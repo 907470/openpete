@@ -10,3 +10,9 @@
 # animation 3 (16), between which no pose exists; the held leg checks that
 # the present shows the 1826 pose until alpha 1.
 artisans-rescue-argus.bk2 | 1714-1838 | pairs=619 class=17 hold=1 dmax=0.0005
+# The bull in Town Square turns 180 degrees in one tick at VBL 1814: its
+# m_Rotation steps 0x80 while its keyframe pair jumps to the mirrored pose, two
+# channels that cancel only at the tick instant. The freecam holds the camera
+# still so the leg measures the moby alone. The span reaches past the reversal
+# on both sides so the bull's own non-reversal legs bound its class legs.
+pose:town_square:pos=(109911, 108961, 10607) yaw=1026 pitch=75 | 1806-1820 | pairs=70 class=3 mirror=1

@@ -79,7 +79,7 @@ static const char* s_cur_mat = "REG";   /* material tag for the current pass (RE
 /* Clip-switch crossfade census (OPENPETE_MOBY_ANIMSW_DBG): how often a sub-tick moby
  * shape-lerp spans a clip switch (prev m_Animation != curr) — crossfaded when the two
  * clips share vertex count, snapped when they don't. Pure instrument, no behaviour. */
-static long s_animsw_cross = 0, s_animsw_snap = 0;
+static long s_animsw_cross = 0, s_animsw_snap = 0, s_animsw_mirror = 0;
 static long s_shmode[3]; /* shaded face-mode census: [0]=gouraud [1]=flat-basic [2]=flat-metal(bit1) */
 static int  s_sh_nohl = -1; /* OPENPETE_SHADED_NOHL=1 disables the gouraud spec boost (A/B) */
 
@@ -4776,6 +4776,93 @@ static int mat3_inverse(const int M[3][3], double out[3][3]) {
     return 1;
 }
 
+/* Facing-reversal hold threshold, in byte angle units (256 = one turn): a
+ * record whose euler steps this far on any axis in one tick, while its
+ * keyframe pair changes, has no pose between its two snapshots, so the
+ * sub-tick interval holds instead of interpolating. 0 disables the hold. */
+#define MOBY_MIRROR_HOLD_DEFAULT 0x40
+
+static int moby_mirror_thresh(void) {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("OPENPETE_MOBY_MIRROR_HOLD");
+                 s = (e && *e) ? (int)strtol(e, NULL, 0) : MOBY_MIRROR_HOLD_DEFAULT; }
+    return s;
+}
+
+/* The largest shortest-arc step of the three euler bytes across an interp
+ * pair, in byte angle units. */
+static int moby_euler_step_max(const openpete_interp_obj_t* o) {
+    const uint32_t ao = game_layout.moby.angle_off;
+    int worst = 0;
+    for (unsigned a = 0; a < 3u; a++) {
+        int d = (int)o->curr[ao + a] - (int)o->prev[ao + a];
+        if (d > 128) d -= 256; else if (d < -128) d += 256;
+        if (d < 0) d = -d;
+        if (d > worst) worst = d;
+    }
+    return worst;
+}
+
+/* The interval between a record's two interp snapshots as the two sub-tick
+ * channels see it: *step is the euler sweep's largest axis step and
+ * *kf_changed says whether the shape lerp spans a different pair of keyframe
+ * streams (the pose the cull would draw from each snapshot's animation state
+ * bytes: its header and keyframe A, and keyframe B's while both snapshots
+ * blend). The blend byte alone moving does not count — that is one keyframe
+ * pair at two weights, which is ordinary animation, continuous by
+ * construction.
+ *
+ * Returns 0 when the record has no usable pair — no prev, no distinct states,
+ * a slot whose two states hold different classes, or a model or pose that does
+ * not resolve — leaving both outputs untouched. */
+static int moby_turn_interval(CPUState* cpu, uint32_t moby, int* step, int* kf_changed) {
+    const openpete_interp_obj_t* o = openpete_interp_objs_find(moby_interp_key(moby));
+    if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return 0;
+    uint16_t pcls, ccls;
+    memcpy(&pcls, o->prev + game_layout.moby.class_off, 2);
+    memcpy(&ccls, o->curr + game_layout.moby.class_off, 2);
+    if (pcls != ccls) return 0;
+    uint32_t model = cpu->read_word(game_layout.moby.model_table + (uint32_t)ccls * 4u);
+    if (model < 0x80000000u) return 0;
+    moby_pose_t pp, pc;
+    if (!moby_pose_derive(cpu, model, o->prev + game_layout.moby.anim_state_off, &pp)) return 0;
+    if (!moby_pose_derive(cpu, model, o->curr + game_layout.moby.anim_state_off, &pc)) return 0;
+    *step = moby_euler_step_max(o);
+    *kf_changed = (pp.header != pc.header || pp.frame_a != pc.frame_a ||
+                   (pp.blend != 0u && pc.blend != 0u &&
+                    (pp.header_b != pc.header_b || pp.frame_b != pc.frame_b)));
+    return 1;
+}
+
+/* Facing reversal: one verdict per record per present, read by both sub-tick
+ * channels — the per-vertex model-space shape lerp and the euler sweep.
+ *
+ * A moby that turns a half circle in one tick does it through two channels
+ * that cancel at the tick instant and nowhere between: m_Rotation steps the
+ * half circle while the keyframe pair jumps to the mirrored pose. Interpolated
+ * independently, the model-space lerp between a pose and its mirror has
+ * in-plane extent proportional to |1 - 2a| — the mesh collapses onto the
+ * flip's invariant axis at alpha 0.5 and the euler sweep turns that line to
+ * face the camera. No pose lies between the two, so the interval holds the
+ * previous shape and the previous rotation and reaches the current tick's at
+ * alpha 1, where every other channel reaches its canonical value.
+ *
+ * The verdict is a pure function of the record's interp pair and the model's
+ * tables, so the two readers cannot disagree; the one-entry memo on (moby,
+ * present clock) only spares the second reader a second pose derive. */
+static int moby_mirror_hold(CPUState* cpu, uint32_t moby) {
+    int thr = moby_mirror_thresh();
+    if (thr <= 0 || !s_rot_now) return 0;
+    static uint32_t s_moby = 0;
+    static op_time_t s_at  = 0;
+    static int       s_hold = 0;
+    if (s_moby == moby && s_at == s_rot_now) return s_hold;
+    int step = 0, kf = 0, hold = 0;
+    if (moby_turn_interval(cpu, moby, &step, &kf)) hold = (step >= thr && kf);
+    s_moby = moby; s_at = s_rot_now; s_hold = hold;
+    return hold;
+}
+
 /* Shortest-arc interpolated byte angle (256/circle) between two byte endpoints. */
 static double lerp_byte_angle(int prev_b, int curr_b, double t) {
     int d = curr_b - prev_b;
@@ -4803,6 +4890,10 @@ int moby_record_euler_at_present(CPUState* cpu, uint32_t moby, ngte_euler_sc* e)
     if (pcls != ccls) return 0;
     double t = (double)(s_rot_now - o->curr_ns) / (double)(o->curr_ns - o->prev_ns);
     if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
+    /* A facing reversal steps instead of sweeping: the previous tick's angles
+     * through the whole interval, this tick's at alpha 1, the same schedule
+     * the shape channel takes for the same verdict. */
+    if (t < 1.0 && moby_mirror_hold(cpu, moby)) t = 0.0;
     const uint32_t ao = game_layout.moby.angle_off;
     double fZ = lerp_byte_angle(o->prev[ao + 0u], o->curr[ao + 0u], t);
     double fX = lerp_byte_angle(o->prev[ao + 1u], o->curr[ao + 1u], t);
@@ -5976,13 +6067,20 @@ static void moby_animsw_census(CPUState* cpu, uint32_t moby) {
     /* Engagement tally: a census that reports no switch is only evidence once
      * the stages it passed through are visible. */
     static long n_rec = 0, n_obj = 0, n_prev = 0, n_cls = 0, n_pose = 0, n_sw = 0;
+    /* Facing reversals, priced at the hold's default threshold whatever
+     * OPENPETE_MOBY_MIRROR_HOLD is set to, split by whether the keyframe pair
+     * changed with the turn: only the changed half has no pose between its two
+     * snapshots, and the unchanged half is the population a threshold-only
+     * rule would hold as well. */
+    static long n_mirror_kf = 0, n_mirror_nokf = 0;
     static unsigned at = 0;
     n_rec++;
     if (openpete_frame >= at + 400u) {
         at = openpete_frame;
         fprintf(stderr, "[moby-animsw-census vbl=%u] stage recs=%ld obj=%ld prev=%ld "
-                        "sameclass=%ld pose=%ld switches=%ld\n",
-                openpete_frame, n_rec, n_obj, n_prev, n_cls, n_pose, n_sw);
+                        "sameclass=%ld pose=%ld switches=%ld mirror=%ld mirror_nokf=%ld\n",
+                openpete_frame, n_rec, n_obj, n_prev, n_cls, n_pose, n_sw,
+                n_mirror_kf, n_mirror_nokf);
     }
     const openpete_interp_obj_t* o = openpete_interp_objs_find(moby_interp_key(moby));
     if (!o) return;
@@ -5999,6 +6097,16 @@ static void moby_animsw_census(CPUState* cpu, uint32_t moby) {
     if (!moby_pose_derive(cpu, model, o->prev + game_layout.moby.anim_state_off, &pp) ||
         !moby_pose_derive(cpu, model, o->curr + game_layout.moby.anim_state_off, &pc)) return;
     n_pose++;
+    {
+        int step = 0, kf = 0;
+        if (moby_turn_interval(cpu, moby, &step, &kf) && step >= MOBY_MIRROR_HOLD_DEFAULT) {
+            if (kf) n_mirror_kf++; else n_mirror_nokf++;
+            fprintf(stderr, "[moby-animsw-census vbl=%u] m=%08x cls=%03x mirror step=%d kf=%d "
+                            "hdr=%08x->%08x fa=%08x->%08x\n",
+                    openpete_frame, moby, (unsigned)ccls, step, kf,
+                    pp.header, pc.header, pp.frame_a, pc.frame_a);
+        }
+    }
     if (pp.header == pc.header) return;
     n_sw++;
     int np = 0, nc = 0;
@@ -6046,6 +6154,12 @@ static int moby_prev_keyframe(CPUState* cpu, uint32_t moby, uint32_t header_curr
         case MOBY_CLIP_COUNTSW: s_animsw_snap++;  verdict = MOBY_PREV_HOLD; break;
         default:                s_animsw_cross++; break;
         }
+    }
+    /* A facing reversal has no pose between its two keyframe pairs either, so
+     * it takes the same hold, clip switch or not. */
+    if (verdict == MOBY_PREV_LERP && moby_mirror_hold(cpu, moby)) {
+        s_animsw_mirror++;
+        verdict = MOBY_PREV_HOLD;
     }
     double t = (double)(s_rot_now - o->curr_ns) / (double)(o->curr_ns - o->prev_ns);
     if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
@@ -7113,8 +7227,9 @@ void moby_reextract(CPUState* cpu) {
         static long last_cross = -1, last_snap = -1;
         if (s_animsw_cross != last_cross || s_animsw_snap != last_snap) {
             last_cross = s_animsw_cross; last_snap = s_animsw_snap;
-            fprintf(stderr, "[moby-animsw vbl=%u] clip-switch crossfaded=%ld snapped(count-mismatch)=%ld\n",
-                    openpete_frame, s_animsw_cross, s_animsw_snap);
+            fprintf(stderr, "[moby-animsw vbl=%u] clip-switch crossfaded=%ld snapped(count-mismatch)=%ld "
+                            "held(facing-reversal)=%ld\n",
+                    openpete_frame, s_animsw_cross, s_animsw_snap, s_animsw_mirror);
         }
     }
 }

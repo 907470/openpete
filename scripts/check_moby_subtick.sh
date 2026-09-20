@@ -28,14 +28,29 @@
 # 1. Its interval therefore starts exactly where the one before ended, so its
 # D is required to be zero outright rather than bounded per moby.
 #
+# A third bin is the facing reversal: an interval whose moby turns 0x40 byte
+# angles (90 degrees) or more on an euler axis while its keyframe pair
+# changes. The two channels the sub-tick pass interpolates — the per-vertex
+# model-space shape lerp and the euler sweep — cancel each other at the tick
+# instant and not between: the shape lerp between a pose and its mirror image
+# has in-plane extent proportional to |1 - 2a| and collapses onto the flip's
+# invariant axis at alpha 0.5. No pose exists between the two, so the interval
+# must be held (prevkf=2), which the bin requires of every such leg. Both the
+# euler step and the keyframe change are read off the two canonical ticks (the
+# alpha-1 leg of v and of v - 2), so the bin measures the interval rather than
+# the engine's verdict on it.
+#
 # Input: games/<slug>/moby-subtick-corpus.manifest, rows
-#   <bk2> | <lo>-<hi> | <key>=<value> ... [| <exclusion>]...
+#   <source> | <lo>-<hi> | <key>=<value> ... [| <exclusion>]...
+# where <source> is a movie under games/<slug>/bk2 or `pose:<level>:<pose>`,
+# which skips to the level and places the freecam (the pose's spaces are kept).
 # The span is the intermediate-capture VBLs, two apart; the [moby-anim] and
 # [moby-screen] traces name each present by the VBL they print (the trace
 # VBL), which is what the exclusions use. Keys:
 #   pairs=<n>   floor on the bracketed legs measured
 #   class=<n>   floor on the defect-class legs measured
 #   hold=<n>    floor on the held (prevkf=2) legs measured
+#   mirror=<n>  floor on the facing-reversal legs measured
 #   dmax=<px>   optional: every leg's D at or below this bound
 # An exclusion is a known-open leg, named with its reason:
 #   leg <vbl> <moby> <reason>    left out of both checks
@@ -89,7 +104,8 @@ mkdir -p "$OUT"
 # logs append to one file. The screenshots are the capture requests that make
 # the intermediate presents exist headless; each run's last one is asserted.
 run_alpha() {
-    local alpha="$1" tag="$2" movie="$3"; shift 3
+    local alpha="$1" tag="$2"; shift 2
+    local -a src=("${SRC[@]}")
     local dir="$OUT/$tag-a$alpha" log="$OUT/$tag-a$alpha.log"
     local -a vbls=("$@")
     mkdir -p "$dir"
@@ -105,7 +121,7 @@ run_alpha() {
         csv="$(IFS=,; echo "${part[*]}")"
         pg_capture "$log.part" "$dir/i__$last-vk.png" -- \
             --renderer vk --mute 1 --aspect 4:3 --lod original \
-            --bk2 "$movie" --screenshot-native-only \
+            "${src[@]}" --screenshot-native-only \
             --screenshot-intermediate-on-frame "$csv" \
             --screenshot-output "$dir/i__{n}.png" \
             --frame-limit $((last + 10)) || return 1
@@ -118,29 +134,44 @@ fail=0 rows=0
 while IFS= read -r line; do
     line="${line%%#*}"
     [[ -n "${line// /}" ]] || continue
-    IFS='|' read -r bk2 span keys excl <<<"$line"
-    bk2="${bk2// /}"; span="${span// /}"
-    movie="$PG_BK2_DIR/$bk2"
-    [[ -f "$movie" ]] || { echo "moby-subtick: SKIP ($movie missing)"; exit 64; }
-    tag="${bk2%.bk2}"
+    IFS='|' read -r src span keys excl <<<"$line"
+    span="${span// /}"
+    # A row names either a movie or a freecam pose: `<bk2>` replays the movie,
+    # `pose:<level>:<pose>` skips to the level and places the freecam, whose
+    # internal spaces survive the trim. A pose row's tag is the level plus a
+    # short hash of the pose, the same slug form the freecam corpus uses.
+    if [[ "$src" == *pose:* ]]; then
+        src="${src#"${src%%[![:space:]]*}"}"; src="${src%"${src##*[![:space:]]}"}"
+        rest="${src#pose:}"; level="${rest%%:*}"; pose="${rest#*:}"
+        SRC=(--skip-to-level "$level" --freecam-pose "$pose")
+        tag="$level-$(printf '%s' "$pose" | md5sum | cut -c1-6)"
+        row="$level"
+    else
+        src="${src// /}"
+        movie="$PG_BK2_DIR/$src"
+        [[ -f "$movie" ]] || { echo "moby-subtick: SKIP ($movie missing)"; exit 64; }
+        SRC=(--bk2 "$movie")
+        tag="${src%.bk2}"
+        row="$src"
+    fi
     rows=$((rows + 1))
 
     lo="${span%-*}"; hi="${span#*-}"
     if (( (hi - lo) % 2 != 0 || hi < lo + 2 )); then
-        echo "moby-subtick: FAIL (row $bk2: span $span is not lo-hi with hi = lo + 2k)"; exit 1
+        echo "moby-subtick: FAIL (row $row: span $span is not lo-hi with hi = lo + 2k)"; exit 1
     fi
     vbls=()
     for ((f = lo; f <= hi; f += 2)); do vbls+=("$f"); done
 
     rc0=0 rc1=0
-    run_alpha 0 "$tag" "$movie" "${vbls[@]}" </dev/null || rc0=$?
-    run_alpha 1 "$tag" "$movie" "${vbls[@]}" </dev/null || rc1=$?
+    run_alpha 0 "$tag" "${vbls[@]}" </dev/null || rc0=$?
+    run_alpha 1 "$tag" "${vbls[@]}" </dev/null || rc1=$?
     if [[ ! -s "$OUT/$tag-a0.log" || ! -s "$OUT/$tag-a1.log" ]] || (( rc0 || rc1 )); then
-        echo "moby-subtick: FAIL (row $bk2: no instrument output, rc=$rc0/$rc1; see $OUT)"
+        echo "moby-subtick: FAIL (row $row: no instrument output, rc=$rc0/$rc1; see $OUT)"
         fail=1; continue
     fi
 
-    python3 - "$OUT/$tag-a0.log" "$OUT/$tag-a1.log" "$GAME" "$bk2" "$keys" "${excl:-}" <<'PYEOF' || fail=1
+    python3 - "$OUT/$tag-a0.log" "$OUT/$tag-a1.log" "$GAME" "$row" "$keys" "${excl:-}" <<'PYEOF' || fail=1
 import re, sys, collections
 
 log0, log1, game, bk2, keys, excl = sys.argv[1:7]
@@ -151,7 +182,13 @@ for tok in keys.split():
 min_pairs = int(opts.get('pairs', '1'))
 min_class = int(opts.get('class', '0'))
 min_hold = int(opts.get('hold', '0'))
+min_mirror = int(opts.get('mirror', '0'))
 dmax = float(opts['dmax']) if 'dmax' in opts else None
+# A facing reversal: an interval whose euler steps this far on any axis, in
+# byte angle units (256 = one turn), while the keyframe pair changes. Read off
+# the two canonical ticks, not off the engine's verdict, so the bin measures
+# the interval rather than the rule applied to it.
+MIRROR_THRESH = 0x40
 # A held leg reuses the pose of the tick before, so its centroid is that
 # tick's alpha-1 centroid recomputed from the same inputs: equal to the last
 # bit of the float format, not merely close.
@@ -169,7 +206,8 @@ for field in excl.split('|'):
 
 ani = re.compile(r'\[moby-anim vbl=(\d+)\] m=(\w+) cls=(\w+) prevkf=(\d) balpha=([\d.]+) '
                  r'curr\(frm=(\d+) nfrm=(\d+) prog=(\d+) anim=(\d+)(?: nid=(\d+))?\) '
-                 r'fa=(\w+) fb=(\w+) fap=(\w+) fbp=(\w+) w0=(\w+) w0p=(\w+)')
+                 r'fa=(\w+) fb=(\w+) fap=(\w+) fbp=(\w+) w0=(\w+) w0p=(\w+) '
+                 r'hdr=(\w+) hdrp=\w+ rot=(\w+)')
 scr = re.compile(r'\[moby-screen vbl=(\d+)\] leg=inter now=\S+ m=(\w+) cls=\w+ n=\d+ '
                  r'c=\(([-\d.]+),([-\d.]+)\)')
 
@@ -195,7 +233,28 @@ A1, S1 = load(log1)
 def blend(m, grp):
     return (int(m[grp], 16) >> 8) & 0xFF
 
-pairs = nclass = nhold = nsnap = 0
+def euler(m):
+    # rot is the angle word's low three bytes: Z at bit 0, X at bit 8, Y at 16.
+    r = int(m[18], 16)
+    return (r & 0xFF, (r >> 8) & 0xFF, (r >> 16) & 0xFF)
+
+def arc(a, b):
+    d = (b - a) & 0xFF
+    return 256 - d if d > 128 else d
+
+def reversal(prv, cur):
+    # The interval between two canonical ticks, from the alpha-1 (identity)
+    # leg of each: the largest shortest-arc euler step, and whether the two
+    # ticks drew a different pair of keyframe streams (header and keyframe A,
+    # and keyframe B while both blend). The blend byte alone moving is one
+    # keyframe pair at two weights, i.e. ordinary animation.
+    step = max(arc(a, b) for a, b in zip(euler(prv), euler(cur)))
+    bl, blp = blend(cur, 15), blend(prv, 15)
+    kf = (prv[17] != cur[17] or prv[11] != cur[11]
+          or (bl != 0 and blp != 0 and prv[12] != cur[12]))
+    return step, kf
+
+pairs = nclass = nhold = nsnap = nmirror = 0
 bad, notes, holds = [], [], []
 per = collections.defaultdict(lambda: {'cls': [], 'other': 0.0, 'n': 0})
 for (v, mob), g in sorted(A0.items()):
@@ -221,6 +280,18 @@ for (v, mob), g in sorted(A0.items()):
     nclass += in_class
     held = g[4] == '2'
     nhold += held
+    cur = A1.get((v, mob))
+    if cur is not None:
+        step, kf = reversal(p, cur)
+        if step >= MIRROR_THRESH and kf:
+            # No pose exists between a shape and its mirror image: the
+            # per-vertex model-space lerp collapses the mesh onto the flip's
+            # invariant axis at alpha 0.5. The interval must hold.
+            nmirror += 1
+            if not held:
+                bad.append("vbl=%d m=%s cls=%s turns %d byte angles on one axis with its "
+                           "keyframe pair changed and reads prevkf=%s: the interval lerps "
+                           "a facing reversal" % (v, mob, g[3], step, g[4]))
     if (v, mob) in skip_seam:
         notes.append("excluded seam vbl=%d m=%s D=%.3f: %s" % (v, mob, D, skip_seam[(v, mob)]))
         continue
@@ -253,12 +324,13 @@ for (mob, c), rec in sorted(per.items()):
             bad.append("vbl=%d m=%s cls=%s classD=%.3f above the moby's non-class max %.3f"
                        % (v, mob, c, d, rec['other']))
 
-head = ("[moby-subtick] game=%s bk2=%s pairs=%d class=%d hold=%d mismatches=%d snaps=%d excluded=%d"
-        % (game, bk2, pairs, nclass, nhold, sum(' tuple ' in b for b in bad), nsnap, len(notes)))
+head = ("[moby-subtick] game=%s bk2=%s pairs=%d class=%d hold=%d mirror=%d mismatches=%d snaps=%d excluded=%d"
+        % (game, bk2, pairs, nclass, nhold, nmirror, sum(' tuple ' in b for b in bad), nsnap, len(notes)))
 for n in notes:
     print("[moby-subtick]   " + n)
-if pairs < min_pairs or nclass < min_class or nhold < min_hold:
-    print(head + " VACUOUS: floor pairs>=%d class>=%d hold>=%d" % (min_pairs, min_class, min_hold))
+if pairs < min_pairs or nclass < min_class or nhold < min_hold or nmirror < min_mirror:
+    print(head + " VACUOUS: floor pairs>=%d class>=%d hold>=%d mirror>=%d"
+          % (min_pairs, min_class, min_hold, min_mirror))
     sys.exit(1)
 print(head + " verdict=%s" % ("FAIL" if bad else "PASS"))
 for v, mob, c, d in holds:

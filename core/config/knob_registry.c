@@ -1299,6 +1299,9 @@ static const knob_desc_t g_builtin[] = {
         "(bitmask 1=player 2=moby 4=world; 0 = legacy derive-from-depth)."),
     ENVROW_LATCHED("MOBY_SNAP_STALE", "Debug", "1",
         "Snap instead of lerp across stale interp pairs (default 1)."),
+    ENVROW_LATCHED("MOBY_MIRROR_HOLD", "Debug", "64",
+        "Sub-tick hold threshold for a moby's one-tick turn, in byte angles "
+        "(256 = one turn); 0 interpolates every interval."),
     ENVROW_LATCHED("MOBY_IDLE", "Debug", "0",
         "Display-only idle animation for frozen mobys."),
     ENVROW_LATCHED("MOBY_HOLD_PX", "Debug", "10",
