@@ -105,13 +105,13 @@ open-atlas-turn-pages|1240|100|freeze|1244,1252,1268,1276,1320,1328,1344,1352,15
 # ribbon producer (func_8002FB68) emits anywhere in the corpus (VBL 4487-4535).
 title-demo-tracers|4480|20||4501
 
-# title-demo-glint2: the attract demo's jittered beams, the only geometry the
+# title-demo-zap: the attract demo's jittered beams, the only geometry the
 # ribbon producer (func_8002F5B4) emits anywhere in the corpus: the live byte
 # at +0x1C of the eight records of D_80072430 reads zero on all six gameplay
 # rows and on open-atlas, and one live record on the plain boot from VBL 4901
 # to VBL 4922. The 4900 grid sample sits before that window, so the row carries
 # its own negative.
-title-demo-glint2|4900|10||4910
+title-demo-zap|4900|10||4910
 #
 # crystal-islands-flame: a flame breath over the water in Crystal Islands with
 # the HUD fully extended. The flame's primitives are written at VBL 1066-1090

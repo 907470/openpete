@@ -505,7 +505,7 @@ const game_layout_t game_layout = {
         .pyr_y      = 0xC0,              /* mobyfunc.s:2316 */
         .near_vz    = 0x2000,            /* mobyfunc.s:2344, the branch depth */
     },
-    .glint2 = {
+    .zap = {
         .hook       = F_GLINT2_DRAW,
         .pool       = D_GLINT2_POOL,
         .slots      = 8u,                /* mobyfunc.s:2564, base +0x180 */

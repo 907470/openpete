@@ -13,7 +13,7 @@ extern const feature_module_t particles_module;
 extern const feature_module_t tracers_module;
 extern const feature_module_t glow_module;
 extern const feature_module_t glint_module;
-extern const feature_module_t glint2_module;
+extern const feature_module_t zap_module;
 extern const feature_module_t moby_module;
 extern const feature_module_t player_module;
 extern const feature_module_t flame_module;
@@ -64,7 +64,7 @@ const feature_module_t* const openpete_features[] = {
     /* The jittered-beam feeder: hooks the world draw's call to the ribbon
        renderer, which links each segment's triangles into an ordering-table
        bucket keyed on that segment's own corners. */
-    &glint2_module,
+    &zap_module,
     /* The shared moby feeder: registers the draw hooks game_layout.moby
      * names, then refuses them because this game supplies no moby_game
      * decoder slots yet — OPENPETE_MOBY_CENSUS prints the reason. */

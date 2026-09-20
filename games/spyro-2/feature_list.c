@@ -16,7 +16,7 @@ extern const feature_module_t flame_module;
 extern const feature_module_t tracers_module;
 extern const feature_module_t glow_module;
 extern const feature_module_t glint_module;
-extern const feature_module_t glint2_module;
+extern const feature_module_t zap_module;
 extern const feature_module_t ui_sprite_module;
 extern const feature_module_t text_sprt_module;
 
@@ -62,7 +62,7 @@ const feature_module_t* const openpete_features[] = {
     /* The jittered-beam feeder: hooks the draw driver's call to the ribbon
        renderer, which links each segment's triangles into an ordering-table
        bucket keyed on that segment's own corners. */
-    &glint2_module,
+    &zap_module,
     /* The shared moby feeder: registers the cull and the two draw passes
      * game_layout.moby names and decodes their records through the
      * moby_game_s23 provider; inert unless the native scene is enabled. */

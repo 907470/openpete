@@ -284,7 +284,7 @@ function(openpete_add_game GAME_ID)
         # registered only by a game whose game_layout names their routines.
         ${_common}/renderer/glow.c
         ${_common}/renderer/glint.c
-        ${_common}/renderer/glint2.c
+        ${_common}/renderer/zap.c
         ${_common}/renderer/tracers.c
         ${_common}/renderer/particles.c
         ${_common}/renderer/moby.c

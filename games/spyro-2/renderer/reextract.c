@@ -25,7 +25,7 @@
 #include "renderer/tracers.h"
 #include "renderer/glow.h"
 #include "renderer/glint.h"
-#include "renderer/glint2.h"
+#include "renderer/zap.h"
 #include "renderer/interp_lerp.h"    /* lerp16/32, lerp_matrix, lerp_vec3 */
 #include "renderer/interp_regions_gen.h"
 #include "renderer/cut_guard.h"      /* the shared camera-cut guard and its census */
@@ -523,8 +523,8 @@ static void game_reextract_body(CPUState* cpu) {
     RX_CENSUS_STEP("glow");
     glint_reextract(cpu, bracketed, alpha);   /* the gem-glint stars the tick captured */
     RX_CENSUS_STEP("glint");
-    glint2_reextract(cpu);          /* the jittered beams the tick captured */
-    RX_CENSUS_STEP("glint2");
+    zap_reextract(cpu);          /* the jittered beams the tick captured */
+    RX_CENSUS_STEP("zap");
     /* The HUD, dialog boxes, text and screen fades are produced during the
      * game's own render and cannot be re-derived here, so the canonical present
      * banks them and every re-extract re-applies that carry on top of the

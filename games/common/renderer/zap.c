@@ -1,12 +1,16 @@
-// games/common/renderer/glint2.c, the jittered-beam feeder: a handwritten
-// routine (Spyro 2 func_8004B194 / mobyfunc.s:2548-2905, Spyro 3 func_8002F5B4
-// / mobyfunc.s:2548-2936) that draws one ragged textured ribbon per live record
-// of a pool, linking every triangle into the 3D ordering table itself, so none
-// of its primitives reaches the 2D chokepoint the sprite feeder hooks. Spyro
+// games/common/renderer/zap.c, the feeder for Zoe's zap: a handwritten routine
+// (Spyro 2 func_8004B194 / mobyfunc.s:2548-2905, Spyro 3 func_8002F5B4 /
+// mobyfunc.s:2548-2936) that draws one ragged textured ribbon per live record
+// of a pool. The records are spawned by the level overlays' Zoe update through
+// the spawner beside it (Spyro 3 func_8002F540 / asm/mobyfunc.s:2511-2544,
+// Spyro 2 func_8004B120 / mobyfunc.s:2510-2543), which is why the pool is empty
+// everywhere Zoe is not zapping. The routine links every triangle into the 3D
+// ordering table itself, so none of its primitives reaches the 2D chokepoint
+// the sprite feeder hooks. Spyro
 // 3's routine carries seven instructions Spyro 2's lacks, a game-state test
 // that suppresses the per-present re-randomize; everything this feeder reads is
 // in the 358 instructions the two share. Every per-game address, count, stride
-// and bound comes from game_layout.glint2; the walk below is one body.
+// and bound comes from game_layout.zap; the walk below is one body.
 //
 // Read from the routine (asm/mobyfunc.s):
 //   * the pool is 8 records of 0x30 bytes: the head world XYZ at +0x00, the
@@ -94,20 +98,20 @@
 
 extern unsigned openpete_frame;
 
-#define G2 (game_layout.glint2)
+#define ZAP (game_layout.zap)
 
-#define G2_MAX_PRIMS 512
-#define G2_MAX_SEG   128
+#define ZAP_MAX_PRIMS 512
+#define ZAP_MAX_SEG   128
 
 typedef struct {
     ngte_prim p;
     float     depth;
     int       paired;
-} g2_item;
+} zap_item;
 
-static g2_item  s_item[G2_MAX_PRIMS];
+static zap_item  s_item[ZAP_MAX_PRIMS];
 static int      s_item_n;
-static float    s_pred[G2_MAX_PRIMS];   /* one depth per predicted triangle */
+static float    s_pred[ZAP_MAX_PRIMS];   /* one depth per predicted triangle */
 static int      s_pred_n;
 static int      s_live;                 /* records with a non-zero count byte */
 static int      s_accepted;             /* 1 when the replay accounted for the call */
@@ -117,14 +121,14 @@ static uint32_t s_tag_hist[256];
 static uint32_t s_fed_tris;
 
 /* The tick's captured set, replayed by every sub-tick present of the tick. */
-typedef struct { ngte_prim p; float depth; } g2_held;
-static g2_held  s_tick[G2_MAX_PRIMS];
+typedef struct { ngte_prim p; float depth; } zap_held;
+static zap_held  s_tick[ZAP_MAX_PRIMS];
 static int      s_tick_n;
 static unsigned s_tick_frame = ~0u;
 
-static int g2_prim_sink(void* ctx, const ngte_prim* s) {
+static int zap_prim_sink(void* ctx, const ngte_prim* s) {
     (void)ctx;
-    if (s_item_n >= G2_MAX_PRIMS) return 0;
+    if (s_item_n >= ZAP_MAX_PRIMS) return 0;
     s_item[s_item_n].p = *s;
     s_item[s_item_n].depth = 0.0f;
     s_item[s_item_n].paired = 0;
@@ -133,14 +137,14 @@ static int g2_prim_sink(void* ctx, const ngte_prim* s) {
 }
 
 /* Walk the interval the call allocated: 8-word POLY_FT3 (tag length 7). */
-static void g2_capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
+static void zap_capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
     s_item_n = 0;
     const ngte_walk_policy pol = {
-        .tag_len_max = 7, .raw_words_max = 8, .guard = G2_MAX_PRIMS,
+        .tag_len_max = 7, .raw_words_max = 8, .guard = ZAP_MAX_PRIMS,
         .polygons_only = 0, .code_hist = s_code_hist, .tag_hist = s_tag_hist,
         .total = NULL, .count_all = 0,
     };
-    ngte_walk_prims(cpu, start, end, &pol, g2_prim_sink, NULL);
+    ngte_walk_prims(cpu, start, end, &pol, zap_prim_sink, NULL);
 }
 
 /* Identify the record whose projected chain the scratchpad still holds. The
@@ -149,21 +153,21 @@ static void g2_capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
  * the two tests before the projection are the count byte and the head's
  * +/-0x5400 box, and both read the record alone. Returns that record's segment
  * count, or 0 when none or more than one reached the projection. */
-static int g2_projected_record(CPUState* cpu, const ngte_view* v) {
+static int zap_projected_record(CPUState* cpu, const ngte_view* v) {
     int reached = 0, n_reached = 0;
     s_live = 0;
-    const double box = (double)G2.box;
-    for (uint32_t s = 0; s < G2.slots; s++) {
-        const uint32_t rec = G2.pool + s * G2.stride;
-        const int n = (int)(cpu->read_word(rec + G2.packed_off) & 0xFFu);
+    const double box = (double)ZAP.box;
+    for (uint32_t s = 0; s < ZAP.slots; s++) {
+        const uint32_t rec = ZAP.pool + s * ZAP.stride;
+        const int n = (int)(cpu->read_word(rec + ZAP.packed_off) & 0xFFu);
         if (n == 0) continue;                          /* :2590 free slot */
         s_live++;
-        if (n < 1 || n > G2_MAX_SEG) return 0;
+        if (n < 1 || n > ZAP_MAX_SEG) return 0;
         /* :2608-2628 the head's camera-relative offset against the box, in the
          * integer staged camera the routine itself subtracts. */
-        const double hx = (double)(int32_t)cpu->read_word(rec + G2.head_off + 0u) - v->cam_ram[0];
-        const double hy = v->cam_ram[1] - (double)(int32_t)cpu->read_word(rec + G2.head_off + 4u);
-        const double hz = v->cam_ram[2] - (double)(int32_t)cpu->read_word(rec + G2.head_off + 8u);
+        const double hx = (double)(int32_t)cpu->read_word(rec + ZAP.head_off + 0u) - v->cam_ram[0];
+        const double hy = v->cam_ram[1] - (double)(int32_t)cpu->read_word(rec + ZAP.head_off + 4u);
+        const double hz = v->cam_ram[2] - (double)(int32_t)cpu->read_word(rec + ZAP.head_off + 8u);
         if (fabs(hx) >= box || fabs(hy) >= box || fabs(hz) >= box) continue;
         reached++;
         n_reached = n;
@@ -189,8 +193,8 @@ static int g2_projected_record(CPUState* cpu, const ngte_view* v) {
  * pairing has to explain.
  *
  * Returns the triangle count, or -1 when the record was dropped whole. */
-static int g2_replay(CPUState* cpu, int n) {
-    const uint32_t base = G2.spad;          /* :2771 the widened entry table */
+static int zap_replay(CPUState* cpu, int n) {
+    const uint32_t base = ZAP.spad;          /* :2771 the widened entry table */
     s_pred_n = 0;
 
     /* :2804-2806 the record is dropped when every projected entry shares an
@@ -202,7 +206,7 @@ static int g2_replay(CPUState* cpu, int n) {
      * reject; the routine addresses it as the halfword at offset 6 of the
      * table's midpoint. */
     const int mid_sz = (int)(int16_t)(uint16_t)(cpu->read_word(base + (uint32_t)n * 8u + 4u) >> 16);
-    if (mid_sz - G2.far_sz >= 0) return -1;
+    if (mid_sz - ZAP.far_sz >= 0) return -1;
 
     for (int j = 1; j <= n; j++) {
         uint32_t xy[4], w1[4];
@@ -226,8 +230,8 @@ static int g2_replay(CPUState* cpu, int n) {
             openpete_worldvz_full((float)sum * 0.25f));
         /* :2863 the first triangle is dropped when this point's two entries
          * coincide, :2890 the second when the previous point's do. */
-        if (xy[2] != xy[3]) { if (s_pred_n >= G2_MAX_PRIMS) return -1; s_pred[s_pred_n++] = d; }
-        if (xy[0] != xy[1]) { if (s_pred_n >= G2_MAX_PRIMS) return -1; s_pred[s_pred_n++] = d; }
+        if (xy[2] != xy[3]) { if (s_pred_n >= ZAP_MAX_PRIMS) return -1; s_pred[s_pred_n++] = d; }
+        if (xy[0] != xy[1]) { if (s_pred_n >= ZAP_MAX_PRIMS) return -1; s_pred[s_pred_n++] = d; }
     }
     return s_pred_n;
 }
@@ -236,11 +240,11 @@ static int g2_replay(CPUState* cpu, int n) {
  * walks the routine's own entry table in the order the routine emitted from it,
  * so one cursor serves the call. The depths are taken only when the replay
  * accounts for exactly the primitives the polybuf carries. */
-static void g2_pair_depths(CPUState* cpu, const ngte_view* v) {
-    const int n = g2_projected_record(cpu, v);
+static void zap_pair_depths(CPUState* cpu, const ngte_view* v) {
+    const int n = zap_projected_record(cpu, v);
     s_pred_n = 0;
     if (n <= 0) return;
-    const int predicted = g2_replay(cpu, n);
+    const int predicted = zap_replay(cpu, n);
     if (predicted != s_item_n) return;   /* every primitive stays unpaired */
     s_accepted = 1;
     for (int i = 0; i < s_item_n; i++) {
@@ -251,15 +255,15 @@ static void g2_pair_depths(CPUState* cpu, const ngte_view* v) {
 
 /* ---- feed ---------------------------------------------------------------- */
 
-/* OPENPETE_GLINT2=0 suppresses this feed alone. The guest draw still runs, so
+/* OPENPETE_ZAP=0 suppresses this feed alone. The guest draw still runs, so
  * the A/B prices the ribbons' painted pixels from one binary. */
-static int g2_feed_enabled(void) {
+static int zap_feed_enabled(void) {
     static int v = -1;
-    if (v < 0) { const char* e = getenv("OPENPETE_GLINT2"); v = !(e && *e && *e == '0'); }
+    if (v < 0) { const char* e = getenv("OPENPETE_ZAP"); v = !(e && *e && *e == '0'); }
     return v;
 }
 
-static void g2_add_prim(const ngte_prim* p, float depth) {
+static void zap_add_prim(const ngte_prim* p, float depth) {
     static const int split[2][3] = { {0, 1, 2}, {1, 3, 2} };
     if (p->nv != 3 && p->nv != 4) return;
     ngte_tpage tp;
@@ -291,37 +295,37 @@ static void g2_add_prim(const ngte_prim* p, float depth) {
     }
 }
 
-static void g2_feed_set(const g2_held* set, int n) {
-    if (!g2_feed_enabled()) return;
+static void zap_feed_set(const zap_held* set, int n) {
+    if (!zap_feed_enabled()) return;
     if (n <= 0) return;
     openpete_native_scene_begin_frame(openpete_frame);
     openpete_native_scene_set_tag(OPENPETE_TAG_TRACER(0));
-    for (int i = 0; i < n; i++) g2_add_prim(&set[i].p, set[i].depth);
+    for (int i = 0; i < n; i++) zap_add_prim(&set[i].p, set[i].depth);
     openpete_native_scene_set_tag(0);
 }
 
 /* Hold the call's primitives for the sub-tick replay. The tick's first hook
  * clears the set; this routine is called once per tick. */
-static void g2_hold(void) {
+static void zap_hold(void) {
     if (s_tick_frame != openpete_frame) { s_tick_frame = openpete_frame; s_tick_n = 0; }
-    for (int i = 0; i < s_item_n && s_tick_n < G2_MAX_PRIMS; i++) {
+    for (int i = 0; i < s_item_n && s_tick_n < ZAP_MAX_PRIMS; i++) {
         s_tick[s_tick_n].p = s_item[i].p;
         s_tick[s_tick_n].depth = s_item[i].depth;
         s_tick_n++;
     }
 }
 
-/* OPENPETE_GLINT2_CENSUS=LO-HI (or a single frame): per call in that frame
+/* OPENPETE_ZAP_CENSUS=LO-HI (or a single frame): per call in that frame
  * range, the primitives the routine appended by GPU code, the pool records that
  * were live and that the reject mirror accepted, the triangles the segment walk
  * predicted, the native triangles this feeder emitted and how many primitives
  * were left unpaired. A capture whose fed count is zero measured nothing. */
-static void g2_census(uint32_t start, uint32_t end, uint32_t fed_before) {
+static void zap_census(uint32_t start, uint32_t end, uint32_t fed_before) {
     static env_frame_range_t s_range = ENV_FRAME_RANGE_INIT;
-    if (!env_frame_range_active(&s_range, "OPENPETE_GLINT2_CENSUS", openpete_frame)) return;
+    if (!env_frame_range_active(&s_range, "OPENPETE_ZAP_CENSUS", openpete_frame)) return;
     int unpaired = 0;
     for (int i = 0; i < s_item_n; i++) if (!s_item[i].paired) unpaired++;
-    fprintf(stderr, "[glint2-census f=%u] polybuf [%08X,%08X) %u bytes prims=%d codes:",
+    fprintf(stderr, "[zap-census f=%u] polybuf [%08X,%08X) %u bytes prims=%d codes:",
             openpete_frame, start, end, end - start, s_item_n);
     uint32_t seen[256];
     memset(seen, 0, sizeof seen);
@@ -332,7 +336,7 @@ static void g2_census(uint32_t start, uint32_t end, uint32_t fed_before) {
     /* Each triangle's first corner and the scene depth the pairing gave it:
      * the two quantities the feed places it by. */
     for (int i = 0; i < s_item_n; i++)
-        fprintf(stderr, "[glint2-tri f=%u] %d a=(%.0f,%.0f) b=(%.0f,%.0f) c=(%.0f,%.0f)"
+        fprintf(stderr, "[zap-tri f=%u] %d a=(%.0f,%.0f) b=(%.0f,%.0f) c=(%.0f,%.0f)"
                         " rgb=%06X uv=(%d,%d) tp=%d depth=%.6f\n",
                 openpete_frame, i, s_item[i].p.x[0], s_item[i].p.y[0],
                 s_item[i].p.x[1], s_item[i].p.y[1], s_item[i].p.x[2], s_item[i].p.y[2],
@@ -344,12 +348,12 @@ static void g2_census(uint32_t start, uint32_t end, uint32_t fed_before) {
 
 static hook_bracket_state s_hb;
 static const hook_bracket_desc k_bracket = {
-    .path = RP_TRACER, .prof_tag = "glint2.srend", .st = &s_hb,
+    .path = RP_TRACER, .prof_tag = "zap.srend", .st = &s_hb,
 };
 
 /* The world draw's call is the only one in either image, so the hook takes
  * every entry (Spyro 2 draw/func_800155A0.s:34, Spyro 3 draw/func_8001E460.s:32). */
-static int on_glint2_draw(CPUState* cpu, uint32_t addr) {
+static int on_zap_draw(CPUState* cpu, uint32_t addr) {
     uint32_t startp, endp; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_bracket, &startp, &endp, &feed, &verify))
         return 0;
@@ -358,14 +362,14 @@ static int on_glint2_draw(CPUState* cpu, uint32_t addr) {
     const uint32_t fed_before = s_fed_tris;
     if (s_tick_frame != openpete_frame) { s_tick_frame = openpete_frame; s_tick_n = 0; }
     if (endp > startp) {
-        g2_capture_prims(cpu, startp, endp);
+        zap_capture_prims(cpu, startp, endp);
         ngte_view view;
         ngte_view_build(cpu, &view);
-        g2_pair_depths(cpu, &view);
-        g2_hold();
-        if (feed && render_path_enabled(RP_TRACER)) g2_feed_set(s_tick, s_tick_n);
+        zap_pair_depths(cpu, &view);
+        zap_hold();
+        if (feed && render_path_enabled(RP_TRACER)) zap_feed_set(s_tick, s_tick_n);
     }
-    g2_census(startp, endp, fed_before);
+    zap_census(startp, endp, fed_before);
     return hook_bracket_end(&k_bracket);
 }
 
@@ -373,27 +377,27 @@ static int on_glint2_draw(CPUState* cpu, uint32_t addr) {
  * once the polybuf is reused, so the replay re-feeds the set the canonical tick
  * captured, at the depths paired then. At alpha 1 it reproduces the canonical
  * present exactly, which is what the spine's identity leg measures. */
-void glint2_reextract(CPUState* cpu) {
+void zap_reextract(CPUState* cpu) {
     (void)cpu;
     if (!hook_reextract_ready(RP_TRACER)) return;
-    g2_feed_set(s_tick, s_tick_n);
+    zap_feed_set(s_tick, s_tick_n);
 }
 
-/* The hook address is the layout's jittered-beam draw site, bound at boot: a
+/* The hook address is the layout's zap draw site, bound at boot: a
  * static initializer cannot read another TU's const. A game with no located
  * routine leaves it 0 and the registry dispatches nothing. */
-static feature_dispatch_entry_t glint2_dispatch[] = {
-    { 0u, on_glint2_draw },
+static feature_dispatch_entry_t zap_dispatch[] = {
+    { 0u, on_zap_draw },
     { 0u, NULL },
 };
 
-static void glint2_apply_options(const openpete_options_t* opts) {
+static void zap_apply_options(const openpete_options_t* opts) {
     (void)opts;
-    glint2_dispatch[0].addr = game_layout.glint2.hook;
+    zap_dispatch[0].addr = game_layout.zap.hook;
 }
 
-const feature_module_t glint2_module = {
-    .name           = "glint2_native",
-    .apply_options  = glint2_apply_options,
-    .dispatch_table = glint2_dispatch,
+const feature_module_t zap_module = {
+    .name           = "zap_native",
+    .apply_options  = zap_apply_options,
+    .dispatch_table = zap_dispatch,
 };

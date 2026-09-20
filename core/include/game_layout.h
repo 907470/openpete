@@ -704,8 +704,9 @@ typedef struct game_layout {
         int32_t  near_vz;
     } glint;
 
-    /* The jittered beam: one ragged textured ribbon per live record of a
-     * third pool. `hook` = 0 on a game with no located routine.
+    /* Zoe's zap: one ragged textured ribbon per live record of a third pool,
+     * spawned by the level overlays' Zoe update. `hook` = 0 on a game with no
+     * located routine.
      *
      * The pool is `slots` records of `stride` bytes: the head world XYZ at
      * `head_off`, the tail twelve bytes on and a packed word at `packed_off`
@@ -724,7 +725,7 @@ typedef struct game_layout {
         int32_t  box;
         int32_t  far_sz;
         uint32_t spad;
-    } glint2;
+    } zap;
 
     /* The two tracer producers: a point-ring ribbon over an array of records
      * and an indexed mesh over a descriptor the caller passes in a0. Either

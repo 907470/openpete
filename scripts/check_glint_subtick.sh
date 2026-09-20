@@ -48,7 +48,11 @@
 # routine's geometry, which this feeder deliberately does not carry.
 #
 # Input: games/<slug>/glint-subtick-corpus.manifest, rows
-#   <bk2> | <V> | <key>=<value> ...
+#   <source> | <V> | <key>=<value> ...
+# <source> is a movie under games/<slug>/bk2, or any name not ending in .bk2,
+# which is the plain boot — the title screen and the attract demo, which need
+# no input — replayed with no movie, the same movie-less row form the
+# presentation corpus takes.
 # V is the canonical VBL whose primitives the intermediate present replays;
 # V-2 opens the interval and the intermediate present is captured at V+1. Keys:
 #   gem=<x>,<y>  a gem to judge, named by its mask component's centroid in the
@@ -115,7 +119,7 @@ run_leg() {
     PG_CAPTURE_TIMEOUT=900
     pg_capture "$log" "$out" -- \
         --renderer vk --mute 1 --aspect 4:3 --lod original \
-        --bk2 "$MOVIE" --screenshot-native-only \
+        "${MOVIE_ARG[@]}" --screenshot-native-only \
         "$@" --screenshot-output "$OUT/$tag/{n}.png" \
         --frame-limit $((V + 11))
 }
@@ -126,8 +130,15 @@ while IFS= read -r line; do
     [[ -n "${line// /}" ]] || continue
     IFS='|' read -r bk2 vfield keys <<<"$line"
     bk2="${bk2// /}"; V="${vfield// /}"
-    MOVIE="$PG_BK2_DIR/$bk2"
-    [[ -f "$MOVIE" ]] || { echo "glint-subtick: SKIP ($MOVIE missing)"; exit 64; }
+    # A row whose first field does not end in .bk2 is the plain boot, which
+    # needs no input and replays with no movie.
+    if [[ "$bk2" == *.bk2 ]]; then
+        MOVIE="$PG_BK2_DIR/$bk2"
+        [[ -f "$MOVIE" ]] || { echo "glint-subtick: SKIP ($MOVIE missing)"; exit 64; }
+        MOVIE_ARG=(--bk2 "$MOVIE")
+    else
+        MOVIE_ARG=()
+    fi
     rows=$((rows + 1))
     tag="${bk2%.bk2}"
 
@@ -140,14 +151,15 @@ while IFS= read -r line; do
     # output asserted after it, so a stale PNG cannot be read as this run's
     # result.
     rc=0 shots=()
-    for g in 2 0; do
-        d="$tag-c-g$g"
+    for lbl in on off; do
+        case "$lbl" in on) g=2;; off) g=0;; esac
+        d="$tag-c-$lbl"
         rm -rf "${OUT:?}/$d"; mkdir -p "$OUT/$d"
         run_leg "$d" "$g" "" "$OUT/$d/$prev-vk.png,$OUT/$d/$V-vk.png" \
                 --screenshot-on-frame "$prev,$V" </dev/null || rc=$?
         shots+=("$OUT/$d/$prev-vk.png" "$OUT/$d/$V-vk.png")
         for alpha in "${ALPHAS[@]}"; do
-            d="$tag-i$alpha-g$g"
+            d="$tag-i$alpha-$lbl"
             rm -rf "${OUT:?}/$d"; mkdir -p "$OUT/$d"
             run_leg "$d" "$g" "$alpha" "$OUT/$d/$mid-vk.png" \
                     --screenshot-intermediate-on-frame "$mid" </dev/null || rc=$?
@@ -255,12 +267,12 @@ legs = {}
 maskpx = 0
 vacuous, bad, notes = [], [], []
 for name, on, off, vbl in (
-        [("canon%d" % prev, "%s-c-g2/%d-vk.png" % (base, prev),
-          "%s-c-g0/%d-vk.png" % (base, prev), prev),
-         ("canon%d" % V, "%s-c-g2/%d-vk.png" % (base, V),
-          "%s-c-g0/%d-vk.png" % (base, V), V)] +
-        [("inter%s" % a, "%s-i%s-g2/%d-vk.png" % (base, a, mid),
-          "%s-i%s-g0/%d-vk.png" % (base, a, mid), mid) for a in alphas]):
+        [("canon%d" % prev, "%s-c-on/%d-vk.png" % (base, prev),
+          "%s-c-off/%d-vk.png" % (base, prev), prev),
+         ("canon%d" % V, "%s-c-on/%d-vk.png" % (base, V),
+          "%s-c-off/%d-vk.png" % (base, V), V)] +
+        [("inter%s" % a, "%s-i%s-on/%d-vk.png" % (base, a, mid),
+          "%s-i%s-off/%d-vk.png" % (base, a, mid), mid) for a in alphas]):
     px = mask(on, off)
     if len(px) > MASK_CAP:
         raise SystemExit("[glint-subtick] leg %s masks %d px, above the %d cap: the "

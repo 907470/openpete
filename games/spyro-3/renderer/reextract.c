@@ -17,7 +17,7 @@
 #include "renderer/tracers.h"
 #include "renderer/glow.h"
 #include "renderer/glint.h"
-#include "renderer/glint2.h"
+#include "renderer/zap.h"
 #include "renderer/moby.h"
 #include "renderer/player.h"
 #include "renderer/player_game.h"   /* PLAYER_PARTS_MAX */
@@ -526,8 +526,8 @@ static void game_reextract_body(CPUState* cpu) {
     RX_CENSUS_STEP("glow");
     glint_reextract(cpu, bracketed, alpha);   /* the gem-glint stars the tick captured */
     RX_CENSUS_STEP("glint");
-    glint2_reextract(cpu);          /* the jittered beams the tick captured */
-    RX_CENSUS_STEP("glint2");
+    zap_reextract(cpu);          /* the jittered beams the tick captured */
+    RX_CENSUS_STEP("zap");
     /* The HUD, dialog boxes, text and screen fades are produced by the 2D-UI
      * feeder during the game's own render and cannot be re-derived here, so the
      * canonical present banks them and every re-extract re-applies that carry on
