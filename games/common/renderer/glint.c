@@ -190,7 +190,7 @@ static void glint_view_offset(const ngte_view* v, const double p[3], double vo[3
  * the reason the particle feeder drops it — widescreen reveal needs the true
  * X. */
 static void glint_project(const ngte_view* v, const double vo[3], ngte_proj* o) {
-    ngte_project_gte(v->cam_M, NULL, vo[1], vo[2], vo[0], v->ofx, v->ofy, v, 0, o);
+    ngte_project_offset(v, vo, o);
 }
 
 /* Mirror the routine's rejects for one pool record and, on acceptance, fill in

@@ -4,6 +4,6 @@
 
 #include "psx_runtime_internal.h"
 
-void zap_reextract(CPUState* cpu);
+void zap_reextract(CPUState* cpu, int bracketed, double alpha);
 
 #endif

@@ -526,7 +526,7 @@ static void game_reextract_body(CPUState* cpu) {
     RX_CENSUS_STEP("glow");
     glint_reextract(cpu, bracketed, alpha);   /* the gem-glint stars the tick captured */
     RX_CENSUS_STEP("glint");
-    zap_reextract(cpu);          /* the jittered beams the tick captured */
+    zap_reextract(cpu, bracketed, alpha);          /* Zoe's zap, the ribbons the tick captured */
     RX_CENSUS_STEP("zap");
     /* The HUD, dialog boxes, text and screen fades are produced by the 2D-UI
      * feeder during the game's own render and cannot be re-derived here, so the

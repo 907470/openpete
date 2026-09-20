@@ -464,6 +464,23 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # registers no row. Fails as vacuous when a leg's mask is empty, when a
     # named gem resolves ambiguously, or when its canonical motion over the
     # interval is below the row's floor.
+    # Sub-tick interpolation of Zoe's zap. Per row of
+    # games/<slug>/zap-subtick-corpus.manifest, three headless replays pinning
+    # the intermediate present at alpha 0, 0.5 and 1, with the record's own
+    # projected head and tail traced per present and each required to sit on
+    # the alpha blend of the two canonical ticks. Spyro 3 only: it is the game
+    # whose corpus reaches a live record. Fails as vacuous when a leg feeds
+    # nothing, when the legs pair different records, or when the canonical
+    # motion is below the row's floor.
+    add_test(NAME zap_subtick_spyro-3
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_zap_subtick.sh
+                     --game spyro-3 --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(zap_subtick_spyro-3 PROPERTIES
+        LABELS "presentation;zap"
+        TIMEOUT 1800
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     foreach(_subtick_game spyro-2 spyro-3)
         add_test(NAME glint_subtick_${_subtick_game}
                  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_glint_subtick.sh

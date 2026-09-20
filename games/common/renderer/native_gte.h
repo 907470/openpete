@@ -195,6 +195,13 @@ void ngte_sincos_f(CPUState* cpu, double fb, double* s_out, double* c_out);
 /* ngte_sincos_f rounded to the nearest int for Q12 matrix composition. */
 void ngte_sincos_interp(CPUState* cpu, double fb, int* s_out, int* c_out);
 
+/* Project a camera-relative offset the way every self-linking producer in
+ * this engine does: the offset ordered (X - camX, camY - Y, camZ - Z) in the
+ * pool's own world units, rotated by the camera matrix with a zero
+ * translation, then divided. The SXY bound is dropped, as the particle feeder
+ * drops it, because widescreen reveal needs the true X. */
+void ngte_project_offset(const ngte_view* v, const double off[3], ngte_proj* o);
+
 /* The rotation carrying a set of screen-space corner extents from the table
  * vector one angle names to the vector another names, as the cos/sin of the
  * change. Both angles are in table entries, 256 to the turn; a routine that

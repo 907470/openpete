@@ -207,6 +207,10 @@ void ngte_sincos_f(CPUState* cpu, double fb, double* s_out, double* c_out) {
     *c_out = c0 + (c1 - c0) * frac;
 }
 
+void ngte_project_offset(const ngte_view* v, const double off[3], ngte_proj* o) {
+    ngte_project_gte(v->cam_M, NULL, off[1], off[2], off[0], v->ofx, v->ofy, v, 0, o);
+}
+
 int ngte_table_rot(CPUState* cpu, double from_ang, double to_ang,
                    double* rc, double* rs) {
     *rc = 1.0; *rs = 0.0;

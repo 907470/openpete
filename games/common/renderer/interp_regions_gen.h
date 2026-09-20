@@ -77,7 +77,12 @@ void game_interp_capture_particle_pool(void);
  * onto. */
 void game_interp_capture_glint_pool(void);
 
-/* Both pools above in one call: the extra-pool walk a game passes to
+/* Snapshot one whole record per live slot of Zoe's zap pool (game_layout.zap:
+ * pool, slots, stride, packed_off), keyed by the record's PSX address, so the
+ * sub-tick replay of its ribbon has a previous head and tail to rebase onto. */
+void game_interp_capture_zap_pool(void);
+
+/* Every pool above in one call: the extra-pool walk a game passes to
  * game_interp_register_common when its particle and glint renderers link their
  * own primitives. */
 void game_interp_capture_feeder_pools(void);

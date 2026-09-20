@@ -88,6 +88,7 @@
 #include "renderer/env_knob.h"
 #include "psx_runtime_internal.h"
 #include "openpete_native_render.h"
+#include "openpete_interp_objs.h"   /* the per-record prev/curr pool snapshots */
 #include "game_layout.h"
 
 #include <math.h>
@@ -119,6 +120,23 @@ static int      s_reached;              /* records that reached the projection p
 static uint32_t s_code_hist[256];
 static uint32_t s_tag_hist[256];
 static uint32_t s_fed_tris;
+
+/* The record the pairing accepted, and where the routine's own projection puts
+ * its head and tail on screen at the tick. The ribbon runs from one to the
+ * other, so these two points are what a sub-tick present has to move it by.
+ * `s_rec` is 0 when the call paired no record. */
+static uint32_t s_rec;
+static uint32_t s_head_w[3], s_tail_w[3];
+static ngte_proj s_head_p, s_tail_p;
+
+/* The sub-tick rebase: each end's screen displacement and re-projected view-Z.
+ * Inactive on a canonical feed and at the end of the tick's own interval,
+ * where the feed must reproduce the canonical primitive bit for bit. */
+static struct {
+    double dhx, dhy, dtx, dty;   /* head and tail screen displacement */
+    double head_m3, tail_m3;     /* their re-projected view-Z */
+    int    active;
+} s_reb;
 
 /* The tick's captured set, replayed by every sub-tick present of the tick. */
 typedef struct { ngte_prim p; float depth; } zap_held;
@@ -153,8 +171,9 @@ static void zap_capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
  * the two tests before the projection are the count byte and the head's
  * +/-0x5400 box, and both read the record alone. Returns that record's segment
  * count, or 0 when none or more than one reached the projection. */
-static int zap_projected_record(CPUState* cpu, const ngte_view* v) {
+static int zap_projected_record(CPUState* cpu, const ngte_view* v, uint32_t* out_rec) {
     int reached = 0, n_reached = 0;
+    uint32_t rec_reached = 0u;
     s_live = 0;
     const double box = (double)ZAP.box;
     for (uint32_t s = 0; s < ZAP.slots; s++) {
@@ -171,9 +190,34 @@ static int zap_projected_record(CPUState* cpu, const ngte_view* v) {
         if (fabs(hx) >= box || fabs(hy) >= box || fabs(hz) >= box) continue;
         reached++;
         n_reached = n;
+        rec_reached = rec;
     }
     s_reached = reached;
-    return reached == 1 ? n_reached : 0;
+    if (reached != 1) return 0;
+    *out_rec = rec_reached;
+    return n_reached;
+}
+
+/* The record's head and tail world points. The head is at `head_off` and the
+ * tail twelve bytes on, both three signed words in full world units. */
+static void zap_rec_points(CPUState* cpu, uint32_t rec,
+                           uint32_t head_w[3], uint32_t tail_w[3]) {
+    for (int k = 0; k < 3; k++) {
+        head_w[k] = cpu->read_word(rec + ZAP.head_off + (uint32_t)k * 4u);
+        tail_w[k] = cpu->read_word(rec + ZAP.head_off + 12u + (uint32_t)k * 4u);
+    }
+}
+
+/* Project one such point through the routine's own arithmetic: the offset the
+ * routine subtracts (:2564-2578 zero the GTE translation, so every MAC is a
+ * plain rotation of a camera-relative offset in full world units), rotated and
+ * divided. `off` displaces the point in those same units. */
+static void zap_project_point(const ngte_view* v, const uint32_t w[3],
+                              const double off[3], ngte_proj* o) {
+    double q[3];
+    for (int k = 0; k < 3; k++) q[k] = (double)(int32_t)w[k] + (off ? off[k] : 0.0);
+    const double rel[3] = { q[0] - v->cam[0], v->cam[1] - q[1], v->cam[2] - q[2] };
+    ngte_project_offset(v, rel, o);
 }
 
 /* Replay the routine's emit loop out of the entry table it just wrote, and
@@ -241,9 +285,15 @@ static int zap_replay(CPUState* cpu, int n) {
  * so one cursor serves the call. The depths are taken only when the replay
  * accounts for exactly the primitives the polybuf carries. */
 static void zap_pair_depths(CPUState* cpu, const ngte_view* v) {
-    const int n = zap_projected_record(cpu, v);
+    uint32_t rec = 0u;
+    const int n = zap_projected_record(cpu, v, &rec);
     s_pred_n = 0;
+    s_rec = 0u;
     if (n <= 0) return;
+    zap_rec_points(cpu, rec, s_head_w, s_tail_w);
+    zap_project_point(v, s_head_w, NULL, &s_head_p);
+    zap_project_point(v, s_tail_w, NULL, &s_tail_p);
+    s_rec = rec;
     const int predicted = zap_replay(cpu, n);
     if (predicted != s_item_n) return;   /* every primitive stays unpaired */
     s_accepted = 1;
@@ -263,9 +313,53 @@ static int zap_feed_enabled(void) {
     return v;
 }
 
+/* Where a corner sits along the ribbon: the parameter of its projection onto
+ * the tick's head-to-tail screen segment, clamped to the segment. The chain
+ * the routine lays down runs from the head to the tail by repeated addition of
+ * one step (:2638-2657), so this parameter is that chain's own, exactly at the
+ * two ends and linearly between them. A record whose two ends project onto one
+ * point carries no direction and takes the head's displacement whole. */
+static double zap_corner_pos(float x, float y) {
+    const double ax = s_head_p.sx, ay = s_head_p.sy;
+    const double dx = s_tail_p.sx - ax, dy = s_tail_p.sy - ay;
+    const double n = dx * dx + dy * dy;
+    if (n < 1e-9) return 0.0;
+    const double t = (((double)x - ax) * dx + ((double)y - ay) * dy) / n;
+    return t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
+}
+
+/* Carry one corner through the rebase: it moves by the two ends' screen
+ * displacement blended at its own position along the ribbon. Both terms are
+ * zero when the rebase is inactive, so the canonical feed emits the captured
+ * corner untouched. */
+static void zap_rebase_xy(float* x, float* y, double* pos) {
+    const double t = zap_corner_pos(*x, *y);
+    if (pos) *pos = t;
+    if (!s_reb.active) return;
+    *x = (float)((double)*x + s_reb.dhx + (s_reb.dtx - s_reb.dhx) * t);
+    *y = (float)((double)*y + s_reb.dhy + (s_reb.dty - s_reb.dhy) * t);
+}
+
 static void zap_add_prim(const ngte_prim* p, float depth) {
     static const int split[2][3] = { {0, 1, 2}, {1, 3, 2} };
     if (p->nv != 3 && p->nv != 4) return;
+    /* Rebase the corners first: the depth the triangle takes is the view-Z of
+     * its own mean position along the ribbon, which is the same quantity the
+     * routine keys its ordering-table bucket on (:2849-2860, the four corners'
+     * mean SZ3). */
+    float px[4], py[4];
+    double pos_sum = 0.0;
+    for (int k = 0; k < p->nv; k++) {
+        px[k] = p->x[k]; py[k] = p->y[k];
+        double t = 0.0;
+        zap_rebase_xy(&px[k], &py[k], &t);
+        pos_sum += t;
+    }
+    if (s_reb.active) {
+        const double tm = pos_sum / (double)p->nv;
+        const double vz = s_reb.head_m3 + (s_reb.tail_m3 - s_reb.head_m3) * tm;
+        depth = openpete_native_depth_from_viewz(openpete_worldvz_full((float)vz));
+    }
     ngte_tpage tp;
     int blend = p->stp ? 1 : 0;
     if (p->textured) {
@@ -279,7 +373,7 @@ static void zap_add_prim(const ngte_prim* p, float depth) {
         openpete_scene_tri st = {0};
         for (int k = 0; k < 3; k++) {
             const int j = split[s][k] == 3 ? last : split[s][k];
-            st.v[k].sx = p->x[j]; st.v[k].sy = p->y[j]; st.v[k].z = depth;
+            st.v[k].sx = px[j]; st.v[k].sy = py[j]; st.v[k].z = depth;
             st.v[k].u = (float)p->u[j]; st.v[k].v = (float)p->v[j];
             st.v[k].rgba = (p->rgb[j] & 0xFFFFFFu) | 0xFF000000u;
         }
@@ -302,6 +396,23 @@ static void zap_feed_set(const zap_held* set, int n) {
     openpete_native_scene_set_tag(OPENPETE_TAG_TRACER(0));
     for (int i = 0; i < n; i++) zap_add_prim(&set[i].p, set[i].depth);
     openpete_native_scene_set_tag(0);
+}
+
+/* OPENPETE_ZAP_TRACE=1: one line per present that fed this producer, carrying
+ * the live record count and the screen points the feed placed the ribbon's two
+ * ends at. On a canonical present those are the routine's own projections of
+ * the record's head and tail; on a sub-tick present they are those two points
+ * moved by the rebase, which is what the ribbon was actually drawn along. A
+ * present whose live count is zero fed nothing and measured nothing. */
+static void zap_trace(const char* leg, double alpha) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_ZAP_TRACE"); on = (e && *e && *e != '0'); }
+    if (!on) return;
+    fprintf(stderr, "[zap-screen vbl=%u leg=%s alpha=%.3f] live=%d rec=%08X "
+                    "head=(%.2f,%.2f) tail=(%.2f,%.2f)\n",
+            openpete_frame, leg, alpha, s_live, s_rec,
+            s_head_p.sx + s_reb.dhx, s_head_p.sy + s_reb.dhy,
+            s_tail_p.sx + s_reb.dtx, s_tail_p.sy + s_reb.dty);
 }
 
 /* Hold the call's primitives for the sub-tick replay. The tick's first hook
@@ -359,6 +470,7 @@ static int on_zap_draw(CPUState* cpu, uint32_t addr) {
         return 0;
 
     s_item_n = 0; s_pred_n = 0; s_live = 0; s_reached = 0; s_accepted = 0;
+    memset(&s_reb, 0, sizeof s_reb);   /* the canonical feed emits the captured corners */
     const uint32_t fed_before = s_fed_tris;
     if (s_tick_frame != openpete_frame) { s_tick_frame = openpete_frame; s_tick_n = 0; }
     if (endp > startp) {
@@ -367,20 +479,122 @@ static int on_zap_draw(CPUState* cpu, uint32_t addr) {
         ngte_view_build(cpu, &view);
         zap_pair_depths(cpu, &view);
         zap_hold();
-        if (feed && render_path_enabled(RP_TRACER)) zap_feed_set(s_tick, s_tick_n);
+        if (feed && render_path_enabled(RP_TRACER)) {
+            zap_feed_set(s_tick, s_tick_n);
+            zap_trace("canon", 1.0);
+        }
     }
     zap_census(startp, endp, fed_before);
     return hook_bracket_end(&k_bracket);
 }
 
+/* ---- sub-tick rebase ------------------------------------------------------
+ *
+ * The triangles are the guest's own int16 output, built under the tick's
+ * camera from the tick's record, so a sub-tick present that re-feeds them
+ * draws the ribbon where the tick drew it: neither the camera's motion nor the
+ * record's own reaches it. The rebase measures each end's screen displacement
+ * as the difference of two projections — the world point the present shows
+ * under the staged camera, against the point the tick drew under the tick's
+ * camera — and moves every corner by the pair blended at its own position
+ * along the chain. At the end of the tick's interval the displaced points and
+ * the staged camera are the tick's, so both projections take identical inputs
+ * through identical arithmetic and every term is exactly zero; the replay then
+ * emits the captured corners verbatim instead, which makes that exactness
+ * structural rather than a matter of float agreement. */
+
+/* A beam end's speed ceiling, in full world units per tick. The table is keyed
+ * by slot address, so a slot a new record respawns into inside one tick pairs
+ * across two different beams and would lerp as a sweep between them. The
+ * segment-count test below catches a reuse that changed the chain's length;
+ * this catches the rest, at a distance no end covers in a tick while staying
+ * inside the +/-0x5400 box the routine admits it from. */
+#define ZAP_REUSE_CEILING 8192.0
+
+/* A pair spanning more than this is a discontinuity rather than motion. */
+#define ZAP_PAIR_STALE_NS (g_openpete_tick_period_ns + g_openpete_tick_period_ns / 2)
+
+/* The record's head and tail displacement between the pose the tick drew and
+ * the pose this present shows, in full world units. Returns 0 when there is no
+ * usable previous record — a beam that spawned this tick, a pair spanning more
+ * than a capture interval, or a slot that took a new record — and the ribbon
+ * then holds its tick pose in the world with only the camera's motion rebasing
+ * it. */
+static int zap_record_pair(double alpha, double off_head[3], double off_tail[3]) {
+    for (int k = 0; k < 3; k++) off_head[k] = off_tail[k] = 0.0;
+    const openpete_interp_obj_t* o = openpete_interp_objs_find(s_rec);
+    if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return 0;
+    if ((uint32_t)o->blob_len < ZAP.head_off + 24u ||
+        (uint32_t)o->blob_len < ZAP.packed_off + 4u) return 0;
+    if (o->curr_ns - o->prev_ns > ZAP_PAIR_STALE_NS) return 0;
+    uint32_t pp, cp;
+    memcpy(&pp, o->prev + ZAP.packed_off, 4);
+    memcpy(&cp, o->curr + ZAP.packed_off, 4);
+    if ((pp & 0xFFu) != (cp & 0xFFu)) return 0;      /* the chain changed length */
+    int32_t ph[3], pt[3];
+    memcpy(ph, o->prev + ZAP.head_off, 12);
+    memcpy(pt, o->prev + ZAP.head_off + 12u, 12);
+    const double rest = 1.0 - alpha;
+    double sq_h = 0.0, sq_t = 0.0;
+    for (int k = 0; k < 3; k++) {
+        const double dh = (double)ph[k] - (double)(int32_t)s_head_w[k];
+        const double dt = (double)pt[k] - (double)(int32_t)s_tail_w[k];
+        sq_h += dh * dh; sq_t += dt * dt;
+        off_head[k] = dh * rest;
+        off_tail[k] = dt * rest;
+    }
+    if (sq_h > ZAP_REUSE_CEILING * ZAP_REUSE_CEILING ||
+        sq_t > ZAP_REUSE_CEILING * ZAP_REUSE_CEILING) {
+        for (int k = 0; k < 3; k++) off_head[k] = off_tail[k] = 0.0;
+        return 0;
+    }
+    return 1;
+}
+
+/* Rebase the held set onto the pose this present shows. The staged camera
+ * resolves through the sub-tick view, so building a view here reads the
+ * interpolated transform the rest of the pass draws under. */
+static void zap_rebase_all(CPUState* cpu, double alpha) {
+    memset(&s_reb, 0, sizeof s_reb);
+    if (!s_rec || s_tick_n <= 0) return;
+    /* At the end of the tick's own interval the replay must reproduce the
+     * canonical present exactly, so it emits the captured corners and the
+     * paired depths verbatim rather than a re-projection that agrees with them
+     * only to the last bit. */
+    if (alpha >= 1.0) return;
+    double off_head[3], off_tail[3];
+    zap_record_pair(alpha, off_head, off_tail);
+    ngte_view v;
+    ngte_view_build(cpu, &v);
+    ngte_proj h, t;
+    zap_project_point(&v, s_head_w, off_head, &h);
+    zap_project_point(&v, s_tail_w, off_tail, &t);
+    s_reb.dhx = h.sx - s_head_p.sx;
+    s_reb.dhy = h.sy - s_head_p.sy;
+    s_reb.dtx = t.sx - s_tail_p.sx;
+    s_reb.dty = t.sy - s_tail_p.sy;
+    s_reb.head_m3 = h.m3;
+    s_reb.tail_m3 = t.m3;
+    s_reb.active = 1;
+}
+
 /* Sub-tick re-extract. The primitives are the guest's own output and are gone
  * once the polybuf is reused, so the replay re-feeds the set the canonical tick
- * captured, at the depths paired then. At alpha 1 it reproduces the canonical
- * present exactly, which is what the spine's identity leg measures. */
-void zap_reextract(CPUState* cpu) {
-    (void)cpu;
+ * captured, rebased onto the pose this present shows: the record's head and
+ * tail carry the ribbon's two ends and every corner between them moves by the
+ * pair blended at its own position along the chain. The jitter is not
+ * re-derived — the routine draws and stores a fresh random halfword per point
+ * inside its own call (:2673-2685), and this replay re-feeds the tick's
+ * primitives, so a sub-tick present shows the tick's jitter rather than a new
+ * one. The rebase runs only inside the tick's interval; at its end the replay
+ * emits the captured corners and the paired depths verbatim and so reproduces
+ * the canonical present exactly, which is what the spine's identity leg
+ * measures. */
+void zap_reextract(CPUState* cpu, int bracketed, double alpha) {
     if (!hook_reextract_ready(RP_TRACER)) return;
+    if (bracketed) zap_rebase_all(cpu, alpha);
     zap_feed_set(s_tick, s_tick_n);
+    zap_trace("inter", bracketed ? alpha : 1.0);
 }
 
 /* The hook address is the layout's zap draw site, bound at boot: a
