@@ -1,5 +1,7 @@
 #version 450
 #extension GL_ARB_gpu_shader_fp64 : require
+#extension GL_GOOGLE_include_directive : require
+#include "psx_unorm8.glsl"
 
 /* Terrain sector-mesh vertex stage — the retained-terrain GPU path
  * (extraction rearchitecture, seam 2).
@@ -966,7 +968,9 @@ void main()
         int ia = (self + 1) % 3, ib = (self + 2) % 3;
         vec3 cf[3], cn[3];
         vec2 uvm[3];
-        cf[self] = inColFar.rgb;  cn[self] = inColNear.rgb;  uvm[self] = uv;
+        cf[self] = op_unorm8(inColFar.rgb);
+        cn[self] = op_unorm8(inColNear.rgb);
+        uvm[self] = uv;
         cf[ia] = unrgb(inCtxACol.x); cn[ia] = unrgb(inCtxACol.y);
         cf[ib] = unrgb(inCtxBCol.x); cn[ib] = unrgb(inCtxBCol.y);
         uvm[ia] = (dbg_half == 1u) ? vec2(inCtxAUV.z, inCtxAUV.w)
@@ -1128,14 +1132,15 @@ void main()
 #ifndef TERRAIN_NEAR
     /* ---- colour: GTE-exact DPCS fog (flat HP); baked raw otherwise. The
      * near variant resolved this per member before its clip. ---- */
-    vec4 col = vec4(terrain_col(mo.z, inColFar.rgb, inColNear.rgb,
+    vec4 col = vec4(terrain_col(mo.z, op_unorm8(inColFar.rgb),
+                                op_unorm8(inColNear.rgb),
                                 !lp && !hqv, fogRef, fogscale,
                                 lp && (sf & SF_LPGRADE) != 0u,
                                 s.sec[slot].gp, s.sec[slot].gq), 1.0);
     {   /* debug tint modes 4/5: show the baked near / far colour raw */
         int dbgmode = (gf >> 26) & 7;
-        if ((gf & (1 << 29)) != 0 && dbgmode == 4) col = vec4(inColNear.rgb, 1.0);
-        if ((gf & (1 << 29)) != 0 && dbgmode == 5) col = vec4(inColFar.rgb, 1.0);
+        if ((gf & (1 << 29)) != 0 && dbgmode == 4) col = vec4(op_unorm8(inColNear.rgb), 1.0);
+        if ((gf & (1 << 29)) != 0 && dbgmode == 5) col = vec4(op_unorm8(inColFar.rgb), 1.0);
     }
 #endif
 

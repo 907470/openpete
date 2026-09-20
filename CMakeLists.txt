@@ -894,4 +894,23 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         ENVIRONMENT "OPENPETE_BIN=${CMAKE_BINARY_DIR}/games/spyro-1/openpete-spyro1"
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+    # Retained-terrain GPU cache vs CPU terrain walk, pixel-exact, headless on
+    # llvmpipe. Per measured freecam row, two legs of one build at the same
+    # pose and pinned VBL differing only in the feed (--terrain-cache 0 against
+    # the cache forced on); the two feeds are one scene, so the pass criterion
+    # is 0 differing pixels. Refuses a verdict unless the cache leg reports
+    # retained sectors and the walk leg reports none and reports terrain
+    # triangles. Skips (exit 64) without a binary, a disc, PIL, or measured
+    # rows for the game.
+    add_test(NAME cache_walk_ab_spyro-1
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_cache_walk_ab.sh
+                     --game spyro-1 --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(cache_walk_ab_spyro-1 PROPERTIES
+        LABELS "slow;presentation;terrain"
+        # Four headless boots to a post-load VBL, each self-limited at
+        # --max-runtime-seconds 840.
+        TIMEOUT 3600
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endif()

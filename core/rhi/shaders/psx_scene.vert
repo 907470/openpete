@@ -1,4 +1,6 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+#include "psx_unorm8.glsl"
 
 /* Scene textured vertex stage — PERSPECTIVE-CORRECT UV/colour with
  * CLIP-INVARIANT depth.
@@ -80,7 +82,7 @@ void main()
     gl_Position = AFFINE_UV ? vec4(inPos.xy, DEPTH_AFFINE ? (vzo - 1.0) / vzo : z, 1.0)
                             : vec4(inPos.xy * vzo, zc, vzo);
     vUV = inUV * q;
-    vColor = inColor * q;
+    vColor = op_unorm8(inColor) * q;
     vQ = q;
     vKoff = inKoff;
     vRank = inRank;

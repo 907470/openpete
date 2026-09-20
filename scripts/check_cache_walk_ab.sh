@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+# check_cache_walk_ab.sh — retained-terrain GPU cache vs CPU terrain walk,
+# pixel-exact, headless on llvmpipe.
+#
+# The retained cache draws a static sector from a persistent vertex buffer and
+# re-derives the per-face decisions (LOD tier, near/HQ subdivision, far cull,
+# the CLUT-ladder fog row) in its own vertex stage; the CPU walk takes the same
+# decisions on the host and feeds the scene stages. The two feeds are one
+# scene by contract, so at a pinned freecam pose they must produce the same
+# bytes: any differing pixel is a finding, not a tolerance.
+#
+# Instrument: two legs of one build on one device at the same pose and the
+# same pinned VBL, differing only in the feed.
+#   leg a  --terrain-cache 0   the CPU walk (reference)
+#   leg b  default feed, OPENPETE_TERRAIN_CACHE_FORCE=1 (the retained cache,
+#          forced on because software vk does not select it on its own)
+# Both legs are 4:3, --lod extended, --vertex-precision subpixel, captured
+# native-only (no guest reference leg: the compare is openpete against
+# openpete).
+#
+# Pass criterion: 0 differing pixels per row, any channel.
+#
+# Engagement: per row, leg b must report retained sectors (secs > 0
+# on a [tgpu-cen] line) and leg a must report none and must report terrain
+# triangles ([nearcen] terrainTris > 0). A row that misses either compared
+# nothing about the cache and is VACUOUS, never PASS.
+#
+# The rows are the poses the class was measured on, named by their
+# freecam-corpus slug <level>-<first 6 hex of the pose's md5> so the pose text
+# keeps its one authority, games/<game>/freecam-corpus.manifest.
+#
+# Usage:
+#   scripts/check_cache_walk_ab.sh [--game SLUG] [--build-dir=DIR] [--out DIR]
+# Exit 0 PASS, 1 FAIL or VACUOUS, 64 SKIP (no binary, no disc, no python3/PIL,
+# or the game has no measured rows).
+set -u
+
+# Unattended launcher: every run this script starts is silenced. Vibration
+# ships on by default, which is right for a player and wrong for a
+# machine-driven run.
+# (scripts/fences/rumble_guard.py enforces this.)
+export OPENPETE_VIBRATION=0
+
+cd "$(dirname "$0")/.."
+# shellcheck source=scripts/lib/game.sh
+source scripts/lib/game.sh
+
+BUILD_DIR=build/linux-release
+OUT=""
+prev=""
+for a in "$@"; do
+    case "$a" in
+        --build-dir=*) BUILD_DIR="${a#*=}";;
+        --out=*)       OUT="${a#*=}";;
+    esac
+    case "$prev" in
+        --out) OUT="$a";;
+    esac
+    prev="$a"
+done
+
+GAME="$(pg_parse_game "$@")" || exit 64
+PG_BUILD_DIR="$BUILD_DIR"
+pg_resolve "$GAME" || exit 64
+
+# Per game, the freecam-corpus rows the cache-vs-walk class was measured on.
+case "$PG_GAME" in
+  spyro-1) ROWS="dream_weavers-9dace6 gnastys_loot-ca95bd";;
+  *) echo "cache-walk-ab: SKIP ($PG_GAME has no measured cache-vs-walk rows)"; exit 64;;
+esac
+
+MAN="games/$PG_GAME/freecam-corpus.manifest"
+[[ -x "$PG_BIN"  ]] || { echo "cache-walk-ab: SKIP (no binary at $PG_BIN)"; exit 64; }
+[[ -f "$PG_DISC" ]] || { echo "cache-walk-ab: SKIP (no disc at $PG_DISC)"; exit 64; }
+[[ -f "$MAN"     ]] || { echo "cache-walk-ab: SKIP (no manifest at $MAN)"; exit 64; }
+python3 -c 'import PIL' 2>/dev/null ||
+    { echo "cache-walk-ab: SKIP (python3 or PIL missing)"; exit 64; }
+
+[[ -n "$OUT" ]] || OUT="$BUILD_DIR/cache-walk-ab/$PG_GAME"
+mkdir -p "$OUT"
+
+# The pinned post-load VBL the freecam corpus samples at.
+START=1900
+
+run_leg() {  # tag level pose extra-args...
+    local tag="$1" level="$2" pose="$3"; shift 3
+    local log="$OUT/$tag.log" shot="$OUT/$tag.png" shot_vk="$OUT/$tag-vk.png"
+    rm -f "$shot"
+    PG_CAPTURE_ENV=(OPENPETE_TERRAIN_CACHE_FORCE=1
+                    OPENPETE_TERRAIN_GPU_CENSUS=1
+                    OPENPETE_TERRAIN_NEARCEN=1)
+    PG_CAPTURE_TIMEOUT=900
+    pg_capture "$log" "$shot_vk" -- \
+        --no-card --mute 1 --vibration 0 \
+        --renderer vk --lod extended --aspect 4:3 \
+        --vertex-precision subpixel \
+        --skip-to-level "$level" --freecam-pose "$pose" \
+        --screenshot-native-only --screenshot-on-frame "$START" \
+        --screenshot-output "$shot" \
+        --frame-limit $((START + 20)) --max-runtime-seconds 840 \
+        "$@"
+}
+
+# The manifest is read into arrays before any run: a child that inherits the
+# loop's stdin would eat the rows it has not reached yet.
+LEVELS=(); POSES=(); SLUGS=()
+while IFS='|' read -r level pose rest; do
+    level="$(echo "$level" | tr -d ' \t')"
+    [[ -z "$level" || "${level:0:1}" == "#" ]] && continue
+    pose="$(echo "$pose" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    [[ -z "$pose" ]] && continue
+    slug="$level-$(printf '%s' "$pose" | md5sum | cut -c1-6)"
+    [[ " $ROWS " == *" $slug "* ]] || continue
+    LEVELS+=("$level"); POSES+=("$pose"); SLUGS+=("$slug")
+done < "$MAN"
+
+rows=0; pass=0; fail=0
+for i in "${!SLUGS[@]}"; do
+    level="${LEVELS[$i]}"; pose="${POSES[$i]}"; slug="${SLUGS[$i]}"
+    rows=$((rows + 1))
+    if ! run_leg "$slug-a" "$level" "$pose" --terrain-cache 0; then
+        echo "[cache-walk-ab] row=$slug verdict=NO-CAPTURE leg=a"; fail=$((fail+1)); continue
+    fi
+    if ! run_leg "$slug-b" "$level" "$pose"; then
+        echo "[cache-walk-ab] row=$slug verdict=NO-CAPTURE leg=b"; fail=$((fail+1)); continue
+    fi
+    python3 - "$OUT/$slug-a-vk.png" "$OUT/$slug-b-vk.png" \
+              "$OUT/$slug-a.log" "$OUT/$slug-b.log" "$slug" <<'AB_PY'
+import re, sys
+from PIL import Image
+
+a_png, b_png, a_log, b_log, row = sys.argv[1:6]
+cen = re.compile(r"\[tgpu-cen f=\d+\] sub=\d+ secs=(\d+)")
+tri = re.compile(r"\[nearcen\] frame=\d+ nearFaces=\d+ subTris=\d+ terrainTris=(\d+)")
+
+def peak(path, pat):
+    v = 0
+    for line in open(path, errors="replace"):
+        m = pat.search(line)
+        if m:
+            v = max(v, int(m.group(1)))
+    return v
+
+secs_a, secs_b = peak(a_log, cen), peak(b_log, cen)
+tris_a = peak(a_log, tri)
+A = Image.open(a_png).convert("RGB")
+B = Image.open(b_png).convert("RGB")
+if A.size != B.size:
+    print("[cache-walk-ab] row=%s verdict=FAIL reason=size %s vs %s" % (row, A.size, B.size))
+    sys.exit(1)
+da, db = A.tobytes(), B.tobytes()
+diff = 0
+first_px = None
+delta = 0
+for i in range(0, len(da), 3):
+    if da[i:i + 3] != db[i:i + 3]:
+        diff += 1
+        delta = max(delta, max(abs(da[i + k] - db[i + k]) for k in range(3)))
+        if first_px is None:
+            p = i // 3
+            first_px = (p % A.size[0], p // A.size[0],
+                        tuple(da[i:i + 3]), tuple(db[i:i + 3]))
+# Engagement: the cache leg drew from the retained mesh and the walk leg drew
+# terrain on the host without it. Either missing means the two feeds were not
+# compared.
+if secs_b == 0 or secs_a != 0 or tris_a == 0:
+    print("[cache-walk-ab] row=%s verdict=VACUOUS px=%d secsB=%d secsA=%d trisA=%d"
+          % (row, diff, secs_b, secs_a, tris_a))
+    sys.exit(1)
+print("[cache-walk-ab] row=%s verdict=%s px=%d maxChannelDelta=%d secsB=%d trisA=%d%s"
+      % (row, "PASS" if diff == 0 else "FAIL", diff, delta, secs_b, tris_a,
+         "" if first_px is None else " first=%s" % (first_px,)))
+sys.exit(0 if diff == 0 else 1)
+AB_PY
+    if [[ $? -eq 0 ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); fi
+done
+
+echo "[cache-walk-ab] game=$PG_GAME rows=$rows pass=$pass fail=$fail verdict=$(
+    if [[ $rows -eq 0 ]]; then echo VACUOUS
+    elif [[ $fail -eq 0 ]]; then echo PASS
+    else echo FAIL; fi)"
+[[ $rows -gt 0 && $fail -eq 0 ]] || exit 1
+exit 0
