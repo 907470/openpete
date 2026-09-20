@@ -2250,30 +2250,54 @@ static bool scene_has_terrain(const scene_tri_t* scene, int n) {
     return false;
 }
 
+/* True if every triangle the game drew belongs to the 2D screen layer: the
+ * HUD ordering table's prims (HUD, HUD_PANEL, OVERLAY) and the composed carry
+ * copies of them. Every other category is 3D — WORLD, WORLD_FILL, ACTOR,
+ * ACTOR_FRONT, PLAYER, SKY, HUD3D, SHADOW, TERRAIN_KEY and the three PORTAL
+ * categories, all of them projected from world space, so one of them present
+ * means the frame is a view of the level and not a screen of 2D art. */
+static bool scene_is_2d_only(const scene_tri_t* scene, int n) {
+    for (int t = 0; t < n; t++) {
+        if (scene[t].host_added || scene[t].carry) continue;
+        int c = scene[t].category;
+        if (c != OPENPETE_SCENE_HUD && c != OPENPETE_SCENE_HUD_PANEL &&
+            c != OPENPETE_SCENE_OVERLAY)
+            return false;
+    }
+    return true;
+}
+
 /* The freeze-backdrop source verdict, shared by the live compose and the
  * capture-time snapshot so both hold one definition of a frame worth freezing.
  *
- * A source frame carries the game's own geometry, is not itself a freeze frame,
- * holds world/actor content, and has terrain. Terrain reaches the present by one
- * of two routes and either qualifies: the retained cache's selected state
- * (frame_content() > 0, or < 0 when the retained path is not in use at all), or
- * WORLD triangles in the scene when the terrain is batched on the CPU.
+ * A source frame carries the game's own geometry and is not itself a freeze
+ * frame. Past that the 3D content sorts it, in three classes:
  *
- * Testing only the retained state rejects every present whenever the retained
- * path is initialised but unusable — a vertex-snap raster grid, a delayed or
- * split scene, a device without fp64 — because the feeder then stages an empty
- * state per scene, which reads the same as a genuine per-scene skip. The CPU
- * terrain clause separates the two: a scene whose terrain feed cut out (the
- * pause-entry transition, where the moby and sky feeders still run) carries
- * neither retained sectors nor WORLD triangles and is still rejected, so the
- * snapshot keeps the last full gameplay frame.
+ * - No 3D at all: the game composed a screen out of 2D prims alone (the atlas
+ *   and options screens, whose level picture and title text are 2D quads).
+ *   That screen is the frame the game means to freeze under the menu, so it
+ *   qualifies.
+ * - World content with terrain: an ordinary gameplay frame. Terrain reaches
+ *   the present by one of two routes and either qualifies: the retained
+ *   cache's selected state (frame_content() > 0, or < 0 when the retained path
+ *   is not in use at all), or WORLD triangles in the scene when the terrain is
+ *   batched on the CPU. Testing only the retained state rejects every present
+ *   whenever the retained path is initialised but unusable — a vertex-snap
+ *   raster grid, a delayed or split scene, a device without fp64 — because the
+ *   feeder then stages an empty state per scene, which reads the same as a
+ *   genuine per-scene skip.
+ * - 3D without world: the degenerate pause-entry transition, where the terrain
+ *   feed cuts out one present before the freeze prim is emitted and the frame
+ *   holds the player's body or a moby over the HUD. Snapshotting it freezes a
+ *   backdrop with no ground, so it is rejected and the last full gameplay
+ *   frame stands.
  *
  * frame_content() reads the state selected for this present, so the caller
  * selects by stamp first. */
 static bool scene_is_freeze_source(const scene_tri_t* scene, int n, uint32_t sfreeze) {
-    return scene_has_game_tris(scene, n)
-        && !(sfreeze & (1u << 31))
-        && scene_has_world(scene, n)
+    if (!scene_has_game_tris(scene, n) || (sfreeze & (1u << 31))) return false;
+    if (scene_is_2d_only(scene, n)) return true;
+    return scene_has_world(scene, n)
         && (openpete_tercache_frame_content() != 0 || scene_has_terrain(scene, n));
 }
 
