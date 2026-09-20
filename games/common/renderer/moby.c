@@ -992,14 +992,44 @@ static int record_zsf4(CPUState* cpu, const moby_record_t* R) {
     return zsf4;
 }
 
+/* Forward decl: the fractional view-space moby centre, the single site that
+ * derives it (defined with the host record builder below). Every pass that
+ * projects a moby reaches the centre through this one call, so the value a
+ * record projects through is a function of the present's camera and the
+ * moby's position alone — the canonical present and the sub-tick present at
+ * alpha 1 are the same point of the same tick and read the same number by
+ * construction, not by two derivations agreeing. */
+static void build_moby_record_tr(CPUState* cpu, uint32_t moby, double tr[3]);
+
 /* Project one live cull record, whose fields the game's record reader already
  * extracted. zsf4 = the record's (--no-lod-adjusted) tier verdict, computed by
- * the caller (record_zsf4) — feeds the tier-adjusted vertex-count read. */
+ * the caller (record_zsf4) — feeds the tier-adjusted vertex-count read.
+ *
+ * The record's stored TR is the cull's MVMVA of the camera-moby delta taken
+ * on the quarter-world grid ((cam - moby) >> 2, MAC >> 12), so it is the
+ * centre truncated twice. The native path projects in float (no PS1
+ * quantization), so the centre it projects is re-derived here at full
+ * precision from the same camera and the same moby position. TR_raw still
+ * goes to the decode: the GPF far-skip mirrors a .s test on the stored
+ * int16, and the builder A/B compares against the stored value.
+ *
+ * Only where the cull stores the unscaled translation. On a game whose cull
+ * stores the final one (rec_tr_final), that translation already carries the
+ * cull's unit scaling — the factor of 4 off the quarter-world grid times the
+ * per-moby size rescale — and the decode passes a fractional centre straight
+ * to the GTE, so substituting the unscaled derivation there would project
+ * every moby at a fraction of its distance. The record's own integer
+ * translation stays on those games. */
 static int moby_project_record(CPUState* cpu, const moby_record_t* R, int zsf4,
                                proj_xy* out, int cap) {
     const ngte_view* v = moby_record_view(R->moby);
+    double tr[3];
+    const double* TR_frac = NULL;
+    if (!game_layout.moby.rec_tr_final && R->moby >= 0x80000000u) {
+        build_moby_record_tr(cpu, R->moby, tr); TR_frac = tr;
+    }
     return moby_decode_project(cpu, R->header, R->header_b, R->frame_a, R->frame_b, R->w0,
-                               NULL, 0.0, -1.0, R->TR_raw, NULL, R->M,
+                               NULL, 0.0, -1.0, R->TR_raw, TR_frac, R->M,
                                zsf4, v, out, cap);
 }
 
@@ -1461,17 +1491,42 @@ static int build_moby_record_fields(CPUState* cpu, uint32_t moby, moby_fields* f
         f->TR_raw[i] = (int32_t)(acc > INT32_MAX ? INT32_MAX
                                 : (acc < INT32_MIN ? INT32_MIN : acc));
     }
-    /* TR_frac: the same view-space centre, FRACTIONAL — delta as ÷4.0 (not >>2) so
-     * the moby tracks the smooth sub-tick camera instead of stepping in 4-world-unit
-     * chunks (moby analog of the terrain cam>>4 fix). Same scale as TR_raw. The
-     * native path projects in float, so this is consumed at full precision; the byte
-     * truncation in TR_raw is kept only for the .s-record verify/validate paths.
-     * Sub-tick floor fix: prefer the FRACTIONAL interpolated camera + moby
-     * positions (un-rounded) over the floored RAM, so neither the camera component
-     * nor the moby's own motion steps on the 1-world-unit lerp32 grid. */
+    /* TR_frac: the same view-space centre at full precision, from the one site
+     * that derives it. Every pass reaches the centre through that call, so the
+     * canonical present and the alpha-1 sub-tick present of the same tick read
+     * one number. */
+    build_moby_record_tr(cpu, moby, f->TR_frac);
+    return 1;
+}
+
+/* The moby's view-space centre, fractional: the cull's centre MVMVA (IR1=cam.y
+ * -moby.y, IR2=cam.z-moby.z, IR3=moby.x-cam.x, MAC=(PM·IR)>>12) with the delta
+ * taken as ÷4.0 instead of >>2 and the MAC as ÷4096.0 instead of >>12, and with
+ * the interpolated camera and moby positions preferred over the floored RAM
+ * ones. Same scale as the record's stored TR, just untruncated: a moby then
+ * tracks the smooth camera instead of stepping in 4-world-unit chunks (the same
+ * rule the terrain path takes for its cam>>4 delta), and neither the camera component nor the
+ * moby's own motion steps on the 1-world-unit lerp32 grid.
+ *
+ * This is the single derivation of the centre. The canonical record pass, the
+ * host record builder (widescreen reveal and sub-tick re-extract), the Tier-2
+ * hold capture and its replay all call it, so a present's centre for a moby is
+ * a function of that present's camera and that moby's position alone. At alpha
+ * 1 the interp resolvers return the tick's own positions, which makes the
+ * sub-tick present's centre the canonical present's centre by construction.
+ *
+ * The per-moby euler rotation compose is not here: the hold
+ * replay needs only the origin projection, and the compose was most of that
+ * path's cost. Callers on the hold path guarantee the moby extracted as an
+ * animated record this epoch, so the model checks are skipped. */
+static void build_moby_record_tr(CPUState* cpu, uint32_t moby, double tr[3]) {
+    const int (*PM)[3] = s_view.cam_M;
     double cfx=s_view.cam[0], cfy=s_view.cam[1], cfz=s_view.cam[2];
+    int32_t mx=(int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 0u),
+            my=(int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 4u),
+            mz=(int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 8u);
     double mfx=(double)mx, mfy=(double)my, mfz=(double)mz;
-    int fpos_hit = 0, cam_hit = s_view.cam_interp;
+    int fpos_hit = 0;
     { double mf[3];
       if (openpete_native_interp_pos(moby,     mf)) { mfx=mf[0]; mfy=mf[1]; mfz=mf[2]; fpos_hit=1; } }
     /* OPENPETE_REG_INTERP_MISS: regular/specular mobys with NO fractional position
@@ -1484,7 +1539,7 @@ static int build_moby_record_fields(CPUState* cpu, uint32_t moby, moby_fields* f
     {
         static int s_rm = -1;
         if (s_rm < 0) { const char* e = getenv("OPENPETE_REG_INTERP_MISS"); s_rm = (e && *e && *e != '0'); }
-        if (s_rm && cam_hit && !fpos_hit) {
+        if (s_rm && s_view.cam_interp && !fpos_hit) {
             static uint64_t t0 = 0; static int nn = 0;
             uint64_t nowp = openpete_phase_now_us();
             if (nowp - t0 >= 1000000u) { t0 = nowp; nn = 0; }
@@ -1493,25 +1548,6 @@ static int build_moby_record_fields(CPUState* cpu, uint32_t moby, moby_fields* f
                         openpete_frame, moby, (unsigned)cpu->read_half(moby + game_layout.moby.class_off), mx, my, mz); }
         }
     }
-    double dVy=(cfy-mfy)/4.0, dVz=(cfz-mfz)/4.0, dVx=(mfx-cfx)/4.0;
-    for (int i=0;i<3;i++)
-        f->TR_frac[i] = (PM[i][0]*dVy + PM[i][1]*dVz + PM[i][2]*dVx) / 4096.0;
-    return 1;
-}
-
-/* TR-only slice of build_moby_record_fields for the Tier-2 hold replay: the
- * origin projection needs the fractional view-space centre (camera MVMVA +
- * interp positions) but NOT the per-moby euler rotation compose — that was
- * most of the held path's residual cost. Callers guarantee the moby extracted
- * as an animated record this epoch, so the model checks are skipped. */
-static void build_moby_record_tr(CPUState* cpu, uint32_t moby, double tr[3]) {
-    const int (*PM)[3] = s_view.cam_M;
-    double cfx=s_view.cam[0], cfy=s_view.cam[1], cfz=s_view.cam[2];
-    double mfx=(double)(int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 0u),
-           mfy=(double)(int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 4u),
-           mfz=(double)(int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 8u);
-    { double mf[3];
-      if (openpete_native_interp_pos(moby,     mf)) { mfx=mf[0]; mfy=mf[1]; mfz=mf[2]; } }
     double dVy=(cfy-mfy)/4.0, dVz=(cfz-mfz)/4.0, dVx=(mfx-cfx)/4.0;
     for (int i=0;i<3;i++)
         tr[i] = (PM[i][0]*dVy + PM[i][1]*dVz + PM[i][2]*dVx) / 4096.0;
