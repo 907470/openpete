@@ -1767,7 +1767,7 @@ typedef struct {
 } carry_runs_t;
 
 /* Per-present run tallies for the census. */
-typedef struct { int runs, lerped, disagree; } carry_run_stats_t;
+typedef struct { int runs, lerped, disagree, segmented, segs; } carry_run_stats_t;
 
 /* Two adjacent entries belong to one run when they draw on the same layer
  * through the same CLUT. The texture page is deliberately not part of this:
@@ -1836,15 +1836,66 @@ static int carry_run_rigid(const scene_tri_t* prev, int plo,
     return 1;
 }
 
+/* The mean of an entry's three vertex displacements from its ordinal partner. */
+static void carry_entry_delta(const scene_tri_t* p, const scene_tri_t* c,
+                              float* dx, float* dy) {
+    float sx = 0.0f, sy = 0.0f;
+    for (int j = 0; j < 3; j++) {
+        sx += c->v[j].sx - p->v[j].sx;
+        sy += c->v[j].sy - p->v[j].sy;
+    }
+    *dx = sx / 3.0f; *dy = sy / 3.0f;
+}
+
+/* Segment pass over an ordinal-paired run that no single translation carries:
+ * partition it into maximal contiguous spans whose every vertex displaces by
+ * the span's own translation within CARRY_RIGID_TOL, and pair each span whole
+ * by ordinal. A span's translation is the mean vertex displacement of its first
+ * ordinal pair, and every later member is admitted only against that same
+ * translation, so a span is one displacement by construction. An entry whose
+ * own three vertices disagree with their mean opens no span and joins none: it
+ * takes no pairing and falls through to the passes below. Two members of one
+ * contiguous body therefore still never take different treatment — a body
+ * carried by one translation gives all its members the same displacement and so
+ * lands in one span — while a body sharing a run with a body that moves
+ * differently keeps its own glide instead of both snapping. Returns the entries
+ * paired and adds the spans it carried to *segs.
+ *
+ * This runs only after the whole-run test has already failed, so a run carried
+ * by one translation reaches none of this code. */
+static int carry_pair_run_segments(const scene_tri_t* prev, int plo,
+                                   const scene_tri_t* curr, int clo, int len,
+                                   carry_match_t* mt, int* segs) {
+    int paired = 0;
+    for (int k = 0; k < len; ) {
+        float dx, dy;
+        carry_entry_delta(&prev[plo + k], &curr[clo + k], &dx, &dy);
+        if (!carry_run_rigid(prev, plo + k, curr, clo + k, 1, dx, dy)) { k++; continue; }
+        int e = k + 1;
+        while (e < len && carry_run_rigid(prev, plo + e, curr, clo + e, 1, dx, dy)) e++;
+        for (int i = k; i < e; i++) {
+            mt->match[clo + i] = plo + i;
+            mt->prev_taken[plo + i] = 1;
+            mt->anchored[clo + i] = 1;
+        }
+        paired += e - k;
+        (*segs)++;
+        k = e;
+    }
+    return paired;
+}
+
 /* Rigid-run pass: each multi-entry run whose partner run carries it by one
- * translation is paired by ordinal, whole. A run with no partner, or one whose
- * entries displace by different amounts, takes no pairing at all and every one
- * of its entries falls through to the passes below. */
+ * translation is paired by ordinal, whole. A run with no partner takes no
+ * pairing at all and every one of its entries falls through to the passes
+ * below; a run whose entries displace by more than one amount goes to the
+ * segment pass, and only the entries of it that no span carried fall through. */
 static int carry_pair_runs(const scene_tri_t* prev, carry_runs_t* pr,   /* pr->taken is written */
                            const scene_tri_t* curr, const carry_runs_t* cr,
                            carry_match_t* mt, carry_run_stats_t* st) {
     int paired = 0;
     st->runs = cr->n; st->lerped = 0; st->disagree = 0;
+    st->segmented = 0; st->segs = 0;
     for (int i = 0; i < cr->n; i++) {
         int len = cr->len[i];
         if (len < 2) continue;
@@ -1852,7 +1903,12 @@ static int carry_pair_runs(const scene_tri_t* prev, carry_runs_t* pr,   /* pr->t
         if (q < 0) continue;
         float dx = cr->cx[i] - pr->cx[q], dy = cr->cy[i] - pr->cy[q];
         if (!carry_run_rigid(prev, pr->lo[q], curr, cr->lo[i], len, dx, dy)) {
-            st->disagree++;
+            int segs = 0;
+            int got = carry_pair_run_segments(prev, pr->lo[q], curr, cr->lo[i], len,
+                                              mt, &segs);
+            if (got == 0) { st->disagree++; continue; }
+            pr->taken[q] = 1;
+            paired += got; st->segmented++; st->segs += segs;
             continue;
         }
         pr->taken[q] = 1;
@@ -1967,8 +2023,10 @@ static int carry_pair_all(const carry_key_map_t* m,
  * nor the occupancy pass naming the partner. Both count only a pair that
  * actually moves. The run counters are the population the rigid pass sorts:
  * `runs` every run of the current capture, `runs_lerped` those carried by one
- * translation, `runs_snapped_disagree` those with a same-multiset partner whose
- * entries displaced by different amounts. One line per present, zero counts
+ * translation, `runs_segmented` those with a same-multiset partner that took
+ * more than one translation, `segments_lerped` the spans those were carried by,
+ * and `runs_snapped_disagree` those with a same-multiset partner that yielded
+ * no translation at all, so every entry of them snapped. One line per present, zero counts
  * included, so a present that carried no 2D reads as no engagement rather than
  * as clean. */
 typedef struct {
@@ -2044,10 +2102,12 @@ static void carry_census_flush(const carry_census_t* cz, int carried, int paired
     if (s_scene_frame != s_frame) { s_frame = s_scene_frame; s_ix = 0; }
     fprintf(stderr, "[carrycensus vbl=%u present=%d alpha=%.3f] carried=%d paired=%d"
                     " lerped=%d far_both=%d uv_mismatch=%d crossed=%d static_moved=%d"
-                    " runs=%d runs_lerped=%d runs_snapped_disagree=%d ambiguous_lerp=%d",
+                    " runs=%d runs_lerped=%d runs_snapped_disagree=%d"
+                    " runs_segmented=%d segments_lerped=%d ambiguous_lerp=%d",
             s_scene_frame, s_ix++, oalpha, carried, paired,
             cz->lerped, cz->far_both, cz->uv_mismatch, cz->crossed, cz->static_moved,
-            st->runs, st->lerped, st->disagree, cz->ambiguous);
+            st->runs, st->lerped, st->disagree, st->segmented, st->segs,
+            cz->ambiguous);
     if (cz->lerped == 0) { fprintf(stderr, " NO-ENGAGEMENT\n"); return; }
     fprintf(stderr, " worst=%.2f cat=%d seq=%u %s%s%sprev=(%.1f,%.1f)"
                     " curr=(%.1f,%.1f) applied=(%.1f,%.1f)\n",

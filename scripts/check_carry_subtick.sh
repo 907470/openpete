@@ -26,6 +26,13 @@
 #   <bk2> | <lo>-<hi> | <key>=<value> ...
 # The span is the intermediate-capture VBLs, one apart, inclusive. Keys:
 #   lerps=<n>   floor on the interpolated carry triangles measured over the row
+#   segs=<n>    floor on the segments the run pass carried by their own
+#               translation, summed over the row: the engagement proof of the
+#               segmentation path, which fires only on a run whose entries
+#               displace by more than one amount
+#   disagree=<n>  cap on runs_snapped_disagree over the row: the runs that
+#               found a same-multiset partner and no translation at all, so
+#               every entry of them snapped
 # A row whose first field does not end in .bk2 is the plain boot — the title
 # screen and the attract demo, which need no input — and replays with no movie,
 # the same movie-less row the presentation corpus takes.
@@ -33,19 +40,22 @@
 # Instrument (stderr), OPENPETE_CARRY_CENSUS=1, one line per present:
 #   [carrycensus vbl=<v> present=<i> alpha=<a>] carried=<n> paired=<n>
 #     lerped=<n> far_both=<n> uv_mismatch=<n> crossed=<n> static_moved=<n>
-#     runs=<n> runs_lerped=<n> runs_snapped_disagree=<n> ambiguous_lerp=<n> ...
+#     runs=<n> runs_lerped=<n> runs_snapped_disagree=<n> runs_segmented=<n>
+#     segments_lerped=<n> ambiguous_lerp=<n> ...
 # A present whose carry interpolated nothing prints NO-ENGAGEMENT rather than
 # a clean row, so an empty window cannot read as a pass.
 #
 # Pass criterion, per row: crossed = 0 summed over every present of every
-# alpha. VACUOUS (exit 1) when the row's summed `lerped` is below its floor.
-# far_both, static_moved, ambiguous_lerp and the three run counts are reported,
-# not judged.
+# alpha, and runs_snapped_disagree at or below the row's `disagree` cap when it
+# sets one. VACUOUS (exit 1) when the row's summed `lerped` or `segments_lerped`
+# is below its floor. far_both, static_moved, ambiguous_lerp and the remaining
+# run counts are reported, not judged.
 #
 # Verdict line per row:
 #   [carry-subtick] game=<g> bk2=<b> presents=<n> lerped=<n> crossed=<n>
 #                   far_both=<n> static_moved=<n> runs=<n> runs_lerped=<n>
-#                   runs_snapped_disagree=<n> ambiguous_lerp=<n> verdict=PASS|FAIL
+#                   runs_snapped_disagree=<n> runs_segmented=<n>
+#                   segments_lerped=<n> ambiguous_lerp=<n> verdict=PASS|FAIL
 #
 # Usage: scripts/check_carry_subtick.sh [--game SLUG] [--build-dir=DIR]
 # Exit 0 PASS, 1 FAIL or VACUOUS, 64 SKIP (binary, disc, bk2, manifest or
@@ -144,35 +154,55 @@ import re, sys
 game, bk2, keys = sys.argv[1:4]
 opts = dict(tok.split('=', 1) for tok in keys.split())
 min_lerps = int(opts.get('lerps', '1'))
+min_segs = int(opts.get('segs', '0'))
+max_dis = opts.get('disagree')
+max_dis = None if max_dis is None else int(max_dis)
 
-row = re.compile(r'\[carrycensus vbl=(\d+) present=(\d+) alpha=([\d.]+)\] '
-                 r'carried=(\d+) paired=(\d+) lerped=(\d+) far_both=(\d+) '
-                 r'uv_mismatch=(\d+) crossed=(\d+) static_moved=(\d+) '
-                 r'runs=(\d+) runs_lerped=(\d+) runs_snapped_disagree=(\d+) '
-                 r'ambiguous_lerp=(\d+)(.*)')
-presents = lerped = crossed = far = stat = 0
-runs = runs_lerped = runs_dis = ambig = 0
+# The census fields are read BY NAME, not by position: a line from a build that
+# predates a counter still parses and the absent counter reads 0, instead of the
+# whole present dropping out of the row and an old build reading as no
+# instrument output at all.
+head_re = re.compile(r'\[carrycensus ')
+kv_re = re.compile(r'(\w+)=(-?[\d.]+)')
+tail_re = re.compile(r'\]\s*(.*)')
+FIELDS = ('lerped', 'far_both', 'crossed', 'static_moved', 'runs', 'runs_lerped',
+          'runs_snapped_disagree', 'runs_segmented', 'segments_lerped',
+          'ambiguous_lerp')
+tot = dict((f, 0) for f in FIELDS)
+presents = 0
 bad = []
 for path in sys.argv[4:]:
     for line in open(path, errors='replace'):
-        m = row.search(line)
-        if not m:
+        if not head_re.search(line):
+            continue
+        kv = dict(kv_re.findall(line))
+        if 'carried' not in kv or 'lerped' not in kv:
             continue
         presents += 1
-        lerped += int(m[6]); far += int(m[7]); crossed += int(m[9]); stat += int(m[10])
-        runs += int(m[11]); runs_lerped += int(m[12]); runs_dis += int(m[13])
-        ambig += int(m[14])
-        if int(m[9]):
+        for f in FIELDS:
+            tot[f] += int(float(kv.get(f, 0)))
+        if int(kv['crossed']):
+            t = tail_re.search(line)
             bad.append("vbl=%s present=%s alpha=%s crossed=%s of %s lerped: %s"
-                       % (m[1], m[2], m[3], m[9], m[6], m[15].strip()))
+                       % (kv.get('vbl'), kv.get('present'), kv.get('alpha'),
+                          kv['crossed'], kv['lerped'], (t and t[1].strip()) or ''))
 
 head = ("[carry-subtick] game=%s bk2=%s presents=%d lerped=%d crossed=%d far_both=%d"
         " static_moved=%d runs=%d runs_lerped=%d runs_snapped_disagree=%d"
-        " ambiguous_lerp=%d"
-        % (game, bk2, presents, lerped, crossed, far, stat,
-           runs, runs_lerped, runs_dis, ambig))
-if lerped < min_lerps:
+        " runs_segmented=%d segments_lerped=%d ambiguous_lerp=%d"
+        % (game, bk2, presents, tot['lerped'], tot['crossed'], tot['far_both'],
+           tot['static_moved'], tot['runs'], tot['runs_lerped'],
+           tot['runs_snapped_disagree'], tot['runs_segmented'],
+           tot['segments_lerped'], tot['ambiguous_lerp']))
+if tot['lerped'] < min_lerps:
     print(head + " VACUOUS: floor lerps>=%d" % min_lerps)
+    sys.exit(1)
+if tot['segments_lerped'] < min_segs:
+    print(head + " VACUOUS: floor segments_lerped>=%d" % min_segs)
+    sys.exit(1)
+if max_dis is not None and tot['runs_snapped_disagree'] > max_dis:
+    print(head + " verdict=FAIL: runs_snapped_disagree=%d exceeds disagree<=%d"
+          % (tot['runs_snapped_disagree'], max_dis))
     sys.exit(1)
 print(head + " verdict=%s" % ("FAIL" if bad else "PASS"))
 for b in bad[:40]:
