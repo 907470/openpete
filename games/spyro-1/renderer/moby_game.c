@@ -128,17 +128,24 @@ static int s1_decode_faces(CPUState* cpu, uint32_t fb, uint32_t bytecount,
  * Stride 0x38 in the render scratch: flags word, AnimationHeader*, the two
  * keyframes, the view-space translation, the 3x3 model->view matrix (whose
  * unused high half of +0x2C carries the LOD verdict), the specular colour
- * word the specular cull copies, and the Moby*. A record whose header and
- * Moby* are both zero terminates the queue. */
+ * word the specular cull copies, and the Moby*.
+ *
+ * A zero flags word terminates the queue: both cull builders close the queue
+ * by storing zero into word 0 alone and leave every other word of that record
+ * as the previous tick left it (r_moby.s:8001F744, 80020EE0), and the draw
+ * stops on exactly that word (r_moby.s:8001F7FC-8001F804). Testing any other
+ * word runs the walk past the terminator into stale bytes, whose header can
+ * pass the decode guard. */
 static int s1_read_record(CPUState* cpu, uint32_t rec, moby_record_t* R) {
+    const uint32_t w0 = cpu->read_word(rec);
+    if (w0 == 0) return 0;
     const uint32_t hdr  = cpu->read_word(rec + game_layout.moby.rec_header_off);
     const uint32_t moby = cpu->read_word(rec + game_layout.moby.rec_moby_off);
-    if (hdr == 0 && moby == 0) return 0;
     R->header   = hdr;
     R->header_b = hdr;   /* one header serves both keyframes on this game */
     R->frame_a  = cpu->read_word(rec + game_layout.moby.rec_frame_a_off);
     R->frame_b  = cpu->read_word(rec + game_layout.moby.rec_frame_b_off);
-    R->w0       = cpu->read_word(rec);
+    R->w0       = w0;
     R->moby     = moby;
     R->material = cpu->read_word(rec + game_layout.moby.rec_material_off);
     for (int i = 0; i < 3; i++)

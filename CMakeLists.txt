@@ -393,6 +393,23 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
 
+    # Vertex-stream field resolution on a stock boot: one headless 206-VBL
+    # boot with a native screenshot armed, and every frame word the moby walk
+    # decodes required to name an address. An unresolved field there is the
+    # walk decoding a record the game never queued and reading the frame word
+    # from unmapped memory. Spyro 1 only: it is the one game whose reader
+    # routes frame words through the handle resolver that feeds the census
+    # (games/spyro-1/renderer/moby_game.c, s1_vstream_init), so on the others
+    # the run decodes no field and the case could only read as vacuous.
+    add_test(NAME vstream_boot_spyro-1
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_vstream_boot.sh
+                     --game spyro-1 --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(vstream_boot_spyro-1 PROPERTIES
+        LABELS "presentation;vstream"
+        TIMEOUT 900
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Freeze-backdrop source frame, windowed. Per row of
     # games/<slug>/freeze-backdrop-corpus.manifest, one windowed replay of a
     # bk2 that enters the pause menu, counting the composed presents the live
