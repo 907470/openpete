@@ -35,6 +35,13 @@ PG_GAMES="spyro-1 spyro-2 spyro-3"
 pg_parse_game() {
   local a next=0 game="spyro-1"
   for a in "$@"; do
+    if [[ "$a" == "--help" || "$a" == "-h" ]]; then
+      # Every harness that shares this parser prints its usage header and
+      # exits 64 instead of starting a run; the caller treats the failed
+      # parse as exit 64.
+      sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//' >&2
+      return 1
+    fi
     if   (( next ));                then game="$a"; next=0
     elif [[ "$a" == "--game" ]];    then next=1
     elif [[ "$a" == --game=* ]];    then game="${a#--game=}"
