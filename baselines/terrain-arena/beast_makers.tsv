@@ -1,0 +1,35 @@
+# terrain-arena high-water baseline (scripts/baseline-terrain-arena.py)
+# level	beast_makers
+# pose	spawn	exit=0	freecam=0	svc=1071/1	draws_retired=0	rebake=131
+# pose	topdown	exit=0	freecam=1	svc=1071/1	draws_retired=0	rebake=131
+pose	arena	high	afail
+spawn	OPAQUE	132759	0
+spawn	ALPHA	0	0
+spawn	ADD	0	0
+spawn	SUB	0	0
+spawn	LP	0	0
+spawn	A_OPAQUE	0	0
+spawn	A_ALPHA	0	0
+spawn	A_ADD	0	0
+spawn	A_SUB	0	0
+spawn	A_LP	0	0
+spawn	N_OPAQUE	10656	0
+spawn	N_ALPHA	0	0
+spawn	N_ADD	0	0
+spawn	N_SUB	0	0
+spawn	N_LP	0	0
+topdown	OPAQUE	158586	0
+topdown	ALPHA	0	0
+topdown	ADD	0	0
+topdown	SUB	0	0
+topdown	LP	0	0
+topdown	A_OPAQUE	0	0
+topdown	A_ALPHA	0	0
+topdown	A_ADD	0	0
+topdown	A_SUB	0	0
+topdown	A_LP	0	0
+topdown	N_OPAQUE	0	0
+topdown	N_ALPHA	0	0
+topdown	N_ADD	0	0
+topdown	N_SUB	0	0
+topdown	N_LP	0	0

@@ -235,6 +235,10 @@ void openpete_tercache_frame_slots(char *out, int cap);
  * not exclusions here. The feeder ANDs its own (flag, debug envs, portal
  * recency). */
 int  openpete_native_tercache_usable(void);
+/* Host loop, once per VBL: run the terrain cache's device service on the
+ * headless path. Self-no-ops with a window, where the present entry runs it
+ * on the thread that owns the device for that present. */
+void openpete_native_tercache_service_headless(void);
 
 /* ---- HD texture-replacement fold (pack art in the retained path) --------
  * Defined in native_render.c (owner of the pack-registry and pack-fog
@@ -305,6 +309,34 @@ void openpete_tercache_chunk_write_ctx(int arena, uint32_t first,
                                        const struct rhi_terrain_nearctx *c, int count);
 void openpete_tercache_chunk_free(int arena, uint32_t first, int count);
 
+/* ---- level-edge arena replacement ---------------------------------------
+ * `high` never falls and a freed range returns to the free list only after
+ * the defer window, so a session accumulates toward every arena cap across
+ * level loads: the previous level's chunks are never released (their decode
+ * slots are rebuilt only when another sector takes them) and the surviving
+ * free spans re-fit the next level's chunk sizes imperfectly. The cure is
+ * replacement, not reset in place: the defer window counts BUILDS and no
+ * build runs during a load, so a range freed at the level edge can never
+ * age out before the new level's first walk allocates over it.
+ *
+ * Three steps on two threads. The builder posts a request at the level
+ * latch (request_resize) after giving up every slot's chunks. The
+ * device-owning thread allocates one fresh {vb, pv} pair per arena
+ * (present_service) — device objects are illegal on the builder's thread.
+ * The builder adopts the pairs at its next frame_begin: the arena's
+ * bookkeeping resets to high = 0 with an empty free list, and the outgoing
+ * pairs go on a retire list that present_service destroys once both drain
+ * floors have passed. Adopting resets every arena's counters, so a caller
+ * holding chunk records frees them BEFORE the adopting frame_begin;
+ * resize_ready reports that moment. */
+void openpete_tercache_request_resize(int level_id);
+int  openpete_tercache_resize_ready(void);
+/* Device-owning thread only, once per present windowed and once per VBL
+ * headless: fulfil a pending request and destroy drained retire entries.
+ * The only caller of rhi_destroy_buffer for arena buffers outside
+ * shutdown. */
+void openpete_tercache_present_service(void);
+
 /* Screen->clip mapping for one draw target: the RAW scene_to_clip inputs,
  * so terrain.vert replicates the CPU's exact float expression term for term
  * (a fitted affine reconstruction loses ~5 subpixel LSBs at the screen
@@ -330,6 +362,21 @@ typedef struct {
     uint32_t chunks, verts_used, verts_cap;   /* summed over arenas */
     uint32_t draws_last_present;
     uint32_t frees_pending;
+    /* Per-arena, in OPTC_ARENA_* order. `high` is the arena's high-water
+     * vertex count (the draw range, and what a cap binds against); `cap` is
+     * the live buffer pair's capacity; `alloc_fail` counts chunk_alloc's -1
+     * returns, which are the sectors the builder claimed back to the CPU
+     * walk because the arena was full. */
+    uint32_t high[OPTC_ARENA_COUNT];
+    uint32_t cap[OPTC_ARENA_COUNT];
+    uint32_t alloc_fail[OPTC_ARENA_COUNT];
+    /* Level-edge replacement engagement: present_service calls and requests
+     * fulfilled. Both zero means the service never ran, which makes every
+     * arena figure below a pre-replacement figure. */
+    uint32_t svc_calls, svc_fulfilled;
+    /* Draws that bound a buffer pair already on the retire list. A
+     * destroyed-while-drawn detector: the invariant is 0. */
+    uint32_t draws_retired;
 } openpete_tercache_stats_t;
 void openpete_tercache_get_stats(openpete_tercache_stats_t *out);
 

@@ -1,0 +1,35 @@
+# terrain-arena high-water baseline (scripts/baseline-terrain-arena.py)
+# level	magic_crafters
+# pose	spawn	exit=0	freecam=0	svc=1071/1	draws_retired=0	rebake=103
+# pose	topdown	exit=0	freecam=1	svc=1071/1	draws_retired=0	rebake=103
+pose	arena	high	afail
+spawn	OPAQUE	62139	0
+spawn	ALPHA	0	0
+spawn	ADD	0	0
+spawn	SUB	0	0
+spawn	LP	6813	0
+spawn	A_OPAQUE	18702	0
+spawn	A_ALPHA	0	0
+spawn	A_ADD	0	0
+spawn	A_SUB	0	0
+spawn	A_LP	594	0
+spawn	N_OPAQUE	6168	0
+spawn	N_ALPHA	0	0
+spawn	N_ADD	0	0
+spawn	N_SUB	0	0
+spawn	N_LP	858	0
+topdown	OPAQUE	136440	0
+topdown	ALPHA	0	0
+topdown	ADD	0	0
+topdown	SUB	0	0
+topdown	LP	15795	0
+topdown	A_OPAQUE	75186	0
+topdown	A_ALPHA	0	0
+topdown	A_ADD	0	0
+topdown	A_SUB	0	0
+topdown	A_LP	4698	0
+topdown	N_OPAQUE	0	0
+topdown	N_ALPHA	0	0
+topdown	N_ADD	0	0
+topdown	N_SUB	0	0
+topdown	N_LP	0	0

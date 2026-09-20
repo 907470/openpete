@@ -3097,6 +3097,47 @@ static void tgpu_free_slot(tgpu_slot_t* T) {
     T->s = 0;
 }
 
+/* Give every decode slot's chunks back to the arenas. A slot otherwise holds
+ * its chunks until another sector takes the slot, so nothing releases the
+ * outgoing level's geometry at a level load. */
+/* Returns the number of slots that held a baked sector, which is how many
+ * sectors have to be walked and baked again. */
+static long tgpu_free_all_slots(void) {
+    long live = 0;
+    for (int i = 0; i < TSC_SLOTS; i++) {
+        if (s_tgpu[i].s) live++;
+        tgpu_free_slot(&s_tgpu[i]);
+    }
+    return live;
+}
+
+/* Sectors given up to the second free, the one between the level edge and
+ * the adoption of the fresh buffers. They were baked into the outgoing
+ * buffers during the load and re-bake over the following walks — a
+ * load-screen transient, and the only re-bake the replacement costs. */
+static long s_tgpu_rebake;
+
+/* Level edge. The freed ranges cannot be reused in place: the arena's defer
+ * window counts builds, no build runs during a load, and the new level's
+ * first walk allocates before any range ages out. So the arenas are asked
+ * for fresh buffers instead, which also resets each arena's high-water mark
+ * and drops the free-list fragmentation the outgoing level left. The first
+ * latch of a session has no outgoing level and init has just made the
+ * buffers, so there it only clears the slots. */
+static void tgpu_level_edge(int prev_level, int level) {
+    tgpu_free_all_slots();
+    if (prev_level >= 0) openpete_tercache_request_resize(level);
+}
+
+/* Run before the frame_begin that adopts fresh arena buffers: the adoption
+ * zeroes every arena's bookkeeping, so the sectors baked into the outgoing
+ * buffers since the level edge must give up their chunk records first (a
+ * free after the adoption would decrement counters the fresh buffers own).
+ * They re-bake against the fresh buffers over the following walks. */
+static void tgpu_resize_adopt_prepare(void) {
+    if (openpete_tercache_resize_ready()) s_tgpu_rebake += tgpu_free_all_slots();
+}
+
 /* Debug/experiment envs whose semantics live in the CPU walk: any of them set
  * forces the pure-CPU path (per-run latch — these are dev levers). */
 static int tgpu_env_block(void) {
@@ -3795,10 +3836,50 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
     return T->unbuildable;
 }
 
+/* Format one per-arena census column in OPTC_ARENA_* order: "n0,n1,..." or,
+ * with `den`, "n0/d0,n1/d1,...". */
+static void tgpu_fmt_arenas(char* out, int cap, const uint32_t* num, const uint32_t* den) {
+    int at = 0;
+    for (int a = 0; a < OPTC_ARENA_COUNT && at < cap - 1; a++) {
+        int n = den
+            ? snprintf(out + at, (size_t)(cap - at), "%s%u/%u", a ? "," : "", num[a], den[a])
+            : snprintf(out + at, (size_t)(cap - at), "%s%u", a ? "," : "", num[a]);
+        if (n < 0 || n >= cap - at) { at = cap - 1; break; }
+        at += n;
+    }
+    out[at] = 0;
+}
+
+/* Per-arena high-water marks against their capacities, the sectors each
+ * arena claimed back for want of room, and the level-edge replacement's
+ * engagement (service calls / requests fulfilled). A `high` equal to its
+ * `cap` is a clamp, not a demand figure. */
+static void tgpu_arena_census_line(void) {
+    openpete_tercache_stats_t st;
+    openpete_tercache_get_stats(&st);
+    char hwm[768], afail[384];
+    tgpu_fmt_arenas(hwm, (int)sizeof hwm, st.high, st.cap);
+    tgpu_fmt_arenas(afail, (int)sizeof afail, st.alloc_fail, NULL);
+    fprintf(stderr, "[ter-gpu f=%u] hwm=%s afail=%s svc=%u/%u draws-retired=%u rebake=%ld\n",
+            openpete_frame, hwm, afail, st.svc_calls, st.svc_fulfilled,
+            st.draws_retired, s_tgpu_rebake);
+}
+
+/* The arena line again at exit, so a run shorter than the census divider
+ * still reports its peak. */
+static void tgpu_arena_census_at_exit(void) {
+    static int armed;
+    if (armed) return;
+    armed = 1;
+    atexit(tgpu_arena_census_line);
+}
+
 static void tgpu_census(void) {   /* OPENPETE_TERRAIN_GPU_DBG: ~1/s */
     static int on = -1, n;
     ENV_FLAG_LATCH(on, "OPENPETE_TERRAIN_GPU_DBG");
-    if (!on || ++n < 120) return;
+    if (!on) return;
+    tgpu_arena_census_at_exit();
+    if (++n < 120) return;
     n = 0;
     openpete_tercache_stats_t st;
     openpete_tercache_get_stats(&st);
@@ -3814,6 +3895,7 @@ static void tgpu_census(void) {   /* OPENPETE_TERRAIN_GPU_DBG: ~1/s */
             s_tgpu_rebuilds,
             st.chunks, st.verts_used, st.verts_cap, st.draws_last_present,
             st.frees_pending);
+    tgpu_arena_census_line();
     s_tgpu_secs = s_tgpu_claims = s_tgpu_rebuilds = s_tgpu_nvsecs = 0;
     s_tgcl_near = s_tgcl_portal = s_tgcl_anim = s_tgcl_scroll = 0;
     s_tgcl_fill = s_tgcl_build = s_tgcl_colour = s_tgcl_slot = 0;
@@ -5220,6 +5302,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     { int lvl = (int)(int32_t)rd(cpu, game_layout.level_id);
       static int s_lpg_lvl = -1;
       if (lvl != s_lpg_lvl) {
+          tgpu_level_edge(s_lpg_lvl, lvl);
           s_lpg_lvl = lvl;
           s_lpg_mean_ok = 0;
           s_lpg_acc_n = 0;
@@ -5463,6 +5546,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     /* The build stamp: a scene id while an eager scene is being extracted
      * (each scene of a burst gets its own retained state), else the VBL. */
     const uint32_t tc_stamp = openpete_native_scene_build_stamp();
+    tgpu_resize_adopt_prepare();
     if (tgpu_on) openpete_tercache_frame_begin(&tcg, tc_stamp, s_vanim_sub);
     else if (openpete_tercache_ready() && tb_first)
         openpete_tercache_frame_skip(tc_stamp, s_vanim_sub);

@@ -225,6 +225,41 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Terrain-arena high-water baseline. Two legs, each a 35-level x 2-pose
+    # headless sweep: `regen` re-measures at a capacity no content reaches
+    # and must reproduce baselines/terrain-arena/ exactly, with no censored
+    # row (a high-water mark equal to its capacity) and no sector claimed
+    # back for want of arena room; `stock` repeats it at the shipped caps,
+    # where the claim-back assertion currently fails on the topdown pose of
+    # the levels whose poly-anim opaque demand exceeds OPTC_ARENA_A_OPAQUE,
+    # and passes once the arenas are sized per level from these baselines.
+    # Its own label: far too long for the per-build ctest run. Exit 64 = no
+    # binary or disc.
+    add_test(NAME terrain_arena_baseline
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/baseline-terrain-arena.py check
+             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    set_tests_properties(terrain_arena_baseline PROPERTIES
+        LABELS "slow;terrain-baseline"
+        TIMEOUT 7200
+        SKIP_RETURN_CODE 64)
+
+    # Cross-level accumulation row: the 40,000-VBL attract demo crosses
+    # several level loads. It measures accumulation — one arena replacement
+    # fulfilled per level load, and, per arena, the first high-water mark
+    # after each edge below that arena's peak in the segment before it —
+    # and reports each arena's exit mark against the union of the visited
+    # levels' baseline rows as a demand figure, not an assertion: the demo
+    # camera traverses a level while the baseline's two poses are static.
+    # Without the level-edge replacement the marks never fall and climb
+    # toward the caps over a session, far past any single level's demand.
+    add_test(NAME terrain_arena_demo
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/baseline-terrain-arena.py demo
+             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    set_tests_properties(terrain_arena_demo PROPERTIES
+        LABELS "slow;terrain-baseline"
+        TIMEOUT 3600
+        SKIP_RETURN_CODE 64)
+
     # Cognitive-complexity ratchet, the ctest spelling of the per-build
     # check (core/CMakeLists.txt, openpete_complexity_ratchet). Exit 64 =
     # no compile database.

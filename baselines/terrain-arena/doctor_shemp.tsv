@@ -1,0 +1,35 @@
+# terrain-arena high-water baseline (scripts/baseline-terrain-arena.py)
+# level	doctor_shemp
+# pose	spawn	exit=0	freecam=0	svc=1071/1	draws_retired=0	rebake=32
+# pose	topdown	exit=0	freecam=1	svc=1071/1	draws_retired=0	rebake=32
+pose	arena	high	afail
+spawn	OPAQUE	24600	0
+spawn	ALPHA	0	0
+spawn	ADD	0	0
+spawn	SUB	0	0
+spawn	LP	3432	0
+spawn	A_OPAQUE	0	0
+spawn	A_ALPHA	0	0
+spawn	A_ADD	0	0
+spawn	A_SUB	0	0
+spawn	A_LP	0	0
+spawn	N_OPAQUE	4236	0
+spawn	N_ALPHA	0	0
+spawn	N_ADD	0	0
+spawn	N_SUB	0	0
+spawn	N_LP	558	0
+topdown	OPAQUE	77784	0
+topdown	ALPHA	0	0
+topdown	ADD	0	0
+topdown	SUB	0	0
+topdown	LP	10269	0
+topdown	A_OPAQUE	4860	0
+topdown	A_ALPHA	0	0
+topdown	A_ADD	0	0
+topdown	A_SUB	0	0
+topdown	A_LP	972	0
+topdown	N_OPAQUE	0	0
+topdown	N_ALPHA	0	0
+topdown	N_ADD	0	0
+topdown	N_SUB	0	0
+topdown	N_LP	0	0

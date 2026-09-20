@@ -6,6 +6,7 @@
 #include "openpete_mods.h"   /* terrain material buckets + their pipelines */
 #include "openpete_native_render.h"   /* scene ring: is a build stamp still referenced */
 
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -53,11 +54,20 @@ static const uint32_t k_arena_cap[OPTC_ARENA_COUNT] = {
 
 typedef struct { uint32_t first, count; } tc_span;
 
+/* One arena's device buffers. Immutable once published: the level-edge
+ * replacement swaps the whole struct through the arena's atomic pointer, so
+ * a present can never bind a new `vb` beside the outgoing `pv` (two separate
+ * stores would leave that window open). The retire entry is the pair. */
 typedef struct {
     rhi_buffer *vb;
     rhi_buffer *pv;                   /* anim arenas: parallel prev-tick buffer
                                        * near arenas: parallel ctx buffer      */
     uint32_t    cap;
+} tc_pair;
+
+typedef struct {
+    _Atomic(tc_pair *) pair;          /* live buffers; swapped at a level edge */
+    uint32_t    cap;                  /* builder's mirror of pair->cap         */
     uint32_t    high;                 /* high-water vertex count (draw range) */
     tc_span     free_list[TC_FREE_MAX];
     int         free_n;
@@ -215,7 +225,83 @@ static struct {
     int           defer_n;
     uint32_t      draws_last;   /* accumulating (this present) */
     uint32_t      draws_prev;   /* completed previous present (census) */
+    /* ---- level-edge arena replacement (see the header's contract) ----
+     * One replacement is in flight at a time, as a three-state handshake
+     * between the builder and the device-owning thread. IDLE: the builder
+     * may post a request. READY: present_service has allocated rz_new and
+     * the builder has not adopted yet. RETIRE: the builder has adopted and
+     * rz_old awaits its drain floors. Each transition is a release store
+     * paired with the other thread's acquire load, which is what publishes
+     * the rz_new / rz_old arrays across the two threads. */
+    _Atomic int      rz_req;      /* builder -> device: a level edge happened */
+    _Atomic int      rz_state;
+    int              rz_level;    /* the incoming level id (census)           */
+    int              rz_alloc_logged;
+    tc_pair         *rz_new[OPTC_ARENA_COUNT];
+    tc_pair         *rz_old[OPTC_ARENA_COUNT];
+    uint32_t         rz_old_build, rz_old_svc;  /* drain floors, at adoption  */
+    _Atomic uint32_t build_ctr;   /* present_ctr, published for the device    */
+    _Atomic uint32_t svc_calls, svc_fulfilled;
+    _Atomic uint32_t draws_retired;
+    uint32_t         alloc_fail[OPTC_ARENA_COUNT];
 } s_tc;
+
+enum { TC_RZ_IDLE = 0, TC_RZ_READY = 1, TC_RZ_RETIRE = 2 };
+
+/* The last stats before teardown. shutdown zeroes the module's state, so a
+ * census printed at process exit would otherwise read every counter as 0
+ * whichever teardown ran first. */
+static openpete_tercache_stats_t s_tc_final;
+static int s_tc_final_valid;
+
+
+/* The arena's live buffers, for the builder and the chunk writes. The draw
+ * path loads the pointer itself so one present's draw reads one pair. */
+static const tc_pair *tc_live_pair(int arena)
+{
+    return atomic_load_explicit(&s_tc.arena[arena].pair, memory_order_acquire);
+}
+
+/* Initial vertex capacity of one arena. OPENPETE_TC_INITIAL_CAP overrides
+ * every arena's capacity with one vertex count, so a measuring run can size
+ * the arenas past any content and read an uncensored high-water mark (a
+ * `high` that reaches `cap` is a clamp, not a demand figure). */
+static uint32_t tc_initial_cap(int arena)
+{
+    static long ov = -1;
+    if (ov < 0) {
+        const char *e = getenv("OPENPETE_TC_INITIAL_CAP");
+        ov = (e && *e) ? strtol(e, NULL, 10) : 0;
+        if (ov < 0) ov = 0;
+    }
+    return ov > 0 ? (uint32_t)ov : k_arena_cap[arena];
+}
+
+static void tc_pair_free(rhi_device *dev, tc_pair *pr)
+{
+    if (!pr) return;
+    if (pr->vb) rhi_destroy_buffer(dev, pr->vb);
+    if (pr->pv) rhi_destroy_buffer(dev, pr->pv);
+    free(pr);
+}
+
+/* Device-owning thread only. The twin is the anim arenas' previous-tick
+ * buffer or the near arenas' emitted-tri context buffer, at the same vertex
+ * count and its own stride; a base arena has none. */
+static tc_pair *tc_pair_make(rhi_device *dev, int arena, uint32_t cap)
+{
+    tc_pair *pr = (tc_pair *)calloc(1, sizeof(*pr));
+    if (!pr) return NULL;
+    pr->cap = cap;
+    pr->vb = rhi_create_vertex_buffer_device(dev, (size_t)cap * sizeof(rhi_terrain_vertex));
+    if (OPTC_ARENA_IS_ANIM(arena))
+        pr->pv = rhi_create_vertex_buffer_device(dev, (size_t)cap * sizeof(rhi_terrain_prev));
+    else if (OPTC_ARENA_IS_NEAR(arena))
+        pr->pv = rhi_create_vertex_buffer_device(dev, (size_t)cap * sizeof(rhi_terrain_nearctx));
+    const int twin_owed = OPTC_ARENA_IS_ANIM(arena) || OPTC_ARENA_IS_NEAR(arena);
+    if (!pr->vb || (twin_owed && !pr->pv)) { tc_pair_free(dev, pr); return NULL; }
+    return pr;
+}
 
 /* push-constant block (mirrors terrain.vert TerrainPC) */
 typedef struct {
@@ -369,20 +455,10 @@ int openpete_tercache_init(rhi_device *dev)
              s_tc.pipe_n_add && s_tc.pipe_n_sub && s_tc.pipe_n_fill &&
              s_tc.pipe_n_prepass && s_tc.pipe_n_key;
     for (int a = 0; ok && a < OPTC_ARENA_COUNT; a++) {
-        s_tc.arena[a].cap = k_arena_cap[a];
-        s_tc.arena[a].vb = rhi_create_vertex_buffer_device(
-            dev, (size_t)k_arena_cap[a] * sizeof(rhi_terrain_vertex));
-        if (!s_tc.arena[a].vb) ok = 0;
-        if (ok && OPTC_ARENA_IS_ANIM(a)) {
-            s_tc.arena[a].pv = rhi_create_vertex_buffer_device(
-                dev, (size_t)k_arena_cap[a] * sizeof(rhi_terrain_prev));
-            if (!s_tc.arena[a].pv) ok = 0;
-        }
-        if (ok && OPTC_ARENA_IS_NEAR(a)) {
-            s_tc.arena[a].pv = rhi_create_vertex_buffer_device(
-                dev, (size_t)k_arena_cap[a] * sizeof(rhi_terrain_nearctx));
-            if (!s_tc.arena[a].pv) ok = 0;
-        }
+        tc_pair *pr = tc_pair_make(dev, a, tc_initial_cap(a));
+        if (!pr) { ok = 0; break; }
+        s_tc.arena[a].cap = pr->cap;
+        atomic_store_explicit(&s_tc.arena[a].pair, pr, memory_order_relaxed);
     }
     if (!ok) {
         fprintf(stderr, "[ter-gpu] init failed (pipeline or arena alloc) — "
@@ -408,10 +484,16 @@ int openpete_tercache_init(rhi_device *dev)
 void openpete_tercache_shutdown(rhi_device *dev)
 {
     if (!dev) return;
+    openpete_tercache_get_stats(&s_tc_final);
+    s_tc_final_valid = 1;
     if (s_tc.hd_dummy) { rhi_destroy_texture(dev, s_tc.hd_dummy); s_tc.hd_dummy = NULL; }
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
-        if (s_tc.arena[a].vb) { rhi_destroy_buffer(dev, s_tc.arena[a].vb); s_tc.arena[a].vb = NULL; }
-        if (s_tc.arena[a].pv) { rhi_destroy_buffer(dev, s_tc.arena[a].pv); s_tc.arena[a].pv = NULL; }
+        tc_pair_free(dev, atomic_load_explicit(&s_tc.arena[a].pair, memory_order_relaxed));
+        atomic_store_explicit(&s_tc.arena[a].pair, NULL, memory_order_relaxed);
+        /* A replacement caught mid-handshake: the fulfilled pair nobody
+         * adopted, and the outgoing pair nobody drained. */
+        tc_pair_free(dev, s_tc.rz_new[a]); s_tc.rz_new[a] = NULL;
+        tc_pair_free(dev, s_tc.rz_old[a]); s_tc.rz_old[a] = NULL;
     }
     if (s_tc.pipe_a_world)      rhi_destroy_pipeline(dev, s_tc.pipe_a_world);
     if (s_tc.pipe_a_world_mark) rhi_destroy_pipeline(dev, s_tc.pipe_a_world_mark);
@@ -495,6 +577,7 @@ int openpete_tercache_chunk_alloc(int arena, int vert_count, uint32_t *out_first
         a->used += (uint32_t)vert_count; a->chunks++;
         return 0;
     }
+    s_tc.alloc_fail[arena]++;
     return -1;   /* full: caller claims the sector back to the CPU walk */
 }
 
@@ -502,7 +585,9 @@ void openpete_tercache_chunk_write(int arena, uint32_t first,
                                    const rhi_terrain_vertex *v, int count)
 {
     if (!s_tc.ready || arena < 0 || arena >= OPTC_ARENA_COUNT) return;
-    rhi_update_buffer_range(s_tc.arena[arena].vb, v,
+    const tc_pair *pr = tc_live_pair(arena);
+    if (!pr) return;
+    rhi_update_buffer_range(pr->vb, v,
                             (size_t)first * sizeof(rhi_terrain_vertex),
                             (size_t)count * sizeof(rhi_terrain_vertex));
 }
@@ -511,8 +596,9 @@ void openpete_tercache_chunk_write_prev(int arena, uint32_t first,
                                         const rhi_terrain_prev *p, int count)
 {
     if (!s_tc.ready || arena < 0 || arena >= OPTC_ARENA_COUNT) return;
-    if (!OPTC_ARENA_IS_ANIM(arena) || !s_tc.arena[arena].pv) return;
-    rhi_update_buffer_range(s_tc.arena[arena].pv, p,
+    const tc_pair *pr = tc_live_pair(arena);
+    if (!OPTC_ARENA_IS_ANIM(arena) || !pr || !pr->pv) return;
+    rhi_update_buffer_range(pr->pv, p,
                             (size_t)first * sizeof(rhi_terrain_prev),
                             (size_t)count * sizeof(rhi_terrain_prev));
 }
@@ -521,8 +607,9 @@ void openpete_tercache_chunk_write_ctx(int arena, uint32_t first,
                                        const rhi_terrain_nearctx *c, int count)
 {
     if (!s_tc.ready || arena < 0 || arena >= OPTC_ARENA_COUNT) return;
-    if (!OPTC_ARENA_IS_NEAR(arena) || !s_tc.arena[arena].pv) return;
-    rhi_update_buffer_range(s_tc.arena[arena].pv, c,
+    const tc_pair *pr = tc_live_pair(arena);
+    if (!OPTC_ARENA_IS_NEAR(arena) || !pr || !pr->pv) return;
+    rhi_update_buffer_range(pr->pv, c,
                             (size_t)first * sizeof(rhi_terrain_nearctx),
                             (size_t)count * sizeof(rhi_terrain_nearctx));
 }
@@ -545,6 +632,107 @@ void openpete_tercache_chunk_free(int arena, uint32_t first, int count)
     } else {
         tc_free_insert(a, first, (uint32_t)count);   /* overflow: reuse now (rare) */
     }
+}
+
+/* ---- level-edge arena replacement --------------------------------------- */
+
+/* Builder thread, at the level latch, after every slot has given up its
+ * chunks. Only the latest request survives: a second level edge before the
+ * first replacement completes simply renames the incoming level. */
+void openpete_tercache_request_resize(int level_id)
+{
+    if (!s_tc.ready) return;
+    s_tc.rz_level = level_id;
+    atomic_store_explicit(&s_tc.rz_req, 1, memory_order_release);
+}
+
+/* Builder thread. 1 while a fulfilled pair is waiting for the adoption that
+ * the next frame_begin performs. The adoption zeroes every arena's
+ * bookkeeping, so a caller holding chunk records must free them while this
+ * reads 1 and before that frame_begin. */
+int openpete_tercache_resize_ready(void)
+{
+    return s_tc.ready &&
+        atomic_load_explicit(&s_tc.rz_state, memory_order_acquire) == TC_RZ_READY;
+}
+
+/* Builder thread, from frame_begin. Publishes the fresh pairs, resets the
+ * allocator, and hands the outgoing pairs to the retire drain. */
+static void tc_adopt_pending(void)
+{
+    if (atomic_load_explicit(&s_tc.rz_state, memory_order_acquire) != TC_RZ_READY) return;
+    for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
+        tc_arena *ar = &s_tc.arena[a];
+        s_tc.rz_old[a] = atomic_load_explicit(&ar->pair, memory_order_relaxed);
+        atomic_store_explicit(&ar->pair, s_tc.rz_new[a], memory_order_release);
+        ar->cap  = s_tc.rz_new[a]->cap;
+        ar->high = 0; ar->free_n = 0; ar->used = 0; ar->chunks = 0;
+        s_tc.rz_new[a] = NULL;
+    }
+    /* Every deferred range addresses the outgoing pair's bytes. The fresh
+     * pair has none of them allocated, so the list is dropped whole rather
+     * than drained: re-inserting those spans into an empty free list would
+     * hand the allocator ranges it already owns. */
+    s_tc.defer_n = 0;
+    s_tc.rz_old_build = s_tc.present_ctr;
+    s_tc.rz_old_svc   = atomic_load_explicit(&s_tc.svc_calls, memory_order_relaxed);
+    atomic_store_explicit(&s_tc.rz_state, TC_RZ_RETIRE, memory_order_release);
+}
+
+/* Device-owning thread. Destroy the outgoing pairs once both floors counted
+ * from the adoption have passed: TC_DEFER_PRESENTS builds (frame_begin's
+ * counter — the window a freed range already waits out, which covers the
+ * one-build presentation lag) and RHI_FRAMES_IN_FLIGHT presents (this
+ * function's counter — the frames whose recorded command buffers may still
+ * bind the outgoing buffers). */
+static void tc_retire_drain(uint32_t svc)
+{
+    const uint32_t builds = atomic_load_explicit(&s_tc.build_ctr, memory_order_acquire);
+    if (builds - s_tc.rz_old_build <= TC_DEFER_PRESENTS) return;
+    if (svc - s_tc.rz_old_svc <= RHI_FRAMES_IN_FLIGHT) return;
+    for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
+        tc_pair_free(s_tc.dev, s_tc.rz_old[a]);
+        s_tc.rz_old[a] = NULL;
+    }
+    atomic_store_explicit(&s_tc.rz_state, TC_RZ_IDLE, memory_order_release);
+}
+
+/* Device-owning thread. Allocate one fresh pair per arena; on any failure
+ * free what was made and leave the live pairs in place, so the cache keeps
+ * drawing at the old (accumulating) high-water marks instead of losing the
+ * retained path. */
+static void tc_resize_fulfil(void)
+{
+    tc_pair *made[OPTC_ARENA_COUNT];
+    int ok = 1;
+    for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
+        made[a] = ok ? tc_pair_make(s_tc.dev, a, tc_initial_cap(a)) : NULL;
+        if (!made[a]) ok = 0;
+    }
+    if (!ok) {
+        for (int a = 0; a < OPTC_ARENA_COUNT; a++) tc_pair_free(s_tc.dev, made[a]);
+        if (!s_tc.rz_alloc_logged) {
+            s_tc.rz_alloc_logged = 1;
+            fprintf(stderr, "[ter-gpu] arena replacement at level %d: allocation failed, "
+                            "the live buffers stay\n", s_tc.rz_level);
+        }
+        return;
+    }
+    for (int a = 0; a < OPTC_ARENA_COUNT; a++) s_tc.rz_new[a] = made[a];
+    atomic_fetch_add_explicit(&s_tc.svc_fulfilled, 1u, memory_order_relaxed);
+    atomic_store_explicit(&s_tc.rz_state, TC_RZ_READY, memory_order_release);
+}
+
+void openpete_tercache_present_service(void)
+{
+    if (!s_tc.ready || !s_tc.dev) return;
+    const uint32_t svc = atomic_load_explicit(&s_tc.svc_calls, memory_order_relaxed) + 1u;
+    atomic_store_explicit(&s_tc.svc_calls, svc, memory_order_relaxed);
+    const int st = atomic_load_explicit(&s_tc.rz_state, memory_order_acquire);
+    if (st == TC_RZ_RETIRE) { tc_retire_drain(svc); return; }
+    if (st != TC_RZ_IDLE) return;   /* READY: the builder has not adopted yet */
+    if (!atomic_exchange_explicit(&s_tc.rz_req, 0, memory_order_acquire)) return;
+    tc_resize_fulfil();
 }
 
 /* ---- per-present protocol ---------------------------------------------- */
@@ -598,6 +786,8 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
 {
     if (!s_tc.ready || !g) return;
     s_tc.present_ctr++;
+    atomic_store_explicit(&s_tc.build_ctr, s_tc.present_ctr, memory_order_release);
+    tc_adopt_pending();
     s_tc.draws_prev = s_tc.draws_last;
     s_tc.draws_last = 0;
     /* release deferred ranges older than the in-flight window */
@@ -633,9 +823,12 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
             if (s_deadbuf[0].face_flags != OPTC_SLOT_DEAD)
                 for (int d = 0; d < 512; d++) s_deadbuf[d] = k_dead;
             uint32_t left = s_tc.defer[i].count, at = s_tc.defer[i].first;
+            /* Non-NULL while the cache is ready: init makes all fifteen
+             * pairs or fails, and the level-edge adoption swaps one in. */
+            const tc_pair *dp = tc_live_pair(s_tc.defer[i].arena);
             while (left) {
                 uint32_t n = left > 512 ? 512 : left;
-                rhi_update_buffer_range(s_tc.arena[s_tc.defer[i].arena].vb,
+                rhi_update_buffer_range(dp->vb,
                                         s_deadbuf,
                                         (size_t)at * sizeof(rhi_terrain_vertex),
                                         (size_t)n * sizeof(rhi_terrain_vertex));
@@ -729,6 +922,7 @@ void openpete_tercache_frame_skip(uint32_t stamp, int immediate)
      * chain with an all-claimed (empty) state, so the present that renders
      * this build's scene draws no retained content. */
     if (!s_tc.ready) return;
+    tc_adopt_pending();
     tc_state *T = tc_begin_state(stamp, immediate);
     memset(&T->g, 0, sizeof(T->g));
     for (int i = 0; i < OPTC_SLOTS; i++) T->sec[i].o[3] = 0.0f;
@@ -827,7 +1021,18 @@ static int s_tc_mat_pass = -1;
 static void tc_draw_arena(int arena, int pass_sel, const openpete_tercache_clip *c)
 {
     tc_arena *a = &s_tc.arena[arena];
-    if (a->high == 0) return;
+    /* One load of the pair for the whole draw, and the range clamped to its
+     * capacity: the builder may swap the pair and reset `high` between this
+     * present's draws, and a stale `high` against a smaller fresh buffer
+     * would read past its end. */
+    const tc_pair *pr = atomic_load_explicit(&a->pair, memory_order_acquire);
+    if (!pr) return;
+    uint32_t nverts = a->high;
+    if (nverts > pr->cap) nverts = pr->cap;
+    if (nverts == 0) return;
+    if (atomic_load_explicit(&s_tc.rz_state, memory_order_acquire) == TC_RZ_RETIRE &&
+        pr == s_tc.rz_old[arena])
+        atomic_fetch_add_explicit(&s_tc.draws_retired, 1u, memory_order_relaxed);
     tc_pc pc;
     memset(&pc, 0, sizeof(pc));
     pc.x_base = c->x_base; pc.x_span = c->x_span;
@@ -838,10 +1043,10 @@ static void tc_draw_arena(int arena, int pass_sel, const openpete_tercache_clip 
     pc.mat_pass = s_tc_mat_pass;
     pc.snap = s_tc_snap;
     rhi_push_constants(s_tc.dev, &pc, sizeof(pc));
-    if (a->pv) rhi_bind_vertex_buffer2(s_tc.dev, a->vb, a->pv);
-    else       rhi_bind_vertex_buffer(s_tc.dev, a->vb);
+    if (pr->pv) rhi_bind_vertex_buffer2(s_tc.dev, pr->vb, pr->pv);
+    else        rhi_bind_vertex_buffer(s_tc.dev, pr->vb);
     for (int r = 0, rn = tc_dup_draw(); r < rn; r++)
-        rhi_draw(s_tc.dev, a->high, 0);
+        rhi_draw(s_tc.dev, nverts, 0);
     s_tc.draws_last++;
 }
 
@@ -1124,12 +1329,19 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
 void openpete_tercache_get_stats(openpete_tercache_stats_t *out)
 {
     if (!out) return;
+    if (!s_tc.ready && s_tc_final_valid) { *out = s_tc_final; return; }
     memset(out, 0, sizeof(*out));
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
         out->chunks     += s_tc.arena[a].chunks;
         out->verts_used += s_tc.arena[a].used;
         out->verts_cap  += s_tc.arena[a].cap;
+        out->high[a]       = s_tc.arena[a].high;
+        out->cap[a]        = s_tc.arena[a].cap;
+        out->alloc_fail[a] = s_tc.alloc_fail[a];
     }
     out->draws_last_present = s_tc.draws_prev;
     out->frees_pending = (uint32_t)s_tc.defer_n;
+    out->svc_calls     = atomic_load_explicit(&s_tc.svc_calls, memory_order_relaxed);
+    out->svc_fulfilled = atomic_load_explicit(&s_tc.svc_fulfilled, memory_order_relaxed);
+    out->draws_retired = atomic_load_explicit(&s_tc.draws_retired, memory_order_relaxed);
 }

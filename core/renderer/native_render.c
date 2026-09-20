@@ -3687,6 +3687,18 @@ int openpete_native_tercache_usable(void)
         && (s_force || !rhi_device_is_software(s_nr.dev));
 }
 
+void openpete_native_tercache_service_headless(void)
+{
+    /* The service's windowed site is the present entry, which headless never
+     * reaches: both entries into the render frame return early on
+     * s_nr.headless, so the host loop drives it here instead, once per VBL.
+     * The headless predicate keeps exactly one of the two sites live in any
+     * one mode, so the device is never serviced from two threads. */
+    if (!s_nr.headless) return;
+    if (!openpete_native_tercache_usable()) return;
+    openpete_tercache_present_service();
+}
+
 uint64_t openpete_native_render_acquire_sheds(void)
 {
     return s_nr.dev ? rhi_acquire_sheds(s_nr.dev) : 0;
@@ -11538,6 +11550,11 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
     /* Retained terrain: select against the stamp of the scene this present
      * composes (freeze/lag included), so retained content follows the same
      * timeline and stale states never repaint. */
+    /* Terrain-cache device service. This thread owns the device for the
+     * whole present (the present thread while eager production is active,
+     * the host loop otherwise), which is what makes buffer creation and
+     * destruction legal here and illegal on the builder's thread. */
+    openpete_tercache_present_service();
     openpete_tercache_frame_select(scene_present_stamp());
     /* Tag this frame's GPU work with its RHI frame serial, so the frame-lagged
      * harvest (next few frames) binds each zone set back to the frame that

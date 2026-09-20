@@ -1,0 +1,17 @@
+# per-arena maximum over every level and pose
+arena	high	level	pose
+OPAQUE	313365	lofty_castle	topdown
+ALPHA	19995	crystal_flight	topdown
+ADD	35424	lofty_castle	topdown
+SUB	0		
+LP	31527	twilight_harbor	topdown
+A_OPAQUE	239472	gnasty_gnorc	topdown
+A_ALPHA	0		
+A_ADD	3582	twilight_harbor	topdown
+A_SUB	0		
+A_LP	19080	gnasty_gnorc	topdown
+N_OPAQUE	96798	tree_tops	spawn
+N_ALPHA	1224	crystal_flight	spawn
+N_ADD	1974	icy_flight	spawn
+N_SUB	0		
+N_LP	8286	tree_tops	spawn

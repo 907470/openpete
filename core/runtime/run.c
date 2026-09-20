@@ -35,6 +35,7 @@
 #include "openpete_rewind.h"
 #include "openpete_record.h"
 #include "openpete_native_render.h"
+#include "openpete_terrain_cache.h"
 #include "openpete_fb_snapshot.h"
 #include "openpete_ident_audit.h"
 #include "openpete_menu.h"
@@ -5001,6 +5002,10 @@ static int run_host_loop(const openpete_options_t* opts) {
                 openpete_native_render_frame((uint64_t)(op_now() / 1000));
                 if (audit_arm) g_openpete_guest_running = 0;
             }
+            /* Terrain-cache device service on the headless path, once per
+             * VBL. Self-no-ops with a window, where the present entry runs
+             * it on the thread that owns the device for that present. */
+            openpete_native_tercache_service_headless();
 
             /* Deferred canonical leg of --screenshot-presents-start/count (see
              * the gate above): the native offscreen now holds this canonical
