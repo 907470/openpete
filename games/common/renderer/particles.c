@@ -338,16 +338,7 @@ static int part_record_pair(const part_item* it, double alpha, double off[3],
  * two table vectors: exact, whatever the table's phase and sense. */
 static int part_corner_rot(CPUState* cpu, double tick_ang, double show_ang,
                            double* rc, double* rs) {
-    *rc = 1.0; *rs = 0.0;
-    if (show_ang == tick_ang) return 0;
-    double st, ct, sa, ca;
-    ngte_sincos_f(cpu, tick_ang + 32.0, &st, &ct);
-    ngte_sincos_f(cpu, show_ang + 32.0, &sa, &ca);
-    const double n = st * st + ct * ct;
-    if (n < 1.0) return 0;
-    *rc = (st * sa + ct * ca) / n;
-    *rs = (ct * sa - st * ca) / n;
-    return 1;
+    return ngte_table_rot(cpu, tick_ang + 32.0, show_ang + 32.0, rc, rs);
 }
 
 /* OPENPETE_PART_REBASE_DBG=1: the rebase's verdicts per run, by class. A class

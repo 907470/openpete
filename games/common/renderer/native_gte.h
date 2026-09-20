@@ -192,6 +192,18 @@ void ngte_sincos_f(CPUState* cpu, double fb, double* s_out, double* c_out);
 /* ngte_sincos_f rounded to the nearest int for Q12 matrix composition. */
 void ngte_sincos_interp(CPUState* cpu, double fb, int* s_out, int* c_out);
 
+/* The rotation carrying a set of screen-space corner extents from the table
+ * vector one angle names to the vector another names, as the cos/sin of the
+ * change. Both angles are in table entries, 256 to the turn; a routine that
+ * indexes the table at a fixed offset from its record's angle byte folds that
+ * offset into both. The extents ride the table's own vector, so the change is
+ * the rotation between the two table vectors: exact whatever the table's
+ * phase, sense and amplitude, because the amplitude divides out. Writes the
+ * identity and returns 0 when the two angles coincide or the table is
+ * unlocated. */
+int ngte_table_rot(CPUState* cpu, double from_ang, double to_ang,
+                   double* rc, double* rs);
+
 /* Byte-exact table lookups for a packed euler word (Z=byte0, X=byte1,
  * Y=byte2; m_Rotation@+0x44). rot==0 gives sin 0 / cos 4096 on every axis. */
 typedef struct { int sy, cy, sx, cx, sz, cz; } ngte_euler_sc;

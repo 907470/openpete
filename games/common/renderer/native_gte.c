@@ -205,6 +205,20 @@ void ngte_sincos_f(CPUState* cpu, double fb, double* s_out, double* c_out) {
     *c_out = c0 + (c1 - c0) * frac;
 }
 
+int ngte_table_rot(CPUState* cpu, double from_ang, double to_ang,
+                   double* rc, double* rs) {
+    *rc = 1.0; *rs = 0.0;
+    if (to_ang == from_ang) return 0;
+    double sf, cf, st, ct;
+    ngte_sincos_f(cpu, from_ang, &sf, &cf);
+    ngte_sincos_f(cpu, to_ang, &st, &ct);
+    const double n = sf * sf + cf * cf;
+    if (n < 1.0) return 0;
+    *rc = (sf * st + cf * ct) / n;
+    *rs = (cf * st - sf * ct) / n;
+    return 1;
+}
+
 static int ngte_rnd_i(double x) { return (int)(x >= 0.0 ? x + 0.5 : x - 0.5); }
 
 void ngte_sincos_interp(CPUState* cpu, double fb, int* s_out, int* c_out) {

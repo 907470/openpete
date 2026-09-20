@@ -455,6 +455,26 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
 
+    # Sub-tick interpolation of the gem-glint stars. Per row of
+    # games/<slug>/glint-subtick-corpus.manifest, six headless replays of one
+    # bk2 — the two canonical ticks of an interval and the intermediate present
+    # inside it, each captured with the glint feed on and off — and the
+    # leave-one-out mask's per-star centroid compared against
+    # (1-alpha)*canon(V-2) + alpha*canon(V). Spyro 1 has no such routine and
+    # registers no row. Fails as vacuous when a leg's mask is empty, when a
+    # named gem resolves ambiguously, or when its canonical motion over the
+    # interval is below the row's floor.
+    foreach(_subtick_game spyro-2 spyro-3)
+        add_test(NAME glint_subtick_${_subtick_game}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_glint_subtick.sh
+                         --game ${_subtick_game} --build-dir=${CMAKE_BINARY_DIR})
+        set_tests_properties(glint_subtick_${_subtick_game} PROPERTIES
+            LABELS "presentation;glint"
+            TIMEOUT 1800
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
+
     # Vertex-stream field resolution on a stock boot: one headless 206-VBL
     # boot with a native screenshot armed, and every frame word the moby walk
     # decodes required to name an address. An unresolved field there is the

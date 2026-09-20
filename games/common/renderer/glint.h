@@ -4,6 +4,6 @@
 
 #include "psx_runtime_internal.h"
 
-void glint_reextract(CPUState* cpu);
+void glint_reextract(CPUState* cpu, int bracketed, double alpha);
 
 #endif

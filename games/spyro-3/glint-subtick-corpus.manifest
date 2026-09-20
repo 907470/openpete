@@ -1,0 +1,14 @@
+# Sub-tick interpolation of the gem-glint stars (scripts/check_glint_subtick.sh).
+#   <bk2> | <V> | gem=<x>,<y> ... [tol=<px>] [step=<px>]
+# V is the tick whose primitives the intermediate present at V+1 replays; V-2
+# opens the interval that present covers. Each gem is named by its mask
+# component's centroid in the canonical capture at V, and must be unoccluded
+# over the interval: a partly covered star's visible centroid measures the
+# depth test rather than the rebase.
+#
+# The camera swings 15-16 PSX px per tick here, 19.9 px on the 640-wide
+# capture, which is what separates a producer that interpolates from one that
+# holds its tick pose. The gem named is the far cross standing clear of the
+# terrain; the second cross in view, near (439.7,123.0), is clipped by the hill
+# in front of it and is reported, not judged.
+sunrise-spring-camera-swing.bk2 | 1518 | gem=465.7,172.9 tol=0.5 step=10

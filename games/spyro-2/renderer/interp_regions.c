@@ -10,10 +10,10 @@
  * once per tick before the draws read them.
  *
  * The per-object capture is the shared moby-array walk
- * (game_interp_capture_moby_array) plus the particle pool
- * (game_interp_capture_particle_pool), whose records the particle feeder's
- * sub-tick replay rebases its captured primitives onto; both are installed by
- * the same registration call.
+ * (game_interp_capture_moby_array) plus the particle and gem-glint pools
+ * (game_interp_capture_feeder_pools), whose records those two feeders'
+ * sub-tick replays rebase their captured primitives onto; all of them are
+ * installed by the same registration call.
  * The scrolling-texture descriptors the same call captures are located
  * (game_layout.env_anim.scroll), so the UV-scroll mirror has its pairs.
  *
@@ -47,5 +47,5 @@ void game_interp_register(void) {
      * computed from the layout descriptor rather than stated. */
     game_interp_register_common(rows, (unsigned)(sizeof(rows) / sizeof(rows[0])),
                                 game_layout.cam.xform_end - game_layout.cam.base,
-                                game_interp_capture_particle_pool);
+                                game_interp_capture_feeder_pools);
 }

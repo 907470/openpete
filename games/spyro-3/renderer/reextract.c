@@ -524,7 +524,7 @@ static void game_reextract_body(CPUState* cpu) {
     RX_CENSUS_STEP("tracers");
     glow_reextract(cpu);            /* the glow fans the tick captured */
     RX_CENSUS_STEP("glow");
-    glint_reextract(cpu);           /* the gem-glint stars the tick captured */
+    glint_reextract(cpu, bracketed, alpha);   /* the gem-glint stars the tick captured */
     RX_CENSUS_STEP("glint");
     glint2_reextract(cpu);          /* the jittered beams the tick captured */
     RX_CENSUS_STEP("glint2");

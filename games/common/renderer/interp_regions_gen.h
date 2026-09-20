@@ -69,6 +69,19 @@ void game_interp_capture_moby_array(void);
  * those primitives has a previous state to rebase each record onto. */
 void game_interp_capture_particle_pool(void);
 
+/* Snapshot one whole record per live slot of the game's gem-glint pool
+ * (game_layout.glint: pool, slots, stride, packed_off), keyed by the record's
+ * PSX address. A game whose glint routine links its own primitives passes
+ * game_interp_capture_feeder_pools below, so the sub-tick replay of those
+ * primitives has a previous position and spin phase to rebase each record
+ * onto. */
+void game_interp_capture_glint_pool(void);
+
+/* Both pools above in one call: the extra-pool walk a game passes to
+ * game_interp_register_common when its particle and glint renderers link their
+ * own primitives. */
+void game_interp_capture_feeder_pools(void);
+
 /* Register a game's interp table and per-object capture in the shared shape:
  * the camera row (GAME_INTERP_CAM_ROW, `cam_length` bytes from
  * game_layout.cam.base, presented from the committed timeline under runahead)
