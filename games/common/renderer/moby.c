@@ -6465,6 +6465,14 @@ static void occl_cache_update(CPUState* cpu, uint32_t moby, const proj_xy* p, in
 static ntri_t   s_hold_tri[HOLD_TRI_MAX];
 static uint32_t s_hold_fkey[HOLD_TRI_MAX];
 static uint8_t  s_hold_mode[HOLD_TRI_MAX];
+/* Per-face verdicts of the capturing walk. They are properties of the face,
+ * not of the present, so a replay restores them rather than recomputing or
+ * clearing them: mangle gates the og OT key and the rank snapshot, dofs is the
+ * authored OT bias inside that key, special names the material that produced
+ * the face's colours. */
+static uint8_t  s_hold_mangle[HOLD_TRI_MAX];
+static int8_t   s_hold_dofs[HOLD_TRI_MAX];
+static uint8_t  s_hold_special[HOLD_TRI_MAX];
 typedef struct { uint32_t moby; unsigned epoch; int off, n, spec;
                  double sx, sy, trz;              /* captured origin projection + view-Z */
                  double H;                        /* projection distance the tris were built with */
@@ -7060,6 +7068,9 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                 s_hold_tri[s_hold_tri_n]  = s_wtri[wi];
                 s_hold_fkey[s_hold_tri_n] = s_wtri_fkey[wi];
                 s_hold_mode[s_hold_tri_n] = s_wtri_mode[wi];
+                s_hold_mangle[s_hold_tri_n]  = s_wtri_mangle[wi];
+                s_hold_dofs[s_hold_tri_n]    = s_wtri_dofs[wi];
+                s_hold_special[s_hold_tri_n] = s_wtri_special[wi];
                 s_hold_tri_n++; n++;
             }
             hold_t* h = &s_hold[s_hold_n++];
@@ -7091,6 +7102,9 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             s_wtri_moby[s_gout.n]    = h->moby;
             s_wtri_fkey[s_gout.n]    = s_hold_fkey[h->off + t];
             s_wtri_mode[s_gout.n]    = s_hold_mode[h->off + t];
+            s_wtri_mangle[s_gout.n]  = s_hold_mangle[h->off + t];
+            s_wtri_dofs[s_gout.n]    = s_hold_dofs[h->off + t];
+            s_wtri_special[s_gout.n] = s_hold_special[h->off + t];
             ntri_t* o = &s_wtri[s_gout.n];
             *o = s_hold_tri[h->off + t];
             for (int vv = 0; vv < 3; vv++) { o->v[vv].sx += dx; o->v[vv].sy += dy; o->v[vv].vz *= vzs; }
