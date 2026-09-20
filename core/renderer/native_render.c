@@ -1649,7 +1649,7 @@ static uint32_t carry_qpx(float f) { return (uint32_t)(int32_t)lrintf(f); }
  * never meet. A hash collision merges two content groups; the nearest-partner
  * rule then still resolves within the merged group. */
 static uint32_t carry_key_of(const scene_tri_t* tri, int* zero_ord) {
-    if (!tri->prim) return 0x80000000u | (uint32_t)(*zero_ord)++;
+    if (!tri->prim) return (1u << 31) | (uint32_t)(*zero_ord)++;
     uint32_t h = 2166136261u;
     h = carry_hash(h, (uint32_t)tri->category);
     h = carry_hash(h, (uint32_t)tri->textured);
