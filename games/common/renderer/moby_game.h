@@ -290,6 +290,13 @@ typedef struct moby_game {
     uint32_t colour_scratch;
     uint32_t shaded_list;
     uint32_t shaded_colour;
+    /* The specular pass's input list: the flat, zero-terminated Moby* array
+     * (stride 4) its cull walks, in the same shape as `shaded_list`. A moby in
+     * it is one the specular pass draws the per-face special material for; a
+     * moby outside it never is, whatever its material word says. 0 = the game
+     * has no such list, and the host reveal then claims no specular draw. */
+    uint32_t spec_list;
+    uint32_t spec_list_max;   /* entries between the list and the block after it */
     uint32_t spec_window_off, spec_window_len;
     /* The far-geometry suppression flag the low-poly colour band consults. */
     uint32_t skip_lowpoly;

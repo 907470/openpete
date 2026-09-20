@@ -20,8 +20,10 @@ static void ngte_census_print(void) {
     fprintf(stderr, "[fov-census]");
     for (int i = 0; i < NGTE_SITE_N; i++)
         fprintf(stderr, " %s=%lu/eff%lu", site[i], ngte_census.hit[i], ngte_census.eff[i]);
-    fprintf(stderr, " sxy_bound=%lu bb_untagged=%lu reveal_admitted=%lu\n",
-            ngte_census.sxy_bound, ngte_census.bb_untagged, ngte_census.reveal_admitted);
+    fprintf(stderr, " sxy_bound=%lu bb_untagged=%lu reveal_admitted=%lu"
+                    " reveal_spec_solo=%lu\n",
+            ngte_census.sxy_bound, ngte_census.bb_untagged, ngte_census.reveal_admitted,
+            ngte_census.reveal_spec_solo);
 }
 static void ngte_census_arm(void) {
     static int armed = 0;

@@ -80,7 +80,9 @@ void ngte_occl_camera(const ngte_view* v, struct openpete_occl_camera* c);
  * design. bb_untagged counts shaded-walk billboard records with no HUD tag
  * (expected 0: every billboard anchor is a game-authored screen
  * coordinate). reveal_admitted counts mobys the reveal admitted host-side
- * (0 at the canonical view). */
+ * (0 at the canonical view), and reveal_spec_solo the subset of those the
+ * specular pass's own input list holds, which is the subset the walk gives
+ * the special per-face material to. */
 enum { NGTE_SITE_RAW_SAT, NGTE_SITE_GTE_SAT, NGTE_SITE_PART_CAP,
        NGTE_SITE_MOBY_NEAR, NGTE_SITE_TERRAIN_UNR, NGTE_SITE_N };
 typedef struct {
@@ -89,6 +91,7 @@ typedef struct {
     unsigned long sxy_bound;
     unsigned long bb_untagged;
     unsigned long reveal_admitted;
+    unsigned long reveal_spec_solo;
 } ngte_census_t;
 extern ngte_census_t ngte_census;
 extern int ngte_census_on;

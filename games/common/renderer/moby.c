@@ -1612,6 +1612,23 @@ static void occl_cache_update(CPUState* cpu, uint32_t moby, const proj_xy* p, in
 static int  occl_verify_begin(uint32_t moby);
 static void occl_verify_end(uint32_t moby, const proj_xy* p, int n);
 static long s_occl_seen, s_occl_culled;
+/* Membership in the specular pass's own input list — the flat, zero-terminated
+ * Moby* array its cull walks (r_moby.s func_800208FC: the walk pointer is the
+ * render scratch base plus 0x2200, it loads a word, advances by 4 and stops on
+ * a zero entry). A revealed record inherits the specular draw only for a moby
+ * the pass would have drawn it for; the material word is the treatment's input,
+ * not its predicate. 0 when the game names no such list. */
+static int moby_in_spec_list(CPUState* cpu, uint32_t moby) {
+    uint32_t base = moby_game.spec_list;
+    if (!base) return 0;
+    uint32_t max = moby_game.spec_list_max;
+    for (uint32_t i = 0; i < max; i++) {
+        uint32_t e = cpu->read_word(base + i * 4u);
+        if (!e) return 0;
+        if (e == moby) { NGTE_CENSUS_HIT(reveal_spec_solo); return 1; }
+    }
+    return 0;
+}
 static int append_revealed_regular_inner(CPUState* cpu);
 static int append_revealed_regular(CPUState* cpu) {
     if (!tier_dbg_on()) return append_revealed_regular_inner(cpu);
@@ -1864,7 +1881,11 @@ static int append_revealed_regular_inner(CPUState* cpu) {
             atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]), f.frameA, 0u, 0u, 0.f };
         memcpy(s_recs[s_nrecs].M, f.M, sizeof s_recs[s_nrecs].M);
         s_recs[s_nrecs].heat = (uint8_t)moby_heat_scalar(f.mscol);
-        s_recs[s_nrecs].spec_solo = 1;   /* sole feeder: walk applies the SPEC face treatment */
+        /* Sole feeder: the walk applies the SPEC face treatment for this moby,
+         * but only for a moby the specular pass itself queues — everything else
+         * keeps its baked per-vertex colours. */
+        s_recs[s_nrecs].spec_solo = (uint8_t)moby_in_spec_list(cpu, m);
+        TRC("spec_solo=%d", (int)s_recs[s_nrecs].spec_solo);
         fade_snap_put(m, rzsf4);
         if (revealed < MAX_RECORDS) revlist[revealed] = m;
         /* census diag: projected screen centroid + vert count of this reveal */
