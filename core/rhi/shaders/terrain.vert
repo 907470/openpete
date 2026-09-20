@@ -75,7 +75,15 @@ layout(push_constant) uniform TerrainPC {
      * into the face, so a face's pass membership depends on the face and
      * not on the camera or on whether the sector is resident. */
     int  mat_pass;
-    int  pad1;
+    /* --vertex-precision integer: 1 = quantise the emitted screen point to the
+     * PSX integer pixel grid (the polygon wobble), 0 = sub-pixel. Latched per
+     * present from the renderer's live snap state rather than baked as a spec
+     * constant, so the runtime setter needs no pipeline rebuild, and carried
+     * here rather than in the globals UBO because that block is re-uploaded
+     * only when the terrain walk publishes new state — a snap toggled between
+     * publishes would lag the CPU walk by one publish and the two feeds would
+     * disagree for those presents. */
+    int  snap;
 } pc;
 
 /* scene_to_clip mirror, term for term in float — a fitted affine loses ~5
@@ -216,6 +224,61 @@ precise vec2 proj_of(dvec3 m) {
     precise double sx = g.dof_xy.x + m.x * g.dH.x / z;
     precise double sy = g.dof_xy.y + m.y * g.dH.x / z;
     return vec2(float(sx), float(sy));
+}
+
+/* Integer vertex-snap mirror (push_tri): the emitted screen point is floored
+ * to the PSX integer pixel grid. TRUNCATE, not round — the GTE derives SXY as
+ * MAC0 >> 16, an arithmetic shift. X/Y only: camera-space Z, the perspective
+ * q and the UVs are untouched, so depth and texturing stay unquantised. The
+ * grid is display-resolution-independent because this point is pre-normalise
+ * (clip_of upscales afterwards). The face verdicts above run on the UNSNAPPED
+ * projections, exactly as the walk's NCLIP runs on sv[].sx. */
+vec2 snap_of(vec2 s) { return pc.snap != 0 ? floor(s) : s; }
+
+/* HQ sub-quad node ids: 0=TL 1=TR 2=BR 3=BL; 4..7 = mT,mB,mL,mR; 8 = centre.
+ * sq[q] = {TL,mT,mL,C} {mT,TR,C,mR} {mL,C,BL,mB} {C,mR,mB,BR}. */
+const int NODEMAP[4][4] = int[4][4](int[4](0, 4, 6, 8),
+                                    int[4](4, 1, 8, 7),
+                                    int[4](6, 8, 3, 5),
+                                    int[4](8, 7, 5, 2));
+
+/* terrain_near_emit's snapped-screen overrides for a subdivided face's nodes.
+ *
+ * Parent corners and the interior centre carry the floor of their own
+ * projection, which is what the generic snap above already produces, so only
+ * a BOUNDARY MIDPOINT differs: it is placed on the SEGMENT between its two
+ * snapped parent corners, at the parameter of the true camera-space
+ * midpoint's projection. That keeps the midpoint collinear with the snapped
+ * parent edge — the unsubdivided neighbour sharing that edge draws the same
+ * line, so no T-junction crack opens — while staying perspective-correct
+ * along the edge, which a plain screen midpoint would not be (the HQ tiles
+ * are attached to these vertices, and a screen-parametric midpoint re-warps
+ * near textures the way the subdivide exists to prevent).
+ *
+ * The guard is per edge: an endpoint inside the near plane projects mirrored
+ * and unusable, and the neighbour sharing the edge must reach the identical
+ * verdict for the shared midpoint, which is a property of the two shared
+ * endpoints alone. An unsafe edge gets no override and its midpoint falls
+ * back to the floor of its own projection. */
+vec2 hq_snap_screen(int node, dvec3 TL, dvec3 TR, dvec3 BL, dvec3 BR, dvec3 m)
+{
+    if (pc.snap == 0) return proj_of(m);
+    if (node < 4 || node == 8) return floor(proj_of(m));
+    dvec3 ea, eb;
+    if      (node == 4) { ea = TL; eb = TR; }
+    else if (node == 5) { ea = BL; eb = BR; }
+    else if (node == 6) { ea = TL; eb = BL; }
+    else                { ea = TR; eb = BR; }
+    if (ea.z < g.dnear.x || eb.z < g.dnear.x) return floor(proj_of(m));
+    vec2 A = floor(proj_of(ea)), B = floor(proj_of(eb));
+    vec2 mm = proj_of(m);
+    precise float dx = B.x - A.x, dy = B.y - A.y;
+    precise float L2 = dx * dx + dy * dy;
+    precise float num = (mm.x - A.x) * dx + (mm.y - A.y) * dy;
+    float tt = L2 > 0.0 ? num / L2 : 0.5;
+    if (tt < 0.0) tt = 0.0; else if (tt > 1.0) tt = 1.0;
+    precise float rx = A.x + tt * dx, ry = A.y + tt * dy;
+    return vec2(rx, ry);
 }
 
 /* GTE_SAT mirror (double of the FLOAT screen coord, like the CPU's
@@ -458,7 +521,11 @@ bool cover_dropped(vec2 s0, vec2 s1, vec2 s2, double z0, double z1, double z2) {
  * A clip corner carries the position, colour and UV the walk resolved BEFORE
  * the clip — fogging and the LP grade run per parent corner, and the cut
  * interpolates their OUTPUT, never re-fogs at the cut position. */
-struct cvx { dvec3 m; ivec3 c; vec2 uv; };
+/* os/ov mirror ngte_cvert.osx/osy/oflag: the screen-space override the HQ
+ * subdivide installs on its own nodes under the integer snap. A cut vertex
+ * rebuilt by the clip carries none (ngte_clip_lerp zeroes oflag) and falls
+ * back to the floor of its own projection, as push_tri does. */
+struct cvx { dvec3 m; ivec3 c; vec2 uv; vec2 os; bool ov; };
 
 /* Unpack a baked R8G8B8A8 colour word the way the vertex-input UNORM
  * conversion unpacks the same bytes at locations 2/3. */
@@ -481,8 +548,13 @@ cvx cv_lerp_n(cvx a, cvx b, double zc) {
     r.m  = dvec3(px, py, zc);
     r.uv = vec2(pu, pv);
     r.c  = ivec3(int(cr), int(cg), int(cb));
+    r.os = vec2(0.0); r.ov = false;
     return r;
 }
+
+/* push_tri's screen resolution for one clip-fan corner: the installed
+ * override when the subdivide left one, otherwise the (snapped) projection. */
+vec2 scr_of(cvx v) { return v.ov ? v.os : snap_of(proj_of(v.m)); }
 
 /* Max distance (PSX px) a crossing vertex may project from the screen centre
  * before the whole face is re-clipped at a doubled zc — the walk's own
@@ -707,9 +779,10 @@ void main()
      * (c1,c2,c3) — in the walk's own emit corner ORDER ((tl,tr,bl)+
      * (tr,bl,br)), which the cover centroid's float sums need for
      * last-ulp identity; the rim classifier's terms are additionally
-     * vertex-SET invariant. Screen coords are the raw float projections
-     * (the feed's push_tri values; vertex-snap runs excluded the cache
-     * entirely). The near variant runs both classifiers AFTER its clip
+     * vertex-SET invariant. Screen coords are the feed's push_tri values:
+     * the raw float projections, or their snapped form under the integer
+     * vertex precision, which is what the ttri the CPU classifies carries.
+     * The near variant runs both classifiers after its clip
      * instead — the feed classifies the tris it actually emits, which for a
      * clipped face are the CLIPPED ones. ---- */
     bool covTest = (f16 & 0x4000u) != 0u && g.cov_cnt.x > 0;
@@ -728,6 +801,7 @@ void main()
                 if (tri2)   { ta = m1; tb = m3c; tc2 = m2; sa = p1f; sb = p3f; sc = p2f; }
                 else        { ta = m0; tb = m1; tc2 = m3c; sa = p0f; sb = p1f; sc = p3f; }
             }
+            sa = snap_of(sa); sb = snap_of(sb); sc = snap_of(sc);
             pdrop = (g.rim_cnt.x > 0 &&
                      rim_classified(sa, sb, sc, ta.z, tb.z, tc2.z))
                  || (covTest &&
@@ -745,9 +819,16 @@ void main()
             else if (subq == 2) { q0 = mL; q1 = C;  q2 = BL; q3 = mB; }
             else                { q0 = C;  q1 = mR; q2 = mB; q3 = BR; }
             precise dvec3 ta, tb, tc2;
-            if (tri2) { ta = q1; tb = q2; tc2 = q3; }
-            else      { ta = q0; tb = q1; tc2 = q2; }
-            vec2 sa = proj_of(ta), sb = proj_of(tb), sc = proj_of(tc2);
+            int na, nb, nc2;
+            if (tri2) { ta = q1; tb = q2; tc2 = q3;
+                        na = NODEMAP[subq][1]; nb = NODEMAP[subq][2];
+                        nc2 = NODEMAP[subq][3]; }
+            else      { ta = q0; tb = q1; tc2 = q2;
+                        na = NODEMAP[subq][0]; nb = NODEMAP[subq][1];
+                        nc2 = NODEMAP[subq][2]; }
+            vec2 sa = hq_snap_screen(na, TL, TR, BL, BR, ta);
+            vec2 sb = hq_snap_screen(nb, TL, TR, BL, BR, tb);
+            vec2 sc = hq_snap_screen(nc2, TL, TR, BL, BR, tc2);
             pdrop = (g.rim_cnt.x > 0 &&
                      rim_classified(sa, sb, sc, ta.z, tb.z, tc2.z))
                  || (covTest &&
@@ -837,12 +918,17 @@ void main()
      * The near variant instead rebuilds the WHOLE emitted triangle, clips it
      * against the near plane and becomes one corner of the clipped fan. */
     precise dvec3 mo;
+    vec2 sscr;      /* the emitted screen point: push_tri's t->sx/sy mirror */
 #ifdef TERRAIN_NEAR
     vec4 col;
     {
         /* Emitted-tri member positions, in the bake's emit order. */
         bool tri2n = (f16 & 0x2000u) != 0u;
         dvec3 tp[3];
+        /* Per-member screen override: set on a subdivide node (the CPU's
+         * ngte_cvert.oflag), absent on a flat face's own corners. */
+        vec2 tos[3] = vec2[3](vec2(0.0), vec2(0.0), vec2(0.0));
+        bool tov = false;
         if (!hqv) {
             if (!quad)      { tp[0] = m0; tp[1] = m1; tp[2] = m2;  }
             else if (lp) {
@@ -862,8 +948,15 @@ void main()
             else if (subq == 1) { q0 = mT; q1 = TR; q2 = C;  q3 = mR; }
             else if (subq == 2) { q0 = mL; q1 = C;  q2 = BL; q3 = mB; }
             else                { q0 = C;  q1 = mR; q2 = mB; q3 = BR; }
+            int base = tri2n ? 1 : 0;
             if (tri2n) { tp[0] = q1; tp[1] = q2; tp[2] = q3; }
             else       { tp[0] = q0; tp[1] = q1; tp[2] = q2; }
+            if (pc.snap != 0) {
+                for (int k = 0; k < 3; k++)
+                    tos[k] = hq_snap_screen(NODEMAP[subq][base + k],
+                                            TL, TR, BL, BR, tp[k]);
+                tov = true;
+            }
         }
         /* Member attributes: self's are this vertex's own, the other two
          * ride the ctx twin in emit order (a = self+1, b = self+2 mod 3).
@@ -894,6 +987,8 @@ void main()
             cin[k].m  = tp[k];
             cin[k].c  = ivec3(round(c * 255.0));
             cin[k].uv = uvm[k];
+            cin[k].os = tos[k];
+            cin[k].ov = tov;
         }
 
         /* Sutherland-Hodgman against m3 >= zc, with the walk's doubling
@@ -932,8 +1027,8 @@ void main()
         if (spare && nout < 4) { kill_vert(); return; }
         int e0 = 0, e1 = spare ? 2 : 1, e2 = spare ? 3 : 2;
         if (g.rim_cnt.x > 0 || covTest) {
-            vec2 sa = proj_of(outv[e0].m), sb = proj_of(outv[e1].m),
-                 sc = proj_of(outv[e2].m);
+            vec2 sa = scr_of(outv[e0]), sb = scr_of(outv[e1]),
+                 sc = scr_of(outv[e2]);
             if ((g.rim_cnt.x > 0 &&
                  rim_classified(sa, sb, sc, outv[e0].m.z, outv[e1].m.z, outv[e2].m.z))
              || (covTest &&
@@ -942,6 +1037,7 @@ void main()
         }
         cvx V = outv[self == 0 ? e0 : (self == 1 ? e1 : e2)];
         mo  = V.m;
+        sscr = scr_of(V);
         uv  = V.uv;
         col = vec4(vec3(V.c) / 255.0, 1.0);
     }
@@ -953,21 +1049,17 @@ void main()
         dvec3 lown = dvec3(inPos.xyz) * 0.25lf;
 #endif
         mo = mac_of(lown, sdel);
+        sscr = snap_of(proj_of(mo));
     } else {
         /* Parent corners in .s grid order: TL=i0, TR=i1, BL=i3, BR=i2. */
         precise dvec3 TL = m0, TR = m1, BL = m3c, BR = m2;
         precise dvec3 mT = (TL + TR) * 0.5lf, mB = (BL + BR) * 0.5lf;
         precise dvec3 mL = (TL + BL) * 0.5lf, mR = (TR + BR) * 0.5lf;
         precise dvec3 C  = (mT + mB) * 0.5lf;
-        /* sq[q] = {TL,mT,mL,C} {mT,TR,C,mR} {mL,C,BL,mB} {C,mR,mB,BR}
-         * (node ids: 0=TL 1=TR 2=BR 3=BL; 4..7 = mT,mB,mL,mR; 8 = C) */
-        const int nodemap[4][4] = int[4][4](int[4](0, 4, 6, 8),
-                                            int[4](4, 1, 8, 7),
-                                            int[4](6, 8, 3, 5),
-                                            int[4](8, 7, 5, 2));
-        int node = nodemap[subq][role];
+        int node = NODEMAP[subq][role];
         mo = node == 0 ? TL : node == 1 ? TR : node == 2 ? BR : node == 3 ? BL
            : node == 4 ? mT : node == 5 ? mB : node == 6 ? mL : node == 7 ? mR : C;
+        sscr = hq_snap_screen(node, TL, TR, BL, BR, mo);
     }
 #endif
 
@@ -1023,7 +1115,7 @@ void main()
         if (koff <= 0.25) { kill_vert(); return; }   /* keyed faces only */
         float K  = koff - 0.5;
         float kv = max(K, 1.0);
-        vec2 cxy = clip_of(proj_of(mo));
+        vec2 cxy = clip_of(sscr);
         gl_Position = vec4(cxy * kv, kv * kv / (kv + 4096.0), kv);
         float fvz = float(mo.z) * 16.0;              /* TRUE per-vertex view-Z */
         float wq  = AFFINE_UV ? 1.0 : max(fvz, 1.0);
@@ -1059,7 +1151,7 @@ void main()
     float vzo = max(4096.0 * zc2 / max(1.0 - zc2, 1e-6), 1.0);
     float Wu  = vzs;                       /* inW = pvz = the same view-Z */
     float q   = AFFINE_UV ? 1.0 : (vzo / Wu);
-    vec2 cxy  = clip_of(proj_of(mo));
+    vec2 cxy  = clip_of(sscr);
     float zcl = DEPTH_AFFINE ? (vzo - 1.0) : (zc2 * vzo);
     gl_Position = AFFINE_UV
         ? vec4(cxy, DEPTH_AFFINE ? (vzo - 1.0) / vzo : zc2, 1.0)

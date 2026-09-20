@@ -57,6 +57,7 @@ alban-rescue                             | 1700  | 100  |        | 1756,1760
 artisans-balloonist                      | 1700  | 100  | freeze | 3130,3520
 artisans-bridge                          | 1700  | 100  |        | 1701,2000
 artisans-bridge-hq                       | 1700  | 100  |        | 2320
+artisans-bridge-hq@vpint                 | 1700  | 100  |        | 2320 | --vertex-precision integer
 artisans-distant-water-gaps              | 1700  | 100  |        | 2600,2650
 artisans-distant-water-gaps-2            | 1700  | 100  |        | 2680,2730
 artisans-lp-waterfall                    | 1700  | 100  |        | 1784,1792
@@ -69,6 +70,7 @@ chest-destruction                        | 1700  | 100  |        | 2332,2610
 chest-saturation                         | 1700  | 100  |        | 1763,1929
 cliff-town-specular                      | 1700  | 100  |        | 1792
 cliff-town-vista                         | 1700  | 100  |        | 1783,2000
+cliff-town-vista@vpint                   | 1700  | 100  |        | 1783,2000 | --vertex-precision integer
 cyclorama-portal                         | 1700  | 100  |        | 1905,2075
 dark-hollow-shadow                       | 1700  | 100  |        | 2700
 dark-hollow-shadow-2                     | 1700  | 100  |        | 2068

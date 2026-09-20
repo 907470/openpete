@@ -3657,8 +3657,11 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
  * run/present? ANDs the renderer-side conditions the feeder can't see: cache
  * up, no reference-compare scene delay (the cache draws the LIVE walk, not
  * the history ring), no dev tag instruments (their semantics live in the
- * CPU batcher), no PSX vertex wobble (the snap lives in add_tri_grouped),
- * and a hardware GPU (the verdict-heavy vertex shader crawls on llvmpipe).
+ * CPU batcher), and a hardware GPU (the verdict-heavy vertex shader crawls
+ * on llvmpipe). The PSX vertex wobble is not an exclusion: terrain.vert
+ * applies the same floor to its emitted screen point, and the subdivide's
+ * boundary-midpoint overrides with it, so a cached sector wobbles exactly as
+ * the walk's would.
  * HD texture packs and mod material selectors are NOT whole-run exclusions:
  * the terrain feeder claims affected sectors back per sector (tier 1 of the
  * exclusion→claim→fold ladder), so a UI-/moby-only pack keeps the full
@@ -3678,7 +3681,6 @@ int openpete_native_tercache_usable(void)
         && scene_delay_depth() == 0
         && !tag_split_dev()
         && !scene_box_armed()
-        && !s_vertex_snap
         /* fp64 in terrain.vert is what makes the mirror bit-exact vs the
          * CPU walk's double math — no fp64, no retained path. */
         && rhi_device_has_float64(s_nr.dev)

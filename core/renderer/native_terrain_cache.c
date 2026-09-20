@@ -223,8 +223,14 @@ typedef struct {
     float   disp_w, clip_h, band, freeze_wf;
     int32_t pass_sel, full_extent;
     int32_t mat_pass;      /* -1 = every face, 0 = stock, >0 = that bucket */
-    int32_t pad1;
+    int32_t snap;          /* 1 = integer vertex precision (screen-point floor) */
 } tc_pc;
+
+/* --vertex-precision integer, latched once per RHI frame (below) so every
+ * arena draw of one present agrees. The renderer's snap state is live: a
+ * mid-present flip would otherwise split a frame between a snapped and an
+ * unsnapped half of the same terrain, along the sector-residency boundary. */
+static int s_tc_snap;
 
 int openpete_tercache_ready(void) { return s_tc.ready; }
 int openpete_tercache_frame_open(void) { return s_tc.draw_open; }
@@ -830,6 +836,7 @@ static void tc_draw_arena(int arena, int pass_sel, const openpete_tercache_clip 
     pc.band = c->band; pc.freeze_wf = c->freeze_wf;
     pc.pass_sel = pass_sel; pc.full_extent = c->full_extent;
     pc.mat_pass = s_tc_mat_pass;
+    pc.snap = s_tc_snap;
     rhi_push_constants(s_tc.dev, &pc, sizeof(pc));
     if (a->pv) rhi_bind_vertex_buffer2(s_tc.dev, a->vb, a->pv);
     else       rhi_bind_vertex_buffer(s_tc.dev, a->vb);
@@ -981,14 +988,17 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
         case OPTC_DRAW_KEY:     p = s_tc.pipe_key;     break;
     }
     if (!p) return;
+    int snap_now = openpete_native_vertex_snap_active();   /* 0 or 1 */
     {   /* First draw of each RHI FRAME: flush the selected state into this
          * frame's UBO ring slot (see ubo_flush_serial — one selection can
-         * render across several rhi frames). */
+         * render across several rhi frames), and latch the vertex-snap mode
+         * the frame's draws all push. */
         uint64_t fs = rhi_frame_serial(s_tc.dev);
         if (s_tc.ubo_flush_serial != fs) {
             rhi_ubo_write(s_tc.ubo, 0, &s_tc.sel.g, sizeof(s_tc.sel.g));
             rhi_ubo_write(s_tc.ubo, 1, s_tc.sel.sec, sizeof(s_tc.sel.sec));
             s_tc.ubo_flush_serial = fs;
+            s_tc_snap = snap_now;
         }
     }
     static const char *k_zone[] = { "ter.world", "ter.alpha", "ter.add",
