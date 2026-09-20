@@ -2240,6 +2240,43 @@ static bool scene_has_game_tris(const scene_tri_t* scene, int n) {
     return false;
 }
 
+/* True if the scene carries the game's terrain as CPU triangles. Host-added
+ * geometry is excluded for the same reason as above: an appended moby is not
+ * terrain. SKY does not count — the cyclorama draws on a frame whose ground
+ * feed cut out. */
+static bool scene_has_terrain(const scene_tri_t* scene, int n) {
+    for (int t = 0; t < n; t++)
+        if (!scene[t].host_added && scene[t].category == OPENPETE_SCENE_WORLD) return true;
+    return false;
+}
+
+/* The freeze-backdrop source verdict, shared by the live compose and the
+ * capture-time snapshot so both hold one definition of a frame worth freezing.
+ *
+ * A source frame carries the game's own geometry, is not itself a freeze frame,
+ * holds world/actor content, and has terrain. Terrain reaches the present by one
+ * of two routes and either qualifies: the retained cache's selected state
+ * (frame_content() > 0, or < 0 when the retained path is not in use at all), or
+ * WORLD triangles in the scene when the terrain is batched on the CPU.
+ *
+ * Testing only the retained state rejects every present whenever the retained
+ * path is initialised but unusable — a vertex-snap raster grid, a delayed or
+ * split scene, a device without fp64 — because the feeder then stages an empty
+ * state per scene, which reads the same as a genuine per-scene skip. The CPU
+ * terrain clause separates the two: a scene whose terrain feed cut out (the
+ * pause-entry transition, where the moby and sky feeders still run) carries
+ * neither retained sectors nor WORLD triangles and is still rejected, so the
+ * snapshot keeps the last full gameplay frame.
+ *
+ * frame_content() reads the state selected for this present, so the caller
+ * selects by stamp first. */
+static bool scene_is_freeze_source(const scene_tri_t* scene, int n, uint32_t sfreeze) {
+    return scene_has_game_tris(scene, n)
+        && !(sfreeze & (1u << 31))
+        && scene_has_world(scene, n)
+        && (openpete_tercache_frame_content() != 0 || scene_has_terrain(scene, n));
+}
+
 /* Single native renderer instance (one window per process). */
 /* Resolve the window size. Shared by bring-up and by the main-thread
  * precreate below so the two cannot disagree about how big the window is. */
@@ -10225,16 +10262,9 @@ static void compose_variant(void)
      * So native_rtt is rendered only when actually consumed: on WORLD frames, to
      * refresh the freeze snapshot (skip menu/freeze frames so the snapshot is the
      * gameplay frame to freeze, never the menu drawn over it). */
-    /* With the retained terrain cache in use the terrain is not in the tri
-     * list at all, and a scene whose terrain build the feeder SKIPPED (all
-     * sectors claimed: the draws open but painting nothing) is not a world
-     * frame however many mobys it carries. Eager production extracts such a
-     * scene at the pause-entry transition -- the moby and sky feeders still
-     * run while the terrain feed has cut out -- where the inline path
-     * extracts nothing; snapshotting it froze a backdrop with the ground
-     * missing. Read here, on the presenting thread, after frame_select. */
-    bool world_frame = want_scene && !(sfreeze & (1u << 31)) && scene_has_world(scene, sn)
-                       && openpete_tercache_frame_content() != 0;
+    /* scene_is_freeze_source reads the selected retained state, so it runs here,
+     * on the presenting thread, after frame_select. */
+    bool world_frame = scene_is_freeze_source(scene, sn, sfreeze);
     /* OPENPETE_FREEZE_DBG=1: one line per composed present -- which frames
      * qualify as the freeze backdrop and where their terrain came from. */
     static int s_fdbg = -1;
@@ -11630,18 +11660,19 @@ void openpete_native_render_snapshot_frozen(float cap_wf)
     if (!s_nr.enabled) return;
     ps_apply_geometry();
     if (cap_wf < 1.0f) cap_wf = 1.0f;
-    /* Only WORLD frames: a freeze frame has no world geometry, and snapshotting it
-     * would overwrite the good backdrop with an empty one. */
+    /* Only freeze-source frames: a freeze frame, a menu frame or a frame whose
+     * terrain feed cut out would overwrite the good backdrop with an empty or
+     * ground-less one. The retained terrain must land in the frozen backdrop
+     * too, and the verdict reads the selected state, so select first. */
     int scene_n; uint32_t sbg, sfade, sfreeze;
     const scene_tri_t* sbuf = scene_present_buf(&scene_n, &sbg, &sfade, &sfreeze, NULL, NULL);
+    openpete_tercache_frame_select(scene_present_stamp());
+    const bool src = scene_is_freeze_source(sbuf, scene_n, sfreeze);
     if (freeze_leg_probe())
         fprintf(stderr, "[freezeleg f=%u] copies_stamp=%u scene_n=%d twod=%d freeze=%d skip=%d\n",
                 s_scene_frame, scene_present_stamp(), scene_n, scene_2d_count(sbuf, scene_n),
-                (sfreeze & (1u << 31)) ? 1 : 0,
-                (scene_n <= 0 || (sfreeze & (1u << 31))) ? 1 : 0);
-    if (scene_n <= 0 || (sfreeze & (1u << 31))) return;
-    /* Retained terrain must land in the frozen backdrop too. */
-    openpete_tercache_frame_select(scene_present_stamp());
+                (sfreeze & (1u << 31)) ? 1 : 0, src ? 0 : 1);
+    if (!src) return;
 
     /* Derive the reference display shape from gamestate (headless has no live
      * frame to source it from), same as the screenshot compose fallback. */

@@ -8,7 +8,12 @@
 # Fields (pipe-separated):
 #   name      bk2 basename under games/spyro-1/bk2/ (its .args sidecar is
 #             auto-spliced by the binary, so --skip-to-level etc. need not be
-#             repeated here; the corpus overrides aspect/LOD explicitly)
+#             repeated here; the corpus overrides aspect/LOD explicitly),
+#             optionally followed by `@<variant>`. The whole name is the file
+#             key, so a variant row's tiles are
+#             <name>@<variant>__canon__<f>-vk.png and never collide with the
+#             plain row's; the bk2 is everything before the first `@`, so a
+#             variant reuses the same movie under a different `launch` field.
 #   start     first VBL frame to sample: the first frame %interval==0 AFTER the
 #             level finishes loading + the fade settles. Every row here is a
 #             --skip-to-level movie, and those all settle by ~f1700 (the level
@@ -28,6 +33,13 @@
 #             inter@F), unlike a grid sample whose intermediate sits at F+interval/2.
 #             Pins are additive — the grid's own samples keep the numbers they have, so
 #             adding one leaves every existing golden tile untouched.
+#   launch    optional 6th field: whitespace-separated tokens applied to every
+#             leg (canon, inter, ident) of this row and to no other row. A token
+#             spelled KEY=VALUE with an upper-case key is an environment entry;
+#             every other token is a command-line argument appended to the run.
+#             It holds a mode the plain row cannot reach — a renderer option, or
+#             an env knob a capture needs — so the row measures that mode's own
+#             pixels. Rows without the field launch byte-identically to before.
 #
 # The frame-limit and both sample grids are DERIVED from the bk2's own length (the
 # input-frame count in its Input Log.txt). The base grid steps by `interval` from
@@ -40,7 +52,7 @@
 # enough for the shared 1700 start (movie > 1800 frames). UI-only / cutscene /
 # demo / TAS bk2s that need a bespoke start are tracked separately (plan §fan-out).
 #
-# name                                     | start | int. | freeze | pins
+# name                                     | start | int. | freeze | pins | launch
 alban-rescue                             | 1700  | 100  |        | 1756,1760
 artisans-balloonist                      | 1700  | 100  | freeze | 3130,3520
 artisans-bridge                          | 1700  | 100  |        | 1701,2000
@@ -80,6 +92,7 @@ moving-terrain                           | 1700  | 100  |        | 2263,2438
 nestor                                   | 1700  | 100  |        | 1710,1875
 particle-circling-stars                  | 1700
 pause-menu-text-moby-swim                | 1700  | 100 | freeze
+pause-menu-text-moby-swim@vpint          | 1750  | 100  | freeze | 1750 | --vertex-precision integer OPENPETE_TERRAIN_CACHE_FORCE=1
 peace-keepers-terrain-culling            | 1700  | 100  |        | 3230,3238
 portal-cyclorama-cull                    | 1700  | 100  |        | 2000,2156
 portal-ground-disocclusion               | 1700  | 100  |        | 2440,2444

@@ -110,8 +110,27 @@ echo "[presentation-corpus] game=$GAME bin=$BIN affine=$AFFINE_ENV aspect=$CAP_A
 # independently-regressable surface the depth work is most likely to disturb.
 lod_tag() { [[ "$1" == "extended" ]] && echo "lodext__" || echo ""; }
 
-run_one() {  # name frame_limit leg flag targets lodmode freeze
-  local name="$1" flim="$2" leg="$3" flag="$4" targets="$5" lod="$6" freeze="$7"
+# Split a row's `launch` field into an env list and a CLI-argument list. A token
+# spelled KEY=VALUE with an upper-case key is an environment entry; every other
+# token is a command-line argument. Results land in the caller's ROW_ENV and
+# ROW_ARGS arrays, both emptied first so a row without the field adds nothing.
+split_launch() {  # launch-field
+  ROW_ENV=(); ROW_ARGS=()
+  local tok
+  for tok in $1; do
+    if [[ "$tok" == [A-Z_]*=* ]]; then ROW_ENV+=("$tok"); else ROW_ARGS+=("$tok"); fi
+  done
+}
+
+# A row name is the bk2 basename optionally followed by `@<variant>`. The whole
+# name is the file key, so the variant's tiles carry it and never collide with
+# the plain row's; the bk2 is everything before the first `@`.
+row_bk2() { echo "${1%%@*}"; }
+
+run_one() {  # name frame_limit leg flag targets lodmode freeze launch
+  local name="$1" flim="$2" leg="$3" flag="$4" targets="$5" lod="$6" freeze="$7" launch="${8:-}"
+  local bk2name; bk2name="$(row_bk2 "$name")"
+  local -a ROW_ENV=() ROW_ARGS=(); split_launch "$launch"
   local tag; tag="$(lod_tag "$lod")"
   local out="$OUTDIR/${name}__${tag}${leg}__{n}.png"
   local log; log="$(mktemp)"
@@ -122,7 +141,7 @@ run_one() {  # name frame_limit leg flag targets lodmode freeze
   local freeze_arg=(); [[ -n "$freeze" ]] && freeze_arg=(--screenshot-freeze-backdrop)
   # A row with no movie file is the plain boot: the title screen and the attract
   # demo, which need no input. Everything else about the row is the same.
-  local bk2_arg=(); [[ -f "$PG_BK2_DIR/${name}.bk2" ]] && bk2_arg=(--bk2 "$PG_BK2_DIR/${name}.bk2")
+  local bk2_arg=(); [[ -f "$PG_BK2_DIR/${bk2name}.bk2" ]] && bk2_arg=(--bk2 "$PG_BK2_DIR/${bk2name}.bk2")
   # The identity leg is the intermediate re-extract phased onto the newest tick's
   # stamp (alpha 1), which must reproduce the canonical dump of the same frame.
   local -a leg_env=(); [[ "$leg" == ident ]] && leg_env=(OPENPETE_INTERMEDIATE_ALPHA=1)
@@ -135,11 +154,13 @@ run_one() {  # name frame_limit leg flag targets lodmode freeze
   # silent (a fanned-out corpus otherwise plays dozens of instances).
   # --no-config: golden images are compared pixel-for-pixel, so the run has
   # to be independent of any openpete.toml on the machine capturing them.
-  env "${leg_env[@]}" timeout 300 "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 --renderer vk \
+  # The row's own launch env and arguments go last, on every leg of the row, so
+  # a variant row differs from its plain twin by exactly that field.
+  env "${leg_env[@]}" "${ROW_ENV[@]}" timeout 300 "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 --renderer vk \
     --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" "${freeze_arg[@]}" "${PG_RUN_ARGS[@]}" \
     "${bk2_arg[@]}" --screenshot-native-only \
     "$flag" "$targets" --screenshot-output "$out" \
-    --frame-limit "$flim" --max-runtime-seconds 280 >"$log" 2>&1
+    --frame-limit "$flim" --max-runtime-seconds 280 "${ROW_ARGS[@]}" >"$log" 2>&1
   local rc=$?
   # Assert every requested target produced a -vk PNG (fail loudly, never silently
   # capture a partial corpus that would read as "all clean" downstream).
@@ -206,7 +227,7 @@ PY
 }
 
 fail=0 ran=0
-while IFS='|' read -r name start interval freeze pins; do
+while IFS='|' read -r name start interval freeze pins launch; do
   name="$(echo "$name" | tr -d ' \t')"
   [[ -z "$name" || "${name:0:1}" == "#" ]] && continue
   [[ "$name" == *"$FILTER"* ]] || continue
@@ -214,7 +235,10 @@ while IFS='|' read -r name start interval freeze pins; do
   interval="$(echo "$interval" | tr -d ' \t')"; interval="${interval:-100}"
   freeze="$(echo "$freeze" | tr -d ' \t')"   # 4th field non-empty => --screenshot-freeze-backdrop
   pins="$(echo "$pins" | tr -d ' \t')"       # 5th field: explicit frames, never subsampled
-  bk2="$PG_BK2_DIR/${name}.bk2"
+  # 6th field: per-row launch tokens (CLI args and KEY=VALUE env entries). Only
+  # the surrounding whitespace is trimmed; the tokens keep their own spacing.
+  launch="${launch:-}"; launch="$(echo "$launch" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  bk2="$PG_BK2_DIR/$(row_bk2 "$name").bk2"
   if [[ -f "$bk2" ]]; then
     fc="$(bk2_frames "$bk2")"
   else
@@ -236,12 +260,12 @@ while IFS='|' read -r name start interval freeze pins; do
     echo "        screenshot cap — lower OPENPETE_MAX_SAMPLES or raise this row's interval."
     fail=1; continue; fi
   ran=$((ran+1))
-  echo "[$name] movie=$fc frame-limit=$flim  canon=[$canon]  inter=[$inter]  lods=[$CAP_LODS]${freeze:+  freeze}${pins:+  pins=$pins}"
+  echo "[$name] movie=$fc frame-limit=$flim  canon=[$canon]  inter=[$inter]  lods=[$CAP_LODS]${freeze:+  freeze}${pins:+  pins=$pins}${launch:+  launch=$launch}"
   # Sweep both LOD modes: original (untagged golden) + extended (lodext__ tag).
   for lod in $CAP_LODS; do
-    cj_run run_one "$name" "$flim" canon --screenshot-on-frame "$canon" "$lod" "$freeze"
-    cj_run run_one "$name" "$flim" inter --screenshot-intermediate-on-frame "$inter" "$lod" "$freeze"
-    cj_run run_one "$name" "$flim" ident --screenshot-intermediate-on-frame "$canon" "$lod" "$freeze"
+    cj_run run_one "$name" "$flim" canon --screenshot-on-frame "$canon" "$lod" "$freeze" "$launch"
+    cj_run run_one "$name" "$flim" inter --screenshot-intermediate-on-frame "$inter" "$lod" "$freeze" "$launch"
+    cj_run run_one "$name" "$flim" ident --screenshot-intermediate-on-frame "$canon" "$lod" "$freeze" "$launch"
   done
 done < "$MANIFEST"
 cj_wait || fail=1
