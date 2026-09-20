@@ -1029,13 +1029,16 @@ typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, header_b,
                                     * it */ } rec_meta;
                  /* spec_solo (trailing, set after the positional literal) =
                  * reveal-built record whose moby is in NO .s queue this tick
-                 * (beyond canonical range under --lod extended, or off-4:3).
-                 * The record is the moby's SOLE feeder, so the walk must apply
-                 * the SPEC per-face treatment (env reflection / diffuse
-                 * highlight) that the .s SPEC pass would have drawn — the
-                 * s_cur_mat=='SP' pass gate alone left revealed metal capes
-                 * rendering their dark baked base texture (the cliff_town
-                 * caped gnorc). */
+                 * (beyond canonical range under --lod extended, or off-4:3)
+                 * and whose renderer byte selects the specular pass
+                 * (moby_is_shiny). The record is the moby's sole feeder, so
+                 * the walk must apply the SPEC per-face treatment (env
+                 * reflection / diffuse highlight) that the .s SPEC pass would
+                 * have drawn — the s_cur_mat=='SP' pass gate alone left
+                 * revealed metal capes rendering their dark baked base texture
+                 * (the cliff_town caped gnorc). A record outside the specular
+                 * pass carries a zero material word, which would flatten
+                 * every face to 000000. */
                  /* frameA = the record's keyframe (rec+0x08 / f.frameA): the frame
                  * may carry a render-time FACEBLOCK PATCH list (see
                  * moby_faces_for_record) — 0 = no patch lookup.
@@ -1612,22 +1615,22 @@ static void occl_cache_update(CPUState* cpu, uint32_t moby, const proj_xy* p, in
 static int  occl_verify_begin(uint32_t moby);
 static void occl_verify_end(uint32_t moby, const proj_xy* p, int n);
 static long s_occl_seen, s_occl_culled;
-/* Membership in the specular pass's own input list — the flat, zero-terminated
- * Moby* array its cull walks (r_moby.s func_800208FC: the walk pointer is the
- * render scratch base plus 0x2200, it loads a word, advances by 4 and stops on
- * a zero entry). A revealed record inherits the specular draw only for a moby
- * the pass would have drawn it for; the material word is the treatment's input,
- * not its predicate. 0 when the game names no such list. */
-static int moby_in_spec_list(CPUState* cpu, uint32_t moby) {
-    uint32_t base = moby_game.spec_list;
-    if (!base) return 0;
-    uint32_t max = moby_game.spec_list_max;
-    for (uint32_t i = 0; i < max; i++) {
-        uint32_t e = cpu->read_word(base + i * 4u);
-        if (!e) return 0;
-        if (e == moby) { NGTE_CENSUS_HIT(reveal_spec_solo); return 1; }
-    }
-    return 0;
+/* The specular pass's per-moby predicate, read off the moby. The renderer-list
+ * builder (moby_lists.s func_800521C0) loads the word at m_State and sorts the
+ * moby on that word's high byte, m_Renderer: zero to the shaded list, bit 7
+ * (m_ShinyRenderer) set to the specular pass's list, otherwise to the regular
+ * list. The bit alone selects the pass; the material word is the treatment's
+ * input, not its predicate. The list itself is NOT the predicate — the same
+ * builder appends a moby only while its sector is in the rendered set
+ * (D_800771C8[m_SectorIndex], @8005225C), so membership follows visibility,
+ * which is what a revealed record has lost. 0 when the game names no such bit,
+ * and a revealed record then claims no specular draw. */
+static int moby_is_shiny(CPUState* cpu, uint32_t moby) {
+    uint32_t bit = moby_game.renderer_shiny_mask;
+    if (!bit) return 0;
+    if (!(cpu->read_byte(moby + moby_game.renderer_off) & bit)) return 0;
+    NGTE_CENSUS_HIT(reveal_spec_solo);
+    return 1;
 }
 static int append_revealed_regular_inner(CPUState* cpu);
 static int append_revealed_regular(CPUState* cpu) {
@@ -1882,9 +1885,9 @@ static int append_revealed_regular_inner(CPUState* cpu) {
         memcpy(s_recs[s_nrecs].M, f.M, sizeof s_recs[s_nrecs].M);
         s_recs[s_nrecs].heat = (uint8_t)moby_heat_scalar(f.mscol);
         /* Sole feeder: the walk applies the SPEC face treatment for this moby,
-         * but only for a moby the specular pass itself queues — everything else
-         * keeps its baked per-vertex colours. */
-        s_recs[s_nrecs].spec_solo = (uint8_t)moby_in_spec_list(cpu, m);
+         * but only for a moby the specular pass itself renders — everything
+         * else keeps its baked per-vertex colours. */
+        s_recs[s_nrecs].spec_solo = (uint8_t)moby_is_shiny(cpu, m);
         TRC("spec_solo=%d", (int)s_recs[s_nrecs].spec_solo);
         fade_snap_put(m, rzsf4);
         if (revealed < MAX_RECORDS) revlist[revealed] = m;

@@ -290,13 +290,6 @@ typedef struct moby_game {
     uint32_t colour_scratch;
     uint32_t shaded_list;
     uint32_t shaded_colour;
-    /* The specular pass's input list: the flat, zero-terminated Moby* array
-     * (stride 4) its cull walks, in the same shape as `shaded_list`. A moby in
-     * it is one the specular pass draws the per-face special material for; a
-     * moby outside it never is, whatever its material word says. 0 = the game
-     * has no such list, and the host reveal then claims no specular draw. */
-    uint32_t spec_list;
-    uint32_t spec_list_max;   /* entries between the list and the block after it */
     uint32_t spec_window_off, spec_window_len;
     /* The far-geometry suppression flag the low-poly colour band consults. */
     uint32_t skip_lowpoly;
@@ -316,6 +309,12 @@ typedef struct moby_game {
              render_radius_off, update_dist_off, substate_off;
     /* The bits of the LOD/fade byte the cull shifts into the tier. */
     uint32_t renderer_mask;
+    /* The bit of the same byte that selects the specular renderer for this
+     * moby. The list builder sorts every moby into one of three renderer
+     * lists on this bit alone, so it is the per-moby predicate the specular
+     * pass applies before any distance or visibility test. 0 = the game has
+     * no such bit, and the host reveal then claims no specular draw. */
+    uint32_t renderer_shiny_mask;
     /* The camera's fine heading word, which the env reflection folds into its
      * azimuth so the reflection stays world-anchored under a pan. */
     uint32_t cam_heading;

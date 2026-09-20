@@ -284,13 +284,6 @@ const moby_game_t moby_game = {
     .colour_scratch  = G_SCRATCH + 0x1100u,  /* per-vertex depth-cued RGB (.s DPCS output) */
     .shaded_list     = G_SCRATCH + 0x2400u,  /* shaded renderer: flat Moby* array (stride 4) */
     .shaded_colour   = G_SCRATCH + 0x2A00u,  /* shaded per-vertex lit colours (block_80023258) */
-    /* specular cull input: flat Moby* array (stride 4), zero-terminated, the
-     * same shape as the shaded list; r_moby.s func_800208FC @80020948 takes the
-     * scratch base plus 0x2200 and the walk at .L80020994 loads a word,
-     * advances by 4 and stops on a zero entry (`beqz` @8002099C). It
-     * ends where the shaded list begins, so it holds at most 128 entries. */
-    .spec_list       = G_SCRATCH + 0x2200u,
-    .spec_list_max   = (0x2400u - 0x2200u) / 4u,
     /* The specular pass rebuilds the record queue with the specular set —
      * including specular-only mobys the regular pass did not draw — and
      * overwrites the colour scratch, so the regular snapshot cannot reproduce
@@ -307,6 +300,12 @@ const moby_game_t moby_game = {
     .props_off         = offsetof(Moby, m_Props),
     .renderer_off      = offsetof(Moby, m_Renderer),   /* low 6 bits = the LOD band */
     .renderer_mask     = 0x3Fu,
+    /* m_ShinyRenderer. moby_lists.s func_800521C0 loads the word at m_State
+     * and sorts the moby on the high byte, m_Renderer: zero to the shaded
+     * list at scratch + 0x2400 (@80052278), bit 7 set to the specular list at
+     * scratch + 0x2200 (@8005224C), otherwise to the regular list at scratch
+     * + 0 (@80052220). */
+    .renderer_shiny_mask = 0x80u,
     .spec_colour_off   = offsetof(Moby, m_SpecularMetalColor),
     .render_radius_off = offsetof(Moby, m_RenderRadius),
     .update_dist_off   = offsetof(Moby, m_UpdateDistance),
