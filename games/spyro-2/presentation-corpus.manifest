@@ -27,7 +27,7 @@ attract-demo|3400|3000||700,1400,3400,3785,6500,10200,14000,17400
 # world, the in-gameplay level change. 1150 is the portal transition, 1250 and
 # 1350 the flight with the treasure tally, 1550 the flight with the level name,
 # 1700 the arrival cutscene in the entered level.
-autumn-plains-skelos-badlands-portal-entry|1150|200||1150,1250,1350,1550,1700
+autumn-plains-skelos-badlands-portal-entry|1150|200||850,851,852,1150,1250,1350,1550,1700
 #
 # colossus-ice-skating: the player on the Colossus rink with the mirrored copy
 # under the ice. 921, 1121 and 1161 are intermediate legs whose tick pair spans a

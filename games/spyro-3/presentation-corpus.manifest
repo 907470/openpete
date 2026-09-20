@@ -48,7 +48,7 @@ icy-peak-reflective-mirror|1900|150||1900,1921,1950,1961,2000,2001
 # occluder depth grid is a GPU readback and headless holds none, so a headless
 # tile cannot see a cull verdict change. That class is measured windowed, per
 # walk.
-sunrise-spring-camera-swing|1500|100||1520,1540,1560,1760,2000
+sunrise-spring-camera-swing|1500|100||1518,1519,1520,1540,1560,1760,2000
 
 # 1500 pins the opening dialogue, complete and static from 1494: a large
 # semi-transparent text box whose corners are semi-transparent textured quads.
