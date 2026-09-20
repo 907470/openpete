@@ -492,6 +492,45 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Glitch-mark rings. One headless bk2 replay with the mark armed on a walk
+    # ordinal, then tools/glitch_mark_read.py over the dump: no SWING (a walk
+    # whose terrain triangle count left and came back), no STAMP-BACK (a
+    # present composing an older terrain build than its predecessor) and no
+    # GAP. Headless composes no presents, so the present ring is empty and the
+    # walk ring is what the row measures. Engagement: the full 600-row ring,
+    # with nothing lost to recycling. Spyro 1 holds the window measured clean.
+    add_test(NAME glitch_mark_spyro-1
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_glitch_mark.sh
+                     --game spyro-1 --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(glitch_mark_spyro-1 PROPERTIES
+        LABELS "presentation;terrain"
+        TIMEOUT 900
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+    # Capture survival under contention. Runs the presentation golden's own
+    # legs at CORPUS_JOBS=nproc for three rounds and keeps each round's log.
+    # A golden divergence (exit 1) is a rendering verdict and passes here;
+    # what fails is a leg that died — an exit outside {0,1}, a MISSING tile,
+    # or a "capture incomplete" line. Engagement: compared > 0 per round.
+    # Registered for the games that have a golden to run.
+    foreach(_contention_game spyro-1 spyro-3)
+        add_test(NAME contention_${_contention_game}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_contention.sh
+                         --game ${_contention_game} --rounds 3
+                         --build-dir=${CMAKE_BINARY_DIR})
+        set_tests_properties(contention_${_contention_game} PROPERTIES
+            LABELS "slow;presentation"
+            # Three whole-corpus runs: the golden's own timeout, tripled, with
+            # headroom for the load this deliberately creates.
+            TIMEOUT 14400
+            SKIP_RETURN_CODE 64
+            # Serial: the point is the load the corpus itself makes, so a
+            # concurrent ctest row would be measuring something else.
+            RUN_SERIAL TRUE
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
+
     # Freeze-backdrop source frame, windowed. Per row of
     # games/<slug>/freeze-backdrop-corpus.manifest, one windowed replay of a
     # bk2 that enters the pause menu, counting the composed presents the live

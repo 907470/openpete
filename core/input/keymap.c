@@ -381,6 +381,18 @@ static const char* km_domain_name(int d) {
          : d == KM_DOM_PAD3 ? "pad3" : d == KM_DOM_PAD4 ? "pad4" : "host";
 }
 
+/* Whether a KM_DEV row's built-in default binds. Only a KM_DEVBUILD row
+ * does, and only where the debug flags are compiled in; the distribution
+ * presets define OPENPETE_HIDE_DEBUG_FLAGS and bind no dev row at all. */
+static int km_devbuild_bound(unsigned flags) {
+#ifdef OPENPETE_HIDE_DEBUG_FLAGS
+    (void)flags;
+    return 0;
+#else
+    return (flags & KM_DEVBUILD) != 0;
+#endif
+}
+
 void openpete_keymap_init(void) {
     memset(g_bind, 0, sizeof g_bind);
     g_consumed_n = 0;
@@ -395,8 +407,11 @@ void openpete_keymap_init(void) {
         /* KM_DEV rows resolve unbound no matter what their default says.
          * The default string is still kept in the registry (and printed
          * by --keys-report) so it reads as documentation of the key to
-         * put in your own config, not as a key that is live. */
-        if (a->flags & KM_DEV) {
+         * put in your own config, not as a key that is live.
+         * KM_DEVBUILD exempts a row from that in a build that compiles
+         * the debug flags in: there the default binds like any other, and
+         * only the shipped build (OPENPETE_HIDE_DEBUG_FLAGS) withholds it. */
+        if ((a->flags & KM_DEV) && !km_devbuild_bound(a->flags)) {
             b->n = 0;
             continue;
         }

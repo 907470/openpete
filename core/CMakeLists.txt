@@ -448,9 +448,12 @@ set_target_properties(openpete_imgui PROPERTIES
 target_link_libraries(openpete_core PUBLIC openpete_imgui)
 
 # Hide the debug/diagnostic CLI flags from `--help` (options.c only splits the
-# text; every flag still PARSES and works — this is display-only). Enabled by
-# the *-shared distribution presets so the distributed build shows a clean,
-# user-facing flag list; OFF everywhere else (dev builds list everything).
+# text; every flag still parses and works). Enabled by the *-shared
+# distribution presets so the distributed build shows a clean, user-facing flag
+# list; OFF everywhere else (dev builds list everything). It is the one switch
+# that says "this build carries the development surface", so the keymap reads
+# it too: a KM_DEVBUILD row (core/include/openpete_keymap.h) takes its default
+# key here and stays unbound in the distributed build.
 option(OPENPETE_HIDE_DEBUG_FLAGS "Hide debug/diagnostic flags from --help output" OFF)
 if(OPENPETE_HIDE_DEBUG_FLAGS)
     target_compile_definitions(openpete_core PUBLIC OPENPETE_HIDE_DEBUG_FLAGS=1)

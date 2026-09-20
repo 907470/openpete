@@ -113,6 +113,13 @@ typedef enum {
                             * do nothing, so the parser rejects it there.
                             * scripts/fences/keymap_flags.py checks both
                             * flags against their consumer sites. */
+#define KM_DEVBUILD 0x10u  /* a KM_DEV row whose default binding is live in a
+                            * build that compiles the debug flags in, and is
+                            * withheld exactly as a plain KM_DEV row in the
+                            * shipped build (OPENPETE_HIDE_DEBUG_FLAGS, set by
+                            * the *-shared distribution presets). The key it
+                            * occupies is therefore spent only where the rest
+                            * of the debug surface is already present. */
 
 /* ---- the action registry -------------------------------------------- */
 
@@ -233,7 +240,7 @@ typedef enum {
         "B",              "fill-tag inspector: clear the verdict")             \
   X(FILLPICK_UNDO,   "fillpick_undo",    KM_DIGITAL, KM_CTX_FILLPICK, KM_DEV,  \
         "U",              "fill-tag inspector: undo")                                            \
-  X(GLITCH_MARK,     "glitch_mark",      KM_DIGITAL, KM_CTX_ALWAYS,   KM_DEV,  \
+  X(GLITCH_MARK, "glitch_mark", KM_DIGITAL, KM_CTX_ALWAYS, KM_DEV|KM_DEVBUILD, \
         "F9",             "write the last N presents and terrain walks to a file")
 
 /* The PSX pad. Defaults reproduce PsyCross's PsyX_Sys_InitialiseInput
