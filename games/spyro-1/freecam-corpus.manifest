@@ -225,3 +225,8 @@ town_square | pos=(109911, 108961, 10607) yaw=1026 pitch=75 | 1764
 # stone_hill sector 7 faces 0 and 1: the fill-tag pick session of 2026-09-19;
 # blessed pre-fix on the binary before the header regeneration.
 stone_hill | pos=(74035, 203225, 34658) yaw=6884 pitch=311
+# town_square fanning chests: under --lod extended the fans on top of the
+# chests draw fully black (no shading) at a distance the stock cull would drop
+# them, centre of frame (user report 2026-09-20). Canonical class: the
+# extended-LOD leg is the defect's leg; blessed pre-fix.
+town_square | pos=(135549, 111171, 39041) yaw=1509 pitch=678
