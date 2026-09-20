@@ -51,9 +51,13 @@
 #                  allocation fits in the margin, the level-edge replacement's
 #                  fresh pairs do not, and they land on the system-memory type
 #                  while the old pairs retire.
-#   overflow-margin  fill-256 with OPENPETE_TC_INITIAL_CAP=16384: the overflow
-#                  buffers land on the system-memory type and afail stops
-#                  rising.
+#   overflow-margin  fill-128 with OPENPETE_TC_INITIAL_CAP=16384: the init
+#                  allocation (the union row) fits in the margin, the
+#                  level-edge pairs and the overflow buffers do not and land
+#                  on the system-memory type through the retry, overflow
+#                  buffers install, and afail stops rising (it counts the
+#                  claims made before each overflow landed, so it is flat at
+#                  the end, not zero).
 # The last two need the arena replacement and the overflow buffers; they
 # report SKIP while the census line carries no svc= field.
 #
@@ -407,23 +411,39 @@ if want overflow-margin; then
         echo "[tercache-vram] leg=overflow-margin SKIP (no DEVICE_LOCAL host-visible type on this device)"
         structural=1
     else
-        run_leg overflow-margin "$BAR_HEAP:fill-256" "$FRAME_LIMIT" metalhead \
+        run_leg overflow-margin "$BAR_HEAP:fill-128" "$FRAME_LIMIT" metalhead \
             OPENPETE_TC_INITIAL_CAP=16384
         rc=$?
         held=$(balloon_mib "$OUT/overflow-margin.log")
         [[ "$held" -ge 1 ]] && engaged=$((engaged + 1))
-        n_fail=$(n_of 'device vertex buffer [0-9]* B: type [0-9]* failed' "$OUT/overflow-margin.log")
-        afail=$(grep -o '\[ter-gpu f=[0-9]*\].*afail=[0-9]*' "$OUT/overflow-margin.log" | tail -1 | sed 's/.*afail=//')
+        n_bar_fail=$(n_of "device vertex buffer [0-9]* B: type $BAR_TYPE failed" "$OUT/overflow-margin.log")
+        n_sys_ok=$(grep -c "device vertex buffer [0-9]* B: type [0-9]* flags" "$OUT/overflow-margin.log" \
+                   | { read -r n; echo "$n"; })
+        n_bar_ok=$(n_of "device vertex buffer [0-9]* B: type $BAR_TYPE flags" "$OUT/overflow-margin.log")
+        n_sys_ok=$((n_sys_ok - n_bar_ok))
+        # The last three census lines: afail (summed over arenas) must be flat
+        # across them, and at least one overflow buffer must be installed.
+        tail3=$(grep -o '\[ter-gpu f=[0-9]*\] hwm=.*' "$OUT/overflow-margin.log" | tail -3)
+        afail_seq=$(echo "$tail3" | sed 's/.*afail=\([0-9,]*\).*/\1/' \
+                    | awk -F, '{ s = 0; for (i = 1; i <= NF; i++) s += $i; printf "%s%d", (NR > 1 ? " " : ""), s }')
+        ovf_last=$(echo "$tail3" | tail -1 | sed 's/.*ovf=\([0-9,]*\).*/\1/' \
+                   | awk -F, '{ s = 0; for (i = 1; i <= NF; i++) s += $i; print s }')
         echo "[tercache-vram] leg=overflow-margin rc=$rc balloonMiB=$held" \
-             "failedAttempts=$n_fail afail=${afail:-0}"
+             "barRefused=$n_bar_fail sysAllocated=$n_sys_ok ovf=${ovf_last:-0} afailTail=[${afail_seq:-}]"
         [[ "$rc" -eq 0 ]] || { echo "[tercache-vram] leg=overflow-margin FAIL (exit $rc)"; fail=1; }
         if [[ "$held" -lt 1 ]]; then
             echo "[tercache-vram] leg=overflow-margin VACUOUS (the balloon held 0 MiB)"; fail=1
         fi
-        [[ "$n_fail" -ge 1 ]] ||
-            { echo "[tercache-vram] leg=overflow-margin FAIL (no overflow allocation was refused)"; fail=1; }
-        [[ "${afail:-1}" -eq 0 ]] ||
-            { echo "[tercache-vram] leg=overflow-margin FAIL (afail=${afail:-?} is still rising)"; fail=1; }
+        [[ "$n_bar_fail" -ge 1 ]] ||
+            { echo "[tercache-vram] leg=overflow-margin FAIL (the driver refused nothing on type $BAR_TYPE)"; fail=1; }
+        [[ "$n_sys_ok" -ge 1 ]] ||
+            { echo "[tercache-vram] leg=overflow-margin FAIL (nothing allocated on a system-memory type)"; fail=1; }
+        [[ "${ovf_last:-0}" -ge 1 ]] ||
+            { echo "[tercache-vram] leg=overflow-margin FAIL (no overflow buffer installed)"; fail=1; }
+        set -- $afail_seq
+        if [[ $# -lt 3 || "$1" != "$2" || "$2" != "$3" ]]; then
+            echo "[tercache-vram] leg=overflow-margin FAIL (afail not flat over the last three census lines: [$afail_seq])"; fail=1
+        fi
     fi
 fi
 
