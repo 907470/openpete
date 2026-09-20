@@ -81,6 +81,7 @@ add_custom_command(
 
 add_library(openpete_rhi STATIC
     rhi_vulkan.c
+    rhi_memtype.c
     rhi_gpu_audit.c
     ${RHI_EMBED_C}
     ${VOLK_DIR}/volk.c

@@ -28,6 +28,7 @@
 #include <stddef.h>
 
 #include "rhi_gpu_audit.h" /* must follow volk.h: redirects the vk* globals */
+#include "rhi_memtype.h"
 
 /* Acquire budget, and the back-off after one expires.
  *
@@ -2931,14 +2932,40 @@ rhi_buffer *rhi_create_vertex_buffer(rhi_device *dev, size_t bytes)
                               /*prefer_cached=*/false);
 }
 
+/* One allocation attempt for a device vertex buffer, and the only
+ * vkAllocateMemory call site of that path.
+ *
+ * OPENPETE_RHI_FAIL_MEMTYPE=<index> makes every attempt on that memory-type
+ * index report VK_ERROR_OUT_OF_DEVICE_MEMORY without reaching the driver, so
+ * the fallback order can be exercised on a device whose heaps do not run
+ * out. The value is read once. */
+static VkResult tc_alloc_try(rhi_device *dev, const VkMemoryAllocateInfo *mai,
+                             VkDeviceMemory *out)
+{
+    static int fail_type = -2;
+    if (fail_type == -2) {
+        const char *s = getenv("OPENPETE_RHI_FAIL_MEMTYPE");
+        fail_type = s ? atoi(s) : -1;
+    }
+    if (fail_type >= 0 && mai->memoryTypeIndex == (uint32_t)fail_type)
+        return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    return vkAllocateMemory(dev->device, mai, NULL, out);
+}
+
+/* A host-mapped vertex buffer the vertex stage fetches every present (the
+ * terrain arenas): written rarely, on sector rebuilds, and read by the GPU
+ * continuously.
+ *
+ * Allocation is attempted on every host-visible, host-coherent memory type
+ * the buffer accepts, DEVICE_LOCAL types first (rhi_memtype_candidates), and
+ * the first type that allocates wins. A device-local host-visible heap can be
+ * far smaller than the device's video memory (a 256 MB BAR window, or
+ * whatever a resizable-BAR driver reports), and its free space varies with
+ * what else is resident, so an allocation that fits on one run fails on the
+ * next; falling through to system memory costs bandwidth and keeps the
+ * buffer. NULL is returned only when every candidate fails. */
 rhi_buffer *rhi_create_vertex_buffer_device(rhi_device *dev, size_t bytes)
 {
-    /* DEVICE_LOCAL + host-mapped (the ReBAR / BAR heap) when available: the
-     * terrain arena is written rarely (sector rebuilds) but fetched by the
-     * vertex stage every present — device-local keeps that fetch off PCIe.
-     * Silent fallback to the plain host-visible type (llvmpipe is unified
-     * memory; pre-ReBAR discrete parts still fit the 256 MB BAR heap or fall
-     * through to system memory, which merely costs bandwidth). */
     rhi_buffer *b = calloc(1, sizeof(*b));
     if (!b) return NULL;
     b->size = (VkDeviceSize)bytes;
@@ -2953,23 +2980,30 @@ rhi_buffer *rhi_create_vertex_buffer_device(rhi_device *dev, size_t bytes)
     }
     VkMemoryRequirements mr;
     vkGetBufferMemoryRequirements(dev->device, b->buffer, &mr);
-    const VkMemoryPropertyFlags base = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    uint32_t mt = find_memtype(dev->phys, mr.memoryTypeBits,
-                               base | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (mt == UINT32_MAX)
-        mt = find_memtype(dev->phys, mr.memoryTypeBits, base);
-    if (mt == UINT32_MAX) {
-        RHI_LOG("no host-visible memory type\n");
-        vkDestroyBuffer(dev->device, b->buffer, NULL); free(b); return NULL;
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(dev->phys, &mp);
+    uint32_t cand[VK_MAX_MEMORY_TYPES];
+    int ncand = rhi_memtype_candidates(&mp, mr.memoryTypeBits, cand,
+                                       (int)(sizeof cand / sizeof cand[0]));
+    VkResult r = VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    for (int i = 0; i < ncand; i++) {
+        VkMemoryAllocateInfo mai = {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .allocationSize = mr.size,
+            .memoryTypeIndex = cand[i],
+        };
+        r = tc_alloc_try(dev, &mai, &b->memory);
+        if (r == VK_SUCCESS) {
+            RHI_LOG("device vertex buffer %zu B: type %u flags %x\n", bytes,
+                    cand[i], (unsigned)mp.memoryTypes[cand[i]].propertyFlags);
+            break;
+        }
+        RHI_LOG("device vertex buffer %zu B: type %u failed (%d)\n", bytes,
+                cand[i], (int)r);
     }
-    VkMemoryAllocateInfo mai = {
-        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .allocationSize = mr.size,
-        .memoryTypeIndex = mt,
-    };
-    if (vkAllocateMemory(dev->device, &mai, NULL, &b->memory) != VK_SUCCESS) {
-        RHI_LOG("vkAllocateMemory (device vertex buffer, %zu bytes) failed\n", bytes);
+    if (r != VK_SUCCESS) {
+        RHI_LOG("device vertex buffer %zu B: no memory type of %d allocated\n",
+                bytes, ncand);
         vkDestroyBuffer(dev->device, b->buffer, NULL); free(b); return NULL;
     }
     vkBindBufferMemory(dev->device, b->buffer, b->memory, 0);

@@ -211,6 +211,20 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         TIMEOUT 600
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Terrain-arena allocation legs: an arena's memory type refused
+    # (OPENPETE_RHI_FAIL_MEMTYPE) reports each failed attempt and ends in the
+    # cache's init-failure path with the run continuing on the CPU terrain
+    # walk; the uninjected leg names the type it allocated on. Two headless
+    # llvmpipe boots. Exit 64 = no binary or disc.
+    add_test(NAME tercache_alloc
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_tercache_alloc.sh
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(tercache_alloc PROPERTIES
+        LABELS "slow;renderer"
+        TIMEOUT 1800
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Cognitive-complexity ratchet, the ctest spelling of the per-build
     # check (core/CMakeLists.txt, openpete_complexity_ratchet). Exit 64 =
     # no compile database.

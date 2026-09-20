@@ -272,3 +272,17 @@ if(OPENPETE_BUILD_GLSLANG AND TARGET openpete-spyro1)
                      $<TARGET_FILE_DIR:openpete-spyro1>/sdk)
     set_tests_properties(mod_shader_compile PROPERTIES LABELS "mods")
 endif()
+
+# rhi_memtype_candidates_test — the memory-type preference order behind the
+# terrain arenas' allocations (core/rhi/rhi_memtype.c). Compiles that one
+# translation unit against the vendored Vulkan headers: the function reads a
+# reported memory table and needs no instance, device or loader, so the test
+# links nothing.
+add_executable(rhi_memtype_candidates_test
+    rhi_memtype_candidates_test.c
+    ${CMAKE_SOURCE_DIR}/core/rhi/rhi_memtype.c)
+target_include_directories(rhi_memtype_candidates_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/rhi
+    ${CMAKE_SOURCE_DIR}/third_party/vulkan-headers/include)
+set_target_properties(rhi_memtype_candidates_test PROPERTIES C_STANDARD 99)
+add_test(NAME rhi_memtype_candidates_test COMMAND rhi_memtype_candidates_test)
