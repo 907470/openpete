@@ -448,6 +448,11 @@ static float s_close_rect[4];
 /* The row cap height the text builder last drew at. Zero means no build yet. */
 static float s_row_cap_drawn;
 
+/* Pointer inside the close glyph's ink, as of the last poll. */
+static int s_close_hover;
+
+int openpete_menu_close_hovered(void) { return s_open && s_close_hover; }
+
 void openpete_menu_note_row_cap(float cap_h) {
     s_row_cap_drawn = cap_h > 0.0f ? cap_h : 0.0f;
 }
@@ -475,6 +480,7 @@ static int menu_in_close(const openpete_menu_layout_t* L, float x, float y) {
 void openpete_menu_mouse_poll(void) {
     if (!s_open) return;
     if (openpete_host_mouse_owned() == OPENPETE_MOUSE_OWNED_DEVUI) {
+        s_close_hover = 0;
         menu_mouse_snap();
         return;
     }
@@ -491,7 +497,7 @@ void openpete_menu_mouse_poll(void) {
     memcpy(s_m_press, press, sizeof press);
     s_m_wheel = wheel;
 
-    if (st.win_h <= 0.0f) return;
+    if (st.win_h <= 0.0f) { s_close_hover = 0; return; }
     /* Overlay space: units of window height, origin top-left. The divisor is
      * the point height, so a display scale cancels. */
     const float x = st.px / st.win_h, y = st.py / st.win_h;
@@ -505,6 +511,7 @@ void openpete_menu_mouse_poll(void) {
         for (int i = 0; i < L.row_count; i++)
             if (fabsf(y - L.row_y[i]) <= L.row_h * 0.5f) { hit = i; break; }
     const int in_close = menu_in_close(&L, x, y);
+    s_close_hover = in_close;
 
     /* Hover: only a pointer move can take the cursor, and only to a row that
      * differs, so a resting pointer never overrides keyboard nav and a move
@@ -603,15 +610,16 @@ void openpete_menu_get_layout(openpete_menu_layout_t* out) {
     out->row_count = N;
     /* Styled after the game's pause menu: a compact block (title + rows) with
      * tight line spacing, TOP-ALIGNED in the panel (a small margin from the top).
-     * The title is a bold header, noticeably larger than the rows. Row font is
-     * capped so the widest row ("SHOW FPS" label / "EXTENDED" value) still fits
-     * the narrow sidebar. */
-    const float title_cap = 0.080f, row_cap = 0.044f;   /* header > rows */
-    /* row_cap is the CEILING: the glyph builder shrinks every row uniformly
-     * to fit the widest value ("FULLSCREEN") in the value column (~0.82×).
-     * Spacing is scaled by the same ratio from the pause-menu-tuned 0.072 so
-     * the shrunk rows keep the original visual density. */
-    const float spacing   = 0.050f;   /* row-to-row (tightened from the pause-menu 0.072 with the font shrink) */
+     * The title is a bold header, noticeably larger than the rows. */
+    const float title_cap = 0.080f, row_cap = 0.0296f;   /* header > rows */
+    /* row_cap is the ceiling the glyph builder shrinks from, to fit the widest
+     * value ("FULLSCREEN") in the value column. It sits below the width the
+     * column can take, so the clamp is a safety net for a future wider value
+     * rather than what sizes the rows: while it is slack the rows draw at
+     * row_cap exactly. Spacing is the same multiple of the cap the
+     * pause-menu-tuned pitch was, so the list shortens with the glyphs instead
+     * of thinning them. */
+    const float spacing   = 0.0442f;   /* row-to-row, 1.49 x row_cap */
     const float top_pad   = 0.055f;   /* panel top → title top, panel bottom → EXIT bottom */
     const float title_gap = 0.070f;   /* title top → first row (larger header needs more) */
     out->title_cap_h = title_cap;

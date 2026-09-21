@@ -1111,9 +1111,14 @@ static float measure_string(const char* str, float cap_h) {
  * off the emitted vertices, and the whole run is then shifted in x until the
  * gap from the panel's right border to the rightmost ink equals the gap from
  * the panel's top border to the topmost ink. The resulting rect is published
- * so the mouse consumer tests the pixels that were drawn. */
+ * so the mouse consumer tests the pixels that were drawn.
+ *
+ * Under the pointer the X takes the same per-glyph yaw wobble the row under
+ * the cursor takes. The anchor and the published rect are measured from the
+ * upright glyph and the wobbled one is emitted in its place, so neither the
+ * drawn position nor the hit region breathes with the animation. */
 static void menu_close_anchor(emit_ctx_t* cx, int v0,
-                              const openpete_menu_layout_t* L) {
+                              const openpete_menu_layout_t* L, int wob_phase) {
     emit_string(cx, "X", L->close_x, L->close_y, L->close_cap_h,
                 MENU_TXT_TINT, -1);
     if (cx->n <= v0) return;
@@ -1127,7 +1132,13 @@ static void menu_close_anchor(emit_ctx_t* cx, int v0,
         if (vy > y1) y1 = vy;
     }
     const float dx = (L->panel_x1 - (y0 - L->panel_y0)) - x1;
-    for (int i = v0; i < cx->n; i++) cx->out[i].x += dx;
+    if (wob_phase >= 0) {
+        cx->n = v0;
+        emit_string(cx, "X", L->close_x + dx, L->close_y, L->close_cap_h,
+                    MENU_TXT_TINT, wob_phase);
+    } else {
+        for (int i = v0; i < cx->n; i++) cx->out[i].x += dx;
+    }
     openpete_menu_note_close_rect(x0 + dx, y0, x1 + dx, y1);
 }
 
@@ -1217,8 +1228,10 @@ void text_moby_native_menu(CPUState* cpu) {
         emit_string(&cx, value, L.value_x, L.row_y[r] - vcap * 0.5f, vcap,
                     MENU_TXT_TINT, wob);
     }
-    /* Close glyph: not a row, so no wobble and no cursor. */
-    menu_close_anchor(&cx, cx.n, &L);
+    /* Close glyph: not a row, so the keyboard cursor never reaches it; the
+     * pointer resting on it wobbles it like the row under the cursor. */
+    menu_close_anchor(&cx, cx.n, &L,
+                      openpete_menu_close_hovered() ? phase : -1);
     /* Gold frame — same rotating light as the rows above (cx still carries it). */
     cx.n += emit_lit_border(&cx, L.panel_x0, L.panel_y0, L.panel_x1, L.panel_y1,
                             MENU_BORDER_BT, s_menu_buf + cx.n, MENU_TXT_MAX - cx.n);

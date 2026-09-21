@@ -74,6 +74,11 @@ void openpete_menu_note_close_rect(float x0, float y0, float x1, float y1);
  * row_cap_h. */
 void openpete_menu_note_row_cap(float cap_h);
 
+/* Nonzero while the menu is open and the pointer sits inside the close
+ * glyph's published ink. The glyph builder animates the X on it exactly as it
+ * animates the row under the cursor. */
+int openpete_menu_close_hovered(void);
+
 /* Text + wobble phase for the game-side glyph builder (text_moby_native). */
 const char* openpete_menu_title(void);
 const char* openpete_menu_row_label(int row);
