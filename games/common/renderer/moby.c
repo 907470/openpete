@@ -1636,6 +1636,23 @@ static int reveal_prev_has(uint32_t m) {
     return 0;
 }
 
+/* Publish one builder call's admitted set (drawn + occlusion-culled) as the
+ * next call's hysteresis set. Both lists hold 0 for a record that was admitted
+ * without a lateral verdict — its extent sphere straddled the camera plane, so
+ * the window test could not reject it — and those entries are dropped here: the
+ * record draws for that present, but publishing it would widen t4e by 0x200 on
+ * every later call, which keeps a record the game's distance cull drops drawn
+ * inside the canonical window for the rest of the run. A straddle admission
+ * re-enters through the window test, or through the game's own queue, on any
+ * later tick that gives it a bounded projection. No record address is 0. */
+static void reveal_publish_hysteresis(const uint32_t* drawn, int drawn_n,
+                                      const uint32_t* occl, int occl_n) {
+    int hn = 0;
+    for (int k = 0; k < drawn_n && hn < MAX_RECORDS; k++) if (drawn[k]) s_rev_prev[hn++] = drawn[k];
+    for (int k = 0; k < occl_n  && hn < MAX_RECORDS; k++) if (occl[k])  s_rev_prev[hn++] = occl[k];
+    s_rev_prev_n = hn;
+}
+
 /* Run-once mobys: instances whose FIRST update does a one-shot job and then
  * retires them (m_State >= 0x80). The update-list builder (@80052040)
  * auto-includes any moby whose m_WasDrawn is set, ahead of its
@@ -1881,6 +1898,10 @@ static int append_revealed_regular_inner(CPUState* cpu) {
         double sx = ofx + rx * H / rz;                                       /* projected centroid X (m_Scale cancels) */
         double sxc = ofx + rx * s_view.H_canon / rz;                         /* the same at the game's H: the .s queue's territory */
         double margin = reveal_lateral_margin(cpu, f.header, rr, rz, H);
+        /* What this record publishes into the hysteresis set if it is admitted:
+         * itself, or nothing when only the straddle clause can admit it (an
+         * infinite margin is that clause's verdict). */
+        uint32_t pub = isinf(margin) ? 0u : m;
         /* central is tested at the CANONICAL projection: the .s cone is wider
          * than the 4:3 screen by the radius bias, so no canonically-central
          * moby is cone-rejected; a moby central only in a wider view can be
@@ -1907,7 +1928,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
             ver_check = occl_verify_begin(m);
             if (!ver_check) {
                 s_occl_seen++; s_occl_culled++;
-                if (occl_rev_n < MAX_RECORDS) occl_rev[occl_rev_n++] = m;
+                if (occl_rev_n < MAX_RECORDS) occl_rev[occl_rev_n++] = pub;
                 TRC("skip=occluded");
                 m += game_layout.moby.array_stride; continue;
             }
@@ -1959,7 +1980,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
         s_recs[s_nrecs].spec_solo = (uint8_t)moby_is_shiny(cpu, m);
         TRC("spec_solo=%d", (int)s_recs[s_nrecs].spec_solo);
         fade_snap_put(m, rzsf4);
-        if (revealed < MAX_RECORDS) revlist[revealed] = m;
+        if (revealed < MAX_RECORDS) revlist[revealed] = pub;
         /* census diag: projected screen centroid + vert count of this reveal */
         if (revealed < MAX_RECORDS) {
             float cxm = 0.f, cym = 0.f;
@@ -1973,15 +1994,8 @@ static int append_revealed_regular_inner(CPUState* cpu) {
         m += game_layout.moby.array_stride;
     }
     #undef TRC
-    /* Publish this call's ADMITTED set (drawn + occlusion-culled) as the next
-     * call's hysteresis set — the widening mirrors what the .s cull would have
-     * admitted, which the display-side cull must not perturb. */
-    {
-        int hn = (revealed < MAX_RECORDS) ? revealed : MAX_RECORDS;
-        memcpy(s_rev_prev, revlist, (size_t)hn * sizeof(uint32_t));
-        for (int k = 0; k < occl_rev_n && hn < MAX_RECORDS; k++) s_rev_prev[hn++] = occl_rev[k];
-        s_rev_prev_n = hn;
-    }
+    reveal_publish_hysteresis(revlist, revealed < MAX_RECORDS ? revealed : MAX_RECORDS,
+                              occl_rev, occl_rev_n);
     static int s_logged = 0;
     if (!s_logged && revealed > 0) {
         s_logged = 1;
