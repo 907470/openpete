@@ -90,6 +90,41 @@ typedef struct openpete_mod_mouse {
     uint8_t  reserved_;
 } openpete_mod_mouse_t;
 
+/** @brief Pad slots openpete_mod_api::pad_read serves: 0 is player 1. */
+#define OPENPETE_MOD_PAD_SLOTS 4
+
+/**
+ * @brief One pad slot as read by openpete_mod_api::pad_read.
+ *
+ * Set `struct_size` to `sizeof(openpete_mod_pad_t)` before the call; the
+ * engine refuses any other size. The bytes come from the input-log record
+ * staged for the tick that is running, the record the log stores for that
+ * tick, so the same read returns the same bytes under live play, bk2
+ * replay, the rewind burst and runahead speculation.
+ *
+ * `vbl` is the VBL index that record was staged for. A speculative tick
+ * re-executes on the last committed tick's record — held input, the same
+ * prediction player 1 gets — and carries that tick's `vbl`. `buttons` is
+ * the PSX pad bitfield, 1 = released. `axes` is LX, LY, RX, RY with 128
+ * centred. `libpad` is the eight bytes libpad reports in a PADRAW buffer:
+ * `00, 73`, low button byte, high button byte, RX, RY, LX, LY.
+ *
+ * An absent slot (`present` 0) is the canonical empty port rather than a
+ * derivation: `buttons` 0xFFFF, axes centred, `libpad` `FF 00 00 00 00 00
+ * 00 00`, what libpad reports for a port with no controller in it, so a
+ * mod that copies `libpad` into a pad buffer of its own behaves as
+ * hardware with nothing plugged in.
+ */
+typedef struct openpete_mod_pad {
+    uint32_t struct_size; /**< sizeof(openpete_mod_pad_t) at the mod's compile time. */
+    uint32_t slot;        /**< The slot read, 0..#OPENPETE_MOD_PAD_SLOTS-1. */
+    uint32_t vbl;         /**< VBL index the record was staged for. */
+    uint32_t present;     /**< 1 = a device drove this slot at that VBL. */
+    uint32_t buttons;     /**< PSX pad bitfield; 1 = released. */
+    uint8_t  axes[4];     /**< LX, LY, RX, RY; 128 = centre. */
+    uint8_t  libpad[8];   /**< The slot as a libpad PADRAW buffer. */
+} openpete_mod_pad_t;
+
 /** @brief Context handed to a present hook (openpete_mod_api::register_present_hook). */
 typedef struct openpete_present_ctx {
     uint32_t tick;   /**< Sim tick counter. */
@@ -871,6 +906,37 @@ typedef struct openpete_mod_api {
      * @since api 12
      */
     int (*mouse_capture)(openpete_mod_t* self, int on);
+    /** @} */
+
+    /** @name Pads
+     * @{ */
+    /**
+     * @brief Read one pad slot's bytes for the tick being executed.
+     *
+     * Slot 0 is player 1, the slot the retail game reads. Slots 1-3 are
+     * host-only: nothing writes them into guest RAM, so a mod that wants
+     * extra players decodes `libpad` into a pad buffer it allocates
+     * itself. The source is the input-log record staged for this tick, so
+     * the read reproduces under bk2 replay and under the rewind burst,
+     * which restages every slot from the log. A speculative runahead tick
+     * reads the last committed tick's record and reports that tick's
+     * `vbl`.
+     *
+     * A slot with no device assigned reads as the canonical empty port and
+     * is reported once per mod in the log. A bk2 movie carries two
+     * players, so slots 2 and 3 read absent on any replay.
+     *
+     * Tick hooks only: a present hook is refused (reported once per mod),
+     * because the staged record belongs to the sim thread. Read in a tick
+     * hook and display from your own copy.
+     * @param slot 0..#OPENPETE_MOD_PAD_SLOTS-1.
+     * @param out  `out->struct_size` must be `sizeof(openpete_mod_pad_t)`.
+     * @return 0, or -1 for a wrong struct_size, a slot out of range, or a
+     *         call from a present hook.
+     * @since api 12
+     */
+    int (*pad_read)(openpete_mod_t* self, uint32_t slot,
+                    openpete_mod_pad_t* out);
     /** @} */
 } openpete_mod_api_t;
 

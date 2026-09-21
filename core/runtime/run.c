@@ -3727,7 +3727,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                                  * every slot exactly as the log recorded it,
                                  * or the burst replays player 1 faithfully
                                  * and the other players from stale bytes. */
-                                input_log_stage_reset();
+                                input_log_stage_reset(openpete_frame);
                                 for (int sl = 0; sl < OPENPETE_PAD_SLOTS; sl++) {
                                     const openpete_input_port_t* pt = &r->port[sl];
                                     if (pt->present)
@@ -4123,7 +4123,7 @@ static int run_host_loop(const openpete_options_t* opts) {
          * An inactive override means PsyCross decodes live inside the tick
          * and there is nothing to stage yet; the post-yield readback below
          * fills slot 0 in that case. */
-        input_log_stage_reset();
+        input_log_stage_reset(openpete_frame);
         /* Before the game calls PadInitDirect there is no pad buffer, so the
          * post-yield readback reports PsyCross's no-buffer default rather
          * than anything the host stamped. Staging that same default keeps

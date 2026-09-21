@@ -36,6 +36,7 @@
 #include "openpete_mods.h"
 #include "openpete_osd.h"
 #include "../host/texture_pack.h"   /* texpack_fog_shift */
+#include "openpete_input_log.h"
 #include "openpete_mod_api.h"
 #include "openpete_mod_ui.h"
 #include "openpete_log.h"
@@ -204,6 +205,12 @@ struct openpete_mod {
         int64_t  mx, my, wheel;
         int      valid;
     } mouse_mark[2];
+    /* pad_read reports its two quiet outcomes once per mod, not per tick:
+     * bit per slot for an absent slot, and one flag for a present-hook
+     * call, which an always-on UI section would otherwise repeat every
+     * present. */
+    unsigned pad_absent_logged;
+    int      pad_present_logged;
     mod_cfg_row_t cfg_rows[MOD_CFG_ROWS_MAX]; /* [[config]] schema */
     int   n_cfg;
     mod_material_row_t mat_rows[MOD_MATERIAL_ROWS_MAX]; /* [[material]] */
@@ -330,6 +337,8 @@ static int mod_check_abi(void* dl, const char* id, const char* path) {
 static void mod_strip_registrations(struct openpete_mod* mod) {
     openpete_host_mouse_request_capture(OPENPETE_MOUSE_CAP_MOD0 + (int)(mod - s_mods), 0);
     memset(mod->mouse_mark, 0, sizeof mod->mouse_mark);
+    mod->pad_absent_logged  = 0;
+    mod->pad_present_logged = 0;
     openpete_mods_chain_remove_owner(mod->id);
     openpete_mods_draw_remove_owner(mod->id);
     openpete_mods_registry_remove_owner(mod->id);
@@ -1455,6 +1464,65 @@ static int api_mouse_capture(openpete_mod_t* self, int on) {
     return 0;
 }
 
+/* One pad slot for a mod (api 12), served from the input-log record staged
+ * for the running tick: the bytes the log stores for that tick, so the read
+ * reproduces wherever the record does. Slots 1-3 never reach guest RAM. */
+static int api_pad_read(openpete_mod_t* self, uint32_t slot,
+                        openpete_mod_pad_t* out) {
+    if (!self || !out) return -1;
+    if (out->struct_size != (uint32_t)sizeof(openpete_mod_pad_t)) {
+        OPL_ERROR_F(self->log_tag, "pad_read: struct_size %u, engine expects %u "
+                    "(rebuild against this SDK)", out->struct_size,
+                    (unsigned)sizeof(openpete_mod_pad_t));
+        return -1;
+    }
+    if (slot >= (uint32_t)OPENPETE_MOD_PAD_SLOTS) {
+        OPL_ERROR_F(self->log_tag, "pad_read: slot %u out of range (0..%d)",
+                    slot, OPENPETE_MOD_PAD_SLOTS - 1);
+        return -1;
+    }
+    if (openpete_mods_in_present) {
+        if (!self->pad_present_logged) {
+            self->pad_present_logged = 1;
+            OPL_ERROR_F(self->log_tag, "pad_read refused inside a present hook: "
+                        "the staged pad record belongs to the tick — read it in "
+                        "a tick hook and display from your own copy");
+        }
+        return -1;
+    }
+
+    openpete_input_port_t p;
+    input_log_read_slot((int)slot, &p);
+    memset(out, 0, sizeof *out);
+    out->struct_size = (uint32_t)sizeof(openpete_mod_pad_t);
+    out->slot    = slot;
+    out->vbl     = input_log_staged_vbl();
+    out->present = p.present ? 1u : 0u;
+    out->buttons = p.bits;
+    memcpy(out->axes, p.axes, sizeof out->axes);
+    if (p.present) {
+        /* PADRAW: no error, type 7 length 3 (digital+analog), the button
+         * word low byte first, then right stick, then left. */
+        out->libpad[0] = 0x00;
+        out->libpad[1] = 0x73;
+        out->libpad[2] = (uint8_t)(p.bits & 0xFFu);
+        out->libpad[3] = (uint8_t)(p.bits >> 8);
+        out->libpad[4] = p.axes[2];
+        out->libpad[5] = p.axes[3];
+        out->libpad[6] = p.axes[0];
+        out->libpad[7] = p.axes[1];
+    } else {
+        /* A port with nothing in it: status FF, the rest zero. */
+        out->libpad[0] = 0xFF;
+        if (!(self->pad_absent_logged & (1u << slot))) {
+            self->pad_absent_logged |= (1u << slot);
+            OPL_INFO_F(self->log_tag,
+                       "pad_read: slot %u absent — no device assigned", slot);
+        }
+    }
+    return 0;
+}
+
 /* Register a parsed manifest's [[binding]] keys with the keymap under the
  * mod.<id> domain. Runs for every discovered mod at init and again for
  * the --keys-report path, which prints before any mod loads. */
@@ -1595,6 +1663,8 @@ static const openpete_mod_api_t s_api = {
     /* pillar 9: the host mouse (api 12) */
     .mouse_read    = api_mouse_read,
     .mouse_capture = api_mouse_capture,
+    /* pillar 9: the host pads (api 12) */
+    .pad_read      = api_pad_read,
     /* declared input bindings */
     .binding_down  = api_binding_down,
     /* pillar 9: game data + texture packs (api 2) */

@@ -13,6 +13,7 @@ static int s_alloc_failed = 0;
 
 /* The record for the tick about to run; see the staging note in the header. */
 static openpete_input_rec_t s_staged;
+static unsigned s_staged_vbl;
 
 void input_port_clear(openpete_input_port_t* p) {
     p->bits = 0xFFFF;
@@ -20,9 +21,10 @@ void input_port_clear(openpete_input_port_t* p) {
     p->present = 0;
 }
 
-void input_log_stage_reset(void) {
+void input_log_stage_reset(unsigned vbl) {
     for (int i = 0; i < OPENPETE_PAD_SLOTS; i++)
         input_port_clear(&s_staged.port[i]);
+    s_staged_vbl = vbl;
 }
 
 void input_log_stage_port(int slot, uint16_t bits, const uint8_t axes[4]) {
@@ -43,6 +45,8 @@ void input_log_stage_p1_readback(uint16_t bits, const uint8_t axes[4]) {
 }
 
 const openpete_input_rec_t* input_log_staged(void) { return &s_staged; }
+
+unsigned input_log_staged_vbl(void) { return s_staged_vbl; }
 
 int input_log_read_slot(int slot, openpete_input_port_t* out) {
     if (!out) return 0;
@@ -91,5 +95,5 @@ void input_log_reset(void) {
     s_log = NULL;
     s_count = s_capacity = 0;
     s_alloc_failed = 0;
-    input_log_stage_reset();
+    input_log_stage_reset(0);
 }

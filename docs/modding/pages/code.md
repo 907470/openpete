@@ -161,6 +161,7 @@ mod that wrote guest bytes restores the stock bytes on `on = 0`.
 | Read player settings | `[[config]]` rows with `config_*` | No |
 | Read a hotkey | `[[binding]]` rows with `binding_down` | No; acting on it in a tick hook diverges gameplay from a replay |
 | Read the mouse | `mouse_read` (position, buttons, per-hook-kind deltas), `mouse_capture` for relative mode | No; same replay caveat in a tick hook |
+| Read another player's pad | `pad_read` | No; the record is the tick's own, so a tick-hook read replays |
 | Post-process the frame | `shader_register` with `postfx_*` | No |
 | Re-shade what the engine draws | `[[material]]` rows or `material_register` | No |
 | Read another level's data | `read_level_data` | No |

@@ -70,9 +70,10 @@ void input_port_clear(openpete_input_port_t* p);
  * already stamped by then. The value the log stores for slot 0 is still the
  * post-yield guest readback, unchanged: staging only publishes it early. */
 
-/* Reset the staged record to four empty ports. Once per host iteration,
- * before any port is staged. */
-void input_log_stage_reset(void);
+/* Reset the staged record to four empty ports and stamp the VBL the tick
+ * about to run carries. Once per host iteration, before any port is staged;
+ * the rewind burst calls it again per replayed tick with that tick's VBL. */
+void input_log_stage_reset(unsigned vbl);
 
 /* Fill one staged port and mark it present. No-op for an out-of-range slot. */
 void input_log_stage_port(int slot, uint16_t bits, const uint8_t axes[4]);
@@ -83,6 +84,11 @@ void input_log_stage_p1_readback(uint16_t bits, const uint8_t axes[4]);
 
 /* The staged record. Never NULL. */
 const openpete_input_rec_t* input_log_staged(void);
+
+/* The VBL the staged record was stamped with. A tick re-executed under
+ * runahead speculation reads the record staged for the last committed tick,
+ * so this is that tick's VBL, not the speculative one. */
+unsigned input_log_staged_vbl(void);
 
 /* Append the staged record as one VBL. Returns the entry's index, or -1 on
  * allocation failure (logged; the log stops growing but never crashes the
