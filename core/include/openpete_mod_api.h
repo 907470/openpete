@@ -937,6 +937,49 @@ typedef struct openpete_mod_api {
      */
     int (*pad_read)(openpete_mod_t* self, uint32_t slot,
                     openpete_mod_pad_t* out);
+
+    /**
+     * @brief Drive player @p slot's rumble motors.
+     *
+     * The two arguments are libpad's actuator bytes, the same pair the
+     * game writes into its own actuator buffer: @p small_byte is the
+     * small motor's on/off byte (bit 0) and @p large_byte the large
+     * motor's 0..255 byte. One byte-to-motor conversion serves every
+     * slot, carrying the user's vibration strength setting, so a mod
+     * neither needs a second mapping nor can bypass the setting.
+     *
+     * Slots 1..#OPENPETE_MOD_PAD_SLOTS-1. Slot 0 is refused (reported
+     * once per mod): it is the game's own actuator table, and a second
+     * writer would fight it.
+     *
+     * Level-triggered. The pair persists, re-issued to the device with a
+     * dead-man refresh, until the next call for that slot or until the
+     * mod is disabled or unloaded, either of which silences the slots the
+     * mod drove. Publish `{0, 0}` to stop.
+     *
+     * A speculative runahead tick and a rewind-burst replay accept the
+     * call and do nothing: those timelines were never lived, and buzzing
+     * for them is a side effect escaping the re-execution. A tick hook
+     * therefore needs no speculation test of its own. The host's own
+     * refusals still apply at drive time — headless, an unfocused window,
+     * pause, a strength of 0.
+     *
+     * To carry a swapped-in player's rumble, decode that player's timers
+     * the way the game decodes player 1's (normal `{1,120}`, electric
+     * `{1,0}`, custom `{0,amount}`, else `{0,0}`, timers decremented once
+     * per VBL) in a `PadVSync` post-hook and pass the result here. The
+     * game's own decode is not re-entrant per player, so it cannot be
+     * called for them.
+     *
+     * @param slot        1..#OPENPETE_MOD_PAD_SLOTS-1.
+     * @param small_byte  small motor, on/off (bit 0).
+     * @param large_byte  large motor, 0..255.
+     * @return 0, or -1 for slot 0, a slot out of range, or a call from a
+     *         present hook.
+     * @since api 12
+     */
+    int (*pad_rumble)(openpete_mod_t* self, uint32_t slot,
+                      uint32_t small_byte, uint32_t large_byte);
     /** @} */
 } openpete_mod_api_t;
 

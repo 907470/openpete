@@ -22,6 +22,16 @@
 #                 absent on every tick and every check must fail. Without
 #                 it a comparator that only ever agrees with its own
 #                 formula would report the same PASS.
+#   f  rumble     OPENPETE_INPUT_VGAMEPAD=2 with the probe driving
+#                 pad_rumble on slot 1: the per-pad rumble recorders must
+#                 show the published pair arriving on virtual pad 1 and
+#                 nothing on pad 0, and slot 0 must be refused.
+#   g  no device  the same with no virtual pad: the calls are accepted and
+#                 no motor command is issued, because no device holds the
+#                 slot.
+#   h  strength   leg f with the vibration strength at 0: commands still
+#                 issue and every one of them is zero, so a mod cannot
+#                 drive motors past the user's setting.
 #
 # Leg b's window is idle attract-loop gameplay, where the runahead loop
 # speculates but no speculation is ever adopted into the presented
@@ -55,6 +65,7 @@ trap 'rm -rf "$WORK"' EXIT
 FRAMES=6500
 REPORT_EVERY=100
 REWIND_FRAMES=4000
+RUMBLE_FRAMES=2500
 REWIND_AT=2500
 REWIND_ITERS=40
 
@@ -65,14 +76,17 @@ bad() { printf '[pad-slots]   FAIL: %s\n' "$*"; fail=1; }
 
 # A leg's own copy of the fixture, so its config.toml cannot reach another
 # leg or the checked-in mod directory.
-fixture() { # fixture <dir> <expect-set>
-    local dir="$1" expect="$2"
+fixture() { # fixture <dir> <expect-set> [rumble-slot]
+    local dir="$1" expect="$2" rumble="${3:-}"
     rm -rf "$dir"
     mkdir -p "$dir"
     cp -r mods/pad-probe "$dir/pad-probe"
     rm -rf "$dir/pad-probe/.build"
     printf 'expect = "%s"\nreport_every = %d\n' "$expect" "$REPORT_EVERY" \
         > "$dir/pad-probe/config.toml"
+    [ -n "$rumble" ] &&
+        printf 'rumble = true\nrumble_slot = %s\n' "$rumble" \
+            >> "$dir/pad-probe/config.toml"
     echo pad-probe > "$dir/enabled.txt"
 }
 
@@ -207,6 +221,112 @@ if [ "$e_checks" -gt 0 ] && [ "$e_mism" -eq "$e_checks" ] && [ "$e_present" -eq 
 else
     bad "leg e: checks=$e_checks mismatches=$e_mism present=$e_present" \
         "(the comparator did not fail on an absent expected slot)"
+fi
+
+# ── rumble legs ────────────────────────────────────────────────────────
+#
+# rumble-guard: intentional — leg f measures motor commands arriving at a
+# device, so it is the one leg here that must NOT silence vibration. The only
+# device reachable from it is the virtual pad the run attaches itself: the
+# actuator path lifts its headless and focus refusals for exactly the ids in
+# its test-device set and re-checks each against the handle actually driven,
+# so a real controller on the desk keeps the normal treatment and stays
+# silent. The other legs go through pg_capture, which silences vibration for
+# every run it starts.
+#
+# These legs do not use pg_capture for the same reason, so they delete their
+# own log before the run and assert it after.
+rumble_run() { # rumble_run <log> <env-assignments...> -- <run args...>
+    local log="$1"; shift
+    local -a env_arr=()
+    while [ "$1" != "--" ]; do env_arr+=("$1"); shift; done
+    shift
+    rm -f "$log"
+    ( env OPENPETE_VIBRATION=10 "${env_arr[@]}" timeout 600 \
+        "$PG_BIN" --headless --no-config --disc "$PG_DISC" --disc-cache 0 \
+        "${PG_RUN_ARGS[@]}" "$@" ) > "$log" 2>&1 || true
+    [ -s "$log" ] || { bad "run produced no log at $log"; return 1; }
+    return 0
+}
+
+# One integer out of a "recorder: pad N ..." or "mod slot N ..." census line.
+census() { # census <log> <sed-expression-with-one-capture>
+    local v
+    v="$(sed -n "s/.*$2.*/\1/p" "$1" | tail -1)"
+    echo "${v:-0}"
+}
+
+RUMBLE_ARGS=(--mute 1 --no-card --skip-to-level artisans
+             --frame-limit $RUMBLE_FRAMES)
+
+say "leg f: OPENPETE_INPUT_VGAMEPAD=2, probe drives pad_rumble on slot 1"
+fixture "$WORK/f" "" 1
+rumble_run "$WORK/f.log" OPENPETE_INPUT_VGAMEPAD=2 -- \
+    --mods-dir "$WORK/f" "${RUMBLE_ARGS[@]}"
+f_live0="$(census "$WORK/f.log" 'recorder: pad 0 live=\([0-9]*\)')"
+f_live1="$(census "$WORK/f.log" 'recorder: pad 1 live=\([0-9]*\)')"
+f_nz0="$(census "$WORK/f.log" 'recorder: pad 0 live=[0-9]*, [0-9]* callback(s), \([0-9]*\) non-zero')"
+f_nz1="$(census "$WORK/f.log" 'recorder: pad 1 live=[0-9]*, [0-9]* callback(s), \([0-9]*\) non-zero')"
+f_cmds="$(census "$WORK/f.log" 'mod slot 1: \([0-9]*\) motor command')"
+f_pair="$(sed -n 's/.*mod slot 1: [0-9]* motor command(s), pair {low \([0-9]*\), high \([0-9]*\)}.*/\1,\2/p' "$WORK/f.log" | tail -1)"
+f_last1="$(sed -n 's/.*recorder: pad 1 .*last pair {low \([0-9]*\), high \([0-9]*\)}.*/\1,\2/p' "$WORK/f.log" | tail -1)"
+f_slot0rc="$(sed -n 's/.*pad-probe: rumble: .* slot0_rc=\(-\?[0-9]*\).*/\1/p' "$WORK/f.log" | tail -1)"
+f_ok="$(sed -n 's/.*pad-probe: rumble: .* ok=\([0-9]*\).*/\1/p' "$WORK/f.log" | tail -1)"
+
+# Harness health before any count is read: a recorder that never saw its own
+# self-probe reports the same zeros as a silent run.
+if [ "$f_live0" = "1" ] && [ "$f_live1" = "1" ]; then
+    ok "leg f: both virtual pad recorders live (self-probe ok)"
+else
+    bad "leg f: recorder live pad0=$f_live0 pad1=$f_live1 — counts below prove nothing"
+fi
+if [ "${f_ok:-0}" -ge 1 ] && [ "$f_cmds" -ge 1 ]; then
+    ok "leg f: ${f_ok:-0} accepted pad_rumble call(s), $f_cmds motor command(s) on slot 1"
+else
+    bad "leg f: accepted calls=${f_ok:-0} slot-1 motor commands=$f_cmds (no engagement)"
+fi
+if [ "$f_nz1" -ge 1 ] && [ "$f_nz0" -eq 0 ]; then
+    ok "leg f: $f_nz1 non-zero command(s) on virtual pad 1, 0 on pad 0"
+else
+    bad "leg f: non-zero commands pad1=$f_nz1 pad0=$f_nz0 (wrong device, or none)"
+fi
+if [ -n "$f_pair" ] && [ "$f_pair" = "$f_last1" ]; then
+    ok "leg f: pad 1 received the published pair {low,high}=$f_pair"
+else
+    bad "leg f: published pair '$f_pair' but pad 1 last received '$f_last1'"
+fi
+if [ "${f_slot0rc:-0}" = "-1" ]; then
+    ok "leg f: pad_rumble(slot 0) refused (-1)"
+else
+    bad "leg f: pad_rumble(slot 0) returned '${f_slot0rc:-none}', expected -1"
+fi
+
+say "leg g: the same with no test device attached"
+fixture "$WORK/g" "" 1
+rumble_run "$WORK/g.log" OPENPETE_INPUT_VGAMEPAD=0 -- \
+    --mods-dir "$WORK/g" "${RUMBLE_ARGS[@]}"
+g_cmds="$(census "$WORK/g.log" 'mod slot 1: \([0-9]*\) motor command')"
+g_ok="$(sed -n 's/.*pad-probe: rumble: .* ok=\([0-9]*\).*/\1/p' "$WORK/g.log" | tail -1)"
+if [ "${g_ok:-0}" -ge 1 ] && [ "$g_cmds" -eq 0 ]; then
+    ok "leg g: ${g_ok:-0} accepted call(s), 0 motor commands — no device, nothing driven"
+else
+    bad "leg g: accepted calls=${g_ok:-0} motor commands=$g_cmds (expected calls, no commands)"
+fi
+
+say "leg h: leg f with the vibration strength at 0"
+fixture "$WORK/h" "" 1
+rm -f "$WORK/h.log"
+( env OPENPETE_VIBRATION=0 OPENPETE_INPUT_VGAMEPAD=2 timeout 600 \
+    "$PG_BIN" --headless --no-config --disc "$PG_DISC" --disc-cache 0 \
+    "${PG_RUN_ARGS[@]}" --mods-dir "$WORK/h" "${RUMBLE_ARGS[@]}" ) \
+    > "$WORK/h.log" 2>&1 || true
+[ -s "$WORK/h.log" ] || bad "leg h produced no log"
+h_nz1="$(census "$WORK/h.log" 'recorder: pad 1 live=[0-9]*, [0-9]* callback(s), \([0-9]*\) non-zero')"
+h_cmds="$(census "$WORK/h.log" 'mod slot 1: \([0-9]*\) motor command')"
+if [ "$h_cmds" -ge 1 ] && [ "$h_nz1" -eq 0 ]; then
+    ok "leg h: $h_cmds command(s) issued, 0 non-zero — the strength setting is not bypassable"
+else
+    bad "leg h: commands=$h_cmds non-zero on pad 1=$h_nz1 (strength 0 did not silence)"
 fi
 
 say "logs under $WORK (removed on exit); copy them out before rerunning"

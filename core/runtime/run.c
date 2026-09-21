@@ -2646,6 +2646,60 @@ static openpete_action_t devui_suspend_exempt(void) {
     return openpete_devui_wants_text_input() ? OPK_ACTION_COUNT : OPK_DEVUI;
 }
 
+static void rumble_census_report(void) {
+    /* Vibration census. Emitted unconditionally because the numbers only mean
+     * something together, and every one of them is a zero in some legitimate
+     * configuration:
+     *
+     *   registered/nonzero  the diagnosis. libpad's PadSetAct is a
+     *                       registration, so the expected reading is a small
+     *                       number of calls all carrying {0,0} — a NON-zero
+     *                       registration would mean the game got its buffer
+     *                       filled before handing it over, and the one-shot
+     *                       reading of PadSetAct was not the whole story.
+     *   commands            SDL rumble calls issued. Zero is correct headless,
+     *                       unfocused, at --vibration 0, or with no pad.
+     *   recorder            the virtual-pad oracle: `live` says the self-probe
+     *                       arrived, and without that a zero motor count is
+     *                       indistinguishable from a recorder that was never
+     *                       wired. Never read the counts without it. */
+    {
+        uint16_t low = 0, high = 0;
+        openpete_rumble_last_pair(&low, &high);
+        OPL_INFO_F("rumble",
+                   "census: PadSetAct %u call(s), %u carrying non-zero bytes; "
+                   "%u motor command(s) issued, last pair {low %u, high %u}",
+                   openpete_rumble_register_calls(),
+                   openpete_rumble_register_nonzero(),
+                   openpete_rumble_commands(), (unsigned)low, (unsigned)high);
+        /* Per virtual pad, because "which device received it" is the claim a
+         * per-slot actuator path has to answer and a total cannot. */
+        for (int v = 0; v < OPENPETE_PAD_SLOTS; v++) {
+            if (!openpete_host_input_vpad_rumble_calls(v) &&
+                !openpete_host_input_vpad_rumble_live(v))
+                continue;
+            unsigned vlow = 0, vhigh = 0;
+            openpete_host_input_vpad_rumble_last(v, &vlow, &vhigh);
+            OPL_INFO_F("rumble",
+                       "recorder: pad %d live=%d, %d callback(s), %d non-zero, "
+                       "last pair {low %u, high %u}", v,
+                       openpete_host_input_vpad_rumble_live(v),
+                       openpete_host_input_vpad_rumble_calls(v),
+                       openpete_host_input_vpad_rumble_nonzero(v),
+                       vlow, vhigh);
+        }
+        for (int sl = 1; sl < OPENPETE_PAD_SLOTS; sl++) {
+            if (!openpete_rumble_mod_commands(sl)) continue;
+            uint16_t mlow = 0, mhigh = 0;
+            openpete_rumble_mod_pair(sl, &mlow, &mhigh);
+            OPL_INFO_F("rumble",
+                       "mod slot %d: %u motor command(s), pair {low %u, high %u}",
+                       sl, openpete_rumble_mod_commands(sl),
+                       (unsigned)mlow, (unsigned)mhigh);
+        }
+    }
+}
+
 static int run_host_loop(const openpete_options_t* opts) {
     /* Which half of the input seam this thread owns (see run_host_init). */
     const bool split = openpete_split_applies(opts);
@@ -6149,40 +6203,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                     s_p1_stage_first_read_axes[0], s_p1_stage_first_read_axes[1],
                     s_p1_stage_first_read_axes[2], s_p1_stage_first_read_axes[3]);
 
-    /* Vibration census. Emitted unconditionally because the numbers only mean
-     * something together, and every one of them is a zero in some legitimate
-     * configuration:
-     *
-     *   registered/nonzero  the diagnosis. libpad's PadSetAct is a
-     *                       registration, so the expected reading is a small
-     *                       number of calls all carrying {0,0} — a NON-zero
-     *                       registration would mean the game got its buffer
-     *                       filled before handing it over, and the one-shot
-     *                       reading of PadSetAct was not the whole story.
-     *   commands            SDL rumble calls issued. Zero is correct headless,
-     *                       unfocused, at --vibration 0, or with no pad.
-     *   recorder            the virtual-pad oracle: `live` says the self-probe
-     *                       arrived, and without that a zero motor count is
-     *                       indistinguishable from a recorder that was never
-     *                       wired. Never read the counts without it. */
-    {
-        uint16_t low = 0, high = 0;
-        openpete_rumble_last_pair(&low, &high);
-        OPL_INFO_F("rumble",
-                   "census: PadSetAct %u call(s), %u carrying non-zero bytes; "
-                   "%u motor command(s) issued, last pair {low %u, high %u}",
-                   openpete_rumble_register_calls(),
-                   openpete_rumble_register_nonzero(),
-                   openpete_rumble_commands(), (unsigned)low, (unsigned)high);
-        if (openpete_host_input_vpad_rumble_calls() ||
-            openpete_host_input_vpad_rumble_live()) {
-            OPL_INFO_F("rumble",
-                       "recorder: live=%d, %d callback(s), %d non-zero",
-                       openpete_host_input_vpad_rumble_live(),
-                       openpete_host_input_vpad_rumble_calls(),
-                       openpete_host_input_vpad_rumble_nonzero());
-        }
-    }
+    rumble_census_report();
 
     /* Whether the guest's own execution ever reached the Vulkan device. A
      * present thread can only run concurrently with a tick if this is zero;

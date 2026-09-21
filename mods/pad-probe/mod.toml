@@ -14,11 +14,12 @@
 # Display-only: no guest RAM is written.
 #
 # uses: `api->pad_read` - slots 0-3 from the input-log record staged for the running tick
+# uses: `api->pad_rumble` - a distinctive actuator byte pair on one slot, and the slot-0 refusal
 # uses: `api->override_name` - a CameraUpdate pre-hook, the per-tick sampler
 # uses: `api->base` - hands control back after sampling
 # uses: `api->config_str` - the expected slot set
 # uses: `api->config_bool` - the rumble-drive row
-# uses: `api->config_int` - the report interval
+# uses: `api->config_int` - the report interval and the rumble slot
 # uses: `api->ui_status` - the running per-slot tallies in the Mods panel
 # uses: `api->log` - the per-slot report lines the gate script parses
 
@@ -54,4 +55,12 @@ type = "bool"
 default = false
 label = "Drive slot rumble"
 group = "Probe"
-help = "Drive a distinctive rumble pair on the expected slots; needs an engine whose API carries pad_rumble"
+help = "Drive a distinctive actuator byte pair on rumble_slot every tick, and probe slot 0 once"
+
+[[config]]
+key = "rumble_slot"
+type = "int"
+default = 1
+label = "Rumble slot"
+group = "Probe"
+help = "The pad slot the rumble drive targets, 1..3"

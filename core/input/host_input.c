@@ -15,6 +15,7 @@
 #include "openpete_pace_log.h"
 
 #include <stdatomic.h>
+#include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -307,7 +308,11 @@ typedef struct {
     SDL_AtomicInt probe_seen;   /* the self-probe pair arrived */
 } vpad_rumble_rec_t;
 
-static vpad_rumble_rec_t s_vpad_rumble;
+/* One recorder per virtual pad. Which device a motor command reached is the
+ * question as soon as more than one slot can be driven, and a single set of
+ * counters cannot answer it: the callback carries its pad index as userdata
+ * so every command is attributed to the device that received it. */
+static vpad_rumble_rec_t s_vpad_rumble[OPENPETE_PAD_SLOTS];
 
 /* Distinctive enough that the probe cannot be confused with a game value: the
  * curve never produces equal low and high bytes at this magnitude. */
@@ -316,38 +321,55 @@ static vpad_rumble_rec_t s_vpad_rumble;
 
 static bool SDLCALL vpad_rumble_cb(void* userdata, Uint16 low, Uint16 high)
 {
-    (void)userdata;
-    SDL_AddAtomicInt(&s_vpad_rumble.calls, 1);
+    int v = (int)(intptr_t)userdata;
+    if (v < 0 || v >= OPENPETE_PAD_SLOTS) return true;
+    vpad_rumble_rec_t* r = &s_vpad_rumble[v];
+    SDL_AddAtomicInt(&r->calls, 1);
     if (low || high)
-        SDL_AddAtomicInt(&s_vpad_rumble.nonzero, 1);
-    SDL_SetAtomicInt(&s_vpad_rumble.last,
-                     (int)(((Uint32)high << 16) | (Uint32)low));
+        SDL_AddAtomicInt(&r->nonzero, 1);
+    SDL_SetAtomicInt(&r->last, (int)(((Uint32)high << 16) | (Uint32)low));
     if (low == VPAD_PROBE_LOW && high == VPAD_PROBE_HIGH)
-        SDL_SetAtomicInt(&s_vpad_rumble.probe_seen, 1);
+        SDL_SetAtomicInt(&r->probe_seen, 1);
     return true;
 }
 
-int openpete_host_input_vpad_rumble_calls(void)
+static int vpad_index_ok(int pad)
 {
-    return SDL_GetAtomicInt(&s_vpad_rumble.calls);
+    return pad >= 0 && pad < OPENPETE_PAD_SLOTS;
 }
 
-int openpete_host_input_vpad_rumble_nonzero(void)
+int openpete_host_input_vpad_rumble_calls(int pad)
 {
-    return SDL_GetAtomicInt(&s_vpad_rumble.nonzero);
+    return vpad_index_ok(pad) ? SDL_GetAtomicInt(&s_vpad_rumble[pad].calls) : 0;
 }
 
-int openpete_host_input_vpad_rumble_live(void)
+int openpete_host_input_vpad_rumble_nonzero(int pad)
 {
-    return SDL_GetAtomicInt(&s_vpad_rumble.probe_seen);
+    return vpad_index_ok(pad) ? SDL_GetAtomicInt(&s_vpad_rumble[pad].nonzero) : 0;
 }
 
-void openpete_host_input_vpad_rumble_last(unsigned* low, unsigned* high)
+int openpete_host_input_vpad_rumble_live(int pad)
 {
-    Uint32 p = (Uint32)SDL_GetAtomicInt(&s_vpad_rumble.last);
+    return vpad_index_ok(pad) ? SDL_GetAtomicInt(&s_vpad_rumble[pad].probe_seen) : 0;
+}
+
+void openpete_host_input_vpad_rumble_last(int pad, unsigned* low, unsigned* high)
+{
+    Uint32 p = vpad_index_ok(pad)
+             ? (Uint32)SDL_GetAtomicInt(&s_vpad_rumble[pad].last) : 0u;
     if (low)  *low  = (unsigned)(p & 0xFFFFu);
     if (high) *high = (unsigned)(p >> 16);
 }
+
+int openpete_host_input_vpad_count(void)
+{
+    int n = 0;
+    for (int v = 0; v < OPENPETE_PAD_SLOTS; v++)
+        if (s_vpads[v]) n++;
+    return n;
+}
+
+static void vpad_selfprobe(int v, SDL_JoystickID id);
 
 static void vgamepad_maybe_attach(void)
 {
@@ -367,6 +389,8 @@ static void vgamepad_maybe_attach(void)
         return;
 
     SDL_JoystickID id = 0;
+    SDL_JoystickID vpad_ids[OPENPETE_PAD_SLOTS];
+    memset(vpad_ids, 0, sizeof vpad_ids);
     const int want = s_vpad_state;
     for (int v = 0; v < want; v++) {
         SDL_VirtualJoystickDesc desc;
@@ -377,10 +401,11 @@ static void vgamepad_maybe_attach(void)
         desc.name       = "openpete virtual pad";
         desc.button_mask = 0xFFFFu;
         desc.axis_mask   = 0x3Fu;
-        /* Only pad 0 carries the rumble callback: the recorder counts motor
-         * commands globally, and a second reporting pad would make the
-         * self-probe ambiguous about which device answered. */
-        desc.Rumble      = (v == 0) ? vpad_rumble_cb : NULL;
+        /* Every pad records, and the index it reports with is its userdata:
+         * a command's destination device is the claim a per-slot actuator
+         * path has to prove, and one shared counter cannot carry it. */
+        desc.Rumble      = vpad_rumble_cb;
+        desc.userdata    = (void*)(intptr_t)v;
 
         SDL_JoystickID vid = SDL_AttachVirtualJoystick(&desc);
         if (!vid) {
@@ -396,6 +421,7 @@ static void vgamepad_maybe_attach(void)
             if (v == 0) { s_vpad_state = 0; return; }
             break;
         }
+        vpad_ids[v] = vid;
         if (v == 0) id = vid;
     }
     /* Attaching is not the same as being usable: the pad only reaches decode
@@ -411,37 +437,42 @@ static void vgamepad_maybe_attach(void)
         OPL_INFO_F("input", "VIRTUAL gamepad attached (id=%u) — diagnostic only",
                    (unsigned)id);
 
-    /* Let the actuator path drive this device even headless / unfocused. The
-     * gates it lifts exist to protect a human's controller, and this one is
-     * ours; the id is re-checked against the handle actually driven, so a real
-     * pad that took slot 0 still gets the normal treatment. */
+    for (int v = 0; v < OPENPETE_PAD_SLOTS; v++)
+        if (s_vpads[v]) vpad_selfprobe(v, vpad_ids[v]);
+}
+
+/* Arm one virtual pad as a test device and prove its recorder is wired.
+ *
+ * The actuator path may drive this device even headless and unfocused: the
+ * gates it lifts exist to protect a human's controller, and this one is ours.
+ * Membership is by instance id and is re-checked against the handle actually
+ * driven, so a real pad that took a slot still gets the normal treatment.
+ *
+ * The probe itself is one deliberate non-zero pair, asserted to arrive before
+ * any run is allowed to read a zero as "the motors stayed silent". It is
+ * instrumentation, not data: the counters are zeroed behind it so everything
+ * they report afterwards is a motor command something else asked for. Leaving
+ * it in the totals would make a run that delivered nothing report one non-zero
+ * command, indistinguishable from a run that delivered exactly one. */
+static void vpad_selfprobe(int v, SDL_JoystickID id)
+{
     openpete_rumble_set_test_device((unsigned)id);
 
-    /* Self-probe: prove the rumble recorder is wired before any run is allowed
-     * to interpret a zero as "the motors stayed silent". Issued through
-     * SDL_RumbleJoystick on the pad we just opened, then immediately cleared
-     * so the probe cannot be mistaken for game output. If this does not
-     * arrive, the oracle is broken and must fail rather than pass quietly. */
-    SDL_RumbleJoystick(s_vpad, VPAD_PROBE_LOW, VPAD_PROBE_HIGH, 50);
-    SDL_RumbleJoystick(s_vpad, 0, 0, 0);
+    SDL_RumbleJoystick(s_vpads[v], VPAD_PROBE_LOW, VPAD_PROBE_HIGH, 50);
+    SDL_RumbleJoystick(s_vpads[v], 0, 0, 0);
 
-    /* The probe is instrumentation, not data: zero the counters behind it so
-     * everything they report afterwards is the GAME driving motors. Leaving it
-     * in the totals is not a rounding error — it makes a run that delivered
-     * nothing report one non-zero command, which is indistinguishable from a
-     * run that delivered exactly one. (Measured: that is precisely how the
-     * gate's legacy leg first read, a false FAIL against working code.) */
-    SDL_SetAtomicInt(&s_vpad_rumble.calls, 0);
-    SDL_SetAtomicInt(&s_vpad_rumble.nonzero, 0);
-    SDL_SetAtomicInt(&s_vpad_rumble.last, 0);
+    SDL_SetAtomicInt(&s_vpad_rumble[v].calls, 0);
+    SDL_SetAtomicInt(&s_vpad_rumble[v].nonzero, 0);
+    SDL_SetAtomicInt(&s_vpad_rumble[v].last, 0);
 
-    if (!SDL_GetAtomicInt(&s_vpad_rumble.probe_seen))
+    if (!SDL_GetAtomicInt(&s_vpad_rumble[v].probe_seen))
         OPL_ERROR_F("input",
-                    "virtual pad rumble recorder is NOT live — the probe pair "
-                    "never reached the callback, so a zero motor count from "
-                    "this run proves nothing");
+                    "virtual pad %d rumble recorder is NOT live — the probe "
+                    "pair never reached the callback, so a zero motor count "
+                    "from this run proves nothing", v);
     else
-        OPL_INFO_F("input", "virtual pad rumble recorder live (self-probe ok)");
+        OPL_INFO_F("input", "virtual pad %d rumble recorder live (self-probe ok)",
+                   v);
 }
 
 /* Drive the virtual pad from the same frame-indexed pattern the synthetic
@@ -773,6 +804,16 @@ static SDL_Gamepad* host_first_gamepad(void)
  * handles because it owns those slots; PsyCross's own are never closed here. */
 #define HOST_OWNED_PADS 8
 static struct { SDL_JoystickID id; SDL_Gamepad* gp; } s_owned[HOST_OWNED_PADS];
+
+/* Each slot's device, as an instance id, for readers on other threads. See
+ * openpete_host_input_slot_device_id. */
+static SDL_AtomicInt s_slot_dev_id[OPENPETE_PAD_SLOTS];
+
+unsigned openpete_host_input_slot_device_id(int slot)
+{
+    if (slot < 1 || slot >= OPENPETE_PAD_SLOTS) return 0u;
+    return (unsigned)SDL_GetAtomicInt(&s_slot_dev_id[slot]);
+}
 
 /* Resolve a device to a gamepad handle, opening it if nothing else has. */
 static SDL_Gamepad* host_gamepad_for_id(SDL_JoystickID id)
@@ -1208,6 +1249,13 @@ void openpete_host_input_sample(bool alt_held)
             memcpy(d->axes, sa, sizeof(d->axes));
             d->valid = true;
         }
+        /* Publish each slot's device id for the rumble pump, which runs on
+         * another thread and must not hold one of these handles across a
+         * prune. Published for an empty slot too (as 0), so a pad going away
+         * silences its slot instead of leaving the last id standing. */
+        for (int sl = 1; sl < OPENPETE_PAD_SLOTS; sl++)
+            SDL_SetAtomicInt(&s_slot_dev_id[sl],
+                             slot_gp[sl] ? (int)SDL_GetGamepadID(slot_gp[sl]) : 0);
     }
 
     const int64_t now_ns = (int64_t)op_now();

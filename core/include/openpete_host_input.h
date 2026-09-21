@@ -191,11 +191,29 @@ int openpete_host_input_pulse_hold_us(void);
  * nothing on its own — it reads the same whether nothing rumbled or the
  * recorder was never wired — so a self-probe issues one deliberate non-zero
  * pair at attach and asserts it arrived. Check `_live` before treating a zero
- * as evidence; a harness that skips it is reporting a vacuous pass. */
-int  openpete_host_input_vpad_rumble_calls(void);
-int  openpete_host_input_vpad_rumble_nonzero(void);
-int  openpete_host_input_vpad_rumble_live(void);
-void openpete_host_input_vpad_rumble_last(unsigned* low, unsigned* high);
+ * as evidence; a harness that skips it is reporting a vacuous pass.
+ *
+ * Counted per virtual pad, `pad` indexing the pads OPENPETE_INPUT_VGAMEPAD
+ * attached (0 is the one PsyCross takes as player 1). A single global counter
+ * cannot answer which device a command reached, which is the whole question
+ * once more than one slot can be driven: one pad's commands would be
+ * indistinguishable from another's. Each pad carries its own callback,
+ * counters and self-probe. */
+int  openpete_host_input_vpad_rumble_calls(int pad);
+int  openpete_host_input_vpad_rumble_nonzero(int pad);
+int  openpete_host_input_vpad_rumble_live(int pad);
+void openpete_host_input_vpad_rumble_last(int pad, unsigned* low, unsigned* high);
+/* How many virtual pads are attached; 0 when the harness is off. */
+int  openpete_host_input_vpad_count(void);
+
+/* The SDL joystick instance id driving pad slot `slot` (1..OPENPETE_PAD_SLOTS-1),
+ * or 0 for an empty slot.
+ *
+ * An id, not a handle: these gamepads are opened and pruned on the sampling
+ * thread while the rumble pump runs on another, so the pump resolves the id
+ * with SDL_GetGamepadFromID at drive time and a prune in between reads as a
+ * NULL rather than as a use-after-close. */
+unsigned openpete_host_input_slot_device_id(int slot);
 
 /* Parity instrument (--input-parity). Compares what the host actually drove
  * into the pad against a fresh live decode taken in the same iteration, on the

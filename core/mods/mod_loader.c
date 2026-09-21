@@ -44,6 +44,7 @@
 #include "openpete_fiber.h"      /* openpete_speculative / openpete_replaying */
 #include "openpete_host_input.h"
 #include "openpete_host_mouse.h" /* mouse_read / mouse_capture */
+#include "openpete_rumble.h"   /* pad_rumble: the one byte-to-motor path */
 #include "openpete_keymap.h"     /* [keys.mod.<id>] binding overrides */
 #include "game_extras.h"      /* game_get_id: [mod] game targeting */
 #include "../ui/openpete_imgui_guard.h" /* ImGui table bind */
@@ -212,6 +213,10 @@ struct openpete_mod {
      * present. */
     unsigned pad_absent_logged;
     int      pad_present_logged;
+    /* Slots this mod has published a rumble pair for, so disabling or
+     * unloading it silences exactly those and nothing else. */
+    unsigned pad_rumble_slots;
+    int      pad_rumble_slot0_logged;
     mod_cfg_row_t cfg_rows[MOD_CFG_ROWS_MAX]; /* [[config]] schema */
     int   n_cfg;
     mod_material_row_t mat_rows[MOD_MATERIAL_ROWS_MAX]; /* [[material]] */
@@ -369,6 +374,13 @@ static void mod_strip_registrations(struct openpete_mod* mod) {
     memset(mod->mouse_mark, 0, sizeof mod->mouse_mark);
     mod->pad_absent_logged  = 0;
     mod->pad_present_logged = 0;
+    /* A mod that goes away stops its motors. The pair is level-triggered, so
+     * without this the last one it published would keep being re-driven. */
+    for (int sl = 1; sl < OPENPETE_MOD_PAD_SLOTS; sl++)
+        if (mod->pad_rumble_slots & (1u << sl))
+            openpete_rumble_mod_clear(sl);
+    mod->pad_rumble_slots = 0;
+    mod->pad_rumble_slot0_logged = 0;
     openpete_mods_chain_remove_owner(mod->id);
     openpete_mods_draw_remove_owner(mod->id);
     openpete_mods_registry_remove_owner(mod->id);
@@ -1588,6 +1600,37 @@ static int api_pad_read(openpete_mod_t* self, uint32_t slot,
     return 0;
 }
 
+static int api_pad_rumble(openpete_mod_t* self, uint32_t slot,
+                          uint32_t small_byte, uint32_t large_byte) {
+    if (!self) return -1;
+    if (slot == 0) {
+        if (!self->pad_rumble_slot0_logged) {
+            self->pad_rumble_slot0_logged = 1;
+            OPL_ERROR_F(self->log_tag, "pad_rumble: slot 0 is the game's own "
+                        "actuator table — a second writer would fight it; "
+                        "drive slots 1..%d", OPENPETE_MOD_PAD_SLOTS - 1);
+        }
+        return -1;
+    }
+    if (slot >= (uint32_t)OPENPETE_MOD_PAD_SLOTS) {
+        OPL_ERROR_F(self->log_tag, "pad_rumble: slot %u out of range (1..%d)",
+                    slot, OPENPETE_MOD_PAD_SLOTS - 1);
+        return -1;
+    }
+    if (purity_violation("pad_rumble")) return -1;
+    /* A speculative tick's timeline is one the player never lived, and a
+     * rewind burst re-executes tens of ticks at burst speed: replaying the
+     * motors for either is a side effect escaping the re-execution, exactly
+     * like audio. The call is accepted and does nothing, so a mod driving
+     * rumble from a tick hook needs no speculation test of its own. */
+    if (openpete_speculative || openpete_replaying) return 0;
+
+    self->pad_rumble_slots |= 1u << slot;
+    openpete_rumble_mod_set((int)slot, (int)(small_byte & 0xFFu),
+                            (int)(large_byte & 0xFFu));
+    return 0;
+}
+
 /* Register a parsed manifest's [[binding]] keys with the keymap under the
  * mod.<id> domain. Runs for every discovered mod at init and again for
  * the --keys-report path, which prints before any mod loads. */
@@ -1729,6 +1772,7 @@ static const openpete_mod_api_t s_api = {
     .mouse_capture = api_mouse_capture,
     /* pillar 9: the host pads (api 12) */
     .pad_read      = api_pad_read,
+    .pad_rumble    = api_pad_rumble,
     /* declared input bindings */
     .binding_down  = api_binding_down,
     /* pillar 9: game data + texture packs (api 2) */

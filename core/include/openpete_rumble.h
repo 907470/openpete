@@ -99,15 +99,42 @@ void openpete_rumble_stop(void);
 /* Headless is a refusal, not a default: no window means no player. */
 void openpete_rumble_set_headless(int headless);
 
-/* Name the harness's virtual pad (OPENPETE_INPUT_VGAMEPAD), by SDL instance id.
+/* Name one of the harness's virtual pads (OPENPETE_INPUT_VGAMEPAD), by SDL
+ * instance id. Call once per pad: the devices form a SET, because the harness
+ * attaches one per slot and every one of them has to be drivable headlessly
+ * for a per-slot claim to be observable at all.
  *
  * The headless and focus refusals protect a human's controller; a virtual
- * device a harness attached is not one. Lifting them for that device — and
- * only that device, re-checked against the handle actually driven — is what
- * lets the vibration oracle observe the REAL apply path headlessly, instead of
- * testing a mock of it. A real pad that has taken slot 0 will not match, so a
+ * device a harness attached is not one. Lifting them for those devices — and
+ * only those, re-checked against the handle actually driven — is what lets the
+ * vibration oracle observe the real apply path headlessly, instead of testing
+ * a mock of it. A real pad that has taken a slot is not in the set, so a
  * diagnostic run still cannot buzz a controller on the desk. */
 void openpete_rumble_set_test_device(unsigned instance_id);
+
+/* ---- mod-driven slots --------------------------------------------------- */
+
+/* Publish slot `slot`'s motor pair from a mod, in libpad's actuator encoding:
+ * `small_byte` is the small motor's on/off byte and `large_byte` the large
+ * motor's 0..255 byte — the two bytes the game itself writes to its actuator
+ * buffer. Converting here means the ONE byte-to-motor conversion, with the
+ * user's strength setting, serves every slot: a mod cannot carry a second
+ * mapping and cannot bypass the setting.
+ *
+ * Slots 1..OPENPETE_PAD_SLOTS-1 only. Slot 0 is the game's own actuator table
+ * and a second writer would fight it.
+ *
+ * Level-triggered: the pair persists, re-driven every pump iteration with the
+ * dead-man refresh above, until the next call for that slot or until the slot
+ * is cleared. Publish {0,0} to stop. */
+void openpete_rumble_mod_set(int slot, int small_byte, int large_byte);
+
+/* Silence one mod-driven slot (mod disabled, unloaded, or reloaded). */
+void openpete_rumble_mod_clear(int slot);
+
+/* SDL rumble calls issued for a mod-driven slot, and its published pair. */
+unsigned openpete_rumble_mod_commands(int slot);
+void     openpete_rumble_mod_pair(int slot, uint16_t* low, uint16_t* high);
 
 /* 0..10 host strength, -1 = unset (parity). Mirrors --vibration. */
 void openpete_rumble_set_strength(int strength);

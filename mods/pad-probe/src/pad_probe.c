@@ -21,6 +21,11 @@
  * `report_every` ticks; the last such line of a run carries its final
  * counts.
  *
+ * With the `rumble` row set the hook also drives `pad_rumble` on
+ * `rumble_slot` every tick with a distinctive actuator byte pair, and probes
+ * slot 0 once, which the engine must refuse. Which device the pair reaches is
+ * the claim the per-pad rumble recorders answer.
+ *
  * Display-only: no guest RAM is written.
  */
 #include <openpete_mod_api.h>
@@ -34,6 +39,17 @@ static openpete_mod_t*           g_self;
 
 static unsigned s_expect_mask;    /* bit per slot the run must carry */
 static unsigned s_report_every;
+
+/* Rumble drive. The pair is an actuator byte pair, the encoding pad_rumble
+ * takes: small motor on, large motor at a value the game's own decode never
+ * produces (its three cases are {1,120}, {1,0} and {0,amount}), so a pair
+ * arriving at a device is this mod's and not the game's. */
+#define PAD_PROBE_SMALL 1u
+#define PAD_PROBE_LARGE 0xA5u
+
+static unsigned s_rumble_slot;    /* 0 = rumble drive off */
+static unsigned s_rumble_calls, s_rumble_ok, s_rumble_refused;
+static int      s_slot0_rc = 1;   /* 1 = not probed yet */
 
 static unsigned s_ticks;
 static unsigned s_reads[PROBE_SLOTS];
@@ -106,6 +122,24 @@ static void report(void) {
     g_api->log(g_self, OP_MOD_LOG_INFO,
                "ticks=%u advanced=%u repeat=%u backward=%u",
                s_ticks, s_advanced, s_repeat, s_backward);
+    if (s_rumble_slot)
+        g_api->log(g_self, OP_MOD_LOG_INFO,
+                   "rumble: slot=%u calls=%u ok=%u refused=%u slot0_rc=%d",
+                   s_rumble_slot, s_rumble_calls, s_rumble_ok,
+                   s_rumble_refused, s_slot0_rc);
+}
+
+/* Drive the probe pair, and probe slot 0 once: the engine must refuse it,
+ * and a refusal nobody asked for is not evidence. */
+static void drive_rumble(void) {
+    if (!s_rumble_slot) return;
+    if (s_slot0_rc == 1)
+        s_slot0_rc = g_api->pad_rumble(g_self, 0, PAD_PROBE_SMALL,
+                                       PAD_PROBE_LARGE);
+    int rc = g_api->pad_rumble(g_self, s_rumble_slot, PAD_PROBE_SMALL,
+                               PAD_PROBE_LARGE);
+    s_rumble_calls++;
+    if (rc == 0) s_rumble_ok++; else s_rumble_refused++;
 }
 
 /* 1 when this tick re-executes the previous tick's record (speculation). */
@@ -146,6 +180,7 @@ static void on_tick(CPUState* cpu) {
     for (unsigned sl = 0; sl < PROBE_SLOTS; sl++)
         if ((got >> sl) & 1u) tally(&pads[sl], repeat);
 
+    drive_rumble();
     s_ticks++;
     if (s_report_every && s_ticks % s_report_every == 0) {
         report();
@@ -167,10 +202,9 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     s_expect_mask  = parse_slot_set(expect);
     s_report_every = (unsigned)api->config_int(self, "report_every", 250);
     if (api->config_bool(self, "rumble", 0))
-        api->log(self, OP_MOD_LOG_WARN,
-                 "rumble drive requested; api %u carries no pad_rumble",
-                 api->api_version);
-    api->log(self, OP_MOD_LOG_INFO, "expect=\"%s\" mask=0x%X report_every=%u",
-             expect, s_expect_mask, s_report_every);
+        s_rumble_slot = (unsigned)api->config_int(self, "rumble_slot", 1);
+    api->log(self, OP_MOD_LOG_INFO,
+             "expect=\"%s\" mask=0x%X report_every=%u rumble_slot=%u",
+             expect, s_expect_mask, s_report_every, s_rumble_slot);
     return api->override_name(self, "CameraUpdate", on_tick);
 }

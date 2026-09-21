@@ -18,6 +18,7 @@
  */
 
 #include "openpete_rumble.h"
+#include "openpete_input_log.h"   /* OPENPETE_PAD_SLOTS */
 #include "openpete_log.h"
 
 #include <SDL3/SDL.h>
@@ -35,6 +36,11 @@ extern void* PsyX_Pad_GetGamepad(int slot);
 /* Runahead speculation flag (openpete_fiber.h). Declared rather than included
  * to keep this TU's include surface to SDL + our own header. */
 extern int openpete_speculative;
+
+/* The device driving pad slot 1..3, as an SDL instance id (host_input.c).
+ * Declared for the same reason: an id, not a handle, because those handles are
+ * opened and pruned on the sampling thread while this file runs on the pump. */
+extern unsigned openpete_host_input_slot_device_id(int slot);
 
 /* Only slot 0 is wired: Spyro registers one actuator buffer, for player one,
  * and a second slot has nothing to drive. The array exists so a game that
@@ -61,13 +67,29 @@ static SDL_AtomicInt s_pair;
  * only instrument that can observe this path at all, and the vibration oracle
  * would be reduced to testing a mock of the code instead of the code.
  *
- * So the refusals are lifted for exactly one device: the virtual pad the
- * harness attached, identified by instance id and re-checked against the
- * handle actually being driven. If a real controller is also plugged in and
- * has taken slot 0, the id will not match and the normal gates apply — a
- * diagnostic run must not buzz a pad on the desk just because a test flag is
- * set. Stored as id+1 so zero means "no test device". */
-static SDL_AtomicInt s_test_device;
+ * So the refusals are lifted for exactly the devices the harness attached:
+ * virtual pads, identified by instance id and re-checked against the handle
+ * actually being driven. If a real controller is also plugged in and has taken
+ * a slot, its id is not in the set and the normal gates apply — a diagnostic
+ * run must not buzz a pad on the desk just because a test flag is set.
+ *
+ * A set rather than one id, because the harness attaches one pad per slot and
+ * a per-slot claim is only observable when every one of them can be driven.
+ * Each entry is stored as id+1 so zero means "empty". */
+static SDL_AtomicInt s_test_device[OPENPETE_PAD_SLOTS];
+
+/* Mod-driven motor pairs for slots 1..OPENPETE_PAD_SLOTS-1, packed the same
+ * way as s_pair: low 16 bits the large motor, high 16 the small. Written by
+ * the sim thread through openpete_rumble_mod_set, read by the pump. Index 0 is
+ * never used: slot 0 is the game's own actuator table. */
+static SDL_AtomicInt s_mod_pair[OPENPETE_PAD_SLOTS];
+static SDL_AtomicInt s_mod_commands[OPENPETE_PAD_SLOTS];
+
+/* Set by the first publish for a slot and never cleared: a slot no mod has
+ * ever driven is left alone entirely, so its command count stays a count of
+ * what a mod asked for. Clearing stays armed, because the stop has to reach
+ * the device. */
+static SDL_AtomicInt s_mod_armed[OPENPETE_PAD_SLOTS];
 
 /* Gates. All are pump-thread reads; the setters are called from wherever the
  * corresponding state changes, and each is a single int, so no locking. */
@@ -192,13 +214,58 @@ static void rumble_drive(uint16_t low, uint16_t high)
     SDL_SetAtomicInt(&s_last_pair, (int)(((uint32_t)high << 16) | (uint32_t)low));
 }
 
-/* True when the pad we would drive is the harness's own virtual device. */
+/* True when the pad we would drive is one of the harness's virtual devices. */
 static int driving_test_device(SDL_Gamepad* gp)
 {
-    int stored = SDL_GetAtomicInt(&s_test_device);
-    if (!stored || !gp)
-        return 0;
-    return (int)SDL_GetGamepadID(gp) == stored - 1;
+    if (!gp) return 0;
+    const int id = (int)SDL_GetGamepadID(gp);
+    for (int i = 0; i < OPENPETE_PAD_SLOTS; i++) {
+        int stored = SDL_GetAtomicInt(&s_test_device[i]);
+        if (stored && stored - 1 == id) return 1;
+    }
+    return 0;
+}
+
+/* The refusals shared by every slot: headless and focus protect a human's
+ * controller and are lifted for a harness device, pause silences everything.
+ * Returns 1 when this pad must stay silent this iteration. */
+static int rumble_gates_block(SDL_Gamepad* gp)
+{
+    if (!driving_test_device(gp)) {
+        if (SDL_GetAtomicInt(&s_headless))
+            return 1;
+        if (!SDL_GetKeyboardFocus())
+            return 1;
+    }
+    return SDL_GetAtomicInt(&s_paused) ? 1 : 0;
+}
+
+/* Drive one mod-published slot against the device currently holding it.
+ *
+ * The id is resolved here, at drive time, rather than held: a device pruned
+ * between the sampling thread's publish and this call reads as a NULL, not as
+ * a use-after-close. */
+static void rumble_apply_mod_slot(int slot)
+{
+    if (!SDL_GetAtomicInt(&s_mod_armed[slot])) return;
+    const unsigned id = openpete_host_input_slot_device_id(slot);
+    if (!id) return;
+    SDL_Gamepad* gp = SDL_GetGamepadFromID((SDL_JoystickID)id);
+    if (!gp) return;
+
+    const uint32_t pair = (uint32_t)SDL_GetAtomicInt(&s_mod_pair[slot]);
+    const uint16_t low  = (uint16_t)(pair & 0xFFFFu);
+    const uint16_t high = (uint16_t)(pair >> 16);
+
+    if (rumble_gates_block(gp)) {
+        /* A refusal has to reach the device, not just skip the drive: a pair
+         * published before focus was lost is still live in the driver until
+         * its expiry. */
+        SDL_RumbleGamepad(gp, 0, 0, 0);
+        return;
+    }
+    SDL_RumbleGamepad(gp, low, high, RUMBLE_DURATION_MS);
+    SDL_AddAtomicInt(&s_mod_commands[slot], 1);
 }
 
 void openpete_rumble_apply(void)
@@ -206,29 +273,17 @@ void openpete_rumble_apply(void)
     uint32_t pair;
     uint16_t low, high;
     SDL_Gamepad* gp = (SDL_Gamepad*)PsyX_Pad_GetGamepad(0);
-    const int test_pad = driving_test_device(gp);
 
-    if (!test_pad) {
-        /* Headless is a refusal, not a default: a run with no window has no
-         * player at the desk, and every gate battery and scripted capture is
-         * one. */
-        if (SDL_GetAtomicInt(&s_headless))
-            return;
+    for (int slot = 1; slot < OPENPETE_PAD_SLOTS; slot++)
+        rumble_apply_mod_slot(slot);
 
-        /* Focus gates the motors. This is the layer that protects a human from
-         * a background window buzzing a pad on their desk — a script-launched
-         * build, a capture running behind the editor — whatever the config
-         * says. Polled rather than tracked through FOCUS_LOST / FOCUS_GAINED
-         * events so there is no state to get out of step with reality: if no
-         * window of ours holds keyboard focus right now, the motors are silent
-         * right now. */
-        if (!SDL_GetKeyboardFocus()) {
-            openpete_rumble_stop();
-            return;
-        }
-    }
-
-    if (SDL_GetAtomicInt(&s_paused)) {
+    /* Headless, focus and pause: see rumble_gates_block. Headless is a
+     * refusal, not a default — a run with no window has no player at the desk,
+     * and every gate battery and scripted capture is one. Focus is the layer
+     * that protects a human from a background window buzzing a pad on their
+     * desk, polled rather than tracked through FOCUS_LOST / FOCUS_GAINED so
+     * there is no state to get out of step with reality. */
+    if (rumble_gates_block(gp)) {
         openpete_rumble_stop();
         return;
     }
@@ -240,6 +295,49 @@ void openpete_rumble_apply(void)
     /* Unconditional — see the header for why a change gate deadlocks against
      * the stop paths above. */
     rumble_drive(low, high);
+}
+
+/* ---- mod-driven slots ---------------------------------------------------- */
+
+void openpete_rumble_mod_set(int slot, int small_byte, int large_byte)
+{
+    if (slot < 1 || slot >= OPENPETE_PAD_SLOTS)
+        return;
+
+    const int strength = openpete_rumble_get_strength();
+    const uint16_t low  = openpete_rumble_motor_u16(large_byte, /*is_small=*/0,
+                                                    strength);
+    const uint16_t high = openpete_rumble_motor_u16(small_byte, /*is_small=*/1,
+                                                    strength);
+    SDL_SetAtomicInt(&s_mod_pair[slot],
+                     (int)(((uint32_t)high << 16) | (uint32_t)low));
+    SDL_SetAtomicInt(&s_mod_armed[slot], 1);
+
+    if (rumble_log_on())
+        OPL_INFO_F("rumble", "mod slot %d pair: bytes {%d, %d} -> "
+                   "{low %u, high %u}", slot, small_byte, large_byte,
+                   (unsigned)low, (unsigned)high);
+}
+
+void openpete_rumble_mod_clear(int slot)
+{
+    if (slot < 1 || slot >= OPENPETE_PAD_SLOTS)
+        return;
+    SDL_SetAtomicInt(&s_mod_pair[slot], 0);
+}
+
+unsigned openpete_rumble_mod_commands(int slot)
+{
+    if (slot < 1 || slot >= OPENPETE_PAD_SLOTS) return 0u;
+    return (unsigned)SDL_GetAtomicInt(&s_mod_commands[slot]);
+}
+
+void openpete_rumble_mod_pair(int slot, uint16_t* low, uint16_t* high)
+{
+    uint32_t p = (slot >= 1 && slot < OPENPETE_PAD_SLOTS)
+               ? (uint32_t)SDL_GetAtomicInt(&s_mod_pair[slot]) : 0u;
+    if (low)  *low  = (uint16_t)(p & 0xFFFFu);
+    if (high) *high = (uint16_t)(p >> 16);
 }
 
 void openpete_rumble_stop(void)
@@ -258,7 +356,12 @@ void openpete_rumble_stop(void)
 
 void openpete_rumble_set_test_device(unsigned instance_id)
 {
-    SDL_SetAtomicInt(&s_test_device, (int)instance_id + 1);
+    const int want = (int)instance_id + 1;
+    for (int i = 0; i < OPENPETE_PAD_SLOTS; i++) {
+        int stored = SDL_GetAtomicInt(&s_test_device[i]);
+        if (stored == want) return;
+        if (!stored) { SDL_SetAtomicInt(&s_test_device[i], want); return; }
+    }
 }
 
 void openpete_rumble_set_headless(int headless)
