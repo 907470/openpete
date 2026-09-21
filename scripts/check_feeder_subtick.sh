@@ -318,7 +318,12 @@ pg_resolve "$GAME"
 # two canonical presents alone and prints every mask component with the
 # statistics a row can name, so the blob coordinates of a new row come from a
 # measurement rather than a guess.
-MANIFEST="games/$GAME/${PATHNAME%-tanim}-subtick-corpus.manifest"
+# A path's own manifest comes first; a path that animates the same surfaces
+# as its base path (the -tanim suffix) falls back to the base manifest. The
+# two terrain knobs animate different surfaces, so a row that engages one
+# can be vacuous under the other and the UV-scroll path keeps its own rows.
+MANIFEST="games/$GAME/${PATHNAME}-subtick-corpus.manifest"
+[[ -f "$MANIFEST" ]] || MANIFEST="games/$GAME/${PATHNAME%-tanim}-subtick-corpus.manifest"
 if [[ -n "$ROW" ]]; then
     MANIFEST="$(mktemp)"
     trap 'rm -f "$MANIFEST"' EXIT

@@ -1,0 +1,11 @@
+# Sub-tick corpus for the terrain UV-scroll path (terrain-tanim): the rows
+# check_feeder_subtick.sh --path terrain-tanim replays. Same row form as
+# terrain-subtick-corpus.manifest: bk2 | VBL | optional cell rect.
+#
+# moving-terrain: the Artisans water surface at V=2262, where the one
+# UV-scroll descriptor (tile 23) paints on screen and the legs separate
+# by 6070 px at alpha 0. The vertex-animation manifest's second row,
+# V=2438, is absent: the poly-animated surface is in frame but tile 23
+# paints no pixel there, so both legs render the same present at every
+# alpha and the floor reports VACUOUS rather than a snap.
+moving-terrain.bk2 | 2262 |
