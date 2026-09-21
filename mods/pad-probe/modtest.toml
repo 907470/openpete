@@ -1,0 +1,13 @@
+# modtest.toml — this repo's CI declaration for tools/modtest.py.
+# Engine-repo concern, not part of the mod manifest format.
+#
+# modtest has no environment field, so this row is the plain live case: no
+# synthetic stream, no expected slots, slot 0 present and slots 1-3 absent
+# on a machine with no second device. The synthetic, runahead, rewind and
+# movie legs need environment and extra flags and live in
+# scripts/check_mod_pad_slots.sh.
+[test]
+args          = "--skip-to-level artisans"
+frames        = 3000
+expect_oracle = "skip"
+expect_log    = ["pad-probe", "slot 0: reads="]

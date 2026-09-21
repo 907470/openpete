@@ -1,0 +1,57 @@
+# pad-probe: what api->pad_read reports for every pad slot, checked
+# against the synthetic pad stream the engine stages under
+# OPENPETE_SYNTH_PADS.
+#
+# A CameraUpdate pre-hook reads slots 0-3 once per tick and recomputes,
+# from the record's own `vbl`, the bytes the synthetic stream defines for
+# that VBL and slot. The `expect` row names the slots the run is supposed
+# to carry: a named slot that reads absent is counted as a check and as a
+# mismatch, an unnamed slot is read and reported but never checked. The
+# formula lives in the mod as well as in the engine because a mod links no
+# engine symbol; the two copies disagreeing is a failure, which is the
+# point of the check.
+#
+# Display-only: no guest RAM is written.
+#
+# uses: `api->pad_read` - slots 0-3 from the input-log record staged for the running tick
+# uses: `api->override_name` - a CameraUpdate pre-hook, the per-tick sampler
+# uses: `api->base` - hands control back after sampling
+# uses: `api->config_str` - the expected slot set
+# uses: `api->config_bool` - the rumble-drive row
+# uses: `api->config_int` - the report interval
+# uses: `api->ui_status` - the running per-slot tallies in the Mods panel
+# uses: `api->log` - the per-slot report lines the gate script parses
+
+[mod]
+id      = "pad-probe"
+name    = "Pad Probe"
+version = "0.1.0"
+game    = "spyro-1"
+api     = 12
+state   = "none"       # host-side tallies only
+runahead = "pure"      # reads the input-log record, writes no guest RAM
+sim_mutative = false
+
+[[config]]
+key = "expect"
+type = "string"
+default = ""
+label = "Expected slots"
+group = "Probe"
+help = "Comma-separated slots that must be present and carry the synthetic stream, e.g. 1,2,3"
+
+[[config]]
+key = "report_every"
+type = "int"
+default = 250
+label = "Report interval (ticks)"
+group = "Probe"
+help = "Ticks between per-slot report lines; the last line of a run carries its final tallies"
+
+[[config]]
+key = "rumble"
+type = "bool"
+default = false
+label = "Drive slot rumble"
+group = "Probe"
+help = "Drive a distinctive rumble pair on the expected slots; needs an engine whose API carries pad_rumble"
