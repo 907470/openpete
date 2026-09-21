@@ -10,6 +10,7 @@
 #include "openpete_log.h"
 #include "openpete_menu.h"
 #include "openpete_native_render.h"
+#include "../mods/mod_vec.h"
 
 #include <SDL3/SDL.h>
 
@@ -37,7 +38,14 @@ static _Atomic int64_t  s_wheel;
 
 /* ---- ownership / capture / requests ------------------------------------ */
 
-static _Atomic uint64_t s_capture_req;   /* one bit per OPENPETE_MOUSE_CAP_* */
+/* One bit per OPENPETE_MOUSE_CAP_* owner, 64 owners per word. The word
+ * list grows with the owner id, so a mod's owner id (MOD0 + its load
+ * index) always has a bit however many mods are loaded. The bits are
+ * only ever touched under s_capture_mx; readers ask s_capture_n, the
+ * number of owners currently requesting capture, which needs no lock. */
+static mod_fvec      s_capture_req;
+static SDL_Mutex*    s_capture_mx;
+static _Atomic int   s_capture_n;
 static _Atomic int      s_captured;
 static _Atomic int      s_menu_req;      /* 0 none, 1 = want closed, 2 = want open */
 static _Atomic unsigned s_dbl_count;
@@ -518,15 +526,46 @@ int openpete_host_mouse_owned(void)
 
 void openpete_host_mouse_request_capture(int owner, int on)
 {
-    if (owner < 0 || owner >= OPENPETE_MOUSE_CAP_COUNT) return;
-    uint64_t bit = (uint64_t)1 << owner;
-    if (on) atomic_fetch_or_explicit(&s_capture_req, bit, memory_order_relaxed);
-    else    atomic_fetch_and_explicit(&s_capture_req, ~bit, memory_order_relaxed);
+    size_t word = (size_t)owner >> 6;
+    uint64_t bit = (uint64_t)1 << ((unsigned)owner & 63u);
+    uint64_t* w;
+    int was;
+    if (owner < 0) return;
+    if (!s_capture_mx) {
+        SDL_Mutex* mx = SDL_CreateMutex();
+        if (!mx) return;
+        /* Two first requests can race here; the loser drops its mutex
+         * and uses the winner's. */
+        if (SDL_CompareAndSwapAtomicPointer((void**)&s_capture_mx, NULL, mx)
+            == false)
+            SDL_DestroyMutex(mx);
+    }
+    SDL_LockMutex(s_capture_mx);
+    if (!s_capture_req.elem_size)
+        /* Census unit is words: the request set used to be exactly one
+         * 64-bit word, which is why owner ids above 63 had no bit. */
+        mod_fvec_init(&s_capture_req, sizeof(uint64_t), 1, "mouse_cap_bits",
+                      1);
+    if (mod_fvec_count(&s_capture_req) <= word &&
+        mod_fvec_resize(&s_capture_req, word + 1) != 0) {
+        SDL_UnlockMutex(s_capture_mx);
+        return;
+    }
+    w = (uint64_t*)mod_fvec_at(&s_capture_req, word);
+    was = (*w & bit) != 0;
+    if (on && !was) {
+        *w |= bit;
+        atomic_fetch_add_explicit(&s_capture_n, 1, memory_order_relaxed);
+    } else if (!on && was) {
+        *w &= ~bit;
+        atomic_fetch_sub_explicit(&s_capture_n, 1, memory_order_relaxed);
+    }
+    SDL_UnlockMutex(s_capture_mx);
 }
 
 int openpete_host_mouse_capture_requested(void)
 {
-    return atomic_load_explicit(&s_capture_req, memory_order_relaxed) != 0;
+    return atomic_load_explicit(&s_capture_n, memory_order_relaxed) != 0;
 }
 
 int openpete_host_mouse_captured(void)
@@ -555,10 +594,9 @@ void openpete_host_mouse_apply_capture(void)
     atomic_store_explicit(&s_captured, want, memory_order_relaxed);
     if (s_probe)
         OPL_INFO_F("mouse",
-                   "capture %s (req=0x%llx menu=%d devui=%d fillpick=%d enabled=%d)",
+                   "capture %s (req_owners=%d menu=%d devui=%d fillpick=%d enabled=%d)",
                    want ? "on" : "off",
-                   (unsigned long long)atomic_load_explicit(&s_capture_req,
-                                                            memory_order_relaxed),
+                   atomic_load_explicit(&s_capture_n, memory_order_relaxed),
                    openpete_menu_is_open(), devui_owner(),
                    openpete_fillpick_active(), openpete_host_mouse_accepting());
 }

@@ -106,11 +106,8 @@ int  openpete_mods_chain_add(uint32_t addr, openpete_mod_override_fn fn,
                              const char* owner_id);
 void openpete_mods_base(CPUState* cpu);
 
-#define MODS_MAX          64  /* keep <= mod_config.c CFG_SLOTS; the scan
-                               * WARNS when a mods dir exceeds this rather
-                               * than silently dropping readdir-order tail
-                               * entries (which once ate a freshly added
-                               * mod on a 33-mod install) */
+/* Mods the live table's first block holds; it grows by whole blocks. */
+#define MODS_BLOCK        64
 #define MOD_ID_MAX        64
 _Static_assert(MOD_ID_MAX == OPENPETE_ARENA_OWNER_MAX,
                "arena ledger owner field must hold a full mod id");
@@ -180,6 +177,9 @@ typedef struct {
 #define MOD_DEPS_MAX      8
 
 struct openpete_mod {
+    int   load_index;    /* position in the live table, set at the copy
+                          * into it; the table is chunked, so the index
+                          * cannot be recovered by pointer subtraction */
     char  id[MOD_ID_MAX];
     char  version[32];
     char  name[64];      /* manifest display name (fallback: id) */
@@ -276,8 +276,36 @@ struct openpete_mod {
     void* dl;
 };
 
-static struct openpete_mod s_mods[MODS_MAX];
-static int                 s_mod_count = 0;
+/* Chunked: a mod holds its own openpete_mod_t* for the session and the
+ * registries keep mod->id pointers, so an element address must outlive
+ * every later load. */
+static mod_cvec s_mods;   /* struct openpete_mod */
+
+static struct openpete_mod* mod_at(int i) {
+    return (struct openpete_mod*)mod_cvec_at(&s_mods, (size_t)i);
+}
+static int mod_count(void) { return (int)mod_cvec_count(&s_mods); }
+
+/* Rows of the loader's working lists. Each list is a mod_fvec sized by
+ * the mods directory, so nothing about the boot path is bounded by a
+ * constant. */
+typedef struct { char id[MOD_ID_MAX]; } mod_id_row_t;
+typedef struct { char k[65]; } mod_key_row_t;
+
+static char* id_row(const mod_fvec* v, int i) {
+    return ((mod_id_row_t*)mod_fvec_at(v, (size_t)i))->id;
+}
+static int int_row(const mod_fvec* v, int i) {
+    const int* p = (const int*)mod_fvec_at(v, (size_t)i);
+    return p ? *p : 0;
+}
+static void int_row_set(mod_fvec* v, int i, int x) {
+    int* p = (int*)mod_fvec_at(v, (size_t)i);
+    if (p) *p = x;
+}
+static struct openpete_mod* pend_at(const mod_fvec* v, int i) {
+    return (struct openpete_mod*)mod_fvec_at(v, (size_t)i);
+}
 static unsigned            s_toggle_epoch; /* defined with the queue below */
 
 /* Where the enabled set came from, so "fix your load order" messages
@@ -336,7 +364,8 @@ static int mod_check_abi(void* dl, const char* id, const char* path) {
  * chains, draws or materials and then returned nonzero must not leave
  * them live under an id the loader has just declared disabled. */
 static void mod_strip_registrations(struct openpete_mod* mod) {
-    openpete_host_mouse_request_capture(OPENPETE_MOUSE_CAP_MOD0 + (int)(mod - s_mods), 0);
+    openpete_host_mouse_request_capture(
+        OPENPETE_MOUSE_CAP_MOD0 + mod->load_index, 0);
     memset(mod->mouse_mark, 0, sizeof mod->mouse_mark);
     mod->pad_absent_logged  = 0;
     mod->pad_present_logged = 0;
@@ -885,8 +914,8 @@ static void hot_reload_poll(void) {
     if (++s_cnt % 64u) return;
     sdk_prefix_recheck(s_sdk_dir); /* an SDK edit must show up in
                                     * this round's keys */
-    for (int i = 0; i < s_mod_count; i++) {
-        struct openpete_mod* mod = &s_mods[i];
+    for (int i = 0; i < mod_count(); i++) {
+        struct openpete_mod* mod = mod_at(i);
         /* Deferred-entry rows (never entered) reload nothing: no code
          * of theirs is live; their first enable uses the boot object. */
         if (!mod->dl || !mod->has_src || !mod->entered) continue;
@@ -943,19 +972,19 @@ typedef struct { unsigned tick; char id[MOD_ID_MAX]; int on; } toggle_sched_t;
 static mod_fvec s_toggle_sched;   /* toggle_sched_t, parsed once at boot */
 static int mod_is_mutative(const struct openpete_mod* m);
 
-int         openpete_mods_count(void) { return s_mod_count; }
+int         openpete_mods_count(void) { return mod_count(); }
 const char* openpete_mods_id(int i) {
-    return (i >= 0 && i < s_mod_count) ? s_mods[i].id : NULL;
+    return (i >= 0 && i < mod_count()) ? mod_at(i)->id : NULL;
 }
 int openpete_mods_is_enabled(const char* id) {
-    for (int i = 0; i < s_mod_count; i++)
-        if (strcmp(s_mods[i].id, id) == 0) return s_mods[i].enabled;
+    for (int i = 0; i < mod_count(); i++)
+        if (strcmp(mod_at(i)->id, id) == 0) return mod_at(i)->enabled;
     return 0;
 }
 
 int openpete_mods_menu_info(int i, openpete_mods_menu_info_t* out) {
-    if (i < 0 || i >= s_mod_count || !out) return 0;
-    const struct openpete_mod* m = &s_mods[i];
+    if (i < 0 || i >= mod_count() || !out) return 0;
+    const struct openpete_mod* m = mod_at(i);
     out->id          = m->id;
     out->name        = m->name[0] ? m->name : m->id;
     out->version     = m->version;
@@ -974,14 +1003,14 @@ int openpete_mods_menu_info(int i, openpete_mods_menu_info_t* out) {
 /* ── Config-schema accessors (the Mods panel's data source) ────────── */
 
 int openpete_mods_cfg_row_count(int mod_index) {
-    if (mod_index < 0 || mod_index >= s_mod_count) return 0;
-    return s_mods[mod_index].n_cfg;
+    if (mod_index < 0 || mod_index >= mod_count()) return 0;
+    return mod_at(mod_index)->n_cfg;
 }
 
 int openpete_mods_cfg_row(int mod_index, int row,
                           openpete_mods_cfg_row_t* out) {
-    if (mod_index < 0 || mod_index >= s_mod_count || !out) return 0;
-    struct openpete_mod* m = &s_mods[mod_index];
+    if (mod_index < 0 || mod_index >= mod_count() || !out) return 0;
+    struct openpete_mod* m = mod_at(mod_index);
     if (row < 0 || row >= m->n_cfg) return 0;
     const mod_cfg_row_t* r = &m->cfg_rows[row];
     out->key     = r->key;
@@ -1018,9 +1047,9 @@ int openpete_mods_cfg_row(int mod_index, int row,
 
 int openpete_mods_cfg_apply(int mod_index, int n,
                             const openpete_mods_cfg_edit_t* edits) {
-    if (mod_index < 0 || mod_index >= s_mod_count || n <= 0 || !edits)
+    if (mod_index < 0 || mod_index >= mod_count() || n <= 0 || !edits)
         return -1;
-    struct openpete_mod* m = &s_mods[mod_index];
+    struct openpete_mod* m = mod_at(mod_index);
     if (openpete_mods_config_write(m->dir, m->log_tag, n, edits) != 0)
         return -1;
     m->cfg_reload_pending = 1;
@@ -1051,8 +1080,8 @@ static void mod_ui_run_body(struct openpete_mod* m, int i,
 }
 
 void openpete_mods_ui_draw(int i, const struct openpete_mod_ui* ui) {
-    if (i < 0 || i >= s_mod_count || !ui) return;
-    struct openpete_mod* m = &s_mods[i];
+    if (i < 0 || i >= mod_count() || !ui) return;
+    struct openpete_mod* m = mod_at(i);
     if (!m->enabled) return;
     for (int l = 0; l < m->status_n; l++)
         ui->text("%s", m->status[l]);
@@ -1068,8 +1097,8 @@ void openpete_mods_ui_draw(int i, const struct openpete_mod_ui* ui) {
 
 void openpete_mods_ui_draw_always(int i, const struct openpete_mod_ui* ui,
                                   int no_input) {
-    if (i < 0 || i >= s_mod_count || !ui) return;
-    struct openpete_mod* m = &s_mods[i];
+    if (i < 0 || i >= mod_count() || !ui) return;
+    struct openpete_mod* m = mod_at(i);
     if (!m->enabled || !m->ui_always) return;
     openpete_mod_ui_body_fn body = m->ui_body;
     if (!body) return;
@@ -1078,16 +1107,16 @@ void openpete_mods_ui_draw_always(int i, const struct openpete_mod_ui* ui,
 
 int openpete_mods_ui_always_count(void) {
     int n = 0;
-    for (int i = 0; i < s_mod_count; i++) {
-        struct openpete_mod* m = &s_mods[i];
+    for (int i = 0; i < mod_count(); i++) {
+        struct openpete_mod* m = mod_at(i);
         if (m->ui_always && m->enabled && m->ui_body) n++;
     }
     return n;
 }
 
 int openpete_mods_ui_refuse_section(int i, const char* why) {
-    if (i < 0 || i >= s_mod_count) return -1;
-    struct openpete_mod* m = &s_mods[i];
+    if (i < 0 || i >= mod_count()) return -1;
+    struct openpete_mod* m = mod_at(i);
     if (!m->ui_body) return 0;
     m->ui_body = NULL;
     m->imgui_calls = 0;  /* the panel's "last present" count is gone too */
@@ -1197,8 +1226,8 @@ static void cfg_apply_schedule_run(unsigned canonical_tick) {
         cfg_apply_sched_t* t = (cfg_apply_sched_t*)mod_fvec_at(&s_cfg_sched, i);
         if (t->tick != canonical_tick) continue;
         int idx = -1;
-        for (int m = 0; m < s_mod_count; m++)
-            if (strcmp(s_mods[m].id, t->id) == 0) { idx = m; break; }
+        for (int m = 0; m < mod_count(); m++)
+            if (strcmp(mod_at(m)->id, t->id) == 0) { idx = m; break; }
         if (idx < 0) {
             OPL_ERROR_F("mods", "config-apply schedule: no mod \"%s\"", t->id);
             continue;
@@ -1228,14 +1257,14 @@ void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
      * have split the frame between two keys, and the class census reads
      * guest RAM. The tick boundary is where they become legal. */
     openpete_mods_material_apply_pending();
-    if (s_mod_count) openpete_mods_moby_class_census(cpu);
+    if (mod_count()) openpete_mods_moby_class_census(cpu);
 
     /* Apply-committed config changes: reload the mod so its entry
      * re-reads the fresh values (build key unchanged, so the compile is
      * a cache hit). A mod that never entered (deferred row / assets-
      * only) just re-parses the file — entry reads it on first enable. */
-    for (int i = 0; i < s_mod_count; i++) {
-        struct openpete_mod* mod = &s_mods[i];
+    for (int i = 0; i < mod_count(); i++) {
+        struct openpete_mod* mod = mod_at(i);
         if (!mod->cfg_reload_pending) continue;
         mod->cfg_reload_pending = 0;
         if (mod->dl && mod->has_src && mod->entered)
@@ -1255,8 +1284,8 @@ void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
         const char* id = cur.id;
         int on = cur.on;
         struct openpete_mod* mod = NULL;
-        for (int i = 0; i < s_mod_count; i++)
-            if (strcmp(s_mods[i].id, id) == 0) { mod = &s_mods[i]; break; }
+        for (int i = 0; i < mod_count(); i++)
+            if (strcmp(mod_at(i)->id, id) == 0) { mod = mod_at(i); break; }
         if (!mod) {
             OPL_ERROR_F("mods", "live toggle: no loaded mod \"%s\"", id);
             continue;
@@ -1285,7 +1314,7 @@ void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
         openpete_mods_registry_set_owner_enabled(id, on);
         openpete_keymap_set_mod_enabled(id, on);
         if (!on) openpete_host_mouse_request_capture(
-                     OPENPETE_MOUSE_CAP_MOD0 + (int)(mod - s_mods), 0);
+                     OPENPETE_MOUSE_CAP_MOD0 + mod->load_index, 0);
         mod->enabled = on;
         s_toggle_epoch++;
         OPL_INFO_F("mods", "live toggle: %s %s (tick %u)",
@@ -1300,8 +1329,8 @@ void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
 
 const char* openpete_mods_build_key(const char* id) {
     if (!id) return NULL;
-    for (int i = 0; i < s_mod_count; i++)
-        if (strcmp(s_mods[i].id, id) == 0) return s_mods[i].build_key;
+    for (int i = 0; i < mod_count(); i++)
+        if (strcmp(mod_at(i)->id, id) == 0) return mod_at(i)->build_key;
     return NULL;
 }
 
@@ -1312,10 +1341,10 @@ const char* openpete_mods_build_key(const char* id) {
  * binary-only mod (prebuilt object, no src/) is held to the same
  * declaration as a source one. */
 int openpete_mods_runahead_capable(const char** offender) {
-    for (int i = 0; i < s_mod_count; i++) {
-        if (!s_mods[i].enabled || !s_mods[i].dl) continue;
-        if (!s_mods[i].ra_decl) {
-            if (offender) *offender = s_mods[i].id;
+    for (int i = 0; i < mod_count(); i++) {
+        if (!mod_at(i)->enabled || !mod_at(i)->dl) continue;
+        if (!mod_at(i)->ra_decl) {
+            if (offender) *offender = mod_at(i)->id;
             return 0;
         }
     }
@@ -1328,10 +1357,10 @@ int openpete_mods_runahead_capable(const char** offender) {
  * (rewind): an undeclared mod's host state may silently desync when the
  * guest world moves under it. Assets-only mods hold no host state. */
 int openpete_mods_state_safe(const char** offender) {
-    for (int i = 0; i < s_mod_count; i++) {
-        if (!s_mods[i].enabled || !s_mods[i].dl) continue;
-        if (!s_mods[i].state_decl) {
-            if (offender) *offender = s_mods[i].id;
+    for (int i = 0; i < mod_count(); i++) {
+        if (!mod_at(i)->enabled || !mod_at(i)->dl) continue;
+        if (!mod_at(i)->state_decl) {
+            if (offender) *offender = mod_at(i)->id;
             return 0;
         }
     }
@@ -1366,11 +1395,19 @@ const char* openpete_mods_modset_tag(void) {
      * entry load-all rows join the tag at their first enable (the
      * enable path clears s_tag_built; memcard reads the tag per
      * check/write, so later writes carry the grown tag). */
-    const struct openpete_mod* picked[MODS_MAX];
+    mod_fvec pick;
+    const struct openpete_mod** picked;
     int n = 0;
-    for (int i = 0; i < s_mod_count; i++)
-        if (s_mods[i].entered && mod_is_mutative(&s_mods[i]))
-            picked[n++] = &s_mods[i];
+    mod_fvec_init(&pick, sizeof(struct openpete_mod*), 64, NULL, 0);
+    for (int i = 0; i < mod_count(); i++)
+        if (mod_at(i)->entered && mod_is_mutative(mod_at(i))) {
+            const struct openpete_mod** slot =
+                (const struct openpete_mod**)mod_fvec_push(&pick);
+            if (!slot) break;
+            *slot = mod_at(i);
+            n++;
+        }
+    picked = (const struct openpete_mod**)mod_fvec_data(&pick);
     for (int i = 1; i < n; i++) {
         const struct openpete_mod* m = picked[i];
         int j = i - 1;
@@ -1487,7 +1524,8 @@ static int api_mouse_read(openpete_mod_t* self, openpete_mod_mouse_t* out) {
 
 static int api_mouse_capture(openpete_mod_t* self, int on) {
     if (!self) return -1;
-    openpete_host_mouse_request_capture(OPENPETE_MOUSE_CAP_MOD0 + (int)(self - s_mods), on);
+    openpete_host_mouse_request_capture(
+        OPENPETE_MOUSE_CAP_MOD0 + self->load_index, on);
     return 0;
 }
 
@@ -1607,8 +1645,7 @@ const char* openpete_mods_dir_of(openpete_mod_t* self) {
 
 int openpete_mods_load_index_of(openpete_mod_t* self) {
     if (!self) return -1;
-    ptrdiff_t i = self - s_mods;
-    return (i >= 0 && i < s_mod_count) ? (int)i : -1;
+    return self->load_index;
 }
 
 const char* openpete_mods_sdk_dir(void) {
@@ -2695,9 +2732,9 @@ static int mod_enter_deferred(struct openpete_mod* mod) {
     if (mod->entered) return 0;
     for (int d = 0; d < mod->n_deps; d++) {
         struct openpete_mod* dep = NULL;
-        for (int i = 0; i < s_mod_count; i++)
-            if (strcmp(s_mods[i].id, mod->deps[d]) == 0) {
-                dep = &s_mods[i];
+        for (int i = 0; i < mod_count(); i++)
+            if (strcmp(mod_at(i)->id, mod->deps[d]) == 0) {
+                dep = mod_at(i);
                 break;
             }
         if (!dep) {
@@ -2728,33 +2765,33 @@ static int mod_enter_deferred(struct openpete_mod* mod) {
 enum { TS_WHITE = 0, TS_GRAY, TS_BLACK, TS_FAILED };
 
 typedef struct {
-    struct openpete_mod* pending;
+    const mod_fvec*      pending;    /* struct openpete_mod rows */
     int                  n_pending;
-    int                  state[MODS_MAX];
-    int                  topo[MODS_MAX];
+    mod_fvec             state;      /* int per pending row */
+    mod_fvec             topo;       /* int, the visit order */
     int                  n_topo;
     const char*          mods_dir;
 } topo_ctx_t;
 
 static int topo_find(const topo_ctx_t* c, const char* id) {
     for (int j = 0; j < c->n_pending; j++)
-        if (strcmp(c->pending[j].id, id) == 0) return j;
+        if (strcmp(pend_at(c->pending, j)->id, id) == 0) return j;
     return -1;
 }
 
 static int topo_visit(topo_ctx_t* c, int i) { /* 0 = ok, -1 = failed */
-    if (c->state[i] == TS_BLACK)  return 0;
-    if (c->state[i] == TS_FAILED) return -1;
-    if (c->state[i] == TS_GRAY) {
+    if (int_row(&c->state, i) == TS_BLACK)  return 0;
+    if (int_row(&c->state, i) == TS_FAILED) return -1;
+    if (int_row(&c->state, i) == TS_GRAY) {
         OPL_ERROR_F("mods", "dependency cycle through \"%s\" — disabled "
                     "(break the cycle in the mods' mod.toml deps)",
-                    c->pending[i].id);
-        c->state[i] = TS_FAILED;
+                    pend_at(c->pending, i)->id);
+        int_row_set(&c->state, i, TS_FAILED);
         return -1;
     }
-    c->state[i] = TS_GRAY;
-    for (int d = 0; d < c->pending[i].n_deps; d++) {
-        int j = topo_find(c, c->pending[i].deps[d]);
+    int_row_set(&c->state, i, TS_GRAY);
+    for (int d = 0; d < pend_at(c->pending, i)->n_deps; d++) {
+        int j = topo_find(c, pend_at(c->pending, i)->deps[d]);
         if (j < 0) {
             char where[MOD_PATH_MAX + 16];
             if (strcmp(s_order_src, "enabled.txt") == 0)
@@ -2764,24 +2801,29 @@ static int topo_visit(topo_ctx_t* c, int i) { /* 0 = ok, -1 = failed */
             OPL_ERROR_F("mods", "\"%s\" requires \"%s\", which is not "
                         "enabled — add it to %s (ahead of "
                         "\"%s\") or install it; \"%s\" disabled",
-                        c->pending[i].id, c->pending[i].deps[d],
-                        where, c->pending[i].id, c->pending[i].id);
-            c->state[i] = TS_FAILED;
+                        pend_at(c->pending, i)->id, pend_at(c->pending, i)->deps[d],
+                        where, pend_at(c->pending, i)->id, pend_at(c->pending, i)->id);
+            int_row_set(&c->state, i, TS_FAILED);
             return -1;
         }
         if (topo_visit(c, j) != 0) {
-            if (c->state[i] != TS_FAILED) {
+            if (int_row(&c->state, i) != TS_FAILED) {
                 OPL_ERROR_F("mods", "\"%s\" disabled: its dependency "
-                            "\"%s\" failed", c->pending[i].id,
-                            c->pending[i].deps[d]);
-                c->state[i] = TS_FAILED;
+                            "\"%s\" failed", pend_at(c->pending, i)->id,
+                            pend_at(c->pending, i)->deps[d]);
+                int_row_set(&c->state, i, TS_FAILED);
             }
             return -1;
         }
     }
-    if (c->state[i] == TS_FAILED) return -1; /* cycle marked us */
-    c->state[i] = TS_BLACK;
-    c->topo[c->n_topo++] = i;
+    if (int_row(&c->state, i) == TS_FAILED) return -1; /* cycle marked us */
+    int_row_set(&c->state, i, TS_BLACK);
+    {
+        int* slot = (int*)mod_fvec_push(&c->topo);
+        if (!slot) return -1;
+        *slot = i;
+        c->n_topo++;
+    }
     return 0;
 }
 
@@ -2919,6 +2961,10 @@ typedef struct {
                              * load-all row) */
 } mod_ref_t;
 
+static mod_ref_t* ref_at(const mod_fvec* v, int i) {
+    return (mod_ref_t*)mod_fvec_at(v, (size_t)i);
+}
+
 /* Resolve the mods dir (opts → env → <exe>/mods), unpack zips, and
  * produce the ordered enabled set (enabled.txt order = priority;
  * fallback: all discovered, lexicographic). Returns the count (0 = no
@@ -3040,42 +3086,41 @@ static int scan_keep_for_game(const char* mods_dir, const char* id) {
  * stamped so re-extraction only happens when the zip changes). A
  * folder and a zip with the same id: the folder wins (consumers probe
  * the folder first when resolving the dir). A mod whose manifest names
- * another game is not a candidate here at all. Returns the count. */
-static int mods_scan(const char* mods_dir, char ids[][MOD_ID_MAX],
-                     int max) {
+ * another game is not a candidate here at all. Appends mod_id_row_t rows
+ * to `ids` and returns the count. */
+static int mods_scan(const char* mods_dir, mod_fvec* ids) {
     DIR* d = opendir(mods_dir);
     if (!d) return 0; /* no mods directory: inert */
 
-    int n_ids = 0, n_over = 0;
     struct dirent* e;
     while ((e = readdir(d)) != NULL) {
+        char id[MOD_ID_MAX];
+        mod_id_row_t* row;
         if (e->d_name[0] == '.') continue;
         size_t nl = strlen(e->d_name);
         if (nl > 4 && strcmp(e->d_name + nl - 4, ".zip") == 0) {
-            char id[MOD_ID_MAX];
             snprintf(id, sizeof id, "%.*s", (int)(nl - 4), e->d_name);
-            if (n_ids >= max) { n_over++; continue; }
-            if (mod_unpack_zip(mods_dir, id) == 0 &&
-                scan_keep_for_game(mods_dir, id))
-                snprintf(ids[n_ids++], MOD_ID_MAX, "%s", id);
+            if (mod_unpack_zip(mods_dir, id) != 0 ||
+                !scan_keep_for_game(mods_dir, id))
+                continue;
+        } else {
+            char manifest[MOD_PATH_MAX];
+            snprintf(manifest, sizeof manifest, "%s/%s/mod.toml", mods_dir,
+                     e->d_name);
+            if (file_mtime(manifest) == (time_t)-1) continue;
+            if (!scan_keep_for_game(mods_dir, e->d_name)) continue;
+            snprintf(id, sizeof id, "%s", e->d_name);
+        }
+        row = (mod_id_row_t*)mod_fvec_push(ids);
+        if (!row) {
+            OPL_ERROR_F("mods", "mods scan: id list allocation failed — "
+                        "\"%s\" skipped", id);
             continue;
         }
-        char manifest[MOD_PATH_MAX];
-        snprintf(manifest, sizeof manifest, "%s/%s/mod.toml", mods_dir,
-                 e->d_name);
-        if (file_mtime(manifest) == (time_t)-1) continue;
-        if (n_ids >= max) { n_over++; continue; }
-        if (!scan_keep_for_game(mods_dir, e->d_name)) continue;
-        snprintf(ids[n_ids++], MOD_ID_MAX, "%s", e->d_name);
+        snprintf(row->id, sizeof row->id, "%s", id);
     }
     closedir(d);
-    /* Never truncate silently: which mods fall off a full scan depends on
-     * raw readdir order, so the victim looks random to the user. */
-    if (n_over)
-        OPL_ERROR_F("mods", "mods dir has %d more mod(s) than the %d this "
-                    "build can load — %d skipped in directory order",
-                    n_over, max, n_over);
-    return n_ids;
+    return (int)mod_fvec_count(ids);
 }
 
 static int cmp_id_row(const void* a, const void* b) {
@@ -3091,9 +3136,91 @@ static char* trim_id(char* s) {
     return s;
 }
 
+/* Append one id to an order list. Returns 1 when it was appended. */
+static int order_push(mod_fvec* order, const char* id) {
+    int n = (int)mod_fvec_count(order);
+    if (!mod_fvec_push(order)) return 0;
+    snprintf(id_row(order, n), MOD_ID_MAX, "%s", id);
+    return 1;
+}
+
+/* Order from a --mods / OPENPETE_MODS comma list. Returns the count. */
+static int order_from_mods_flag(const char* list, mod_fvec* order) {
+    int n = 0;
+    for (const char* p = list; *p; ) {
+        const char* comma = strchr(p, ',');
+        size_t len = comma ? (size_t)(comma - p) : strlen(p);
+        char item[MOD_ID_MAX * 2];
+        char* s;
+        snprintf(item, sizeof item, "%.*s", (int)len, p);
+        s = trim_id(item);
+        if (strlen(s) >= MOD_ID_MAX)
+            OPL_WARN_F("mods", "--mods: id \"%.32s...\" exceeds %d "
+                       "characters — skipped", s, MOD_ID_MAX - 1);
+        else if (*s)
+            n += order_push(order, s);
+        if (!comma) break;
+        p = comma + 1;
+    }
+    return n;
+}
+
+/* Order from an open enabled.txt, one id per line, '#' comments.
+ *
+ * One whole line per iteration: a comment (or any text) longer than the
+ * buffer must not come back as fragments, or each tail reads as a bogus
+ * id and warns at every boot.
+ *
+ * fgets drops the newline in two very different cases: the line outran
+ * the buffer, or the file simply ended without a trailing newline. Only
+ * the first is truncation — telling them apart by "did fgets fill the
+ * buffer" rather than by the missing newline, because a final line with
+ * no newline is the norm for editors that don't add one, and treating it
+ * as truncated silently drops whatever mod the user appended last. */
+static int order_from_enabled_txt(FILE* en, mod_fvec* order) {
+    char line[512];
+    int n = 0;
+    while (fgets(line, sizeof line, en)) {
+        size_t got = strlen(line);
+        int truncated = (got == sizeof line - 1) && line[got - 1] != '\n';
+        char* s;
+        if (truncated) { /* drain the rest of the over-long line */
+            int c;
+            while ((c = fgetc(en)) != EOF && c != '\n') { }
+        }
+        line[strcspn(line, "\r\n")] = 0;
+        s = trim_id(line);
+        if (!*s || *s == '#') continue;
+        if (truncated)
+            OPL_WARN_F("mods", "enabled.txt: line starting \"%.32s\" is "
+                       "longer than %d characters — skipped",
+                       s, (int)(sizeof line - 1));
+        else if (strlen(s) >= MOD_ID_MAX)
+            OPL_WARN_F("mods", "enabled.txt: id \"%.32s...\" exceeds "
+                       "%d characters — skipped", s, MOD_ID_MAX - 1);
+        else
+            n += order_push(order, s);
+    }
+    return n;
+}
+
+/* Order with no list to follow: every scanned id, lexicographic. */
+static int order_from_scan(mod_fvec* ids, int n_ids, mod_fvec* order) {
+    int n = 0;
+    qsort(mod_fvec_data(ids), (size_t)n_ids, sizeof(mod_id_row_t),
+          cmp_id_row);
+    for (int i = 0; i < n_ids; i++) {
+        if (!order_push(order, id_row(ids, i))) break;
+        n++;
+    }
+    return n;
+}
+
+/* Resolve the mods dir and append one mod_ref_t per discovered mod to
+ * `out`, enabled set first in priority order. Returns the count. */
 static int mods_discover(const openpete_options_t* opts,
                          char* mods_dir, size_t mods_dir_cap,
-                         mod_ref_t* out, int max) {
+                         mod_fvec* out) {
     if (mods_root(opts, mods_dir, mods_dir_cap) != 0) return 0;
 
     /* --mods (env OPENPETE_MODS) replaces enabled.txt wholesale: a
@@ -3105,105 +3232,56 @@ static int mods_discover(const openpete_options_t* opts,
                                    : getenv("OPENPETE_MODS");
     s_order_src = enabled_override ? "--mods" : "enabled.txt";
 
-    char ids[MODS_MAX][MOD_ID_MAX];
-    int n_ids = mods_scan(mods_dir, ids, MODS_MAX);
-    if (n_ids == 0) return 0;
+    mod_fvec ids, order;
+    int n_ids, n_order, n_out = 0;
+    mod_fvec_init(&ids, sizeof(mod_id_row_t), 64, NULL, 0);
+    mod_fvec_init(&order, sizeof(mod_id_row_t), 64, NULL, 0);
+    n_ids = mods_scan(mods_dir, &ids);
+    if (n_ids == 0) { mod_fvec_free(&ids); mod_fvec_free(&order); return 0; }
 
-    /* enabled.txt (one id per line, '#' comments) fixes the order; the
-     * order IS the priority (later = higher). Fallback: lexicographic. */
-    char order[MODS_MAX][MOD_ID_MAX];
-    int n_order = 0;
+    /* enabled.txt (one id per line) fixes the order; the order IS the
+     * priority (later = higher). Fallback: lexicographic. */
     char en_path[MOD_PATH_MAX];
     snprintf(en_path, sizeof en_path, "%s/enabled.txt", mods_dir);
     FILE* en = enabled_override ? NULL : fopen(en_path, "r");
-    if (enabled_override) {
-        const char* p = enabled_override;
-        while (n_order < MODS_MAX && *p) {
-            const char* comma = strchr(p, ',');
-            size_t len = comma ? (size_t)(comma - p) : strlen(p);
-            char item[MOD_ID_MAX * 2];
-            snprintf(item, sizeof item, "%.*s", (int)len, p);
-            char* s = trim_id(item);
-            if (strlen(s) >= MOD_ID_MAX)
-                OPL_WARN_F("mods", "--mods: id \"%.32s...\" exceeds %d "
-                           "characters — skipped", s, MOD_ID_MAX - 1);
-            else if (*s)
-                snprintf(order[n_order++], MOD_ID_MAX, "%s", s);
-            if (!comma) break;
-            p = comma + 1;
-        }
-        if (n_order == 0) {
-            OPL_INFO_F("mods", "--mods lists no mods — none enabled "
-                       "(mods dir: %s)", mods_dir);
-            return 0;
-        }
-    } else if (en) {
-        /* One WHOLE line per iteration: a comment (or any text) longer
-         * than the buffer must not come back as fragments, or each tail
-         * reads as a bogus id and warns at every boot.
-         *
-         * fgets drops the newline in two very different cases: the line
-         * outran the buffer, or the file simply ended without a trailing
-         * newline. Only the first is truncation — telling them apart by
-         * "did fgets fill the buffer" rather than by the missing newline,
-         * because a final line with no newline is the norm for editors
-         * that don't add one, and treating it as truncated silently drops
-         * whatever mod the user appended last. */
-        char line[512];
-        while (n_order < MODS_MAX && fgets(line, sizeof line, en)) {
-            size_t got = strlen(line);
-            int truncated = (got == sizeof line - 1) && line[got - 1] != '\n';
-            if (truncated) { /* drain the rest of the over-long line */
-                int c;
-                while ((c = fgetc(en)) != EOF && c != '\n') { }
-            }
-            line[strcspn(line, "\r\n")] = 0;
-            char* s = trim_id(line);
-            if (!*s || *s == '#') continue;
-            if (truncated) {
-                OPL_WARN_F("mods", "enabled.txt: line starting \"%.32s\" is "
-                           "longer than %d characters — skipped",
-                           s, (int)(sizeof line - 1));
-                continue;
-            }
-            if (strlen(s) >= MOD_ID_MAX) {
-                OPL_WARN_F("mods", "enabled.txt: id \"%.32s...\" exceeds "
-                           "%d characters — skipped", s, MOD_ID_MAX - 1);
-                continue;
-            }
-            snprintf(order[n_order++], MOD_ID_MAX, "%s", s);
-        }
-        fclose(en);
-    } else {
-        qsort(ids, (size_t)n_ids, sizeof ids[0], cmp_id_row);
-        for (int i = 0; i < n_ids; i++)
-            snprintf(order[n_order++], MOD_ID_MAX, "%s", ids[i]);
+    if (enabled_override)  n_order = order_from_mods_flag(enabled_override,
+                                                          &order);
+    else if (en)           n_order = order_from_enabled_txt(en, &order);
+    else                   n_order = order_from_scan(&ids, n_ids, &order);
+    if (en) fclose(en);
+    if (enabled_override && n_order == 0) {
+        OPL_INFO_F("mods", "--mods lists no mods — none enabled "
+                   "(mods dir: %s)", mods_dir);
+        mod_fvec_free(&ids); mod_fvec_free(&order);
+        return 0;
     }
 
-    int n_out = 0;
-    for (int i = 0; i < n_order && n_out < max; i++) {
+    for (int i = 0; i < n_order; i++) {
+        mod_ref_t* slot;
         int known = 0;
         for (int j = 0; j < n_ids; j++)
-            if (strcmp(order[i], ids[j]) == 0) known = 1;
+            if (strcmp(id_row(&order, i), id_row(&ids, j)) == 0) known = 1;
         if (!known) {
             /* Say which case it is: a folder missing its manifest, or no
              * folder at all (typical after enabling a mod the deployed
              * mods dir doesn't have yet — rebuild/stage or copy it in). */
             char d[MOD_PATH_MAX];
-            snprintf(d, sizeof d, "%s/%s", mods_dir, order[i]);
+            const char* want = id_row(&order, i);
+            snprintf(d, sizeof d, "%s/%s", mods_dir, want);
             if (file_mtime(d) == (time_t)-1)
                 OPL_WARN_F("mods", "%s names \"%s\" but there is "
                            "no mods/%s/ folder (or <id>.zip) here — skipped "
-                           "(mods dir: %s)", s_order_src, order[i], order[i],
+                           "(mods dir: %s)", s_order_src, want, want,
                            mods_dir);
             else
                 OPL_WARN_F("mods", "%s names \"%s\" but mods/%s/ has "
-                           "no mod.toml — skipped", s_order_src, order[i],
-                           order[i]);
+                           "no mod.toml — skipped", s_order_src, want, want);
             continue;
         }
-        mod_ref_resolve(mods_dir, order[i], &out[n_out]);
-        out[n_out].boot_on = 1;
+        slot = (mod_ref_t*)mod_fvec_push(out);
+        if (!slot) break;
+        mod_ref_resolve(mods_dir, id_row(&order, i), slot);
+        slot->boot_on = 1;
         n_out++;
     }
 
@@ -3214,17 +3292,24 @@ static int mods_discover(const openpete_options_t* opts,
      * (every harness/CI case) and headless runs keep exact-set
      * semantics; the no-enabled.txt fallback already enables all. */
     if (!enabled_override && en && opts && !opts->headless) {
-        qsort(ids, (size_t)n_ids, sizeof ids[0], cmp_id_row);
-        for (int i = 0; i < n_ids && n_out < max; i++) {
+        qsort(mod_fvec_data(&ids), (size_t)n_ids, sizeof(mod_id_row_t),
+              cmp_id_row);
+        for (int i = 0; i < n_ids; i++) {
+            mod_ref_t* slot;
             int listed = 0;
             for (int j = 0; j < n_out && !listed; j++)
-                if (strcmp(out[j].id, ids[i]) == 0) listed = 1;
+                if (strcmp(ref_at(out, j)->id, id_row(&ids, i)) == 0)
+                    listed = 1;
             if (listed) continue;
-            mod_ref_resolve(mods_dir, ids[i], &out[n_out]);
-            out[n_out].boot_on = 0;
+            slot = (mod_ref_t*)mod_fvec_push(out);
+            if (!slot) break;
+            mod_ref_resolve(mods_dir, id_row(&ids, i), slot);
+            slot->boot_on = 0;
             n_out++;
         }
     }
+    mod_fvec_free(&ids);
+    mod_fvec_free(&order);
     return n_out;
 }
 
@@ -3258,9 +3343,9 @@ static void mods_sdk_missing_notice(const char* sdk_dir) {
 /* ---- compile-on-boot prepare (openpete-mod-compile-on-boot) ---------- */
 
 struct mods_prepare_ctx {
-    mod_ref_t                 refs[MODS_MAX];
-    char                      keys[MODS_MAX][65];
-    int                       stale[MODS_MAX];
+    mod_fvec                  refs;   /* mod_ref_t */
+    mod_fvec                  keys;   /* mod_key_row_t, one per ref */
+    mod_fvec                  stale;  /* int, indices into refs */
     int                       n_stale;
     char                      sdk_dir[MOD_PATH_MAX];
     openpete_mods_progress_fn progress;
@@ -3269,7 +3354,8 @@ struct mods_prepare_ctx {
 static int mods_prepare_task(void* ud) {
     struct mods_prepare_ctx* c = (struct mods_prepare_ctx*)ud;
     for (int i = 0; i < c->n_stale; i++) {
-        const mod_ref_t* r = &c->refs[c->stale[i]];
+        int si = int_row(&c->stale, i);
+        const mod_ref_t* r = ref_at(&c->refs, si);
         if (c->progress) c->progress("COMPILING MODS", i, c->n_stale);
         char so_path[MOD_PATH_MAX];
         snprintf(so_path, sizeof so_path, "%s/.build/%s" MOD_DL_EXT,
@@ -3277,7 +3363,8 @@ static int mods_prepare_task(void* ud) {
         /* A failure is logged (+ compile.log) and left for init to
          * report as disabled — prepare never aborts the boot. */
         (void)mod_compile(r->dir, r->id, c->sdk_dir,
-                          c->keys[c->stale[i]], so_path, 1);
+                          ((mod_key_row_t*)mod_fvec_at(&c->keys, (size_t)si))->k,
+                          so_path, 1);
     }
     if (c->progress) c->progress("COMPILING MODS", c->n_stale, c->n_stale);
     return 0;
@@ -3292,18 +3379,26 @@ int openpete_mods_prepare(const openpete_options_t* opts,
         if (!cc[0]) return 0; /* no compiler on this box: init's
                                * prebuilt-DLL fallback owns messaging */
     }
-    /* Boot-once, main-thread; static keeps ~37 KB off the stack. */
+    /* Boot-once, main-thread. The lists are heap-backed; releasing them
+     * before the memset keeps a second call from orphaning the first
+     * call's rows (free on a zeroed vec is a no-op). */
     static struct mods_prepare_ctx c;
+    mod_fvec_free(&c.refs);
+    mod_fvec_free(&c.keys);
+    mod_fvec_free(&c.stale);
     memset(&c, 0, sizeof c);
+    mod_fvec_init(&c.refs, sizeof(mod_ref_t), 64, NULL, 0);
+    mod_fvec_init(&c.keys, sizeof(mod_key_row_t), 64, NULL, 0);
+    mod_fvec_init(&c.stale, sizeof(int), 64, NULL, 0);
     char mods_dir[MOD_PATH_MAX];
-    int n_refs = mods_discover(opts, mods_dir, sizeof mods_dir, c.refs,
-                               MODS_MAX);
+    int n_refs = mods_discover(opts, mods_dir, sizeof mods_dir, &c.refs);
     if (n_refs <= 0) return 0;
+    if (mod_fvec_resize(&c.keys, (size_t)n_refs) != 0) return 0;
     mods_sdk_dir(c.sdk_dir, sizeof c.sdk_dir);
     if (!mods_sdk_present(c.sdk_dir)) {
         for (int i = 0; i < n_refs; i++) {
             char key[65];
-            if (mod_compute_key(c.refs[i].dir, c.sdk_dir, key) == 0) {
+            if (mod_compute_key(ref_at(&c.refs, i)->dir, c.sdk_dir, key) == 0) {
                 mods_sdk_missing_notice(c.sdk_dir); /* a src/ mod exists */
                 break;
             }
@@ -3315,12 +3410,18 @@ int openpete_mods_prepare(const openpete_options_t* opts,
     /* Pass 1: pure hashing — milliseconds; no window, no compile. */
     for (int i = 0; i < n_refs; i++) {
         char key[65];
-        if (mod_compute_key(c.refs[i].dir, c.sdk_dir, key) != 0)
+        int* slot;
+        const mod_ref_t* r = ref_at(&c.refs, i);
+        if (mod_compute_key(r->dir, c.sdk_dir, key) != 0)
             continue; /* assets-only or binary-only mod */
-        if (mod_key_cached(c.refs[i].dir, c.refs[i].id, key))
+        if (mod_key_cached(r->dir, r->id, key))
             continue;
-        memcpy(c.keys[i], key, sizeof key);
-        c.stale[c.n_stale++] = i;
+        memcpy(((mod_key_row_t*)mod_fvec_at(&c.keys, (size_t)i))->k, key,
+               sizeof key);
+        slot = (int*)mod_fvec_push(&c.stale);
+        if (!slot) break;
+        *slot = i;
+        c.n_stale++;
     }
     if (c.n_stale == 0) return 0;
 
@@ -3355,18 +3456,22 @@ int openpete_mods_compile_all(const openpete_options_t* opts) {
 
     /* EVERY candidate in the dir — enabled.txt is a runtime concern;
      * the build gate wants a disabled mod's breakage surfaced too. */
-    char ids[MODS_MAX][MOD_ID_MAX];
-    int n_ids = mods_scan(mods_dir, ids, MODS_MAX);
+    mod_fvec ids;
+    mod_fvec_init(&ids, sizeof(mod_id_row_t), 64, NULL, 0);
+    int n_ids = mods_scan(mods_dir, &ids);
     if (n_ids == 0) {
+        mod_fvec_free(&ids);
         OPL_INFO_F("mods", "--compile-mods: nothing to compile in %s",
                    mods_dir);
         return 0;
     }
-    qsort(ids, (size_t)n_ids, sizeof ids[0], cmp_id_row);
+    qsort(mod_fvec_data(&ids), (size_t)n_ids, sizeof(mod_id_row_t),
+          cmp_id_row);
 
     char sdk_dir[MOD_PATH_MAX];
     mods_sdk_dir(sdk_dir, sizeof sdk_dir);
     if (!mods_sdk_present(sdk_dir)) {
+        mod_fvec_free(&ids);
         mods_sdk_missing_notice(sdk_dir);
         OPL_ERROR_F("mods", "--compile-mods: no SDK at %s", sdk_dir);
         return -1;
@@ -3375,7 +3480,7 @@ int openpete_mods_compile_all(const openpete_options_t* opts) {
     int n_compiled = 0, n_cached = 0, n_failed = 0;
     for (int i = 0; i < n_ids; i++) {
         mod_ref_t r;
-        mod_ref_resolve(mods_dir, ids[i], &r);
+        mod_ref_resolve(mods_dir, id_row(&ids, i), &r);
         char key[65];
         if (mod_compute_key(r.dir, sdk_dir, key) != 0)
             continue; /* assets-only or binary-only mod: nothing to do */
@@ -3391,6 +3496,7 @@ int openpete_mods_compile_all(const openpete_options_t* opts) {
         else
             n_failed++; /* mod_compile logged + pointed at compile.log */
     }
+    mod_fvec_free(&ids);
     OPL_INFO_F("mods", "--compile-mods: %d compiled, %d up to date, "
                "%d failed (%s)", n_compiled, n_cached, n_failed, mods_dir);
     return n_failed;
@@ -3398,14 +3504,16 @@ int openpete_mods_compile_all(const openpete_options_t* opts) {
 
 void openpete_mods_register_key_defaults(const openpete_options_t* opts) {
     char mods_dir[MOD_PATH_MAX];
-    mod_ref_t refs[MODS_MAX];
-    int n_refs = mods_discover(opts, mods_dir, sizeof mods_dir, refs, MODS_MAX);
+    mod_fvec refs;
+    mod_fvec_init(&refs, sizeof(mod_ref_t), 64, NULL, 0);
+    int n_refs = mods_discover(opts, mods_dir, sizeof mods_dir, &refs);
     static struct openpete_mod scratch;   /* ~7 KB; see the note in init */
     for (int i = 0; i < n_refs; i++) {
         memset(&scratch, 0, sizeof scratch);
-        if (parse_manifest(refs[i].dir, &scratch) != 0) continue;
-        mod_register_key_defaults(&scratch, refs[i].boot_on);
+        if (parse_manifest(ref_at(&refs, i)->dir, &scratch) != 0) continue;
+        mod_register_key_defaults(&scratch, ref_at(&refs, i)->boot_on);
     }
+    mod_fvec_free(&refs);
 }
 
 int openpete_mods_init(const openpete_options_t* opts) {
@@ -3424,10 +3532,10 @@ int openpete_mods_init(const openpete_options_t* opts) {
                               && !opts->headless;
 
     char mods_dir[MOD_PATH_MAX];
-    mod_ref_t refs[MODS_MAX];
-    int n_refs = mods_discover(opts, mods_dir, sizeof mods_dir, refs,
-                               MODS_MAX);
-    if (n_refs <= 0) return 0;
+    mod_fvec refs;
+    mod_fvec_init(&refs, sizeof(mod_ref_t), 64, NULL, 0);
+    int n_refs = mods_discover(opts, mods_dir, sizeof mods_dir, &refs);
+    if (n_refs <= 0) { mod_fvec_free(&refs); return 0; }
 
     char sdk_dir[MOD_PATH_MAX];
     mods_sdk_dir(sdk_dir, sizeof sdk_dir);
@@ -3435,21 +3543,24 @@ int openpete_mods_init(const openpete_options_t* opts) {
 
     /* Phase A: parse all discovered manifests (no loading yet).
      *
-     * STATIC, not a local: struct openpete_mod is ~7 KB (it carries several
-     * PATH_MAX buffers plus the [[material]] rows), so MODS_MAX of them is
-     * over half a megabyte in one frame. As a local that silently outgrew
-     * the Windows main-thread stack the moment the material rows were added
-     * — boot died with EXCEPTION_STACK_OVERFLOW right after the PSX EXE
-     * loaded, while Linux's 8 MB stack absorbed it and showed nothing.
-     * Single-threaded boot-path code, so a static is the cheap fix and it
-     * matches s_mods above. */
-    static struct openpete_mod pending[MODS_MAX];
+     * Heap, not a local array: struct openpete_mod is ~7 KB (it carries
+     * several PATH_MAX buffers plus the [[material]] rows), so one per
+     * discovered mod is hundreds of kilobytes — as a local it overflowed
+     * the Windows main-thread stack (boot died with
+     * EXCEPTION_STACK_OVERFLOW right after the PSX EXE loaded, while
+     * Linux's 8 MB stack absorbed it and showed nothing). */
+    mod_fvec pending;
     int n_pending = 0;
-    for (int i = 0; i < n_refs && n_pending < MODS_MAX; i++) {
-        struct openpete_mod* mod = &pending[n_pending];
-        memset(mod, 0, sizeof(*mod));
-        if (parse_manifest(refs[i].dir, mod) != 0) continue;
-        mod->boot_on = refs[i].boot_on;
+    mod_fvec_init(&pending, sizeof(struct openpete_mod), 64, NULL, 0);
+    for (int i = 0; i < n_refs; i++) {
+        struct openpete_mod* mod =
+            (struct openpete_mod*)mod_fvec_push(&pending);
+        if (!mod) break;
+        if (parse_manifest(ref_at(&refs, i)->dir, mod) != 0) {
+            mod_fvec_truncate(&pending, (size_t)n_pending);
+            continue;
+        }
+        mod->boot_on = ref_at(&refs, i)->boot_on;
         mod_register_key_defaults(mod, mod->boot_on);
         n_pending++;
     }
@@ -3457,9 +3568,12 @@ int openpete_mods_init(const openpete_options_t* opts) {
     /* Phase B: topo-sort by hard deps (see topo_visit above). */
     topo_ctx_t tc;
     memset(&tc, 0, sizeof tc);
-    tc.pending   = pending;
+    tc.pending   = &pending;
     tc.n_pending = n_pending;
     tc.mods_dir  = mods_dir;
+    mod_fvec_init(&tc.state, sizeof(int), 64, NULL, 0);
+    mod_fvec_init(&tc.topo, sizeof(int), 64, NULL, 0);
+    (void)mod_fvec_resize(&tc.state, (size_t)n_pending);
     for (int i = 0; i < n_pending; i++) (void)topo_visit(&tc, i);
 
     /* Entry policy: boot-enabled mods enter at load, and so do their
@@ -3467,17 +3581,21 @@ int openpete_mods_init(const openpete_options_t* opts) {
      * enters but stays disabled if it wasn't in the enabled set
      * itself). Every other load-all row defers entry to its first
      * enable. */
-    int must_enter[MODS_MAX] = {0};
+    mod_fvec must_enter;   /* int per pending row */
+    mod_fvec_init(&must_enter, sizeof(int), 64, NULL, 0);
+    (void)mod_fvec_resize(&must_enter, (size_t)n_pending);
     {
         int changed = 1;
         while (changed) {
             changed = 0;
             for (int i = 0; i < n_pending; i++) {
-                if (!pending[i].boot_on && !must_enter[i]) continue;
-                for (int d = 0; d < pending[i].n_deps; d++) {
-                    int j = topo_find(&tc, pending[i].deps[d]);
-                    if (j >= 0 && !pending[j].boot_on && !must_enter[j]) {
-                        must_enter[j] = 1;
+                if (!pend_at(&pending, i)->boot_on && !int_row(&must_enter, i))
+                    continue;
+                for (int d = 0; d < pend_at(&pending, i)->n_deps; d++) {
+                    int j = topo_find(&tc, pend_at(&pending, i)->deps[d]);
+                    if (j >= 0 && !pend_at(&pending, j)->boot_on &&
+                        !int_row(&must_enter, j)) {
+                        int_row_set(&must_enter, j, 1);
                         changed = 1;
                     }
                 }
@@ -3488,30 +3606,50 @@ int openpete_mods_init(const openpete_options_t* opts) {
     /* Phase C: build + load in topo order; a load failure cascades to
      * dependents (their imports would dangle). */
     int loaded = 0, enabled = 0;
-    int load_ok[MODS_MAX] = {0};
+    mod_fvec load_ok;   /* int per pending row */
+    mod_fvec_init(&load_ok, sizeof(int), 64, NULL, 0);
+    (void)mod_fvec_resize(&load_ok, (size_t)n_pending);
     for (int t = 0; t < tc.n_topo; t++) {
-        int i = tc.topo[t];
+        int i = int_row(&tc.topo, t);
         int deps_ok = 1;
-        for (int d = 0; d < pending[i].n_deps; d++) {
-            int j = topo_find(&tc, pending[i].deps[d]);
-            if (j < 0 || !load_ok[j]) deps_ok = 0;
+        for (int d = 0; d < pend_at(&pending, i)->n_deps; d++) {
+            int j = topo_find(&tc, pend_at(&pending, i)->deps[d]);
+            if (j < 0 || !int_row(&load_ok, j)) deps_ok = 0;
         }
         if (!deps_ok) {
             OPL_ERROR_F("mods", "\"%s\" disabled: a dependency failed to "
-                        "load", pending[i].id);
+                        "load", pend_at(&pending, i)->id);
             continue;
         }
-        if (s_mod_count >= MODS_MAX) break;
-        struct openpete_mod* mod = &s_mods[s_mod_count];
-        *mod = pending[i];
-        if (load_mod(mod, sdk_dir,
-                     pending[i].boot_on || must_enter[i]) != 0) {
-            openpete_keymap_set_mod_enabled(mod->id, 0);
-            continue;
+        if (!s_mods.elem_size)
+            mod_cvec_init(&s_mods, sizeof(struct openpete_mod), MODS_BLOCK,
+                          "mods", MODS_BLOCK);
+        struct openpete_mod* mod =
+            (struct openpete_mod*)mod_cvec_push(&s_mods);
+        if (!mod) {
+            OPL_ERROR_F("mods", "mod table allocation failed — \"%s\" not "
+                        "loaded", pend_at(&pending, i)->id);
+            break;
         }
+        *mod = *pend_at(&pending, i);
+        /* Both set before load_mod, which runs the entry: the row is in
+         * the live table from the push on, so anything the entry
+         * registers asks the table about this mod and must read its
+         * final state. A registration surface records whether its owner
+         * starts disabled, so an enabled mod whose row still read
+         * "disabled" would register a hook that never runs. */
+        mod->load_index = mod_count() - 1;
         mod->enabled = mod->boot_on;
-        load_ok[i] = 1;
-        s_mod_count++;
+        if (load_mod(mod, sdk_dir,
+                     pend_at(&pending, i)->boot_on ||
+                     int_row(&must_enter, i)) != 0) {
+            openpete_keymap_set_mod_enabled(mod->id, 0);
+            /* Drop the dead tail element, the way the fixed table left
+             * the slot for the next copy to overwrite. */
+            mod_cvec_remove_at(&s_mods, (size_t)mod_count() - 1);
+            continue;
+        }
+        int_row_set(&load_ok, i, 1);
         loaded++;
         if (mod->enabled) enabled++;
         /* Boot-disabled rows: make every registration surface agree.
@@ -3532,27 +3670,27 @@ int openpete_mods_init(const openpete_options_t* opts) {
      * mod's key in [keys.mod.<id>] is the documented way to resolve one
      * of these, so a scan blind to the override would keep warning about
      * a clash the user has already fixed. */
-    for (int i = 0; i < s_mod_count; i++)
-        for (int bi = 0; bi < s_mods[i].n_bindings; bi++) {
+    for (int i = 0; i < mod_count(); i++)
+        for (int bi = 0; bi < mod_at(i)->n_bindings; bi++) {
             char key_i[80];
             snprintf(key_i, sizeof key_i, "%s",
                      openpete_keymap_mod_effective_key(
-                         s_mods[i].id, s_mods[i].bindings[bi].name,
-                         s_mods[i].bindings[bi].key));
+                         mod_at(i)->id, mod_at(i)->bindings[bi].name,
+                         mod_at(i)->bindings[bi].key));
             if (strcmp(key_i, "(unbound)") == 0) continue;
-            for (int j = i + 1; j < s_mod_count; j++)
-                for (int bj = 0; bj < s_mods[j].n_bindings; bj++) {
+            for (int j = i + 1; j < mod_count(); j++)
+                for (int bj = 0; bj < mod_at(j)->n_bindings; bj++) {
                     const char* key_j = openpete_keymap_mod_effective_key(
-                        s_mods[j].id, s_mods[j].bindings[bj].name,
-                        s_mods[j].bindings[bj].key);
+                        mod_at(j)->id, mod_at(j)->bindings[bj].name,
+                        mod_at(j)->bindings[bj].key);
                     if (strcmp(key_i, key_j) == 0)
                         OPL_WARN_F("mods", "key \"%s\" bound by both %s "
                                    "(%s) and %s (%s)",
                                    key_i,
-                                   s_mods[i].id,
-                                   s_mods[i].bindings[bi].purpose,
-                                   s_mods[j].id,
-                                   s_mods[j].bindings[bj].purpose);
+                                   mod_at(i)->id,
+                                   mod_at(i)->bindings[bi].purpose,
+                                   mod_at(j)->id,
+                                   mod_at(j)->bindings[bj].purpose);
                 }
         }
 
@@ -3566,6 +3704,15 @@ int openpete_mods_init(const openpete_options_t* opts) {
                    loaded - enabled == 1 ? "" : "s");
     toggle_parse_env();
     cfg_apply_schedule_parse();
+
+    /* The working lists die with the boot; the live table owns the rows
+     * copied into it. */
+    mod_fvec_free(&load_ok);
+    mod_fvec_free(&must_enter);
+    mod_fvec_free(&tc.state);
+    mod_fvec_free(&tc.topo);
+    mod_fvec_free(&pending);
+    mod_fvec_free(&refs);
     return loaded;
 }
 

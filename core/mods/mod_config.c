@@ -29,9 +29,12 @@
 #include <string.h>
 
 #include "../../third_party/tomlc99/toml.h"
+#include "mod_vec.h"
 
-#define CFG_SLOTS    64   /* >= loader MODS_MAX */
-#define CFG_KEYS_MAX 128
+/* Slots the first block holds, and keys a slot allocates up front. Both
+ * tables grow past these. */
+#define CFG_SLOTS_BLOCK 64
+#define CFG_KEYS_INIT   128
 #define CFG_KEY_LEN  96
 #define CFG_STR_LEN  128
 
@@ -45,25 +48,35 @@ typedef struct {
 
 typedef struct {
     const openpete_mod_t* mod;   /* slot owner (identity key) */
-    cfg_entry_t e[CFG_KEYS_MAX];
-    int n;
+    mod_fvec e;                  /* cfg_entry_t */
 } cfg_slot_t;
 
-static cfg_slot_t s_slots[CFG_SLOTS];
-static int        s_slot_count;
+/* Chunked: a slot is keyed by its owner's address and its entry list
+ * lives inside it, so a slot must not move once handed out. */
+static mod_cvec s_slots;   /* cfg_slot_t */
+
+static int slot_keys(const cfg_slot_t* s) {
+    return (int)mod_fvec_count(&s->e);
+}
 
 static cfg_slot_t* slot_of(const openpete_mod_t* mod, int create) {
-    for (int i = 0; i < s_slot_count; i++)
-        if (s_slots[i].mod == mod) return &s_slots[i];
-    if (!create || s_slot_count >= CFG_SLOTS) return NULL;
-    cfg_slot_t* s = &s_slots[s_slot_count++];
-    memset(s, 0, sizeof *s);
+    for (size_t i = 0; i < mod_cvec_count(&s_slots); i++) {
+        cfg_slot_t* c = (cfg_slot_t*)mod_cvec_at(&s_slots, i);
+        if (c->mod == mod) return c;
+    }
+    if (!create) return NULL;
+    if (!s_slots.elem_size)
+        mod_cvec_init(&s_slots, sizeof(cfg_slot_t), CFG_SLOTS_BLOCK,
+                      "cfg_slots", CFG_SLOTS_BLOCK);
+    cfg_slot_t* s = (cfg_slot_t*)mod_cvec_push(&s_slots);
+    if (!s) return NULL;
+    mod_fvec_init(&s->e, sizeof(cfg_entry_t), CFG_KEYS_INIT, NULL, 0);
     s->mod = mod;
     return s;
 }
 
 /* Flatten one table into slot entries, prefixing nested tables with
- * "name." — arrays and >CFG_KEYS_MAX overflow are logged and skipped. */
+ * "name." — arrays are logged and skipped. */
 static void flatten(cfg_slot_t* s, const toml_table_t* tab,
                     const char* prefix, const char* log_tag) {
     for (int i = 0;; i++) {
@@ -83,13 +96,10 @@ static void flatten(cfg_slot_t* s, const toml_table_t* tab,
                        "unsupported, ignored", full);
             continue;
         }
-        if (s->n >= CFG_KEYS_MAX) {
-            OPL_WARN_F(log_tag, "config.toml: more than %d keys — "
-                       "\"%s\" and the rest ignored", CFG_KEYS_MAX, full);
-            return;
-        }
-
-        cfg_entry_t* e = &s->e[s->n];
+        /* Built in a local and pushed only once the value typed: an
+         * unsupported type leaves the list untouched. */
+        cfg_entry_t tmp;
+        cfg_entry_t* e = &tmp;
         memset(e, 0, sizeof *e);
         snprintf(e->key, sizeof e->key, "%s", full);
 
@@ -106,7 +116,15 @@ static void flatten(cfg_slot_t* s, const toml_table_t* tab,
                        "value type — ignored", full);
             continue;
         }
-        s->n++;
+        {
+            cfg_entry_t* slot = (cfg_entry_t*)mod_fvec_push(&s->e);
+            if (!slot) {
+                OPL_ERROR_F(log_tag, "config.toml: key table allocation "
+                            "failed — \"%s\" and the rest ignored", full);
+                return;
+            }
+            *slot = tmp;
+        }
     }
 }
 
@@ -114,10 +132,10 @@ void openpete_mods_config_load(openpete_mod_t* mod, const char* mod_dir,
                                const char* log_tag) {
     cfg_slot_t* s = slot_of(mod, 1);
     if (!s) {
-        OPL_ERROR_F("mods", "config slots exhausted (%d)", CFG_SLOTS);
+        OPL_ERROR_F("mods", "config slot allocation failed");
         return;
     }
-    s->n = 0;   /* reload replaces (hot reload re-enters here) */
+    mod_fvec_clear(&s->e);   /* reload replaces (hot reload re-enters here) */
 
     char path[1200];
     snprintf(path, sizeof path, "%s/config.toml", mod_dir);
@@ -134,15 +152,17 @@ void openpete_mods_config_load(openpete_mod_t* mod, const char* mod_dir,
     }
     flatten(s, root, "", log_tag);
     toml_free(root);
-    OPL_INFO_F(log_tag, "config.toml: %d key(s) loaded", s->n);
+    OPL_INFO_F(log_tag, "config.toml: %d key(s) loaded", slot_keys(s));
 }
 
 static const cfg_entry_t* find(openpete_mod_t* self, const char* key) {
     if (!self || !key) return NULL;
     const cfg_slot_t* s = slot_of(self, 0);
     if (!s) return NULL;
-    for (int i = 0; i < s->n; i++)
-        if (strcmp(s->e[i].key, key) == 0) return &s->e[i];
+    for (int i = 0; i < slot_keys(s); i++) {
+        cfg_entry_t* e = (cfg_entry_t*)mod_fvec_at(&s->e, (size_t)i);
+        if (strcmp(e->key, key) == 0) return e;
+    }
     return NULL;
 }
 
@@ -201,7 +221,9 @@ int openpete_mods_config_str(openpete_mod_t* self, const char* key,
  * sections append at EOF. Scalars only — exactly the shapes the
  * [[config]] schema can declare. */
 
-#define CFGW_MAX (64 * 1024)
+/* Headroom one edit can add to the text: a section header, the key and
+ * its value, each bounded by the schema's own field sizes. */
+#define CFGW_EDIT_GROWTH 1024
 
 static void cfgw_format_value(char* out, size_t cap,
                               const openpete_mods_cfg_edit_t* e) {
@@ -357,25 +379,41 @@ static int cfgw_apply_one(char* text, size_t* len, size_t cap,
 
 int openpete_mods_config_write(const char* mod_dir, const char* log_tag,
                                int n, const openpete_mods_cfg_edit_t* e) {
-    static char text[CFGW_MAX];
     char path[1200];
     snprintf(path, sizeof path, "%s/config.toml", mod_dir);
 
-    size_t len = 0;
+    /* The buffer is the file plus what the edits can append, so the
+     * editable size is the file's own size. */
+    mod_fvec buf;
+    size_t cap = 0, len = 0;
+    char* text;
     FILE* fp = fopen(path, "rb");
     if (fp) {
-        len = fread(text, 1, sizeof text - 1, fp);
-        fclose(fp);
-        if (len >= sizeof text - 1) {
-            OPL_ERROR_F(log_tag, "config.toml too large to edit (%d KiB "
-                        "cap)", CFGW_MAX / 1024);
-            return -1;
+        if (fseek(fp, 0, SEEK_END) == 0) {
+            long end = ftell(fp);
+            if (end > 0) cap = (size_t)end;
         }
+        rewind(fp);
+    }
+    cap += (size_t)n * CFGW_EDIT_GROWTH + 1;
+    mod_fvec_init(&buf, 1, cap, NULL, 0);
+    if (mod_fvec_resize(&buf, cap) != 0) {
+        if (fp) fclose(fp);
+        mod_fvec_free(&buf);
+        OPL_ERROR_F(log_tag, "config.toml: edit buffer allocation failed "
+                    "— file left unchanged");
+        return -1;
+    }
+    text = (char*)mod_fvec_data(&buf);
+    if (fp) {
+        len = fread(text, 1, cap - 1, fp);
+        fclose(fp);
     }
     text[len] = '\0';
 
     for (int i = 0; i < n; i++) {
-        if (cfgw_apply_one(text, &len, sizeof text, &e[i]) != 0) {
+        if (cfgw_apply_one(text, &len, cap, &e[i]) != 0) {
+            mod_fvec_free(&buf);
             OPL_ERROR_F(log_tag, "config.toml: failed to write \"%s\" — "
                         "file left unchanged", e[i].key);
             return -1;
@@ -386,11 +424,13 @@ int openpete_mods_config_write(const char* mod_dir, const char* log_tag,
     snprintf(tmp, sizeof tmp, "%s.tmp", path);
     FILE* out = fopen(tmp, "wb");
     if (!out) {
+        mod_fvec_free(&buf);
         OPL_ERROR_F(log_tag, "config.toml: cannot open %s for writing", tmp);
         return -1;
     }
     size_t wrote = fwrite(text, 1, len, out);
     fclose(out);
+    mod_fvec_free(&buf);
     if (wrote != len) {
         remove(tmp);
         OPL_ERROR_F(log_tag, "config.toml: short write — original kept");

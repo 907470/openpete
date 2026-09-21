@@ -69,7 +69,10 @@ enum {
     OPENPETE_MOUSE_OWNED_DEVUI = 2
 };
 
-/* Capture request owners. Mods take OPENPETE_MOUSE_CAP_MOD0 + index. */
+/* Capture request owners. A mod takes OPENPETE_MOUSE_CAP_MOD0 plus its
+ * load index, so the owner ids run as far as the mod set does; the
+ * request set grows to hold them and the count is only the size it starts
+ * at. */
 enum {
     OPENPETE_MOUSE_CAP_CAMERA  = 0,   /* freecam or camlock */
     OPENPETE_MOUSE_CAP_HARNESS = 1,   /* the `capture` inject verb */

@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 436ff831db7bf58eb11e151a886aea81186c5369
+# head: 1bc3599f139ea997682eda98021e4c2090493117
 file	function	score	marked	accepted
 core/config/config.c	harvest_args	30	0	
 core/config/config.c	harvest_base	39	0	
@@ -41,8 +41,8 @@ core/input/keymap.c	openpete_keymap_set	32	0
 core/mods/mod_config.c	cfgw_apply_one	126	0	
 core/mods/mod_loader.c	mod_hot_reload	26	0	
 core/mods/mod_loader.c	mod_unpack_zip	46	0	
-core/mods/mod_loader.c	mods_discover	77	0	
-core/mods/mod_loader.c	openpete_mods_init	60	0	
+core/mods/mod_loader.c	mods_discover	44	0	
+core/mods/mod_loader.c	openpete_mods_init	63	0	
 core/mods/mod_loader.c	openpete_mods_tick_boundary	34	0	
 core/mods/mod_loader.c	parse_manifest	254	0	
 core/mods/mod_registry.c	custom_tick	51	0	
@@ -107,7 +107,7 @@ core/runtime/run.c	run_host_loop	1521	0
 core/runtime/run.c	run_split_threaded	27	0	
 core/runtime/run.c	stamp_psx_pad_bindings	49	0	
 core/ui/devui.cpp	draw_custom_level_rows	26	0	
-core/ui/devui.cpp	draw_mod_config_rows	73	0	
+core/ui/devui.cpp	draw_mod_config_rows	76	0	
 core/ui/devui.cpp	draw_mods_section	52	0	
 core/ui/devui.cpp	draw_panel	42	0	
 core/ui/devui.cpp	draw_row	87	0	

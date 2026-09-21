@@ -45,6 +45,9 @@ extern "C" {
 #include "openpete_mods.h"
 #include "openpete_mod_ui.h"
 
+#include <deque>
+#include <vector>
+
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -685,32 +688,40 @@ static void mod_row_tooltip(const openpete_mods_menu_info_t *mi)
  * re-reads the values. Nothing applies until the user hits Apply — a
  * half-dragged slider never half-configures a mod. */
 
+struct mod_cfg_edit_value {
+    int64_t i;
+    double  d;
+    char    s[128];
+};
+
 struct mod_cfg_edit_state {
     char id[64];
     int  n;
     bool seeded;
-    struct { int64_t i; double d; char s[128]; } v[32];
+    std::vector<mod_cfg_edit_value> v;   /* one per [[config]] row */
 };
-static mod_cfg_edit_state s_cfg_edit[64];
+
+/* Deque, not vector: a slot pointer handed to the draw below must stay
+ * valid when a later mod's panel appends its own slot. */
+static std::deque<mod_cfg_edit_state> s_cfg_edit;
 
 static mod_cfg_edit_state *cfg_edit_slot(const char *id)
 {
-    mod_cfg_edit_state *free_slot = nullptr;
-    for (auto &e : s_cfg_edit) {
-        if (e.id[0] && strcmp(e.id, id) == 0) return &e;
-        if (!e.id[0] && !free_slot) free_slot = &e;
-    }
-    if (free_slot) {
-        snprintf(free_slot->id, sizeof free_slot->id, "%s", id);
-        free_slot->seeded = false;
-    }
-    return free_slot;
+    for (auto &e : s_cfg_edit)
+        if (strcmp(e.id, id) == 0) return &e;
+    s_cfg_edit.emplace_back();
+    mod_cfg_edit_state *slot = &s_cfg_edit.back();
+    snprintf(slot->id, sizeof slot->id, "%s", id);
+    slot->n = 0;
+    slot->seeded = false;
+    return slot;
 }
 
 static void cfg_seed(mod_cfg_edit_state *st, int mod_index, int rows)
 {
     st->n = rows;
-    for (int r = 0; r < rows && r < 32; r++) {
+    st->v.assign((size_t)(rows > 0 ? rows : 0), mod_cfg_edit_value{});
+    for (int r = 0; r < rows; r++) {
         openpete_mods_cfg_row_t row;
         if (!openpete_mods_cfg_row(mod_index, r, &row)) continue;
         st->v[r].i = row.ival;
@@ -731,7 +742,7 @@ static void draw_mod_config_rows(int mod_index,
 
     bool dirty = false;
     const char *open_group = "";
-    for (int r = 0; r < rows && r < 32; r++) {
+    for (int r = 0; r < rows && r < (int)st->v.size(); r++) {
         openpete_mods_cfg_row_t row;
         if (!openpete_mods_cfg_row(mod_index, r, &row)) continue;
         if (row.group[0] && strcmp(row.group, open_group) != 0) {
@@ -794,9 +805,10 @@ static void draw_mod_config_rows(int mod_index,
 
     if (dirty) {
         if (ImGui::Button("Apply")) {
-            openpete_mods_cfg_edit_t edits[32];
+            std::vector<openpete_mods_cfg_edit_t> edits(
+                (size_t)(rows > 0 ? rows : 0));
             int n = 0;
-            for (int r = 0; r < rows && r < 32; r++) {
+            for (int r = 0; r < rows && r < (int)st->v.size(); r++) {
                 openpete_mods_cfg_row_t row;
                 if (!openpete_mods_cfg_row(mod_index, r, &row)) continue;
                 edits[n].key  = row.key;
@@ -806,7 +818,7 @@ static void draw_mod_config_rows(int mod_index,
                 edits[n].sval = st->v[r].s;
                 n++;
             }
-            if (openpete_mods_cfg_apply(mod_index, n, edits) == 0)
+            if (openpete_mods_cfg_apply(mod_index, n, edits.data()) == 0)
                 OPL_INFO_F("devui", "mod %s: config applied", mi->id);
         }
         ImGui::SameLine();
@@ -851,7 +863,7 @@ static void mod_body_error_cb(ImGuiContext *, void *user_data,
  * ui_status lines and nothing else, so a shared counter would see a clean
  * bracket from that pass every present and reset a streak the always pass
  * was accumulating — the refusal would never fire. */
-static int s_mod_body_err_streak[2][64];
+static std::vector<int> s_mod_body_err_streak[2];
 
 /* @p always picks the pass: 0 draws the mod's node contents (status lines
  * plus a plain body), 1 draws an always-flagged body at top level. @p
@@ -904,8 +916,11 @@ static void draw_mod_section_bracketed(int mod_index, const char *mod_id,
     g.ErrorCallbackUserData             = cb_user_save;
 
     const int pass = always ? 1 : 0;
-    if (mod_index < 0 || mod_index >= IM_ARRAYSIZE(s_mod_body_err_streak[0]))
-        return;
+    if (mod_index < 0) return;
+    /* One counter per loaded mod: the table grows with the mod set, so a
+     * late mod's misbehaving body is refused like any other's. */
+    if ((size_t)mod_index >= s_mod_body_err_streak[pass].size())
+        s_mod_body_err_streak[pass].resize((size_t)mod_index + 1, 0);
     if (!s_mod_body_errored) {
         s_mod_body_err_streak[pass][mod_index] = 0;
         return;
