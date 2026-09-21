@@ -165,6 +165,11 @@ void knob_registry_late_stamp(void);
  * the extra-row capacity is exhausted. */
 int openpete_knob_add(const knob_desc_t *row);
 
+/* The game's default window size, for the --window row's "(default)" text.
+ * Called by the host loop once the game layout is known; the registry itself
+ * links no game layout, so console tests that compile it need no game. */
+void openpete_knob_default_window_set(int w, int h);
+
 int openpete_knob_bind_str(const char *id,
                            void (*get_str)(const struct knob_desc *k,
                                            char *buf, size_t cap),

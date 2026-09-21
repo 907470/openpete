@@ -8,6 +8,7 @@
 #include "openpete.h"
 #include "openpete_fiber.h"
 #include "openpete_log.h"
+#include "openpete_knobs.h"
 #include "openpete_host_input.h"
 #include "openpete_host_mouse.h"
 #include "openpete_input_lock.h"
@@ -2051,6 +2052,7 @@ static int run_host_init(const openpete_options_t* opts) {
 
     int win_w = (opts->window_w > 0) ? opts->window_w : game_default_window_w();
     int win_h = (opts->window_h > 0) ? opts->window_h : game_default_window_h();
+    openpete_knob_default_window_set(game_default_window_w(), game_default_window_h());
     /* If --aspect is set but the user didn't pin --window, scale the
      * default window so the *cropped* (post-overscan) src exactly fills
      * it — otherwise the present blit letterboxes the un-rendered

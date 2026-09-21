@@ -28,7 +28,6 @@
 #include "openpete_record.h"
 #include "openpete_rewind.h"
 #include "no_lod.h"
-#include "game_layout.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -302,13 +301,24 @@ static int fogscale_set(knob_desc_t *k, double v) {
 static const char *const k_renderer_names[] = { "psycross", "vk" };
 static double renderer_get(const knob_desc_t *k) { (void)k; return g_opts ? (double)g_opts->renderer : 1.0; }
 
+/* The game's default window size, handed in by the host loop once the game
+ * layout is known. The registry has no game layout of its own: it is compiled
+ * into console tests that link no game. Zero until set. */
+static int s_default_win_w, s_default_win_h;
+
+void openpete_knob_default_window_set(int w, int h) {
+    s_default_win_w = w;
+    s_default_win_h = h;
+}
+
 static void window_get_str(const knob_desc_t *k, char *buf, size_t cap) {
     (void)k;
     if (g_opts && g_opts->window_w > 0)
         snprintf(buf, cap, "%dx%d", g_opts->window_w, g_opts->window_h);
+    else if (s_default_win_w > 0 && s_default_win_h > 0)
+        snprintf(buf, cap, "%dx%d (default)", s_default_win_w, s_default_win_h);
     else
-        snprintf(buf, cap, "%dx%d (default)",
-                 game_default_window_w(), game_default_window_h());
+        snprintf(buf, cap, "(default)");
 }
 
 /* ---- Pacing ---- */
