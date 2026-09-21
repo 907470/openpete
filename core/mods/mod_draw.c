@@ -36,28 +36,75 @@
 #include "openpete_time.h"
 #include "openpete_fiber.h" /* openpete_frame */
 #include "../ui/openpete_imgui_guard.h" /* hook-owner attribution */
+#include "mod_vec.h"
+
+#include <SDL3/SDL.h>   /* SDL_GetCurrentThreadID — the single-owner check */
 
 #include <stdio.h>
 #include <string.h>
 
-#define DRAW_TEXTS_MAX 64
-#define DRAW_STR_MAX   96
+/* Texts a command buffer allocates up front; it grows past this. */
+#define DRAW_TEXTS_INIT 64
+#define DRAW_STR_MAX    96
 #define PRESENT_HOOKS_MAX 16
 
 typedef struct {
-    float    x, y, cap_h;
-    uint32_t rgb;
-    char     str[DRAW_STR_MAX];
+    float       x, y, cap_h;
+    uint32_t    rgb;
+    const char* owner;   /* mod id of the hook that submitted this text */
+    char        str[DRAW_STR_MAX];
 } cmd_text_t;
 
 typedef struct {
-    cmd_text_t  texts[DRAW_TEXTS_MAX];
-    int         n_texts;
+    mod_fvec texts;      /* cmd_text_t */
+    int      inited;
 } cmd_buf_t;
 
-static cmd_buf_t s_tick_staging;   /* written by tick-context draws     */
-static cmd_buf_t s_tick_committed; /* displayed for the current tick    */
-static cmd_buf_t s_present;        /* rebuilt inside each present hook  */
+/* The tick double buffer. Staging takes this tick's draws; committed is
+ * what the presents of this tick display. The canonical commit exchanges
+ * the two by pointer, so neither buffer's heap block is ever aliased or
+ * dropped, and clears the new staging. */
+static cmd_buf_t  s_tick_bufs[2];
+static cmd_buf_t* s_tick_staging   = &s_tick_bufs[0];
+static cmd_buf_t* s_tick_committed = &s_tick_bufs[1];
+static cmd_buf_t  s_present;       /* rebuilt inside each present hook  */
+
+static void buf_init(cmd_buf_t* b, const char* name) {
+    if (b->inited) return;
+    b->inited = 1;
+    mod_fvec_init(&b->texts, sizeof(cmd_text_t), DRAW_TEXTS_INIT, name,
+                  DRAW_TEXTS_INIT);
+}
+
+static int buf_count(const cmd_buf_t* b) {
+    return (int)mod_fvec_count(&b->texts);
+}
+
+/* Drop the commands, keep the storage: the buffers refill every tick, so
+ * the allocation is paid once for the session. */
+static void buf_clear(cmd_buf_t* b) { mod_fvec_clear(&b->texts); }
+
+/* The draw service has one owner thread. The tick buffers are exchanged
+ * by pointer and a mod pushes into staging from a hook, so a submission
+ * on a second thread could be in flight across the swap. Registration,
+ * removal, submission and the flush all run on the worker thread that
+ * owns the game fiber; this latches the first thread to reach the swap
+ * and reports any later one, which is the only way the argument can
+ * break without a visible symptom. */
+static void assert_one_owner(void) {
+    static SDL_ThreadID s_owner_tid = 0;
+    static int s_reported = 0;
+    SDL_ThreadID tid = SDL_GetCurrentThreadID();
+    if (!s_owner_tid) { s_owner_tid = tid; return; }
+    if (tid != s_owner_tid && !s_reported) {
+        s_reported = 1;
+        OPL_ERROR_F("mods", "draw service: tick buffers exchanged from a "
+                    "second thread (owner %llu, now %llu) — a mod's text "
+                    "can be lost or double-freed",
+                    (unsigned long long)s_owner_tid,
+                    (unsigned long long)tid);
+    }
+}
 
 /* Per thread: present hooks run on the thread that extracts while a mod UI
  * section can run inside a compose on a present thread; one shared flag
@@ -154,16 +201,27 @@ int openpete_mods_register_present_hook(openpete_mod_present_fn fn,
 /* ---- command submission (mod-facing, via the api struct) ------------ */
 
 static cmd_buf_t* target_buf(void) {
-    return openpete_mods_in_present ? &s_present : &s_tick_staging;
+    return openpete_mods_in_present ? &s_present : s_tick_staging;
 }
 
 void openpete_mods_draw_text(float x, float y, float cap_h, uint32_t rgb,
                              const char* str) {
     if (!str || !str[0]) return;
     cmd_buf_t* b = target_buf();
-    if (b->n_texts >= DRAW_TEXTS_MAX) return;
-    cmd_text_t* t = &b->texts[b->n_texts++];
+    cmd_text_t* t;
+    buf_init(b, b == &s_present ? "draw_text_present"
+                                : (b == &s_tick_bufs[0] ? "draw_text_tick_a"
+                                                        : "draw_text_tick_b"));
+    t = (cmd_text_t*)mod_fvec_push(&b->texts);
+    if (!t) {
+        OPL_ERROR_F("mods", "draw service: text list allocation failed — "
+                    "\"%.32s\" dropped", str);
+        return;
+    }
     t->x = x; t->y = y; t->cap_h = cap_h; t->rgb = rgb;
+    /* The hook dispatch publishes the running mod for attribution; a
+     * draw from anywhere else has no owner to name. */
+    t->owner = openpete_imgui_guard_hook_owner();
     snprintf(t->str, sizeof t->str, "%s", str);
     s_any_draw = 1;
 }
@@ -173,13 +231,43 @@ void openpete_mods_draw_text(float x, float y, float cap_h, uint32_t rgb,
 #define MOD_DRAW_VERTS_MAX 16384
 static openpete_hud_vert s_verts[MOD_DRAW_VERTS_MAX];
 
+/* One warning per owner per session: the vertex stream is a real bound
+ * (the renderer's buffer is sized to it), so the remedy is the mod
+ * drawing less, and repeating the line every present would bury it. */
+static void warn_glyph_overflow(const char* owner) {
+    static const char* s_warned[32];
+    static int s_warned_n = 0;
+    const char* id = owner ? owner : "?";
+    for (int i = 0; i < s_warned_n; i++)
+        if (s_warned[i] == owner) return;
+    if (s_warned_n < (int)(sizeof s_warned / sizeof s_warned[0]))
+        s_warned[s_warned_n++] = owner;
+    OPL_WARN_F("mods", "draw service: %s filled the overlay vertex budget "
+               "(%d verts) — the rest of its text this present is dropped",
+               id, MOD_DRAW_VERTS_MAX);
+}
+
 static int emit_buf(const cmd_buf_t* b, int n) {
-    if (s_text_fn) {
-        for (int i = 0; i < b->n_texts; i++) {
-            const cmd_text_t* t = &b->texts[i];
-            n += s_text_fn(t->str, t->x, t->y, t->cap_h, t->rgb,
-                           &s_verts[n], MOD_DRAW_VERTS_MAX - n);
-        }
+    /* A text that laid out no glyphs at all is the drop this reports. The
+     * emitter refuses a glyph only when the remaining budget cannot hold
+     * it, so once the budget is full every later text writes nothing —
+     * but it writes nothing for a missing font too, which is why the
+     * report waits until some text in this flush has laid out glyphs.
+     * The one text straddling the boundary keeps the glyphs that fit and
+     * is not reported: it drew. */
+    int emitted_any = 0;
+    if (!s_text_fn) return n;
+    for (int i = 0; i < buf_count(b); i++) {
+        const cmd_text_t* t = (const cmd_text_t*)mod_fvec_at(&b->texts,
+                                                             (size_t)i);
+        int avail = MOD_DRAW_VERTS_MAX - n;
+        int wrote = avail > 0
+                  ? s_text_fn(t->str, t->x, t->y, t->cap_h, t->rgb,
+                              &s_verts[n], avail)
+                  : 0;
+        n += wrote;
+        if (wrote > 0) { emitted_any = 1; continue; }
+        if (emitted_any) warn_glyph_overflow(t->owner);
     }
     return n;
 }
@@ -224,8 +312,11 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical) {
      * empty, and the next canonical commit clears the display set;
      * nothing of a disabled mod survives past that one tick. */
     if (canonical) {
+        cmd_buf_t* prev = s_tick_committed;
+        assert_one_owner();
         s_tick_committed = s_tick_staging;
-        memset(&s_tick_staging, 0, sizeof s_tick_staging);
+        s_tick_staging = prev;
+        buf_clear(s_tick_staging);
     }
 
     if (!openpete_native_render_enabled()) return;
@@ -233,7 +324,7 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical) {
     /* Present hooks: render-pure by API shape (see header comment). The
      * ctx is computed unconditionally — the postfx engine UBO reads the
      * same values through openpete_mods_present_ctx (S4), hooks or not. */
-    memset(&s_present, 0, sizeof s_present);
+    buf_clear(&s_present);
     {
         static op_time_t s_prev_present_ns = 0;
         const op_time_t now = openpete_interp_present_now();
@@ -279,7 +370,7 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical) {
     }
 
     int n = 0;
-    n = emit_buf(&s_tick_committed, n);
+    n = emit_buf(s_tick_committed, n);
     n = emit_buf(&s_present, n);
     openpete_native_set_mod_overlay(s_verts, n);
 
@@ -289,6 +380,6 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical) {
         s_logged_first = 1;
         OPL_INFO_F("mods", "draw service live: %d overlay verts "
                    "(%d tick texts, %d present texts)",
-                   n, s_tick_committed.n_texts, s_present.n_texts);
+                   n, buf_count(s_tick_committed), buf_count(&s_present));
     }
 }
