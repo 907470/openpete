@@ -168,6 +168,7 @@ mod that wrote guest bytes restores the stock bytes on `on = 0`.
 | Read another level's data | `read_level_data` | No |
 | Re-target texture-pack fog | `texpack_fog_shift` | No |
 | Persistent files | `data_dir` | No |
+| Find the booted disc image | `disc_path` (the path the engine opened, in any layout) | No |
 
 **`ui_status` or `notify`.** `ui_status` reports state: lines in the mod's
 block of the Mods section, visible while that overlay is open, repainted

@@ -981,6 +981,27 @@ typedef struct openpete_mod_api {
     int (*pad_rumble)(openpete_mod_t* self, uint32_t slot,
                       uint32_t small_byte, uint32_t large_byte);
     /** @} */
+
+    /** @name Disc
+     * @{ */
+    /**
+     * @brief The disc image this session booted, or NULL when none is open.
+     *
+     * The path the engine itself opened, so it is correct in every layout:
+     * an explicit `--disc`, a library entry picked in the splash, an
+     * ingested image, portable or user data directory. A mod that reads
+     * sectors wants @p want_bin: the cue names no sectors.
+     *
+     * The string is owned by the engine and stays valid for the session.
+     * Legal from any context.
+     * @param want_bin Non-zero for the sector image (`.bin`), zero for the
+     *                 path as given (the `.cue` where one was named).
+     * @return The path, or NULL when no disc is open or the sector image
+     *         behind the cue cannot be resolved.
+     * @since api 12
+     */
+    const char* (*disc_path)(openpete_mod_t* self, int want_bin);
+    /** @} */
 } openpete_mod_api_t;
 
 /**

@@ -38,6 +38,7 @@
 #include "openpete_osd.h"
 #include "../host/texture_pack.h"   /* texpack_fog_shift */
 #include "openpete_input_log.h"
+#include "openpete_psx.h"   /* openpete_psx_resolve_disc_bin */
 #include "openpete_mod_api.h"
 #include "openpete_mod_ui.h"
 #include "openpete_log.h"
@@ -743,6 +744,31 @@ static const char* api_data_dir(openpete_mod_t* self) {
         mod_mkdir(self->data_dir); /* EEXIST fine */
     }
     return self->data_dir;
+}
+
+/* The disc image the engine opened, captured once the library has had its
+ * chance to fill opts->disc_path. The sector image behind a cue is resolved
+ * on first demand and kept, since the resolver touches the filesystem. */
+static char s_disc_path[MOD_PATH_MAX];
+static char s_disc_bin[MOD_PATH_MAX];
+static int  s_disc_bin_state; /* 0 unresolved, 1 resolved, -1 unresolvable */
+
+/* Called once mods load: the library, the splash drop and --ingest have all
+ * written opts->disc_path by then, so the boot path is final. */
+static void mods_capture_disc_path(const openpete_options_t* opts) {
+    const char* p = (opts && opts->disc_path) ? opts->disc_path : "";
+    snprintf(s_disc_path, sizeof s_disc_path, "%s", p);
+    s_disc_bin_state = 0;
+}
+
+static const char* api_disc_path(openpete_mod_t* self, int want_bin) {
+    if (!self || !s_disc_path[0]) return NULL;
+    if (!want_bin) return s_disc_path;
+    if (s_disc_bin_state == 0)
+        s_disc_bin_state = openpete_psx_resolve_disc_bin(
+                               s_disc_path, s_disc_bin, sizeof s_disc_bin,
+                               NULL, 0) == 0 ? 1 : -1;
+    return s_disc_bin_state > 0 ? s_disc_bin : NULL;
 }
 
 static int api_host_key_down(const char* key_name) {
@@ -1773,6 +1799,8 @@ static const openpete_mod_api_t s_api = {
     /* pillar 9: the host pads (api 12) */
     .pad_read      = api_pad_read,
     .pad_rumble    = api_pad_rumble,
+    /* pillar 9: the booted disc (api 12) */
+    .disc_path     = api_disc_path,
     /* declared input bindings */
     .binding_down  = api_binding_down,
     /* pillar 9: game data + texture packs (api 2) */
@@ -3574,6 +3602,8 @@ int openpete_mods_init(const openpete_options_t* opts) {
      * psycross / ab / diff / headless the PSX path still rasterizes. */
     s_native_hides_psx = opts && opts->renderer == OPENPETE_RENDERER_VK
                               && !opts->headless;
+
+    mods_capture_disc_path(opts);
 
     char mods_dir[MOD_PATH_MAX];
     mod_fvec refs;
