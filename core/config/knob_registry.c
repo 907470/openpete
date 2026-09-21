@@ -616,7 +616,7 @@ static const knob_desc_t g_builtin[] = {
       "the next present.",
       KNOB_FLOAT, KNOB_LIVE, NULL, 0, 30, 120,
       fov_get, fov_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
-      .zero_label = "Game projection" },
+      .zero_label = "Original" },
 
     { "ssaa", "Supersampling", "Display", "--ssaa", NULL,
       "Native supersampling factor. Applying reallocates the render target "

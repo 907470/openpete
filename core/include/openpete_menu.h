@@ -66,6 +66,14 @@ void openpete_menu_get_layout(openpete_menu_layout_t* out);
  * to the layout square. */
 void openpete_menu_note_close_rect(float x0, float y0, float x1, float y1);
 
+/* The cap height the builder actually drew the rows at. row_cap_h is a
+ * ceiling; the builder shrinks every row uniformly to fit the widest value in
+ * its column, and only it knows the font metrics that decide by how much. The
+ * layout needs the drawn height to sit the bottom-anchored EXIT row's ink at
+ * the panel's bottom inset. Until the builder has run once the layout uses
+ * row_cap_h. */
+void openpete_menu_note_row_cap(float cap_h);
+
 /* Text + wobble phase for the game-side glyph builder (text_moby_native). */
 const char* openpete_menu_title(void);
 const char* openpete_menu_row_label(int row);

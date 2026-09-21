@@ -29,8 +29,8 @@
 
 /* --- rows ---------------------------------------------------------------- */
 enum { ROW_DISPLAY, ROW_ASPECT, ROW_FOV, ROW_FPS, ROW_SHOWFPS, ROW_VSYNC, ROW_SSAA,
-       ROW_WOBBLE, ROW_TEXMAP, ROW_DITHER, ROW_LOD, ROW_FREECAM, ROW_SAVE,
-       ROW_QUIT,
+       ROW_WOBBLE, ROW_PIXEL, ROW_TEXMAP, ROW_DITHER, ROW_LOD, ROW_FREECAM,
+       ROW_SAVE, ROW_QUIT,
        ROW_COUNT,
        /* MODSEL/MODEN and FOG are parked past ROW_COUNT: hidden from display
         * + navigation for now, but all their plumbing stays live and
@@ -42,7 +42,8 @@ enum { ROW_DISPLAY, ROW_ASPECT, ROW_FOV, ROW_FPS, ROW_SHOWFPS, ROW_VSYNC, ROW_SS
 
 static const char* const ROW_LABEL[ROW_COUNT] = {
     "DISPLAY", "ASPECT", "FOV", "FPS", "SHOW FPS", "VSYNC", "SSAA", "WOBBLE",
-    "TEXTURES", "DITHER", "LOD", "FREECAM", "SETTINGS", "EXIT GAME",
+    "PIXELATION", "TEXTURES", "DITHER", "LOD", "FREECAM", "SETTINGS",
+    "EXIT GAME",
 };
 
 /* OSD coalescing key per row. NAMED, not indexed, because the hotkeys that
@@ -52,8 +53,8 @@ static const char* const ROW_LABEL[ROW_COUNT] = {
  * stack. */
 static const char* const ROW_OSD_KEY[ROW_COUNT] = {
     "menu.display", "menu.aspect", "menu.fov", "menu.fps", "menu.showfps", "menu.vsync",
-    "menu.ssaa", "menu.wobble", "menu.texmap", "menu.dither", "menu.lod",
-    "menu.freecam", "menu.settings", "menu.quit",
+    "menu.ssaa", "menu.wobble", "menu.pixelation", "menu.texmap", "menu.dither",
+    "menu.lod", "menu.freecam", "menu.settings", "menu.quit",
 };
 
 /* EXIT is a CENTERED row: no value column, its label spans the panel centre
@@ -99,23 +100,26 @@ static float fov_val(int idx) { return idx <= 0 ? 0.0f : (float)(FOV_MIN + (idx 
  * ~44% less render-target area than 4X.
  *
  * Factor 1 reads OFF, not "1X": it is not a supersampling amount but the
- * absence of one — no supersampled target, no resolve pass. (The WOBBLE
+ * absence of one — no supersampled target, no resolve pass. (The PIXELATION
  * ladder below spells its own no-op step the same way, where 1X IS a
  * setting.) */
 static const int   s_ssaa_vals[]   = { 1, 2, 3, 4 };
 static const char* s_ssaa_labels[] = { "OFF", "2X", "3X", "4X" };
 #define N_SSAA ((int)(sizeof(s_ssaa_vals) / sizeof(s_ssaa_vals[0])))
 
-/* WOBBLE ladder: one row drives the PS1-look PAIR — the integer vertex snap
- * plus the raster quantize whose grid it snaps to. Every ON step is
- * snap + quantize at the given multiplier of the 512x240 PSX raster: the
- * snap's residual cracks are bounded/absorbed by the quantize cells, so the
- * menu never offers the sharp-wobble combo whose hairlines pulled this row
- * the first time. (The independent CLI knobs --vertex-precision /
- * --raster-quantize keep the full space, e.g. quantize-only or 16x.) */
-static const int   s_wob_vals[]   = { 0, 1, 2, 4, 8 };
-static const char* s_wob_labels[] = { "OFF", "1X", "2X", "4X", "8X" };
-#define N_WOB ((int)(sizeof(s_wob_vals) / sizeof(s_wob_vals[0])))
+/* The PS1-look pair is two independent rows, each driving one setter, so the
+ * menu offers the whole space the CLI knobs do:
+ *   WOBBLE     — the integer-grid vertex snap (--vertex-precision), ON/OFF.
+ *   PIXELATION — the scene point-resample (--raster-quantize N), OFF or a
+ *                multiplier of the 512x240 PSX raster.
+ * Snapping without quantizing leaves the snap's residual hairline cracks
+ * visible; quantizing without snapping is a pixelated image with smooth
+ * vertex motion. Both are reachable, neither row writes the other's setter.
+ *
+ * The ladder stops at 16X, the maximum --raster-quantize accepts. */
+static const int   s_pix_vals[]   = { 0, 1, 2, 4, 8, 16 };
+static const char* s_pix_labels[] = { "OFF", "1X", "2X", "4X", "8X", "16X" };
+#define N_PIX ((int)(sizeof(s_pix_vals) / sizeof(s_pix_vals[0])))
 
 /* FPS ladder, built from the monitor refresh at init. The final entry is an
  * UNLIMITED sentinel: a render-fps so high the wall-clock pacer never sleeps on
@@ -135,7 +139,8 @@ static int s_fps_idx    = 0;   /* first ladder entry (30) */
 static int s_showfps_idx = 1;  /* ON — mirrors the live vk FPS overlay */
 static int s_vsync_idx  = 1;   /* ON       */
 static int s_ssaa_idx   = 0;   /* 1X       */
-static int s_wobble_idx = 0;   /* OFF — re-synced from the live pair on open */
+static int s_wobble_idx = 0;   /* OFF — re-synced from the live snap on open */
+static int s_pixel_idx  = 0;   /* OFF — re-synced from the live quantize on open */
 static int s_texmap_idx = 0;   /* CORRECT (perspective) — re-synced from the live mode on open */
 static int s_dither_idx = 0;   /* OFF — re-synced from the live flag on open */
 static int s_lod_idx    = 0;   /* ORIGINAL */
@@ -151,6 +156,9 @@ static int wrap_idx(int i, int n) {
     return i;
 }
 
+/* The value string every two-state row shows. */
+static const char* on_off(int v) { return v ? "ON" : "OFF"; }
+
 /* Index of the value in `vals` nearest to `want` (for seeding from opts). */
 static int nearest_idx(const int* vals, int n, int want) {
     int best = 0, bestd = -1;
@@ -161,14 +169,15 @@ static int nearest_idx(const int* vals, int n, int want) {
     return best;
 }
 
-/* Map the live snap+quantize pair onto the WOBBLE ladder: OFF unless the
- * vertex snap is integer, else the ON step nearest the live multiplier. A
- * custom CLI/M-overlay pair (quantize-only, sharp wobble, 16x) shows its
- * nearest rung and is only rewritten when the user cycles the row. */
+/* Each row re-seeds from its OWN live setting. A quantize multiplier off the
+ * ladder (a CLI/M-overlay 3x) shows its nearest rung and is only rewritten
+ * when the user cycles the row. */
 static int wobble_idx_from_live(void) {
-    if (!openpete_native_vertex_snap_active()) return 0;
-    return 1 + nearest_idx(s_wob_vals + 1, N_WOB - 1,
-                           openpete_native_get_raster_quantize());
+    return openpete_native_vertex_snap_active() ? 1 : 0;
+}
+
+static int pixel_idx_from_live(void) {
+    return nearest_idx(s_pix_vals, N_PIX, openpete_native_get_raster_quantize());
 }
 
 static void build_fps_list(int refresh) {
@@ -217,15 +226,16 @@ static const char* value_str(int row, char* buf, int buflen) {
         snprintf(buf, (size_t)buflen, "%d", v);
         return buf;
     }
-    case ROW_SHOWFPS:  return s_showfps_idx ? "ON" : "OFF";
-    case ROW_VSYNC:    return s_vsync_idx ? "ON" : "OFF";
+    case ROW_SHOWFPS:  return on_off(s_showfps_idx);
+    case ROW_VSYNC:    return on_off(s_vsync_idx);
     case ROW_SSAA:     return s_ssaa_labels[s_ssaa_idx];
-    case ROW_WOBBLE:   return s_wob_labels[s_wobble_idx];
+    case ROW_WOBBLE:   return on_off(s_wobble_idx);
+    case ROW_PIXEL:    return s_pix_labels[s_pixel_idx];
     case ROW_TEXMAP:   return s_texmap_idx ? "AFFINE" : "CORRECT";
     case ROW_DITHER:   return s_dither_idx ? "15-BIT" : "OFF";
     case ROW_LOD: return s_lod_idx ? "EXTENDED" : "ORIGINAL";
-    case ROW_FOG:      return s_fog_idx ? "ON" : "OFF";
-    case ROW_FREECAM:  return s_freecam_idx ? "ON" : "OFF";
+    case ROW_FOG:      return on_off(s_fog_idx);
+    case ROW_FREECAM:  return on_off(s_freecam_idx);
     case ROW_SAVE:
         if (s_save_result == -1) return "FAILED";
         if (s_save_result == -2) return "CLEARED";
@@ -242,7 +252,7 @@ static const char* value_str(int row, char* buf, int buflen) {
     case ROW_MODEN: {
         const char* id = openpete_mods_id(s_modsel_idx);
         if (!id) return "-";
-        return openpete_mods_is_enabled(id) ? "ON" : "OFF";
+        return on_off(openpete_mods_is_enabled(id));
     }
     default:           return "?";
     }
@@ -282,12 +292,8 @@ static void apply_row(int row) {
     case ROW_SHOWFPS:  openpete_native_set_fps_overlay(s_showfps_idx);         break;
     case ROW_VSYNC:    openpete_native_set_vsync(s_vsync_idx);                 break;
     case ROW_SSAA:     openpete_native_set_ssaa(s_ssaa_vals[s_ssaa_idx]);      break;
-    case ROW_WOBBLE: {
-        int m = s_wob_vals[s_wobble_idx];
-        openpete_native_set_vertex_precision(m > 0);
-        openpete_native_set_raster_quantize(m);
-        break;
-    }
+    case ROW_WOBBLE:   openpete_native_set_vertex_precision(s_wobble_idx);    break;
+    case ROW_PIXEL:    openpete_native_set_raster_quantize(s_pix_vals[s_pixel_idx]); break;
     /* Queued: the renderer re-bakes its pipelines at the next present
      * (a one-time device-idle hitch), so the value string reads the local
      * index, not the not-yet-applied live getter. */
@@ -381,9 +387,11 @@ void openpete_menu_init(const openpete_options_t* opts, int refresh_hz) {
     /* SSAA: nearest supported factor. */
     s_ssaa_idx = nearest_idx(s_ssaa_vals, N_SSAA, opts->ssaa > 0 ? opts->ssaa : 1);
 
-    /* WOBBLE: the native renderer has already resolved --vertex-precision and
-     * the --raster-quantize auto default — read the live pair. */
+    /* WOBBLE / PIXELATION: the native renderer has already resolved
+     * --vertex-precision and the --raster-quantize auto default (which pairs
+     * with the snap when unset) — read each live value. */
     s_wobble_idx = wobble_idx_from_live();
+    s_pixel_idx  = pixel_idx_from_live();
 
     /* TEXTURE: the renderer resolved --texture-mapping at its init. */
     s_texmap_idx = openpete_native_get_texture_mapping();
@@ -436,6 +444,13 @@ static int row_action_only(int row) {
 /* The close glyph's drawn ink, in overlay units, as the text builder emitted
  * it. Zero width means no build has run yet. */
 static float s_close_rect[4];
+
+/* The row cap height the text builder last drew at. Zero means no build yet. */
+static float s_row_cap_drawn;
+
+void openpete_menu_note_row_cap(float cap_h) {
+    s_row_cap_drawn = cap_h > 0.0f ? cap_h : 0.0f;
+}
 
 void openpete_menu_note_close_rect(float x0, float y0, float x1, float y1) {
     if (x0 != s_close_rect[0] || y0 != s_close_rect[1] ||
@@ -557,7 +572,8 @@ int openpete_menu_toggle(void) {
         s_lod_idx     = openpete_no_lod ? 1 : 0;
         s_fog_idx     = openpete_fog_enabled();
         s_freecam_idx = openpete_freecam_active() ? 1 : 0;
-        s_wobble_idx  = wobble_idx_from_live();   /* M-overlay knobs move the pair */
+        s_wobble_idx  = wobble_idx_from_live();   /* M-overlay knob moves the snap */
+        s_pixel_idx   = pixel_idx_from_live();    /* M-overlay knob moves the quantize */
         s_texmap_idx  = openpete_native_get_texture_mapping();   /* M-overlay row moves it */
         s_dither_idx  = openpete_native_get_dither();            /* M-overlay row moves it */
         s_quit_armed  = 0;   /* never re-open onto a primed EXIT */
@@ -596,17 +612,24 @@ void openpete_menu_get_layout(openpete_menu_layout_t* out) {
      * Spacing is scaled by the same ratio from the pause-menu-tuned 0.072 so
      * the shrunk rows keep the original visual density. */
     const float spacing   = 0.050f;   /* row-to-row (tightened from the pause-menu 0.072 with the font shrink) */
-    const float top_pad   = 0.055f;   /* panel top → title top */
+    const float top_pad   = 0.055f;   /* panel top → title top, panel bottom → EXIT bottom */
     const float title_gap = 0.070f;   /* title top → first row (larger header needs more) */
-    const float quit_gap  = 0.030f;   /* extra space above EXIT: it acts, it doesn't set */
     out->title_cap_h = title_cap;
     out->title_y     = out->panel_y0 + top_pad + title_cap * 0.5f;
     out->row_cap_h   = row_cap;
     out->row_h       = spacing;        /* (selection bar removed; kept ≈ line pitch) */
     const float first = out->panel_y0 + top_pad + title_cap + title_gap + row_cap * 0.5f;
     for (int i = 0; i < N; i++)
-        out->row_y[i] = first + spacing * (float)i
-                      + (i >= ROW_QUIT ? quit_gap : 0.0f);
+        out->row_y[i] = first + spacing * (float)i;
+    /* EXIT acts, it doesn't set: it leaves the settings block and anchors to
+     * the panel's bottom edge at the same inset the title keeps from the top,
+     * so the block reads as framed rather than trailing off. Its ink bottom,
+     * not its nominal box, is what lands on the inset, hence the drawn cap.
+     * The draw and the hit test both read this y. */
+    if (ROW_QUIT < N) {
+        const float drawn = s_row_cap_drawn > 0.0f ? s_row_cap_drawn : row_cap;
+        out->row_y[ROW_QUIT] = out->panel_y1 - top_pad - drawn * 0.5f;
+    }
     /* Split point (labels right-align to label_x, values left-align at value_x).
      * Kept left of centre — reduces the left padding and gives the widest row's
      * value ("EXTENDED") room before the right border. */
@@ -673,7 +696,8 @@ void openpete_menu_adjust(int dx) {
     case ROW_SHOWFPS:  s_showfps_idx = wrap_idx(s_showfps_idx + step, 2);         break;
     case ROW_VSYNC:    s_vsync_idx  = wrap_idx(s_vsync_idx  + step, 2);           break;
     case ROW_SSAA:     s_ssaa_idx   = wrap_idx(s_ssaa_idx   + step, N_SSAA);      break;
-    case ROW_WOBBLE:   s_wobble_idx = wrap_idx(s_wobble_idx + step, N_WOB);       break;
+    case ROW_WOBBLE:   s_wobble_idx = wrap_idx(s_wobble_idx + step, 2);           break;
+    case ROW_PIXEL:    s_pixel_idx  = wrap_idx(s_pixel_idx  + step, N_PIX);      break;
     case ROW_TEXMAP:   s_texmap_idx = wrap_idx(s_texmap_idx + step, 2);           break;
     case ROW_DITHER:   s_dither_idx = wrap_idx(s_dither_idx + step, 2);           break;
     case ROW_LOD:      s_lod_idx    = wrap_idx(s_lod_idx    + step, 2);           break;

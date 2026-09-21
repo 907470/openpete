@@ -1184,6 +1184,10 @@ void text_moby_native_menu(CPUState* cpu) {
         const float w = measure_string("FULLSCREEN", L.row_cap_h);
         if (w > vavail && w > 0.0f) row_cap = L.row_cap_h * (vavail / w);
     }
+    /* The bottom-anchored row's y is computed from this height; publish it
+     * before the rows are placed so the anchor uses what was drawn. */
+    openpete_menu_note_row_cap(row_cap);
+    openpete_menu_get_layout(&L);
     for (int r = 0; r < L.row_count; r++) {
         const int wob = (r == cursor) ? phase : -1;   /* only the selected row wobbles */
         char vb[16];

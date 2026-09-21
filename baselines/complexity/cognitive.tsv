@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 9e6dedf2617bc1cf96e46a9a0c2dacf43949d36e
+# head: 80079ba1ae095a2d4933621a3be4f02296733f6c
 file	function	score	marked	accepted
 core/config/config.c	harvest_args	30	0	
 core/config/config.c	harvest_base	39	0	
@@ -112,7 +112,7 @@ core/ui/devui.cpp	draw_mods_section	52	0
 core/ui/devui.cpp	draw_panel	42	0	
 core/ui/devui.cpp	draw_row	87	0	
 core/ui/openpete_menu.c	openpete_menu_mouse_poll	52	0	
-core/ui/openpete_menu.c	value_str	37	0	
+core/ui/openpete_menu.c	value_str	27	0	
 core/ui/openpete_osd.c	openpete_osd_present_update	47	0	
 games/common/freecam_game.c	freecam_drive	38	0	
 games/common/freecam_game.c	freecam_path_parse	42	0	
