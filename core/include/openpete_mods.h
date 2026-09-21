@@ -701,9 +701,16 @@ unsigned openpete_mods_material_terrain_epoch(void);
  * same priority as the draw-time resolve — a face must shade identically
  * whether it is walked or retained. */
 int  openpete_mods_material_terrain_bucket(int texid, int env, int lp);
-/* Highest live bucket id (0 = no terrain material installed), so the draw
- * loop knows how many material passes an arena can need. */
-int  openpete_mods_material_terrain_bucket_max(void);
+/* The live bucket ids, ascending, written into `out` (capacity `cap`;
+ * OPENPETE_MATERIAL_TER_BUCKET_MAX always suffices). Returns the count.
+ *
+ * A bucket id is a material index + 1, so the ids are sparse: registering
+ * one terrain material at index 200 leaves 199 ids below it with no live
+ * material. Iterating 1..bucket_max would bind the stock pipeline and draw
+ * the whole arena once per dead id. Iterating this list instead keeps the
+ * pass count proportional to the live terrain materials, whatever the
+ * table's size. */
+int  openpete_mods_material_terrain_bucket_list(int* out, int cap);
 
 typedef struct {
     const uint32_t* frag_spv;    /* the OP_PROFILE_TERRAIN module          */
@@ -737,13 +744,16 @@ const void* openpete_mods_material_slot_uniforms(int slot, uint32_t* len);
  * static slot before re-minting it: a read in that window binds block 0
  * (the engine block) as the mod's uniforms. */
 #define OPENPETE_MODS_MATERIAL_VIEW_SLOTS 128
-#define OPENPETE_MODS_MATERIAL_VIEW_MATS   32
+#define OPENPETE_MODS_MATERIAL_VIEW_MATS   255
 typedef struct {
     int slot_n;                                   /* 1 + interned slots */
     struct { int mat; uint32_t len; unsigned char bytes[256]; }
         slots[OPENPETE_MODS_MATERIAL_VIEW_SLOTS];
     int static_slot[OPENPETE_MODS_MATERIAL_VIEW_MATS];   /* 0 = no params */
-    int ter_bucket_max;
+    /* The live terrain bucket ids at capture, ascending. The highest is
+     * the last entry, so this carries what ter_bucket_max used to. */
+    int ter_bucket_n;
+    int ter_bucket[OPENPETE_MODS_MATERIAL_VIEW_MATS];
 } openpete_mods_material_view_t;
 void openpete_mods_material_view_capture(openpete_mods_material_view_t* out);
 /* Present thread: resolve/bind through `v` until set back to NULL (live). */

@@ -55,12 +55,16 @@ typedef struct mod_vec_retired {
     void* mem;
 } mod_vec_retired_t;
 
+#define MOD_VEC_FVEC  0
+#define MOD_VEC_CVEC  1
+#define MOD_VEC_FIXED 2
+
 typedef struct mod_vec_node {
     struct mod_vec_node* next;
     const void* vec;            /* owning mod_cvec or mod_fvec */
     const char* name;           /* table name on the census line */
     unsigned long was;          /* capacity the table had as a fixed array */
-    int chunked;                /* 1 = mod_cvec, 0 = mod_fvec */
+    int kind;                   /* MOD_VEC_FVEC / _CVEC / _FIXED */
     int linked;                 /* node is in the census list */
 } mod_vec_node_t;
 
@@ -201,6 +205,34 @@ void mod_fvec_clear(mod_fvec* v);
 
 /** @brief Release the run, unlink the census node and zero the table. */
 void mod_fvec_free(mod_fvec* v);
+
+/**
+ * @brief A fixed table held at a real bound, reported beside the growable
+ *        ones.
+ *
+ * Some tables cannot grow past a bound the format fixes (an index carried
+ * in a tag's spare bits, an ABI field). Their storage is still sized to
+ * that bound rather than to a guess, and the census shows how much of it a
+ * run uses, so the bound can be checked against real content the same way
+ * a growable table's high-water is.
+ */
+typedef struct mod_fixed {
+    size_t count;
+    size_t peak;
+    size_t bound;               /* elements the storage holds */
+    mod_vec_node_t census;
+} mod_fixed;
+
+/**
+ * @brief Register a fixed table in the census.
+ * @param name   Census name, or NULL to stay out of the census.
+ * @param was    Capacity the table had before it was sized to the bound.
+ * @param bound  Elements the storage holds.
+ */
+void mod_fixed_init(mod_fixed* t, const char* name, unsigned long was,
+                    size_t bound);
+/** @brief Publish the table's live element count, tracking its high-water. */
+void mod_fixed_set(mod_fixed* t, size_t count);
 
 /**
  * @brief Arm the exit-time census report.

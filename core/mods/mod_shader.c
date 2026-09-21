@@ -769,7 +769,11 @@ void openpete_mods_postfx_remove_owner(const char* mod_id) { REG_WR(); openpete_
  * strobing). Canonical-compute + identity-replay would only save the
  * callback cost on intermediates; deferred as a pure optimization. */
 
-#define MOD_MATERIAL_MAX 32
+/* A real bound, not a table size: the bucket id stamped into the baked
+ * face material is the index + 1, and it has 8 bits
+ * (OPENPETE_MATERIAL_TER_BUCKET_MAX). A material registered above index
+ * 254 would succeed and then never shade a terrain face. */
+#define MOD_MATERIAL_MAX OPENPETE_MATERIAL_TER_BUCKET_MAX
 
 typedef struct {
     const char* owner;
@@ -816,6 +820,9 @@ typedef struct {
 
 static mod_material_t s_mats[MOD_MATERIAL_MAX];
 static int s_mat_count;
+/* Census only: the table cannot grow past the bucket-id bound, so the
+ * row reports how much of that bound a run's content uses. */
+static mod_fixed s_mat_census;
 static int s_mat_sel_dirty;      /* any material carries a parked selector */
 static int s_mat_has_instance;   /* cached: any live selector has a callback */
 
@@ -951,14 +958,23 @@ int openpete_mods_material_terrain_bucket(int texid, int env, int lp) {
     return (w + 1 <= OPENPETE_MATERIAL_TER_BUCKET_MAX) ? w + 1 : 0;
 }
 
-int openpete_mods_material_terrain_bucket_max(void) {
-    if (s_mat_view) return s_mat_view->ter_bucket_max;
-    int max = 0, level = openpete_mods_current_level();
-    for (int i = 0; i < s_mat_count; i++) {
-        if (!terrain_sel_usable(&s_mats[i], level)) continue;
-        if (i + 1 > max && i + 1 <= OPENPETE_MATERIAL_TER_BUCKET_MAX) max = i + 1;
+int openpete_mods_material_terrain_bucket_list(int* out, int cap) {
+    if (!out || cap <= 0) return 0;
+    if (s_mat_view) {
+        int n = s_mat_view->ter_bucket_n;
+        if (n > cap) n = cap;
+        for (int i = 0; i < n; i++) out[i] = s_mat_view->ter_bucket[i];
+        return n;
     }
-    return max;
+    int n = 0, level = openpete_mods_current_level();
+    /* Ascending by construction: the scan runs in index order and the id
+     * is the index + 1. */
+    for (int i = 0; i < s_mat_count && n < cap; i++) {
+        if (!terrain_sel_usable(&s_mats[i], level)) continue;
+        if (i + 1 > OPENPETE_MATERIAL_TER_BUCKET_MAX) break;
+        out[n++] = i + 1;
+    }
+    return n;
 }
 
 static int terrain_refine_slot(int w);   /* defined with the refine tier */
@@ -1074,6 +1090,9 @@ static int openpete_mods_material_register_locked(openpete_mod_t* self,
     m->live = 1;
     m->user_enabled = 1;          /* registration arms it; enable() toggles */
     int handle = s_mat_count++;
+    if (!s_mat_census.bound)
+        mod_fixed_init(&s_mat_census, "materials", 32, MOD_MATERIAL_MAX);
+    mod_fixed_set(&s_mat_census, (size_t)s_mat_count);
     if (terrain_sel_relevant(m)) s_mat_ter_epoch++;
     material_rearm_split();
     OPL_INFO_F("mods", "%s: material selector armed (channel %d ident %d class %d "
@@ -1255,7 +1274,10 @@ void openpete_mods_material_view_capture(openpete_mods_material_view_t* out) {
         memcpy(out->slots[i].bytes, s_mat_slots[i].bytes, s_mat_slots[i].len);
     }
     for (int i = 0; i < MOD_MATERIAL_MAX; i++) out->static_slot[i] = s_mats[i].static_slot;
-    out->ter_bucket_max = openpete_mods_material_terrain_bucket_max();
+    /* Capture the live list, not the view's: a capture runs on the sim
+     * thread with no view installed. */
+    out->ter_bucket_n = openpete_mods_material_terrain_bucket_list(
+        out->ter_bucket, OPENPETE_MODS_MATERIAL_VIEW_MATS);
 }
 void openpete_mods_material_view_set(const openpete_mods_material_view_t* v) { s_mat_view = v; }
 

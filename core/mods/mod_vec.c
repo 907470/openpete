@@ -13,11 +13,11 @@ static mod_vec_node_t* s_census_head;
 static int s_census_armed;
 
 static void census_link(mod_vec_node_t* n, const void* vec, const char* name,
-                        unsigned long was, int chunked) {
+                        unsigned long was, int kind) {
     n->vec = vec;
     n->name = name;
     n->was = was;
-    n->chunked = chunked;
+    n->kind = kind;
     n->next = NULL;
     n->linked = 0;
     if (!name) return;
@@ -214,7 +214,10 @@ static int census_enabled(void) {
 static void census_row(const mod_vec_node_t* n) {
     size_t count, peak, storage;
     unsigned long grew;
-    if (n->chunked) {
+    if (n->kind == MOD_VEC_FIXED) {
+        const mod_fixed* t = (const mod_fixed*)n->vec;
+        count = t->count; peak = t->peak; storage = t->bound; grew = 0;
+    } else if (n->kind == MOD_VEC_CVEC) {
         const mod_cvec* v = (const mod_cvec*)n->vec;
         count = v->count; peak = v->peak; storage = v->block_count;
         grew = v->grew;
@@ -225,6 +228,21 @@ static void census_row(const mod_vec_node_t* n) {
     OPL_INFO_F("mods", "mod-table: %s count=%zu peak=%zu was=%lu "
                "storage=%zu grew=%lu",
                n->name, count, peak, n->was, storage, grew);
+}
+
+void mod_fixed_init(mod_fixed* t, const char* name, unsigned long was,
+                    size_t bound) {
+    if (!t) return;
+    t->count = 0;
+    t->peak = 0;
+    t->bound = bound;
+    census_link(&t->census, t, name, was, MOD_VEC_FIXED);
+}
+
+void mod_fixed_set(mod_fixed* t, size_t count) {
+    if (!t) return;
+    t->count = count;
+    if (count > t->peak) t->peak = count;
 }
 
 void mod_vec_census_report(void) {

@@ -1234,6 +1234,15 @@ static int tc_dup_draw(void)
  * (no terrain material installed, and every depth/key pass), 0 = the stock
  * pass, >0 = one material's pass. Set around each group of arena draws. */
 static int s_tc_mat_pass = -1;
+/* Bucket passes that fell through to the stock pipeline, counted per draw
+ * pass. A live bucket binds its own pipeline; a bucket whose material is
+ * dead, disabled or has no terrain profile redraws the whole arena stock,
+ * which is what iterating the live-bucket list avoids. */
+static unsigned s_tc_mat_stock;
+/* Bucket passes run in this draw pass. With the live-bucket list this is
+ * the number of live terrain materials; iterating 1..bucket_max instead
+ * would make it the highest material index, however few are live. */
+static unsigned s_tc_mat_passes;
 
 /* Is this pair one the level-edge replacement has already retired? The
  * invariant is that no draw ever binds one. */
@@ -1385,6 +1394,7 @@ static int tc_bind_material(int bucket, int variant, int slot,
     }
 draw_stock:
     if (!stock) return 0;       /* no arena of this flavour in this slot */
+    s_tc_mat_stock++;
     rhi_bind_pipeline(s_tc.dev, stock);
     return 1;
 }
@@ -1422,6 +1432,56 @@ static void tc_draw_material_blend(int bucket, int slot, int a_plain,
     if (tc_bind_material(bucket, 0, slot, s_plain)) tc_draw_arena(a_plain, 0, clip);
     if (tc_bind_material(bucket, 1, slot, s_anim))  tc_draw_arena(a_anim,  0, clip);
     if (tc_bind_material(bucket, 2, slot, s_near))  tc_draw_arena(a_near,  0, clip);
+}
+
+/* The material passes of one colour slot, run after its stock passes.
+ *
+ * One pass per live terrain bucket. Bucket ids are a material index + 1
+ * and so are sparse: a material registered at index 200 leaves 199 ids
+ * with no live material behind it. Iterating the live list rather than
+ * 1..highest keeps the pass count proportional to the live terrain
+ * materials at any table size, because an id with no live material still
+ * binds a pipeline and redraws the whole arena, every face of which the
+ * bucket filter then discards. */
+static void tc_draw_material_passes(int which, const int *buckets, int bn,
+                                    int use_mark,
+                                    const openpete_tercache_clip *clip)
+{
+    for (int k = 0; k < bn; k++) {
+        const int b = buckets[k];
+        s_tc_mat_pass = b;
+        s_tc_mat_passes++;
+        switch (which) {
+        case OPTC_DRAW_WORLD:
+            tc_draw_material_world(b, use_mark ? 1 : 0, use_mark, clip);
+            break;
+        case OPTC_DRAW_ALPHA:
+            tc_draw_material_blend(b, 3, OPTC_ARENA_ALPHA,
+                                   OPTC_ARENA_A_ALPHA, OPTC_ARENA_N_ALPHA,
+                                   s_tc.pipe_alpha, s_tc.pipe_a_alpha,
+                                   s_tc.pipe_n_alpha, clip);
+            break;
+        case OPTC_DRAW_ADD:
+            tc_draw_material_blend(b, 4, OPTC_ARENA_ADD,
+                                   OPTC_ARENA_A_ADD, OPTC_ARENA_N_ADD,
+                                   s_tc.pipe_add, s_tc.pipe_a_add,
+                                   s_tc.pipe_n_add, clip);
+            break;
+        case OPTC_DRAW_SUB:
+            tc_draw_material_blend(b, 5, OPTC_ARENA_SUB,
+                                   OPTC_ARENA_A_SUB, OPTC_ARENA_N_SUB,
+                                   s_tc.pipe_sub, s_tc.pipe_a_sub,
+                                   s_tc.pipe_n_sub, clip);
+            break;
+        case OPTC_DRAW_FILL:
+            if (tc_bind_material(b, 0, 2, s_tc.pipe_fill))
+                tc_draw_arena(OPTC_ARENA_LP,   1, clip);
+            if (tc_bind_material(b, 2, 2, s_tc.pipe_n_fill))
+                tc_draw_arena(OPTC_ARENA_N_LP, 1, clip);
+            break;
+        default: break;
+        }
+    }
 }
 
 void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
@@ -1478,11 +1538,19 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
     rhi_ubo_bind_at(s_tc.dev, s_tc.ubo, 5, 0);
     rhi_ubo_bind_at(s_tc.dev, s_tc.ubo, 6, 1);
     /* Every colour slot runs its stock pass filtered (mat_pass 0) and then
-     * one pass per bucket. The depth and key passes shade nothing, so they
-     * draw every face regardless of bucket. */
-    const int bmax = (which == OPTC_DRAW_PREPASS || which == OPTC_DRAW_KEY)
-                         ? 0 : openpete_mods_material_terrain_bucket_max();
-    s_tc_mat_pass = bmax > 0 ? 0 : -1;
+     * one pass per live bucket. Bucket ids are a material index + 1 and so
+     * are sparse: the list is iterated rather than the 1..max range,
+     * because an id with no live material still binds the stock pipeline
+     * and redraws the whole arena. The depth and key passes shade nothing,
+     * so they draw every face regardless of bucket. */
+    int buckets[OPENPETE_MATERIAL_TER_BUCKET_MAX];
+    const int bn = (which == OPTC_DRAW_PREPASS || which == OPTC_DRAW_KEY)
+                       ? 0
+                       : openpete_mods_material_terrain_bucket_list(
+                             buckets, OPENPETE_MATERIAL_TER_BUCKET_MAX);
+    s_tc_mat_pass = bn > 0 ? 0 : -1;
+    s_tc_mat_stock = 0;
+    s_tc_mat_passes = 0;
     switch (which) {
         case OPTC_DRAW_WORLD:
             tc_draw_arena(OPTC_ARENA_OPAQUE, 0, clip);
@@ -1495,58 +1563,26 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
                          OPTC_ARENA_N_OPAQUE, 0, clip);
             tc_draw_anim(use_mark ? s_tc.pipe_n_world_mark : s_tc.pipe_n_world,
                          OPTC_ARENA_N_LP,     0, clip);
-            for (int b = 1; b <= bmax; b++) {
-                s_tc_mat_pass = b;
-                tc_draw_material_world(b, use_mark ? 1 : 0, use_mark, clip);
-            }
             break;
         case OPTC_DRAW_ALPHA:
             tc_draw_arena(OPTC_ARENA_ALPHA, 0, clip);
             tc_draw_anim(s_tc.pipe_a_alpha, OPTC_ARENA_A_ALPHA, 0, clip);
             tc_draw_anim(s_tc.pipe_n_alpha, OPTC_ARENA_N_ALPHA, 0, clip);
-            for (int b = 1; b <= bmax; b++) {
-                s_tc_mat_pass = b;
-                tc_draw_material_blend(b, 3, OPTC_ARENA_ALPHA,
-                                       OPTC_ARENA_A_ALPHA, OPTC_ARENA_N_ALPHA,
-                                       s_tc.pipe_alpha, s_tc.pipe_a_alpha,
-                                       s_tc.pipe_n_alpha, clip);
-            }
             break;
         case OPTC_DRAW_ADD:
             tc_draw_arena(OPTC_ARENA_ADD,   0, clip);
             tc_draw_anim(s_tc.pipe_a_add, OPTC_ARENA_A_ADD, 0, clip);
             tc_draw_anim(s_tc.pipe_n_add, OPTC_ARENA_N_ADD, 0, clip);
-            for (int b = 1; b <= bmax; b++) {
-                s_tc_mat_pass = b;
-                tc_draw_material_blend(b, 4, OPTC_ARENA_ADD,
-                                       OPTC_ARENA_A_ADD, OPTC_ARENA_N_ADD,
-                                       s_tc.pipe_add, s_tc.pipe_a_add,
-                                       s_tc.pipe_n_add, clip);
-            }
             break;
         case OPTC_DRAW_SUB:
             tc_draw_arena(OPTC_ARENA_SUB,   0, clip);
             tc_draw_anim(s_tc.pipe_a_sub, OPTC_ARENA_A_SUB, 0, clip);
             tc_draw_anim(s_tc.pipe_n_sub, OPTC_ARENA_N_SUB, 0, clip);
-            for (int b = 1; b <= bmax; b++) {
-                s_tc_mat_pass = b;
-                tc_draw_material_blend(b, 5, OPTC_ARENA_SUB,
-                                       OPTC_ARENA_A_SUB, OPTC_ARENA_N_SUB,
-                                       s_tc.pipe_sub, s_tc.pipe_a_sub,
-                                       s_tc.pipe_n_sub, clip);
-            }
             break;
         case OPTC_DRAW_FILL:
             /* LP only: poly-anim sectors never backstop-fill, near ones do. */
             tc_draw_arena(OPTC_ARENA_LP,    1, clip);
             tc_draw_anim(s_tc.pipe_n_fill, OPTC_ARENA_N_LP, 1, clip);
-            for (int b = 1; b <= bmax; b++) {
-                s_tc_mat_pass = b;
-                if (tc_bind_material(b, 0, 2, s_tc.pipe_fill))
-                    tc_draw_arena(OPTC_ARENA_LP,   1, clip);
-                if (tc_bind_material(b, 2, 2, s_tc.pipe_n_fill))
-                    tc_draw_arena(OPTC_ARENA_N_LP, 1, clip);
-            }
             break;
         case OPTC_DRAW_PREPASS:
             tc_draw_arena(OPTC_ARENA_OPAQUE, 0, clip);
@@ -1569,6 +1605,12 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
             tc_draw_anim(s_tc.pipe_n_key, OPTC_ARENA_N_LP,     2, clip);
             break;
     }
+    tc_draw_material_passes(which, buckets, bn, use_mark ? 1 : 0, clip);
+    if (tc_dbg())
+        fprintf(stderr, "[tc] %s mat_passes=%u stock_fallback=%u\n",
+                (which >= 0 && which <= OPTC_DRAW_KEY) ? k_zone[which]
+                                                       : "ter.gpu",
+                s_tc_mat_passes, s_tc_mat_stock);
     s_tc_mat_pass = -1;
     rhi_gpu_zone_end(s_tc.dev);
 }
