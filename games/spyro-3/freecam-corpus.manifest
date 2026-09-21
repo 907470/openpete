@@ -38,3 +38,8 @@ sunrise_spring | pos=(50900, 12500, 26900) yaw=1480 pitch=354
 # Widescreen moby cull: the basket on the right of the frame is visible at
 # 16:9 but is culled early (user report 2026-09-19); blessed pre-fix.
 sunrise_spring | pos=(39482, 20225, 17997) yaw=-201 pitch=-30
+# terrain texture tier: the wall's higher-quality texture repeats four times
+# where the lower one drew whole; under --lod extended the highest tier must
+# draw everywhere (reported 2026-09-20). The second pose sits one step closer.
+evening_lake | pos=(45318, 64221, 42770) yaw=1790 pitch=-20
+evening_lake | pos=(44902, 64396, 42783) yaw=1790 pitch=-20
