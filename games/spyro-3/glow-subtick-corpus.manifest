@@ -1,0 +1,17 @@
+# Sub-tick interpolation of the glow rings (scripts/check_glow_subtick.sh).
+#   <bk2> | <V> | blob=<x>,<y> ... [tol=<px>] [step=<px>] [judge=<a>,...]
+# V is the tick whose primitives the intermediate present at V+1 replays; V-2
+# opens the interval that present covers. V is even because a tick spans two
+# VBLs here: the intermediate present at V+1 has to fall inside V's own tick.
+#
+# Two glow records are on frame over this camera swing: Sparx, the 1069-1147 px
+# component the row names, and a second fan of 46-53 px standing near
+# (163,134), which is left unnamed and so reported only. The camera swings
+# 21.9 px over this interval, the widest per-tick step the movie's glow takes.
+#
+# The bound is 1.0 px, twice the glint harness's, because the ring's own size
+# is the channel this rebase does not carry: the routine scales the fan by the
+# record's view Z, so the mask changes size across the interval while the
+# rebase translates it, and the visible centroid follows that change wherever
+# the ring is clipped by the screen edge or covered by terrain.
+sunrise-spring-camera-swing.bk2 | 1234 | blob=342.1,255.3 tol=1.0 step=10

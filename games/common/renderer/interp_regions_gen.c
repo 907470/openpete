@@ -234,6 +234,30 @@ void game_interp_capture_glint_pool(void) {
     }
 }
 
+/* The glow-ring pool (game_layout.glow): `slots` records of `stride` bytes,
+ * world XYZ at `pos_off` and a packed word at `packed_off` whose byte 0 is the
+ * shape index and 0 on a free slot. The glow routine projects each record
+ * under the tick's camera and emits the ring's screen corners itself, so a
+ * sub-tick present that replays those corners needs the record's previous
+ * world position to rebase them onto the pose it shows. The pool is a fixed
+ * array outside the moby array, so the shared walk never reaches it and the
+ * record's address is its slot. Read-only against guest RAM. */
+void game_interp_capture_glow_pool(void) {
+    if (!game_layout.glow.pool || !game_layout.glow.stride) return;
+    const uint32_t stride = game_layout.glow.stride;
+    const uint32_t len = openpete_interp_objs_blob_bytes() < stride
+                             ? openpete_interp_objs_blob_bytes() : stride;
+    for (uint32_t s = 0; s < game_layout.glow.slots; ++s) {
+        const uint32_t rec = game_layout.glow.pool + s * stride;
+        const void* host = openpete_psx_to_host_ptr(rec);
+        if (!host) break;
+        uint32_t packed;
+        memcpy(&packed, (const uint8_t*)host + game_layout.glow.packed_off, 4);
+        if ((packed & 0xFFu) == 0u) continue;             /* free slot */
+        openpete_interp_objs_capture(rec, host, len);
+    }
+}
+
 /* Zoe's zap pool (game_layout.zap): 8 records of `stride` bytes, the head
  * world XYZ at `head_off`, the tail twelve bytes on, and a packed word at
  * `packed_off` whose byte 0 is the segment count and 0 on a free slot. The
@@ -263,6 +287,7 @@ void game_interp_capture_zap_pool(void) {
 void game_interp_capture_feeder_pools(void) {
     game_interp_capture_particle_pool();
     game_interp_capture_glint_pool();
+    game_interp_capture_glow_pool();
     game_interp_capture_zap_pool();
 }
 

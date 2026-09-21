@@ -10,8 +10,8 @@
  * once per tick before the draws read them.
  *
  * The per-object capture is the shared moby-array walk
- * (game_interp_capture_moby_array) plus the particle and gem-glint pools
- * (game_interp_capture_feeder_pools), whose records those two feeders'
+ * (game_interp_capture_moby_array) plus the particle, gem-glint, glow and zap
+ * pools (game_interp_capture_feeder_pools), whose records those feeders'
  * sub-tick replays rebase their captured primitives onto; all of them are
  * installed by the same registration call.
  * The scrolling-texture descriptors the same call captures are located

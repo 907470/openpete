@@ -1,0 +1,19 @@
+# Sub-tick interpolation of the glow rings (scripts/check_glow_subtick.sh).
+#   <bk2> | <V> | blob=<x>,<y> ... [tol=<px>] [step=<px>] [judge=<a>,...]
+# V is the tick whose primitives the intermediate present at V+1 replays; V-2
+# opens the interval that present covers. Each blob is named by its mask
+# component's centroid in the canonical capture at V.
+#
+# Sparx carries the one glow record on frame over this pogo dialogue: the mask
+# is a single component of 1157-2875 px, one 16-triangle fan. The two rows carry
+# a 16.3 px and a 29.6 px canonical step over their
+# intervals. Both V are even because a tick spans two VBLs here: the
+# intermediate present at V+1 has to fall inside V's own tick.
+#
+# The bound is 1.0 px, twice the glint harness's, because the ring's own size
+# is the channel this rebase does not carry: the routine scales the fan by the
+# record's view Z, so the mask grows 20-28% across one of these intervals while
+# the rebase translates it, and the visible centroid follows that growth
+# wherever the ring is clipped by the screen edge or covered by terrain.
+glimmer-pogo-dialogue.bk2 | 862 | blob=417.1,217.5 tol=1.0 step=10
+glimmer-pogo-dialogue.bk2 | 868 | blob=357.5,267.4 tol=1.0 step=10

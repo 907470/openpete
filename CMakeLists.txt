@@ -510,6 +510,17 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
 
+    foreach(_subtick_game spyro-2 spyro-3)
+        add_test(NAME glow_subtick_${_subtick_game}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_glow_subtick.sh
+                         --game ${_subtick_game} --build-dir=${CMAKE_BINARY_DIR})
+        set_tests_properties(glow_subtick_${_subtick_game} PROPERTIES
+            LABELS "presentation;glow"
+            TIMEOUT 1800
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
+
     # Vertex-stream field resolution on a stock boot: one headless 206-VBL
     # boot with a native screenshot armed, and every frame word the moby walk
     # decodes required to name an address. An unresolved field there is the

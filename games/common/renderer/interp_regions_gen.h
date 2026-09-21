@@ -76,6 +76,7 @@ void game_interp_capture_particle_pool(void);
  * primitives has a previous position and spin phase to rebase each record
  * onto. */
 void game_interp_capture_glint_pool(void);
+void game_interp_capture_glow_pool(void);
 
 /* Snapshot one whole record per live slot of Zoe's zap pool (game_layout.zap:
  * pool, slots, stride, packed_off), keyed by the record's PSX address, so the

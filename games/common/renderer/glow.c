@@ -58,6 +58,7 @@
 #include "renderer/env_knob.h"
 #include "psx_runtime_internal.h"
 #include "openpete_native_render.h"
+#include "openpete_interp_objs.h"   /* the per-record prev/curr pool snapshots */
 #include "game_layout.h"
 
 #include <math.h>
@@ -75,11 +76,28 @@ extern unsigned openpete_frame;
 #define GLOW_DRMODE     0xE1u   /* GP0 draw-mode packet, one per accepted record */
 #define GLOW_TRI        0x32u   /* POLY_G3 semi-transparent */
 
+/* One accepted record, as the fan the routine built from it needs it back:
+ * the depth its primitives take, the slot address the keyed store holds its
+ * previous copy under, the position words the tick read, and the screen point
+ * the tick's camera put that position at. The routine loads a 2x2 rotate-scale
+ * basis whose third row is zero and translates the shape's outline about the
+ * record's own rotated position (Spyro 2 mobyfunc.s:2026-2034, Spyro 3
+ * :2030-2038), so every corner of a fan shares that position's view Z and one
+ * perspective divide: the fan's whole screen displacement is that point's. */
+typedef struct {
+    float    depth;
+    uint32_t addr;
+    int32_t  w[3];
+    double   psx, psy;
+} glow_rec;
+
 typedef struct {
     ngte_prim p;
     float     depth;
     int       paired;
     int       blend;
+    float     dx, dy;     /* the sub-tick screen displacement of its fan */
+    glow_rec  src;
 } glow_item;
 
 static glow_item s_item[GLOW_MAX_PRIMS];
@@ -97,6 +115,9 @@ static int glow_prim_sink(void* ctx, const ngte_prim* s) {
     s_item[s_item_n].depth = 0.0f;
     s_item[s_item_n].paired = 0;
     s_item[s_item_n].blend = 0;
+    s_item[s_item_n].dx = 0.0f;
+    s_item[s_item_n].dy = 0.0f;
+    memset(&s_item[s_item_n].src, 0, sizeof s_item[s_item_n].src);
     s_item_n++;
     return 1;
 }
@@ -112,9 +133,6 @@ static void glow_capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
     };
     ngte_walk_prims(cpu, start, end, &pol, glow_prim_sink, NULL);
 }
-
-/* One accepted record's view-Z and its blend-independent verdict. */
-typedef struct { float depth; } glow_rec;
 
 /* The fan's native depth from the ordering-table key the routine links it at,
  * (MAC3 >> 7) - bias (Spyro 2 mobyfunc.s:2048-2049, Spyro 3 :2052-2053). A
@@ -172,7 +190,17 @@ static int glow_predict(CPUState* cpu, const ngte_view* v, glow_rec* out, int ca
         if (4.0 * fabs(m1) - 3.0 * m3 - (double)GW.pyr_x >= 0.0) continue;
         if (3.0 * fabs(m2) - m3 - (double)GW.pyr_y >= 0.0) continue;
 
-        if (n < cap) out[n].depth = glow_record_depth(m3, bias);
+        if (n < cap) {
+            out[n].depth = glow_record_depth(m3, bias);
+            out[n].addr = rec;
+            out[n].w[0] = (int32_t)px; out[n].w[1] = (int32_t)py;
+            out[n].w[2] = (int32_t)pz;
+            const double off[3] = { vx, vy, vz };
+            ngte_proj o;
+            ngte_project_offset(v, off, &o);
+            out[n].psx = o.sx;
+            out[n].psy = o.sy;
+        }
         n++;
     }
     return n;
@@ -204,6 +232,7 @@ static void glow_pair_depths(CPUState* cpu, const ngte_view* v) {
         s_item[i].blend = blend;
         s_item[i].depth = depth;
         s_item[i].paired = pair;
+        if (pair) s_item[i].src = pred[g];
     }
 }
 
@@ -225,7 +254,9 @@ static void glow_feed_native(void) {
         if (p->nv != 3) continue;
         openpete_scene_tri st = {0};
         for (int k = 0; k < 3; k++) {
-            st.v[k].sx = p->x[k]; st.v[k].sy = p->y[k]; st.v[k].z = s_item[i].depth;
+            st.v[k].sx = (float)p->x[k] + s_item[i].dx;
+            st.v[k].sy = (float)p->y[k] + s_item[i].dy;
+            st.v[k].z = s_item[i].depth;
             st.v[k].u = 0.0f; st.v[k].v = 0.0f;
             st.v[k].rgba = (p->rgb[k] & 0xFFFFFFu) | 0xFF000000u;
         }
@@ -289,13 +320,128 @@ static int on_glow_draw(CPUState* cpu, uint32_t addr) {
     return hook_bracket_end(&k_bracket);
 }
 
+/* ---- sub-tick rebase ------------------------------------------------------
+ *
+ * The primitives are the guest's own int16 output, built under the tick's
+ * camera from the tick's pool, so a present that re-feeds them draws every
+ * ring at the pixels the tick drew: neither the camera's motion nor the
+ * record's reaches them. The rebase measures the record's screen displacement
+ * as the difference of two projections — the position the present shows under
+ * the staged camera, against the position the tick drew under the tick's
+ * camera — and moves the fan by it. Every corner of a fan shares the record's
+ * view Z and its perspective divide, so one displacement carries the fan. At
+ * the end of the tick's own interval the shown position and the staged camera
+ * are both the tick's, so the two projections take identical inputs through
+ * identical arithmetic and the displacement is exactly zero.
+ *
+ * Out of scope, each its own channel of the same record: the ring's spin,
+ * which the routine takes from the camera's yaw plus a phase byte it
+ * decrements by two table entries per draw (Spyro 2 mobyfunc.s:1970-1973), and
+ * the ring's size, which scales with the record's view Z. */
+
+/* A record's speed ceiling, in world units per tick. The keyed store is keyed
+ * by slot address, so a slot a new record respawns into inside one tick pairs
+ * across two different rings and would lerp as a streak between them. The
+ * packed-word test below catches a reuse that changed the shape, the size or
+ * the ordering bias; this catches one that kept all three, at a distance no
+ * record covers in a tick. */
+#define GLOW_REUSE_CEILING 4096.0
+
+/* The packed word's stable bytes: the shape index, the size and the signed
+ * ordering-table bias, all written once by the spawner. Byte 2 is the spin
+ * phase, which the routine rewrites on every draw, so it is masked out of the
+ * identity test. */
+#define GLOW_PACKED_STABLE 0xFF00FFFFu
+
+static unsigned long s_reb_stat[2];   /* 0 lerped, 1 snapped */
+static double        s_reb_worldmax;  /* the largest per-tick world step paired */
+static double        s_reb_screenmax; /* the largest screen displacement applied */
+
+/* The record's displacement between the pose the tick drew and the pose this
+ * present shows, in world units. Returns 1 only when the previous blob is the
+ * same record. A record that spawned this tick, one whose two states are
+ * further apart than a tick's capture interval, and one whose slot was reused
+ * return 0, and the fan then holds the tick's world position with only the
+ * camera's motion rebasing it. */
+static int glow_record_offset(const glow_rec* r, double alpha, double off[3]) {
+    off[0] = off[1] = off[2] = 0.0;
+    const openpete_interp_obj_t* o = openpete_interp_objs_find(r->addr);
+    if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return 0;
+    if ((uint32_t)o->blob_len < GW.pos_off + 12u ||
+        (uint32_t)o->blob_len < GW.packed_off + 4u) return 0;
+    if (o->curr_ns - o->prev_ns >
+        g_openpete_tick_period_ns + g_openpete_tick_period_ns / 2) return 0;
+    uint32_t pp, cp;
+    memcpy(&pp, o->prev + GW.packed_off, 4);
+    memcpy(&cp, o->curr + GW.packed_off, 4);
+    if ((pp & GLOW_PACKED_STABLE) != (cp & GLOW_PACKED_STABLE)) return 0;
+    int32_t pw[3];
+    memcpy(pw, o->prev + GW.pos_off, 12);
+    double d[3], sq = 0.0;
+    for (int k = 0; k < 3; k++) {
+        d[k] = (double)pw[k] - (double)r->w[k];
+        sq += d[k] * d[k];
+    }
+    if (sq > GLOW_REUSE_CEILING * GLOW_REUSE_CEILING) return 0;
+    if (sqrt(sq) > s_reb_worldmax) s_reb_worldmax = sqrt(sq);
+    const double rest = 1.0 - alpha;
+    for (int k = 0; k < 3; k++) off[k] = d[k] * rest;
+    return 1;
+}
+
+/* OPENPETE_GLOW_REBASE_DBG=1: the rebase's verdicts per run. A run whose lerped
+ * count is zero rebased nothing against a previous record and measured
+ * nothing. */
+static void glow_rebase_report(void) {
+    fprintf(stderr, "[glow-rebase] lerped=%lu snapped=%lu worldmax=%.3f screenmax=%.3f\n",
+            s_reb_stat[0], s_reb_stat[1], s_reb_worldmax, s_reb_screenmax);
+}
+
+/* Rebase the captured set onto the pose this present shows. The staged camera
+ * resolves through the sub-tick view, so building a view here reads the
+ * interpolated transform the rest of the pass draws under. */
+static void glow_rebase_all(CPUState* cpu, double alpha) {
+    if (s_item_n <= 0) return;
+    static int dbg = -1;
+    if (dbg < 0) {
+        const char* e = getenv("OPENPETE_GLOW_REBASE_DBG");
+        dbg = (e && *e && *e != '0');
+        if (dbg) atexit(glow_rebase_report);
+    }
+    ngte_view v;
+    ngte_view_build(cpu, &v);
+    for (int i = 0; i < s_item_n; i++) {
+        glow_item* it = &s_item[i];
+        it->dx = 0.0f;
+        it->dy = 0.0f;
+        if (!it->src.addr) continue;              /* an unpaired primitive */
+        double off[3];
+        s_reb_stat[glow_record_offset(&it->src, alpha, off) ? 0 : 1]++;
+        const double p[3] = { (double)it->src.w[0] + off[0],
+                              (double)it->src.w[1] + off[1],
+                              (double)it->src.w[2] + off[2] };
+        const double vo[3] = { p[0] - v.cam[0], v.cam[1] - p[1], v.cam[2] - p[2] };
+        ngte_proj o;
+        ngte_project_offset(&v, vo, &o);
+        /* A record whose shown position crossed the routine's own near plane
+         * has no screen point to displace to; the fan holds the tick's. */
+        if (o.m3 < (double)GW.near_z) continue;
+        it->dx = (float)(o.sx - it->src.psx);
+        it->dy = (float)(o.sy - it->src.psy);
+        const double m = fabs((double)it->dx) > fabs((double)it->dy)
+                             ? fabs((double)it->dx) : fabs((double)it->dy);
+        if (m > s_reb_screenmax) s_reb_screenmax = m;
+    }
+}
+
 /* Sub-tick re-extract. The primitives are the guest's own output and are gone
  * once the polybuf is reused, so the replay re-feeds the set the canonical tick
- * captured, at the depths paired then. At alpha 1 it reproduces the canonical
- * present exactly, which is what the spine's identity leg measures. */
-void glow_reextract(CPUState* cpu) {
-    (void)cpu;
+ * captured, at the depths paired then, rebased onto the pose this present
+ * shows. At alpha 1 the rebase is zero and it reproduces the canonical present
+ * exactly, which is what the spine's identity leg measures. */
+void glow_reextract(CPUState* cpu, int bracketed, double alpha) {
     if (!hook_reextract_ready(RP_GLOW)) return;
+    if (bracketed) glow_rebase_all(cpu, alpha);
     glow_feed_native();
 }
 
