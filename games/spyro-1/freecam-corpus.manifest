@@ -38,6 +38,10 @@ cliff_town | pos=(59710, 127007, 17599) yaw=-3825 pitch=148
 # dark_hollow rescue room: per-tick vertex-lighting pulse (secC churn) over
 # textured fogged walls — the animated-colour + CLUT-ladder interaction pose.
 dark_hollow | pos=(86434, 27639, 17265) yaw=3048 pitch=243
+# dark_hollow: whole-frame flicker under interpolation on the live window
+# (Windows exe, fullscreen, --render-fps 60). Both legs; the intermediate leg
+# is the comparand.
+dark_hollow | pos=(15607, 62161, 18376) yaw=3735 pitch=87
 dream_weavers | pos=(78707, 18103, 11657) yaw=291 pitch=86
 gnorc_cove | pos=(36863, 117108, 30800) yaw=1448 pitch=343
 # gnorc_cove aerial vista, LP-dominated. The .s's per-half LP NCLIP backface
