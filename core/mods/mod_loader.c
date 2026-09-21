@@ -191,7 +191,13 @@ typedef struct {
 } mod_level_row_t;
 
 #define MOD_PATH_MAX      1024
-#define MOD_SRCS_MAX      64
+/* One src/*.c path. The list is heap-held: it used to be a
+ * srcs[64][1024] local, 64 KiB of stack per caller, and the 64 was a
+ * stand-in for the cmd.exe line-length limit rather than a real bound.
+ * The sources now reach the compiler through a response file, which
+ * removes that limit. */
+typedef struct { char path[MOD_PATH_MAX]; } mod_src_t;
+#define MOD_SRCS_INIT     64
 #define MOD_DEPS_INIT     8
 /* One declared dependency id. */
 typedef struct { char id[MOD_ID_MAX]; } mod_dep_t;
@@ -2459,18 +2465,10 @@ static int hash_file(openpete_sha256_ctx* c, const char* path) {
 
 /* insertion-sort src paths so the build key is order-independent
  * (readdir order is filesystem-dependent). */
-static void sort_srcs(char srcs[][MOD_PATH_MAX], int n) {
-    for (int i = 1; i < n; i++) {
-        char tmp[MOD_PATH_MAX];
-        memcpy(tmp, srcs[i], MOD_PATH_MAX);
-        int j = i - 1;
-        while (j >= 0 && strcmp(srcs[j], tmp) > 0) {
-            memcpy(srcs[j + 1], srcs[j], MOD_PATH_MAX);
-            j--;
-        }
-        memcpy(srcs[j + 1], tmp, MOD_PATH_MAX);
-    }
+static int cmp_src(const void* a, const void* b) {
+    return strcmp(((const mod_src_t*)a)->path, ((const mod_src_t*)b)->path);
 }
+
 
 /* The compiler for mod builds. OPENPETE_MOD_CC is the explicit dev
  * override; under it, the bundled toolchain the distribution package
@@ -2537,23 +2535,42 @@ static const char* mods_cc_identity(void) {
 /* Enumerate + sort src/*.c. Returns the count, 0 if src/ has no .c
  * files, or -1 if there is no src/ directory at all (quiet — callers
  * decide whether that's binary-only, assets-only, or an error). */
-static int mod_list_srcs(const char* mod_dir,
-                         char srcs[][MOD_PATH_MAX]) {
+/* Census only: the list is freed as soon as it has been used, so a
+ * named vec would be gone from the list by the exit report. One
+ * process-global counter carries the population's high-water. */
+static mod_fixed s_census_srcs;
+
+static int mod_list_srcs(const char* mod_dir, mod_fvec* out) {
     char src_dir[MOD_PATH_MAX];
     snprintf(src_dir, sizeof src_dir, "%s/src", mod_dir);
     DIR* d = opendir(src_dir);
     if (!d) return -1;
-    int n_srcs = 0;
+    mod_fvec_init(out, sizeof(mod_src_t), MOD_SRCS_INIT, NULL, 0);
     struct dirent* e;
-    while ((e = readdir(d)) != NULL && n_srcs < MOD_SRCS_MAX) {
+    while ((e = readdir(d)) != NULL) {
         size_t len = strlen(e->d_name);
         if (len < 3 || strcmp(e->d_name + len - 2, ".c") != 0) continue;
-        snprintf(srcs[n_srcs], MOD_PATH_MAX, "%s/%s", src_dir, e->d_name);
-        n_srcs++;
+        mod_src_t* slot = (mod_src_t*)mod_fvec_push(out);
+        if (!slot) break;
+        snprintf(slot->path, MOD_PATH_MAX, "%s/%s", src_dir, e->d_name);
     }
     closedir(d);
-    sort_srcs(srcs, n_srcs);
-    return n_srcs;
+    /* The build key hashes the sources in order, so the order must not
+     * depend on the directory's. */
+    size_t n = mod_fvec_count(out);
+    if (n > 1)
+        qsort(mod_fvec_data(out), n, sizeof(mod_src_t), cmp_src);
+    static int census_armed;
+    if (!census_armed) {
+        census_armed = 1;
+        mod_fixed_init(&s_census_srcs, "mod_srcs", MOD_SRCS_INIT, 0);
+    }
+    mod_fixed_note(&s_census_srcs, n, out->cap);
+    return (int)n;
+}
+
+static const char* src_path(const mod_fvec* v, int i) {
+    return ((const mod_src_t*)mod_fvec_at(v, (size_t)i))->path;
 }
 
 /* CONTENT-HASH build key: api version + compiler identity + SDK header
@@ -2636,13 +2653,15 @@ static const openpete_sha256_ctx* sdk_prefix(const char* sdk_dir) {
 
 static int mod_compute_key(const char* mod_dir, const char* sdk_dir,
                            char key_out[65]) {
-    char srcs[MOD_SRCS_MAX][MOD_PATH_MAX];
-    int n_srcs = mod_list_srcs(mod_dir, srcs);
-    if (n_srcs <= 0) return -1;
+    mod_fvec srcs;
+    memset(&srcs, 0, sizeof srcs);
+    int n_srcs = mod_list_srcs(mod_dir, &srcs);
+    if (n_srcs <= 0) { mod_fvec_free(&srcs); return -1; }
 
     openpete_sha256_ctx hc = *sdk_prefix(sdk_dir);
     for (int i = 0; i < n_srcs; i++)
-        (void)hash_file(&hc, srcs[i]);
+        (void)hash_file(&hc, src_path(&srcs, i));
+    mod_fvec_free(&srcs);
     uint8_t digest[32];
     openpete_sha256_final(&hc, digest);
     openpete_sha256_hex(digest, key_out);
@@ -2699,6 +2718,32 @@ static int mod_key_cached(const char* mod_dir, const char* id,
     return strcmp(stamped, key) == 0;
 }
 
+/* Write the compiler response file: one path per line, quoted, with
+ * forward slashes.
+ *
+ * Both tokenizers accept `/`, and neither accepts `\\` the same way:
+ * mingw-gcc reads an @file GNU-style, where a backslash escapes the
+ * next character, while the bundled llvm-mingw clang reads it
+ * Windows-style. Writing `/` is what both agree on. */
+static int write_sources_rsp(const char* rsp_path, const mod_fvec* srcs,
+                             int n_srcs, const char* sdk_dir) {
+    FILE* f = fopen(rsp_path, "wb");
+    if (!f) return -1;
+    for (int i = 0; i <= n_srcs; i++) {
+        char p[MOD_PATH_MAX + 32];
+        if (i < n_srcs)
+            snprintf(p, sizeof p, "%s", src_path(srcs, i));
+        else
+            snprintf(p, sizeof p, "%s/openpete_mod_abi.c", sdk_dir);
+        for (char* q = p; *q; q++)
+            if (*q == '\\') *q = '/';
+        fprintf(f, "\"%s\"\n", p);
+    }
+    int ok = ferror(f) == 0;
+    if (fclose(f) != 0) ok = 0;
+    return ok ? 0 : -1;
+}
+
 /* Compile src/*.c → out_path with the resolved compiler. `stamp` = 1
  * records the build key on success so an unchanged mod never
  * recompiles (0 = hot-reload .hotN objects on Windows, where the base
@@ -2706,10 +2751,12 @@ static int mod_key_cached(const char* mod_dir, const char* id,
 static int mod_compile(const char* mod_dir, const char* id,
                        const char* sdk_dir, const char* key,
                        const char* out_path, int stamp) {
-    char srcs[MOD_SRCS_MAX][MOD_PATH_MAX];
-    int n_srcs = mod_list_srcs(mod_dir, srcs);
+    mod_fvec srcs;
+    memset(&srcs, 0, sizeof srcs);
+    int n_srcs = mod_list_srcs(mod_dir, &srcs);
     if (n_srcs <= 0) {
         OPL_ERROR_F("mods", "%s: no .c sources in src/", id);
+        mod_fvec_free(&srcs);
         return -1;
     }
 
@@ -2719,6 +2766,7 @@ static int mod_compile(const char* mod_dir, const char* id,
         OPL_ERROR_F("mods", "%s: no compiler — expected the bundled "
                     "toolchain at recomp/tools/ next to the exe, or set "
                     "OPENPETE_MOD_CC", id);
+        mod_fvec_free(&srcs);
         return -1;
     }
 
@@ -2736,20 +2784,35 @@ static int mod_compile(const char* mod_dir, const char* id,
     static const char* const flags =
         "-shared -fPIC -O2 -g -fno-strict-aliasing -Wall";
 #endif
+    /* The sources go in a response file, not on the command line: on
+     * Windows the line is wrapped in `cmd.exe /C "..."`, whose limit is
+     * 8191 characters and is external to this program. A mod with
+     * enough sources used to silently lose the tail of its own compile
+     * line. The ABI descriptor rides the same file (openpete_mod_api.h,
+     * "ABI descriptor"): compiled against the same SDK as the mod's own
+     * sources, it records the api the object is really built for. */
+    char rsp_path[MOD_PATH_MAX + 16];
+    snprintf(rsp_path, sizeof rsp_path, "%s/sources.rsp", build_dir);
+    if (write_sources_rsp(rsp_path, &srcs, n_srcs, sdk_dir) != 0) {
+        OPL_ERROR_F("mods", "%s: cannot write %s", id, rsp_path);
+        mod_fvec_free(&srcs);
+        return -1;
+    }
+    mod_fvec_free(&srcs);
+
     char cmd[8192];
     int off = snprintf(cmd, sizeof cmd,
                        MOD_Q "%s" MOD_Q " %s -I" MOD_Q "%s" MOD_Q
-                       " -o " MOD_Q "%s" MOD_Q,
-                       cc, flags, sdk_dir, out_path);
-    for (int i = 0; i < n_srcs && off < (int)sizeof cmd; i++)
-        off += snprintf(cmd + off, sizeof cmd - (size_t)off,
-                        " " MOD_Q "%s" MOD_Q, srcs[i]);
-    /* The ABI descriptor rides every compile line (openpete_mod_api.h,
-     * "ABI descriptor"): compiled against the same SDK as the mod's own
-     * sources, it records the api the object is really built for. */
-    if (off < (int)sizeof cmd)
-        off += snprintf(cmd + off, sizeof cmd - (size_t)off,
-                        " " MOD_Q "%s/openpete_mod_abi.c" MOD_Q, sdk_dir);
+                       " -o " MOD_Q "%s" MOD_Q " @" MOD_Q "%s" MOD_Q,
+                       cc, flags, sdk_dir, out_path, rsp_path);
+    /* snprintf returns the length it would have written, so `off` can
+     * run past the buffer; `sizeof cmd - off` would then underflow and
+     * the write would run off the end. */
+    if (off < 0 || off >= (int)sizeof cmd) {
+        OPL_ERROR_F("mods", "%s: compile command too long (%d bytes) — "
+                    "disabled", id, off);
+        return -1;
+    }
     snprintf(cmd + off, sizeof cmd - (size_t)off,
              " >" MOD_Q "%s/compile.log" MOD_Q " 2>&1", build_dir);
 
