@@ -105,6 +105,10 @@ spyro-dragon-pedastal-depth              | 1700  | 100  |        | 3635
 spyro-shadow-wall-disocclusion           | 1700  | 100  |        | 2700,3450
 stone-hill-distant-terrain               | 1700  | 100  |        | 3020,3090
 sunny-flight-exit                        | 1700  | 100  | freeze | 2466
+# sunny-flight-wall-punch: the Artisans waterfall pool at VBL 2700, a green
+# wedge under the rim's inner edge between rim and water (user report
+# 2026-09-21); drawn by both renderers on v0.3.0 and main, pinned as is.
+sunny-flight-wall-punch                  | 1700  | 100  |        | 2700
 toasty-moving-terrain-z-fighting         | 1700  | 100  |        | 3111
 town-square-delvin-rescue                | 1700  | 100  |        | 2574,2621
 town-square-nils-rescue                  | 1700  | 100  |        | 2590

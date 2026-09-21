@@ -220,6 +220,10 @@ artisans | pos=(69222, 48707, 7142) yaw=1706 pitch=138
 # field while its centre lies outside; the reveal drops it (user report
 # 2026-09-19); blessed pre-fix.
 artisans | pos=(69222, 48707, 7142) yaw=1685 pitch=135
+# Widescreen moby cull, third pose: the pad's near corner reaches into the
+# 16:9 field while its centre lies 197 px outside; the reveal's centre-depth
+# margin drops it (user report 2026-09-21); blessed pre-fix.
+artisans | pos=(68239, 49731, 8905) yaw=1705 pitch=437
 # town_square bull moby: disappears or shrinks when it changes animation
 # pose while interpolation is active (user report 2026-09-19, VBL ~1800;
 # pose corrected the same day); blessed pre-fix. Canonical at 1764 so the
