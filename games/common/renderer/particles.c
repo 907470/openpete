@@ -87,6 +87,7 @@ extern unsigned openpete_frame;
 typedef struct {
     ngte_prim p;
     float     depth;
+    double    vz;         /* the record point's view-Z under the tick's camera */
     double    psx, psy;   /* the record's own projected point, or the sentinel */
     double    psx2, psy2; /* the second record point of a two-point class */
     int       cls;        /* the record's class, or -1 when unpaired */
@@ -103,9 +104,11 @@ typedef struct {
     float dx, dy;         /* the first record point's screen displacement */
     float dx2, dy2;       /* the second's, for a two-point class */
     double rc, rs;        /* the corner rotation, cos/sin of the angle change */
+    double scl;           /* the corner offsets' scale, 1.0 when the extent holds */
     float depth;          /* the depth of the re-projected record point */
     uint8_t active;       /* 1 = translate the corners and take `depth` */
     uint8_t rot;          /* 1 = rotate the corner offsets as well */
+    uint8_t dsz;          /* 1 = the pair's two size bytes differ */
 } part_rebase;
 
 static part_item   s_item[PART_MAX_PRIMS];
@@ -127,6 +130,7 @@ static int part_prim_sink(void* ctx, const ngte_prim* s) {
     s_item[s_item_n].rec = 0u;
     s_item[s_item_n].w0 = s_item[s_item_n].w1 = s_item[s_item_n].w2 = 0u;
     memset(&s_reb[s_item_n], 0, sizeof s_reb[0]);
+    s_reb[s_item_n].scl = 1.0;
     s_item_n++;
     return 1;
 }
@@ -223,6 +227,7 @@ static void part_pair_depths(CPUState* cpu, const ngte_view* v) {
         part_project(v, p, &o);
         it->psx = o.sx;
         it->psy = o.sy;
+        it->vz  = o.m3;
         it->depth =
             openpete_native_depth_from_viewz(openpete_worldvz_scaled((float)o.m3, 4.0f));
         if (cls == PART_TWO_POINT_CLASS) {
@@ -292,8 +297,9 @@ enum { PART_PAIR_NONE = 0, PART_PAIR_LERP = 1, PART_PAIR_REUSE = 2 };
  * the new record; the speed ceiling catches the rest, at a distance no particle
  * covers in a tick. */
 static int part_record_pair(const part_item* it, double alpha, double off[3],
-                            double* prev_ang) {
+                            double* prev_ang, double* size_delta) {
     off[0] = off[1] = off[2] = 0.0;
+    *size_delta = 0.0;
     const uint32_t pos = game_layout.particles.pos_off;
     const openpete_interp_obj_t* o = openpete_interp_objs_find(it->rec);
     if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns)
@@ -327,6 +333,11 @@ static int part_record_pair(const part_item* it, double alpha, double off[3],
     while (da > 128.0) da -= 256.0;
     while (da < -128.0) da += 256.0;
     *prev_ang = ca + da * rest;
+    /* The size byte the corner extents are built from is byte 2 of the same
+     * word (partsdraw.s:488-489 and :488C-4490 take (w1 >> 16) & 0xFF straight
+     * into IR1 before the sine pair), so the extent this present shows is the
+     * tick's size plus this much. */
+    *size_delta = ((double)((pw[1] >> 16) & 0xFFu) - (double)((cw[1] >> 16) & 0xFFu)) * rest;
     return PART_PAIR_LERP;
 }
 
@@ -350,13 +361,54 @@ static int part_corner_rot(CPUState* cpu, double tick_ang, double show_ang,
 static unsigned long s_reb_stat[4][16];   /* 0 lerped, 1 snapped, 2 rotated, 3 reused */
 static int s_reb_dbg;   /* 2 = one line per rebased primitive */
 
+/* The scale carrying a primitive's corner offsets from the extent the tick
+ * built to the extent this present shows. The routine builds a billboard's
+ * half-extents as (size * sine) >> 10 in view space and divides all four
+ * corners by the record point's own view-Z (partsdraw.s:488-4904 loads the
+ * size byte and the sine pair into IR1..IR3, :4930-4934 shifts the products
+ * right by 10, and :49C4 projects the four corners against one translation),
+ * so the screen extent is proportional to the size byte and inversely
+ * proportional to that view-Z. Both terms move inside a tick and the captured
+ * corners carry neither: the scale is their ratio between the shown state and
+ * the tick's.
+ *
+ * A two-point class's two endpoints are two record points, each translated by
+ * its own displacement, so it has no offsets about a single point and holds
+ * the identity.
+ *
+ * At the end of the tick's own interval the size delta is zero and the shown
+ * view-Z is the projection of the tick's own inputs through the same
+ * arithmetic, so both ratios are exactly one and the corners are untouched.
+ *
+ * The band is the discontinuity guard the displacement gets from
+ * PART_REUSE_CEILING: a view-Z that moved a particle's extent by more than a
+ * factor of four inside one tick is a camera cut or a slot reuse, where
+ * holding the tick's extent is what every other term of the rebase does. */
+#define PART_SCALE_MIN 0.25
+#define PART_SCALE_MAX 4.0
+
+static double part_extent_scale(const part_item* it, const ngte_proj* shown,
+                                double size_delta) {
+    if (it->cls == PART_TWO_POINT_CLASS) return 1.0;
+    if (!(it->vz > 0.0) || !(shown->m3 > 0.0)) return 1.0;
+    double scl = it->vz / shown->m3;
+    if (size_delta != 0.0) {
+        const double tick_size = (double)((it->w1 >> 16) & 0xFFu);
+        if (!(tick_size > 0.0)) return 1.0;
+        scl *= (tick_size + size_delta) / tick_size;
+    }
+    if (!(scl >= PART_SCALE_MIN) || !(scl <= PART_SCALE_MAX)) return 1.0;
+    return scl;
+}
+
 static void part_rebase_item(CPUState* cpu, const ngte_view* v, double alpha, int i) {
     part_item* it = &s_item[i];
     part_rebase* r = &s_reb[i];
     memset(r, 0, sizeof *r);
+    r->scl = 1.0;
     if (it->cls < 0 || !it->rec) return;         /* the fixed front bucket */
-    double off[3], show_ang = -1.0;
-    const int verdict = part_record_pair(it, alpha, off, &show_ang);
+    double off[3], show_ang = -1.0, size_delta = 0.0;
+    const int verdict = part_record_pair(it, alpha, off, &show_ang, &size_delta);
     const int paired = (verdict == PART_PAIR_LERP);
     s_reb_stat[paired ? 0 : 1][it->cls & 0xF]++;
     if (verdict == PART_PAIR_REUSE) s_reb_stat[3][it->cls & 0xF]++;
@@ -387,6 +439,8 @@ static void part_rebase_item(CPUState* cpu, const ngte_view* v, double alpha, in
                      ? 1u : 0u;
         s_reb_stat[2][it->cls & 0xF] += r->rot;
     }
+    r->dsz = (size_delta != 0.0) ? 1u : 0u;
+    r->scl = part_extent_scale(it, &o, size_delta);
 }
 
 static void part_view_dbg(const char* tag, const ngte_view* v) {
@@ -432,11 +486,16 @@ static void part_rebase_all(CPUState* cpu, double alpha) {
 static void part_rebase_xy(const part_item* it, const part_rebase* r, int second,
                            float* x, float* y) {
     if (!r->active) return;
-    if (r->rot) {
-        const double ox = (double)*x - it->psx;
-        const double oy = (double)*y - it->psy;
-        *x = (float)(it->psx + ox * r->rc + oy * r->rs);
-        *y = (float)(it->psy - ox * r->rs + oy * r->rc);
+    if (r->rot || r->scl != 1.0) {
+        double ox = (double)*x - it->psx;
+        double oy = (double)*y - it->psy;
+        if (r->rot) {
+            const double rx = ox * r->rc + oy * r->rs;
+            oy = -ox * r->rs + oy * r->rc;
+            ox = rx;
+        }
+        *x = (float)(it->psx + ox * r->scl);
+        *y = (float)(it->psy + oy * r->scl);
     }
     *x += second ? r->dx2 : r->dx;
     *y += second ? r->dy2 : r->dy;
@@ -581,6 +640,60 @@ static void part_census(uint32_t start, uint32_t end, uint32_t fed_before) {
     fprintf(stderr, " unpaired=%d\n", unpaired);
 }
 
+/* OPENPETE_PART_EXTENT_CENSUS: per present, per class, the decomposition of a
+ * primitive's painted extent into the terms a sub-tick present could carry.
+ * `ext` is the mean distance from the record's own projected point to the
+ * primitive's furthest vertex, which is the extent the routine built from the
+ * record's state under the tick's camera; `vz` is that point's view-Z, whose
+ * reciprocal scales every extent; `dsz` counts the records whose size byte
+ * differs between the pair's two states. A step in `ext` between two canonical
+ * presents at a steady `n` is the primitive's own extent moving; a step in `n`
+ * at a steady `ext` is the pool's population, which no rebase of the captured
+ * set can carry. */
+static double part_item_extent(const part_item* it) {
+    const ngte_prim* p = &it->p;
+    double worst = 0;
+    if (p->nv) {
+        for (int k = 0; k < p->nv; k++) {
+            const double dx = p->x[k] - it->psx, dy = p->y[k] - it->psy;
+            const double d = sqrt(dx * dx + dy * dy);
+            if (d > worst) worst = d;
+        }
+        return worst;
+    }
+    const int words = (p->code & 0x10u) ? 3 : 2;
+    for (int k = 0; k < 2; k++) {
+        const uint32_t xy = p->raw[2 + (uint32_t)k * (uint32_t)(words - 1)];
+        const double dx = (double)(int16_t)(xy & 0xFFFFu) - it->psx;
+        const double dy = (double)(int16_t)(xy >> 16) - it->psy;
+        const double d = sqrt(dx * dx + dy * dy);
+        if (d > worst) worst = d;
+    }
+    return worst;
+}
+
+static void part_extent_census(double alpha) {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("OPENPETE_PART_EXTENT_CENSUS"); s = (e && *e && *e != '0'); }
+    if (!s) return;
+    char buf[512]; int n = 0;
+    for (int cl = 0; cl < 16; cl++) {
+        int cnt = 0, dsz = 0; double ext = 0, vz = 0, scl = 0;
+        for (int i = 0; i < s_item_n; i++) {
+            const part_item* it = &s_item[i];
+            if (it->cls != cl || !it->rec) continue;
+            cnt++; ext += part_item_extent(it); vz += it->vz;
+            scl += s_reb[i].active ? s_reb[i].scl : 1.0;
+            if (s_reb[i].dsz) dsz++;
+        }
+        if (cnt) n += snprintf(buf + n, sizeof buf - (size_t)n,
+                               " c%d:n=%d ext=%.2f vz=%.1f scl=%.4f dsz=%d",
+                               cl, cnt, ext / cnt, vz / cnt, scl / cnt, dsz);
+    }
+    fprintf(stderr, "[part-ext f=%u a=%.3f prims=%d]%s\n",
+            openpete_frame, alpha, s_item_n, buf);
+}
+
 /* Sub-tick re-extract. The primitives are the guest's own output and are gone
  * once the polybuf is reused, so the replay re-feeds the set the canonical tick
  * captured, rebased onto the pose this present shows: each record point's
@@ -591,6 +704,7 @@ static void part_census(uint32_t start, uint32_t end, uint32_t fed_before) {
 void particles_reextract(CPUState* cpu, int bracketed, double alpha) {
     if (!hook_reextract_ready(RP_PARTICLES)) return;
     if (bracketed) part_rebase_all(cpu, alpha);
+    part_extent_census(alpha);
     part_feed_native();
 }
 
@@ -613,6 +727,7 @@ static int on_particles_draw(CPUState* cpu, uint32_t addr) {
         ngte_view_build(cpu, &view);
         if (s_reb_dbg >= 2) part_view_dbg("tick", &view);
         part_pair_depths(cpu, &view);
+        part_extent_census(-1.0);
         if (feed && render_path_enabled(RP_PARTICLES)) part_feed_native();
         part_census(startp, endp, fed_before);
     }

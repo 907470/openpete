@@ -11,3 +11,11 @@
 # at the alpha-0.5 present) and the visible centroid moves with it, which is
 # this row's residual floor.
 icy-peak-ice-crystal-destruction.bk2 | 1674 | blob=539.3,266.9 tol=1.0 step=4
+
+# crystal-islands-flame: the flame's own puff, the larger of the two the
+# breath sustains. The row is the extent cell's, not the centroid's: the puff
+# grows 3901 px to 4216 px over the interval while its centroid crosses only
+# 2.96 px, so `step` sits below the compact feeders' default. The extent is
+# what the billboard's size byte and its view-Z drive, and 315 px clears the
+# area cell's own floor with margin.
+crystal-islands-flame.bk2 | 1100 | blob=367.5,196.2 tol=1.0 step=2
