@@ -47,6 +47,9 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 
+sys.path.insert(0, str(REPO / "tools"))
+import psyq_types as P  # noqa: E402
+
 # (game slug, has a mod SDK). A game without an SDK gets reference pages
 # that describe its decompilation surface (manifests + headers) with no
 # hookable names, wrappers, OP_GADDR_* constants or pinned structs.
@@ -441,7 +444,9 @@ def fmt_param(p: str) -> str:
     n = re.search(r'name\s*=\s*"([^"]+)"', p)
     ty = t.group(1) if t else "?"
     if ty.startswith("ptr:"):
-        ty = ty[4:] + "*"
+        # PSYQ types are spelled as the SDK spells them, under the PSX_
+        # prefix that keeps them clear of <windows.h>'s RECT.
+        ty = P.psx_prefixed(ty[4:]) + "*"
     return f"{ty} {n.group(1) if n else '?'}"
 
 
@@ -458,7 +463,7 @@ def parse_protos(path: Path):
                  if params else [])
         r = ret.group(1)
         if r.startswith("ptr:"):
-            r = r[4:] + "*"
+            r = P.psx_prefixed(r[4:]) + "*"
         protos[name.group(1)] = (
             f"{r} {name.group(1)}({', '.join(plist) if plist else 'void'})")
     return protos
@@ -840,9 +845,7 @@ def gen_structs(structs_header: Path, linker: SourceLinker,
 
     # PSYQ types are emitted ahead of the game structs and have no decomp
     # source range; they are listed in their own section.
-    sys.path.insert(0, str(REPO / "tools"))
-    import psyq_types as P
-    psyq = set(P.psyq_names())
+    psyq = {P.psx_prefixed(n) for n in P.psyq_names()}
 
     def emit(name, body):
         out.append(f"## `{name}`\n")
@@ -878,8 +881,10 @@ def gen_structs(structs_header: Path, linker: SourceLinker,
         out.append("## PSYQ types\n")
         out.append("Types from the PlayStation SDK that the game structs "
                    "embed. Their layouts are pinned like every other struct; "
-                   "`RECT` and `MATRIX` complete the forward declarations "
-                   "the wrappers header makes.\n")
+                   "`PSX_RECT` and `PSX_MATRIX` complete the forward "
+                   "declarations the wrappers header makes. The `PSX_` prefix "
+                   "is what lets a mod include `<windows.h>`, which defines a "
+                   "`RECT` of its own.\n")
         for name, body in psyq_blocks:
             emit(name, body)
 

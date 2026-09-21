@@ -182,6 +182,19 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         ENVIRONMENT "OPENPETE_BIN=${CMAKE_BINARY_DIR}/games/spyro-1/openpete-spyro1"
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # A Windows mod may include the SDK headers and <windows.h>, whose
+    # windef.h defines RECT. The SDK's PSYQ types carry a PSX_ prefix to
+    # keep clear of it; this cross-compiles one such translation unit and
+    # fails on a redefinition. Skips (64) with no mingw cross compiler.
+    add_test(NAME sdk_windows_include
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_sdk_windows_include.sh
+                     --sdk ${CMAKE_BINARY_DIR}/games/spyro-1/sdk)
+    set_tests_properties(sdk_windows_include PROPERTIES
+        LABELS "mods"
+        TIMEOUT 300
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Freecam-corpus gate for the terrain near-LP gapfill classifier —
     # replays recorded problematic freecam spots (holes that must stay
     # filled, walls/arches the fill must not touch) and asserts metric

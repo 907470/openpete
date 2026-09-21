@@ -11,7 +11,12 @@ include/libgpu.h (a PSYQ header); MATRIX from third_party/PsyCross/
 include/psx/libgte.h; SpuVolume, SpuExtAttr, SpuCommonAttr from
 libspu.h; CdlLOC, CdlATV, CdlFILE from libcd.h. Every struct carries its
 tag so a typedef completes the forward declarations the wrappers header
-emits (typedef struct MATRIX MATRIX; ...).
+emits (typedef struct PSX_MATRIX PSX_MATRIX; ...).
+
+The text spells the PSYQ names, which is what the MIPS probe's stub
+headers must carry. The SDK-facing emitters rewrite them through
+psx_prefixed(): <windows.h> defines RECT, so a mod including both it and
+the SDK header would see two definitions of the name.
 
 Types are written with the PSX width names (u_char, u_short, u_long) so
 the same text compiles under the MIPS probe and, after the generator's
@@ -133,3 +138,20 @@ def psyq_names(stubs=None):
 
 def psyq_text(stubs=None):
     return "\n".join(text for _, text in psyq_types(stubs))
+
+
+# The prefix the SDK-facing spelling of every PSYQ type carries.
+PSX_PREFIX = "PSX_"
+
+
+def psx_prefixed(text, names=None):
+    """`text` with every whole-word occurrence of a PSYQ type name under
+    the PSX_ prefix. `names` restricts the rewrite to one game's stub set;
+    None covers every PSYQ type."""
+    import re
+    names = psyq_names() if names is None else list(names)
+    if not names:
+        return text
+    rx = re.compile(r"\b(" + "|".join(sorted(names, key=len, reverse=True))
+                    + r")\b")
+    return rx.sub(lambda m: PSX_PREFIX + m.group(1), text)

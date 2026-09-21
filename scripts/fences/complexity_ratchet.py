@@ -78,6 +78,7 @@ UNSCORED = (
     "games/spyro-1/recomp_attach_shared.c",     # OPENPETE_RECOMP_LINKAGE=shared
     "core/psx/pcsxr_gte_stub.c",                # MinGW only
     "tests/recomp/gte_sideeffects/harness.c",   # built by check_recomp_gte.sh
+    "tests/unit/sdk_windows_include_test.c",    # cross-compiled by check_sdk_windows_include.sh
     "core/mods/sdk/openpete_mod_abi.c",         # shipped SDK source, built with mods
     # openpete_add_game() defaults that every linux-release game overrides
     "games/common/feature_list_none.c",

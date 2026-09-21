@@ -49,16 +49,9 @@
 set -euo pipefail
 
 REPO=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-# The toolchains live beside the main checkout, so a run from a linked
-# worktree must resolve the parent of the main worktree, not of the
-# worktree it is running in. The common git dir is the main checkout's
-# .git in both cases.
-_common=$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
-if [[ -n "${_common:-}" ]]; then
-    SPYRO=$(dirname -- "$(dirname -- "$_common")")
-else
-    SPYRO=$(dirname -- "$REPO")
-fi
+# shellcheck source=scripts/lib/mingw.sh
+source "$REPO/scripts/lib/mingw.sh"
+SPYRO=$(mingw_spyro_root "$REPO")
 
 TOOLCHAIN="${OPENPETE_TOOLCHAIN:-}"
 MODS_DIR=""
@@ -104,35 +97,19 @@ fi
 SDK_DIR=$(cd -- "$SDK_DIR" && pwd)
 
 # --- compiler -------------------------------------------------------------
-# A Linux-hosted tree carries an extensionless driver; the tree the
-# distribution bundles for Windows carries only .exe drivers, which this
-# host cannot run. Name that case rather than fail at the first compile.
-driver_in() {  # driver_in <toolchain dir> -> prints the driver, or nothing
-    local t="$1" d
-    for d in x86_64-w64-mingw32-clang x86_64-w64-mingw32-gcc; do
-        [[ -x "$t/bin/$d" ]] && { echo "$t/bin/$d"; return 0; }
-    done
-    return 1
-}
-
+# A tree with only .exe drivers is the Windows-hosted release, which this
+# host cannot run: name that case rather than fail at the first compile.
 CC=""
 if [[ -n "$TOOLCHAIN" ]]; then
     [[ -d "$TOOLCHAIN" ]] || die "toolchain not found: $TOOLCHAIN" 64
-    CC=$(driver_in "$TOOLCHAIN") || {
+    CC=$(mingw_driver_in "$TOOLCHAIN") || {
         if compgen -G "$TOOLCHAIN/bin/x86_64-w64-mingw32-*.exe" >/dev/null; then
             die "$TOOLCHAIN is a Windows-hosted llvm-mingw tree (.exe drivers only); this host needs the Linux-hosted build of the same release" 64
         fi
         die "$TOOLCHAIN/bin has no x86_64-w64-mingw32-clang or -gcc" 64
     }
 else
-    for t in "$SPYRO"/toolchains/llvm-mingw*; do
-        [[ -d "$t" ]] || continue
-        CC=$(driver_in "$t") && break
-        CC=""
-    done
-    if [[ -z "$CC" ]]; then
-        CC=$(command -v x86_64-w64-mingw32-gcc || true)
-    fi
+    CC=$(mingw_find_cc "$SPYRO") || CC=""
 fi
 [[ -n "$CC" ]] || die "no cross compiler: no Linux-hosted llvm-mingw tree under $SPYRO/toolchains and no x86_64-w64-mingw32-gcc on PATH (pass --toolchain DIR)" 64
 

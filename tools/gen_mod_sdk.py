@@ -24,6 +24,9 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import psyq_types as P  # noqa: E402
+
 FUNC_RE = re.compile(r"^\[\[function\]\]\s*$")
 ADDR_RE = re.compile(r"^addr\s*=\s*(0x[0-9A-Fa-f]+)\s*$")
 NAME_RE = re.compile(r'^name\s*=\s*"([^"]+)"\s*$')
@@ -145,6 +148,10 @@ def c_type(kind):
     base = kind[4:]
     if base in SCALAR_C:
         return f"{SCALAR_C[base]}*", None
+    # A PSYQ type is spelled with the PSX_ prefix the game-structs header
+    # gives it, so the forward declaration below completes that definition
+    # and neither name collides with <windows.h>'s RECT.
+    base = P.psx_prefixed(base)
     return f"{base}*", base
 
 
