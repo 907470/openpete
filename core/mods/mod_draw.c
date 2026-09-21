@@ -46,7 +46,8 @@
 /* Texts a command buffer allocates up front; it grows past this. */
 #define DRAW_TEXTS_INIT 64
 #define DRAW_STR_MAX    96
-#define PRESENT_HOOKS_MAX 16
+/* Hooks the table allocates up front; it grows past this. */
+#define PRESENT_HOOKS_INIT 16
 
 typedef struct {
     float       x, y, cap_h;
@@ -122,8 +123,16 @@ typedef struct {
     int                     disabled; /* live toggle */
 } present_hook_t;
 
-static present_hook_t s_phooks[PRESENT_HOOKS_MAX];
-static int            s_phook_count = 0;
+/* Flat, and safe to move: registration, removal and the flush below all
+ * run on the worker thread that owns the game fiber, so the table has
+ * one owner and no reader can be inside it across a growth. The swap's
+ * assert_one_owner() above latches that thread. */
+static mod_fvec s_phooks;   /* present_hook_t */
+
+static int phook_count(void) { return (int)mod_fvec_count(&s_phooks); }
+static present_hook_t* phook_at(int i) {
+    return (present_hook_t*)mod_fvec_at(&s_phooks, (size_t)i);
+}
 static int            s_any_draw = 0; /* fast bail for modless runs */
 
 /* Last present's ctx (tick/alpha/canonical) — the postfx engine UBO
@@ -142,21 +151,21 @@ void openpete_mods_present_ctx(uint32_t* tick, float* alpha, int* canonical) {
 void openpete_mods_draw_remove_owner(const char* owner_id) {
     if (!owner_id) return;
     int w = 0;
-    for (int i = 0; i < s_phook_count; i++) {
-        if (s_phooks[i].owner_id &&
-            strcmp(s_phooks[i].owner_id, owner_id) == 0)
-            continue;
-        s_phooks[w++] = s_phooks[i];
+    for (int i = 0; i < phook_count(); i++) {
+        present_hook_t* h = phook_at(i);
+        if (h->owner_id && strcmp(h->owner_id, owner_id) == 0) continue;
+        *phook_at(w++) = *h;
     }
-    s_phook_count = w;
+    mod_fvec_truncate(&s_phooks, (size_t)w);
 }
 
 void openpete_mods_draw_set_owner_enabled(const char* owner_id, int on) {
     if (!owner_id) return;
-    for (int i = 0; i < s_phook_count; i++)
-        if (s_phooks[i].owner_id &&
-            strcmp(s_phooks[i].owner_id, owner_id) == 0)
-            s_phooks[i].disabled = !on;
+    for (int i = 0; i < phook_count(); i++) {
+        present_hook_t* h = phook_at(i);
+        if (h->owner_id && strcmp(h->owner_id, owner_id) == 0)
+            h->disabled = !on;
+    }
 }
 
 /* A hook registered by a mod the loader already publishes comes up in
@@ -185,15 +194,19 @@ static int owner_starts_disabled(const char* owner_id) {
 int openpete_mods_register_present_hook(openpete_mod_present_fn fn,
                                         const char* owner_id) {
     if (!fn) return -1;
-    if (s_phook_count >= PRESENT_HOOKS_MAX) {
-        OPL_ERROR_F("mods", "present-hook table full (%d) — cannot add %s",
-                    PRESENT_HOOKS_MAX, owner_id ? owner_id : "?");
+    present_hook_t* h;
+    if (!s_phooks.elem_size)
+        mod_fvec_init(&s_phooks, sizeof(present_hook_t), PRESENT_HOOKS_INIT,
+                      "present_hooks", PRESENT_HOOKS_INIT);
+    h = (present_hook_t*)mod_fvec_push(&s_phooks);
+    if (!h) {
+        OPL_ERROR_F("mods", "present-hook table allocation failed — cannot "
+                    "add %s", owner_id ? owner_id : "?");
         return -1;
     }
-    s_phooks[s_phook_count].fn = fn;
-    s_phooks[s_phook_count].owner_id = owner_id;
-    s_phooks[s_phook_count].disabled = owner_starts_disabled(owner_id);
-    s_phook_count++;
+    h->fn = fn;
+    h->owner_id = owner_id;
+    h->disabled = owner_starts_disabled(owner_id);
     s_any_draw = 1;
     return 0;
 }
@@ -353,17 +366,22 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical) {
         s_pctx_alpha = ctx.alpha;
         s_pctx_canonical = canonical ? 1 : 0;
 
-        if (s_phook_count > 0) {
+        if (phook_count() > 0) {
         openpete_mods_in_present = 1;
-        for (int i = 0; i < s_phook_count; i++) {
-            if (s_phooks[i].disabled) continue;
+        for (int i = 0; i < phook_count(); i++) {
+            const present_hook_t* h = phook_at(i);
+            if (h->disabled) continue;
             const op_time_t t0 = op_now(); /* clock-guard: wall */ /* hook cost span */
             /* Names the mod in an ImGui refusal: a present hook runs
-             * outside any UI section body, so the guard has no mod index. */
-            openpete_imgui_guard_set_hook_owner(s_phooks[i].owner_id);
-            s_phooks[i].fn(&ctx);
+             * outside any UI section body, so the guard has no mod index.
+             * The owner is read out before the call: a hook body that
+             * registers another hook moves the table. */
+            const char* owner = h->owner_id;
+            openpete_mod_present_fn fn = h->fn;
+            openpete_imgui_guard_set_hook_owner(owner);
+            fn(&ctx);
             openpete_imgui_guard_set_hook_owner(NULL);
-            openpete_mods_time_add(s_phooks[i].owner_id, op_now() - t0, 1); /* clock-guard: wall */
+            openpete_mods_time_add(owner, op_now() - t0, 1); /* clock-guard: wall */
         }
         openpete_mods_in_present = 0;
         }

@@ -1179,11 +1179,21 @@ int openpete_mods_set_mod_enabled(const char* id, int on) {
     return 0;
 }
 
+/* A mutable copy of an environment variable, or NULL when it is unset,
+ * empty, or the copy fails. strtok_r writes into its subject, and a
+ * fixed stack buffer would silently drop the tail of a long schedule. */
+static char* env_dup(const char* name) {
+    const char* e = getenv(name);
+    if (!e || !*e) return NULL;
+    size_t n = strlen(e) + 1;
+    char* d = (char*)malloc(n);
+    if (d) memcpy(d, e, n);
+    return d;
+}
+
 static void toggle_parse_env(void) {
-    const char* e = getenv("OPENPETE_MODS_TOGGLE");
-    if (!e || !*e) return;
-    char buf[512];
-    snprintf(buf, sizeof buf, "%s", e);
+    char* buf = env_dup("OPENPETE_MODS_TOGGLE");
+    if (!buf) return;
     char* save = NULL;
     for (char* tok = strtok_r(buf, ",", &save); tok;
          tok = strtok_r(NULL, ",", &save)) {
@@ -1207,6 +1217,7 @@ static void toggle_parse_env(void) {
                         "(want tick:id:0|1)", tok);
         }
     }
+    free(buf);
     size_t n_sched = mod_fvec_count(&s_toggle_sched);
     if (n_sched)
         OPL_INFO_F("mods", "toggle schedule armed (%zu entr%s)",
@@ -1228,10 +1239,8 @@ typedef struct {
 static mod_fvec s_cfg_sched;   /* cfg_apply_sched_t, parsed once at boot */
 
 static void cfg_apply_schedule_parse(void) {
-    const char* e = getenv("OPENPETE_MODS_CFG_APPLY");
-    if (!e || !*e) return;
-    char buf[512];
-    snprintf(buf, sizeof buf, "%s", e);
+    char* buf = env_dup("OPENPETE_MODS_CFG_APPLY");
+    if (!buf) return;
     char* save = NULL;
     for (char* tok = strtok_r(buf, ",", &save); tok;
          tok = strtok_r(NULL, ",", &save)) {
@@ -1253,6 +1262,7 @@ static void cfg_apply_schedule_parse(void) {
                         "(want tick:id:key=int)", tok);
         }
     }
+    free(buf);
     size_t n_cfg = mod_fvec_count(&s_cfg_sched);
     if (n_cfg)
         OPL_INFO_F("mods", "config-apply schedule armed (%zu entr%s)",

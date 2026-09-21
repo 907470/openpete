@@ -86,7 +86,8 @@ static int      s_state = 0; /* 0 unregistered, 1 ok, -1 failed */
  *     replacement.
  * Overflow REFUSES the allocation: a ledger that silently stops
  * recording turns every later verdict into a guess. */
-#define ARENA_ROWS_MAX 8192 /* a total conversion at ~3000 streams fits with room */
+/* Rows the ledger allocates up front; it grows past this. */
+#define ARENA_ROWS_INIT 8192
 
 /* Two row kinds share the ledger and its replay/verdict semantics: an
  * ALLOCATION row records (size, align, flags, off); a HANDLE row records
@@ -103,10 +104,27 @@ typedef struct {
     uint32_t flags;      /* OP_GALLOC_* as passed */
     uint32_t off;        /* alloc: arena offset (vaddr = ARENA_BASE + off); handle: index */
     uint32_t superseded; /* replaced by a later row on a mismatching replay */
+    /* Immutable digest, held on the row rather than in a parallel array
+     * so a row and its promise cannot drift apart: 0 none, 1 captured,
+     * 2 broken. Not part of the saved record. */
+    uint64_t sum;
+    uint8_t  sum_state;
 } arena_row_t;
 
-static arena_row_t s_rows[ARENA_ROWS_MAX];
-static uint32_t    s_rows_n = 0;
+static mod_fvec s_rows;   /* arena_row_t */
+
+static uint32_t row_count(void) { return (uint32_t)mod_fvec_count(&s_rows); }
+static arena_row_t* row_at(uint32_t i) {
+    return (arena_row_t*)mod_fvec_at(&s_rows, (size_t)i);
+}
+
+/* Append a ledger row, or NULL when the allocation fails. */
+static arena_row_t* row_push(void) {
+    if (!s_rows.elem_size)
+        mod_fvec_init(&s_rows, sizeof(arena_row_t), ARENA_ROWS_INIT,
+                      "arena_rows", ARENA_ROWS_INIT);
+    return (arena_row_t*)mod_fvec_push(&s_rows);
+}
 
 /* Per-owner call cursors: reset to 0 when the owner (re)enters so its
  * allocation sequence replays from the first row. */
@@ -173,8 +191,8 @@ uint32_t openpete_mods_guest_alloc(uint32_t size, uint32_t align,
      * state): the old row is marked superseded so no savestate written
      * against it can ever restore into an orphan, and the call falls
      * through to a fresh bump. */
-    for (uint32_t i = 0; i < s_rows_n; i++) {
-        arena_row_t* r = &s_rows[i];
+    for (uint32_t i = 0; i < row_count(); i++) {
+        arena_row_t* r = row_at(i);
         if (r->superseded || r->call_idx != call_idx ||
             strcmp(r->owner, owner) != 0)
             continue;
@@ -197,12 +215,6 @@ uint32_t openpete_mods_guest_alloc(uint32_t size, uint32_t align,
         break;
     }
 
-    if (s_rows_n >= ARENA_ROWS_MAX) {
-        OPL_ERROR_F("mods", "guest arena ledger full (%d rows) — %s call "
-                    "#%u refused; allocate at entry and reuse, the cursor "
-                    "never returns", ARENA_ROWS_MAX, owner, call_idx);
-        return 0;
-    }
     uint32_t off = (s_used + (align - 1)) & ~(align - 1);
     if (off + size > ARENA_SIZE) {
         OPL_ERROR_F("mods", "guest arena exhausted (%s wanted %u B, "
@@ -213,8 +225,12 @@ uint32_t openpete_mods_guest_alloc(uint32_t size, uint32_t align,
     s_used = off + size;
     memset(&s_arena[off], 0, size); /* zero on first allocation */
 
-    arena_row_t* r = &s_rows[s_rows_n++];
-    memset(r, 0, sizeof *r);
+    arena_row_t* r = row_push();
+    if (!r) {
+        OPL_ERROR_F("mods", "guest arena ledger allocation failed — %s "
+                    "call #%u refused", owner, call_idx);
+        return 0;
+    }
     snprintf(r->owner, sizeof r->owner, "%s", owner);
     r->kind = ROW_ALLOC;
     r->call_idx = call_idx;
@@ -261,8 +277,8 @@ uint32_t openpete_mods_vstream_handle(uint32_t vaddr, const char* owner) {
         return 0;
     }
     uint32_t call_idx = o->next_call;
-    for (uint32_t i = 0; i < s_rows_n; i++) {
-        arena_row_t* r = &s_rows[i];
+    for (uint32_t i = 0; i < row_count(); i++) {
+        arena_row_t* r = row_at(i);
         if (r->superseded || r->call_idx != call_idx ||
             strcmp(r->owner, owner) != 0)
             continue;
@@ -279,12 +295,6 @@ uint32_t openpete_mods_vstream_handle(uint32_t vaddr, const char* owner) {
                    r->kind == ROW_HANDLE ? "handle" : "alloc", vaddr, i);
         break;
     }
-    if (s_rows_n >= ARENA_ROWS_MAX) {
-        OPL_ERROR_F("mods", "guest arena ledger full (%d rows) — %s "
-                    "vstream_handle call #%u refused", ARENA_ROWS_MAX,
-                    owner, call_idx);
-        return 0;
-    }
     uint32_t h = handle_bind(vaddr);
     if (!h) {
         OPL_ERROR_F("mods", "%s: vstream_handle(0x%08X): handle table "
@@ -292,8 +302,12 @@ uint32_t openpete_mods_vstream_handle(uint32_t vaddr, const char* owner) {
         return 0;
     }
     o->next_call = call_idx + 1;
-    arena_row_t* r = &s_rows[s_rows_n++];
-    memset(r, 0, sizeof *r);
+    arena_row_t* r = row_push();
+    if (!r) {
+        OPL_ERROR_F("mods", "guest arena ledger allocation failed — %s "
+                    "vstream_handle call #%u refused", owner, call_idx);
+        return 0;
+    }
     snprintf(r->owner, sizeof r->owner, "%s", owner);
     r->kind = ROW_HANDLE;
     r->call_idx = call_idx;
@@ -325,20 +339,17 @@ void openpete_mods_arena_mem_restore(const void* bytes, uint32_t used) {
  * mismatch is the mod's promise broken — warned once per row, with the
  * owner and call index, so the flag is a falsifiable claim rather than
  * a hint the engine takes on faith. */
-static uint64_t s_row_sum[ARENA_ROWS_MAX];
-static uint8_t  s_row_sum_state[ARENA_ROWS_MAX]; /* 0 none, 1 captured, 2 broken */
-
 void openpete_mods_arena_immutable_check(const char* when) {
-    for (uint32_t i = 0; i < s_rows_n; i++) {
-        const arena_row_t* r = &s_rows[i];
+    for (uint32_t i = 0; i < row_count(); i++) {
+        arena_row_t* r = row_at(i);
         if (!(r->flags & OP_GALLOC_IMMUTABLE) || r->superseded) continue;
-        if (s_row_sum_state[i] == 2) continue;
+        if (r->sum_state == 2) continue;
         uint64_t h = openpete_fnv1a64(&s_arena[r->off], r->size);
-        if (s_row_sum_state[i] == 0) {
-            s_row_sum[i] = h;
-            s_row_sum_state[i] = 1;
-        } else if (h != s_row_sum[i]) {
-            s_row_sum_state[i] = 2;
+        if (r->sum_state == 0) {
+            r->sum = h;
+            r->sum_state = 1;
+        } else if (h != r->sum) {
+            r->sum_state = 2;
             OPL_WARN_F("mods", "guest arena: %s call #%u is marked "
                        "IMMUTABLE but its bytes changed (%u B @0x%08X, "
                        "seen at %s) — the promise is broken; drop the "
@@ -396,19 +407,19 @@ static int rec_matches(const arena_rec_t* a, const arena_row_t* b) {
 
 uint32_t openpete_mods_arena_state_size(void) {
     return (uint32_t)(sizeof(arena_state_hdr_t)
-                      + s_rows_n * sizeof(arena_rec_t) + s_used);
+                      + row_count() * sizeof(arena_rec_t) + s_used);
 }
 
 void openpete_mods_arena_state_save(void* dst) {
     arena_state_hdr_t h;
     h.ver = 3u;
-    h.count = s_rows_n;
+    h.count = row_count();
     h.used = s_used;
     uint8_t* p = (uint8_t*)dst;
     memcpy(p, &h, sizeof h);                       p += sizeof h;
-    for (uint32_t i = 0; i < s_rows_n; i++) {
+    for (uint32_t i = 0; i < row_count(); i++) {
         arena_rec_t rec;
-        rec_from_row(&rec, &s_rows[i]);
+        rec_from_row(&rec, row_at(i));
         memcpy(p, &rec, sizeof rec);               p += sizeof rec;
     }
     memcpy(p, s_arena, s_used);
@@ -442,10 +453,10 @@ int openpete_mods_arena_state_verdict(const void* src, uint32_t size) {
     /* Exact prefix, superseded marks included. A saved row the live
      * session has superseded is the reload case — the file's bytes (or
      * frame words) describe a block or handle the mod no longer holds. */
-    uint32_t common = h.count < s_rows_n ? h.count : s_rows_n;
+    uint32_t common = h.count < row_count() ? h.count : row_count();
     for (uint32_t i = 0; i < common; i++) {
         const arena_rec_t* a = &rows[i];
-        const arena_row_t* b = &s_rows[i];
+        const arena_row_t* b = row_at(i);
         if (rec_matches(a, b)) continue;
         const char* what = b->kind == ROW_HANDLE ? "handle" : "entry";
         if (a->call_idx == b->call_idx && a->kind == b->kind &&
@@ -481,9 +492,14 @@ void openpete_mods_arena_state_apply(const void* src, uint32_t size) {
      * common prefix matches), so a mod's later call at that index replays
      * the row the file holds — bytes restored below, handles bound here —
      * instead of bumping into a fresh block or a fresh index. */
-    for (uint32_t i = s_rows_n; i < h.count && i < ARENA_ROWS_MAX; i++) {
-        arena_row_t* r = &s_rows[i];
-        memset(r, 0, sizeof *r);
+    for (uint32_t i = row_count(); i < h.count; i++) {
+        arena_row_t* r = row_push();
+        if (!r) {
+            OPL_ERROR_F("mods", "arena ledger: row allocation failed at "
+                        "#%u — the rest of the saved rows are not adopted",
+                        i);
+            break;
+        }
         memcpy(r->owner, rows[i].owner, sizeof r->owner);
         r->owner[sizeof r->owner - 1] = '\0';
         r->kind = rows[i].kind; r->call_idx = rows[i].call_idx;
@@ -494,10 +510,9 @@ void openpete_mods_arena_state_apply(const void* src, uint32_t size) {
             (void)openpete_vstream_table_set(r->off, r->size);
             if (r->off >= s_next_handle) s_next_handle = r->off + 1;
         }
-        s_rows_n = i + 1;
     }
     if (s_state == 0 && h.used) (void)arena_register();
     openpete_mods_arena_mem_restore(bytes, h.used);
     OPL_INFO_F("mods", "arena ledger applied: %u entries, %u B restored, "
-               "cursor %u/%u", s_rows_n, h.used, s_used, ARENA_SIZE);
+               "cursor %u/%u", row_count(), h.used, s_used, ARENA_SIZE);
 }

@@ -40,9 +40,12 @@ void call_by_address(CPUState* cpu, uint32_t addr);
 
 int openpete_mods_active = 0;
 
-#define MOD_CHAIN_MAX        64   /* distinct overridden addresses */
-#define MOD_CHAIN_LINKS_MAX  16   /* stacked overrides per address  */
-#define MOD_FRAME_STACK_MAX  32   /* nested chain invocations       */
+/* Addresses the chain table's first block holds, and links a chain
+ * allocates up front; both grow past these. */
+#define MOD_CHAIN_BLOCK      64
+#define MOD_CHAIN_LINKS_INIT 16
+#define MOD_FRAME_STACK_MAX  32   /* nested chain invocations: a real
+                                   * bound, the recursion guard */
 
 typedef struct {
     openpete_mod_override_fn fn;
@@ -52,13 +55,24 @@ typedef struct {
 } mod_link_t;
 
 typedef struct {
-    uint32_t   addr;
-    int        count;
-    mod_link_t links[MOD_CHAIN_LINKS_MAX]; /* [0] = highest priority */
+    uint32_t addr;
+    mod_fvec links;   /* mod_link_t, [0] = highest priority */
 } mod_chain_t;
 
-static mod_chain_t s_chains[MOD_CHAIN_MAX];
-static int         s_chain_count = 0;
+/* Chunked: a live frame holds its chain's address across the override
+ * body it is running, and that body may register another chain. */
+static mod_cvec s_chains;   /* mod_chain_t */
+
+static mod_chain_t* chain_at(int i) {
+    return (mod_chain_t*)mod_cvec_at(&s_chains, (size_t)i);
+}
+static int chain_count(void) { return (int)mod_cvec_count(&s_chains); }
+static int link_count(const mod_chain_t* c) {
+    return (int)mod_fvec_count(&c->links);
+}
+static mod_link_t* link_at(const mod_chain_t* c, int i) {
+    return (mod_link_t*)mod_fvec_at(&c->links, (size_t)i);
+}
 
 /* Number of links across all chains that are NOT disabled. Zero = every
  * registered chain is toggled off, and dispatch must behave exactly like
@@ -79,39 +93,48 @@ static int s_live_links = 0;
  *     toggled-off mod).
  * Owners never toggled — including engine-internal ones like the content
  * registry's driver link — default to enabled. */
-#define MOD_OWNER_STATE_MAX 32
+/* Owners the state table allocates up front; it grows past this. */
+#define MOD_OWNER_STATE_INIT 32
 #define MOD_OWNER_ID_MAX    64 /* mirrors the loader's MOD_ID_MAX */
 
-static struct {
+typedef struct {
     char owner[MOD_OWNER_ID_MAX];
     int  disabled;
-} s_owner_state[MOD_OWNER_STATE_MAX];
-static int s_owner_state_n = 0;
+} owner_state_t;
+static mod_fvec s_owner_state;   /* owner_state_t */
+
+static owner_state_t* owner_state_find(const char* owner_id) {
+    for (size_t i = 0; i < mod_fvec_count(&s_owner_state); i++) {
+        owner_state_t* o = (owner_state_t*)mod_fvec_at(&s_owner_state, i);
+        if (strcmp(o->owner, owner_id) == 0) return o;
+    }
+    return NULL;
+}
 
 static int owner_disabled(const char* owner_id) {
+    const owner_state_t* o;
     if (!owner_id) return 0;
-    for (int i = 0; i < s_owner_state_n; i++)
-        if (strcmp(s_owner_state[i].owner, owner_id) == 0)
-            return s_owner_state[i].disabled;
-    return 0;
+    o = owner_state_find(owner_id);
+    return o ? o->disabled : 0;
 }
 
 static void owner_state_set(const char* owner_id, int disabled) {
-    for (int i = 0; i < s_owner_state_n; i++)
-        if (strcmp(s_owner_state[i].owner, owner_id) == 0) {
-            s_owner_state[i].disabled = disabled;
-            return;
-        }
-    if (s_owner_state_n >= MOD_OWNER_STATE_MAX) {
-        OPL_ERROR_F("mods", "override owner-state table full (%d) — \"%s\" "
-                    "will re-register its links ENABLED after a reload",
-                    MOD_OWNER_STATE_MAX, owner_id);
+    owner_state_t* o = owner_state_find(owner_id);
+    if (o) { o->disabled = disabled; return; }
+    owner_state_t* slot;
+    if (!s_owner_state.elem_size)
+        mod_fvec_init(&s_owner_state, sizeof(owner_state_t),
+                      MOD_OWNER_STATE_INIT, "chain_owner_state",
+                      MOD_OWNER_STATE_INIT);
+    slot = (owner_state_t*)mod_fvec_push(&s_owner_state);
+    if (!slot) {
+        OPL_ERROR_F("mods", "override owner-state allocation failed — "
+                    "\"%s\" will re-register its links ENABLED after a "
+                    "reload", owner_id);
         return;
     }
-    snprintf(s_owner_state[s_owner_state_n].owner, MOD_OWNER_ID_MAX, "%s",
-             owner_id);
-    s_owner_state[s_owner_state_n].disabled = disabled;
-    s_owner_state_n++;
+    snprintf(slot->owner, MOD_OWNER_ID_MAX, "%s", owner_id);
+    slot->disabled = disabled;
 }
 
 /* Per-call frame: which link of which chain is currently executing, so
@@ -132,8 +155,9 @@ static _Thread_local uint32_t s_bypass_addr = 0;
 static _Thread_local int      s_bypass_armed = 0;
 
 static mod_chain_t* chain_find(uint32_t addr) {
-    for (int i = 0; i < s_chain_count; i++) {
-        if (s_chains[i].addr == addr) return &s_chains[i];
+    for (int i = 0; i < chain_count(); i++) {
+        mod_chain_t* c = chain_at(i);
+        if (c->addr == addr) return c;
     }
     return NULL;
 }
@@ -149,9 +173,9 @@ static mod_chain_t* chain_find(uint32_t addr) {
 static void run_link(CPUState* cpu, mod_chain_t* chain, int idx) {
     /* Live toggle: disabled links are transparent — base() descends
      * straight past them. */
-    while (idx < chain->count && chain->links[idx].disabled) idx++;
+    while (idx < link_count(chain) && link_at(chain, idx)->disabled) idx++;
     const op_time_t t0 = op_now();
-    if (idx < chain->count) {
+    if (idx < link_count(chain)) {
         if (s_frame_depth >= MOD_FRAME_STACK_MAX) {
             OPL_ERROR_F("mods", "override frame stack overflow at 0x%08X "
                         "(recursion through %d chained calls?) — running "
@@ -166,13 +190,17 @@ static void run_link(CPUState* cpu, mod_chain_t* chain, int idx) {
              * no mod index. Restored rather than cleared, since a link's
              * base() descent re-enters here for the next owner. */
             const char* owner_save = openpete_imgui_guard_hook_owner();
-            openpete_imgui_guard_set_hook_owner(chain->links[idx].owner_id);
-            chain->links[idx].fn(cpu);
+            /* Read out before the call: the body may register a link on
+             * this same chain, which moves the link list and shifts this
+             * link's index. */
+            const char* owner = link_at(chain, idx)->owner_id;
+            openpete_mod_override_fn fn = link_at(chain, idx)->fn;
+            openpete_imgui_guard_set_hook_owner(owner);
+            fn(cpu);
             openpete_imgui_guard_set_hook_owner(owner_save);
             const op_time_t span = op_now() - t0;
             s_frame_depth--;
-            openpete_mods_time_add(chain->links[idx].owner_id,
-                                   span - f->child_ns, 0);
+            openpete_mods_time_add(owner, span - f->child_ns, 0);
             if (s_frame_depth > 0)
                 s_frames[s_frame_depth - 1].child_ns += span;
             return;
@@ -197,18 +225,18 @@ static void run_link(CPUState* cpu, mod_chain_t* chain, int idx) {
  * mod re-registers fresh at re-entry). Tick-boundary only. */
 void openpete_mods_chain_remove_owner(const char* owner_id) {
     if (!owner_id) return;
-    for (int i = 0; i < s_chain_count; i++) {
-        mod_chain_t* c = &s_chains[i];
+    for (int i = 0; i < chain_count(); i++) {
+        mod_chain_t* c = chain_at(i);
         int w = 0;
-        for (int j = 0; j < c->count; j++) {
-            if (c->links[j].owner_id &&
-                strcmp(c->links[j].owner_id, owner_id) == 0) {
-                if (!c->links[j].disabled) s_live_links--;
+        for (int j = 0; j < link_count(c); j++) {
+            mod_link_t* l = link_at(c, j);
+            if (l->owner_id && strcmp(l->owner_id, owner_id) == 0) {
+                if (!l->disabled) s_live_links--;
                 continue;
             }
-            c->links[w++] = c->links[j];
+            *link_at(c, w++) = *l;
         }
-        c->count = w;
+        mod_fvec_truncate(&c->links, (size_t)w);
     }
 }
 
@@ -219,9 +247,9 @@ void openpete_mods_chain_set_owner_enabled(const char* owner_id, int on) {
     if (!owner_id) return;
     const int want = !on;
     owner_state_set(owner_id, want); /* outlives the links themselves */
-    for (int i = 0; i < s_chain_count; i++)
-        for (int j = 0; j < s_chains[i].count; j++) {
-            mod_link_t* l = &s_chains[i].links[j];
+    for (int i = 0; i < chain_count(); i++)
+        for (int j = 0; j < link_count(chain_at(i)); j++) {
+            mod_link_t* l = link_at(chain_at(i), j);
             if (!l->owner_id || strcmp(l->owner_id, owner_id) != 0) continue;
             if (l->disabled == want) continue;
             l->disabled = want;
@@ -306,14 +334,14 @@ int openpete_mods_dispatch(CPUState* cpu, uint32_t addr) {
     mod_chain_t* chain = chain_find(addr);
     if (!chain) return 0;
     int idx = 0;
-    while (idx < chain->count && chain->links[idx].disabled) idx++;
+    while (idx < link_count(chain) && link_at(chain, idx)->disabled) idx++;
     /* Every link toggled off: run the recompiled body IN PLACE. Entering
      * run_link here would still produce the right result (it bottoms out
      * on the original), but only by re-calling the function through
      * call_by_address — a second pass over every dispatch arm of the
      * prologue (freecam freeze, native decomp, feature registry) for a
      * call no mod is servicing. */
-    if (idx >= chain->count) return 0;
+    if (idx >= link_count(chain)) return 0;
     run_link(cpu, chain, idx);
     return 1;
 }
@@ -342,8 +370,9 @@ const char* openpete_mods_crash_attribution(uint32_t* addr_out) {
     if (s_frame_depth <= 0) return NULL;
     const mod_frame_t* f = &s_frames[s_frame_depth - 1];
     if (addr_out) *addr_out = f->chain->addr;
-    if (f->link < f->chain->count && f->chain->links[f->link].owner_id)
-        return f->chain->links[f->link].owner_id;
+    if (f->link < link_count(f->chain) &&
+        link_at(f->chain, f->link)->owner_id)
+        return link_at(f->chain, f->link)->owner_id;
     return "?";
 }
 
@@ -357,33 +386,38 @@ int openpete_mods_chain_add(uint32_t addr, openpete_mod_override_fn fn,
     if (addr == 0 || !fn) return -1;
     mod_chain_t* chain = chain_find(addr);
     if (!chain) {
-        if (s_chain_count >= MOD_CHAIN_MAX) {
-            OPL_ERROR_F("mods", "override chain table full (%d addrs) — "
-                        "cannot hook 0x%08X for %s",
-                        MOD_CHAIN_MAX, addr, owner_id ? owner_id : "?");
+        if (!s_chains.elem_size)
+            mod_cvec_init(&s_chains, sizeof(mod_chain_t), MOD_CHAIN_BLOCK,
+                          "chains", MOD_CHAIN_BLOCK);
+        chain = (mod_chain_t*)mod_cvec_push(&s_chains);
+        if (!chain) {
+            OPL_ERROR_F("mods", "override chain table allocation failed — "
+                        "cannot hook 0x%08X for %s", addr,
+                        owner_id ? owner_id : "?");
             return -1;
         }
-        chain = &s_chains[s_chain_count++];
-        memset(chain, 0, sizeof(*chain));
         chain->addr = addr;
+        mod_fvec_init(&chain->links, sizeof(mod_link_t),
+                      MOD_CHAIN_LINKS_INIT, NULL, 0);
     }
-    if (chain->count >= MOD_CHAIN_LINKS_MAX) {
-        OPL_ERROR_F("mods", "override chain at 0x%08X full (%d links) — "
-                    "cannot add %s", addr, chain->count,
+    /* Append, then rotate the new link to the front: the list is in
+     * priority order and the last registration is the highest. */
+    if (!mod_fvec_push(&chain->links)) {
+        OPL_ERROR_F("mods", "override chain at 0x%08X: link allocation "
+                    "failed — cannot add %s", addr,
                     owner_id ? owner_id : "?");
         return -1;
     }
-    memmove(&chain->links[1], &chain->links[0],
-            (size_t)chain->count * sizeof(mod_link_t));
-    chain->links[0].fn       = fn;
-    chain->links[0].owner_id = owner_id;
+    for (int j = link_count(chain) - 1; j > 0; j--)
+        *link_at(chain, j) = *link_at(chain, j - 1);
+    link_at(chain, 0)->fn       = fn;
+    link_at(chain, 0)->owner_id = owner_id;
     /* Seed from the OWNER, never from the slot: the memmove leaves the
      * previous head link's bytes in [0], so an inherited flag would make
      * a fresh link dead (registering behind a toggled-off mod) or live
      * (a toggled-off mod re-registering on hot reload). */
-    chain->links[0].disabled = owner_disabled(owner_id);
-    if (!chain->links[0].disabled) s_live_links++;
-    chain->count++;
+    link_at(chain, 0)->disabled = owner_disabled(owner_id);
+    if (!link_at(chain, 0)->disabled) s_live_links++;
     /* The insert shifted every existing link up one slot, but live
      * frames hold link INDICES. Registration from inside a running chain
      * is a normal path (the content registry's on_level hooks fire from

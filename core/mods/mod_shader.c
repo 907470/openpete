@@ -22,6 +22,7 @@
 
 #include "openpete_mods.h"
 #include "openpete_log.h"
+#include "mod_vec.h"
 #include "openpete_native_render.h"   /* set_tag_split arming (S8) */
 #include "../host/sha256.h"
 #include "mod_glsl.h"
@@ -80,7 +81,8 @@ void openpete_mods_registry_read_unlock(void) {
 #define shader_mkdir(p) mkdir((p), 0755)
 #endif
 
-#define MOD_SHADER_MAX      256
+/* Shaders the table's first block holds; it grows by whole blocks. */
+#define MOD_SHADER_BLOCK    256
 #define MOD_SHADER_PATH_MAX OPENPETE_MOD_GLSL_PATH_MAX
 
 typedef struct {
@@ -98,8 +100,14 @@ typedef struct {
     int         live;        /* 0 = swept slot (stale handle) */
 } mod_shader_t;
 
-static mod_shader_t s_shaders[MOD_SHADER_MAX];
-static int s_shader_count;
+/* Chunked: a handle is an index into this table and the renderer reads
+ * an entry's SPIR-V under REG_RD while a registration appends. */
+static mod_cvec s_shaders;   /* mod_shader_t */
+
+static int shader_count(void) { return (int)mod_cvec_count(&s_shaders); }
+static mod_shader_t* shader_at(int i) {
+    return (mod_shader_t*)mod_cvec_at(&s_shaders, (size_t)i);
+}
 
 /* ------------------------------------------------------------------ */
 /* small file helpers                                                  */
@@ -322,11 +330,6 @@ static int openpete_mods_shader_register_locked(openpete_mod_t* self, const char
                     id, path);
         return -1;
     }
-    if (s_shader_count >= MOD_SHADER_MAX) {
-        OPL_ERROR_F("mods", "%s: shader table full (%d)", id, MOD_SHADER_MAX);
-        return -1;
-    }
-
     /* cache paths */
     char build_dir[MOD_SHADER_PATH_MAX * 2];
     snprintf(build_dir, sizeof build_dir, "%s/.build", mod_dir);
@@ -420,7 +423,16 @@ static int openpete_mods_shader_register_locked(openpete_mod_t* self, const char
                    id, path, n_words);
     }
 
-    mod_shader_t* sh = &s_shaders[s_shader_count];
+    if (!s_shaders.elem_size)
+        mod_cvec_init(&s_shaders, sizeof(mod_shader_t), MOD_SHADER_BLOCK,
+                      "shaders", MOD_SHADER_BLOCK);
+    mod_shader_t* sh = (mod_shader_t*)mod_cvec_push(&s_shaders);
+    if (!sh) {
+        OPL_ERROR_F("mods", "%s: shader table allocation failed", id);
+        free(words);
+        free(ter_words);
+        return -1;
+    }
     sh->owner = id;
     snprintf(sh->path, sizeof sh->path, "%s", path);
     sh->stage = stage;
@@ -429,41 +441,46 @@ static int openpete_mods_shader_register_locked(openpete_mod_t* self, const char
     sh->spv_ter = ter_words;
     sh->spv_ter_words = n_ter_words;
     sh->live = 1;
-    return s_shader_count++;
+    return shader_count() - 1;
 }
 int openpete_mods_shader_register(openpete_mod_t* self, const char* path) { REG_WR(); int r_ = openpete_mods_shader_register_locked(self, path); REG_WR_END(); return r_; }
 
 
 const uint32_t* openpete_mods_shader_spv(int handle, size_t* words,
                                          int* stage) {
-    if (handle < 0 || handle >= s_shader_count || !s_shaders[handle].live)
-        return NULL;
-    if (words) *words = s_shaders[handle].spv_words;
-    if (stage) *stage = s_shaders[handle].stage;
-    return s_shaders[handle].spv;
+    const mod_shader_t* sh;
+    if (handle < 0 || handle >= shader_count()) return NULL;
+    sh = shader_at(handle);
+    if (!sh->live) return NULL;
+    if (words) *words = sh->spv_words;
+    if (stage) *stage = sh->stage;
+    return sh->spv;
 }
 
 /* The retained-terrain profile of a material fragment. NULL when the shader
  * has none (not a material, or its terrain compile failed) — the caller then
  * draws terrain stock rather than dropping the frame. */
 const uint32_t* openpete_mods_shader_spv_terrain(int handle, size_t* words) {
-    if (handle < 0 || handle >= s_shader_count || !s_shaders[handle].live)
-        return NULL;
-    if (words) *words = s_shaders[handle].spv_ter_words;
-    return s_shaders[handle].spv_ter;
+    const mod_shader_t* sh;
+    if (handle < 0 || handle >= shader_count()) return NULL;
+    sh = shader_at(handle);
+    if (!sh->live) return NULL;
+    if (words) *words = sh->spv_ter_words;
+    return sh->spv_ter;
 }
 
 static void openpete_mods_shader_remove_owner_locked(const char* mod_id) {
-    for (int i = 0; i < s_shader_count; i++) {
-        if (!s_shaders[i].live || !s_shaders[i].owner) continue;
-        if (strcmp(s_shaders[i].owner, mod_id) != 0) continue;
-        free(s_shaders[i].spv);
-        s_shaders[i].spv = NULL;
-        s_shaders[i].spv_words = 0;
-        free(s_shaders[i].spv_ter);
-        s_shaders[i].spv_ter = NULL;
-        s_shaders[i].spv_ter_words = 0;
-        s_shaders[i].live = 0;   /* slot stays dead: stale handles error */
+    for (int i = 0; i < shader_count(); i++) {
+        mod_shader_t* sh = shader_at(i);
+        if (!sh->live || !sh->owner) continue;
+        if (strcmp(sh->owner, mod_id) != 0) continue;
+        free(sh->spv);
+        sh->spv = NULL;
+        sh->spv_words = 0;
+        free(sh->spv_ter);
+        sh->spv_ter = NULL;
+        sh->spv_ter_words = 0;
+        sh->live = 0;   /* slot stays dead: stale handles error */
     }
 }
 void openpete_mods_shader_remove_owner(const char* mod_id) { REG_WR(); openpete_mods_shader_remove_owner_locked(mod_id); REG_WR_END(); }
@@ -515,7 +532,9 @@ int openpete_mods_shader_watch_key(const char* mod_dir, char key_out[65]) {
  * the slot via pass.pipeline_slot; a sweep moves it to the retirement
  * list, drained by the renderer under its own frame discipline. */
 
-#define MOD_POSTFX_MAX 64
+/* Passes the postfx table's first block holds, and retired pipelines the
+ * drain list allocates up front; both grow past these. */
+#define MOD_POSTFX_BLOCK 64
 
 typedef struct {
     const char* owner;
@@ -530,10 +549,33 @@ typedef struct {
     uint32_t uniforms_len;
 } mod_postfx_t;
 
-static mod_postfx_t s_fx[MOD_POSTFX_MAX];
-static int s_fx_count;
-static void* s_retired_pipelines[MOD_POSTFX_MAX];
-static int s_retired_n;
+/* Chunked: the renderer holds &fx->pipeline as its executor-cached
+ * pipeline slot across presents. */
+static mod_cvec s_fx;               /* mod_postfx_t */
+static mod_fvec s_retired_pipelines; /* void*, drained by the renderer */
+
+/* Hand a cached pipeline to the renderer's drain list. The list grows,
+ * so a sweep that retires a whole material's variants at once cannot
+ * drop one on the floor (a dropped pipeline is leaked GPU memory). */
+static void retire_pipeline(void* pipe) {
+    void** slot;
+    if (!pipe || pipe == OPENPETE_POSTFX_PIPE_FAILED) return;
+    if (!s_retired_pipelines.elem_size)
+        mod_fvec_init(&s_retired_pipelines, sizeof(void*),
+                      MOD_POSTFX_BLOCK, "postfx_retired", MOD_POSTFX_BLOCK);
+    slot = (void**)mod_fvec_push(&s_retired_pipelines);
+    if (!slot) {
+        OPL_ERROR_F("mods", "postfx: retirement list allocation failed — "
+                    "a cached pipeline is leaked");
+        return;
+    }
+    *slot = pipe;
+}
+
+static int fx_count(void) { return (int)mod_cvec_count(&s_fx); }
+static mod_postfx_t* fx_at(int i) {
+    return (mod_postfx_t*)mod_cvec_at(&s_fx, (size_t)i);
+}
 
 static int openpete_mods_postfx_register_locked(openpete_mod_t* self, int frag_shader,
                                   int point, int order) {
@@ -556,12 +598,14 @@ static int openpete_mods_postfx_register_locked(openpete_mod_t* self, int frag_s
                     "handle %d", id, frag_shader);
         return -1;
     }
-    if (s_fx_count >= MOD_POSTFX_MAX) {
-        OPL_ERROR_F("mods", "%s: postfx table full (%d)", id, MOD_POSTFX_MAX);
+    if (!s_fx.elem_size)
+        mod_cvec_init(&s_fx, sizeof(mod_postfx_t), MOD_POSTFX_BLOCK,
+                      "postfx", MOD_POSTFX_BLOCK);
+    mod_postfx_t* fx = (mod_postfx_t*)mod_cvec_push(&s_fx);
+    if (!fx) {
+        OPL_ERROR_F("mods", "%s: postfx table allocation failed", id);
         return -1;
     }
-    mod_postfx_t* fx = &s_fx[s_fx_count];
-    memset(fx, 0, sizeof *fx);
     fx->owner = id;
     fx->shader = frag_shader;
     fx->point = point;
@@ -569,7 +613,7 @@ static int openpete_mods_postfx_register_locked(openpete_mod_t* self, int frag_s
     fx->load_index = openpete_mods_load_index_of(self);
     fx->enabled = 0;             /* explicit postfx_enable arms it */
     fx->live = 1;
-    return s_fx_count++;
+    return fx_count() - 1;
 }
 int openpete_mods_postfx_register(openpete_mod_t* self, int frag_shader,
                                   int point, int order) { REG_WR(); int r_ = openpete_mods_postfx_register_locked(self, frag_shader, point, order); REG_WR_END(); return r_; }
@@ -577,9 +621,9 @@ int openpete_mods_postfx_register(openpete_mod_t* self, int frag_shader,
 
 static int openpete_mods_postfx_enable_locked(openpete_mod_t* self, int fx, int enabled) {
     const char* id = openpete_mods_id_of(self);
-    if (!id || fx < 0 || fx >= s_fx_count || !s_fx[fx].live) return -1;
-    if (strcmp(s_fx[fx].owner, id) != 0) return -1;   /* not yours */
-    s_fx[fx].enabled = enabled ? 1 : 0;
+    if (!id || fx < 0 || fx >= fx_count() || !fx_at(fx)->live) return -1;
+    if (strcmp(fx_at(fx)->owner, id) != 0) return -1;   /* not yours */
+    fx_at(fx)->enabled = enabled ? 1 : 0;
     return 0;
 }
 int openpete_mods_postfx_enable(openpete_mod_t* self, int fx, int enabled) { REG_WR(); int r_ = openpete_mods_postfx_enable_locked(self, fx, enabled); REG_WR_END(); return r_; }
@@ -588,11 +632,12 @@ int openpete_mods_postfx_enable(openpete_mod_t* self, int fx, int enabled) { REG
 static int openpete_mods_postfx_set_uniforms_locked(openpete_mod_t* self, int fx,
                                       const void* data, uint32_t size) {
     const char* id = openpete_mods_id_of(self);
-    if (!id || fx < 0 || fx >= s_fx_count || !s_fx[fx].live || !data) return -1;
-    if (strcmp(s_fx[fx].owner, id) != 0) return -1;
+    if (!id || fx < 0 || fx >= fx_count() || !fx_at(fx)->live || !data)
+        return -1;
+    if (strcmp(fx_at(fx)->owner, id) != 0) return -1;
     if (size > OPENPETE_POSTFX_UNIFORMS_MAX) size = OPENPETE_POSTFX_UNIFORMS_MAX;
-    memcpy(s_fx[fx].uniforms, data, size);   /* copy-on-call, any context */
-    s_fx[fx].uniforms_len = size;
+    memcpy(fx_at(fx)->uniforms, data, size); /* copy-on-call, any context */
+    fx_at(fx)->uniforms_len = size;
     return 0;
 }
 int openpete_mods_postfx_set_uniforms(openpete_mod_t* self, int fx,
@@ -602,28 +647,58 @@ int openpete_mods_postfx_set_uniforms(openpete_mod_t* self, int fx,
 /* Renderer-facing: enabled passes at `point`, ordered by enabled-list
  * priority (load index) then per-mod order then registration. The fx
  * table is small — selection sort into the out array. */
+/* One line per point per session: the renderer's pass ceiling is its
+ * own bound, so a set that exceeds it keeps the highest-priority passes
+ * and the mods that lost theirs are named by count, not by repetition. */
+static void postfx_truncation_notice(int point, int have, int cap) {
+    static unsigned char s_said[OP_POSTFX_PRESENT + 1];
+    if (point < 0 || point >= (int)(sizeof s_said / sizeof s_said[0])) return;
+    if (s_said[point]) return;
+    s_said[point] = 1;
+    OPL_WARN_F("mods", "postfx point %d: %d enabled passes, the renderer "
+               "runs %d — the %d lowest-priority pass(es) are dropped",
+               point, have, cap, have - cap);
+}
+
 int openpete_mods_postfx_collect(int point, openpete_postfx_pass_t* out,
                                  int cap) {
-    int idx[MOD_POSTFX_MAX];
-    int n = 0;
-    for (int i = 0; i < s_fx_count; i++) {
-        if (!s_fx[i].live || !s_fx[i].enabled || s_fx[i].point != point)
-            continue;
-        if (!openpete_mods_is_enabled(s_fx[i].owner)) continue;  /* live toggle */
-        if (n < cap) idx[n++] = i;
+    /* The whole enabled set is collected and sorted before the cap is
+     * applied, so the passes the renderer runs are the highest-priority
+     * ones rather than whichever registered first. Static, cleared per
+     * call: this runs per present and the storage is worth keeping. */
+    static mod_fvec s_idx;   /* int, indices into s_fx */
+    int n;
+    if (!s_idx.elem_size)
+        mod_fvec_init(&s_idx, sizeof(int), MOD_POSTFX_BLOCK, NULL, 0);
+    mod_fvec_clear(&s_idx);
+    for (int i = 0; i < fx_count(); i++) {
+        const mod_postfx_t* f = fx_at(i);
+        int* slot;
+        if (!f->live || !f->enabled || f->point != point) continue;
+        if (!openpete_mods_is_enabled(f->owner)) continue;  /* live toggle */
+        slot = (int*)mod_fvec_push(&s_idx);
+        if (!slot) break;
+        *slot = i;
     }
+    n = (int)mod_fvec_count(&s_idx);
     for (int i = 1; i < n; i++)
         for (int j = i; j > 0; j--) {
-            mod_postfx_t *a = &s_fx[idx[j - 1]], *b = &s_fx[idx[j]];
+            int* pj1 = (int*)mod_fvec_at(&s_idx, (size_t)j - 1);
+            int* pj  = (int*)mod_fvec_at(&s_idx, (size_t)j);
+            mod_postfx_t *a = fx_at(*pj1), *b = fx_at(*pj);
             int swap = (a->load_index > b->load_index) ||
                        (a->load_index == b->load_index && a->order > b->order) ||
                        (a->load_index == b->load_index && a->order == b->order &&
-                        idx[j - 1] > idx[j]);
+                        *pj1 > *pj);
             if (!swap) break;
-            int t = idx[j - 1]; idx[j - 1] = idx[j]; idx[j] = t;
+            { int t = *pj1; *pj1 = *pj; *pj = t; }
         }
+    if (n > cap) {
+        postfx_truncation_notice(point, n, cap);
+        n = cap;
+    }
     for (int i = 0; i < n; i++) {
-        mod_postfx_t* fx = &s_fx[idx[i]];
+        mod_postfx_t* fx = fx_at(*(int*)mod_fvec_at(&s_idx, (size_t)i));
         out[i].frag_spv = openpete_mods_shader_spv(fx->shader,
                                                    &out[i].frag_words, NULL);
         out[i].uniforms = fx->uniforms;
@@ -637,11 +712,13 @@ int openpete_mods_postfx_collect(int point, openpete_postfx_pass_t* out,
 /* Drain executor-cached pipelines orphaned by a sweep (hot reload).
  * The renderer destroys them under its own synchronization. */
 int openpete_mods_postfx_take_retired(void** out, int cap) {
-    int n = s_retired_n < cap ? s_retired_n : cap;
-    memcpy(out, s_retired_pipelines, (size_t)n * sizeof(void*));
-    memmove(s_retired_pipelines, s_retired_pipelines + n,
-            (size_t)(s_retired_n - n) * sizeof(void*));
-    s_retired_n -= n;
+    int have = (int)mod_fvec_count(&s_retired_pipelines);
+    int n = have < cap ? have : cap;
+    void** base = (void**)mod_fvec_data(&s_retired_pipelines);
+    if (n <= 0) return 0;
+    memcpy(out, base, (size_t)n * sizeof(void*));
+    memmove(base, base + n, (size_t)(have - n) * sizeof(void*));
+    mod_fvec_truncate(&s_retired_pipelines, (size_t)(have - n));
     return n;
 }
 
@@ -649,25 +726,23 @@ int openpete_mods_postfx_take_retired(void** out, int cap) {
  * retirement list; registrations stay live (process is exiting or the
  * renderer is about to drain). */
 static void openpete_mods_postfx_retire_all_locked(void) {
-    for (int i = 0; i < s_fx_count; i++) {
-        if (!s_fx[i].live) continue;
-        if (s_fx[i].pipeline && s_fx[i].pipeline != OPENPETE_POSTFX_PIPE_FAILED &&
-            s_retired_n < MOD_POSTFX_MAX)
-            s_retired_pipelines[s_retired_n++] = s_fx[i].pipeline;
-        s_fx[i].pipeline = NULL;
+    for (int i = 0; i < fx_count(); i++) {
+        mod_postfx_t* f = fx_at(i);
+        if (!f->live) continue;
+        retire_pipeline(f->pipeline);
+        f->pipeline = NULL;
     }
 }
 void openpete_mods_postfx_retire_all(void) { REG_WR(); openpete_mods_postfx_retire_all_locked(); REG_WR_END(); }
 
 
 static void openpete_mods_postfx_remove_owner_locked(const char* mod_id) {
-    for (int i = 0; i < s_fx_count; i++) {
-        if (!s_fx[i].live || strcmp(s_fx[i].owner, mod_id) != 0) continue;
-        if (s_fx[i].pipeline && s_fx[i].pipeline != OPENPETE_POSTFX_PIPE_FAILED &&
-            s_retired_n < MOD_POSTFX_MAX)
-            s_retired_pipelines[s_retired_n++] = s_fx[i].pipeline;
-        s_fx[i].pipeline = NULL;
-        s_fx[i].live = 0;
+    for (int i = 0; i < fx_count(); i++) {
+        mod_postfx_t* f = fx_at(i);
+        if (!f->live || strcmp(f->owner, mod_id) != 0) continue;
+        retire_pipeline(f->pipeline);
+        f->pipeline = NULL;
+        f->live = 0;
     }
 }
 void openpete_mods_postfx_remove_owner(const char* mod_id) { REG_WR(); openpete_mods_postfx_remove_owner_locked(mod_id); REG_WR_END(); }
@@ -1369,73 +1444,112 @@ static int material_fill_gpu(int best, int uniform_slot,
  * the winning override, or -1. Tag layout: [31:28] path+1; moby class
  * [15:0] + per-instance slot [27:16] (S8b); terrain env bit 27 / LP
  * bit 26 + sector [8:0]. Enabled-list priority, FIRST match wins. */
-int openpete_mods_material_resolve(uint32_t tag,
-                                   openpete_mod_material_gpu_t* out) {
-    if (!tag || s_mat_count == 0) return -1;
-    int path = (int)(tag >> 28) - 1;              /* 0 = moby, 1 = terrain */
+/* The selector keys a tag carries, decoded once. `path` is 0 moby,
+ * 1 terrain; the other members are -1 when the tag's path does not carry
+ * that key. */
+typedef struct {
+    int path;
+    int cls;     /* moby class */
+    int tex;     /* terrain texture id */
+    int chan;    /* raw path nibble: the feeder's channel */
+    int ident;   /* channel-local identity */
+    int level;
+    int env, lp, untex;
+} material_key_t;
 
-    if (path == 0) {   /* moby: check the per-instance slot first (S8b) */
-        int slot = (int)((tag >> 16) & 0xFFFu);
-        if (slot == OPENPETE_MATERIAL_SLOT_STOCK) return -1;   /* declined */
-        if (slot != 0) {
-            if (slot >= view_slot_n()) return -1;   /* stale (post-reset) */
-            if (!material_slot_usable(slot)) return -1;   /* toggled/swept */
-            return material_fill_gpu(view_slot_mat(slot), slot, out);
-        }
-        /* slot 0 → fall through to declarative class resolve */
-    }
-
-    int untex = (path == 1) && (tag & 0x02000000u);
-    if (path == 1) {   /* terrain: per-present slot (S8c untex / S9 texture) */
-        int slot = (int)((tag >> 16) & 0x1FFu);
-        if (slot == OPENPETE_MATERIAL_TERRAIN_STOCK) return -1;   /* declined */
-        if (slot != 0) {
-            if (slot >= view_slot_n()) return -1;   /* stale (post-reset) */
-            if (!material_slot_usable(slot)) return -1;   /* toggled/swept */
-            return material_fill_gpu(view_slot_mat(slot), slot, out);
-        }
-        /* slot 0 → fall through to declarative resolve */
-    }
-
-    int cls  = (path == 0) ? (int)(tag & 0xFFFFu) : -1;
-    int env  = (path == 1) && (tag & 0x08000000u);
-    int lp   = (path == 1) && (tag & 0x04000000u);
-    int tex  = (path == 1 && !untex) ? (int)((tag >> 9) & 0x7Fu) : -1;
+static void material_key_from_tag(uint32_t tag, material_key_t* k) {
+    k->path  = (int)(tag >> 28) - 1;
+    k->untex = (k->path == 1) && (tag & 0x02000000u);
+    k->cls   = (k->path == 0) ? (int)(tag & 0xFFFFu) : -1;
+    k->env   = (k->path == 1) && (tag & 0x08000000u);
+    k->lp    = (k->path == 1) && (tag & 0x04000000u);
+    k->tex   = (k->path == 1 && !k->untex) ? (int)((tag >> 9) & 0x7Fu) : -1;
     /* Channel == the raw path nibble. The other feeders (player, flame,
      * particle, sky, shadow, tracer) all carry their identity in [15:0],
      * so one comparison serves every one of them. */
-    int chan  = (int)(tag >> 28);
-    int ident = (int)(tag & 0xFFFFu);
-    int level = openpete_mods_current_level();
+    k->chan  = (int)(tag >> 28);
+    k->ident = (int)(tag & 0xFFFFu);
+    k->level = openpete_mods_current_level();
+}
+
+/* The slot a tag names directly: moby per-instance (S8b) or terrain
+ * per-present (S8c untex / S9 texture). Returns 1 with the slot in
+ * *slot, 0 when the tag falls through to the declarative resolve, and
+ * -1 when the slot declines the draw or no longer resolves. */
+static int material_slot_from_tag(uint32_t tag, int path, int* slot) {
+    int s;
+    if (path == 0) {
+        s = (int)((tag >> 16) & 0xFFFu);
+        if (s == OPENPETE_MATERIAL_SLOT_STOCK) return -1;    /* declined */
+    } else if (path == 1) {
+        s = (int)((tag >> 16) & 0x1FFu);
+        if (s == OPENPETE_MATERIAL_TERRAIN_STOCK) return -1; /* declined */
+    } else {
+        return 0;
+    }
+    if (s == 0) return 0;                        /* declarative resolve */
+    if (s >= view_slot_n()) return -1;           /* stale (post-reset) */
+    if (!material_slot_usable(s)) return -1;     /* toggled/swept */
+    *slot = s;
+    return 1;
+}
+
+/* Does this material's selector accept the key? */
+static int material_selector_matches(const mod_material_t* m,
+                                     const material_key_t* k) {
+    if (m->sel.channel != -1 && m->sel.channel != k->chan) return 0;
+    if (m->sel.level != -1 && k->level >= 0 && m->sel.level != k->level)
+        return 0;
+    /* Identity is meaningful for every channel except terrain, whose
+     * [15:0] is sector|texid rather than a channel-local id and which
+     * has its own keys below. */
+    if (m->sel.ident != -1 && k->path != 1 && m->sel.ident != k->ident)
+        return 0;
+    if (k->path == 0 && m->sel.moby_class != -1 &&
+        m->sel.moby_class != k->cls)
+        return 0;
+    /* Texture key (S9): terrain textured faces only. */
+    if (m->sel.texture != -1 && (k->tex < 0 || m->sel.texture != k->tex))
+        return 0;
+    if ((m->sel.flags & OP_SEL_ENV_ANIM) && !k->env) return 0;
+    if ((m->sel.flags & OP_SEL_HP_TIER) && k->lp) return 0;
+    if ((m->sel.flags & OP_SEL_LP_TIER) && !k->lp) return 0;
+    /* Texturedness narrows: setting neither member selects both, so an
+     * unqualified terrain selector reaches the gouraud faces (the LP
+     * tier and the beyond-LOD band) as well as the textured ones. */
+    if ((m->sel.flags & OP_SEL_TEXTURED) && k->untex) return 0;
+    if ((m->sel.flags & OP_SEL_UNTEXTURED) && !k->untex) return 0;
+    return 1;
+}
+
+/* The matching material with the highest enabled-list priority, or -1. */
+static int material_winner(const material_key_t* k) {
     int best = -1;
     for (int i = 0; i < s_mat_count; i++) {
         mod_material_t* m = &s_mats[i];
         if (!m->live || !m->user_enabled ||
             !openpete_mods_is_enabled(m->owner)) continue;
         if (m->per_instance) continue;   /* per-instance winners resolve via slots only */
-        if (m->sel.channel != -1 && m->sel.channel != chan) continue;
-        if (m->sel.level != -1 && level >= 0 && m->sel.level != level) continue;
-        /* Identity is meaningful for every channel EXCEPT terrain, whose
-         * [15:0] is sector|texid rather than a channel-local id and which
-         * has its own keys below. */
-        if (m->sel.ident != -1 && path != 1 && m->sel.ident != ident) continue;
-        if (path == 0 && m->sel.moby_class != -1 && m->sel.moby_class != cls)
-            continue;
-        /* Texture key (S9): terrain textured faces only. */
-        if (m->sel.texture != -1 && (tex < 0 || m->sel.texture != tex))
-            continue;
-        if ((m->sel.flags & OP_SEL_ENV_ANIM) && !env) continue;
-        if ((m->sel.flags & OP_SEL_HP_TIER) && lp) continue;
-        if ((m->sel.flags & OP_SEL_LP_TIER) && !lp) continue;
-        /* Texturedness NARROWS: setting neither member selects both, so an
-         * unqualified terrain selector reaches the gouraud faces (the LP
-         * tier and the beyond-LOD band) as well as the textured ones. */
-        if ((m->sel.flags & OP_SEL_TEXTURED) && untex) continue;
-        if ((m->sel.flags & OP_SEL_UNTEXTURED) && !untex) continue;
+        if (!material_selector_matches(m, k)) continue;
         if (best < 0 ||
             m->load_index > s_mats[best].load_index)  /* later = higher prio */
             best = i;
     }
+    return best;
+}
+
+int openpete_mods_material_resolve(uint32_t tag,
+                                   openpete_mod_material_gpu_t* out) {
+    material_key_t k;
+    int slot = 0, best;
+    if (!tag || s_mat_count == 0) return -1;
+    material_key_from_tag(tag, &k);
+    switch (material_slot_from_tag(tag, k.path, &slot)) {
+    case 1:  return material_fill_gpu(view_slot_mat(slot), slot, out);
+    case -1: return -1;
+    default: break;   /* declarative resolve */
+    }
+    best = material_winner(&k);
     if (best < 0) return -1;
     return material_fill_gpu(best, 0, out);
 }
@@ -1444,19 +1558,10 @@ static void openpete_mods_material_remove_owner_locked(const char* mod_id) {
     for (int i = 0; i < s_mat_count; i++) {
         if (!s_mats[i].live || strcmp(s_mats[i].owner, mod_id) != 0) continue;
         for (int b = 0; b < OPENPETE_MATERIAL_PIPE_VARIANTS; b++)
-            if (s_mats[i].pipeline[b] &&
-                s_mats[i].pipeline[b] != OPENPETE_POSTFX_PIPE_FAILED &&
-                s_retired_n < MOD_POSTFX_MAX)
-                s_retired_pipelines[s_retired_n++] = s_mats[i].pipeline[b];
-        if (s_mats[i].pipeline_mark &&
-            s_mats[i].pipeline_mark != OPENPETE_POSTFX_PIPE_FAILED &&
-            s_retired_n < MOD_POSTFX_MAX)
-            s_retired_pipelines[s_retired_n++] = s_mats[i].pipeline_mark;
+            retire_pipeline(s_mats[i].pipeline[b]);
+        retire_pipeline(s_mats[i].pipeline_mark);
         for (int b = 0; b < OPENPETE_MATERIAL_TER_PIPES; b++)
-            if (s_mats[i].pipeline_ter[b] &&
-                s_mats[i].pipeline_ter[b] != OPENPETE_POSTFX_PIPE_FAILED &&
-                s_retired_n < MOD_POSTFX_MAX)
-                s_retired_pipelines[s_retired_n++] = s_mats[i].pipeline_ter[b];
+            retire_pipeline(s_mats[i].pipeline_ter[b]);
         for (int b = 0; b < OPENPETE_MATERIAL_PIPE_VARIANTS; b++) s_mats[i].pipeline[b] = NULL;
         for (int b = 0; b < OPENPETE_MATERIAL_TER_PIPES; b++) s_mats[i].pipeline_ter[b] = NULL;
         s_mats[i].pipeline_mark = NULL;
@@ -1473,19 +1578,10 @@ static void openpete_mods_material_retire_all_locked(void) {
     for (int i = 0; i < s_mat_count; i++) {
         if (!s_mats[i].live) continue;
         for (int b = 0; b < OPENPETE_MATERIAL_PIPE_VARIANTS; b++)
-            if (s_mats[i].pipeline[b] &&
-                s_mats[i].pipeline[b] != OPENPETE_POSTFX_PIPE_FAILED &&
-                s_retired_n < MOD_POSTFX_MAX)
-                s_retired_pipelines[s_retired_n++] = s_mats[i].pipeline[b];
-        if (s_mats[i].pipeline_mark &&
-            s_mats[i].pipeline_mark != OPENPETE_POSTFX_PIPE_FAILED &&
-            s_retired_n < MOD_POSTFX_MAX)
-            s_retired_pipelines[s_retired_n++] = s_mats[i].pipeline_mark;
+            retire_pipeline(s_mats[i].pipeline[b]);
+        retire_pipeline(s_mats[i].pipeline_mark);
         for (int b = 0; b < OPENPETE_MATERIAL_TER_PIPES; b++)
-            if (s_mats[i].pipeline_ter[b] &&
-                s_mats[i].pipeline_ter[b] != OPENPETE_POSTFX_PIPE_FAILED &&
-                s_retired_n < MOD_POSTFX_MAX)
-                s_retired_pipelines[s_retired_n++] = s_mats[i].pipeline_ter[b];
+            retire_pipeline(s_mats[i].pipeline_ter[b]);
         for (int b = 0; b < OPENPETE_MATERIAL_PIPE_VARIANTS; b++) s_mats[i].pipeline[b] = NULL;
         for (int b = 0; b < OPENPETE_MATERIAL_TER_PIPES; b++) s_mats[i].pipeline_ter[b] = NULL;
         s_mats[i].pipeline_mark = NULL;

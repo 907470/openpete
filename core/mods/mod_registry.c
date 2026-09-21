@@ -11,6 +11,7 @@
 
 #include "openpete_mods.h"
 #include "openpete_log.h"
+#include "mod_vec.h"
 #include "openpete_str.h"
 #include "../host/wav_loader.h" /* op_wav_probe_seconds (custom-level music) */
 
@@ -54,7 +55,8 @@ static int s_resident_level = 0;
  * camera function — the event is immune to freecam freezes (the trap
  * that killed two generations of spyro3's per-level SFX re-staging).
  * Tick context: guest reads/writes and call_addr are legal inside. */
-#define LEVEL_HOOKS_MAX 32
+/* Hooks the table allocates up front; it grows past this. */
+#define LEVEL_HOOKS_INIT 32
 
 typedef struct {
     char mod_id[MOBY_OWNER_MAX];
@@ -63,8 +65,14 @@ typedef struct {
     int  disabled;
 } level_hook_t;
 
-static level_hook_t s_level_hooks[LEVEL_HOOKS_MAX];
-static int          s_level_hook_count = 0;
+static mod_fvec s_level_hooks;   /* level_hook_t */
+
+static int level_hook_count(void) {
+    return (int)mod_fvec_count(&s_level_hooks);
+}
+static level_hook_t* level_hook_at(int i) {
+    return (level_hook_t*)mod_fvec_at(&s_level_hooks, (size_t)i);
+}
 
 void openpete_mods_set_moby_ops(const openpete_moby_ops_t* ops) {
     s_ops = ops;
@@ -136,11 +144,15 @@ static void registry_tick(CPUState* cpu) {
     if (lvl != s_level) s_level = lvl;
     if (lvl <= 0) return;
 
-    for (int i = 0; i < s_level_hook_count; i++) {
-        level_hook_t* h = &s_level_hooks[i];
+    for (int i = 0; i < level_hook_count(); i++) {
+        level_hook_t* h = level_hook_at(i);
+        openpete_mod_level_fn fn;
         if (h->disabled || h->fired_level == lvl) continue;
         h->fired_level = lvl;
-        h->fn(cpu, lvl);
+        /* Read out before the call: a hook body may register another
+         * level hook, which moves the table. */
+        fn = h->fn;
+        fn(cpu, lvl);
     }
 }
 
@@ -188,13 +200,15 @@ int openpete_mods_registry_ensure_driver(const char* log_tag) {
 int openpete_mods_on_level(const char* mod_id, openpete_mod_level_fn fn,
                            const char* log_tag) {
     if (!mod_id || !fn) return -1;
-    if (s_level_hook_count >= LEVEL_HOOKS_MAX) {
-        OPL_ERROR_F(log_tag, "on_level: hook table full (%d)",
-                    LEVEL_HOOKS_MAX);
+    if (ensure_hooked(log_tag) != 0) return -1;
+    if (!s_level_hooks.elem_size)
+        mod_fvec_init(&s_level_hooks, sizeof(level_hook_t),
+                      LEVEL_HOOKS_INIT, "level_hooks", LEVEL_HOOKS_INIT);
+    level_hook_t* h = (level_hook_t*)mod_fvec_push(&s_level_hooks);
+    if (!h) {
+        OPL_ERROR_F(log_tag, "on_level: hook table allocation failed");
         return -1;
     }
-    if (ensure_hooked(log_tag) != 0) return -1;
-    level_hook_t* h = &s_level_hooks[s_level_hook_count++];
     snprintf(h->mod_id, sizeof h->mod_id, "%s", mod_id);
     h->fn = fn;
     h->fired_level = 0; /* fires on the next live tick — including for a
@@ -213,11 +227,12 @@ void openpete_mods_registry_remove_owner(const char* mod_id) {
     }
     s_level_count = w;
     w = 0;
-    for (int i = 0; i < s_level_hook_count; i++) {
-        if (strcmp(s_level_hooks[i].mod_id, mod_id) == 0) continue;
-        s_level_hooks[w++] = s_level_hooks[i];
+    for (int i = 0; i < level_hook_count(); i++) {
+        level_hook_t* h = level_hook_at(i);
+        if (strcmp(h->mod_id, mod_id) == 0) continue;
+        *level_hook_at(w++) = *h;
     }
-    s_level_hook_count = w;
+    mod_fvec_truncate(&s_level_hooks, (size_t)w);
 }
 
 /* Live toggle: gate a mod's registry rows (level slots + level hooks).
@@ -232,16 +247,16 @@ void openpete_mods_registry_set_owner_enabled(const char* mod_id, int on) {
     for (int i = 0; i < s_level_count; i++)
         if (strcmp(s_levels[i].mod_id, mod_id) == 0)
             s_levels[i].disabled = !on;
-    for (int i = 0; i < s_level_hook_count; i++)
-        if (strcmp(s_level_hooks[i].mod_id, mod_id) == 0) {
-            s_level_hooks[i].disabled = !on;
+    for (int i = 0; i < level_hook_count(); i++)
+        if (strcmp(level_hook_at(i)->mod_id, mod_id) == 0) {
+            level_hook_at(i)->disabled = !on;
             /* Enable = (re)apply: clear the once-per-level latch so the
              * hook fires for the level IN PROGRESS on the next live tick.
              * Level hooks are once-per-EVERY-level by contract, so they
              * are already written idempotent; a re-enabled mod re-runs
              * its per-level work instead of staying silently inert until
              * the next level change. */
-            if (on) s_level_hooks[i].fired_level = 0;
+            if (on) level_hook_at(i)->fired_level = 0;
         }
 }
 
@@ -337,7 +352,8 @@ int openpete_mods_level_enter(CPUState* cpu, int level_id) {
  * v1 capacity: rows TIME-SHARE the one free slot (id 65); per-level
  * progress on the shared index is common to all of them until the
  * capacity arc lifts the guest tables. */
-#define CUSTOM_MAX 64
+/* Rows the custom-level table allocates up front; it grows past this. */
+#define CUSTOM_INIT 64
 
 typedef struct {
     char mod_id[MOBY_OWNER_MAX];
@@ -362,9 +378,25 @@ typedef struct {
  * index at or above this has no egg row. */
 #define EGG_TABLE_ROWS 18
 
-static custom_level_t s_customs[CUSTOM_MAX];
-static int s_custom_count = 0;
-static int s_custom_order[CUSTOM_MAX]; /* alphabetical by name */
+static mod_fvec s_customs;   /* custom_level_t */
+
+static int custom_count(void) { return (int)mod_fvec_count(&s_customs); }
+static custom_level_t* custom_at(int i) {
+    return (custom_level_t*)mod_fvec_at(&s_customs, (size_t)i);
+}
+/* Row indices, alphabetical by name. Parallel to s_customs, so it
+ * converts with it. */
+static mod_fvec s_custom_order;   /* int */
+
+static int id_at(const mod_fvec* v, int i) {
+    const int* p = (const int*)mod_fvec_at(v, (size_t)i);
+    return p ? *p : 0;
+}
+
+static int order_row(int i) {
+    const int* p = (const int*)mod_fvec_at(&s_custom_order, (size_t)i);
+    return p ? *p : 0;
+}
 static int s_custom_active = -1;       /* row owning the shared slot */
 static int s_custom_slot_id = 0;       /* claimed slot id (65), 0 = none */
 static int s_custom_warp = -1;         /* queued warp (real row index) */
@@ -404,6 +436,72 @@ int openpete_mods_custom_asset_path(const char* dir, const char* stem,
     return -1;
 }
 
+/* An egg total needs a row in the 18-entry table. A replace row takes
+ * the donor's index; a slot row lands on the shared free slot, which is
+ * past the table entirely. Drop the declaration rather than carry a
+ * value nothing can display — the row still registers, and its gem and
+ * dragon totals still apply. */
+static void custom_apply_counts(custom_level_t* r, int replace,
+                                const openpete_level_counts_t* counts,
+                                const char* name, const char* log_tag) {
+    r->counts.dragons = r->counts.gems = r->counts.eggs = -1;
+    if (!counts) return;
+    r->counts = *counts;
+    if (r->counts.eggs < 0) return;
+    int idx = replace ? (r->donor_id / 10 - 1) * 6 + r->donor_id % 10 : -1;
+    if (idx >= 0 && idx < EGG_TABLE_ROWS) return;
+    if (idx < 0)
+        OPL_WARN_F(log_tag, "level \"%s\": eggs = %d dropped — a "
+                   "slot-mode level has no row in the %d-entry egg table",
+                   name, r->counts.eggs, EGG_TABLE_ROWS);
+    else
+        OPL_WARN_F(log_tag, "level \"%s\": eggs = %d dropped — donor "
+                   "index %d is outside the %d-entry egg table",
+                   name, r->counts.eggs, idx, EGG_TABLE_ROWS);
+    r->counts.eggs = -1;
+}
+
+/* Fill the row's derived-asset members: level data size, display title,
+ * and the music track, each dropped with a warning when absent. */
+static void custom_probe_assets(custom_level_t* r, const char* music,
+                                const char* title, const char* log_tag) {
+    char p[1088];
+    struct stat st;
+    r->data_size = openpete_mods_custom_asset_path(r->dir, r->stem, 0, p,
+                                                   sizeof p) == 0 &&
+                           stat(p, &st) == 0
+                       ? (uint32_t)st.st_size
+                       : 0;
+    if (!r->data_size)
+        OPL_WARN_F(log_tag, "level \"%s\": %s missing — listed but not "
+                   "playable until derived", r->name, p);
+    snprintf(r->title, sizeof r->title, "%s",
+             title && title[0] ? title : "");
+    r->music[0] = '\0';
+    r->music_sec = 0.0;
+    if (!music || !music[0]) return;
+    snprintf(r->music, sizeof r->music, "%s/music/%s", r->dir, music);
+    r->music_sec = op_wav_probe_seconds(r->music);
+    if (r->music_sec > 0.0) return;
+    OPL_WARN_F(log_tag, "level \"%s\": music %s missing/unreadable — "
+               "donor's track plays until derived", r->name, r->music);
+    r->music[0] = '\0';
+}
+
+/* Place `row` in the alphabetical order the menu's Custom World buckets
+ * read. The order vec already holds `row + 1` entries. */
+static void custom_order_insert(int row, const char* name) {
+    int at = row;
+    for (int i = 0; i < row; i++)
+        if (op_strcasecmp(custom_at(order_row(i))->name, name) > 0) {
+            at = i;
+            break;
+        }
+    for (int i = row; i > at; i--)
+        *(int*)mod_fvec_at(&s_custom_order, (size_t)i) = order_row(i - 1);
+    *(int*)mod_fvec_at(&s_custom_order, (size_t)at) = row;
+}
+
 int openpete_mods_custom_register(const char* mod_id, const char* name,
                                   const char* stem, const char* dir,
                                   const char* donor, int replace,
@@ -412,10 +510,6 @@ int openpete_mods_custom_register(const char* mod_id, const char* name,
                                   const char* log_tag) {
     if (!mod_id || !name || !name[0] || !stem || !stem[0] || !dir)
         return -1;
-    if (s_custom_count >= CUSTOM_MAX) {
-        OPL_ERROR_F(log_tag, "custom-level table full (%d)", CUSTOM_MAX);
-        return -1;
-    }
     int donor_id = 0;
     if (s_level_ops && s_level_ops->resolve_name)
         donor_id = s_level_ops->resolve_name(donor ? donor : "");
@@ -425,7 +519,18 @@ int openpete_mods_custom_register(const char* mod_id, const char* name,
                     donor ? donor : "");
         return -1;
     }
-    custom_level_t* r = &s_customs[s_custom_count];
+    if (!s_customs.elem_size) {
+        mod_fvec_init(&s_customs, sizeof(custom_level_t), CUSTOM_INIT,
+                      "custom_levels", CUSTOM_INIT);
+        mod_fvec_init(&s_custom_order, sizeof(int), CUSTOM_INIT, NULL, 0);
+    }
+    custom_level_t* r = (custom_level_t*)mod_fvec_push(&s_customs);
+    if (!r) {
+        OPL_ERROR_F(log_tag, "custom-level table allocation failed — "
+                    "\"%s\" skipped", name);
+        return -1;
+    }
+    int row = custom_count() - 1;
     snprintf(r->mod_id, sizeof r->mod_id, "%s", mod_id);
     snprintf(r->name, sizeof r->name, "%s", name);
     snprintf(r->stem, sizeof r->stem, "%s", stem);
@@ -433,77 +538,32 @@ int openpete_mods_custom_register(const char* mod_id, const char* name,
     r->donor_id = donor_id;
     r->replace_mode = replace ? 1 : 0;
     r->declared_replace = 0;
-    r->counts.dragons = r->counts.gems = r->counts.eggs = -1;
-    if (counts) {
-        r->counts = *counts;
-        /* An egg total needs a row in the 18-entry table. A replace row
-         * takes the donor's index; a slot row lands on the shared free
-         * slot, which is past the table entirely. Drop the declaration
-         * rather than carry a value nothing can display — the row still
-         * registers, and its gem and dragon totals still apply. */
-        int idx = replace ? (donor_id / 10 - 1) * 6 + donor_id % 10 : -1;
-        if (r->counts.eggs >= 0 && (idx < 0 || idx >= EGG_TABLE_ROWS)) {
-            if (idx < 0)
-                OPL_WARN_F(log_tag, "level \"%s\": eggs = %d dropped — a "
-                           "slot-mode level has no row in the %d-entry "
-                           "egg table", name, r->counts.eggs,
-                           EGG_TABLE_ROWS);
-            else
-                OPL_WARN_F(log_tag, "level \"%s\": eggs = %d dropped — "
-                           "donor index %d is outside the %d-entry egg "
-                           "table", name, r->counts.eggs, idx,
-                           EGG_TABLE_ROWS);
-            r->counts.eggs = -1;
-        }
-    }
-    char p[1088];
-    struct stat st;
-    r->data_size = openpete_mods_custom_asset_path(dir, stem, 0, p, sizeof p)
-                   == 0 && stat(p, &st) == 0 ? (uint32_t)st.st_size : 0;
-    if (!r->data_size)
-        OPL_WARN_F(log_tag, "level \"%s\": %s missing — listed but not "
-                   "playable until derived", name, p);
-    snprintf(r->title, sizeof r->title, "%s",
-             title && title[0] ? title : "");
-    r->music[0] = '\0';
-    r->music_sec = 0.0;
-    if (music && music[0]) {
-        snprintf(r->music, sizeof r->music, "%s/music/%s", dir, music);
-        r->music_sec = op_wav_probe_seconds(r->music);
-        if (r->music_sec <= 0.0) {
-            OPL_WARN_F(log_tag, "level \"%s\": music %s missing/unreadable "
-                       "— donor's track plays until derived", name,
-                       r->music);
-            r->music[0] = '\0';
-        }
-    }
-    int row = s_custom_count++;
+    custom_apply_counts(r, replace, counts, name, log_tag);
+    custom_probe_assets(r, music, title, log_tag);
     /* The per-tick driver does all the work — make sure it's armed. */
     (void)ensure_hooked(log_tag);
-    /* Alphabetical order (the menu's Custom World buckets). */
-    int at = row;
-    for (int i = 0; i < row; i++)
-        if (op_strcasecmp(s_customs[s_custom_order[i]].name, name) > 0) {
-            at = i;
-            break;
-        }
-    for (int i = row; i > at; i--) s_custom_order[i] = s_custom_order[i - 1];
-    s_custom_order[at] = row;
+    if (!mod_fvec_push(&s_custom_order)) {
+        OPL_ERROR_F(log_tag, "custom-level order allocation failed — "
+                    "\"%s\" skipped", name);
+        mod_fvec_truncate(&s_customs, (size_t)row);
+        return -1;
+    }
+    custom_order_insert(row, name);
     OPL_INFO_F(log_tag, "custom level \"%s\" registered (donor %d%s)",
                name, donor_id, replace ? ", replace" : "");
     return 0;
 }
 
-int openpete_mods_custom_count(void) { return s_custom_count; }
+int openpete_mods_custom_count(void) { return custom_count(); }
 
 int openpete_mods_custom_info(int i, openpete_mods_custom_info_t* out) {
-    if (i < 0 || i >= s_custom_count || !out) return 0;
-    const custom_level_t* r = &s_customs[s_custom_order[i]];
+    if (i < 0 || i >= custom_count() || !out) return 0;
+    const custom_level_t* r = custom_at(order_row(i));
     out->name = r->name;
     out->owner = r->mod_id;
     out->donor_id = r->donor_id;
     out->replace_mode = r->replace_mode;
-    out->active = s_custom_active == s_custom_order[i];
+    out->active = s_custom_active == order_row(i);
     out->level_id = r->replace_mode ? r->donor_id
                   : (out->active ? s_custom_slot_id : 0);
     out->files_ok = r->data_size != 0;
@@ -511,29 +571,29 @@ int openpete_mods_custom_info(int i, openpete_mods_custom_info_t* out) {
 }
 
 int openpete_mods_custom_warp(int i) {
-    if (i < 0 || i >= s_custom_count) return -1;
-    s_custom_warp = s_custom_order[i];
+    if (i < 0 || i >= custom_count()) return -1;
+    s_custom_warp = order_row(i);
     return 0;
 }
 
 void openpete_mods_custom_set_mode(int i, int replace) {
-    if (i < 0 || i >= s_custom_count) return;
-    s_customs[s_custom_order[i]].replace_mode = replace ? 1 : 0;
+    if (i < 0 || i >= custom_count()) return;
+    custom_at(order_row(i))->replace_mode = replace ? 1 : 0;
 }
 
 int openpete_mods_custom_files_for(int level_id, const char** dir_out,
                                    const char** stem_out) {
     if (s_custom_slot_id && level_id == s_custom_slot_id &&
         s_custom_active >= 0) {
-        const custom_level_t* r = &s_customs[s_custom_active];
+        const custom_level_t* r = custom_at(s_custom_active);
         if (openpete_mods_is_enabled(r->mod_id)) {
             *dir_out = r->dir;
             *stem_out = r->stem;
             return 1;
         }
     }
-    for (int i = 0; i < s_custom_count; i++) {
-        const custom_level_t* r = &s_customs[i];
+    for (int i = 0; i < custom_count(); i++) {
+        const custom_level_t* r = custom_at(i);
         if (r->replace_mode && r->declared_replace &&
             r->donor_id == level_id &&
             openpete_mods_is_enabled(r->mod_id)) {
@@ -550,12 +610,12 @@ const char* openpete_mods_custom_music_for(int level_id,
     const custom_level_t* r = NULL;
     if (s_custom_slot_id && level_id == s_custom_slot_id &&
         s_custom_active >= 0)
-        r = &s_customs[s_custom_active];
+        r = custom_at(s_custom_active);
     else
-        for (int i = 0; i < s_custom_count && !r; i++)
-            if (s_customs[i].replace_mode && s_customs[i].declared_replace &&
-                s_customs[i].donor_id == level_id)
-                r = &s_customs[i];
+        for (int i = 0; i < custom_count() && !r; i++)
+            if (custom_at(i)->replace_mode && custom_at(i)->declared_replace &&
+                custom_at(i)->donor_id == level_id)
+                r = custom_at(i);
     if (!r || !r->music[0] || !openpete_mods_is_enabled(r->mod_id))
         return NULL;
     if (dur_sec_out) *dur_sec_out = r->music_sec;
@@ -580,8 +640,8 @@ static void custom_env_schedule(unsigned tick_no) {
         }
     }
     if (!s_name[0] || tick_no != s_at) return;
-    for (int i = 0; i < s_custom_count; i++)
-        if (strcmp(s_customs[i].name, s_name) == 0) {
+    for (int i = 0; i < custom_count(); i++)
+        if (strcmp(custom_at(i)->name, s_name) == 0) {
             s_custom_warp = i;
             OPL_INFO_F("mods", "custom warp scheduled: \"%s\"", s_name);
         }
@@ -613,13 +673,13 @@ static unsigned long s_counts_writes = 0;
 static int counts_declarer_for(int level_id) {
     if (s_custom_slot_id && level_id == s_custom_slot_id) {
         if (s_custom_active < 0) return -1;
-        const custom_level_t* a = &s_customs[s_custom_active];
+        const custom_level_t* a = custom_at(s_custom_active);
         if (a->replace_mode || !custom_row_live(a)) return -1;
         return s_custom_active;
     }
     int found = -1;
-    for (int i = 0; i < s_custom_count; i++) {
-        custom_level_t* r = &s_customs[i];
+    for (int i = 0; i < custom_count(); i++) {
+        custom_level_t* r = custom_at(i);
         if (!r->replace_mode || r->donor_id != level_id) continue;
         if (!custom_row_live(r)) continue;
         if (found < 0) { found = i; continue; }
@@ -627,8 +687,8 @@ static int counts_declarer_for(int level_id) {
             r->counts_clash_logged = 1;
             OPL_WARN_F("mods", "custom level \"%s\" and \"%s\" both "
                        "replace level %d — \"%s\" declares its target "
-                       "totals", s_customs[found].name, r->name,
-                       level_id, s_customs[found].name);
+                       "totals", custom_at(found)->name, r->name,
+                       level_id, custom_at(found)->name);
         }
     }
     return found;
@@ -643,39 +703,53 @@ static int counts_declarer_for(int level_id) {
  * from the Mods panel is unguarded, and a savestate load replaces the
  * tables with no edge firing in either direction; a rule evaluated every
  * tick has none of those holes, and needs no hook on the state path. */
+/* The level ids to reconcile: the shared slot plus every distinct donor. */
+static void counts_collect_ids(mod_fvec* ids) {
+    mod_fvec_clear(ids);
+    if (s_custom_slot_id) {
+        int* slot = (int*)mod_fvec_push(ids);
+        if (slot) *slot = s_custom_slot_id;
+    }
+    for (int i = 0; i < custom_count(); i++) {
+        int id = custom_at(i)->donor_id;
+        int dup = 0;
+        for (int j = 0; j < (int)mod_fvec_count(ids); j++)
+            if (id_at(ids, j) == id) { dup = 1; break; }
+        if (dup) continue;
+        int* slot = (int*)mod_fvec_push(ids);
+        if (slot) *slot = id;
+    }
+}
+
+/* Write one level's target totals from whichever row declares them. */
+static void counts_apply_one(CPUState* cpu, int id) {
+    int d = counts_declarer_for(id);
+    const openpete_level_counts_t* c = d >= 0 ? &custom_at(d)->counts : NULL;
+    int wrote = s_level_ops->set_level_counts(
+        cpu, id, c ? c->dragons : -1, c ? c->gems : -1, c ? c->eggs : -1);
+    if (wrote <= 0) return;
+    s_counts_writes += (unsigned long)wrote;
+    /* Only an ownership change reaches this: the op writes nothing once
+     * the tables hold what the rule asks for. A line per tick would mean
+     * that idempotence had broken. */
+    OPL_INFO_F("mods", "level %d target totals: %s (dragons=%d gems=%d "
+               "eggs=%d, %d B, %lu total)",
+               id, c ? custom_at(d)->name : "stock",
+               c ? c->dragons : -1, c ? c->gems : -1, c ? c->eggs : -1,
+               wrote, s_counts_writes);
+}
+
 static void counts_tick(CPUState* cpu) {
     if (!s_level_ops || !s_level_ops->set_level_counts) return;
 
-    int ids[CUSTOM_MAX + 1];
-    int n = 0;
-    if (s_custom_slot_id) ids[n++] = s_custom_slot_id;
-    for (int i = 0; i < s_custom_count; i++) {
-        int id = s_customs[i].donor_id;
-        int dup = 0;
-        for (int j = 0; j < n; j++)
-            if (ids[j] == id) { dup = 1; break; }
-        if (!dup) ids[n++] = id;
-    }
-
-    for (int k = 0; k < n; k++) {
-        int d = counts_declarer_for(ids[k]);
-        const openpete_level_counts_t* c = d >= 0 ? &s_customs[d].counts
-                                                  : NULL;
-        int wrote = s_level_ops->set_level_counts(
-            cpu, ids[k], c ? c->dragons : -1, c ? c->gems : -1,
-            c ? c->eggs : -1);
-        if (wrote > 0) {
-            s_counts_writes += (unsigned long)wrote;
-            /* Only an ownership change reaches this: the op writes
-             * nothing once the tables hold what the rule asks for. A
-             * line per tick would mean that idempotence had broken. */
-            OPL_INFO_F("mods", "level %d target totals: %s (dragons=%d "
-                       "gems=%d eggs=%d, %d B, %lu total)", ids[k],
-                       c ? s_customs[d].name : "stock",
-                       c ? c->dragons : -1, c ? c->gems : -1,
-                       c ? c->eggs : -1, wrote, s_counts_writes);
-        }
-    }
+    /* Static, cleared per call: this runs every tick and the storage is
+     * worth keeping. */
+    static mod_fvec s_ids;   /* int */
+    if (!s_ids.elem_size)
+        mod_fvec_init(&s_ids, sizeof(int), CUSTOM_INIT + 1, NULL, 0);
+    counts_collect_ids(&s_ids);
+    for (int k = 0; k < (int)mod_fvec_count(&s_ids); k++)
+        counts_apply_one(cpu, id_at(&s_ids, k));
 }
 
 unsigned long openpete_mods_registry_counts_writes(void);
@@ -688,10 +762,10 @@ unsigned long openpete_mods_registry_counts_writes(void) {
 static void custom_tick(CPUState* cpu) {
     static unsigned s_tickno = 0;
     custom_env_schedule(++s_tickno);
-    if (!s_level_ops || !s_custom_count) return;
+    if (!s_level_ops || !custom_count()) return;
 
-    for (int i = 0; i < s_custom_count; i++) {
-        custom_level_t* r = &s_customs[i];
+    for (int i = 0; i < custom_count(); i++) {
+        custom_level_t* r = custom_at(i);
         int want = r->data_size && r->replace_mode &&
                    openpete_mods_is_enabled(r->mod_id);
         if (want && !r->declared_replace) {
@@ -727,7 +801,7 @@ static void custom_tick(CPUState* cpu) {
     }
 
     if (s_custom_warp < 0) return;
-    custom_level_t* r = &s_customs[s_custom_warp];
+    custom_level_t* r = custom_at(s_custom_warp);
     if (!r->data_size || !openpete_mods_is_enabled(r->mod_id)) {
         s_custom_warp = -1;
         return;
@@ -742,14 +816,14 @@ static void custom_tick(CPUState* cpu) {
         if (!got) return; /* TOC not read yet, or the slot is another
                            * mod's — keep retrying quietly */
         s_custom_slot_id = got;
-    } else if (s_custom_active != (int)(r - s_customs)) {
+    } else if (s_custom_active != s_custom_warp) {
         if (!s_level_ops->retarget_slot ||
             s_level_ops->retarget_slot(cpu, r->donor_id) != 0) {
             s_custom_warp = -1;
             return;
         }
     }
-    s_custom_active = (int)(r - s_customs);
+    s_custom_active = s_custom_warp;
     if (s_level_ops->declare_data_len)
         (void)s_level_ops->declare_data_len(cpu, s_custom_slot_id,
                                             r->data_size);
@@ -776,7 +850,7 @@ int openpete_mods_registry_owner_busy(const char* mod_id) {
             return 1;
     }
     if (s_custom_active >= 0 && s_custom_slot_id &&
-        strcmp(s_customs[s_custom_active].mod_id, mod_id) == 0 &&
+        strcmp(custom_at(s_custom_active)->mod_id, mod_id) == 0 &&
         (s_resident_level == s_custom_slot_id ||
          s_slot_entering == s_custom_slot_id))
         return 1;
