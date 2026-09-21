@@ -33,10 +33,11 @@
 # diverge_baseline, the records it diverged on over the golden; a full
 # run exceeding it fails.
 #
-# render_scratch rows are the four render-side ranges inside the main
-# image: the three channels audited in games/spyro-1/manifest/render_channels.toml
-# (prim colour scratch, the moby prim queues, the dedup flags), sized from
-# sony_image.h, and the primitive-buffer cursor. The DEMO MODE text
+# render_scratch rows are the five render-side ranges inside the main
+# image: the four channels audited in games/spyro-1/manifest/render_channels.toml
+# (prim colour scratch, the moby prim queues, the dedup flags, the sector
+# class-skip flags), the first three sized from sony_image.h, and the
+# primitive-buffer cursor. The DEMO MODE text
 # letters wobble by COSINE_8((g_LevelTicks * 4 + i * 12) & 0xFF)
 # (gamestates/draw.c func_80018908), and g_LevelTicks is the VBL counter
 # PadVSync increments; under the reference's VBL schedule (the golden's
@@ -86,6 +87,8 @@ named = [
   "g_CdState=0x80076B90:0x30", "g_CdMusic_head=0x800774B0:0x208",
   "g_CdMusic_tail=0x800776C4:0x14", "g_NewCyclorama=0x80077780:0x14",
   "g_Environment_g_Buffers=0x800785A8:0x60", "g_TitlescreenState=0x80078D78:0x5C",
+  "g_Sparkles_pool=0x80077108:0xC0",
+  "render_channel:class_skip_flags=0x800771C8:0x100:render_scratch",
 ]
 min_row = 4
 
@@ -237,6 +240,20 @@ start       = 0x80077868
 length      = 0x20
 class       = "render_scratch"
 description = "Per-call scratch of func_80051FEC: cleared at entry, filled and consumed within the call (render_channels.toml dedup_flag_table, audited_clean)"
+
+[[region]]
+name        = "render_channel:class_skip_flags"
+start       = 0x800771C8
+length      = 0x100
+class       = "render_scratch"
+description = "D_800771C8: per-sector rendered flags written by r_environment.s at PC 0x80025B50 during the per-cell cull pass and read by func_800521C0 to clear m_WasDrawn on mobys whose owning sector was not rendered; func_800258F0 clears all 0x100 bytes at entry (loop at 0x80025990). Carried as its own row so a divergence names the channel (render_channels.toml class_skip_flags)"
+
+[[region]]
+name        = "g_Sparkles_pool"
+start       = 0x80077108
+length      = 0xC0
+class       = "gameplay"
+description = "g_Sparkles[8] (renderers.h; 8 x 0x18 bytes, the extent between the psx.map symbols g_Sparkles and D_800771C8): short-lived sparkle effects spawned by SpawnMobySparkle. The +0xC byte is the in-use tag; alloc state cascades into rotation-matrix updates because the spawn path calls func_800529E4(UPDATE_PROP_ROTMATRIX) only on a successful alloc. The render-side cull at r_particles.s 0x80058648 frees slots when sparkles leave the screen, so the kill verdict runs on the canonical SX (render_channels.toml sparkle_alloc_state)"
 
 [[region]]
 name              = "g_Environment_g_Buffers"
@@ -393,65 +410,74 @@ start  = 0x80076B80
 length = 0x10
 class  = "gameplay"
 
-# .bss extent 17: 17 symbols; named: cheat_InputBuffer, g_LevelHeader, g_Camera, g_DB, g_LevelEggCount, g_DragonCutscene, g_Sparkles, g_TracerPointCount, g_LevelDragonCount, g_CollisionNormal, g_Pad
+# .bss extent 17: 11 symbols; named: cheat_InputBuffer, g_LevelHeader, g_Camera, g_DB, g_LevelEggCount, g_DragonCutscene
 [[region]]
 name         = "main_bss_80076bc0"
 start        = 0x80076BC0
-length       = 0x7FC
+length       = 0x548
 class        = "gameplay"
-mask_offsets = [0x4C4, 0x7C8, 0x7C9, 0x7CA, 0x7CB]
-mask_reason  = "+0x4C4 g_DragonCutscene+0x54 (0x80077084): the SPU voice the host allocator answered to a play request, resolved one tick later than hardware on some ticks (host-precision residual, as the m_SoundChannel masks); +0x7C8..+0x7CB g_Pad.m_LeftStickMoved (0x80077388): derived from the pad buffer the reference polls during the streaming load's blocked VBLs (the pad-model carve-out of ram_diff_expect.toml), one tick per streaming load"
+mask_offsets = [0x4C4]
+mask_reason  = "+0x4C4 g_DragonCutscene+0x54 (0x80077084): the SPU voice the host allocator answered to a play request, resolved one tick later than hardware on some ticks (host-precision residual, as the m_SoundChannel masks)"
 
-# .bss extent 18: 1 symbols; named: g_LevelGemCount
+# .bss extent 18: 4 symbols; named: g_TracerPointCount, g_LevelDragonCount, g_CollisionNormal, g_Pad
+[[region]]
+name         = "main_bss_800772c8"
+start        = 0x800772C8
+length       = 0xF4
+class        = "gameplay"
+mask_offsets = [0xC0, 0xC1, 0xC2, 0xC3]
+mask_reason  = "+0xC0..+0xC3 g_Pad.m_LeftStickMoved (0x80077388): derived from the pad buffer the reference polls during the streaming load's blocked VBLs (the pad-model carve-out of ram_diff_expect.toml), one tick per streaming load"
+
+# .bss extent 19: 1 symbols; named: g_LevelGemCount
 [[region]]
 name   = "main_bss_80077420"
 start  = 0x80077420
 length = 0x90
 class  = "gameplay"
 
-# .bss extent 19: 1 symbols; named: g_PadBackup
+# .bss extent 20: 1 symbols; named: g_PadBackup
 [[region]]
 name   = "main_bss_800776d8"
 start  = 0x800776D8
 length = 0xA8
 class  = "gameplay"
 
-# .bss extent 20: 12 symbols
+# .bss extent 21: 12 symbols
 [[region]]
 name   = "main_bss_80077794"
 start  = 0x80077794
 length = 0xD4
 class  = "gameplay"
 
-# .bss extent 21: 5 symbols; named: g_Checkpoint, g_CutsceneSoundDef, g_RecentGemsCollected
+# .bss extent 22: 5 symbols; named: g_Checkpoint, g_CutsceneSoundDef, g_RecentGemsCollected
 [[region]]
 name   = "main_bss_80077888"
 start  = 0x80077888
 length = 0x574
 class  = "gameplay"
 
-# .bss extent 22: 8 symbols; named: g_Hud, g_EnvironmentAnimations
+# .bss extent 23: 8 symbols; named: g_Hud, g_EnvironmentAnimations
 [[region]]
 name   = "main_bss_80077e04"
 start  = 0x80077E04
 length = 0x7A4
 class  = "gameplay"
 
-# .bss extent 23: 12 symbols; named: g_FlightObjectiveActiveSlots, g_FlightCourseRecords, g_FlightObjectiveCounters, g_Portals, g_TracerLists, g_FlightCollected
+# .bss extent 24: 12 symbols; named: g_FlightObjectiveActiveSlots, g_FlightCourseRecords, g_FlightObjectiveCounters, g_Portals, g_TracerLists, g_FlightCollected
 [[region]]
 name   = "main_bss_80078608"
 start  = 0x80078608
 length = 0x98
 class  = "gameplay"
 
-# .bss extent 24: 3 symbols; named: g_SpyroFlame, g_Cyclorama
+# .bss extent 25: 3 symbols; named: g_SpyroFlame, g_Cyclorama
 [[region]]
 name   = "main_bss_800786c4"
 start  = 0x800786C4
 length = 0x394
 class  = "gameplay"
 
-# .bss extent 25: 1 symbols; named: g_FairyCutscene
+# .bss extent 26: 1 symbols; named: g_FairyCutscene
 [[region]]
 name        = "main_bss_80078cfc"
 start       = 0x80078CFC
@@ -461,14 +487,14 @@ class       = "gameplay"
 # cutscene plays).
 constant_ok = true
 
-# .bss extent 26: 7 symbols; named: g_PadBufferSecondController, g_VisitedFlags
+# .bss extent 27: 7 symbols; named: g_PadBufferSecondController, g_VisitedFlags
 [[region]]
 name   = "main_bss_80078dd4"
 start  = 0x80078DD4
 length = 0xCC
 class  = "gameplay"
 
-# .bss extent 27: 4 symbols; named: g_LevelVortexExitFlags, g_WadHeader
+# .bss extent 28: 4 symbols; named: g_LevelVortexExitFlags, g_WadHeader
 [[region]]
 name   = "main_bss_8007a6a8"
 start  = 0x8007A6A8
