@@ -3,6 +3,7 @@
 
 #include "mod_vec.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -211,7 +212,30 @@ static int census_enabled(void) {
     return e && *e && strcmp(e, "0") != 0;
 }
 
-static void census_row(const mod_vec_node_t* n) {
+/* Where the report goes. A bare on-value writes it to stderr, which is
+ * what an interactive run wants. Any other value names a file and the
+ * report is written there instead.
+ *
+ * The file form exists because stderr is not a plain descriptor here:
+ * the log mirror dup2's it onto a pipe and a pump thread copies the
+ * bytes out. The report is a burst at exit, so its tail races the pump
+ * and is lost intermittently — a handful of rows on one run, none on
+ * another. A reader that asserts one row per table needs the whole
+ * report, and a file is not on the pipe. */
+static FILE* census_open(int* needs_close) {
+    const char* e = getenv("OPENPETE_MOD_TABLE_CENSUS");
+    *needs_close = 0;
+    if (!e || !*e || strcmp(e, "1") == 0) return stderr;
+    FILE* f = fopen(e, "wb");
+    if (!f) {
+        fprintf(stderr, "mod-table: cannot write %s\n", e);
+        return stderr;
+    }
+    *needs_close = 1;
+    return f;
+}
+
+static void census_row(FILE* out, const mod_vec_node_t* n) {
     size_t count, peak, storage;
     unsigned long grew;
     if (n->kind == MOD_VEC_FIXED) {
@@ -225,9 +249,9 @@ static void census_row(const mod_vec_node_t* n) {
         const mod_fvec* v = (const mod_fvec*)n->vec;
         count = v->count; peak = v->peak; storage = v->cap; grew = v->grew;
     }
-    OPL_INFO_F("mods", "mod-table: %s count=%zu peak=%zu was=%lu "
-               "storage=%zu grew=%lu",
-               n->name, count, peak, n->was, storage, grew);
+    fprintf(out, "mod-table: %s count=%zu peak=%zu was=%lu "
+            "storage=%zu grew=%lu\n",
+            n->name, count, peak, n->was, storage, grew);
 }
 
 void mod_fixed_init(mod_fixed* t, const char* name, unsigned long was,
@@ -251,13 +275,21 @@ void mod_fixed_set(mod_fixed* t, size_t count) {
     if (count > t->peak) t->peak = count;
 }
 
+/* The `tables=` header states how many rows follow, so a reader can tell
+ * a short report from a complete one without knowing which tables to
+ * expect. */
 void mod_vec_census_report(void) {
     const mod_vec_node_t* n;
     size_t tables = 0;
+    int needs_close = 0;
+    FILE* out;
     if (!census_enabled()) return;
+    out = census_open(&needs_close);
     for (n = s_census_head; n; n = n->next) tables++;
-    OPL_INFO_F("mods", "mod-table: tables=%zu", tables);
-    for (n = s_census_head; n; n = n->next) census_row(n);
+    fprintf(out, "mod-table: tables=%zu\n", tables);
+    for (n = s_census_head; n; n = n->next) census_row(out, n);
+    fflush(out);
+    if (needs_close) fclose(out);
 }
 
 void mod_vec_census_arm(void) {

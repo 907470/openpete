@@ -1442,7 +1442,10 @@ static const knob_desc_t g_builtin[] = {
     ENVROW_LATCHED("MOD_TABLE_CENSUS", "Debug diagnostics", "0",
         "Mod-table census at exit: one line per growable mod table with "
         "its element count, the fixed capacity it used to have, its "
-        "storage size and how many times it grew."),
+        "storage size and how many times it grew. 1 writes the report to "
+        "stderr; any other value names a file to write it to, which a "
+        "reader needs because stderr rides a pipe whose pump can lose the "
+        "tail of a burst at exit."),
     ENVROW_LATCHED("TEXPACK_CATCENSUS", "Debug diagnostics", "0",
         "HD-texpack category census (which categories resolve per level)."),
     ENVROW_LATCHED("TEXPACK_ANIMPROBE", "Debug diagnostics", "",

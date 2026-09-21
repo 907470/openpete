@@ -1262,6 +1262,224 @@ else
     ok "PIL unavailable — declarative pixel assertion skipped"
 fi
 
+# ── table census: every converted table grows past its former cap ──────
+#
+# One fixture, one run, one row per table. The assertion is peak > was,
+# not count > was: a table drained at the tick boundary (the toggle
+# queues, the draw-text staging) reads count=0 at exit, so the
+# high-water is what proves the run crossed the old fixed capacity.
+#
+# The fixture is generated, never committed: 65 small mods for the
+# process-global tables, one mod carrying every per-mod row kind, one
+# with more sources than the old compile line held, and one registering
+# more shaders and post-process passes than the old tables did.
+say "table census: every converted table grows past its former cap"
+
+CEN="$WORK/census"
+mkdir -p "$CEN"
+: > "$CEN/enabled.txt"
+
+cen_mod() { # cen_mod <id> -- manifest header + enabled.txt row
+    local id="$1"
+    mkdir -p "$CEN/$id"
+    printf '[mod]\nid = "%s"\nname = "%s"\nversion = "0.1.0"\n' "$id" "$id" \
+        > "$CEN/$id/mod.toml"
+    printf 'game = "spyro-1"\napi = %s\nstate = "none"\nrunahead = "pure"\n' \
+        "$API_VER" >> "$CEN/$id/mod.toml"
+    echo "$id" >> "$CEN/enabled.txt"
+}
+
+# 65 mods: a present hook each, a link each on one shared chain, a chain
+# each of their own, a config row and a declarative level. cen00 also
+# fills the guest arena ledger past its former 8192 rows.
+for i in $(seq 0 64); do
+    id="$(printf 'cen%02d' "$i")"
+    cen_mod "$id"
+    printf '\n[[config]]\nkey = "on"\ntype = "bool"\ndefault = true\n' \
+        >> "$CEN/$id/mod.toml"
+    printf '\n[[level]]\nname = "Cen %d"\nfiles = "cen%02d"\ndonor = "dark_hollow"\n' \
+        "$i" "$i" >> "$CEN/$id/mod.toml"
+    mkdir -p "$CEN/$id/src"
+    {
+        echo '#include <openpete_mod_api.h>'
+        echo 'static const openpete_mod_api_t* g_api;'
+        echo 'static void present(const openpete_present_ctx_t* c) { (void)c; }'
+        echo 'static void shared(CPUState* cpu) { g_api->base(cpu); }'
+        echo 'static void mine(CPUState* cpu) { g_api->base(cpu); }'
+        echo 'int openpete_mod_entry(const openpete_mod_api_t* api,'
+        echo '                       openpete_mod_t* self) {'
+        echo '    g_api = api;'
+        echo '    api->register_present_hook(self, present);'
+        echo '    api->override_name(self, "CameraUpdate", shared);'
+        printf '    api->override_addr(self, 0x%08Xu, mine);\n' \
+            "$((0x80010000 + i * 4))"
+        # One allocation each: the arena's owner ledger carries a row per
+        # allocating mod, so passing its former 64 needs 65 owners, not
+        # 65 allocations from one owner.
+        echo '    (void)api->guest_alloc(self, 16, 0, 0, 0);'
+        if [ "$i" -eq 0 ]; then
+            echo '    for (int k = 0; k < 8300; k++)'
+            echo '        if (!api->guest_alloc(self, 16, 0, 0, 0)) break;'
+        fi
+        echo '    return 0;'
+        echo '}'
+    } > "$CEN/$id/src/probe.c"
+done
+
+# Every per-mod row kind at once: 9 deps, 9 bindings, 33 config rows of
+# 9 items, 17 material rows, 5 level blocks.
+cen_mod cenrows
+{
+    printf 'deps = ['
+    for i in $(seq 0 8); do
+        printf '"cen%02d"' "$i"; [ "$i" -lt 8 ] && printf ', '
+    done
+    printf ']\n'
+    for i in $(seq 1 9); do
+        printf '\n[[binding]]\nname = "act%d"\nkey = "F%d"\npurpose = "row %d"\n' \
+            "$i" "$i" "$i"
+    done
+    for r in $(seq 1 33); do
+        printf '\n[[config]]\nkey = "opt%02d"\ntype = "string"\ndefault = "c1"\nitems = [' "$r"
+        for k in $(seq 1 9); do
+            printf '"c%d"' "$k"; [ "$k" -lt 9 ] && printf ', '
+        done
+        printf ']\n'
+    done
+    for m in $(seq 1 17); do
+        printf '\n[[material]]\nfrag = "shaders/tint.frag"\nchannel = "player"\nparams = [1.0, 0.5, 0.2, 0.01]\n'
+    done
+    for l in $(seq 1 5); do
+        printf '\n[[level]]\nname = "Rows %d"\nfiles = "rows%d"\ndonor = "dark_hollow"\n' "$l" "$l"
+    done
+} >> "$CEN/cenrows/mod.toml"
+mkdir -p "$CEN/cenrows/shaders"
+cp "$MODS_SRC/declarative-reshade/shaders/tint.frag" "$CEN/cenrows/shaders/"
+
+# 16 more material rows, so the engine-wide material table passes 32.
+cen_mod cenmats
+for m in $(seq 1 16); do
+    printf '\n[[material]]\nfrag = "shaders/tint.frag"\nchannel = "moby"\nparams = [0.2, 0.9, 0.4, 0.01]\n' \
+        >> "$CEN/cenmats/mod.toml"
+done
+mkdir -p "$CEN/cenmats/shaders"
+cp "$MODS_SRC/declarative-reshade/shaders/tint.frag" "$CEN/cenmats/shaders/"
+
+# More translation units than the old compile line could carry.
+cen_mod censrcs
+mkdir -p "$CEN/censrcs/src"
+for i in $(seq 1 70); do
+    printf 'int unit_%02d(void) { return %d; }\n' "$i" "$i" \
+        > "$CEN/censrcs/src/u$(printf '%02d' "$i").c"
+done
+{
+    echo '#include <openpete_mod_api.h>'
+    echo 'int unit_70(void);'
+    echo 'int openpete_mod_entry(const openpete_mod_api_t* api,'
+    echo '                       openpete_mod_t* self) {'
+    echo '    /* Links only if the 70th unit reached the compiler. */'
+    echo '    api->log(self, 2, "censrcs: unit_70 = %d", unit_70());'
+    echo '    return 0;'
+    echo '}'
+} > "$CEN/censrcs/src/entry.c"
+
+# More shaders and post-process passes than the old tables held.
+cen_mod cenfx
+mkdir -p "$CEN/cenfx/shaders" "$CEN/cenfx/src"
+{
+    echo '#version 450'
+    echo '#extension GL_GOOGLE_include_directive : require'
+    echo '#define OP_POSTFX_STAGE_FRAGMENT 1'
+    echo '#include "openpete_shader_api.glsl"'
+    echo 'void main() { op_color = texture(op_prev_pass, op_uv); }'
+} > "$CEN/cenfx/shaders/p.frag"
+{
+    echo '#include <openpete_mod_api.h>'
+    echo 'int openpete_mod_entry(const openpete_mod_api_t* api,'
+    echo '                       openpete_mod_t* self) {'
+    echo '    int frag = -1;'
+    echo '    for (int i = 0; i < 300; i++) {'
+    echo '        int h = api->shader_register(self, "shaders/p.frag");'
+    echo '        if (h >= 0 && frag < 0) frag = h;'
+    echo '    }'
+    echo '    if (frag < 0) return 0;'
+    echo '    for (int i = 0; i < 70; i++) {'
+    echo '        int fx = api->postfx_register(self, frag,'
+    echo '                                      OP_POSTFX_COMPOSITE, i);'
+    echo '        if (fx >= 0) api->postfx_enable(self, fx, 1);'
+    echo '    }'
+    echo '    return 0;'
+    echo '}'
+} > "$CEN/cenfx/src/fx.c"
+
+# 33 owner toggles at one tick: the chain owner-state table records an
+# entry per owner ever toggled, and the queues carry them in one batch.
+cen_toggles=""
+for i in $(seq 0 32); do
+    cen_toggles="${cen_toggles}200:cen$(printf '%02d' "$i"):0,"
+done
+cen_toggles="${cen_toggles%,}"
+
+# The boot compiles 69 mods before the run starts. That measured 9 s here
+# (the 300 shader registrations name one file, so it compiles once and the
+# content-key cache serves the rest), well inside the helper's default
+# ceiling; the ceiling is still named rather than inherited, because this
+# leg loads a level and a cold machine has neither the disc cache nor the
+# compile cache. CEN_SECS reports the run's own wall clock.
+# The census is written to a file, not read out of the run's output:
+# stderr is dup2'd onto a pipe that the log pump drains, so a burst of
+# lines at exit races the pump and loses its tail. A file is not on that
+# pipe, so the report arrives whole.
+CEN_TXT="$WORK/census.txt"
+rm -f "$CEN_TXT"
+cen_t0=$SECONDS
+OPENPETE_MOD_TABLE_CENSUS="$CEN_TXT" OPENPETE_MODS_TOGGLE="$cen_toggles" \
+    OPENPETE_TERRAIN_CACHE_FORCE=1 RUN_TIMEOUT=300 \
+    run_game "$CEN" 900 --skip-to-level artisans \
+    --screenshot-on-frame 880 \
+    --screenshot-output "$WORK/census-{n}.png" > /dev/null 2>&1
+CEN_SECS=$((SECONDS - cen_t0))
+cen_out="$(cat "$CEN_TXT" 2>/dev/null || true)"
+
+# A short report reads as a table that was never measured rather than as
+# a failure, so the row count is asserted against the header the report
+# prints for exactly that purpose.
+cen_tables="$(printf '%s\n' "$cen_out" | sed -n 's/.*mod-table: tables=\([0-9]*\).*/\1/p' | head -1)"
+cen_rows="$(printf '%s\n' "$cen_out" | grep -c 'mod-table: [a-z_]* count=' || true)"
+if [ -n "$cen_tables" ] && [ "$cen_rows" -eq "$cen_tables" ]; then
+    ok "census complete: $cen_rows rows, header says $cen_tables (${CEN_SECS}s)"
+else
+    bad "census truncated: $cen_rows rows printed, header says ${cen_tables:-none}"
+fi
+
+# name:former-capacity. Each row must show a high-water above the cap the
+# table used to carry.
+for row in \
+    mods:64 cfg_slots:64 mod_time:24 present_hooks:16 chains:64 \
+    chain_owner_state:32 toggle_queue:16 toggle_sched:16 \
+    custom_levels:64 arena_rows:8192 arena_owners:64 materials:32 \
+    shaders:256 postfx:64 mod_deps:8 mod_bindings:8 mod_cfg_rows:32 \
+    mod_cfg_items:8 mod_material_rows:16 mod_levels:4 mod_srcs:64
+do
+    name="${row%%:*}"; was="${row##*:}"
+    line="$(printf '%s\n' "$cen_out" | grep -m1 "mod-table: $name count=")"
+    if [ -z "$line" ]; then
+        bad "census row $name missing (former cap $was)"
+        continue
+    fi
+    peak="$(printf '%s\n' "$line" | sed -n 's/.*peak=\([0-9]*\).*/\1/p')"
+    if [ "${peak:-0}" -gt "$was" ]; then
+        ok "$name peak=$peak > was=$was"
+    else
+        bad "$name peak=${peak:-0} did not pass its former cap $was"
+    fi
+done
+
+# The sound cache is the one converted table this run cannot reach: it
+# fills only when a WAV decodes, and a headless run has no audio device
+# to open. Covered by the mod_vec unit test on the same container.
+ok "snd_cache CARVE-OUT: no audio device headless, covered by mod_vec_test"
+
 echo
 if [ "$fail" -eq 0 ]; then
     echo "[modtest] ALL GREEN"
