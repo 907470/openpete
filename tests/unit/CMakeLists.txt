@@ -286,3 +286,20 @@ target_include_directories(rhi_memtype_candidates_test PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party/vulkan-headers/include)
 set_target_properties(rhi_memtype_candidates_test PROPERTIES C_STANDARD 99)
 add_test(NAME rhi_memtype_candidates_test COMMAND rhi_memtype_candidates_test)
+
+# mod_vec_test — the mod surface's two growable tables
+# (core/mods/mod_vec.c): the chunked table's growth past one block and the
+# element addresses that survive it, the flat table's contiguity after a
+# realloc, the order-preserving remove, clear keeping storage, the no-ops
+# on a zeroed table, and the exit census line. mod_vec.c reaches nothing
+# but malloc and the logger, so log.c is the whole link line.
+add_executable(mod_vec_test
+    mod_vec_test.c
+    ${CMAKE_SOURCE_DIR}/core/mods/mod_vec.c
+    ${CMAKE_SOURCE_DIR}/core/diag/log.c)
+target_include_directories(mod_vec_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/core/mods)
+set_target_properties(mod_vec_test PROPERTIES C_STANDARD 99)
+add_test(NAME mod_vec_test COMMAND mod_vec_test)
+set_tests_properties(mod_vec_test PROPERTIES LABELS "mods")

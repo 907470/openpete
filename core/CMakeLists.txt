@@ -138,6 +138,7 @@ add_library(openpete_core STATIC
     # psx_override_dispatch prologue chokepoint, the compile-on-load mod
     # loader (mod.toml manifests via vendored tomlc99, POSIX dlopen), and
     # the mod install's checkpoint, exec and restore path (handoff.c).
+    mods/mod_vec.c
     mods/mod_chain.c
     mods/handoff.c
     mods/mod_loader.c

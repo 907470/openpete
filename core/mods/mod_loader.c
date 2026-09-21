@@ -34,6 +34,7 @@
 // before openpete_mods_init() loads them from the warmed cache.
 
 #include "openpete_mods.h"
+#include "mod_vec.h"
 #include "openpete_osd.h"
 #include "../host/texture_pack.h"   /* texpack_fog_shift */
 #include "openpete_input_log.h"
@@ -3385,6 +3386,10 @@ int openpete_mods_init(const openpete_options_t* opts) {
     /* The ImGui guard attributes a refused call by mod index; the loader
      * owns the index-to-id mapping. */
     openpete_imgui_guard_set_mod_id_fn(openpete_mods_id);
+
+    /* Before the no-mods early return below, so a run that loads nothing
+     * still reports the census. */
+    mod_vec_census_arm();
 
     /* Pure vk windowed = native is the sole display and the PSX ordering table
      * is not rasterized, so render-function overrides are visual no-ops. Under
