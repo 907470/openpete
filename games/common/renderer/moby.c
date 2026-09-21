@@ -673,6 +673,40 @@ static double reveal_lateral_extent(CPUState* cpu, uint32_t header, double rr) {
     return ext_stored > lat ? ext_stored : lat;
 }
 
+/* The smallest stored view-Z the margin below will divide by: stored units are
+ * world/4, so this floors the nearest-point depth at four world units. */
+#define REVEAL_NEAR_RZ 1.0
+
+/* How far, in screen px, a record's body may reach either side of its
+ * projected centre under the widened-window admission.
+ *
+ * The centre projects at its own view-Z, but the body's nearest point sits up
+ * to its lateral extent closer to the camera, and that point projects by the
+ * nearer depth: a wide flat model seen obliquely spans more screen x than its
+ * extent scaled at the centre's depth. reveal_lateral_extent returns the
+ * extent in the units the stored translation carries — model_extent's
+ * rotated-vertex units with the header's m_Scale shift taken back
+ * (TR = (stored << 2) >> m_Scale) — which is what rz holds, so rz - ext is the
+ * nearest view-Z the body can occupy and ext * H / (rz - ext) its lateral
+ * reach there. Dividing by rz instead bounds only a body whose vertices all
+ * sit at the centre's depth, and drops a nearer-cornered model whose pixels
+ * are inside the frame.
+ *
+ * A body whose extent sphere straddles the camera plane has no bounded lateral
+ * projection: the margin is infinite and the window test cannot reject it. The
+ * behind-camera and camera-plane gates upstream already drop the records with
+ * no projection at all.
+ *
+ * The bound is a superset of the centre-depth one for every record: ext >= 0,
+ * so rz - ext <= rz and the margin never shrinks. */
+static double reveal_lateral_margin(CPUState* cpu, uint32_t header, double rr,
+                                    double rz, double H) {
+    double ext = reveal_lateral_extent(cpu, header, rr);
+    double near_rz = rz - ext;
+    if (near_rz <= REVEAL_NEAR_RZ) return INFINITY;
+    return ext * H / near_rz;
+}
+
 /* Decode + float-project one record's vertices. Mirrors F798: the no-blend path
  * (block 8001FCC8) when the keyframe blend factor is 0, else the INTPL blend
  * path (block 8001FA44) -- decode BOTH frame A and frame B streams and lerp each
@@ -1846,7 +1880,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
         if (rz <= 0.0) { TRC("skip=camera-plane"); m += game_layout.moby.array_stride; continue; }    /* camera-plane straddler: no stable projection */
         double sx = ofx + rx * H / rz;                                       /* projected centroid X (m_Scale cancels) */
         double sxc = ofx + rx * s_view.H_canon / rz;                         /* the same at the game's H: the .s queue's territory */
-        double margin = reveal_lateral_extent(cpu, f.header, rr) * H / rz;
+        double margin = reveal_lateral_margin(cpu, f.header, rr, rz, H);
         /* central is tested at the CANONICAL projection: the .s cone is wider
          * than the 4:3 screen by the radius bias, so no canonically-central
          * moby is cone-rejected; a moby central only in a wider view can be
