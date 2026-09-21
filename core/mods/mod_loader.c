@@ -113,7 +113,7 @@ void openpete_mods_base(CPUState* cpu);
 #define MOD_ID_MAX        64
 _Static_assert(MOD_ID_MAX == OPENPETE_ARENA_OWNER_MAX,
                "arena ledger owner field must hold a full mod id");
-#define MOD_BINDINGS_MAX  8
+#define MOD_BINDINGS_INIT 8
 
 typedef struct {
     char name[24];    /* binding_down() key within the mod's namespace */
@@ -123,8 +123,14 @@ typedef struct {
 
 /* One [[config]] schema row from mod.toml — what the engine renders in
  * the Mods panel for this mod. Values themselves live in config.toml. */
-#define MOD_CFG_ROWS_MAX  32
-#define MOD_CFG_ITEMS_MAX 8
+/* Rows a [[config]] table declares, and the choices a string row offers.
+ * Both are the mod author's content, so both grow; the constants are the
+ * initial allocation. */
+#define MOD_CFG_ROWS_INIT  32
+#define MOD_CFG_ITEMS_INIT 8
+/* One combo choice. A fixed-width element keeps the row's storage one
+ * allocation rather than one per string. */
+typedef struct { char s[24]; } mod_cfg_item_t;
 typedef struct {
     char    key[96];   /* dotted config path */
     char    type;      /* 'b' bool, 'i' int, 'd' float, 's' string */
@@ -132,9 +138,7 @@ typedef struct {
     char    group[32];
     char    help[128];
     double  min, max;  /* numeric range; min >= max = free input */
-    char    items[MOD_CFG_ITEMS_MAX][24];
-    const char* item_ptrs[MOD_CFG_ITEMS_MAX]; /* stable combo view */
-    int     n_items;
+    mod_fvec items;    /* mod_cfg_item_t; the combo choices, in order */
     int64_t def_i;     /* default: bool/int */
     double  def_d;     /* default: float */
     char    def_s[64]; /* default: string */
@@ -145,7 +149,7 @@ typedef struct {
  * all. Rows register BEFORE openpete_mod_entry, so a mixed mod's C code
  * registers later and therefore wins (last match takes the pixels): the
  * manifest states the default, code refines it. */
-#define MOD_MATERIAL_ROWS_MAX 16
+#define MOD_MATERIAL_ROWS_INIT 16
 #define MOD_MATERIAL_PARAMS_MAX 64   /* floats; capped again by the ABI's
                                       * OPENPETE_MATERIAL_UNIFORMS_MAX */
 /* Manifest channel spelling -> OP_CHAN_*. "any" (or an absent key) is -1;
@@ -174,9 +178,23 @@ typedef struct {
     int   n_params;
     int   enabled;     /* [[material]] enabled = false starts it off */
 } mod_material_row_t;
+/* [[level]] blocks a mod declares. The process-global claimable-slot
+ * count is a separate bound (LEVEL_SLOTS_MAX in mod_registry.c). */
+#define MOD_LEVELS_INIT 4
+/* One [[level]] block: a declarative custom level. */
+typedef struct {
+    char name[64]; char files[64]; char donor[24]; int replace;
+    char music[64]; char title[40];
+    /* Target totals; -1 = the block declared none, leaving that table on
+     * its stock row. */
+    int dragons; int gems; int eggs;
+} mod_level_row_t;
+
 #define MOD_PATH_MAX      1024
 #define MOD_SRCS_MAX      64
-#define MOD_DEPS_MAX      8
+#define MOD_DEPS_INIT     8
+/* One declared dependency id. */
+typedef struct { char id[MOD_ID_MAX]; } mod_dep_t;
 
 struct openpete_mod {
     int   load_index;    /* position in the live table, set at the copy
@@ -188,8 +206,7 @@ struct openpete_mod {
     char  dir[MOD_PATH_MAX];
     char  data_dir[MOD_PATH_MAX + 8]; /* "<dir>/data", made on demand */
     char  log_tag[MOD_ID_MAX + 8]; /* "mod:<id>" */
-    char  deps[MOD_DEPS_MAX][MOD_ID_MAX];
-    int   n_deps;
+    mod_fvec deps;       /* mod_dep_t */
     int   raw_warned;  /* raw-tier warning issued (once per mod) */
     char  state_decl;  /* manifest state: 0 undeclared, 'n' none,
                         * 'r' rebuildable (host state re-derives from
@@ -199,8 +216,7 @@ struct openpete_mod {
     int   sim_mutative; /* [mod] sim_mutative: -1 undeclared (the engine
                         * derives it), 0 the mod never writes guest RAM,
                         * 1 it does. Drives the save modset tag. */
-    mod_binding_t bindings[MOD_BINDINGS_MAX]; /* declared host keys */
-    int   n_bindings;
+    mod_fvec bindings;   /* mod_binding_t; declared host keys */
     /* mouse_read markers, one set per hook kind (0 tick/entry, 1 present):
      * the totals this mod last consumed from that cadence. */
     struct {
@@ -218,21 +234,13 @@ struct openpete_mod {
      * unloading it silences exactly those and nothing else. */
     unsigned pad_rumble_slots;
     int      pad_rumble_slot0_logged;
-    mod_cfg_row_t cfg_rows[MOD_CFG_ROWS_MAX]; /* [[config]] schema */
-    int   n_cfg;
-    mod_material_row_t mat_rows[MOD_MATERIAL_ROWS_MAX]; /* [[material]] */
-    int   n_mat_rows;
+    mod_fvec cfg_rows;   /* mod_cfg_row_t; [[config]] schema */
+    mod_fvec mat_rows;   /* mod_material_row_t; [[material]] */
     int   cfg_reload_pending; /* Apply wrote config.toml; reload at the
                                * next tick boundary re-reads it */
     /* [[level]] blocks: declarative custom levels (registered with the
      * content registry at load; the engine owns slot/TOC/warp). */
-    struct { char name[64]; char files[64]; char donor[24]; int replace;
-             char music[64]; char title[40];
-             /* Target totals; -1 = the block declared none, leaving that
-              * table on its stock row. */
-             int dragons; int gems; int eggs; }
-          levels[4];
-    int   n_levels;
+    mod_fvec levels;     /* mod_level_row_t */
     char  build_key[65]; /* content-hash build key (hot-reload watch);
                           * empty for a prebuilt object loaded without
                           * the SDK */
@@ -281,6 +289,83 @@ struct openpete_mod {
     int      imgui_engaged;/* the first non-zero count has been logged */
     void* dl;
 };
+
+/* Row accessors. Each per-mod table is a mod_fvec owned by the struct;
+ * the rows are reached by index, never by a held address (the getter
+ * that hands a row out copies what the caller needs). */
+static int   mod_dep_count(const struct openpete_mod* m) {
+    return (int)mod_fvec_count(&m->deps);
+}
+static mod_dep_t* mod_dep_at(const struct openpete_mod* m, int i) {
+    return (mod_dep_t*)mod_fvec_at(&m->deps, (size_t)i);
+}
+static int   mod_binding_count(const struct openpete_mod* m) {
+    return (int)mod_fvec_count(&m->bindings);
+}
+static mod_binding_t* mod_binding_at(const struct openpete_mod* m, int i) {
+    return (mod_binding_t*)mod_fvec_at(&m->bindings, (size_t)i);
+}
+static int   mod_cfg_count(const struct openpete_mod* m) {
+    return (int)mod_fvec_count(&m->cfg_rows);
+}
+static mod_cfg_row_t* mod_cfg_at(const struct openpete_mod* m, int i) {
+    return (mod_cfg_row_t*)mod_fvec_at(&m->cfg_rows, (size_t)i);
+}
+static int   mod_mat_count(const struct openpete_mod* m) {
+    return (int)mod_fvec_count(&m->mat_rows);
+}
+static mod_material_row_t* mod_mat_at(const struct openpete_mod* m, int i) {
+    return (mod_material_row_t*)mod_fvec_at(&m->mat_rows, (size_t)i);
+}
+static int   mod_level_count(const struct openpete_mod* m) {
+    return (int)mod_fvec_count(&m->levels);
+}
+static mod_level_row_t* mod_level_at(const struct openpete_mod* m, int i) {
+    return (mod_level_row_t*)mod_fvec_at(&m->levels, (size_t)i);
+}
+static int   mod_cfg_item_count(const mod_cfg_row_t* r) {
+    return (int)mod_fvec_count(&r->items);
+}
+static const char* mod_cfg_item_at(const mod_cfg_row_t* r, int i) {
+    const mod_cfg_item_t* it =
+        (const mod_cfg_item_t*)mod_fvec_at(&r->items, (size_t)i);
+    return it ? it->s : "";
+}
+
+/* Release every heap row a mod owns. There is no unload path, so this
+ * runs only on the parse-scratch and pending slots (a failed or
+ * superseded parse) and on the post-phase-C sweep. */
+static void mod_rows_free(struct openpete_mod* m) {
+    for (int i = 0; i < mod_cfg_count(m); i++)
+        mod_fvec_free(&mod_cfg_at(m, i)->items);
+    mod_fvec_free(&m->cfg_rows);
+    mod_fvec_free(&m->deps);
+    mod_fvec_free(&m->bindings);
+    mod_fvec_free(&m->mat_rows);
+    mod_fvec_free(&m->levels);
+}
+
+/* Give up ownership without freeing: the rows moved to another struct,
+ * which now frees them. Leaves the vec headers empty so a later sweep
+ * over this slot is a no-op rather than a double free. */
+static void mod_rows_disown(struct openpete_mod* m) {
+    memset(&m->deps, 0, sizeof m->deps);
+    memset(&m->bindings, 0, sizeof m->bindings);
+    memset(&m->cfg_rows, 0, sizeof m->cfg_rows);
+    memset(&m->mat_rows, 0, sizeof m->mat_rows);
+    memset(&m->levels, 0, sizeof m->levels);
+}
+
+/* Drop every row, keeping the storage, for a re-parse in place. */
+static void mod_rows_clear(struct openpete_mod* m) {
+    for (int i = 0; i < mod_cfg_count(m); i++)
+        mod_fvec_free(&mod_cfg_at(m, i)->items);
+    mod_fvec_clear(&m->cfg_rows);
+    mod_fvec_clear(&m->deps);
+    mod_fvec_clear(&m->bindings);
+    mod_fvec_clear(&m->mat_rows);
+    mod_fvec_clear(&m->levels);
+}
 
 /* Chunked: a mod holds its own openpete_mod_t* for the session and the
  * registries keep mod->id pointers, so an element address must outlive
@@ -898,10 +983,10 @@ static void mod_hot_reload(struct openpete_mod* mod) {
      * the new entry never completed — which the log says in as many
      * words. */
     mod_strip_registrations(mod);
-    mod->n_deps = mod->n_bindings = 0;
-    mod->n_cfg = 0;
-    mod->n_mat_rows = 0;   /* re-parsed below; else a reload appends dupes */
-    mod->n_levels = 0;     /* same: [[level]] blocks are re-parsed below */
+    /* Drop every manifest row in place, keeping the storage: the rows
+     * are re-parsed below, and appending to them would duplicate every
+     * binding, config row, material row and level block. */
+    mod_rows_clear(mod);
     mod->state_decl = mod->ra_decl = 0;
     char dir_copy[MOD_PATH_MAX];
     snprintf(dir_copy, sizeof dir_copy, "%s", mod->dir);
@@ -1033,7 +1118,7 @@ int openpete_mods_menu_info(int i, openpete_mods_menu_info_t* out) {
     out->ui_always   = m->ui_always;
     out->has_assets  = m->has_assets;
     out->has_src     = m->has_src;
-    out->has_cfg     = m->n_cfg;
+    out->has_cfg     = mod_cfg_count(m);
     out->imgui_calls = m->imgui_calls;
     return 1;
 }
@@ -1042,15 +1127,15 @@ int openpete_mods_menu_info(int i, openpete_mods_menu_info_t* out) {
 
 int openpete_mods_cfg_row_count(int mod_index) {
     if (mod_index < 0 || mod_index >= mod_count()) return 0;
-    return mod_at(mod_index)->n_cfg;
+    return mod_cfg_count(mod_at(mod_index));
 }
 
 int openpete_mods_cfg_row(int mod_index, int row,
                           openpete_mods_cfg_row_t* out) {
     if (mod_index < 0 || mod_index >= mod_count() || !out) return 0;
     struct openpete_mod* m = mod_at(mod_index);
-    if (row < 0 || row >= m->n_cfg) return 0;
-    const mod_cfg_row_t* r = &m->cfg_rows[row];
+    if (row < 0 || row >= mod_cfg_count(m)) return 0;
+    const mod_cfg_row_t* r = mod_cfg_at(m, row);
     out->key     = r->key;
     out->type    = r->type;
     out->label   = r->label[0] ? r->label : r->key;
@@ -1058,8 +1143,20 @@ int openpete_mods_cfg_row(int mod_index, int row,
     out->help    = r->help;
     out->min     = r->min;
     out->max     = r->max;
-    out->items   = r->n_items ? r->item_ptrs : NULL;
-    out->n_items = r->n_items;
+    /* The combo view. A row stores its choices as fixed-width elements,
+     * so a pointer into one would move with the row's storage; the
+     * pointers are rebuilt here instead, and like `sbuf` below they are
+     * valid until the next call. */
+    static mod_fvec view;   /* const char* */
+    int n_items = mod_cfg_item_count(r);
+    if (!view.elem_size)
+        mod_fvec_init(&view, sizeof(const char*), MOD_CFG_ITEMS_INIT,
+                      NULL, 0);
+    if (mod_fvec_resize(&view, (size_t)n_items) != 0) n_items = 0;
+    for (int i = 0; i < n_items; i++)
+        *(const char**)mod_fvec_at(&view, (size_t)i) = mod_cfg_item_at(r, i);
+    out->items   = n_items ? (const char**)mod_fvec_data(&view) : NULL;
+    out->n_items = n_items;
     out->ival    = 0;
     out->fval    = 0.0;
     out->sval    = "";
@@ -1424,7 +1521,7 @@ int openpete_mods_state_safe(const char** offender) {
  * spurious save warning rather than a silently mistagged card. */
 static int mod_is_mutative(const struct openpete_mod* m) {
     if (m->sim_mutative >= 0) return m->sim_mutative;
-    return (m->dl != NULL) || (m->n_levels > 0);
+    return (m->dl != NULL) || (mod_level_count(m) > 0);
 }
 
 /* Save modset tag (per-modset save safety): the canonical identity of
@@ -1673,9 +1770,11 @@ static int api_pad_rumble(openpete_mod_t* self, uint32_t slot,
 static void mod_register_key_defaults(const struct openpete_mod* mod, int enabled) {
     char where[MOD_PATH_MAX + 16];
     snprintf(where, sizeof where, "%s/mod.toml", mod->dir);
-    for (int i = 0; i < mod->n_bindings; i++)
-        (void)openpete_keymap_set_mod_default(mod->id, mod->bindings[i].name,
-                                              mod->bindings[i].key, where);
+    for (int i = 0; i < mod_binding_count(mod); i++)
+        (void)openpete_keymap_set_mod_default(mod->id,
+                                              mod_binding_at(mod, i)->name,
+                                              mod_binding_at(mod, i)->key,
+                                              where);
     openpete_keymap_set_mod_enabled(mod->id, enabled);
 }
 
@@ -1850,26 +1949,11 @@ static int level_count_key(toml_table_t* lt, const char* key, int max,
     return (int)d.u.i;
 }
 
-static int parse_manifest(const char* mod_dir, struct openpete_mod* mod) {
-    char path[MOD_PATH_MAX];
-    snprintf(path, sizeof path, "%s/mod.toml", mod_dir);
-    FILE* fp = fopen(path, "r");
-    if (!fp) return -1;
-
-    char errbuf[256];
-    toml_table_t* root = toml_parse_file(fp, errbuf, sizeof errbuf);
-    fclose(fp);
-    if (!root) {
-        OPL_ERROR_F("mods", "%s: TOML parse error: %s", path, errbuf);
-        return -1;
-    }
-
-    int rc = -1;
-    toml_table_t* t = toml_table_in(root, "mod");
-    if (!t) {
-        OPL_ERROR_F("mods", "%s: missing [mod] table", path);
-        goto out;
-    }
+/* [mod] header: identity, the api floor, and the declarations that gate
+ * savestate, rewind and runahead. Returns 0, or -1 when the table is
+ * missing or the mod needs a newer engine. */
+static int parse_mod_header(toml_table_t* t, struct openpete_mod* mod,
+                            const char* mod_dir, const char* path) {
     toml_datum_t id = toml_string_in(t, "id");
     toml_datum_t ver = toml_string_in(t, "version");
     toml_datum_t api = toml_int_in(t, "api");
@@ -1877,7 +1961,7 @@ static int parse_manifest(const char* mod_dir, struct openpete_mod* mod) {
         OPL_ERROR_F("mods", "%s: [mod] requires id and version", path);
         if (id.ok) free(id.u.s);
         if (ver.ok) free(ver.u.s);
-        goto out;
+        return -1;
     }
     /* The api struct is append-only, and source mods recompile against
      * the CURRENT staged SDK regardless — so the manifest pin is the
@@ -1889,7 +1973,7 @@ static int parse_manifest(const char* mod_dir, struct openpete_mod* mod) {
                     OPENPETE_MOD_API_VERSION);
         free(id.u.s);
         free(ver.u.s);
-        goto out;
+        return -1;
     }
     snprintf(mod->id, sizeof mod->id, "%s", id.u.s);
     snprintf(mod->version, sizeof mod->version, "%s", ver.u.s);
@@ -1922,19 +2006,6 @@ static int parse_manifest(const char* mod_dir, struct openpete_mod* mod) {
                    mod->id, sn.u.b ? "false" : "true");
         if (!sm.ok) mod->sim_mutative = sn.u.b ? 0 : 1;
     }
-    /* Hard dependencies: deps = ["other-mod", ...]. Topo-sorted before
-     * loading (a dep's entry runs before its dependents'); a missing or
-     * cyclic dep disables the mod with an actionable error. */
-    toml_array_t* deps = toml_array_in(t, "deps");
-    if (deps) {
-        int n = toml_array_nelem(deps);
-        for (int i = 0; i < n && mod->n_deps < MOD_DEPS_MAX; i++) {
-            toml_datum_t d = toml_string_at(deps, i);
-            if (!d.ok) continue;
-            snprintf(mod->deps[mod->n_deps++], MOD_ID_MAX, "%s", d.u.s);
-            free(d.u.s);
-        }
-    }
     /* State + runahead declarations (savestate/rewind/runahead gates).
      * state: "none" (no host state derived from guest history) or
      * "rebuildable" (host state re-derives from guest RAM within a
@@ -1960,279 +2031,414 @@ static int parse_manifest(const char* mod_dir, struct openpete_mod* mod) {
                          mod->id, ra.u.s);
         free(ra.u.s);
     }
-    /* Declared input bindings ([[binding]] name/key/purpose): the
-     * registry that makes host-key use visible — conflicts across the
-     * enabled set are detected after loading (advisory warn; reads are
-     * non-exclusive), and a future mod menu rebinds by editing the
-     * registry, not the mod. */
+    return 0;
+}
+
+/* Hard dependencies: deps = ["other-mod", ...]. Topo-sorted before
+ * loading (a dep's entry runs before its dependents'); a missing or
+ * cyclic dep disables the mod with an actionable error. */
+static void parse_deps(toml_table_t* t, struct openpete_mod* mod) {
+    toml_array_t* deps = toml_array_in(t, "deps");
+    if (!deps) return;
+    if (!mod->deps.elem_size)
+        mod_fvec_init(&mod->deps, sizeof(mod_dep_t), MOD_DEPS_INIT,
+                      NULL, 0);
+    int n = toml_array_nelem(deps);
+    for (int i = 0; i < n; i++) {
+        toml_datum_t d = toml_string_at(deps, i);
+        if (!d.ok) continue;
+        mod_dep_t* slot = (mod_dep_t*)mod_fvec_push(&mod->deps);
+        if (slot) snprintf(slot->id, MOD_ID_MAX, "%s", d.u.s);
+        free(d.u.s);
+        if (!slot) break;
+    }
+}
+
+/* Declared input bindings ([[binding]] name/key/purpose): the registry
+ * that makes host-key use visible — conflicts across the enabled set are
+ * detected after loading (advisory warn; reads are non-exclusive), and a
+ * future mod menu rebinds by editing the registry, not the mod. */
+static void parse_bindings(toml_table_t* root, struct openpete_mod* mod,
+                           const char* path) {
     toml_array_t* binds = toml_array_in(root, "binding");
-    if (binds) {
-        int n = toml_array_nelem(binds);
-        for (int i = 0; i < n && mod->n_bindings < MOD_BINDINGS_MAX; i++) {
-            toml_table_t* b = toml_table_at(binds, i);
-            if (!b) continue;
-            toml_datum_t bn = toml_string_in(b, "name");
-            toml_datum_t bk = toml_string_in(b, "key");
-            toml_datum_t bp = toml_string_in(b, "purpose");
-            if (bn.ok && bk.ok) {
-                mod_binding_t* mb = &mod->bindings[mod->n_bindings++];
+    if (!binds) return;
+    if (!mod->bindings.elem_size)
+        mod_fvec_init(&mod->bindings, sizeof(mod_binding_t),
+                      MOD_BINDINGS_INIT, NULL, 0);
+    int n = toml_array_nelem(binds);
+    for (int i = 0; i < n; i++) {
+        toml_table_t* b = toml_table_at(binds, i);
+        if (!b) continue;
+        toml_datum_t bn = toml_string_in(b, "name");
+        toml_datum_t bk = toml_string_in(b, "key");
+        toml_datum_t bp = toml_string_in(b, "purpose");
+        if (bn.ok && bk.ok) {
+            mod_binding_t* mb =
+                (mod_binding_t*)mod_fvec_push(&mod->bindings);
+            if (mb) {
                 snprintf(mb->name, sizeof mb->name, "%s", bn.u.s);
                 snprintf(mb->key, sizeof mb->key, "%s", bk.u.s);
                 snprintf(mb->purpose, sizeof mb->purpose, "%s",
                          bp.ok ? bp.u.s : "");
-            } else {
-                OPL_ERROR_F("mods", "%s: [[binding]] needs name and key",
-                            path);
             }
-            if (bn.ok) free(bn.u.s);
-            if (bk.ok) free(bk.u.s);
-            if (bp.ok) free(bp.u.s);
+        } else {
+            OPL_ERROR_F("mods", "%s: [[binding]] needs name and key", path);
+        }
+        if (bn.ok) free(bn.u.s);
+        if (bk.ok) free(bk.u.s);
+        if (bp.ok) free(bp.u.s);
+    }
+}
+
+/* The default value a [[config]] row declares, in the row's own type. */
+static void parse_config_default(toml_table_t* c, mod_cfg_row_t* r) {
+    toml_datum_t d;
+    switch (r->type) {
+    case 'b':
+        if ((d = toml_bool_in(c, "default")).ok) r->def_i = d.u.b ? 1 : 0;
+        break;
+    case 'i':
+        if ((d = toml_int_in(c, "default")).ok) r->def_i = d.u.i;
+        break;
+    case 'd':
+        if ((d = toml_double_in(c, "default")).ok) r->def_d = d.u.d;
+        else if ((d = toml_int_in(c, "default")).ok)
+            r->def_d = (double)d.u.i;
+        break;
+    case 's':
+        if ((d = toml_string_in(c, "default")).ok) {
+            snprintf(r->def_s, sizeof r->def_s, "%s", d.u.s);
+            free(d.u.s);
+        }
+        break;
+    default: break;
+    }
+}
+
+/* One [[config]] row into `r`. Returns 0, or -1 when the row is missing
+ * a key or names a type the panel cannot render. */
+static int parse_config_row(toml_table_t* c, mod_cfg_row_t* r,
+                            const char* path) {
+    toml_datum_t ck = toml_string_in(c, "key");
+    toml_datum_t ct = toml_string_in(c, "type");
+    if (!ck.ok || !ct.ok) {
+        OPL_ERROR_F("mods", "%s: [[config]] needs key and type", path);
+        if (ck.ok) free(ck.u.s);
+        if (ct.ok) free(ct.u.s);
+        return -1;
+    }
+    char type = 0;
+    if (strcmp(ct.u.s, "bool") == 0)        type = 'b';
+    else if (strcmp(ct.u.s, "int") == 0)    type = 'i';
+    else if (strcmp(ct.u.s, "float") == 0)  type = 'd';
+    else if (strcmp(ct.u.s, "string") == 0) type = 's';
+    if (!type) {
+        OPL_ERROR_F("mods", "%s: [[config]] \"%s\": unknown type \"%s\"",
+                    path, ck.u.s, ct.u.s);
+        free(ck.u.s);
+        free(ct.u.s);
+        return -1;
+    }
+    snprintf(r->key, sizeof r->key, "%s", ck.u.s);
+    r->type = type;
+    free(ck.u.s);
+    free(ct.u.s);
+    toml_datum_t d;
+    if ((d = toml_string_in(c, "label")).ok) {
+        snprintf(r->label, sizeof r->label, "%s", d.u.s);
+        free(d.u.s);
+    }
+    if ((d = toml_string_in(c, "group")).ok) {
+        snprintf(r->group, sizeof r->group, "%s", d.u.s);
+        free(d.u.s);
+    }
+    if ((d = toml_string_in(c, "help")).ok) {
+        snprintf(r->help, sizeof r->help, "%s", d.u.s);
+        free(d.u.s);
+    }
+    if ((d = toml_double_in(c, "min")).ok) r->min = d.u.d;
+    if ((d = toml_double_in(c, "max")).ok) r->max = d.u.d;
+    parse_config_default(c, r);
+    toml_array_t* it = toml_array_in(c, "items");
+    if (it && type == 's') {
+        mod_fvec_init(&r->items, sizeof(mod_cfg_item_t),
+                      MOD_CFG_ITEMS_INIT, NULL, 0);
+        int ni = toml_array_nelem(it);
+        for (int k = 0; k < ni; k++) {
+            toml_datum_t iv = toml_string_at(it, k);
+            if (!iv.ok) continue;
+            mod_cfg_item_t* slot =
+                (mod_cfg_item_t*)mod_fvec_push(&r->items);
+            if (slot) snprintf(slot->s, sizeof slot->s, "%s", iv.u.s);
+            free(iv.u.s);
+            if (!slot) break;
         }
     }
-    /* [[config]] schema rows: key + type (+ default/label/group/help,
-     * numeric min/max, string items). The engine renders these in the
-     * Mods panel; a row with a bad or missing type/key is skipped with
-     * an error rather than guessing. */
+    return 0;
+}
+
+/* [[config]] schema rows: key + type (+ default/label/group/help,
+ * numeric min/max, string items). The engine renders these in the Mods
+ * panel; a row with a bad or missing type/key is skipped with an error
+ * rather than guessing. */
+static void parse_config(toml_table_t* root, struct openpete_mod* mod,
+                         const char* path) {
     toml_array_t* cfgs = toml_array_in(root, "config");
-    if (cfgs) {
-        int n = toml_array_nelem(cfgs);
-        for (int i = 0; i < n; i++) {
-            if (mod->n_cfg >= MOD_CFG_ROWS_MAX) {
-                OPL_ERROR_F("mods", "%s: more than %d [[config]] rows — "
-                            "the rest are ignored", path, MOD_CFG_ROWS_MAX);
-                break;
-            }
-            toml_table_t* c = toml_table_at(cfgs, i);
-            if (!c) continue;
-            toml_datum_t ck = toml_string_in(c, "key");
-            toml_datum_t ct = toml_string_in(c, "type");
-            if (!ck.ok || !ct.ok) {
-                OPL_ERROR_F("mods", "%s: [[config]] needs key and type",
-                            path);
-                if (ck.ok) free(ck.u.s);
-                if (ct.ok) free(ct.u.s);
-                continue;
-            }
-            char type = 0;
-            if (strcmp(ct.u.s, "bool") == 0)        type = 'b';
-            else if (strcmp(ct.u.s, "int") == 0)    type = 'i';
-            else if (strcmp(ct.u.s, "float") == 0)  type = 'd';
-            else if (strcmp(ct.u.s, "string") == 0) type = 's';
-            if (!type) {
-                OPL_ERROR_F("mods", "%s: [[config]] \"%s\": unknown type "
-                            "\"%s\"", path, ck.u.s, ct.u.s);
-                free(ck.u.s);
-                free(ct.u.s);
-                continue;
-            }
-            mod_cfg_row_t* r = &mod->cfg_rows[mod->n_cfg];
-            memset(r, 0, sizeof *r);
-            snprintf(r->key, sizeof r->key, "%s", ck.u.s);
-            r->type = type;
-            free(ck.u.s);
-            free(ct.u.s);
-            toml_datum_t d;
-            if ((d = toml_string_in(c, "label")).ok) {
-                snprintf(r->label, sizeof r->label, "%s", d.u.s);
-                free(d.u.s);
-            }
-            if ((d = toml_string_in(c, "group")).ok) {
-                snprintf(r->group, sizeof r->group, "%s", d.u.s);
-                free(d.u.s);
-            }
-            if ((d = toml_string_in(c, "help")).ok) {
-                snprintf(r->help, sizeof r->help, "%s", d.u.s);
-                free(d.u.s);
-            }
-            if ((d = toml_double_in(c, "min")).ok) r->min = d.u.d;
-            if ((d = toml_double_in(c, "max")).ok) r->max = d.u.d;
-            switch (type) {
-            case 'b':
-                if ((d = toml_bool_in(c, "default")).ok)
-                    r->def_i = d.u.b ? 1 : 0;
-                break;
-            case 'i':
-                if ((d = toml_int_in(c, "default")).ok) r->def_i = d.u.i;
-                break;
-            case 'd':
-                if ((d = toml_double_in(c, "default")).ok) r->def_d = d.u.d;
-                else if ((d = toml_int_in(c, "default")).ok)
-                    r->def_d = (double)d.u.i;
-                break;
-            case 's':
-                if ((d = toml_string_in(c, "default")).ok) {
-                    snprintf(r->def_s, sizeof r->def_s, "%s", d.u.s);
-                    free(d.u.s);
-                }
-                break;
-            }
-            toml_array_t* it = toml_array_in(c, "items");
-            if (it && type == 's') {
-                int ni = toml_array_nelem(it);
-                for (int k = 0; k < ni && r->n_items < MOD_CFG_ITEMS_MAX;
-                     k++) {
-                    toml_datum_t iv = toml_string_at(it, k);
-                    if (!iv.ok) continue;
-                    snprintf(r->items[r->n_items], sizeof r->items[0],
-                             "%s", iv.u.s);
-                    free(iv.u.s);
-                    r->n_items++;
-                }
-            }
-            for (int k = 0; k < r->n_items; k++)
-                r->item_ptrs[k] = r->items[k];
-            mod->n_cfg++;
+    if (!cfgs) return;
+    if (!mod->cfg_rows.elem_size)
+        mod_fvec_init(&mod->cfg_rows, sizeof(mod_cfg_row_t),
+                      MOD_CFG_ROWS_INIT, NULL, 0);
+    int n = toml_array_nelem(cfgs);
+    for (int i = 0; i < n; i++) {
+        toml_table_t* c = toml_table_at(cfgs, i);
+        if (!c) continue;
+        mod_cfg_row_t* r = (mod_cfg_row_t*)mod_fvec_push(&mod->cfg_rows);
+        if (!r) {
+            OPL_ERROR_F("mods", "%s: config row allocation failed", path);
+            break;
         }
-        if (mod->n_cfg)
-            OPL_INFO_F("mods", "%s: %d config schema row(s)", mod->id,
-                       mod->n_cfg);
+        if (parse_config_row(c, r, path) != 0)
+            mod_fvec_truncate(&mod->cfg_rows,
+                              mod_fvec_count(&mod->cfg_rows) - 1);
     }
-    {   /* [[level]] — declarative custom levels */
-        toml_array_t* la = toml_array_in(root, "level");
-        int nl = la ? toml_array_nelem(la) : 0;
-        for (int i = 0; i < nl && mod->n_levels < 4; i++) {
-            toml_table_t* lt = toml_table_at(la, i);
-            if (!lt) continue;
-            toml_datum_t ln = toml_string_in(lt, "name");
-            toml_datum_t lf = toml_string_in(lt, "files");
-            toml_datum_t ld = toml_string_in(lt, "donor");
-            toml_datum_t lr = toml_bool_in(lt, "replace");
-            toml_datum_t lm = toml_string_in(lt, "music");
-            toml_datum_t lti = toml_string_in(lt, "title");
-            if (ln.ok && lf.ok && ld.ok) {
-                snprintf(mod->levels[mod->n_levels].name,
-                         sizeof mod->levels[0].name, "%s", ln.u.s);
-                snprintf(mod->levels[mod->n_levels].files,
-                         sizeof mod->levels[0].files, "%s", lf.u.s);
-                snprintf(mod->levels[mod->n_levels].donor,
-                         sizeof mod->levels[0].donor, "%s", ld.u.s);
-                mod->levels[mod->n_levels].replace = lr.ok && lr.u.b;
-                snprintf(mod->levels[mod->n_levels].music,
-                         sizeof mod->levels[0].music, "%s",
+    if (mod_cfg_count(mod))
+        OPL_INFO_F("mods", "%s: %d config schema row(s)", mod->id,
+                   mod_cfg_count(mod));
+}
+
+/* [[level]] — declarative custom levels. */
+static void parse_levels(toml_table_t* root, struct openpete_mod* mod,
+                         const char* path) {
+    toml_array_t* la = toml_array_in(root, "level");
+    if (!la) return;
+    if (!mod->levels.elem_size)
+        mod_fvec_init(&mod->levels, sizeof(mod_level_row_t),
+                      MOD_LEVELS_INIT, NULL, 0);
+    int nl = toml_array_nelem(la);
+    for (int i = 0; i < nl; i++) {
+        toml_table_t* lt = toml_table_at(la, i);
+        if (!lt) continue;
+        toml_datum_t ln = toml_string_in(lt, "name");
+        toml_datum_t lf = toml_string_in(lt, "files");
+        toml_datum_t ld = toml_string_in(lt, "donor");
+        toml_datum_t lr = toml_bool_in(lt, "replace");
+        toml_datum_t lm = toml_string_in(lt, "music");
+        toml_datum_t lti = toml_string_in(lt, "title");
+        if (ln.ok && lf.ok && ld.ok) {
+            mod_level_row_t* L =
+                (mod_level_row_t*)mod_fvec_push(&mod->levels);
+            if (L) {
+                snprintf(L->name, sizeof L->name, "%s", ln.u.s);
+                snprintf(L->files, sizeof L->files, "%s", lf.u.s);
+                snprintf(L->donor, sizeof L->donor, "%s", ld.u.s);
+                L->replace = lr.ok && lr.u.b;
+                snprintf(L->music, sizeof L->music, "%s",
                          lm.ok ? lm.u.s : "");
-                snprintf(mod->levels[mod->n_levels].title,
-                         sizeof mod->levels[0].title, "%s",
+                snprintf(L->title, sizeof L->title, "%s",
                          lti.ok ? lti.u.s : "");
                 /* Bounds are the guest tables' own element types:
                  * u_char, short, u_char. */
-                mod->levels[mod->n_levels].dragons =
-                    level_count_key(lt, "dragons", 255, path, ln.u.s);
-                mod->levels[mod->n_levels].gems =
-                    level_count_key(lt, "gems", 32767, path, ln.u.s);
-                mod->levels[mod->n_levels].eggs =
-                    level_count_key(lt, "eggs", 255, path, ln.u.s);
-                mod->n_levels++;
-            } else {
-                OPL_ERROR_F("mods", "%s: [[level]] needs name, files and "
-                            "donor — skipped", path);
+                L->dragons = level_count_key(lt, "dragons", 255, path,
+                                             ln.u.s);
+                L->gems    = level_count_key(lt, "gems", 32767, path,
+                                             ln.u.s);
+                L->eggs    = level_count_key(lt, "eggs", 255, path,
+                                             ln.u.s);
             }
-            if (ln.ok) free(ln.u.s);
-            if (lf.ok) free(lf.u.s);
-            if (ld.ok) free(ld.u.s);
-            if (lm.ok) free(lm.u.s);
-            if (lti.ok) free(lti.u.s);
+        } else {
+            OPL_ERROR_F("mods", "%s: [[level]] needs name, files and "
+                        "donor — skipped", path);
         }
+        if (ln.ok) free(ln.u.s);
+        if (lf.ok) free(lf.u.s);
+        if (ld.ok) free(ld.u.s);
+        if (lm.ok) free(lm.u.s);
+        if (lti.ok) free(lti.u.s);
     }
-    {   /* [[material]] — declarative reshade rows (zero-C material tier).
-         * Unknown channel/tier/textured spellings are REFUSED, never
-         * defaulted: a typo'd key that silently widened the selection
-         * would repaint geometry the author never asked for, and the
-         * whole selector contract is "never match wider than asked". */
-        toml_array_t* ma = toml_array_in(root, "material");
-        int nm = ma ? toml_array_nelem(ma) : 0;
-        for (int i = 0; i < nm; i++) {
-            if (mod->n_mat_rows >= MOD_MATERIAL_ROWS_MAX) {
-                OPL_ERROR_F("mods", "%s: more than %d [[material]] rows — "
-                            "the rest are ignored", path,
-                            MOD_MATERIAL_ROWS_MAX);
-                break;
-            }
-            toml_table_t* mt = toml_table_at(ma, i);
-            if (!mt) continue;
-            mod_material_row_t r;
-            memset(&r, 0, sizeof r);
-            r.channel = r.ident = r.moby_class = r.texture = r.level = -1;
-            r.enabled = 1;
+}
 
-            toml_datum_t d;
-            int bad = 0;
-            if ((d = toml_string_in(mt, "frag")).ok) {
-                snprintf(r.frag, sizeof r.frag, "%s", d.u.s); free(d.u.s);
-            }
-            if ((d = toml_string_in(mt, "vert")).ok) {
-                snprintf(r.vert, sizeof r.vert, "%s", d.u.s); free(d.u.s);
-            }
-            if (!r.frag[0] && !r.vert[0]) {
-                OPL_ERROR_F("mods", "%s: [[material]] needs frag (or vert) "
-                            "— skipped", path);
-                continue;
-            }
-            if ((d = toml_string_in(mt, "channel")).ok) {
-                r.channel = mod_channel_from_name(d.u.s);
-                if (r.channel == -2) {
-                    OPL_ERROR_F("mods", "%s: [[material]] unknown channel "
-                                "\"%s\" — skipped", path, d.u.s);
-                    bad = 1;
-                }
-                free(d.u.s);
-            }
-            if (bad) continue;
-            if ((d = toml_int_in(mt, "ident")).ok)   r.ident      = (int)d.u.i;
-            if ((d = toml_int_in(mt, "class")).ok)   r.moby_class = (int)d.u.i;
-            if ((d = toml_int_in(mt, "texture")).ok) r.texture    = (int)d.u.i;
-            if ((d = toml_int_in(mt, "level")).ok)   r.level      = (int)d.u.i;
-            if ((d = toml_bool_in(mt, "enabled")).ok) r.enabled   = d.u.b ? 1 : 0;
-            /* tier / textured are NARROWING: omit for both, name one to
-             * restrict. They mirror the C flags exactly. */
-            if ((d = toml_string_in(mt, "tier")).ok) {
-                if (strcmp(d.u.s, "hp") == 0)      r.flags |= OP_SEL_HP_TIER;
-                else if (strcmp(d.u.s, "lp") == 0) r.flags |= OP_SEL_LP_TIER;
-                else {
-                    OPL_ERROR_F("mods", "%s: [[material]] tier must be "
-                                "\"hp\" or \"lp\" (got \"%s\") — skipped",
-                                path, d.u.s);
-                    bad = 1;
-                }
-                free(d.u.s);
-            }
-            if (bad) continue;
-            if ((d = toml_bool_in(mt, "textured")).ok)
-                r.flags |= d.u.b ? OP_SEL_TEXTURED : OP_SEL_UNTEXTURED;
-            if ((d = toml_bool_in(mt, "env_anim")).ok && d.u.b)
-                r.flags |= OP_SEL_ENV_ANIM;
-            toml_array_t* pa = toml_array_in(mt, "params");
-            if (pa) {
-                int np = toml_array_nelem(pa);
-                if (np > MOD_MATERIAL_PARAMS_MAX) {
-                    OPL_ERROR_F("mods", "%s: [[material]] params has %d "
-                                "floats, max %d — skipped", path, np,
-                                MOD_MATERIAL_PARAMS_MAX);
-                    continue;
-                }
-                for (int k = 0; k < np; k++) {
-                    toml_datum_t pv = toml_double_at(pa, k);
-                    if (!pv.ok) {   /* TOML keeps 1 and 1.0 distinct */
-                        toml_datum_t iv = toml_int_at(pa, k);
-                        if (!iv.ok) {
-                            OPL_ERROR_F("mods", "%s: [[material]] params[%d] "
-                                        "is not a number — skipped", path, k);
-                            bad = 1;
-                            break;
-                        }
-                        r.params[k] = (float)iv.u.i;
-                    } else {
-                        r.params[k] = (float)pv.u.d;
-                    }
-                }
-                if (bad) continue;
-                r.n_params = np;
-            }
-            mod->mat_rows[mod->n_mat_rows++] = r;
-        }
-        if (mod->n_mat_rows)
-            OPL_INFO_F("mods", "%s: %d declarative material row(s)", mod->id,
-                       mod->n_mat_rows);
+/* The float list a [[material]] row hands its shader as a uniform block.
+ * Returns 0, or -1 when an element is not a number. */
+static int parse_material_params(toml_table_t* mt, mod_material_row_t* r,
+                                 const char* path) {
+    toml_array_t* pa = toml_array_in(mt, "params");
+    if (!pa) return 0;
+    int np = toml_array_nelem(pa);
+    if (np > MOD_MATERIAL_PARAMS_MAX) {
+        OPL_ERROR_F("mods", "%s: [[material]] params has %d floats, max "
+                    "%d — skipped", path, np, MOD_MATERIAL_PARAMS_MAX);
+        return -1;
     }
+    for (int k = 0; k < np; k++) {
+        toml_datum_t pv = toml_double_at(pa, k);
+        if (pv.ok) { r->params[k] = (float)pv.u.d; continue; }
+        toml_datum_t iv = toml_int_at(pa, k);   /* TOML keeps 1 and 1.0 distinct */
+        if (!iv.ok) {
+            OPL_ERROR_F("mods", "%s: [[material]] params[%d] is not a "
+                        "number — skipped", path, k);
+            return -1;
+        }
+        r->params[k] = (float)iv.u.i;
+    }
+    r->n_params = np;
+    return 0;
+}
+
+/* The narrowing selector keys of one [[material]] row. Returns 0, or -1
+ * when a key names something the engine does not know. */
+static int parse_material_selector(toml_table_t* mt, mod_material_row_t* r,
+                                   const char* path) {
+    toml_datum_t d;
+    if ((d = toml_string_in(mt, "channel")).ok) {
+        r->channel = mod_channel_from_name(d.u.s);
+        int bad = r->channel == -2;
+        if (bad)
+            OPL_ERROR_F("mods", "%s: [[material]] unknown channel \"%s\" "
+                        "— skipped", path, d.u.s);
+        free(d.u.s);
+        if (bad) return -1;
+    }
+    if ((d = toml_int_in(mt, "ident")).ok)   r->ident      = (int)d.u.i;
+    if ((d = toml_int_in(mt, "class")).ok)   r->moby_class = (int)d.u.i;
+    if ((d = toml_int_in(mt, "texture")).ok) r->texture    = (int)d.u.i;
+    if ((d = toml_int_in(mt, "level")).ok)   r->level      = (int)d.u.i;
+    if ((d = toml_bool_in(mt, "enabled")).ok) r->enabled   = d.u.b ? 1 : 0;
+    /* tier / textured are narrowing: omit for both, name one to
+     * restrict. They mirror the C flags exactly. */
+    if ((d = toml_string_in(mt, "tier")).ok) {
+        int bad = 0;
+        if (strcmp(d.u.s, "hp") == 0)      r->flags |= OP_SEL_HP_TIER;
+        else if (strcmp(d.u.s, "lp") == 0) r->flags |= OP_SEL_LP_TIER;
+        else {
+            OPL_ERROR_F("mods", "%s: [[material]] tier must be \"hp\" or "
+                        "\"lp\" (got \"%s\") — skipped", path, d.u.s);
+            bad = 1;
+        }
+        free(d.u.s);
+        if (bad) return -1;
+    }
+    if ((d = toml_bool_in(mt, "textured")).ok)
+        r->flags |= d.u.b ? OP_SEL_TEXTURED : OP_SEL_UNTEXTURED;
+    if ((d = toml_bool_in(mt, "env_anim")).ok && d.u.b)
+        r->flags |= OP_SEL_ENV_ANIM;
+    return 0;
+}
+
+/* [[material]] — declarative reshade rows (zero-C material tier).
+ * Unknown channel/tier/textured spellings are refused, never defaulted:
+ * a typo'd key that silently widened the selection would repaint
+ * geometry the author never asked for, and the whole selector contract
+ * is "never match wider than asked". */
+static void parse_materials(toml_table_t* root, struct openpete_mod* mod,
+                            const char* path) {
+    toml_array_t* ma = toml_array_in(root, "material");
+    if (!ma) return;
+    if (!mod->mat_rows.elem_size)
+        mod_fvec_init(&mod->mat_rows, sizeof(mod_material_row_t),
+                      MOD_MATERIAL_ROWS_INIT, NULL, 0);
+    int nm = toml_array_nelem(ma);
+    for (int i = 0; i < nm; i++) {
+        toml_table_t* mt = toml_table_at(ma, i);
+        if (!mt) continue;
+        mod_material_row_t r;
+        memset(&r, 0, sizeof r);
+        r.channel = r.ident = r.moby_class = r.texture = r.level = -1;
+        r.enabled = 1;
+
+        toml_datum_t d;
+        if ((d = toml_string_in(mt, "frag")).ok) {
+            snprintf(r.frag, sizeof r.frag, "%s", d.u.s); free(d.u.s);
+        }
+        if ((d = toml_string_in(mt, "vert")).ok) {
+            snprintf(r.vert, sizeof r.vert, "%s", d.u.s); free(d.u.s);
+        }
+        if (!r.frag[0] && !r.vert[0]) {
+            OPL_ERROR_F("mods", "%s: [[material]] needs frag (or vert) — "
+                        "skipped", path);
+            continue;
+        }
+        if (parse_material_selector(mt, &r, path) != 0) continue;
+        if (parse_material_params(mt, &r, path) != 0) continue;
+        mod_material_row_t* slot =
+            (mod_material_row_t*)mod_fvec_push(&mod->mat_rows);
+        if (!slot) {
+            OPL_ERROR_F("mods", "%s: material row allocation failed", path);
+            break;
+        }
+        *slot = r;
+    }
+    if (mod_mat_count(mod))
+        OPL_INFO_F("mods", "%s: %d declarative material row(s)", mod->id,
+                   mod_mat_count(mod));
+}
+
+/* Per-mod row tables, counted across the population. The census node
+ * cannot live in the tables themselves: every mod owns a copy of the
+ * struct, and the pending-to-live copy would duplicate the node while
+ * the list still pointed at the pending slot. */
+static mod_fixed s_census_deps, s_census_bindings, s_census_cfg_rows,
+                 s_census_cfg_items, s_census_mat_rows, s_census_levels;
+
+static void mod_rows_census(const struct openpete_mod* mod) {
+    static int armed;
+    if (!armed) {
+        armed = 1;
+        mod_fixed_init(&s_census_deps, "mod_deps", MOD_DEPS_INIT, 0);
+        mod_fixed_init(&s_census_bindings, "mod_bindings",
+                       MOD_BINDINGS_INIT, 0);
+        mod_fixed_init(&s_census_cfg_rows, "mod_cfg_rows",
+                       MOD_CFG_ROWS_INIT, 0);
+        mod_fixed_init(&s_census_cfg_items, "mod_cfg_items",
+                       MOD_CFG_ITEMS_INIT, 0);
+        mod_fixed_init(&s_census_mat_rows, "mod_material_rows",
+                       MOD_MATERIAL_ROWS_INIT, 0);
+        mod_fixed_init(&s_census_levels, "mod_levels", MOD_LEVELS_INIT, 0);
+    }
+    mod_fixed_note(&s_census_deps, mod_fvec_count(&mod->deps),
+                   mod->deps.cap);
+    mod_fixed_note(&s_census_bindings, mod_fvec_count(&mod->bindings),
+                   mod->bindings.cap);
+    mod_fixed_note(&s_census_cfg_rows, mod_fvec_count(&mod->cfg_rows),
+                   mod->cfg_rows.cap);
+    mod_fixed_note(&s_census_mat_rows, mod_fvec_count(&mod->mat_rows),
+                   mod->mat_rows.cap);
+    mod_fixed_note(&s_census_levels, mod_fvec_count(&mod->levels),
+                   mod->levels.cap);
+    /* The widest choice list any one row carries. */
+    for (int i = 0; i < mod_cfg_count(mod); i++) {
+        const mod_cfg_row_t* r = mod_cfg_at(mod, i);
+        mod_fixed_note(&s_census_cfg_items, mod_fvec_count(&r->items),
+                       r->items.cap);
+    }
+}
+
+static int parse_manifest(const char* mod_dir, struct openpete_mod* mod) {
+    char path[MOD_PATH_MAX];
+    snprintf(path, sizeof path, "%s/mod.toml", mod_dir);
+    FILE* fp = fopen(path, "r");
+    if (!fp) return -1;
+
+    char errbuf[256];
+    toml_table_t* root = toml_parse_file(fp, errbuf, sizeof errbuf);
+    fclose(fp);
+    if (!root) {
+        OPL_ERROR_F("mods", "%s: TOML parse error: %s", path, errbuf);
+        return -1;
+    }
+
+    int rc = -1;
+    toml_table_t* t = toml_table_in(root, "mod");
+    if (!t) {
+        OPL_ERROR_F("mods", "%s: missing [mod] table", path);
+        goto out;
+    }
+    if (parse_mod_header(t, mod, mod_dir, path) != 0) goto out;
+    parse_deps(t, mod);
+    parse_bindings(root, mod, path);
+    parse_config(root, mod, path);
+    parse_levels(root, mod, path);
+    parse_materials(root, mod, path);
+    mod_rows_census(mod);
     rc = 0;
 out:
     toml_free(root);
@@ -2655,8 +2861,8 @@ static int mod_run_entry(struct openpete_mod* mod) {
  * still arm — one bad row must not cost a mod its whole manifest — but
  * it is never silently downgraded to a wider selector. */
 static void mod_register_materials(struct openpete_mod* mod) {
-    for (int i = 0; i < mod->n_mat_rows; i++) {
-        const mod_material_row_t* r = &mod->mat_rows[i];
+    for (int i = 0; i < mod_mat_count(mod); i++) {
+        const mod_material_row_t* r = mod_mat_at(mod, i);
         int frag = -1, vert = -1;
         if (r->frag[0]) {
             frag = openpete_mods_shader_register(mod, r->frag);
@@ -2718,20 +2924,21 @@ static int load_mod(struct openpete_mod* mod, const char* sdk_dir,
         snprintf(assets, sizeof assets, "%s/assets", mod->dir);
         struct stat st;
         mod->has_assets = (stat(assets, &st) == 0 && S_ISDIR(st.st_mode));
-        for (int i = 0; i < mod->n_levels; i++) {
+        for (int i = 0; i < mod_level_count(mod); i++) {
+            const mod_level_row_t* L = mod_level_at(mod, i);
             openpete_level_counts_t counts = {
-                mod->levels[i].dragons,
-                mod->levels[i].gems,
-                mod->levels[i].eggs,
+                L->dragons,
+                L->gems,
+                L->eggs,
             };
             (void)openpete_mods_custom_register(mod->id,
-                                                mod->levels[i].name,
-                                                mod->levels[i].files,
+                                                L->name,
+                                                L->files,
                                                 assets,
-                                                mod->levels[i].donor,
-                                                mod->levels[i].replace,
-                                                mod->levels[i].music,
-                                                mod->levels[i].title,
+                                                L->donor,
+                                                L->replace,
+                                                L->music,
+                                                L->title,
                                                 &counts,
                                                 mod->log_tag);
         }
@@ -2812,16 +3019,17 @@ static int load_mod(struct openpete_mod* mod, const char* sdk_dir,
  * mod into enabled.txt order. */
 static int mod_enter_deferred(struct openpete_mod* mod) {
     if (mod->entered) return 0;
-    for (int d = 0; d < mod->n_deps; d++) {
+    for (int d = 0; d < mod_dep_count(mod); d++) {
+        const char* dep_id = mod_dep_at(mod, d)->id;
         struct openpete_mod* dep = NULL;
         for (int i = 0; i < mod_count(); i++)
-            if (strcmp(mod_at(i)->id, mod->deps[d]) == 0) {
+            if (strcmp(mod_at(i)->id, dep_id) == 0) {
                 dep = mod_at(i);
                 break;
             }
         if (!dep) {
             OPL_ERROR_F("mods", "%s: dependency \"%s\" is not loaded",
-                        mod->id, mod->deps[d]);
+                        mod->id, dep_id);
             return -1;
         }
         if (mod_enter_deferred(dep) != 0) return -1;
@@ -2872,8 +3080,9 @@ static int topo_visit(topo_ctx_t* c, int i) { /* 0 = ok, -1 = failed */
         return -1;
     }
     int_row_set(&c->state, i, TS_GRAY);
-    for (int d = 0; d < pend_at(c->pending, i)->n_deps; d++) {
-        int j = topo_find(c, pend_at(c->pending, i)->deps[d]);
+    for (int d = 0; d < mod_dep_count(pend_at(c->pending, i)); d++) {
+        const char* dep_id = mod_dep_at(pend_at(c->pending, i), d)->id;
+        int j = topo_find(c, dep_id);
         if (j < 0) {
             char where[MOD_PATH_MAX + 16];
             if (strcmp(s_order_src, "enabled.txt") == 0)
@@ -2883,7 +3092,7 @@ static int topo_visit(topo_ctx_t* c, int i) { /* 0 = ok, -1 = failed */
             OPL_ERROR_F("mods", "\"%s\" requires \"%s\", which is not "
                         "enabled — add it to %s (ahead of "
                         "\"%s\") or install it; \"%s\" disabled",
-                        pend_at(c->pending, i)->id, pend_at(c->pending, i)->deps[d],
+                        pend_at(c->pending, i)->id, dep_id,
                         where, pend_at(c->pending, i)->id, pend_at(c->pending, i)->id);
             int_row_set(&c->state, i, TS_FAILED);
             return -1;
@@ -2892,7 +3101,7 @@ static int topo_visit(topo_ctx_t* c, int i) { /* 0 = ok, -1 = failed */
             if (int_row(&c->state, i) != TS_FAILED) {
                 OPL_ERROR_F("mods", "\"%s\" disabled: its dependency "
                             "\"%s\" failed", pend_at(c->pending, i)->id,
-                            pend_at(c->pending, i)->deps[d]);
+                            dep_id);
                 int_row_set(&c->state, i, TS_FAILED);
             }
             return -1;
@@ -3591,10 +3800,14 @@ void openpete_mods_register_key_defaults(const openpete_options_t* opts) {
     int n_refs = mods_discover(opts, mods_dir, sizeof mods_dir, &refs);
     static struct openpete_mod scratch;   /* ~7 KB; see the note in init */
     for (int i = 0; i < n_refs; i++) {
+        /* The slot is reused per ref: release the previous manifest's
+         * rows before the memset drops the pointers to them. */
+        mod_rows_free(&scratch);
         memset(&scratch, 0, sizeof scratch);
         if (parse_manifest(ref_at(&refs, i)->dir, &scratch) != 0) continue;
         mod_register_key_defaults(&scratch, ref_at(&refs, i)->boot_on);
     }
+    mod_rows_free(&scratch);   /* the last ref's rows */
     mod_fvec_free(&refs);
 }
 
@@ -3641,6 +3854,9 @@ int openpete_mods_init(const openpete_options_t* opts) {
             (struct openpete_mod*)mod_fvec_push(&pending);
         if (!mod) break;
         if (parse_manifest(ref_at(&refs, i)->dir, mod) != 0) {
+            /* A partial parse can already have pushed rows; the slot is
+             * about to be reused by the next ref. */
+            mod_rows_free(mod);
             mod_fvec_truncate(&pending, (size_t)n_pending);
             continue;
         }
@@ -3675,8 +3891,10 @@ int openpete_mods_init(const openpete_options_t* opts) {
             for (int i = 0; i < n_pending; i++) {
                 if (!pend_at(&pending, i)->boot_on && !int_row(&must_enter, i))
                     continue;
-                for (int d = 0; d < pend_at(&pending, i)->n_deps; d++) {
-                    int j = topo_find(&tc, pend_at(&pending, i)->deps[d]);
+                for (int d = 0;
+                     d < mod_dep_count(pend_at(&pending, i)); d++) {
+                    int j = topo_find(
+                        &tc, mod_dep_at(pend_at(&pending, i), d)->id);
                     if (j >= 0 && !pend_at(&pending, j)->boot_on &&
                         !int_row(&must_enter, j)) {
                         int_row_set(&must_enter, j, 1);
@@ -3696,13 +3914,15 @@ int openpete_mods_init(const openpete_options_t* opts) {
     for (int t = 0; t < tc.n_topo; t++) {
         int i = int_row(&tc.topo, t);
         int deps_ok = 1;
-        for (int d = 0; d < pend_at(&pending, i)->n_deps; d++) {
-            int j = topo_find(&tc, pend_at(&pending, i)->deps[d]);
+        for (int d = 0; d < mod_dep_count(pend_at(&pending, i)); d++) {
+            int j = topo_find(&tc,
+                              mod_dep_at(pend_at(&pending, i), d)->id);
             if (j < 0 || !int_row(&load_ok, j)) deps_ok = 0;
         }
         if (!deps_ok) {
             OPL_ERROR_F("mods", "\"%s\" disabled: a dependency failed to "
                         "load", pend_at(&pending, i)->id);
+            mod_rows_free(pend_at(&pending, i));
             continue;
         }
         if (!s_mods.elem_size)
@@ -3716,6 +3936,9 @@ int openpete_mods_init(const openpete_options_t* opts) {
             break;
         }
         *mod = *pend_at(&pending, i);
+        /* The copy took the row storage with it; the pending slot must
+         * not free what the live row now owns. */
+        mod_rows_disown(pend_at(&pending, i));
         /* Both set before load_mod, which runs the entry: the row is in
          * the live table from the push on, so anything the entry
          * registers asks the table about this mod and must read its
@@ -3730,6 +3953,7 @@ int openpete_mods_init(const openpete_options_t* opts) {
             openpete_keymap_set_mod_enabled(mod->id, 0);
             /* Drop the dead tail element, the way the fixed table left
              * the slot for the next copy to overwrite. */
+            mod_rows_free(mod);
             mod_cvec_remove_at(&s_mods, (size_t)mod_count() - 1);
             continue;
         }
@@ -3746,6 +3970,18 @@ int openpete_mods_init(const openpete_options_t* opts) {
         }
     }
 
+    /* Every pending row the transfer did not take. topo_visit marks a
+     * mod TS_FAILED on a dependency cycle or a missing dependency and
+     * returns before adding it to tc.topo, and phase C iterates tc.topo,
+     * so such a row is never reached by the copy or by either failure
+     * path above and would hold its manifest rows for the session. The
+     * sweep is the catch-all; the earlier frees stay because they
+     * release at the point of failure, which holds the peak allocation
+     * to the live set rather than to the discovered set. A row whose
+     * storage moved was disowned, so this is a no-op for it. */
+    for (int i = 0; i < n_pending; i++)
+        mod_rows_free(pend_at(&pending, i));
+
     /* Declared-bindings conflict scan: two enabled mods claiming the
      * same host key is legal (reads are non-exclusive) but surprising —
      * name both, with purposes, so the user can re-order or rebind.
@@ -3755,26 +3991,29 @@ int openpete_mods_init(const openpete_options_t* opts) {
      * of these, so a scan blind to the override would keep warning about
      * a clash the user has already fixed. */
     for (int i = 0; i < mod_count(); i++)
-        for (int bi = 0; bi < mod_at(i)->n_bindings; bi++) {
+        for (int bi = 0; bi < mod_binding_count(mod_at(i)); bi++) {
+            const mod_binding_t* bind_i = mod_binding_at(mod_at(i), bi);
             char key_i[80];
             snprintf(key_i, sizeof key_i, "%s",
                      openpete_keymap_mod_effective_key(
-                         mod_at(i)->id, mod_at(i)->bindings[bi].name,
-                         mod_at(i)->bindings[bi].key));
+                         mod_at(i)->id, bind_i->name,
+                         bind_i->key));
             if (strcmp(key_i, "(unbound)") == 0) continue;
             for (int j = i + 1; j < mod_count(); j++)
-                for (int bj = 0; bj < mod_at(j)->n_bindings; bj++) {
+                for (int bj = 0; bj < mod_binding_count(mod_at(j)); bj++) {
+                    const mod_binding_t* bind_j =
+                        mod_binding_at(mod_at(j), bj);
                     const char* key_j = openpete_keymap_mod_effective_key(
-                        mod_at(j)->id, mod_at(j)->bindings[bj].name,
-                        mod_at(j)->bindings[bj].key);
+                        mod_at(j)->id, bind_j->name,
+                        bind_j->key);
                     if (strcmp(key_i, key_j) == 0)
                         OPL_WARN_F("mods", "key \"%s\" bound by both %s "
                                    "(%s) and %s (%s)",
                                    key_i,
                                    mod_at(i)->id,
-                                   mod_at(i)->bindings[bi].purpose,
+                                   bind_i->purpose,
                                    mod_at(j)->id,
-                                   mod_at(j)->bindings[bj].purpose);
+                                   bind_j->purpose);
                 }
         }
 

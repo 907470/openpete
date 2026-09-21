@@ -219,7 +219,7 @@ void mod_fvec_free(mod_fvec* v);
 typedef struct mod_fixed {
     size_t count;
     size_t peak;
-    size_t bound;               /* elements the storage holds */
+    size_t storage;             /* elements the storage holds */
     mod_vec_node_t census;
 } mod_fixed;
 
@@ -227,12 +227,22 @@ typedef struct mod_fixed {
  * @brief Register a fixed table in the census.
  * @param name   Census name, or NULL to stay out of the census.
  * @param was    Capacity the table had before it was sized to the bound.
- * @param bound  Elements the storage holds.
+ * @param storage  Elements the storage holds.
  */
 void mod_fixed_init(mod_fixed* t, const char* name, unsigned long was,
-                    size_t bound);
+                    size_t storage);
 /** @brief Publish the table's live element count, tracking its high-water. */
 void mod_fixed_set(mod_fixed* t, size_t count);
+/**
+ * @brief Publish a count and storage for a table that is not one object.
+ *
+ * For a row table that every mod owns a copy of: the census node cannot
+ * live in the copies, because a copy duplicates the node while the list
+ * still points at the original. One process-global counter stands for
+ * the whole population instead, so `peak` is the largest any one mod
+ * reached and `count` is the most recent.
+ */
+void mod_fixed_note(mod_fixed* t, size_t count, size_t storage);
 
 /**
  * @brief Arm the exit-time census report.

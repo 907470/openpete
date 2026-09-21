@@ -216,7 +216,7 @@ static void census_row(const mod_vec_node_t* n) {
     unsigned long grew;
     if (n->kind == MOD_VEC_FIXED) {
         const mod_fixed* t = (const mod_fixed*)n->vec;
-        count = t->count; peak = t->peak; storage = t->bound; grew = 0;
+        count = t->count; peak = t->peak; storage = t->storage; grew = 0;
     } else if (n->kind == MOD_VEC_CVEC) {
         const mod_cvec* v = (const mod_cvec*)n->vec;
         count = v->count; peak = v->peak; storage = v->block_count;
@@ -231,12 +231,18 @@ static void census_row(const mod_vec_node_t* n) {
 }
 
 void mod_fixed_init(mod_fixed* t, const char* name, unsigned long was,
-                    size_t bound) {
+                    size_t storage) {
     if (!t) return;
     t->count = 0;
     t->peak = 0;
-    t->bound = bound;
+    t->storage = storage;
     census_link(&t->census, t, name, was, MOD_VEC_FIXED);
+}
+
+void mod_fixed_note(mod_fixed* t, size_t count, size_t storage) {
+    if (!t) return;
+    mod_fixed_set(t, count);
+    if (storage > t->storage) t->storage = storage;
 }
 
 void mod_fixed_set(mod_fixed* t, size_t count) {

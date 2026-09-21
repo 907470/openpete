@@ -158,7 +158,9 @@ static void registry_tick(CPUState* cpu) {
 
 /* ── Level-slot namespace (rung 12) ─────────────────────────────────── */
 
-#define LEVEL_SLOTS_MAX 4 /* v1: game ops expose one free slot anyway */
+/* Slots the registry starts with. The game ops expose one free slot
+ * today, so a stock set never grows this. */
+#define LEVEL_SLOTS_INIT 4
 
 typedef struct {
     char mod_id[MOBY_OWNER_MAX];
@@ -168,8 +170,14 @@ typedef struct {
     int  disabled; /* live toggle */
 } level_slot_t;
 
-static level_slot_t s_levels[LEVEL_SLOTS_MAX];
-static int          s_level_count = 0;
+static mod_fvec s_levels;   /* level_slot_t */
+
+static int level_slot_count(void) {
+    return (int)mod_fvec_count(&s_levels);
+}
+static level_slot_t* level_slot_at(int i) {
+    return (level_slot_t*)mod_fvec_at(&s_levels, (size_t)i);
+}
 static const openpete_level_ops_t* s_level_ops = NULL;
 
 void openpete_mods_set_level_ops(const openpete_level_ops_t* ops) {
@@ -179,8 +187,8 @@ void openpete_mods_set_level_ops(const openpete_level_ops_t* ops) {
 /* Lazy claims ride the same per-tick driver as moby types (below). */
 static void level_slots_tick(CPUState* cpu) {
     if (!s_level_ops) return;
-    for (int i = 0; i < s_level_count; i++) {
-        level_slot_t* s = &s_levels[i];
+    for (int i = 0; i < level_slot_count(); i++) {
+        level_slot_t* s = level_slot_at(i);
         if (s->disabled || s->slot_id) continue;
         s->slot_id = s_level_ops->claim_slot(cpu, s->donor_level_id);
         if (s->slot_id)
@@ -221,11 +229,11 @@ int openpete_mods_on_level(const char* mod_id, openpete_mod_level_fn fn,
 void openpete_mods_registry_remove_owner(const char* mod_id) {
     if (!mod_id) return;
     int w = 0;
-    for (int i = 0; i < s_level_count; i++) {
-        if (strcmp(s_levels[i].mod_id, mod_id) == 0) continue;
-        s_levels[w++] = s_levels[i];
+    for (int i = 0; i < level_slot_count(); i++) {
+        if (strcmp(level_slot_at(i)->mod_id, mod_id) == 0) continue;
+        *level_slot_at(w++) = *level_slot_at(i);
     }
-    s_level_count = w;
+    mod_fvec_truncate(&s_levels, (size_t)w);
     w = 0;
     for (int i = 0; i < level_hook_count(); i++) {
         level_hook_t* h = level_hook_at(i);
@@ -244,9 +252,9 @@ void openpete_mods_registry_remove_owner(const char* mod_id) {
  * applying a toggle-off. */
 void openpete_mods_registry_set_owner_enabled(const char* mod_id, int on) {
     if (!mod_id) return;
-    for (int i = 0; i < s_level_count; i++)
-        if (strcmp(s_levels[i].mod_id, mod_id) == 0)
-            s_levels[i].disabled = !on;
+    for (int i = 0; i < level_slot_count(); i++)
+        if (strcmp(level_slot_at(i)->mod_id, mod_id) == 0)
+            level_slot_at(i)->disabled = !on;
     for (int i = 0; i < level_hook_count(); i++)
         if (strcmp(level_hook_at(i)->mod_id, mod_id) == 0) {
             level_hook_at(i)->disabled = !on;
@@ -267,21 +275,24 @@ int openpete_mods_level_register(const char* mod_id, const char* name,
         OPL_ERROR_F(log_tag, "level registry: no game ops registered");
         return -1;
     }
-    for (int i = 0; i < s_level_count; i++) {
-        if (strcmp(s_levels[i].mod_id, mod_id) == 0 &&
-            strcmp(s_levels[i].name, name) == 0) {
+    for (int i = 0; i < level_slot_count(); i++) {
+        if (strcmp(level_slot_at(i)->mod_id, mod_id) == 0 &&
+            strcmp(level_slot_at(i)->name, name) == 0) {
             OPL_ERROR_F(log_tag, "level slot \"%s\" already registered",
                         name);
             return -1;
         }
     }
-    if (s_level_count >= LEVEL_SLOTS_MAX) {
-        OPL_ERROR_F(log_tag, "level slot registry full (%d)",
-                    LEVEL_SLOTS_MAX);
+    if (ensure_hooked(log_tag) != 0) return -1;
+    if (!s_levels.elem_size)
+        mod_fvec_init(&s_levels, sizeof(level_slot_t), LEVEL_SLOTS_INIT,
+                      "level_slots", LEVEL_SLOTS_INIT);
+    level_slot_t* s = (level_slot_t*)mod_fvec_push(&s_levels);
+    if (!s) {
+        OPL_ERROR_F(log_tag, "level slot allocation failed — \"%s\" "
+                    "skipped", name);
         return -1;
     }
-    if (ensure_hooked(log_tag) != 0) return -1;
-    level_slot_t* s = &s_levels[s_level_count++];
     snprintf(s->mod_id, sizeof s->mod_id, "%s", mod_id);
     snprintf(s->name, sizeof s->name, "%s", name);
     s->donor_level_id = donor_level_id;
@@ -292,10 +303,10 @@ int openpete_mods_level_register(const char* mod_id, const char* name,
 }
 
 int openpete_mods_level_slot_id(const char* mod_id, const char* name) {
-    for (int i = 0; i < s_level_count; i++)
-        if (strcmp(s_levels[i].mod_id, mod_id) == 0 &&
-            strcmp(s_levels[i].name, name) == 0)
-            return s_levels[i].slot_id ? s_levels[i].slot_id : -1;
+    for (int i = 0; i < level_slot_count(); i++)
+        if (strcmp(level_slot_at(i)->mod_id, mod_id) == 0 &&
+            strcmp(level_slot_at(i)->name, name) == 0)
+            return level_slot_at(i)->slot_id ? level_slot_at(i)->slot_id : -1;
     return -1;
 }
 
@@ -308,19 +319,19 @@ int openpete_mods_level_enter(CPUState* cpu, int level_id) {
      * hooks the mod installs, i.e. as a bare clone of the donor. Refuse
      * the warp instead of shipping the player a half-level. Retail ids
      * match no slot row and pass straight through. */
-    for (int i = 0; i < s_level_count; i++) {
-        if (s_levels[i].slot_id != level_id) continue;
-        if (s_levels[i].disabled) {
+    for (int i = 0; i < level_slot_count(); i++) {
+        if (level_slot_at(i)->slot_id != level_id) continue;
+        if (level_slot_at(i)->disabled) {
             OPL_ERROR_F("mods", "level %d belongs to disabled mod \"%s\" — "
-                        "entry refused", level_id, s_levels[i].mod_id);
+                        "entry refused", level_id, level_slot_at(i)->mod_id);
             return -1;
         }
         break;
     }
     int rc = s_level_ops->enter_level(cpu, level_id);
     if (rc == 0) {
-        for (int i = 0; i < s_level_count; i++)
-            if (s_levels[i].slot_id == level_id) {
+        for (int i = 0; i < level_slot_count(); i++)
+            if (level_slot_at(i)->slot_id == level_id) {
                 s_slot_entering = level_id;
                 break;
             }
@@ -842,8 +853,8 @@ static void custom_tick(CPUState* cpu) {
 int openpete_mods_registry_owner_busy(const char* mod_id);
 int openpete_mods_registry_owner_busy(const char* mod_id) {
     if (!mod_id) return 0;
-    for (int i = 0; i < s_level_count; i++) {
-        const level_slot_t* s = &s_levels[i];
+    for (int i = 0; i < level_slot_count(); i++) {
+        const level_slot_t* s = level_slot_at(i);
         if (!s->slot_id || strcmp(s->mod_id, mod_id) != 0) continue;
         if (s_resident_level == s->slot_id ||
             s_slot_entering == s->slot_id)

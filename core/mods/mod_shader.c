@@ -1090,7 +1090,7 @@ static int openpete_mods_material_register_locked(openpete_mod_t* self,
     m->live = 1;
     m->user_enabled = 1;          /* registration arms it; enable() toggles */
     int handle = s_mat_count++;
-    if (!s_mat_census.bound)
+    if (!s_mat_census.storage)
         mod_fixed_init(&s_mat_census, "materials", 32, MOD_MATERIAL_MAX);
     mod_fixed_set(&s_mat_census, (size_t)s_mat_count);
     if (terrain_sel_relevant(m)) s_mat_ter_epoch++;
