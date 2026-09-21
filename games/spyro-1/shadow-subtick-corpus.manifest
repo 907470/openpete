@@ -1,0 +1,21 @@
+# Sub-tick interpolation of the moby ground shadows
+# (scripts/check_shadow_subtick.sh). Row grammar: see
+# games/spyro-3/shadow-subtick-corpus.manifest. V is odd here: the tick
+# boundaries of this replay fall on the odd VBL, so 1823 and 1824 are one
+# tick's two VBLs and the intermediate present at 1824 sits inside it. The
+# alpha-1 identity leg is what catches a row of the wrong parity, and it does:
+# at V=1822 it finds no component anywhere on the interval.
+#
+# The control game. Spyro 1's interpolation spine answers for a moby's world
+# position, so the shadow walk reads a lerped position here and takes none of
+# the record own-motion offsets the other two games need. Argus walks across
+# the courtyard over this interval, 17.19 px of canonical step, and his shadow
+# tracks the lerp to about 1 px. engage=0 says so: OPENPETE_SHADOW_INTERP=0
+# reaches no code this row runs, so the suppressed leg is reported and asserts
+# nothing here.
+#
+# The bound is 1.2 px rather than the other manifest's 1.0 because this row's
+# residual is the size channel at its widest: the decal's mask grows by a third
+# across the interval — 646 px at 1821 against 847 px at 1823 — while the
+# radius word stays the newest tick's, and the visible centroid moves with it.
+artisans-rescue-argus.bk2 | 1823 | blob=222.6,304.3 tol=1.2 engage=0

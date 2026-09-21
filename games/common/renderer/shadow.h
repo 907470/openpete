@@ -81,6 +81,13 @@ void   shadow_reextract(CPUState* cpu);
  * renders under; the caller stages that record's shadow state first. */
 void   shadow_player_reextract(CPUState* cpu, int slot);
 
+/* OPENPETE_SHADOW_PLAYER=0 suppresses the player's own ground shadow, whatever
+ * renderer a game draws it with, leaving the moby drop-shadows alone on the
+ * shadow render path: the A/B that prices the player fan's painted pixels
+ * without a second binary, and what leaves a leave-one-out of the shadow path
+ * holding moby shadows only. The guest draw still runs. */
+int    shadow_player_feed_enabled(void);
+
 #ifdef __cplusplus
 }
 #endif

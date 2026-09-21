@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: a9620c710c566bae727c80db44cb5836178d361c
+# head: be2aeb17409e1ecba2000d26ffbdda7dc9272654
 file	function	score	marked	accepted
 core/config/config.c	harvest_args	30	0	
 core/config/config.c	harvest_base	39	0	
@@ -173,7 +173,7 @@ games/common/renderer/player.c	pv_capture	60	0
 games/common/renderer/player_game_spyro23.c	s23_part_record	28	0	
 games/common/renderer/portal_spyro23.c	p3_extract_one	31	0	
 games/common/renderer/portal_spyro23.c	portal_s23_sky_planes	31	0	
-games/common/renderer/shadow.c	shadow_moby_build	37	0	
+games/common/renderer/shadow.c	shadow_moby_build	35	0	
 games/common/renderer/shadow.c	shadow_moby_compare	61	0	
 games/common/renderer/shadow_player.c	shadow_player_compare	70	0	
 games/common/renderer/terrain.c	clip_push_tri	35	0	

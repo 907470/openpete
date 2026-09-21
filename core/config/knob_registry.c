@@ -1095,6 +1095,9 @@ static const knob_desc_t g_builtin[] = {
         "Depth-aware moby-shadow decal vs legacy subtract pipe (default 1)."),
     ENVROW_LATCHED("SHADOW_PLAYER", "Debug", "1",
         "Player ground-shadow leg feed enable (default 1); the guest draw runs either way."),
+    ENVROW_LATCHED("SHADOW_INTERP", "Debug", "1",
+        "Moby drop-shadow own-motion offsets under an interpolated camera (default 1); "
+        "0 leaves every shadow at the newest tick's world pose."),
     ENVROW_LATCHED("PARTICLES", "Debug", "1",
         "Particle feed enable (default 1); the guest draw runs either way."),
     ENVROW_LATCHED("TRACERS", "Debug", "1",

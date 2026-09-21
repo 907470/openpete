@@ -75,10 +75,19 @@ double moby_native_view_widen(void);
  * including a stale one, where a multi-tick gap is a discontinuity rather than
  * motion. Returns 1 with a zero out[] for a moby static in the world.
  *
+ * moby_record_halfword_offset does the same for the unsigned 16-bit field at
+ * byte offset `off` inside the captured record, for a caller whose own
+ * convention is not the position words: *out is (prev - curr) * (1 - t).
+ * Returns 0 with *out zeroed when there is no usable pair, when `off` lies
+ * past the captured blob, or when either state reads 0, which every such
+ * field uses as its absent value and which would otherwise sweep the object
+ * toward an origin it never held.
+ *
  * moby_record_euler_at_present fills *e with the moby's three euler axes at the
  * present's phase. Returns 0 and leaves *e untouched when the caller must use
  * the byte-exact table lookup instead. */
 int moby_record_world_offset(uint32_t moby, double out[3]);
+int moby_record_halfword_offset(uint32_t moby, uint32_t off, double* out);
 int moby_record_euler_at_present(struct CPUState* cpu, uint32_t moby,
                                  ngte_euler_sc* e);
 

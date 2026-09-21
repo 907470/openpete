@@ -217,15 +217,6 @@ static void shadow_player_build(CPUState* cpu) {
 /* Feed the native player shadow (untextured G3 fan, ABR mode 2 -> blend 3).
  * `slot`: the model record the shadow renders under, the PLAYER slot of its
  * scene tag. */
-/* OPENPETE_SHADOW_PLAYER=0 suppresses this leg's feed alone, leaving the moby
- * drop-shadows on the same render path: the A/B that prices the fan's painted
- * pixels without a second binary. The guest draw still runs. */
-static int shadow_player_feed_enabled(void) {
-    static int v = -1;
-    if (v < 0) { const char* e = getenv("OPENPETE_SHADOW_PLAYER"); v = !(e && *e && *e == '0'); }
-    return v;
-}
-
 static void shadow_player_feed_native(CPUState* cpu, int slot) {
     if (!shadow_player_feed_enabled()) return;
     shadow_player_build(cpu);

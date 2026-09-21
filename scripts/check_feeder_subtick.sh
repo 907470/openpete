@@ -18,10 +18,23 @@
 # its own state needs its own harness, which is why check_zap_subtick.sh is a
 # sibling rather than a path here.
 #
-# A path is named by --path and carries: the knob that suppresses its feed, the
-# value that turns the feed on, the manifest it reads and the alphas it judges.
-#   glint  OPENPETE_GLINT=2 against =0, games/<slug>/glint-subtick-corpus.manifest
-#   glow   OPENPETE_GLOW=1  against =0, games/<slug>/glow-subtick-corpus.manifest
+# A path is named by --path and carries: what suppresses its feed for the
+# leave-one-out, the manifest it reads and the alphas it judges.
+#   glint   OPENPETE_GLINT=2 against =0, games/<slug>/glint-subtick-corpus.manifest
+#   glow    OPENPETE_GLOW=1  against =0, games/<slug>/glow-subtick-corpus.manifest
+#   shadow  --render-paths terrain,moby,shadow against terrain,moby,
+#           games/<slug>/shadow-subtick-corpus.manifest
+#
+# The shadow path is the moby ground shadow, which no env knob switches off on
+# its own, so its two legs are a render-path selection with and without the
+# shadow path. Both legs run under a selection, so everything else on screen is
+# identical between them, and the terrain and moby paths stay in because the
+# shadow is a depth-aware decal tested against the world depth pre-pass.
+# OPENPETE_SHADOW_PLAYER=0 on both legs drops the player's own fan, leaving the
+# moby shadows as the only thing the difference can contain. The shadow is not
+# a self-linking feeder replayed out of the polybuf: it is re-derived from
+# gamestate every present, and what this harness measures there is whether that
+# derivation reads the pose the present shows or the pose the newest tick left.
 #
 # Instrument: leave-one-out, not colour. Every leg is captured twice
 # from one binary, the path's knob at its on value against 0 (the feed
@@ -48,6 +61,27 @@
 # interval, so the replay must reproduce the canonical present. alpha 0 is the
 # leg that prices the defect: a producer that holds its tick pose reads canon(V)
 # there, one whole tick step from where it belongs.
+#
+# Three statistics per named blob per row, all in screen pixels:
+#   resid  the judged one: the distance from the shown centroid to the expected
+#          (1-alpha)*canon(V-2) + alpha*canon(V), at each judged alpha
+#   ident  resid at alpha 1, where the expected position is canon(V) exactly
+#   own    |c(alpha 0) - canon(V-2)|, how far the alpha-0 leg stands from the
+#          pose the previous tick drew: a producer that carries its own motion
+#          reads near zero there, one that holds its tick pose reads the whole
+#          canonical step
+# The component's pixel count is printed beside every centroid. A producer
+# whose painted extent changes with its own state ramps that count across the
+# interval and moves the visible centroid with it, which is the residual's
+# floor and the reason a row sets `tol` above the instrument's own noise.
+#
+# A path with a suppress knob also runs an engagement leg: the alpha-0
+# present captured again with the knob at 0, where the producer must hold its
+# tick pose. At least one of an `engage=1` row's blobs must read `own` of at
+# least its canonical step there; with none the knob reached nothing this row
+# can see, the normal legs prove nothing, and the row is VACUOUS. One blob
+# suffices because a row may name a control blob the knob cannot move — a
+# producer already at rest in the world, whose whole step is the camera's.
 #
 # alpha 0 is captured and reported, not judged. The replay is a screen-space
 # rebase of the tick's own primitives, so at alpha 0 it shows the tick's blob —
@@ -85,17 +119,22 @@
 #                that does not move between the two ticks passes every alpha
 #                whatever the producer does, so a row below this floor is
 #                VACUOUS rather than a pass. Default 4.
+#   engage=0     this row runs no code the path's suppress knob reaches, so the
+#                engagement leg below is captured and reported but asserts
+#                nothing. It is how a control row on a game that takes another
+#                code path for the same producer is declared. Default 1.
 #
 # Pass criterion, per row: every named blob, at every judged alpha, within
 # `tol` of its expected centroid. VACUOUS (exit 1) when a leg's mask is empty,
 # when a named blob resolves to no component or to an ambiguous one in some
-# leg, or when a blob's canonical step is below the floor.
+# leg, when a blob's canonical step is below the floor, or when the path has a
+# suppress knob and the engagement leg's `own` is below that step.
 #
 # Verdict line per row:
 #   [<path>-subtick] game=<g> bk2=<b> V=<v> blobs=<n> legs=<n> maskpx=<n>
 #                    worst=<px> verdict=PASS|FAIL
 #
-# Usage: scripts/check_feeder_subtick.sh --path glint|glow
+# Usage: scripts/check_feeder_subtick.sh --path glint|glow|shadow
 #        [--game SLUG] [--build-dir=DIR]
 # Exit 0 PASS, 1 FAIL or VACUOUS, 64 SKIP (binary, disc, bk2, manifest, python3
 # or PIL missing).
@@ -118,12 +157,22 @@ done
 # Per render path: the knob that suppresses the feed, the value that turns it
 # on, and the alphas whose residual the bound applies to. alpha 1 is judged on
 # every path: it is the identity leg.
+# LEG_ENV_ON/OFF and LEG_ARGS_ON/OFF are what the two leave-one-out legs
+# differ by, plus whatever both of them need; SUPPRESS names the knob the
+# engagement leg sets to 0, empty on a path that has none.
+LEG_ENV_ON=(); LEG_ENV_OFF=(); LEG_ARGS_ON=(); LEG_ARGS_OFF=(); SUPPRESS=
 case "$PATHNAME" in
-    glint) KNOB=OPENPETE_GLINT; KNOB_ON=2
-           ALPHAS=(0 0.5 1); JUDGE_DEF=0.5,1;;
-    glow)  KNOB=OPENPETE_GLOW;  KNOB_ON=1
-           ALPHAS=(0 0.25 0.5 0.75 1); JUDGE_DEF=0.25,0.5,0.75,1;;
-    *)     echo "feeder-subtick: FAIL (unknown --path $PATHNAME)"; exit 1;;
+    glint)  LEG_ENV_ON=(OPENPETE_GLINT=2); LEG_ENV_OFF=(OPENPETE_GLINT=0)
+            ALPHAS=(0 0.5 1); JUDGE_DEF=0.5,1;;
+    glow)   LEG_ENV_ON=(OPENPETE_GLOW=1); LEG_ENV_OFF=(OPENPETE_GLOW=0)
+            ALPHAS=(0 0.25 0.5 0.75 1); JUDGE_DEF=0.25,0.5,0.75,1;;
+    shadow) LEG_ENV_ON=(OPENPETE_SHADOW_PLAYER=0)
+            LEG_ENV_OFF=(OPENPETE_SHADOW_PLAYER=0)
+            LEG_ARGS_ON=(--render-paths terrain,moby,shadow)
+            LEG_ARGS_OFF=(--render-paths terrain,moby)
+            SUPPRESS=OPENPETE_SHADOW_INTERP
+            ALPHAS=(0 0.5 1); JUDGE_DEF=0.5,1;;
+    *)      echo "feeder-subtick: FAIL (unknown --path $PATHNAME)"; exit 1;;
 esac
 TAG="$PATHNAME-subtick"
 
@@ -145,14 +194,23 @@ mkdir -p "$OUT"
 # makes the native renderer run and the intermediate present exist at all under
 # --headless, so every leg carries one.
 run_leg() {
-    local tag="$1" knobval="$2" alpha="$3" out="$4"; shift 4
+    local tag="$1" leg="$2" alpha="$3" out="$4"; shift 4
     local log="$OUT/$tag.log"
-    PG_CAPTURE_ENV=("$KNOB=$knobval")
+    local -a legargs=()
+    if [[ "$leg" == on ]]; then
+        PG_CAPTURE_ENV=(${LEG_ENV_ON[@]+"${LEG_ENV_ON[@]}"})
+        legargs=(${LEG_ARGS_ON[@]+"${LEG_ARGS_ON[@]}"})
+    else
+        PG_CAPTURE_ENV=(${LEG_ENV_OFF[@]+"${LEG_ENV_OFF[@]}"})
+        legargs=(${LEG_ARGS_OFF[@]+"${LEG_ARGS_OFF[@]}"})
+    fi
+    [[ -n "$SUPPRESSED" ]] && PG_CAPTURE_ENV+=("$SUPPRESS=0")
     [[ -n "$alpha" ]] && PG_CAPTURE_ENV+=(OPENPETE_INTERMEDIATE_ALPHA="$alpha")
     PG_CAPTURE_TIMEOUT=900
     pg_capture "$log" "$out" -- \
         --renderer vk --mute 1 --aspect 4:3 --lod original \
         "${MOVIE_ARG[@]}" --screenshot-native-only \
+        ${legargs[@]+"${legargs[@]}"} \
         "$@" --screenshot-output "$OUT/$tag/{n}.png" \
         --frame-limit $((V + 11))
 }
@@ -187,21 +245,34 @@ while IFS= read -r line; do
     # output asserted after it, so a stale PNG cannot be read as this run's
     # result.
     rc=0 shots=()
+    SUPPRESSED=
     for lbl in on off; do
-        case "$lbl" in on) g="$KNOB_ON";; off) g=0;; esac
         d="$tag-c-$lbl"
         rm -rf "${OUT:?}/$d"; mkdir -p "$OUT/$d"
-        run_leg "$d" "$g" "" "$OUT/$d/$prev-vk.png,$OUT/$d/$V-vk.png" \
+        run_leg "$d" "$lbl" "" "$OUT/$d/$prev-vk.png,$OUT/$d/$V-vk.png" \
                 --screenshot-on-frame "$prev,$V" </dev/null || rc=$?
         shots+=("$OUT/$d/$prev-vk.png" "$OUT/$d/$V-vk.png")
         for alpha in "${ALPHAS[@]}"; do
             d="$tag-i$alpha-$lbl"
             rm -rf "${OUT:?}/$d"; mkdir -p "$OUT/$d"
-            run_leg "$d" "$g" "$alpha" "$OUT/$d/$mid-vk.png" \
+            run_leg "$d" "$lbl" "$alpha" "$OUT/$d/$mid-vk.png" \
                     --screenshot-intermediate-on-frame "$mid" </dev/null || rc=$?
             shots+=("$OUT/$d/$mid-vk.png")
         done
     done
+    # The engagement leg: the alpha-0 present again with the path's own
+    # interpolation suppressed, where the producer must hold its tick pose.
+    if [[ -n "$SUPPRESS" ]]; then
+        SUPPRESSED=1
+        for lbl in on off; do
+            d="$tag-s-$lbl"
+            rm -rf "${OUT:?}/$d"; mkdir -p "$OUT/$d"
+            run_leg "$d" "$lbl" 0 "$OUT/$d/$mid-vk.png" \
+                    --screenshot-intermediate-on-frame "$mid" </dev/null || rc=$?
+            shots+=("$OUT/$d/$mid-vk.png")
+        done
+        SUPPRESSED=
+    fi
     missing=0
     for f in "${shots[@]}"; do [[ -s "$f" ]] || missing=1; done
     if (( missing || rc )); then
@@ -210,12 +281,12 @@ while IFS= read -r line; do
     fi
 
     python3 - "$TAG" "$JUDGE_DEF" "$GAME" "$bk2" "$V" "$keys" "$OUT/$tag" "$prev" "$mid" \
-             "${ALPHAS[@]}" <<'PYEOF' || fail=1
+             "$SUPPRESS" "${ALPHAS[@]}" <<'PYEOF' || fail=1
 import sys
 from PIL import Image
 
-tag, judge_def, game, bk2, V, keys, base, prev, mid = sys.argv[1:10]
-alphas = sys.argv[10:]
+tag, judge_def, game, bk2, V, keys, base, prev, mid, suppress = sys.argv[1:11]
+alphas = sys.argv[11:]
 V, prev, mid = int(V), int(prev), int(mid)
 
 opts, gems = {}, []
@@ -229,6 +300,7 @@ for tok in keys.split():
 tol = float(opts.get('tol', '0.5'))
 judged = set(opts.get('judge', judge_def).split(','))
 step_floor = float(opts.get('step', '4'))
+engage = opts.get('engage', '1') != '0'
 
 # Two components of one mask are the same blob when their pixels come within
 # this Chebyshev distance: a four-point star's arms and a glow ring's fan are
@@ -309,7 +381,9 @@ for name, on, off, vbl in (
          ("canon%d" % V, "%s-c-on/%d-vk.png" % (base, V),
           "%s-c-off/%d-vk.png" % (base, V), V)] +
         [("inter%s" % a, "%s-i%s-on/%d-vk.png" % (base, a, mid),
-          "%s-i%s-off/%d-vk.png" % (base, a, mid), mid) for a in alphas]):
+          "%s-i%s-off/%d-vk.png" % (base, a, mid), mid) for a in alphas] +
+        ([("suppressed", "%s-s-on/%d-vk.png" % (base, mid),
+           "%s-s-off/%d-vk.png" % (base, mid), mid)] if suppress else [])):
     px = mask(on, off)
     if len(px) > MASK_CAP:
         raise SystemExit("[%s] leg %s masks %d px, above the %d cap: the "
@@ -321,6 +395,7 @@ for name, on, off, vbl in (
         vacuous.append("leg %s masks no pixel: the feed painted nothing" % name)
 
 worst = 0.0
+engaged = 0
 rows_out = []
 if not gems:
     vacuous.append("the row names no blob")
@@ -342,6 +417,7 @@ for gx, gy in gems:
         vacuous.append("blob (%.1f,%.1f) steps %.2f px over the interval, below the %.2f floor"
                        % (gx, gy, step, step_floor))
         continue
+    shown0 = None
     for a in alphas:
         av = float(a)
         ex = (c0[0] + (c1[0] - c0[0]) * av, c0[1] + (c1[1] - c0[1]) * av)
@@ -359,6 +435,8 @@ for gx, gy in gems:
                            % (gx, gy, a))
             continue
         ci = cand[0][1]
+        if float(a) == 0.0:
+            shown0 = ci
         d = ((ci[0] - ex[0]) ** 2 + (ci[1] - ex[1]) ** 2) ** 0.5
         if a in judged:
             worst = max(worst, d)
@@ -369,6 +447,31 @@ for gx, gy in gems:
             bad.append("blob (%.1f,%.1f) alpha=%s D=%.2f above the %.2f bound"
                        % (gx, gy, a, d, tol))
 
+    # own: how far the alpha-0 leg stands from the pose the previous tick drew.
+    # A producer that carries its own motion reads near zero, one that holds
+    # its tick pose reads the whole step.
+    if shown0 is not None:
+        own = ((shown0[0] - c0[0]) ** 2 + (shown0[1] - c0[1]) ** 2) ** 0.5
+        rows_out.append("  own=%.2f of step=%.2f  area canon%d=%dpx canon%d=%dpx alpha0=%dpx"
+                        % (own, step, prev, c0[2], V, c1[2], shown0[2]))
+    # The engagement leg: with the path's interpolation suppressed the
+    # producer must hold its tick pose, which is the whole step away from the
+    # previous tick's. A smaller reading means the knob reached nothing.
+    if suppress:
+        cand = sorted(((seg_dist(c, c0, c1), c) for c in legs["suppressed"]))
+        if not cand or cand[0][0] > FIND_R:
+            vacuous.append("blob (%.1f,%.1f) under %s=0: no component on the interval"
+                           % (gx, gy, suppress))
+        else:
+            cs = cand[0][1]
+            own_s = ((cs[0] - c0[0]) ** 2 + (cs[1] - c0[1]) ** 2) ** 0.5
+            rows_out.append("  %s=0 own=%.2f of step=%.2f %dpx" % (suppress, own_s, step, cs[2]))
+            if own_s >= step:
+                engaged += 1
+
+if suppress and engage and not engaged:
+    vacuous.append("no blob holds its tick pose under %s=0: the knob suppressed "
+                   "nothing this row can see" % suppress)
 head = ("[%s] game=%s bk2=%s V=%d blobs=%d legs=%d maskpx=%d worst=%.2f"
         % (tag, game, bk2, V, len(gems), len(legs), maskpx, worst))
 for r in rows_out:

@@ -254,6 +254,7 @@ static void shadow_spyro_build(CPUState* cpu) {
  * `slot`: the model record the shadow renders under (spyro_records.h), the
  * PLAYER slot of its tag. */
 static void shadow_spyro_feed_native(CPUState* cpu, int slot) {
+    if (!shadow_player_feed_enabled()) return;
     shadow_spyro_build(cpu);
     if (s_sptri_n <= 0) return;
     openpete_native_scene_begin_frame(openpete_frame);

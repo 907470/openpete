@@ -6613,24 +6613,52 @@ static int hold_project_origin(CPUState* cpu, const double tr[3], double* sx, do
  * discontinuity, not motion, and snapping keeps the record's own pose.
  * Returns 1 with a zero out[] for a moby that is static in the world, which is
  * what keeps such a record bit-identical. */
-int moby_record_world_offset(uint32_t moby, double out[3]) {
-    out[0] = out[1] = out[2] = 0.0;
+/* The object's prev/curr snapshot pair, with *t set to the present's phase
+ * past the curr stamp over the roll interval, capped at one tick so a pair
+ * whose two distinct states are further apart sweeps the whole delta over the
+ * tick and still lands exactly on curr at t = 1. Returns NULL when no term
+ * built on the pair may be applied: no pair, a slot that changed class between
+ * the two states, or a stale pair, where a multi-tick gap is a discontinuity
+ * rather than motion and the record's own pose is what to keep. */
+static const openpete_interp_obj_t* moby_record_pair(uint32_t moby, double* t) {
     const openpete_interp_obj_t* o = openpete_interp_objs_find(moby_interp_key(moby));
-    if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return 0;
+    if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return NULL;
     uint16_t pcls, ccls;
     memcpy(&pcls, o->prev + game_layout.moby.class_off, 2);
     memcpy(&ccls, o->curr + game_layout.moby.class_off, 2);
-    if (pcls != ccls) return 0;
-    if (moby_interp_pair_stale(o->prev_ns, o->curr_ns)) return 0;
+    if (pcls != ccls) return NULL;
+    if (moby_interp_pair_stale(o->prev_ns, o->curr_ns)) return NULL;
     double period = (double)(o->curr_ns - o->prev_ns);
     if (period > (double)MOBY_TICK_PERIOD_NS) period = (double)MOBY_TICK_PERIOD_NS;
-    double t = (double)(openpete_interp_present_now() - o->curr_ns) / period;
-    if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
+    double ph = (double)(openpete_interp_present_now() - o->curr_ns) / period;
+    *t = ph < 0.0 ? 0.0 : (ph > 1.0 ? 1.0 : ph);
+    return o;
+}
+
+int moby_record_world_offset(uint32_t moby, double out[3]) {
+    out[0] = out[1] = out[2] = 0.0;
+    double t = 0.0;
+    const openpete_interp_obj_t* o = moby_record_pair(moby, &t);
+    if (!o) return 0;
     int32_t pv[3], cv[3];
     memcpy(pv, o->prev + game_layout.moby.pos_off, 12);
     memcpy(cv, o->curr + game_layout.moby.pos_off, 12);
     for (int i = 0; i < 3; i++)
         out[i] = ((double)pv[i] - (double)cv[i]) * (1.0 - t);
+    return 1;
+}
+
+int moby_record_halfword_offset(uint32_t moby, uint32_t off, double* out) {
+    *out = 0.0;
+    if (off + 2u > openpete_interp_objs_blob_bytes()) return 0;
+    double t = 0.0;
+    const openpete_interp_obj_t* o = moby_record_pair(moby, &t);
+    if (!o) return 0;
+    uint16_t pv, cv;
+    memcpy(&pv, o->prev + off, 2);
+    memcpy(&cv, o->curr + off, 2);
+    if (pv == 0 || cv == 0) return 0;
+    *out = ((double)pv - (double)cv) * (1.0 - t);
     return 1;
 }
 

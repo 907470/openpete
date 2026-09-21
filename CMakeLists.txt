@@ -521,6 +521,21 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
 
+    # Spyro 2 has no shadow row: its two candidate movies carry only shadows
+    # whose moby is static in the world or none at all over the window, and a
+    # blob that cannot move measures nothing. The harness SKIPs there for want
+    # of the manifest until a movie with a moving shadowed moby is recorded.
+    foreach(_subtick_game spyro-1 spyro-3)
+        add_test(NAME shadow_subtick_${_subtick_game}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_shadow_subtick.sh
+                         --game ${_subtick_game} --build-dir=${CMAKE_BINARY_DIR})
+        set_tests_properties(shadow_subtick_${_subtick_game} PROPERTIES
+            LABELS "presentation;shadow"
+            TIMEOUT 1800
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
+
     # Vertex-stream field resolution on a stock boot: one headless 206-VBL
     # boot with a native screenshot armed, and every frame word the moby walk
     # decodes required to name an address. An unresolved field there is the

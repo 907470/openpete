@@ -35,6 +35,7 @@
 #include "renderer/render_paths.h"  /* --render-paths isolation */
 #include "renderer/hook_bracket.h"  /* the shared feeder hook bracket */
 #include "renderer/orchestrator.h"  /* openpete_native_interp_pos */
+#include "renderer/moby.h"        /* the record own-motion offsets */
 
 #include <math.h>
 #include <stdint.h>
@@ -368,6 +369,58 @@ static int cull_corners(const shadow_pt c[4]) {
     return 0;
 }
 
+/* OPENPETE_SHADOW_INTERP=0 suppresses the two own-motion offsets below,
+ * leaving every entry at the newest tick's world pose. It is the engagement
+ * leg of scripts/check_feeder_subtick.sh --path shadow: the harness reads the
+ * whole tick step back under it. */
+static int shadow_interp_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_SHADOW_INTERP"); v = !(e && *e && *e == '0'); }
+    return v;
+}
+
+/* The world pose one drawn-moby list entry projects from: the moby's position
+ * in world units and the low halfword of its packed ground word, the ground
+ * height in quarter-world units (mobyfunc.s:930-933 reads all three straight
+ * out of the Moby, not out of any render record).
+ *
+ * Those live reads are the state the newest tick left, so a present under an
+ * interpolated camera would place a moving moby's shadow one whole tick ahead
+ * of the world it falls on. Two sources carry the entry back onto the pose the
+ * present shows. A game whose interpolation spine answers for this object
+ * hands over its lerped position directly. Otherwise the record own-motion
+ * offsets do it: moby_record_world_offset on the position, and its sibling on
+ * the ground halfword, which a moby crossing a step in the terrain changes as
+ * fast as it changes its position. Both are zero at the end of the tick's own
+ * interval and neither is read under the tick's own camera, so the canonical
+ * feed is the unmodified one.
+ *
+ * The entry's radius word and the list membership stay the tick's: both live
+ * in the list record rather than in the Moby, and no per-tick copy of the list
+ * exists to pair them against.
+ *
+ * Returns 0 when the ground halfword is zero, the game's own verdict that this
+ * moby casts no shadow. */
+typedef struct { double px, py, gnd; uint32_t sd; } shadow_entry_pose;
+
+static int shadow_entry_world(CPUState* cpu, const ngte_view* v, uint32_t mob,
+                              uint32_t off_pos, uint32_t off_gnd,
+                              shadow_entry_pose* e) {
+    e->sd = cpu->read_word(mob + off_gnd);
+    e->gnd = (double)(int)(e->sd & 0xFFFFu);
+    if (e->gnd == 0.0) return 0;
+    e->px = (double)(int32_t)cpu->read_word(mob + off_pos + 0);
+    e->py = (double)(int32_t)cpu->read_word(mob + off_pos + 4);
+    double mf[3];
+    if (openpete_native_interp_pos(mob, mf)) { e->px = mf[0]; e->py = mf[1]; return 1; }
+    if (!v->cam_interp || !shadow_interp_on()) return 1;
+    double mw[3];
+    if (moby_record_world_offset(mob, mw)) { e->px += mw[0]; e->py += mw[1]; }
+    double dg;
+    if (moby_record_halfword_offset(mob, off_gnd, &dg)) e->gnd += dg;
+    return 1;
+}
+
 static void shadow_moby_build(CPUState* cpu) {
     s_mosh_n = 0;
     const uint32_t desc = game_layout.shadow.desc;
@@ -428,18 +481,12 @@ static void shadow_moby_build(CPUState* cpu) {
         uint32_t mob = s_list[li].moby;
         uint32_t radius = s_list[li].size << size_shl;
         if (mob < 0x80000000u || mob >= 0x80800000u) continue;
-        uint32_t posX = cpu->read_word(mob + off_pos + 0);
-        uint32_t posY = cpu->read_word(mob + off_pos + 4);
-        uint32_t sd   = cpu->read_word(mob + off_gnd);
-        int sdlo = (int)(sd & 0xFFFF);
-        if (sdlo == 0) continue;
-        /* Floor fix: prefer the FRACTIONAL interpolated moby position so the shadow
-         * tracks the smooth body (which uses the same source) under sub-tick. */
-        double pfx = (double)(int32_t)posX, pfy = (double)(int32_t)posY;
-        { double mf[3]; if (openpete_native_interp_pos(mob, mf)) { pfx = mf[0]; pfy = mf[1]; } }
-        double vx = cam1 - pfy / 4.0;
-        double vy = cam2 - (double)sdlo;
-        double vz = pfx / 4.0 - cam0;
+        shadow_entry_pose ep;
+        if (!shadow_entry_world(cpu, v, mob, off_pos, off_gnd, &ep)) continue;
+        uint32_t sd = ep.sd;
+        double vx = cam1 - ep.py / 4.0;
+        double vy = cam2 - ep.gnd;
+        double vz = ep.px / 4.0 - cam0;
         double TR[3]; shadow_ground_tr(C, vx, vy, vz, TR);
         if (TR[2] - 4096.0 >= 0.0) continue;                /* Z cull (floor(x)>=N ⟺ x>=N) */
         shadow_pt anchor; shadow_project(C, ZERO, ofx, ofy, v, vx, vy, vz, &anchor);
@@ -528,6 +575,12 @@ float shadow_bias_spyro(void) {
     if (b < 0.0f) { const char* e = getenv("OPENPETE_SHADOW_BIAS_SPYRO"); b = (e && *e) ? (float)atof(e) : 1.0f; }
     return b;
 }
+int shadow_player_feed_enabled(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_SHADOW_PLAYER"); v = !(e && *e && *e == '0'); }
+    return v;
+}
+
 float shadow_bias_moby(void) {
     static float b = -1.0f;
     if (b < 0.0f) { const char* e = getenv("OPENPETE_SHADOW_BIAS_MOBY"); b = (e && *e) ? (float)atof(e) : 1.0f; }
