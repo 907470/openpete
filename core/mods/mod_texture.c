@@ -40,6 +40,7 @@
 
 #include "openpete_mods.h"
 #include "openpete_log.h"
+#include "mod_vec.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -53,7 +54,8 @@
 #define STBI_ONLY_PNG
 #include "../../third_party/stb/stb_image.h"
 
-#define MOD_TEXTURE_MAX 64
+/* Entries the first block holds; the table grows by whole blocks. */
+#define MOD_TEXTURE_BLOCK 64
 #define MOD_TEXTURE_DIM_MAX 1024
 
 typedef struct {
@@ -69,8 +71,10 @@ typedef struct {
     unsigned char announced;      /* "first drawn" already logged for this id */
 } mod_texture_t;
 
-static mod_texture_t s_tex[MOD_TEXTURE_MAX];
-static int s_tex_count;
+/* Chunked: openpete_mods_texture_get walks this from the present thread
+ * while a registration appends on the sim thread, and a block never
+ * moves. */
+static mod_cvec s_tex;   /* mod_texture_t */
 
 /* Superseded pixel buffers, kept alive forever.
  *
@@ -131,11 +135,16 @@ static int tex_register_owned(const char* owner, uint16_t id,
         w > MOD_TEXTURE_DIM_MAX || h > MOD_TEXTURE_DIM_MAX)
         return -1;
     mod_texture_t* t = NULL;
-    for (int i = 0; i < s_tex_count; i++)
-        if (s_tex[i].id == id) { t = &s_tex[i]; break; }
+    for (size_t i = 0; i < mod_cvec_count(&s_tex); i++) {
+        mod_texture_t* c = (mod_texture_t*)mod_cvec_at(&s_tex, i);
+        if (c->id == id) { t = c; break; }
+    }
     if (!t) {
-        if (s_tex_count >= MOD_TEXTURE_MAX) return -1;
-        t = &s_tex[s_tex_count++];
+        if (!s_tex.elem_size)
+            mod_cvec_init(&s_tex, sizeof(mod_texture_t), MOD_TEXTURE_BLOCK,
+                          "mod_texture", MOD_TEXTURE_BLOCK);
+        t = (mod_texture_t*)mod_cvec_push(&s_tex);
+        if (!t) return -1;
         t->id = id;
     }
     unsigned char* copy = (unsigned char*)malloc((size_t)(4 * w * h));
@@ -217,8 +226,8 @@ int openpete_mods_texture_scan_root(const char* dir, const char* owner) {
 }
 
 const unsigned char* openpete_mods_texture_get(uint16_t id, int* w, int* h) {
-    for (int i = 0; i < s_tex_count; i++) {
-        mod_texture_t* t = &s_tex[i];
+    for (size_t i = 0; i < mod_cvec_count(&s_tex); i++) {
+        mod_texture_t* t = (mod_texture_t*)mod_cvec_at(&s_tex, i);
         if (t->id != id) continue;
         tex_poll_owner(t);
         if (t->owner_off && !t->warned) {

@@ -63,6 +63,7 @@ static void test_cvec_growth_and_stability(void) {
     /* clear keeps the blocks; the next push reuses block 0. */
     mod_cvec_clear(&v);
     CHECK(mod_cvec_count(&v) == 0);
+    CHECK(v.peak == (size_t)N);                /* the drained peak is kept */
     CHECK(v.block_count == 3);
     CHECK(v.grew == 3);
     CHECK(mod_cvec_push(&v) == first);
@@ -100,6 +101,21 @@ static void test_fvec_growth_and_contiguity(void) {
     for (i = 0; i < N - 1; i++)
         CHECK(((elem_t*)mod_fvec_at(&v, (size_t)i))->v == i + 1);
 
+    /* resize grows with zeroed elements and shrinks the count. */
+    CHECK(mod_fvec_resize(&v, N + 3) == 0);
+    CHECK(mod_fvec_count(&v) == (size_t)N + 3);
+    CHECK(((elem_t*)mod_fvec_at(&v, (size_t)N + 2))->v == 0);
+    CHECK(mod_fvec_resize(&v, (size_t)N - 1) == 0);
+    CHECK(mod_fvec_count(&v) == (size_t)N - 1);
+
+    /* truncate drops the tail and keeps the survivors and the storage. */
+    mod_fvec_truncate(&v, 3);
+    CHECK(mod_fvec_count(&v) == 3);
+    for (i = 0; i < 3; i++)
+        CHECK(((elem_t*)mod_fvec_at(&v, (size_t)i))->v == i + 1);
+    mod_fvec_truncate(&v, 9);                  /* above the count: no-op */
+    CHECK(mod_fvec_count(&v) == 3);
+
     mod_fvec_clear(&v);
     CHECK(mod_fvec_count(&v) == 0);
     CHECK(v.cap >= (size_t)N);                 /* clear keeps the storage */
@@ -126,6 +142,7 @@ static void test_zeroed(void) {
     CHECK(mod_fvec_at(&f, 0) == NULL);
     CHECK(mod_fvec_push(&f) == NULL);
     mod_fvec_remove_at(&f, 0);
+    mod_fvec_truncate(&f, 0);
     mod_fvec_clear(&f);
     mod_fvec_free(&f);
     mod_fvec_free(&f);
@@ -167,9 +184,9 @@ static void test_census(void) {
     printf("census output:\n%s", buf);
     CHECK(strstr(buf, "mod-table: tables=2") != NULL);
     CHECK(strstr(buf,
-        "mod-table: chunked_table count=9 was=4 storage=3 grew=3") != NULL);
+        "mod-table: chunked_table count=9 peak=9 was=4 storage=3 grew=3") != NULL);
     CHECK(strstr(buf,
-        "mod-table: flat_table count=9 was=2 storage=16 grew=4") != NULL);
+        "mod-table: flat_table count=9 peak=9 was=2 storage=16 grew=4") != NULL);
     /* One report, not two: the second call saw no env var. */
     {
         const char* p = buf;

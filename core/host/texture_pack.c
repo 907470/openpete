@@ -46,6 +46,7 @@ static SDL_Mutex *reg_mx(void) { if (!s_reg_mx) s_reg_mx = SDL_CreateMutex(); re
 
 #include <SDL3/SDL.h>  /* SDL_GetBasePath — same discovery music_override uses */
 #include "openpete_paths.h" /* the writable user pack root */
+#include "../mods/mod_vec.h"
 #include <dirent.h>
 
 #define TP_MAX_ENTRIES   4096
@@ -85,7 +86,8 @@ static int      s_inited = 0;
 /* The pack INDEX is built at init by parsing every PNG filename in the dir
  * (identity is fully encoded in the name); images load lazily on first
  * match. Matching is containment-based — see texture_pack.h. */
-#define TP_PACK_MAX 8192
+/* Entries the first block holds; the table grows by whole blocks. */
+#define TP_PACK_BLOCK 8192
 typedef struct {
     uint64_t thash, phash;
     int bpp;
@@ -102,9 +104,26 @@ typedef struct {
     unsigned char src;             /* index into s_srcs (0 = base pack dir) */
     char name[96];                 /* filename; for symbolic: asset name (no .png) */
 } tp_pack_entry;
-static tp_pack_entry s_pack[TP_PACK_MAX];
+/* Chunked: the decode worker dereferences an entry by index while a late
+ * mod source appends on the sim thread, and a block never moves. */
+static mod_cvec s_pack;   /* tp_pack_entry */
 
-static int  s_pack_n = 0;
+static tp_pack_entry* pack_at(int i) {
+    return (tp_pack_entry*)mod_cvec_at(&s_pack, (size_t)i);
+}
+static int pack_count(void) { return (int)mod_cvec_count(&s_pack); }
+
+/* Append an entry, or NULL when the allocation fails. */
+static tp_pack_entry* pack_push(void) {
+    tp_pack_entry *e;
+    if (!s_pack.elem_size)
+        mod_cvec_init(&s_pack, sizeof(tp_pack_entry), TP_PACK_BLOCK,
+                      "texpack_pack", TP_PACK_BLOCK);
+    e = (tp_pack_entry*)mod_cvec_push(&s_pack);
+    if (!e) fprintf(stderr, "%s", "[texpack] entry table allocation failed\n");
+    return e;
+}
+
 static char s_repl_dir[512];
 static int  s_repl_active = 0;
 /* Layered sources (asset-overlay v1): [0] = the base pack dir; then one
@@ -112,18 +131,37 @@ static int  s_repl_active = 0;
  * later source shipping the SAME identity replaces the earlier
  * entry at scan time (last-writer-wins — the overlay's single priority
  * truth), logged for the resolved-asset assert. */
-#define TP_SRC_MAX 17
-static struct {
+#define TP_SRC_BLOCK 17
+typedef struct {
     char dir[560];
     char label[64];
     char owner[64];  /* mod id; "" = base pack (always enabled) */
-} s_srcs[TP_SRC_MAX];
+} tp_source;
+/* Chunked for the same reason as s_pack: the decode worker reads a
+ * source's dir while a late root appends. */
+static mod_cvec s_srcs;   /* tp_source */
+
+static tp_source* src_at(int i) {
+    return (tp_source*)mod_cvec_at(&s_srcs, (size_t)i);
+}
+static int src_count(void) { return (int)mod_cvec_count(&s_srcs); }
+
+/* Append a source, or NULL when the allocation fails. */
+static tp_source* src_push(void) {
+    tp_source *sp;
+    if (!s_srcs.elem_size)
+        mod_cvec_init(&s_srcs, sizeof(tp_source), TP_SRC_BLOCK, "texpack_src",
+                      TP_SRC_BLOCK);
+    sp = (tp_source*)mod_cvec_push(&s_srcs);
+    if (!sp) fprintf(stderr, "%s", "[texpack] source table allocation failed\n");
+    return sp;
+}
 
 /* A source serves only while its owning mod is enabled (live toggle);
  * the base pack always serves. */
 static int tp_src_enabled(int src) {
-    return !s_srcs[src].owner[0] ||
-           openpete_mods_is_enabled(s_srcs[src].owner);
+    const tp_source *sp = src_at(src);
+    return !sp || !sp->owner[0] || openpete_mods_is_enabled(sp->owner);
 }
 
 static int tp_add_root_source(int r);
@@ -150,7 +188,7 @@ static void tp_poll_modset(void) {
         s_seen_roots = n;
         if (grew) {
             s_gen++;
-            s_repl_active = s_pack_n > 0;
+            s_repl_active = pack_count() > 0;
             /* A mod's pack arrives here, not through tp_repl_scan — this is
              * the activation path that matters in practice, so it is the one
              * that must start the prefetch. */
@@ -158,7 +196,6 @@ static void tp_poll_modset(void) {
         }
     }
 }
-static int s_src_n = 0;
 static char s_dir_override[512];   /* --texpack-dir; empty = unset (see set_dir_override) */
 
 void texture_pack_set_dir_override(const char *dir)
@@ -167,83 +204,118 @@ void texture_pack_set_dir_override(const char *dir)
     else             s_dir_override[0] = '\0';
 }
 
-/* memo: identity key -> pack entry index (or -1 = no match) */
-#define TP_MATCH_SLOTS 8192
+/* memo: identity key -> pack entry index (or -1 = no match). Slot count
+ * is a power of two at least twice the pack, so the probe window stays
+ * short however many entries the sources bring. */
+#define TP_MATCH_SLOTS_MIN 8192
 typedef struct { uint64_t key; uint32_t gen; int entry; } tp_match_slot;
-static tp_match_slot s_match[TP_MATCH_SLOTS];
+static mod_fvec s_match;   /* tp_match_slot, power-of-two slot count */
 
-/* Scan one source dir into s_pack. A duplicate identity REPLACES the
- * existing entry in place (last-writer-wins across sources). Returns
- * entries touched (added or overridden).
+/* Size the memo to the pack and clear it. A failed allocation leaves the
+ * memo empty, which costs the match its memoization and nothing else. */
+static void tp_match_reset(void) {
+    size_t want = TP_MATCH_SLOTS_MIN;
+    while (want < (size_t)pack_count() * 2u) want *= 2u;
+    if (!s_match.elem_size)
+        mod_fvec_init(&s_match, sizeof(tp_match_slot), TP_MATCH_SLOTS_MIN,
+                      "texpack_match", TP_MATCH_SLOTS_MIN);
+    if (mod_fvec_count(&s_match) != want &&
+        mod_fvec_resize(&s_match, want) != 0)
+        mod_fvec_truncate(&s_match, 0);
+    if (mod_fvec_count(&s_match))
+        memset(mod_fvec_data(&s_match), 0,
+               mod_fvec_count(&s_match) * sizeof(tp_match_slot));
+}
+
+/* Fill `out` from one pack filename. Hash-named files may carry a
+ * leading `<label>-` (the draw's scene category, written by the dumper
+ * purely to make a pack browsable); the label is organisational only —
+ * identity is the hash fields — so the parse skips it. A name that is
+ * not the hash form is a symbolic entry: <asset>.png, matched against
+ * the game layer's texture_pack_annotate name, covering the full
+ * upload. */
+static void tp_parse_name(const char *fname, const char *dot,
+                          tp_pack_entry *out)
+{
+    unsigned long long th, ph;
+    int bx, by, bw, bh, bpp;
+    const char *idpart = fname;
+    const char *dash = strchr(fname, '-');
+    int hexrun = 0;
+    memset(out, 0, sizeof *out);
+    while (isxdigit((unsigned char)fname[hexrun])) hexrun++;
+    if (dash && hexrun < 16) idpart = dash + 1;
+    if (sscanf(idpart, "%16llx-%dx%d+%dx%d-%16llx-%dbpp.png",
+               &th, &bx, &by, &bw, &bh, &ph, &bpp) == 7) {
+        out->thash = th; out->phash = ph; out->bpp = bpp;
+        out->bx = bx; out->by = by; out->bw = bw; out->bh = bh;
+        snprintf(out->name, sizeof out->name, "%s", fname);
+    } else {
+        out->symbolic = 1;
+        snprintf(out->name, sizeof out->name, "%.*s",
+                 (int)(dot - fname), fname);
+    }
+}
+
+/* Index of the entry carrying the same identity as `q`, or -1. */
+static int tp_find_identity(const tp_pack_entry *q)
+{
+    for (int i = 0; i < pack_count(); i++) {
+        const tp_pack_entry *pe = pack_at(i);
+        if (pe->symbolic != q->symbolic) continue;
+        if (q->symbolic ? (strcmp(pe->name, q->name) == 0)
+                        : (pe->thash == q->thash &&
+                           pe->phash == q->phash &&
+                           pe->bpp == q->bpp &&
+                           pe->bx == q->bx &&
+                           pe->by == q->by &&
+                           pe->bw == q->bw &&
+                           pe->bh == q->bh))
+            return i;
+    }
+    return -1;
+}
+
+/* Append one scanned file as an entry. A duplicate identity from an
+ * earlier source is announced and both entries stay resident: the match
+ * loops pick the later (higher-priority) enabled one, so a live toggle
+ * falls back to the earlier source's file. The log is the resolved-asset
+ * table: with both mods enabled, the later one wins. Returns 0 when the
+ * table could not grow. */
+static int tp_entry_add(int src, const tp_pack_entry *tmp)
+{
+    int hit = tp_find_identity(tmp);
+    tp_pack_entry *slot;
+    if (hit >= 0)
+        fprintf(stderr, "[texpack] %s overrides \"%s\" (was %s)\n",
+                src_at(src)->label, tmp->name,
+                src_at(pack_at(hit)->src)->label);
+    slot = pack_push();
+    if (!slot) return 0;
+    *slot = *tmp;
+    return 1;
+}
+
+/* Scan one source dir into s_pack. Returns entries touched.
  *
  * Only loose *.png files in the dir itself are entries; the scan is flat,
  * so sibling subdirectories that live under the same textures/ root (such
  * as own/, the declarative own-texture ids) are skipped. */
 static int tp_scan_dir(int src)
 {
-    DIR *d = opendir(s_srcs[src].dir);
+    DIR *d = opendir(src_at(src)->dir);
     if (!d) return 0;
     int touched = 0;
     struct dirent *de;
     while ((de = readdir(d))) {
         const char *dot = strrchr(de->d_name, '.');
-        if (!dot || strcmp(dot, ".png") != 0) continue;
-        if ((int)strlen(de->d_name) >= (int)sizeof(s_pack[0].name)) continue;
         tp_pack_entry tmp;
-        unsigned long long th, ph;
-        int bx, by, bw, bh, bpp;
-        memset(&tmp, 0, sizeof tmp);
-        /* Hash-named files may carry a leading `<label>-` (the draw's scene
-         * category, written by the dumper purely to make a pack browsable).
-         * The label is organisational only — identity is the hash fields —
-         * so skip it and parse from the thash. */
-        const char *idpart = de->d_name;
-        {
-            const char *dash = strchr(de->d_name, '-');
-            int hexrun = 0;
-            while (isxdigit((unsigned char)de->d_name[hexrun])) hexrun++;
-            if (dash && hexrun < 16) idpart = dash + 1;
-        }
-        if (sscanf(idpart, "%16llx-%dx%d+%dx%d-%16llx-%dbpp.png",
-                   &th, &bx, &by, &bw, &bh, &ph, &bpp) == 7) {
-            tmp.thash = th; tmp.phash = ph; tmp.bpp = bpp;
-            tmp.bx = bx; tmp.by = by; tmp.bw = bw; tmp.bh = bh;
-            snprintf(tmp.name, sizeof tmp.name, "%s", de->d_name);
-        } else {
-            /* Symbolic entry: <asset>.png, matched against the game layer's
-             * texture_pack_annotate name; covers the full upload. */
-            tmp.symbolic = 1;
-            snprintf(tmp.name, sizeof tmp.name, "%.*s",
-                     (int)(dot - de->d_name), de->d_name);
-        }
+        if (!dot || strcmp(dot, ".png") != 0) continue;
+        if (strlen(de->d_name) >= sizeof tmp.name) continue;
+        tp_parse_name(de->d_name, dot, &tmp);
         tmp.src = (unsigned char)src;
-        /* Same identity from an earlier source? Replace (later = higher
-         * priority) and say so — the resolved-asset table in log form. */
-        int hit = -1;
-        for (int i = 0; i < s_pack_n; i++) {
-            if (s_pack[i].symbolic != tmp.symbolic) continue;
-            if (tmp.symbolic ? (strcmp(s_pack[i].name, tmp.name) == 0)
-                             : (s_pack[i].thash == tmp.thash &&
-                                s_pack[i].phash == tmp.phash &&
-                                s_pack[i].bpp == tmp.bpp &&
-                                s_pack[i].bx == tmp.bx &&
-                                s_pack[i].by == tmp.by &&
-                                s_pack[i].bw == tmp.bw &&
-                                s_pack[i].bh == tmp.bh)) { hit = i; break; }
-        }
-        if (hit >= 0)
-            /* Same identity from an earlier source: BOTH entries stay
-             * resident and the match loops pick the later (higher-
-             * priority) ENABLED one — so a live toggle can fall back to
-             * the earlier source's file. The log is still the resolved-
-             * asset table: with both mods enabled, this one wins. */
-            fprintf(stderr, "[texpack] %s overrides \"%s\" (was %s)\n",
-                    s_srcs[src].label, tmp.name,
-                    s_srcs[s_pack[hit].src].label);
-        if (s_pack_n < TP_PACK_MAX) {
-            s_pack[s_pack_n++] = tmp;
-            touched++;
-        }
+        if (!tp_entry_add(src, &tmp)) break;
+        touched++;
     }
     closedir(d);
     return touched;
@@ -253,25 +325,22 @@ static int tp_scan_dir(int src)
  * anything was added/overridden. */
 static int tp_add_root_source(int r)
 {
-    if (s_src_n >= TP_SRC_MAX) return 0;
     const char* owner = NULL;
     const char* root = openpete_mods_asset_root(r, &owner);
     if (!root) return 0;
-    int si = s_src_n;
-    snprintf(s_srcs[si].dir, sizeof s_srcs[si].dir,
-             "%s/textures", root);
-    snprintf(s_srcs[si].label, sizeof s_srcs[si].label, "mod %s",
-             owner ? owner : "?");
-    snprintf(s_srcs[si].owner, sizeof s_srcs[si].owner, "%s",
-             owner ? owner : "");
-    int before = s_pack_n;
-    s_src_n++;
+    tp_source *sp = src_push();
+    if (!sp) return 0;
+    int si = src_count() - 1;
+    snprintf(sp->dir, sizeof sp->dir, "%s/textures", root);
+    snprintf(sp->label, sizeof sp->label, "mod %s", owner ? owner : "?");
+    snprintf(sp->owner, sizeof sp->owner, "%s", owner ? owner : "");
+    int before = pack_count();
     int added = tp_scan_dir(si);
-    if (added > 0 || s_pack_n != before)
+    if (added > 0 || pack_count() != before)
         fprintf(stderr, "[texpack] + %s: %d entr%s (%s)\n",
-                s_srcs[si].label, added, added == 1 ? "y" : "ies",
-                s_srcs[si].dir);
-    return added > 0 || s_pack_n != before;
+                src_at(si)->label, added, added == 1 ? "y" : "ies",
+                src_at(si)->dir);
+    return added > 0 || pack_count() != before;
 }
 
 /* ---- Background replacement decode ---------------------------------------
@@ -302,7 +371,10 @@ static int tp_add_root_source(int r)
  * texture a draw is actually waiting for is always worth the memory. */
 #define TP_PREFETCH_BUDGET ((size_t)256 * 1024 * 1024)
 
-#define TP_Q_CAP (TP_PACK_MAX + 1)
+/* Prefetch ring depth. A pack larger than this is not a refusal: a push
+ * into a full ring is dropped and the entry decodes on its first draw
+ * instead, which is the on-demand path every entry can take. */
+#define TP_Q_CAP 8193
 
 static struct {
     SDL_Thread    *th;
@@ -336,9 +408,10 @@ static void tp_q_push(int ei, int front) {
 }
 
 static void tp_decode_one(int ei) {
-    tp_pack_entry *e = &s_pack[ei];
+    tp_pack_entry *e = pack_at(ei);
     char path[704];
-    snprintf(path, sizeof path, "%s/%s%s", s_srcs[e->src].dir, e->name,
+    if (!e) return;
+    snprintf(path, sizeof path, "%s/%s%s", src_at(e->src)->dir, e->name,
              e->symbolic ? ".png" : "");
     int comp = 0, w = 0, h = 0;
     unsigned char *px = stbi_load(path, &w, &h, &comp, 4);
@@ -373,7 +446,8 @@ static int SDLCALL tp_decode_main(void *unused) {
         int over = s_dec.resident >= TP_PREFETCH_BUDGET;
         SDL_UnlockMutex(s_dec.mu);
 
-        tp_pack_entry *e = &s_pack[ei];
+        tp_pack_entry *e = pack_at(ei);
+        if (!e) { SDL_LockMutex(s_dec.mu); s_dec.busy = 0; SDL_UnlockMutex(s_dec.mu); continue; }
         if (over && !e->urgent) {
             /* Back to NONE, not FAILED: the first draw that wants it will
              * re-queue it as urgent and it decodes then. */
@@ -444,7 +518,8 @@ static void tp_decode_stop(void) {
  * marks a draw as waiting: it jumps the prefetch backlog and ignores the
  * memory budget. */
 static void tp_decode_request(int ei, int urgent) {
-    tp_pack_entry *e = &s_pack[ei];
+    tp_pack_entry *e = pack_at(ei);
+    if (!e) return;
     if (urgent) e->urgent = 1;
     int st = SDL_GetAtomicInt(&e->px_state);
     if (st != TP_PX_NONE) return;              /* ready, failed, or queued */
@@ -480,8 +555,8 @@ static void tp_decode_prefetch_all(void) {
     s_dec.pf_done = 0;
     SDL_UnlockMutex(s_dec.mu);
     int n = 0;
-    for (int i = 0; i < s_pack_n; i++)
-        if (tp_src_enabled(s_pack[i].src)) { tp_decode_request(i, 0); n++; }
+    for (int i = 0; i < pack_count(); i++)
+        if (tp_src_enabled(pack_at(i)->src)) { tp_decode_request(i, 0); n++; }
     SDL_LockMutex(s_dec.mu);
     s_dec.pf_outstanding += n;
     SDL_UnlockMutex(s_dec.mu);
@@ -494,8 +569,9 @@ static void tp_repl_scan(void)
 {
     /* The worker indexes s_pack; this rebuilds it. */
     tp_decode_quiesce();
-    s_repl_active = 0; s_pack_n = 0;
-    memset(s_match, 0, sizeof s_match);
+    s_repl_active = 0;
+    mod_cvec_clear(&s_pack);
+    tp_match_reset();
     /* Precedence: --texpack-dir override > OPENPETE_TEXPACK_DIR env > built-in dir. */
     const char *env = getenv("OPENPETE_TEXPACK_DIR");
     if (s_dir_override[0]) {
@@ -507,11 +583,14 @@ static void tp_repl_scan(void)
         if (!base) return;
         snprintf(s_repl_dir, sizeof s_repl_dir, "%sassets/textures", base);
     }
-    s_src_n = 0;
-    snprintf(s_srcs[0].dir, sizeof s_srcs[0].dir, "%s", s_repl_dir);
-    snprintf(s_srcs[0].label, sizeof s_srcs[0].label, "base pack");
-    s_src_n = 1;
-    tp_scan_dir(0);
+    mod_cvec_clear(&s_srcs);
+    {
+        tp_source *base_src = src_push();
+        if (!base_src) return;
+        snprintf(base_src->dir, sizeof base_src->dir, "%s", s_repl_dir);
+        snprintf(base_src->label, sizeof base_src->label, "base pack");
+        tp_scan_dir(0);
+    }
     /* The shipped pack sits inside the install, which may be read-only —
      * so the user's own drop-in dir is a SECOND base root, not a
      * replacement, and outranks the shipped one. An explicit
@@ -520,14 +599,15 @@ static void tp_repl_scan(void)
     if (!s_dir_override[0] && !(env && *env)) {
         char user[512];
         if (openpete_paths_data_dir("assets", user, sizeof user, 0) == 0) {
-            char dir[sizeof s_srcs[0].dir];
+            char dir[560];
             snprintf(dir, sizeof dir, "%s/textures", user);
-            if (strcmp(dir, s_repl_dir) != 0 && s_src_n < TP_SRC_MAX) {
-                int si = s_src_n;
-                snprintf(s_srcs[si].dir, sizeof s_srcs[si].dir, "%s", dir);
-                snprintf(s_srcs[si].label, sizeof s_srcs[si].label, "user pack");
-                s_src_n++;
-                tp_scan_dir(si);
+            if (strcmp(dir, s_repl_dir) != 0) {
+                tp_source *us = src_push();
+                if (us) {
+                    snprintf(us->dir, sizeof us->dir, "%s", dir);
+                    snprintf(us->label, sizeof us->label, "user pack");
+                    tp_scan_dir(src_count() - 1);
+                }
             }
         }
     }
@@ -535,11 +615,12 @@ static void tp_repl_scan(void)
     int n_roots = openpete_mods_asset_root_count();
     for (int r = 0; r < n_roots; r++) (void)tp_add_root_source(r);
     s_seen_roots = n_roots;
-    s_repl_active = s_pack_n > 0;
+    s_repl_active = pack_count() > 0;
+    tp_match_reset();
     if (s_repl_active)
         fprintf(stderr, "[texpack] replacement pack active: %d entries "
-                "(%d source%s)\n", s_pack_n, s_src_n,
-                s_src_n == 1 ? "" : "s");
+                "(%d source%s)\n", pack_count(), src_count(),
+                src_count() == 1 ? "" : "s");
     tp_decode_prefetch_all();
 }
 
@@ -606,9 +687,11 @@ void texture_pack_shutdown(void)
 {
     if (getenv("OPENPETE_TEXPACK_DUMP_REGISTRY")) texture_pack_debug_dump();
     tp_decode_stop();
-    for (int i = 0; i < s_pack_n; i++)
-        if (s_pack[i].px) { stbi_image_free(s_pack[i].px); s_pack[i].px = NULL; }
-    s_pack_n = 0;
+    for (int i = 0; i < pack_count(); i++) {
+        tp_pack_entry *e = pack_at(i);
+        if (e->px) { stbi_image_free(e->px); e->px = NULL; }
+    }
+    mod_cvec_clear(&s_pack);
     s_ent_n = 0; s_annot_n = 0; s_gen++; s_inited = 0; s_repl_active = 0;
 }
 
@@ -840,7 +923,11 @@ static int texture_pack_match_locked(const texture_pack_id *id, texture_pack_rep
     uint64_t base = key * 0xff51afd7ed558ccdull >> 32;
     tp_match_slot *m = NULL;
     for (int p = 0; p < 16; p++) {
-        tp_match_slot *c = &s_match[(base + (uint64_t)p) & (TP_MATCH_SLOTS - 1)];
+        size_t slots = mod_fvec_count(&s_match);
+        tp_match_slot *c;
+        if (!slots) break;                      /* memo unavailable */
+        c = (tp_match_slot*)mod_fvec_at(&s_match,
+                                        (size_t)(base + (uint64_t)p) & (slots - 1));
         if (c->key == key || c->key == 0) { m = c; break; }
     }
     int ei;
@@ -857,13 +944,15 @@ static int texture_pack_match_locked(const texture_pack_id *id, texture_pack_rep
         ei = -1;
         long best = 0;
         if (id->asset) {
-            for (int i = 0; i < s_pack_n; i++)
-                if (s_pack[i].symbolic && tp_src_enabled(s_pack[i].src) &&
-                    strcmp(s_pack[i].name, id->asset) == 0)
+            for (int i = 0; i < pack_count(); i++) {
+                const tp_pack_entry *pe = pack_at(i);
+                if (pe->symbolic && tp_src_enabled(pe->src) &&
+                    strcmp(pe->name, id->asset) == 0)
                     ei = i;                     /* keep last = later source */
+            }
         }
-        if (ei < 0) for (int i = 0; i < s_pack_n; i++) {
-            const tp_pack_entry *e = &s_pack[i];
+        if (ei < 0) for (int i = 0; i < pack_count(); i++) {
+            const tp_pack_entry *e = pack_at(i);
             if (e->symbolic) continue;
             if (!tp_src_enabled(e->src)) continue;
             if (e->thash != id->thash || e->bpp != id->bpp || e->phash != id->phash)
@@ -878,7 +967,8 @@ static int texture_pack_match_locked(const texture_pack_id *id, texture_pack_rep
         if (m) { m->key = key; m->gen = s_gen; m->entry = ei; }
     }
     if (ei < 0) return 0;
-    tp_pack_entry *e = &s_pack[ei];
+    tp_pack_entry *e = pack_at(ei);
+    if (!e) return 0;
     /* Not resident yet: ask for it and draw the base texture this frame
      * rather than blocking the tick on a disk read. */
     if (SDL_GetAtomicInt(&e->px_state) != TP_PX_READY) {
@@ -905,8 +995,8 @@ static int texture_pack_overlaps_locked(const texture_pack_id *id) {
     if (!id) return 0;
     tp_poll_modset(); /* a late root / toggle can activate the pack */
     if (!s_repl_active) return 0;
-    for (int i = 0; i < s_pack_n; i++) {
-        const tp_pack_entry *e = &s_pack[i];
+    for (int i = 0; i < pack_count(); i++) {
+        const tp_pack_entry *e = pack_at(i);
         if (!tp_src_enabled(e->src)) continue;
         if (e->symbolic) {
             if (id->asset && strcmp(e->name, id->asset) == 0) return 1;

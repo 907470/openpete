@@ -23,6 +23,7 @@
 
 #include "wav_loader.h"
 #include "openpete_log.h"
+#include "../mods/mod_vec.h"
 
 #include <AL/al.h>
 
@@ -30,16 +31,16 @@
 #include <stdio.h>
 #include <string.h>
 
-#define SND_CACHE_MAX 16
-#define SND_SOURCES   8
+/* Buffers the cache allocates up front; it grows past this. */
+#define SND_CACHE_INIT 16
+#define SND_SOURCES    8
 
 typedef struct {
     char   key[1024];   /* WAV path, or a caller-chosen label for raw PCM */
     ALuint buf;
 } snd_cache_t;
 
-static snd_cache_t s_cache[SND_CACHE_MAX];
-static int         s_cache_count = 0;
+static mod_fvec    s_cache;      /* snd_cache_t, one per uploaded key */
 static ALuint      s_sources[SND_SOURCES];
 static int         s_inited = 0; /* 0 = not yet, 1 = ok, -1 = AL dead */
 static int         s_muted  = 0;
@@ -62,8 +63,10 @@ static int snd_init(void) {
 
 /* Cached AL buffer for `key`, or 0 if this key has not been uploaded. */
 static ALuint snd_cache_find(const char* key) {
-    for (int i = 0; i < s_cache_count; i++)
-        if (strcmp(s_cache[i].key, key) == 0) return s_cache[i].buf;
+    for (size_t i = 0; i < mod_fvec_count(&s_cache); i++) {
+        const snd_cache_t* c = (const snd_cache_t*)mod_fvec_at(&s_cache, i);
+        if (strcmp(c->key, key) == 0) return c->buf;
+    }
     return 0;
 }
 
@@ -72,11 +75,6 @@ static ALuint snd_cache_find(const char* key) {
 static ALuint snd_cache_upload(const char* key, const int16_t* pcm,
                                uint32_t frame_count, int channels,
                                uint32_t sample_rate) {
-    if (s_cache_count >= SND_CACHE_MAX) {
-        OPL_WARN_F("mods", "sfx_play: sound cache full (%d)",
-                   SND_CACHE_MAX);
-        return 0;
-    }
     ALuint buf = 0;
     alGetError();
     alGenBuffers(1, &buf);
@@ -90,7 +88,16 @@ static ALuint snd_cache_upload(const char* key, const int16_t* pcm,
         if (buf) alDeleteBuffers(1, &buf);
         return 0;
     }
-    snd_cache_t* c = &s_cache[s_cache_count++];
+    if (!s_cache.elem_size)
+        mod_fvec_init(&s_cache, sizeof(snd_cache_t), SND_CACHE_INIT,
+                      "snd_cache", SND_CACHE_INIT);
+    snd_cache_t* c = (snd_cache_t*)mod_fvec_push(&s_cache);
+    if (!c) {
+        OPL_ERROR_F("mods", "sfx_play: sound cache allocation failed — "
+                    "%s not cached", key);
+        alDeleteBuffers(1, &buf);
+        return 0;
+    }
     snprintf(c->key, sizeof c->key, "%s", key);
     c->buf = buf;
     return buf;

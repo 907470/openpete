@@ -99,6 +99,7 @@ void* mod_cvec_push(mod_cvec* v) {
     slot = cvec_slot(v, v->count);
     memset(slot, 0, v->elem_size);
     v->count++;                  /* published after the element is zeroed */
+    if (v->count > v->peak) v->peak = v->count;
     return slot;
 }
 
@@ -162,6 +163,7 @@ void* mod_fvec_push(mod_fvec* v) {
     slot = v->data + v->count * v->elem_size;
     memset(slot, 0, v->elem_size);
     v->count++;
+    if (v->count > v->peak) v->peak = v->count;
     return slot;
 }
 
@@ -181,6 +183,21 @@ void mod_fvec_remove_at(mod_fvec* v, size_t i) {
     v->count--;
 }
 
+int mod_fvec_resize(mod_fvec* v, size_t n) {
+    if (n > v->count) {
+        if (mod_fvec_reserve(v, n) != 0) return -1;
+        memset(v->data + v->count * v->elem_size, 0,
+               (n - v->count) * v->elem_size);
+    }
+    v->count = n;
+    if (v->count > v->peak) v->peak = v->count;
+    return 0;
+}
+
+void mod_fvec_truncate(mod_fvec* v, size_t n) {
+    if (n < v->count) v->count = n;
+}
+
 void mod_fvec_clear(mod_fvec* v) { v->count = 0; }
 
 void mod_fvec_free(mod_fvec* v) {
@@ -195,17 +212,19 @@ static int census_enabled(void) {
 }
 
 static void census_row(const mod_vec_node_t* n) {
-    size_t count, storage;
+    size_t count, peak, storage;
     unsigned long grew;
     if (n->chunked) {
         const mod_cvec* v = (const mod_cvec*)n->vec;
-        count = v->count; storage = v->block_count; grew = v->grew;
+        count = v->count; peak = v->peak; storage = v->block_count;
+        grew = v->grew;
     } else {
         const mod_fvec* v = (const mod_fvec*)n->vec;
-        count = v->count; storage = v->cap; grew = v->grew;
+        count = v->count; peak = v->peak; storage = v->cap; grew = v->grew;
     }
-    OPL_INFO_F("mods", "mod-table: %s count=%zu was=%lu storage=%zu grew=%lu",
-               n->name, count, n->was, storage, grew);
+    OPL_INFO_F("mods", "mod-table: %s count=%zu peak=%zu was=%lu "
+               "storage=%zu grew=%lu",
+               n->name, count, peak, n->was, storage, grew);
 }
 
 void mod_vec_census_report(void) {

@@ -13,9 +13,11 @@
 #include "openpete_log.h"
 #include "openpete_mods.h"
 #include "openpete_paths.h"
+#include "../mods/mod_vec.h"
 
-#define SP_SRC_MAX   17
-#define SP_ENTRY_MAX 4096
+/* Sources and entries the tables allocate up front; both grow past it. */
+#define SP_SRC_INIT   17
+#define SP_ENTRY_INIT 4096
 #define SP_CACHE_MAX 1024
 #define SP_SPU_SIZE  (512u * 1024u)
 
@@ -49,10 +51,37 @@ typedef struct {
     int      len;        /* ADPCM bytes */
 } sp_ident;
 
-static sp_source s_srcs[SP_SRC_MAX];
-static int       s_src_n;
-static sp_entry  s_entries[SP_ENTRY_MAX];
-static int       s_entry_n;
+static mod_fvec  s_srcs;      /* sp_source, index-stable within a rescan */
+static mod_fvec  s_entries;   /* sp_entry */
+
+static sp_source* src_at(int i) {
+    return (sp_source*)mod_fvec_at(&s_srcs, (size_t)i);
+}
+static sp_entry* entry_at(int i) {
+    return (sp_entry*)mod_fvec_at(&s_entries, (size_t)i);
+}
+static int src_count(void)   { return (int)mod_fvec_count(&s_srcs); }
+static int entry_count(void) { return (int)mod_fvec_count(&s_entries); }
+
+/* Append a source, or NULL when the allocation fails. */
+static sp_source* src_push(void) {
+    if (!s_srcs.elem_size)
+        mod_fvec_init(&s_srcs, sizeof(sp_source), SP_SRC_INIT, "sfx_src",
+                      SP_SRC_INIT);
+    sp_source* s = (sp_source*)mod_fvec_push(&s_srcs);
+    if (!s) OPL_ERROR_F("sfxpack", "source table allocation failed");
+    return s;
+}
+
+/* Append an entry, or NULL when the allocation fails. */
+static sp_entry* entry_push(void) {
+    if (!s_entries.elem_size)
+        mod_fvec_init(&s_entries, sizeof(sp_entry), SP_ENTRY_INIT,
+                      "sfx_entry", SP_ENTRY_INIT);
+    sp_entry* e = (sp_entry*)mod_fvec_push(&s_entries);
+    if (!e) OPL_ERROR_F("sfxpack", "entry table allocation failed");
+    return e;
+}
 static sp_ident  s_cache[SP_CACHE_MAX];
 static unsigned  s_gen;
 static char      s_dir_override[512];
@@ -141,69 +170,88 @@ static void entry_release(sp_entry* e)
 
 /* ── sources + scan ──────────────────────────────────────────────── */
 
+/* Insert or refresh the entry for `path` in source `si`. An unchanged
+ * file keeps its decoded PCM; a changed one is released and re-read.
+ * Returns the entry, or NULL when the table could not grow. */
+static sp_entry* entry_upsert(int si, const char* path, op_sfx_name id,
+                              const struct stat* st)
+{
+    sp_entry* e = NULL;
+    for (int i = 0; i < entry_count(); i++) {
+        sp_entry* o = entry_at(i);
+        if (o->src == si && strcmp(o->path, path) == 0) { e = o; break; }
+    }
+    if (!e) {
+        e = entry_push();
+        if (!e) return NULL;
+        e->src = si;
+        snprintf(e->path, sizeof e->path, "%s", path);
+    } else if (e->mtime != (long)st->st_mtime ||
+               e->size != (long)st->st_size) {
+        entry_release(e);
+    }
+    e->id    = id;
+    e->mtime = (long)st->st_mtime;
+    e->size  = (long)st->st_size;
+    return e;
+}
+
+/* Announce the earlier source `e` overrides, if any. Duplicate identity
+ * across sources: later wins, both stay so a live disable falls back. */
+static void note_override(int si, const sp_entry* e, const char* fname)
+{
+    for (int i = 0; i < entry_count(); i++) {
+        const sp_entry* o = entry_at(i);
+        int same;
+        if (o == e || o->src < 0 || o->src >= si) continue;
+        same = o->id.kind == e->id.kind &&
+               (e->id.kind == OP_SFX_NAME_HASH
+                    ? (o->id.hash == e->id.hash && o->id.pitch == e->id.pitch)
+                    : strcmp(o->id.name, e->id.name) == 0);
+        if (same) {
+            OPL_INFO_F("sfxpack", "%s overrides \"%s\" (was %s)",
+                       src_at(si)->label, fname, src_at(o->src)->label);
+            break;
+        }
+    }
+}
+
 static void scan_dir(int si)
 {
-    DIR* d = opendir(s_srcs[si].dir);
+    DIR* d = opendir(src_at(si)->dir);
     if (!d) return;
     struct dirent* de;
     int added = 0;
     while ((de = readdir(d)) != NULL) {
         op_sfx_name id;
-        if (op_sfx_name_parse(de->d_name, &id) == OP_SFX_NAME_NONE) continue;
         char path[640];
-        snprintf(path, sizeof path, "%s/%s", s_srcs[si].dir, de->d_name);
         struct stat st;
+        sp_entry* e;
+        if (op_sfx_name_parse(de->d_name, &id) == OP_SFX_NAME_NONE) continue;
+        snprintf(path, sizeof path, "%s/%s", src_at(si)->dir, de->d_name);
         if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) continue;
-        /* Re-use the existing entry (its decoded PCM survives) when the
-         * file is unchanged; otherwise refresh it. */
-        sp_entry* e = NULL;
-        for (int i = 0; i < s_entry_n; i++)
-            if (s_entries[i].src == si && strcmp(s_entries[i].path, path) == 0) { e = &s_entries[i]; break; }
-        if (!e) {
-            if (s_entry_n >= SP_ENTRY_MAX) break;
-            e = &s_entries[s_entry_n++];
-            memset(e, 0, sizeof *e);
-            e->src = si;
-            snprintf(e->path, sizeof e->path, "%s", path);
-        } else if (e->mtime != (long)st.st_mtime || e->size != (long)st.st_size) {
-            entry_release(e);
-        }
-        e->id    = id;
-        e->mtime = (long)st.st_mtime;
-        e->size  = (long)st.st_size;
+        e = entry_upsert(si, path, id, &st);
+        if (!e) break;
         added++;
-        /* Duplicate identity across sources: later wins, both stay so a
-         * live disable falls back. */
-        for (int i = 0; i < s_entry_n; i++) {
-            sp_entry* o = &s_entries[i];
-            if (o == e || o->src < 0 || o->src >= si) continue;
-            int same = o->id.kind == id.kind &&
-                       (id.kind == OP_SFX_NAME_HASH
-                            ? (o->id.hash == id.hash && o->id.pitch == id.pitch)
-                            : strcmp(o->id.name, id.name) == 0);
-            if (same) {
-                OPL_INFO_F("sfxpack", "%s overrides \"%s\" (was %s)",
-                           s_srcs[si].label, de->d_name, s_srcs[o->src].label);
-                break;
-            }
-        }
+        note_override(si, e, de->d_name);
     }
     closedir(d);
     if (added)
-        OPL_INFO_F("sfxpack", "%s: %d file%s (%s)", s_srcs[si].label, added,
-                   added == 1 ? "" : "s", s_srcs[si].dir);
+        OPL_INFO_F("sfxpack", "%s: %d file%s (%s)", src_at(si)->label, added,
+                   added == 1 ? "" : "s", src_at(si)->dir);
 }
 
 static void add_root_source(int r)
 {
-    if (s_src_n >= SP_SRC_MAX) return;
     const char* owner = NULL;
     const char* root = openpete_mods_asset_root(r, &owner);
     if (!root) return;
-    int si = s_src_n++;
-    snprintf(s_srcs[si].dir, sizeof s_srcs[si].dir, "%s/sfx", root);
-    snprintf(s_srcs[si].label, sizeof s_srcs[si].label, "mod %s", owner ? owner : "?");
-    snprintf(s_srcs[si].owner, sizeof s_srcs[si].owner, "%s", owner ? owner : "");
+    sp_source* src = src_push();
+    if (!src) return;
+    int si = src_count() - 1;
+    snprintf(src->dir, sizeof src->dir, "%s/sfx", root);
+    snprintf(src->label, sizeof src->label, "mod %s", owner ? owner : "?");
+    snprintf(src->owner, sizeof src->owner, "%s", owner ? owner : "");
     scan_dir(si);
 }
 
@@ -212,15 +260,17 @@ static void rescan(void)
     /* Entries whose file vanished are dropped; the rest keep their PCM.
      * Code-registered entries have no file and live until re-registered. */
     int keep = 0;
-    for (int i = 0; i < s_entry_n; i++) {
+    for (int i = 0; i < entry_count(); i++) {
         struct stat st;
-        if (s_entries[i].src < 0 || stat(s_entries[i].path, &st) == 0)
-            s_entries[keep++] = s_entries[i];
-        else entry_release(&s_entries[i]);
+        sp_entry* e = entry_at(i);
+        if (e->src < 0 || stat(e->path, &st) == 0) *entry_at(keep++) = *e;
+        else entry_release(e);
     }
-    s_entry_n = keep;
+    mod_fvec_truncate(&s_entries, (size_t)keep);
 
-    s_src_n = 0;
+    /* Sources are rebuilt in the same order every rescan, so the `src`
+     * index a surviving entry carries still names its source. */
+    mod_fvec_clear(&s_srcs);
     const char* env = getenv("OPENPETE_SFXPACK_DIR");
     char base[512];
     if (s_dir_override[0]) snprintf(base, sizeof base, "%s", s_dir_override);
@@ -229,26 +279,27 @@ static void rescan(void)
         const char* bp = SDL_GetBasePath();
         snprintf(base, sizeof base, "%sassets/sfx", bp ? bp : "./");
     }
-    snprintf(s_srcs[0].dir, sizeof s_srcs[0].dir, "%s", base);
-    snprintf(s_srcs[0].label, sizeof s_srcs[0].label, "base pack");
-    s_srcs[0].owner[0] = '\0';
-    s_src_n = 1;
+    sp_source* base_src = src_push();
+    if (!base_src) return;
+    snprintf(base_src->dir, sizeof base_src->dir, "%s", base);
+    snprintf(base_src->label, sizeof base_src->label, "base pack");
     scan_dir(0);
     if (!s_dir_override[0] && !(env && *env)) {
         char user[512];
         if (openpete_paths_data_dir("assets", user, sizeof user, 0) == 0) {
-            int si = s_src_n++;
-            snprintf(s_srcs[si].dir, sizeof s_srcs[si].dir, "%s/sfx", user);
-            snprintf(s_srcs[si].label, sizeof s_srcs[si].label, "user pack");
-            s_srcs[si].owner[0] = '\0';
-            scan_dir(si);
+            sp_source* us = src_push();
+            if (us) {
+                snprintf(us->dir, sizeof us->dir, "%s/sfx", user);
+                snprintf(us->label, sizeof us->label, "user pack");
+                scan_dir(src_count() - 1);
+            }
         }
     }
     int n_roots = openpete_mods_asset_root_count();
     for (int r = 0; r < n_roots; r++) add_root_source(r);
     s_seen_roots = n_roots;
-    s_census.active = s_entry_n > 0;
-    s_census.files  = s_entry_n;
+    s_census.active = entry_count() > 0;
+    s_census.files  = entry_count();
 }
 
 /* ── identity cache ──────────────────────────────────────────────── */
@@ -277,7 +328,7 @@ static const sp_ident* ident_lookup(uint32_t addr)
 
 static int entry_enabled(const sp_entry* e)
 {
-    const char* owner = e->src < 0 ? e->owner : s_srcs[e->src].owner;
+    const char* owner = e->src < 0 ? e->owner : src_at(e->src)->owner;
     return !owner[0] || openpete_mods_is_enabled(owner);
 }
 
@@ -293,8 +344,8 @@ static sp_entry* match(const sp_ident* id, uint32_t addr, int base_pitch)
     int best_tier = 0;
     const char* names[8];
     int n_names = s_name_resolver ? s_name_resolver(addr, names, 8) : 0;
-    for (int i = 0; i < s_entry_n; i++) {
-        sp_entry* e = &s_entries[i];
+    for (int i = 0; i < entry_count(); i++) {
+        sp_entry* e = entry_at(i);
         int tier = 0;
         if (e->id.kind == OP_SFX_NAME_HASH && id && e->id.hash == id->hash)
             tier = e->id.pitch < 0 ? 3 : (base_pitch > 0 && e->id.pitch == base_pitch ? 4 : 2);
@@ -349,7 +400,7 @@ static int override_cb(int voice, unsigned int addr, int stock_samples,
         const char* v = getenv("OPENPETE_SFXPACK_LOG");
         s_log = (v && *v && *v != '0') ? 1 : 0;
     }
-    if (s_entry_n == 0) return 0;
+    if (entry_count() == 0) return 0;
     /* Late asset roots (a mod enabled mid-session) become sources here,
      * the way the texture pack does it. */
     if (openpete_mods_asset_root_count() > s_seen_roots) rescan();
@@ -468,15 +519,14 @@ int sfx_pack_register_symbolic_adpcm(const char* owner, const char* name,
     if (n <= 0) { SDL_free(pcm); return -1; }
     const char* own = owner ? owner : "";
     sp_entry* e = NULL;
-    for (int i = 0; i < s_entry_n; i++) {
-        sp_entry* o = &s_entries[i];
+    for (int i = 0; i < entry_count(); i++) {
+        sp_entry* o = entry_at(i);
         if (o->src < 0 && strcmp(o->owner, own) == 0 &&
             strcmp(o->id.name, name) == 0) { e = o; break; }
     }
     if (!e) {
-        if (s_entry_n >= SP_ENTRY_MAX) { SDL_free(pcm); return -1; }
-        e = &s_entries[s_entry_n++];
-        memset(e, 0, sizeof *e);
+        e = entry_push();
+        if (!e) { SDL_free(pcm); return -1; }
         e->src = -1;
         snprintf(e->owner, sizeof e->owner, "%s", own);
     } else {
@@ -513,10 +563,10 @@ void sfx_pack_init(void)
 {
     rescan();
     PsyX_SPUAL_SetSampleOverride(override_cb);
-    if (s_entry_n)
+    if (entry_count())
         OPL_INFO_F("sfxpack", "sfx pack active: %d file%s (%d source%s)",
-                   s_entry_n, s_entry_n == 1 ? "" : "s", s_src_n,
-                   s_src_n == 1 ? "" : "s");
+                   entry_count(), entry_count() == 1 ? "" : "s", src_count(),
+                   src_count() == 1 ? "" : "s");
 }
 
 void sfx_pack_generation_bump(void)

@@ -49,6 +49,7 @@
 #include "openpete_mods.h"
 #include "openpete_log.h"
 #include "openpete_fnv1a64.h"
+#include "mod_vec.h"
 
 #include "psx_runtime_internal.h" /* psx_runtime_register_region */
 #include "openpete_vstream.h" /* stream-handle table (vstream_handle) */
@@ -109,21 +110,27 @@ static uint32_t    s_rows_n = 0;
 
 /* Per-owner call cursors: reset to 0 when the owner (re)enters so its
  * allocation sequence replays from the first row. */
-#define ARENA_OWNERS_MAX 64
+/* Cursors the table allocates up front; it grows past this. */
+#define ARENA_OWNERS_INIT 64
 typedef struct {
     char     owner[OPENPETE_ARENA_OWNER_MAX];
     uint32_t next_call;
 } arena_owner_t;
-static arena_owner_t s_owners[ARENA_OWNERS_MAX];
-static uint32_t      s_owners_n = 0;
+static mod_fvec s_owners;   /* arena_owner_t, one per owner seen */
 
+/* The returned pointer is call-local: the next create invalidates it. */
 static arena_owner_t* owner_slot(const char* owner, int create) {
-    for (uint32_t i = 0; i < s_owners_n; i++)
-        if (strcmp(s_owners[i].owner, owner) == 0) return &s_owners[i];
-    if (!create || s_owners_n >= ARENA_OWNERS_MAX) return NULL;
-    arena_owner_t* o = &s_owners[s_owners_n++];
+    for (size_t i = 0; i < mod_fvec_count(&s_owners); i++) {
+        arena_owner_t* o = (arena_owner_t*)mod_fvec_at(&s_owners, i);
+        if (strcmp(o->owner, owner) == 0) return o;
+    }
+    if (!create) return NULL;
+    if (!s_owners.elem_size)
+        mod_fvec_init(&s_owners, sizeof(arena_owner_t), ARENA_OWNERS_INIT,
+                      "arena_owners", ARENA_OWNERS_INIT);
+    arena_owner_t* o = (arena_owner_t*)mod_fvec_push(&s_owners);
+    if (!o) return NULL;
     snprintf(o->owner, sizeof o->owner, "%s", owner);
-    o->next_call = 0;
     return o;
 }
 
@@ -153,8 +160,8 @@ uint32_t openpete_mods_guest_alloc(uint32_t size, uint32_t align,
 
     arena_owner_t* o = owner_slot(owner, 1);
     if (!o) {
-        OPL_ERROR_F("mods", "guest arena: owner table full (%d) — %s "
-                    "refused", ARENA_OWNERS_MAX, owner);
+        OPL_ERROR_F("mods", "guest arena: owner table allocation failed "
+                    "— %s refused", owner);
         return 0;
     }
     uint32_t call_idx = o->next_call;
@@ -249,8 +256,8 @@ uint32_t openpete_mods_vstream_handle(uint32_t vaddr, const char* owner) {
     }
     arena_owner_t* o = owner_slot(owner, 1);
     if (!o) {
-        OPL_ERROR_F("mods", "vstream_handle: owner table full (%d) — %s "
-                    "refused", ARENA_OWNERS_MAX, owner);
+        OPL_ERROR_F("mods", "vstream_handle: owner table allocation "
+                    "failed — %s refused", owner);
         return 0;
     }
     uint32_t call_idx = o->next_call;

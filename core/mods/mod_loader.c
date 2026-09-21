@@ -931,17 +931,17 @@ typedef struct {
     int  on;
     int  defer_logged; /* one deferral notice per request, not per tick */
 } toggle_req_t;
-static toggle_req_t s_toggle_q[16];
-static int          s_toggle_n = 0;
+/* Requests the queue allocates up front; it grows past this. */
+#define TOGGLE_Q_INIT 16
+static mod_fvec s_toggle_q;   /* toggle_req_t, drained per tick boundary */
 static unsigned     s_toggle_epoch = 0; /* bumped per applied change */
 
 unsigned openpete_mods_toggle_epoch(void) { return s_toggle_epoch; }
 
 typedef struct { unsigned tick; char id[MOD_ID_MAX]; int on; } toggle_sched_t;
-static toggle_sched_t s_toggle_sched[16];
+#define TOGGLE_SCHED_INIT 16
+static mod_fvec s_toggle_sched;   /* toggle_sched_t, parsed once at boot */
 static int mod_is_mutative(const struct openpete_mod* m);
-
-static int            s_toggle_sched_n = 0;
 
 int         openpete_mods_count(void) { return s_mod_count; }
 const char* openpete_mods_id(int i) {
@@ -1098,11 +1098,17 @@ int openpete_mods_ui_refuse_section(int i, const char* why) {
 
 int openpete_mods_set_mod_enabled(const char* id, int on) {
     if (!id || !id[0]) return -1;
-    if (s_toggle_n >= (int)(sizeof s_toggle_q / sizeof s_toggle_q[0]))
+    if (!s_toggle_q.elem_size)
+        mod_fvec_init(&s_toggle_q, sizeof(toggle_req_t), TOGGLE_Q_INIT,
+                      "toggle_queue", TOGGLE_Q_INIT);
+    toggle_req_t* r = (toggle_req_t*)mod_fvec_push(&s_toggle_q);
+    if (!r) {
+        OPL_ERROR_F("mods", "live toggle: request queue allocation failed "
+                    "— \"%s\" not queued", id);
         return -1;
-    snprintf(s_toggle_q[s_toggle_n].id, MOD_ID_MAX, "%s", id);
-    s_toggle_q[s_toggle_n].on = on ? 1 : 0;
-    s_toggle_n++;
+    }
+    snprintf(r->id, MOD_ID_MAX, "%s", id);
+    r->on = on ? 1 : 0;
     return 0;
 }
 
@@ -1117,10 +1123,15 @@ static void toggle_parse_env(void) {
         unsigned tick;
         char id[MOD_ID_MAX];
         int on;
-        if (sscanf(tok, "%u:%63[^:]:%d", &tick, id, &on) == 3 &&
-            s_toggle_sched_n < (int)(sizeof s_toggle_sched /
-                                     sizeof s_toggle_sched[0])) {
-            toggle_sched_t* t = &s_toggle_sched[s_toggle_sched_n++];
+        toggle_sched_t* t = NULL;
+        if (sscanf(tok, "%u:%63[^:]:%d", &tick, id, &on) == 3) {
+            if (!s_toggle_sched.elem_size)
+                mod_fvec_init(&s_toggle_sched, sizeof(toggle_sched_t),
+                              TOGGLE_SCHED_INIT, "toggle_sched",
+                              TOGGLE_SCHED_INIT);
+            t = (toggle_sched_t*)mod_fvec_push(&s_toggle_sched);
+        }
+        if (t) {
             t->tick = tick;
             snprintf(t->id, MOD_ID_MAX, "%s", id);
             t->on = on ? 1 : 0;
@@ -1129,9 +1140,10 @@ static void toggle_parse_env(void) {
                         "(want tick:id:0|1)", tok);
         }
     }
-    if (s_toggle_sched_n)
-        OPL_INFO_F("mods", "toggle schedule armed (%d entr%s)",
-                   s_toggle_sched_n, s_toggle_sched_n == 1 ? "y" : "ies");
+    size_t n_sched = mod_fvec_count(&s_toggle_sched);
+    if (n_sched)
+        OPL_INFO_F("mods", "toggle schedule armed (%zu entr%s)",
+                   n_sched, n_sched == 1 ? "y" : "ies");
 }
 
 /* Scheduled config edits (harness): OPENPETE_MODS_CFG_APPLY=
@@ -1145,8 +1157,8 @@ typedef struct {
     char     key[64];
     int64_t  val;
 } cfg_apply_sched_t;
-static cfg_apply_sched_t s_cfg_sched[8];
-static int               s_cfg_sched_n = 0;
+#define CFG_SCHED_INIT 8
+static mod_fvec s_cfg_sched;   /* cfg_apply_sched_t, parsed once at boot */
 
 static void cfg_apply_schedule_parse(void) {
     const char* e = getenv("OPENPETE_MODS_CFG_APPLY");
@@ -1158,24 +1170,31 @@ static void cfg_apply_schedule_parse(void) {
          tok = strtok_r(NULL, ",", &save)) {
         cfg_apply_sched_t t;
         long long v;
+        cfg_apply_sched_t* slot = NULL;
         if (sscanf(tok, "%u:%63[^:]:%63[^=]=%lld", &t.tick, t.id, t.key,
-                   &v) == 4 &&
-            s_cfg_sched_n < (int)(sizeof s_cfg_sched / sizeof s_cfg_sched[0])) {
+                   &v) == 4) {
+            if (!s_cfg_sched.elem_size)
+                mod_fvec_init(&s_cfg_sched, sizeof(cfg_apply_sched_t),
+                              CFG_SCHED_INIT, "cfg_sched", CFG_SCHED_INIT);
+            slot = (cfg_apply_sched_t*)mod_fvec_push(&s_cfg_sched);
+        }
+        if (slot) {
             t.val = (int64_t)v;
-            s_cfg_sched[s_cfg_sched_n++] = t;
+            *slot = t;
         } else {
             OPL_ERROR_F("mods", "OPENPETE_MODS_CFG_APPLY: bad token \"%s\" "
                         "(want tick:id:key=int)", tok);
         }
     }
-    if (s_cfg_sched_n)
-        OPL_INFO_F("mods", "config-apply schedule armed (%d entr%s)",
-                   s_cfg_sched_n, s_cfg_sched_n == 1 ? "y" : "ies");
+    size_t n_cfg = mod_fvec_count(&s_cfg_sched);
+    if (n_cfg)
+        OPL_INFO_F("mods", "config-apply schedule armed (%zu entr%s)",
+                   n_cfg, n_cfg == 1 ? "y" : "ies");
 }
 
 static void cfg_apply_schedule_run(unsigned canonical_tick) {
-    for (int i = 0; i < s_cfg_sched_n; i++) {
-        cfg_apply_sched_t* t = &s_cfg_sched[i];
+    for (size_t i = 0; i < mod_fvec_count(&s_cfg_sched); i++) {
+        cfg_apply_sched_t* t = (cfg_apply_sched_t*)mod_fvec_at(&s_cfg_sched, i);
         if (t->tick != canonical_tick) continue;
         int idx = -1;
         for (int m = 0; m < s_mod_count; m++)
@@ -1195,10 +1214,11 @@ static void cfg_apply_schedule_run(unsigned canonical_tick) {
 
 void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
     s_current_tick = canonical_tick;
-    for (int i = 0; i < s_toggle_sched_n; i++) {
-        if (s_toggle_sched[i].tick == canonical_tick)
-            (void)openpete_mods_set_mod_enabled(s_toggle_sched[i].id,
-                                                s_toggle_sched[i].on);
+    for (size_t i = 0; i < mod_fvec_count(&s_toggle_sched); i++) {
+        const toggle_sched_t* t =
+            (const toggle_sched_t*)mod_fvec_at(&s_toggle_sched, i);
+        if (t->tick == canonical_tick)
+            (void)openpete_mods_set_mod_enabled(t->id, t->on);
     }
     cfg_apply_schedule_run(canonical_tick);
     hot_reload_poll();
@@ -1224,10 +1244,16 @@ void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
             openpete_mods_config_load(mod, mod->dir, mod->log_tag);
     }
 
-    int kept = 0;
-    for (int q = 0; q < s_toggle_n; q++) {
-        const char* id = s_toggle_q[q].id;
-        int on = s_toggle_q[q].on;
+    /* The queue is drained in place: a deferred request is compacted down
+     * to `kept` and the tail is dropped at the end. The bound is re-read
+     * per iteration, so a request queued from a toggle body is drained by
+     * this same pass. The request is copied out first: that body's queue
+     * push may move the run under a held element pointer. */
+    size_t kept = 0;
+    for (size_t q = 0; q < mod_fvec_count(&s_toggle_q); q++) {
+        toggle_req_t cur = *(toggle_req_t*)mod_fvec_at(&s_toggle_q, q);
+        const char* id = cur.id;
+        int on = cur.on;
         struct openpete_mod* mod = NULL;
         for (int i = 0; i < s_mod_count; i++)
             if (strcmp(s_mods[i].id, id) == 0) { mod = &s_mods[i]; break; }
@@ -1241,12 +1267,12 @@ void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
          * the moment they leave the slot. The epoch must not bump until
          * it actually applies. */
         if (!on && openpete_mods_registry_owner_busy(id)) {
-            if (!s_toggle_q[q].defer_logged) {
+            if (!cur.defer_logged) {
                 OPL_INFO_F("mods", "live toggle: \"%s\" deferred — can't "
                            "be turned off while inside its level", id);
-                s_toggle_q[q].defer_logged = 1;
+                cur.defer_logged = 1;
             }
-            s_toggle_q[kept++] = s_toggle_q[q];
+            *(toggle_req_t*)mod_fvec_at(&s_toggle_q, kept++) = cur;
             continue;
         }
         if (on && !mod->entered && mod_enter_deferred(mod) != 0) {
@@ -1269,7 +1295,7 @@ void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
          * the new state. */
         if (mod->toggle_fn) mod->toggle_fn(cpu, on);
     }
-    s_toggle_n = kept;
+    mod_fvec_truncate(&s_toggle_q, kept);
 }
 
 const char* openpete_mods_build_key(const char* id) {

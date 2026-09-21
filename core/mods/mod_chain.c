@@ -28,6 +28,7 @@
 #include "openpete_mod_api.h"
 #include "openpete_log.h"
 #include "openpete_time.h" /* per-mod time instrument */
+#include "mod_vec.h"
 #include "../ui/openpete_imgui_guard.h" /* hook-owner attribution */
 
 #include <stdio.h>  /* snprintf — owner-state table */
@@ -236,7 +237,8 @@ void openpete_mods_chain_set_owner_enabled(const char* owner_id, int on) {
  * contract made socially enforceable); full dump under
  * OPENPETE_MOD_TIMERS=1. */
 
-#define MOD_TIME_SLOTS    24
+/* Slots the report table allocates up front; it grows past this. */
+#define MOD_TIME_INIT      24
 #define MOD_TICK_BUDGET_MS 4.0
 
 typedef struct {
@@ -245,21 +247,26 @@ typedef struct {
     uint32_t    tick_calls, present_calls;
 } mod_time_slot_t;
 
-static mod_time_slot_t s_times[MOD_TIME_SLOTS];
-static int             s_time_count = 0;
+static mod_fvec s_times;   /* mod_time_slot_t, one per owner seen */
 
 void openpete_mods_time_add(const char* owner, op_time_t ns, int is_present) {
     if (!owner || ns < 0) return;
     mod_time_slot_t* t = NULL;
-    for (int i = 0; i < s_time_count; i++)
-        if (s_times[i].owner == owner ||
-            strcmp(s_times[i].owner, owner) == 0) { t = &s_times[i]; break; }
+    for (size_t i = 0; i < mod_fvec_count(&s_times); i++) {
+        mod_time_slot_t* c = (mod_time_slot_t*)mod_fvec_at(&s_times, i);
+        if (c->owner == owner || strcmp(c->owner, owner) == 0) { t = c; break; }
+    }
     if (!t) {
-        if (s_time_count >= MOD_TIME_SLOTS) return;
-        t = &s_times[s_time_count++];
+        if (!s_times.elem_size)
+            mod_fvec_init(&s_times, sizeof(mod_time_slot_t), MOD_TIME_INIT,
+                          "mod_time", MOD_TIME_INIT);
+        t = (mod_time_slot_t*)mod_fvec_push(&s_times);
+        if (!t) {
+            OPL_ERROR_F("mods", "timer table allocation failed — %s is "
+                        "absent from the time report", owner);
+            return;
+        }
         t->owner = owner;
-        t->tick_ns = t->present_ns = 0;
-        t->tick_calls = t->present_calls = 0;
     }
     if (is_present) { t->present_ns += ns; t->present_calls++; }
     else            { t->tick_ns    += ns; t->tick_calls++;    }
@@ -270,8 +277,8 @@ void openpete_mods_time_report(unsigned ticks_elapsed) {
     const char* mt_env = getenv("OPENPETE_MOD_TIMERS");
     int s_dump = (mt_env && *mt_env && *mt_env != '0') ? 1 : 0;
     if (!ticks_elapsed) ticks_elapsed = 1;
-    for (int i = 0; i < s_time_count; i++) {
-        mod_time_slot_t* t = &s_times[i];
+    for (size_t i = 0; i < mod_fvec_count(&s_times); i++) {
+        mod_time_slot_t* t = (mod_time_slot_t*)mod_fvec_at(&s_times, i);
         double tick_ms = (double)t->tick_ns / OP_NS_PER_MS
                        / (double)ticks_elapsed;
         if (tick_ms > MOD_TICK_BUDGET_MS)

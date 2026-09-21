@@ -10,6 +10,7 @@
 #include "openpete_mod_api.h"
 #include "openpete_log.h"
 #include "openpete_state.h"
+#include "mod_vec.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -97,43 +98,53 @@ int openpete_mods_pending_state_op(unsigned* out_slot) {
  * its Mods-panel row has to say so. A first enable during the session
  * appends its root here at the tail (= highest priority). */
 
-#define ASSET_ROOTS_MAX 16
+/* Roots the table allocates up front; it grows past this. */
+#define ASSET_ROOTS_INIT 16
 
-static struct {
+typedef struct {
     char        dir[1024];
     const char* owner;
-} s_roots[ASSET_ROOTS_MAX];
-static int s_root_n = 0;
+} asset_root_t;
+static mod_fvec s_roots;   /* asset_root_t, append-only, index-stable */
 
 int openpete_mods_register_asset_root(const char* dir, const char* owner) {
     if (!dir || !dir[0]) return -1;
-    if (s_root_n >= ASSET_ROOTS_MAX) {
-        OPL_WARN_F("mods", "asset-root table full (%d) — %s's assets "
-                   "ignored", ASSET_ROOTS_MAX, owner ? owner : "?");
+    if (!s_roots.elem_size)
+        mod_fvec_init(&s_roots, sizeof(asset_root_t), ASSET_ROOTS_INIT,
+                      "asset_roots", ASSET_ROOTS_INIT);
+    asset_root_t* r = (asset_root_t*)mod_fvec_push(&s_roots);
+    if (!r) {
+        OPL_WARN_F("mods", "asset-root table allocation failed — %s's "
+                   "assets ignored", owner ? owner : "?");
         return -1;
     }
-    snprintf(s_roots[s_root_n].dir, sizeof s_roots[s_root_n].dir, "%s", dir);
-    s_roots[s_root_n].owner = owner;
-    s_root_n++;
+    snprintf(r->dir, sizeof r->dir, "%s", dir);
+    r->owner = owner;
     OPL_INFO_F("mods", "asset root registered: %s (%s)", dir,
                owner ? owner : "?");
     /* Declarative own-textures ride the root registration (boot-scoped,
      * like every asset overlay). The owner string passed here is the
      * loader's session-lifetime id — the registry keeps that pointer. */
     {
-        int n = openpete_mods_texture_scan_root(
-            s_roots[s_root_n - 1].dir, s_roots[s_root_n - 1].owner);
+        int n = openpete_mods_texture_scan_root(r->dir, r->owner);
         if (n > 0)
             OPL_INFO_F("mods", "asset root %s: %d own-texture PNG(s)",
-                       s_roots[s_root_n - 1].dir, n);
+                       r->dir, n);
     }
     return 0;
 }
 
-int openpete_mods_asset_root_count(void) { return s_root_n; }
+int openpete_mods_asset_root_count(void) {
+    return (int)mod_fvec_count(&s_roots);
+}
 
+/* The returned dir pointer is valid until the next root registers, which
+ * may move the run; every caller copies it inside the call. */
 const char* openpete_mods_asset_root(int i, const char** owner) {
-    if (i < 0 || i >= s_root_n) return NULL;
-    if (owner) *owner = s_roots[i].owner;
-    return s_roots[i].dir;
+    const asset_root_t* r;
+    if (i < 0) return NULL;
+    r = (const asset_root_t*)mod_fvec_at(&s_roots, (size_t)i);
+    if (!r) return NULL;
+    if (owner) *owner = r->owner;
+    return r->dir;
 }

@@ -31,7 +31,9 @@
 // caller reports it with the table's name and the owner.
 //
 // A zeroed vec is a valid empty vec for count, at, clear, remove_at and
-// free; push needs init, since the element size lives in the struct.
+// free; push needs init, since the element size lives in the struct. A
+// static table therefore inits on its first push: `elem_size` is zero
+// until init has run and nonzero afterwards, which is the test.
 
 #ifndef OPENPETE_MOD_VEC_H
 #define OPENPETE_MOD_VEC_H
@@ -71,6 +73,7 @@ typedef struct mod_cvec {
     size_t elem_size;
     unsigned block_shift;       /* block_elems = (size_t)1 << block_shift */
     unsigned long grew;         /* block allocations since init */
+    size_t peak;                /* highest count the table has held */
     mod_vec_retired_t* retired; /* superseded block indices */
     mod_vec_node_t census;
 } mod_cvec;
@@ -83,6 +86,7 @@ typedef struct mod_fvec {
     size_t elem_size;
     size_t init_cap;            /* capacity the first push allocates */
     unsigned long grew;         /* reallocations since init */
+    size_t peak;                /* highest count the table has held */
     mod_vec_node_t census;
 } mod_fvec;
 
@@ -177,6 +181,21 @@ int mod_fvec_reserve(mod_fvec* v, size_t n);
  */
 void mod_fvec_remove_at(mod_fvec* v, size_t i);
 
+/**
+ * @brief Set the count to @p n, zeroing any elements this adds.
+ *        For a slot table whose size is a function of another table.
+ * @return 0 on success, -1 on allocation failure (the count is unchanged).
+ */
+int mod_fvec_resize(mod_fvec* v, size_t n);
+
+/**
+ * @brief Drop every element above index @p n, keeping the capacity.
+ *        For the compact-in-place idiom: the caller copies the survivors
+ *        down to [0, n) and calls this to drop the tail. A count at or
+ *        below @p n is left alone.
+ */
+void mod_fvec_truncate(mod_fvec* v, size_t n);
+
 /** @brief Drop every element, keeping the capacity for the next fill. */
 void mod_fvec_clear(mod_fvec* v);
 
@@ -195,12 +214,14 @@ void mod_vec_census_arm(void);
 /**
  * @brief Print the census: one summary line naming the number of tables,
  *        then one line per named table,
- *        "mod-table: <name> count=<n> was=<former capacity>
+ *        "mod-table: <name> count=<n> peak=<p> was=<former capacity>
  *        storage=<blocks for a cvec, capacity for an fvec> grew=<k>".
  *
- * count against was is what shows a table carrying more than its former
- * fixed capacity; grew counts allocations and is 1 on a table that only
- * ever allocated its first block.
+ * peak against was is what shows a table having carried more than its
+ * former fixed capacity: count is the live size, which a table drained
+ * every tick reports as 0 whatever it held in between. grew counts
+ * allocations and is 1 on a table that only ever allocated its first
+ * block.
  */
 void mod_vec_census_report(void);
 
