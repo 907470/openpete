@@ -137,6 +137,15 @@ endforeach()
 if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMakeLists.txt")
     add_subdirectory(tests/unit)
 
+    # RESOURCE_LOCK openpete_game: every test below that launches a game
+    # process holds it, so ctest never co-schedules two of them. A second
+    # game process invalidates any timing measurement and is refused
+    # outright by scripts/fences/bench_guard.py (scripts/bench-corpus.py,
+    # scripts/baseline-terrain-arena.py, scripts/check_pacing.sh), and a
+    # run that shares the machine also overruns its TIMEOUT. The
+    # presentation-labelled per-feature tests keep their parallelism:
+    # they carry no timing threshold and run under `ctest -L presentation`.
+
     # Modding-framework PoC-ladder gate (modtest v0): chain-order matrix,
     # observer-neutrality vs the PSX oracle, raw-tier warning, and the
     # double-gems expected-divergence assertion. Slow (four headless
@@ -146,6 +155,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_mods.sh)
     set_tests_properties(mod_poc_ladder PROPERTIES
         LABELS "slow;mods"
+        RESOURCE_LOCK openpete_game
         TIMEOUT 1800
         ENVIRONMENT "OPENPETE_BIN=${CMAKE_BINARY_DIR}/games/spyro-1/openpete-spyro1"
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
@@ -160,6 +170,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_mod_imgui.sh)
     set_tests_properties(mod_imgui PROPERTIES
         LABELS "mods"
+        RESOURCE_LOCK openpete_game
         TIMEOUT 900
         SKIP_RETURN_CODE 64
         ENVIRONMENT "OPENPETE_BIN=${CMAKE_BINARY_DIR}/games/spyro-1/openpete-spyro1"
@@ -177,6 +188,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_mod_channels.sh)
     set_tests_properties(mod_channel_selectors PROPERTIES
         LABELS "slow;mods"
+        RESOURCE_LOCK openpete_game
         TIMEOUT 1800
         SKIP_RETURN_CODE 64
         ENVIRONMENT "OPENPETE_BIN=${CMAKE_BINARY_DIR}/games/spyro-1/openpete-spyro1"
@@ -205,6 +217,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                      --build-dir=${CMAKE_BINARY_DIR})
     set_tests_properties(gapfill_corpus PROPERTIES
         LABELS "slow;gapfill"
+        RESOURCE_LOCK openpete_game
         TIMEOUT 900
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
@@ -221,6 +234,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                      --frame=850)
     set_tests_properties(aspect_screenshot_symmetry PROPERTIES
         LABELS "slow;determinism"
+        RESOURCE_LOCK openpete_game
         TIMEOUT 600
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -234,6 +248,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                      --build-dir=${CMAKE_BINARY_DIR})
     set_tests_properties(tercache_alloc PROPERTIES
         LABELS "slow;renderer"
+        RESOURCE_LOCK openpete_game
         TIMEOUT 1800
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
@@ -252,6 +267,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
              WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     set_tests_properties(terrain_arena_baseline PROPERTIES
         LABELS "slow;terrain-baseline"
+        RESOURCE_LOCK openpete_game
         TIMEOUT 7200
         SKIP_RETURN_CODE 64)
 
@@ -269,6 +285,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
              WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     set_tests_properties(terrain_arena_demo PROPERTIES
         LABELS "slow;terrain-baseline"
+        RESOURCE_LOCK openpete_game
         TIMEOUT 3600
         SKIP_RETURN_CODE 64)
 
@@ -283,6 +300,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
              WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     set_tests_properties(terrain_arena_overflow PROPERTIES
         LABELS "slow;terrain-baseline"
+        RESOURCE_LOCK openpete_game
         TIMEOUT 1800
         SKIP_RETURN_CODE 64)
 
@@ -316,6 +334,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                      --build-dir=${CMAKE_BINARY_DIR})
     set_tests_properties(native_visual_regression PROPERTIES
         LABELS "slow;visual"
+        RESOURCE_LOCK openpete_game
         # Headroom over the game's own --max-runtime-seconds 600 so the
         # in-loop self-limit always fires first (equal timeouts raced, and a
         # hung game loop can't fire its own limit — the 2026-07-01 flake).
@@ -344,6 +363,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                      --build-dir=${CMAKE_BINARY_DIR})
     set_tests_properties(presentation_golden PROPERTIES
         LABELS "slow;presentation"
+        RESOURCE_LOCK openpete_game
         # The whole corpus replays ~53 bk2 movies + the freecam poses (~35 min);
         # generous headroom so a loaded host doesn't spuriously time out.
         TIMEOUT 3600
@@ -356,6 +376,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                      --game spyro-3 --build-dir=${CMAKE_BINARY_DIR})
     set_tests_properties(presentation_golden_spyro3 PROPERTIES
         LABELS "slow;presentation"
+        RESOURCE_LOCK openpete_game
         TIMEOUT 1800
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
@@ -371,6 +392,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                          --game ${_font_game} --build-dir=${CMAKE_BINARY_DIR})
         set_tests_properties(text_font_${_font_game} PROPERTIES
             LABELS "slow;presentation"
+            RESOURCE_LOCK openpete_game
             TIMEOUT 900
             SKIP_RETURN_CODE 64
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
@@ -661,6 +683,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                          --build-dir=${CMAKE_BINARY_DIR})
         set_tests_properties(contention_${_contention_game} PROPERTIES
             LABELS "slow;presentation"
+            RESOURCE_LOCK openpete_game
             # Three whole-corpus runs: the golden's own timeout, tripled, with
             # headroom for the load this deliberately creates.
             TIMEOUT 14400
@@ -707,6 +730,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                          --game ${tcgh_game})
         set_tests_properties(tercache_gpu_holes_${tcgh_slug} PROPERTIES
             LABELS "slow;presentation;terrain;windowed"
+            RESOURCE_LOCK openpete_game
             # Two windowed legs per corpus row, each booting to a pinned
             # post-load VBL; the Spyro 1 corpus is the long one.
             TIMEOUT 21600
@@ -727,6 +751,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                      --game spyro-3)
     set_tests_properties(tercache_cache_ab_spyro3 PROPERTIES
         LABELS "slow;presentation;terrain;windowed"
+        RESOURCE_LOCK openpete_game
         TIMEOUT 3600
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
@@ -742,6 +767,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                      --build-dir=${CMAKE_BINARY_DIR})
     set_tests_properties(spyro_records PROPERTIES
         LABELS "slow;presentation;mods"
+        RESOURCE_LOCK openpete_game
         TIMEOUT 1800
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
@@ -771,6 +797,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_pacing.sh)
     set_tests_properties(pacing_strict PROPERTIES
         LABELS "slow;pacing"
+        RESOURCE_LOCK openpete_game
         TIMEOUT 1800
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
@@ -787,6 +814,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                      --frames=300)
     set_tests_properties(record_smoke PROPERTIES
         LABELS "slow;tooling"
+        RESOURCE_LOCK openpete_game
         TIMEOUT 300
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
@@ -802,6 +830,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                      --build-dir=${CMAKE_BINARY_DIR})
     set_tests_properties(input_lock PROPERTIES
         LABELS "slow;input"
+        RESOURCE_LOCK openpete_game
         TIMEOUT 900
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
@@ -820,6 +849,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                      --out-dir ${CMAKE_BINARY_DIR}/bench-smoke --run-id ctest)
     set_tests_properties(bench_corpus_smoke PROPERTIES
         LABELS "slow;bench"
+        RESOURCE_LOCK openpete_game
         TIMEOUT 400
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
@@ -897,6 +927,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_psx_oracle.sh)
     set_tests_properties(psx_oracle_match PROPERTIES
         LABELS "slow;oracle"
+        RESOURCE_LOCK openpete_game
         TIMEOUT 1800
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
@@ -909,6 +940,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_psx_oracle.sh --game ${_g})
         set_tests_properties(psx_oracle_match_${_g} PROPERTIES
             LABELS "slow;oracle"
+            RESOURCE_LOCK openpete_game
             TIMEOUT 1800
             SKIP_RETURN_CODE 64
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
@@ -926,6 +958,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_psx_oracle.sh)
     set_tests_properties(psx_oracle_windowed PROPERTIES
         LABELS "slow;oracle"
+        RESOURCE_LOCK openpete_game
         TIMEOUT 1800
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
@@ -943,6 +976,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                      --game spyro-3 -- --render-fps 60)
     set_tests_properties(psx_oracle_windowed_spyro-3 PROPERTIES
         LABELS "slow;oracle"
+        RESOURCE_LOCK openpete_game
         TIMEOUT 1800
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
@@ -960,6 +994,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                      --frames=2000)
     set_tests_properties(determinism_matrix PROPERTIES
         LABELS "slow;determinism;matrix"
+        RESOURCE_LOCK openpete_game
         TIMEOUT 1800
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -975,6 +1010,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                      --soak)
     set_tests_properties(determinism_soak PROPERTIES
         LABELS "slow;determinism;soak"
+        RESOURCE_LOCK openpete_game
         TIMEOUT 7200
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -992,6 +1028,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_state_roundtrip.sh)
     set_tests_properties(state_roundtrip PROPERTIES
         LABELS "slow;determinism;savestate"
+        RESOURCE_LOCK openpete_game
         # Each leg self-limits at `timeout 600`; headroom for ~20 of them.
         TIMEOUT 7200
         SKIP_RETURN_CODE 64
@@ -1012,6 +1049,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_subtick_state.py)
     set_tests_properties(subtick_state PROPERTIES
         LABELS "slow;determinism"
+        RESOURCE_LOCK openpete_game
         # Four headless legs, each self-limited at --max-runtime-seconds 280.
         TIMEOUT 1800
         SKIP_RETURN_CODE 64
@@ -1031,6 +1069,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
                      --game spyro-1 --build-dir=${CMAKE_BINARY_DIR})
     set_tests_properties(cache_walk_ab_spyro-1 PROPERTIES
         LABELS "slow;presentation;terrain"
+        RESOURCE_LOCK openpete_game
         # Four headless boots to a post-load VBL, each self-limited at
         # --max-runtime-seconds 840.
         TIMEOUT 3600

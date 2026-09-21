@@ -198,6 +198,9 @@ if(OPENPETE_ENABLE_RECORD AND PkgConfig_FOUND AND NOT CMAKE_CROSSCOMPILING)
                          --out ${CMAKE_CURRENT_BINARY_DIR}/encode-bench.mkv)
         set_tests_properties(record_encode_bench PROPERTIES
             LABELS "slow;tooling"
+            # An encoder throughput floor measured beside a game process
+            # measures the machine; share the game tests' lock.
+            RESOURCE_LOCK openpete_game
             TIMEOUT 120)
     endif()
 endif()

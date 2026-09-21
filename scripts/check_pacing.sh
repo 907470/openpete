@@ -87,6 +87,13 @@ fi
 [ -x "$EXE" ] || { echo "[pacing] SKIP: no binary at $EXE"; exit 64; }
 [ -f "$DISC" ] || { echo "[pacing] SKIP: no disc at $DISC"; exit 64; }
 
+# Every leg below is a wall-clock threshold: a p99 in microseconds, a drift in
+# ppm, a late-tick rate. A second game process on the machine moves all three
+# by more than the gate's own margins, so a number measured beside one is
+# about the machine. Refuse instead (exit 65, the precondition named), as the
+# bench entry points do.
+python3 scripts/fences/bench_guard.py --exe "$EXE" || exit 65
+
 OUT=build/pacing/gate
 mkdir -p "$OUT"
 # Destroy prior output before the run: a stale log from a failed leg reads

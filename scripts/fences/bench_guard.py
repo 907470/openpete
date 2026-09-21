@@ -14,7 +14,12 @@ the wrong thing:
 `--allow-untuned` (the caller passes allow=True) skips check 1 only.
 Always PRINTS the resolved mod/texpack/opts surface next to the exe, so
 every reported number carries what was actually loaded.
+
+Shell callers run it as a command:
+
+    python3 scripts/fences/bench_guard.py --exe "$EXE" || exit 65
 """
+import argparse
 import os
 import subprocess
 import sys
@@ -93,3 +98,19 @@ def print_surface(exe, mods_dir=None, texpack_dir=None):
     print("bench_guard: sidecars=%s mods_dir=%s texpack_dir=%s"
           % (",".join(sidecars) or "none", mods_dir or "none",
              texpack_dir or "none"))
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="benchmark precondition fence")
+    ap.add_argument("--exe", required=True,
+                    help="the binary the timed run will launch")
+    ap.add_argument("--allow-untuned", action="store_true",
+                    help="skip the tuned-build check, keep the contention check")
+    a = ap.parse_args(argv)
+    check(a.exe, allow_untuned=a.allow_untuned)
+    print_surface(a.exe)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
