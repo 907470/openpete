@@ -751,11 +751,10 @@ void main()
     if (!lp && !fillPass && (gf & GF_NEARHQ) != 0 && quad && (front || straddle)
         && (ff & FF_HQELIG) != 0u) {
         if ((gf & GF_HQPIN) != 0) {
-            /* --no-lod, flags-only games (hp_far == 0): HQ pinned ON for
-             * every eligible face; only the behind-camera guard and the
-             * w3&0x80 exclusion remain (the latter is folded into FF_HQELIG
-             * at pack time). Games whose draw bins HP by distance keep the
-             * canonical band in every mode, like the walk's face_is_near. */
+            /* --no-lod: HQ pinned ON for every eligible face at every
+             * distance; only the behind-camera guard and the w3&0x80
+             * exclusion remain (the latter is folded into FF_HQELIG at pack
+             * time). Mirrors the walk's face_is_near extended branch. */
             double sz = max(m0.z, 0.0lf) + max(m1.z, 0.0lf) + max(m2.z, 0.0lf) + max(m3c.z, 0.0lf);
             near = sz > 0.0lf;
         } else {

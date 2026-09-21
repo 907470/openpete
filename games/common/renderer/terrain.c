@@ -1155,6 +1155,15 @@ static int face_is_near_canonical(double z0, double z1, double z2, double z3, ui
     if (mn < (double)game_layout.terrain.near_corner) return 1;   /* a corner below the tier-4 bound */
     return !tface_near_tier2(word3);                   /* else tier 2 unless the flag refuses it */
 }
+/* The always-HQ pin is in force exactly under --lod extended, on every
+ * game: the extended mode's contract is the highest terrain tier at
+ * every distance, so every frustum-admitted HQ-eligible quad takes the 2x2
+ * subdivide however far it is. One predicate behind both consumers, the
+ * walk's face_is_near and the retained cache's OPTC_GF_HQPIN, which must
+ * agree or a cached sector draws a different tier from a walked one. */
+static int hq_pin_active(void) {
+    return openpete_no_lod != 0;
+}
 static int face_is_near(double z0, double z1, double z2, double z3, uint32_t word3) {
     /* --no-lod: pin the bpp8 HQ near-subdivide ON for every eligible face,
      * regardless of distance, so the coarse bpp4 LQ far tier is never shown. The
@@ -1167,17 +1176,12 @@ static int face_is_near(double z0, double z1, double z2, double z3, uint32_t wor
      * detail-descriptor carve-out, see the near-dispatch site). Display-only;
      * reads no gameplay state.
      *
-     * Only for games whose draw does not bin the HP list by distance
-     * (terrain.hp_far == 0), the same property the LP far-only substitution is
-     * gated on. Where the draw owns the HP band, --no-lod already promotes the
-     * far sectors into HP-only, so dropping the distance gates here routes
-     * every front-or-straddling HP quad through the 2x2 subdivide at every
-     * distance. That face set is not stable between presents (a corner
-     * crossing the camera plane moves a face in or out) and each change swings
-     * 6 triangles, so the scene's triangle count oscillates by hundreds per
-     * present. Those games keep the canonical classification, whose distance
-     * band makes membership change only as the camera travels. */
-    if (openpete_no_lod && !game_layout.terrain.hp_far) {
+     * Where the draw bins the HP list by distance (terrain.hp_far != 0),
+     * --no-lod has already promoted the far sectors into HP-only, so dropping
+     * the distance gates routes every front-or-straddling HP quad through the
+     * 2x2 subdivide at every distance: about 3x the terrain triangles of the
+     * canonical classification on those games. */
+    if (hq_pin_active()) {
         if (s_hqscale < 0.0) {
             const char* e = getenv("OPENPETE_TERRAIN_HQSCALE"); s_hqscale = (e && *e) ? atof(e) : 4.0;
         }
@@ -5512,10 +5516,9 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                    | (lod_handoff     ? OPTC_GF_HANDOFF : 0u)
                    | (s_gapfill_en    ? OPTC_GF_GAPFILL : 0u)
                    | (openpete_no_lod ? OPTC_GF_NOLOD   : 0u)
-                   /* face_is_near's extended branch: the HQ pin applies only
-                    * where the draw does not bin HP by distance. */
-                   | ((openpete_no_lod && !game_layout.terrain.hp_far)
-                                      ? OPTC_GF_HQPIN   : 0u)
+                   /* the vertex stage's variant select mirrors
+                    * face_is_near's extended branch. */
+                   | (hq_pin_active()  ? OPTC_GF_HQPIN : 0u)
                    | (game_layout.terrain.ladder_nearest_corner
                                       ? OPTC_GF_LADNEAR : 0u)
                    | ((s_otbias_on && openpete_native_key_resolve_on())

@@ -115,9 +115,8 @@ enum {
 #define OPTC_GF_CULLLP     64u    /* LP per-half NCLIP cull (s_cull bit 1)    */
 #define OPTC_GF_KEYON      128u   /* og OT-key emit/contest active this walk  */
 #define OPTC_GF_HQPIN      256u   /* extended LOD pins the HQ subdivide on every
-                                   * eligible HP quad: the walk's face_is_near
-                                   * extended branch, taken only where the draw
-                                   * does not bin HP by distance (hp_far == 0) */
+                                   * eligible HP quad at every distance: the
+                                   * walk's face_is_near extended branch      */
 #define OPTC_GF_LADNEAR    512u   /* game_layout.terrain.ladder_nearest_corner:
                                    * the CLUT-fog row and near-tile select key
                                    * on the nearest corner (row = 15 - (max
