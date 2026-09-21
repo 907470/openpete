@@ -15,7 +15,8 @@
  *  - every SDL event is forwarded via openpete_devui_process_event (cheap io
  *    bookkeeping; imgui frames only run while the overlay is open);
  *  - while wants_keyboard() the host hotkey block and the keyboard->pad path
- *    must be gated off so typed text never steers the game;
+ *    must be gated off so typed text never steers the game, except that the
+ *    overlay's own toggle action stays readable unless wants_text_input();
  *  - while wants_mouse() the double-click-fullscreen shortcut is skipped.
  * The sim keeps running and the pad is NOT suppressed - this is a dev tool;
  * watching the live scene while flipping knobs is the point.
@@ -67,8 +68,12 @@ void openpete_devui_close(void);
 /* Forward one SDL event to imgui (call for EVERY event, open or closed). */
 void openpete_devui_process_event(const union SDL_Event *ev);
 
-/* True while imgui wants the keyboard/mouse (only ever true while open). */
+/* True while imgui wants the keyboard/mouse (only ever true while open).
+ * wants_text_input() is the subset of wants_keyboard() in which a field has
+ * focus and is consuming characters; bare nav focus reads 1 on the former
+ * and 0 on the latter. */
 int  openpete_devui_wants_keyboard(void);
+int  openpete_devui_wants_text_input(void);
 int  openpete_devui_wants_mouse(void);
 
 /* Build + record the overlay into the current offscreen pass. Call from the

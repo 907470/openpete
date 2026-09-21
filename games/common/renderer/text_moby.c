@@ -1102,6 +1102,35 @@ static float measure_string(const char* str, float cap_h) {
     return cursor;
 }
 
+/* Emit the settings menu's close glyph at `v0` and anchor it by its INK.
+ *
+ * The layout square is an advance box: it carries the trailing inter-glyph
+ * gap and, for a proportional glyph, leading space the X does not fill, so
+ * placing the box leaves unequal margins above and right of the drawn
+ * pixels. The glyph is emitted at the square, its drawn extent is read back
+ * off the emitted vertices, and the whole run is then shifted in x until the
+ * gap from the panel's right border to the rightmost ink equals the gap from
+ * the panel's top border to the topmost ink. The resulting rect is published
+ * so the mouse consumer tests the pixels that were drawn. */
+static void menu_close_anchor(emit_ctx_t* cx, int v0,
+                              const openpete_menu_layout_t* L) {
+    emit_string(cx, "X", L->close_x, L->close_y, L->close_cap_h,
+                MENU_TXT_TINT, -1);
+    if (cx->n <= v0) return;
+    float x0 = cx->out[v0].x, x1 = x0;
+    float y0 = cx->out[v0].y, y1 = y0;
+    for (int i = v0 + 1; i < cx->n; i++) {
+        const float vx = cx->out[i].x, vy = cx->out[i].y;
+        if (vx < x0) x0 = vx;
+        if (vx > x1) x1 = vx;
+        if (vy < y0) y0 = vy;
+        if (vy > y1) y1 = vy;
+    }
+    const float dx = (L->panel_x1 - (y0 - L->panel_y0)) - x1;
+    for (int i = v0; i < cx->n; i++) cx->out[i].x += dx;
+    openpete_menu_note_close_rect(x0 + dx, y0, x1 + dx, y1);
+}
+
 /* Build the settings-menu glyph text (title + each row's label/value) from the
  * same gold glyph mobys, with the selected row's per-glyph yaw wobble, and push
  * it to the native renderer (draw_menu_overlay draws it over the panel). Reads
@@ -1184,14 +1213,8 @@ void text_moby_native_menu(CPUState* cpu) {
         emit_string(&cx, value, L.value_x, L.row_y[r] - vcap * 0.5f, vcap,
                     MENU_TXT_TINT, wob);
     }
-    /* Close glyph: one X centred in the layout's square at the panel's top
-     * right. Not a row: no wobble, no cursor. The mouse consumer tests a
-     * left press against the same square. */
-    {
-        const float xw = measure_string("X", L.close_cap_h);
-        emit_string(&cx, "X", L.close_x + 0.5f * (L.close_cap_h - xw),
-                    L.close_y, L.close_cap_h, MENU_TXT_TINT, -1);
-    }
+    /* Close glyph: not a row, so no wobble and no cursor. */
+    menu_close_anchor(&cx, cx.n, &L);
     /* Gold frame — same rotating light as the rows above (cx still carries it). */
     cx.n += emit_lit_border(&cx, L.panel_x0, L.panel_y0, L.panel_x1, L.panel_y1,
                             MENU_BORDER_BT, s_menu_buf + cx.n, MENU_TXT_MAX - cx.n);

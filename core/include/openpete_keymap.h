@@ -486,8 +486,10 @@ void openpete_keymap_mouse_markers(long long* wheel, long long* mx, long long* m
 /* While an overlay owns the keyboard, KEYBOARD sources go inert but pad
  * sources keep working — mouse-only devui interaction is meant to leave
  * the game playable. Suspending by source kind rather than wholesale is
- * what preserves that. */
-void openpete_keymap_suspend_keyboard(int on);
+ * what preserves that. `exempt` names one action whose keyboard sources are
+ * read anyway, so the key that opened an overlay can close it; pass
+ * OPK_ACTION_COUNT to suspend every action. */
+void openpete_keymap_suspend_keyboard(int on, openpete_action_t exempt);
 
 /* ---- diagnostics / consumers ---------------------------------------- */
 

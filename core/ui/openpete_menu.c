@@ -433,6 +433,30 @@ static int row_action_only(int row) {
     return row == ROW_DISPLAY || row == ROW_SAVE || row == ROW_QUIT;
 }
 
+/* The close glyph's drawn ink, in overlay units, as the text builder emitted
+ * it. Zero width means no build has run yet. */
+static float s_close_rect[4];
+
+void openpete_menu_note_close_rect(float x0, float y0, float x1, float y1) {
+    if (x0 != s_close_rect[0] || y0 != s_close_rect[1] ||
+        x1 != s_close_rect[2] || y1 != s_close_rect[3])
+        openpete_host_mouse_probe_log("menu", "close rect [%g,%g]x[%g,%g]",
+                                      x0, x1, y0, y1);
+    s_close_rect[0] = x0; s_close_rect[1] = y0;
+    s_close_rect[2] = x1; s_close_rect[3] = y1;
+}
+
+/* A left press closes the menu when it lands on the close glyph's drawn ink.
+ * Before the first build of the menu text the ink rect is unknown and the
+ * layout square stands in. */
+static int menu_in_close(const openpete_menu_layout_t* L, float x, float y) {
+    if (s_close_rect[2] > s_close_rect[0])
+        return x >= s_close_rect[0] && x <= s_close_rect[2] &&
+               y >= s_close_rect[1] && y <= s_close_rect[3];
+    return x >= L->close_x && x <= L->close_x + L->close_cap_h &&
+           y >= L->close_y && y <= L->close_y + L->close_cap_h;
+}
+
 void openpete_menu_mouse_poll(void) {
     if (!s_open) return;
     if (openpete_host_mouse_owned() == OPENPETE_MOUSE_OWNED_DEVUI) {
@@ -465,8 +489,7 @@ void openpete_menu_mouse_poll(void) {
     if (in_panel)
         for (int i = 0; i < L.row_count; i++)
             if (fabsf(y - L.row_y[i]) <= L.row_h * 0.5f) { hit = i; break; }
-    const int in_close = x >= L.close_x && x <= L.close_x + L.close_cap_h &&
-                         y >= L.close_y && y <= L.close_y + L.close_cap_h;
+    const int in_close = menu_in_close(&L, x, y);
 
     /* Hover: only a pointer move can take the cursor, and only to a row that
      * differs, so a resting pointer never overrides keyboard nav and a move

@@ -2637,6 +2637,15 @@ static uint16_t s_p1_stage_first_read_bits = 0;
 static unsigned char s_p1_stage_first_staged_axes[4] = {0};
 static unsigned char s_p1_stage_first_read_axes[4] = {0};
 
+/* The action that keeps reading the keyboard while the dev overlay holds it.
+ * imgui's nav focus covers the whole panel for as long as it is open, so
+ * suspending every keyboard action would make the key that opened the panel
+ * unable to close it; a focused text field must swallow that key too, and
+ * then nothing is exempt. */
+static openpete_action_t devui_suspend_exempt(void) {
+    return openpete_devui_wants_text_input() ? OPK_ACTION_COUNT : OPK_DEVUI;
+}
+
 static int run_host_loop(const openpete_options_t* opts) {
     /* Which half of the input seam this thread owns (see run_host_init). */
     const bool split = openpete_split_applies(opts);
@@ -3387,10 +3396,14 @@ static int run_host_loop(const openpete_options_t* opts) {
          * interaction with the dev panel is meant to leave the game
          * playable, and the same override block above only neutralises the
          * PSX pad while imgui actually wants typing. Esc-close and the
-         * overlay toggle still work: Esc via the event filter, the toggle
-         * once the text field loses focus (or via the panel's close
-         * button). */
-        openpete_keymap_suspend_keyboard(openpete_devui_wants_keyboard() ? 1 : 0);
+         * overlay toggle still work: Esc via the event filter, and the
+         * toggle action itself is exempt from the suspension so the key
+         * that opened the panel also closes it. Bare nav focus, which the
+         * panel holds the whole time it is open, must not swallow that key;
+         * a focused text field must, so while imgui wants text input the
+         * suspension has no exemption. */
+        openpete_keymap_suspend_keyboard(
+            openpete_devui_wants_keyboard() ? 1 : 0, devui_suspend_exempt());
 
         /* Under the thread split the cursor is main's business (see
          * openpete_cursor_update): SetCursor only reaches a window from the

@@ -51,12 +51,20 @@ typedef struct {
     float row_cap_h;       /* glyph cap height for a row */
     float label_x, value_x;/* left edge of the label / value glyph columns */
     /* The close glyph: a square at the panel's top right holding an X. The
-     * glyph builder places the X from it and the mouse consumer tests a
-     * left press against it, so geometry and hit-test share one source. */
+     * glyph builder places the X inside it; the emitted ink is published
+     * back through openpete_menu_note_close_rect and is what the mouse
+     * consumer tests, so the hit region is the pixels that were drawn. */
     float close_x, close_y, close_cap_h;   /* top-left corner, side */
 } openpete_menu_layout_t;
 
 void openpete_menu_get_layout(openpete_menu_layout_t* out);
+
+/* The bounding box, in overlay units, of the close glyph's emitted ink. Only
+ * the text builder knows a glyph's drawn extent: the layout square is the
+ * advance box, which is wider than the X and would put the hit region beside
+ * the visible pixels. Until the builder has run once the consumer falls back
+ * to the layout square. */
+void openpete_menu_note_close_rect(float x0, float y0, float x1, float y1);
 
 /* Text + wobble phase for the game-side glyph builder (text_moby_native). */
 const char* openpete_menu_title(void);

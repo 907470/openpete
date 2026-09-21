@@ -113,6 +113,12 @@ typedef struct knob_desc {
      * only. NULL = always shown. A section whose rows are all hidden emits no
      * header. */
     int (*visible)(const struct knob_desc *k);
+
+    /* Numeric rows whose 0 is a distinct mode rather than a magnitude, so the
+     * setter accepts 0 and [num_min, num_max] but refuses the span between:
+     * the caption of the checkbox that selects 0, beside a slider over the
+     * range. NULL = the range runs to num_min with nothing below it. */
+    const char *zero_label;
 } knob_desc_t;
 
 /* The table (mutable: boot stamps + stored values live in the rows). */

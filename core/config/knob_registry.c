@@ -614,8 +614,9 @@ static const knob_desc_t g_builtin[] = {
       "projection, 55). The horizontal FOV follows the Hor+ aspect: 74 at "
       "4:3, 90 at 16:9 for the default. Native renderer only; applies at "
       "the next present.",
-      KNOB_FLOAT, KNOB_LIVE, NULL, 0, 0, 120,
-      fov_get, fov_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+      KNOB_FLOAT, KNOB_LIVE, NULL, 0, 30, 120,
+      fov_get, fov_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      .zero_label = "Game projection" },
 
     { "ssaa", "Supersampling", "Display", "--ssaa", NULL,
       "Native supersampling factor. Applying reallocates the render target "

@@ -226,6 +226,7 @@ static void devui_drain_events(void)
  * construction, which is what a capture flag is anyway — it describes the
  * frame that was drawn. */
 static SDL_AtomicInt s_wants_kb;
+static SDL_AtomicInt s_wants_text;
 static SDL_AtomicInt s_wants_mouse;
 
 static void devui_publish_io_wants(void)
@@ -233,6 +234,11 @@ static void devui_publish_io_wants(void)
     const ImGuiIO &io = ImGui::GetIO();
     SDL_SetAtomicInt(&s_wants_kb,
                      (s_open && (io.WantCaptureKeyboard || io.WantTextInput)) ? 1 : 0);
+    /* Text input is published on its own because the two wants call for
+     * different gating: a focused field must swallow every key, while bare
+     * nav focus -- which keyboard navigation sets for the whole panel -- must
+     * still leave the key that closes the panel readable. */
+    SDL_SetAtomicInt(&s_wants_text, (s_open && io.WantTextInput) ? 1 : 0);
     /* The fill-tag inspector draws its interactive panel with the overlay
      * closed, so its hover counts: a click aimed at its buttons must not
      * also reach the game or the settings menu under it. */
@@ -246,6 +252,7 @@ static void devui_publish_io_wants(void)
 static void devui_publish_none(void)
 {
     SDL_SetAtomicInt(&s_wants_kb, 0);
+    SDL_SetAtomicInt(&s_wants_text, 0);
     SDL_SetAtomicInt(&s_wants_mouse, 0);
 }
 
@@ -253,6 +260,12 @@ int openpete_devui_wants_keyboard(void)
 {
     if (!s_inited || !s_open) return 0;
     return SDL_GetAtomicInt(&s_wants_kb);
+}
+
+int openpete_devui_wants_text_input(void)
+{
+    if (!s_inited || !s_open) return 0;
+    return SDL_GetAtomicInt(&s_wants_text);
 }
 
 int openpete_devui_wants_mouse(void)
@@ -341,6 +354,40 @@ static void row_tooltip(const knob_desc_t *k)
 static const knob_desc_t *s_edit_row = nullptr;
 static double             s_edit_val = 0.0;
 
+/* A float knob as a slider over its registered range, applied on every
+ * change. A drag widget that commits only on release reads as dead while it
+ * is moving, and its per-pixel speed suits one range and crawls on another;
+ * a slider spans the range whatever the range is. Ctrl+click is imgui's own
+ * typed entry and applies through the same call. A row carrying a
+ * zero_label has a mode at 0 that the span up to num_min does not reach: a
+ * drag through that span only ever hands the setter values it refuses, so
+ * the mode is a checkbox and the slider starts at num_min. */
+static void knob_row_float(knob_desc_t *k)
+{
+    double live = k->get_num ? k->get_num(k) : k->stored_num;
+    bool off = false;
+    if (k->zero_label) {
+        off = (live <= 0.0);
+        if (ImGui::Checkbox(k->zero_label, &off) && k->set_num) {
+            const double v = off ? 0.0 : (double)k->num_min;
+            if (k->set_num(k, v) == 0) {
+                OPL_INFO_F("devui", "%s = %.3f", k->id, v);
+                live = v;
+            }
+        }
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (off) ImGui::BeginDisabled();
+    }
+    float v = (float)live;
+    if (ImGui::SliderFloat("##v", &v, k->num_min, k->num_max, "%.2f") &&
+        k->set_num) {
+        if (k->set_num(k, v) == 0)
+            OPL_INFO_F("devui", "%s = %.3f", k->id, v);
+    }
+    if (off) ImGui::EndDisabled();
+}
+
 static void draw_row(knob_desc_t *k)
 {
     ImGui::TableNextRow();
@@ -382,18 +429,9 @@ static void draw_row(knob_desc_t *k)
         if (ImGui::IsItemDeactivated() && s_edit_row == k) s_edit_row = nullptr;
         break;
     }
-    case KNOB_FLOAT: {
-        double live = k->get_num ? k->get_num(k) : k->stored_num;
-        float v = (float)((s_edit_row == k) ? s_edit_val : live);
-        ImGui::DragFloat("##v", &v, 0.05f, k->num_min, k->num_max, "%.3f");
-        if (ImGui::IsItemActive()) { s_edit_row = k; s_edit_val = v; }
-        if (ImGui::IsItemDeactivatedAfterEdit() && k->set_num) {
-            if (k->set_num(k, v) == 0)
-                OPL_INFO_F("devui", "%s = %.3f", k->id, v);
-        }
-        if (ImGui::IsItemDeactivated() && s_edit_row == k) s_edit_row = nullptr;
+    case KNOB_FLOAT:
+        knob_row_float(k);
         break;
-    }
     case KNOB_ENUM: {
         int idx = (int)(k->get_num ? k->get_num(k) : k->stored_num);
         if (ImGui::Combo("##v", &idx, k->enum_values, k->enum_count) && k->set_num) {

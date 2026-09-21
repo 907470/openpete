@@ -746,6 +746,9 @@ int openpete_keymap_resolve(void) {
 static unsigned char g_held[OPK_ACTION_COUNT];
 static unsigned char g_prev[OPK_ACTION_COUNT];
 static int           g_suspend_kbd;
+/* The one action that stays readable through a keyboard suspension, or
+ * OPK_ACTION_COUNT for none. */
+static openpete_action_t g_suspend_exempt = OPK_ACTION_COUNT;
 
 /* Past this fraction of full throw an axis counts as a digital press —
  * generous, because the only digital-from-axis bindings are the analog
@@ -773,9 +776,12 @@ typedef struct {
      * and OPK_MENU_CLOSE, so a mouse-bound `menu` can close what it opened).
      * Never exempt from the dev overlay's. */
     int menu_exempt;
+    /* The action is the one named by openpete_keymap_suspend_keyboard, so its
+     * keyboard sources are read through a suspension. */
+    int kbd_exempt;
 } km_resolve_t;
 
-static const km_resolve_t KM_RESOLVE_LIVE = { NULL, 0, 0 };
+static const km_resolve_t KM_RESOLVE_LIVE = { NULL, 0, 0, 0 };
 
 static int km_mouse_owned(void) {
     return s_in.mouse_owned ? s_in.mouse_owned() : OPENPETE_MOUSE_OWNED_NONE;
@@ -803,7 +809,7 @@ static int km_src_slot(const km_resolve_t* c, const km_source_t* s) {
 }
 
 static int km_read_key(const km_resolve_t* c, int code) {
-    if (g_suspend_kbd) return 0;
+    if (g_suspend_kbd && !c->kbd_exempt) return 0;
     /* The event filter already acted on this press. */
     if (km_key_consumed(code)) return 0;
     if (c->rd) return c->rd->key_down ? c->rd->key_down(c->rd->ctx, code) : 0;
@@ -864,6 +870,7 @@ static int km_action_down(const km_resolve_t* c, openpete_action_t a) {
     const km_binding_t* b = &g_bind[a];
     km_resolve_t cc = *c;
     cc.menu_exempt = km_menu_exempt(a);
+    cc.kbd_exempt  = (a == g_suspend_exempt);
     for (int i = 0; i < b->n; i++)
         if (km_src_down(&cc, &b->src[i])) return 1;
     return 0;
@@ -1009,7 +1016,11 @@ float openpete_key_axis(openpete_action_t a) {
     return km_action_axis(&KM_RESOLVE_LIVE, a);
 }
 
-void openpete_keymap_suspend_keyboard(int on) { g_suspend_kbd = on ? 1 : 0; }
+void openpete_keymap_suspend_keyboard(int on, openpete_action_t exempt) {
+    g_suspend_kbd = on ? 1 : 0;
+    g_suspend_exempt = (unsigned)exempt < OPK_ACTION_COUNT ? exempt
+                                                           : OPK_ACTION_COUNT;
+}
 
 int openpete_keymap_sources(openpete_action_t a, km_source_t* out, int cap) {
     if ((unsigned)a >= OPK_ACTION_COUNT || !out) return 0;

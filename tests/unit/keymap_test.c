@@ -491,7 +491,7 @@ static void test_suspend_is_keyboard_only(void) {
     g_keys[fake_to_code(KM_SRC_KEY, "F")]           = 1;
     g_btns[fake_to_code(KM_SRC_PADBTN, "leftstick")] = 1;
 
-    openpete_keymap_suspend_keyboard(1);
+    openpete_keymap_suspend_keyboard(1, OPK_ACTION_COUNT);
     openpete_keymap_poll();
     CHECK(openpete_key_down(OPK_FREECAM),
           "a pad source must survive a keyboard suspend");
@@ -501,7 +501,7 @@ static void test_suspend_is_keyboard_only(void) {
     CHECK(!openpete_key_down(OPK_FREECAM),
           "the keyboard source must be inert while suspended");
 
-    openpete_keymap_suspend_keyboard(0);
+    openpete_keymap_suspend_keyboard(0, OPK_ACTION_COUNT);
     openpete_keymap_poll();
     CHECK(openpete_key_down(OPK_FREECAM), "and live again after resume");
 }
