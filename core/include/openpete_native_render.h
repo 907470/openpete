@@ -269,6 +269,23 @@ void openpete_native_set_overlay_glyphs(const openpete_hud_vert *verts, int nver
 void openpete_native_set_overlay_extent(float w, float h);
 void openpete_native_get_overlay_extent(float *w, float *h);
 
+/* The build-version line: the same 3D glyph vertices, plus the region rect
+ * they were emitted region-local to, in ONE call — the two are read together
+ * on the present thread and must describe the same push. The renderer pins it
+ * to the bottom-left anchor, holds it briefly on a tagged build and fades it,
+ * and keeps it up for the whole session on a build that is not exactly a
+ * release. nverts==0 clears it. Display-only. */
+void openpete_native_set_version_glyphs(const openpete_hud_vert *verts, int nverts,
+                                        float region_w, float region_h);
+
+/* Whether the version line is drawn at all (--version-osd). Live-settable. */
+void openpete_native_set_version_osd(int on);
+int  openpete_native_version_osd(void);
+
+/* Version lines actually drawn, cumulative — the engagement counter a check
+ * harness reads to tell a drawn line from a suppressed one. */
+unsigned openpete_native_version_drawn(void);
+
 /* Which corner/edge the performance-stats block anchors to
  * (openpete_overlay_anchor.h's openpete_anchor_t). Live-settable. The builder
  * reads it back to align each line inside the region — right-anchored text

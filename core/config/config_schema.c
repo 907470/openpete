@@ -31,6 +31,7 @@ static const cfg_knob_t g_schema[] = {
     { "perf_stats",       "--perf-stats",       NULL,                    CFG_ENUM,   v_perf,     NULL,       NULL,       0 },
     { "perf_position",    "--perf-position",    NULL,                    CFG_ENUM,   v_anchor,   NULL,       NULL,       0 },
     { "osd",              "--osd",              NULL,                    CFG_BOOL,   NULL,       NULL,       NULL,       0 },
+    { "version_osd",      "--version-osd",      NULL,                    CFG_BOOL,   NULL,       NULL,       NULL,       0 },
     { "osd_position",     "--osd-position",     NULL,                    CFG_ENUM,   v_anchor,   NULL,       NULL,       0 },
     { "osd_timeout",      "--osd-timeout",      NULL,                    CFG_FLOAT,  NULL,       NULL,       NULL,       0 },
     { "vertex_precision", "--vertex-precision", NULL,                    CFG_ENUM,   v_vprec,    NULL,       NULL,       0 },

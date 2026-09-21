@@ -112,6 +112,9 @@ int    openpete_native_get_terrain_visibility(void)     { return s_native_tervis
 static float s_native_fov;
 void   openpete_native_set_fov(float deg)      { s_native_fov = deg; }
 float  openpete_native_fov_deg(void)           { return s_native_fov; }
+static int s_native_version_osd = 1;
+void   openpete_native_set_version_osd(int on) { s_native_version_osd = on ? 1 : 0; }
+int    openpete_native_version_osd(void)       { return s_native_version_osd; }
 int    openpete_native_get_texture_mapping(void)   { return s_native_texmap; }
 void   openpete_native_set_texture_mapping(int m)  { s_native_texmap = m ? 1 : 0; }
 int    openpete_native_get_notex(void)             { return 0; }

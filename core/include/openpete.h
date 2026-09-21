@@ -525,6 +525,12 @@ typedef struct openpete_options {
     int      osd_position;
     uint32_t osd_timeout_ms;
 
+    /* --version-osd 0|1: the build-version line at the bottom left. A build
+     * that is not exactly a release keeps it up for the whole session, so a
+     * screenshot of it always names the build; the flag suppresses it either
+     * way. Display-only. */
+    int version_osd;
+
     /* --vsync 0|1: native vk swapchain present mode. 1 = FIFO (vsync ON, present
      * locked to the monitor refresh — the default); 0 = a vsync-OFF mode
      * (immediate/mailbox) for low latency / uncapped-throughput benchmarking;

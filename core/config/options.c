@@ -430,6 +430,8 @@ static void print_help(const char* display_name, const char* argv0,
         "  --osd on|off               on-screen notifications when a setting changes (default on)\n"
         "  --osd-position ANCHOR      where notifications stack; same six anchors (default top-left)\n"
         "  --osd-timeout SECONDS      how long a notification stays up (default 3.0, max 30)\n"
+        "  --version-osd on|off       the build version at the bottom left (default on): 2 s on a\n"
+        "                             release build, the whole session on any other\n"
         "  --rewind N                 hold Backspace to rewind up to N seconds (default 0 = off;\n"
         "                             ~2 MiB RAM per second of window; same-level only)\n"
         "  --runahead N               lead the presented timeline by N sim ticks (default 0 = off).\n"
@@ -722,6 +724,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->osd                 = 1;                          /* toasts on */
     opts->osd_position        = OPENPETE_ANCHOR_TOP_LEFT;
     opts->osd_timeout_ms      = 3000u;
+    opts->version_osd         = 1;                          /* version line on */
     opts->vsync               = -1;    /* -1 = unset; default vsync ON (FIFO) unless OPENPETE_PRESENT_MODE */
     opts->render_fps          = -1;    /* -1 = unset; resolved at startup: display refresh (windowed) /
                                         * 0 legacy match-sim pacer (headless). --render-fps 0 = explicit legacy. */
@@ -843,6 +846,14 @@ static int parse_flag_chain(openpete_options_t* opts, int argc, char** argv,
             else if (!strcmp(v, "off") || !strcmp(v, "0")) opts->osd = 0;
             else {
                 fprintf(stderr, "openpete: --osd expects on|off, got: %s\n", v);
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+        } else if (strcmp(a, "--version-osd") == 0) {
+            const char *v = (i + 1 < argc) ? argv[++i] : "";
+            if      (!strcmp(v, "on")  || !strcmp(v, "1")) opts->version_osd = 1;
+            else if (!strcmp(v, "off") || !strcmp(v, "0")) opts->version_osd = 0;
+            else {
+                fprintf(stderr, "openpete: --version-osd expects on|off, got: %s\n", v);
                 return OPENPETE_EXIT_SETUP_ERROR;
             }
         } else if (strcmp(a, "--osd-position") == 0) {

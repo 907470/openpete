@@ -73,6 +73,10 @@ void text_moby_native_menu(struct CPUState* cpu);
  * font not yet cached. */
 void text_moby_native_osd(struct CPUState* cpu);
 
+/* Build the build-version line (core/include/openpete_build_id.h) and push it
+ * to the renderer. Builds once: the string is fixed at configure time. */
+void text_moby_native_version(struct CPUState* cpu);
+
 /* The gold shimmer's phase — SpecularUpdate's travelling light, reproduced
  * host-side. Advanced once per LOGIC frame by text_moby_native_shimmer_tick
  * (call once per sim tick, before the builders); speculative and replayed

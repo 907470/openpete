@@ -294,6 +294,9 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
      * builders all share. Pure presentation. */
     text_moby_native_osd(cpu);
 
+    /* The build-version line, from the same glyph models. Pure presentation. */
+    text_moby_native_version(cpu);
+
     /* --skip-to-level: induce the title's demo-timeout transition early,
      * pointed at our target via g_DemoLevelIds[g_DemoIndex], and clamp
      * g_DemoMode = DEMO_MODE_NONE so the user controls Spyro instead of

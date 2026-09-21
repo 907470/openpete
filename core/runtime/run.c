@@ -36,6 +36,7 @@
 #include "openpete_rewind.h"
 #include "openpete_record.h"
 #include "openpete_native_render.h"
+#include "openpete_build_id.h"
 #include "game_layout.h"
 #include "openpete_terrain_cache.h"
 #include "openpete_fb_snapshot.h"
@@ -2289,6 +2290,7 @@ static int run_host_init(const openpete_options_t* opts) {
     openpete_osd_set_enabled(opts->osd);
     openpete_osd_set_anchor(opts->osd_position);
     openpete_osd_set_default_timeout_ms(opts->osd_timeout_ms);
+    openpete_native_set_version_osd(opts->version_osd);   /* build-version line (--version-osd) */
     if (opts->mouse_sensitivity >= 0.0f)
         openpete_freecam_set_mouse_sensitivity(opts->mouse_sensitivity);
     /* OPENPETE_OSD_DEMO=N seeds N sample toasts at startup. The OSD is
@@ -6179,6 +6181,10 @@ static int run_host_loop(const openpete_options_t* opts) {
     if (openpete_osd_enabled())
         OPL_INFO_F("osd", "census: %u toast(s) composited",
                    openpete_native_osd_composited());
+    /* Version-line engagement, on the same footing: a capture that never drew
+     * it proves nothing about the line, whatever its pixels looked like. */
+    OPL_INFO_F("version", "census: %s, %u line(s) drawn",
+               openpete_build_version(), openpete_native_version_drawn());
 
     {
         unsigned gpu_hits = op_gpu_audit_total();

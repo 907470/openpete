@@ -159,6 +159,18 @@ static int osd_set(knob_desc_t *k, double v) {
     k->stored_num = (v != 0.0);
     return 0;
 }
+static double versionosd_get(const knob_desc_t *k) {
+    /* No stored fallback: the backing flag is a plain host-side int, seeded
+     * from the parsed options at boot whether or not the native renderer came
+     * up, so the live read is always the resolved value. */
+    (void)k;
+    return openpete_native_version_osd() ? 1.0 : 0.0;
+}
+static int versionosd_set(knob_desc_t *k, double v) {
+    openpete_native_set_version_osd(v != 0.0);
+    k->stored_num = (v != 0.0);
+    return 0;
+}
 static double osdpos_get(const knob_desc_t *k) {
     KNOB_LIVE_OR_STORED(k);
     return (double)openpete_osd_anchor();
@@ -636,6 +648,13 @@ static const knob_desc_t g_builtin[] = {
       "chrome. Mods raise them too.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       osd_get, osd_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    { "version_osd", "Version line", "Display", "--version-osd", NULL,
+      "The build version in small text at the bottom left. A release build "
+      "shows it for two seconds; any other build keeps it up, so a screenshot "
+      "always names the build it came from.",
+      KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
+      versionosd_get, versionosd_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "osd_position", "Notification position", "Display", "--osd-position", NULL,
       "Which corner or edge notifications stack at. Sharing a corner with the "

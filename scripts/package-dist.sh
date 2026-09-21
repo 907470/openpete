@@ -80,6 +80,10 @@ sign_pe() {  # sign_pe <file> — no-op unless --sign was given
     eval "$SIGN_CMD \"\$1\"" || { echo "[package] signing FAILED: $1" >&2; exit 1; }
 }
 
+# OPENPETE_DIST_VERSION overrides the derived name, and the CMake configure
+# reads the same variable for the version the build SHOWS on screen — export
+# it before configuring as well as before packaging, or the artifact's name
+# and its version line disagree.
 # OPENPETE_DIST_VERSION overrides the derived name. Test builds handed to
 # testers want the commit alone (`git rev-parse --short HEAD`) so a report
 # names the build without implying a release; leave it unset for releases,

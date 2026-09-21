@@ -40,6 +40,7 @@ add_library(openpete_core STATIC
     config/config_schema.c
     config/knob_registry.c
     config/paths.c
+    config/build_id.c
 
     # Host input.
     # [keys]: the input binding registry. Split the same way and for the
@@ -343,6 +344,46 @@ if(NOT OPENPETE_GIT_REV)
 endif()
 target_compile_definitions(openpete_core
     PRIVATE OPENPETE_BUILD_ID="${OPENPETE_GIT_REV}")
+
+# The version the running build SHOWS the player (core/config/build_id.c).
+# OPENPETE_DIST_VERSION, cache variable or environment, wins: an artifact
+# built from a checkout that cannot see the tag would otherwise display the
+# previous release's number. It is the same variable scripts/package-dist.sh
+# reads for the artifact filename, so the name on disk and the name on screen
+# come from one source.
+#
+# TAGGED means "this tree is exactly a release": describe --exact-match
+# resolves and the working tree is clean. An untagged build keeps its version
+# line on screen for the whole session, so a build handed to someone else can
+# always be identified from a screenshot. An explicit OPENPETE_DIST_VERSION is
+# taken as a release name and counts as tagged.
+if(NOT DEFINED OPENPETE_DIST_VERSION AND DEFINED ENV{OPENPETE_DIST_VERSION})
+    set(OPENPETE_DIST_VERSION "$ENV{OPENPETE_DIST_VERSION}" CACHE STRING
+        "Version string shown on screen and used for dist artifact names")
+endif()
+if(OPENPETE_DIST_VERSION)
+    set(OPENPETE_BUILD_VERSION "${OPENPETE_DIST_VERSION}")
+    set(OPENPETE_BUILD_TAGGED 1)
+else()
+    set(OPENPETE_BUILD_VERSION "${OPENPETE_GIT_REV}")
+    set(OPENPETE_BUILD_TAGGED 0)
+    if(GIT_FOUND)
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} describe --tags --exact-match
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            RESULT_VARIABLE OPENPETE_GIT_EXACT_RC
+            OUTPUT_QUIET ERROR_QUIET)
+        # --dirty is already in OPENPETE_GIT_REV: a tag on a dirty tree is not
+        # the release, so the suffix alone disqualifies it.
+        if(OPENPETE_GIT_EXACT_RC EQUAL 0 AND
+           NOT OPENPETE_GIT_REV MATCHES "-dirty$")
+            set(OPENPETE_BUILD_TAGGED 1)
+        endif()
+    endif()
+endif()
+target_compile_definitions(openpete_core
+    PRIVATE OPENPETE_BUILD_VERSION="${OPENPETE_BUILD_VERSION}"
+            OPENPETE_BUILD_TAGGED=${OPENPETE_BUILD_TAGGED})
 
 # Native renderer foundation: the thin RHI + Vulkan backend (core/rhi).
 # Always available (added unconditionally by the top-level CMakeLists);

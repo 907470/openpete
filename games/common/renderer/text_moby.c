@@ -38,6 +38,7 @@
 #include "openpete_perf_stats.h"    /* the overlay's levels + line text */
 #include "openpete_overlay_anchor.h" /* per-line alignment inside an anchored block */
 #include "openpete_osd.h"          /* toast ring — the OSD builder below */
+#include "openpete_build_id.h"     /* the version line below */
 #include "openpete_fiber.h"        /* speculative / replayed ticks skip the shimmer */
 #include "openpete_paths.h"        /* the per-user state directory */
 #include "openpete_fnv1a64.h"
@@ -806,6 +807,50 @@ void text_moby_native_perf_overlay(CPUState* cpu) {
     memcpy(s_shown, lines, sizeof lines);
     s_shown_n = nl;
     s_shown_anchor = anchor;
+}
+
+/* ---- the build-version line --------------------------------------------
+ * One short line naming the build, region-local like the stats block: the
+ * renderer pins the region to the bottom-left anchor and decides how long it
+ * stays up. Same cap height and inset as the stats readout, so the two corner
+ * blocks read as one set.
+ *
+ * Built once. The string is fixed at configure time, so re-emitting it every
+ * tick would spend the glyph builder's whole cost for identical geometry on
+ * the thread that owns the tick deadline.
+ *
+ * The game's HUD font has no hyphen model, so the separators of an untagged
+ * describe string ("v0.3.0-12-gabc1234") come out as spaces. The digits and
+ * the commit hash, which are what identifies the build, are unaffected. */
+#define VER_CAP_H     PERF_CAP_H
+#define VER_ORIGIN_X  PERF_ORIGIN_X
+#define VER_ORIGIN_Y  PERF_ORIGIN_Y
+#define VER_OVL_MAX   4096
+
+static openpete_hud_vert s_ver_buf[VER_OVL_MAX];
+static int s_ver_pushed = -1;   /* -1 = nothing pushed yet, 0 = cleared */
+
+void text_moby_native_version(CPUState* cpu) {
+    if (!openpete_native_scene_enabled()) return;   /* inert headless: no cache, no draw */
+    text_moby_native_cache(cpu);
+    if (!openpete_native_version_osd() || !text_moby_native_ready()) {
+        if (s_ver_pushed != 0) {
+            openpete_native_set_version_glyphs(NULL, 0, 0.0f, 0.0f);
+            s_ver_pushed = 0;
+        }
+        return;
+    }
+    if (s_ver_pushed > 0) return;   /* the string never changes */
+
+    const char* text = openpete_build_version();
+    const float region_w = 2.0f * VER_ORIGIN_X + measure_string(text, VER_CAP_H);
+    const float region_h = 2.0f * VER_ORIGIN_Y + VER_CAP_H;
+    const int nv = text_moby_native_emit(text, VER_ORIGIN_X, VER_ORIGIN_Y,
+                                         VER_CAP_H, FONT.fixed_tint,
+                                         s_ver_buf, VER_OVL_MAX);
+    if (nv <= 0) return;   /* font cached but this string emitted nothing: retry next tick */
+    openpete_native_set_version_glyphs(s_ver_buf, nv, region_w, region_h);
+    s_ver_pushed = nv;
 }
 
 /* ---- the gold shimmer's phase ------------------------------------------

@@ -83,6 +83,7 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
     text_moby_native_perf_overlay(cpu);
     text_moby_native_menu(cpu);
     text_moby_native_osd(cpu);
+    text_moby_native_version(cpu);
 }
 void game_on_frame(CPUState* cpu, uint32_t frame_counter) {
     (void)cpu; (void)frame_counter;

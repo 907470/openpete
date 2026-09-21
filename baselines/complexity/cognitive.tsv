@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: be2aeb17409e1ecba2000d26ffbdda7dc9272654
+# head: cc6cc9ed02d95918382e2fd02cf5c4cf4c732804
 file	function	score	marked	accepted
 core/config/config.c	harvest_args	30	0	
 core/config/config.c	harvest_base	39	0	
@@ -11,7 +11,7 @@ core/config/config.c	materialize	32	0
 core/config/config.c	openpete_config_apply	80	0	
 core/config/config.c	openpete_config_report	45	0	
 core/config/knob_registry.c	knob_registry_init	134	0	
-core/config/options.c	parse_flag_chain	779	1	
+core/config/options.c	parse_flag_chain	790	1	
 core/config/options.c	tokenize_sidecar_args	43	0	
 core/diag/ident_audit.c	openpete_ident_audit_present	32	0	
 core/diag/log.c	parse_spec	30	0	

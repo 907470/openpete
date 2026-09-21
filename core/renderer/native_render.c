@@ -23,6 +23,7 @@
 #include "openpete_menu.h"
 #include "openpete_overlay_anchor.h"
 #include "openpete_osd.h"
+#include "openpete_build_id.h"
 #include "openpete_knobs.h"   /* env-epoch for cached live knobs */
 #include "openpete_devui.h"
 #include "openpete_mods.h"   /* openpete_mods_texture_get (mod-texture runs) */
@@ -255,6 +256,7 @@ typedef struct {
 #define OVL_MAX_VERTS 16384  /* overlay (3D text-moby glyph) vertex cap (see draw_perf_overlay);
                              * sized for the 4-line detailed readout, not a 1-line counter */
 #define MOD_OVL_MAX_VERTS 16384 /* mod draw-service overlay verts (see draw_mod_overlay) */
+#define VER_MAX_VERTS 4096   /* build-version line glyph verts (see draw_version_overlay) */
 #define MENU_MAX_VERTS 256   /* in-game menu panel/border/selection quads (see draw_menu_overlay) */
 #define MENU_GLYPH_MAX 32768 /* in-game menu 3D glyph text verts (labels/values/title);
                               * must match MENU_TXT_MAX (text_moby.c) — 8 rows
@@ -2702,6 +2704,7 @@ static struct {
     rhi_pipeline *freeze_plain_pipe;  /* samples frozen_tex unaltered (set 0) */
     rhi_buffer   *fs_quad_vb;         /* full-target (-1..1) quad, UV 0..1 (RT copies) */
     rhi_buffer   *overlay_vb;         /* FPS overlay glyph quads (NDC), rebuilt per present */
+    rhi_buffer   *version_vb;         /* build-version line glyphs (NDC), rebuilt per present */
     rhi_buffer   *mod_ovl_vb;         /* mod draw-service overlay (rects + text glyphs, NDC), rebuilt per present */
     rhi_buffer   *menu_vb;            /* in-game settings menu panel/border/selection quads (NDC) */
     rhi_buffer   *menu_glyph_vb;      /* in-game settings menu 3D glyph text (NDC, depth-tested) */
@@ -9624,6 +9627,63 @@ void openpete_native_set_mod_overlay(const openpete_hud_vert *verts, int nverts)
     s_mod_overlay_n = nverts;
 }
 
+/* ---- the build-version line ---------------------------------------------
+ * Small text in a corner naming the build (core/include/openpete_build_id.h),
+ * built from the same 3D glyph models as the stats readout and pushed once —
+ * the string does not change. It is the cheapest way for a screenshot of a
+ * build that is not a release to say which build it is.
+ *
+ * A tagged build shows it briefly and fades it out; an untagged one keeps it
+ * up for the whole session, because that is the build whose identity nobody
+ * can otherwise recover from an image.
+ *
+ * Not a toast: toasts are the game's bordered dialog chrome at a
+ * user-chosen anchor, they expire (OPENPETE_OSD_TIMEOUT_MAX_MS), and a
+ * session-long one would hold a ring slot the whole time. This is bare text
+ * at a fixed anchor, drawn through the shared glyph path. */
+static openpete_hud_vert s_ver_glyph_verts[VER_MAX_VERTS];
+static int               s_ver_glyph_n = 0;
+/* Region extent as one packed 64-bit word, like the stats block's: the
+ * builder writes it on the sim thread and the compose reads it on the present
+ * thread, and a torn width/height pair would claim a different rect on the
+ * anchor ledger than the glyphs fill. */
+static uint64_t          s_ver_extent = 0;
+
+void openpete_native_set_version_glyphs(const openpete_hud_vert *verts, int nverts,
+                                        float region_w, float region_h) {
+    if (nverts < 0) nverts = 0;
+    if (nverts > VER_MAX_VERTS) nverts = VER_MAX_VERTS;
+    if (nverts > 0 && verts) memcpy(s_ver_glyph_verts, verts, (size_t)nverts * sizeof(verts[0]));
+    s_ver_glyph_n = nverts;
+    if (region_w > 0.0f && region_h > 0.0f) {
+        uint32_t bw, bh;
+        memcpy(&bw, &region_w, sizeof bw);
+        memcpy(&bh, &region_h, sizeof bh);
+        s_ver_extent = (uint64_t)bw | ((uint64_t)bh << 32);
+    }
+}
+
+/* The published region, or a degenerate one when nothing has been pushed. */
+static void version_region(float *w, float *h) {
+    const uint64_t v = s_ver_extent;   /* one read: both halves from one publish */
+    uint32_t bw = (uint32_t)v, bh = (uint32_t)(v >> 32);
+    float fw = 0.0f, fh = 0.0f;
+    memcpy(&fw, &bw, sizeof fw);
+    memcpy(&fh, &bh, sizeof fh);
+    if (w) *w = (fw > 0.0f) ? fw : 0.0f;
+    if (h) *h = (fh > 0.0f) ? fh : 0.0f;
+}
+
+/* --version-osd off suppresses the line entirely, tagged or not. */
+static int s_version_osd = 1;
+void openpete_native_set_version_osd(int on) { s_version_osd = on ? 1 : 0; }
+int  openpete_native_version_osd(void) { return s_version_osd; }
+
+/* Lines actually drawn, cumulative. A capture that greened with zero here
+ * proved nothing about the version line. */
+static unsigned s_ver_drawn = 0;
+unsigned openpete_native_version_drawn(void) { return s_ver_drawn; }
+
 /* Window aspect (w/h) for mod HUD layout in overlay space: x spans
  * [0, aspect], y spans [0, 1]. Falls back to 4:3 pre-init. */
 float openpete_native_overlay_aspect(void) {
@@ -9712,8 +9772,13 @@ void openpete_native_osd_slot_extent(float *w, float *h) {
  * same isolation trick as the in-game HUD3D pass. Returns true if it drew. */
 static bool draw_glyph_list_3d(const openpete_hud_vert *verts, int nverts,
                                rhi_buffer *vb, int cap,
-                               float ax, float ay, float ox, float oy) {
-    if (nverts < 3 || !verts || !vb || !s_nr.gouraud_pipe) return false;
+                               float ax, float ay, float ox, float oy,
+                               rhi_pipeline *pipe, int alpha8) {
+    /* `pipe` NULL selects the depth-isolated opaque path below; a caller that
+     * wants the list to fade passes a blended HUD pipe (depth test already
+     * off) and an alpha, which scales every vertex's alpha byte. */
+    if (!pipe) pipe = s_nr.gouraud_pipe;
+    if (nverts < 3 || !verts || !vb || !pipe) return false;
     static rhi_vertex buf[OSD_GLYPH_MAX > OVL_MAX_VERTS ? OSD_GLYPH_MAX : OVL_MAX_VERTS];
     if (cap > (int)(sizeof buf / sizeof buf[0])) cap = (int)(sizeof buf / sizeof buf[0]);
     int n = 0;
@@ -9730,6 +9795,10 @@ static bool draw_glyph_list_3d(const openpete_hud_vert *verts, int nverts,
         buf[n].y = 1.0f - (v->y + oy) * ay;
         buf[n].z = v->z; buf[n].u = 0.0f; buf[n].v = 0.0f;
         buf[n].rgba = v->rgba; buf[n].koff = 0.0f; buf[n].w = 0.0f;
+        if (alpha8 >= 0) {
+            const uint32_t a = (uint32_t)(((buf[n].rgba >> 24) * (uint32_t)alpha8) / 255u);
+            buf[n].rgba = (buf[n].rgba & 0x00FFFFFFu) | (a << 24);
+        }
         buf[n].sx = 0.0f; buf[n].sy = 0.0f;   /* unranked: rank select off */
         n++;
     }
@@ -9737,8 +9806,12 @@ static bool draw_glyph_list_3d(const openpete_hud_vert *verts, int nverts,
     if (n <= 0) return false;
     rhi_update_buffer(vb, buf, (size_t)n * sizeof(rhi_vertex));
     rhi_reset_scissor(s_nr.dev);
-    rhi_clear_depth(s_nr.dev);
-    bind_scene_pipe(s_nr.gouraud_pipe);
+    /* The opaque path clears depth so the glyphs z-sort among their own faces
+     * on top of the frame. A blended HUD pipe has the depth test off already,
+     * and clearing under it would throw away the scene depth the rest of the
+     * pass still needs. */
+    if (pipe == s_nr.gouraud_pipe) rhi_clear_depth(s_nr.dev);
+    bind_scene_pipe(pipe);
     rhi_bind_vertex_buffer(s_nr.dev, vb);
     rhi_draw(s_nr.dev, (uint32_t)n, 0);
     return true;
@@ -9747,7 +9820,8 @@ static bool draw_glyph_list_3d(const openpete_hud_vert *verts, int nverts,
 /* The stats readout's own glyph list, through the shared draw above. */
 static bool draw_overlay_glyphs_3d(float ax, float ay, float ox, float oy) {
     return draw_glyph_list_3d(s_overlay_glyph_verts, s_overlay_glyph_n,
-                              s_nr.overlay_vb, OVL_MAX_VERTS, ax, ay, ox, oy);
+                              s_nr.overlay_vb, OVL_MAX_VERTS, ax, ay, ox, oy,
+                              NULL, -1);
 }
 
 /* Draw the mod draw-service overlay (rects + text glyphs) into the currently
@@ -9893,6 +9967,49 @@ static float snap_px(float v, float win_h) {
     return (float)(int)(v * win_h + (v >= 0.0f ? 0.5f : -0.5f)) / win_h;
 }
 
+/* How long a tagged build holds its version line at full opacity, and how
+ * long the fade out takes. An untagged build never leaves the hold. */
+#define VER_HOLD_NS  ((op_time_t)2000 * OP_NS_PER_MS)
+#define VER_FADE_NS  ((op_time_t)300  * OP_NS_PER_MS)
+
+/* The first present at which the line HAD geometry, which is where its dwell
+ * starts. The glyph models come out of the game's own font, which is not in
+ * RAM until the game has loaded it; a timer started at launch would run out
+ * while there was still nothing to draw. */
+static op_time_t s_ver_birth = 0;
+/* The alpha and placement latched for this present, resolved once in the
+ * layout pass so the ledger claim and the draw cannot disagree about whether
+ * the line is up. */
+static int   s_ver_alpha8 = 0;
+static float s_ver_ox, s_ver_oy;
+
+static float ver_smoothstep(float x) {
+    if (x <= 0.0f) return 0.0f;
+    if (x >= 1.0f) return 1.0f;
+    return x * x * (3.0f - 2.0f * x);
+}
+
+static int version_overlay_alpha(void) {
+    if (!s_version_osd || s_ver_glyph_n < 3) return 0;
+    if (s_nr.win_w <= 0 || s_nr.win_h <= 0) return 0;
+    /* Chrome stays out of a --record video under the same override the stats
+     * block uses. */
+    if (openpete_record_active() && !fps_in_record_resolved()) return 0;
+
+    const op_time_t now = openpete_interp_present_now();
+    if (s_ver_birth == 0 || now < s_ver_birth) s_ver_birth = now;
+    if (!openpete_build_tagged()) return 255;
+
+    const op_time_t age = now - s_ver_birth;
+    if (age >= VER_HOLD_NS + VER_FADE_NS) return 0;
+    if (age <= VER_HOLD_NS) return 255;
+    const float t = (float)((double)(age - VER_HOLD_NS) / (double)VER_FADE_NS);
+    int a8 = (int)((1.0f - ver_smoothstep(t)) * 255.0f + 0.5f);
+    if (a8 < 0) a8 = 0;
+    if (a8 > 255) a8 = 255;
+    return a8;
+}
+
 static void overlay_layout_update(void) {
     const float ph = (s_nr.win_h > 0) ? (float)s_nr.win_h : 0.0f;
     openpete_native_get_overlay_extent(&s_perf_rw, &s_perf_rh);
@@ -9927,6 +10044,19 @@ static void overlay_layout_update(void) {
          * output-pixel-to-block rule the toast quads already follow. */
         s_perf_ox = snap_px(s_perf_ox, ph);
         s_perf_oy = snap_px(s_perf_oy, ph);
+    }
+    /* The version line claims next: persistent chrome, so it settles before
+     * the transient toasts and they stack away from it. Margin 0 for the same
+     * reason as the perf block — the region carries its own inset. */
+    s_ver_alpha8 = version_overlay_alpha();
+    if (s_ver_alpha8 > 0) {
+        float vw, vh;
+        version_region(&vw, &vh);
+        openpete_anchor_place(&s_anchor_ledger, OPENPETE_ANCHOR_BOTTOM_LEFT,
+                              snap_px(vw, ph), snap_px(vh, ph), 0.0f,
+                              &s_ver_ox, &s_ver_oy);
+        s_ver_ox = snap_px(s_ver_ox, ph);
+        s_ver_oy = snap_px(s_ver_oy, ph);
     }
 }
 
@@ -10011,6 +10141,31 @@ static void draw_perf_overlay(void) {
         draw_overlay_glyphs_3d(2.0f * (float)s_nr.win_h / (float)s_nr.win_w, 2.0f,
                                s_perf_ox, s_perf_oy);
     }
+}
+
+/* The version line's vertex buffer, created on the first present that will
+ * use it. A session that never shows the line never pays for it, and the
+ * renderer's bring-up does not have to unwind one more resource. Call from
+ * the per-present resource pass, outside a render pass. */
+static void ensure_version_vb(void) {
+    if (s_nr.version_vb || !s_nr.dev || s_ver_alpha8 <= 0) return;
+    s_nr.version_vb = rhi_create_vertex_buffer_dynamic(s_nr.dev,
+                                                       sizeof(rhi_vertex) * VER_MAX_VERTS);
+}
+
+/* The build-version line, at the placement and alpha the layout pass latched.
+ * 1x through the alpha-blended untextured HUD pipe (depth test off), so the
+ * fade is the vertex alpha and no supersample target is needed for one short
+ * line of text. */
+static void draw_version_overlay(void) {
+    if (s_ver_alpha8 <= 0 || !s_nr.version_vb) return;
+    rhi_pipeline *pipe = s_nr.gouraud_hud_pipes[NR_BLEND_AVG];
+    if (!pipe) return;
+    if (draw_glyph_list_3d(s_ver_glyph_verts, s_ver_glyph_n,
+                           s_nr.version_vb, VER_MAX_VERTS,
+                           2.0f * (float)s_nr.win_h / (float)s_nr.win_w, 2.0f,
+                           s_ver_ox, s_ver_oy, pipe, s_ver_alpha8))
+        s_ver_drawn++;   /* engagement counter */
 }
 
 /* --- in-game settings menu overlay -----------------------------------------
@@ -10267,7 +10422,8 @@ static void prepare_osd_ss(void) {
     SDL_LockMutex(osd_pub_mx());
     draw_glyph_list_3d(s_osd_glyph_verts, s_osd_glyph_n,
                        s_nr.osd_glyph_vb, OSD_GLYPH_MAX,
-                       2.0f / sw, 2.0f / (sh * (float)OPENPETE_OSD_MAX), 0.0f, 0.0f);
+                       2.0f / sw, 2.0f / (sh * (float)OPENPETE_OSD_MAX), 0.0f, 0.0f,
+                       NULL, -1);
     SDL_UnlockMutex(osd_pub_mx());
     rhi_end_render_target(s_nr.dev, s_nr.osd_ss);
 }
@@ -10657,6 +10813,7 @@ static void compose_variant(void)
         draw_mod_overlay();                       /* mod HUD (content) */
         if (s_overlay_live) {
             draw_perf_overlay();
+            draw_version_overlay();
             draw_osd_overlay();
             draw_menu_overlay();
         }
@@ -10760,6 +10917,7 @@ static void compose_variant(void)
         const bool froze = chrome_split_capture(world_frame);
         if (s_overlay_live) {
             draw_perf_overlay();                  /* on the resolved 1× offscreen, crisp */
+            draw_version_overlay();               /* build-version line           */
             draw_osd_overlay();                   /* toasts above the readout    */
             draw_menu_overlay();                  /* settings menu on top        */
         }
@@ -10819,6 +10977,7 @@ static void compose_variant(void)
      * s_overlay_live is 0. */
     if (s_overlay_live) {
         draw_perf_overlay();
+        draw_version_overlay();
         draw_osd_overlay();
         draw_menu_overlay();
     }
@@ -11903,6 +12062,7 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
     ensure_ovl_ss();           /* stats-overlay supersample target + composite quad */
     ensure_menu_ss();          /* settings-menu glyph supersample (lazy, while open) */
     ensure_osd_ss();           /* OSD toast slot grid (lazy, once a toast exists) */
+    ensure_version_vb();       /* version-line buffer (lazy, once the line is up) */
     ensure_opaque_depth();     /* WORLD-opaque depth pre-pass target (shadow decal) */
     ensure_terrain_key_targets(); /* key-contest images: bound by every scene-pipe draw, chrome first */
 
@@ -12698,6 +12858,7 @@ void openpete_native_render_shutdown(void)
     rhi_destroy_texture(s_nr.dev, s_nr.vram_tex);
     rhi_destroy_buffer(s_nr.dev, s_nr.fs_quad_vb);
     rhi_destroy_buffer(s_nr.dev, s_nr.overlay_vb);
+    if (s_nr.version_vb) rhi_destroy_buffer(s_nr.dev, s_nr.version_vb);
     rhi_destroy_buffer(s_nr.dev, s_nr.mod_ovl_vb);
     rhi_destroy_buffer(s_nr.dev, s_nr.menu_vb);
     rhi_destroy_buffer(s_nr.dev, s_nr.menu_glyph_vb);
