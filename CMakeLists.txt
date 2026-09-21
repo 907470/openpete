@@ -437,6 +437,26 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
 
+    # Runahead prediction contract. Per row of
+    # games/<slug>/runahead-corpus.manifest, two headless replays of one bk2:
+    # the native capture at the row's VBL under --runahead <depth>, and the
+    # capture at that VBL plus 2*<depth> without runahead. --runahead presents
+    # the state <depth> ticks ahead of the committed timeline, so the two are
+    # the same picture and any pixel between them is a canonical presentation
+    # latch that a speculative tick wrote. Fails as vacuous when the run never
+    # armed runahead, retired no led prediction, or had its speculation
+    # adopted into the real timeline before the row's VBL.
+    foreach(_ra_game spyro-1 spyro-2 spyro-3)
+        add_test(NAME runahead_ident_${_ra_game}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_runahead_ident.sh
+                         --game ${_ra_game} --build-dir=${CMAKE_BINARY_DIR})
+        set_tests_properties(runahead_ident_${_ra_game} PROPERTIES
+            LABELS "presentation;runahead"
+            TIMEOUT 1800
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
+
     # 2D-UI carry identity across sub-tick presents. Per row of
     # games/<slug>/carry-subtick-corpus.manifest, three headless replays of one
     # bk2 with the intermediate presents pinned at alpha 0.25, 0.5 and 0.75,

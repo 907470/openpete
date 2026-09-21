@@ -1,0 +1,8 @@
+# Runahead prediction-contract corpus for Spyro 1 (fields: bk2 | vbl | depth).
+# The led capture at <vbl> under --runahead <depth> must be pixel-identical to
+# the unaccelerated capture at <vbl> + 2*<depth>.
+#
+# beast_makers_wall is the control row: it is the movie the state-roundtrip
+# gate already replays under --runahead 2, and the comparand was calibrated on
+# it (VBL 1828 led matches 1832 exactly and no other VBL in 1824..1834).
+beast_makers_wall.bk2 | 1828 | 2

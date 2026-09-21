@@ -1,0 +1,7 @@
+# Runahead prediction-contract corpus for Spyro 2 (fields: bk2 | vbl | depth).
+# See games/spyro-1/runahead-corpus.manifest for the contract.
+#
+# shady-oasis-flame at 964 is gameplay-live with the camera in motion: the two
+# ticks between 964 and 968 move 22257 pixels, so a led capture that showed the
+# committed tick instead of the led one could not pass by standing still.
+shady-oasis-flame.bk2 | 964 | 2

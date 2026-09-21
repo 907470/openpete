@@ -27,6 +27,7 @@
 #include "renderer/render_paths.h"
 #include "renderer/native_gte.h"      /* the shared texture-page decode */
 #include "renderer/ui_game.h"
+#include "renderer/orchestrator.h"  /* spyro_native_canon_capture_open */
 #include "openpete_recomp_module.h"   /* the game's own routine, through the module dispatch */
 #include "texture_pack.h"
 #include "openpete_fb_snapshot.h"
@@ -811,6 +812,9 @@ static unsigned s_claim_at_capture;   /* batches released at their own frame's c
 static ui_claim_t s_verify[UI_CLAIM_MAX];
 static unsigned s_verify_pending;     /* entries awaiting their walk */
 static unsigned s_verify_n, s_verify_stale;
+static unsigned s_claim_spec_refused; /* claims and glyph feeds refused because the tick was
+                                       * speculative: the engagement counter for that guard
+                                       * (0 under --runahead means it never engaged) */
 static unsigned s_mutated;            /* primitives whose words changed between the claim
                                        * and the flush: the deferral's engagement counter
                                        * (0 means no caller ever rewrites a linked prim
@@ -1171,6 +1175,8 @@ static void release_batch(unsigned n) {
         fprintf(stderr, "[uifeed f=%u built=%u live=%u] rel=%u kept=%u mutated=%u lost=%u late=%u cap=%u fed=%u\n",
                 openpete_frame, s_claim_frame, openpete_native_scene_frame(), n, s_claim_n,
                 s_mutated, s_claim_lost, s_claim_late, s_claim_at_capture, s_fed_prims);
+    if (s_tr)
+        fprintf(stderr, "[uispec f=%u] refused=%u\n", openpete_frame, s_claim_spec_refused);
 }
 
 /* Release everything still claimed: the ordering-table walk and the close of
@@ -1235,6 +1241,13 @@ void ui_sprite_ot_verify(void) {
 static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux);
 
 static void claim_aux(CPUState* cpu, uint32_t prim, int kind, uint32_t aux) {
+    /* A claim is a canonical latch: it records an address whose words are read
+     * back at the ordering-table walk. A speculative tick's link is rolled back
+     * with the rest of guest RAM, so a claim made there names a slot that holds
+     * another tick's bytes by the time the batch is released, and the deferred
+     * read decodes them as a primitive. The committed tick's link is the one
+     * the walk can read. */
+    if (!spyro_native_canon_capture_open()) { s_claim_spec_refused++; return; }
     if (openpete_frame == s_cap_frame) s_post_claim++;
     /* A batch never spans frames: the tail the capture kept back belongs to the
      * frame that built it, and by the first claim of a later frame it is final,
@@ -1266,6 +1279,7 @@ static void claim(CPUState* cpu, uint32_t prim, int kind) { claim_aux(cpu, prim,
  * rather than fed, so the release's table walk ranks a glyph against the
  * chokepoint's primitives by the order the GPU will draw them. */
 void ui_sprite_feed_sprt(CPUState* cpu, uint32_t prim, unsigned tpage) {
+    if (!spyro_native_canon_capture_open()) { s_claim_spec_refused++; return; }
     if (openpete_frame == s_cap_frame) s_post_sprt++;
     if (!openpete_native_scene_enabled()) return;
     if (!s_cpu) s_cpu = cpu;

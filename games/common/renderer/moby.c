@@ -289,12 +289,11 @@ static uint8_t s_canon_spec[SPEC_SCR_MAX];
 static uint32_t s_canon_spec_epoch = 0;   /* canonical-render epoch at capture (freshness gate) */
 static int     s_canon_spec_valid = 0;
 static void moby_native_capture_spec_scratch(CPUState* cpu) {
-    /* Runahead: speculative fires must not stamp/overwrite the canonical
-     * SPEC capture (same rule as scratch_row_capture — the stamp would be
-     * the uncommitted epoch and the SPEC pass would skip on every
-     * intermediate present, strobing specular mobys). */
-    extern int openpete_speculative;
-    if (openpete_speculative) return;
+    /* Runahead: a speculative fire must not stamp or overwrite the canonical
+     * SPEC capture — the stamp would be the uncommitted epoch and the SPEC
+     * pass would skip on every intermediate present, strobing specular
+     * mobys. */
+    if (!spyro_native_canon_capture_open()) return;
     if (!SPEC_SCR_LEN || SPEC_SCR_LEN > SPEC_SCR_MAX) return;
     const void* h = openpete_subtick_host_ptr(moby_game.scratch + SPEC_SCR_LO);
     if (h) { memcpy(s_canon_spec, h, SPEC_SCR_LEN); s_canon_spec_valid = 1;
@@ -4538,8 +4537,7 @@ static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat)
              * A speculative REGULAR pass clearing s_canon_spec_valid (with
              * the guarded spec capture unable to re-validate) skipped the
              * SPEC replay on every intermediate — specular mobys strobed. */
-            extern int openpete_speculative;
-            if (!openpete_speculative) {
+            if (spyro_native_canon_capture_open()) {
                 if (!is_spec) {
                     spyro_native_canon_capture_range(cpu, 0x1100u, 0x500u);
                     spyro_native_canon_capture_recs(cpu);    /* full records (>13 overflow 0x1900) */
@@ -5970,8 +5968,10 @@ static int on_draw_shaded(CPUState* cpu, uint32_t addr) {
         push_scene_moby();                      /* reads zero .s prim output */
         /* Sub-tick spine: snapshot the shaded Moby* list (live now) so
          * intermediates can re-derive the gems/props. */
-        spyro_native_canon_capture_range(cpu, 0x2400u, 0x800u);
-        spyro_native_canon_capture_camera(cpu, SPYRO_PROD_SHADED);
+        if (spyro_native_canon_capture_open()) {
+            spyro_native_canon_capture_range(cpu, 0x2400u, 0x800u);
+            spyro_native_canon_capture_camera(cpu, SPYRO_PROD_SHADED);
+        }
         /* Flat HUD and text draw OVER the player by default; the game states
          * where they draw under it are moby_game's to name. Set after push
          * (begin_frame, which resets the flag, has run); the moby renderer

@@ -1040,16 +1040,17 @@ static int on_player_draw(CPUState* cpu, uint32_t addr) {
          * gamestate the block is still staged: a provider reads the words
          * around the records out of the same span (a per-part origin the
          * draw's later passes keep). */
-        if (is_player)
-        spyro_native_canon_capture_range(cpu, PL.part_off, PL.part_block_len);
-        /* The pre-blend colour table the draw builds above when the state's
-         * colour filter selects it. It lives inside the record region the
-         * sub-tick restore takes at an EARLIER hook, so that restore leaves it
-         * stale and the avatar's colours strobe above the tick rate. Capture
-         * it fresh here and overlay it for this feeder. */
-        if (is_player && PL.colour_scratch_len)
-            spyro_native_canon_capture_range(cpu, PL.colour_scratch_off, PL.colour_scratch_len);
-        if (is_player) {
+        if (is_player && spyro_native_canon_capture_open()) {
+            spyro_native_canon_capture_range(cpu, PL.part_off, PL.part_block_len);
+            /* The pre-blend colour table the draw builds above when the
+             * state's colour filter selects it. It lives inside the record
+             * region the sub-tick restore takes at an EARLIER hook, so that
+             * restore leaves it stale and the avatar's colours strobe above
+             * the tick rate. Capture it fresh here and overlay it for this
+             * feeder. */
+            if (PL.colour_scratch_len)
+                spyro_native_canon_capture_range(cpu, PL.colour_scratch_off,
+                                                 PL.colour_scratch_len);
             spyro_native_canon_capture_sxy(cpu);
             spyro_native_canon_capture_camera(cpu, SPYRO_PROD_SPYRO);
         }

@@ -47,6 +47,21 @@ int      spyro_native_canon_epoch_fresh(uint32_t stamp);
 int      spyro_native_canon_mobyreg_fresh(void);
 int      spyro_native_canon_shaded_fresh(void);
 
+/* Whether a canonical latch may be written at the producer hook running now.
+ *
+ * Runahead speculates 2N VBLs past the committed tick and rolls the guest
+ * state back afterwards, and the producer hooks fire during those VBLs as
+ * well. A capture taken then holds a speculative tick's render scratch,
+ * addressed off that tick's primitive-buffer end, and stamps the epoch the
+ * next canonical present latches; the replay would stage one tick's bytes
+ * over another tick's address and decode them as geometry. The committed
+ * tick's fire is the canonical capture, so every speculative fire is
+ * skipped. */
+extern int openpete_speculative;   /* openpete_fiber.h - runahead lookahead */
+static inline int spyro_native_canon_capture_open(void) {
+    return !openpete_speculative;
+}
+
 /* Canonical-scratch capture, called from a canonical render hook while the
  * transient render-pass scratch is still live.
  *   _range: a sub-range of the render scratch block (offset, length).
