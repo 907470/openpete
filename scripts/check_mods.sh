@@ -659,14 +659,40 @@ if printf '%s\n' "$out" | grep -q "arena-canary: DESYNC"; then
 else
     ok "stress-rewind: arena rolled back with guest RAM (no DESYNC)"
 fi
-out="$(OPENPETE_RA_PREDICT_CHECK=1 run_game "$WORK/canary" 7000 --runahead 1)"
-if printf '%s\n' "$out" | grep -q "runahead: armed" && \
-   printf '%s\n' "$out" | grep -q "arena-canary: armed" && \
-   printf '%s\n' "$out" | grep -qE "\[ra-predict\] checked=[1-9][0-9]* mismatch=0" && \
-   ! printf '%s\n' "$out" | grep -q "arena-canary: DESYNC"; then
-    ok "runahead armed over mutable arena memory; prediction oracle exact; no DESYNC"
+# The window is a loaded level, not the boot/attract window the other
+# canary runs use: runahead only speculates while gameplay is live
+# (g_Gamestate == GS_Playing and a non-zero level id), and a prediction
+# is retired only when the committed timeline reaches the frame it was
+# recorded for. Booting to the attract demo reaches gameplay so late
+# that the run ends before any prediction retires, so the oracle
+# retires zero and the leg proves nothing.
+out="$(OPENPETE_RA_PREDICT_CHECK=1 RUN_TIMEOUT=900 \
+    run_game "$WORK/canary" 3000 --runahead 1 --skip-to-level 10)"
+ra_sum="$(printf '%s\n' "$out" |
+          grep -oE '\[ra-predict\] checked=[0-9]+ mismatch=[0-9]+' | tail -1)"
+ra_checked="${ra_sum#*checked=}"; ra_checked="${ra_checked%% *}"
+ra_mismatch="${ra_sum##*mismatch=}"
+# Each arm names the condition that failed: one combined pattern cannot
+# distinguish "never speculated" from "predicted wrong", and a window
+# that retires no prediction must read as VACUOUS, not as a pass.
+if ! printf '%s\n' "$out" | grep -q "runahead: armed"; then
+    bad "runahead over the canary: runahead never armed"
+elif ! printf '%s\n' "$out" | grep -q "arena-canary: armed"; then
+    bad "runahead over the canary: the canary never armed (no gameplay tick)"
+elif [ -z "$ra_sum" ]; then
+    bad "runahead over the canary: VACUOUS — no [ra-predict] summary; the" \
+        "prediction oracle was not armed in this binary"
+elif [ "${ra_checked:-0}" -eq 0 ]; then
+    bad "runahead over the canary: VACUOUS — the prediction oracle retired" \
+        "0 predictions in this window; nothing was compared"
+elif [ "${ra_mismatch:-1}" -ne 0 ]; then
+    bad "runahead over the canary: prediction oracle mismatch ($ra_sum)"
+elif printf '%s\n' "$out" | grep -q "arena-canary: DESYNC"; then
+    bad "runahead over the canary: DESYNC — the arena did not roll back" \
+        "with guest RAM"
 else
-    bad "runahead over the canary: not armed, oracle mismatch, or DESYNC"
+    ok "runahead armed over mutable arena memory; prediction oracle exact" \
+       "($ra_checked prediction(s) retired, 0 mismatch); no DESYNC"
 fi
 rm -f "$WORK/canary.state"
 out="$(run_game "$WORK/canary" 5000 --state-save-on-frame 4500 \

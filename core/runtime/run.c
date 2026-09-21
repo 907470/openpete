@@ -6100,8 +6100,12 @@ static int run_host_loop(const openpete_options_t* opts) {
                    (unsigned long long)openpete_interp_total_captures(),
                    (unsigned long long)openpete_interp_total_dedupe_skips());
     }
-    if (ra_pc_on() && (s_ra_pc_checked || s_ra_pc_mismatches || s_ra_pc_invalidated)) {
-        /* stderr, not the log: the roundtrip gate greps this summary. */
+    if (ra_pc_on()) {
+        /* stderr, not the log: the roundtrip gate greps this summary.
+         * Emitted whenever the check is armed, counters or not: a window
+         * that retired no prediction then reads as checked=0 instead of
+         * an absent line, which a harness cannot tell from a binary that
+         * never armed the check. */
         fprintf(stderr, "[ra-predict] checked=%u mismatch=%u invalidated=%u\n",
                 s_ra_pc_checked, s_ra_pc_mismatches, s_ra_pc_invalidated);
     }
