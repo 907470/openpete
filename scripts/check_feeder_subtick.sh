@@ -24,6 +24,23 @@
 #   glow    OPENPETE_GLOW=1  against =0, games/<slug>/glow-subtick-corpus.manifest
 #   shadow  --render-paths terrain,moby,shadow against terrain,moby,
 #           games/<slug>/shadow-subtick-corpus.manifest
+#   portal  OPENPETE_PORTAL3_DBG=1, one leg per alpha, no leave-one-out,
+#           games/<slug>/portal-subtick-corpus.manifest
+#
+# The portal path is the homeworld portal preview of Spyro 2 and Spyro 3, and
+# it takes the other statistic this script carries. What moves there is the
+# aperture the preview is seen through: a screen polygon spanning most of the
+# frame, not a compact blob, so the pixel mask below does not model it and the
+# MASK_CAP would refuse it. Its statistic is instead the aperture polygon's
+# vertices, which the feeder emits exactly under OPENPETE_PORTAL3_DBG, one
+# `[portal3-ap]` line per fed preview per present, with the canonical pass and
+# the sub-tick replay distinguished by `src=`. The vertices are the feeder's
+# own floats, so no leave-one-out and no clustering are needed: one run per
+# alpha carries the two canonical ticks and the intermediate present together.
+# `--render-paths` cannot isolate this path on its own — the ordering-table
+# filter drops the portal prims before the drawing-primitive count, so fast
+# boot never ends and no present is reached — and the vertex list is the
+# isolation instead. The engagement counter is the fed triangle count per leg.
 #
 # The shadow path is the moby ground shadow, which no env knob switches off on
 # its own, so its two legs are a render-path selection with and without the
@@ -106,7 +123,9 @@
 # step. The alpha-1 leg is what catches a row of the wrong parity.  Keys:
 #   blob=<x>,<y> a blob to judge, named by its mask component's centroid in the
 #                canonical capture at V (`gem=` is the same key, the glint
-#                manifests' spelling). Repeatable; at least one required.
+#                manifests' spelling; `vertex=` the portal manifests', where
+#                the position is an aperture polygon vertex rather than a
+#                centroid). Repeatable; at least one required.
 #                A row names the blobs unoccluded over the interval: a partly
 #                covered blob's visible centroid is not the interpolation of
 #                its two visible centroids, so judging it would measure the
@@ -134,7 +153,7 @@
 #   [<path>-subtick] game=<g> bk2=<b> V=<v> blobs=<n> legs=<n> maskpx=<n>
 #                    worst=<px> verdict=PASS|FAIL
 #
-# Usage: scripts/check_feeder_subtick.sh --path glint|glow|shadow
+# Usage: scripts/check_feeder_subtick.sh --path glint|glow|shadow|portal
 #        [--game SLUG] [--build-dir=DIR]
 # Exit 0 PASS, 1 FAIL or VACUOUS, 64 SKIP (binary, disc, bk2, manifest, python3
 # or PIL missing).
@@ -160,12 +179,17 @@ done
 # LEG_ENV_ON/OFF and LEG_ARGS_ON/OFF are what the two leave-one-out legs
 # differ by, plus whatever both of them need; SUPPRESS names the knob the
 # engagement leg sets to 0, empty on a path that has none.
-LEG_ENV_ON=(); LEG_ENV_OFF=(); LEG_ARGS_ON=(); LEG_ARGS_OFF=(); SUPPRESS=
+# STAT names the statistic: `mask` is the leave-one-out mask's per-blob
+# centroid, `vertex` the feeder's own emitted polygon vertices.
+LEG_ENV_ON=(); LEG_ENV_OFF=(); LEG_ARGS_ON=(); LEG_ARGS_OFF=(); SUPPRESS=; STAT=mask
 case "$PATHNAME" in
     glint)  LEG_ENV_ON=(OPENPETE_GLINT=2); LEG_ENV_OFF=(OPENPETE_GLINT=0)
             ALPHAS=(0 0.5 1); JUDGE_DEF=0.5,1;;
     glow)   LEG_ENV_ON=(OPENPETE_GLOW=1); LEG_ENV_OFF=(OPENPETE_GLOW=0)
             ALPHAS=(0 0.25 0.5 0.75 1); JUDGE_DEF=0.25,0.5,0.75,1;;
+    portal) LEG_ENV_ON=(OPENPETE_PORTAL3_DBG=1)
+            SUPPRESS=OPENPETE_PORTAL3_INTERP; STAT=vertex
+            ALPHAS=(0 0.5 1); JUDGE_DEF=0.5,1;;
     shadow) LEG_ENV_ON=(OPENPETE_SHADOW_PLAYER=0)
             LEG_ENV_OFF=(OPENPETE_SHADOW_PLAYER=0)
             LEG_ARGS_ON=(--render-paths terrain,moby,shadow)
@@ -205,6 +229,9 @@ run_leg() {
         legargs=(${LEG_ARGS_OFF[@]+"${LEG_ARGS_OFF[@]}"})
     fi
     [[ -n "$SUPPRESSED" ]] && PG_CAPTURE_ENV+=("$SUPPRESS=0")
+    # The census reports from the interval's opening tick on, so a leg's log
+    # holds canon(V-2), canon(V) and the present between them.
+    [[ "$STAT" == vertex ]] && PG_CAPTURE_ENV+=(OPENPETE_PORTAL3_DBG_FROM="$prev")
     [[ -n "$alpha" ]] && PG_CAPTURE_ENV+=(OPENPETE_INTERMEDIATE_ALPHA="$alpha")
     PG_CAPTURE_TIMEOUT=900
     pg_capture "$log" "$out" -- \
@@ -246,6 +273,26 @@ while IFS= read -r line; do
     # result.
     rc=0 shots=()
     SUPPRESSED=
+    if [[ "$STAT" == vertex ]]; then
+        # One run per alpha. The feeder's census in that run's log already
+        # carries canon(V-2), canon(V) and the intermediate present, so the
+        # separate canonical legs and the leave-one-out partner of the mask
+        # statistic are not captured at all.
+        for alpha in "${ALPHAS[@]}"; do
+            d="$tag-i$alpha"
+            rm -rf "${OUT:?}/$d"; mkdir -p "$OUT/$d"
+            run_leg "$d" on "$alpha" "$OUT/$d/$mid-vk.png" \
+                    --screenshot-intermediate-on-frame "$mid" </dev/null || rc=$?
+            shots+=("$OUT/$d/$mid-vk.png" "$OUT/$d.log")
+        done
+        SUPPRESSED=1
+        d="$tag-s"
+        rm -rf "${OUT:?}/$d"; mkdir -p "$OUT/$d"
+        run_leg "$d" on 0 "$OUT/$d/$mid-vk.png" \
+                --screenshot-intermediate-on-frame "$mid" </dev/null || rc=$?
+        shots+=("$OUT/$d/$mid-vk.png" "$OUT/$d.log")
+        SUPPRESSED=
+    else
     for lbl in on off; do
         d="$tag-c-$lbl"
         rm -rf "${OUT:?}/$d"; mkdir -p "$OUT/$d"
@@ -273,6 +320,7 @@ while IFS= read -r line; do
         done
         SUPPRESSED=
     fi
+    fi
     missing=0
     for f in "${shots[@]}"; do [[ -s "$f" ]] || missing=1; done
     if (( missing || rc )); then
@@ -280,6 +328,236 @@ while IFS= read -r line; do
         fail=1; continue
     fi
 
+    if [[ "$STAT" == vertex ]]; then
+    python3 - "$TAG" "$JUDGE_DEF" "$GAME" "$bk2" "$V" "$keys" "$OUT/$tag" "$prev" "$mid" \
+             "$SUPPRESS" "${ALPHAS[@]}" <<'PYEOF' || fail=1
+import re
+import sys
+
+tag, judge_def, game, bk2, V, keys, base, prev, mid, suppress = sys.argv[1:11]
+alphas = sys.argv[11:]
+V, prev, mid = int(V), int(prev), int(mid)
+
+opts, named = {}, []
+for tok in keys.split():
+    k, _, v = tok.partition('=')
+    if k in ('vertex', 'blob', 'gem'):
+        x, _, y = v.partition(',')
+        named.append((float(x), float(y)))
+    else:
+        opts[k] = v
+tol = float(opts.get('tol', '0.5'))
+judged = set(opts.get('judge', judge_def).split(','))
+step_floor = float(opts.get('step', '4'))
+engage = opts.get('engage', '1') != '0'
+
+# Two aperture vertices this close are one corner: the clip emits a corner
+# twice where an edge meets the rect exactly there, and the pair would
+# otherwise read as an ambiguous match.
+DEDUPE_R = 0.05
+# A named corner must resolve to one vertex: the runner-up must sit at least
+# this many pixels further from the target than the winner.
+AMBIG_MARGIN = 6.0
+# The radius a named corner is looked for in.
+FIND_R = 12.0
+# The bound the alpha-1 replay must reproduce the canonical present within,
+# vertex for vertex: the two are the same float expression evaluated at 1, so
+# the only slack is the census's own two printed decimals.
+IDENT_TOL = 0.011
+
+AP = re.compile(r'\[portal3-ap f=(\d+) src=(\w+) a=([0-9.]+) slot=(\d+) arg=(\d+) n=(\d+) '
+                r'd7=(-?\d+) dw=(-?[0-9.]+) ir0=(-?\d+) far=([0-9A-F]+)\](.*)')
+FEED = re.compile(r'\[portal3-feed f=(\d+) src=(\w+) a=([0-9.]+) portals=(\d+) '
+                  r'tris=(\d+) emitted=(\d+)\]')
+XY = re.compile(r'\(([-0-9.]+),([-0-9.]+)\)')
+
+
+def read(path):
+    """The aperture corners and the fed triangle count of every present in one
+    run's census, keyed (src, VBL). Only the base record of each portal carries
+    the aperture; its duplicate corners are folded."""
+    verts, tris = {}, {}
+    try:
+        fh = open(path, errors='replace')
+    except IOError:
+        return None, None
+    with fh:
+        for ln in fh:
+            ln = ln.strip()
+            m = FEED.match(ln)
+            if m:
+                tris[(m.group(2), int(m.group(1)))] = int(m.group(5))
+                continue
+            m = AP.match(ln)
+            if not m or m.group(5) != '1':
+                continue
+            pts = verts.setdefault((m.group(2), int(m.group(1))), [])
+            for x, y in XY.findall(m.group(11)):
+                q = (float(x), float(y))
+                if all(abs(q[0] - r[0]) > DEDUPE_R or abs(q[1] - r[1]) > DEDUPE_R
+                       for r in pts):
+                    pts.append(q)
+    return verts, tris
+
+
+def find(pts, tx, ty, radius):
+    """The one corner near (tx, ty), or None with the reason."""
+    d = sorted((((p[0] - tx) ** 2 + (p[1] - ty) ** 2) ** 0.5, p) for p in pts)
+    if not d or d[0][0] > radius:
+        return None, "no vertex within %.1f px of (%.1f,%.1f)" % (radius, tx, ty)
+    if len(d) > 1 and d[1][0] - d[0][0] < AMBIG_MARGIN:
+        return None, ("two vertices within %.1f px of each other at (%.1f,%.1f)"
+                      % (AMBIG_MARGIN, tx, ty))
+    return d[0][1], ""
+
+
+def seg_dist(c, a, b):
+    """Distance from a corner to the segment between its two canonical
+    positions - the line its own motion lies on."""
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    n = dx * dx + dy * dy
+    t = 0.0 if n == 0 else ((c[0] - a[0]) * dx + (c[1] - a[1]) * dy) / n
+    t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
+    return ((c[0] - (a[0] + dx * t)) ** 2 + (c[1] - (a[1] + dy * t)) ** 2) ** 0.5
+
+
+legs = {}
+vacuous, bad, rows_out = [], [], []
+tris_total = 0
+for name, path in ([(a, "%s-i%s.log" % (base, a)) for a in alphas]
+                   + ([("suppressed", "%s-s.log" % base)] if suppress else [])):
+    verts, tris = read(path)
+    if verts is None:
+        vacuous.append("leg %s: no log at %s" % (name, path))
+        continue
+    legs[name] = verts
+    for key in (("canon", prev), ("canon", V), ("sub", mid)):
+        if key not in verts:
+            vacuous.append("leg %s: no %s present at VBL %d in %s"
+                           % (name, key[0], key[1], path))
+        elif tris.get(key, 0) == 0:
+            vacuous.append("leg %s: the %s present at VBL %d fed no portal triangle"
+                           % (name, key[0], key[1]))
+        else:
+            tris_total += tris[key]
+
+if not named:
+    vacuous.append("the row names no vertex")
+if vacuous:
+    print("[%s] game=%s bk2=%s V=%d verts=%d legs=%d tris=%d VACUOUS"
+          % (tag, game, bk2, V, len(named), len(legs), tris_total))
+    for v in vacuous:
+        print("[%s]   " % tag + v)
+    sys.exit(1)
+
+# The identity leg, whole-polygon: at alpha 1 the replay evaluates the same
+# expression at the tick's own instant, so it must reproduce the canonical
+# present corner for corner, not merely within the residual bound.
+if "1" in legs:
+    c = legs["1"][("canon", V)]
+    r = legs["1"][("sub", mid)]
+    if len(c) != len(r):
+        bad.append("identity: alpha 1 replays %d corners, canon%d has %d"
+                   % (len(r), V, len(c)))
+    else:
+        worst_id = max([max(abs(a[0] - b[0]), abs(a[1] - b[1]))
+                        for a, b in zip(c, r)] or [0.0])
+        rows_out.append("identity alpha=1 corners=%d worst=%.3f" % (len(c), worst_id))
+        if worst_id > IDENT_TOL:
+            bad.append("identity: alpha 1 differs from canon%d by %.3f px"
+                       % (V, worst_id))
+
+worst = 0.0
+engaged = 0
+for gx, gy in named:
+    # The row names the corner where the replayed tick drew it; its partner one
+    # tick back opens the interval. Both are read from the alpha-1 leg's own
+    # census, and every other leg's canonical presents are the same run.
+    ref = legs.get("1") or legs[alphas[0]]
+    c1, why = find(ref[("canon", V)], gx, gy, FIND_R)
+    if c1 is None:
+        vacuous.append("vertex (%.1f,%.1f) at canon%d: %s" % (gx, gy, V, why))
+        continue
+    c0, why = find(ref[("canon", prev)], c1[0], c1[1], 3 * FIND_R)
+    if c0 is None:
+        vacuous.append("vertex (%.1f,%.1f) at canon%d: %s" % (gx, gy, prev, why))
+        continue
+    step = ((c1[0] - c0[0]) ** 2 + (c1[1] - c0[1]) ** 2) ** 0.5
+    rows_out.append("vertex (%.1f,%.1f) canon%d=(%.2f,%.2f) canon%d=(%.2f,%.2f) step=%.2f"
+                    % (gx, gy, prev, c0[0], c0[1], V, c1[0], c1[1], step))
+    if step < step_floor:
+        vacuous.append("vertex (%.1f,%.1f) steps %.2f px over the interval, below the %.2f floor"
+                       % (gx, gy, step, step_floor))
+        continue
+    shown0 = None
+    for a in alphas:
+        av = float(a)
+        ex = (c0[0] + (c1[0] - c0[0]) * av, c0[1] + (c1[1] - c0[1]) * av)
+        # The corner is identified by the interval it must lie on, not by the
+        # expected point: a replay that holds its tick state sits at the
+        # interval's closing end, which is on the same segment, so one rule
+        # names the same corner before and after a fix.
+        cand = sorted((seg_dist(p, c0, c1), p) for p in legs[a][("sub", mid)])
+        if not cand or cand[0][0] > FIND_R:
+            vacuous.append("vertex (%.1f,%.1f) at alpha=%s: no corner on the interval"
+                           % (gx, gy, a))
+            continue
+        if len(cand) > 1 and cand[1][0] - cand[0][0] < AMBIG_MARGIN:
+            vacuous.append("vertex (%.1f,%.1f) at alpha=%s: two corners on the interval"
+                           % (gx, gy, a))
+            continue
+        ci = cand[0][1]
+        if av == 0.0:
+            shown0 = ci
+        d = ((ci[0] - ex[0]) ** 2 + (ci[1] - ex[1]) ** 2) ** 0.5
+        if a in judged:
+            worst = max(worst, d)
+        rows_out.append("  alpha=%s%s shown=(%.2f,%.2f) expected=(%.2f,%.2f) D=%.2f"
+                        % (a, "" if a in judged else " (reported)",
+                           ci[0], ci[1], ex[0], ex[1], d))
+        if a in judged and d > tol:
+            bad.append("vertex (%.1f,%.1f) alpha=%s D=%.2f above the %.2f bound"
+                       % (gx, gy, a, d, tol))
+
+    # own: how far the alpha-0 leg stands from the corner the previous tick
+    # drew. A replay that carries the interval reads near zero there, one that
+    # holds its tick state reads the whole step.
+    if shown0 is not None:
+        own = ((shown0[0] - c0[0]) ** 2 + (shown0[1] - c0[1]) ** 2) ** 0.5
+        rows_out.append("  own=%.2f of step=%.2f" % (own, step))
+    # The engagement leg: with the replay's interpolation suppressed
+    # the aperture must hold its tick state, the whole step from the previous
+    # tick's. A smaller reading means the knob reached nothing.
+    if suppress:
+        cand = sorted((seg_dist(p, c0, c1), p) for p in legs["suppressed"][("sub", mid)])
+        if not cand or cand[0][0] > FIND_R:
+            vacuous.append("vertex (%.1f,%.1f) under %s=0: no corner on the interval"
+                           % (gx, gy, suppress))
+        else:
+            cs = cand[0][1]
+            own_s = ((cs[0] - c0[0]) ** 2 + (cs[1] - c0[1]) ** 2) ** 0.5
+            rows_out.append("  %s=0 own=%.2f of step=%.2f" % (suppress, own_s, step))
+            if own_s >= step - IDENT_TOL:
+                engaged += 1
+
+if suppress and engage and not engaged:
+    vacuous.append("no corner holds its tick state under %s=0: the knob suppressed "
+                   "nothing this row can see" % suppress)
+head = ("[%s] game=%s bk2=%s V=%d verts=%d legs=%d tris=%d worst=%.2f"
+        % (tag, game, bk2, V, len(named), len(legs), tris_total, worst))
+for r in rows_out:
+    print("[%s]   " % tag + r)
+if vacuous:
+    print(head + " VACUOUS")
+    for v in vacuous:
+        print("[%s]   " % tag + v)
+    sys.exit(1)
+print(head + " verdict=%s" % ("FAIL" if bad else "PASS"))
+for b in bad:
+    print("[%s]   " % tag + b)
+sys.exit(1 if bad else 0)
+PYEOF
+    else
     python3 - "$TAG" "$JUDGE_DEF" "$GAME" "$bk2" "$V" "$keys" "$OUT/$tag" "$prev" "$mid" \
              "$SUPPRESS" "${ALPHAS[@]}" <<'PYEOF' || fail=1
 import sys
@@ -486,6 +764,7 @@ for b in bad:
     print("[%s]   " % tag + b)
 sys.exit(1 if bad else 0)
 PYEOF
+    fi
 done <"$MANIFEST"
 
 if (( rows == 0 )); then

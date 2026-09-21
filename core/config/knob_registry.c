@@ -1098,6 +1098,9 @@ static const knob_desc_t g_builtin[] = {
     ENVROW_LATCHED("SHADOW_INTERP", "Debug", "1",
         "Moby drop-shadow own-motion offsets under an interpolated camera (default 1); "
         "0 leaves every shadow at the newest tick's world pose."),
+    ENVROW_LATCHED("PORTAL3_INTERP", "Debug", "1",
+        "Spyro 2 and Spyro 3 portal-preview sub-tick interpolation (default 1); "
+        "0 replays every preview at the state its tick captured."),
     ENVROW_LATCHED("PARTICLES", "Debug", "1",
         "Particle feed enable (default 1); the guest draw runs either way."),
     ENVROW_LATCHED("TRACERS", "Debug", "1",

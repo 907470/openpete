@@ -536,6 +536,28 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
 
+    # Sub-tick interpolation of the homeworld portal preview's aperture. Per
+    # row of games/<slug>/portal-subtick-corpus.manifest, four headless replays
+    # of one bk2 — the intermediate present at alpha 0, 0.5 and 1, and once
+    # more with the replay's own interpolation suppressed — with the feeder's
+    # emitted aperture polygon read out of each run's census and every named
+    # corner required to sit on the alpha blend of the two canonical ticks the
+    # same run recorded. The statistic is the polygon rather than a pixel mask:
+    # the aperture spans most of the frame. Spyro 1 draws its portals as a
+    # re-projected dome and registers no row. Fails as vacuous when a present
+    # feeds no portal triangle, when a named corner resolves ambiguously, or
+    # when its canonical motion over the interval is below the row's floor.
+    foreach(_subtick_game spyro-2 spyro-3)
+        add_test(NAME portal_subtick_${_subtick_game}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_portal_subtick.sh
+                         --game ${_subtick_game} --build-dir=${CMAKE_BINARY_DIR})
+        set_tests_properties(portal_subtick_${_subtick_game} PROPERTIES
+            LABELS "presentation;portal"
+            TIMEOUT 1800
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
+
     # Vertex-stream field resolution on a stock boot: one headless 206-VBL
     # boot with a native screenshot armed, and every frame word the moby walk
     # decodes required to name an address. An unresolved field there is the

@@ -62,7 +62,8 @@ typedef struct {
     uint32_t mesh;                 /* the preview mesh header vaddr */
     int      arg;                  /* 1 = background record, 0 = the +0x3C picture */
     int      ymin, ymax, xmin, xmax;
-    int      depth7;               /* portal depth >> 7 */
+    int      depth7;               /* portal depth >> 7, as captured */
+    float    depth_w;              /* the same depth in world units, lerpable */
     uint32_t far_rgb;              /* packed 8-bit far colour */
     int      ir0;                  /* portal fade factor */
     int      nedge;
@@ -96,6 +97,19 @@ static unsigned p3_dbg_from(void) {
 }
 static int s_cen_faces, s_cen_idx, s_cen_oc, s_cen_edge, s_cen_tris;
 
+/* OPENPETE_PORTAL3_INTERP=0 replays every preview at the state its tick
+ * captured, with no lerp toward the previous tick. */
+static int p3_interp_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_PORTAL3_INTERP"); v = !(e && *e == '0'); }
+    return v;
+}
+
+/* What the census names the feed that is running: the canonical pass, or the
+ * sub-tick replay at its alpha. */
+static const char* s_feed_src = "canon";
+static float s_feed_alpha = 1.0f;
+
 /* ---- capture: the block, before the leaf overwrites nothing and after the
  * pass rewrote it for this portal ---------------------------------------- */
 static void p3_capture(CPUState* cpu, int arg) {
@@ -111,6 +125,7 @@ static void p3_capture(CPUState* cpu, int arg) {
     p->arg  = arg;
     if (arg == 0) p->mesh += 0x3C;
     p->depth7 = (int32_t)cpu->read_word(B + 0x14);
+    p->depth_w = (float)(p->depth7 << 7);
     uint32_t r = (cpu->read_half(B + 0x18) >> 4) & 0xFF, g = (cpu->read_half(B + 0x1A) >> 4) & 0xFF,
              b = (cpu->read_half(B + 0x1C) >> 4) & 0xFF;
     p->far_rgb = r | (g << 8) | (b << 16);
@@ -294,7 +309,7 @@ static void p3_extract_one(CPUState* cpu, const p3_preview* p, const ngte_view* 
     uint32_t fc = cpu->read_word(M + 0x10), fo = cpu->read_word(M + 0x14);
     if (vc > P3_MAX_VERTS || cc > P3_MAX_COLS || fc > 4096) return;
     const float offx = (float)(vw->ofx - 256.0), offy = (float)(vw->ofy - 120.0);
-    const float depth_world = (float)(p->depth7 << 7);
+    const float depth_world = p->depth_w;
     const int group = 1 + p->slot;
     const p3_bounds B = p3_bounds_of(p);
     /* The background record is one quad spanning the 4:3 frame, the backdrop
@@ -356,6 +371,30 @@ static void p3_extract_one(CPUState* cpu, const p3_preview* p, const ngte_view* 
     openpete_native_scene_set_tag(0);
 }
 
+static int p3_opening_poly(const p3_preview* p, p3_v* out, int maxn);
+
+/* The aperture census: one uncapped line per fed preview, holding the opening
+ * polygon in the screen space p3_emit_tri draws into and the per-record
+ * channels the replay carries. It is the statistic
+ * scripts/check_feeder_subtick.sh --path portal judges, the aperture being far
+ * larger than the compact blob a pixel mask models. */
+static void p3_census(const p3_tick* T, const ngte_view* vw) {
+    const float offx = (float)(vw->ofx - 256.0), offy = (float)(vw->ofy - 120.0);
+    fprintf(stderr, "[portal3-feed f=%u src=%s a=%.3f portals=%d tris=%d emitted=%d]\n",
+            openpete_frame, s_feed_src, (double)s_feed_alpha, T->n, s_cen_tris, s_emitted);
+    for (int i = 0; i < T->n; i++) {
+        const p3_preview* p = &T->p[i];
+        p3_v poly[32];
+        const int pn = p3_opening_poly(p, poly, 32);
+        fprintf(stderr, "[portal3-ap f=%u src=%s a=%.3f slot=%d arg=%d n=%d d7=%d dw=%.1f ir0=%d far=%06X]",
+                openpete_frame, s_feed_src, (double)s_feed_alpha, p->slot, p->arg, pn,
+                p->depth7, (double)p->depth_w, p->ir0, p->far_rgb);
+        for (int k = 0; k < pn; k++)
+            fprintf(stderr, " (%.2f,%.2f)", (double)(poly[k].x + offx), (double)(poly[k].y + offy));
+        fprintf(stderr, "\n");
+    }
+}
+
 static void p3_feed(CPUState* cpu, const p3_tick* T) {
     if (!openpete_native_scene_enabled() || !render_path_enabled(RP_PORTAL)) return;
     s_emitted = 0;
@@ -376,6 +415,7 @@ static void p3_feed(CPUState* cpu, const p3_tick* T) {
     int mask_done[P3_MAX_PORTALS]; memset(mask_done, 0, sizeof mask_done);
     for (int i = 0; i < T->n; i++) p3_extract_one(cpu, &T->p[i], &vw, sky_ir0, env_far, mask_done);
     if (s_emitted) s_sky_fed_frame = openpete_frame;
+    if (p3_dbg() && openpete_frame >= p3_dbg_from()) p3_census(T, &vw);
 }
 
 /* ---- opening planes for the shared terrain feeder ----------------------
@@ -405,7 +445,7 @@ static void p3_feed(CPUState* cpu, const p3_tick* T) {
  * the previous tick's rect : one tick of lag while a portal moves on screen,
  * zero while the camera holds. */
 static double p3_plane_depth_world(const p3_preview* p) {
-    double d = (double)(p->depth7 << 7);
+    double d = (double)p->depth_w;
     return d > 1.0 ? d : 1.0;
 }
 
@@ -579,9 +619,62 @@ static int on_portal_pass(CPUState* cpu, uint32_t addr) {
     return 1;
 }
 
-/* Sub-tick re-extract: replay the tick's previews; lerp the rect and edges
- * from the previous tick when the same portal set drew with the same edge
- * counts, else hold the current tick's. */
+/* The previous tick's record for one preview, or NULL when the portal was not
+ * previewed then. The portal's identity is its preview mesh, since the pass's
+ * slot numbering is the order of the portals it gated this tick and shifts
+ * whenever one enters or leaves the set; the leaf argument separates the
+ * backdrop record from the picture record of the same portal. A slot that
+ * agrees as well settles the case of two portals previewing one destination. */
+static const p3_preview* p3_pair(const p3_tick* prev, const p3_preview* c) {
+    const p3_preview* hit = NULL;
+    int n = 0;
+    for (int i = 0; i < prev->n; i++) {
+        const p3_preview* p = &prev->p[i];
+        if (p->arg != c->arg || p->mesh != c->mesh) continue;
+        if (p->slot == c->slot) return p;
+        hit = p;
+        n++;
+    }
+    return n == 1 ? hit : NULL;
+}
+
+/* One preview's captured state at the instant `a` between its two ticks.
+ *
+ * The pentagon edges pair by index over the count the two ticks share; a tick
+ * that shows more edges than its partner holds the extra ones at its own,
+ * since the partner has no line for them. The clip rect and the two fade terms
+ * pair outright. The depth is lerped in world units rather than in the
+ * captured depth >> 7: the native path takes it as a view-Z, so the step the
+ * capture quantizes to 128 units is a step in the order the preview occludes
+ * terrain, and the interval between the two ticks is continuous.
+ *
+ * The preview mesh itself is not interpolated: it is baked screen-space art
+ * whose vertices are identical from tick to tick, and the aperture is the only
+ * thing that moves. */
+static void p3_lerp_preview(p3_preview* O, const p3_preview* P, const p3_preview* C,
+                            float a) {
+    O->xmin = (int)lroundf((float)P->xmin + (float)(C->xmin - P->xmin) * a);
+    O->xmax = (int)lroundf((float)P->xmax + (float)(C->xmax - P->xmax) * a);
+    O->ymin = (int)lroundf((float)P->ymin + (float)(C->ymin - P->ymin) * a);
+    O->ymax = (int)lroundf((float)P->ymax + (float)(C->ymax - P->ymax) * a);
+    O->depth_w = P->depth_w + (C->depth_w - P->depth_w) * a;
+    O->ir0 = (int)lroundf((float)P->ir0 + (float)(C->ir0 - P->ir0) * a);
+    for (int k = 0; k < 24; k += 8) {
+        const int pc = (int)((P->far_rgb >> k) & 0xFFu), cc = (int)((C->far_rgb >> k) & 0xFFu);
+        const uint32_t lc = (uint32_t)(int)lroundf((float)pc + (float)(cc - pc) * a);
+        O->far_rgb = (O->far_rgb & ~(0xFFu << k)) | (lc << k);
+    }
+    const int ne = P->nedge < C->nedge ? P->nedge : C->nedge;
+    for (int e = 0; e < ne; e++)
+        for (int k = 0; k < 2; k++) {
+            O->ex[e][k] = P->ex[e][k] + (C->ex[e][k] - P->ex[e][k]) * a;
+            O->ey[e][k] = P->ey[e][k] + (C->ey[e][k] - P->ey[e][k]) * a;
+        }
+}
+
+/* Sub-tick re-extract: replay the tick's previews, each lerped toward the
+ * record the previous tick captured for the same portal. A portal with no
+ * partner there holds its own capture while the rest of the set lerps. */
 void portal_s23_reextract(CPUState* cpu, double alpha, int interp_on) {
     if (!openpete_native_scene_enabled()) return;
     if (!render_path_canon_drawn(RP_PORTAL)) return;
@@ -590,25 +683,17 @@ void portal_s23_reextract(CPUState* cpu, double alpha, int interp_on) {
     /* At alpha 1 the present is the current tick's own view: replay the
      * capture unchanged, so the identity present reproduces the canonical one
      * bit for bit (a lerp evaluated at 1 rounds differently). */
-    int can_lerp = interp_on && alpha < 0.999 && s_prev.valid && s_prev.n == s_curr.n;
-    for (int i = 0; can_lerp && i < T.n; i++)
-        if (s_prev.p[i].mesh != s_curr.p[i].mesh || s_prev.p[i].nedge != s_curr.p[i].nedge) can_lerp = 0;
+    int can_lerp = interp_on && p3_interp_on() && alpha < 0.999 && s_prev.valid;
     if (can_lerp) {
-        float a = (float)alpha;
+        const float a = (float)alpha;
         for (int i = 0; i < T.n; i++) {
-            const p3_preview *P = &s_prev.p[i], *C = &s_curr.p[i]; p3_preview* O = &T.p[i];
-            O->xmin = (int)lroundf(P->xmin + (C->xmin - P->xmin) * a);
-            O->xmax = (int)lroundf(P->xmax + (C->xmax - P->xmax) * a);
-            O->ymin = (int)lroundf(P->ymin + (C->ymin - P->ymin) * a);
-            O->ymax = (int)lroundf(P->ymax + (C->ymax - P->ymax) * a);
-            for (int e = 0; e < C->nedge; e++)
-                for (int k = 0; k < 2; k++) {
-                    O->ex[e][k] = P->ex[e][k] + (C->ex[e][k] - P->ex[e][k]) * a;
-                    O->ey[e][k] = P->ey[e][k] + (C->ey[e][k] - P->ey[e][k]) * a;
-                }
+            const p3_preview* P = p3_pair(&s_prev, &s_curr.p[i]);
+            if (P) p3_lerp_preview(&T.p[i], P, &s_curr.p[i], a);
         }
     }
+    s_feed_src = "sub"; s_feed_alpha = (float)alpha;
     p3_feed(cpu, &T);
+    s_feed_src = "canon"; s_feed_alpha = 1.0f;
 }
 
 /* The two hook addresses come from the game's own table, so the table is

@@ -1,0 +1,26 @@
+# Sub-tick interpolation of the homeworld portal preview's aperture
+# (scripts/check_portal_subtick.sh).
+#   <bk2> | <V> | vertex=<x>,<y> ... [tol=<px>] [step=<px>] [judge=<a>,...]
+# V is the canonical VBL the intermediate present at V+1 sits above; V-2 opens
+# the interval that present covers. V is even because a tick spans two VBLs
+# here: the intermediate present at V+1 has to fall inside V's own tick.
+#
+# The statistic is the aperture polygon's corners, read from the feeder's own
+# emitted list, not a pixel mask: the aperture spans most of the frame.
+# Spyro flies at the Skelos Badlands portal and the aperture opens across these
+# ticks. Each row names three corners of the near portal's aperture whose
+# canonical step over the interval is well clear of the floor and that stand
+# far apart from every other corner. Corners sliding along the frame's bottom
+# edge are left out: they run tens of pixels per tick because they are the
+# intersection of two nearly parallel lines, and their motion prices the clip
+# rather than the aperture.
+#
+# The second row is the interval whose portal set changes (the near portal's
+# visible pentagon edge count drops), where the whole-set lerp gate used to
+# disable interpolation for every portal of the present.
+#
+# The bound is 1.0 px: the rect is captured as integers and the aperture is
+# their clip against the pentagon, so a corner's expected position carries the
+# rounding of both.
+autumn-plains-skelos-badlands-portal-entry.bk2 | 1096 | vertex=472.17,12 vertex=403,216 vertex=92.62,228 tol=1.0
+autumn-plains-skelos-badlands-portal-entry.bk2 | 1100 | vertex=491.27,12 vertex=69.71,228 vertex=0,131.02 tol=1.0

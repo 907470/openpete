@@ -1,0 +1,22 @@
+# Sub-tick interpolation of the homeworld portal preview's aperture
+# (scripts/check_portal_subtick.sh).
+#   <bk2> | <V> | vertex=<x>,<y> ... [tol=<px>] [step=<px>] [judge=<a>,...]
+# V is the canonical VBL the intermediate present at V+1 sits above; V-2 opens
+# the interval that present covers. V is even because a tick spans two VBLs
+# here: the intermediate present at V+1 has to fall inside V's own tick.
+#
+# The statistic is the aperture polygon's corners, read from the feeder's own
+# emitted list, not a pixel mask: the aperture spans most of the frame.
+# Spyro walks at the Sunny Villa portal and the aperture opens across these
+# ticks. Each row names three corners of the aperture whose canonical step over
+# the interval is well clear of the floor and that stand far apart from every
+# other corner.
+#
+# The second row is the interval whose visible pentagon edge count drops, where
+# the whole-set lerp gate used to disable interpolation for the present.
+#
+# The bound is 1.0 px: the rect is captured as integers and the aperture is
+# their clip against the pentagon, so a corner's expected position carries the
+# rounding of both.
+sunrise-spring-sunny-villa-portal-entry.bk2 | 2530 | vertex=319.36,12 vertex=412,81 vertex=412,215 tol=1.0
+sunrise-spring-sunny-villa-portal-entry.bk2 | 2534 | vertex=341.08,12 vertex=438,82 vertex=46,66 tol=1.0
