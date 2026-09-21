@@ -1,0 +1,12 @@
+# carry-subtick-corpus.manifest — rows for scripts/check_carry_subtick.sh.
+# Row grammar and the instrument: see games/spyro-2/carry-subtick-corpus.manifest.
+#
+# pause-menu: the pause panel and its glyph rows. 33 presents carry 462
+# interpolated triangles in 99 runs, every run carried by its own translation,
+# no crossed pair. This is the Spyro 1 leg of the 2D-carry translation, which
+# had no manifest on this game.
+#
+# beast-makers-wild-flight-text at 3305-3315 was tried and reads lerped=0 over
+# 33 presents: the flight timer's glyphs are rebuilt rather than carried, so
+# the carry pairs nothing there and the row measures nothing.
+pause-menu.bk2 | 1800-1810 | lerps=400

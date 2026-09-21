@@ -1,0 +1,13 @@
+# Sub-tick interpolation of the particle systems. Row grammar and the
+# leave-one-out: see games/spyro-1/particles-subtick-corpus.manifest.
+#
+# icy-peak-ice-crystal-destruction: the shards a smashed ice crystal throws.
+# The mask holds 53-57 components; the row names the largest, a 150-px shard
+# that crosses 12.2 px over the interval and is unoccluded throughout. The
+# smaller shards spawn and die inside the interval and would resolve to no
+# component in one leg or another.
+# The bound is 1.0 px rather than the 0.5 the compact feeders take: the shard's
+# own extent ramps across the interval (150 px at 1672, 153 px at 1674, 166 px
+# at the alpha-0.5 present) and the visible centroid moves with it, which is
+# this row's residual floor.
+icy-peak-ice-crystal-destruction.bk2 | 1674 | blob=539.3,266.9 tol=1.0 step=4

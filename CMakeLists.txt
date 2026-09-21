@@ -556,6 +556,28 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
 
+    # The remaining render paths of the shared feeder harness. Each is one
+    # channel of scripts/check_feeder_subtick.sh, with its own manifest per
+    # game; the game list per path is the set whose rows engage and pass
+    # today, and each manifest records why the games left out have no row.
+    foreach(_subtick_path_game
+            "terrain;spyro-1" "terrain_tanim;spyro-1" "terrain_tanim;spyro-3"
+            "cyclorama;spyro-2" "cyclorama;spyro-3"
+            "particles;spyro-1" "particles;spyro-2" "particles;spyro-3"
+            "flame;spyro-2" "flame;spyro-3"
+            "moby_mask;spyro-1")
+        list(GET _subtick_path_game 0 _sp)
+        list(GET _subtick_path_game 1 _sg)
+        add_test(NAME ${_sp}_subtick_${_sg}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_${_sp}_subtick.sh
+                         --game ${_sg} --build-dir=${CMAKE_BINARY_DIR})
+        set_tests_properties(${_sp}_subtick_${_sg} PROPERTIES
+            LABELS "presentation;subtick;${_sp}"
+            TIMEOUT 1800
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
+
     # Sub-tick interpolation of the homeworld portal preview's aperture. Per
     # row of games/<slug>/portal-subtick-corpus.manifest, four headless replays
     # of one bk2 — the intermediate present at alpha 0, 0.5 and 1, and once

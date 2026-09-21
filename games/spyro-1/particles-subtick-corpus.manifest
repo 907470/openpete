@@ -1,0 +1,27 @@
+# Sub-tick interpolation of the particle systems
+# (scripts/check_feeder_subtick.sh --path particles).
+#   <bk2> | <V> | blob=<x>,<y> ... [tol=<px>] [step=<px>] [astep=<px>] [cstep=<n>]
+#
+# The two legs are a render-path selection with and without the particle path,
+# terrain and moby in both. The path's own feed knob OPENPETE_PARTICLES reaches
+# only games/common/renderer/particles.c; Spyro 1 draws its particles through
+# games/spyro-1/renderer/particle.c, which that knob does not reach, so the
+# selection is what isolates the feed on all three games alike.
+#
+# V is odd on this game's movies: a tick spans two VBLs and 1801 is the first
+# of its own, so the intermediate present at 1802 falls inside it. The same row
+# at V=1802 reads an alpha-1 identity residual of 9 px, which is what the
+# identity leg is for.
+#
+# dream-weavers-particle: the fireworks burst. The row names its head, a
+# 1098-1227 px body that crosses 2.2 px over the interval while its own extent
+# falls 129 px, so the area cell carries the size channel and the centroid the
+# translation. The circling stun stars of particle-circling-stars.bk2 were
+# tried first and cross 1.5-1.9 px per tick, under the instrument's own
+# separation, so that movie holds no usable row.
+dream-weavers-particle.bk2 | 1801 | blob=287.6,91.1 tol=1.0 step=2
+#
+# The bound is 1.0 px: the burst's own extent falls 129 px across the interval
+# and the replay holds the tick's size byte, so the visible centroid moves with
+# an extent the rebase does not carry. That is the row's residual floor, and
+# the area cell below it is where the size channel is priced.

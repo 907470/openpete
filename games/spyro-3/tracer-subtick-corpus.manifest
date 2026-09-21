@@ -1,0 +1,14 @@
+# Sub-tick interpolation of the additive tracer ribbon
+# (scripts/check_feeder_subtick.sh --path tracer).
+#   <bk2> | <V> | blob=<x>,<y> ... [tol=<px>] [step=<px>] [astep=<px>] [cstep=<n>]
+#
+# The two legs are a render-path selection with and without the tracer path,
+# terrain and moby in both.
+#
+# The source is not a movie: the plain boot's attract demo charges through
+# Sunrise Spring at VBL 4500, the same present the presentation corpus pins as
+# its tracer row. The ribbon is one 2272-2717 px component whose head crosses
+# 21.9 px over the interval while its tail grows, so all three cells carry
+# signal: the centroid is the head's translation, the area the ribbon's own
+# length ramp, the mean colour its additive fade.
+title-demo | 4500 | blob=285.0,202.0 tol=1.0 step=10

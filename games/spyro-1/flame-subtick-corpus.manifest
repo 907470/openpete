@@ -1,0 +1,26 @@
+# Sub-tick interpolation of Spyro's flame breath
+# (scripts/check_feeder_subtick.sh --path flame).
+#   <bk2> | <V> | blob=<x>,<y> ... [tol=<px>] [step=<px>] [astep=<px>] [cstep=<n>]
+#
+# The flame has no feed knob; the two legs are a render-path selection with and
+# without it, terrain and moby in both so the world the ribbon is drawn against
+# is identical.
+#
+# The flame's channel is not translation. It leaves Spyro's mouth, and the
+# camera holds Spyro at the same screen point, so the ribbon's centroid crosses
+# 1.4 px over the interval — below the centroid floor, reported and not judged.
+# What moves is its extent: the ribbon grows a strand per tick while the breath
+# lasts, 5048 px at 1687 against 5284 px at 1689. The area cell is the one this
+# row measures.
+flame.bk2 | 1689 | blob=320.0,200.0 tol=1.0 step=4 cluster=20 findr=25
+#
+# This row FAILS today, on the identity leg. The alpha-1 present must reproduce
+# the canonical present the tick drew, and here it masks 4278 px against the
+# canonical 5284 px and stands 1.40 px away: about a fifth of the ribbon the
+# tick drew is missing from its own replay. Spyro 2 and Spyro 3 reproduce
+# theirs exactly (ident=0.00). The row is the pre-fix value of that defect.
+#
+# cluster=20 rather than the default 6: the replayed ribbon is drawn as
+# separate strands whose pixels stand further apart than 6, so at the default
+# radius the mask splits into components none of whose centroids sits on the
+# canonical interval and the row reads VACUOUS instead of measuring.

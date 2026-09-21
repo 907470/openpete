@@ -26,6 +26,29 @@
 #           games/<slug>/shadow-subtick-corpus.manifest
 #   portal  OPENPETE_PORTAL3_DBG=1, one leg per alpha, no leave-one-out,
 #           games/<slug>/portal-subtick-corpus.manifest
+#   cyclorama  --render-paths cyclorama,terrain against terrain
+#   flame      --render-paths terrain,moby,flame against terrain,moby
+#   particles  --render-paths terrain,moby,particles against terrain,moby
+#   tracer     --render-paths terrain,moby,tracer against terrain,moby
+#   moby-mask  --render-paths terrain,moby against terrain: the moby's painted
+#              extent and colour, which check_moby_subtick.sh does not separate
+#   terrain        OPENPETE_TERRAIN_VANIM=1 against =0, the interp statistic
+#   terrain-tanim  OPENPETE_TERRAIN_TANIM=1 against =0, the interp statistic;
+#                  both read games/<slug>/terrain-subtick-corpus.manifest
+#
+# The interp statistic (STAT=interp) is for a knob that suppresses a channel's
+# sub-tick interpolation rather than its feed. The canonical presents are then
+# identical between the legs, so the legs are intermediate presents alone and
+# their difference is the pixels that interpolation moved. Read per cell: the
+# count must be zero at alpha 1 (every term of a correct rebase is zero at the
+# tick's own instant), above the floor at alpha 0 (the knob moved something
+# this cell can see), and a channel that holds its tick state renders the same
+# present in both legs at every alpha and the count collapses to zero.
+#
+# Row authoring: --row '<bk2>|<V>|<keys>' runs one row from the command line
+# instead of the manifest, and OPENPETE_FEEDER_PROBE=1 with it captures the two
+# canonical presents alone and prints every mask component with its centroid,
+# area and mean colour, so a row's blob coordinates come from a measurement.
 #
 # The portal path is the homeworld portal preview of Spyro 2 and Spyro 3, and
 # it takes the other statistic this script carries. What moves there is the
@@ -78,6 +101,29 @@
 # interval, so the replay must reproduce the canonical present. alpha 0 is the
 # leg that prices the defect: a producer that holds its tick pose reads canon(V)
 # there, one whole tick step from where it belongs.
+#
+# Three statistics per named blob, one cell each, the census this harness
+# reports:
+#   centroid  the mask component's centroid, in screen pixels: translation
+#   area      the component's pixel count: scale, view-Z and extent
+#   colour    the mean feed-on RGB of the component's pixels, widest channel
+#             of 0-255: colour, fade and opacity
+# Each is compared with the lerp of the same statistic at canon(V-2) and
+# canon(V). A producer that holds its tick state shows the canon(V) value,
+# which sits (1-alpha) of the canonical step from that lerp, so the ratio of
+# the measured residual to that distance classifies every statistic alike:
+#   LERPED   ratio at or below 0.25
+#   PARTIAL  between
+#   SNAP     ratio at or above 0.75
+#   UNMOVED  the statistic's canonical step is below its own floor, so no
+#            reading of it separates a lerp from a hold
+# The centroid keeps the `tol` bound, which is what decides PASS or FAIL; the
+# area and colour cells assert only where the row sets `atol` or `ctol`.
+#
+# The colour cell of a translating additive blob reads its own colour blended
+# over whatever it covers, which changes as it moves: a colour verdict is
+# read with the area cell beside it, and a colour SNAP under an area SNAP is
+# the extent's reading, not the colour's.
 #
 # Three statistics per named blob per row, all in screen pixels:
 #   resid  the judged one: the distance from the shown centroid to the expected
@@ -153,8 +199,10 @@
 #   [<path>-subtick] game=<g> bk2=<b> V=<v> blobs=<n> legs=<n> maskpx=<n>
 #                    worst=<px> verdict=PASS|FAIL
 #
-# Usage: scripts/check_feeder_subtick.sh --path glint|glow|shadow|portal
-#        [--game SLUG] [--build-dir=DIR]
+# Usage: scripts/check_feeder_subtick.sh
+#          --path glint|glow|shadow|portal|terrain|cyclorama|particles|flame|
+#                 tracer|moby-mask
+#          [--game SLUG] [--build-dir=DIR] [--row '<bk2>|<V>|<keys>']
 # Exit 0 PASS, 1 FAIL or VACUOUS, 64 SKIP (binary, disc, bk2, manifest, python3
 # or PIL missing).
 set -u
@@ -163,13 +211,16 @@ cd "$(dirname "$0")/.."
 source scripts/lib/game.sh
 
 PATHNAME=glint
+ROW=
 prev_arg=""
 for a in "$@"; do
     case "$a" in
         --build-dir=*) PG_BUILD_DIR="${a#--build-dir=}";;
         --path=*)      PATHNAME="${a#--path=}";;
+        --row=*)       ROW="${a#--row=}";;
     esac
     [[ "$prev_arg" == "--path" ]] && PATHNAME="$a"
+    [[ "$prev_arg" == "--row" ]] && ROW="$a"
     prev_arg="$a"
 done
 
@@ -179,9 +230,15 @@ done
 # LEG_ENV_ON/OFF and LEG_ARGS_ON/OFF are what the two leave-one-out legs
 # differ by, plus whatever both of them need; SUPPRESS names the knob the
 # engagement leg sets to 0, empty on a path that has none.
-# STAT names the statistic: `mask` is the leave-one-out mask's per-blob
-# centroid, `vertex` the feeder's own emitted polygon vertices.
+# STAT names the statistic source: `mask` is the leave-one-out mask, whose
+# per-blob centroid, pixel count and mean colour are the three statistics;
+# `vertex` is the feeder's own emitted polygon vertices.
+# MASK_CAP is the largest mask a leg of this path may produce; above it the
+# leave-one-out isolated something other than this feeder and the statistics
+# would be meaningless. A path whose feed paints a surface rather than a blob
+# carries a cap sized for that surface.
 LEG_ENV_ON=(); LEG_ENV_OFF=(); LEG_ARGS_ON=(); LEG_ARGS_OFF=(); SUPPRESS=; STAT=mask
+MASK_CAP=20000
 case "$PATHNAME" in
     glint)  LEG_ENV_ON=(OPENPETE_GLINT=2); LEG_ENV_OFF=(OPENPETE_GLINT=0)
             ALPHAS=(0 0.5 1); JUDGE_DEF=0.5,1;;
@@ -196,6 +253,59 @@ case "$PATHNAME" in
             LEG_ARGS_OFF=(--render-paths terrain,moby)
             SUPPRESS=OPENPETE_SHADOW_INTERP
             ALPHAS=(0 0.5 1); JUDGE_DEF=0.5,1;;
+    # The terrain paths' own animation knobs are the leave-one-out: with
+    # OPENPETE_TERRAIN_VANIM=0 the sector's vertices stand at their rest
+    # positions and with OPENPETE_TERRAIN_TANIM=0 its UVs stop scrolling, so
+    # the difference is exactly the pixels the animated terrain painted. Both
+    # legs select the terrain path alone, so nothing else on screen can enter
+    # the difference, and the mask is a water or lava surface rather than a
+    # blob, which is what the cap allows for.
+    terrain) LEG_ENV_ON=(OPENPETE_TERRAIN_VANIM=1); LEG_ENV_OFF=(OPENPETE_TERRAIN_VANIM=0)
+            LEG_ARGS_ON=(--render-paths terrain)
+            LEG_ARGS_OFF=(--render-paths terrain)
+            STAT=interp; MASK_CAP=320000
+            ALPHAS=(0 0.25 0.5 0.75 1); JUDGE_DEF=0.5,1;;
+    terrain-tanim) LEG_ENV_ON=(OPENPETE_TERRAIN_TANIM=1); LEG_ENV_OFF=(OPENPETE_TERRAIN_TANIM=0)
+            LEG_ARGS_ON=(--render-paths terrain)
+            LEG_ARGS_OFF=(--render-paths terrain)
+            STAT=interp; MASK_CAP=320000
+            ALPHAS=(0 0.25 0.5 0.75 1); JUDGE_DEF=0.5,1;;
+    # The cyclorama has no suppress knob; the two legs are a render-path
+    # selection with and without it, terrain in both so the horizon the
+    # cyclorama is seen against is identical between them. The feed covers the
+    # sky, so the cap is sized for a surface.
+    cyclorama) LEG_ARGS_ON=(--render-paths cyclorama,terrain)
+            LEG_ARGS_OFF=(--render-paths terrain)
+            MASK_CAP=320000
+            ALPHAS=(0 0.5 1); JUDGE_DEF=0.5,1;;
+    # Particles, tracers and the flame are isolated by a render-path selection
+    # rather than by their own feed knobs: Spyro 1 has its own particle and
+    # tracer renderers, which those knobs do not reach, and the selection means
+    # the same thing on all three games. Terrain and moby stay in both legs so
+    # the world the effect is drawn against is identical between them.
+    particles) LEG_ARGS_ON=(--render-paths terrain,moby,particles)
+            LEG_ARGS_OFF=(--render-paths terrain,moby)
+            MASK_CAP=60000
+            ALPHAS=(0 0.5 1); JUDGE_DEF=0.5,1;;
+    # The flame has no suppress knob either. Its ribbon is drawn against the
+    # world it lights, so both legs keep terrain and moby.
+    flame)  LEG_ARGS_ON=(--render-paths terrain,moby,flame)
+            LEG_ARGS_OFF=(--render-paths terrain,moby)
+            MASK_CAP=60000
+            ALPHAS=(0 0.5 1); JUDGE_DEF=0.5,1;;
+    tracer) LEG_ARGS_ON=(--render-paths terrain,moby,tracer)
+            LEG_ARGS_OFF=(--render-paths terrain,moby)
+            MASK_CAP=60000
+            ALPHAS=(0 0.5 1); JUDGE_DEF=0.5,1;;
+    # Spyro 1's moby scale and colour cells, which the moby path's own harness
+    # (check_moby_subtick.sh) does not separate: the mask's pixel count is the
+    # scale channel and its mean colour the colour channel, both read off the
+    # one moby the row names. Both legs select the moby path alone so the
+    # terrain behind it cannot enter the difference.
+    moby-mask) LEG_ARGS_ON=(--render-paths terrain,moby)
+            LEG_ARGS_OFF=(--render-paths terrain)
+            MASK_CAP=200000
+            ALPHAS=(0 0.5 1); JUDGE_DEF=0.5,1;;
     *)      echo "feeder-subtick: FAIL (unknown --path $PATHNAME)"; exit 1;;
 esac
 TAG="$PATHNAME-subtick"
@@ -203,8 +313,19 @@ TAG="$PATHNAME-subtick"
 GAME="$(pg_parse_game "$@")" || exit 64
 pg_resolve "$GAME"
 
-MANIFEST="games/$GAME/$PATHNAME-subtick-corpus.manifest"
+# --row runs one row given on the command line instead of the manifest, which
+# is how a row is authored: with OPENPETE_FEEDER_PROBE=1 the run captures the
+# two canonical presents alone and prints every mask component with the
+# statistics a row can name, so the blob coordinates of a new row come from a
+# measurement rather than a guess.
+MANIFEST="games/$GAME/${PATHNAME%-tanim}-subtick-corpus.manifest"
+if [[ -n "$ROW" ]]; then
+    MANIFEST="$(mktemp)"
+    trap 'rm -f "$MANIFEST"' EXIT
+    printf '%s\n' "$ROW" >"$MANIFEST"
+fi
 [[ -f "$MANIFEST" ]] || { echo "$TAG: SKIP ($GAME has no $MANIFEST)"; exit 64; }
+if [[ "${OPENPETE_FEEDER_PROBE:-0}" != 0 ]]; then ALPHAS=(); fi
 [[ -x "$PG_BIN" && -f "$PG_DISC" ]] ||
     { echo "$TAG: SKIP (binary or disc missing)"; exit 64; }
 python3 -c 'import PIL' 2>/dev/null ||
@@ -273,12 +394,28 @@ while IFS= read -r line; do
     # result.
     rc=0 shots=()
     SUPPRESSED=
-    if [[ "$STAT" == vertex ]]; then
+    if [[ "$STAT" == interp ]]; then
+        # The knob this path toggles suppresses the sub-tick interpolation of
+        # one channel, not the feed: with it at 0 the canonical presents are
+        # identical between the legs and only the intermediate present differs.
+        # So the legs are intermediate presents alone, and what the difference
+        # of the two contains is exactly the pixels this channel's
+        # interpolation moved.
+        for alpha in ${ALPHAS[@]+"${ALPHAS[@]}"}; do
+            for lbl in on off; do
+                d="$tag-i$alpha-$lbl"
+                rm -rf "${OUT:?}/$d"; mkdir -p "$OUT/$d"
+                run_leg "$d" "$lbl" "$alpha" "$OUT/$d/$mid-vk.png" \
+                        --screenshot-intermediate-on-frame "$mid" </dev/null || rc=$?
+                shots+=("$OUT/$d/$mid-vk.png")
+            done
+        done
+    elif [[ "$STAT" == vertex ]]; then
         # One run per alpha. The feeder's census in that run's log already
         # carries canon(V-2), canon(V) and the intermediate present, so the
         # separate canonical legs and the leave-one-out partner of the mask
         # statistic are not captured at all.
-        for alpha in "${ALPHAS[@]}"; do
+        for alpha in ${ALPHAS[@]+"${ALPHAS[@]}"}; do
             d="$tag-i$alpha"
             rm -rf "${OUT:?}/$d"; mkdir -p "$OUT/$d"
             run_leg "$d" on "$alpha" "$OUT/$d/$mid-vk.png" \
@@ -299,7 +436,7 @@ while IFS= read -r line; do
         run_leg "$d" "$lbl" "" "$OUT/$d/$prev-vk.png,$OUT/$d/$V-vk.png" \
                 --screenshot-on-frame "$prev,$V" </dev/null || rc=$?
         shots+=("$OUT/$d/$prev-vk.png" "$OUT/$d/$V-vk.png")
-        for alpha in "${ALPHAS[@]}"; do
+        for alpha in ${ALPHAS[@]+"${ALPHAS[@]}"}; do
             d="$tag-i$alpha-$lbl"
             rm -rf "${OUT:?}/$d"; mkdir -p "$OUT/$d"
             run_leg "$d" "$lbl" "$alpha" "$OUT/$d/$mid-vk.png" \
@@ -309,7 +446,7 @@ while IFS= read -r line; do
     done
     # The engagement leg: the alpha-0 present again with the path's own
     # interpolation suppressed, where the producer must hold its tick pose.
-    if [[ -n "$SUPPRESS" ]]; then
+    if [[ -n "$SUPPRESS" && ${#ALPHAS[@]} -gt 0 ]]; then
         SUPPRESSED=1
         for lbl in on off; do
             d="$tag-s-$lbl"
@@ -328,9 +465,143 @@ while IFS= read -r line; do
         fail=1; continue
     fi
 
-    if [[ "$STAT" == vertex ]]; then
+    if [[ "$STAT" == interp ]]; then
     python3 - "$TAG" "$JUDGE_DEF" "$GAME" "$bk2" "$V" "$keys" "$OUT/$tag" "$prev" "$mid" \
-             "$SUPPRESS" "${ALPHAS[@]}" <<'PYEOF' || fail=1
+             "$SUPPRESS" "$MASK_CAP" ${ALPHAS[@]+"${ALPHAS[@]}"} <<'PYEOF' || fail=1
+import sys
+from PIL import Image
+
+tag, judge_def, game, bk2, V, keys, base, prev, mid, suppress = sys.argv[1:11]
+mask_cap = int(sys.argv[11])
+alphas = sys.argv[12:]
+V, prev, mid = int(V), int(prev), int(mid)
+
+opts, rects = {}, []
+for tok in keys.split():
+    k, _, v = tok.partition('=')
+    if k == 'rect':
+        x0, y0, x1, y1 = (int(t) for t in v.split(','))
+        rects.append((x0, y0, x1, y1))
+    else:
+        opts[k] = v
+# The whole frame is the default cell: the render-path selection has already
+# isolated the path, so every pixel that moves is this path's.
+if not rects:
+    rects = [None]
+# The floor on the alpha-0 difference, in mask pixels. Below it the knob moved
+# nothing this row can see: no animated surface stood in the cell, and the
+# legs prove nothing.
+px_floor = float(opts.get('step', '200'))
+judged = set(opts.get('judge', judge_def).split(','))
+# The bound the alpha-1 leg must reproduce the unsuppressed present within.
+# Every term of the interpolation is zero at the end of the tick's own
+# interval, so the two legs render the same scene and the difference is exact.
+IDENT_PX = float(opts.get('itol', '0'))
+
+
+def load(path):
+    im = Image.open(path).convert("RGB")
+    return im.load(), im.size
+
+
+def diff(a_path, b_path, rect):
+    """The pixels the channel's interpolation moved inside the cell, their
+    centroid, and the mean absolute RGB difference over them: the leave-one-out
+    of one intermediate present rendered with and without that interpolation."""
+    pa, sa = load(a_path)
+    pb, sb = load(b_path)
+    if sa != sb:
+        raise SystemExit("[%s] %s and %s differ in size" % (tag, a_path, b_path))
+    w, h = sa
+    x0, y0, x1, y1 = rect if rect else (0, 0, w, h)
+    x0 = max(0, x0); y0 = max(0, y0); x1 = min(w, x1); y1 = min(h, y1)
+    n = 0
+    sx = sy = 0.0
+    sd = 0.0
+    for y in range(y0, y1):
+        for x in range(x0, x1):
+            ca, cb = pa[x, y], pb[x, y]
+            if ca == cb:
+                continue
+            n += 1
+            sx += x; sy += y
+            sd += abs(ca[0] - cb[0]) + abs(ca[1] - cb[1]) + abs(ca[2] - cb[2])
+    if n == 0:
+        return 0, None, 0.0
+    return n, (sx / n, sy / n), sd / (3.0 * n)
+
+
+bad, vacuous, rows_out = [], [], []
+cells = 0
+total_px = 0
+for rect in rects:
+    name = "whole frame" if rect is None else "rect%s" % (rect,)
+    d = {}
+    for a in alphas:
+        n, c, m = diff("%s-i%s-on/%d-vk.png" % (base, a, mid),
+                       "%s-i%s-off/%d-vk.png" % (base, a, mid), rect)
+        if n > mask_cap:
+            raise SystemExit("[%s] %s alpha=%s differs in %d px, above the %d cap"
+                             % (tag, name, a, n, mask_cap))
+        d[a] = (n, c, m)
+        total_px += n
+    n0 = d.get("0", (0, None, 0.0))[0]
+    n1 = d.get("1", (0, None, 0.0))[0]
+    rows_out.append("cell %s" % name)
+    for a in alphas:
+        n, c, m = d[a]
+        rows_out.append("  alpha=%s%s px=%d meanD=%.2f centroid=%s"
+                        % (a, "" if a in judged else " (reported)", n, m,
+                           "-" if c is None else "(%.1f,%.1f)" % c))
+    # The identity leg: at alpha 1 the interpolation term is zero, so the two
+    # legs render the same present and no pixel may differ.
+    if "1" in d and n1 > IDENT_PX:
+        bad.append("identity: alpha 1 differs in %d px, above the %.0f bound" % (n1, IDENT_PX))
+    # Engagement: at alpha 0 the whole tick's worth of this channel's
+    # motion separates the legs. Below the floor the knob reached nothing.
+    if n0 < px_floor:
+        vacuous.append("%s: alpha 0 differs in %d px, below the %.0f floor: the knob "
+                       "moved nothing this cell can see" % (name, n0, px_floor))
+        continue
+    cells += 1
+    # The verdict, from the shape of the difference across the interval. A
+    # linearly interpolated channel separates the legs by (1-alpha) of the
+    # tick's motion, so the alpha-0.5 difference is about half the alpha-0
+    # one; a channel that holds its tick state renders the same present in
+    # both legs at every alpha and the difference collapses to nothing.
+    for a in alphas:
+        if a not in judged or a == "1":
+            continue
+        n, c, m = d[a]
+        av = float(a)
+        r = n / float(n0) if n0 else 0.0
+        exp = 1.0 - av
+        if r <= 0.05:
+            vd = "SNAP"
+        elif 0.5 * exp <= r <= 1.5 * exp:
+            vd = "LERPED"
+        else:
+            vd = "PARTIAL"
+        rows_out.append("  alpha=%s px=%d of alpha0 px=%d ratio=%.3f expected=%.3f %s"
+                        % (a, n, n0, r, exp, vd))
+
+head = ("[%s] game=%s bk2=%s V=%d cells=%d legs=%d diffpx=%d"
+        % (tag, game, bk2, V, cells, len(alphas) * 2, total_px))
+for r in rows_out:
+    print("[%s]   " % tag + r)
+if vacuous or not cells:
+    print(head + " VACUOUS")
+    for v in vacuous:
+        print("[%s]   " % tag + v)
+    sys.exit(1)
+print(head + " verdict=%s" % ("FAIL" if bad else "PASS"))
+for b in bad:
+    print("[%s]   " % tag + b)
+sys.exit(1 if bad else 0)
+PYEOF
+    elif [[ "$STAT" == vertex ]]; then
+    python3 - "$TAG" "$JUDGE_DEF" "$GAME" "$bk2" "$V" "$keys" "$OUT/$tag" "$prev" "$mid" \
+             "$SUPPRESS" ${ALPHAS[@]+"${ALPHAS[@]}"} <<'PYEOF' || fail=1
 import re
 import sys
 
@@ -559,13 +830,16 @@ sys.exit(1 if bad else 0)
 PYEOF
     else
     python3 - "$TAG" "$JUDGE_DEF" "$GAME" "$bk2" "$V" "$keys" "$OUT/$tag" "$prev" "$mid" \
-             "$SUPPRESS" "${ALPHAS[@]}" <<'PYEOF' || fail=1
+             "$SUPPRESS" "$MASK_CAP" ${ALPHAS[@]+"${ALPHAS[@]}"} <<'PYEOF' || fail=1
+import os
 import sys
 from PIL import Image
 
 tag, judge_def, game, bk2, V, keys, base, prev, mid, suppress = sys.argv[1:11]
-alphas = sys.argv[11:]
+mask_cap = int(sys.argv[11])
+alphas = sys.argv[12:]
 V, prev, mid = int(V), int(prev), int(mid)
+probe = os.environ.get("OPENPETE_FEEDER_PROBE", "") not in ("", "0")
 
 opts, gems = {}, []
 for tok in keys.split():
@@ -579,53 +853,79 @@ tol = float(opts.get('tol', '0.5'))
 judged = set(opts.get('judge', judge_def).split(','))
 step_floor = float(opts.get('step', '4'))
 engage = opts.get('engage', '1') != '0'
+# The area and colour statistics are judged only where the row sets a bound;
+# without one they are measured and classified but assert nothing, so a row
+# written for the centroid alone keeps its verdict.
+atol = float(opts['atol']) if 'atol' in opts else None
+ctol = float(opts['ctol']) if 'ctol' in opts else None
+# Per-statistic floors on the canonical step. A statistic that barely moves
+# over the interval cannot separate a lerp from a hold, so it is classified
+# UNMOVED rather than LERPED. Area is in mask pixels, colour in 0-255 levels
+# of the widest channel.
+area_floor = float(opts.get('astep', '40'))
+col_floor = float(opts.get('cstep', '6'))
 
 # Two components of one mask are the same blob when their pixels come within
 # this Chebyshev distance: a four-point star's arms and a glow ring's fan are
 # each contiguous, and the nearest two blobs of any corpus row stand far
 # further apart than this.
-CLUSTER_R = 6
-# A mask this large is not one feeder's primitives; the A/B isolated something
-# else and its centroids would be meaningless.
-MASK_CAP = 20000
+CLUSTER_R = int(opts.get('cluster', '6'))
 # A named blob must resolve to one component: the runner-up must sit at least
 # this many pixels further from the target than the winner.
 AMBIG_MARGIN = 6.0
 # The radius a named blob's component is looked for in, around the position the
 # row names and around each tracked position after it.
-FIND_R = 12.0
+FIND_R = float(opts.get('findr', '12'))
 
 
 def mask(a_path, b_path):
-    """The pixels this feed painted: the leave-one-out difference of the
-    feed-on and feed-off captures of one present."""
+    """The pixels this feed painted and the colour it painted them: the
+    leave-one-out difference of the feed-on and feed-off captures of one
+    present, each pixel carrying its feed-on RGB."""
     a = Image.open(a_path).convert("RGB")
     b = Image.open(b_path).convert("RGB")
     if a.size != b.size:
         raise SystemExit("[%s] %s and %s differ in size" % (tag, a_path, b_path))
     pa, pb = a.load(), b.load()
     w, h = a.size
-    px = [(x, y) for y in range(h) for x in range(w) if pa[x, y] != pb[x, y]]
+    px = {}
+    for y in range(h):
+        for x in range(w):
+            ca = pa[x, y]
+            if ca != pb[x, y]:
+                px[(x, y)] = ca
     return px
 
 
 def components(px):
-    """Cluster mask pixels at CLUSTER_R, returning (cx, cy, count) per blob."""
+    """Cluster mask pixels at CLUSTER_R, returning (cx, cy, count, r, g, b) per
+    blob, where r,g,b is the mean feed-on colour of the blob's pixels. The
+    flood fill walks the Chebyshev neighbourhood of each pixel rather than the
+    remaining set, so a mask of a whole terrain surface clusters in time linear
+    in its pixel count."""
     seen = set(px)
     out = []
+    span = range(-CLUSTER_R, CLUSTER_R + 1)
     while seen:
-        stack = [seen.pop()]
-        comp = [stack[0]]
+        start = seen.pop()
+        stack = [start]
+        comp = [start]
         while stack:
             x, y = stack.pop()
-            near = [q for q in seen
-                    if abs(q[0] - x) <= CLUSTER_R and abs(q[1] - y) <= CLUSTER_R]
-            for q in near:
-                seen.discard(q)
-                stack.append(q)
-                comp.append(q)
+            for dy in span:
+                for dx in span:
+                    q = (x + dx, y + dy)
+                    if q in seen:
+                        seen.discard(q)
+                        stack.append(q)
+                        comp.append(q)
         n = len(comp)
-        out.append((sum(p[0] for p in comp) / n, sum(p[1] for p in comp) / n, n))
+        sr = sg = sb = 0
+        for q in comp:
+            c = px[q]
+            sr += c[0]; sg += c[1]; sb += c[2]
+        out.append((sum(p[0] for p in comp) / n, sum(p[1] for p in comp) / n, n,
+                    sr / n, sg / n, sb / n))
     return sorted(out, key=lambda c: (-c[2], c[0]))
 
 
@@ -650,6 +950,59 @@ def find(comps, tx, ty, radius):
     return d[0][1], ""
 
 
+def st_centroid(c):
+    return (c[0], c[1])
+
+
+def st_area(c):
+    return (float(c[2]),)
+
+
+def st_colour(c):
+    return (c[3], c[4], c[5])
+
+
+def dist(u, w):
+    """The residual of a statistic: Euclidean for the two-vector centroid, the
+    widest channel for the three-vector colour, the magnitude for area. Each
+    is the one a bound on that statistic is naturally written in."""
+    if len(u) == 2:
+        return ((u[0] - w[0]) ** 2 + (u[1] - w[1]) ** 2) ** 0.5
+    return max(abs(a - b) for a, b in zip(u, w))
+
+
+def lerp(u, w, a):
+    return tuple(p + (q - p) * a for p, q in zip(u, w))
+
+
+def fmt(u):
+    return "(" + ",".join("%.1f" % v for v in u) + ")"
+
+
+# A statistic's residual against its own hold: a producer that holds its tick
+# state shows the canonical V value, which sits (1-alpha) of the step from the
+# expected lerp. The ratio of the measured residual to that distance is what
+# separates the three verdicts, and it is the same number for every statistic
+# and every channel, so one pair of thresholds classifies them all.
+LERP_R = 0.25
+SNAP_R = 0.75
+
+
+def verdict(resid, hold):
+    if hold <= 0.0:
+        return "UNMOVED"
+    r = resid / hold
+    if r <= LERP_R:
+        return "LERPED"
+    if r >= SNAP_R:
+        return "SNAP"
+    return "PARTIAL"
+
+
+STATS = (("centroid", st_centroid, step_floor, tol),
+         ("area", st_area, area_floor, atol),
+         ("colour", st_colour, col_floor, ctol))
+
 legs = {}
 maskpx = 0
 vacuous, bad, notes = [], [], []
@@ -663,17 +1016,29 @@ for name, on, off, vbl in (
         ([("suppressed", "%s-s-on/%d-vk.png" % (base, mid),
            "%s-s-off/%d-vk.png" % (base, mid), mid)] if suppress else [])):
     px = mask(on, off)
-    if len(px) > MASK_CAP:
+    if len(px) > mask_cap:
         raise SystemExit("[%s] leg %s masks %d px, above the %d cap: the "
                          "leave-one-out is not isolating this feeder"
-                         % (tag, name, len(px), MASK_CAP))
+                         % (tag, name, len(px), mask_cap))
     legs[name] = components(px)
     maskpx += len(px)
     if not px:
         vacuous.append("leg %s masks no pixel: the feed painted nothing" % name)
 
+if probe:
+    # Row authoring: the components of the two canonical presents, largest
+    # first, with every statistic a row can name. No blob is judged.
+    for name in ("canon%d" % prev, "canon%d" % V):
+        print("[%s] probe %s components=%d" % (tag, name, len(legs.get(name, []))))
+        for c in legs.get(name, [])[:20]:
+            print("[%s]   blob=%.1f,%.1f area=%d colour=(%.1f,%.1f,%.1f)"
+                  % (tag, c[0], c[1], c[2], c[3], c[4], c[5]))
+    print("[%s] probe game=%s bk2=%s V=%d maskpx=%d" % (tag, game, bk2, V, maskpx))
+    sys.exit(0)
+
 worst = 0.0
 engaged = 0
+engaged_stats = 0
 rows_out = []
 if not gems:
     vacuous.append("the row names no blob")
@@ -689,13 +1054,22 @@ for gx, gy in gems:
         vacuous.append("blob (%.1f,%.1f) at canon%d: %s" % (gx, gy, prev, why))
         continue
     step = ((c1[0] - c0[0]) ** 2 + (c1[1] - c0[1]) ** 2) ** 0.5
-    rows_out.append("blob (%.1f,%.1f) canon%d=(%.1f,%.1f) %dpx canon%d=(%.1f,%.1f) %dpx step=%.2f"
-                    % (gx, gy, prev, c0[0], c0[1], c0[2], V, c1[0], c1[1], c1[2], step))
-    if step < step_floor:
-        vacuous.append("blob (%.1f,%.1f) steps %.2f px over the interval, below the %.2f floor"
-                       % (gx, gy, step, step_floor))
-        continue
+    rows_out.append("blob (%.1f,%.1f) canon%d=(%.1f,%.1f) %dpx rgb=(%.1f,%.1f,%.1f) "
+                    "canon%d=(%.1f,%.1f) %dpx rgb=(%.1f,%.1f,%.1f) step=%.2f"
+                    % (gx, gy, prev, c0[0], c0[1], c0[2], c0[3], c0[4], c0[5],
+                       V, c1[0], c1[1], c1[2], c1[3], c1[4], c1[5], step))
+    # A blob whose centroid barely moves over the interval passes any centroid
+    # bound whatever the producer does, so the centroid is reported and not
+    # judged there. Its area and its colour are separate channels and are
+    # measured either way; the row is VACUOUS only when no statistic of any of
+    # its blobs cleared its own floor.
+    judge_centroid = step >= step_floor
+    if not judge_centroid:
+        notes.append("blob (%.1f,%.1f) steps %.2f px over the interval, below the %.2f "
+                     "centroid floor: its centroid is reported, not judged"
+                     % (gx, gy, step, step_floor))
     shown0 = None
+    shown = {}
     for a in alphas:
         av = float(a)
         ex = (c0[0] + (c1[0] - c0[0]) * av, c0[1] + (c1[1] - c0[1]) * av)
@@ -713,17 +1087,49 @@ for gx, gy in gems:
                            % (gx, gy, a))
             continue
         ci = cand[0][1]
+        shown[a] = ci
         if float(a) == 0.0:
             shown0 = ci
         d = ((ci[0] - ex[0]) ** 2 + (ci[1] - ex[1]) ** 2) ** 0.5
-        if a in judged:
+        if a in judged and judge_centroid:
             worst = max(worst, d)
-        rows_out.append("  alpha=%s%s shown=(%.1f,%.1f) %dpx expected=(%.1f,%.1f) D=%.2f"
+        rows_out.append("  alpha=%s%s shown=(%.1f,%.1f) %dpx rgb=(%.1f,%.1f,%.1f) "
+                        "expected=(%.1f,%.1f) D=%.2f"
                         % (a, "" if a in judged else " (reported)",
-                           ci[0], ci[1], ci[2], ex[0], ex[1], d))
-        if a in judged and d > tol:
+                           ci[0], ci[1], ci[2], ci[3], ci[4], ci[5], ex[0], ex[1], d))
+        if a in judged and judge_centroid and d > tol:
             bad.append("blob (%.1f,%.1f) alpha=%s D=%.2f above the %.2f bound"
                        % (gx, gy, a, d, tol))
+
+    # The census line per statistic: the canonical step, the residual at every
+    # captured alpha against the lerp of the same statistic, the alpha-1
+    # identity, the alpha-0 own, and the verdict.
+    for sname, sfn, floor, sbound in STATS:
+        s0, s1 = sfn(c0), sfn(c1)
+        sstep = dist(s0, s1)
+        parts = []
+        vd = "UNMOVED"
+        for a in alphas:
+            if a not in shown:
+                continue
+            av = float(a)
+            sx = lerp(s0, s1, av)
+            sr = dist(sfn(shown[a]), sx)
+            parts.append("a%s=%.2f" % (a, sr))
+            if a in judged and a != "1":
+                vd = verdict(sr, (1.0 - av) * sstep)
+            if sbound is not None and a in judged and sr > sbound:
+                bad.append("blob (%.1f,%.1f) %s alpha=%s resid=%.2f above the %.2f bound"
+                           % (gx, gy, sname, a, sr, sbound))
+        ident = dist(sfn(shown["1"]), s1) if "1" in shown else float('nan')
+        own = dist(sfn(shown["0"]), s0) if "0" in shown else float('nan')
+        if sstep < floor:
+            vd = "UNMOVED(step=%.2f<%.2f)" % (sstep, floor)
+        else:
+            engaged_stats += 1
+        rows_out.append("  cell %s %s step=%.2f %s ident=%.2f own=%.2f %s"
+                        % (fmt(s0) + "->" + fmt(s1), sname, sstep,
+                           " ".join(parts), ident, own, vd))
 
     # own: how far the alpha-0 leg stands from the pose the previous tick drew.
     # A producer that carries its own motion reads near zero, one that holds
@@ -750,6 +1156,11 @@ for gx, gy in gems:
 if suppress and engage and not engaged:
     vacuous.append("no blob holds its tick pose under %s=0: the knob suppressed "
                    "nothing this row can see" % suppress)
+if gems and not engaged_stats:
+    vacuous.append("no statistic of any named blob moved over the interval: the row "
+                   "measures nothing")
+for n in notes:
+    rows_out.append(n)
 head = ("[%s] game=%s bk2=%s V=%d blobs=%d legs=%d maskpx=%d worst=%.2f"
         % (tag, game, bk2, V, len(gems), len(legs), maskpx, worst))
 for r in rows_out:

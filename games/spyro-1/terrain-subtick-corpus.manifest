@@ -1,0 +1,29 @@
+# Sub-tick interpolation of the animated terrain
+# (scripts/check_feeder_subtick.sh --path terrain, --path terrain-tanim).
+#   <source> | <V> | [rect=<x0>,<y0>,<x1>,<y1> ...] [step=<px>] [itol=<px>]
+#
+# This path's knobs, OPENPETE_TERRAIN_VANIM and OPENPETE_TERRAIN_TANIM, do not
+# suppress the terrain feed: they snap one channel of the sub-tick present to
+# the newest tick's state. The canonical presents are therefore identical
+# between the two legs and only the intermediate present differs, so the legs
+# are intermediate presents alone and their difference is exactly the pixels
+# that channel's interpolation moved. Both legs select the terrain path, so no
+# other producer can enter it.
+#
+# Read per cell: the differing-pixel count at each alpha. alpha 1 must differ
+# in no pixel (every interpolation term is zero at the tick's own instant),
+# alpha 0 must differ in more than `step` pixels (the channel moved something
+# this cell can see), and alpha 0.5 separates a channel that carries
+# the interval from one that holds its tick state: the latter renders the same
+# present in both legs and the count collapses to zero.
+#
+# The whole frame is the cell where no rect is named: the render-path
+# selection has already isolated the terrain.
+#
+# moving-terrain: the Artisans water surface, the level the movie is named
+# for, at the two presents the presentation corpus also pins. A third row on
+# toasty-moving-terrain-z-fighting at V=3110 was dropped: no animated surface
+# stands in that frame and both legs render the same present at every alpha,
+# which the floor reports as VACUOUS rather than as a snap.
+moving-terrain.bk2 | 2262 |
+moving-terrain.bk2 | 2438 |

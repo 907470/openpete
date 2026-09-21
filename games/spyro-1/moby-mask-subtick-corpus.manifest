@@ -1,0 +1,19 @@
+# Sub-tick interpolation of a moby's painted extent and colour
+# (scripts/check_feeder_subtick.sh --path moby-mask).
+#   <bk2> | <V> | blob=<x>,<y> ... [tol=<px>] [step=<px>] [astep=<px>] [cstep=<n>]
+#
+# scripts/check_moby_subtick.sh answers for a moby's vertex and keyframe
+# animation, by comparing host-side poses. It does not separate the two cells
+# this row measures: the screen scale the moby is drawn at, which is its mask's
+# pixel count, and the colour it is drawn in, which is that mask's mean.
+#
+# The two legs are a render-path selection with and without the moby path,
+# terrain in both, so the mask holds the mobys alone and nothing of the world
+# behind them.
+#
+# moby-crossfade: two mobys, named at the positions the tick at V drew them.
+# (201.6,206.5) is the one that moves, 4.3 px across the interval while its
+# mask grows 624 px to 788 px — the scale cell. (321.6,90.7) barely moves and
+# barely resizes, and its mean colour steps 26 levels over the interval — the
+# keyframe colour crossfade the movie is named for.
+moby-crossfade.bk2 | 1801 | blob=201.6,206.5 blob=321.6,90.7 tol=1.0 step=4
