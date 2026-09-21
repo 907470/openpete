@@ -79,6 +79,8 @@ static const cfg_knob_t g_schema[] = {
     { "skip_to_cutscene", "--skip-to-cutscene", NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "cheats",           "--cheats",           NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "freecam",          NULL,                 "OPENPETE_FREECAM",      CFG_BOOL,   NULL,       NULL,       NULL,       0 },
+    { "freecam_pose",     "--freecam-pose",     "OPENPETE_FREECAM_POSE", CFG_STRING, NULL,       NULL,       NULL,       0 },
+    { "player_pose",      "--player-pose",      "OPENPETE_PLAYER_POSE",  CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "camlock",          NULL,                 "OPENPETE_CAMLOCK",      CFG_BOOL,   NULL,       NULL,       NULL,       0 },
     { "bk2",              "--bk2",              NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },
 
