@@ -902,9 +902,11 @@ static void emit_quad_cv(tn_wctx* W, ngte_cvert tl, ngte_cvert tr, ngte_cvert bl
  * subdivision — the D_8006CF98 pattern path — is NOT replicated here; the 2×2 is
  * the dominant geometry and fixes the medallion's affine warp.) */
 /* HQ sub-quad UV ORIENTATION (rotation/flip), mirroring func_800276A0
- * block_80027EA8: the HQ Tiledef carries an orientation index in `word1 >> 25`;
- * when nonzero it selects an 8-byte entry in the offset table D_8006D058
- * (`base + ori`) of per-corner packed (du | dv<<8) deltas added to the base
+ * block_80027EA8: the HQ Tiledef carries an orientation index in `word1 >> 25`,
+ * masked by the descriptor's `uv_ori_mask`; when nonzero it selects an 8-byte
+ * entry in the offset table (`base + ori`: Spyro 1 D_8006D058 at 128 bytes,
+ * Spyro 2 D_80062040 and Spyro 3 D_80065D08 at 64, the latter two holding
+ * byte-identical 32-texel entries) of per-corner packed (du | dv<<8) deltas added to the base
  * UVs — TL/BL/BR relative to (u0,v0) [word0], TR relative to (u1,v1) [word1] —
  * then masked to the u/v bytes (carry between u,v is faithful). Entry 0/64 are
  * the identity transform (≡ decode_tiledef's default), so cells already drawn
@@ -913,10 +915,18 @@ static void emit_quad_cv(tn_wctx* W, ngte_cvert tl, ngte_cvert tr, ngte_cvert bl
  * 6/23 ori=104, the right-column sub-quads of a cell). The 16px (0x0F) table
  * half is unused in practice. Returns the ori index (0 = identity, u/v kept). */
 static int tiledef_apply_ori(CPUState* cpu, uint32_t e, float u[4], float v[4]) {
-    uint32_t ori = rd(cpu, e + 4) >> 25;
-    if (!ori) return 0;
-    uint32_t w0 = rd(cpu, e), w1 = rd(cpu, e + 4);
     if (!game_layout.terrain.uv_ori_table) return 0;   /* no table located: identity */
+    uint32_t w0 = rd(cpu, e), w1 = rd(cpu, e + 4);
+    /* Where word1 is the BR corner the emit decrements it by 0x1F00 before it
+     * derives the index and before the TR add (Spyro 3 environment.s
+     * 80024D10-80024D18), so the borrow out of the low half reaches the index
+     * exactly as the game's does. */
+    if (game_layout.terrain.tile_word1_br) w1 -= 0x1F00u;
+    /* The index is a byte offset into the table, masked to bound it: the games
+     * that carry ABE in tpage bit 15 would otherwise index past their 64-byte
+     * table (Spyro 3 `srl 25; andi 0x38`, environment.s 80024D18-80024D1C). */
+    uint32_t ori = (w1 >> 25) & game_layout.terrain.uv_ori_mask;
+    if (!ori) return 0;
     uint32_t te = game_layout.terrain.uv_ori_table + ori;     /* per-orientation UV-offset table (Spyro 1 D_8006D058) */
     uint32_t ew0 = rd(cpu, te), ew1 = rd(cpu, te + 4);
     uint32_t tl = ((w0 & 0xFFFF) + (ew0 & 0xFFFF)) & 0xFFFF;  /* TL rel (u0,v0) */
@@ -3636,20 +3646,7 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
                 memset(&m, 0, sizeof(m)); m.bpp = 16;
                 uint32_t e = hqBase + game_layout.terrain.hq_sub0 + (uint32_t)q * 8u;
                 decode_tiledef(cpu, e, F->abe, &m, u, v);
-                uint32_t ori = rd(cpu, e + 4) >> 25;
-                if (ori && game_layout.terrain.uv_ori_table) {   /* HQ UV orientation offset table (Spyro 1 D_8006D058) */
-                    uint32_t w0 = rd(cpu, e), w1 = rd(cpu, e + 4);
-                    uint32_t te = game_layout.terrain.uv_ori_table + ori;
-                    uint32_t ew0 = rd(cpu, te), ew1 = rd(cpu, te + 4);
-                    uint32_t tl = ((w0 & 0xFFFF) + (ew0 & 0xFFFF)) & 0xFFFF;
-                    uint32_t tr = ((w1 & 0xFFFF) + (ew0 >> 16))    & 0xFFFF;
-                    uint32_t bl = ((w0 & 0xFFFF) + (ew1 & 0xFFFF)) & 0xFFFF;
-                    uint32_t br = ((w0 & 0xFFFF) + (ew1 >> 16))    & 0xFFFF;
-                    u[0]=(float)(tl & 0xFF); v[0]=(float)((tl >> 8) & 0xFF);
-                    u[1]=(float)(tr & 0xFF); v[1]=(float)((tr >> 8) & 0xFF);
-                    u[2]=(float)(bl & 0xFF); v[2]=(float)((bl >> 8) & 0xFF);
-                    u[3]=(float)(br & 0xFF); v[3]=(float)((br >> 8) & 0xFF);
-                }
+                tiledef_apply_ori(cpu, e, u, v);   /* rotated/flipped HQ tiles */
                 tgpu_face_t H = T;
                 /* HQ variant + sub-quad + the HQ RECORD's scroll tile id
                  * (the near-emit's dv lookup keys on hq_idx, not tb;
@@ -7339,6 +7336,53 @@ static void terrain_feed_native(CPUState* cpu) {
     }
 }
 
+/* UVDBG pairing: the captured textured prim nearest a native triangle's screen
+ * centroid, with the squared distance in *out_d2. A quad prim is two native
+ * triangles, so its own centroid sits half a tile from either triangle's and
+ * the quad's two half centroids are candidates too; without them no triangle
+ * of a subdivided quad pairs with the prim that drew it. */
+static int uvdbg_nn_prim(float ncx, float ncy, float* out_d2) {
+    int bj = -1; float bd = 1e18f;
+    for (int p = 0; p < s_gte_n; p++) {
+        prim_t* g = &s_gte[p]; if (!g->textured) continue;
+        float gcx = 0, gcy = 0;
+        for (int k = 0; k < g->nv; k++) { gcx += g->x[k]; gcy += g->y[k]; }
+        gcx /= g->nv; gcy /= g->nv;
+        float dx = ncx - gcx, dy = ncy - gcy, d = dx * dx + dy * dy;
+        for (int h = 0; h < (g->nv == 4 ? 2 : 0); h++) {
+            float hx = (g->x[h] + g->x[h+1] + g->x[h+2]) / 3.f;
+            float hy = (g->y[h] + g->y[h+1] + g->y[h+2]) / 3.f;
+            float hdx = ncx - hx, hdy = ncy - hy, hd2 = hdx * hdx + hdy * hdy;
+            if (hd2 < d) d = hd2;
+        }
+        if (d < bd) { bd = d; bj = p; }
+    }
+    *out_d2 = bd; return bj;
+}
+
+/* UVDBG corner UVs: pair each native triangle vertex with the captured prim's
+ * vertex at the same screen position and require the same UV there. A rotated
+ * or mirrored tile carries the same four UV pairs as the identity, permuted
+ * between the corners, so only the per-corner pairing sees an orientation
+ * divergence; the page, bpp and CLUT all agree across it. A corner with no
+ * captured vertex within 3 px is not scored. Returns the corners scored and
+ * clears *ok on the first disagreement. */
+static int uvdbg_corner_uv(const ttri* t, const prim_t* g, int* ok) {
+    int scored = 0;
+    for (int k = 0; k < 3; k++) {
+        int gbest = -1; float gbd = 1e18f;
+        for (int gk = 0; gk < g->nv; gk++) {
+            float ddx = t->sx[k] - (float)g->x[gk], ddy = t->sy[k] - (float)g->y[gk];
+            float dd = ddx * ddx + ddy * ddy;
+            if (dd < gbd) { gbd = dd; gbest = gk; }
+        }
+        if (gbest < 0 || gbd > 9.0f) continue;
+        scored++;
+        if (g->u[gbest] != (int)lrintf(t->u[k]) || g->v[gbest] != (int)lrintf(t->v[k])) *ok = 0;
+    }
+    return scored;
+}
+
 /* Geometry A/B: NN-match each native projected vertex to the nearest captured
  * prim vertex (order/topology independent — the .s emits LP for far sectors, so
  * exact ordering won't line up; NN measures the decode+projection). */
@@ -7456,7 +7500,7 @@ static void terrain_compare(void) {
         const char* be = getenv("OPENPETE_TERRAIN_UVBOX");
         if (be && *be) sscanf(be, "%f,%f,%f,%f", &bx0, &by0, &bx1, &by1);
         int shown = 0, want = 40;
-        long uvmatch=0, uvexact_tp=0, uvexact_cl=0, tight=0, tdis=0;
+        long uvmatch=0, uvexact_tp=0, uvexact_cl=0, tight=0, tdis=0, uvdis=0, uvcmp=0;
         double hi_min=1e18,hi_max=0,lo_min=1e18,lo_max=0,hi_sum=0,lo_sum=0; long hin=0,lon=0;
         for (int i = 0; i < s_tri_n; i++) {
             ttri* t = &s_tri[i];
@@ -7464,11 +7508,7 @@ static void terrain_compare(void) {
             float ncx=(t->sx[0]+t->sx[1]+t->sx[2])/3.f, ncy=(t->sy[0]+t->sy[1]+t->sy[2])/3.f;
             if (ncx<bx0||ncx>bx1||ncy<by0||ncy>by1) continue;
             /* nearest captured textured prim by centroid */
-            int bj=-1; float bd=1e18f;
-            for (int p=0;p<s_gte_n;p++){ prim_t* g=&s_gte[p]; if(!g->textured) continue;
-                float gcx=0,gcy=0; for(int k=0;k<g->nv;k++){gcx+=g->x[k];gcy+=g->y[k];}
-                gcx/=g->nv; gcy/=g->nv; float dx=ncx-gcx,dy=ncy-gcy,d=dx*dx+dy*dy;
-                if(d<bd){bd=d;bj=p;} }
+            float bd=1e18f; int bj=uvdbg_nn_prim(ncx, ncy, &bd);
             if (bj<0) continue; bd=sqrtf(bd);
             if (bd > 6.0f) continue;                /* loose match — skip */
             prim_t* g=&s_gte[bj];
@@ -7479,23 +7519,26 @@ static void terrain_compare(void) {
             uvmatch++;
             int tp_ok = (gtpx==t->tpx && gtpy==t->tpy && gbpp==t->bpp);
             int cl_ok = (gclx==t->clx && gcly==t->cly);
+            /* A triangle scoring fewer than two corners is not counted. */
+            int uv_ok = 1, uv_cmp = uvdbg_corner_uv(t, g, &uv_ok);
             if (tp_ok) uvexact_tp++;
             if (cl_ok) uvexact_cl++;
             /* Only print TIGHT matches (d<2.5px, trustworthy spatial pairing) that
              * actually DISAGREE — those are real per-tile decode divergences, not
              * NN noise from grabbing an adjacent checkerboard tile. */
             int printall = getenv("OPENPETE_TERRAIN_UVALL") != NULL;
-            if (((printall && bd < 6.0f) || (bd < 2.5f && (!tp_ok || !cl_ok))) && shown < want) { shown++;
+            if (((printall && bd < 6.0f) || (bd < 2.5f && (!tp_ok || !cl_ok || (!uv_ok && uv_cmp >= 2)))) && shown < want) { shown++;
                 fprintf(stderr,
-                  "[uvdbg] c=(%.0f,%.0f) d=%.1f %s%s | NAT tp=(%d,%d) bpp=%d cl=(%d,%d) uv=[(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f)]\n"
+                  "[uvdbg] c=(%.0f,%.0f) d=%.1f %s%s%s | NAT tp=(%d,%d) bpp=%d cl=(%d,%d) uv=[(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f)]\n"
                   "                          | PSX tp=(%d,%d) bpp=%d cl=(%d,%d) uv=",
-                  ncx, ncy, bd, tp_ok?"":"TP! ", cl_ok?"":"CL! ", t->tpx, t->tpy, t->bpp, t->clx, t->cly,
+                  ncx, ncy, bd, tp_ok?"":"TP! ", cl_ok?"":"CL! ", uv_ok?"":"UV! ", t->tpx, t->tpy, t->bpp, t->clx, t->cly,
                   t->u[0],t->v[0],t->u[1],t->v[1],t->u[2],t->v[2],
                   gtpx, gtpy, gbpp, gclx, gcly);
                 for (int k=0;k<g->nv;k++) fprintf(stderr,"(%d,%d)",g->u[k],g->v[k]);
                 fprintf(stderr, " raw tpage=%04X clut=%04X\n", g->tpage, g->clut);
             }
             if (bd < 2.5f) { tight++; if (!tp_ok || !cl_ok) tdis++;
+                if (uv_cmp >= 2) { uvcmp++; if (!uv_ok) uvdis++; }
                 /* empirical near/far fit: native mean view-Z (m3) vs the table the
                  * game chose (bpp8 = HQ/near, bpp4 = LQ/far). */
                 double mvz = (t->vz[0]+t->vz[1]+t->vz[2])/3.0;
@@ -7518,6 +7561,8 @@ static void terrain_compare(void) {
             uvexact_cl, uvmatch?100.0*uvexact_cl/uvmatch:0.0);
         fprintf(stderr, "[uvdbg-tight] tight(<2.5px)=%ld disagree=%ld (%.0f%%)\n",
             tight, tdis, tight?100.0*tdis/tight:0.0);
+        fprintf(stderr, "[uvdbg-uvcorner] scored=%ld uv-mismatch=%ld (%.0f%%)\n",
+            uvcmp, uvdis, uvcmp?100.0*uvdis/uvcmp:0.0);
       }
     }
 

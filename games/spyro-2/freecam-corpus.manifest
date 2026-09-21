@@ -57,3 +57,8 @@ winter_tundra | pos=(51217, 30497, 40037) yaw=752 pitch=160
 # 16:9 on the PSX-projected view but is culled by the host reveal (user
 # report 2026-09-19); blessed pre-fix.
 glimmer | pos=(68754, 34233, 13267) yaw=215 pitch=12
+# Near/HQ tier UV orientation: the pose stands close enough to the surface for
+# the 2x2 subdivide, and its sub-tiles carry non-identity orientation indices,
+# so every mirrored or rotated HQ quadrant in the frame moves when the
+# orientation table is read or left unread.
+metropolis | pos=(115218, 59889, 40916) yaw=1696 pitch=160

@@ -166,7 +166,15 @@ const game_layout_t game_layout = {
                                                      * selects the flat HP list */
         .vz_shl       = 1,                          /* Z4 = (v << 3) & 0x1FFC in quarter units */
         .vz_flat_shr  = 2,                          /* flat list: Z4 = v & 0x3FF */
-        .uv_ori_table = 0u,                         /* none: GT3 UVs rotate by face word 3 bits 12-13 */
+        .uv_ori_table = 0x80065D08u,                /* D_80065D08: the 8-entry per-corner packed UV
+                                                     * delta table the near/HQ 2x2 emit adds
+                                                     * to the sub-tile's base UVs
+                                                     * (environment.s 80024D18-80024D58 (near/HQ emit) and
+                                                     * 80025FD8-80026018 (detail sub-path)) */
+        .uv_ori_mask  = 0x38u,                      /* environment.s: `srl 25` then `andi 0x38`;
+                                                     * ABE occupies tpage bit 15 here, and the
+                                                     * unmasked index would reach past the
+                                                     * 64-byte table */
         .defer_q      = { 0u, 0u },                 /* the near lists live in the scratchpad; not read */
         .face_layout  = TERRAIN_FACES_SPYRO3,
         .tex_stride   = 48u,

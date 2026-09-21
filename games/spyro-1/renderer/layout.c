@@ -98,6 +98,11 @@ const game_layout_t game_layout = {
         .vz_shl       = 0,
         .vz_flat_shr  = 0,
         .uv_ori_table = D_HQ_UV_ORI_TABLE,
+        .uv_ori_mask  = 0x7Fu,                      /* r_environment.s 80027E9C and 8002928C take the
+                                                     * index as a bare `srl 25`, already bounded to
+                                                     * 0x7F, over a 128-byte table (D_8006D058: the
+                                                     * 16-texel half at +0, the 32-texel half at
+                                                     * +0x40) */
         .defer_q      = { G_SCRATCH + 0x2000u, G_SCRATCH + 0x1E00u },
         .face_layout  = TERRAIN_FACES_SPYRO1,
         .tex_stride   = 16u,

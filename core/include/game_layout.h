@@ -214,8 +214,9 @@ typedef struct game_layout {
      * sector whose Z offsets are stored at `vz_flat_shr` bits less; every
      * other sector's Z offset is `vz_shl` bits more than the 10 packed bits.
      * `uv_ori_table` is the HQ tile UV-orientation offset table (0 =
-     * identity); `defer_q` are the two near-cell defer queues the draw fills
-     * (0 = none). */
+     * identity) and `uv_ori_mask` the mask applied to the index the emit
+     * derives as `tileWord1 >> 25`, bounding it to the table; `defer_q` are
+     * the two near-cell defer queues the draw fills (0 = none). */
     struct {
         uint32_t radius_mask;
         uint32_t flags_mask;
@@ -223,6 +224,7 @@ typedef struct game_layout {
         int      vz_shl;
         int      vz_flat_shr;
         uint32_t uv_ori_table;
+        uint32_t uv_ori_mask;
         uint32_t defer_q[2];
         /* The face record layout (TERRAIN_FACES_*): the games pack the HP
          * texture index, flip, OT bias and triangle UV rotation, and the LP
