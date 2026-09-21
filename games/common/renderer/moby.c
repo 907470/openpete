@@ -6255,7 +6255,12 @@ typedef struct { uint32_t moby; float x0, y0, x1, y1, vz_min; unsigned tick;
                   * and class at the last REAL extraction. Written only there,
                   * so a refresh re-derives from a fixed reference and cannot
                   * drift however long a moby stays hidden. */
-                 float asx, asy, atrz, arad; uint16_t acls; } occl_rect_t;
+                 float asx, asy, atrz, arad; uint16_t acls;
+                 /* Verdict held for one canonical epoch: the moby it was
+                  * decided for (the slot is direct-mapped, so it need not be
+                  * the moby whose bounds the entry carries), the epoch stamp
+                  * it was decided in, and the verdict itself. */
+                 uint32_t vmoby; uint32_t vepoch; uint8_t vculled; } occl_rect_t;
 #define OCCL_HASH_N 1024                       /* power of two; ~500 live mobys max */
 static occl_rect_t s_occl_cache[OCCL_HASH_N];
 static float s_occl_pan_px = 0.0f;             /* px/tick pan allowance (orchestrator) */
@@ -6269,6 +6274,13 @@ static unsigned occl_slot(uint32_t moby) {
 }
 
 static long s_occl_f[4];   /* feeder-side pre-query outcomes: ui-exempt / no-cache / stale-cache / refreshed */
+
+/* Per-leg cull census (OPENPETE_REEXTRACT_FEEDDBG), index 1 = the canonical
+ * re-extract leg, 0 = an intermediate one. Both legs of one canonical epoch
+ * see the same gameplay state, so their culled counts must agree; a
+ * difference means the verdict was decided per present. */
+static long s_occl_leg_culled[2], s_occl_leg_seen[2];
+extern int g_openpete_canon_lag_leg;
 
 static int hold_project_origin(CPUState* cpu, const double tr[3], double* sx, double* sy);
 
@@ -6326,7 +6338,7 @@ static int occl_refresh_bounds(CPUState* cpu, uint32_t moby, const occl_rect_t* 
 }
 
 /* Cull verdict for one record BEFORE any decode work. 1 = provably hidden. */
-static int occl_record_culled(CPUState* cpu, uint32_t moby) {
+static int occl_record_decide(CPUState* cpu, uint32_t moby) {
     if (openpete_ui_moby_is_addr_static(moby) || openpete_ui_moby_is_addr_ui(moby))
         { s_occl_f[0]++; return 0; }                /* HUD/UI: drawn depth-off, never occluded */
     const occl_rect_t* e = &s_occl_cache[occl_slot(moby)];
@@ -6365,6 +6377,44 @@ static int occl_record_culled(CPUState* cpu, uint32_t moby) {
                                             rx1 + inf, ry1 + inf,
                                             rvz - vzs * aged, &qcam);
     return culled;
+}
+
+/* The verdict is decided once per canonical epoch and held for every later
+ * present of that epoch. Both the rect inflation and the depth margin scale
+ * with the cached bounds' age, and a record the first present of the epoch
+ * extracts is written back at age 0 by occl_cache_update: without the hold the
+ * next present of the same tick queries tighter bounds and culls what the
+ * previous present drew, which alternates the record in and out at the present
+ * rate. The canonical leg always re-decides — it opens each epoch's span, so
+ * the held verdict is the one it reached, and a run with a single present per
+ * tick keeps the pre-hold output exactly. */
+static int occl_record_culled(CPUState* cpu, uint32_t moby) {
+    occl_rect_t* e = &s_occl_cache[occl_slot(moby)];
+    unsigned epoch = spyro_native_canon_epoch_stamp();
+    int leg = g_openpete_canon_lag_leg ? 1 : 0;
+    int culled;
+    if (!leg && e->vmoby == moby && e->vepoch == epoch) {
+        culled = (int)e->vculled;
+    } else {
+        culled = occl_record_decide(cpu, moby);
+        e->vmoby = moby; e->vepoch = epoch; e->vculled = (uint8_t)(culled != 0);
+    }
+    s_occl_leg_seen[leg]++;
+    if (culled) s_occl_leg_culled[leg]++;
+    return culled;
+}
+
+/* One line per re-extract leg with that leg's cull verdict count since its
+ * previous line. */
+static void occl_leg_census_report(void) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_REEXTRACT_FEEDDBG"); on = (e && *e && *e != '0'); }
+    if (!on) return;
+    int leg = g_openpete_canon_lag_leg ? 1 : 0;
+    fprintf(stderr, "[moby-occl-leg vbl=%u epoch=%u leg=%s] culled=%ld seen=%ld\n",
+            openpete_frame, spyro_native_canon_epoch_stamp(), leg ? "CANON" : "inter",
+            s_occl_leg_culled[leg], s_occl_leg_seen[leg]);
+    s_occl_leg_culled[leg] = 0; s_occl_leg_seen[leg] = 0;
 }
 
 /* ---- occl-verify audit mode (OPENPETE_MOBY_OCCL_VERIFY=1, inert otherwise) --
@@ -7323,6 +7373,7 @@ void moby_reextract(CPUState* cpu) {
                     openpete_frame, reg_fresh, spec_fresh, shd_fresh,
                     nm, reg_walk, spec_walk, sim_walk, shd_fresh ? s_gout.n : 0); }
     }
+    occl_leg_census_report();
     static int animswdbg = -1;
     if (animswdbg < 0) { const char* e = getenv("OPENPETE_MOBY_ANIMSW_DBG"); animswdbg = (e && *e && *e != '0'); }
     if (animswdbg) {
