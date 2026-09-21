@@ -13,7 +13,12 @@
 #ifndef OPENPETE_BUILD_TAGGED
 #define OPENPETE_BUILD_TAGGED 0
 #endif
+#ifndef OPENPETE_BUILD_SHARED_RECOMP
+#define OPENPETE_BUILD_SHARED_RECOMP 0
+#endif
 
 const char *openpete_build_version(void) { return OPENPETE_BUILD_VERSION; }
 
 int openpete_build_tagged(void) { return OPENPETE_BUILD_TAGGED ? 1 : 0; }
+
+int openpete_build_shared_recomp(void) { return OPENPETE_BUILD_SHARED_RECOMP ? 1 : 0; }

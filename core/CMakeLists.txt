@@ -325,7 +325,10 @@ else()
     target_compile_definitions(openpete_core PRIVATE OPENPETE_NO_GLSLANG)
 endif()
 
-# Build identity for the pacing log's environment block. Baselines are only
+# Build identity for the pacing log's environment block, and the version the
+# player sees. --abbrev=6 fixes the commit suffix at six hex characters, for
+# the tag-relative form and for the --always fallback alike, so the string has
+# a known width. Baselines are only
 # comparable within a matching environment, and "which build produced this"
 # is the field that decides it. Resolved at configure time, so a rebuild
 # without a reconfigure reports the revision the tree was configured at --
@@ -333,7 +336,7 @@ endif()
 find_package(Git QUIET)
 if(GIT_FOUND)
     execute_process(
-        COMMAND ${GIT_EXECUTABLE} describe --always --dirty --tags
+        COMMAND ${GIT_EXECUTABLE} describe --always --dirty --tags --abbrev=6
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         OUTPUT_VARIABLE OPENPETE_GIT_REV
         OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -381,9 +384,26 @@ else()
         endif()
     endif()
 endif()
+# Whether this is a shared-recomp build — the linkage the distribution
+# presets select (cmake/presets/*-shared.cmake set OPENPETE_RECOMP_LINKAGE),
+# and so the only builds that leave this machine. The version line draws on
+# those alone; a locally built static-linkage binary shows nothing. The
+# presets set the cache variable from CMAKE_PROJECT_openpete_INCLUDE, which
+# runs before this directory is added, so the value is already resolved here;
+# a configure that never sets it reads the static default.
+# An explicit -DOPENPETE_BUILD_SHARED_RECOMP wins, so the gate can be exercised
+# in both states without configuring and building a whole shared module.
+if(NOT DEFINED OPENPETE_BUILD_SHARED_RECOMP)
+    if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared")
+        set(OPENPETE_BUILD_SHARED_RECOMP 1)
+    else()
+        set(OPENPETE_BUILD_SHARED_RECOMP 0)
+    endif()
+endif()
 target_compile_definitions(openpete_core
     PRIVATE OPENPETE_BUILD_VERSION="${OPENPETE_BUILD_VERSION}"
-            OPENPETE_BUILD_TAGGED=${OPENPETE_BUILD_TAGGED})
+            OPENPETE_BUILD_TAGGED=${OPENPETE_BUILD_TAGGED}
+            OPENPETE_BUILD_SHARED_RECOMP=${OPENPETE_BUILD_SHARED_RECOMP})
 
 # Native renderer foundation: the thin RHI + Vulkan backend (core/rhi).
 # Always available (added unconditionally by the top-level CMakeLists);

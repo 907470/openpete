@@ -24,6 +24,13 @@ const char *openpete_build_version(void);
 /* 1 = exactly a release, 0 = anything else. */
 int openpete_build_tagged(void);
 
+/* 1 when the recomp module is linked the way the distribution presets link
+ * it (OPENPETE_RECOMP_LINKAGE=shared), which is what every binary that leaves
+ * this machine is built from. A locally built static-linkage binary is not a
+ * build anybody has to identify from a screenshot, and shows no version
+ * line. */
+int openpete_build_shared_recomp(void);
+
 #ifdef __cplusplus
 }
 #endif

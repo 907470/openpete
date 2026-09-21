@@ -278,9 +278,20 @@ void openpete_native_get_overlay_extent(float *w, float *h);
 void openpete_native_set_version_glyphs(const openpete_hud_vert *verts, int nverts,
                                         float region_w, float region_h);
 
-/* Whether the version line is drawn at all (--version-osd). Live-settable. */
+/* --version-osd's own value. Live-settable. It governs the RELEASE build's
+ * two-second line alone: an untagged shared build keeps its line for the
+ * whole session and no knob suppresses it, and a build that is not
+ * shared-recomp shows none either way. */
 void openpete_native_set_version_osd(int on);
 int  openpete_native_version_osd(void);
+
+/* The three facts above resolved into one answer: whether a version line will
+ * be drawn in this build. The game-side builder asks before spending glyph
+ * geometry on it. */
+int openpete_native_version_line_enabled(void);
+
+/* One phrase naming why, for the shutdown census. Never NULL. */
+const char *openpete_native_version_reason(void);
 
 /* Version lines actually drawn, cumulative — the engagement counter a check
  * harness reads to tell a drawn line from a suppressed one. */

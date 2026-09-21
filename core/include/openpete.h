@@ -525,10 +525,11 @@ typedef struct openpete_options {
     int      osd_position;
     uint32_t osd_timeout_ms;
 
-    /* --version-osd 0|1: the build-version line at the bottom left. A build
-     * that is not exactly a release keeps it up for the whole session, so a
-     * screenshot of it always names the build; the flag suppresses it either
-     * way. Display-only. */
+    /* --version-osd 0|1: the release build's two-second version line at the
+     * bottom left. A distributed build that is not exactly a release keeps its
+     * line up for the whole session and this does not suppress it — the line
+     * is what names the build in a screenshot of it — and a build that is not
+     * shared-recomp draws none either way. Display-only. */
     int version_osd;
 
     /* --vsync 0|1: native vk swapchain present mode. 1 = FIFO (vsync ON, present

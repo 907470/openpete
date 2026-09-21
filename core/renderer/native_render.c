@@ -256,7 +256,7 @@ typedef struct {
 #define OVL_MAX_VERTS 16384  /* overlay (3D text-moby glyph) vertex cap (see draw_perf_overlay);
                              * sized for the 4-line detailed readout, not a 1-line counter */
 #define MOD_OVL_MAX_VERTS 16384 /* mod draw-service overlay verts (see draw_mod_overlay) */
-#define VER_MAX_VERTS 4096   /* build-version line glyph verts (see draw_version_overlay) */
+#define VER_MAX_VERTS 16384  /* build-version line glyph verts (see draw_version_overlay) */
 #define MENU_MAX_VERTS 256   /* in-game menu panel/border/selection quads (see draw_menu_overlay) */
 #define MENU_GLYPH_MAX 32768 /* in-game menu 3D glyph text verts (labels/values/title);
                               * must match MENU_TXT_MAX (text_moby.c) — 8 rows
@@ -2704,7 +2704,14 @@ static struct {
     rhi_pipeline *freeze_plain_pipe;  /* samples frozen_tex unaltered (set 0) */
     rhi_buffer   *fs_quad_vb;         /* full-target (-1..1) quad, UV 0..1 (RT copies) */
     rhi_buffer   *overlay_vb;         /* FPS overlay glyph quads (NDC), rebuilt per present */
-    rhi_buffer   *version_vb;         /* build-version line glyphs (NDC), rebuilt per present */
+    rhi_buffer   *version_vb;         /* build-version line glyphs (NDC), into its SS target */
+    /* Version-line supersample: same route as the stats block, its own region
+     * and placement. The composite quad is dynamic, unlike the stats block's:
+     * its tint carries the fade, so it is rebuilt every present rather than
+     * only on a resize. */
+    rhi_texture  *ver_ss;
+    int           ver_ss_w, ver_ss_h;
+    rhi_buffer   *ver_quad_vb;
     rhi_buffer   *mod_ovl_vb;         /* mod draw-service overlay (rects + text glyphs, NDC), rebuilt per present */
     rhi_buffer   *menu_vb;            /* in-game settings menu panel/border/selection quads (NDC) */
     rhi_buffer   *menu_glyph_vb;      /* in-game settings menu 3D glyph text (NDC, depth-tested) */
@@ -9674,10 +9681,37 @@ static void version_region(float *w, float *h) {
     if (h) *h = (fh > 0.0f) ? fh : 0.0f;
 }
 
-/* --version-osd off suppresses the line entirely, tagged or not. */
+/* --version-osd: the knob's own value. It governs the release build's brief
+ * line alone — see openpete_native_version_line_enabled. */
 static int s_version_osd = 1;
 void openpete_native_set_version_osd(int on) { s_version_osd = on ? 1 : 0; }
 int  openpete_native_version_osd(void) { return s_version_osd; }
+
+/* Whether this build shows a version line at all.
+ *
+ * A build whose recomp module is not linked the way the distribution presets
+ * link it never leaves this machine, so nobody has to identify it from a
+ * screenshot and it shows nothing.
+ *
+ * A shared build that is not exactly a release shows its describe string for
+ * the whole session, and no knob suppresses it: the line is the only thing
+ * that names the build in an image of it. The knob governs the release
+ * build's two-second line alone. */
+int openpete_native_version_line_enabled(void) {
+    if (!openpete_build_shared_recomp()) return 0;
+    if (!openpete_build_tagged()) return 1;
+    return s_version_osd;
+}
+
+/* One phrase naming the state above, for the shutdown census. */
+const char *openpete_native_version_reason(void) {
+    if (!openpete_build_shared_recomp())
+        return "not a shared-recomp build, no line";
+    if (!openpete_build_tagged())
+        return "untagged shared build, whole session, not suppressible";
+    return s_version_osd ? "release build, brief"
+                         : "release build, suppressed by --version-osd off";
+}
 
 /* Lines actually drawn, cumulative. A capture that greened with zero here
  * proved nothing about the version line. */
@@ -9990,7 +10024,7 @@ static float ver_smoothstep(float x) {
 }
 
 static int version_overlay_alpha(void) {
-    if (!s_version_osd || s_ver_glyph_n < 3) return 0;
+    if (!openpete_native_version_line_enabled() || s_ver_glyph_n < 3) return 0;
     if (s_nr.win_w <= 0 || s_nr.win_h <= 0) return 0;
     /* Chrome stays out of a --record video under the same override the stats
      * block uses. */
@@ -9998,7 +10032,7 @@ static int version_overlay_alpha(void) {
 
     const op_time_t now = openpete_interp_present_now();
     if (s_ver_birth == 0 || now < s_ver_birth) s_ver_birth = now;
-    if (!openpete_build_tagged()) return 255;
+    if (!openpete_build_tagged()) return 255;   /* whole session */
 
     const op_time_t age = now - s_ver_birth;
     if (age >= VER_HOLD_NS + VER_FADE_NS) return 0;
@@ -10064,24 +10098,36 @@ static void overlay_layout_update(void) {
  * composite quad on a window resize. Creates GPU resources / waits idle — call
  * OUTSIDE a frame (alongside ensure_ss_rtt). No-op if the SS pipeline/quad
  * failed at init (draw_perf_overlay then falls back to the 1× path). */
-static void ensure_ovl_ss(void) {
-    if (!s_nr.ovl_resolve_pipe || !s_nr.ovl_quad_vb || s_nr.win_w <= 0 || s_nr.win_h <= 0) return;
-    int rw = (int)(ovl_region_w() * (float)s_nr.win_h + 0.5f);
-    int rh = (int)(ovl_region_h() * (float)s_nr.win_h + 0.5f);
+/* (Re)create one text block's supersample target at OVL_SS_FACTOR× its
+ * region, clamped to the device's largest image. Destroys and reallocates
+ * only when the pixel size actually changes, and waits the device idle when
+ * it does — so call this OUTSIDE a frame. A NULL target afterwards leaves the
+ * caller on its 1× fallback. Shared by the stats block and the version
+ * line, which differ only in their region and their name. */
+static void ensure_text_ss_target(rhi_texture **tex, int *cur_w, int *cur_h,
+                                  float region_w, float region_h,
+                                  const char *what) {
+    int rw = (int)(region_w * (float)s_nr.win_h + 0.5f);
+    int rh = (int)(region_h * (float)s_nr.win_h + 0.5f);
     if (rw < 1) rw = 1;
     if (rh < 1) rh = 1;
     int want_w = rw * OVL_SS_FACTOR, want_h = rh * OVL_SS_FACTOR;
     uint32_t maxdim = rhi_max_image_dimension(s_nr.dev);
     if ((uint32_t)want_w > maxdim) want_w = (int)maxdim;
     if ((uint32_t)want_h > maxdim) want_h = (int)maxdim;
-    if (!s_nr.ovl_ss || s_nr.ovl_ss_w != want_w || s_nr.ovl_ss_h != want_h) {
-        rhi_wait_idle(s_nr.dev);
-        if (s_nr.ovl_ss) { rhi_destroy_texture(s_nr.dev, s_nr.ovl_ss); s_nr.ovl_ss = NULL; }
-        s_nr.ovl_ss = rhi_create_render_target(s_nr.dev, (uint32_t)want_w, (uint32_t)want_h);
-        s_nr.ovl_ss_w = want_w; s_nr.ovl_ss_h = want_h;
-        if (s_nr.ovl_ss)
-            OPL_INFO_F("native", "stats overlay SS target %dx%d (%d×)", want_w, want_h, OVL_SS_FACTOR);
-    }
+    if (*tex && *cur_w == want_w && *cur_h == want_h) return;
+    rhi_wait_idle(s_nr.dev);
+    if (*tex) { rhi_destroy_texture(s_nr.dev, *tex); *tex = NULL; }
+    *tex = rhi_create_render_target(s_nr.dev, (uint32_t)want_w, (uint32_t)want_h);
+    *cur_w = want_w; *cur_h = want_h;
+    if (*tex)
+        OPL_INFO_F("native", "%s SS target %dx%d (%d×)", what, want_w, want_h, OVL_SS_FACTOR);
+}
+
+static void ensure_ovl_ss(void) {
+    if (!s_nr.ovl_resolve_pipe || !s_nr.ovl_quad_vb || s_nr.win_w <= 0 || s_nr.win_h <= 0) return;
+    ensure_text_ss_target(&s_nr.ovl_ss, &s_nr.ovl_ss_w, &s_nr.ovl_ss_h,
+                          ovl_region_w(), ovl_region_h(), "stats overlay");
     /* Composite quad — the overlay's screen rect in offscreen NDC. Left edge sits
      * at overlay-x = want_ox (0 = flush top-left; shifted right of the panel while
      * the menu is open, see perf_overlay_ox). Rect width is win_h-relative (glyph x
@@ -10143,29 +10189,84 @@ static void draw_perf_overlay(void) {
     }
 }
 
-/* The version line's vertex buffer, created on the first present that will
- * use it. A session that never shows the line never pays for it, and the
- * renderer's bring-up does not have to unwind one more resource. Call from
- * the per-present resource pass, outside a render pass. */
-static void ensure_version_vb(void) {
-    if (s_nr.version_vb || !s_nr.dev || s_ver_alpha8 <= 0) return;
-    s_nr.version_vb = rhi_create_vertex_buffer_dynamic(s_nr.dev,
-                                                       sizeof(rhi_vertex) * VER_MAX_VERTS);
+/* The version line's GPU resources, created on the first present that will
+ * use them: the glyph buffer, the supersample target, and the composite quad.
+ * A session that never shows the line never pays for them, and the renderer's
+ * bring-up does not have to unwind three more resources. Creates resources
+ * and can wait the device idle — call from the per-present resource pass,
+ * outside a render pass. */
+static void ensure_version_ss(void) {
+    if (!s_nr.dev || s_ver_alpha8 <= 0 || s_nr.win_w <= 0 || s_nr.win_h <= 0) return;
+    if (!s_nr.version_vb)
+        s_nr.version_vb = rhi_create_vertex_buffer_dynamic(s_nr.dev,
+                                                           sizeof(rhi_vertex) * VER_MAX_VERTS);
+    if (!s_nr.ver_quad_vb)
+        s_nr.ver_quad_vb = rhi_create_vertex_buffer_dynamic(s_nr.dev, sizeof(rhi_vertex) * 6);
+    if (!s_nr.ovl_resolve_pipe) return;   /* 1x fallback; no target to size */
+    float vw, vh;
+    version_region(&vw, &vh);
+    if (vw <= 0.0f || vh <= 0.0f) return;
+    ensure_text_ss_target(&s_nr.ver_ss, &s_nr.ver_ss_w, &s_nr.ver_ss_h,
+                          vw, vh, "version line");
 }
 
-/* The build-version line, at the placement and alpha the layout pass latched.
- * 1x through the alpha-blended untextured HUD pipe (depth test off), so the
- * fade is the vertex alpha and no supersample target is needed for one short
- * line of text. */
+static bool ver_ss_ready(void) {
+    return s_nr.ovl_resolve_pipe && s_nr.ver_quad_vb && s_nr.ver_ss && s_nr.version_vb;
+}
+
+/* Pre-pass: the version glyphs at OVL_SS_FACTOR* into ver_ss, cleared
+ * transparent. Its own render-target pass, so it runs BEFORE the offscreen
+ * pass opens, beside the stats block's. The glyphs go in opaque and
+ * region-local; the fade is applied to the composite quad, not here, so the
+ * supersampled coverage is resolved once and then scaled as a whole. */
+static void prepare_version_ss(void) {
+    if (!ver_ss_ready() || s_ver_alpha8 <= 0) return;
+    float vw, vh;
+    version_region(&vw, &vh);
+    if (vw <= 0.0f || vh <= 0.0f) return;
+    rhi_begin_render_target(s_nr.dev, s_nr.ver_ss, 0.0f, 0.0f, 0.0f, 0.0f);
+    draw_glyph_list_3d(s_ver_glyph_verts, s_ver_glyph_n,
+                       s_nr.version_vb, VER_MAX_VERTS,
+                       2.0f / vw, 2.0f / vh, 0.0f, 0.0f, NULL, -1);
+    rhi_end_render_target(s_nr.dev, s_nr.ver_ss);
+}
+
+/* Composite the version line into the currently-open offscreen pass, at the
+ * placement and alpha the layout pass latched: box-downsample the
+ * supersampled target and straight-alpha-blend it, the same route the stats
+ * readout takes, with the fade carried by the quad's tint. Fallback when the
+ * supersample resources are not up: the glyphs at 1x through the
+ * alpha-blended untextured HUD pipe, where the fade is the vertex alpha. */
 static void draw_version_overlay(void) {
-    if (s_ver_alpha8 <= 0 || !s_nr.version_vb) return;
-    rhi_pipeline *pipe = s_nr.gouraud_hud_pipes[NR_BLEND_AVG];
-    if (!pipe) return;
-    if (draw_glyph_list_3d(s_ver_glyph_verts, s_ver_glyph_n,
-                           s_nr.version_vb, VER_MAX_VERTS,
-                           2.0f * (float)s_nr.win_h / (float)s_nr.win_w, 2.0f,
-                           s_ver_ox, s_ver_oy, pipe, s_ver_alpha8))
-        s_ver_drawn++;   /* engagement counter */
+    if (s_ver_alpha8 <= 0) return;
+    const float ax = 2.0f * (float)s_nr.win_h / (float)s_nr.win_w;
+    if (!ver_ss_ready()) {
+        rhi_pipeline *pipe = s_nr.gouraud_hud_pipes[NR_BLEND_AVG];
+        if (!pipe || !s_nr.version_vb) return;
+        if (draw_glyph_list_3d(s_ver_glyph_verts, s_ver_glyph_n,
+                               s_nr.version_vb, VER_MAX_VERTS, ax, 2.0f,
+                               s_ver_ox, s_ver_oy, pipe, s_ver_alpha8))
+            s_ver_drawn++;
+        return;
+    }
+    float vw, vh;
+    version_region(&vw, &vh);
+    if (vw <= 0.0f || vh <= 0.0f) return;
+    const float rw_ndc = vw * ax, rh_ndc = vh * 2.0f;
+    const float nx_left = s_ver_ox * ax - 1.0f, ny_top = 1.0f - s_ver_oy * 2.0f;
+    rhi_vertex q[6];
+    build_panel_tinted(q, nx_left + rw_ndc * 0.5f, ny_top - rh_ndc * 0.5f,
+                       rw_ndc * 0.5f, rh_ndc * 0.5f, 0.0f, 0.0f, 1.0f, 1.0f,
+                       0x00FFFFFFu | ((uint32_t)s_ver_alpha8 << 24));
+    int factor = OVL_SS_FACTOR;
+    rhi_update_buffer(s_nr.ver_quad_vb, q, sizeof(q));
+    rhi_reset_scissor(s_nr.dev);
+    bind_scene_pipe(s_nr.ovl_resolve_pipe);
+    rhi_bind_vram(s_nr.dev, s_nr.ver_ss);
+    rhi_push_constants(s_nr.dev, &factor, sizeof(factor));
+    rhi_bind_vertex_buffer(s_nr.dev, s_nr.ver_quad_vb);
+    rhi_draw(s_nr.dev, 6, 0);
+    s_ver_drawn++;   /* engagement counter */
 }
 
 /* --- in-game settings menu overlay -----------------------------------------
@@ -12062,7 +12163,7 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
     ensure_ovl_ss();           /* stats-overlay supersample target + composite quad */
     ensure_menu_ss();          /* settings-menu glyph supersample (lazy, while open) */
     ensure_osd_ss();           /* OSD toast slot grid (lazy, once a toast exists) */
-    ensure_version_vb();       /* version-line buffer (lazy, once the line is up) */
+    ensure_version_ss();       /* version-line buffers + SS target (lazy, once it is up) */
     ensure_opaque_depth();     /* WORLD-opaque depth pre-pass target (shadow decal) */
     ensure_terrain_key_targets(); /* key-contest images: bound by every scene-pipe draw, chrome first */
 
@@ -12134,6 +12235,9 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
     rhi_gpu_zone_end(s_nr.dev);
     rhi_gpu_zone_begin(s_nr.dev, "osd_ss");
     prepare_osd_ss();          /* toast slot grid at OSD_SS_FACTOR× (own pass) */
+    rhi_gpu_zone_end(s_nr.dev);
+    rhi_gpu_zone_begin(s_nr.dev, "ver_ss");
+    prepare_version_ss();      /* version line at OVL_SS_FACTOR× (own pass) */
     rhi_gpu_zone_end(s_nr.dev);
     rhi_gpu_zone_begin(s_nr.dev, "compose");
     compose_variant();
@@ -12859,6 +12963,8 @@ void openpete_native_render_shutdown(void)
     rhi_destroy_buffer(s_nr.dev, s_nr.fs_quad_vb);
     rhi_destroy_buffer(s_nr.dev, s_nr.overlay_vb);
     if (s_nr.version_vb) rhi_destroy_buffer(s_nr.dev, s_nr.version_vb);
+    if (s_nr.ver_quad_vb) rhi_destroy_buffer(s_nr.dev, s_nr.ver_quad_vb);
+    if (s_nr.ver_ss) rhi_destroy_texture(s_nr.dev, s_nr.ver_ss);
     rhi_destroy_buffer(s_nr.dev, s_nr.mod_ovl_vb);
     rhi_destroy_buffer(s_nr.dev, s_nr.menu_vb);
     rhi_destroy_buffer(s_nr.dev, s_nr.menu_glyph_vb);

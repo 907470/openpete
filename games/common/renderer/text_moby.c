@@ -105,13 +105,14 @@ typedef struct {
 } glyph_cache_t;
 
 /* Slots: '0'-'9', 'A'-'Z', the descriptor's punctuation list in order, then
- * the synthesized period. */
+ * the synthesized period and the synthesized hyphen. */
 #define SLOT_DIGIT   0
 #define SLOT_LETTER  10
 #define SLOT_PUNCT   36
 #define N_PUNCT      ((int)(sizeof FONT.punct / sizeof FONT.punct[0]))
 #define SLOT_SYNTH_PERIOD (SLOT_PUNCT + 8)
-#define NGLYPH       (SLOT_SYNTH_PERIOD + 1)
+#define SLOT_SYNTH_HYPHEN (SLOT_SYNTH_PERIOD + 1)
+#define NGLYPH       (SLOT_SYNTH_HYPHEN + 1)
 _Static_assert(sizeof FONT.punct / sizeof FONT.punct[0] == 8, "slot table sized for 8 punctuation pairs");
 
 static glyph_cache_t s_glyph[NGLYPH];
@@ -131,6 +132,10 @@ static int glyph_slot(char c) {
     for (int p = 0; p < N_PUNCT && FONT.punct[p].ch; p++)
         if (FONT.punct[p].ch == c) return SLOT_PUNCT + p;
     if (c == '.' && FONT.synth_period) return SLOT_SYNTH_PERIOD;
+    /* Unconditional, unlike the period: a font that carries a hyphen returns
+     * it from the punctuation loop above and never reaches here, and one that
+     * does not gets the synthesized bar. */
+    if (c == '-') return SLOT_SYNTH_HYPHEN;
     return -1;
 }
 
@@ -286,6 +291,63 @@ static void synth_period(void) {
     for (int i = 0; i < 8; i++) {
         g->vx[i] = (int16_t)((i & 1) ? side : 0);
         g->vy[i] = (int16_t)((i & 2) ? base : base - side);
+        g->vz[i] = (int16_t)((i & 4) ? zmin : zmax);
+    }
+    static const uint8_t quad[6][4] = {
+        {0,1,2,3}, {5,4,7,6},      /* front, back   */
+        {4,0,6,2}, {1,5,3,7},      /* left, right   */
+        {4,5,0,1}, {2,3,6,7},      /* top, bottom   */
+    };
+    static const int16_t normal[6][3] = {
+        {0,0,127}, {0,0,-127}, {-127,0,0}, {127,0,0}, {0,-127,0}, {0,127,0},
+    };
+    memcpy(g->fi, quad, sizeof quad);
+    memcpy(g->fn, normal, sizeof normal);
+    g->vcount = 8; g->fcount = 6;
+    glyph_set_xrange(g);
+    g->valid = 1;
+}
+
+/* The hyphen a font lacks: a thin horizontal bar, half the digit cap height
+ * wide and an eighth of it thick, centred at half the cap height above the
+ * baseline, extruded over the digit's own depth range. Every dimension is a
+ * fraction of the digit's cap height, so it scales with the font instead of
+ * carrying absolute numbers.
+ *
+ * The bar is a box, built like synth_period's, so it takes the same lighting
+ * and the same extrusion as a real glyph and does not read as a flat decal
+ * among them. */
+static void synth_hyphen(void) {
+    glyph_cache_t* g = &s_glyph[SLOT_SYNTH_HYPHEN];
+    g->valid = 0;
+    /* Everything is measured off the digit '0': it is the one glyph the
+     * snapshot is not taken without, so the bar exists wherever text does.
+     * (synth_period's depth-donor descriptor field is optional and unset on
+     * fonts that have their own period, which would leave the bar unbuilt.) */
+    const glyph_cache_t* zero = &s_glyph[SLOT_DIGIT];
+    if (!zero->valid || zero->vcount <= 0) return;
+    int zmin = 1 << 30, zmax = -(1 << 30);
+    /* Model y grows DOWNWARD (emit_glyph flips it with TXT_YSIGN), so the
+     * baseline is the digit's largest y and the cap line its smallest. */
+    int base = -(1 << 30), top = 1 << 30;
+    for (int i = 0; i < zero->vcount; i++) {
+        if (zero->vz[i] < zmin) zmin = zero->vz[i];
+        if (zero->vz[i] > zmax) zmax = zero->vz[i];
+        if (zero->vy[i] > base) base = zero->vy[i];
+        if (zero->vy[i] < top)  top  = zero->vy[i];
+    }
+    const int cap = base - top;
+    if (cap <= 0 || zmax <= zmin) return;
+    int wide  = cap / 2;          /* bar length  */
+    int thick = cap / 8;          /* bar height  */
+    if (wide  < 1) wide  = 1;
+    if (thick < 1) thick = 1;
+    const int mid = base - cap / 2;
+    const int y0 = mid - thick / 2, y1 = y0 + thick;
+    /* vertex i: bit 0 = right, bit 1 = bottom, bit 2 = back */
+    for (int i = 0; i < 8; i++) {
+        g->vx[i] = (int16_t)((i & 1) ? wide : 0);
+        g->vy[i] = (int16_t)((i & 2) ? y1 : y0);
         g->vz[i] = (int16_t)((i & 4) ? zmin : zmax);
     }
     static const uint8_t quad[6][4] = {
@@ -484,6 +546,7 @@ void text_moby_native_cache(CPUState* cpu) {
             if (idx >= 0) cache_one_class(cpu, &s_glyph[s], idx);
         }
         if (FONT.synth_period) synth_period();
+        synth_hyphen();
         cache_finish(1);
     } else if (FONT.form == GAME_FONT_ONE_CLASS) {
         static int s_file_tried = 0;
@@ -510,6 +573,7 @@ void text_moby_native_cache(CPUState* cpu) {
                 g->vy[i] = (int16_t)(g->vy[i] + FONT.punct[p].dy);
         }
         if (FONT.synth_period) synth_period();
+        synth_hyphen();
         cache_finish(1);
         font_file_save();
     }
@@ -704,11 +768,11 @@ static float measure_string(const char* str, float cap_h);
  * The count a check harness reads to tell a drawn font from an absent one. */
 static void glyph_census(int consumer, int nverts, int glyph_verts) {
     static int s_on = -1;
-    static int s_last[3] = { -1, -1, -1 };
+    static int s_last[4] = { -1, -1, -1, -1 };
     if (s_on < 0) { const char* e = getenv("OPENPETE_TEXT_GLYPH_CENSUS"); s_on = (e && *e && *e != '0') ? 1 : 0; }
     if (!s_on || s_last[consumer] == nverts) return;
     s_last[consumer] = nverts;
-    static const char* const name[3] = { "perf", "menu", "osd" };
+    static const char* const name[4] = { "perf", "menu", "osd", "version" };
     static const char* const src[3]  = { "none", "ram", "file" };
     fprintf(stderr, "[text-glyph vbl=%u] consumer=%s verts=%d glyph_verts=%d source=%s\n",
             openpete_frame, name[consumer], nverts, glyph_verts, src[s_cache_source]);
@@ -825,7 +889,11 @@ void text_moby_native_perf_overlay(CPUState* cpu) {
 #define VER_CAP_H     PERF_CAP_H
 #define VER_ORIGIN_X  PERF_ORIGIN_X
 #define VER_ORIGIN_Y  PERF_ORIGIN_Y
-#define VER_OVL_MAX   4096
+/* The extruded glyph models run ~180 verts each, so a describe string of two
+ * dozen characters needs thousands: sized like the stats readout's buffer,
+ * not like one short word. Must not exceed the renderer's VER_MAX_VERTS,
+ * which drops the overflow. */
+#define VER_OVL_MAX   16384
 
 static openpete_hud_vert s_ver_buf[VER_OVL_MAX];
 static int s_ver_pushed = -1;   /* -1 = nothing pushed yet, 0 = cleared */
@@ -833,7 +901,7 @@ static int s_ver_pushed = -1;   /* -1 = nothing pushed yet, 0 = cleared */
 void text_moby_native_version(CPUState* cpu) {
     if (!openpete_native_scene_enabled()) return;   /* inert headless: no cache, no draw */
     text_moby_native_cache(cpu);
-    if (!openpete_native_version_osd() || !text_moby_native_ready()) {
+    if (!openpete_native_version_line_enabled() || !text_moby_native_ready()) {
         if (s_ver_pushed != 0) {
             openpete_native_set_version_glyphs(NULL, 0, 0.0f, 0.0f);
             s_ver_pushed = 0;
@@ -850,6 +918,7 @@ void text_moby_native_version(CPUState* cpu) {
                                          s_ver_buf, VER_OVL_MAX);
     if (nv <= 0) return;   /* font cached but this string emitted nothing: retry next tick */
     openpete_native_set_version_glyphs(s_ver_buf, nv, region_w, region_h);
+    glyph_census(3, nv, nv);
     s_ver_pushed = nv;
 }
 

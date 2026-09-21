@@ -6183,8 +6183,9 @@ static int run_host_loop(const openpete_options_t* opts) {
                    openpete_native_osd_composited());
     /* Version-line engagement, on the same footing: a capture that never drew
      * it proves nothing about the line, whatever its pixels looked like. */
-    OPL_INFO_F("version", "census: %s, %u line(s) drawn",
-               openpete_build_version(), openpete_native_version_drawn());
+    OPL_INFO_F("version", "census: %s (%s), %u line(s) drawn",
+               openpete_build_version(), openpete_native_version_reason(),
+               openpete_native_version_drawn());
 
     {
         unsigned gpu_hits = op_gpu_audit_total();

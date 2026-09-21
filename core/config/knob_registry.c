@@ -650,9 +650,10 @@ static const knob_desc_t g_builtin[] = {
       osd_get, osd_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "version_osd", "Version line", "Display", "--version-osd", NULL,
-      "The build version in small text at the bottom left. A release build "
-      "shows it for two seconds; any other build keeps it up, so a screenshot "
-      "always names the build it came from.",
+      "A release build's two-second version line at the bottom left. A "
+      "distributed build that is not a clean tag keeps its version up for the "
+      "whole session and this does not turn it off, so a screenshot always "
+      "names the build it came from; a locally built binary shows no line.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       versionosd_get, versionosd_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
