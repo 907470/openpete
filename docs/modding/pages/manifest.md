@@ -57,9 +57,9 @@ key     = "F6"            # default source(s), keymap spelling
 purpose = "warp home"     # shown to the player
 ```
 
-Up to 8 rows. `key` takes the keymap's spelling: a keyboard name, a
-gamepad source (`pad:north`, `pad:-lefty`), a mouse button
-(`mouse:right`), or a comma-separated list (`"F6,pad:north"`). Wheel
+`key` takes the keymap's spelling: a keyboard name, a gamepad source
+(`pad:north`, `pad:-lefty`), a mouse button (`mouse:right`), or a
+comma-separated list (`"F6,pad:north"`). Wheel
 notches and mouse motion are not bindable (the read is a level); a key
 that fails to parse is logged at load and reads 0. Conflicts across the
 enabled set are reported at load. Players rebind under `[keys.mod.<id>]`
@@ -97,9 +97,9 @@ default = "fast"
 items   = ["fast", "fancy"]   # string + items renders a combo
 ```
 
-Up to 32 rows. A mod whose UI is settings plus `api->ui_status` lines
-needs no widget code. Custom panels use `openpete_mod_ui.h`, which is
-versioned separately and carries no stability promise.
+A mod whose UI is settings plus `api->ui_status` lines needs no widget
+code. Custom panels use `openpete_mod_ui.h`, which is versioned
+separately and carries no stability promise.
 
 ### `[[level]]` and `[[material]]`
 

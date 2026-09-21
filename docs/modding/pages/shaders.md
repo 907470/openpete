@@ -102,8 +102,6 @@ re-composite geometry. On an additive draw the output is still added.
 
 ### Declare a material in the manifest
 
-Up to 16 rows per mod.
-
 ```toml
 [[material]]
 frag    = "shaders/tint.frag"

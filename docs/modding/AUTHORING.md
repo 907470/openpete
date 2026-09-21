@@ -88,12 +88,12 @@ sim_mutative = false    # writes guest RAM? see §7
 state    = "none"       # "none" | "rebuildable"; undeclared = rewind refused
 runahead = "pure"       # "pure" | "host-fx"; undeclared = runahead disabled
 
-[[binding]]             # ≤ 8 rows; api->binding_down(self, "warp")
+[[binding]]             # api->binding_down(self, "warp")
 name = "warp"; key = "F6"; purpose = "warp home"
 # player rebinds under [keys.mod.<id>] in openpete.toml: key names,
 # "pad:north" etc., or "none"; conflicts across the enabled set logged at load
 
-[[config]]              # ≤ 32 rows; engine renders them in the Mods panel
+[[config]]              # engine renders them in the Mods panel
 key = "spawn.scale"     # config.toml dotted path: [spawn] scale
 type = "float"          # bool | int | float | string
 default = 1.0
@@ -101,10 +101,10 @@ min = 0.25; max = 4.0   # min<max on int/float = slider, else input box
 label = "Scale"; group = "Spawn"; help = "tooltip"
 # type="string" + items=["a","b"] = combo
 
-[[material]]            # ≤ 16 rows; see §5
+[[material]]            # see §5
 frag = "shaders/tint.frag"; channel = "player"; params = [1.0, 0.5, 0.1, 0.4]
 
-[[level]]               # ≤ 4 rows; see §6
+[[level]]               # see §6
 name = "Grim Garden"; files = "grim_garden"; donor = "dark_hollow"
 ```
 
@@ -312,7 +312,7 @@ lower first. 64 passes engine-wide. `op_uv` (0,0) = top-left;
 
 Replace fragment shading of a subset of the engine's draws. Inherit blend,
 depth, stencil, order; colour math only; cannot hide or move geometry;
-unmatched or failed = stock. 32 material slots engine-wide.
+unmatched or failed = stock. 255 material slots engine-wide.
 
 ```glsl
 #version 450

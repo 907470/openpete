@@ -581,6 +581,9 @@ typedef struct openpete_mod_api {
      * `% / ? + ^ . ' :`, drawn with the game's own gold text glyphs; text
      * appears once the game has loaded the glyph font. Headless and
      * PsyCross-only runs consume nothing.
+     *
+     * The command stores the string in a fixed 96-byte field, so a
+     * longer one is truncated to 95 characters.
      * @param cap_h  Glyph cap height in overlay units.
      * @param rgb    Glyph tint (0x605010 = HUD gold).
      * @since api 1
@@ -665,7 +668,9 @@ typedef struct openpete_mod_api {
      *        a host-side one-shot.
      *
      * Never routed through the SPU, so it is legal from tick and present
-     * hooks. WAVs are cached after the first play.
+     * hooks. A WAV is decoded on its first play and the buffer is then
+     * retained for the rest of the session; the cache has no eviction,
+     * so a mod that plays many distinct files holds all of them.
      * @param gain 0..4; 1.0 = as authored.
      * @return 0, or -1 for a missing file or no audio device (logged).
      * @since api 1

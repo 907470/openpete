@@ -44,7 +44,9 @@ eggs    = 1                # optional: replace-mode, first three worlds only
   `<stem>.OVL` is the donor's code overlay and must keep the donor's
   stock size. Omit the overlay to run the stock one. Extension case does
   not matter.
-- Up to 4 `[[level]]` blocks per mod.
+- A mod declares as many `[[level]]` blocks as it has levels. The game
+  exposes one claimable level slot, so they time-share it: one custom
+  level is enterable at a time.
 - Custom levels from every mod currently share level slot
   ID 65, so per-level progress (gems, dragons) is shared between them.
   The collected count is shared but each level's declared target is its
