@@ -28,6 +28,7 @@
 #include "skip_to_level.h"
 #include "openpete_fiber.h"
 #include "named_target.h"
+#include "spyro2_symbols.gen.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -40,7 +41,7 @@
 #define S2_DEMO_INDEX      0x80066D40u
 #define S2_NEXT_LEVEL_NUM  0x80066F90u
 #define S2_DEMO_MODE       0x80067024u
-#define S2_LOADER_STATE    0x80066EECu
+#define S2_LOADER_STATE    G_GAMESTATE
 #define S2_LEVEL_TICK      0x80067008u
 
 #define S2_SUBSTATE_IDLE     2u

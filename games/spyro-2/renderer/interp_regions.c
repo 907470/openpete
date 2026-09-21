@@ -17,13 +17,13 @@
  * The scrolling-texture descriptors the same call captures are located
  * (game_layout.env_anim.scroll), so the UV-scroll mirror has its pairs.
  *
- * No game-state row: this game's simulation-regime word is not located, so a
- * pair whose two ticks came from different regimes is not marked as a
- * discontinuity here. The camera cut guard in renderer/reextract.c is the only
- * such guard the bracket has. */
+ * The game-state row is the loader/simulation regime word, so a pair whose two
+ * ticks came from different regimes is marked as a discontinuity and the camera
+ * cut guard in renderer/reextract.c holds instead of lerping across it. */
 #include "renderer/interp_regions_gen.h"
 #include "renderer/orchestrator.h"
 #include "game_layout.h"
+#include "spyro2_symbols.gen.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -42,6 +42,13 @@ void game_interp_register(void) {
     const game_interp_row_t rows[] = {
         { "g_Spyro", game_layout.player.base, game_layout.player.rec_len, 0 },
         { "g_SpyroFlame", game_layout.player.flame_base, game_layout.player.flame_len, 0 },
+        /* g_GameState (4 bytes): which simulation regime produced the tick. The
+         * tick dispatcher branches on this word (update/func_8001A79C.s:26-31),
+         * so a pair whose two ticks straddle one of its edges spans a level
+         * load or a cutscene boundary rather than one motion. Committed
+         * timeline, like the camera it gates: a led copy could flip a tick
+         * before the camera pair it is compared against. */
+        { "g_GameState", G_GAMESTATE, 4u, 1 },
     };
     /* The camera's span is the draw-time transform [cam.base, cam.xform_end),
      * computed from the layout descriptor rather than stated. */

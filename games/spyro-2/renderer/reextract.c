@@ -116,8 +116,8 @@ static void cam_dbg_line(const char* tag, const uint8_t* c) {
 
 /* Where this game's camera fields sit, for the shared cut guard: the sky matrix
  * decides the rotation test and the world position the jump test. The regime
- * row resolves to -1 (this game locates no game-state word), so the guard marks
- * no regime edge here. */
+ * row is the loader/simulation regime word, so the guard marks a pair that
+ * straddles one of its edges as a cut. */
 static const cut_cam_desc_t* cut_desc(void) {
     static cut_cam_desc_t d = { -2, -2, CAM_OFF_POS, CAM_OFF_SKY };
     if (d.cam_region == -2) {

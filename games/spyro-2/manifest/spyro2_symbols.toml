@@ -35,6 +35,11 @@ addr = 0x80066F90
 note = "the level number the loader loads; written by func_8001A9B0 (update/func_8001A9B0.s:36-37) and read by func_800151F0 (draw/func_800151F0.s:84-85)"
 
 [[symbol]]
+name = "G_GAMESTATE"
+addr = 0x80066EEC
+note = "the loader/simulation regime word: -1 level resident, 0 title, 2 load g_LEVELID, and the intermediate values the transition steps through. The tick dispatcher func_8001A79C branches the regime on it at three sites, each `slti $v0, 0x2` taking the loading path (update/func_8001A79C.s:26-31,55-58,98-103); func_8001A9B0 writes it (update/func_8001A9B0.s:22-23) and clears it (:34-35), func_8001A6F8 clears it (update/func_8001A6F8.s:40-41) and func_800176A4 writes and re-reads it (update/func_800176A4.s:469-475)"
+
+[[symbol]]
 name = "G_CUR_DB"
 addr = 0x80066FC0
 note = "pointer to the draw buffer under construction; func_8004D810 flips it between G_DB and G_DB+0x74 (drawutil/func_8004D810.s:44-53)"

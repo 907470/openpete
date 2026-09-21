@@ -1,0 +1,15 @@
+# Sub-tick interpolation of Zoe's zap (scripts/check_zap_subtick.sh).
+#   <source> | <V> | [tol=<px>] [step=<px>]
+# <source> is a movie under games/spyro-2/bk2, or a name not ending in .bk2,
+# which is the plain boot replayed with no input. V is the tick whose
+# primitives the intermediate present at V+1 replays; V-2 opens the interval.
+#
+# The zap's records are spawned by the level overlays' Zoe update, so the pool
+# is empty wherever Zoe is not zapping: none of the bk2 rows holds a live
+# record, and the plain boot holds exactly one, 0x8006B400, from VBL 10334 to
+# 10354. Inside that window the record's head sweeps while its tail stays
+# anchored, and the interval closing at 10354 carries the largest canonical
+# motion of the window, 22.83 px at the head against 1.46 px at the tail. Both
+# ends are judged: the head prices the sweep and the tail proves the anchored
+# end is not dragged along with it.
+title-demo-zap | 10354 | tol=0.5 step=4
