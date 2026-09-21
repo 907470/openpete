@@ -14,6 +14,7 @@ static void reextract_view(void* cpu_v) {
     CPUState* cpu = (CPUState*)cpu_v;
     openpete_subtick_view_begin(cpu);
     if (s_body) s_body(cpu_v);
+    openpete_native_scene_mark_replay();
     openpete_subtick_view_end(cpu);
 }
 

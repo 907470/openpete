@@ -762,6 +762,13 @@ void openpete_native_set_shadow_decal_params(const openpete_shadow_decal_params 
 /* Begin a fresh native-scene frame (clears the triangle list). Called by
  * the game at the start of its scene extraction. */
 void openpete_native_scene_begin(void);
+/* Mark the scene now accumulating as a sub-tick / lag re-extract's rebuild
+ * rather than the game render's own. The blended-world block of a replay is
+ * reordered into the emission order the game render last recorded, because
+ * the blend equations do not commute once a channel clamps and the replay
+ * emits one producer at a time. Called by the re-extract wrapper after the
+ * game's body has fed. */
+void openpete_native_scene_mark_replay(void);
 /* Frame-keyed begin: clears the scene only when `frame` differs from the last
  * begin_frame call, otherwise a no-op. This lets MULTIPLE independent feeders
  * (cyclorama, then the world, then mobys — whatever order they hook in within

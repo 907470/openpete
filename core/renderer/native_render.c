@@ -367,6 +367,7 @@ enum { SS_FREE = 0, SS_PENDING, SS_PRESENTING, SS_PRESENTED };
 typedef struct {
     scene_tri_t *tri; int cap, n;
     uint32_t bg, fade, freeze; int hud_under, actor_front;
+    int replay;                    /* the scene was built by a re-extract, not the game render */
     unsigned  frame;               /* openpete_frame at extraction */
     uint32_t  stamp;               /* terrain-cache build stamp (scene id) */
     uint32_t  drawenv_clear;
@@ -575,6 +576,7 @@ static unsigned           s_scene_hist_frame[SCENE_HIST]; /* completed frame's s
 static uint32_t           s_scene_hist_bg[SCENE_HIST];
 static uint32_t           s_scene_hist_fade[SCENE_HIST];  /* full-screen fade overlay, per snapshot */
 static uint32_t           s_scene_hist_freeze[SCENE_HIST]; /* freeze-backdrop overlay, per snapshot */
+static int                s_scene_hist_replay[SCENE_HIST]; /* built by a re-extract, per snapshot */
 static int                s_scene_hist_hud_under[SCENE_HIST]; /* flat-HUD-under-player flag, per snapshot */
 static int                s_scene_hist_actor_front[SCENE_HIST]; /* actors-in-front (dragon rescue) flag, per snapshot */
 static int                s_scene_hist_head = -1;  /* ring index of the most-recent completed frame */
@@ -815,7 +817,56 @@ void openpete_native_scene_sig_report(int canonical)
 }
 
 static void fov_latch(void);
-void openpete_native_scene_begin(void) { fov_latch(); s_scene_epoch++; s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; openpete_mods_material_frame_reset(); /* S8b: per-present interned slots */ }
+/* The blended-world classes composite in emission order, and the blend
+ * equations do not commute once a channel clamps (additive over subtractive
+ * saturates where subtractive over additive does not). The game render emits in
+ * the order the guest links its primitives into the ordering table; the
+ * re-extract emits one producer at a time in its body's call order, which the
+ * producers' data dependencies fix. Recording the game render's key order and
+ * reordering the re-extract's block by it makes the two composite the same.
+ *
+ * The key is the provenance tag's path (bits 31:28) refined, for the particle
+ * path, by the KIND byte: that path is shared by three feeders (the particle
+ * pool, the glow rings, the gem glints) on Spyro 2 and Spyro 3, and only the
+ * KIND separates them. The tracer path is shared by the tracer pool and the zap
+ * ribbons with nothing in the tag to separate them, so those two keep their
+ * relative call order. */
+static int      blended_world_tri(const scene_tri_t* s);
+static unsigned bw_rank_key(const scene_tri_t* t);
+#define BW_KEY_MAX 16
+static uint32_t s_bw_key_order[BW_KEY_MAX];   /* keys in first-emission order */
+static int      s_bw_key_n;
+/* Recorded rank of a key: its position in the last game-render scene's
+ * first-emission order, or s_bw_key_n for a key that scene never emitted (those
+ * sort after every recorded key, keeping their relative order). */
+static int bw_key_rank(uint32_t key) {
+    for (int i = 0; i < s_bw_key_n; i++) if (s_bw_key_order[i] == key) return i;
+    return s_bw_key_n;
+}
+static void bw_key_order_record(const scene_tri_t* sc, int n) {
+    s_bw_key_n = 0;
+    for (int i = 0; i < n; i++) {
+        if (!blended_world_tri(&sc[i])) continue;
+        const uint32_t k = bw_rank_key(&sc[i]);
+        int seen = 0;
+        for (int q = 0; q < s_bw_key_n; q++) if (s_bw_key_order[q] == k) { seen = 1; break; }
+        if (!seen && s_bw_key_n < BW_KEY_MAX) s_bw_key_order[s_bw_key_n++] = k;
+    }
+}
+
+/* 1 while the scene being accumulated is a sub-tick / lag re-extract's
+ * rebuild (openpete_native_scene_begin), 0 while it is the game render's
+ * own accumulation (openpete_native_scene_begin_frame). The two emit the
+ * same geometry in different orders: the game render in the order the guest
+ * links its primitives, the re-extract in its fixed producer order. */
+static int s_scene_replay;
+void openpete_native_scene_begin(void) {
+    /* The scene about to be wiped is the game render's own accumulation the
+     * first time a tick re-extracts; record its blended-world key order
+     * before it goes. A later re-extract of the same tick must not
+     * overwrite the record with its own (already reordered) order. */
+    if (!s_scene_replay) bw_key_order_record(s_scene, s_scene_n);
+    s_scene_replay = 1; fov_latch(); s_scene_epoch++; s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; openpete_mods_material_frame_reset(); /* S8b: per-present interned slots */ }
 
 /* Frame-keyed reset: the first feeder of each game frame clears; later feeders
  * (in any order) append, so the cyclorama + world + mobys compose into one
@@ -874,6 +925,7 @@ void openpete_native_scene_begin_frame(unsigned frame) {
             s_scene_hist_frame[slot] = s_scene_frame;
             s_scene_hist_fade[slot] = s_scene_fade;
             s_scene_hist_freeze[slot] = s_scene_freeze;
+            s_scene_hist_replay[slot] = s_scene_replay;
             s_scene_hist_hud_under[slot] = s_scene_hud_under;
             s_scene_hist_actor_front[slot] = s_scene_actor_front;
             s_scene_hist_head = slot;
@@ -883,6 +935,7 @@ void openpete_native_scene_begin_frame(unsigned frame) {
         s_cur_seq = 0;
         s_cur_prim = 0;
         s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_scene_frame = frame;
+        s_scene_replay = 0;
         /* Per-instance material slots are per-feed-cycle: reset here (the
          * canonical present's reset) as well as in scene_begin (the sub-tick
          * one). Without this, a TIME-VARYING per-instance uniform (e.g. an
@@ -892,6 +945,10 @@ void openpete_native_scene_begin_frame(unsigned frame) {
         openpete_mods_material_frame_reset();
     }
 }
+/* The re-extract wrapper calls this once its body has finished feeding: the
+ * scene now in s_scene is a replay's, whatever the feeders' own
+ * begin_frame calls did to the flag while the body ran. */
+void openpete_native_scene_mark_replay(void) { s_scene_replay = 1; }
 
 /* Accumulating-scene save/restore. A re-extract rebuilds s_scene in place, so a
  * caller that drives one purely to look at the result must put the canonical
@@ -973,6 +1030,19 @@ static int scene_hist_depth_max(void) { return s_scene_hist_count; }
  * selection (delay/shot-lag included) — what the retained-terrain freshness
  * gate compares against, so a frozen/lagged compose keeps its retained
  * content and a stale-state compose (menus) drops it. */
+/* Whether the scene scene_present_buf() would return was built by a re-extract
+ * rather than by the game render itself — the same selection (publish slot,
+ * delay history, live accumulator) scene_present_stamp() reads. */
+static int scene_present_replay(void) {
+    if (s_ps_slot) return s_ps_slot->replay;
+    int depth = scene_delay_depth();
+    if (depth > 0 && depth <= s_scene_hist_count && s_scene_hist_head >= 0) {
+        int slot = (s_scene_hist_head - (depth - 1) + SCENE_HIST * 4) % SCENE_HIST;
+        return s_scene_hist_replay[slot];
+    }
+    return s_scene_replay;
+}
+
 static unsigned scene_present_stamp(void) {
     if (s_ps_slot) return s_ps_slot->stamp;
     int depth = scene_delay_depth();
@@ -7697,6 +7767,148 @@ static int bw_draw_ranges(const scene_tri_t* sc, int n, int ordered) {
     return draws;
 }
 
+/* The emission-rank key of a blended-world triangle. The provenance tag's
+ * family (bits 31:28) names the feeder path; family 5 (particles) is shared by
+ * the particle pool and the glow rings, which are separate feeders emitted at
+ * separate points of the guest's render, so the particle KIND byte refines it.
+ * Family 8 (tracers) is shared by the tracer pool and the zap ribbons with no
+ * discriminator in the tag; those two collapse to one key. */
+static unsigned bw_rank_key(const scene_tri_t* t) {
+    const unsigned fam = t->tag >> 28;
+    return (fam << 8) | (fam == 5u ? ((t->tag >> 8) & 0xFFu) : 0u);
+}
+
+/* OPENPETE_BWFAMCENSUS=<frame>[-<frame>] — per present in the range, the
+ * blended-world block partitioned into bursts: a burst is a maximal run of
+ * adjacent triangles sharing one key. Reported twice, keyed by the tag family
+ * alone and by bw_rank_key. A key with more than one burst is a producer the
+ * guest interleaves with another producer, which a replay that emits one
+ * producer at a time cannot reproduce by producer order alone. */
+static void bw_fam_census_pass(const scene_tri_t* sc, int n, int refined,
+                               const char* label) {
+    enum { BWF_MAX = 32 };
+    unsigned key[BWF_MAX]; int bursts[BWF_MAX], tris[BWF_MAX], first[BWF_MAX];
+    int nk = 0, have = 0, split = 0, bw = 0;
+    unsigned prev = 0;
+    for (int i = 0; i < n; i++) {
+        if (!blended_world_tri(&sc[i])) continue;
+        const unsigned k = refined ? bw_rank_key(&sc[i]) : (sc[i].tag >> 28) << 8;
+        int s = -1;
+        for (int q = 0; q < nk; q++) if (key[q] == k) { s = q; break; }
+        if (s < 0) {
+            if (nk >= BWF_MAX) continue;
+            s = nk++; key[s] = k; bursts[s] = 0; tris[s] = 0; first[s] = i;
+        }
+        if (!have || prev != k) bursts[s]++;
+        tris[s]++; prev = k; have = 1; bw++;
+    }
+    for (int q = 0; q < nk; q++) if (bursts[q] > 1) split++;
+    fprintf(stderr, "[bwfam f=%u key=%s] bw=%d keys=%d split=%d\n",
+            s_scene_frame, label, bw, nk, split);
+    for (int q = 0; q < nk; q++)
+        fprintf(stderr, "[bwf %s] k=%04X bursts=%d tris=%d first=#%d\n",
+                label, key[q], bursts[q], tris[q], first[q]);
+}
+
+static void bw_fam_census(const scene_tri_t* sc, int n) {
+    static int on = -2; static unsigned lo = 0, hi = 0;
+    if (on == -2) { const char* e = getenv("OPENPETE_BWFAMCENSUS");
+        on = (e && *e) ? 1 : -1;
+        unsigned a = 0, b = 0;
+        if (e && sscanf(e, "%u-%u", &a, &b) == 2) { lo = a; hi = b; }
+        else if (e && *e) { lo = (unsigned)atoi(e); hi = lo; }
+    }
+    if (on != 1 || s_scene_frame < lo || s_scene_frame > hi) return;
+    fprintf(stderr, "[bwfam f=%u leg=%s] n=%d\n", s_scene_frame,
+            s_scene_replay ? "replay" : "inline", n);
+    bw_fam_census_pass(sc, n, 0, "fam");
+    bw_fam_census_pass(sc, n, 1, "rank");
+}
+
+#define NR_PROF_BEGIN(lit) do { static int op_id_ = -1; \
+        if (op_prof_on()) { if (op_id_ < 0) op_id_ = op_prof_intern(lit); \
+                            op_prof_begin(op_id_); } } while (0)
+#define NR_PROF_END() do { if (op_prof_on()) op_prof_end(); } while (0)
+
+/* Reorder a re-extract's blended-world block into the recorded emission order.
+ * Stable per key: each triangle keeps its position inside its own key's run, so
+ * only whole producer runs move, and a block already in recorded order comes
+ * back unchanged (which is what makes the game render's own block, the block
+ * the record was taken from, pass through untouched). */
+/* OPENPETE_BWDRAWORDER=<frame>[-<frame>] — the blended-world block of each
+ * present in the range as the ordered pass will draw it: one line per maximal
+ * run of one provenance key, blend class and texturing mode, with its triangle
+ * count, then the totals. Scene indices are deliberately absent — the game
+ * render and the re-extract build different scenes, so only the run SEQUENCE is
+ * comparable, and that sequence is what the blend equations see. Two legs of
+ * the same tick must produce identical dumps. */
+static void bw_draw_order_dump(const scene_tri_t* scene, const int* idx, int n) {
+    static int on = -2; static unsigned lo = 0, hi = 0;
+    if (on == -2) { const char* e = getenv("OPENPETE_BWDRAWORDER");
+        on = (e && *e) ? 1 : -1;
+        unsigned a = 0, b = 0;
+        if (e && sscanf(e, "%u-%u", &a, &b) == 2) { lo = a; hi = b; }
+        else if (e && *e) { lo = (unsigned)atoi(e); hi = lo; }
+    }
+    if (on != 1 || s_scene_frame < lo || s_scene_frame > hi) return;
+    int runs = 0, tris = 0, i = 0;
+    while (i < n) {
+        const scene_tri_t* s0 = &scene[idx[i]];
+        const unsigned k = bw_rank_key(s0);
+        const int bl = s0->blend, tex = s0->textured;
+        int cnt = 0;
+        while (i + cnt < n) {
+            const scene_tri_t* sn = &scene[idx[i + cnt]];
+            if (bw_rank_key(sn) != k || sn->blend != bl || sn->textured != tex) break;
+            cnt++;
+        }
+        fprintf(stderr, "[bwdo] run=%d key=%04X blend=%d tex=%d tris=%d\n",
+                runs, k, bl, tex, cnt);
+        runs++; tris += cnt; i += cnt;
+    }
+    fprintf(stderr, "[bwdraworder f=%u] runs=%d tris=%d\n", s_scene_frame, runs, tris);
+}
+
+
+static int s_bw_sort_tmp[MAX_SCENE_TRIS];
+static void bw_rank_sort(const scene_tri_t* scene, int* idx, int n) {
+    if (n <= 1 || s_bw_key_n <= 0) return;
+    int w = 0;
+    for (int r = 0; r <= s_bw_key_n; r++)
+        for (int i = 0; i < n; i++)
+            if (bw_key_rank(bw_rank_key(&scene[idx[i]])) == r) s_bw_sort_tmp[w++] = idx[i];
+    if (w != n) return;   /* every triangle must land exactly once */
+    memcpy(idx, s_bw_sort_tmp, (size_t)n * sizeof *idx);
+}
+
+/* Put one packed textured bucket into the order it draws in — the whole
+ * per-bucket ordering policy, in one place.
+ *
+ * The opaque buckets sort by material: depth resolves visibility whatever the
+ * order, so the sort costs nothing in correctness and coalesces pipeline
+ * binds. The blended-world block (bucket 11) draws in emission order, because
+ * the guest links its classes into the ordering table interleaved and the
+ * blend equations do not commute once a channel clamps; a re-extract emits one
+ * producer at a time, so its block is put back into the order the game render
+ * emitted those producers in. Every other bucket keeps submission order
+ * (ABR0 alpha is rare and single-layer, the flat-HUD backdrops want painter's
+ * order). */
+static void tx_bucket_order(int b, const scene_tri_t* scene, int* idx, int n) {
+    if (b == 0 || b == 2 || b == 3 || b == 9) {
+        NR_PROF_BEGIN("cmp.sort");
+        tex_mat_sort(scene, idx, n);
+        NR_PROF_END();
+        return;
+    }
+    if (b != 11) return;
+    if (scene_present_replay()) {
+        NR_PROF_BEGIN("cmp.sort");
+        bw_rank_sort(scene, idx, n);
+        NR_PROF_END();
+    }
+    bw_draw_order_dump(scene, idx, n);
+}
+
 /* OPENPETE_BLENDORDER=<frame>[-<frame>] — every blended-world triangle of each
  * present in the range, in emission order, with the class run it falls in. One
  * line per run: the emission index span, the blend class, the texturing mode
@@ -7785,6 +7997,7 @@ static void scene_probes(scene_tri_t* sc, int n)
         }
       } }
     blend_order_dump(sc, n);
+    bw_fam_census(sc, n);
     portal_cover_check(sc, n);
     scene_box_probe(sc, n);
 }
@@ -7959,10 +8172,7 @@ static bool draw_native_scene(bool full_extent)
      * build_ut (untextured bucketing incl. portal-run collection),
      * build_tex (textured bucketing + material sort), vb_tex (textured
      * vertex pack), upload (VB update) and record (draw recording). */
-#define NR_PROF_BEGIN(lit) do { static int op_id_ = -1; \
-        if (op_prof_on()) { if (op_id_ < 0) op_id_ = op_prof_intern(lit); \
-                            op_prof_begin(op_id_); } } while (0)
-#define NR_PROF_END() do { if (op_prof_on()) op_prof_end(); } while (0)
+
 
     NR_PROF_BEGIN("cmp.build_ut");
     s_utmat_n = 0; s_utmemo_n = 0;
@@ -8362,11 +8572,7 @@ static bool draw_native_scene(bool full_extent)
             }
             if (belongs) s_txscene[txtri++] = t;
         }
-        if (b == 0 || b == 2 || b == 3 || b == 9) {   /* opaque: material-sort (depth-correct) */
-            NR_PROF_BEGIN("cmp.sort");
-            tex_mat_sort(scene, &s_txscene[run_start], txtri - run_start);
-            NR_PROF_END();
-        }
+        tx_bucket_order(b, scene, &s_txscene[run_start], txtri - run_start);
         txg_count[b] = (tx_start + txtri * 3) - txg_first[b];
     }
     NR_PROF_END();   /* cmp.build_tex */
@@ -11288,6 +11494,7 @@ int openpete_native_scene_publish(int64_t target_ns, int kind, double alpha, int
     if (!slot_grow(sl, s_scene_n)) { s_eager_stamp = 0; return -1; }
     if (s_scene_n > 0) memcpy(sl->tri, s_scene, (size_t)s_scene_n * sizeof(scene_tri_t));
     sl->n = s_scene_n; sl->bg = s_scene_bg; sl->fade = s_scene_fade; sl->freeze = s_scene_freeze;
+    sl->replay = s_scene_replay;
     sl->hud_under = s_scene_hud_under; sl->actor_front = s_scene_actor_front;
     sl->frame = s_scene_frame;
     sl->stamp = s_eager_stamp ? s_eager_stamp : s_scene_frame;

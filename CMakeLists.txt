@@ -481,6 +481,24 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # The blended-world draw order on the identity instant: the game render's
+    # own block against the sub-tick replay's, run for run, keyed by provenance
+    # and blend class. The classes composite in emission order and the blend
+    # equations do not commute once a channel clamps, so a replay that emits
+    # its producers in a different order than the guest linked them draws a
+    # picture the canonical present never produced. Fails as vacuous when
+    # either leg draws no blended run.
+    foreach(_bwo_game spyro-2)
+        add_test(NAME blendorder_ident_${_bwo_game}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_blendorder_ident.sh
+                         --game ${_bwo_game} --build-dir=${CMAKE_BINARY_DIR})
+        set_tests_properties(blendorder_ident_${_bwo_game} PROPERTIES
+            LABELS "presentation;blendorder"
+            TIMEOUT 1800
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
+
     foreach(_subtick_game spyro-2 spyro-3)
         add_test(NAME glint_subtick_${_subtick_game}
                  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_glint_subtick.sh
