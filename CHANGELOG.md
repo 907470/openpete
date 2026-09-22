@@ -16,7 +16,7 @@ Markdown has none (<kbd>M</kbd>, &times;). A link whose whole text is one
 code span renders as <code><a>...</a></code>.
 -->
 
-## v0.4.0 (Unreleased)
+## v0.4.0 - 2026-09-22 (Current)
 
 - Fixed subtle flickering with interpolation active
 - Added field of view (FOV) option
@@ -38,7 +38,7 @@ code span renders as <code><a>...</a></code>.
 - Spyro 1: Fixed the green pause framebuffer effect not updating with wobble enabled
 - Spyro 1: Fixed moby positioning being slightly off with interpolation active
 
-## v0.3.0 - 2026-09-10 (Current)
+## v0.3.0 - 2026-09-10
 
 - Fixed a crash when pressing <kbd>F12</kbd> to screenshot
 - Spyro 1: Fixed mobys incorrectly appearing at the edges of the screen during dragon cutscenes in widescreen
