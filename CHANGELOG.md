@@ -19,10 +19,16 @@ code span renders as <code><a>...</a></code>.
 ## v0.4.0 (Unreleased)
 
 - Fixed subtle flickering with interpolation active
-- Mouse: Implemented mouse support for the in-game menu and freecam
+- Added field of view (FOV) option
+- Split out wobble and pixelation options
+- Reduced VRAM usage
+- Fixed the dev menu (default: <kbd>M</kbd>) opening and closing the first time
+- Implemented mouse support for the in-game menu, freecam and bindings (<code>mouse:left</code>, <code>mouse:wheel_up</code>, <code>mouse:x</code>)
 - Mod SDK: Added [mouse APIs](/docs/modding/reference/api.html#mouse)
-- Mod SDK: Dynamically allocate asset arrays to remove asset count limitations
-- Added field of view (FOV) slider in dev menu (default <kbd>M</kbd>)
+- Mod SDK: Added [controller APIs](/docs/modding/reference/api.html#pads)
+- Mod SDK: Added [api->disc_path](/docs/modding/reference/api.html#api-disc_path)
+- Mod SDK: Dynamically allocate asset arrays to remove fixed capacities
+- Mod SDK: the PSYQ types in the generated struct header carry a <code>PSX\_</code> prefix
 - Spyro 1: Fixed some near-camera terrain rendering the low-poly geometry in the end credits
 - Spyro 1: Fixed the interpolation of text mobys in the end credits
 - Spyro 1: Fixed big boi mobys being culled near the edges of the screen in widescreen
