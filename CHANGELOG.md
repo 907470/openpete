@@ -16,12 +16,12 @@ Markdown has none (<kbd>M</kbd>, &times;). A link whose whole text is one
 code span renders as <code><a>...</a></code>.
 -->
 
-## v0.4.1 (Unreleased)
+## v0.4.1 - 2026-09-22 (Current)
 
 - Spyro 1: Fixed the HUD eggs swimming between each other with interpolation active
 - Spyro 1: Fixed a black line along the bottom of the screen on the pause menu
 
-## v0.4.0 - 2026-09-22 (Current)
+## v0.4.0 - 2026-09-22
 
 - Fixed subtle flickering with interpolation active
 - Added field of view (FOV) option
