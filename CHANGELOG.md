@@ -28,7 +28,7 @@ code span renders as <code><a>...</a></code>.
 - Mod SDK: Added [controller APIs](/docs/modding/reference/api.html#pads)
 - Mod SDK: Added [api->disc_path](/docs/modding/reference/api.html#api-disc_path)
 - Mod SDK: Dynamically allocate asset arrays to remove fixed capacities
-- Mod SDK: the PSYQ types in the generated struct header carry a <code>PSX\_</code> prefix
+- Mod SDK: Added PSYQ types in the generated struct header with a <code>PSX\_</code> prefix
 - Spyro 1: Fixed some near-camera terrain rendering the low-poly geometry in the end credits
 - Spyro 1: Fixed the interpolation of text mobys in the end credits
 - Spyro 1: Fixed big boi mobys being culled near the edges of the screen in widescreen
