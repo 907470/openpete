@@ -28,7 +28,7 @@
 #include <string.h>
 
 /* --- rows ---------------------------------------------------------------- */
-enum { ROW_DISPLAY, ROW_ASPECT, ROW_FOV, ROW_FPS, ROW_SHOWFPS, ROW_VSYNC, ROW_SSAA,
+enum { ROW_DISPLAY, ROW_ASPECT, ROW_FPS, ROW_FOV, ROW_SHOWFPS, ROW_VSYNC, ROW_SSAA,
        ROW_WOBBLE, ROW_PIXEL, ROW_TEXMAP, ROW_DITHER, ROW_LOD, ROW_FREECAM,
        ROW_SAVE, ROW_QUIT,
        ROW_COUNT,
@@ -41,7 +41,7 @@ enum { ROW_DISPLAY, ROW_ASPECT, ROW_FOV, ROW_FPS, ROW_SHOWFPS, ROW_VSYNC, ROW_SS
        ROW_MODSEL, ROW_MODEN, ROW_FOG };
 
 static const char* const ROW_LABEL[ROW_COUNT] = {
-    "DISPLAY", "ASPECT", "FOV", "FPS", "SHOW FPS", "VSYNC", "SSAA", "WOBBLE",
+    "DISPLAY", "ASPECT", "FPS", "FOV", "SHOW FPS", "VSYNC", "SSAA", "WOBBLE",
     "PIXELATION", "TEXTURES", "DITHER", "LOD", "FREECAM", "SETTINGS",
     "EXIT GAME",
 };
@@ -52,7 +52,7 @@ static const char* const ROW_LABEL[ROW_COUNT] = {
  * with the key and then with the row should see one toast repaint, not two
  * stack. */
 static const char* const ROW_OSD_KEY[ROW_COUNT] = {
-    "menu.display", "menu.aspect", "menu.fov", "menu.fps", "menu.showfps", "menu.vsync",
+    "menu.display", "menu.aspect", "menu.fps", "menu.fov", "menu.showfps", "menu.vsync",
     "menu.ssaa", "menu.wobble", "menu.pixelation", "menu.texmap", "menu.dither",
     "menu.lod", "menu.freecam", "menu.settings", "menu.quit",
 };

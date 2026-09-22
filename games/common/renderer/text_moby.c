@@ -595,6 +595,7 @@ typedef struct {
     int   cap;                 /* its capacity, in verts               */
     int   n;                   /* verts written so far                 */
     int   glyph_n;             /* of those, glyph faces (the rest is frame) */
+    int   dropped;             /* triangles refused for want of capacity */
     float light[3];            /* unit light direction (N·L)           */
     int   light_signed;        /* see the note above                   */
     /* per-glyph vertices in overlay space (filled by emit_glyph). */
@@ -609,6 +610,7 @@ static void emit_ctx_init(emit_ctx_t* cx, openpete_hud_vert* out, int cap) {
     cx->cap = cap;
     cx->n   = 0;
     cx->glyph_n = 0;
+    cx->dropped = 0;
     cx->light[0] = FONT.fixed_light[0]; cx->light[1] = FONT.fixed_light[1]; cx->light[2] = FONT.fixed_light[2];
     cx->light_signed = 0;
 }
@@ -624,7 +626,8 @@ static uint32_t lit_colour(int baseR, int baseG, int baseB, float t) {
 }
 
 static void push_tri(emit_ctx_t* cx, int a, int b, int c, uint32_t rgba) {
-    if (!cx->out || cx->n + 3 > cx->cap) return;
+    if (!cx->out) return;
+    if (cx->n + 3 > cx->cap) { cx->dropped++; return; }
     cx->out[cx->n++] = (openpete_hud_vert){ cx->gx[a], cx->gy[a], cx->gz[a], rgba };
     cx->out[cx->n++] = (openpete_hud_vert){ cx->gx[b], cx->gy[b], cx->gz[b], rgba };
     cx->out[cx->n++] = (openpete_hud_vert){ cx->gx[c], cx->gy[c], cx->gz[c], rgba };
@@ -994,9 +997,7 @@ static void glyph_hash_probe(void) {
 }
 
 /* ---- in-game settings menu text (labels / values / title) --------------- */
-#define MENU_TXT_MAX    32768   /* must match MENU_GLYPH_MAX (native_render.c);
-                                 * 8 rows of label+value+title+border overflowed
-                                 * 16384 and emit_string drops trailing glyphs */
+#define MENU_TXT_MAX    OPENPETE_MENU_GLYPH_MAX
 /* Mid-tone gold BASE — the signed light swings faces both ways around it (lit →
  * white-gold, shadowed → dark), so base is the average, not the floor. The game's
  * HUD/menu gold is R==G with a low B (measured (96,96,0)→(214,214,118)); R>G is
@@ -1022,6 +1023,7 @@ static openpete_hud_vert s_menu_buf[MENU_TXT_MAX];
 #define MENU_BORDER_B    80
 #define MENU_BORDER_BT   0.0035f  /* frame thickness, overlay units */
 #define MENU_BORDER_SAMP 12       /* perimeter samples per edge (smooth glint) */
+#define MENU_BORDER_VERTS (4 * MENU_BORDER_SAMP * 6)  /* two tris per sample step */
 
 static uint32_t border_lit(const emit_ctx_t* cx, float nx, float ny) {
     float t = nx * cx->light[0] + ny * cx->light[1];   /* N·L, N=(nx,ny,0) unit; signed like the glyphs */
@@ -1168,7 +1170,9 @@ void text_moby_native_menu(CPUState* cpu) {
     /* One emission for the whole menu: the title, every row and the frame share
      * this context's rotating light, and nothing else can perturb it mid-build. */
     emit_ctx_t cx;
-    emit_ctx_init(&cx, s_menu_buf, MENU_TXT_MAX);
+    /* The frame is emitted last but its room is reserved here, so text that
+     * outgrows the buffer loses its own tail and never the frame. */
+    emit_ctx_init(&cx, s_menu_buf, MENU_TXT_MAX - MENU_BORDER_VERTS);
 
     install_specular_light(&cx, text_moby_native_shimmer_phase());
 
@@ -1235,6 +1239,14 @@ void text_moby_native_menu(CPUState* cpu) {
     /* Gold frame — same rotating light as the rows above (cx still carries it). */
     cx.n += emit_lit_border(&cx, L.panel_x0, L.panel_y0, L.panel_x1, L.panel_y1,
                             MENU_BORDER_BT, s_menu_buf + cx.n, MENU_TXT_MAX - cx.n);
+    if (cx.dropped) {
+        static int s_warned;
+        if (!s_warned) {
+            s_warned = 1;
+            OPL_WARN_F("text", "settings menu text exceeded %d verts: %d triangle(s) "
+                       "dropped", MENU_TXT_MAX - MENU_BORDER_VERTS, cx.dropped);
+        }
+    }
     openpete_native_set_menu_glyphs(s_menu_buf, cx.n);
     glyph_hash_probe();
     if ((text_moby_native_shimmer_phase() & 63u) == 0u) glyph_hash_census("menu", s_menu_buf, cx.n);

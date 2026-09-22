@@ -258,9 +258,7 @@ typedef struct {
 #define MOD_OVL_MAX_VERTS 16384 /* mod draw-service overlay verts (see draw_mod_overlay) */
 #define VER_MAX_VERTS 16384  /* build-version line glyph verts (see draw_version_overlay) */
 #define MENU_MAX_VERTS 256   /* in-game menu panel/border/selection quads (see draw_menu_overlay) */
-#define MENU_GLYPH_MAX 32768 /* in-game menu 3D glyph text verts (labels/values/title);
-                              * must match MENU_TXT_MAX (text_moby.c) — 8 rows
-                              * overflowed 16384 (truncated border/last rows) */
+#define MENU_GLYPH_MAX OPENPETE_MENU_GLYPH_MAX /* in-game menu 3D glyph layer verts */
 /* Stats-overlay supersampling: render the glyphs at OVL_SS_FACTOR× into a small
  * RGBA target covering the top-left ovl_region_w() × ovl_region_h() of the frame (in
  * win_h-fraction units, matching the glyph layout's win_h-relative coords), then

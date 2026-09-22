@@ -324,6 +324,11 @@ float openpete_native_overlay_aspect(void);
  * exists. */
 float openpete_native_overlay_px_per_unit(void);
 
+/* Capacity of the settings menu's 3D glyph layer, in vertices: the rows'
+ * labels, values and title, the close glyph, and the lit frame. The emitter
+ * and the renderer size their buffers from this one value. */
+#define OPENPETE_MENU_GLYPH_MAX 65536
+
 /* Hand the native renderer the in-game settings menu's glyph geometry (the row
  * labels/values/title, built game-side by text_moby_native from the same 3D gold
  * glyph mobys, with the selected row's per-glyph yaw baked in). Same overlay
