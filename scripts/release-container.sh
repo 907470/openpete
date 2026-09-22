@@ -66,7 +66,12 @@ fi
 
 # The container builds and never commits: the complexity fence's hook-arming
 # check (scripts/fences/complexity_ratchet.py check --armed) does not apply.
-"$ENGINE" run --rm -v "$PWD:/src" -e OPENPETE_NO_COMMITS=1 "${uidmap[@]}" "$IMAGE" bash -euo pipefail -c '
+# OPENPETE_DIST_VERSION names the artifact and sets the exe's version line
+# (CMake configure and package-dist.sh both read it); the container sees
+# only the variables passed with -e.
+env_args=(-e OPENPETE_NO_COMMITS=1)
+[[ -n "${OPENPETE_DIST_VERSION:-}" ]] && env_args+=(-e "OPENPETE_DIST_VERSION=$OPENPETE_DIST_VERSION")
+"$ENGINE" run --rm -v "$PWD:/src" "${env_args[@]}" "${uidmap[@]}" "$IMAGE" bash -euo pipefail -c '
     cmake -S third_party/psxrecomp/recompiler -B third_party/psxrecomp/build \
           -G Ninja -DCMAKE_BUILD_TYPE=Release
     cmake --build third_party/psxrecomp/build -j
