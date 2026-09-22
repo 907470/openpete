@@ -940,6 +940,46 @@ static int tiledef_apply_ori(CPUState* cpu, uint32_t e, float u[4], float v[4]) 
     return (int)ori;
 }
 
+/* Camera-space triple product of three terrain corners: its sign is the
+ * sign of the projected NCLIP over the same triple (the projection scales
+ * each axis by a positive factor), and unlike the projection it stays
+ * defined for a corner behind the eye. */
+static double tface_det3(const lvert* a, const lvert* b, const lvert* c) {
+    return a->m1 * (b->m2 * c->m3 - b->m3 * c->m2)
+         - a->m2 * (b->m1 * c->m3 - b->m3 * c->m1)
+         + a->m3 * (b->m1 * c->m2 - b->m2 * c->m1);
+}
+
+/* Does a straddling HP face face the eye? The .s walk does not NCLIP it:
+ * a corner whose GTE FLAG bit 31 is set carries vertex flag 0x10
+ * (0x80026A8C-0x80026AA4), and the face's OR of it skips both face NCLIPs
+ * (bgtz at 0x80026C5C). The near-queue drain then NCLIPs every sub-quad
+ * over the same two corner triples with the same flip/double-sided rule
+ * (0x80027DEC-0x80027E54, 0x800292EC-0x80029354), so a back-facing
+ * straddler draws nothing. The triple products decide it here. */
+static int tface_front3d(const lvert* sv, int i0, int i1, int i2, int i3,
+                         int quad, int flip, int dside) {
+    if (dside) return 1;
+    const double d1 = tface_det3(&sv[i0], &sv[i1], &sv[quad ? i3 : i2]);
+    if (flip ? (d1 <= 0.0) : (d1 >= 0.0)) return 1;
+    if (!quad) return 0;
+    const double d2 = tface_det3(&sv[i1], &sv[i2], &sv[i3]);
+    return flip ? (d2 <= 0.0) : (d2 >= 0.0);
+}
+
+/* A face's facing verdicts: *near_front gates the near/HQ subdivide (half 1
+ * of the projected NCLIP, like the .s classifier's input), *cull_front the
+ * back-face cull (either half). A straddling face has no usable projected
+ * NCLIP: HP takes tface_front3d for both, LP (whose straddlers the .s path
+ * has not been traced for) waives the facing test. */
+static void tface_facing(const lvert* sv, int i0, int i1, int i2, int i3,
+                         int quad, int flip, int dside, int hp, int straddle,
+                         int front, int front2, int* near_front, int* cull_front) {
+    if (!straddle) { *near_front = front; *cull_front = front || front2; return; }
+    *near_front = *cull_front =
+        hp ? tface_front3d(sv, i0, i1, i2, i3, quad, flip, dside) : 1;
+}
+
 static void terrain_near_emit(tn_wctx* W, CPUState* cpu, uint32_t hqBase, int texid, int abe,
                               ngte_cvert TL, ngte_cvert TR, ngte_cvert BL, ngte_cvert BR) {
     ngte_cvert mT = cv_mid(TL, TR), mB = cv_mid(BL, BR);
@@ -4862,13 +4902,14 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
             /* `front` is NCLIP on the PROJECTED corners — meaningless when a
              * corner sits behind the camera (proj_screen mirrors it), so a
              * straddling foreground cell flunked it ~half the time and fell to
-             * the LQ tier (the user-visible "closest ground/wall goes low-res"
-             * flicker). Waive the facing test for straddling cells; the
-             * near-emit path near-plane-clips (clip_push_tri) and the Z-buffer
-             * owns occlusion, so a waived back-face is harmless. */
+             * the LQ tier. tface_facing decides a straddler's facing on its
+             * camera-space corners instead (see there). */
             int straddle = (sv[i0].m3 <= 0.0 || sv[i1].m3 <= 0.0 ||
                             sv[i2].m3 <= 0.0 || sv[i3].m3 <= 0.0);
-            int near = (faceStride == 16 && s_nearhq && hqTable && (front || straddle) && quad &&
+            int near_front, cfront;
+            tface_facing(sv, i0, i1, i2, i3, quad, flip, F->dside, faceStride == 16,
+                         straddle, front, front2, &near_front, &cfront);
+            int near = (faceStride == 16 && s_nearhq && hqTable && near_front && quad &&
                         face_is_near(sv[i0].m3, sv[i1].m3, sv[i2].m3, sv[i3].m3, hqW3));
             {   /* OPENPETE_TERRAIN_NEARDBG: census of STRADDLING foreground quads
                  * (a corner behind the camera) by route — near/HQ vs LQ fall-through. */
@@ -4927,10 +4968,9 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
              * and punch through (magic_crafters waterfall room). The game
              * never draws those faces at all — NCLIP culls them — so cull is
              * the canonical visibility rule, not a perf knob.
-             * Two carve-outs where the .s verdict can't be mirrored:
-             *  - straddling faces (a corner behind the camera): projected
-             *    corners are mirrored, the cross-product sign is garbage —
-             *    waive (Z-buffer owns those; same waiver as the near/HQ gate).
+             * Straddling faces (a corner behind the camera) take
+             * tface_facing's camera-space verdict (HP) or are waived (LP).
+             * One carve-out where the .s verdict can't be mirrored:
              *  - fill passes: native-only hole cover with no .s counterpart,
              *    stencil-gated to pixels nothing else drew — stay emit-all.
              * Both tiers are whole-face verdicts: the .s emits the full
@@ -4940,8 +4980,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
              * cull LP faces (both default on; each mirrors its walk's exact
              * per-half NCLIP rule above). */
             int cullable = ((faceStride == 16) ? (s_cull & 1) : (s_cull & 2))
-                           && !straddle && !passFill;
-            int cfront = front || front2;
+                           && !passFill;
             {   /* OPENPETE_TERRAIN_CULLDBG="frame,x0,y0,x1,y1" (PSX screen rect):
                  * log every back-verdict face whose bbox intersects the rect. */
                 static int s_cdbg = -2; static long s_cd[5];
@@ -5095,6 +5134,24 @@ static void walk_sector_job(int item, int worker, void* arg) {
     s_pre_rec[item].start  = W->tri_n;
     walk_sector(W, G, item);
     s_pre_rec[item].count  = W->tri_n - s_pre_rec[item].start;
+}
+
+/* The retained path's global flag word (OPTC_GF_*): each bit is one walk
+ * rule the vertex stage mirrors for this present. */
+static uint32_t tc_global_flags(int nearhq, int lod_handoff) {
+    return (nearhq            ? OPTC_GF_NEARHQ  : 0u)
+         | (s_clutfog         ? OPTC_GF_CLUTFOG : 0u)
+         | ((s_cull & 1)      ? OPTC_GF_CULLHP  : 0u)
+         | ((s_cull & 2)      ? OPTC_GF_CULLLP  : 0u)
+         | (lod_handoff       ? OPTC_GF_HANDOFF : 0u)
+         | (s_gapfill_en      ? OPTC_GF_GAPFILL : 0u)
+         | (openpete_no_lod   ? OPTC_GF_NOLOD   : 0u)
+         /* the vertex stage's variant select mirrors face_is_near's
+          * extended branch. */
+         | (hq_pin_active()   ? OPTC_GF_HQPIN   : 0u)
+         | (game_layout.terrain.ladder_nearest_corner ? OPTC_GF_LADNEAR : 0u)
+         | (game_layout.terrain.nearband_ot_keys      ? OPTC_GF_NBKEYS  : 0u)
+         | ((s_otbias_on && openpete_native_key_resolve_on()) ? OPTC_GF_KEYON : 0u);
 }
 
 static void terrain_build(CPUState* cpu, int32_t occGroup) {
@@ -5511,20 +5568,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 }
         tcg.fog_ref_base = fogRefBase;
         tcg.cull_ref_s2  = cullRefS2;
-        tcg.gflags = ((s_nearhq && hqTable) ? OPTC_GF_NEARHQ : 0u)
-                   | (s_clutfog       ? OPTC_GF_CLUTFOG : 0u)
-                   | ((s_cull & 1)    ? OPTC_GF_CULLHP  : 0u)
-                   | ((s_cull & 2)    ? OPTC_GF_CULLLP  : 0u)
-                   | (lod_handoff     ? OPTC_GF_HANDOFF : 0u)
-                   | (s_gapfill_en    ? OPTC_GF_GAPFILL : 0u)
-                   | (openpete_no_lod ? OPTC_GF_NOLOD   : 0u)
-                   /* the vertex stage's variant select mirrors
-                    * face_is_near's extended branch. */
-                   | (hq_pin_active()  ? OPTC_GF_HQPIN : 0u)
-                   | (game_layout.terrain.ladder_nearest_corner
-                                      ? OPTC_GF_LADNEAR : 0u)
-                   | ((s_otbias_on && openpete_native_key_resolve_on())
-                                      ? OPTC_GF_KEYON   : 0u);
+        tcg.gflags = tc_global_flags(s_nearhq && hqTable, lod_handoff);
         {   /* OPENPETE_TERRAIN_GPU_TINT=1: retained draws tint by sector id
              * (temp bring-up attribution; unregistered). */
             const char* e = getenv("OPENPETE_TERRAIN_GPU_TINT");

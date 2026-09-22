@@ -154,6 +154,7 @@ layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
 #define GF_KEYON     128
 #define GF_HQPIN     256
 #define GF_LADNEAR   512
+#define GF_NBKEYS    1024
 
 struct TerrainSector {
     vec4 o;        /* xyz: sector origin (world/16), w: uintBitsToFloat(flags) */
@@ -343,6 +344,15 @@ vec3 terrain_col(double mz, vec3 cfar, vec3 cnear, bool doFog, int fogRef,
  * Used both for the HQ variant select (via face_is_near = this, or the
  * NOLOD short-circuit) and for the koff near-band/otslots-zero verdict
  * (ALWAYS this canonical form, even under NOLOD). */
+/* Camera-space triple product of three terrain corners (the walk's
+ * tface_det3): the sign of the projected NCLIP over the same triple, and
+ * still defined for a corner behind the eye. */
+double det3d(dvec3 a, dvec3 b, dvec3 c) {
+    return a.x * (b.y * c.z - b.z * c.y)
+         - a.y * (b.x * c.z - b.z * c.x)
+         + a.z * (b.x * c.y - b.y * c.x);
+}
+
 bool near_canonical(double z0, double z1, double z2, double z3, uint w3_40, uint w3_80) {
     double sz0 = z0 > 0.0lf ? z0 * 4.0lf : 0.0lf, sz1 = z1 > 0.0lf ? z1 * 4.0lf : 0.0lf;
     double sz2 = z2 > 0.0lf ? z2 * 4.0lf : 0.0lf, sz3 = z3 > 0.0lf ? z3 * 4.0lf : 0.0lf;
@@ -735,20 +745,34 @@ void main()
     }
 
     /* ---- face_is_near: flat-vs-HQ variant select (HP quads only).
-     * The CPU gate is (front || straddle) — `front` is NCLIP on the PROJECTED
-     * corners, which is meaningless once a corner sits behind the camera, so
-     * the walk waives the facing test for straddling faces (both here and at
-     * the back-face cull below). Plain chunks never straddle (such sectors
-     * take the near variant or the CPU walk), so there `front` alone is the
-     * mirror. ---- */
+     * The CPU gate is (straddle ? front3d : front). `front` is NCLIP on the
+     * PROJECTED corners, which is meaningless once a corner sits behind the
+     * camera; the .s skips the face NCLIP for such a face and its near
+     * drain NCLIPs every sub-quad over the same two triples, so a straddling
+     * HP face's facing is the camera-space triple product over those
+     * triples (front3d, the walk's tface_det3 mirror), used here and at the
+     * back-face cull below. LP straddlers keep the waiver. Plain chunks
+     * never straddle (such sectors take the near variant or the CPU walk),
+     * so there `front` alone is the mirror. ---- */
 #ifdef TERRAIN_NEAR
     bool straddle = m0.z <= 0.0lf || m1.z <= 0.0lf ||
                     m2.z <= 0.0lf || m3c.z <= 0.0lf;
 #else
     const bool straddle = false;
 #endif
+    bool front3d = true;
+    if (!lp && straddle) {
+        precise double d1 = det3d(m0, m1, quad ? m3c : m2);
+        bool f1 = flip ? (d1 <= 0.0lf) : (d1 >= 0.0lf);
+        bool f2 = false;
+        if (quad) {
+            precise double d2 = det3d(m1, m2, m3c);
+            f2 = flip ? (d2 <= 0.0lf) : (d2 >= 0.0lf);
+        }
+        front3d = ((ff & FF_DSIDE) != 0u) || f1 || f2;
+    }
     bool near = false;
-    if (!lp && !fillPass && (gf & GF_NEARHQ) != 0 && quad && (front || straddle)
+    if (!lp && !fillPass && (gf & GF_NEARHQ) != 0 && quad && (straddle ? front3d : front)
         && (ff & FF_HQELIG) != 0u) {
         if ((gf & GF_HQPIN) != 0) {
             /* --no-lod: HQ pinned ON for every eligible face at every
@@ -769,7 +793,8 @@ void main()
      * the cull in the walk; fill is emit-all by design) ---- */
     if (!near && !fillPass) {
         bool cullable = lp ? ((gf & GF_CULLLP) != 0) : ((gf & GF_CULLHP) != 0);
-        if (cullable && !straddle && !front && !front2) { kill_vert(); return; }
+        bool facing = straddle ? (lp || front3d) : (front || front2);
+        if (cullable && !facing) { kill_vert(); return; }
     }
 
     /* ---- portal drops: rebuild THIS vertex's emitted tri and run the two
@@ -1088,17 +1113,21 @@ void main()
               :             dvec4(C.z, mR.z, mB.z, BR.z);
             ok = float((sq.x + sq.y + sq.z + sq.w) * 4.0lf);
         }
-        /* Foreground (near-band) faces carry no authored OT slot: the .s
-         * defers them (DrawPrim, mask-protected, no OT index). ALWAYS the
-         * canonical classifier here (LP tests the distance band alone —
-         * word3 = 0), independent of the NOLOD HQ pin. */
+        /* Foreground (near-band) faces: ALWAYS the canonical classifier
+         * here (LP tests the distance band alone — word3 = 0), independent
+         * of the NOLOD HQ pin. GF_NBKEYS (game_layout.terrain.nearband_ot_keys)
+         * set: the game keys them through the ordinary insert with their
+         * authored slots, so they take the far faces' key below. Clear: the
+         * game's near queue has no OT index, so opaque ones are contest-only
+         * (negative key, no slots). Blended near-band faces stay out either
+         * way (the feed's koff = 0). */
         bool nearband = near_canonical(m0.z, m1.z, m2.z, quad ? m3c.z : m2.z,
                                        lp ? 0u : (ff & FF_W3_40),
                                        lp ? 0u : (ff & FF_W3_80));
-        if (nearband) {
-            /* contest-only (negative) for opaque; blended near-band is out */
-            if (((mat0 >> 21) & 3u) == 0u)
-                koff = -float(double(ok) + 0.5lf);
+        if (nearband && (((mat0 >> 21) & 3u) != 0u)) {
+            koff = 0.0;
+        } else if (nearband && (gf & GF_NBKEYS) == 0) {
+            koff = -float(double(ok) + 0.5lf);
         } else {
             double slots = lp ? double(0x40u + 8u * ((ff >> 24) & 0x1Fu))
                               : double(4u * ((ff >> 24) & 0x1Fu));

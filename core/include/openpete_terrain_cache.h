@@ -121,6 +121,10 @@ enum {
                                    * the CLUT-fog row and near-tile select key
                                    * on the nearest corner (row = 15 - (max
                                    * ir0 >> 8)), not the four-corner mean */
+#define OPTC_GF_NBKEYS     1024u  /* game_layout.terrain.nearband_ot_keys: the
+                                   * near/HQ-classified faces key through the
+                                   * ordinary OT insert (authored slots kept,
+                                   * key emitted); clear = contest-only      */
 
 /* face_flags bit layout lives with rhi_terrain_vertex in rhi.h. */
 #define OPTC_SLOT_DEAD     511u

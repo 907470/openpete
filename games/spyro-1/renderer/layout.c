@@ -133,7 +133,10 @@ const game_layout_t game_layout = {
                                    * table census before it moves */
         .lp_bias_slots   = 8,
         .hp_bias_slots   = 4,
-        .nearband_ot_keys = 0,    /* the near/HQ queue carries no ordering key */
+        .nearband_ot_keys = 1,    /* the near/HQ drain (func_800276A0) inserts
+                                   * every sub-quad into g_WorldOT at
+                                   * (ΣSZ >> 7) + ((word3 & 0x38) >> 1):
+                                   * r_environment.s 0x80027D4C, 0x80027EF8 */
         .slot_ot_contest  = 0,
     },
     .shadow = {
