@@ -52,10 +52,11 @@ typedef struct CPUState CPUState;
 #define SPYRO1_MODULE_FUNCS(X) \
     X(func_800168DC) X(func_800189F0) X(func_800190D4) X(func_8001C694) \
     X(func_8001ED5C) X(func_8001F798) X(func_80020F34) X(func_80022A2C) \
-    X(func_80023AC4) X(func_800258F0) X(func_8003DFA4) X(func_8004EBA8) \
-    X(func_8004F000) X(func_8004F4BC) X(func_8004FEA0) X(func_80050240) \
-    X(func_80050BE0) X(func_800573C8) X(func_800580F4) X(func_800584C4) \
-    X(func_80058864) X(func_80058D64) X(func_80059A48) X(func_80059F8C)
+    X(func_80023AC4) X(func_800258F0) X(func_80034358) X(func_8003DFA4) \
+    X(func_8004EBA8) X(func_8004F000) X(func_8004F4BC) X(func_8004FEA0) \
+    X(func_80050240) X(func_80050BE0) X(func_800573C8) X(func_800580F4) \
+    X(func_800584C4) X(func_80058864) X(func_80058D64) X(func_80059A48) \
+    X(func_80059F8C)
 
 #define DECL_PTR(n) static void (*p_##n)(CPUState*);
 SPYRO1_MODULE_FUNCS(DECL_PTR)
