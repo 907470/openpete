@@ -1679,10 +1679,10 @@ void openpete_native_scene_capture_overlay(void) {
  * lands and read as static; the rigid test over the whole body is the evidence
  * that separates that slide from a body that did not move, and an entry a run
  * did not take still reaches the occupancy pass. The converse case is a body
- * that did not move while its content shifted by one period (a row of
- * identical sprites animated out of phase): a previous run standing exactly
- * where the current run stands, entry for entry, marks it seated, and a seated
- * run skips the run pass.
+ * whose content shifted by one period while it stood still or moved less (a
+ * row of identical sprites animated out of phase): the previous run of its
+ * shape nearest by one rigid translation is its body, and it takes precedence
+ * over a farther content partner (carry_run_pick).
  *
  * The content key of a tri fed with no primitive address (the fade overlay,
  * the letterbox bars) is its ordinal among the other address-less tris: that
@@ -1690,11 +1690,11 @@ void openpete_native_scene_capture_overlay(void) {
  * bars whose content is identical.
  *
  * Two carve-outs, both visible in the census as a snap rather than a sweep:
- * an element whose texture frame advances every tick while it translates (an
- * animated pickup sprite) changes content key each tick, so its run's multiset
- * changes and the run snaps; and a body whose members displace by different
- * amounts — a re-flow, or a scroll that reveals one more glyph — snaps whole
- * rather than tearing.
+ * a single-triangle element whose texture frame advances every tick while it
+ * translates changes content key each tick and has no run to carry it, so it
+ * snaps (a multi-triangle body carries by its geometric body); and a body
+ * whose members displace by different amounts — a re-flow, or a scroll that
+ * reveals one more glyph — snaps whole rather than tearing.
  */
 #define CARRY_KEY_SLOTS 2048            /* power of two > OVERLAY_CARRY_MAX */
 #define CARRY_MOVE_MAX  64.0f           /* per-tick move bound, px (billboard interp's) */
@@ -1959,31 +1959,100 @@ static int carry_pair_run_segments(const scene_tri_t* prev, int plo,
     return paired;
 }
 
-/* Whether a previous run of current run `ci`'s layer and length stands exactly
- * where `ci` stands, entry for entry by ordinal. Such a run is `ci`'s seat: the
- * body did not move and only its content changed. A row of identical sprites
- * animated out of phase (spinning eggs, each one frame behind its neighbour)
- * hands each sprite's frame to its neighbour every tick, so the same-multiset
- * partner is the neighbour one sprite-width away and the whole body would read
- * as a rigid slide by one period; the seat is the evidence that it stood
- * still. A body that genuinely translates has no seat, since each of its
- * entries left the position its ordinal partner held. */
-static int carry_run_seated(const scene_tri_t* prev, const carry_runs_t* pr,
-                            const scene_tri_t* curr, const carry_runs_t* cr, int ci) {
+/* The previous run that is current run `ci`'s body by geometry alone: of the
+ * unclaimed previous runs of its layer, texturing and length that carry onto
+ * it by one translation (carry_run_rigid under their centroid displacement)
+ * inside the move bound, the one displaced least, or -1 when none is. *out_d
+ * is its displacement; *out_unique is 0 when a second such run lies within
+ * CARRY_RIGID_TOL of it, since two equally near bodies name neither.
+ *
+ * Content alone misnames a body whose sprites animate out of phase: a row of
+ * spinning eggs, each one frame behind its neighbour, hands each egg's frame to
+ * its neighbour every tick, so the same-multiset partner is the neighbour one
+ * egg-width away and every egg would slide one period sideways, whether the row
+ * stands still or rises. The frame can live in the CLUT as well as the texture
+ * coordinates, so the CLUT is no part of this match. The run of the same shape
+ * nearest by a rigid translation is the row itself: a row that stands still is
+ * displaced by zero, a row that rises by its rise, and both are nearer than one
+ * period. */
+static int carry_run_body(const scene_tri_t* prev, const carry_runs_t* pr,
+                          const scene_tri_t* curr, const carry_runs_t* cr, int ci,
+                          float* out_d, int* out_unique) {
     const scene_tri_t* c0 = &curr[cr->lo[ci]];
+    int best = -1;
+    float bd = CARRY_MOVE_MAX, second = CARRY_MOVE_MAX;
     for (int q = 0; q < pr->n; q++) {
         const scene_tri_t* p0 = &prev[pr->lo[q]];
-        if (pr->len[q] != cr->len[ci] || p0->category != c0->category ||
-            p0->textured != c0->textured) continue;
-        if (carry_run_rigid(prev, pr->lo[q], curr, cr->lo[ci], cr->len[ci], 0.0f, 0.0f))
-            return 1;
+        if (pr->taken[q] || pr->len[q] != cr->len[ci] ||
+            p0->category != c0->category || p0->textured != c0->textured) continue;
+        float dx = cr->cx[ci] - pr->cx[q], dy = cr->cy[ci] - pr->cy[q];
+        float d = sqrtf(dx * dx + dy * dy);
+        if (d >= second) continue;
+        if (!carry_run_rigid(prev, pr->lo[q], curr, cr->lo[ci], cr->len[ci], dx, dy)) continue;
+        if (d < bd) { second = bd; bd = d; best = q; }
+        else second = d;
     }
-    return 0;
+    *out_d = bd;
+    *out_unique = best >= 0 && second - bd > CARRY_RIGID_TOL;
+    return best;
 }
 
-/* Rigid-run pass: each multi-entry run whose partner run carries it by one
- * translation is paired by ordinal, whole. A seated run (carry_run_seated) takes
- * no pairing here and reaches the occupancy pass, which holds it still. A run with no partner takes no
+/* The smaller side of the screen box of current run `ci`. */
+static float carry_run_extent(const scene_tri_t* curr, const carry_runs_t* cr, int ci) {
+    const scene_tri_t* t0 = &curr[cr->lo[ci]];
+    float x0 = t0->v[0].sx, x1 = x0, y0 = t0->v[0].sy, y1 = y0;
+    for (int t = cr->lo[ci]; t < cr->lo[ci] + cr->len[ci]; t++)
+        for (int k = 0; k < 3; k++) {
+            x0 = fminf(x0, curr[t].v[k].sx); x1 = fmaxf(x1, curr[t].v[k].sx);
+            y0 = fminf(y0, curr[t].v[k].sy); y1 = fmaxf(y1, curr[t].v[k].sy);
+        }
+    return fminf(x1 - x0, y1 - y0);
+}
+
+enum { CARRY_PICK_SNAP = 0, CARRY_PICK_BODY, CARRY_PICK_CONTENT };
+
+/* How the run pass carries current run `ci`, whose content partner is `q`
+ * (carry_run_partner, or -1). The geometric body (carry_run_body) is taken
+ * when it is unique and either is the content partner or lies nearer than the
+ * run's own smaller side: two sprites of one shape that close overlap, so the
+ * nearer one is the sprite itself, whatever frame it shows. A body farther than
+ * that with a different frame is some other sprite (an inventory egg above the
+ * HUD row the moment the row appears), and does not name the run. The content
+ * partner is taken only when no body, tied or not, lies as near as it: a row
+ * whose layout jumps (eggs stacked two to a slot spread to one each) holds the
+ * same frame one slot over at the same distance as the stacked twin, and the
+ * pairing is a guess. Every other case snaps. *out is the previous run for
+ * CARRY_PICK_BODY. */
+static int carry_run_pick(const scene_tri_t* prev, const carry_runs_t* pr,
+                          const scene_tri_t* curr, const carry_runs_t* cr, int ci,
+                          int q, int* out) {
+    float gd, dq = CARRY_MOVE_MAX;
+    int unique;
+    const int g = carry_run_body(prev, pr, curr, cr, ci, &gd, &unique);
+    if (q >= 0) dq = hypotf(cr->cx[ci] - pr->cx[q], cr->cy[ci] - pr->cy[q]);
+    if (g >= 0 && unique && (g == q || gd <= carry_run_extent(curr, cr, ci))) {
+        *out = g;
+        return CARRY_PICK_BODY;
+    }
+    if (q < 0 || (g >= 0 && gd <= dq + CARRY_RIGID_TOL)) return CARRY_PICK_SNAP;
+    return CARRY_PICK_CONTENT;
+}
+
+/* Pair current run `ci` with previous run `q` by ordinal, whole. */
+static int carry_take_run(carry_runs_t* pr, int q, const carry_runs_t* cr, int ci,
+                          carry_match_t* mt) {
+    pr->taken[q] = 1;
+    for (int k = 0; k < cr->len[ci]; k++) {
+        mt->match[cr->lo[ci] + k] = pr->lo[q] + k;
+        mt->prev_taken[pr->lo[q] + k] = 1;
+        mt->anchored[cr->lo[ci] + k] = 1;
+    }
+    return cr->len[ci];
+}
+
+/* Rigid-run pass: each multi-entry run is paired by ordinal, whole, with the
+ * previous run carry_run_pick names: its geometric body, or its content partner
+ * when that carries it by one translation. A run it names none for takes no
  * pairing at all and every one of its entries falls through to the passes
  * below; a run whose entries displace by more than one amount goes to the
  * segment pass, and only the entries of it that no span carried fall through. */
@@ -1996,11 +2065,14 @@ static int carry_pair_runs(const scene_tri_t* prev, carry_runs_t* pr,   /* pr->t
     for (int i = 0; i < cr->n; i++) {
         int len = cr->len[i];
         if (len < 2) continue;
-        int q = carry_run_partner(pr, cr, i);
-        if (q < 0) continue;
+        int q = carry_run_partner(pr, cr, i), g = -1;
+        int pick = carry_run_pick(prev, pr, curr, cr, i, q, &g);
+        if (pick == CARRY_PICK_BODY) {
+            paired += carry_take_run(pr, g, cr, i, mt); st->lerped++;
+            continue;
+        }
+        if (pick == CARRY_PICK_SNAP) continue;
         float dx = cr->cx[i] - pr->cx[q], dy = cr->cy[i] - pr->cy[q];
-        if (dx * dx + dy * dy > CARRY_RIGID_TOL * CARRY_RIGID_TOL &&
-            carry_run_seated(prev, pr, curr, cr, i)) continue;
         if (!carry_run_rigid(prev, pr->lo[q], curr, cr->lo[i], len, dx, dy)) {
             int segs = 0;
             int got = carry_pair_run_segments(prev, pr->lo[q], curr, cr->lo[i], len,
@@ -2010,13 +2082,7 @@ static int carry_pair_runs(const scene_tri_t* prev, carry_runs_t* pr,   /* pr->t
             paired += got; st->segmented++; st->segs += segs;
             continue;
         }
-        pr->taken[q] = 1;
-        for (int k = 0; k < len; k++) {
-            mt->match[cr->lo[i] + k] = pr->lo[q] + k;
-            mt->prev_taken[pr->lo[q] + k] = 1;
-            mt->anchored[cr->lo[i] + k] = 1;
-        }
-        paired += len; st->lerped++;
+        paired += carry_take_run(pr, q, cr, i, mt); st->lerped++;
     }
     return paired;
 }
@@ -2119,8 +2185,9 @@ static int carry_pair_all(const carry_key_map_t* m,
  * element itself standing still while the pairing sweeps it. `ambiguous_lerp`
  * names the guess instead of its result: a moved pair taken from a content key
  * that two or more entries of either capture hold, with neither the rigid-run
- * nor the occupancy pass naming the partner. Both count only a pair that
- * actually moves. The run counters are the population the rigid pass sorts:
+ * nor the occupancy pass naming the partner. `nearer_twin` counts a moved
+ * pair whose partner lies farther than another previous entry of the same
+ * shape (carry_nearer_twin). All four count only a pair that actually moves. The run counters are the population the rigid pass sorts:
  * `runs` every run of the current capture, `runs_lerped` those carried by one
  * translation, `runs_segmented` those with a same-multiset partner that took
  * more than one translation, `segments_lerped` the spans those were carried by,
@@ -2135,6 +2202,7 @@ typedef struct {
     int      crossed;       /* pairs whose partner is another entry's predecessor */
     int      static_moved;  /* moved entries whose own content stood still */
     int      ambiguous;     /* moved pairs taken from a repeated content key */
+    int      nearer_twin;   /* moved pairs past a nearer same-shape entry (carry_nearer_twin) */
     float    worst;         /* largest min(d_prev, d_curr) seen */
     int      worst_far, worst_uvmm, worst_cross, worst_cat;
     uint32_t worst_seq;
@@ -2167,6 +2235,30 @@ static int carry_twin_of(const scene_tri_t* prev, const uint32_t* prev_key, int 
     return -1;
 }
 
+/* Whether a previous entry other than `self`, of `curr`'s layer and texturing
+ * and of its shape (every vertex's offset from the first within 0.5 px), stands
+ * nearer to `curr` than `self` does by more than 0.5 px. The nearer entry is
+ * the likelier predecessor: `crossed` is the case where it stands on `curr`
+ * exactly, and a body moving less than its own period (a row of identical
+ * sprites rising) pairs with a neighbour one period over only past such an
+ * entry. */
+static int carry_nearer_twin(const scene_tri_t* prev, int prev_n,
+                             const scene_tri_t* curr, int self) {
+    const float d0 = tri_pos_dist(&prev[self], curr);
+    for (int j = 0; j < prev_n; j++) {
+        if (j == self || prev[j].category != curr->category ||
+            prev[j].textured != curr->textured) continue;
+        int same_shape = 1;
+        for (int k = 1; k < 3 && same_shape; k++) {
+            float ex = (prev[j].v[k].sx - prev[j].v[0].sx) - (curr->v[k].sx - curr->v[0].sx);
+            float ey = (prev[j].v[k].sy - prev[j].v[0].sy) - (curr->v[k].sy - curr->v[0].sy);
+            same_shape = ex * ex + ey * ey <= 0.25f;
+        }
+        if (same_shape && tri_pos_dist(&prev[j], curr) + 0.5f < d0) return 1;
+    }
+    return 0;
+}
+
 static void carry_census_note(carry_census_t* cz, const scene_tri_t* prev,
                               const scene_tri_t* curr, const scene_tri_t* app,
                               int crossed, int static_moved, int ambiguous) {
@@ -2194,6 +2286,25 @@ static void carry_census_note(carry_census_t* cz, const scene_tri_t* prev,
     }
 }
 
+/* The census entry of current entry `t`, paired with previous entry
+ * match[t], whose applied (interpolated) triangle is `app`. */
+static void carry_census_pair(carry_census_t* cz, const carry_key_map_t* m,
+                              const carry_match_t* mt, int t, const scene_tri_t* app) {
+    const int pi = mt->match[t];
+    const scene_tri_t* p = &s_overlay_prev[pi];
+    const scene_tri_t* c = &s_overlay_carry[t];
+    if (!(tri_pos_dist(p, c) > 0.0f)) {
+        carry_census_note(cz, p, c, app, 0, 0, 0);
+        return;
+    }
+    carry_census_note(cz, p, c, app,
+                      carry_twin_of(s_overlay_prev, m->key, s_overlay_prev_n, c, 0, pi) >= 0,
+                      carry_twin_of(s_overlay_prev, m->key, s_overlay_prev_n, c,
+                                    mt->ckey[t], pi) >= 0,
+                      !mt->anchored[t] && mt->ambig[t]);
+    if (carry_nearer_twin(s_overlay_prev, s_overlay_prev_n, c, pi)) cz->nearer_twin++;
+}
+
 static void carry_census_flush(const carry_census_t* cz, int carried, int paired,
                                double oalpha, const carry_run_stats_t* st) {
     static uint32_t s_frame = 0xFFFFFFFFu;
@@ -2202,11 +2313,11 @@ static void carry_census_flush(const carry_census_t* cz, int carried, int paired
     fprintf(stderr, "[carrycensus vbl=%u present=%d alpha=%.3f] carried=%d paired=%d"
                     " lerped=%d far_both=%d uv_mismatch=%d crossed=%d static_moved=%d"
                     " runs=%d runs_lerped=%d runs_snapped_disagree=%d"
-                    " runs_segmented=%d segments_lerped=%d ambiguous_lerp=%d",
+                    " runs_segmented=%d segments_lerped=%d ambiguous_lerp=%d nearer_twin=%d",
             s_scene_frame, s_ix++, oalpha, carried, paired,
             cz->lerped, cz->far_both, cz->uv_mismatch, cz->crossed, cz->static_moved,
             st->runs, st->lerped, st->disagree, st->segmented, st->segs,
-            cz->ambiguous);
+            cz->ambiguous, cz->nearer_twin);
     if (cz->lerped == 0) { fprintf(stderr, " NO-ENGAGEMENT\n"); return; }
     fprintf(stderr, " worst=%.2f cat=%d seq=%u %s%s%sprev=(%.1f,%.1f)"
                     " curr=(%.1f,%.1f) applied=(%.1f,%.1f)\n",
@@ -2287,16 +2398,7 @@ void openpete_native_scene_apply_overlay(double alpha) {
                 tri.v[k].sx = (float)(p->v[k].sx + (tri.v[k].sx - p->v[k].sx) * oalpha);
                 tri.v[k].sy = (float)(p->v[k].sy + (tri.v[k].sy - p->v[k].sy) * oalpha);
             }
-            if (census) {
-                const scene_tri_t* c = &s_overlay_carry[t];
-                int moves = tri_pos_dist(p, c) > 0.0f;
-                carry_census_note(&cz, p, c, &tri,
-                                  moves && carry_twin_of(s_overlay_prev, s_map.key,
-                                                         s_overlay_prev_n, c, 0, pi) >= 0,
-                                  moves && carry_twin_of(s_overlay_prev, s_map.key,
-                                                         s_overlay_prev_n, c, s_mt.ckey[t], pi) >= 0,
-                                  moves && !s_mt.anchored[t] && s_mt.ambig[t]);
-            }
+            if (census) carry_census_pair(&cz, &s_map, &s_mt, t, &tri);
         }
         tri.carry = 2;                             /* mark re-applied so the next capture skips it */
         s_scene[s_scene_n++] = tri;

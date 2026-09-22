@@ -33,6 +33,12 @@
 #   disagree=<n>  cap on runs_snapped_disagree over the row: the runs that
 #               found a same-multiset partner and no translation at all, so
 #               every entry of them snapped
+#   nearer=<n>  cap on nearer_twin over the row: the moved pairs whose partner
+#               lies farther than another previous entry of the same shape,
+#               the mispair of a body that moves less than its own period
+#   far=<n>     cap on far_both over the row: lerped tris more than 2 px from
+#               both brackets, for a window in which nothing moves more than
+#               4 px a tick, so any such tri was slid between two sprites
 # A row whose first field does not end in .bk2 is the plain boot — the title
 # screen and the attract demo, which need no input — and replays with no movie,
 # the same movie-less row the presentation corpus takes.
@@ -41,13 +47,14 @@
 #   [carrycensus vbl=<v> present=<i> alpha=<a>] carried=<n> paired=<n>
 #     lerped=<n> far_both=<n> uv_mismatch=<n> crossed=<n> static_moved=<n>
 #     runs=<n> runs_lerped=<n> runs_snapped_disagree=<n> runs_segmented=<n>
-#     segments_lerped=<n> ambiguous_lerp=<n> ...
+#     segments_lerped=<n> ambiguous_lerp=<n> nearer_twin=<n> ...
 # A present whose carry interpolated nothing prints NO-ENGAGEMENT rather than
 # a clean row, so an empty window cannot read as a pass.
 #
 # Pass criterion, per row: crossed = 0 summed over every present of every
-# alpha, and runs_snapped_disagree at or below the row's `disagree` cap when it
-# sets one. VACUOUS (exit 1) when the row's summed `lerped` or `segments_lerped`
+# alpha, runs_snapped_disagree at or below the row's `disagree` cap and
+# nearer_twin and far_both at or below its `nearer` and `far` caps when it
+# sets them. VACUOUS (exit 1) when the row's summed `lerped` or `segments_lerped`
 # is below its floor. far_both, static_moved, ambiguous_lerp and the remaining
 # run counts are reported, not judged.
 #
@@ -157,6 +164,10 @@ min_lerps = int(opts.get('lerps', '1'))
 min_segs = int(opts.get('segs', '0'))
 max_dis = opts.get('disagree')
 max_dis = None if max_dis is None else int(max_dis)
+max_near = opts.get('nearer')
+max_near = None if max_near is None else int(max_near)
+max_far = opts.get('far')
+max_far = None if max_far is None else int(max_far)
 
 # The census fields are read BY NAME, not by position: a line from a build that
 # predates a counter still parses and the absent counter reads 0, instead of the
@@ -167,7 +178,7 @@ kv_re = re.compile(r'(\w+)=(-?[\d.]+)')
 tail_re = re.compile(r'\]\s*(.*)')
 FIELDS = ('lerped', 'far_both', 'crossed', 'static_moved', 'runs', 'runs_lerped',
           'runs_snapped_disagree', 'runs_segmented', 'segments_lerped',
-          'ambiguous_lerp')
+          'ambiguous_lerp', 'nearer_twin')
 tot = dict((f, 0) for f in FIELDS)
 presents = 0
 bad = []
@@ -189,11 +200,11 @@ for path in sys.argv[4:]:
 
 head = ("[carry-subtick] game=%s bk2=%s presents=%d lerped=%d crossed=%d far_both=%d"
         " static_moved=%d runs=%d runs_lerped=%d runs_snapped_disagree=%d"
-        " runs_segmented=%d segments_lerped=%d ambiguous_lerp=%d"
+        " runs_segmented=%d segments_lerped=%d ambiguous_lerp=%d nearer_twin=%d"
         % (game, bk2, presents, tot['lerped'], tot['crossed'], tot['far_both'],
            tot['static_moved'], tot['runs'], tot['runs_lerped'],
            tot['runs_snapped_disagree'], tot['runs_segmented'],
-           tot['segments_lerped'], tot['ambiguous_lerp']))
+           tot['segments_lerped'], tot['ambiguous_lerp'], tot['nearer_twin']))
 if tot['lerped'] < min_lerps:
     print(head + " VACUOUS: floor lerps>=%d" % min_lerps)
     sys.exit(1)
@@ -203,6 +214,13 @@ if tot['segments_lerped'] < min_segs:
 if max_dis is not None and tot['runs_snapped_disagree'] > max_dis:
     print(head + " verdict=FAIL: runs_snapped_disagree=%d exceeds disagree<=%d"
           % (tot['runs_snapped_disagree'], max_dis))
+    sys.exit(1)
+if max_far is not None and tot['far_both'] > max_far:
+    print(head + " verdict=FAIL: far_both=%d exceeds far<=%d" % (tot['far_both'], max_far))
+    sys.exit(1)
+if max_near is not None and tot['nearer_twin'] > max_near:
+    print(head + " verdict=FAIL: nearer_twin=%d exceeds nearer<=%d"
+          % (tot['nearer_twin'], max_near))
     sys.exit(1)
 print(head + " verdict=%s" % ("FAIL" if bad else "PASS"))
 for b in bad[:40]:

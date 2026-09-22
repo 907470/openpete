@@ -1,20 +1,38 @@
 # carry-subtick-corpus.manifest — rows for scripts/check_carry_subtick.sh.
 # Row grammar and the instrument: see games/spyro-2/carry-subtick-corpus.manifest.
 #
-# pause-menu: the pause panel and its glyph rows. 33 presents carry 462
-# interpolated triangles in 99 runs, every run carried by its own translation,
+# pause-menu: the pause panel and its glyph rows. 33 presents carry 396
+# interpolated triangles in 66 runs, every run carried by its own translation,
 # no crossed pair. This is the Spyro 1 leg of the 2D-carry translation, which
 # had no manifest on this game.
 #
 # beast-makers-wild-flight-text at 3305-3315 was tried and reads lerped=0 over
 # 33 presents: the flight timer's glyphs are rebuilt rather than carried, so
 # the carry pairs nothing there and the row measures nothing.
-pause-menu.bk2 | 1800-1810 | lerps=400
+pause-menu.bk2 | 1800-1810 | lerps=300
 #
 # all-eggs: the HUD egg row with every egg collected. Each egg spins, one frame
 # out of phase with its neighbour, so an egg's frame this tick is its
 # neighbour's frame last tick. The row stands still; a pairing that follows the
 # frame pairs each egg with the neighbour 27 px away and slides the row by one
 # egg. 1200-1210 is the row alone, 1290-1300 the row with the level HUD.
-all-eggs.bk2 | 1200-1210 | lerps=200
-all-eggs.bk2 | 1290-1300 | lerps=600
+all-eggs.bk2 | 1200-1210 | lerps=200 nearer=0
+all-eggs.bk2 | 1290-1300 | lerps=600 nearer=0
+#
+# all-eggs rising: the same egg row entering from the bottom of the screen,
+# about 4 px up per tick. No egg's new position was occupied last tick, so
+# `crossed` cannot see a neighbour pairing here; `nearer` caps the pairs taken
+# past a nearer egg of the same shape.
+all-eggs.bk2 | 1628-1640 | lerps=300 nearer=0
+#
+# all-eggs inventory dismiss: the inventory's egg grid closes and the HUD egg
+# row appears at VBL 1517. No egg of the row has a predecessor, so the row
+# snaps; an inventory egg 54 px above is the nearest egg of the same shape and
+# must not be taken for one. Nothing in the window moves, so `far` caps any
+# slide.
+all-eggs.bk2 | 1512-1522 | lerps=200 far=0 nearer=0
+#
+# all-eggs unpause: at VBL 1585 the row, drawn two eggs to a slot, spreads to
+# one egg a slot. Each egg's frame now sits one slot over at the same distance
+# as its stacked twin, so the row snaps rather than sliding to a guess.
+all-eggs.bk2 | 1580-1590 | lerps=100 nearer=0
