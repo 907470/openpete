@@ -36,6 +36,7 @@ code span renders as <code><a>...</a></code>.
 - Spyro 1: Fixed fanning chests' fans rendering pure black at large distances with extended LOD
 - Spyro 1: Fixed 2 missing polys on Stone Hill with extended LOD
 - Spyro 1: Fixed the green pause framebuffer effect not updating with wobble enabled
+- Spyro 1: Fixed moby positioning being slightly off with interpolation active
 
 ## v0.3.0 - 2026-09-10 (Current)
 
