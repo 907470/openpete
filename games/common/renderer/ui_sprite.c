@@ -907,6 +907,44 @@ static int is_freeze_backdrop(CPUState* cpu, uint32_t prim) {
     return clx == ui_game.freeze_clut_x && cly == ui_game.freeze_clut_y;
 }
 
+/* The band the freeze-backdrop FT4s linked this VBL cover: x from the leftmost
+ * quad's left edge to the rightmost's right edge, and the y of their bottom
+ * vertices. */
+static int is_line_f2(CPUState* cpu, uint32_t prim);
+static struct { unsigned frame; int valid; int x0, x1, y; } s_freeze_band;
+static unsigned s_freeze_mask_dropped;   /* engagement count, UI-SPRITE census */
+
+static void freeze_band_note(CPUState* cpu, uint32_t prim) {
+    const uint32_t xy0 = cpu->read_word(prim + 0x08), xy3 = cpu->read_word(prim + 0x20);
+    const int x0 = (int16_t)xy0, x1 = (int16_t)xy3, y = (int16_t)(xy3 >> 16);
+    if (!s_freeze_band.valid || s_freeze_band.frame != openpete_frame) {
+        s_freeze_band.frame = openpete_frame; s_freeze_band.valid = 1;
+        s_freeze_band.x0 = x0; s_freeze_band.x1 = x1; s_freeze_band.y = y;
+        return;
+    }
+    if (x0 < s_freeze_band.x0) s_freeze_band.x0 = x0;
+    if (x1 > s_freeze_band.x1) s_freeze_band.x1 = x1;
+}
+
+/* The black LINE_F2 the pause renderer links after its freeze-backdrop FT4s,
+ * across the band's full width on the band's bottom row. A quad leaves its
+ * bottom row unfilled, so the FT4s stop one row short of their bottom vertices
+ * and that row would show stale VRAM; the line covers it. The native backdrop
+ * is the renderer's own frozen frame over the whole display rect, which fills
+ * that row at every aspect, so the line has nothing to cover and is dropped
+ * with the FT4s it pairs with. */
+static int is_freeze_mask_line(CPUState* cpu, uint32_t prim) {
+    if (!s_freeze_band.valid || s_freeze_band.frame != openpete_frame) return 0;
+    if (!is_line_f2(cpu, prim)) return 0;
+    if ((cpu->read_word(prim + 4) & 0xFFFFFFu) != 0u) return 0;          /* black */
+    const uint32_t xy0 = cpu->read_word(prim + 0x08), xy1 = cpu->read_word(prim + 0x0C);
+    const int ya = (int16_t)(xy0 >> 16), yb = (int16_t)(xy1 >> 16);
+    const int xa = (int16_t)xy0, xb = (int16_t)xy1;
+    return ya == s_freeze_band.y && yb == s_freeze_band.y &&
+           ((xa == s_freeze_band.x0 && xb == s_freeze_band.x1) ||
+            (xb == s_freeze_band.x0 && xa == s_freeze_band.x1));
+}
+
 /* SPRT (screen-space textured sprite, codes 0x64..0x67) — a HUD icon or digit
  * linked one primitive at a time through the chokepoint, as opposed to the
  * glyph chains that link themselves and are fed by text_sprt.c. The packet
@@ -1329,7 +1367,8 @@ static int on_ot_insert(CPUState* cpu, uint32_t addr) {
     if (feed) {
         /* Claimed here, fed at the OT walk, the primitive's words are not
          * final yet (see the dispatch header). */
-        if (is_freeze_backdrop(cpu, prim)) claim(cpu, prim, QK_FREEZE);
+        if (is_freeze_backdrop(cpu, prim)) { freeze_band_note(cpu, prim); claim(cpu, prim, QK_FREEZE); }
+        else if (is_freeze_mask_line(cpu, prim)) s_freeze_mask_dropped++;   /* see is_freeze_mask_line */
         else if (is_ft4(cpu, prim))        claim(cpu, prim, QK_FT4);
         else if (is_dr_mode(cpu, prim))    claim(cpu, prim, QK_DR_MODE);   /* the GPU draw-mode's ABR */
         else if (is_f4_opaque(cpu, prim))  claim(cpu, prim, QK_F4_BAR);    /* letterbox bars */
@@ -1357,11 +1396,12 @@ static int on_ot_insert(CPUState* cpu, uint32_t addr) {
       if (cen && openpete_frame / 100u != last) { last = openpete_frame / 100u;
           fprintf(stderr, "[census f=%u UI-SPRITE] fed=%u sprt=%u mutated=%u lost=%u"
                           " verified=%u stale=%u abr=%d"
-                          " ft4=%u bar=%u panel=%u line=%u sprt_n=%u fade=%u\n",
+                          " ft4=%u bar=%u panel=%u line=%u sprt_n=%u fade=%u freeze_mask=%u\n",
                   openpete_frame, s_fed_prims, s_fed_sprts, s_mutated, s_claim_lost,
                   s_verify_n, s_verify_stale, s_last_abr,
                   s_cls_n[UICLS_FT4], s_cls_n[UICLS_BAR], s_cls_n[UICLS_PANEL],
-                  s_cls_n[UICLS_LINE], s_cls_n[UICLS_SPRT], s_cls_n[UICLS_FADE]); } }
+                  s_cls_n[UICLS_LINE], s_cls_n[UICLS_SPRT], s_cls_n[UICLS_FADE],
+                  s_freeze_mask_dropped); } }
     bbox_report();
     s_in = 0;
     return 1;
