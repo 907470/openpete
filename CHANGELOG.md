@@ -16,6 +16,11 @@ Markdown has none (<kbd>M</kbd>, &times;). A link whose whole text is one
 code span renders as <code><a>...</a></code>.
 -->
 
+## v0.4.1 (Unreleased)
+
+- Spyro 1: Fixed the HUD eggs swimming between each other with interpolation active, including as they rise from the bottom of the screen, when closing the inventory, and when unpausing
+- Spyro 1: Fixed a black line along the bottom of the screen on the pause menu
+
 ## v0.4.0 - 2026-09-22 (Current)
 
 - Fixed subtle flickering with interpolation active
