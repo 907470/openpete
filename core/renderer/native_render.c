@@ -1678,7 +1678,11 @@ void openpete_native_scene_capture_overlay(void) {
  * would otherwise have every tile claimed by the neighbour standing where it
  * lands and read as static; the rigid test over the whole body is the evidence
  * that separates that slide from a body that did not move, and an entry a run
- * did not take still reaches the occupancy pass.
+ * did not take still reaches the occupancy pass. The converse case is a body
+ * that did not move while its content shifted by one period (a row of
+ * identical sprites animated out of phase): a previous run standing exactly
+ * where the current run stands, entry for entry, marks it seated, and a seated
+ * run skips the run pass.
  *
  * The content key of a tri fed with no primitive address (the fade overlay,
  * the letterbox bars) is its ordinal among the other address-less tris: that
@@ -1955,8 +1959,31 @@ static int carry_pair_run_segments(const scene_tri_t* prev, int plo,
     return paired;
 }
 
+/* Whether a previous run of current run `ci`'s layer and length stands exactly
+ * where `ci` stands, entry for entry by ordinal. Such a run is `ci`'s seat: the
+ * body did not move and only its content changed. A row of identical sprites
+ * animated out of phase (spinning eggs, each one frame behind its neighbour)
+ * hands each sprite's frame to its neighbour every tick, so the same-multiset
+ * partner is the neighbour one sprite-width away and the whole body would read
+ * as a rigid slide by one period; the seat is the evidence that it stood
+ * still. A body that genuinely translates has no seat, since each of its
+ * entries left the position its ordinal partner held. */
+static int carry_run_seated(const scene_tri_t* prev, const carry_runs_t* pr,
+                            const scene_tri_t* curr, const carry_runs_t* cr, int ci) {
+    const scene_tri_t* c0 = &curr[cr->lo[ci]];
+    for (int q = 0; q < pr->n; q++) {
+        const scene_tri_t* p0 = &prev[pr->lo[q]];
+        if (pr->len[q] != cr->len[ci] || p0->category != c0->category ||
+            p0->textured != c0->textured) continue;
+        if (carry_run_rigid(prev, pr->lo[q], curr, cr->lo[ci], cr->len[ci], 0.0f, 0.0f))
+            return 1;
+    }
+    return 0;
+}
+
 /* Rigid-run pass: each multi-entry run whose partner run carries it by one
- * translation is paired by ordinal, whole. A run with no partner takes no
+ * translation is paired by ordinal, whole. A seated run (carry_run_seated) takes
+ * no pairing here and reaches the occupancy pass, which holds it still. A run with no partner takes no
  * pairing at all and every one of its entries falls through to the passes
  * below; a run whose entries displace by more than one amount goes to the
  * segment pass, and only the entries of it that no span carried fall through. */
@@ -1972,6 +1999,8 @@ static int carry_pair_runs(const scene_tri_t* prev, carry_runs_t* pr,   /* pr->t
         int q = carry_run_partner(pr, cr, i);
         if (q < 0) continue;
         float dx = cr->cx[i] - pr->cx[q], dy = cr->cy[i] - pr->cy[q];
+        if (dx * dx + dy * dy > CARRY_RIGID_TOL * CARRY_RIGID_TOL &&
+            carry_run_seated(prev, pr, curr, cr, i)) continue;
         if (!carry_run_rigid(prev, pr->lo[q], curr, cr->lo[i], len, dx, dy)) {
             int segs = 0;
             int got = carry_pair_run_segments(prev, pr->lo[q], curr, cr->lo[i], len,

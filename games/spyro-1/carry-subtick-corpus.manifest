@@ -10,3 +10,11 @@
 # 33 presents: the flight timer's glyphs are rebuilt rather than carried, so
 # the carry pairs nothing there and the row measures nothing.
 pause-menu.bk2 | 1800-1810 | lerps=400
+#
+# all-eggs: the HUD egg row with every egg collected. Each egg spins, one frame
+# out of phase with its neighbour, so an egg's frame this tick is its
+# neighbour's frame last tick. The row stands still; a pairing that follows the
+# frame pairs each egg with the neighbour 27 px away and slides the row by one
+# egg. 1200-1210 is the row alone, 1290-1300 the row with the level HUD.
+all-eggs.bk2 | 1200-1210 | lerps=200
+all-eggs.bk2 | 1290-1300 | lerps=600
