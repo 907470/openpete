@@ -4302,64 +4302,131 @@ static int isect_log_on(void) {
                  s = (l && *l && *l != '0'); }
     return s;
 }
-typedef struct { double p[3][3]; double lo[3], hi[3]; } isect_tri;
+/* A face in intersection space: its vertices, bounding box and plane normal
+ * n with nlen = |n|, computed once per face, and whether all of them are
+ * finite. */
+typedef struct { double p[3][3]; double lo[3], hi[3]; double n[3], nlen; int fin; } isect_tri;
 static void isect_cross(const double a[3], const double b[3], double o[3]) {
     o[0] = a[1]*b[2] - a[2]*b[1]; o[1] = a[2]*b[0] - a[0]*b[2]; o[2] = a[0]*b[1] - a[1]*b[0];
 }
 static double isect_dot(const double a[3], const double b[3]) {
     return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
 }
-/* Clip triangle T by the plane (n, d0 = n.q): returns the points of T on the
- * plane (0..3; edge crossings and on-plane vertices) in pts, -1 when T lies on
- * one side, -2 when it lies in the plane. */
-static int isect_clip(const isect_tri* T, const double n[3], double nlen, const double q[3],
-                      double pts[4][3]) {
-    double d[3];
+/* A vertex's side of a plane from its distance numerator g = n.(p - q): the
+ * distance g/nlen, snapped to 0 within ISECT_EPS, classes as +1 or -1 by its
+ * sign, 0 when snapped, and ISECT_NAN when it is not a number (on neither side
+ * and not on the plane). Away from the snap bound the class follows from g
+ * alone: a relative margin far above the rounding of the division decides it,
+ * and the division runs only inside the margin. */
+#define ISECT_NAN 2
+static int isect_side_of(double g, double nlen) {
+    const double a = fabs(g), e = ISECT_EPS * nlen;
+    const int beyond = a > e * (1.0 + 1e-6), within = a < e * (1.0 - 1e-6);
+    if (beyond | within) return beyond * ((g > 0) - (g < 0));
+    const double d = g / nlen;
+    if (fabs(d) < ISECT_EPS) return 0;
+    return d > 0 ? 1 : d < 0 ? -1 : ISECT_NAN;
+}
+/* The side classes s and distance numerators g of T's vertices against the
+ * plane (n, d0 = n.q). Returns -1 when T lies strictly on one side, -2 when it
+ * lies in the plane, else 0. */
+static int isect_side(const isect_tri* T, const double n[3], double nlen, const double q[3],
+                      double g[3], int s[3]) {
     for (int k = 0; k < 3; k++) {
         double v[3] = { T->p[k][0]-q[0], T->p[k][1]-q[1], T->p[k][2]-q[2] };
-        d[k] = isect_dot(n, v) / nlen;
-        if (fabs(d[k]) < ISECT_EPS) d[k] = 0.0;
+        g[k] = isect_dot(n, v);
+        s[k] = isect_side_of(g[k], nlen);
     }
-    if ((d[0] > 0 && d[1] > 0 && d[2] > 0) || (d[0] < 0 && d[1] < 0 && d[2] < 0)) return -1;
-    if (d[0] == 0 && d[1] == 0 && d[2] == 0) return -2;
+    if ((s[0] == 1 && s[1] == 1 && s[2] == 1) || (s[0] == -1 && s[1] == -1 && s[2] == -1))
+        return -1;
+    if (s[0] == 0 && s[1] == 0 && s[2] == 0) return -2;
+    return 0;
+}
+/* The points of T on the plane (edge crossings and on-plane vertices) in pts;
+ * returns their count (0..3). Both ends of a crossing edge lie beyond the snap
+ * bound, so their distances are g/nlen unsnapped. */
+static int isect_clip(const isect_tri* T, const double g[3], const int s[3], double nlen,
+                      double pts[4][3]) {
     int m = 0;
     for (int k = 0; k < 3; k++) {
         int j = (k + 1) % 3;
-        if (d[k] == 0) { memcpy(pts[m++], T->p[k], sizeof(double)*3); }
-        if ((d[k] < 0 && d[j] > 0) || (d[k] > 0 && d[j] < 0)) {
-            double t = d[k] / (d[k] - d[j]);
+        if (s[k] == 0) { memcpy(pts[m++], T->p[k], sizeof(double)*3); }
+        if (s[k] * s[j] == -1) {
+            double dk = g[k] / nlen, dj = g[j] / nlen;
+            double t = dk / (dk - dj);
             for (int c = 0; c < 3; c++) pts[m][c] = T->p[k][c] + t*(T->p[j][c] - T->p[k][c]);
             m++;
         }
     }
     return m;
 }
+/* The number of points isect_clip returns for the side classes s. */
+static int isect_npts(const int s[3]) {
+    int m = 0;
+    for (int k = 0; k < 3; k++) m += (s[k] == 0) + (s[k] * s[(k + 1) % 3] == -1);
+    return m;
+}
+/* A's side of B's plane alone rules the pair out: a degenerate face, A
+ * strictly on one side, or A (finite values) meeting the plane in at most one
+ * point, an overlap of zero length. isect_pair then returns 0 or 2. The
+ * classes are counted without branching on each vertex; a vertex inside the
+ * margin of isect_side_of takes the exact classification. In a triangle every
+ * vertex pair is an edge, so pos * neg edges cross the plane. */
+static int isect_misses(const isect_tri* A, const isect_tri* B) {
+    if (A->nlen < 1e-9 || B->nlen < 1e-9) return 1;
+    const double e = ISECT_EPS * B->nlen, ehi = e * (1.0 + 1e-6), elo = e * (1.0 - 1e-6);
+    int pos = 0, neg = 0, zer = 0, amb = 0;
+    for (int k = 0; k < 3; k++) {
+        double v[3] = { A->p[k][0]-B->p[0][0], A->p[k][1]-B->p[0][1], A->p[k][2]-B->p[0][2] };
+        const double g = isect_dot(B->n, v), a = fabs(g);
+        const int beyond = a > ehi, within = a < elo;
+        pos += beyond & (g > 0); neg += beyond & (g < 0); zer += within; amb += !(beyond | within);
+    }
+    if (amb) {
+        double g[3];
+        int s[3];
+        if (isect_side(A, B->n, B->nlen, B->p[0], g, s) == -1) return 1;
+        return A->fin && B->fin && isect_npts(s) <= 1;
+    }
+    if (pos == 3 || neg == 3) return 1;
+    return A->fin && B->fin && zer + pos * neg <= 1;
+}
+/* The positions t of the points pts[0..m) along the line direction D (|D| =
+ * lD) and the indices of the first and last of them. */
+static void isect_extent(const double pts[4][3], int m, const double D[3], double lD,
+                         double t[4], int* first, int* last) {
+    int i0 = 0, i1 = 0;
+    for (int k = 0; k < m; k++) {
+        t[k] = isect_dot(D, pts[k]) / lD;
+        if (t[k] < t[i0]) i0 = k;
+        if (t[k] > t[i1]) i1 = k;
+    }
+    *first = i0; *last = i1;
+}
 /* 1 = intersect (overlap screen length > tol), 0 = no, 2 = coplanar. */
 static int isect_pair(const isect_tri* A, const isect_tri* B) {
-    double ea[3], fa[3], eb[3], fb[3], nA[3], nB[3];
-    for (int c = 0; c < 3; c++) {
-        ea[c] = A->p[1][c]-A->p[0][c]; fa[c] = A->p[2][c]-A->p[0][c];
-        eb[c] = B->p[1][c]-B->p[0][c]; fb[c] = B->p[2][c]-B->p[0][c];
-    }
-    isect_cross(ea, fa, nA); isect_cross(eb, fb, nB);
-    double lA = sqrt(isect_dot(nA, nA)), lB = sqrt(isect_dot(nB, nB));
-    if (lA < 1e-9 || lB < 1e-9) return 0;
+    if (A->nlen < 1e-9 || B->nlen < 1e-9) return 0;
+    double ga[3], gb[3];
+    int sa3[3], sb3[3];
+    int sa = isect_side(A, B->n, B->nlen, B->p[0], ga, sa3);
+    if (sa == -1) return 0;
+    int sb = isect_side(B, A->n, A->nlen, A->p[0], gb, sb3);
+    if (sb == -1) return 0;
+    if (sa == -2 || sb == -2) return 2;
     double pa[4][3], pb[4][3];
-    int ma = isect_clip(A, nB, lB, B->p[0], pa);
-    if (ma == -1) return 0;
-    int mb = isect_clip(B, nA, lA, A->p[0], pb);
-    if (mb == -1) return 0;
-    if (ma == -2 || mb == -2) return 2;
+    int ma = isect_clip(A, ga, sa3, B->nlen, pa), mb = isect_clip(B, gb, sb3, A->nlen, pb);
     if (ma < 1 || mb < 1) return 0;
-    double D[3]; isect_cross(nA, nB, D);
+    double D[3]; isect_cross(A->n, B->n, D);
     double lD = sqrt(isect_dot(D, D));
     if (lD < 1e-12) return 2;
-    int ia0 = 0, ia1 = 0, ib0 = 0, ib1 = 0;
+    /* A face meeting the other's plane in one point (a shared vertex, or a
+     * vertex touching it) bounds the overlap to that point: zero length. For
+     * finite values the projection below reaches the same verdict. */
+    if ((ma == 1 || mb == 1) && A->fin && B->fin) return 0;
+    int ia0, ia1, ib0, ib1;
     double ta[4], tb[4];
-    for (int k = 0; k < ma; k++) { ta[k] = isect_dot(D, pa[k]) / lD;
-        if (ta[k] < ta[ia0]) ia0 = k; if (ta[k] > ta[ia1]) ia1 = k; }
-    for (int k = 0; k < mb; k++) { tb[k] = isect_dot(D, pb[k]) / lD;
-        if (tb[k] < tb[ib0]) ib0 = k; if (tb[k] > tb[ib1]) ib1 = k; }
+    isect_extent(pa, ma, D, lD, ta, &ia0, &ia1);
+    isect_extent(pb, mb, D, lD, tb, &ib0, &ib1);
     /* Overlap endpoints as 3D points: the later start and the earlier end. */
     const double* s = ta[ia0] > tb[ib0] ? pa[ia0] : pb[ib0];
     const double* e = ta[ia1] < tb[ib1] ? pa[ia1] : pb[ib1];
@@ -4382,35 +4449,94 @@ static int isect_eligible(int i) {
     return s_wtri[i].blend == 0 && s_wtri_moby[i] && s_wtri_ui[i] == 0 && !s_wtri_mangle[i];
 }
 static void isect_tri_of(int i, isect_tri* t) {
+    int fin = 1;
     for (int k = 0; k < 3; k++) {
         double w = s_wtri[i].v[k].vz;
         t->p[k][0] = s_wtri[i].v[k].sx; t->p[k][1] = s_wtri[i].v[k].sy;
         t->p[k][2] = w > 0.0 ? ISECT_K / w : 0.0;
+        fin &= isfinite(t->p[k][0]) && isfinite(t->p[k][1]) && isfinite(t->p[k][2]);
     }
+    double e[3], f[3];
     for (int c = 0; c < 3; c++) {
         t->lo[c] = fmin(t->p[0][c], fmin(t->p[1][c], t->p[2][c]));
         t->hi[c] = fmax(t->p[0][c], fmax(t->p[1][c], t->p[2][c]));
+        e[c] = t->p[1][c]-t->p[0][c]; f[c] = t->p[2][c]-t->p[0][c];
     }
+    isect_cross(e, f, t->n);
+    t->nlen = sqrt(isect_dot(t->n, t->n));
+    t->fin = fin && isfinite(t->nlen);
 }
-static int isect_boxes_apart(const isect_tri* A, const isect_tri* B) {
-    for (int c = 0; c < 3; c++)
-        if (A->hi[c] < B->lo[c] || B->hi[c] < A->lo[c]) return 1;
-    return 0;
-}
+/* The census feeds an instrument (the per-moby log, the select census or the
+ * calibration), which reads every intersecting pair and every face's rank. */
+static int isect_instrumented(void) { return isect_log_on() || moby_rank_cal_on(); }
 typedef struct { long faces, contested, pairs, coplanar, shared; } isect_count;
-/* Tests every pair of the eligible faces idx[0..n) of one moby; sets their
- * contest flags and records the intersecting pairs. */
-static void isect_moby(const isect_tri* T, const int* idx, int n, isect_count* c) {
+typedef struct { const isect_tri* T; const int* idx; isect_count* c; int all; } isect_ctx;
+/* One pair whose bounding boxes overlap, a before b in the moby's face list.
+ * Without an instrument, which counts every verdict, a pair is dropped before
+ * the adjacency test when its result cannot set a contest flag: both faces
+ * contest already, or either face's side of the other's plane rules it out. */
+static void isect_test(const isect_ctx* x, int a, int b) {
+    const int ia = x->idx[a], ib = x->idx[b];
+    const isect_tri *A = &x->T[a], *B = &x->T[b];
+    if (!x->all && ((s_wtri_contest[ia] && s_wtri_contest[ib]) ||
+                    isect_misses(A, B) || isect_misses(B, A)))
+        return;
+    if (isect_shared(&s_wtri[ia], &s_wtri[ib]) >= 2) { x->c->shared++; return; }
+    int r = isect_pair(A, B);
+    x->c->coplanar += r == 2;
+    if (r != 1) return;
+    x->c->pairs++;
+    s_wtri_contest[ia] = 1; s_wtri_contest[ib] = 1;
+    if (s_ip_n < ISECT_PAIRS_MAX) { s_ip_a[s_ip_n] = ia; s_ip_b[s_ip_n] = ib; s_ip_n++; }
+}
+/* A face's bounding box in the sweep order. A bound that is not a number
+ * (every vertex coordinate on that axis is NaN) is widened to infinity, which
+ * like NaN never separates two boxes. */
+typedef struct { double lo[3], hi[3]; int k; } isect_box;
+static void isect_box_of(const isect_tri* t, int k, isect_box* o) {
+    for (int c = 0; c < 3; c++) {
+        o->lo[c] = isnan(t->lo[c]) ? -INFINITY : t->lo[c];
+        o->hi[c] = isnan(t->hi[c]) ? INFINITY : t->hi[c];
+    }
+    o->k = k;
+}
+/* The boxes of T[0..n) in ascending order of x minimum (insertion sort on a
+ * compact key: a moby's face count is small and the sort runs per tick). */
+static void isect_boxes_sorted(const isect_tri* T, int n, isect_box* K) {
+    static struct { double x; int k; } X[MAX_NTRI];
     for (int a = 0; a < n; a++) {
-        for (int b = a + 1; b < n; b++) {
-            if (isect_boxes_apart(&T[a], &T[b])) continue;
-            if (isect_shared(&s_wtri[idx[a]], &s_wtri[idx[b]]) >= 2) { c->shared++; continue; }
-            int r = isect_pair(&T[a], &T[b]);
-            c->coplanar += r == 2;
-            if (r != 1) continue;
-            c->pairs++;
-            s_wtri_contest[idx[a]] = 1; s_wtri_contest[idx[b]] = 1;
-            if (s_ip_n < ISECT_PAIRS_MAX) { s_ip_a[s_ip_n] = idx[a]; s_ip_b[s_ip_n] = idx[b]; s_ip_n++; }
+        const double x = isnan(T[a].lo[0]) ? -INFINITY : T[a].lo[0];
+        int j = a;
+        for (; j > 0 && X[j - 1].x > x; j--) X[j] = X[j - 1];
+        X[j].x = x; X[j].k = a;
+    }
+    for (int s = 0; s < n; s++) isect_box_of(&T[X[s].k], X[s].k, &K[s]);
+}
+/* Tests the pairs of the eligible faces idx[0..n) of one moby whose bounding
+ * boxes overlap; sets their contest flags and records the intersecting pairs.
+ * Sort and sweep on x: the boxes sorted by x minimum, each against the
+ * following boxes whose minimum does not pass its maximum, which enumerates
+ * exactly the pairs overlapping in x; the pairs that also overlap in y and
+ * depth are collected without a branch per pair, then tested. The pair test
+ * takes the lower face-list position first, so its floating-point result does
+ * not depend on the enumeration order. */
+static void isect_moby(const isect_tri* T, const int* idx, int n, isect_count* c) {
+    static isect_box K[MAX_NTRI];
+    static int hit[MAX_NTRI];
+    isect_boxes_sorted(T, n, K);
+    const isect_ctx x = { T, idx, c, isect_instrumented() };
+    for (int s = 0; s < n; s++) {
+        const isect_box* A = &K[s];
+        int m = 0;
+        for (int t = s + 1; t < n && K[t].lo[0] <= A->hi[0]; t++) {
+            const isect_box* B = &K[t];
+            hit[m] = t;
+            m += (B->lo[1] <= A->hi[1]) & (A->lo[1] <= B->hi[1]) &
+                 (B->lo[2] <= A->hi[2]) & (A->lo[2] <= B->hi[2]);
+        }
+        for (int j = 0; j < m; j++) {
+            const int b = K[hit[j]].k;
+            isect_test(&x, A->k < b ? A->k : b, A->k < b ? b : A->k);
         }
     }
     for (int a = 0; a < n; a++) c->contested += s_wtri_contest[idx[a]];
@@ -4476,13 +4602,18 @@ static void native_rank_moby(int i0, int i1, int neg) {
     for (int i = i0 + 1; i < i1; i++)
         if (s_wtri_otk[i] >= 0 && (s_wtri_otk[i] & MOBY_OTK_Q2)) s_nrank[i] = s_nrank[i - 1];
 }
+/* Ranks the mobys with a contested face. The select reads a rank only on a
+ * contested face, so the faces of the other mobys take rank 0 unsorted, and
+ * the sub-tick carry stores none of them; an instrument reads every rank. */
 static void native_rank_build(void) {
     static int s_neg = -1;
     if (s_neg < 0) { const char* e = getenv("OPENPETE_MOBY_RANK_NEGCTL"); s_neg = e && *e == '1'; }
+    const int all = isect_instrumented();
     for (int i0 = 0; i0 < s_gout.n; ) {
-        int i1 = i0;
-        while (i1 < s_gout.n && s_wtri_moby[i1] == s_wtri_moby[i0]) i1++;
-        native_rank_moby(i0, i1, s_neg);
+        int i1 = i0, cont = 0;
+        for (; i1 < s_gout.n && s_wtri_moby[i1] == s_wtri_moby[i0]; i1++) cont |= s_wtri_contest[i1];
+        if (all || cont) native_rank_moby(i0, i1, s_neg);
+        else memset(&s_nrank[i0], 0, (size_t)(i1 - i0) * sizeof s_nrank[0]);
         i0 = i1;
     }
 }
@@ -4497,8 +4628,11 @@ static void native_rank_build(void) {
  * depth. OPENPETE_MOBY_RANK_CARRY=0 recomputes on every present instead. */
 #define RC_BITS 16
 #define RC_SIZE (1 << RC_BITS)
-typedef struct { uint32_t moby, fkey; int32_t rank; uint8_t cont; } rc_ent;
+/* An entry belongs to the table only while its generation is s_rc_gen, so a
+ * new epoch empties the table by advancing the generation. */
+typedef struct { uint32_t moby, fkey; int32_t rank; uint32_t gen : 31, cont : 1; } rc_ent;
 static rc_ent   s_rc[RC_SIZE];
+static uint32_t s_rc_gen;
 static int      s_rc_n;
 static uint32_t s_rc_epoch;
 static int      s_rc_valid;
@@ -4515,20 +4649,23 @@ static void rank_carry_store(void) {
     if (!spyro_native_canon_capture_open()) return;
     uint32_t ep = spyro_native_canon_epoch_stamp();
     if (!s_rc_valid || ep != s_rc_epoch) {
-        memset(s_rc, 0, sizeof s_rc); s_rc_n = 0; s_rc_epoch = ep; s_rc_valid = 1;
+        s_rc_gen = (s_rc_gen + 1) & 0x7FFFFFFFu;
+        if (!s_rc_gen) { memset(s_rc, 0, sizeof s_rc); s_rc_gen = 1; }
+        s_rc_n = 0; s_rc_epoch = ep; s_rc_valid = 1;
     }
     for (int i = 0; i < s_gout.n; i++) {
         if (s_nrank[i] <= 0 || !s_wtri_moby[i] || s_rc_n >= RC_SIZE - (RC_SIZE >> 2)) continue;
         uint32_t h = rc_hash(s_wtri_moby[i], s_wtri_fkey[i]);
-        while (s_rc[h].moby && !(s_rc[h].moby == s_wtri_moby[i] && s_rc[h].fkey == s_wtri_fkey[i]))
+        while (s_rc[h].gen == s_rc_gen &&
+               !(s_rc[h].moby == s_wtri_moby[i] && s_rc[h].fkey == s_wtri_fkey[i]))
             h = (h + 1) & (RC_SIZE - 1);
-        if (!s_rc[h].moby) s_rc_n++;
-        s_rc[h] = (rc_ent){ s_wtri_moby[i], s_wtri_fkey[i], s_nrank[i], s_wtri_contest[i] };
+        if (s_rc[h].gen != s_rc_gen) s_rc_n++;
+        s_rc[h] = (rc_ent){ s_wtri_moby[i], s_wtri_fkey[i], s_nrank[i], s_rc_gen, s_wtri_contest[i] };
     }
 }
 static const rc_ent* rank_carry_find(uint32_t moby, uint32_t fkey) {
     uint32_t h = rc_hash(moby, fkey);
-    for (; s_rc[h].moby; h = (h + 1) & (RC_SIZE - 1))
+    for (; s_rc[h].gen == s_rc_gen; h = (h + 1) & (RC_SIZE - 1))
         if (s_rc[h].moby == moby && s_rc[h].fkey == fkey) return &s_rc[h];
     return NULL;
 }
