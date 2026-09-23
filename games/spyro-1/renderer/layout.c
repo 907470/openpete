@@ -113,6 +113,11 @@ const game_layout_t game_layout = {
                                                      * r_environment.s 0x80029210 steps the
                                                      * record pointer past entry 0 and the
                                                      * quadrants before the cell loop */
+        .hq_tri4_nodes = D_HQ_TRI4_NODES,
+        .hq_tri4_cells = D_HQ_TRI4_CELLS,
+        .hq_tri_uv     = D_HQ_TRI_UV,
+        .hq_tri_uv_mask = 0x78u,                    /* `srl 25; andi 0x78` at
+                                                     * r_environment.s 0x80029E98 */
         .abe_in_tpage = 0,
         .tile_word1_br = 0,
         .lod_dist_default = 0u,

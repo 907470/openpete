@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 0214bf643296f2c91ad29b6f61211ec23cdd7398
+# head: e85062a4928213775b5aa41c82c95aa1a7680ac7
 file	function	score	marked	accepted
 core/config/config.c	harvest_args	30	0	
 core/config/config.c	harvest_base	39	0	
@@ -187,7 +187,7 @@ games/common/renderer/terrain.c	terrain_feed_native	463	0
 games/common/renderer/terrain.c	terrain_near_emit	29	0	
 games/common/renderer/terrain.c	terrain_texrecords	26	0	
 games/common/renderer/terrain.c	terrain_vislist	105	0	
-games/common/renderer/terrain.c	tgpu_build_sector	127	0	
+games/common/renderer/terrain.c	tgpu_build_sector	123	0	
 games/common/renderer/terrain.c	tgpu_ensure	37	0	
 games/common/renderer/terrain.c	tgpu_env_block	30	0	
 games/common/renderer/terrain.c	tgpu_pack_scan	41	0	
@@ -195,7 +195,7 @@ games/common/renderer/terrain.c	tsc_field_census	27	0
 games/common/renderer/terrain.c	tsc_get	107	0	
 games/common/renderer/terrain.c	tsc_lp_grade	31	0	
 games/common/renderer/terrain.c	tsc_vert_anim_refresh	155	0	
-games/common/renderer/terrain.c	walk_sector	720	0	
+games/common/renderer/terrain.c	walk_sector	710	0	
 games/common/renderer/text_moby.c	emit_glyph	26	0	
 games/common/renderer/text_moby.c	font_file_load	39	0	
 games/common/renderer/text_moby.c	text_moby_native_cache	49	0	

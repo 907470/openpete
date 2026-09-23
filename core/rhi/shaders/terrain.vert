@@ -200,6 +200,7 @@ layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
 #define GF_LADNEAR   512
 #define GF_NBKEYS    1024
 #define GF_CELLS4    2048
+#define GF_TRI4      4096
 
 struct TerrainSector {
     vec4 o;        /* xyz: sector origin (world/16), w: uintBitsToFloat(flags) */
@@ -350,13 +351,11 @@ precise dvec3 nc4_node(int r, int c, dvec3 TL, dvec3 TR, dvec3 BL, dvec3 BR) {
  * edge node sits on the segment between its edge's snapped corners at the
  * parameter of its own projection, unless an edge corner is inside the near
  * plane. */
-vec2 nc4_snap_screen(int r, int c, dvec3 TL, dvec3 TR, dvec3 BL, dvec3 BR, dvec3 m)
+/* nc4_snap_edge mirror: the point of the segment between the edge corners'
+ * snapped projections at the parameter of the node's own projection, or the
+ * floor of that projection when an edge corner is inside the near plane. */
+vec2 edge_snap_screen(dvec3 ea, dvec3 eb, dvec3 m)
 {
-    if (pc.snap == 0) return proj_of(m);
-    bool er = (r == 0 || r == 4), ec = (c == 0 || c == 4);
-    if (er == ec) return floor(proj_of(m));
-    dvec3 ea = er ? (r == 0 ? TL : BL) : (c == 0 ? TL : TR);
-    dvec3 eb = er ? (r == 0 ? TR : BR) : (c == 0 ? BL : BR);
     if (ea.z < g.dnear.x || eb.z < g.dnear.x) return floor(proj_of(m));
     vec2 A = floor(proj_of(ea)), B = floor(proj_of(eb));
     vec2 mm = proj_of(m);
@@ -367,6 +366,16 @@ vec2 nc4_snap_screen(int r, int c, dvec3 TL, dvec3 TR, dvec3 BL, dvec3 BR, dvec3
     if (tt < 0.0) tt = 0.0; else if (tt > 1.0) tt = 1.0;
     precise float rx = A.x + tt * dx, ry = A.y + tt * dy;
     return vec2(rx, ry);
+}
+
+vec2 nc4_snap_screen(int r, int c, dvec3 TL, dvec3 TR, dvec3 BL, dvec3 BR, dvec3 m)
+{
+    if (pc.snap == 0) return proj_of(m);
+    bool er = (r == 0 || r == 4), ec = (c == 0 || c == 4);
+    if (er == ec) return floor(proj_of(m));
+    dvec3 ea = er ? (r == 0 ? TL : BL) : (c == 0 ? TL : TR);
+    dvec3 eb = er ? (r == 0 ? TR : BR) : (c == 0 ? BL : BR);
+    return edge_snap_screen(ea, eb, m);
 }
 
 /* nc4_morph mirror: an odd-odd node moves toward the mean of its up-right
@@ -391,6 +400,52 @@ vec2 nc4_screen(int r, int c, dvec3 TL, dvec3 TR, dvec3 BL, dvec3 BR)
     precise double my = ((256.0lf - at) * double(sc.y) + at * 0.5lf * (double(a.y) + double(b.y))) / 256.0lf;
     vec2 o = vec2(float(mx), float(my));
     return pc.snap != 0 ? floor(o) : o;
+}
+
+/* ---- tier-4 triangles (terrain.c nt4_* mirrors) --------------------------
+ * A tier-4 triangle (corners A = i0, B = i1, C = i2) draws as 16
+ * sub-triangles over 15 nodes, node (r, c) at A(4-r-c)/4 + Bc/4 + Cr/4. A
+ * sub-triangle vertex carries bit 30 beside the cell bit 31 in mat_near1,
+ * its sub-triangle in bits 4-7 and its cell in bits 0-3; its member slot is
+ * the role. NT4_SUB is D_8006D0F8's node ids (A, B, C per sub-triangle). */
+const int NT4_SUB[48] = int[48](0, 1, 5,   6, 5, 1,   1, 2, 6,   7, 6, 2,
+                                2, 3, 7,   8, 7, 3,   3, 4, 8,   5, 6, 9,
+                                10, 9, 6,  6, 7, 10,  11, 10, 7, 7, 8, 11,
+                                9, 10, 12, 13, 12, 10, 10, 11, 13, 12, 13, 14);
+/* A node's face edge: 0 none, 1 AB, 2 CA, 3 BC (k_nt4_edge). */
+const int NT4_EDGE[15] = int[15](0, 1, 1, 1, 0, 2, 0, 0, 3, 2, 0, 3, 2, 3, 0);
+
+/* nt4_grid mirror: nodes by the drain's halving order, each the camera-space
+ * mean of its two parents. */
+precise dvec3 nt4_node(int n, dvec3 A, dvec3 B, dvec3 C) {
+    if (n == 0) return A;
+    if (n == 4) return B;
+    if (n == 14) return C;
+    precise dvec3 m2 = (A + B) * 0.5lf, m9 = (A + C) * 0.5lf, m11 = (B + C) * 0.5lf;
+    if (n == 2) return m2;
+    if (n == 9) return m9;
+    if (n == 11) return m11;
+    precise dvec3 r;
+    if      (n == 1)  r = (A + m2) * 0.5lf;
+    else if (n == 3)  r = (B + m2) * 0.5lf;
+    else if (n == 5)  r = (A + m9) * 0.5lf;
+    else if (n == 12) r = (C + m9) * 0.5lf;
+    else if (n == 8)  r = (B + m11) * 0.5lf;
+    else if (n == 13) r = (C + m11) * 0.5lf;
+    else if (n == 6)  r = (A + m11) * 0.5lf;
+    else if (n == 7)  r = (B + m9) * 0.5lf;
+    else              r = (C + m2) * 0.5lf;   /* node 10 */
+    return r;
+}
+
+/* nt4_snap mirror: a corner or interior node floors its own projection, an
+ * edge node sits on its edge's snapped segment. */
+vec2 nt4_screen(int n, dvec3 A, dvec3 B, dvec3 C) {
+    dvec3 m = nt4_node(n, A, B, C);
+    if (pc.snap == 0) return proj_of(m);
+    int e = NT4_EDGE[n];
+    if (e == 0) return floor(proj_of(m));
+    return edge_snap_screen(e == 3 ? B : A, e == 1 ? B : C, m);
 }
 
 /* GTE_SAT mirror (double of the FLOAT screen coord, like the CPU's
@@ -714,6 +769,32 @@ uint cell_node_rgb(int r, int c) {
     uint R = cell_rgb_pt(inCellNear.y, inCellNear.z, r);
     return cell_rgb_pt(L, R, c);
 }
+/* nt4_rgb_mid mirror: the triangle drain's colour average, both words
+ * masked with 0xFFFEFEFF, added, shifted right once. */
+uint nt4_rgb_mid(uint a, uint b) {
+    return ((a & 0xFEFEFFu) + (b & 0xFEFEFFu)) >> 1;
+}
+/* Node n's colour of a tier-4 triangle record: A = near_rgb[0], B = [1],
+ * C = [3] (word 1 byte 0), nodes in nt4_node's parent order. */
+uint nt4_node_rgb(int n) {
+    uint A = inCellNear.x, B = inCellNear.y, C = inCellNear.w;
+    if (n == 0) return A;
+    if (n == 4) return B;
+    if (n == 14) return C;
+    uint m2 = nt4_rgb_mid(A, B), m9 = nt4_rgb_mid(A, C), m11 = nt4_rgb_mid(B, C);
+    if (n == 2) return m2;
+    if (n == 9) return m9;
+    if (n == 11) return m11;
+    if (n == 1)  return nt4_rgb_mid(A, m2);
+    if (n == 3)  return nt4_rgb_mid(B, m2);
+    if (n == 5)  return nt4_rgb_mid(A, m9);
+    if (n == 12) return nt4_rgb_mid(C, m9);
+    if (n == 8)  return nt4_rgb_mid(B, m11);
+    if (n == 13) return nt4_rgb_mid(C, m11);
+    if (n == 6)  return nt4_rgb_mid(A, m11);
+    if (n == 7)  return nt4_rgb_mid(B, m9);
+    return nt4_rgb_mid(C, m2);                  /* node 10 */
+}
 vec4 cell_unorm(uint rgb) {
     return vec4(float(rgb & 0xFFu), float((rgb >> 8) & 0xFFu),
                 float((rgb >> 16) & 0xFFu), 255.0) / 255.0;
@@ -731,6 +812,41 @@ uvec2 cell_uv(uvec4 t, int q) {
  * variant; corner slot = triangle member + the second triangle's offset.
  * Returns false for a cell this record copy does not draw (another draw
  * class's copy carries it). */
+/* A tier-4 triangle record (info bit 24): entry lc of half h is
+ * sub-triangle h*8 + lc, drawn by the entry's first triangle alone (the
+ * second is killed); tile uv[0..5] are nodes A, B, C's (u, v) and uv[6] the
+ * cell. */
+bool tri4_fetch(uint info, int lc, int tri2, int k, bool spare) {
+    if (tri2 != 0) return false;
+    uvec4 t = lc == 0 ? inCellT0 : lc == 1 ? inCellT1 : lc == 2 ? inCellT2
+            : lc == 3 ? inCellT3 : lc == 4 ? inCellT4 : lc == 5 ? inCellT5
+            : lc == 6 ? inCellT6 : inCellT7;
+    int sub = int((info >> 7) & 1u) * 8 + lc;
+    uint cell = (t.y >> 16) & 15u;
+    uint f16 = 1u | (uint(k) << 3) | ((info & 0x7Fu) << 5) | 0x1000u
+             | (((info >> uint(16 + lc)) & 1u) != 0u ? 0x4000u : 0u)
+             | (spare ? 0x8000u : 0u);
+    inPos = ivec4(inC0.xyz, int(f16));
+    inUV = uvec4(cell_uv(t, k), 0u, 0u);
+    inColFar = cell_unorm(nt4_node_rgb(NT4_SUB[sub * 3 + k]));
+    inColNear = inColFar;
+    inMat = uvec4(t.z, t.w, 0u, 0xC0000000u | (uint(sub) << 4) | cell);
+    inFaceFlags = inCellFace.x;
+#ifdef TERRAIN_ANIM
+    inPrevPos = ivec4(inPrevC0.xyz, 0);
+#endif
+#ifdef TERRAIN_NEAR
+    int ra = (k + 1) % 3, rb = (k + 2) % 3;
+    uint ca = 0xFF000000u | nt4_node_rgb(NT4_SUB[sub * 3 + ra]);
+    uint cb = 0xFF000000u | nt4_node_rgb(NT4_SUB[sub * 3 + rb]);
+    inCtxAUV = uvec4(cell_uv(t, ra), 0u, 0u);
+    inCtxACol = uvec2(ca, ca);
+    inCtxBUV = uvec4(cell_uv(t, rb), 0u, 0u);
+    inCtxBCol = uvec2(cb, cb);
+#endif
+    return true;
+}
+
 bool cells_fetch() {
     uint info = inCellFace.y;
 #ifdef TERRAIN_NEAR
@@ -745,6 +861,7 @@ bool cells_fetch() {
 #endif
     int lc = tri >> 1, tri2 = tri & 1;
     if (((info >> uint(8 + lc)) & 1u) == 0u) return false;
+    if ((info & 0x1000000u) != 0u) return tri4_fetch(info, lc, tri2, k, spare);
     int cell = int((info >> 7) & 1u) * 8 + lc;
     uvec4 t = lc == 0 ? inCellT0 : lc == 1 ? inCellT1 : lc == 2 ? inCellT2
             : lc == 3 ? inCellT3 : lc == 4 ? inCellT4 : lc == 5 ? inCellT5
@@ -794,7 +911,9 @@ void main()
     int  subq = int((f16 >> 1) & 3u);         /* HQ sub-quad index           */
     int  role = int((f16 >> 3) & 3u);         /* corner slot in the sub-quad */
     bool is4  = hqv && (inMat.w & 0x80000000u) != 0u;   /* 4x4 near-cell vertex */
+    bool ist  = is4 && (inMat.w & 0x40000000u) != 0u;   /* tier-4 sub-triangle  */
     int  cell = int(inMat.w & 15u);           /* its cell, row-major        */
+    int  tsub = int((inMat.w >> 4) & 15u);    /* its sub-triangle (ist)     */
     bool fillPass = (pc.pass_sel == 1);
     bool keyPass  = (pc.pass_sel == 2);
 
@@ -998,10 +1117,21 @@ void main()
      * subdivide, or (GF_CELLS4, a tier-4 face) the 4x4 cells. */
     bool t4 = near && (gf & GF_CELLS4) != 0 &&
               nc4_tier4(m0.z, m1.z, m2.z, m3c.z, ff & FF_W3_40, ff & FF_W3_80);
-    if (hqv != near || is4 != t4) { kill_vert(); return; }
+    /* A triangle face: the flat GT3, or (GF_TRI4, the tier-4 verdict over
+     * A, B, C, C) its 16 sub-triangle records. */
+    bool t4tri = !quad && !lp && !fillPass && (gf & GF_NEARHQ) != 0 && (gf & GF_TRI4) != 0
+              && (straddle ? front3d : front) && (ff & FF_HQELIG) != 0u
+              && nc4_tier4(m0.z, m1.z, m2.z, m2.z, ff & FF_W3_40, ff & FF_W3_80);
+    if (hqv != (near || t4tri) || is4 != (t4 || t4tri)) { kill_vert(); return; }
     /* nc4_front mirror: a straddling face's cell draws only when one of its
      * two triples faces. */
-    if (is4 && straddle && (ff & FF_DSIDE) == 0u) {
+    if (ist && straddle && (ff & FF_DSIDE) == 0u) {
+        /* nt4_emit's straddler facing: the sub-triangle's own triple. */
+        precise double d = det3d(nt4_node(NT4_SUB[tsub * 3], m0, m1, m2),
+                                 nt4_node(NT4_SUB[tsub * 3 + 1], m0, m1, m2),
+                                 nt4_node(NT4_SUB[tsub * 3 + 2], m0, m1, m2));
+        if (flip ? (d > 0.0lf) : (d < 0.0lf)) { kill_vert(); return; }
+    } else if (is4 && straddle && (ff & FF_DSIDE) == 0u) {
         int cr = cell >> 2, cq = cell & 3;
         precise dvec3 ctl = nc4_node(cr, cq, m0, m1, m3c, m2);
         precise dvec3 ctr = nc4_node(cr, cq + 1, m0, m1, m3c, m2);
@@ -1055,6 +1185,19 @@ void main()
                 else        { ta = m0; tb = m1; tc2 = m3c; sa = p0f; sb = p1f; sc = p3f; }
             }
             sa = snap_of(sa); sb = snap_of(sb); sc = snap_of(sc);
+            pdrop = (g.rim_cnt.x > 0 &&
+                     rim_classified(sa, sb, sc, ta.z, tb.z, tc2.z))
+                 || (covTest &&
+                     cover_dropped(sa, sb, sc, ta.z, tb.z, tc2.z));
+        } else if (ist) {
+            /* Sub-triangle members (A,B,C), nt4_emit's order. */
+            int na = NT4_SUB[tsub * 3], nb = NT4_SUB[tsub * 3 + 1], nc2 = NT4_SUB[tsub * 3 + 2];
+            precise dvec3 ta = nt4_node(na, m0, m1, m2);
+            precise dvec3 tb = nt4_node(nb, m0, m1, m2);
+            precise dvec3 tc2 = nt4_node(nc2, m0, m1, m2);
+            vec2 sa = nt4_screen(na, m0, m1, m2);
+            vec2 sb = nt4_screen(nb, m0, m1, m2);
+            vec2 sc = nt4_screen(nc2, m0, m1, m2);
             pdrop = (g.rim_cnt.x > 0 &&
                      rim_classified(sa, sb, sc, ta.z, tb.z, tc2.z))
                  || (covTest &&
@@ -1209,6 +1352,15 @@ void main()
                 if (tri2n)  { tp[0] = m1; tp[1] = m3c; tp[2] = m2; }
                 else        { tp[0] = m0; tp[1] = m1; tp[2] = m3c; }
             }
+        } else if (ist) {
+            /* Sub-triangle members (A,B,C); each carries its emitted
+             * point (the snap) as its override. */
+            for (int k = 0; k < 3; k++) {
+                int n = NT4_SUB[tsub * 3 + k];
+                tp[k]  = nt4_node(n, m0, m1, m2);
+                tos[k] = nt4_screen(n, m0, m1, m2);
+            }
+            tov = true;
         } else if (is4) {
             /* Cell members (TL,TR,BL) / (TR,BL,BR); each carries its
              * emitted point (snap and morph) as its override. */
@@ -1337,6 +1489,10 @@ void main()
 #endif
         mo = mac_of(lown, sdel);
         sscr = snap_of(proj_of(mo));
+    } else if (ist) {
+        int n = NT4_SUB[tsub * 3 + role];
+        mo = nt4_node(n, m0, m1, m2);
+        sscr = nt4_screen(n, m0, m1, m2);
     } else if (is4) {
         precise dvec3 TL = m0, TR = m1, BL = m3c, BR = m2;
         int nr = (cell >> 2) + (role >> 1), nq = (cell & 3) + (role & 1);
@@ -1365,6 +1521,12 @@ void main()
         float ok;
         if (!hqv) {
             ok = float((m0.z + m1.z + m2.z + m3c.z) * 4.0lf);
+        } else if (ist) {
+            /* the sub-triangle's SZ A + SZ B + 2 SZ C (nt4_emit's emit_otkey) */
+            precise double zs = nt4_node(NT4_SUB[tsub * 3], m0, m1, m2).z
+                              + nt4_node(NT4_SUB[tsub * 3 + 1], m0, m1, m2).z
+                              + 2.0lf * nt4_node(NT4_SUB[tsub * 3 + 2], m0, m1, m2).z;
+            ok = float(zs * 4.0lf);
         } else if (is4) {
             /* the cell's own corner sum (emit_quad_cv's emit_otkey) */
             int cr = cell >> 2, cq = cell & 3;

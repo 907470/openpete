@@ -254,6 +254,20 @@ typedef struct game_layout {
          * base entry and the four 2x2 quadrants (r_environment.s
          * .L80029204-0x80029498, table D_8006CF58). */
         uint32_t hq_cells4;
+        /* The same drain's triangle pass, 0 when the port does not draw it.
+         * A tier-4 triangle is split into 16 sub-triangles over 15 nodes;
+         * `hq_tri4_nodes` is its 16-word sub-triangle table (node ids A, B, C
+         * in bytes 3, 2, 1, cell selector in bits 2-5, UV orientation in bits
+         * 0-1), `hq_tri4_cells` the byte table the selector plus the face's
+         * UV rotation indexes (cell * 8, the rotated 4x4 grid),
+         * `hq_tri_uv` the per-orientation UV offset table (4 blocks of 128
+         * bytes) and `hq_tri_uv_mask` the mask on the tile's word1 >> 25
+         * index into a block. Spyro 1: D_8006D0F8, D_8006D388, D_8006D3C8,
+         * 0x78 (r_environment.s 0x80029E18-0x80029ECC). */
+        uint32_t hq_tri4_nodes;
+        uint32_t hq_tri4_cells;
+        uint32_t hq_tri_uv;
+        uint32_t hq_tri_uv_mask;
         /* Semi-transparency: Spyro 1 flags it per face; Spyro 3 in bit 15 of
          * the tile's TPAGE halfword. */
         int      abe_in_tpage;

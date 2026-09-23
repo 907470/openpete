@@ -65,10 +65,11 @@ enum {
     OPTC_ARENA_N_SUB,
     OPTC_ARENA_N_LP,
     /* 4x4 near-cell records (rhi_terrain_cell, one per half of a tier-4-
-     * eligible HQ face, drawn instanced by the terrain_cells pipelines). The
-     * CN family belongs to near-variant sectors and draws with their chunks
-     * (OPTC_SF_NEARVAR); the CA family (rhi_terrain_cell_anim, previous
-     * corners appended) belongs to poly-anim sectors. One arena per HP draw
+     * eligible HQ quad or triangle, drawn instanced by the terrain_cells
+     * pipelines). The CN family belongs to near-variant sectors and draws
+     * with their chunks (OPTC_SF_NEARVAR); the CA family
+     * (rhi_terrain_cell_anim, previous corners appended) belongs to
+     * poly-anim sectors. One arena per HP draw
      * class; no LP class, as cells are HP faces. These arenas count RECORDS,
      * not vertices. */
     OPTC_ARENA_CN_OPAQUE,
@@ -148,6 +149,11 @@ enum {
                                    * face (a corner SZ3 under near_corner, word
                                    * 3 near_flag_tier2 clear) draws its 4x4
                                    * cell variant instead of the 2x2          */
+#define OPTC_GF_TRI4       4096u  /* game_layout.terrain.hq_tri4_nodes != 0: a
+                                   * tier-4 triangle (the same verdict over
+                                   * corners A, B, C, C) draws its 16
+                                   * sub-triangle records instead of the flat
+                                   * GT3                                      */
 
 /* face_flags bit layout lives with rhi_terrain_vertex in rhi.h. */
 #define OPTC_SLOT_DEAD     511u

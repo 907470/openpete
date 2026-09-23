@@ -323,6 +323,21 @@ addr = 0x8006D058
 note = "D_8006D058 — the HQ tiledef UV-orientation offset table: 8-byte entries of per-corner (du | dv<<8) deltas indexed by tiledef word1 >> 25 (func_800276A0 block_80027EA8)"
 
 [[symbol]]
+name = "D_HQ_TRI4_NODES"
+addr = 0x8006D0F8
+note = "D_8006D0F8 — the tier-4 triangle drain's 16 sub-triangles: node ids A,B,C in bytes 3,2,1, cell selector bits 2-5, UV orientation bits 0-1 (r_environment.s 0x80029E18)"
+
+[[symbol]]
+name = "D_HQ_TRI4_CELLS"
+addr = 0x8006D388
+note = "D_8006D388 — the tier-4 triangle drain's cell byte offsets (cell * 8) by selector + UV rotation (r_environment.s 0x80029E4C-0x80029E58)"
+
+[[symbol]]
+name = "D_HQ_TRI_UV"
+addr = 0x8006D3C8
+note = "D_8006D3C8 — the triangle drains' UV offset table: 4 orientation blocks of 128 bytes, 8-byte entries indexed by tiledef word1 >> 25 & 0x78 (r_environment.s 0x80029E88-0x80029ECC)"
+
+[[symbol]]
 name = "F_MOBY_SHADOWS"
 addr = 0x80059F8C
 kind = "function"
