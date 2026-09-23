@@ -186,10 +186,6 @@ def launch(work, tag, cap, shot_vbl, frame_limit, extra):
            "--vibration", "0", "--renderer", "vk", "--screenshot-native-only",
            "--screenshot-on-frame", str(shot_vbl), "--screenshot-output", shot,
            "--frame-limit", str(frame_limit), "--no-card", "--mute", "1",
-           # The stderr log mirror drains fd 2 on an SDL thread that SDL_Quit
-           # detaches before the exit handlers print: a mirrored run can lose
-           # its exit census line and read an earlier one as its peak.
-           "--log-file", "off",
            "--disc", DISC] + list(extra)
     lf = open(log, "wb")
     p = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT, env=child_env(cap))
