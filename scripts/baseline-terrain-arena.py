@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """baseline-terrain-arena.py — per-level terrain-arena high-water baseline.
 
-The retained terrain cache holds fifteen vertex arenas whose capacities are
+The retained terrain cache holds fifteen vertex arenas and eight cell-record
+arenas (CN_*, CA_*: counted in records) whose capacities are
 generated from this baseline (scripts/gen-terrain-arena-caps.py). An arena
 that runs out returns -1 from its chunk allocator, the builder claims the
 sector back to the CPU walk, and the cache asks the device thread for an
@@ -98,19 +99,25 @@ ARENAS = [
     "OPAQUE", "ALPHA", "ADD", "SUB", "LP",
     "A_OPAQUE", "A_ALPHA", "A_ADD", "A_SUB", "A_LP",
     "N_OPAQUE", "N_ALPHA", "N_ADD", "N_SUB", "N_LP",
+    "CN_OPAQUE", "CN_ALPHA", "CN_ADD", "CN_SUB",
+    "CA_OPAQUE", "CA_ALPHA", "CA_ADD", "CA_SUB",
 ]
 
 POSES = ("spawn", "topdown")
 ROW_KINDS = ("spawn", "topdown", "bk2", "demo")
-# The four arenas the sizing turns on; the rest sit at the 16,384-vertex floor.
-REPORT_ARENAS = ("OPAQUE", "A_OPAQUE", "N_OPAQUE", "N_LP")
+# The arenas the sizing turns on; the rest sit at their floor (16,384
+# vertices, or 256 records on a cell arena).
+REPORT_ARENAS = ("OPAQUE", "A_OPAQUE", "N_OPAQUE", "N_LP", "CN_OPAQUE")
 
 # Every arena's capacity for a generating run. The largest per-arena demand
 # measured across the levels is OPAQUE at ~451,600 vertices, so twice that
-# binds nowhere. Cost per process: 903,258 x (15 x 64 B + 5 x 32 B + 5 x 24 B)
-# = 1.12 GB of address space per buffer generation, doubled for the one level
-# edge each run crosses while the outgoing buffers drain. llvmpipe backs it
-# with host memory, and only the written prefix is ever touched.
+# binds nowhere. The cell-record arenas take a sixteenth of it in records
+# (OPENPETE_TC_INITIAL_CAP's rule, core/renderer/native_terrain_cache.c).
+# Cost per process: 903,258 x (15 x 64 B + 5 x 32 B + 5 x 24 B) plus
+# 56,453 x (4 x 176 B + 4 x 200 B) = 1.21 GB of address space per buffer
+# generation, doubled for the one level edge each run crosses while the
+# outgoing buffers drain. llvmpipe backs it with host memory, and only the
+# written prefix is ever touched.
 GEN_CAP = 903258
 
 # The screenshot is what brings the native renderer up headless; the run must

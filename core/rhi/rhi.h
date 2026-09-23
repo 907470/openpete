@@ -413,6 +413,60 @@ typedef struct rhi_terrain_nearctx {
     uint32_t b_far, b_near;
 } rhi_terrain_nearctx;          /* 24 bytes */
 
+/* 4x4 near-cell records (the terrain cache's cell arenas; one INSTANCE per
+ * record, drawn by the terrain_cells vertex stages). A tier-4-eligible HQ face
+ * (the near drain's 5x5 node grid, 16 cells, each textured from a 16x16 tile,
+ * r_environment.s 0x8002928C) carries its parent corners and raw near
+ * colours once, beside the cell tiles; the vertex stage derives each cell vertex from the record and gl_VertexIndex — node
+ * position, colour (the drain's halving order over the four near colours),
+ * tile UV and material — so no per-vertex cell data is stored.
+ *
+ * A record holds EIGHT of the face's 16 cells (one half, row-major cells 0-7
+ * or 8-15): the whole face would need 16 cell attributes beside the face
+ * context, past the 16 vertex-input locations every Vulkan device provides.
+ * A record lives in the cell arena of one draw class and draws only the cells
+ * its mask names, so a face whose tiles span blend classes has one record copy
+ * per class. */
+typedef struct rhi_terrain_cell_tile {
+    uint8_t  uv[8];             /* u,v of the cell corners in [TL,TR,BL,BR]
+                                 * order: the 16x16 tile at hq_cells4 + i*8
+                                 * with the D_8006D058 orientation applied   */
+    uint32_t mat0;              /* rhi_terrain_vertex.mat_far0 packing, the
+                                 * face's material bucket in bits 24-31      */
+    uint32_t mat1;              /* clut_raw | HD-fold entry id << 16         */
+} rhi_terrain_cell_tile;        /* 16 bytes */
+
+typedef struct rhi_terrain_cell {
+    int16_t  c0x, c0y, c0z;     /* parent face corners i0,i1,i2,i3,         */
+    int16_t  c1x, c1y, c1z;     /* sector-local x4 fixed point, the         */
+    int16_t  c2x, c2y, c2z;     /* rhi_terrain_vertex c0x..c3z layout        */
+    int16_t  c3x, c3y, c3z;
+    uint32_t face_flags;        /* rhi_terrain_vertex.face_flags            */
+    uint32_t info;              /* bits 0-6: HQ record id (scroll tile id);
+                                 * bit 7: half (0 = cells 0-7, 1 = 8-15);
+                                 * bits 8-15: cells this record draws;
+                                 * bits 16-23: cells whose tile is blended
+                                 * (the cover-drop key, flags16 bit 14)      */
+    uint32_t near_rgb[4];       /* raw near colours of corners i0..i3       */
+    rhi_terrain_cell_tile tile[8];
+} rhi_terrain_cell;             /* 176 bytes */
+
+/* Poly-anim sectors' records: the same plus the previous-tick corners the
+ * terrain_anim stage lerps from (rhi_terrain_prev's c0x..c3z). */
+typedef struct rhi_terrain_cell_anim {
+    rhi_terrain_cell cur;
+    int16_t  p0x, p0y, p0z;
+    int16_t  p1x, p1y, p1z;
+    int16_t  p2x, p2y, p2z;
+    int16_t  p3x, p3y, p3z;
+} rhi_terrain_cell_anim;        /* 200 bytes */
+
+/* Vertices per cell record instance: 8 cells x 2 triangles, each baked as
+ * the near variant's primary + spare fan triangle (6) or as the anim
+ * variant's single triangle (3). */
+#define RHI_TERRAIN_CELL_VERTS_NEAR 96u
+#define RHI_TERRAIN_CELL_VERTS_ANIM 48u
+
 /* RHI_BLEND_SUBTRACT = PSX ABR mode 2 (dst = B - F): reverse-subtract, src ONE,
  * dst ONE — used by shadows (subtractive darkening). */
 /* RHI_BLEND_ADD_QUARTER = PSX ABR mode 3 (dst = B + F/4): add with the source
@@ -544,6 +598,13 @@ typedef struct {
                                  * chunks). Mutually exclusive with
                                  * terrain_anim; bind the ctx buffer with
                                  * rhi_bind_vertex_buffer2.                   */
+    bool           terrain_cells; /* with terrain_pipeline: the vertex input is
+                                 * ONE instance-rate binding of cell records
+                                 * (rhi_terrain_cell, locations 0..12; with
+                                 * terrain_anim, rhi_terrain_cell_anim, plus
+                                 * the previous corners at 13..15) and no
+                                 * per-vertex binding. Draw with
+                                 * rhi_draw_instanced.                        */
 } rhi_pipeline_desc;
 
 /* Host-visible vertex buffer (map-and-memcpy updates).
@@ -873,6 +934,11 @@ void rhi_set_depth_bias(rhi_device *dev, float constant, float clamp, float slop
  * pipeline desc's push_const_size). */
 void rhi_push_constants(rhi_device *dev, const void *data, uint32_t size);
 void rhi_draw(rhi_device *dev, uint32_t vertex_count, uint32_t first_vertex);
+/* Instanced draw: vertex_count vertices per instance (gl_VertexIndex restarts
+ * at first_vertex for each), instance_count instances from first_instance
+ * (the instance-rate binding's record index). Counts as one draw call. */
+void rhi_draw_instanced(rhi_device *dev, uint32_t vertex_count, uint32_t instance_count,
+                        uint32_t first_vertex, uint32_t first_instance);
 /* Number of rhi_draw calls recorded since the last rhi_begin_frame (perf
  * census — the draw-submission count the material batching is minimizing). */
 uint32_t rhi_draw_calls(rhi_device *dev);

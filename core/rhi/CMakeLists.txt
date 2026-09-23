@@ -60,6 +60,22 @@ add_custom_command(
     COMMENT "glslangValidator terrain.vert (TERRAIN_NEAR) -> terrain_near.vert.spv"
     VERBATIM)
 list(APPEND RHI_SHADER_SPV ${RHI_SHADER_OUT_DIR}/terrain_near.vert.spv)
+# terrain_cells_near.vert / terrain_cells_anim.vert: terrain.vert recompiled
+# for the 4x4 near-cell records (one instance-rate binding; each cell vertex
+# derived from its record), with the near clip-fan or the poly-anim lerp.
+foreach(v near anim)
+    string(TOUPPER ${v} V)
+    add_custom_command(
+        OUTPUT ${RHI_SHADER_OUT_DIR}/terrain_cells_${v}.vert.spv
+        COMMAND ${GLSLANG_VALIDATOR} -V -I${RHI_SHADER_SRC_DIR}
+                --define-macro TERRAIN_CELLS=1 --define-macro TERRAIN_${V}=1
+                ${RHI_SHADER_SRC_DIR}/terrain.vert
+                -o ${RHI_SHADER_OUT_DIR}/terrain_cells_${v}.vert.spv
+        DEPENDS ${RHI_SHADER_SRC_DIR}/terrain.vert ${RHI_SHADER_INCLUDES}
+        COMMENT "glslangValidator terrain.vert (TERRAIN_CELLS, TERRAIN_${V}) -> terrain_cells_${v}.vert.spv"
+        VERBATIM)
+    list(APPEND RHI_SHADER_SPV ${RHI_SHADER_OUT_DIR}/terrain_cells_${v}.vert.spv)
+endforeach()
 # Embed the compiled .spv into the binary: a build-time `cmake -P` step turns
 # the SPIR-V into a generated C source (byte arrays + a name->blob table),
 # which is compiled into the library. The renderer then loads shaders from

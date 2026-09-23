@@ -687,7 +687,8 @@ unsigned openpete_mods_material_terrain_epoch(void);
  * the faces whose bucket matches the pass being drawn; the material epoch
  * invalidates the bake. Identity, never an outcome — a slot number would
  * be stale one present later. */
-#define OPENPETE_MATERIAL_TER_VARIANTS 3  /* arena vertex stage: plain/anim/near */
+#define OPENPETE_MATERIAL_TER_VARIANTS 5  /* arena vertex stage: plain/anim/near,
+                                          * then the anim/near cell records */
 /* Colour slot: world, world-MARK (hole-fill coverage), fill (LP backing),
  * then the three PSX blend classes. Depth and key passes shade nothing and
  * need no material pipeline. */

@@ -32,6 +32,7 @@
  * in front of the camera, which is what makes the raw H/m3 projection (no
  * near clipping, no straddle handling) safe here. */
 
+#ifndef TERRAIN_CELLS
 layout(location = 0) in ivec4 inPos;      /* xyz: sector-local x4 fixed; w: flags16 */
 layout(location = 1) in uvec4 inUV;       /* far u,v, near u,v (texels)   */
 layout(location = 2) in vec4  inColFar;   /* far colour  (UNORM 0..1)     */
@@ -41,7 +42,8 @@ layout(location = 5) in uint  inFaceFlags;
 layout(location = 6) in ivec4 inC0;       /* c0.xyz, c1.x   (x4 fixed)    */
 layout(location = 7) in ivec4 inC1;       /* c1.yz, c2.xy                 */
 layout(location = 8) in ivec4 inC2;       /* c2.z, c3.xyz                 */
-#ifdef TERRAIN_ANIM
+#endif
+#if defined(TERRAIN_ANIM) && !defined(TERRAIN_CELLS)
 /* Poly-anim chunks (binding 1, rhi_terrain_prev): previous-tick twin of the
  * position + parent corners. Every local coordinate is lerped prev->cur in
  * fp64 at the build's alpha and CAST TO FLOAT before the camera transform —
@@ -52,7 +54,7 @@ layout(location = 10) in ivec4 inPrevC0;
 layout(location = 11) in ivec4 inPrevC1;
 layout(location = 12) in ivec4 inPrevC2;
 #endif
-#ifdef TERRAIN_NEAR
+#if defined(TERRAIN_NEAR) && !defined(TERRAIN_CELLS)
 /* Near-variant chunks (binding 1, rhi_terrain_nearctx): the OTHER two
  * emitted-tri members' attributes, in emit order relative to self
  * (a = self+1, b = self+2 mod 3). Positions need no context — every vertex
@@ -63,6 +65,47 @@ layout(location = 9)  in uvec4 inCtxAUV;  /* a: uf, vf, un, vn            */
 layout(location = 10) in uvec2 inCtxACol; /* a: far, near (R8G8B8A8)      */
 layout(location = 11) in uvec4 inCtxBUV;
 layout(location = 12) in uvec2 inCtxBCol;
+#endif
+#ifdef TERRAIN_CELLS
+/* 4x4 near-cell records (rhi_terrain_cell, one per INSTANCE): the face
+ * corners, face flags, raw near colours and eight cell tiles. cells_fetch()
+ * derives this vertex's attributes from the record and gl_VertexIndex into
+ * the same names the chunk variants read from their vertex inputs, so main()
+ * runs unchanged on them. Compiled with TERRAIN_NEAR (near-variant sectors,
+ * 6 vertices per cell triangle) or TERRAIN_ANIM (poly-anim sectors, 3). */
+layout(location = 0)  in ivec4 inC0;
+layout(location = 1)  in ivec4 inC1;
+layout(location = 2)  in ivec4 inC2;
+layout(location = 3)  in uvec2 inCellFace;  /* face_flags, record info    */
+layout(location = 4)  in uvec4 inCellNear;  /* raw near colours i0..i3    */
+layout(location = 5)  in uvec4 inCellT0;    /* tile: uv TL,TR | uv BL,BR | mat0 | mat1 */
+layout(location = 6)  in uvec4 inCellT1;
+layout(location = 7)  in uvec4 inCellT2;
+layout(location = 8)  in uvec4 inCellT3;
+layout(location = 9)  in uvec4 inCellT4;
+layout(location = 10) in uvec4 inCellT5;
+layout(location = 11) in uvec4 inCellT6;
+layout(location = 12) in uvec4 inCellT7;
+#ifdef TERRAIN_ANIM
+layout(location = 13) in ivec4 inPrevC0;    /* previous-tick corners      */
+layout(location = 14) in ivec4 inPrevC1;
+layout(location = 15) in ivec4 inPrevC2;
+#endif
+ivec4 inPos;
+uvec4 inUV;
+vec4  inColFar;
+vec4  inColNear;
+uvec4 inMat;
+uint  inFaceFlags;
+#ifdef TERRAIN_ANIM
+ivec4 inPrevPos;
+#endif
+#ifdef TERRAIN_NEAR
+uvec4 inCtxAUV;
+uvec2 inCtxACol;
+uvec4 inCtxBUV;
+uvec2 inCtxBCol;
+#endif
 #endif
 
 layout(push_constant) uniform TerrainPC {
@@ -649,8 +692,97 @@ vec2 scr_of(cvx v) { return v.ov ? v.os : snap_of(proj_of(v.m)); }
 #define CLIP_PROJ_LIMIT 2048.0
 #endif
 
+#ifdef TERRAIN_CELLS
+/* tgpu_rgb_mid mirror: the walk's per-channel (a + b) >> 1 on packed RGB. */
+uint cell_rgb_mid(uint a, uint b) {
+    return (((a & 0xFFu) + (b & 0xFFu)) >> 1)
+         | ((((a >> 8) & 0xFFu) + ((b >> 8) & 0xFFu)) >> 1) << 8
+         | ((((a >> 16) & 0xFFu) + ((b >> 16) & 0xFFu)) >> 1) << 16;
+}
+/* tgpu_rgb_pt mirror: node k (0..4) of the 5-node edge a..b in the drain's
+ * halving order (midpoint first, then the quarter points off it). */
+uint cell_rgb_pt(uint a, uint b, int k) {
+    if (k == 0) return a;
+    if (k == 4) return b;
+    uint m = cell_rgb_mid(a, b);
+    return k == 2 ? m : cell_rgb_mid(k == 1 ? a : b, m);
+}
+/* Node (r, c) colour of the 5x5 grid from the four raw near colours
+ * (i0 = TL, i1 = TR, i2 = BR, i3 = BL): rows first, then along the row. */
+uint cell_node_rgb(int r, int c) {
+    uint L = cell_rgb_pt(inCellNear.x, inCellNear.w, r);
+    uint R = cell_rgb_pt(inCellNear.y, inCellNear.z, r);
+    return cell_rgb_pt(L, R, c);
+}
+vec4 cell_unorm(uint rgb) {
+    return vec4(float(rgb & 0xFFu), float((rgb >> 8) & 0xFFu),
+                float((rgb >> 16) & 0xFFu), 255.0) / 255.0;
+}
+/* Corner q's texel (u, v) of a tile: TL,TR in x, BL,BR in y, a byte each. */
+uvec2 cell_uv(uvec4 t, int q) {
+    uint w = (q < 2) ? t.x : t.y;
+    uint sh = uint(q & 1) * 16u;
+    return uvec2((w >> sh) & 0xFFu, (w >> (sh + 8u)) & 0xFFu);
+}
+/* Fill the per-vertex names main() reads with what the baked cell vertex at
+ * this index carried: an instance draws 8 cells x 2 triangles (TL,TR,BL) +
+ * (TR,BL,BR) in cell order, each triangle 6 vertices on the near variant
+ * (primary fan triangle, then the flags16-bit-15 spare) or 3 on the anim
+ * variant; corner slot = triangle member + the second triangle's offset.
+ * Returns false for a cell this record copy does not draw (another draw
+ * class's copy carries it). */
+bool cells_fetch() {
+    uint info = inCellFace.y;
+#ifdef TERRAIN_NEAR
+    int tri = gl_VertexIndex / 6;
+    int w6 = gl_VertexIndex - tri * 6;
+    bool spare = w6 >= 3;
+    int k = spare ? w6 - 3 : w6;
+#else
+    int tri = gl_VertexIndex / 3;
+    int k = gl_VertexIndex - tri * 3;
+    bool spare = false;
+#endif
+    int lc = tri >> 1, tri2 = tri & 1;
+    if (((info >> uint(8 + lc)) & 1u) == 0u) return false;
+    int cell = int((info >> 7) & 1u) * 8 + lc;
+    uvec4 t = lc == 0 ? inCellT0 : lc == 1 ? inCellT1 : lc == 2 ? inCellT2
+            : lc == 3 ? inCellT3 : lc == 4 ? inCellT4 : lc == 5 ? inCellT5
+            : lc == 6 ? inCellT6 : inCellT7;
+    int cr = cell >> 2, cq = cell & 3;
+    int role = k + tri2;
+    uint f16 = 1u | (uint(role) << 3) | ((info & 0x7Fu) << 5) | 0x1000u
+             | (tri2 != 0 ? 0x2000u : 0u)
+             | (((info >> uint(16 + lc)) & 1u) != 0u ? 0x4000u : 0u)
+             | (spare ? 0x8000u : 0u);
+    inPos = ivec4(inC0.xyz, int(f16));
+    inUV = uvec4(cell_uv(t, role), 0u, 0u);
+    uint rgb = cell_node_rgb(cr + (role >> 1), cq + (role & 1));
+    inColFar = cell_unorm(rgb);
+    inColNear = inColFar;
+    inMat = uvec4(t.z, t.w, 0u, 0x80000000u | uint(cell));
+    inFaceFlags = inCellFace.x;
+#ifdef TERRAIN_ANIM
+    inPrevPos = ivec4(inPrevC0.xyz, 0);
+#endif
+#ifdef TERRAIN_NEAR
+    int ra = tri2 + (k + 1) % 3, rb = tri2 + (k + 2) % 3;
+    uint ca = 0xFF000000u | cell_node_rgb(cr + (ra >> 1), cq + (ra & 1));
+    uint cb = 0xFF000000u | cell_node_rgb(cr + (rb >> 1), cq + (rb & 1));
+    inCtxAUV = uvec4(cell_uv(t, ra), 0u, 0u);
+    inCtxACol = uvec2(ca, ca);
+    inCtxBUV = uvec4(cell_uv(t, rb), 0u, 0u);
+    inCtxBCol = uvec2(cb, cb);
+#endif
+    return true;
+}
+#endif
+
 void main()
 {
+#ifdef TERRAIN_CELLS
+    if (!cells_fetch()) { kill_vert(); return; }
+#endif
     uint ff   = inFaceFlags;
     uint slot = ff & FF_SLOT_MASK;
     uint sf   = floatBitsToUint(s.sec[slot].o.w);

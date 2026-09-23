@@ -64,12 +64,31 @@ enum {
     OPTC_ARENA_N_ADD,
     OPTC_ARENA_N_SUB,
     OPTC_ARENA_N_LP,
+    /* 4x4 near-cell records (rhi_terrain_cell, one per half of a tier-4-
+     * eligible HQ face, drawn instanced by the terrain_cells pipelines). The
+     * CN family belongs to near-variant sectors and draws with their chunks
+     * (OPTC_SF_NEARVAR); the CA family (rhi_terrain_cell_anim, previous
+     * corners appended) belongs to poly-anim sectors. One arena per HP draw
+     * class; no LP class, as cells are HP faces. These arenas count RECORDS,
+     * not vertices. */
+    OPTC_ARENA_CN_OPAQUE,
+    OPTC_ARENA_CN_ALPHA,
+    OPTC_ARENA_CN_ADD,
+    OPTC_ARENA_CN_SUB,
+    OPTC_ARENA_CA_OPAQUE,
+    OPTC_ARENA_CA_ALPHA,
+    OPTC_ARENA_CA_ADD,
+    OPTC_ARENA_CA_SUB,
     OPTC_ARENA_COUNT
 };
 #define OPTC_ARENA_ANIM_BASE OPTC_ARENA_A_OPAQUE   /* base + class = twin */
 #define OPTC_ARENA_NEAR_BASE OPTC_ARENA_N_OPAQUE
+#define OPTC_ARENA_CELL_NEAR_BASE OPTC_ARENA_CN_OPAQUE   /* base + class */
+#define OPTC_ARENA_CELL_ANIM_BASE OPTC_ARENA_CA_OPAQUE
 #define OPTC_ARENA_IS_ANIM(a) ((a) >= OPTC_ARENA_A_OPAQUE && (a) < OPTC_ARENA_N_OPAQUE)
-#define OPTC_ARENA_IS_NEAR(a) ((a) >= OPTC_ARENA_N_OPAQUE)
+#define OPTC_ARENA_IS_NEAR(a) ((a) >= OPTC_ARENA_N_OPAQUE && (a) < OPTC_ARENA_CN_OPAQUE)
+#define OPTC_ARENA_IS_CELL(a) ((a) >= OPTC_ARENA_CN_OPAQUE && (a) < OPTC_ARENA_COUNT)
+#define OPTC_ARENA_IS_CELL_ANIM(a) ((a) >= OPTC_ARENA_CA_OPAQUE && (a) < OPTC_ARENA_COUNT)
 
 /* Draw slots — native_render.c calls these at the matching point of its
  * draw order. WORLD = opaque arena + LP arena (pass WORLD); FILL = LP arena
@@ -324,6 +343,11 @@ void openpete_tercache_chunk_write_prev(int arena, int buf, uint32_t first,
  * written at the same [first, first+count) range. */
 void openpete_tercache_chunk_write_ctx(int arena, int buf, uint32_t first,
                                        const struct rhi_terrain_nearctx *c, int count);
+/* Cell arenas only: upload `count` cell records (rhi_terrain_cell, or
+ * rhi_terrain_cell_anim on the CA family) at record index `first`. alloc and
+ * free count records on these arenas. */
+void openpete_tercache_chunk_write_cells(int arena, int buf, uint32_t first,
+                                         const void *recs, int count);
 void openpete_tercache_chunk_free(int arena, int buf, uint32_t first, int count);
 
 /* ---- overflow buffers ---------------------------------------------------
@@ -426,6 +450,10 @@ typedef struct {
     /* Draws that bound a buffer pair already on the retire list. A
      * destroyed-while-drawn detector: the invariant is 0. */
     uint32_t draws_retired;
+    /* Instanced cell-record draws issued and the record instances they
+     * covered, summed over the session. */
+    uint32_t cell_draws;
+    uint64_t cell_instances;
 } openpete_tercache_stats_t;
 void openpete_tercache_get_stats(openpete_tercache_stats_t *out);
 

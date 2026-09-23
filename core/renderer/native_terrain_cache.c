@@ -21,11 +21,12 @@
  * never a claim that outlives one. */
 #include "terrain_arena_caps.gen.h"
 
-/* Last-resort arena capacities (vertices), used only when the generated table
- * is empty (no baseline rows at all). Sized from worst-case level content: a
- * big level carries ~50k HP faces x (6 flat + 24 HQ-variant) verts and a few
- * thousand LP/blend faces x 6. 64 B/vert => OPAQUE 96 MB, 192 MiB over the
- * fifteen arenas with their twins. */
+/* Last-resort arena capacities (vertices; records on the cell arenas), used
+ * only when the generated table is empty (no baseline rows at all). Sized
+ * from worst-case level content: a big level carries ~50k HP faces x (6 flat
+ * + 24 HQ-variant) verts and a few thousand LP/blend faces x 6. 64 B/vert =>
+ * OPAQUE 96 MB, 192 MiB over the fifteen vertex arenas with their twins; the
+ * eight cell-record arenas add 4.8 MiB. */
 static const uint32_t k_arena_cap[OPTC_ARENA_COUNT] = {
     [OPTC_ARENA_OPAQUE] = 1500000,
     [OPTC_ARENA_ALPHA]  =  131072,
@@ -51,6 +52,17 @@ static const uint32_t k_arena_cap[OPTC_ARENA_COUNT] = {
     [OPTC_ARENA_N_ADD]    =  32768,
     [OPTC_ARENA_N_SUB]    =  32768,
     [OPTC_ARENA_N_LP]     =  65536,
+    /* Cell records (one per half of a tier-4-eligible face in a near-variant
+     * or poly-anim sector), counted in RECORDS: a record stands in for the
+     * 96 near-variant or 48 anim vertices its eight cells would bake. */
+    [OPTC_ARENA_CN_OPAQUE] = 16384,
+    [OPTC_ARENA_CN_ALPHA]  =  1024,
+    [OPTC_ARENA_CN_ADD]    =  1024,
+    [OPTC_ARENA_CN_SUB]    =  1024,
+    [OPTC_ARENA_CA_OPAQUE] =  4096,
+    [OPTC_ARENA_CA_ALPHA]  =  1024,
+    [OPTC_ARENA_CA_ADD]    =  1024,
+    [OPTC_ARENA_CA_SUB]    =  1024,
 };
 
 #define TC_FREE_MAX   1024   /* free-list spans per arena */
@@ -61,6 +73,11 @@ static const uint32_t k_arena_cap[OPTC_ARENA_COUNT] = {
 #define TC_DEFER_PRESENTS 4
 
 #define TC_BUF_MAX 2   /* an arena's primary buffer plus one overflow */
+
+/* Colour/depth slots of a cell-record pipeline set. No FILL: cells are HP
+ * faces, and the hole-fill backing is LP only. */
+enum { TC_CP_WORLD, TC_CP_MARK, TC_CP_ALPHA, TC_CP_ADD, TC_CP_SUB,
+       TC_CP_PREPASS, TC_CP_KEY, TC_CP_N };
 
 typedef struct { uint32_t first, count; } tc_span;
 
@@ -215,6 +232,12 @@ static struct {
     rhi_pipeline *pipe_n_world, *pipe_n_world_mark;
     rhi_pipeline *pipe_n_alpha, *pipe_n_add, *pipe_n_sub;
     rhi_pipeline *pipe_n_fill, *pipe_n_prepass, *pipe_n_key;
+    /* terrain_cells variants (instanced cell records): the near-variant
+     * sectors' set (clip-fan stage) and the poly-anim sectors' set (lerp
+     * stage), indexed by TC_CP_*. */
+    rhi_pipeline *pipe_cn[TC_CP_N], *pipe_ca[TC_CP_N];
+    uint32_t      cell_draws;         /* instanced cell draws (census)        */
+    uint64_t      cell_instances;     /* record instances they covered        */
     rhi_texture  *hd_dummy;           /* 1x1 stand-in for the set-4 atlas     */
     tc_state      staged;             /* canonical build awaiting its present */
     tc_state      live;               /* what presents render                 */
@@ -317,10 +340,13 @@ static uint32_t tc_level_cap(int level_id, int arena)
 }
 
 /* The capacity an arena's PRIMARY buffer is allocated at.
- * OPENPETE_TC_INITIAL_CAP replaces it with one vertex count for every arena,
- * so a measuring run can size the primaries past any content and read an
- * uncensored high-water mark, or squeeze them so the overflow path runs. It
- * does not size the overflow buffer, which is what the arena grows to. */
+ * OPENPETE_TC_INITIAL_CAP replaces it with one vertex count for every vertex
+ * arena and a sixteenth of it for every cell-record arena (a record replaces
+ * 48 or 96 baked vertices, so the sixteenth still binds after the vertex
+ * arenas do), so a measuring run can size the primaries past any content and
+ * read an uncensored high-water mark, or squeeze them so the overflow path
+ * runs. It does not size the overflow buffer, which is what the arena grows
+ * to. */
 static uint32_t tc_initial_cap(int level_id, int arena)
 {
     static long ov = -1;
@@ -329,14 +355,25 @@ static uint32_t tc_initial_cap(int level_id, int arena)
         ov = (e && *e) ? strtol(e, NULL, 10) : 0;
         if (ov < 0) ov = 0;
     }
-    return ov > 0 ? (uint32_t)ov : tc_level_cap(level_id, arena);
+    if (ov <= 0) return tc_level_cap(level_id, arena);
+    if (OPTC_ARENA_IS_CELL(arena)) return ov >= 16 ? (uint32_t)(ov / 16) : 1u;
+    return (uint32_t)ov;
 }
 
-/* Device bytes one buffer of this arena holds: the vertex stride plus the
+/* Bytes of one element of an arena's main buffer: a terrain vertex, or a cell
+ * record on the cell arenas. */
+static size_t tc_elem_size(int arena)
+{
+    if (OPTC_ARENA_IS_CELL_ANIM(arena)) return sizeof(rhi_terrain_cell_anim);
+    if (OPTC_ARENA_IS_CELL(arena))      return sizeof(rhi_terrain_cell);
+    return sizeof(rhi_terrain_vertex);
+}
+
+/* Device bytes one buffer of this arena holds: the element stride plus the
  * twin's, at the buffer's capacity. */
 static uint64_t tc_pair_bytes(int arena, uint32_t cap)
 {
-    size_t stride = sizeof(rhi_terrain_vertex);
+    size_t stride = tc_elem_size(arena);
     if (OPTC_ARENA_IS_ANIM(arena))      stride += sizeof(rhi_terrain_prev);
     else if (OPTC_ARENA_IS_NEAR(arena)) stride += sizeof(rhi_terrain_nearctx);
     return (uint64_t)cap * stride;
@@ -352,13 +389,13 @@ static void tc_pair_free(rhi_device *dev, tc_pair *pr)
 
 /* Device-owning thread only. The twin is the anim arenas' previous-tick
  * buffer or the near arenas' emitted-tri context buffer, at the same vertex
- * count and its own stride; a base arena has none. */
+ * count and its own stride; a base arena and a cell arena have none. */
 static tc_pair *tc_pair_make(rhi_device *dev, int arena, uint32_t cap)
 {
     tc_pair *pr = (tc_pair *)calloc(1, sizeof(*pr));
     if (!pr) return NULL;
     pr->cap = cap;
-    pr->vb = rhi_create_vertex_buffer_device(dev, (size_t)cap * sizeof(rhi_terrain_vertex));
+    pr->vb = rhi_create_vertex_buffer_device(dev, (size_t)cap * tc_elem_size(arena));
     if (OPTC_ARENA_IS_ANIM(arena))
         pr->pv = rhi_create_vertex_buffer_device(dev, (size_t)cap * sizeof(rhi_terrain_prev));
     else if (OPTC_ARENA_IS_NEAR(arena))
@@ -455,6 +492,35 @@ int openpete_tercache_frame_content(void)
     return 0;
 }
 
+/* One cell-record pipeline set: `vert` is the near or anim cell stage, `anim`
+ * selects the anim record layout. Returns 1 when every slot built. */
+static int tc_make_cell_pipes(rhi_device *dev, const char *vert, int anim,
+                              rhi_pipeline *out[TC_CP_N])
+{
+    const rhi_pipeline_desc base = {
+        .vert_spv = vert, .frag_spv = "terrain.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = true,
+        .terrain_pipeline = true, .terrain_cells = true,
+        .terrain_anim = anim != 0, .terrain_near = anim == 0,
+        .push_const_size = sizeof(tc_pc),
+    };
+    rhi_pipeline_desc d[TC_CP_N];
+    for (int i = 0; i < TC_CP_N; i++) d[i] = base;
+    d[TC_CP_MARK].stencil = RHI_STENCIL_MARK;
+    d[TC_CP_ALPHA].blend = RHI_BLEND_ALPHA;    d[TC_CP_ALPHA].depth_write_off = true;
+    d[TC_CP_ADD].blend   = RHI_BLEND_ADD;      d[TC_CP_ADD].depth_write_off = true;
+    d[TC_CP_SUB].blend   = RHI_BLEND_SUBTRACT; d[TC_CP_SUB].depth_write_off = true;
+    d[TC_CP_PREPASS].frag_spv = "terrain_prepass.frag.spv";
+    d[TC_CP_PREPASS].color_write_off = true;
+    d[TC_CP_KEY].frag_spv = "terrain_key_cache.frag.spv";
+    int ok = 1;
+    for (int i = 0; i < TC_CP_N; i++) {
+        out[i] = rhi_create_pipeline(dev, &d[i]);
+        ok &= out[i] != NULL;
+    }
+    return ok;
+}
+
 int openpete_tercache_init(rhi_device *dev)
 {
     memset(&s_tc, 0, sizeof(s_tc));
@@ -531,7 +597,11 @@ int openpete_tercache_init(rhi_device *dev)
     d = near_desc; d.frag_spv = "terrain_key_cache.frag.spv";
     s_tc.pipe_n_key = rhi_create_pipeline(dev, &d);
 
-    int ok = s_tc.pipe_world && s_tc.pipe_world_mark && s_tc.pipe_alpha &&
+    /* Cell-record variants: the same states over the instanced cell stages. */
+    const int cells_ok = tc_make_cell_pipes(dev, "terrain_cells_near.vert.spv", 0, s_tc.pipe_cn)
+                       & tc_make_cell_pipes(dev, "terrain_cells_anim.vert.spv", 1, s_tc.pipe_ca);
+
+    int ok = cells_ok && s_tc.pipe_world && s_tc.pipe_world_mark && s_tc.pipe_alpha &&
              s_tc.pipe_add && s_tc.pipe_sub && s_tc.pipe_fill && s_tc.pipe_prepass &&
              s_tc.pipe_key &&
              s_tc.pipe_a_world && s_tc.pipe_a_world_mark && s_tc.pipe_a_alpha &&
@@ -576,29 +646,21 @@ void openpete_tercache_shutdown(rhi_device *dev)
     s_tc_final_valid = 1;
     if (s_tc.hd_dummy) { rhi_destroy_texture(dev, s_tc.hd_dummy); s_tc.hd_dummy = NULL; }
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) tc_arena_free_all(dev, a);
-    if (s_tc.pipe_a_world)      rhi_destroy_pipeline(dev, s_tc.pipe_a_world);
-    if (s_tc.pipe_a_world_mark) rhi_destroy_pipeline(dev, s_tc.pipe_a_world_mark);
-    if (s_tc.pipe_a_alpha)      rhi_destroy_pipeline(dev, s_tc.pipe_a_alpha);
-    if (s_tc.pipe_a_add)        rhi_destroy_pipeline(dev, s_tc.pipe_a_add);
-    if (s_tc.pipe_a_sub)        rhi_destroy_pipeline(dev, s_tc.pipe_a_sub);
-    if (s_tc.pipe_a_prepass)    rhi_destroy_pipeline(dev, s_tc.pipe_a_prepass);
-    if (s_tc.pipe_a_key)        rhi_destroy_pipeline(dev, s_tc.pipe_a_key);
-    if (s_tc.pipe_n_world)      rhi_destroy_pipeline(dev, s_tc.pipe_n_world);
-    if (s_tc.pipe_n_world_mark) rhi_destroy_pipeline(dev, s_tc.pipe_n_world_mark);
-    if (s_tc.pipe_n_alpha)      rhi_destroy_pipeline(dev, s_tc.pipe_n_alpha);
-    if (s_tc.pipe_n_add)        rhi_destroy_pipeline(dev, s_tc.pipe_n_add);
-    if (s_tc.pipe_n_sub)        rhi_destroy_pipeline(dev, s_tc.pipe_n_sub);
-    if (s_tc.pipe_n_fill)       rhi_destroy_pipeline(dev, s_tc.pipe_n_fill);
-    if (s_tc.pipe_n_prepass)    rhi_destroy_pipeline(dev, s_tc.pipe_n_prepass);
-    if (s_tc.pipe_n_key)        rhi_destroy_pipeline(dev, s_tc.pipe_n_key);
-    if (s_tc.pipe_world)      rhi_destroy_pipeline(dev, s_tc.pipe_world);
-    if (s_tc.pipe_world_mark) rhi_destroy_pipeline(dev, s_tc.pipe_world_mark);
-    if (s_tc.pipe_alpha)      rhi_destroy_pipeline(dev, s_tc.pipe_alpha);
-    if (s_tc.pipe_add)        rhi_destroy_pipeline(dev, s_tc.pipe_add);
-    if (s_tc.pipe_sub)        rhi_destroy_pipeline(dev, s_tc.pipe_sub);
-    if (s_tc.pipe_fill)       rhi_destroy_pipeline(dev, s_tc.pipe_fill);
-    if (s_tc.pipe_prepass)    rhi_destroy_pipeline(dev, s_tc.pipe_prepass);
-    if (s_tc.pipe_key)        rhi_destroy_pipeline(dev, s_tc.pipe_key);
+    rhi_pipeline **const named[] = {
+        &s_tc.pipe_world, &s_tc.pipe_world_mark, &s_tc.pipe_alpha, &s_tc.pipe_add,
+        &s_tc.pipe_sub, &s_tc.pipe_fill, &s_tc.pipe_prepass, &s_tc.pipe_key,
+        &s_tc.pipe_a_world, &s_tc.pipe_a_world_mark, &s_tc.pipe_a_alpha,
+        &s_tc.pipe_a_add, &s_tc.pipe_a_sub, &s_tc.pipe_a_prepass, &s_tc.pipe_a_key,
+        &s_tc.pipe_n_world, &s_tc.pipe_n_world_mark, &s_tc.pipe_n_alpha,
+        &s_tc.pipe_n_add, &s_tc.pipe_n_sub, &s_tc.pipe_n_fill, &s_tc.pipe_n_prepass,
+        &s_tc.pipe_n_key,
+    };
+    for (size_t i = 0; i < sizeof(named) / sizeof(named[0]); i++)
+        if (*named[i]) rhi_destroy_pipeline(dev, *named[i]);
+    for (int i = 0; i < TC_CP_N; i++) {
+        if (s_tc.pipe_cn[i]) rhi_destroy_pipeline(dev, s_tc.pipe_cn[i]);
+        if (s_tc.pipe_ca[i]) rhi_destroy_pipeline(dev, s_tc.pipe_ca[i]);
+    }
     if (s_tc.ubo)             rhi_destroy_ubo(dev, s_tc.ubo);
     memset(&s_tc, 0, sizeof(s_tc));
 }
@@ -725,6 +787,16 @@ void openpete_tercache_chunk_write_ctx(int arena, int buf, uint32_t first,
     rhi_update_buffer_range(pr->pv, c,
                             (size_t)first * sizeof(rhi_terrain_nearctx),
                             (size_t)count * sizeof(rhi_terrain_nearctx));
+}
+
+void openpete_tercache_chunk_write_cells(int arena, int buf, uint32_t first,
+                                         const void *recs, int count)
+{
+    if (!s_tc.ready || !OPTC_ARENA_IS_CELL(arena)) return;
+    const tc_pair *pr = tc_live_pair(arena, buf);
+    if (!pr) return;
+    const size_t sz = tc_elem_size(arena);
+    rhi_update_buffer_range(pr->vb, recs, (size_t)first * sz, (size_t)count * sz);
 }
 
 void openpete_tercache_chunk_free(int arena, int buf, uint32_t first, int count)
@@ -997,6 +1069,43 @@ static tc_state *tc_begin_state(uint32_t stamp, int immediate)
     return &s_tc.staged;
 }
 
+/* Dead-stamp a released range BEFORE it becomes reusable. Every draw walks
+ * the whole arena and selects per element by 3-bit generation, so a
+ * released range that lingers unreused (release != reuse; the allocator can
+ * go elsewhere for many builds) still rasterises whenever a later state's
+ * generation aliases its own mod 8 — a sector that rebuilds every build
+ * (animated vertex lighting) then z-fights its current chunk with a
+ * pulse-phase-old twin. The defer window just guaranteed no in-flight frame
+ * reads these bytes, so overwriting here is the one race-free moment
+ * (stamping at free time races the frames still reading them). Slot DEAD is
+ * never published, so SF_DRAWN kills the element forever. A vertex and a
+ * cell record both carry face_flags, at their own offsets. */
+static void tc_dead_stamp(const tc_defer *d)
+{
+    enum { DEAD_N = 512 };
+    static uint8_t s_dead[DEAD_N * sizeof(rhi_terrain_cell_anim)];
+    static size_t s_dead_sz;          /* element size s_dead is laid out for */
+    const size_t sz = tc_elem_size(d->arena);
+    if (s_dead_sz != sz) {
+        const size_t ffo = OPTC_ARENA_IS_CELL(d->arena)
+                               ? offsetof(rhi_terrain_cell, face_flags)
+                               : offsetof(rhi_terrain_vertex, face_flags);
+        const uint32_t dead = OPTC_SLOT_DEAD;
+        memset(s_dead, 0, sizeof(s_dead));
+        for (int k = 0; k < DEAD_N; k++) memcpy(s_dead + (size_t)k * sz + ffo, &dead, sizeof dead);
+        s_dead_sz = sz;
+    }
+    uint32_t left = d->count, at = d->first;
+    /* Non-NULL while the cache is ready: init makes every pair or fails, and
+     * the level-edge adoption swaps one in. */
+    const tc_pair *dp = tc_live_pair(d->arena, d->buf);
+    while (left) {
+        uint32_t n = left > DEAD_N ? DEAD_N : left;
+        rhi_update_buffer_range(dp->vb, s_dead, (size_t)at * sz, (size_t)n * sz);
+        at += n; left -= n;
+    }
+}
+
 void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
                                    uint32_t stamp, int immediate)
 {
@@ -1024,33 +1133,7 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
         const int aged   = s_tc.present_ctr - s_tc.defer[i].stamp > TC_DEFER_PRESENTS;
         const int unread = !have_floor || (int32_t)(s_tc.defer[i].stamp - floor_serial) <= 0;
         if (aged && unread) {
-            /* Dead-stamp BEFORE the range becomes reusable. Every draw walks
-             * the whole arena and selects per vertex by 3-bit generation, so
-             * a released range that lingers unreused (release != reuse; the
-             * allocator can go elsewhere for many builds) still rasterises
-             * whenever a later state's generation aliases its own mod 8 — a
-             * sector that rebuilds every build (animated vertex lighting)
-             * then z-fights its current chunk with a pulse-phase-old twin.
-             * The defer window just guaranteed no in-flight frame reads
-             * these bytes, so overwriting here is the one race-free moment
-             * (stamping at free time was the July hazard). Slot DEAD is
-             * never published, so SF_DRAWN kills the vertex forever. */
-            static const rhi_terrain_vertex k_dead = { .face_flags = OPTC_SLOT_DEAD };
-            static rhi_terrain_vertex s_deadbuf[512];
-            if (s_deadbuf[0].face_flags != OPTC_SLOT_DEAD)
-                for (int d = 0; d < 512; d++) s_deadbuf[d] = k_dead;
-            uint32_t left = s_tc.defer[i].count, at = s_tc.defer[i].first;
-            /* Non-NULL while the cache is ready: init makes all fifteen
-             * pairs or fails, and the level-edge adoption swaps one in. */
-            const tc_pair *dp = tc_live_pair(s_tc.defer[i].arena, s_tc.defer[i].buf);
-            while (left) {
-                uint32_t n = left > 512 ? 512 : left;
-                rhi_update_buffer_range(dp->vb,
-                                        s_deadbuf,
-                                        (size_t)at * sizeof(rhi_terrain_vertex),
-                                        (size_t)n * sizeof(rhi_terrain_vertex));
-                at += n; left -= n;
-            }
+            tc_dead_stamp(&s_tc.defer[i]);
             if (tc_dbg()) fprintf(stderr, "[tc] release arena=%d first=%u count=%u freed_at=%u ctr=%u floor=%u\n",
                                   s_tc.defer[i].arena, s_tc.defer[i].first, s_tc.defer[i].count, s_tc.defer[i].stamp, s_tc.present_ctr, floor_serial);
             tc_free_insert(&s_tc.arena[s_tc.defer[i].arena].buf[s_tc.defer[i].buf],
@@ -1259,7 +1342,9 @@ static int tc_pair_retired(int arena, const tc_pair *pr)
 
 /* One buffer of an arena, whole. Each buffer numbers its vertices from 0 and
  * the vertex stage's only index use is gl_VertexIndex % 3, which restarts at
- * every draw, so the buffers need no index translation between them. */
+ * every draw, so the buffers need no index translation between them. A cell
+ * arena's buffer is an instance-rate record array: one instance per record,
+ * the record's cell vertices per instance. */
 static void tc_draw_buf(int arena, const tc_buf *b, const tc_pc *pc)
 {
     /* One load of the pair for the whole draw, and the range clamped to its
@@ -1268,7 +1353,7 @@ static void tc_draw_buf(int arena, const tc_buf *b, const tc_pc *pc)
      * would read past its end. */
     const tc_pair *pr = atomic_load_explicit(&b->pair, memory_order_acquire);
     if (!pr) return;
-    uint32_t nverts = b->high;
+    uint32_t nverts = b->high;            /* records, on a cell arena */
     if (nverts > pr->cap) nverts = pr->cap;
     if (nverts == 0) return;
     if (tc_pair_retired(arena, pr))
@@ -1276,8 +1361,14 @@ static void tc_draw_buf(int arena, const tc_buf *b, const tc_pc *pc)
     rhi_push_constants(s_tc.dev, pc, sizeof(*pc));
     if (pr->pv) rhi_bind_vertex_buffer2(s_tc.dev, pr->vb, pr->pv);
     else        rhi_bind_vertex_buffer(s_tc.dev, pr->vb);
-    for (int r = 0, rn = tc_dup_draw(); r < rn; r++)
-        rhi_draw(s_tc.dev, nverts, 0);
+    const int cells = OPTC_ARENA_IS_CELL(arena);
+    const uint32_t per = OPTC_ARENA_IS_CELL_ANIM(arena) ? RHI_TERRAIN_CELL_VERTS_ANIM
+                                                        : RHI_TERRAIN_CELL_VERTS_NEAR;
+    for (int r = 0, rn = tc_dup_draw(); r < rn; r++) {
+        if (cells) rhi_draw_instanced(s_tc.dev, per, nverts, 0, 0);
+        else       rhi_draw(s_tc.dev, nverts, 0);
+    }
+    if (cells) { s_tc.cell_draws++; s_tc.cell_instances += nverts; }
     s_tc.draws_last++;
 }
 
@@ -1352,7 +1443,8 @@ static int tc_bind_material(int bucket, int variant, int slot,
     if (*mg.pipeline_slot == OPENPETE_POSTFX_PIPE_FAILED) goto draw_stock;
     if (!*mg.pipeline_slot) {
         static const char *k_vert[OPENPETE_MATERIAL_TER_VARIANTS] = {
-            "terrain.vert.spv", "terrain_anim.vert.spv", "terrain_near.vert.spv"
+            "terrain.vert.spv", "terrain_anim.vert.spv", "terrain_near.vert.spv",
+            "terrain_cells_anim.vert.spv", "terrain_cells_near.vert.spv"
         };
         rhi_pipeline_desc d;
         memset(&d, 0, sizeof(d));
@@ -1360,8 +1452,9 @@ static int tc_bind_material(int bucket, int variant, int slot,
         d.blend = RHI_BLEND_NONE;
         d.depth_test = true;
         d.terrain_pipeline = true;
-        d.terrain_anim = (variant == 1);
-        d.terrain_near = (variant == 2);
+        d.terrain_anim = (variant == 1 || variant == 3);
+        d.terrain_near = (variant == 2 || variant == 4);
+        d.terrain_cells = (variant >= 3);
         d.push_const_size = sizeof(tc_pc);
         switch (slot) {
             case 1: d.stencil = RHI_STENCIL_MARK; break;
@@ -1401,7 +1494,7 @@ draw_stock:
     return 1;
 }
 
-/* The three arena flavours of one colour slot, for one bucket. Each carries
+/* The five arena flavours of one colour slot, for one bucket. Each carries
  * the stock pipeline it would have used, so a material that cannot serve
  * its faces this present degrades to stock shading rather than to a hole. */
 static void tc_draw_material_world(int bucket, int slot, int use_mark,
@@ -1422,18 +1515,31 @@ static void tc_draw_material_world(int bucket, int slot, int use_mark,
         tc_draw_arena(OPTC_ARENA_N_OPAQUE, 0, clip);
         tc_draw_arena(OPTC_ARENA_N_LP,     0, clip);
     }
+    const int cp = use_mark ? TC_CP_MARK : TC_CP_WORLD;
+    if (tc_bind_material(bucket, 3, slot, s_tc.pipe_ca[cp]))
+        tc_draw_arena(OPTC_ARENA_CA_OPAQUE, 0, clip);
+    if (tc_bind_material(bucket, 4, slot, s_tc.pipe_cn[cp]))
+        tc_draw_arena(OPTC_ARENA_CN_OPAQUE, 0, clip);
 }
 
-/* One blend class, all three arena flavours, for one bucket. */
-static void tc_draw_material_blend(int bucket, int slot, int a_plain,
-                                   int a_anim, int a_near,
+/* One blend class (cls = OPTC_ARENA_ALPHA/ADD/SUB), all five arena flavours,
+ * for one bucket. */
+static void tc_draw_material_blend(int bucket, int slot, int cls,
                                    rhi_pipeline *s_plain, rhi_pipeline *s_anim,
                                    rhi_pipeline *s_near,
                                    const openpete_tercache_clip *clip)
 {
-    if (tc_bind_material(bucket, 0, slot, s_plain)) tc_draw_arena(a_plain, 0, clip);
-    if (tc_bind_material(bucket, 1, slot, s_anim))  tc_draw_arena(a_anim,  0, clip);
-    if (tc_bind_material(bucket, 2, slot, s_near))  tc_draw_arena(a_near,  0, clip);
+    const int cp = TC_CP_ALPHA + (cls - OPTC_ARENA_ALPHA);
+    if (tc_bind_material(bucket, 0, slot, s_plain))
+        tc_draw_arena(cls, 0, clip);
+    if (tc_bind_material(bucket, 1, slot, s_anim))
+        tc_draw_arena(OPTC_ARENA_ANIM_BASE + cls, 0, clip);
+    if (tc_bind_material(bucket, 2, slot, s_near))
+        tc_draw_arena(OPTC_ARENA_NEAR_BASE + cls, 0, clip);
+    if (tc_bind_material(bucket, 3, slot, s_tc.pipe_ca[cp]))
+        tc_draw_arena(OPTC_ARENA_CELL_ANIM_BASE + cls, 0, clip);
+    if (tc_bind_material(bucket, 4, slot, s_tc.pipe_cn[cp]))
+        tc_draw_arena(OPTC_ARENA_CELL_NEAR_BASE + cls, 0, clip);
 }
 
 /* The material passes of one colour slot, run after its stock passes.
@@ -1459,19 +1565,16 @@ static void tc_draw_material_passes(int which, const int *buckets, int bn,
             break;
         case OPTC_DRAW_ALPHA:
             tc_draw_material_blend(b, 3, OPTC_ARENA_ALPHA,
-                                   OPTC_ARENA_A_ALPHA, OPTC_ARENA_N_ALPHA,
                                    s_tc.pipe_alpha, s_tc.pipe_a_alpha,
                                    s_tc.pipe_n_alpha, clip);
             break;
         case OPTC_DRAW_ADD:
             tc_draw_material_blend(b, 4, OPTC_ARENA_ADD,
-                                   OPTC_ARENA_A_ADD, OPTC_ARENA_N_ADD,
                                    s_tc.pipe_add, s_tc.pipe_a_add,
                                    s_tc.pipe_n_add, clip);
             break;
         case OPTC_DRAW_SUB:
             tc_draw_material_blend(b, 5, OPTC_ARENA_SUB,
-                                   OPTC_ARENA_A_SUB, OPTC_ARENA_N_SUB,
                                    s_tc.pipe_sub, s_tc.pipe_a_sub,
                                    s_tc.pipe_n_sub, clip);
             break;
@@ -1553,33 +1656,42 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
     s_tc_mat_pass = bn > 0 ? 0 : -1;
     s_tc_mat_stock = 0;
     s_tc_mat_passes = 0;
+    const int cworld = use_mark ? TC_CP_MARK : TC_CP_WORLD;
     switch (which) {
         case OPTC_DRAW_WORLD:
             tc_draw_arena(OPTC_ARENA_OPAQUE, 0, clip);
             tc_draw_arena(OPTC_ARENA_LP,     0, clip);
             tc_draw_anim(use_mark ? s_tc.pipe_a_world_mark : s_tc.pipe_a_world,
                          OPTC_ARENA_A_OPAQUE, 0, clip);
+            tc_draw_anim(s_tc.pipe_ca[cworld], OPTC_ARENA_CA_OPAQUE, 0, clip);
             tc_draw_anim(use_mark ? s_tc.pipe_a_world_mark : s_tc.pipe_a_world,
                          OPTC_ARENA_A_LP,     0, clip);
             tc_draw_anim(use_mark ? s_tc.pipe_n_world_mark : s_tc.pipe_n_world,
                          OPTC_ARENA_N_OPAQUE, 0, clip);
+            tc_draw_anim(s_tc.pipe_cn[cworld], OPTC_ARENA_CN_OPAQUE, 0, clip);
             tc_draw_anim(use_mark ? s_tc.pipe_n_world_mark : s_tc.pipe_n_world,
                          OPTC_ARENA_N_LP,     0, clip);
             break;
         case OPTC_DRAW_ALPHA:
             tc_draw_arena(OPTC_ARENA_ALPHA, 0, clip);
             tc_draw_anim(s_tc.pipe_a_alpha, OPTC_ARENA_A_ALPHA, 0, clip);
+            tc_draw_anim(s_tc.pipe_ca[TC_CP_ALPHA], OPTC_ARENA_CA_ALPHA, 0, clip);
             tc_draw_anim(s_tc.pipe_n_alpha, OPTC_ARENA_N_ALPHA, 0, clip);
+            tc_draw_anim(s_tc.pipe_cn[TC_CP_ALPHA], OPTC_ARENA_CN_ALPHA, 0, clip);
             break;
         case OPTC_DRAW_ADD:
             tc_draw_arena(OPTC_ARENA_ADD,   0, clip);
             tc_draw_anim(s_tc.pipe_a_add, OPTC_ARENA_A_ADD, 0, clip);
+            tc_draw_anim(s_tc.pipe_ca[TC_CP_ADD], OPTC_ARENA_CA_ADD, 0, clip);
             tc_draw_anim(s_tc.pipe_n_add, OPTC_ARENA_N_ADD, 0, clip);
+            tc_draw_anim(s_tc.pipe_cn[TC_CP_ADD], OPTC_ARENA_CN_ADD, 0, clip);
             break;
         case OPTC_DRAW_SUB:
             tc_draw_arena(OPTC_ARENA_SUB,   0, clip);
             tc_draw_anim(s_tc.pipe_a_sub, OPTC_ARENA_A_SUB, 0, clip);
+            tc_draw_anim(s_tc.pipe_ca[TC_CP_SUB], OPTC_ARENA_CA_SUB, 0, clip);
             tc_draw_anim(s_tc.pipe_n_sub, OPTC_ARENA_N_SUB, 0, clip);
+            tc_draw_anim(s_tc.pipe_cn[TC_CP_SUB], OPTC_ARENA_CN_SUB, 0, clip);
             break;
         case OPTC_DRAW_FILL:
             /* LP only: poly-anim sectors never backstop-fill, near ones do. */
@@ -1591,8 +1703,10 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
             tc_draw_arena(OPTC_ARENA_LP,     0, clip);
             tc_draw_arena(OPTC_ARENA_LP,     1, clip);
             tc_draw_anim(s_tc.pipe_a_prepass, OPTC_ARENA_A_OPAQUE, 0, clip);
+            tc_draw_anim(s_tc.pipe_ca[TC_CP_PREPASS], OPTC_ARENA_CA_OPAQUE, 0, clip);
             tc_draw_anim(s_tc.pipe_a_prepass, OPTC_ARENA_A_LP,     0, clip);
             tc_draw_anim(s_tc.pipe_n_prepass, OPTC_ARENA_N_OPAQUE, 0, clip);
+            tc_draw_anim(s_tc.pipe_cn[TC_CP_PREPASS], OPTC_ARENA_CN_OPAQUE, 0, clip);
             tc_draw_anim(s_tc.pipe_n_prepass, OPTC_ARENA_N_LP,     0, clip);
             tc_draw_anim(s_tc.pipe_n_prepass, OPTC_ARENA_N_LP,     1, clip);
             break;
@@ -1602,8 +1716,10 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
             tc_draw_arena(OPTC_ARENA_OPAQUE, 2, clip);
             tc_draw_arena(OPTC_ARENA_LP,     2, clip);
             tc_draw_anim(s_tc.pipe_a_key, OPTC_ARENA_A_OPAQUE, 2, clip);
+            tc_draw_anim(s_tc.pipe_ca[TC_CP_KEY], OPTC_ARENA_CA_OPAQUE, 2, clip);
             tc_draw_anim(s_tc.pipe_a_key, OPTC_ARENA_A_LP,     2, clip);
             tc_draw_anim(s_tc.pipe_n_key, OPTC_ARENA_N_OPAQUE, 2, clip);
+            tc_draw_anim(s_tc.pipe_cn[TC_CP_KEY], OPTC_ARENA_CN_OPAQUE, 2, clip);
             tc_draw_anim(s_tc.pipe_n_key, OPTC_ARENA_N_LP,     2, clip);
             break;
     }
@@ -1640,4 +1756,6 @@ void openpete_tercache_get_stats(openpete_tercache_stats_t *out)
     out->svc_calls     = atomic_load_explicit(&s_tc.svc_calls, memory_order_relaxed);
     out->svc_fulfilled = atomic_load_explicit(&s_tc.svc_fulfilled, memory_order_relaxed);
     out->draws_retired = atomic_load_explicit(&s_tc.draws_retired, memory_order_relaxed);
+    out->cell_draws     = s_tc.cell_draws;
+    out->cell_instances = s_tc.cell_instances;
 }

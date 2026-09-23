@@ -3269,7 +3269,7 @@ typedef struct {
                                        * drawn from the cache. */
     uint32_t first[OPTC_ARENA_COUNT];
     int      count[OPTC_ARENA_COUNT];
-    uint16_t bufbit;                  /* bit a = which buffer of arena a holds
+    uint32_t bufbit;                  /* bit a = which buffer of arena a holds
                                        * this slot's chunk (0 primary, 1 the
                                        * arena's overflow buffer); each buffer
                                        * numbers its vertices from 0, so the
@@ -3381,8 +3381,9 @@ static double s_tgpu_l3 = 1.0;        /* ||M row 2||/4096 (near-claim bound) */
  * 16.0 view-Z the near claim guards (poly-anim sectors on the sphere alone).
  * On a game with the 4x4 near-cell path, also every non-anim sector that may
  * bring a vertex inside the tier-4 corner bound (near_corner / hqscale view-Z):
- * only the near-variant twin bakes the cells, so a plain chunk never holds a
- * face the classifier can route to tier 4. */
+ * only a near-variant sector carries cell records (tgpu_bake_cells4), so a
+ * sector drawn from its plain chunks never holds a face the classifier can
+ * route to tier 4. */
 static int tgpu_near_reach(const tscache_t* SC, const int M[3][3], double camx,
                            double camy, double camz, double oc3) {
     const double nearBound = s_tgpu_l3 * ((double)SC->radius + 16.0);
@@ -3528,7 +3529,9 @@ static int tgpu_arena_of(const tmat* m) {
 typedef struct { rhi_terrain_vertex* v; rhi_terrain_prev* pv;
                  rhi_terrain_nearctx* cx; int n, cap;
                  int anim; /* fill pv alongside v (poly-anim sector)    */
-                 int nearv; /* fill cx alongside v (near-variant chunk) */ } tgpu_buf;
+                 int nearv; /* fill cx alongside v (near-variant chunk) */
+                 uint8_t* rec;  /* cell arenas: n records of rsz bytes (v unused) */
+                 size_t rsz; } tgpu_buf;
 static int tgpu_push(tgpu_buf* b, const rhi_terrain_vertex* v,
                      const rhi_terrain_prev* p, const rhi_terrain_nearctx* c) {
     if (b->n >= b->cap) {
@@ -3551,6 +3554,18 @@ static int tgpu_push(tgpu_buf* b, const rhi_terrain_vertex* v,
     if (b->anim) b->pv[b->n] = *p;
     if (b->nearv) b->cx[b->n] = *c;
     b->v[b->n++] = *v;
+    return 0;
+}
+
+/* Append one cell record to a cell arena's buffer. */
+static int tgpu_push_rec(tgpu_buf* b, const void* r) {
+    if (b->n >= b->cap) {
+        int nc = b->cap ? b->cap * 2 : 64;
+        uint8_t* nr = (uint8_t*)realloc(b->rec, b->rsz * (size_t)nc);
+        if (!nr) return -1;
+        b->rec = nr; b->cap = nc;
+    }
+    memcpy(b->rec + b->rsz * (size_t)b->n++, r, b->rsz);
     return 0;
 }
 
@@ -3789,80 +3804,128 @@ static int tgpu_bake_hq2(CPUState* cpu, tgpu_buf* buf, int ab, int with_var,
     return 0;
 }
 
-/* One node colour of the 4x4 grid: nc4_pt's halving order on tgpu_rgb_mid. */
-static uint32_t tgpu_rgb_pt(uint32_t a, uint32_t b, int k) {
-    if (k == 0) return a;
-    if (k == 4) return b;
-    uint32_t m = tgpu_rgb_mid(a, b);
-    return k == 2 ? m : tgpu_rgb_mid(k == 1 ? a : b, m);
-}
-
-/* Emit one 4x4-cell triangle. The cells bake only where a tier-4 face can
- * draw from the chunk: the near-variant twin (every non-anim sector with a
- * vertex inside the tier-4 corner bound takes it, tgpu_near_reach) and the
- * poly-anim chunk (those sectors have no near twin). */
-static int tgpu_emit_cell_tri(tgpu_buf* buf, int arena, int ab, int with_var,
-                              const tgpu_face_t* F, tgpu_corner_t a,
-                              tgpu_corner_t c1, tgpu_corner_t c2, int tri2) {
-    if (ab && tgpu_emit_tri(&buf[arena + ab], F, a, c1, c2, tri2) != 0) return -1;
-    if (with_var && tgpu_emit_tri_near(&buf[arena + (int)OPTC_ARENA_NEAR_BASE],
-                                       F, a, c1, c2, tri2) != 0) return -1;
+/* One 4x4 cell's tile (the 16x16 Tiledef at `e`, with the D_8006D058
+ * orientation): its record entry, its draw class and whether its material is
+ * blended (the cover-drop key). -1 = the HD fold cannot bake it. */
+static int tgpu_cell_tile(CPUState* cpu, uint32_t e, int abe, int hp_bucket,
+                          int hdfold, rhi_terrain_cell_tile* t, uint8_t* cls,
+                          uint8_t* blended) {
+    tmat m; float u[4], v[4];
+    memset(&m, 0, sizeof(m)); m.bpp = 16;
+    decode_tiledef_span(cpu, e, abe, &m, u, v, 0x0F);
+    tiledef_apply_ori(cpu, e, u, v);
+    t->mat0 = tgpu_pack_mat0(&m) | ((uint32_t)hp_bucket << 24);
+    t->mat1 = (uint32_t)(m.clut_raw & 0xFFFF);
+    for (int q = 0; q < 4; q++) {
+        t->uv[q * 2 + 0] = (uint8_t)u[q];
+        t->uv[q * 2 + 1] = (uint8_t)v[q];
+    }
+    if (hdfold) {
+        float uA[3] = { u[0], u[1], u[2] }, vA[3] = { v[0], v[1], v[2] };
+        float uB[3] = { u[1], u[2], u[3] }, vB[3] = { v[1], v[2], v[3] };
+        int hd = tgpu_hdfold_face(&m, uA, vA, uB, vB);
+        if (hd < 0) return -1;
+        t->mat1 |= (uint32_t)hd << 16;
+    }
+    *cls = (uint8_t)tgpu_arena_of(&m);
+    *blended = m.blend ? 1 : 0;
     return 0;
 }
 
 /* 4x4 cell variant (nc4_emit_cells mirror) of an HQ-eligible quad the
  * classifier can route to tier 4 (near_flag_tier2 clear): 16 cells, cell i
- * textured from the 16x16 tile at hq_cells4 + i*8, node colours from the
- * raw near corner colours by the drain's halving order. Node positions,
- * the snap, the interior morph, the key and the straddler facing are
- * rebuilt in the vertex stage from the transformed parent corners; a vertex
- * carries its cell in mat_near1 (bit 31 set, cell in bits 0-3) and its
- * corner slot in the flags16 role bits. */
+ * textured from the 16x16 tile at hq_cells4 + i*8. The cells are not baked
+ * as vertices: the face contributes cell records (rhi_terrain_cell, eight
+ * cells each) to the cell arenas, and the terrain_cells vertex stage derives
+ * every cell vertex from the record — node positions, the snap, the interior
+ * morph, the key and the straddler facing from the transformed parent
+ * corners as before, node colours from the raw near corner colours by the
+ * drain's halving order, the tile UVs and material from the record.
+ *
+ * Records exist only where a tier-4 face can draw: a near-variant sector
+ * (every non-anim sector with a vertex inside the tier-4 corner bound takes
+ * one, tgpu_near_reach) writes the CN family, drawn with its near chunks; a
+ * poly-anim sector (those have no near variant) writes the CA family, with
+ * the previous-tick corners appended. Each half of the face gets one record
+ * per draw class its tiles use, masked to that class's cells. */
 static int tgpu_bake_cells4(CPUState* cpu, tgpu_buf* buf, int ab, int with_var,
                             const tgpu_face_t* T, const uint32_t nearC[4],
                             const tsface_t* F, uint32_t hqBase, int hp_bucket,
                             int hdfold, int* fail) {
     if (!game_layout.terrain.hq_cells4 || tface_near_tier2(F->w3)) return 0;
     if (!ab && !with_var) return 0;
-    uint32_t col[5][5];
-    for (int r = 0; r < 5; r++) {
-        uint32_t L = tgpu_rgb_pt(nearC[0], nearC[3], r), R = tgpu_rgb_pt(nearC[1], nearC[2], r);
-        for (int c = 0; c < 5; c++) col[r][c] = tgpu_rgb_pt(L, R, c);
-    }
+    const int base = ab ? (int)OPTC_ARENA_CELL_ANIM_BASE : (int)OPTC_ARENA_CELL_NEAR_BASE;
+    rhi_terrain_cell_anim R;
+    memset(&R, 0, sizeof(R));
+    R.cur.c0x = T->c[0].x; R.cur.c0y = T->c[0].y; R.cur.c0z = T->c[0].z;
+    R.cur.c1x = T->c[1].x; R.cur.c1y = T->c[1].y; R.cur.c1z = T->c[1].z;
+    R.cur.c2x = T->c[2].x; R.cur.c2y = T->c[2].y; R.cur.c2z = T->c[2].z;
+    R.cur.c3x = T->c[3].x; R.cur.c3y = T->c[3].y; R.cur.c3z = T->c[3].z;
+    R.p0x = T->pc[0].x; R.p0y = T->pc[0].y; R.p0z = T->pc[0].z;
+    R.p1x = T->pc[1].x; R.p1y = T->pc[1].y; R.p1z = T->pc[1].z;
+    R.p2x = T->pc[2].x; R.p2y = T->pc[2].y; R.p2z = T->pc[2].z;
+    R.p3x = T->pc[3].x; R.p3y = T->pc[3].y; R.p3z = T->pc[3].z;
+    for (int q = 0; q < 4; q++) R.cur.near_rgb[q] = nearC[q] & 0xFFFFFFu;
+    R.cur.face_flags = T->face_flags;
+    rhi_terrain_cell_tile tiles[16];
+    uint8_t cls[16], blended[16];
     for (int i = 0; i < 16; i++) {
-        int r = i >> 2, c = i & 3;
-        tmat m; float u[4], v[4];
-        memset(&m, 0, sizeof(m)); m.bpp = 16;
         uint32_t e = hqBase + game_layout.terrain.hq_cells4 + (uint32_t)i * 8u;
-        decode_tiledef_span(cpu, e, F->abe, &m, u, v, 0x0F);
-        tiledef_apply_ori(cpu, e, u, v);
-        tgpu_face_t H = *T;
-        H.flags16 = (uint16_t)(1u | (((uint32_t)F->hq_idx & 0x7Fu) << 5) | 0x1000u
-                  | (m.blend ? 0x4000u : 0u));
-        H.matf0 = tgpu_pack_mat0(&m) | ((uint32_t)hp_bucket << 24);
-        H.matf1 = (uint32_t)(m.clut_raw & 0xFFFF);
-        H.matn0 = 0; H.matn1 = 0x80000000u | (uint32_t)i;
-        tgpu_corner_t k[4];
-        memset(k, 0, sizeof(k));
-        for (int q = 0; q < 4; q++) {
-            k[q].p = T->c[0]; k[q].pp = T->pc[0];   /* unread: nodes rebuild in-shader */
-            k[q].rgb_far = k[q].rgb_near = col[r + (q >> 1)][c + (q & 1)];
-            k[q].uf = (uint8_t)u[q]; k[q].vf = (uint8_t)v[q];
-            k[q].role = (uint8_t)q;
+        if (tgpu_cell_tile(cpu, e, F->abe, hp_bucket, hdfold, &tiles[i], &cls[i],
+                           &blended[i]) != 0) {
+            *fail = 5;
+            return -1;
         }
-        if (hdfold) {
-            float uA[3] = { u[0], u[1], u[2] }, vA[3] = { v[0], v[1], v[2] };
-            float uB[3] = { u[1], u[2], u[3] }, vB[3] = { v[1], v[2], v[3] };
-            int hd = tgpu_hdfold_face(&m, uA, vA, uB, vB);
-            if (hd < 0) { *fail = 5; return -1; }
-            H.matf1 |= (uint32_t)hd << 16;
+    }
+    for (int h = 0; h < 2; h++) {
+        uint32_t bl = 0;
+        for (int j = 0; j < 8; j++) bl |= (uint32_t)blended[h * 8 + j] << j;
+        memcpy(R.cur.tile, &tiles[h * 8], sizeof(R.cur.tile));
+        for (int c = OPTC_ARENA_OPAQUE; c <= OPTC_ARENA_SUB; c++) {
+            uint32_t mask = 0;
+            for (int j = 0; j < 8; j++) mask |= (uint32_t)(cls[h * 8 + j] == c) << j;
+            if (!mask) continue;
+            R.cur.info = ((uint32_t)F->hq_idx & 0x7Fu) | ((uint32_t)h << 7)
+                       | (mask << 8) | (bl << 16);
+            if (tgpu_push_rec(&buf[base + c], &R) != 0) return -1;
         }
-        int ha = tgpu_arena_of(&m);
-        if (tgpu_emit_cell_tri(buf, ha, ab, with_var, &H, k[0], k[1], k[2], 0) != 0) return -1;
-        if (tgpu_emit_cell_tri(buf, ha, ab, with_var, &H, k[1], k[2], k[3], 1) != 0) return -1;
     }
     return 0;
 }
+/* Allocate and upload one built sector's chunks, recording them in its slot.
+ * All or nothing: an arena that is full rolls back the chunks already
+ * allocated for this sector and returns -1 (the arena-full claim). */
+static int tgpu_upload_chunks(tgpu_slot_t* S, const tgpu_buf* buf) {
+    uint32_t first[OPTC_ARENA_COUNT] = {0};
+    int bufi[OPTC_ARENA_COUNT] = {0};
+    uint32_t bits = 0;
+    int a;
+    for (a = 0; a < OPTC_ARENA_COUNT; a++) {
+        if (buf[a].n == 0) continue;
+        if (openpete_tercache_chunk_alloc(a, buf[a].n, &first[a], &bufi[a]) != 0) break;
+    }
+    if (a < OPTC_ARENA_COUNT) {
+        for (int b = 0; b < a; b++)
+            if (buf[b].n) openpete_tercache_chunk_free(b, bufi[b], first[b], buf[b].n);
+        return -1;
+    }
+    for (a = 0; a < OPTC_ARENA_COUNT; a++) {
+        if (buf[a].n == 0) { S->count[a] = 0; continue; }
+        if (OPTC_ARENA_IS_CELL(a))
+            openpete_tercache_chunk_write_cells(a, bufi[a], first[a], buf[a].rec, buf[a].n);
+        else
+            openpete_tercache_chunk_write(a, bufi[a], first[a], buf[a].v, buf[a].n);
+        if (buf[a].anim)
+            openpete_tercache_chunk_write_prev(a, bufi[a], first[a], buf[a].pv, buf[a].n);
+        if (buf[a].nearv)
+            openpete_tercache_chunk_write_ctx(a, bufi[a], first[a], buf[a].cx, buf[a].n);
+        S->first[a] = first[a]; S->count[a] = buf[a].n;
+        bits |= (uint32_t)bufi[a] << a;
+    }
+    S->bufbit = bits;
+    return 0;
+}
+
 /* Build all of one sector's chunks. Returns 0 on success, 1 arena-full,
  * 2 scroll-anim claim (the flat/HQ UV-scroll rides a fractional per-present
  * accumulator lerp the mesh cannot bake), 5 = HD-fold unbakeable face (see
@@ -3893,8 +3956,11 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
      * binding-1 twin per chunk — prev record OR member context). */
     if (anim) with_var = 0;
     if (with_var)
-        for (int a = OPTC_ARENA_NEAR_BASE; a < OPTC_ARENA_COUNT; a++)
+        for (int a = OPTC_ARENA_NEAR_BASE; a < OPTC_ARENA_CELL_NEAR_BASE; a++)
             buf[a].nearv = 1;
+    for (int a = OPTC_ARENA_CELL_NEAR_BASE; a < OPTC_ARENA_COUNT; a++)
+        buf[a].rsz = OPTC_ARENA_IS_CELL_ANIM(a) ? sizeof(rhi_terrain_cell_anim)
+                                                : sizeof(rhi_terrain_cell);
     int vsnap = 1;
     if (anim) {
         for (int a = OPTC_ARENA_ANIM_BASE; a < OPTC_ARENA_NEAR_BASE; a++)
@@ -4061,37 +4127,10 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
     }
 
     /* ---- upload ---- */
-    {
-        tgpu_slot_t* S = &s_tgpu[slot];
-        uint32_t first[OPTC_ARENA_COUNT] = {0};
-        int bufi[OPTC_ARENA_COUNT] = {0};
-        uint16_t bits = 0;
-        int a;
-        for (a = 0; a < OPTC_ARENA_COUNT; a++) {
-            if (buf[a].n == 0) continue;
-            if (openpete_tercache_chunk_alloc(a, buf[a].n, &first[a], &bufi[a]) != 0) break;
-        }
-        if (a < OPTC_ARENA_COUNT) {   /* arena full: roll back this sector */
-            for (int b = 0; b < a; b++)
-                if (buf[b].n) openpete_tercache_chunk_free(b, bufi[b], first[b], buf[b].n);
-            goto done;
-        }
-        for (a = 0; a < OPTC_ARENA_COUNT; a++) {
-            if (buf[a].n == 0) { S->count[a] = 0; continue; }
-            openpete_tercache_chunk_write(a, bufi[a], first[a], buf[a].v, buf[a].n);
-            if (buf[a].anim)
-                openpete_tercache_chunk_write_prev(a, bufi[a], first[a], buf[a].pv, buf[a].n);
-            if (buf[a].nearv)
-                openpete_tercache_chunk_write_ctx(a, bufi[a], first[a], buf[a].cx, buf[a].n);
-            S->first[a] = first[a]; S->count[a] = buf[a].n;
-            bits |= (uint16_t)(bufi[a] << a);
-        }
-        S->bufbit = bits;
-        ok = 1;
-    }
+    ok = tgpu_upload_chunks(&s_tgpu[slot], buf) == 0;
 done:
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
-        free(buf[a].v); free(buf[a].pv); free(buf[a].cx);
+        free(buf[a].v); free(buf[a].pv); free(buf[a].cx); free(buf[a].rec);
     }
     return ok ? 0 : fail;
 }
@@ -4257,8 +4296,9 @@ static void tgpu_fmt_arenas(char* out, int cap, const uint32_t* num, const uint3
 
 /* Per-arena high-water marks against their capacities, the sectors each
  * arena claimed back for want of room, the overflow buffers each arena has
- * taken on, the device bytes the live buffers hold, and the level-edge
- * replacement's engagement (service calls / requests fulfilled). A `high`
+ * taken on, the device bytes the live buffers hold, the level-edge
+ * replacement's engagement (service calls / requests fulfilled), and the
+ * instanced cell-record draws with the record instances they covered. A `high`
  * equal to its `cap` with no overflow behind it is a clamp, not a demand
  * figure. */
 static void tgpu_arena_census_line(void) {
@@ -4269,10 +4309,11 @@ static void tgpu_arena_census_line(void) {
     tgpu_fmt_arenas(afail, (int)sizeof afail, st.alloc_fail, NULL);
     tgpu_fmt_arenas(ovf, (int)sizeof ovf, st.overflow_adopted, NULL);
     fprintf(stderr, "[ter-gpu f=%u] hwm=%s afail=%s ovf=%s caps=%.1fMiB svc=%u/%u "
-            "draws-retired=%u rebake=%ld\n",
+            "draws-retired=%u rebake=%ld cell-draws=%u/%llu\n",
             openpete_frame, hwm, afail, ovf,
             (double)st.cap_bytes / (1024.0 * 1024.0),
-            st.svc_calls, st.svc_fulfilled, st.draws_retired, s_tgpu_rebake);
+            st.svc_calls, st.svc_fulfilled, st.draws_retired, s_tgpu_rebake,
+            st.cell_draws, (unsigned long long)st.cell_instances);
 }
 
 /* The arena line again at exit, so a run shorter than the census divider

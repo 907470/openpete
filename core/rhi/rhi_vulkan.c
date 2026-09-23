@@ -4404,6 +4404,112 @@ void rhi_set_moby_truescope(int on) { s_fs_moby_truescope = on ? VK_TRUE : VK_FA
 static VkBool32 s_fs_slot_contest = VK_FALSE;
 void rhi_set_slot_contest(int on) { s_fs_slot_contest = on ? VK_TRUE : VK_FALSE; }
 
+/* Terrain sector-mesh layout (rhi_terrain_vertex, 64 B): integer-packed
+ * retained world-space vertices; see rhi.h for the field/bit contract.
+ * SINT/UINT formats — terrain.vert consumes ivec/uvec, no normalization. */
+#define TERRAIN_VERTEX_ATTRS \
+    { .location = 0, .binding = 0, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_vertex, px) }, \
+    { .location = 1, .binding = 0, .format = VK_FORMAT_R8G8B8A8_UINT,     .offset = offsetof(rhi_terrain_vertex, uvf_u) }, \
+    { .location = 2, .binding = 0, .format = VK_FORMAT_R8G8B8A8_UNORM,    .offset = offsetof(rhi_terrain_vertex, rgba_far) }, \
+    { .location = 3, .binding = 0, .format = VK_FORMAT_R8G8B8A8_UNORM,    .offset = offsetof(rhi_terrain_vertex, rgba_near) }, \
+    { .location = 4, .binding = 0, .format = VK_FORMAT_R32G32B32A32_UINT, .offset = offsetof(rhi_terrain_vertex, mat_far0) }, \
+    { .location = 5, .binding = 0, .format = VK_FORMAT_R32_UINT,          .offset = offsetof(rhi_terrain_vertex, face_flags) }, \
+    { .location = 6, .binding = 0, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_vertex, c0x) }, \
+    { .location = 7, .binding = 0, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_vertex, c1y) }, \
+    { .location = 8, .binding = 0, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_vertex, c2z) }
+static const VkVertexInputAttributeDescription k_terrain_attrs[9] = { TERRAIN_VERTEX_ATTRS };
+/* terrain_anim: cur verts at binding 0 + the prev-tick twin at binding 1
+ * (a parallel array, same vertex indexing — see rhi_terrain_prev). */
+static const VkVertexInputBindingDescription k_terrain_anim_binds[2] = {
+    { .binding = 0, .stride = sizeof(rhi_terrain_vertex),
+      .inputRate = VK_VERTEX_INPUT_RATE_VERTEX },
+    { .binding = 1, .stride = sizeof(rhi_terrain_prev),
+      .inputRate = VK_VERTEX_INPUT_RATE_VERTEX },
+};
+static const VkVertexInputAttributeDescription k_terrain_anim_attrs[13] = {
+    TERRAIN_VERTEX_ATTRS,
+    { .location = 9,  .binding = 1, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_prev, px) },
+    { .location = 10, .binding = 1, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_prev, c0x) },
+    { .location = 11, .binding = 1, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_prev, c1y) },
+    { .location = 12, .binding = 1, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_prev, c2z) },
+};
+/* terrain_near: cur verts at binding 0 + the emitted-tri member context
+ * at binding 1 (a parallel array — see rhi_terrain_nearctx). */
+static const VkVertexInputBindingDescription k_terrain_near_binds[2] = {
+    { .binding = 0, .stride = sizeof(rhi_terrain_vertex),
+      .inputRate = VK_VERTEX_INPUT_RATE_VERTEX },
+    { .binding = 1, .stride = sizeof(rhi_terrain_nearctx),
+      .inputRate = VK_VERTEX_INPUT_RATE_VERTEX },
+};
+static const VkVertexInputAttributeDescription k_terrain_near_attrs[13] = {
+    TERRAIN_VERTEX_ATTRS,
+    { .location = 9,  .binding = 1, .format = VK_FORMAT_R8G8B8A8_UINT, .offset = offsetof(rhi_terrain_nearctx, a_uf) },
+    { .location = 10, .binding = 1, .format = VK_FORMAT_R32G32_UINT,   .offset = offsetof(rhi_terrain_nearctx, a_far) },
+    { .location = 11, .binding = 1, .format = VK_FORMAT_R8G8B8A8_UINT, .offset = offsetof(rhi_terrain_nearctx, b_uf) },
+    { .location = 12, .binding = 1, .format = VK_FORMAT_R32G32_UINT,   .offset = offsetof(rhi_terrain_nearctx, b_far) },
+};
+#undef TERRAIN_VERTEX_ATTRS
+/* terrain_cells: one INSTANCE-rate binding of cell records (rhi_terrain_cell;
+ * see rhi.h), no per-vertex binding — the vertex stage derives every cell
+ * vertex from its record and gl_VertexIndex. Locations 0-2 carry the corners
+ * in rhi_terrain_vertex's c0x..c3z packing, 3 the face flags + record info,
+ * 4 the near colours, 5-12 the eight cell tiles; the anim records append the
+ * previous corners at 13-15. */
+#define CELL_TILE_ATTR(i) \
+    { .location = 5 + (i), .binding = 0, .format = VK_FORMAT_R32G32B32A32_UINT, \
+      .offset = offsetof(rhi_terrain_cell, tile) + (i) * sizeof(rhi_terrain_cell_tile) }
+static const VkVertexInputAttributeDescription k_terrain_cell_attrs[16] = {
+    { .location = 0, .binding = 0, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_cell, c0x) },
+    { .location = 1, .binding = 0, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_cell, c1y) },
+    { .location = 2, .binding = 0, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_cell, c2z) },
+    { .location = 3, .binding = 0, .format = VK_FORMAT_R32G32_UINT,       .offset = offsetof(rhi_terrain_cell, face_flags) },
+    { .location = 4, .binding = 0, .format = VK_FORMAT_R32G32B32A32_UINT, .offset = offsetof(rhi_terrain_cell, near_rgb) },
+    CELL_TILE_ATTR(0), CELL_TILE_ATTR(1), CELL_TILE_ATTR(2), CELL_TILE_ATTR(3),
+    CELL_TILE_ATTR(4), CELL_TILE_ATTR(5), CELL_TILE_ATTR(6), CELL_TILE_ATTR(7),
+    { .location = 13, .binding = 0, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_cell_anim, p0x) },
+    { .location = 14, .binding = 0, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_cell_anim, p1y) },
+    { .location = 15, .binding = 0, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_cell_anim, p2z) },
+};
+#undef CELL_TILE_ATTR
+static const VkVertexInputBindingDescription k_terrain_cell_bind = {
+    .binding = 0, .stride = sizeof(rhi_terrain_cell), .inputRate = VK_VERTEX_INPUT_RATE_INSTANCE,
+};
+static const VkVertexInputBindingDescription k_terrain_cell_anim_bind = {
+    .binding = 0, .stride = sizeof(rhi_terrain_cell_anim), .inputRate = VK_VERTEX_INPUT_RATE_INSTANCE,
+};
+
+/* The terrain pipelines' vertex input: the plain sector mesh, its anim or
+ * near twin pair, or a cell-record flavour. `vi` arrives holding the
+ * one-binding default, whose binding stride the plain mesh overrides. */
+static void terrain_vertex_input(const rhi_pipeline_desc *desc,
+                                 VkPipelineVertexInputStateCreateInfo *vi)
+{
+    static const VkVertexInputBindingDescription plain = {
+        .binding = 0, .stride = sizeof(rhi_terrain_vertex),
+        .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
+    };
+    vi->vertexBindingDescriptionCount = 1;
+    vi->pVertexBindingDescriptions = &plain;
+    vi->vertexAttributeDescriptionCount = 9;
+    vi->pVertexAttributeDescriptions = k_terrain_attrs;
+    if (desc->terrain_cells) {
+        vi->pVertexBindingDescriptions = desc->terrain_anim ? &k_terrain_cell_anim_bind
+                                                            : &k_terrain_cell_bind;
+        vi->vertexAttributeDescriptionCount = desc->terrain_anim ? 16 : 13;
+        vi->pVertexAttributeDescriptions = k_terrain_cell_attrs;
+    } else if (desc->terrain_anim) {
+        vi->vertexBindingDescriptionCount = 2;
+        vi->pVertexBindingDescriptions = k_terrain_anim_binds;
+        vi->vertexAttributeDescriptionCount = 13;
+        vi->pVertexAttributeDescriptions = k_terrain_anim_attrs;
+    } else if (desc->terrain_near) {
+        vi->vertexBindingDescriptionCount = 2;
+        vi->pVertexBindingDescriptions = k_terrain_near_binds;
+        vi->vertexAttributeDescriptionCount = 13;
+        vi->pVertexAttributeDescriptions = k_terrain_near_attrs;
+    }
+}
+
 /* Compile a pipeline's Vulkan objects from its stored sources (desc + shader
  * names/words) without touching the rhi_pipeline's live handles: the create
  * path assigns the result to a fresh pipeline, the rebuild path swaps it into
@@ -4476,78 +4582,12 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
         { .location = 4, .binding = 0, .format = VK_FORMAT_R32_SFLOAT,       .offset = offsetof(rhi_vertex, w) },
         { .location = 5, .binding = 0, .format = VK_FORMAT_R32_SFLOAT,       .offset = offsetof(rhi_vertex, koff) },
     };
-    /* Terrain sector-mesh layout (rhi_terrain_vertex, 64 B): integer-packed
-     * retained world-space vertices; see rhi.h for the field/bit contract.
-     * SINT/UINT formats — terrain.vert consumes ivec/uvec, no normalization. */
-    VkVertexInputAttributeDescription terrain_attrs[9] = {
-        { .location = 0, .binding = 0, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_vertex, px) },
-        { .location = 1, .binding = 0, .format = VK_FORMAT_R8G8B8A8_UINT,     .offset = offsetof(rhi_terrain_vertex, uvf_u) },
-        { .location = 2, .binding = 0, .format = VK_FORMAT_R8G8B8A8_UNORM,    .offset = offsetof(rhi_terrain_vertex, rgba_far) },
-        { .location = 3, .binding = 0, .format = VK_FORMAT_R8G8B8A8_UNORM,    .offset = offsetof(rhi_terrain_vertex, rgba_near) },
-        { .location = 4, .binding = 0, .format = VK_FORMAT_R32G32B32A32_UINT, .offset = offsetof(rhi_terrain_vertex, mat_far0) },
-        { .location = 5, .binding = 0, .format = VK_FORMAT_R32_UINT,          .offset = offsetof(rhi_terrain_vertex, face_flags) },
-        { .location = 6, .binding = 0, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_vertex, c0x) },
-        { .location = 7, .binding = 0, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_vertex, c1y) },
-        { .location = 8, .binding = 0, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_vertex, c2z) },
-    };
-    /* terrain_anim: cur verts at binding 0 + the prev-tick twin at binding 1
-     * (a parallel array, same vertex indexing — see rhi_terrain_prev). */
-    VkVertexInputBindingDescription terrain_binds[2] = {
-        { .binding = 0, .stride = sizeof(rhi_terrain_vertex),
-          .inputRate = VK_VERTEX_INPUT_RATE_VERTEX },
-        { .binding = 1, .stride = sizeof(rhi_terrain_prev),
-          .inputRate = VK_VERTEX_INPUT_RATE_VERTEX },
-    };
-    VkVertexInputAttributeDescription terrain_anim_attrs[13];
-    memcpy(terrain_anim_attrs, terrain_attrs, sizeof(terrain_attrs));
-    terrain_anim_attrs[9]  = (VkVertexInputAttributeDescription)
-        { .location = 9,  .binding = 1, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_prev, px) };
-    terrain_anim_attrs[10] = (VkVertexInputAttributeDescription)
-        { .location = 10, .binding = 1, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_prev, c0x) };
-    terrain_anim_attrs[11] = (VkVertexInputAttributeDescription)
-        { .location = 11, .binding = 1, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_prev, c1y) };
-    terrain_anim_attrs[12] = (VkVertexInputAttributeDescription)
-        { .location = 12, .binding = 1, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_prev, c2z) };
-    /* terrain_near: cur verts at binding 0 + the emitted-tri member context
-     * at binding 1 (a parallel array — see rhi_terrain_nearctx). */
-    VkVertexInputBindingDescription terrain_near_binds[2] = {
-        { .binding = 0, .stride = sizeof(rhi_terrain_vertex),
-          .inputRate = VK_VERTEX_INPUT_RATE_VERTEX },
-        { .binding = 1, .stride = sizeof(rhi_terrain_nearctx),
-          .inputRate = VK_VERTEX_INPUT_RATE_VERTEX },
-    };
-    VkVertexInputAttributeDescription terrain_near_attrs[13];
-    memcpy(terrain_near_attrs, terrain_attrs, sizeof(terrain_attrs));
-    terrain_near_attrs[9]  = (VkVertexInputAttributeDescription)
-        { .location = 9,  .binding = 1, .format = VK_FORMAT_R8G8B8A8_UINT, .offset = offsetof(rhi_terrain_nearctx, a_uf) };
-    terrain_near_attrs[10] = (VkVertexInputAttributeDescription)
-        { .location = 10, .binding = 1, .format = VK_FORMAT_R32G32_UINT,   .offset = offsetof(rhi_terrain_nearctx, a_far) };
-    terrain_near_attrs[11] = (VkVertexInputAttributeDescription)
-        { .location = 11, .binding = 1, .format = VK_FORMAT_R8G8B8A8_UINT, .offset = offsetof(rhi_terrain_nearctx, b_uf) };
-    terrain_near_attrs[12] = (VkVertexInputAttributeDescription)
-        { .location = 12, .binding = 1, .format = VK_FORMAT_R32G32_UINT,   .offset = offsetof(rhi_terrain_nearctx, b_far) };
     VkPipelineVertexInputStateCreateInfo vi = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
         .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &bind,
         .vertexAttributeDescriptionCount = 6, .pVertexAttributeDescriptions = attrs,
     };
-    if (desc->terrain_pipeline) {
-        bind.stride = sizeof(rhi_terrain_vertex);
-        vi.vertexAttributeDescriptionCount = 9;
-        vi.pVertexAttributeDescriptions = terrain_attrs;
-        if (desc->terrain_anim) {
-            vi.vertexBindingDescriptionCount = 2;
-            vi.pVertexBindingDescriptions = terrain_binds;
-            vi.vertexAttributeDescriptionCount = 13;
-            vi.pVertexAttributeDescriptions = terrain_anim_attrs;
-        }
-        if (desc->terrain_near) {
-            vi.vertexBindingDescriptionCount = 2;
-            vi.pVertexBindingDescriptions = terrain_near_binds;
-            vi.vertexAttributeDescriptionCount = 13;
-            vi.pVertexAttributeDescriptions = terrain_near_attrs;
-        }
-    }
+    if (desc->terrain_pipeline) terrain_vertex_input(desc, &vi);
     if (desc->postfx) {   /* fullscreen triangle: no vertex buffer at all */
         vi.vertexBindingDescriptionCount = 0;
         vi.pVertexBindingDescriptions = NULL;
@@ -5267,6 +5307,15 @@ void rhi_draw(rhi_device *dev, uint32_t vertex_count, uint32_t first_vertex)
     if (!dev->frame_active) return;
     dev->draw_calls++;
     vkCmdDraw(dev->cmd[dev->frame], vertex_count, 1, first_vertex, 0);
+}
+
+void rhi_draw_instanced(rhi_device *dev, uint32_t vertex_count, uint32_t instance_count,
+                        uint32_t first_vertex, uint32_t first_instance)
+{
+    if (!dev->frame_active) return;
+    dev->draw_calls++;
+    vkCmdDraw(dev->cmd[dev->frame], vertex_count, instance_count, first_vertex,
+              first_instance);
 }
 
 uint32_t rhi_draw_calls(rhi_device *dev)
