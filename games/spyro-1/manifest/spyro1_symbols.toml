@@ -338,6 +338,16 @@ addr = 0x8006D3C8
 note = "D_8006D3C8 — the triangle drains' UV offset table: 4 orientation blocks of 128 bytes, 8-byte entries indexed by tiledef word1 >> 25 & 0x78 (r_environment.s 0x80029E88-0x80029ECC)"
 
 [[symbol]]
+name = "D_HQ_TRI2_NODES"
+addr = 0x8006D0E8
+note = "D_8006D0E8 — the tier-2 triangle drain's 4 sub-triangles: node ids 0-5 (A, AB, B, AC, BC, C) in bytes 3,2,1, tile selector bits 2-3, UV orientation bits 0-1 (r_environment.s 0x800283DC-0x80028434)"
+
+[[symbol]]
+name = "D_HQ_TRI2_TILES"
+addr = 0x8006D378
+note = "D_8006D378 — the tier-2 triangle drain's quadrant tile byte offsets (tile * 8 past the record's entry 0) by selector + UV rotation (r_environment.s 0x80028408-0x8002843C)"
+
+[[symbol]]
 name = "F_MOBY_SHADOWS"
 addr = 0x80059F8C
 kind = "function"

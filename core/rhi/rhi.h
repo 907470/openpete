@@ -452,7 +452,10 @@ typedef struct rhi_terrain_cell {
                                  * bit 24: a tier-4 triangle's record: entry
                                  * j is sub-triangle half*8 + j, its tile
                                  * uv[0..5] the (u, v) of nodes A, B, C and
-                                 * uv[6] its cell                            */
+                                 * uv[6] its cell;
+                                 * bit 25 (with bit 24): a tier-2 triangle's
+                                 * record, entries 0-3 its sub-triangles and
+                                 * uv[6] the quadrant tile                   */
     uint32_t near_rgb[4];       /* raw near colours of corners i0..i3 (a
                                  * triangle's C colour, word 1 byte 0, in [3]) */
     rhi_terrain_cell_tile tile[8];

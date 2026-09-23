@@ -201,6 +201,7 @@ layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
 #define GF_NBKEYS    1024
 #define GF_CELLS4    2048
 #define GF_TRI4      4096
+#define GF_TRI2      8192
 
 struct TerrainSector {
     vec4 o;        /* xyz: sector origin (world/16), w: uintBitsToFloat(flags) */
@@ -463,16 +464,20 @@ nc4v nc4_vert(int r, int c, dvec3 TL, dvec3 TR, dvec3 BL, dvec3 BR)
     return o;
 }
 
-/* ---- tier-4 triangles (terrain.c nt4_* mirrors) --------------------------
+/* ---- split triangles (terrain.c nt4_* / nt_* mirrors) --------------------
  * A tier-4 triangle (corners A = i0, B = i1, C = i2) draws as 16
- * sub-triangles over 15 nodes, node (r, c) at A(4-r-c)/4 + Bc/4 + Cr/4. A
- * sub-triangle vertex carries bit 30 beside the cell bit 31 in mat_near1,
- * its sub-triangle in bits 4-7 and its cell in bits 0-3; its member slot is
- * the role. NT4_SUB is D_8006D0F8's node ids (A, B, C per sub-triangle). */
-const int NT4_SUB[48] = int[48](0, 1, 5,   6, 5, 1,   1, 2, 6,   7, 6, 2,
-                                2, 3, 7,   8, 7, 3,   3, 4, 8,   5, 6, 9,
-                                10, 9, 6,  6, 7, 10,  11, 10, 7, 7, 8, 11,
-                                9, 10, 12, 13, 12, 10, 10, 11, 13, 12, 13, 14);
+ * sub-triangles over 15 nodes, node (r, c) at A(4-r-c)/4 + Bc/4 + Cr/4; a
+ * tier-2 triangle as 4 sub-triangles over the grid's nodes 0, 2, 4, 9, 11
+ * and 14 (the corners and edge midpoints). A sub-triangle vertex carries
+ * bit 30 beside the cell bit 31 in mat_near1, its sub-triangle in bits 4-8
+ * (16-19: tier 2) and its cell or quadrant in bits 0-3; its member slot is
+ * the role. NT_SUB is D_8006D0F8's node ids (A, B, C per sub-triangle),
+ * then D_8006D0E8's mapped onto the 15-node numbering (k_nt2_node). */
+const int NT_SUB[60] = int[60](0, 1, 5,   6, 5, 1,   1, 2, 6,   7, 6, 2,
+                               2, 3, 7,   8, 7, 3,   3, 4, 8,   5, 6, 9,
+                               10, 9, 6,  6, 7, 10,  11, 10, 7, 7, 8, 11,
+                               9, 10, 12, 13, 12, 10, 10, 11, 13, 12, 13, 14,
+                               0, 2, 9,   11, 9, 2,  2, 4, 11,  9, 11, 14);
 /* A node's face edge: 0 none, 1 AB, 2 CA, 3 BC (k_nt4_edge). */
 const int NT4_EDGE[15] = int[15](0, 1, 1, 1, 0, 2, 0, 0, 3, 2, 0, 3, 2, 3, 0);
 
@@ -905,23 +910,23 @@ uint nc4_mv_rgb(dvec2 st) {
  * variant; corner slot = triangle member + the second triangle's offset.
  * Returns false for a cell this record copy does not draw (another draw
  * class's copy carries it). */
-/* A tier-4 triangle record (info bit 24): entry lc of half h is
- * sub-triangle h*8 + lc, drawn by the entry's first triangle alone (the
- * second is killed); tile uv[0..5] are nodes A, B, C's (u, v) and uv[6] the
- * cell. */
+/* A split-triangle record (info bit 24): entry lc of half h is
+ * sub-triangle h*8 + lc of a tier-4 record, 16 + lc of a tier-2 one (bit
+ * 25), drawn by the entry's first triangle alone (the second is killed);
+ * tile uv[0..5] are nodes A, B, C's (u, v) and uv[6] the cell or quadrant. */
 bool tri4_fetch(uint info, int lc, int tri2, int k, bool spare) {
     if (tri2 != 0) return false;
     uvec4 t = lc == 0 ? inCellT0 : lc == 1 ? inCellT1 : lc == 2 ? inCellT2
             : lc == 3 ? inCellT3 : lc == 4 ? inCellT4 : lc == 5 ? inCellT5
             : lc == 6 ? inCellT6 : inCellT7;
-    int sub = int((info >> 7) & 1u) * 8 + lc;
+    int sub = (info & 0x2000000u) != 0u ? 16 + lc : int((info >> 7) & 1u) * 8 + lc;
     uint cell = (t.y >> 16) & 15u;
     uint f16 = 1u | (uint(k) << 3) | ((info & 0x7Fu) << 5) | 0x1000u
              | (((info >> uint(16 + lc)) & 1u) != 0u ? 0x4000u : 0u)
              | (spare ? 0x8000u : 0u);
     inPos = ivec4(inC0.xyz, int(f16));
     inUV = uvec4(cell_uv(t, k), 0u, 0u);
-    inColFar = cell_unorm(nt4_node_rgb(NT4_SUB[sub * 3 + k]));
+    inColFar = cell_unorm(nt4_node_rgb(NT_SUB[sub * 3 + k]));
     inColNear = inColFar;
     inMat = uvec4(t.z, t.w, 0u, 0xC0000000u | (uint(sub) << 4) | cell);
     inFaceFlags = inCellFace.x;
@@ -930,8 +935,8 @@ bool tri4_fetch(uint info, int lc, int tri2, int k, bool spare) {
 #endif
 #ifdef TERRAIN_NEAR
     int ra = (k + 1) % 3, rb = (k + 2) % 3;
-    uint ca = 0xFF000000u | nt4_node_rgb(NT4_SUB[sub * 3 + ra]);
-    uint cb = 0xFF000000u | nt4_node_rgb(NT4_SUB[sub * 3 + rb]);
+    uint ca = 0xFF000000u | nt4_node_rgb(NT_SUB[sub * 3 + ra]);
+    uint cb = 0xFF000000u | nt4_node_rgb(NT_SUB[sub * 3 + rb]);
     inCtxAUV = uvec4(cell_uv(t, ra), 0u, 0u);
     inCtxACol = uvec2(ca, ca);
     inCtxBUV = uvec4(cell_uv(t, rb), 0u, 0u);
@@ -1007,7 +1012,8 @@ void main()
     bool is4  = hqv && (inMat.w & 0x80000000u) != 0u;   /* 4x4 near-cell vertex */
     bool ist  = is4 && (inMat.w & 0x40000000u) != 0u;   /* tier-4 sub-triangle  */
     int  cell = int(inMat.w & 15u);           /* its cell, row-major        */
-    int  tsub = int((inMat.w >> 4) & 15u);    /* its sub-triangle (ist)     */
+    int  tsub = int((inMat.w >> 4) & 31u);    /* its sub-triangle (ist)     */
+    bool ist2 = ist && tsub >= 16;            /* a tier-2 sub-triangle      */
     bool fillPass = (pc.pass_sel == 1);
     bool keyPass  = (pc.pass_sel == 2);
 
@@ -1218,22 +1224,32 @@ void main()
     bool t4 = near && (gf & GF_CELLS4) != 0 &&
               (pin ? (ff & FF_W3_40) == 0u
                    : nc4_tier4(m0.z, m1.z, m2.z, m3c.z, ff & FF_W3_40, ff & FF_W3_80));
-    /* A triangle face: the flat GT3, or (GF_TRI4, the tier-4 verdict over
-     * A, B, C, C) its 16 sub-triangle records. Pinned to the cells: every
-     * triangle not fully behind the camera with w3 & 0x40 clear. */
-    bool t4tri = !quad && !lp && !fillPass && (gf & GF_NEARHQ) != 0 && (gf & GF_TRI4) != 0
-              && (straddle ? front3d : front) && (ff & FF_HQELIG) != 0u
-              && (pin ? ((ff & FF_W3_40) == 0u &&
-                         max(m0.z, 0.0lf) + max(m1.z, 0.0lf) + 2.0lf * max(m2.z, 0.0lf) > 0.0lf)
+    /* A triangle face: the flat GT3, (GF_TRI4, the tier-4 verdict over
+     * A, B, C, C) its 16 sub-triangle records, or (GF_TRI2, any other near
+     * verdict over A, B, C, C: tn_face_near) its 4 tier-2 records. Pinned
+     * to the cells: every triangle not fully behind the camera with
+     * w3 & 0x40 clear takes tier 4; the HQ pin sends every other one not
+     * fully behind the camera to tier 2. */
+    bool trinear = !quad && !lp && !fillPass && (gf & GF_NEARHQ) != 0
+                && (straddle ? front3d : front) && (ff & FF_HQELIG) != 0u;
+    bool trifront = max(m0.z, 0.0lf) + max(m1.z, 0.0lf) + 2.0lf * max(m2.z, 0.0lf) > 0.0lf;
+    bool t4tri = trinear && (gf & GF_TRI4) != 0
+              && (pin ? ((ff & FF_W3_40) == 0u && trifront)
                       : nc4_tier4(m0.z, m1.z, m2.z, m2.z, ff & FF_W3_40, ff & FF_W3_80));
-    if (hqv != (near || t4tri) || is4 != (t4 || t4tri)) { kill_vert(); return; }
+    bool t2tri = trinear && !t4tri && (gf & GF_TRI2) != 0
+              && ((gf & GF_HQPIN) != 0 ? trifront
+                                       : near_canonical(m0.z, m1.z, m2.z, m2.z,
+                                                        ff & FF_W3_40, ff & FF_W3_80));
+    if (hqv != (near || t4tri || t2tri) || is4 != (t4 || t4tri || t2tri) || ist2 != t2tri) {
+        kill_vert(); return;
+    }
     /* nc4_front mirror: a straddling face's cell draws only when one of its
      * two triples faces. */
     if (ist && straddle && (ff & FF_DSIDE) == 0u) {
         /* nt4_emit's straddler facing: the sub-triangle's own triple. */
-        precise double d = det3d(nt4_node(NT4_SUB[tsub * 3], m0, m1, m2),
-                                 nt4_node(NT4_SUB[tsub * 3 + 1], m0, m1, m2),
-                                 nt4_node(NT4_SUB[tsub * 3 + 2], m0, m1, m2));
+        precise double d = det3d(nt4_node(NT_SUB[tsub * 3], m0, m1, m2),
+                                 nt4_node(NT_SUB[tsub * 3 + 1], m0, m1, m2),
+                                 nt4_node(NT_SUB[tsub * 3 + 2], m0, m1, m2));
         if (flip ? (d > 0.0lf) : (d < 0.0lf)) { kill_vert(); return; }
     } else if (is4 && straddle && (ff & FF_DSIDE) == 0u) {
         int cr = cell >> 2, cq = cell & 3;
@@ -1295,7 +1311,7 @@ void main()
                      cover_dropped(sa, sb, sc, ta.z, tb.z, tc2.z));
         } else if (ist) {
             /* Sub-triangle members (A,B,C), nt4_emit's order. */
-            int na = NT4_SUB[tsub * 3], nb = NT4_SUB[tsub * 3 + 1], nc2 = NT4_SUB[tsub * 3 + 2];
+            int na = NT_SUB[tsub * 3], nb = NT_SUB[tsub * 3 + 1], nc2 = NT_SUB[tsub * 3 + 2];
             precise dvec3 ta = nt4_node(na, m0, m1, m2);
             precise dvec3 tb = nt4_node(nb, m0, m1, m2);
             precise dvec3 tc2 = nt4_node(nc2, m0, m1, m2);
@@ -1444,7 +1460,8 @@ void main()
     float uvdv = 0.0;
     if (scrollOn) {
         int stile = int((f16 >> 5) & 0x7Fu);
-        uvdv = is4 ? g.sdvc[stile][cell >> 2]
+        uvdv = ist2 ? g.sdv[stile][(cell >> 1) + 1]
+             : is4 ? g.sdvc[stile][cell >> 2]
              : hqv ? g.sdv[stile][(subq >> 1) + 1] : g.sdv[stile].x;
         uv.y += uvdv;
     }
@@ -1490,7 +1507,7 @@ void main()
             /* Sub-triangle members (A,B,C); each carries its emitted
              * point (the snap) as its override. */
             for (int k = 0; k < 3; k++) {
-                int n = NT4_SUB[tsub * 3 + k];
+                int n = NT_SUB[tsub * 3 + k];
                 tp[k]  = nt4_node(n, m0, m1, m2);
                 tos[k] = nt4_screen(n, m0, m1, m2);
             }
@@ -1630,7 +1647,7 @@ void main()
         mo = mac_of(lown, sdel);
         sscr = snap_of(proj_of(mo));
     } else if (ist) {
-        int n = NT4_SUB[tsub * 3 + role];
+        int n = NT_SUB[tsub * 3 + role];
         mo = nt4_node(n, m0, m1, m2);
         sscr = nt4_screen(n, m0, m1, m2);
     } else if (is4) {
@@ -1664,9 +1681,9 @@ void main()
             ok = float((m0.z + m1.z + m2.z + m3c.z) * 4.0lf);
         } else if (ist) {
             /* the sub-triangle's SZ A + SZ B + 2 SZ C (nt4_emit's emit_otkey) */
-            precise double zs = nt4_node(NT4_SUB[tsub * 3], m0, m1, m2).z
-                              + nt4_node(NT4_SUB[tsub * 3 + 1], m0, m1, m2).z
-                              + 2.0lf * nt4_node(NT4_SUB[tsub * 3 + 2], m0, m1, m2).z;
+            precise double zs = nt4_node(NT_SUB[tsub * 3], m0, m1, m2).z
+                              + nt4_node(NT_SUB[tsub * 3 + 1], m0, m1, m2).z
+                              + 2.0lf * nt4_node(NT_SUB[tsub * 3 + 2], m0, m1, m2).z;
             ok = float(zs * 4.0lf);
         } else if (is4) {
             /* the cell's own corner sum over the unmoved grid depths

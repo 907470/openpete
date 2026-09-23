@@ -161,6 +161,10 @@ enum {
                                    * corners A, B, C, C) draws its 16
                                    * sub-triangle records instead of the flat
                                    * GT3                                      */
+#define OPTC_GF_TRI2       8192u  /* game_layout.terrain.hq_tri2_nodes != 0: a
+                                   * near triangle outside tier 4 draws its 4
+                                   * tier-2 sub-triangle records instead of
+                                   * the flat GT3                             */
 
 /* face_flags bit layout lives with rhi_terrain_vertex in rhi.h. */
 #define OPTC_SLOT_DEAD     511u

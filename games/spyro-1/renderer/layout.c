@@ -118,6 +118,8 @@ const game_layout_t game_layout = {
         .hq_tri_uv     = D_HQ_TRI_UV,
         .hq_tri_uv_mask = 0x78u,                    /* `srl 25; andi 0x78` at
                                                      * r_environment.s 0x80029E98 */
+        .hq_tri2_nodes = D_HQ_TRI2_NODES,
+        .hq_tri2_tiles = D_HQ_TRI2_TILES,
         .abe_in_tpage = 0,
         .tile_word1_br = 0,
         .lod_dist_default = 0u,
