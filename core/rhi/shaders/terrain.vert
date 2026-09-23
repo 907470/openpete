@@ -380,88 +380,29 @@ vec2 nc4_snap_screen(int r, int c, dvec3 TL, dvec3 TR, dvec3 BL, dvec3 BR, dvec3
     return edge_snap_screen(ea, eb, m);
 }
 
-/* nc4_patch_pt mirror: the face point at parameters (s, t) of the bilinear
- * patch over TL, TR, BL, BR. */
-precise dvec3 nc4_patch(dvec3 Q0, dvec3 Q1, dvec3 Q2, dvec3 Q3, double s, double t) {
-    precise dvec3 p = Q0 + s * (Q1 - Q0) + t * (Q2 - Q0)
-                    + (s * t) * (((Q0 - Q1) - Q2) + Q3);
-    return p;
-}
-
-/* nc4_surf_solve mirror: six Newton steps on the two bilinear equations
- * H*px + (ofx-X)*pz = 0, H*py + (ofy-Y)*pz = 0 over the patch, from st,
- * the solution rounded to a multiple of 2^-16 of the face so that this
- * stage and the walk agree although their fp64 results may differ in the
- * last bits; false on a singular Jacobian, a solution off the face or a
- * point at or behind the eye. */
-bool nc4_surf_solve(dvec3 Q0, dvec3 Q1, dvec3 Q2, dvec3 Q3, double X, double Y,
-                    inout dvec2 st)
+/* nc4_morph mirror: an odd-odd node moves toward the mean of its up-right
+ * and down-left neighbours' emitted points, weight at = least corner SZ3 -
+ * 0x40, skipped when at <= 0 or the node's own integer projection is off
+ * the 512x256 GTE screen (nc4_outcode). Applied under AFFINE_UV only: the
+ * morph (r_environment.s 0x80028D1C-0x80028E44) moves the screen point while
+ * UV and w stay, which perspective-correct texturing renders as a warp. */
+vec2 nc4_screen(int r, int c, dvec3 TL, dvec3 TR, dvec3 BL, dvec3 BR)
 {
-    double H = g.dH.x;
-    precise double K0 = g.dof_xy.x - X, K1 = g.dof_xy.y - Y;
-    precise dvec3 E = Q1 - Q0, F = Q2 - Q0, D = ((Q0 - Q1) - Q2) + Q3;
-    precise double a0 = H * Q0.x + K0 * Q0.z, a1 = H * Q0.y + K1 * Q0.z;
-    precise double b0 = H * E.x + K0 * E.z,   b1 = H * E.y + K1 * E.z;
-    precise double c0 = H * F.x + K0 * F.z,   c1 = H * F.y + K1 * F.z;
-    precise double d0 = H * D.x + K0 * D.z,   d1 = H * D.y + K1 * D.z;
-    precise double s = st.x, t = st.y;
-    for (int it = 0; it < 6; it++) {
-        precise double f0 = a0 + b0 * s + c0 * t + d0 * (s * t);
-        precise double f1 = a1 + b1 * s + c1 * t + d1 * (s * t);
-        precise double js0 = b0 + d0 * t, jt0 = c0 + d0 * s;
-        precise double js1 = b1 + d1 * t, jt1 = c1 + d1 * s;
-        precise double det = js0 * jt1 - jt0 * js1;
-        if (det == 0.0lf) return false;
-        precise double ds = (f0 * jt1 - jt0 * f1) / det;
-        precise double dt = (js0 * f1 - js1 * f0) / det;
-        s = s - ds; t = t - dt;
-    }
-    s = floor(s * 65536.0lf + 0.5lf) / 65536.0lf;
-    t = floor(t * 65536.0lf + 0.5lf) / 65536.0lf;
-    if (!(s >= 0.0lf && s <= 1.0lf && t >= 0.0lf && t <= 1.0lf)) return false;
-    if (!(nc4_patch(Q0, Q1, Q2, Q3, s, t).z > 0.0lf)) return false;
-    st = dvec2(s, t);
-    return true;
-}
-
-/* A 4x4 cell node: its camera-space point m, emitted screen point scr and
- * face parameters st; mv marks a node the perspective morph moved. */
-struct nc4v { dvec3 m; vec2 scr; dvec2 st; bool mv; };
-
-/* nc4_morph mirror: an odd-odd node's morph target lies toward the mean of
- * its up-right and down-left neighbours' emitted points, weight at = least
- * corner SZ3 - 0x40, skipped when at <= 0 or the node's own integer
- * projection is off the 512x256 GTE screen (nc4_outcode). Under AFFINE_UV
- * the node keeps its point and moves on screen only (r_environment.s
- * 0x80028D1C-0x80028E44); otherwise it becomes the face point projecting
- * to the target (nc4_morph_surf), unmoved when the solve fails. */
-nc4v nc4_vert(int r, int c, dvec3 TL, dvec3 TR, dvec3 BL, dvec3 BR)
-{
-    nc4v o;
-    o.m = nc4_node(r, c, TL, TR, BL, BR);
-    o.scr = nc4_snap_screen(r, c, TL, TR, BL, BR, o.m);
-    o.st = dvec2(double(c) * 0.25lf, double(r) * 0.25lf);
-    o.mv = false;
-    if ((r & 1) == 0 || (c & 1) == 0) return o;
+    dvec3 m = nc4_node(r, c, TL, TR, BL, BR);
+    vec2 sc = nc4_snap_screen(r, c, TL, TR, BL, BR, m);
+    if (!AFFINE_UV || (r & 1) == 0 || (c & 1) == 0) return sc;
     double mn = min(min(TL.z, TR.z), min(BL.z, BR.z));
     precise double at = mn * 4.0lf - 64.0lf;
-    if (at <= 0.0lf || o.m.z <= 0.0lf) return o;
-    vec2 op = floor(proj_of(o.m));
-    if (op.y <= 0.0 || op.y >= 256.0 || op.x <= 0.0 || op.x >= 512.0) return o;
+    if (at <= 0.0lf || m.z <= 0.0lf) return sc;
+    at = min(at, 256.0lf);             /* pinned far faces: full weight, never past it */
+    vec2 op = floor(proj_of(m));
+    if (op.y <= 0.0 || op.y >= 256.0 || op.x <= 0.0 || op.x >= 512.0) return sc;
     vec2 a = nc4_snap_screen(r - 1, c + 1, TL, TR, BL, BR, nc4_node(r - 1, c + 1, TL, TR, BL, BR));
     vec2 b = nc4_snap_screen(r + 1, c - 1, TL, TR, BL, BR, nc4_node(r + 1, c - 1, TL, TR, BL, BR));
-    precise double mx = ((256.0lf - at) * double(o.scr.x) + at * 0.5lf * (double(a.x) + double(b.x))) / 256.0lf;
-    precise double my = ((256.0lf - at) * double(o.scr.y) + at * 0.5lf * (double(a.y) + double(b.y))) / 256.0lf;
-    vec2 ms = vec2(float(mx), float(my));
-    if (!AFFINE_UV) {
-        dvec2 st = o.st;
-        if (!nc4_surf_solve(TL, TR, BL, BR, double(ms.x), double(ms.y), st)) return o;
-        o.m = nc4_patch(TL, TR, BL, BR, st.x, st.y);
-        o.st = st;
-        o.mv = true;
-    }
-    o.scr = pc.snap != 0 ? floor(ms) : ms;
-    return o;
+    precise double mx = ((256.0lf - at) * double(sc.x) + at * 0.5lf * (double(a.x) + double(b.x))) / 256.0lf;
+    precise double my = ((256.0lf - at) * double(sc.y) + at * 0.5lf * (double(a.y) + double(b.y))) / 256.0lf;
+    vec2 o = vec2(float(mx), float(my));
+    return pc.snap != 0 ? floor(o) : o;
 }
 
 /* ---- split triangles (terrain.c nt4_* / nt_* mirrors) --------------------
@@ -871,38 +812,6 @@ uvec2 cell_uv(uvec4 t, int q) {
     uint sh = uint(q & 1) * 16u;
     return uvec2((w >> sh) & 0xFFu, (w >> (sh + 8u)) & 0xFFu);
 }
-/* The drawn cell's tile, kept by cells_fetch for main()'s moved-node UVs. */
-uvec4 gCellTile;
-/* nc4_cell_uv mirror: a moved node's texture coordinates in cell (cr, cq),
- * the tile's corner UVs bilinear at (4s - cq, 4t - cr). */
-vec2 nc4_mv_uv(uvec4 t, int cr, int cq, dvec2 st) {
-    precise double x = st.x * 4.0lf - double(cq), y = st.y * 4.0lf - double(cr);
-    precise double w0 = (1.0lf - x) * (1.0lf - y), w1 = x * (1.0lf - y);
-    precise double w2 = (1.0lf - x) * y, w3 = x * y;
-    uvec2 q0 = cell_uv(t, 0), q1 = cell_uv(t, 1), q2 = cell_uv(t, 2), q3 = cell_uv(t, 3);
-    precise double u = w0 * double(q0.x) + w1 * double(q1.x) + w2 * double(q2.x) + w3 * double(q3.x);
-    precise double v = w0 * double(q0.y) + w1 * double(q1.y) + w2 * double(q2.y) + w3 * double(q3.y);
-    return vec2(float(u), float(v));
-}
-/* nc4_rgb_at mirror: a moved node's colour, bilinear over the grid cell
- * holding (s, t), each channel rounded to nearest. */
-uint nc4_mv_rgb(dvec2 st) {
-    precise double fs = st.x * 4.0lf, ft = st.y * 4.0lf;
-    int ci = clamp(int(floor(fs)), 0, 3), ri = clamp(int(floor(ft)), 0, 3);
-    precise double x = fs - double(ci), y = ft - double(ri);
-    uint q0 = cell_node_rgb(ri, ci), q1 = cell_node_rgb(ri, ci + 1);
-    uint q2 = cell_node_rgb(ri + 1, ci), q3 = cell_node_rgb(ri + 1, ci + 1);
-    uint o = 0u;
-    for (uint sh = 0u; sh < 24u; sh += 8u) {
-        precise double v = (1.0lf - x) * (1.0lf - y) * double((q0 >> sh) & 0xFFu)
-                         + x * (1.0lf - y) * double((q1 >> sh) & 0xFFu)
-                         + (1.0lf - x) * y * double((q2 >> sh) & 0xFFu)
-                         + x * y * double((q3 >> sh) & 0xFFu);
-        int iv = clamp(int(floor(v + 0.5lf)), 0, 255);
-        o |= uint(iv) << sh;
-    }
-    return o;
-}
 /* Fill the per-vertex names main() reads with what the baked cell vertex at
  * this index carried: an instance draws 8 cells x 2 triangles (TL,TR,BL) +
  * (TR,BL,BR) in cell order, each triangle 6 vertices on the near variant
@@ -966,7 +875,6 @@ bool cells_fetch() {
             : lc == 6 ? inCellT6 : inCellT7;
     int cr = cell >> 2, cq = cell & 3;
     int role = k + tri2;
-    gCellTile = t;
     uint f16 = 1u | (uint(role) << 3) | ((info & 0x7Fu) << 5) | 0x1000u
              | (tri2 != 0 ? 0x2000u : 0u)
              | (((info >> uint(16 + lc)) & 1u) != 0u ? 0x4000u : 0u)
@@ -1329,11 +1237,12 @@ void main()
             ivec2 n0 = tri2 ? ivec2(cr, cq + 1) : ivec2(cr, cq);
             ivec2 n1 = tri2 ? ivec2(cr + 1, cq) : ivec2(cr, cq + 1);
             ivec2 n2 = tri2 ? ivec2(cr + 1, cq + 1) : ivec2(cr + 1, cq);
-            nc4v va = nc4_vert(n0.x, n0.y, TL, TR, BL, BR);
-            nc4v vb = nc4_vert(n1.x, n1.y, TL, TR, BL, BR);
-            nc4v vc = nc4_vert(n2.x, n2.y, TL, TR, BL, BR);
-            precise dvec3 ta = va.m, tb = vb.m, tc2 = vc.m;
-            vec2 sa = va.scr, sb = vb.scr, sc = vc.scr;
+            precise dvec3 ta = nc4_node(n0.x, n0.y, TL, TR, BL, BR);
+            precise dvec3 tb = nc4_node(n1.x, n1.y, TL, TR, BL, BR);
+            precise dvec3 tc2 = nc4_node(n2.x, n2.y, TL, TR, BL, BR);
+            vec2 sa = nc4_screen(n0.x, n0.y, TL, TR, BL, BR);
+            vec2 sb = nc4_screen(n1.x, n1.y, TL, TR, BL, BR);
+            vec2 sc = nc4_screen(n2.x, n2.y, TL, TR, BL, BR);
             pdrop = (g.rim_cnt.x > 0 &&
                      rim_classified(sa, sb, sc, ta.z, tb.z, tc2.z))
                  || (covTest &&
@@ -1370,41 +1279,10 @@ void main()
     }
 #endif
 
-#ifdef TERRAIN_CELLS
-    /* Cell nodes the perspective morph moved (nc4_vert .mv): texture
-     * coordinates from the cell's tile and colour from the grid at the
-     * node's face parameters (nc4_cell_uv, nc4_rgb_at mirrors). Triangle
-     * member j has role j + tri2; this vertex is member role - tri2. */
-    bool mvHas[3] = bool[3](false, false, false);
-    vec2 mvUV[3] = vec2[3](vec2(0.0), vec2(0.0), vec2(0.0));
-    int mvSelf = role - ((f16 & 0x2000u) != 0u ? 1 : 0);
-    if (is4 && !ist && !AFFINE_UV) {
-        int t2 = role - mvSelf, cr = cell >> 2, cq = cell & 3;
-        for (int j = 0; j < 3; j++) {
-#ifndef TERRAIN_NEAR
-            if (j != mvSelf) continue;
-#endif
-            nc4v nv = nc4_vert(cr + ((j + t2) >> 1), cq + ((j + t2) & 1), m0, m1, m3c, m2);
-            if (!nv.mv) continue;
-            mvHas[j] = true;
-            mvUV[j] = nc4_mv_uv(gCellTile, cr, cq, nv.st);
-            uint rgb = nc4_mv_rgb(nv.st);
-            if (j == mvSelf) { inColFar = cell_unorm(rgb); inColNear = inColFar; }
-#ifdef TERRAIN_NEAR
-            else if (j == (mvSelf + 1) % 3) inCtxACol = uvec2(0xFF000000u | rgb);
-            else inCtxBCol = uvec2(0xFF000000u | rgb);
-#endif
-        }
-    }
-#endif
-
     /* ---- material: near-tile / CLUT-ladder row select (flat HP textured) ---- */
     uint mat0 = inMat.x;
     uint clut = inMat.y & 0xFFFFu;
     vec2 uv   = vec2(float(inUV.x), float(inUV.y));
-#ifdef TERRAIN_CELLS
-    if (mvSelf >= 0 && mvSelf < 3 && mvHas[mvSelf]) uv = mvUV[mvSelf];
-#endif
     uint dbg_half = 0u, dbg_delta = 0u;
     int  dbg_t0k  = -99999;   /* tint mode 6: exact ladder key (t0k) probe */
     bool ladderFace = false;
@@ -1514,8 +1392,7 @@ void main()
             tov = true;
         } else if (is4) {
             /* Cell members (TL,TR,BL) / (TR,BL,BR); each carries its
-             * emitted point (snap and morph) as its override and its
-             * morphed camera-space point. */
+             * emitted point (snap and morph) as its override. */
             precise dvec3 TL = m0, TR = m1, BL = m3c, BR = m2;
             int cr = cell >> 2, cq = cell & 3;
             ivec2 nn[3];
@@ -1523,9 +1400,8 @@ void main()
             nn[1] = tri2n ? ivec2(cr + 1, cq) : ivec2(cr, cq + 1);
             nn[2] = tri2n ? ivec2(cr + 1, cq + 1) : ivec2(cr + 1, cq);
             for (int k = 0; k < 3; k++) {
-                nc4v nv = nc4_vert(nn[k].x, nn[k].y, TL, TR, BL, BR);
-                tp[k]  = nv.m;
-                tos[k] = nv.scr;
+                tp[k]  = nc4_node(nn[k].x, nn[k].y, TL, TR, BL, BR);
+                tos[k] = nc4_screen(nn[k].x, nn[k].y, TL, TR, BL, BR);
             }
             tov = true;
         } else {
@@ -1565,10 +1441,6 @@ void main()
                                    : vec2(inCtxAUV.x, inCtxAUV.y);
         uvm[ib] = (dbg_half == 1u) ? vec2(inCtxBUV.z, inCtxBUV.w)
                                    : vec2(inCtxBUV.x, inCtxBUV.y);
-#ifdef TERRAIN_CELLS
-        if (mvHas[ia]) uvm[ia] = mvUV[ia];
-        if (mvHas[ib]) uvm[ib] = mvUV[ib];
-#endif
         if (scrollOn) { uvm[ia].y += uvdv; uvm[ib].y += uvdv; }
 
         bool doFog   = !lp && !hqv;
@@ -1653,9 +1525,8 @@ void main()
     } else if (is4) {
         precise dvec3 TL = m0, TR = m1, BL = m3c, BR = m2;
         int nr = (cell >> 2) + (role >> 1), nq = (cell & 3) + (role & 1);
-        nc4v nv = nc4_vert(nr, nq, TL, TR, BL, BR);
-        mo = nv.m;
-        sscr = nv.scr;
+        mo = nc4_node(nr, nq, TL, TR, BL, BR);
+        sscr = nc4_screen(nr, nq, TL, TR, BL, BR);
     } else {
         /* Parent corners in .s grid order: TL=i0, TR=i1, BL=i3, BR=i2. */
         precise dvec3 TL = m0, TR = m1, BL = m3c, BR = m2;
@@ -1686,8 +1557,7 @@ void main()
                               + 2.0lf * nt4_node(NT_SUB[tsub * 3 + 2], m0, m1, m2).z;
             ok = float(zs * 4.0lf);
         } else if (is4) {
-            /* the cell's own corner sum over the unmoved grid depths
-             * (nc4_emit_cells' emit_otkey) */
+            /* the cell's own corner sum (emit_quad_cv's emit_otkey) */
             int cr = cell >> 2, cq = cell & 3;
             precise double zs = nc4_node(cr, cq, m0, m1, m3c, m2).z
                               + nc4_node(cr, cq + 1, m0, m1, m3c, m2).z

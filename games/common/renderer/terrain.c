@@ -905,22 +905,18 @@ static ngte_cvert cv_mid(ngte_cvert a, ngte_cvert b) {
 /* Emit a textured camera-space quad (corners TL,TR,BL,BR) with near-clipping.
  * UVs come from a decoded Tiledef (u/v in [TL,TR,BL,BR]); GPU diagonal TR-BL
  * (triangulation (TL,TR,BL)+(TR,BL,BR)) — same as the main loop. */
-static void emit_quad_cv_key(tn_wctx* W, ngte_cvert tl, ngte_cvert tr, ngte_cvert bl, ngte_cvert br,
-                             const tmat* m, const float u[4], const float v[4], double zsum) {
-    tl.u=u[0]; tl.v=v[0]; tr.u=u[1]; tr.v=v[1]; bl.u=u[2]; bl.v=v[2]; br.u=u[3]; br.v=v[3];
-    W->emit_otkey = (float)(zsum * 4.0);
-    clip_push_tri(W, tl, tr, bl, m);
-    clip_push_tri(W, tr, bl, br, m);
-}
 static void emit_quad_cv(tn_wctx* W, ngte_cvert tl, ngte_cvert tr, ngte_cvert bl, ngte_cvert br,
                          const tmat* m, const float u[4], const float v[4]) {
+    tl.u=u[0]; tl.v=v[0]; tr.u=u[1]; tr.v=v[1]; bl.u=u[2]; bl.v=v[2]; br.u=u[3]; br.v=v[3];
     /* Portal OT-conformance key: near-subdivided (deferred) faces are drained
      * into the OT as 4 SEPARATE sub-quad prims, EACH bucketed by its own
      * corner sum — the .s sky-vs-floor boundary at a portal base is at
      * SUB-QUAD granularity (og f2440: the walkway's near sub-quads paint over
      * the preview, its far ones are covered). Override the parent face's key
      * with this sub-quad's own. */
-    emit_quad_cv_key(W, tl, tr, bl, br, m, u, v, tl.m3 + tr.m3 + bl.m3 + br.m3);
+    W->emit_otkey = (float)((tl.m3 + tr.m3 + bl.m3 + br.m3) * 4.0);
+    clip_push_tri(W, tl, tr, bl, m);
+    clip_push_tri(W, tr, bl, br, m);
 }
 
 /* Near/HQ subdivide pass — the func_800276A0 simple-emit path (.L80027D7C),
@@ -1507,133 +1503,25 @@ static int nc4_outcode(const ngte_cvert* n) {
  * its quadrants along, so the cell grid meets the 2x2 image where a face
  * crosses between the queues. Screen only: depth and key stay the node's.
  * The game's integer at >> 1 is kept as at / 2 in full precision.
- * Under screen-affine texturing (the PSX GPU's) the node keeps its UV and
- * depth, which matches the cell image to the 2x2 image's affine
- * interpolation across the queue crossing. Under perspective-correct
- * texturing a node that keeps its UV at a moved screen point samples its
- * texel at the wrong place; there the node instead becomes the face point
- * that projects to the morphed screen point (nc4_surf_solve), with that
- * point's depth, colour and texture coordinates, so the cells keep the
- * drain's screen footprint and the texture stays on the surface.
- *
- * The moved nodes' face parameters (s across TL->TR, t down TL->BL), one
- * slot per odd-odd node, (r >> 1) * 2 + (c >> 1). */
-typedef struct { int mv[4]; double s[4], t[4], gz[4]; } nc4_moved;
-
-/* The face point at parameters (s, t) of the bilinear patch over the four
- * corners Q = TL, TR, BL, BR: Q0 + s(Q1-Q0) + t(Q2-Q0) + st(Q0-Q1-Q2+Q3).
- * Grid node (r, c) is its (c/4, r/4) point. */
-static void nc4_patch_pt(const double Q[4][3], double s, double t, double p[3]) {
-    for (int k = 0; k < 3; k++)
-        p[k] = Q[0][k] + s * (Q[1][k] - Q[0][k]) + t * (Q[2][k] - Q[0][k])
-             + (s * t) * (((Q[0][k] - Q[1][k]) - Q[2][k]) + Q[3][k]);
-}
-
-/* The patch point whose projection is the screen point (X, Y). A point p
- * projects there when H*px + (ofx-X)*pz = 0 and H*py + (ofy-Y)*pz = 0
- * (proj_screen's SX = OFX + H*px/pz); on the patch both are bilinear in
- * (s, t), f = a + b*s + c*t + d*s*t. Six Newton steps from the node's grid
- * parameters (s0, t0) solve the pair: the morph moves a node by a fraction
- * of one cell, the start lies within the basin, and the step converges
- * quadratically to double precision. A planar face needs no separate
- * ray/plane case: its patch lies in the plane. The system's other root (the
- * quadratic's second solution) lies off the face. The solution is rounded
- * to a multiple of 2^-16 of the face: the vertex stage's fp64 mirror does
- * not reproduce every double operation bit for bit, and a last-bit
- * difference in (s, t) moves texture coordinates across a texel boundary on
- * some pixels; on the dyadic grid both paths agree unless the solution lies
- * within that difference of a rounding boundary. The rounding moves the
- * node's projection by at most 2^-17 of the face's screen extent. Fails on
- * a singular Jacobian, a solution outside the face or a point at or behind
- * the eye. */
-static int nc4_surf_solve(const double Q[4][3], double X, double Y,
-                          double* ps, double* pt) {
-    double K[2] = { s_ofx - X, s_ofy - Y };
-    double a[2], b[2], c[2], d[2];
-    for (int i = 0; i < 2; i++) {
-        a[i] = s_H * Q[0][i] + K[i] * Q[0][2];
-        b[i] = s_H * (Q[1][i] - Q[0][i]) + K[i] * (Q[1][2] - Q[0][2]);
-        c[i] = s_H * (Q[2][i] - Q[0][i]) + K[i] * (Q[2][2] - Q[0][2]);
-        d[i] = s_H * (((Q[0][i] - Q[1][i]) - Q[2][i]) + Q[3][i])
-             + K[i] * (((Q[0][2] - Q[1][2]) - Q[2][2]) + Q[3][2]);
-    }
-    double s = *ps, t = *pt;
-    for (int it = 0; it < 6; it++) {
-        double f0 = a[0] + b[0] * s + c[0] * t + d[0] * (s * t);
-        double f1 = a[1] + b[1] * s + c[1] * t + d[1] * (s * t);
-        double js0 = b[0] + d[0] * t, jt0 = c[0] + d[0] * s;
-        double js1 = b[1] + d[1] * t, jt1 = c[1] + d[1] * s;
-        double det = js0 * jt1 - jt0 * js1;
-        if (det == 0.0) return 0;
-        double ds = (f0 * jt1 - jt0 * f1) / det;
-        double dt = (js0 * f1 - js1 * f0) / det;
-        s = s - ds; t = t - dt;
-    }
-    s = floor(s * 65536.0 + 0.5) / 65536.0;
-    t = floor(t * 65536.0 + 0.5) / 65536.0;
-    if (!(s >= 0.0 && s <= 1.0 && t >= 0.0 && t <= 1.0)) return 0;
-    double p[3];
-    nc4_patch_pt(Q, s, t, p);
-    if (!(p[2] > 0.0)) return 0;
-    *ps = s; *pt = t;
-    return 1;
-}
-
-/* The colour of the face point (s, t): bilinear over the four grid node
- * colours R of the grid cell holding it, each channel rounded to nearest.
- * At a grid node it is that node's colour. */
-static uint32_t nc4_rgb_at(const uint32_t R[5][5], double s, double t) {
-    double fs = s * 4.0, ft = t * 4.0;
-    int ci = (int)floor(fs), ri = (int)floor(ft);
-    ci = ci < 0 ? 0 : ci > 3 ? 3 : ci;
-    ri = ri < 0 ? 0 : ri > 3 ? 3 : ri;
-    double x = fs - (double)ci, y = ft - (double)ri;
-    uint32_t q0 = R[ri][ci], q1 = R[ri][ci + 1];
-    uint32_t q2 = R[ri + 1][ci], q3 = R[ri + 1][ci + 1];
-    uint32_t out = 0;
-    for (unsigned sh = 0; sh < 24; sh += 8) {
-        double v = (1.0 - x) * (1.0 - y) * (double)((q0 >> sh) & 0xFFu)
-                 + x * (1.0 - y) * (double)((q1 >> sh) & 0xFFu)
-                 + (1.0 - x) * y * (double)((q2 >> sh) & 0xFFu)
-                 + x * y * (double)((q3 >> sh) & 0xFFu);
-        int iv = (int)floor(v + 0.5);
-        iv = iv < 0 ? 0 : iv > 255 ? 255 : iv;
-        out |= (uint32_t)iv << sh;
-    }
-    return out;
-}
-
-/* Surface form of the morph: node (r, c) becomes the face point projecting
- * to the morphed screen point (mx, my), coloured from the unmoved grid's
- * colours R; its emitted point stays the morphed one (floored under the
- * integer snap, as the morph's is). */
-static int nc4_morph_surf(ngte_cvert G[5][5], const uint32_t R[5][5], const double Q[4][3],
-                          int r, int c, float mx, float my, nc4_moved* M) {
-    double s = c * 0.25, t = r * 0.25;
-    if (!nc4_surf_solve(Q, (double)mx, (double)my, &s, &t)) return 0;
-    double p[3];
-    nc4_patch_pt(Q, s, t, p);
-    ngte_cvert* n = &G[r][c];
-    int k = (r >> 1) * 2 + (c >> 1);
-    M->mv[k] = 1; M->s[k] = s; M->t[k] = t; M->gz[k] = n->m3;
-    n->m1 = p[0]; n->m2 = p[1]; n->m3 = p[2]; n->rgb = nc4_rgb_at(R, s, t);
-    return 1;
-}
-
-static void nc4_morph(ngte_cvert G[5][5], int surf, nc4_moved* M) {
+ * The morph moves a node's screen point while its UV and depth stay. Under
+ * screen-affine texturing (the PSX GPU's) it matches the cell image to the 2x2
+ * image's affine interpolation across the queue crossing; under
+ * perspective-correct texturing the unmorphed node already lies at its
+ * texel's projection and the moved node samples that texel at the wrong
+ * screen point. The caller applies it under affine texture mapping only. */
+static void nc4_morph(ngte_cvert G[5][5]) {
     double mn = G[0][0].m3;
     if (G[0][4].m3 < mn) mn = G[0][4].m3;
     if (G[4][0].m3 < mn) mn = G[4][0].m3;
     if (G[4][4].m3 < mn) mn = G[4][4].m3;
     double at = mn * tface_hqscale() - 64.0;
     if (at <= 0.0) return;
+    /* Inside the tier-4 band a corner's SZ3 is below 0x140, so at < 256. A face
+     * the --lod extended pin sends to the cells from farther away takes the
+     * full weight: the grid in the 2x2 image's shape, never past it. */
+    if (at > 256.0) at = 256.0;
     int snap = openpete_native_vertex_snap_active();
     static const int P[4][2] = { {1, 1}, {1, 3}, {3, 1}, {3, 3} };
-    const ngte_cvert* C4[4] = { &G[0][0], &G[0][4], &G[4][0], &G[4][4] };
-    double Q[4][3];
-    for (int i = 0; i < 4; i++) { Q[i][0] = C4[i]->m1; Q[i][1] = C4[i]->m2; Q[i][2] = C4[i]->m3; }
-    uint32_t R[5][5];
-    for (int i = 0; i < 25; i++) R[i / 5][i % 5] = G[i / 5][i % 5].rgb;
     float ms[4][2];
     for (int i = 0; i < 4; i++) {           /* neighbours are even nodes: never morphed */
         int r = P[i][0], c = P[i][1];
@@ -1647,30 +1535,9 @@ static void nc4_morph(ngte_cvert G[5][5], int surf, nc4_moved* M) {
     for (int i = 0; i < 4; i++) {
         ngte_cvert* n = &G[P[i][0]][P[i][1]];
         if (nc4_outcode(n)) continue;
-        if (surf && !nc4_morph_surf(G, R, Q, P[i][0], P[i][1], ms[i][0], ms[i][1], M)) continue;
         n->osx = snap ? floorf(ms[i][0]) : ms[i][0];
         n->osy = snap ? floorf(ms[i][1]) : ms[i][1];
         n->oflag = 1;
-    }
-}
-
-/* A cell corner's texture coordinates at a moved node: the cell tile's
- * corner UVs (TL, TR, BL, BR) bilinear at the node's parameters in the
- * cell's own frame, (4s - c, 4t - r), so the tile's texel grid continues
- * across the node's new place. */
-static void nc4_cell_uv(const nc4_moved* M, int r, int c, float u[4], float v[4]) {
-    float u0[4], v0[4];
-    memcpy(u0, u, sizeof u0); memcpy(v0, v, sizeof v0);
-    for (int q = 0; q < 4; q++) {
-        int nr = r + (q >> 1), nq = c + (q & 1);
-        if (!(nr & nq & 1)) continue;
-        int k = (nr >> 1) * 2 + (nq >> 1);
-        if (!M->mv[k]) continue;
-        double x = M->s[k] * 4.0 - (double)c, y = M->t[k] * 4.0 - (double)r;
-        double w0 = (1.0 - x) * (1.0 - y), w1 = x * (1.0 - y);
-        double w2 = (1.0 - x) * y, w3 = x * y;
-        u[q] = (float)(w0 * u0[0] + w1 * u0[1] + w2 * u0[2] + w3 * u0[3]);
-        v[q] = (float)(w0 * v0[0] + w1 * v0[1] + w2 * v0[2] + w3 * v0[3]);
     }
 }
 
@@ -1693,15 +1560,9 @@ static int nc4_front(const ngte_cvert* tl, const ngte_cvert* tr,
 
 /* The 16 cells in the drain's row-major order (D_8006CF58); cell i reads the
  * tile at hq_cells4 + i*8, its V scroll from its row's group. Keys: the
- * per-quad emit_otkey of emit_quad_cv, the cell's own corner sum over the
- * unmoved grid depths: the drain inserts a cell at the sum of its nodes'
- * RTPT SZ3 (0x80029450-0x80029498), which the screen morph leaves as is. */
-static double nc4_grid_z(ngte_cvert G[5][5], const nc4_moved* M, int r, int c) {
-    int k = (r >> 1) * 2 + (c >> 1);
-    return (r & c & 1) && M->mv[k] ? M->gz[k] : G[r][c].m3;
-}
+ * per-quad emit_otkey of emit_quad_cv, the cell's own corner sum. */
 static void nc4_emit_cells(tn_wctx* W, CPUState* cpu, const tn_nearface* nf,
-                           ngte_cvert G[5][5], const nc4_moved* M) {
+                           ngte_cvert G[5][5]) {
     int scroll = s_tanim_have && nf->texid >= 0 && nf->texid < 128 && s_tanim_act[nf->texid];
     for (int i = 0; i < 16; i++) {
         int r = i >> 2, c = i & 3;
@@ -1714,11 +1575,8 @@ static void nc4_emit_cells(tn_wctx* W, CPUState* cpu, const tn_nearface* nf,
         decode_tiledef_span(cpu, e, nf->abe, &mat, u, v, 0x0F);
         mat.texid = nf->texid;
         tiledef_apply_ori(cpu, e, u, v);   /* word1 >> 25: the 16-texel half of D_8006D058 */
-        nc4_cell_uv(M, r, c, u, v);
         for (int k = 0; scroll && k < 4; k++) v[k] += s_tanim_dvcell[nf->texid][r];
-        double zs = nc4_grid_z(G, M, r, c) + nc4_grid_z(G, M, r, c + 1)
-                  + nc4_grid_z(G, M, r + 1, c) + nc4_grid_z(G, M, r + 1, c + 1);
-        emit_quad_cv_key(W, *tl, *tr, *bl, *br, &mat, u, v, zs);
+        emit_quad_cv(W, *tl, *tr, *bl, *br, &mat, u, v);
     }
 }
 
@@ -1737,10 +1595,9 @@ static void terrain_near_emit_face(tn_wctx* W, CPUState* cpu, const tn_nearface*
     ngte_cvert G[5][5];
     nc4_grid(G, TL, TR, BL, BR);
     if (openpete_native_vertex_snap_active()) nc4_snap(G);
-    nc4_moved M;
-    memset(&M, 0, sizeof M);
-    nc4_morph(G, !openpete_native_get_texture_mapping(), &M);
-    nc4_emit_cells(W, cpu, nf, G, &M);
+    int affine_texturing = openpete_native_get_texture_mapping();
+    if (affine_texturing) nc4_morph(G);
+    nc4_emit_cells(W, cpu, nf, G);
 }
 
 /* ---- tier-4 triangles (the +0x1E00 queue's triangle pass) -----------------
