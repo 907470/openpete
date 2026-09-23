@@ -17,6 +17,13 @@
 # run-to-run); the intermediate leg then exercises the moving terrain / mobys at
 # that pose (the toasty platform is a freecam case).
 #
+# A row is `<level>[@<variant>] | <pose> | [start] | [launch]`. The level is
+# everything before the first `@`; the whole field keys the tiles, so a variant
+# row never collides with a plain row at the same pose. `launch` holds tokens
+# applied to every leg of that row only (KEY=VALUE with an upper-case key is an
+# environment entry, anything else a command-line argument), so the row
+# measures that mode's own pixels. Rows without the field launch as before.
+#
 # Shares the diff/promote/golden infrastructure with the bk2 corpus: it writes
 # PNGs into the same output directory, so check_presentation_golden.sh runs both
 # capture scripts into one dir and diffs the union.
@@ -106,17 +113,18 @@ pose_slug() {  # level pose
   echo "${1}-${h}"
 }
 
-run_leg() {  # slug frame_limit leg flag target lodmode level pose
-  local slug="$1" flim="$2" leg="$3" flag="$4" target="$5" lod="$6" level="$7" pose="$8"
+run_leg() {  # slug frame_limit leg flag target lodmode level pose launch
+  local slug="$1" flim="$2" leg="$3" flag="$4" target="$5" lod="$6" level="$7" pose="$8" launch="${9:-}"
+  local -a ROW_ENV=() ROW_ARGS=(); pg_split_launch "$launch"
   local tag; tag="$(lod_tag "$lod")"
   local out="$OUTDIR/${slug}__${tag}${leg}__{n}.png"
   local log; log="$(mktemp)"
   local -a leg_env=(); [[ "$leg" == ident ]] && leg_env=(OPENPETE_INTERMEDIATE_ALPHA=1)
-  env "${leg_env[@]}" timeout 300 "$BIN" --headless --disc "$DISC" --disc-cache 0 --renderer vk \
+  env "${leg_env[@]}" "${ROW_ENV[@]}" timeout 300 "$BIN" --headless --disc "$DISC" --disc-cache 0 --renderer vk \
     --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" "${PG_RUN_ARGS[@]}" \
     --skip-to-level "$level" --freecam-pose "$pose" \
     --screenshot-native-only "$flag" "$target" --screenshot-output "$out" \
-    --frame-limit "$flim" --max-runtime-seconds 280 >"$log" 2>&1
+    --frame-limit "$flim" --max-runtime-seconds 280 "${ROW_ARGS[@]}" >"$log" 2>&1
   local rc=$?
   if [[ ! -f "$OUTDIR/${slug}__${tag}${leg}__${target}-vk.png" ]]; then
     echo "  MISSING ${slug}__${tag}${leg}__${target}-vk.png (rc=$rc)"
@@ -141,23 +149,25 @@ run_leg() {  # slug frame_limit leg flag target lodmode level pose
 }
 
 fail=0 ran=0
-while IFS='|' read -r level pose start; do
-  level="$(echo "$level" | tr -d ' \t')"
-  [[ -z "$level" || "${level:0:1}" == "#" ]] && continue
+while IFS='|' read -r name pose start launch; do
+  name="$(echo "$name" | tr -d ' \t')"
+  [[ -z "$name" || "${name:0:1}" == "#" ]] && continue
+  level="${name%%@*}"
   # Trim surrounding whitespace from the pose but keep its internal spaces.
   pose="$(echo "$pose" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
   start="$(echo "$start" | tr -d ' \t')"; start="${start:-$START_DEFAULT}"
+  launch="$(echo "${launch:-}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
   [[ -z "$pose" ]] && { echo "  SKIP row: no pose for level '$level'"; continue; }
-  [[ -n "$FILTER" && "$level" != *"$FILTER"* ]] && continue
+  [[ -n "$FILTER" && "$name" != *"$FILTER"* ]] && continue
   local_istart=$((start + 50))
   flim=$((local_istart + 51))
-  slug="$(pose_slug "$level" "$pose")"
+  slug="$(pose_slug "$name" "$pose")"
   ran=$((ran+1))
-  echo "[$slug] level=$level start=$start pose='$pose'"
+  echo "[$slug] level=$level start=$start pose='$pose'${launch:+  launch=$launch}"
   for lod in $CAP_LODS; do
-    cj_run run_leg "$slug" "$flim" canon --screenshot-on-frame "$start" "$lod" "$level" "$pose"
-    cj_run run_leg "$slug" "$flim" inter --screenshot-intermediate-on-frame "$local_istart" "$lod" "$level" "$pose"
-    cj_run run_leg "$slug" "$flim" ident --screenshot-intermediate-on-frame "$start" "$lod" "$level" "$pose"
+    cj_run run_leg "$slug" "$flim" canon --screenshot-on-frame "$start" "$lod" "$level" "$pose" "$launch"
+    cj_run run_leg "$slug" "$flim" inter --screenshot-intermediate-on-frame "$local_istart" "$lod" "$level" "$pose" "$launch"
+    cj_run run_leg "$slug" "$flim" ident --screenshot-intermediate-on-frame "$start" "$lod" "$level" "$pose" "$launch"
   done
 done < "$MANIFEST"
 cj_wait || fail=1

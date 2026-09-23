@@ -123,17 +123,6 @@ MANIFEST="games/$GAME/freeze-backdrop-corpus.manifest"
 [[ -n "$OUT" ]] || OUT="${PG_BUILD_DIR:-build/linux-release}/freeze-backdrop/$GAME"
 mkdir -p "$OUT"
 
-# Split a row's launch field into an env list and a CLI-argument list, the same
-# sort the presentation corpus does. Results land in the caller's ROW_ENV and
-# ROW_ARGS, both emptied first so a row with an empty field adds nothing.
-split_launch() {  # launch-field
-    ROW_ENV=(); ROW_ARGS=()
-    local tok
-    for tok in $1; do
-        if [[ "$tok" == [A-Z_]*=* ]]; then ROW_ENV+=("$tok"); else ROW_ARGS+=("$tok"); fi
-    done
-}
-
 # One windowed replay of a row. The log is deleted before the run and asserted
 # after it, so a stale log from an earlier build can never be read as this
 # run's result. stdin is closed: the row loop reads the manifest on
@@ -194,7 +183,7 @@ while IFS='|' read -r bk2 flim launch keys; do
         tag="$tag-$(printf '%s' "$launch" | md5sum | cut -c1-6)"
     fi
 
-    split_launch "$launch"
+    pg_split_launch "$launch"
     if ! run_row "$tag" "$movie" "$flim"; then
         echo "[freeze-backdrop] game=$GAME bk2=$bk2 verdict=NO-RUN"
         missing=$((missing + 1)); continue

@@ -212,9 +212,12 @@ pose_slug() {  # level pose
 }
 
 rows=0; engaged=0; skipped=0; failed=0; missing=0
-while IFS='|' read -r level pose start; do
+while IFS='|' read -r level pose start _launch; do
     level="$(echo "$level" | tr -d ' \t')"
     [[ -z "$level" || "${level:0:1}" == "#" ]] && continue
+    # A variant row (`<level>@<variant>`) re-captures a base pose under its
+    # own launch field; the cache-vs-walk comparison belongs to the base row.
+    [[ "$level" == *@* ]] && continue
     pose="$(echo "$pose" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
     start="$(echo "$start" | tr -d ' \t')"; start="${start:-$START_DEFAULT}"
     [[ -z "$pose" ]] && continue

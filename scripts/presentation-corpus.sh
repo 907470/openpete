@@ -110,18 +110,6 @@ echo "[presentation-corpus] game=$GAME bin=$BIN affine=$AFFINE_ENV aspect=$CAP_A
 # independently-regressable surface the depth work is most likely to disturb.
 lod_tag() { [[ "$1" == "extended" ]] && echo "lodext__" || echo ""; }
 
-# Split a row's `launch` field into an env list and a CLI-argument list. A token
-# spelled KEY=VALUE with an upper-case key is an environment entry; every other
-# token is a command-line argument. Results land in the caller's ROW_ENV and
-# ROW_ARGS arrays, both emptied first so a row without the field adds nothing.
-split_launch() {  # launch-field
-  ROW_ENV=(); ROW_ARGS=()
-  local tok
-  for tok in $1; do
-    if [[ "$tok" == [A-Z_]*=* ]]; then ROW_ENV+=("$tok"); else ROW_ARGS+=("$tok"); fi
-  done
-}
-
 # A row name is the bk2 basename optionally followed by `@<variant>`. The whole
 # name is the file key, so the variant's tiles carry it and never collide with
 # the plain row's; the bk2 is everything before the first `@`.
@@ -130,7 +118,7 @@ row_bk2() { echo "${1%%@*}"; }
 run_one() {  # name frame_limit leg flag targets lodmode freeze launch
   local name="$1" flim="$2" leg="$3" flag="$4" targets="$5" lod="$6" freeze="$7" launch="${8:-}"
   local bk2name; bk2name="$(row_bk2 "$name")"
-  local -a ROW_ENV=() ROW_ARGS=(); split_launch "$launch"
+  local -a ROW_ENV=() ROW_ARGS=(); pg_split_launch "$launch"
   local tag; tag="$(lod_tag "$lod")"
   local out="$OUTDIR/${name}__${tag}${leg}__{n}.png"
   local log; log="$(mktemp)"

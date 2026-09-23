@@ -87,6 +87,21 @@ pg_resolve() {
   return 0
 }
 
+# ---- per-row launch field --------------------------------------------------
+#
+# A corpus row's optional `launch` field holds whitespace-separated tokens
+# applied to every leg of that row and to no other row. A token spelled
+# KEY=VALUE with an upper-case key is an environment entry; every other token
+# is a command-line argument. Results land in the caller's ROW_ENV and ROW_ARGS
+# arrays, both emptied first so a row without the field adds nothing.
+pg_split_launch() {  # launch-field
+  ROW_ENV=(); ROW_ARGS=()
+  local tok
+  for tok in $1; do
+    if [[ "$tok" == [A-Z_]*=* ]]; then ROW_ENV+=("$tok"); else ROW_ARGS+=("$tok"); fi
+  done
+}
+
 # ---- failed-leg logs -------------------------------------------------------
 #
 # A capture leg's log is the only record of why it failed, and a crash writes
