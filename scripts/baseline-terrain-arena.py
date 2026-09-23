@@ -144,7 +144,7 @@ OVERFLOW_SHOT = 1755
 OVERFLOW_FRAME_LIMIT = 2400
 
 HWM_RE = re.compile(
-    r"\[ter-gpu f=\d+\] hwm=(\S+) afail=(\S+) ovf=(\S+) caps=(\S+)MiB "
+    r"\[ter-gpu f=(?:\d+)\] hwm=(\S+) afail=(\S+) ovf=(\S+) caps=(\S+)MiB "
     r"svc=(\d+)/(\d+) draws-retired=(\d+) rebake=(\d+)")
 # core/psx/dispatch: the overlay switch that names each level the run enters.
 LEVEL_LOAD_RE = re.compile(r"active overlay: \S+ -> level_(\d+)")
@@ -170,9 +170,13 @@ def child_env(cap):
     return e
 
 
+RUN_FRAME_LIMIT = {}   # log path -> the --frame-limit its run was launched with
+
+
 def launch(work, tag, cap, shot_vbl, frame_limit, extra):
     """One headless run. Returns (Popen, log path, shot path)."""
     log = os.path.join(work, tag + ".log")
+    RUN_FRAME_LIMIT[log] = frame_limit
     shot = os.path.join(work, tag + ".png")
     vkshot = shot.replace(".png", "-vk.png")
     for f in (log, shot, vkshot):
@@ -182,6 +186,10 @@ def launch(work, tag, cap, shot_vbl, frame_limit, extra):
            "--vibration", "0", "--renderer", "vk", "--screenshot-native-only",
            "--screenshot-on-frame", str(shot_vbl), "--screenshot-output", shot,
            "--frame-limit", str(frame_limit), "--no-card", "--mute", "1",
+           # The stderr log mirror drains fd 2 on an SDL thread that SDL_Quit
+           # detaches before the exit handlers print: a mirrored run can lose
+           # its exit census line and read an earlier one as its peak.
+           "--log-file", "off",
            "--disc", DISC] + list(extra)
     lf = open(log, "wb")
     p = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT, env=child_env(cap))
@@ -258,11 +266,27 @@ def census_lines(log):
     return out, txt
 
 
-def read_run(log):
-    """The last census line of a run plus the run-wide counts, or None."""
+FRAME_RE = re.compile(r"\[ter-gpu f=(\d+)\] hwm=")
+
+
+def read_run(log, frame_limit=None):
+    """The last census line of a run plus the run-wide counts, or None.
+
+    With frame_limit, a run whose last census line is not the exit line
+    (printed at the frame limit) is refused: its log lost the tail, and the
+    last line it holds is an earlier, lower sample.
+    """
     lines, txt = census_lines(log)
     if not lines:
         return None
+    if frame_limit is None:
+        frame_limit = RUN_FRAME_LIMIT.get(log)
+    if frame_limit is not None:
+        frames = FRAME_RE.findall(txt)
+        if not frames or int(frames[-1]) < frame_limit - 1:
+            die("%s: last census line at f=%s, not the exit line at f=%d: "
+                "the log lost its tail" % (log, frames[-1] if frames else "none",
+                                           frame_limit))
     last = dict(lines[-1])
     last["pose_lines"] = len(POSE_RE.findall(txt))
     last["levels"] = sorted({int(x) for x in LEVEL_LOAD_RE.findall(txt)})
