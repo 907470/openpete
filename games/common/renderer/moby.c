@@ -4621,59 +4621,96 @@ static void native_rank_build(void) {
 /* ---- sub-tick carry of the paint verdict ------------------------------------
  * The canonical feed of a tick stores each face's rank and contest flag by
  * (moby, fkey); an intermediate present reads them back rather than keying
- * and intersecting its interpolated pose, so the select changes only at a
- * canonical tick, where the game's own order changes, and a present costs one
- * lookup per face. A face the tick did not rank (a mesh the present holds from
- * the previous clip, a face the tick culled) reads rank 0 and keeps true
- * depth. OPENPETE_MOBY_RANK_CARRY=0 recomputes on every present instead. */
+ * and intersecting its interpolated pose, so the select changes only where
+ * the game's own order changes, between two ticks, and a present costs one
+ * lookup per face. Two tables are kept: the latest canonical tick's (T) and
+ * the one before it (T-1). An intermediate present shows a pose between T-1
+ * (alpha 0) and T (alpha 1), and applies the verdict of the nearer endpoint:
+ * T-1's for alpha < 0.5, T's for alpha >= 0.5. The verdict therefore changes
+ * once per tick interval, at its midpoint, and never leads the pose by more
+ * than half a tick. A face the chosen endpoint did not rank (a mesh the
+ * present holds from the previous clip, a face that tick culled, a T-1 table
+ * that is not the tick adjacent to T) reads rank 0 and keeps true depth.
+ * OPENPETE_MOBY_RANK_CARRY=0 recomputes on every present instead. */
 #define RC_BITS 16
 #define RC_SIZE (1 << RC_BITS)
-/* An entry belongs to the table only while its generation is s_rc_gen, so a
- * new epoch empties the table by advancing the generation. */
+/* An entry belongs to its table only while its generation is the table's, so
+ * a new epoch empties a table by giving it a fresh generation. */
 typedef struct { uint32_t moby, fkey; int32_t rank; uint32_t gen : 31, cont : 1; } rc_ent;
-static rc_ent   s_rc[RC_SIZE];
-static uint32_t s_rc_gen;
-static int      s_rc_n;
-static uint32_t s_rc_epoch;
-static int      s_rc_valid;
+typedef struct {
+    rc_ent   e[RC_SIZE];
+    uint32_t gen;     /* generation of this table's live entries */
+    uint32_t epoch;   /* canonical epoch the entries were stored under */
+    int      n;
+    int      valid;
+} rc_tab;
+static rc_tab   s_rc_tab[2];
+static int      s_rc_cur;              /* index of the latest tick's table */
+static uint32_t s_rc_gen;              /* last generation handed out */
+static double   s_rc_alpha = 1.0;      /* the present's alpha (moby_native_set_verdict_alpha) */
 static long     s_rc_hit, s_rc_miss;   /* engagement counters (sub-tick lookups) */
+static int      s_rc_prev_used;        /* the last apply read the T-1 table */
 static int rank_carry_on(void) {
     static int s = -1;
     if (s < 0) { const char* e = getenv("OPENPETE_MOBY_RANK_CARRY"); s = !(e && *e == '0'); }
     return s;
 }
+/* An unbracketed present shows the latest tick, so it takes alpha 1. */
+void moby_native_set_verdict_alpha(double alpha, int bracketed) { s_rc_alpha = bracketed ? alpha : 1.0; }
 static uint32_t rc_hash(uint32_t m, uint32_t k) {
     return ((m * 2654435761u) ^ (k * 2246822519u)) >> (32 - RC_BITS);
 }
+/* The first store of a new epoch turns the latest table into the T-1 table
+ * and empties the other one for the new tick. */
+static rc_tab* rank_carry_table_for(uint32_t ep) {
+    rc_tab* t = &s_rc_tab[s_rc_cur];
+    if (t->valid && ep == t->epoch) return t;
+    s_rc_cur ^= 1;
+    t = &s_rc_tab[s_rc_cur];
+    s_rc_gen = (s_rc_gen + 1) & 0x7FFFFFFFu;
+    if (!s_rc_gen) {
+        memset(s_rc_tab, 0, sizeof s_rc_tab);   /* wrap: both tables start empty */
+        s_rc_gen = 1;
+    }
+    t->gen = s_rc_gen; t->n = 0; t->epoch = ep; t->valid = 1;
+    return t;
+}
 static void rank_carry_store(void) {
     if (!spyro_native_canon_capture_open()) return;
-    uint32_t ep = spyro_native_canon_epoch_stamp();
-    if (!s_rc_valid || ep != s_rc_epoch) {
-        s_rc_gen = (s_rc_gen + 1) & 0x7FFFFFFFu;
-        if (!s_rc_gen) { memset(s_rc, 0, sizeof s_rc); s_rc_gen = 1; }
-        s_rc_n = 0; s_rc_epoch = ep; s_rc_valid = 1;
-    }
+    rc_tab* t = rank_carry_table_for(spyro_native_canon_epoch_stamp());
     for (int i = 0; i < s_gout.n; i++) {
-        if (s_nrank[i] <= 0 || !s_wtri_moby[i] || s_rc_n >= RC_SIZE - (RC_SIZE >> 2)) continue;
+        if (s_nrank[i] <= 0 || !s_wtri_moby[i] || t->n >= RC_SIZE - (RC_SIZE >> 2)) continue;
         uint32_t h = rc_hash(s_wtri_moby[i], s_wtri_fkey[i]);
-        while (s_rc[h].gen == s_rc_gen &&
-               !(s_rc[h].moby == s_wtri_moby[i] && s_rc[h].fkey == s_wtri_fkey[i]))
+        while (t->e[h].gen == t->gen &&
+               !(t->e[h].moby == s_wtri_moby[i] && t->e[h].fkey == s_wtri_fkey[i]))
             h = (h + 1) & (RC_SIZE - 1);
-        if (s_rc[h].gen != s_rc_gen) s_rc_n++;
-        s_rc[h] = (rc_ent){ s_wtri_moby[i], s_wtri_fkey[i], s_nrank[i], s_rc_gen, s_wtri_contest[i] };
+        if (t->e[h].gen != t->gen) t->n++;
+        t->e[h] = (rc_ent){ s_wtri_moby[i], s_wtri_fkey[i], s_nrank[i], t->gen, s_wtri_contest[i] };
     }
 }
-static const rc_ent* rank_carry_find(uint32_t moby, uint32_t fkey) {
+static const rc_ent* rank_carry_find(const rc_tab* t, uint32_t moby, uint32_t fkey) {
     uint32_t h = rc_hash(moby, fkey);
-    for (; s_rc[h].gen == s_rc_gen; h = (h + 1) & (RC_SIZE - 1))
-        if (s_rc[h].moby == moby && s_rc[h].fkey == fkey) return &s_rc[h];
+    for (; t->e[h].gen == t->gen; h = (h + 1) & (RC_SIZE - 1))
+        if (t->e[h].moby == moby && t->e[h].fkey == fkey) return &t->e[h];
     return NULL;
 }
+/* The table whose verdict this present applies, NULL when that endpoint has
+ * none: the latest table only while it is the last canonical present's, the
+ * T-1 table only while it is the epoch directly before it. */
+static const rc_tab* rank_carry_endpoint(void) {
+    const rc_tab* latest = &s_rc_tab[s_rc_cur];
+    const rc_tab* prev   = &s_rc_tab[s_rc_cur ^ 1];
+    s_rc_prev_used = 0;
+    if (!latest->valid || !spyro_native_canon_epoch_fresh(latest->epoch)) return NULL;
+    if (s_rc_alpha >= 0.5) return latest;
+    s_rc_prev_used = 1;
+    return (prev->valid && prev->epoch + 1u == latest->epoch) ? prev : NULL;
+}
 static void rank_carry_apply(void) {
-    int live = s_rc_valid && spyro_native_canon_epoch_fresh(s_rc_epoch);
+    const rc_tab* t = rank_carry_endpoint();
     for (int i = 0; i < s_gout.n; i++) {
-        const rc_ent* e = (live && s_wtri_moby[i]) ? rank_carry_find(s_wtri_moby[i], s_wtri_fkey[i])
-                                                    : NULL;
+        const rc_ent* e = (t && s_wtri_moby[i]) ? rank_carry_find(t, s_wtri_moby[i], s_wtri_fkey[i])
+                                                 : NULL;
         s_nrank[i] = e ? e->rank : 0;
         s_wtri_contest[i] = e ? e->cont : 0;
         if (s_nrank[i] > 0) s_rc_hit++; else s_rc_miss++;
@@ -4792,8 +4829,10 @@ static void moby_rank_prepare(void) {
     rt_report(s_cur_mat, s_gout.n);
     if (isect_log_on()) {
         if (carry)
-            fprintf(stderr, "[rank-carry] vbl=%u mat=%s tris=%d hit=%ld miss=%ld epoch=%u\n",
-                    openpete_frame, s_cur_mat, s_gout.n, s_rc_hit, s_rc_miss, s_rc_epoch);
+            fprintf(stderr, "[rank-carry] vbl=%u mat=%s tris=%d hit=%ld miss=%ld epoch=%u "
+                            "alpha=%.3f endpoint=%s\n",
+                    openpete_frame, s_cur_mat, s_gout.n, s_rc_hit, s_rc_miss,
+                    s_rc_tab[s_rc_cur].epoch, s_rc_alpha, s_rc_prev_used ? "prev" : "latest");
         isect_select_census();
     }
     s_rc_hit = s_rc_miss = 0;

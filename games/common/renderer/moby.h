@@ -30,6 +30,14 @@ struct CPUState;
  * re-extract; reset (off) so the canonical inline render stays byte-exact. */
 void moby_native_set_rot_interp(int on);
 
+/* The interpolation alpha of the present being re-extracted and whether the
+ * camera bracket ran: alpha 0 shows the previous canonical tick, 1 the latest;
+ * an unbracketed present shows the latest and reads as alpha 1. The sub-tick
+ * carry of the same-moby paint verdict applies the previous tick's verdict
+ * below 0.5 and the latest tick's from 0.5. Set by the orchestrator before
+ * moby_reextract and reset to (1, 1) after. */
+void moby_native_set_verdict_alpha(double alpha, int bracketed);
+
 /* The camera the cull composed this tick's records against, for a game whose
  * cull stores view-space records (moby_game.host_reveal == 0): the interp
  * ring's curr snapshot, nine int16 matrix entries in GTE row order (1.0 =

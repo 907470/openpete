@@ -506,7 +506,9 @@ static void game_reextract_body(CPUState* cpu) {
          * itself for the whole interior of the tick. Reset after the pass so the
          * canonical inline render stays byte-exact. */
         moby_native_set_rot_interp(1);
+        moby_native_set_verdict_alpha(alpha, bracketed);
         moby_reextract(cpu);        /* the 3D actors, after the terrain they stand on */
+        moby_native_set_verdict_alpha(1.0, 1);
         moby_native_set_rot_interp(0);
         moby_native_set_tick_camera(NULL, NULL);
     }

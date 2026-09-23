@@ -2082,7 +2082,9 @@ static void game_reextract_body(void* cpu_v) {
     if (pt_on) pt_t0 = openpete_phase_now_us();
     terrain_reextract(cpu, alpha, cam_bracketed); /* interpolated camera + poly-anim vert lerp */
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_REX_TERRAIN, pt_t1 - pt_t0); pt_t0 = pt_t1; }
+    moby_native_set_verdict_alpha(alpha, cam_bracketed);
     moby_reextract(cpu);           /* re-derived: interpolated camera + lerped position */
+    moby_native_set_verdict_alpha(1.0, 1);
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_REX_MOBY, pt_t1 - pt_t0); pt_t0 = pt_t1; }
     shadow_reextract(cpu);         /* drop-shadows under mobys (Spyro's: the record loop below) */
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_REX_SHADOW, pt_t1 - pt_t0); }
