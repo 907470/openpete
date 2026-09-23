@@ -23,7 +23,7 @@
 
 #include "wav_loader.h"
 #include "openpete_log.h"
-#include "../mods/mod_vec.h"
+#include "mod_vec.h"
 
 #include <AL/al.h>
 

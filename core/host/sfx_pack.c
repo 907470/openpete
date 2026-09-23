@@ -13,7 +13,7 @@
 #include "openpete_log.h"
 #include "openpete_mods.h"
 #include "openpete_paths.h"
-#include "../mods/mod_vec.h"
+#include "mod_vec.h"
 
 /* Sources and entries the tables allocate up front; both grow past it. */
 #define SP_SRC_INIT   17

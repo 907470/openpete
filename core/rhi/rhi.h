@@ -376,6 +376,8 @@ typedef struct rhi_terrain_vertex {   /* tagged: forward-declared by the
                                  * hq_eligible<<17 |
                                  * floor<<18 (LP up-facing) |
                                  * admit(5)<<19 (LP authored admission) |
+                                 * pincells<<19 (HP: the always-HQ pin sends
+                                 * the face to the 4x4 cells) |
                                  * otbias(5)<<24 (authored OT-slot bias)     */
     int16_t  c0x, c0y, c0z;     /* parent face corners in i0,i1,i2,i3 order, */
     int16_t  c1x, c1y, c1z;     /* sector-local, same x4 fixed point         */
@@ -652,6 +654,17 @@ void        rhi_update_buffer(rhi_buffer *buf, const void *data, size_t bytes);
  * clobber batches an earlier recorded pass reads. */
 void        rhi_update_buffer_range(rhi_buffer *buf, const void *data, size_t offset, size_t bytes);
 void        rhi_destroy_buffer(rhi_device *dev, rhi_buffer *buf);
+/* Grow a ring vertex buffer (rhi_create_vertex_buffer_dynamic[_gens]) so each
+ * frame slot holds at least `bytes`, keeping the handle. The new allocation
+ * starts as a copy of every slot; the replaced one stays alive until no
+ * submitted frame can read it, so a draw recorded before the growth keeps its
+ * data. Call from the thread that owns the display. False when the
+ * allocation fails (the buffer is unchanged and writes past its slot clamp),
+ * or for a single-instance buffer smaller than `bytes`. */
+bool        rhi_vertex_buffer_reserve(rhi_device *dev, rhi_buffer *buf, size_t bytes);
+/* Bytes one frame slot of a ring vertex buffer holds (the whole size of a
+ * single-instance buffer). */
+size_t      rhi_vertex_buffer_slot_bytes(const rhi_buffer *buf);
 
 rhi_pipeline *rhi_create_pipeline(rhi_device *dev, const rhi_pipeline_desc *desc);
 void          rhi_destroy_pipeline(rhi_device *dev, rhi_pipeline *pipe);

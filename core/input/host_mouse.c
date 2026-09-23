@@ -10,7 +10,7 @@
 #include "openpete_log.h"
 #include "openpete_menu.h"
 #include "openpete_native_render.h"
-#include "../mods/mod_vec.h"
+#include "mod_vec.h"
 
 #include <SDL3/SDL.h>
 

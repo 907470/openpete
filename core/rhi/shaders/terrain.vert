@@ -234,6 +234,7 @@ layout(std140, set = 6, binding = 0) uniform TerrainSectors {
 #define FF_W3_80      (1u << 16)
 #define FF_HQELIG     (1u << 17)
 #define FF_FLOOR      (1u << 18)
+#define FF_PINCELLS   (1u << 19)   /* HP: the pin sends this face to the cells */
 /* admit: bits 19-23; otbias: bits 24-28 */
 
 /* Depth encoding + PSX-affine interpolation — the scene stages' spec
@@ -1207,14 +1208,24 @@ void main()
         }
     }
     /* Exactly one variant of an HQ-eligible face survives: flat, the 2x2
-     * subdivide, or (GF_CELLS4, a tier-4 face) the 4x4 cells. */
+     * subdivide, or (GF_CELLS4, a tier-4 face) the 4x4 cells. For a face the
+     * pin sends to the cells (GF_HQPIN, FF_PINCELLS: the walk's
+     * tface_pin_cells, baked per face) the tier-4 distance terms drop and the
+     * flag term stays: a near face with w3 & 0x40 clear takes the cells (the
+     * walk's face_near_tier4 pinned branch; w3 & 0x80 is folded into
+     * FF_HQELIG). */
+    bool pin = (gf & GF_HQPIN) != 0 && (ff & FF_PINCELLS) != 0u;
     bool t4 = near && (gf & GF_CELLS4) != 0 &&
-              nc4_tier4(m0.z, m1.z, m2.z, m3c.z, ff & FF_W3_40, ff & FF_W3_80);
+              (pin ? (ff & FF_W3_40) == 0u
+                   : nc4_tier4(m0.z, m1.z, m2.z, m3c.z, ff & FF_W3_40, ff & FF_W3_80));
     /* A triangle face: the flat GT3, or (GF_TRI4, the tier-4 verdict over
-     * A, B, C, C) its 16 sub-triangle records. */
+     * A, B, C, C) its 16 sub-triangle records. Pinned to the cells: every
+     * triangle not fully behind the camera with w3 & 0x40 clear. */
     bool t4tri = !quad && !lp && !fillPass && (gf & GF_NEARHQ) != 0 && (gf & GF_TRI4) != 0
               && (straddle ? front3d : front) && (ff & FF_HQELIG) != 0u
-              && nc4_tier4(m0.z, m1.z, m2.z, m2.z, ff & FF_W3_40, ff & FF_W3_80);
+              && (pin ? ((ff & FF_W3_40) == 0u &&
+                         max(m0.z, 0.0lf) + max(m1.z, 0.0lf) + 2.0lf * max(m2.z, 0.0lf) > 0.0lf)
+                      : nc4_tier4(m0.z, m1.z, m2.z, m2.z, ff & FF_W3_40, ff & FF_W3_80));
     if (hqv != (near || t4tri) || is4 != (t4 || t4tri)) { kill_vert(); return; }
     /* nc4_front mirror: a straddling face's cell draws only when one of its
      * two triples faces. */

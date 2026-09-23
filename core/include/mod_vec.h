@@ -1,7 +1,8 @@
-// core/mods/mod_vec.h — the two growable tables of the mod surface.
+// core/include/mod_vec.h — the two growable tables (mod surface, renderer scene buffers).
 //
-// Tables on the mod surface are sized by their content. Two containers
-// cover every consumer shape; a third growth scheme is a duplicate.
+// Tables on the mod surface, and the renderer's triangle and vertex
+// buffers, are sized by their content. Two containers cover every
+// consumer shape; a third growth scheme is a duplicate.
 //
 //   mod_cvec  chunked. Elements live in fixed-size blocks linked from a
 //             block index; a push never moves an element, so an address
@@ -25,7 +26,8 @@
 // index grows by copy-then-publish, and a pushed element is zeroed
 // before the count admits it, so the reader sees a zeroed element rather
 // than uninitialized bytes. init, free and clear are writer-side and are
-// not concurrent with a reader.
+// not concurrent with a reader. Tables owned by different threads may
+// init and free concurrently: the census list they link into is locked.
 //
 // Allocation failure is the only failure mode: push returns NULL and the
 // caller reports it with the table's name and the owner.
@@ -91,6 +93,7 @@ typedef struct mod_fvec {
     size_t init_cap;            /* capacity the first push allocates */
     unsigned long grew;         /* reallocations since init */
     size_t peak;                /* highest count the table has held */
+    size_t failed_at;           /* largest request an allocation refused */
     mod_vec_node_t census;
 } mod_fvec;
 
@@ -177,6 +180,18 @@ void* mod_fvec_data(const mod_fvec* v);
  * @return 0 on success, -1 on allocation failure.
  */
 int mod_fvec_reserve(mod_fvec* v, size_t n);
+
+/**
+ * @brief mod_fvec_reserve for a run whose caller keeps its own element
+ *        count (a buffer refilled per use and indexed through
+ *        mod_fvec_data). @p n raises the peak. A growth to a capacity above
+ *        the table's former fixed capacity (`was`), and each allocation
+ *        failure at a request size larger than any refused before, is
+ *        logged under the census name.
+ * @return 0 on success, -1 on allocation failure; the run and its
+ *         capacity are then unchanged, and the caller fills what fits.
+ */
+int mod_fvec_reserve_noted(mod_fvec* v, size_t n);
 
 /**
  * @brief Remove element @p i, shifting the elements above it down one.

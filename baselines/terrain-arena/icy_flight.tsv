@@ -19,9 +19,9 @@ spawn	N_ALPHA	252	0
 spawn	N_ADD	1974	0
 spawn	N_SUB	0	0
 spawn	N_LP	3258	0
-spawn	CN_OPAQUE	686	0
+spawn	CN_OPAQUE	756	0
 spawn	CN_ALPHA	0	0
-spawn	CN_ADD	64	0
+spawn	CN_ADD	82	0
 spawn	CN_SUB	0	0
 spawn	CA_OPAQUE	0	0
 spawn	CA_ALPHA	0	0
@@ -65,9 +65,9 @@ demo	N_ALPHA	3714	0
 demo	N_ADD	21738	0
 demo	N_SUB	0	0
 demo	N_LP	24888	0
-demo	CN_OPAQUE	5460	0
+demo	CN_OPAQUE	6210	0
 demo	CN_ALPHA	0	0
-demo	CN_ADD	704	0
+demo	CN_ADD	818	0
 demo	CN_SUB	0	0
 demo	CA_OPAQUE	0	0
 demo	CA_ALPHA	0	0

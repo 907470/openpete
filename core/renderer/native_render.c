@@ -37,6 +37,7 @@
 #include "openpete_interp_objs.h" /* tick stamp + period for the overlay sub-tick alpha */
 #include "openpete_record.h" /* native --record capture seam */
 #include "rhi.h"
+#include "mod_vec.h"      /* the scene triangle store and compose scratch runs */
 #include "game_layout.h"  /* game_layout.terrain: the per-game ordering-table key policy */
 #include "screenshot.h"  /* openpete_write_png_rgba */
 
@@ -233,20 +234,17 @@ typedef struct {
  * (cyclorama/sky from gamestate). Double-buffered isn't needed — the game
  * fills it during its render pass (before openpete_native_render_frame reads
  * it). begin() clears; add_tri() appends. */
-/* Native scene-triangle cap. Sized for the worst-case --no-lod load: forced-HQ
- * routes every foreground terrain cell through the 2x2 subdivide (~4x the tris)
- * and renders every moby with no distance cull, so the densest content
- * (gnastys_loot, the all-gems loot vault) peaks at ~43k tris vs ~10k for a
- * typical level at stock LOD. The old 16384 cap silently dropped everything past
- * it, and which tris dropped depended on the view → terrain that appeared/
- * disappeared with camera angle. Worst measured across all 35 levels is
- * beast_makers at ~63k (a homeworld: every enemy + gem + dragon rendered with no
- * cull, plus forced-HQ terrain); 131072 is ~2x that, covering worst-camera-angle
- * beyond the charge-path sample. The drop counter below is the permanent safety
- * net for any outlier. (Static arrays cost ~68 MB; dynamic sizing keyed on
- * --no-lod is a future optimisation — see the disable-lods plan.) */
-#define MAX_SCENE_TRIS 131072
-#define SCENE_VB_VERTS (MAX_SCENE_TRIS * 3 + 18)  /* +6 bg-fill, +6 fade overlay, +6 freeze backdrop */
+/* The scene triangle store and every buffer sized from it grow with the
+ * scene. A fixed cap drops the triangles past it, and which ones drop depends
+ * on the view, so geometry appears and disappears with the camera; an
+ * extended-LOD vista that routes every terrain face through the 4x4 cell path
+ * feeds well past 150k triangles. Runs start at SCENE_RUN_INIT elements and
+ * double; SCENE_TRIS_WAS is the former fixed capacity, past which each growth
+ * is logged. An allocation failure keeps what fits and is logged. */
+#define SCENE_RUN_INIT 4096
+#define SCENE_TRIS_WAS 131072
+#define SCENE_VB_EXTRA 18          /* +6 bg-fill, +6 fade overlay, +6 freeze backdrop */
+#define SCENE_VB_WAS (SCENE_TRIS_WAS * 3 + SCENE_VB_EXTRA)
 
 /* Moby occlusion-culling grid extent (cells over the PSX screen: ~8×5 PSX px
  * per cell at 512×240). Coarse on purpose — the CPU reads it back per present
@@ -340,8 +338,21 @@ typedef struct {
  * without mirroring it here (or vice versa), this array gets a negative size. */
 typedef char nr_assert_scene_tri_prefix[
     (offsetof(scene_tri_t, category) == sizeof(openpete_scene_tri)) ? 1 : -1];
-static scene_tri_t s_scene[MAX_SCENE_TRIS];      /* accumulating (frame N) */
+static mod_fvec           s_scene_v;              /* accumulating (frame N) */
+#define s_scene ((scene_tri_t*)s_scene_v.data)    /* moves on growth: index, never hold */
 static int                s_scene_n;
+
+/* How many of `n` scene triangles the run `v` holds after growing it to fit
+ * them (initialising it on first use). Less than `n` only when the
+ * allocation failed, which the vec logs. */
+static int scene_run_fit(mod_fvec *v, const char *name, int n) {
+    if (!v->elem_size)
+        mod_fvec_init(v, sizeof(scene_tri_t), SCENE_RUN_INIT, name, SCENE_TRIS_WAS);
+    if (mod_fvec_reserve_noted(v, (size_t)(n > 0 ? n : 0)) == 0) return n;
+    return (int)v->cap < n ? (int)v->cap : n;
+}
+/* Room for `n` triangles in the accumulating scene. */
+static int scene_room(int n) { return scene_run_fit(&s_scene_v, "scene.tri", n) >= n; }
 
 /* ---- eager scene ring ----------------------------------------------------
  *
@@ -365,7 +376,8 @@ static int                s_scene_n;
 enum { SS_FREE = 0, SS_PENDING, SS_PRESENTING, SS_PRESENTED };
 #define SCENE_RING 48
 typedef struct {
-    scene_tri_t *tri; int cap, n;
+    scene_tri_t *tri; int n;        /* tri = tri_v's run, re-read after each growth */
+    mod_fvec  tri_v;
     uint32_t bg, fade, freeze; int hud_under, actor_front;
     int replay;                    /* the scene was built by a re-extract, not the game render */
     unsigned  frame;               /* openpete_frame at extraction */
@@ -570,7 +582,7 @@ static uint32_t           s_scene_bg;  /* panel-0 background fill (rgba); 0 = no
  * the one `depth` frames back. Depth is 0 (the live frame) unless
  * OPENPETE_NATIVE_SCENE_DELAY=<n> forces an explicit integer depth. */
 #define SCENE_HIST 4   /* ring of completed-frame snapshots; supports delay depth 0..3 */
-static scene_tri_t s_scene_hist[SCENE_HIST][MAX_SCENE_TRIS]; /* completed-frame ring */
+static mod_fvec           s_scene_hist[SCENE_HIST];   /* completed-frame ring (scene_tri_t) */
 static int                s_scene_hist_n[SCENE_HIST];
 static unsigned           s_scene_hist_frame[SCENE_HIST]; /* completed frame's stamp */
 static uint32_t           s_scene_hist_bg[SCENE_HIST];
@@ -893,17 +905,17 @@ void openpete_native_scene_begin_frame(unsigned frame) {
             if (s_scene_dropped > 0) {
                 static int s_warned = 0;
                 if (!s_warned) { s_warned = 1;
-                    fprintf(stderr, "native: WARNING scene cap %d exceeded (frame=%u wanted=%d, "
-                            "%d tris dropped) — geometry will vanish view-dependently; raise MAX_SCENE_TRIS\n",
-                            MAX_SCENE_TRIS, s_scene_frame, s_scene_n + s_scene_dropped, s_scene_dropped); }
+                    fprintf(stderr, "native: WARNING scene store could not grow past %zu tris "
+                            "(frame=%u wanted=%d, %d tris dropped): geometry vanishes view-dependently\n",
+                            s_scene_v.cap, s_scene_frame, s_scene_n + s_scene_dropped, s_scene_dropped); }
             }
             static int s_capdbg = -1; static int s_scene_peak = 0;
             if (s_capdbg < 0) { const char* e = getenv("OPENPETE_SCENE_CAPDBG"); s_capdbg = (e && *e && *e != '0'); }
             if (s_capdbg) {
                 int want = s_scene_n + s_scene_dropped;   /* true demand (raised caps → dropped=0) */
                 if (want > s_scene_peak) { s_scene_peak = want;
-                    fprintf(stderr, "[scenecap] frame=%u NEW PEAK want=%d (accepted=%d/%d dropped=%d)\n",
-                            s_scene_frame, want, s_scene_n, MAX_SCENE_TRIS, s_scene_dropped); }
+                    fprintf(stderr, "[scenecap] frame=%u NEW PEAK want=%d (accepted=%d/%zu dropped=%d)\n",
+                            s_scene_frame, want, s_scene_n, s_scene_v.cap, s_scene_dropped); }
             }
             s_scene_dropped = 0;
             /* OPENPETE_SCENE_DROP_BLEND=<n> — drop every completed scene
@@ -920,8 +932,9 @@ void openpete_native_scene_begin_frame(unsigned frame) {
                 s_scene_n = w; } }
             alpha_census(s_scene, s_scene_n);  /* census the completed scene (runs even headless) */
             int slot = (s_scene_hist_head + 1) % SCENE_HIST;
-            if (s_scene_n > 0) memcpy(s_scene_hist[slot], s_scene, (size_t)s_scene_n * sizeof(s_scene[0]));
-            s_scene_hist_n[slot] = s_scene_n; s_scene_hist_bg[slot] = s_scene_bg;
+            const int hn = scene_run_fit(&s_scene_hist[slot], "scene.hist", s_scene_n);
+            if (hn > 0) memcpy(s_scene_hist[slot].data, s_scene, (size_t)hn * sizeof(s_scene[0]));
+            s_scene_hist_n[slot] = hn; s_scene_hist_bg[slot] = s_scene_bg;
             s_scene_hist_frame[slot] = s_scene_frame;
             s_scene_hist_fade[slot] = s_scene_fade;
             s_scene_hist_freeze[slot] = s_scene_freeze;
@@ -957,20 +970,15 @@ void openpete_native_scene_mark_replay(void) { s_scene_replay = 1; }
  * Saves only the live prefix (s_scene_n tris); the buffer is grown on demand and
  * never shrinks, so a steady-state caller allocates once. Returns 0 on success;
  * a failed save returns nonzero and leaves nothing to restore. */
-static scene_tri_t *s_scene_saved;
-static int          s_scene_saved_cap;
+static mod_fvec     s_scene_saved;          /* scene_tri_t */
 static int          s_scene_saved_n = -1;   /* -1 = nothing saved */
 static uint32_t     s_scene_saved_fam[16];
 static uint32_t     s_scene_saved_bg, s_scene_saved_fade, s_scene_saved_freeze;
 static int          s_scene_saved_hud_under, s_scene_saved_actor_front, s_scene_saved_dropped;
 
 int openpete_native_scene_save(void) {
-    if (s_scene_n > s_scene_saved_cap) {
-        scene_tri_t *g = realloc(s_scene_saved, (size_t)s_scene_n * sizeof(scene_tri_t));
-        if (!g) return 1;
-        s_scene_saved = g; s_scene_saved_cap = s_scene_n;
-    }
-    if (s_scene_n > 0) memcpy(s_scene_saved, s_scene, (size_t)s_scene_n * sizeof(scene_tri_t));
+    if (scene_run_fit(&s_scene_saved, "scene.saved", s_scene_n) < s_scene_n) return 1;
+    if (s_scene_n > 0) memcpy(s_scene_saved.data, s_scene, (size_t)s_scene_n * sizeof(scene_tri_t));
     s_scene_saved_n = s_scene_n;
     memcpy(s_scene_saved_fam, s_scene_fam_n, sizeof s_scene_fam_n);
     s_scene_saved_bg = s_scene_bg; s_scene_saved_fade = s_scene_fade;
@@ -983,7 +991,8 @@ int openpete_native_scene_save(void) {
 
 void openpete_native_scene_restore(void) {
     if (s_scene_saved_n < 0) return;
-    if (s_scene_saved_n > 0) memcpy(s_scene, s_scene_saved, (size_t)s_scene_saved_n * sizeof(scene_tri_t));
+    if (s_scene_saved_n > 0 && scene_room(s_scene_saved_n))
+        memcpy(s_scene, s_scene_saved.data, (size_t)s_scene_saved_n * sizeof(scene_tri_t));
     s_scene_n = s_scene_saved_n;
     memcpy(s_scene_fam_n, s_scene_saved_fam, sizeof s_scene_fam_n);
     s_scene_bg = s_scene_saved_bg; s_scene_fade = s_scene_saved_fade;
@@ -1110,7 +1119,7 @@ static int category_snaps_vertices(int category) {
 void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int category,
                                            int carry, int group) {
     if (!tri) return;
-    if (s_scene_n < MAX_SCENE_TRIS) {
+    if (s_scene_n < (int)s_scene_v.cap || scene_room(s_scene_n + 1)) {
         /* geometry+material prefix copy (the feeder tri IS the stored tri's
          * layout prefix — asserted at scene_tri_t), then stamp the routing
          * state from the explicit args. */
@@ -1590,7 +1599,8 @@ void openpete_native_scene_capture_overlay(void) {
                 if (!eligible) { if (w != t) s_scene[w] = s_scene[t]; w++; }
             }
             s_scene_n = w;
-            for (int t = 0; t < s_overlay_carry_n && s_scene_n < MAX_SCENE_TRIS; t++) {
+            (void)scene_room(s_scene_n + s_overlay_carry_n);
+            for (int t = 0; t < s_overlay_carry_n && s_scene_n < (int)s_scene_v.cap; t++) {
                 scene_tri_t tri = s_overlay_carry[t];
                 tri.carry = 2;                   /* composed copy: never re-accumulates */
                 s_scene[s_scene_n++] = tri;
@@ -2389,7 +2399,8 @@ void openpete_native_scene_apply_overlay(double alpha) {
                                 s_overlay_carry, s_overlay_carry_n, &s_mt, &rst);
     carry_census_t cz = {0};
     int census = carry_census_on();
-    for (int t = 0; t < s_overlay_carry_n && s_scene_n < MAX_SCENE_TRIS; t++) {
+    (void)scene_room(s_scene_n + s_overlay_carry_n);
+    for (int t = 0; t < s_overlay_carry_n && s_scene_n < (int)s_scene_v.cap; t++) {
         scene_tri_t tri = s_overlay_carry[t];   /* curr; category already stamped */
         int pi = s_mt.match[t];
         if (pi >= 0) {
@@ -2453,7 +2464,7 @@ static const scene_tri_t* scene_present_buf(int* out_n, uint32_t* out_bg,
         if (out_freeze) *out_freeze = s_scene_hist_freeze[slot];
         if (out_hud_under) *out_hud_under = s_scene_hist_hud_under[slot];
         if (out_actor_front) *out_actor_front = s_scene_hist_actor_front[slot];
-        return s_scene_hist[slot];
+        return (const scene_tri_t*)s_scene_hist[slot].data;
     }
     *out_n = s_scene_n; *out_bg = s_scene_bg; *out_fade = s_scene_fade;
     if (out_freeze) *out_freeze = s_scene_freeze;
@@ -2744,7 +2755,7 @@ static struct {
     rhi_texture  *mat_pack_dummy;     /* 1x1 opaque white bound at set 1 for material
                                        * draws with no pack replacement (op_pack_tex
                                        * needs a valid RGBA descriptor either way) */
-    rhi_buffer   *scene_vb;     /* MAX_SCENE_TRIS*3 verts, rebuilt per frame */
+    rhi_buffer   *scene_vb;     /* the composed scene's verts, rebuilt per frame; grows with it */
     float         p0_cx, p0_hx, p0_hy; /* panel-0 fitted rect (clip space, cy=0) — the 4:3 CONTENT sub-rect */
     /* Target display aspect (W/H), from --aspect. 0 = AUTO (the default):
      * the render aspect follows the window/fullscreen shape live, filling it
@@ -3669,7 +3680,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * (init / re-layout) under rhi_wait_idle and stay single. */
     rhi_buffer   *panels_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * NR_PANELS * 6);
     /* One scene fill per frame, so a single generation. */
-    rhi_buffer   *scene_vb  = rhi_create_vertex_buffer_dynamic_gens(dev, sizeof(rhi_vertex) * SCENE_VB_VERTS, 1u);
+    rhi_buffer   *scene_vb  = rhi_create_vertex_buffer_dynamic_gens(dev, sizeof(rhi_vertex) * SCENE_VB_WAS, 1u);
     rhi_buffer   *fs_quad_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
     rhi_buffer   *overlay_vb = rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * OVL_MAX_VERTS);
     /* Mod draw-service overlay (optional — NULL just disables mod draws). */
@@ -3704,13 +3715,13 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         OPL_ERROR_F("native", "hole-fill pipelines unavailable; terrain LP hole-fill disabled");
     }
     rhi_texture  *occl_grid = rhi_create_render_target(dev, OCCL_GW, OCCL_GH);
-    rhi_buffer   *prepass_vb = rhi_create_vertex_buffer_dynamic_gens(dev, sizeof(rhi_vertex) * SCENE_VB_VERTS, 1u);
+    rhi_buffer   *prepass_vb = rhi_create_vertex_buffer_dynamic_gens(dev, sizeof(rhi_vertex) * SCENE_VB_WAS, 1u);
     /* Optional P6b key-pass resources (graceful fallback: NULL → the feeder
      * emits koff=0, LP fragments never sample, terrain contests at raw true
      * depth — the OT_BIAS=0 look). The key IMAGE allocates lazily per target
      * size (ensure_terrain_key_depth). */
     rhi_pipeline *terrain_key_pipe = rhi_create_pipeline(dev, &terrain_key_desc);
-    rhi_buffer   *terrain_key_vb = rhi_create_vertex_buffer_dynamic_gens(dev, sizeof(rhi_vertex) * SCENE_VB_VERTS, 1u);
+    rhi_buffer   *terrain_key_vb = rhi_create_vertex_buffer_dynamic_gens(dev, sizeof(rhi_vertex) * SCENE_VB_WAS, 1u);
     if (!terrain_key_pipe || !terrain_key_vb) {
         if (terrain_key_pipe) { rhi_destroy_pipeline(dev, terrain_key_pipe); terrain_key_pipe = NULL; }
         if (terrain_key_vb)   { rhi_destroy_buffer(dev, terrain_key_vb);     terrain_key_vb = NULL; }
@@ -4780,6 +4791,32 @@ static int scene_has_spyro_shadow(const scene_tri_t* scene, int scene_n)
     return 0;
 }
 
+/* Per-present compose scratch, sized from the scene being composed by
+ * compose_reserve. Vertex runs hold 3 vertices per scene triangle plus the
+ * full-screen quads; index runs one entry per scene triangle. The two runs
+ * only an armed instrument reads (s_cz_ident, s_cz_cand) are sized by that
+ * instrument. Every compose
+ * runs on the thread that owns the display and composes never overlap, so the
+ * runs have one owner; a growth moves a run, so no pointer into one is held
+ * across a compose_reserve call. */
+static mod_fvec s_cz_vb, s_cz_prepass, s_cz_key[4], s_cz_ident;   /* rhi_vertex */
+static mod_fvec s_cz_ktex, s_cz_txscene, s_cz_txout, s_cz_utdef,
+                s_cz_bwsort, s_cz_cand;                            /* int */
+static mod_fvec s_cz_bwdef;                                        /* uint8_t */
+static mod_fvec s_cz_txof;                                         /* uint16_t */
+static mod_fvec s_cz_hud;                                          /* hud_paint_t */
+static int s_cz_tris;    /* entries every index run holds */
+static int s_cz_verts;   /* vertices every vertex run and scene GPU buffer holds */
+static int compose_reserve(int scene_n);
+/* Grow an instrument-only run to `n` elements. 0 when it cannot hold them
+ * (logged by the vec) and the instrument skips this present. */
+static int cz_instrument_run(mod_fvec *v, size_t elem, const char *name,
+                             unsigned long was, int n)
+{
+    if (!v->elem_size) mod_fvec_init(v, elem, SCENE_RUN_INIT, name, was);
+    return mod_fvec_reserve_noted(v, (size_t)(n > 0 ? n : 0)) == 0;
+}
+
 /* (Re)create opaque_depth sized to max(reference, window) — the presented pixel
  * grid bounds the useful discard-edge precision, so the SSAA extent is
  * intentionally NOT covered (consumers sample by uv; a coarser pre-pass texel
@@ -4840,6 +4877,7 @@ static void native_depth_prepass(void)
     }
     if (scene_n <= 0) return;
     if (freeze_ & (1u << 31)) return;   /* freeze backdrop: gameplay groups skipped, no shadow drawn */
+    scene_n = compose_reserve(scene_n);
     if (!scene_has_spyro_shadow(scene, scene_n) && !occl_active()) return;
 
     /* Raster extent = the ensure_opaque_depth sizing, clamped to the allocation. */
@@ -4864,7 +4902,7 @@ static void native_depth_prepass(void)
     float prev_wf = s_render_freeze_wf;
     s_render_full_extent = 1;
     s_render_freeze_wf = openpete_native_widescreen_factor();
-    static rhi_vertex pbuf[SCENE_VB_VERTS];
+    rhi_vertex *pbuf = (rhi_vertex *)s_cz_prepass.data;
     int m = 0;
     /* Far BACKSTOP: a fullscreen quad at z=0.999 (view-Z ≈ 4.09M — decodes as
      * the far sentinel) drawn under everything, so every pre-pass texel is
@@ -4889,7 +4927,7 @@ static void native_depth_prepass(void)
         }
         m += 6;
     }
-    for (int t = 0; t < scene_n && m + 3 <= SCENE_VB_VERTS; t++) {
+    for (int t = 0; t < scene_n && m + 3 <= s_cz_verts; t++) {
         int b = scene[t].blend; if (b < 0 || b > 4) b = 0;
         if (b != 0) continue;                                    /* opaque only */
         /* World occluders only — plus the WORLD_FILL LP backing: at the fogged
@@ -5139,7 +5177,7 @@ static void ensure_terrain_key_targets(void)
 #define KEYTEX_MAX_SPANS 256
 typedef struct { int first, count; psx_material mat; } keytex_span_t;
 
-static int s_ktex_idx[MAX_SCENE_TRIS];
+#define s_ktex_idx ((int *)s_cz_ktex.data)
 static void tex_mat_sort(const scene_tri_t* scene, int* idx, int n);
 
 /* The screen boxes of this scene's keyed additive glow fans. The player's
@@ -5275,10 +5313,10 @@ static int pack_terrain_key_batch(const scene_tri_t* scene, int scene_n,
     *nspans = 0;
     key_box_t aura[KEY_AURA_BOX_MAX];
     int naura = prop_class == 2 ? scene_aura_boxes(scene, scene_n, aura) : 0;
-    for (int t = 0; t < scene_n && m + 3 <= SCENE_VB_VERTS; t++) {
+    for (int t = 0; t < scene_n && m + 3 <= s_cz_verts; t++) {
         if (!key_batch_admits(&scene[t], prop_class, aura, naura)) continue;
         if (scene[t].textured) {
-            if (tex_n < MAX_SCENE_TRIS) s_ktex_idx[tex_n++] = t;
+            if (tex_n < s_cz_tris) s_ktex_idx[tex_n++] = t;
             continue;
         }
         pack_key_vert(&scene[t], prop_class, 0, &out[m]);
@@ -5288,7 +5326,7 @@ static int pack_terrain_key_batch(const scene_tri_t* scene, int scene_n,
     /* Material-run order for the textured tail — same intern/sort the scene
      * draw batches with, so runs are contiguous and few. */
     tex_mat_sort(scene, s_ktex_idx, tex_n);
-    for (int i = 0; i < tex_n && m + 3 <= SCENE_VB_VERTS; i++) {
+    for (int i = 0; i < tex_n && m + 3 <= s_cz_verts; i++) {
         const scene_tri_t* T = &scene[s_ktex_idx[i]];
         keytex_span_t* sp = (*nspans > 0) ? &spans[*nspans - 1] : NULL;
         if (!sp || sp->mat.bpp < 0 ||
@@ -5355,11 +5393,11 @@ static int pack_moby_rank_batch(const scene_tri_t* scene, int scene_n,
     s_render_full_extent = full_extent ? 1 : 0;
     int m = 0, tex_n = 0;
     *nspans = 0;
-    for (int t = 0; t < scene_n && m + 3 <= SCENE_VB_VERTS; t++) {
+    for (int t = 0; t < scene_n && m + 3 <= s_cz_verts; t++) {
         if (scene[t].blend != 0) continue;      /* opaque only */
         if (scene[t].rank < 0.5f) continue;     /* ranked faces only */
         if (scene[t].textured) {
-            if (tex_n < MAX_SCENE_TRIS) s_ktex_idx[tex_n++] = t;
+            if (tex_n < s_cz_tris) s_ktex_idx[tex_n++] = t;
             continue;
         }
         pack_rank_vert(&scene[t], 0, &out[m]);
@@ -5367,7 +5405,7 @@ static int pack_moby_rank_batch(const scene_tri_t* scene, int scene_n,
     }
     *out_untex = m;
     tex_mat_sort(scene, s_ktex_idx, tex_n);
-    for (int i = 0; i < tex_n && m + 3 <= SCENE_VB_VERTS; i++) {
+    for (int i = 0; i < tex_n && m + 3 <= s_cz_verts; i++) {
         const scene_tri_t* T = &scene[s_ktex_idx[i]];
         keytex_span_t* sp = (*nspans > 0) ? &spans[*nspans - 1] : NULL;
         if (!sp || sp->mat.bpp < 0 ||
@@ -5402,9 +5440,9 @@ static int pack_moby_rank_batch(const scene_tri_t* scene, int scene_n,
 static struct {
     const scene_tri_t* scene;
     int scene_n, full_extent, m, mm, am;
-    const rhi_vertex* buf;
-    const rhi_vertex* mbuf;
-    const rhi_vertex* abuf;
+    const mod_fvec* buf;     /* runs, not bases: a later compose_reserve may move them */
+    const mod_fvec* mbuf;
+    const mod_fvec* abuf;
 } s_tk_last = { NULL, 0, -1, -1, -1, -1, NULL, NULL, NULL };
 
 /* Draw one packed key batch into the currently-open key render pass:
@@ -5491,10 +5529,11 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
     if (vh > s_nr.tk_h) vh = s_nr.tk_h;
     int scene_n; uint32_t bg_, fade_, freeze_; int hud_;
     const scene_tri_t* scene = scene_present_buf(&scene_n, &bg_, &fade_, &freeze_, &hud_, NULL);
-    static rhi_vertex kbuf[SCENE_VB_VERTS];
-    static rhi_vertex mkbuf[SCENE_VB_VERTS];
-    static rhi_vertex akbuf[SCENE_VB_VERTS];
-    static rhi_vertex rbuf[SCENE_VB_VERTS];
+    scene_n = compose_reserve(scene_n);
+    rhi_vertex *kbuf  = (rhi_vertex *)s_cz_key[0].data;
+    rhi_vertex *mkbuf = (rhi_vertex *)s_cz_key[1].data;
+    rhi_vertex *akbuf = (rhi_vertex *)s_cz_key[2].data;
+    rhi_vertex *rbuf  = (rhi_vertex *)s_cz_key[3].data;
     static keytex_span_t kspans[KEYTEX_MAX_SPANS], mspans[KEYTEX_MAX_SPANS],
                          aspans[KEYTEX_MAX_SPANS], rspans[KEYTEX_MAX_SPANS];
     int k_untex = 0, m_untex = 0, a_untex = 0, r_untex = 0,
@@ -5519,9 +5558,9 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
       } }
     s_tk_last.scene = scene; s_tk_last.scene_n = scene_n;
     s_tk_last.full_extent = full_extent ? 1 : 0;
-    s_tk_last.m = m; s_tk_last.buf = kbuf;
-    s_tk_last.mm = mm; s_tk_last.mbuf = mkbuf;
-    s_tk_last.am = am; s_tk_last.abuf = akbuf;
+    s_tk_last.m = m; s_tk_last.buf = &s_cz_key[0];
+    s_tk_last.mm = mm; s_tk_last.mbuf = &s_cz_key[1];
+    s_tk_last.am = am; s_tk_last.abuf = &s_cz_key[2];
     { static int kdbg = -1;
       if (kdbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_KEY_DBG"); kdbg = (e && *e && *e != '0'); }
       if (kdbg) {
@@ -5585,19 +5624,19 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
     static int s_tk_base = 0;
     uint64_t serial = rhi_frame_serial(s_nr.dev);
     if (serial != s_tk_serial) { s_tk_serial = serial; s_tk_base = 0; }
-    if (m + mm + am + rr > 0 && s_tk_base + m + mm + am + rr > SCENE_VB_VERTS) {
-        /* Ring slot exhausted (several huge batches in one frame). The
-         * earlier batches are recorded but NOT yet submitted, so resetting
+    if (m + mm + am + rr > 0 &&
+        !rhi_vertex_buffer_reserve(s_nr.dev, s_nr.terrain_key_vb,
+                                   sizeof(rhi_vertex) * (size_t)(s_tk_base + m + mm + am + rr))) {
+        /* The ring slot could not grow to hold this target's batches. The
+         * earlier batches are recorded but not yet submitted, so resetting
          * the bump offset would clobber data a recorded pass still reads at
-         * execution — and a mid-frame wait_idle cannot help, the work isn't
-         * on the GPU yet. Degrade safely: leave this target's images clear
-         * ("no cover" → contest OFF for this target only, keyed faces
-         * resolve at true depth), and say so loudly — a silent skip would
-         * read as coverage. */
+         * execution. Degrade: leave this target's images clear ("no cover":
+         * contest off for this target only, keyed faces resolve at true
+         * depth), and say so; a silent skip would read as coverage. */
         extern unsigned openpete_frame;
-        fprintf(stderr, "[keypass f=%u] key VB exhausted (base=%d + m=%d+%d+%d+%d > %d): "
+        fprintf(stderr, "[keypass f=%u] key VB could not grow (base=%d + m=%d+%d+%d+%d): "
                         "contest OFF for this target\n",
-                openpete_frame, s_tk_base, m, mm, am, rr, (int)SCENE_VB_VERTS);
+                openpete_frame, s_tk_base, m, mm, am, rr);
         m = mm = am = rr = 0;
     }
     if (m > 0)
@@ -5982,16 +6021,66 @@ static void cover_rect(int full_extent, float *l, float *r, float *t, float *b)
 /* Textured-tri material batching (see the bucket build in render_scene). The
  * scene index of each textured block-tri, in VB order, so the draw side can read
  * a tri's material and coalesce adjacent same-material runs into one draw. */
-static int s_txscene[MAX_SCENE_TRIS];
+#define s_txscene ((int *)s_cz_txscene.data)
 /* Set for a scene triangle the untextured bucket build deferred into a mod
  * material span. A deferred triangle draws from that span at its group's slot,
  * so the emission-ordered blended-world block leaves it out. */
-static uint8_t s_bw_deferred[MAX_SCENE_TRIS];
+#define s_bw_deferred ((uint8_t *)s_cz_bwdef.data)
 /* Flat-HUD within-layer painter order (see the bucket-6 build in render_scene):
  * back-to-front by centroid z, ties broken by submission index so equal-z runs
  * (all the 2D-UI content at z=0) keep submission order — a STABLE descending
  * sort built on qsort. */
 typedef struct { float z; int t; } hud_paint_t;
+/* Grow every compose scratch run, and the scene and pre-pass GPU buffers, to
+ * hold a scene of `scene_n` triangles. Returns how many of them the smallest
+ * run holds: `scene_n` unless an allocation failed, in which case the compose
+ * draws that prefix of the scene and the failure is logged (by the vec or the
+ * RHI, with the run's name). */
+typedef struct { mod_fvec *v; size_t elem; int verts; const char *name; } cz_run_t;
+static int compose_reserve(int scene_n)
+{
+    const cz_run_t runs[] = {
+        { &s_cz_vb,       sizeof(rhi_vertex), 1, "compose.scene_vb" },
+        { &s_cz_prepass,  sizeof(rhi_vertex), 1, "compose.prepass_vb" },
+        { &s_cz_key[0],   sizeof(rhi_vertex), 1, "compose.key_terrain" },
+        { &s_cz_key[1],   sizeof(rhi_vertex), 1, "compose.key_prop" },
+        { &s_cz_key[2],   sizeof(rhi_vertex), 1, "compose.key_actor" },
+        { &s_cz_key[3],   sizeof(rhi_vertex), 1, "compose.key_rank" },
+        { &s_cz_ktex,     sizeof(int),        0, "compose.key_tex_idx" },
+        { &s_cz_txscene,  sizeof(int),        0, "compose.tex_scene_idx" },
+        { &s_cz_txout,    sizeof(int),        0, "compose.tex_sort_out" },
+        { &s_cz_txof,     sizeof(uint16_t),   0, "compose.tex_sort_slot" },
+        { &s_cz_utdef,    sizeof(int),        0, "compose.ut_deferred_idx" },
+        { &s_cz_bwdef,    sizeof(uint8_t),    0, "compose.bw_deferred" },
+        { &s_cz_bwsort,   sizeof(int),        0, "compose.bw_sort_tmp" },
+        { &s_cz_hud,      sizeof(hud_paint_t), 0, "compose.hud_paint" },
+    };
+    if (scene_n < 0) scene_n = 0;
+    const int want_v = scene_n * 3 + SCENE_VB_EXTRA;
+    int held_v = want_v, held_t = scene_n;
+    for (size_t i = 0; i < sizeof runs / sizeof runs[0]; i++) {
+        const cz_run_t *r = &runs[i];
+        if (!r->v->elem_size)
+            mod_fvec_init(r->v, r->elem, r->verts ? SCENE_RUN_INIT * 3 : SCENE_RUN_INIT,
+                          r->name, r->verts ? SCENE_VB_WAS : SCENE_TRIS_WAS);
+        (void)mod_fvec_reserve_noted(r->v, (size_t)(r->verts ? want_v : scene_n));
+        int *held = r->verts ? &held_v : &held_t;
+        if ((int)r->v->cap < *held) *held = (int)r->v->cap;
+    }
+    rhi_buffer *const gpu[] = { s_nr.scene_vb, s_nr.prepass_vb };
+    for (size_t i = 0; i < sizeof gpu / sizeof gpu[0]; i++) {
+        if (!gpu[i] || rhi_vertex_buffer_reserve(s_nr.dev, gpu[i], sizeof(rhi_vertex) * (size_t)want_v))
+            continue;
+        const int slot_v = (int)(rhi_vertex_buffer_slot_bytes(gpu[i]) / sizeof(rhi_vertex));
+        if (slot_v < held_v) held_v = slot_v;
+    }
+    s_cz_verts = held_v; s_cz_tris = held_t;
+    int fit = (held_v - SCENE_VB_EXTRA) / 3;
+    if (held_t < fit) fit = held_t;
+    if (fit < 0) fit = 0;
+    return fit < scene_n ? fit : scene_n;
+}
+
 static int hud_paint_cmp(const void* pa, const void* pb) {
     const hud_paint_t* a = (const hud_paint_t*)pa;
     const hud_paint_t* b = (const hud_paint_t*)pb;
@@ -6031,8 +6120,8 @@ static int tex_mat_cmp(const void* pa, const void* pb) {
 #define TXMAT_BUCKETS 1024   /* power of two; distinct materials per scene ~dozens */
 typedef struct { uint64_t key; uint32_t tag; int count, offset, used; } txmat_bucket_t;
 static txmat_bucket_t s_txmat_b[TXMAT_BUCKETS];
-static uint16_t       s_txmat_of[MAX_SCENE_TRIS];   /* tri -> bucket slot */
-static int            s_txmat_out[MAX_SCENE_TRIS];  /* scatter target */
+#define s_txmat_of  ((uint16_t *)s_cz_txof.data)    /* tri -> bucket slot */
+#define s_txmat_out ((int *)s_cz_txout.data)        /* scatter target */
 
 static int txmat_bucket_cmp(const void* pa, const void* pb) {
     const txmat_bucket_t* a = &s_txmat_b[*(const uint16_t*)pa];
@@ -6348,7 +6437,7 @@ static void tp_fog_affine(int clut_x, int base_y, int delta, int bpp,
 #define UT_BUCKET_SKY 11
 static struct { int gi; uint32_t tag; int first, count; } s_utmat[UT_MAT_SPANS];
 static int s_utmat_n;
-static int s_utdef_idx[MAX_SCENE_TRIS];
+#define s_utdef_idx ((int *)s_cz_utdef.data)
 
 /* Resolve-relevant tag bits: terrain resolve ignores the sector id, so mask
  * it out — one span (and one memo entry) per material outcome, not per
@@ -6407,7 +6496,7 @@ static int ut_emit_deferred(int gi, const scene_tri_t* scene, rhi_vertex* buf,
     uint32_t cur = 0; int span_first = 0, open = 0;
     for (int d = 0; d < dn; d++) {
         int t = s_utdef_idx[d];
-        if (n + 3 > SCENE_VB_VERTS) break;
+        if (n + 3 > s_cz_verts) break;
         uint32_t mt = ut_mask_tag(scene[t].tag);
         if (!open) {
             cur = mt; span_first = n; open = 1;
@@ -7604,6 +7693,8 @@ static void portal_cover_check(const scene_tri_t* sc, int n)
     if (chk == -2) { const char* e = getenv("OPENPETE_PORTAL_COVER_CHECK");
                      chk = (e && *e) ? atol(e) : -1; }
     if (chk < 0 || s_scene_frame != (unsigned)chk || s_cvp_n <= 0) return;
+    if (!cz_instrument_run(&s_cz_cand, sizeof(int), "compose.portal_cover_cand",
+                           SCENE_TRIS_WAS, n)) return;
     for (int pi = 0; pi < s_cvp_n; pi++) {
         const openpete_native_cover_plane* P = &s_cvp[pi];
         if (P->pn < 3) continue;
@@ -7615,8 +7706,8 @@ static void portal_cover_check(const scene_tri_t* sc, int n)
             if (P->py[k] > by1) by1 = P->py[k];
         }
         /* Candidate tris: bbox-overlap prefilter, split opaque vs preview. */
-        static int cand[MAX_SCENE_TRIS]; int cn = 0;
-        for (int t = 0; t < n && cn < MAX_SCENE_TRIS; t++) {
+        int *cand = (int *)s_cz_cand.data; int cn = 0;
+        for (int t = 0; t < n; t++) {
             const scene_tri_t* T = &sc[t];
             const int c = T->category;
             const int terr = (c == OPENPETE_SCENE_WORLD || c == OPENPETE_SCENE_ACTOR ||
@@ -8009,7 +8100,7 @@ static void bw_draw_order_dump(const scene_tri_t* scene, const int* idx, int n) 
 }
 
 
-static int s_bw_sort_tmp[MAX_SCENE_TRIS];
+#define s_bw_sort_tmp ((int *)s_cz_bwsort.data)
 static void bw_rank_sort(const scene_tri_t* scene, int* idx, int n) {
     if (n <= 1 || s_bw_key_n <= 0) return;
     int w = 0;
@@ -8145,6 +8236,7 @@ static bool draw_native_scene(bool full_extent)
 {
     int scene_n; uint32_t scene_bg, scene_fade, scene_freeze; int hud_under = 0, actor_front = 0;
     const scene_tri_t* scene = scene_present_buf(&scene_n, &scene_bg, &scene_fade, &scene_freeze, &hud_under, &actor_front);
+    scene_n = compose_reserve(scene_n);
     scene_probes((scene_tri_t*)scene, scene_n);   /* per-present: sees intermediates too */
 
     /* OPENPETE_TERRAIN_KEY_IDENT=1: prove the hoisted key pass and this draw
@@ -8158,13 +8250,15 @@ static bool draw_native_scene(bool full_extent)
       if (s_ident < 0) { const char* e = getenv("OPENPETE_TERRAIN_KEY_IDENT");
           s_ident = (e && *e && *e != '0'); }
       if (s_ident && s_tk_last.m >= 0 && openpete_native_key_resolve_on()
-          && s_tk_last.full_extent == (full_extent ? 1 : 0)) {
-          static rhi_vertex ibuf[SCENE_VB_VERTS];
+          && s_tk_last.full_extent == (full_extent ? 1 : 0)
+          && cz_instrument_run(&s_cz_ident, sizeof(rhi_vertex), "compose.key_ident",
+                               SCENE_VB_WAS, s_cz_verts)) {
+          rhi_vertex *ibuf = (rhi_vertex *)s_cz_ident.data;
           static keytex_span_t ispans[KEYTEX_MAX_SPANS];
           for (int cls = 0; cls < 3; cls++) {
               int lm = cls == 1 ? s_tk_last.mm : cls == 2 ? s_tk_last.am : s_tk_last.m;
-              const rhi_vertex* lb = cls == 1 ? s_tk_last.mbuf
-                                   : cls == 2 ? s_tk_last.abuf : s_tk_last.buf;
+              const rhi_vertex* lb = (const rhi_vertex *)(cls == 1 ? s_tk_last.mbuf
+                                   : cls == 2 ? s_tk_last.abuf : s_tk_last.buf)->data;
               int iuntex = 0, inspans = 0;
               int im = pack_terrain_key_batch(scene, scene_n, full_extent ? 1 : 0, cls, ibuf,
                                               &iuntex, ispans, &inspans);
@@ -8235,7 +8329,7 @@ static bool draw_native_scene(bool full_extent)
 
     s_render_full_extent = full_extent ? 1 : 0;
 
-    static rhi_vertex buf[SCENE_VB_VERTS];
+    rhi_vertex *buf = (rhi_vertex *)s_cz_vb.data;
     int n = 0;
     /* Background fill (untextured, far plane), drawn first; depth-tested actors
      * sit in front of it. Covers the panel rect (window) or the full target. */
@@ -8328,7 +8422,7 @@ static bool draw_native_scene(bool full_extent)
                              s_utmat_n < UT_MAT_SPANS;
         int dn = 0;
         for (int t = 0; t < scene_n; t++) {
-            if (scene[t].textured || n + 3 > SCENE_VB_VERTS) continue;
+            if (scene[t].textured || n + 3 > s_cz_verts) continue;
             if (scene[t].category == OPENPETE_SCENE_HUD ||
                 scene[t].category == OPENPETE_SCENE_HUD3D ||
                 scene[t].category == OPENPETE_SCENE_HUD_PANEL) continue;  /* -> HUD passes */
@@ -8395,7 +8489,7 @@ static bool draw_native_scene(bool full_extent)
      * flat per-glyph quads — in submission order, i.e. exactly the old draw. */
     ut_first[6] = n;
     {
-        static hud_paint_t ho[MAX_SCENE_TRIS];
+        hud_paint_t *ho = (hud_paint_t *)s_cz_hud.data;
         int hn = 0;
         for (int t = 0; t < scene_n; t++) {
             if (scene[t].textured || scene[t].category != OPENPETE_SCENE_HUD) continue;
@@ -8411,7 +8505,7 @@ static bool draw_native_scene(bool full_extent)
         static int s_h6 = -2;
         if (s_h6 == -2) { const char* e = getenv("OPENPETE_HUD6_DBG"); s_h6 = (e && *e) ? atoi(e) : -1; }
         int h6_live = s_h6 >= 0 && (int)s_scene_frame >= s_h6 && (int)s_scene_frame < s_h6 + 2;
-        for (int i = 0; i < hn && n + 3 <= SCENE_VB_VERTS; i++) {
+        for (int i = 0; i < hn && n + 3 <= s_cz_verts; i++) {
             int t = ho[i].t;
             if (h6_live) {
                 float x0 = scene[t].v[0].sx, x1 = x0, y0 = scene[t].v[0].sy, y1 = y0;
@@ -8451,7 +8545,7 @@ static bool draw_native_scene(bool full_extent)
      * over everything (incl. the player). Untextured opaque; painter's order. */
     ut_first[7] = n;
     for (int t = 0; t < scene_n; t++) {
-        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_OVERLAY || n + 3 > SCENE_VB_VERTS) continue;
+        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_OVERLAY || n + 3 > s_cz_verts) continue;
         for (int k = 0; k < 3; k++) {
             float cx, cy;
             scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
@@ -8469,7 +8563,7 @@ static bool draw_native_scene(bool full_extent)
      * top. Submission order; depth-test off. */
     ut_first[8] = n;
     for (int t = 0; t < scene_n; t++) {
-        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_HUD_PANEL || n + 3 > SCENE_VB_VERTS) continue;
+        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_HUD_PANEL || n + 3 > s_cz_verts) continue;
         for (int k = 0; k < 3; k++) {
             float cx, cy;
             scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
@@ -8489,7 +8583,7 @@ static bool draw_native_scene(bool full_extent)
      * same as actors. */
     ut_first[9] = n;
     for (int t = 0; t < scene_n; t++) {
-        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_HUD3D || n + 3 > SCENE_VB_VERTS) continue;
+        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_HUD3D || n + 3 > s_cz_verts) continue;
         for (int k = 0; k < 3; k++) {
             float cx, cy;
             scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
@@ -8507,7 +8601,7 @@ static bool draw_native_scene(bool full_extent)
      * sequence — re-wins its own pixels from the depth-write-off sky. */
     ut_first[10] = n;
     for (int t = 0; t < scene_n; t++) {
-        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_PORTAL_GUARD || n + 3 > SCENE_VB_VERTS) continue;
+        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_PORTAL_GUARD || n + 3 > s_cz_verts) continue;
         for (int k = 0; k < 3; k++) {
             float cx, cy;
             scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
@@ -8538,7 +8632,7 @@ static bool draw_native_scene(bool full_extent)
         int sdn = 0;
         for (int t = 0; t < scene_n; t++) {
             if (scene[t].textured || scene[t].category != OPENPETE_SCENE_SKY ||
-                n + 3 > SCENE_VB_VERTS) continue;
+                n + 3 > s_cz_verts) continue;
             if (sky_defer && scene[t].tag && ut_tag_resolves(scene[t].tag)) {
                 s_utdef_idx[sdn++] = t;
                 continue;
@@ -8559,7 +8653,7 @@ static bool draw_native_scene(bool full_extent)
     }
     ut_first[12] = n;
     for (int t = 0; t < scene_n; t++) {
-        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_WORLD_FILL || n + 3 > SCENE_VB_VERTS) continue;
+        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_WORLD_FILL || n + 3 > s_cz_verts) continue;
         for (int k = 0; k < 3; k++) {
             float cx, cy;
             scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
@@ -8583,7 +8677,7 @@ static bool draw_native_scene(bool full_extent)
     ut_first[14] = n;
     for (int t = 0; t < scene_n; t++) {
         if (scene[t].textured || scene[t].category != OPENPETE_SCENE_ACTOR_FRONT ||
-            n + 3 > SCENE_VB_VERTS) continue;
+            n + 3 > s_cz_verts) continue;
         int b = scene[t].blend; if (b < 0 || b > 4) b = 0;
         if (b != 0) continue;   /* transparent rescue-actor faces route by blend (ALPHA/ADD) */
         for (int k = 0; k < 3; k++) {
@@ -8627,7 +8721,7 @@ static bool draw_native_scene(bool full_extent)
         int *rn = cat ? &psky_n : &pmask_n;
         int cur = -1;   /* current run: a maximal streak of one group id */
         for (int t = 0; t < scene_n; t++) {
-            if (scene[t].textured || scene[t].category != want || n + 3 > SCENE_VB_VERTS) continue;
+            if (scene[t].textured || scene[t].category != want || n + 3 > s_cz_verts) continue;
             if (cur < 0 || runs[cur].group != scene[t].group) {
                 if (*rn >= MAX_PORTAL_RUNS) continue;   /* drop past cap */
                 cur = (*rn)++;
@@ -8680,7 +8774,7 @@ static bool draw_native_scene(bool full_extent)
         txg_first[b] = tx_start + txtri * 3;
         int run_start = txtri;
         for (int t = 0; t < scene_n; t++) {
-            if (tx_start + (txtri + 1) * 3 > SCENE_VB_VERTS) break;
+            if (tx_start + (txtri + 1) * 3 > s_cz_verts) break;
             int cat = scene[t].category;
             int belongs;
             /* Bucket 11 is the emission-ordered blended-world block and is the
@@ -8746,7 +8840,7 @@ static bool draw_native_scene(bool full_extent)
      * the fade colour; the blend mode (set below) reproduces the PSX ABR. */
     NR_PROF_END();   /* cmp.vb_tex */
     int fade_first = -1, fade_mode = -1;
-    if ((scene_fade & (1u << 31)) && n + 6 <= SCENE_VB_VERTS) {
+    if ((scene_fade & (1u << 31)) && n + 6 <= s_cz_verts) {
         fade_mode  = (int)((scene_fade >> 24) & 3u);
         int fr = (int)((scene_fade >> 16) & 0xFFu);
         int fg = (int)((scene_fade >> 8) & 0xFFu);
@@ -8778,7 +8872,7 @@ static bool draw_native_scene(bool full_extent)
     rhi_pipeline *freeze_pipe = s_freeze_retained ? s_nr.freeze_plain_pipe
                                                  : s_nr.freeze_overlay_pipe;
     if ((scene_freeze & (1u << 31)) && frozen_ok && freeze_pipe
-        && n + 6 <= SCENE_VB_VERTS) {
+        && n + 6 <= s_cz_verts) {
         uint32_t trgb = scene_freeze & 0xFFFFFFu;     /* rgb in R<<16|G<<8|B */
         uint32_t tr8 = (trgb >> 16) & 0xFFu, tg8 = (trgb >> 8) & 0xFFu, tb8 = trgb & 0xFFu;
         /* Fade-to-black shift (bits 24-30, 0..127) rides the vertex alpha as 0..1; the
@@ -11848,13 +11942,9 @@ void openpete_native_scene_eager_begin(void) {
     s_eager_stamp = OPTC_STAMP_SCENE_BIT | (s_scene_id_next & ~OPTC_STAMP_SCENE_BIT);
 }
 static int slot_grow(scene_slot_t *sl, int n) {
-    if (sl->cap >= n) return 1;
-    int cap = sl->cap ? sl->cap : 4096;
-    while (cap < n) cap *= 2;
-    void *nt = realloc(sl->tri, (size_t)cap * sizeof(scene_tri_t));
-    if (!nt) return 0;
-    sl->tri = (scene_tri_t*)nt; sl->cap = cap;
-    return 1;
+    const int held = scene_run_fit(&sl->tri_v, "scene.ring", n);
+    sl->tri = (scene_tri_t*)sl->tri_v.data;
+    return held >= n;
 }
 /* Copy the accumulator and its companions into the next ring slot. Returns
  * the slot index, or -1 when the ring has no free slot (the producer is

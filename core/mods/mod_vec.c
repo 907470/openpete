@@ -9,9 +9,20 @@
 
 #include "openpete_log.h"
 
-/* Census list. Built during mod init on one thread; walked at exit. */
+/* Census list. Tables init from the mod loader, the simulation thread and
+ * the display thread, so link and unlink hold a spin lock; the exit-time
+ * walk runs after those threads have stopped. */
 static mod_vec_node_t* s_census_head;
 static int s_census_armed;
+static char s_census_lock;
+
+static void census_lock(void) {
+    while (__atomic_test_and_set(&s_census_lock, __ATOMIC_ACQUIRE)) { }
+}
+
+static void census_unlock(void) {
+    __atomic_clear(&s_census_lock, __ATOMIC_RELEASE);
+}
 
 static void census_link(mod_vec_node_t* n, const void* vec, const char* name,
                         unsigned long was, int kind) {
@@ -22,18 +33,22 @@ static void census_link(mod_vec_node_t* n, const void* vec, const char* name,
     n->next = NULL;
     n->linked = 0;
     if (!name) return;
+    census_lock();
     n->next = s_census_head;
     s_census_head = n;
     n->linked = 1;
+    census_unlock();
 }
 
 static void census_unlink(mod_vec_node_t* n) {
     mod_vec_node_t** p = &s_census_head;
     if (!n->linked) return;
+    census_lock();
     while (*p) {
         if (*p == n) { *p = n->next; break; }
         p = &(*p)->next;
     }
+    census_unlock();
     n->linked = 0;
     n->next = NULL;
 }
@@ -155,6 +170,27 @@ int mod_fvec_reserve(mod_fvec* v, size_t n) {
     v->data = d;
     v->cap = cap;
     v->grew++;
+    return 0;
+}
+
+int mod_fvec_reserve_noted(mod_fvec* v, size_t n) {
+    const char* name = v->census.name ? v->census.name : "(unnamed)";
+    size_t before = v->cap;
+    if (n > v->peak) v->peak = n;
+    if (n <= v->cap) return 0;
+    if (mod_fvec_reserve(v, n) != 0) {
+        if (n <= v->failed_at) return -1;   /* this size was already reported */
+        v->failed_at = n;
+        OPL_ERROR_F("vec", "%s: allocation FAILED at %zu elements (%.1f MiB); "
+                    "holding %zu, the rest is not stored", name, n,
+                    (double)n * (double)v->elem_size / (1024.0 * 1024.0), before);
+        return -1;
+    }
+    if (v->cap > v->census.was)
+        OPL_WARN_F("vec", "%s grew %zu -> %zu elements (%.1f MiB; former fixed "
+                   "capacity %lu)", name, before, v->cap,
+                   (double)v->cap * (double)v->elem_size / (1024.0 * 1024.0),
+                   v->census.was);
     return 0;
 }
 

@@ -46,7 +46,7 @@ static SDL_Mutex *reg_mx(void) { if (!s_reg_mx) s_reg_mx = SDL_CreateMutex(); re
 
 #include <SDL3/SDL.h>  /* SDL_GetBasePath — same discovery music_override uses */
 #include "openpete_paths.h" /* the writable user pack root */
-#include "../mods/mod_vec.h"
+#include "mod_vec.h"
 #include <dirent.h>
 
 #define TP_MAX_ENTRIES   4096

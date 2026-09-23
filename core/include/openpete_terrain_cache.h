@@ -68,8 +68,10 @@ enum {
      * eligible HQ quad or triangle, drawn instanced by the terrain_cells
      * pipelines). The CN family belongs to near-variant sectors and draws
      * with their chunks (OPTC_SF_NEARVAR); the CA family
-     * (rhi_terrain_cell_anim, previous corners appended) belongs to
-     * poly-anim sectors. One arena per HP draw
+     * (rhi_terrain_cell_anim, previous corners appended) draws with the
+     * plain chunk set: poly-anim sectors, and under OPTC_GF_HQPIN the
+     * faces the pin sends to the cells in every sector (a non-anim sector's
+     * previous corners equal its current ones). One arena per HP draw
      * class; no LP class, as cells are HP faces. These arenas count RECORDS,
      * not vertices. */
     OPTC_ARENA_CN_OPAQUE,
@@ -136,7 +138,12 @@ enum {
 #define OPTC_GF_KEYON      128u   /* og OT-key emit/contest active this walk  */
 #define OPTC_GF_HQPIN      256u   /* extended LOD pins the HQ subdivide on every
                                    * eligible HP quad at every distance: the
-                                   * walk's face_is_near extended branch      */
+                                   * walk's face_is_near extended branch; with
+                                   * OPTC_GF_CELLS4 / OPTC_GF_TRI4 a face baked
+                                   * with face_flags bit 19 (tface_pin_cells)
+                                   * and word 3 near_flag_tier2 clear takes the
+                                   * 4x4 cells / 16 sub-triangles at every
+                                   * distance (face_near_tier4 pinned branch) */
 #define OPTC_GF_LADNEAR    512u   /* game_layout.terrain.ladder_nearest_corner:
                                    * the CLUT-fog row and near-tile select key
                                    * on the nearest corner (row = 15 - (max

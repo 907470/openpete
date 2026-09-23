@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: e85062a4928213775b5aa41c82c95aa1a7680ac7
+# head: 6491de56682ed4be2cabd25049924ea3092b617c
 file	function	score	marked	accepted
 core/config/config.c	harvest_args	30	0	
 core/config/config.c	harvest_base	39	0	
@@ -76,7 +76,7 @@ core/renderer/native_render.c	openpete_native_hdfold_intern	32	0
 core/renderer/native_render.c	openpete_native_occl_query	27	0	
 core/renderer/native_render.c	openpete_native_render_init	164	0	
 core/renderer/native_render.c	openpete_native_render_snapshot_frozen	26	0	
-core/renderer/native_render.c	openpete_native_scene_add_tri_grouped	42	0	
+core/renderer/native_render.c	openpete_native_scene_add_tri_grouped	43	0	
 core/renderer/native_render.c	openpete_native_scene_apply_overlay	82	0	
 core/renderer/native_render.c	openpete_native_scene_begin_frame	59	0	
 core/renderer/native_render.c	openpete_native_scene_capture_overlay	49	0	
@@ -181,13 +181,13 @@ games/common/renderer/terrain.c	portal_rim_classify	66	0
 games/common/renderer/terrain.c	sector_verdicts	27	0	
 games/common/renderer/terrain.c	td_scan_verts	26	0	
 games/common/renderer/terrain.c	terrain_animdbg	44	0	
-games/common/renderer/terrain.c	terrain_build	577	0	
+games/common/renderer/terrain.c	terrain_build	573	0	
 games/common/renderer/terrain.c	terrain_compare	313	0	
 games/common/renderer/terrain.c	terrain_feed_native	463	0	
 games/common/renderer/terrain.c	terrain_near_emit	29	0	
 games/common/renderer/terrain.c	terrain_texrecords	26	0	
 games/common/renderer/terrain.c	terrain_vislist	105	0	
-games/common/renderer/terrain.c	tgpu_build_sector	123	0	
+games/common/renderer/terrain.c	tgpu_build_sector	126	0	
 games/common/renderer/terrain.c	tgpu_ensure	37	0	
 games/common/renderer/terrain.c	tgpu_env_block	30	0	
 games/common/renderer/terrain.c	tgpu_pack_scan	41	0	
@@ -195,7 +195,7 @@ games/common/renderer/terrain.c	tsc_field_census	27	0
 games/common/renderer/terrain.c	tsc_get	107	0	
 games/common/renderer/terrain.c	tsc_lp_grade	31	0	
 games/common/renderer/terrain.c	tsc_vert_anim_refresh	155	0	
-games/common/renderer/terrain.c	walk_sector	710	0	
+games/common/renderer/terrain.c	walk_sector	709	0	
 games/common/renderer/text_moby.c	emit_glyph	26	0	
 games/common/renderer/text_moby.c	font_file_load	39	0	
 games/common/renderer/text_moby.c	text_moby_native_cache	49	0	

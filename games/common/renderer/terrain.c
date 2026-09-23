@@ -70,6 +70,7 @@
 #include <string.h>
 #include "game_layout.h"          /* game_layout: the engine RAM addresses this walk reads */
 #include "renderer/env_knob.h"
+#include "mod_vec.h"
 
 extern void     func_800258F0(CPUState* cpu);  /* the real world renderer */
 extern unsigned openpete_frame;
@@ -337,12 +338,14 @@ static uint8_t  s_emit_nearband = 0; /* current face is .s near-band (defer/HQ c
                                       * NEVER an OT face, so it neither emits nor contests
                                       * the og key raster — near geometry resolves by
                                       * TRUE depth, like the mask-bit-protected defer queues */
-/* Local terrain-triangle cap (before the scene feed). Under --no-lod every
- * foreground cell is forced through the 2x2 HQ subdivide, so terrain peaks at
- * ~29k tris (beast_makers) vs ~9k at stock LOD; 65536 is ~2x the measured worst
- * case (headroom for worst-camera-angle). See MAX_SCENE_TRIS in native_render.c. */
-#define MAX_TTRIS 65536
-static ttri s_tri[MAX_TTRIS]; static int s_tri_n;
+/* The walk's triangle stream (before the scene feed), sized by the walk: a
+ * dense extended-LOD vista routes every eligible face through the 4x4 cell
+ * path and emits well past 100k triangles. s_tri reads the run's current
+ * base; a growth moves it, so no pointer into it outlives an append. */
+#define TN_TRI_INIT 65536   /* first allocation; the former fixed capacity */
+static mod_fvec s_tri_v;
+#define s_tri ((ttri*)s_tri_v.data)
+static int s_tri_n;
 
 static int s_dbg_faces, s_dbg_oob, s_dbg_nclip, s_dbg_behind, s_dbg_spike;  /* diagnostics */
 static int s_dbg_spike_tris;   /* triangles the near/HQ subdivide emitted this walk */
@@ -720,10 +723,13 @@ static void terrain_texmat(CPUState* cpu, uint32_t table, int texByte, int hiDet
     m->texid = texByte & 0x7F;                           /* texture-selector key (S9) */
 }
 
-/* Native colour-verts (per emitted tri corner) for the colour A/B. */
-static float s_cvx[MAX_TTRIS * 3], s_cvy[MAX_TTRIS * 3];
-static double s_cvz[MAX_TTRIS * 3];               /* m3 (world/16 view-Z) for fog regime */
-static uint32_t s_cvrgb[MAX_TTRIS * 3]; static int s_cv_n;
+/* Native colour-verts (per emitted tri corner) for the colour A/B. An
+ * instrument, not the draw: the compare runs over the first TN_CV_MAX
+ * corners, and the triangles past them still draw. */
+#define TN_CV_MAX (65536 * 3)
+static float s_cvx[TN_CV_MAX], s_cvy[TN_CV_MAX];
+static double s_cvz[TN_CV_MAX];                   /* m3 (world/16 view-Z) for fog regime */
+static uint32_t s_cvrgb[TN_CV_MAX]; static int s_cv_n;
 static int s_tex_faces, s_tex_tris;               /* diagnostics: textured-face count */
 static int s_dbg_clipped;                          /* faces that hit the near plane */
 
@@ -737,7 +743,8 @@ static int s_dbg_clipped;                          /* faces that hit the near pl
  * lives here. Per-sector output runs are recorded and merged into s_tri in
  * sector order, so the merged stream is byte-identical to the serial walk. */
 typedef struct {
-    ttri* tri; int tri_n, tri_cap;      /* output (serial ctx aliases s_tri) */
+    ttri* tri; int tri_n, tri_cap;      /* output: base and capacity of *out */
+    mod_fvec* out;                       /* the run tri points into (serial: s_tri_v) */
     lvert sv[256];                       /* per-sector projected verts */
     /* ambient per-face emit state (consumed by push_tri) */
     int emit_noHP, emit_guard, emit_fill, emit_fptag, emit_sec, emit_face, emit_env;
@@ -767,8 +774,18 @@ static int s_nearhq = -1;
 
 /* Push one (already near-clipped) camera-space triangle: project to screen + the
  * scene-feed ttri (+ the colour-A/B verts). */
+/* Room for `need` triangles in the worker's output run, growing it. Each
+ * worker grows only its own run; the serial walk's run is s_tri_v. On an
+ * allocation failure the triangle is not stored (logged by the vec). */
+static int tn_room(tn_wctx* W, int need) {
+    if (need <= W->tri_cap) return 1;
+    if (!W->out || mod_fvec_reserve_noted(W->out, (size_t)need) != 0) return 0;
+    W->tri = (ttri*)W->out->data; W->tri_cap = (int)W->out->cap;
+    return 1;
+}
+
 static void push_tri(tn_wctx* W, ngte_cvert a, ngte_cvert b, ngte_cvert c, const tmat* m) {
-    if (W->tri_n >= W->tri_cap) return;
+    if (!tn_room(W, W->tri_n + 1)) return;
     ngte_cvert cc[3] = { a, b, c };
     ttri* t = &W->tri[W->tri_n++];
     int fsnap = openpete_native_vertex_snap_active();
@@ -784,7 +801,7 @@ static void push_tri(tn_wctx* W, ngte_cvert a, ngte_cvert b, ngte_cvert c, const
             if (fsnap) { t->sx[k] = floorf(t->sx[k]); t->sy[k] = floorf(t->sy[k]); }
         }
         t->vz[k] = cc[k].m3; t->rgb[k] = cc[k].rgb; t->u[k] = cc[k].u; t->v[k] = cc[k].v;
-        if (W->serial && s_cv_n < MAX_TTRIS * 3) {   /* colour-A/B verts (verify) */
+        if (W->serial && s_cv_n < TN_CV_MAX) {       /* colour-A/B verts (verify) */
             s_cvx[s_cv_n]=t->sx[k]; s_cvy[s_cv_n]=t->sy[k]; s_cvz[s_cv_n]=cc[k].m3; s_cvrgb[s_cv_n]=cc[k].rgb; s_cv_n++;
         }
     }
@@ -1222,9 +1239,13 @@ static int face_is_near_canonical(double z0, double z1, double z2, double z3, ui
 }
 /* The always-HQ pin is in force exactly under --lod extended, on every
  * game: the extended mode's contract is the highest terrain tier at
- * every distance, so every frustum-admitted HQ-eligible quad takes the 2x2
- * subdivide however far it is. One predicate behind both consumers, the
- * walk's face_is_near and the retained cache's OPTC_GF_HQPIN, which must
+ * every distance, so every frustum-admitted HQ-eligible face takes its
+ * finest near subdivide however far it is: the 4x4 cells (a quad) or the 16
+ * sub-triangles (a triangle) where the game has them, word 3
+ * near_flag_tier2 is clear and the record's cells carry texels its 2x2 does
+ * not (tface_pin_cells), the 2x2 (a quad) otherwise. One predicate behind
+ * every consumer, the walk's face_is_near and face_near_tier4 and the
+ * retained cache's OPTC_GF_HQPIN bake and vertex-stage select, which must
  * agree or a cached sector draws a different tier from a walked one. */
 static int hq_pin_active(void) {
     return openpete_no_lod != 0;
@@ -1236,14 +1257,14 @@ static int face_is_near(double z0, double z1, double z2, double z3, uint32_t wor
      * under --no-lod we drop all the distance-derived gates and keep only the
      * two that aren't distance: the behind-camera guard and the descriptor's
      * near_flag_excl hard-exclusion (those faces never carry a valid HQ
-     * Tiledef). Quads only: triangles route by the canonical tier-4 verdict
-     * (tn_face_near). Display-only; reads no gameplay state.
+     * Tiledef). A triangle reaches this through face_near_tier4 (corners
+     * A, B, C, C). Display-only; reads no gameplay state.
      *
      * Where the draw bins the HP list by distance (terrain.hp_far != 0),
      * --no-lod has already promoted the far sectors into HP-only, so dropping
-     * the distance gates routes every front-or-straddling HP quad through the
-     * 2x2 subdivide at every distance: about 3x the terrain triangles of the
-     * canonical classification on those games. */
+     * the distance gates routes every front-or-straddling HP face through the
+     * near subdivide at every distance; face_near_tier4 picks the subdivide
+     * (4x4 cells or 2x2). */
     if (hq_pin_active()) {
         if (s_hqscale < 0.0) {
             const char* e = getenv("OPENPETE_TERRAIN_HQSCALE"); s_hqscale = (e && *e) ? atof(e) : 4.0;
@@ -1289,11 +1310,111 @@ static double tface_hqscale(void) {
     return s_hqscale;
 }
 
-/* The canonical tier-4 verdict: a near face with a corner SZ3 under
- * near_corner and near_flag_tier2 clear (the classifier's .L80026D70 route,
- * r_environment.s 0x80026D10-0x80026DB4). */
-static int face_near_tier4(double z0, double z1, double z2, double z3, uint32_t word3) {
+/* The always-HQ pin sends a face to the 4x4 cells at every distance only
+ * where the cells show texels the 2x2 does not: its HQ record's cell tiles
+ * are not a re-cut of the record's quadrant tiles (s_hq_differ). Where they
+ * are, the cells would add geometry and colour-interpolation density only,
+ * so the face keeps the pinned 2x2 and the unpinned tier-4 verdict near the
+ * camera. */
+
+/* One tile's decoded rectangle: its four corner texels [TL,TR,BL,BR] with
+ * the orientation applied, and the page/CLUT/depth it samples. */
+typedef struct { int u[4], v[4], tpx, tpy, bpp, clut; } thq_rect;
+static void thq_rect_of(CPUState* cpu, uint32_t e, int span, thq_rect* r) {
+    tmat m; float u[4], v[4];
+    memset(&m, 0, sizeof(m)); m.bpp = 16;
+    decode_tiledef_span(cpu, e, 0, &m, u, v, span);
+    tiledef_apply_ori(cpu, e, u, v);
+    for (int k = 0; k < 4; k++) { r->u[k] = (int)u[k]; r->v[k] = (int)v[k]; }
+    r->tpx = m.tpx; r->tpy = m.tpy; r->bpp = m.bpp; r->clut = m.clut_raw;
+}
+/* The signed byte delta b - a (UV bytes wrap at 256). */
+static int thq_d8(int a, int b) { return (int8_t)(uint8_t)(b - a); }
+
+/* Does cell i (row i >> 2, column i & 3, D_8006CF58 order) address exactly
+ * the matching quarter of its parent quadrant q = (r >> 1) * 2 + (c >> 1)?
+ * The quadrant's 32-texel edges TL->TR and TL->BL (either axis, either sign
+ * after the orientation) put the quarter's corners at 0, 15, 16 and 31
+ * texels along each edge; the cell's four corners must be those, byte for
+ * byte, on the same page, CLUT and depth. A record on the live scroller
+ * list (s_tscroll_tile) has its V bytes rewritten within a 64-texel window
+ * whose content repeats (tsc_scroll_desc), so its V compares modulo 64
+ * (vmask 0x3F; 0xFF otherwise). */
+static int thq_cell_is_quarter(const thq_rect* Q, const thq_rect* C, int i, int vmask) {
+    if (Q->tpx != C->tpx || Q->tpy != C->tpy || Q->bpp != C->bpp || Q->clut != C->clut)
+        return 0;
+    static const int kOff[4] = { 0, 15, 16, 31 };
+    const int r = i >> 2, c = i & 3;
+    const int du_s = thq_d8(Q->u[0], Q->u[1]), dv_s = thq_d8(Q->v[0], Q->v[1]);   /* TL->TR */
+    const int du_t = thq_d8(Q->u[0], Q->u[2]), dv_t = thq_d8(Q->v[0], Q->v[2]);   /* TL->BL */
+    for (int k = 0; k < 4; k++) {             /* cell corner TL,TR,BL,BR */
+        const int ks = kOff[(c & 1) * 2 + (k & 1)], kt = kOff[(r & 1) * 2 + (k >> 1)];
+        const int eu = Q->u[0] + (du_s * ks + du_t * kt) / 31;
+        const int ev = Q->v[0] + (dv_s * ks + dv_t * kt) / 31;
+        if (((eu - C->u[k]) & 0xFF) != 0 || ((ev - C->v[k]) & vmask) != 0) return 0;
+    }
+    return 1;
+}
+
+/* s_hq_differ[i]: HQ record i has a cell tile that is not the matching
+ * quarter of its quadrant tile (thq_cell_is_quarter), so its 4x4 cells show
+ * texels its 2x2 does not. Recomputed from the record table when the table
+ * moves or any tile generation steps (s_tgen_epoch: a level load re-bases
+ * it, env animation rewrites tiles); s_hq_differ_gen steps when a verdict
+ * moves, which re-bakes the pinned sectors (tgpu_pin_key). */
+static uint32_t s_tgen_epoch;         /* tentative: defined with tsc_tile_gens */
+static uint8_t  s_hq_differ[128];
+static uint32_t s_hq_differ_gen, s_hq_differ_table, s_hq_differ_epoch;
+static void tface_differ_refresh(CPUState* cpu, uint32_t hqTable, uint32_t texCnt) {
+    if (!hq_pin_active() || !game_layout.terrain.hq_cells4) return;
+    if (hqTable == s_hq_differ_table && s_tgen_epoch == s_hq_differ_epoch) return;
+    if (texCnt > 128) texCnt = 128;
+    int moved = 0;
+    for (uint32_t rec = 0; rec < 128; rec++) {
+        uint8_t d = 0;
+        const uint32_t base = hqTable + rec * game_layout.terrain.hq_stride;
+        for (int i = 0; hqTable && rec < texCnt && i < 16 && !d; i++) {
+            const int q = ((i >> 3) << 1) | ((i & 3) >> 1);
+            thq_rect Q, C;
+            thq_rect_of(cpu, base + game_layout.terrain.hq_sub0 + (uint32_t)q * 8u, 0x1F, &Q);
+            thq_rect_of(cpu, base + game_layout.terrain.hq_cells4 + (uint32_t)i * 8u, 0x0F, &C);
+            d = !thq_cell_is_quarter(&Q, &C, i, s_tscroll_tile[rec] ? 0x3F : 0xFF);
+        }
+        moved |= d != s_hq_differ[rec];
+        s_hq_differ[rec] = d;
+    }
+    s_hq_differ_table = hqTable;
+    s_hq_differ_epoch = s_tgen_epoch;
+    if (moved) s_hq_differ_gen++;
+    static int s_dbg = -1;
+    if (s_dbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_PIN_DBG"); s_dbg = e && *e == '1'; }
+    if (s_dbg && moved) {
+        fprintf(stderr, "[pincells] table=%08x records=%u differ:", hqTable, texCnt);
+        for (int rec = 0; rec < 128; rec++) if (s_hq_differ[rec]) fprintf(stderr, " %d", rec);
+        fprintf(stderr, "\n");
+    }
+}
+
+/* The pin's cell verdict for a face with HQ record hq_idx, the one predicate
+ * behind the walk (face_near_tier4) and the cache bake (tgpu_build_sector,
+ * which marks the face for the vertex stage's select): the pin is in force
+ * on a game with the 4x4 cells and the face's record's cells differ. */
+static int tface_pin_cells(int hq_idx) {
+    if (!hq_pin_active() || !game_layout.terrain.hq_cells4) return 0;
+    return s_hq_differ[hq_idx & 0x7F];
+}
+
+/* The tier-4 verdict: a near face with a corner SZ3 under near_corner and
+ * near_flag_tier2 clear (the classifier's .L80026D70 route,
+ * r_environment.s 0x80026D10-0x80026DB4). For a face the pin sends to the
+ * cells (tface_pin_cells) the distance terms drop and the flag term stays:
+ * every such near face with near_flag_tier2 clear takes the cells (a quad)
+ * or the 16 sub-triangles (a triangle, through face_tri4_routed). */
+static int face_near_tier4(double z0, double z1, double z2, double z3, uint32_t word3,
+                           int hq_idx) {
     if (!game_layout.terrain.hq_cells4) return 0;
+    if (tface_pin_cells(hq_idx))
+        return face_is_near(z0, z1, z2, z3, word3) && !tface_near_tier2(word3);
     if (!face_is_near_canonical(z0, z1, z2, z3, word3)) return 0;
     if (tface_near_tier2(word3)) return 0;
     double s = tface_hqscale();
@@ -1607,7 +1728,7 @@ static void terrain_near_emit_face(tn_wctx* W, CPUState* cpu, const tn_nearface*
                                    ngte_cvert TL, ngte_cvert TR, ngte_cvert BL, ngte_cvert BR) {
     int t4 = (s_nearq > 0 && s_defer_n > 0)
            ? (game_layout.terrain.hq_cells4 != 0 && is_deferred4(nf->rec))
-           : face_near_tier4(TL.m3, TR.m3, BR.m3, BL.m3, nf->w3);
+           : face_near_tier4(TL.m3, TR.m3, BR.m3, BL.m3, nf->w3, nf->texid);
     if (!t4) {
         terrain_near_emit(W, cpu, nf->hqBase, nf->texid, nf->abe, TL, TR, BL, BR);
         return;
@@ -1765,10 +1886,11 @@ static void terrain_near_emit_tri4(tn_wctx* W, CPUState* cpu, const tn_nearface*
  * verdict over (A, B, C, C) — the triangle classifier at 0x80027168 is the
  * quad one with C counted twice — or, under OPENPETE_TERRAIN_NEARQ, the
  * face's presence in the game's filled +0x1E00 queue. */
-static int face_tri4_routed(double zA, double zB, double zC, uint32_t w3, uint32_t rec) {
+static int face_tri4_routed(double zA, double zB, double zC, uint32_t w3, uint32_t rec,
+                            int hq_idx) {
     if (!game_layout.terrain.hq_tri4_nodes) return 0;
     if (s_nearq > 0 && s_defer_n > 0) return is_deferred4(rec);
-    return face_near_tier4(zA, zB, zC, zC, w3);
+    return face_near_tier4(zA, zB, zC, zC, w3, hq_idx);
 }
 
 /* ---- sector decode cache (terrain Tier 1, mirrors the moby faceblock cache) --
@@ -3591,6 +3713,12 @@ typedef struct {
                                        * across the near threshold re-bakes at
                                        * most once (and a variant build that
                                        * failed is not retried every present) */
+    uint32_t bakePinKey;              /* tgpu_pin_key() at build: the pinned
+                                       * bake puts records in the plain chunk
+                                       * set and drops the 2x2 of the faces
+                                       * the pin sends to the cells, so a
+                                       * toggle of the pin or a moved
+                                       * s_hq_differ verdict re-bakes */
     uint32_t animRoll;                /* poly-anim: SC->vrollPres at build — a
                                        * new canonical roll re-bakes (prev,cur)
                                        * even when the content hash is stable
@@ -3677,14 +3805,26 @@ static int tgpu_near_box_clear(const tscache_t* SC, const int M[3][3],
 }
 static double s_tgpu_l3 = 1.0;        /* ||M row 2||/4096 (near-claim bound) */
 
+/* The bake follows the always-HQ pin: a face tface_pin_cells admits carries
+ * its cell or sub-triangle records in its sector's plain chunk set
+ * (tgpu_push_cell_families), drops its 2x2 (tgpu_bake_near) and is marked
+ * for the vertex stage (face_flags bit 19). The key names everything that
+ * verdict reads, so a slot baked under another key re-bakes: 0 unpinned,
+ * else 1 + the s_hq_differ verdict generation. */
+static uint32_t tgpu_pin_key(void) {
+    if (!hq_pin_active() || !game_layout.terrain.hq_cells4) return 0;
+    return 1u + s_hq_differ_gen;
+}
+
 /* Does a sector take the near path this present? Every sector whose
  * bounding sphere, refined by its vertex AABB, may bring a vertex inside the
  * 16.0 view-Z the near claim guards (poly-anim sectors on the sphere alone).
- * On a game with the 4x4 near-cell path, also every non-anim sector that may
- * bring a vertex inside the tier-4 corner bound (near_corner / hqscale view-Z):
- * only a near-variant sector carries cell records (tgpu_bake_cells4), so a
- * sector drawn from its plain chunks never holds a face the classifier can
- * route to tier 4. */
+ * On a game with the 4x4 near-cell path and the pin off, also every non-anim
+ * sector that may bring a vertex inside the tier-4 corner bound
+ * (near_corner / hqscale view-Z): only a near-variant sector carries the
+ * records of a face the pin does not send to the cells (tgpu_bake_cells4),
+ * so a sector drawn from its plain chunks never holds such a face the
+ * classifier can route to tier 4. */
 static int tgpu_near_reach(const tscache_t* SC, const int M[3][3], double camx,
                            double camy, double camz, double oc3) {
     const double nearBound = s_tgpu_l3 * ((double)SC->radius + 16.0);
@@ -4172,6 +4312,27 @@ static int tgpu_push_cell_halves(tgpu_buf* buf, int base, rhi_terrain_cell_anim*
     return 0;
 }
 
+/* Push a face's records into every family that draws them: the CA family
+ * for the plain chunk set of a poly-anim sector (ab) or, for a face the pin
+ * sends to the cells (pin4, tface_pin_cells), of any sector (a non-anim
+ * sector's previous corners equal its current ones, so the anim stage's
+ * prev->cur lerp returns them exactly), and the CN family for a
+ * near-variant sector's near set (with_var). */
+static int tgpu_push_cell_families(tgpu_buf* buf, int ab, int with_var, int pin4,
+                                   rhi_terrain_cell_anim* R,
+                                   const rhi_terrain_cell_tile tiles[16], const uint8_t cls[16],
+                                   const uint8_t blended[16], uint32_t hq_idx, uint32_t kind) {
+    if ((ab || pin4) &&
+        tgpu_push_cell_halves(buf, (int)OPTC_ARENA_CELL_ANIM_BASE, R, tiles, cls, blended,
+                              hq_idx, kind) != 0)
+        return -1;
+    if (with_var &&
+        tgpu_push_cell_halves(buf, (int)OPTC_ARENA_CELL_NEAR_BASE, R, tiles, cls, blended,
+                              hq_idx, kind) != 0)
+        return -1;
+    return 0;
+}
+
 /* 4x4 cell variant (nc4_emit_cells mirror) of an HQ-eligible quad the
  * classifier can route to tier 4 (near_flag_tier2 clear): 16 cells, cell i
  * textured from the 16x16 tile at hq_cells4 + i*8. The cells are not baked
@@ -4186,15 +4347,16 @@ static int tgpu_push_cell_halves(tgpu_buf* buf, int base, rhi_terrain_cell_anim*
  * (every non-anim sector with a vertex inside the tier-4 corner bound takes
  * one, tgpu_near_reach) writes the CN family, drawn with its near chunks; a
  * poly-anim sector (those have no near variant) writes the CA family, with
- * the previous-tick corners appended. Each half of the face gets one record
+ * the previous-tick corners appended; a face the pin sends to the cells
+ * (tface_pin_cells) writes the CA family from every sector's plain chunk
+ * set too (tgpu_push_cell_families). Each half of the face gets one record
  * per draw class its tiles use, masked to that class's cells. */
-static int tgpu_bake_cells4(CPUState* cpu, tgpu_buf* buf, int ab, int with_var,
+static int tgpu_bake_cells4(CPUState* cpu, tgpu_buf* buf, int ab, int with_var, int pin4,
                             const tgpu_face_t* T, const uint32_t nearC[4],
                             const tsface_t* F, uint32_t hqBase, int hp_bucket,
                             int hdfold, int* fail) {
     if (!game_layout.terrain.hq_cells4 || tface_near_tier2(F->w3)) return 0;
-    if (!ab && !with_var) return 0;
-    const int base = ab ? (int)OPTC_ARENA_CELL_ANIM_BASE : (int)OPTC_ARENA_CELL_NEAR_BASE;
+    if (!ab && !with_var && !pin4) return 0;
     rhi_terrain_cell_anim R;
     tgpu_cell_rec_init(&R, T, nearC);
     rhi_terrain_cell_tile tiles[16];
@@ -4207,7 +4369,8 @@ static int tgpu_bake_cells4(CPUState* cpu, tgpu_buf* buf, int ab, int with_var,
             return -1;
         }
     }
-    return tgpu_push_cell_halves(buf, base, &R, tiles, cls, blended, F->hq_idx, 0u);
+    return tgpu_push_cell_families(buf, ab, with_var, pin4, &R, tiles, cls, blended,
+                                   F->hq_idx, 0u);
 }
 
 /* One tier-4 sub-triangle's tile (the 16x16 cell tile at `e`): its record
@@ -4248,13 +4411,14 @@ static int tgpu_tri_tile(CPUState* cpu, uint32_t e, int rot, int o, int cell, in
  * transformed corners (c3 = c2) and the node colours from near_rgb[0]
  * (A), [1] (B) and [3] (C, word 1 byte 0). Written where tgpu_bake_cells4
  * writes: the CN family of a near-variant sector, the CA family of a
- * poly-anim one. */
-static int tgpu_bake_tri4(CPUState* cpu, tgpu_buf* buf, int ab, int with_var,
+ * poly-anim one and, for a face the pin sends to the cells, of every
+ * sector's plain chunk set. */
+static int tgpu_bake_tri4(CPUState* cpu, tgpu_buf* buf, int ab, int with_var, int pin4,
                           const tgpu_face_t* T, const uint32_t nearC[4],
                           const tsface_t* F, uint32_t hqBase, int hp_bucket,
                           int hdfold, int* fail) {
     if (!game_layout.terrain.hq_tri4_nodes || tface_near_tier2(F->w3)) return 0;
-    if (!ab && !with_var) return 0;
+    if (!ab && !with_var && !pin4) return 0;
     rhi_terrain_cell_anim R;
     tgpu_cell_rec_init(&R, T, nearC);
     rhi_terrain_cell_tile tiles[16];
@@ -4270,8 +4434,8 @@ static int tgpu_bake_tri4(CPUState* cpu, tgpu_buf* buf, int ab, int with_var,
             return -1;
         }
     }
-    const int base = ab ? (int)OPTC_ARENA_CELL_ANIM_BASE : (int)OPTC_ARENA_CELL_NEAR_BASE;
-    return tgpu_push_cell_halves(buf, base, &R, tiles, cls, blended, F->hq_idx, 1u << 24);
+    return tgpu_push_cell_families(buf, ab, with_var, pin4, &R, tiles, cls, blended,
+                                   F->hq_idx, 1u << 24);
 }
 
 /* An HP face carries near variants when it has an HQ record and word 3
@@ -4283,17 +4447,24 @@ static int tgpu_hq_elig(const tsface_t* F, uint32_t hqTable) {
 }
 
 /* Bake an HQ-eligible face's near variants: a quad's 2x2 subdivide and 4x4
- * cells, a triangle's tier-4 sub-triangles. */
-static int tgpu_bake_near(CPUState* cpu, tgpu_buf* buf, int ab, int with_var,
+ * cells, a triangle's tier-4 sub-triangles. A quad the pin sends to the
+ * cells (pin4, tface_pin_cells) with near_flag_tier2 clear selects its
+ * cells at every distance, so its 2x2 is never drawn and is not baked; a
+ * near_flag_tier2 quad keeps the 2x2 alone. */
+static int tgpu_bake_near(CPUState* cpu, tgpu_buf* buf, int ab, int with_var, int pin4,
                           const tgpu_face_t* T, const tgpu_corner_t k[4],
                           const uint32_t nearC[4], const tsface_t* F, uint32_t hqTable,
                           int hp_bucket, int hdfold, int* fail) {
     uint32_t hqBase = hqTable + (uint32_t)F->hq_idx * game_layout.terrain.hq_stride;
     if (!F->quad)
-        return tgpu_bake_tri4(cpu, buf, ab, with_var, T, nearC, F, hqBase, hp_bucket, hdfold, fail);
-    if (tgpu_bake_hq2(cpu, buf, ab, with_var, T, k, nearC, F, hqBase, hp_bucket, hdfold, fail) != 0)
+        return tgpu_bake_tri4(cpu, buf, ab, with_var, pin4, T, nearC, F, hqBase, hp_bucket,
+                              hdfold, fail);
+    const int cells_only = pin4 && !tface_near_tier2(F->w3);
+    if (!cells_only &&
+        tgpu_bake_hq2(cpu, buf, ab, with_var, T, k, nearC, F, hqBase, hp_bucket, hdfold, fail) != 0)
         return -1;
-    return tgpu_bake_cells4(cpu, buf, ab, with_var, T, nearC, F, hqBase, hp_bucket, hdfold, fail);
+    return tgpu_bake_cells4(cpu, buf, ab, with_var, pin4, T, nearC, F, hqBase, hp_bucket,
+                            hdfold, fail);
 }
 
 /* Allocate and upload one built sector's chunks, recording them in its slot.
@@ -4436,6 +4607,7 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
         if (F->i0 >= SC->nHpV || F->i1 >= SC->nHpV || F->i2 >= SC->nHpV || F->i3 >= SC->nHpV)
             continue;
         int hq_elig = tgpu_hq_elig(F, hqTable);
+        const int pin4 = hq_elig && tface_pin_cells(F->hq_idx);
         tgpu_face_t T;
         memset(&T, 0, sizeof(T));
         T.c[0] = tgpu_p4_of(&SC->hpV[F->i0]); T.c[1] = tgpu_p4_of(&SC->hpV[F->i1]);
@@ -4448,6 +4620,7 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
                      | (tface_near_tier2(F->w3) ? (1u << 15) : 0u)
                      | (tface_near_excl(F->w3)  ? (1u << 16) : 0u)
                      | (hq_elig ? (1u << 17) : 0u)
+                     | (pin4    ? (1u << 19) : 0u)      /* pinned cells */
                      | (((uint32_t)F->otbias & 0x1Fu) << 24);
         /* Material bucket, keyed exactly as the walk's provenance tag is:
          * Tiledef id + env-rewrite membership. Both LOD halves of a face
@@ -4522,7 +4695,7 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
             }
             if (tgpu_emit_face_tri(buf, da, ab, with_var, &T, k[0], k[1], k[2], 0) != 0) goto done;
         }
-        if (hq_elig && tgpu_bake_near(cpu, buf, ab, with_var, &T, k, nearC, F, hqTable,
+        if (hq_elig && tgpu_bake_near(cpu, buf, ab, with_var, pin4, &T, k, nearC, F, hqTable,
                                       hp_bucket, hdfold, &fail) != 0)
             goto done;
     }
@@ -4627,7 +4800,9 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
     /* Near-variant chunks: kept for as long as the slot holds this sector, so
      * a sector oscillating across the near threshold re-bakes at most once. */
     int with_var = want_near || (T->bakeVar && T->s == SC->s);
+    const uint32_t pinKey = tgpu_pin_key();
     int dirty = (with_var && !T->bakeVar)
+             || (T->bakePinKey != pinKey)
              || (T->s != SC->s) || (T->decodeGen != SC->decodeGen)
              || (T->texGen != SC->texGen) || (T->vertGen != SC->vertGen)
              /* poly-anim: every canonical roll re-bakes (prev,cur) — the
@@ -4674,6 +4849,7 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
         T->lastColFrame = openpete_frame;
         if (tgpu_col_hash(SC, &T->colHash) != 0) { T->unbuildable = 3; return 3; }
         T->bakeVar = (uint8_t)(with_var != 0);
+        T->bakePinKey = pinKey;
         T->unbuildable = tgpu_build_sector(cpu, slot, SC, hqTable, sec_index, with_var);
         s_tgpu_rebuilds++;
     }
@@ -4859,7 +5035,7 @@ static void sector_verdicts(const tscache_t* SC, const tn_wcfg* G, tn_secverd* V
  * out — see the dispatch break-even derivation at the workpool call site. */
 #define TN_FANOUT_MIN_FACES 400
 static tn_wctx s_wctx[TN_MAX_WORKERS];
-static ttri*   s_wbuf[TN_MAX_WORKERS];   /* parallel-mode output buffers (lazy) */
+static mod_fvec s_wbuf[TN_MAX_WORKERS];  /* parallel-mode output runs (lazy) */
 static const tscache_t* s_pre_SC[1024];
 static uint32_t s_pre_sec[1024];
 static struct { uint8_t worker; int start, count; } s_pre_rec[1024];
@@ -4869,7 +5045,7 @@ static struct { uint8_t worker; int start, count; } s_pre_rec[1024];
  * A near triangle outside tier 4 keeps the flat GT3 emit. */
 static int tn_face_near(const lvert* sv, const tsface_t* F, uint32_t rec) {
     if (F->quad) return face_is_near(sv[F->i0].m3, sv[F->i1].m3, sv[F->i2].m3, sv[F->i3].m3, F->w3);
-    return face_tri4_routed(sv[F->i0].m3, sv[F->i1].m3, sv[F->i2].m3, F->w3, rec);
+    return face_tri4_routed(sv[F->i0].m3, sv[F->i1].m3, sv[F->i2].m3, F->w3, rec, F->hq_idx);
 }
 /* The same verdict read off the game's filled queues (OPENPETE_TERRAIN_NEARQ
  * debug): a quad in either queue, a triangle in the +0x1E00 queue. */
@@ -5197,7 +5373,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
             }
         }
 
-        for (int f = 0; f < nf && W->tri_n < W->tri_cap - 4; f++) {  /* clipped quad → ≤4 tris */
+        for (int f = 0; f < nf; f++) {
             /* Face decode from the sector cache (indices/flags/colour offsets/
              * texmat all static — see tsc_decode_faces; §7/§8 layout comments
              * live there now). Per-present work starts at the projection use. */
@@ -6217,6 +6393,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     uint32_t hqTable = tenv_rd(cpu, game_layout.env.hq_tex);  /* near/detail Tiledef (bpp8 tiles) */
     tsc_tile_gens(cpu, lqTable, tenv_rd(cpu, game_layout.env.tex_count));  /* env-anim liveness */
     tsc_scroll_refresh(cpu);                                           /* env-anim UV scroll (sub-tick) */
+    tface_differ_refresh(cpu, hqTable, tenv_rd(cpu, game_layout.env.tex_count));
     /* OPENPETE_TERRAIN_TEXTBL: 0=auto(near→HQ,far→LQ) 1=force LQ 2=force HQ (debug) */
     int texTblMode = 0; { const char* e=getenv("OPENPETE_TERRAIN_TEXTBL"); if(e&&*e) texTblMode=atoi(e); }
     if (s_nearhq < 0) {      /* near/HQ subdivide pass enable (Route 2, default ON) */
@@ -6430,13 +6607,14 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     else if (openpete_tercache_ready() && tb_first)
         openpete_tercache_frame_skip(tc_stamp, s_vanim_sub);
     int nw_used = wserial ? 1 : nw;
+    if (!s_tri_v.elem_size)
+        mod_fvec_init(&s_tri_v, sizeof(ttri), TN_TRI_INIT, "terrain.walk", TN_TRI_INIT);
     for (int w = 0; w < nw_used; w++) {
         tn_wctx* W = &s_wctx[w];
-        if (wserial) { W->tri = s_tri; W->tri_cap = MAX_TTRIS; }
-        else {
-            if (!s_wbuf[w]) s_wbuf[w] = (ttri*)malloc(sizeof(ttri) * MAX_TTRIS);
-            W->tri = s_wbuf[w]; W->tri_cap = s_wbuf[w] ? MAX_TTRIS : 0;
-        }
+        W->out = wserial ? &s_tri_v : &s_wbuf[w];
+        if (!W->out->elem_size)
+            mod_fvec_init(W->out, sizeof(ttri), TN_TRI_INIT, "terrain.walk.worker", TN_TRI_INIT);
+        W->tri = (ttri*)W->out->data; W->tri_cap = (int)W->out->cap;
         W->tri_n = 0;
         W->dbg_faces = W->dbg_oob = W->dbg_nclip = W->dbg_behind = 0;
         W->dbg_spike = W->dbg_clipped = 0;
@@ -6753,9 +6931,11 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         for (int vi = 0; vi < nvis; vi++) {
             int n = s_pre_rec[vi].count;
             if (n <= 0) continue;
-            if (s_tri_n + n > MAX_TTRIS) n = MAX_TTRIS - s_tri_n;
+            if (mod_fvec_reserve_noted(&s_tri_v, (size_t)(s_tri_n + n)) != 0)
+                n = (int)s_tri_v.cap - s_tri_n;   /* merge what fits (logged by the vec) */
             if (n <= 0) break;
-            memcpy(&s_tri[s_tri_n], &s_wbuf[s_pre_rec[vi].worker][s_pre_rec[vi].start],
+            memcpy(&s_tri[s_tri_n],
+                   (const ttri*)s_wbuf[s_pre_rec[vi].worker].data + s_pre_rec[vi].start,
                    (size_t)n * sizeof(ttri));
             s_tri_n += n;
         }
@@ -7620,7 +7800,8 @@ static void terrain_feed_native(CPUState* cpu) {
     { static int s_cap = -1, s_peak = 0;
       ENV_FLAG_LATCH(s_cap, "OPENPETE_SCENE_CAPDBG");
       if (s_cap && s_tri_n > s_peak) { s_peak = s_tri_n;
-          fprintf(stderr, "[terraincap] NEW PEAK terrain_tris=%d / MAX_TTRIS=%d\n", s_tri_n, MAX_TTRIS); } }
+          fprintf(stderr, "[terraincap] NEW PEAK terrain_tris=%d (capacity %zu)\n",
+                  s_tri_n, s_tri_v.cap); } }
     /* OPENPETE_PORTAL_FIT_DBG=<frame>: one-shot dump of each active opening and
      * the terrain around it, expressed in the OPENING PLANE's own 2D basis.
      *

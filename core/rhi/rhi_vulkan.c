@@ -412,7 +412,20 @@ struct rhi_device {
     rhi_gpu_zone_result gpu_results[RHI_GPU_ZONES_MAX];
     int         gpu_results_n;
     uint64_t    gpu_results_token;                  /* tag of harvested slot   */
+    /* Storage a grown ring vertex buffer replaced (rhi_vertex_buffer_reserve),
+     * kept until no submitted frame can still read it. */
+    struct rhi_retired_buf *retired;
 };
+
+/* One replaced buffer allocation and the frame serial current when it was
+ * replaced: frames up to that serial may have recorded binds of it. */
+struct rhi_retired_buf {
+    struct rhi_retired_buf *next;
+    VkBuffer       buffer;
+    VkDeviceMemory memory;
+    uint64_t       serial;
+};
+static void retired_reclaim(rhi_device *dev, bool all);
 
 struct rhi_buffer {
     VkBuffer       buffer;
@@ -2017,7 +2030,7 @@ void rhi_destroy(rhi_device *dev)
                 (unsigned long long)s_ring_gen_bumps, (unsigned long long)s_ring_gen_overflows,
                 (unsigned long long)s_dbg_gw, (unsigned long long)s_dbg_gb);
     if (!dev) return;
-    if (dev->device) { vkDeviceWaitIdle(dev->device); rhi_balloon_free(dev); }
+    if (dev->device) { vkDeviceWaitIdle(dev->device); rhi_balloon_free(dev); retired_reclaim(dev, true); }
 
     if (dev->readback_buf) { rhi_destroy_buffer(dev, dev->readback_buf); dev->readback_buf = NULL; }
     for (int i = 0; i < RHI_FRAMES_IN_FLIGHT; i++) {
@@ -2274,6 +2287,25 @@ static bool ensure_swapchain(rhi_device *dev)
     return true;
 }
 
+/* Free the replaced buffer allocations no frame can still read. A frame
+ * RHI_FRAMES_IN_FLIGHT serials back has had its fence waited by the time the
+ * current serial began, so an allocation replaced at serial R is free once the
+ * serial reaches R + RHI_FRAMES_IN_FLIGHT. `all` frees every entry; the caller
+ * has waited the device idle. */
+static void retired_reclaim(rhi_device *dev, bool all)
+{
+    struct rhi_retired_buf **pp = &dev->retired;
+    while (*pp) {
+        struct rhi_retired_buf *r = *pp;
+        if (!all && r->serial + RHI_FRAMES_IN_FLIGHT > s_frame_serial) { pp = &r->next; continue; }
+        *pp = r->next;
+        vkUnmapMemory(dev->device, r->memory);
+        vkFreeMemory(dev->device, r->memory, NULL);
+        vkDestroyBuffer(dev->device, r->buffer, NULL);
+        free(r);
+    }
+}
+
 static bool begin_frame_impl(rhi_device *dev, bool acquire)
 {
     seam_check("begin_frame");
@@ -2374,6 +2406,7 @@ static bool begin_frame_impl(rhi_device *dev, bool acquire)
      * still-executing submission reads. Every counted begin is followed by
      * its submit, so slot alternation is exact and the promise holds. */
     s_frame_serial++;
+    retired_reclaim(dev, false);
     dev->frame_active = true;
     dev->draw_calls = 0;
     if (dev->gpu_timers) {
@@ -3193,6 +3226,48 @@ rhi_buffer *rhi_create_vertex_buffer_dynamic_gens(rhi_device *dev, size_t bytes,
 rhi_buffer *rhi_create_vertex_buffer_dynamic(rhi_device *dev, size_t bytes)
 {
     return rhi_create_vertex_buffer_dynamic_gens(dev, bytes, 1);
+}
+
+size_t rhi_vertex_buffer_slot_bytes(const rhi_buffer *buf)
+{
+    if (!buf) return 0;
+    return (size_t)(buf->ring_stride ? buf->ring_stride : buf->size);
+}
+
+bool rhi_vertex_buffer_reserve(rhi_device *dev, rhi_buffer *buf, size_t bytes)
+{
+    if (!buf) return false;
+    if (!buf->ring_stride) return (VkDeviceSize)bytes <= buf->size;
+    if ((VkDeviceSize)bytes <= buf->ring_stride) return true;
+    seam_check("vertex_buffer_reserve");   /* the retire list is the display owner's */
+    VkDeviceSize stride = buf->ring_stride;
+    while (stride < (VkDeviceSize)bytes) stride *= 2;
+    const uint32_t slots = RHI_FRAMES_IN_FLIGHT * (buf->gens ? buf->gens : 1);
+    struct rhi_retired_buf *r = calloc(1, sizeof(*r));
+    rhi_buffer *nb = r ? create_host_buffer(dev, (size_t)(stride * slots),
+                                            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                                            /*prefer_cached=*/false)
+                       : NULL;
+    if (!nb) {
+        free(r);
+        RHI_LOG("vertex ring buffer: growth to %llu B per slot FAILED; holding %llu B\n",
+                (unsigned long long)stride, (unsigned long long)buf->ring_stride);
+        return false;
+    }
+    /* Every slot and generation keeps its bytes: a range written earlier in
+     * this frame and bound after the growth reads the same data. */
+    for (uint32_t i = 0; i < slots; i++)
+        memcpy((uint8_t *)nb->mapped + stride * i,
+               (const uint8_t *)buf->mapped + buf->ring_stride * i,
+               (size_t)buf->ring_stride);
+    r->buffer = buf->buffer; r->memory = buf->memory; r->serial = s_frame_serial;
+    r->next = dev->retired; dev->retired = r;
+    RHI_LOG("vertex ring buffer grew %llu -> %llu B per slot\n",
+            (unsigned long long)buf->ring_stride, (unsigned long long)stride);
+    buf->buffer = nb->buffer; buf->memory = nb->memory; buf->mapped = nb->mapped;
+    buf->size = nb->size; buf->ring_stride = stride;
+    free(nb);
+    return true;
 }
 
 void rhi_update_buffer_range(rhi_buffer *buf, const void *data,
