@@ -241,6 +241,13 @@ while IFS='|' read -r name start interval freeze pins launch; do
   bk2="$PG_BK2_DIR/$(row_bk2 "$name").bk2"
   if [[ -f "$bk2" ]]; then
     fc="$(bk2_frames "$bk2")"
+    # A row that starts at or past the movie end samples the game running on
+    # without input (e.g. a scripted freecam engaged after the last input);
+    # its length is its last pin, as for a movie-less row.
+    if [[ -n "$pins" && "$fc" =~ ^[0-9]+$ && "$start" -ge "$fc" ]]; then
+      fc="$(tr ',' '\n' <<<"$pins" | sort -n | tail -1)"
+      echo "  [$name] starts past the movie end: length from the last pin ($fc)"
+    fi
   else
     # No movie: the plain boot (title screen, attract demo). The row's length is
     # its last pin, so a movie-less row must pin every frame it wants.

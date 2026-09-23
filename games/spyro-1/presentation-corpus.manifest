@@ -19,6 +19,8 @@
 #             --skip-to-level movie, and those all settle by ~f1700 (the level
 #             loads ~f1197, GS_Playing ~f1584, fade clears by ~f1650), so 1700 is
 #             the shared start. A slower-loading scene overrides it per row.
+#             A start at or past the movie end samples the game running on
+#             without input; the row's length is then its last pin.
 #   interval  optional base VBL spacing (default 100).
 #   freeze    optional 4th field: any non-empty value (e.g. "freeze") enables
 #             --screenshot-freeze-backdrop for this row — needed for bk2s that
@@ -110,6 +112,18 @@ sunny-flight-exit                        | 1700  | 100  | freeze | 2466
 # 2026-09-21); drawn by both renderers on v0.3.0 and main, pinned as is.
 sunny-flight-wall-punch                  | 1700  | 100  |        | 2700
 toasty-moving-terrain-z-fighting         | 1700  | 100  |        | 3111
+# Toasty lowered wall 1 drawn under the grass (disappears); freecam at VBL 3650.
+toasty-defeat@w1a                        | 3660  | 10   |        | 3665 | OPENPETE_FREECAM_AT_VBL=3650 OPENPETE_FREECAM_POSE=100084,130751,23620,8,758
+# Toasty lowered wall 1 z-fighting the grass (interpenetrates); freecam at VBL 3650.
+toasty-defeat@w1b                        | 3660  | 10   |        | 3665 | OPENPETE_FREECAM_AT_VBL=3650 OPENPETE_FREECAM_POSE=101912,130057,21099,554,555
+# Toasty lowered wall 1 z-fighting the grass, drawn by the GPU terrain cache; freecam at VBL 3650.
+toasty-defeat@w1b-tcache                 | 3660  | 10   |        | 3665 | OPENPETE_FREECAM_AT_VBL=3650 OPENPETE_FREECAM_POSE=101912,130057,21099,554,555 OPENPETE_TERRAIN_CACHE_FORCE=1
+# Toasty lowered wall 2 drawn under the grass (disappears); freecam at VBL 3650.
+toasty-defeat@w2a                        | 3660  | 10   |        | 3665 | OPENPETE_FREECAM_AT_VBL=3650 OPENPETE_FREECAM_POSE=111273,125857,24236,-719,803
+# Toasty lowered wall 2 z-fighting the grass (interpenetrates); freecam at VBL 3650.
+toasty-defeat@w2b                        | 3660  | 10   |        | 3665 | OPENPETE_FREECAM_AT_VBL=3650 OPENPETE_FREECAM_POSE=111554,126370,21037,-924,501
+# Toasty lowered wall 3 z-fighting the grass; freecam at VBL 3650.
+toasty-defeat@w3                         | 3660  | 10   |        | 3665 | OPENPETE_FREECAM_AT_VBL=3650 OPENPETE_FREECAM_POSE=113350,119478,20814,-1809,115
 town-square-delvin-rescue                | 1700  | 100  |        | 2574,2621
 town-square-nils-rescue                  | 1700  | 100  |        | 2590
 town-square-portal-entry                 | 1700  | 100  |        | 2200,2767

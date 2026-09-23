@@ -583,6 +583,26 @@ int game_get_player_pose(CPUState* cpu, int32_t* out_x, int32_t* out_y, int32_t*
     return 0;
 }
 
+/* OPENPETE_FREECAM_AT_VBL=N: the VBL the scripted engage waits for, or -1
+ * to engage as soon as the level is live. A timed engage goes through a bk2
+ * replay, which otherwise refuses it; the movie desyncs from N on (the
+ * camera follow is frozen), so it serves captures of a state the movie
+ * reaches, taken at or just after N. */
+static int freecam_engage_vbl(void) {
+    const char* at = getenv("OPENPETE_FREECAM_AT_VBL");
+    return (at && *at) ? atoi(at) : -1;
+}
+
+/* Engage the free camera for a scripted pose or path; `through_bk2` lets
+ * the engage past a replaying movie's refusal. */
+static bool freecam_engage_scripted(bool through_bk2) {
+    const bool bk2 = through_bk2 && openpete_bk2_active();
+    if (bk2) openpete_bk2_set_active(false);
+    const bool engaged = openpete_freecam_toggle();
+    if (bk2) openpete_bk2_set_active(true);
+    return engaged;
+}
+
 /* Optional scripted / headless engage. Set OPENPETE_FREECAM=1 to engage the
  * free camera, or OPENPETE_FREECAM_POSE="x,y,z,yaw,pitch" to engage AND jump to
  * a specific pose (for reproducing a test view — the coords come straight from
@@ -600,9 +620,11 @@ void freecam_maybe_autoengage(CPUState* cpu) {
     int want = (pose && *pose) || (path && *path) ||
                (eng && *eng && *eng != '0');
     if (!want || openpete_freecam_active()) { s_done = 1; return; }
+    const int at_vbl = freecam_engage_vbl();
+    if (at_vbl >= 0 && openpete_frame < (unsigned)at_vbl) return;
     if (level_live(cpu)) {
         s_done = 1;
-        if (!openpete_freecam_toggle()) return;   /* refused (bk2 replay/record) */
+        if (!freecam_engage_scripted(at_vbl >= 0)) return;   /* refused (bk2 replay/record) */
         /* A path supersedes a single pose: it stamps the camera every tick,
          * so an initial jump would only be overwritten on the next one. */
         if (path && *path) freecam_path_parse(path);
