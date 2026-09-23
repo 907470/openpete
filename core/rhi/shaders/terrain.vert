@@ -141,6 +141,7 @@ layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
     dvec4 cov_abc[6];    /* screen inv-vz plane fit a, b, c; w = pn       */
     vec4  cov_bbox[6];   /* outline screen bbox x0, y0, x1, y1            */
     vec4  cov_poly[96];  /* outline points (px, py, 0, 0)                 */
+    vec4  sdvc[128];     /* per-tile 4x4 near-cell row V offsets (rows 0-3) */
 } g;
 
 /* g.fog.y bits — keep in sync with openpete_terrain_cache.h OPTC_GF_* */
@@ -155,6 +156,7 @@ layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
 #define GF_HQPIN     256
 #define GF_LADNEAR   512
 #define GF_NBKEYS    1024
+#define GF_CELLS4    2048
 
 struct TerrainSector {
     vec4 o;        /* xyz: sector origin (world/16), w: uintBitsToFloat(flags) */
@@ -284,6 +286,68 @@ vec2 hq_snap_screen(int node, dvec3 TL, dvec3 TR, dvec3 BL, dvec3 BR, dvec3 m)
     return vec2(rx, ry);
 }
 
+/* ---- 4x4 near cells (terrain.c nc4_* mirrors) ----------------------------
+ * A tier-4 face (face_near_tier4) draws as a 5x5 node grid, 16 cells. A
+ * cell vertex carries its cell in mat_near1 (bit 31 set, cell in bits 0-3)
+ * and its corner slot [TL,TR,BL,BR] in the role bits; node (r, c) is
+ * rebuilt from the transformed parent corners in the walk's halving order. */
+precise dvec3 nc4_pt(dvec3 a, dvec3 b, int k) {
+    if (k == 0) return a;
+    if (k == 4) return b;
+    precise dvec3 m = (a + b) * 0.5lf;
+    if (k == 2) return m;
+    precise dvec3 q = ((k == 1 ? a : b) + m) * 0.5lf;
+    return q;
+}
+precise dvec3 nc4_node(int r, int c, dvec3 TL, dvec3 TR, dvec3 BL, dvec3 BR) {
+    return nc4_pt(nc4_pt(TL, BL, r), nc4_pt(TR, BR, r), c);
+}
+
+/* nc4_snap mirror: corner and interior nodes floor their own projection; an
+ * edge node sits on the segment between its edge's snapped corners at the
+ * parameter of its own projection, unless an edge corner is inside the near
+ * plane. */
+vec2 nc4_snap_screen(int r, int c, dvec3 TL, dvec3 TR, dvec3 BL, dvec3 BR, dvec3 m)
+{
+    if (pc.snap == 0) return proj_of(m);
+    bool er = (r == 0 || r == 4), ec = (c == 0 || c == 4);
+    if (er == ec) return floor(proj_of(m));
+    dvec3 ea = er ? (r == 0 ? TL : BL) : (c == 0 ? TL : TR);
+    dvec3 eb = er ? (r == 0 ? TR : BR) : (c == 0 ? BL : BR);
+    if (ea.z < g.dnear.x || eb.z < g.dnear.x) return floor(proj_of(m));
+    vec2 A = floor(proj_of(ea)), B = floor(proj_of(eb));
+    vec2 mm = proj_of(m);
+    precise float dx = B.x - A.x, dy = B.y - A.y;
+    precise float L2 = dx * dx + dy * dy;
+    precise float num = (mm.x - A.x) * dx + (mm.y - A.y) * dy;
+    float tt = L2 > 0.0 ? num / L2 : 0.5;
+    if (tt < 0.0) tt = 0.0; else if (tt > 1.0) tt = 1.0;
+    precise float rx = A.x + tt * dx, ry = A.y + tt * dy;
+    return vec2(rx, ry);
+}
+
+/* nc4_morph mirror: an odd-odd node moves toward the mean of its up-right
+ * and down-left neighbours' emitted points, weight at = least corner SZ3 -
+ * 0x40, skipped when at <= 0 or the node's own integer projection is off
+ * the 512x256 GTE screen (nc4_outcode). */
+vec2 nc4_screen(int r, int c, dvec3 TL, dvec3 TR, dvec3 BL, dvec3 BR)
+{
+    dvec3 m = nc4_node(r, c, TL, TR, BL, BR);
+    vec2 sc = nc4_snap_screen(r, c, TL, TR, BL, BR, m);
+    if ((r & 1) == 0 || (c & 1) == 0) return sc;
+    double mn = min(min(TL.z, TR.z), min(BL.z, BR.z));
+    precise double at = mn * 4.0lf - 64.0lf;
+    if (at <= 0.0lf || m.z <= 0.0lf) return sc;
+    vec2 op = floor(proj_of(m));
+    if (op.y <= 0.0 || op.y >= 256.0 || op.x <= 0.0 || op.x >= 512.0) return sc;
+    vec2 a = nc4_snap_screen(r - 1, c + 1, TL, TR, BL, BR, nc4_node(r - 1, c + 1, TL, TR, BL, BR));
+    vec2 b = nc4_snap_screen(r + 1, c - 1, TL, TR, BL, BR, nc4_node(r + 1, c - 1, TL, TR, BL, BR));
+    precise double mx = ((256.0lf - at) * double(sc.x) + at * 0.5lf * (double(a.x) + double(b.x))) / 256.0lf;
+    precise double my = ((256.0lf - at) * double(sc.y) + at * 0.5lf * (double(a.y) + double(b.y))) / 256.0lf;
+    vec2 o = vec2(float(mx), float(my));
+    return pc.snap != 0 ? floor(o) : o;
+}
+
 /* GTE_SAT mirror (double of the FLOAT screen coord, like the CPU's
  * NSAT(sv.sx)). */
 double nsat(float v, bool unr_ovf) {
@@ -363,6 +427,14 @@ bool near_canonical(double z0, double z1, double z2, double z3, uint w3_40, uint
     double mn = min(min(sz0, sz1), min(sz2, sz3));
     if (mn < 320.0lf) return true;                  /* a corner SZ3 < 0x140 */
     return w3_40 == 0u;
+}
+
+/* face_near_tier4 mirror: a canonical near face with near_flag_tier2 clear
+ * and a corner SZ3 under near_corner (0x140). */
+bool nc4_tier4(double z0, double z1, double z2, double z3, uint w3_40, uint w3_80) {
+    if (w3_40 != 0u) return false;
+    if (!near_canonical(z0, z1, z2, z3, w3_40, w3_80)) return false;
+    return min(min(z0, z1), min(z2, z3)) * 4.0lf < 320.0lf;
 }
 
 void kill_vert() {
@@ -587,6 +659,8 @@ void main()
     bool hqv  = (f16 & 1u) != 0u;             /* HQ-subdivide variant vertex */
     int  subq = int((f16 >> 1) & 3u);         /* HQ sub-quad index           */
     int  role = int((f16 >> 3) & 3u);         /* corner slot in the sub-quad */
+    bool is4  = hqv && (inMat.w & 0x80000000u) != 0u;   /* 4x4 near-cell vertex */
+    int  cell = int(inMat.w & 15u);           /* its cell, row-major        */
     bool fillPass = (pc.pass_sel == 1);
     bool keyPass  = (pc.pass_sel == 2);
 
@@ -786,8 +860,27 @@ void main()
                                   ff & FF_W3_40, ff & FF_W3_80);
         }
     }
-    /* Exactly one variant of an HQ-eligible face survives. */
-    if (hqv != near) { kill_vert(); return; }
+    /* Exactly one variant of an HQ-eligible face survives: flat, the 2x2
+     * subdivide, or (GF_CELLS4, a tier-4 face) the 4x4 cells. */
+    bool t4 = near && (gf & GF_CELLS4) != 0 &&
+              nc4_tier4(m0.z, m1.z, m2.z, m3c.z, ff & FF_W3_40, ff & FF_W3_80);
+    if (hqv != near || is4 != t4) { kill_vert(); return; }
+    /* nc4_front mirror: a straddling face's cell draws only when one of its
+     * two triples faces. */
+    if (is4 && straddle && (ff & FF_DSIDE) == 0u) {
+        int cr = cell >> 2, cq = cell & 3;
+        precise dvec3 ctl = nc4_node(cr, cq, m0, m1, m3c, m2);
+        precise dvec3 ctr = nc4_node(cr, cq + 1, m0, m1, m3c, m2);
+        precise dvec3 cbl = nc4_node(cr + 1, cq, m0, m1, m3c, m2);
+        precise dvec3 cbr = nc4_node(cr + 1, cq + 1, m0, m1, m3c, m2);
+        precise double d1 = det3d(ctl, ctr, cbl);
+        bool cf = flip ? (d1 <= 0.0lf) : (d1 >= 0.0lf);
+        if (!cf) {
+            precise double d2 = det3d(ctr, cbr, cbl);
+            cf = flip ? (d2 <= 0.0lf) : (d2 >= 0.0lf);
+        }
+        if (!cf) { kill_vert(); return; }
+    }
 
     /* ---- NCLIP back-face cull (flat faces; near faces dispatched before
      * the cull in the walk; fill is emit-all by design) ---- */
@@ -828,6 +921,23 @@ void main()
                 else        { ta = m0; tb = m1; tc2 = m3c; sa = p0f; sb = p1f; sc = p3f; }
             }
             sa = snap_of(sa); sb = snap_of(sb); sc = snap_of(sc);
+            pdrop = (g.rim_cnt.x > 0 &&
+                     rim_classified(sa, sb, sc, ta.z, tb.z, tc2.z))
+                 || (covTest &&
+                     cover_dropped(sa, sb, sc, ta.z, tb.z, tc2.z));
+        } else if (is4) {
+            /* Cell members (TL,TR,BL) / (TR,BL,BR), emit_quad_cv's order. */
+            precise dvec3 TL = m0, TR = m1, BL = m3c, BR = m2;
+            int cr = cell >> 2, cq = cell & 3;
+            ivec2 n0 = tri2 ? ivec2(cr, cq + 1) : ivec2(cr, cq);
+            ivec2 n1 = tri2 ? ivec2(cr + 1, cq) : ivec2(cr, cq + 1);
+            ivec2 n2 = tri2 ? ivec2(cr + 1, cq + 1) : ivec2(cr + 1, cq);
+            precise dvec3 ta = nc4_node(n0.x, n0.y, TL, TR, BL, BR);
+            precise dvec3 tb = nc4_node(n1.x, n1.y, TL, TR, BL, BR);
+            precise dvec3 tc2 = nc4_node(n2.x, n2.y, TL, TR, BL, BR);
+            vec2 sa = nc4_screen(n0.x, n0.y, TL, TR, BL, BR);
+            vec2 sb = nc4_screen(n1.x, n1.y, TL, TR, BL, BR);
+            vec2 sc = nc4_screen(n2.x, n2.y, TL, TR, BL, BR);
             pdrop = (g.rim_cnt.x > 0 &&
                      rim_classified(sa, sb, sc, ta.z, tb.z, tc2.z))
                  || (covTest &&
@@ -923,7 +1033,8 @@ void main()
     float uvdv = 0.0;
     if (scrollOn) {
         int stile = int((f16 >> 5) & 0x7Fu);
-        uvdv = hqv ? g.sdv[stile][(subq >> 1) + 1] : g.sdv[stile].x;
+        uvdv = is4 ? g.sdvc[stile][cell >> 2]
+             : hqv ? g.sdv[stile][(subq >> 1) + 1] : g.sdv[stile].x;
         uv.y += uvdv;
     }
     vMat = uvec2(mat0, (clut & 0x3Fu) * 16u | (((clut >> 6) & 0x1FFu) << 16));
@@ -964,6 +1075,20 @@ void main()
                 if (tri2n)  { tp[0] = m1; tp[1] = m3c; tp[2] = m2; }
                 else        { tp[0] = m0; tp[1] = m1; tp[2] = m3c; }
             }
+        } else if (is4) {
+            /* Cell members (TL,TR,BL) / (TR,BL,BR); each carries its
+             * emitted point (snap and morph) as its override. */
+            precise dvec3 TL = m0, TR = m1, BL = m3c, BR = m2;
+            int cr = cell >> 2, cq = cell & 3;
+            ivec2 nn[3];
+            nn[0] = tri2n ? ivec2(cr, cq + 1) : ivec2(cr, cq);
+            nn[1] = tri2n ? ivec2(cr + 1, cq) : ivec2(cr, cq + 1);
+            nn[2] = tri2n ? ivec2(cr + 1, cq + 1) : ivec2(cr + 1, cq);
+            for (int k = 0; k < 3; k++) {
+                tp[k]  = nc4_node(nn[k].x, nn[k].y, TL, TR, BL, BR);
+                tos[k] = nc4_screen(nn[k].x, nn[k].y, TL, TR, BL, BR);
+            }
+            tov = true;
         } else {
             precise dvec3 TL = m0, TR = m1, BL = m3c, BR = m2;
             precise dvec3 mT = (TL + TR) * 0.5lf, mB = (BL + BR) * 0.5lf;
@@ -1078,6 +1203,11 @@ void main()
 #endif
         mo = mac_of(lown, sdel);
         sscr = snap_of(proj_of(mo));
+    } else if (is4) {
+        precise dvec3 TL = m0, TR = m1, BL = m3c, BR = m2;
+        int nr = (cell >> 2) + (role >> 1), nq = (cell & 3) + (role & 1);
+        mo = nc4_node(nr, nq, TL, TR, BL, BR);
+        sscr = nc4_screen(nr, nq, TL, TR, BL, BR);
     } else {
         /* Parent corners in .s grid order: TL=i0, TR=i1, BL=i3, BR=i2. */
         precise dvec3 TL = m0, TR = m1, BL = m3c, BR = m2;
@@ -1101,6 +1231,14 @@ void main()
         float ok;
         if (!hqv) {
             ok = float((m0.z + m1.z + m2.z + m3c.z) * 4.0lf);
+        } else if (is4) {
+            /* the cell's own corner sum (emit_quad_cv's emit_otkey) */
+            int cr = cell >> 2, cq = cell & 3;
+            precise double zs = nc4_node(cr, cq, m0, m1, m3c, m2).z
+                              + nc4_node(cr, cq + 1, m0, m1, m3c, m2).z
+                              + nc4_node(cr + 1, cq, m0, m1, m3c, m2).z
+                              + nc4_node(cr + 1, cq + 1, m0, m1, m3c, m2).z;
+            ok = float(zs * 4.0lf);
         } else {
             precise dvec3 TL = m0, TR = m1, BL = m3c, BR = m2;
             precise dvec3 mT = (TL + TR) * 0.5lf, mB = (BL + BR) * 0.5lf;

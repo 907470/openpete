@@ -246,6 +246,14 @@ typedef struct game_layout {
          * vertex-base table D_80065C28 over the 3x3 grid). */
         uint32_t hq_stride;
         uint32_t hq_sub0;
+        /* The 4x4 near-cell path's tile source, 0 when the port does not draw
+         * that path. A face with a corner SZ3 under `near_corner` and word 3
+         * `near_flag_tier2` clear is drained as a 5x5 vertex grid, 16 cells in
+         * row-major order, cell i textured from the 16x16 tile at
+         * `hq_cells4` + i*8 of the face's HQ record. Spyro 1: 0x28, after the
+         * base entry and the four 2x2 quadrants (r_environment.s
+         * .L80029204-0x80029498, table D_8006CF58). */
+        uint32_t hq_cells4;
         /* Semi-transparency: Spyro 1 flags it per face; Spyro 3 in bit 15 of
          * the tile's TPAGE halfword. */
         int      abe_in_tpage;

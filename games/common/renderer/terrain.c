@@ -89,6 +89,7 @@ extern unsigned openpete_frame;
 static uint8_t s_tanim_act[128];      /* tile carries a fractional offset this build */
 static float   s_tanim_dvlq[128];     /* LQ per-quad tiledef  (game writes scroll>>2) */
 static float   s_tanim_dvhq[128][2];  /* HQ record entries 1-2 / 3-4 (scroll>>1) */
+static float   s_tanim_dvcell[128][4]; /* HQ record 4x4 cell rows 0-3 (scroll>>1, +16 per row) */
 static int     s_tanim_have;          /* any tile active — skips the per-face test */
 static int     s_tanim_en;            /* OPENPETE_TERRAIN_TANIM latch (re-extract only) */
 /* Tiles on the live scroller list, refreshed EVERY build (canonical included).
@@ -679,15 +680,20 @@ typedef struct { int textured, tpx, tpy, clx, cly, bpp, blend, clut_raw, fog_del
  * corner UVs [TL,TR,BL,BR]. Shared by the per-quad LQ path (terrain_texmat) and
  * the near/HQ subdivide path (entries inside the 168-byte HQ cell record). `m`
  * must be zeroed by the caller. */
-static void decode_tiledef(CPUState* cpu, uint32_t e, int abe, tmat* m, float u[4], float v[4]) {
+/* A tile's four corner UVs [TL,TR,BL,BR] and material. `span` is the tile's
+ * texel extent minus one: 0x1F for the 32x32 LQ and 2x2 quadrant tiles, 0x0F
+ * for the 16x16 4x4-cell tiles (r_environment.s 0x8002928C: BL = word0 +
+ * 0xF00, BR = word0 + 0xF0F). */
+static void decode_tiledef_span(CPUState* cpu, uint32_t e, int abe, tmat* m,
+                                float u[4], float v[4], int span) {
     uint32_t w0 = rd(cpu, e + 0), w1 = rd(cpu, e + 4);
     int u0 = (int)(w0 & 0xFF), v0 = (int)((w0 >> 8) & 0xFF), clut = (int)((w0 >> 16) & 0xFFFF);
     int u1 = (int)(w1 & 0xFF), v1 = (int)((w1 >> 8) & 0xFF), tpage = (int)((w1 >> 16) & 0xFFFF);
-    if (game_layout.terrain.tile_word1_br) v1 = (v1 - 0x1F) & 0xFF;   /* word1 is the BR corner */
-    u[0]=(float)u0;               v[0]=(float)v0;                  /* TL */
-    u[1]=(float)u1;               v[1]=(float)v1;                  /* TR */
-    u[2]=(float)u0;               v[2]=(float)((v0 + 0x1F) & 0xFF);/* BL */
-    u[3]=(float)((u0+0x1F)&0xFF); v[3]=(float)((v0 + 0x1F) & 0xFF);/* BR */
+    if (game_layout.terrain.tile_word1_br) v1 = (v1 - span) & 0xFF;   /* word1 is the BR corner */
+    u[0]=(float)u0;                v[0]=(float)v0;                   /* TL */
+    u[1]=(float)u1;                v[1]=(float)v1;                   /* TR */
+    u[2]=(float)u0;                v[2]=(float)((v0 + span) & 0xFF); /* BL */
+    u[3]=(float)((u0+span)&0xFF);  v[3]=(float)((v0 + span) & 0xFF); /* BR */
     ngte_tpage tp;
     ngte_decode_tpage((unsigned)tpage, (unsigned)clut, 0u, &tp);
     m->textured = 1;
@@ -699,6 +705,9 @@ static void decode_tiledef(CPUState* cpu, uint32_t e, int abe, tmat* m, float u[
     /* blend: opaque unless ABE; then the tpage ABR mode. */
     if (game_layout.terrain.abe_in_tpage && (tpage & 0x8000)) abe = 1;
     m->blend = abe ? ngte_abr_blend(tp.abr, NGTE_ABR_EXACT) : 0;
+}
+static void decode_tiledef(CPUState* cpu, uint32_t e, int abe, tmat* m, float u[4], float v[4]) {
+    decode_tiledef_span(cpu, e, abe, m, u, v, 0x1F);
 }
 
 static void terrain_texmat(CPUState* cpu, uint32_t table, int texByte, int hiDetail,
@@ -1092,49 +1101,54 @@ static void terrain_near_emit(tn_wctx* W, CPUState* cpu, uint32_t hqBase, int te
  * (faceRecPtr | clipBit, low 2 bits are flags). func_800276A0 drains +0x2000 then
  * +0x1E00 (.L8002857C re-points $ra at +0x1E00), so BOTH are rendered.
  *
- * We replicate the .s's classification EXACTLY by reading the filled queues from
- * RAM after func_800258F0 returns (the hook runs it first), collecting the set of
- * deferred face-record pointers. Re-deriving the classifier in the main loop was
- * Route 1, which over-deferred (the artist flags 0x40/0x80 are unset this scene,
- * so depthSum<0x2000 alone caught ~701/839 cells vs the .s's ~tens). Reading the
- * queue sidesteps that — it IS the game's verdict. The face record IS the same
- * 16B HP face record the main loop walks (faceRecPtr = faces + f*16), and the HQ
- * index is its word2 & 0x7F, so a deferred face just routes through
- * terrain_near_emit instead of the flat LQ emit. */
+ * The walk routes faces with face_is_near_canonical and face_near_tier4, which
+ * evaluate this classifier per face from the corner depths and word3. Reading
+ * the queues at walk time is not a routing source: by then they hold only part
+ * of the tick's deferred faces. The reader below serves the verify/debug oracle, which compares its entries
+ * (faceRecPtr = faces + f*16, the same 16-byte HP face record the walk reads)
+ * with the walk's verdict. Bit 1 of a cell entry marks a triangle face
+ * (r_environment.s 0x800272F8). */
 #define MAX_DEFER 4096
 static uint32_t s_defer[MAX_DEFER]; static int s_defer_n;
 static int s_defer_hdr2, s_defer_cell2, s_defer_hdr1e, s_defer_cell1e;
+static uint32_t s_defer4[MAX_DEFER]; static int s_defer4_n;   /* the +0x1E00 cells alone */
 static int defer_cmp(const void* a, const void* b) {
     uint32_t x = *(const uint32_t*)a, y = *(const uint32_t*)b;
     return (x > y) - (x < y);
 }
-static void terrain_read_defer(CPUState* cpu) {
-    s_defer_n = 0;
-    s_defer_hdr2 = s_defer_cell2 = s_defer_hdr1e = s_defer_cell1e = 0;
-    const uint32_t qbase[2] = { game_layout.terrain.defer_q[0], game_layout.terrain.defer_q[1] };
-    for (int q = 0; q < 2; q++) {
-        uint32_t p = qbase[q];
-        if (!p) continue;                    /* no queue located for this game */
-        for (int guard = 0; guard < MAX_DEFER * 2; guard++) {
-            uint32_t e = rd(cpu, p); p += 4;
-            if (e == 0) break;
-            if ((int32_t)e > 0) { if (q) s_defer_hdr1e++; else s_defer_hdr2++; continue; }
-            if (s_defer_n < MAX_DEFER) s_defer[s_defer_n++] = e & ~3u;  /* cell: faceRecPtr */
-            if (q) s_defer_cell1e++; else s_defer_cell2++;
-        }
+/* Read one 0-terminated defer queue: headers counted into *hdr, each cell's
+ * face record into s_defer (and into s_defer4 for the +0x1E00 queue). */
+static void defer_read_queue(CPUState* cpu, uint32_t p, int is1e, int* hdr, int* cell) {
+    for (int guard = 0; p && guard < MAX_DEFER * 2; guard++) {
+        uint32_t e = rd(cpu, p); p += 4;
+        if (e == 0) break;
+        if ((int32_t)e > 0) { (*hdr)++; continue; }
+        if (s_defer_n < MAX_DEFER) s_defer[s_defer_n++] = e & ~3u;  /* cell: faceRecPtr */
+        if (is1e && s_defer4_n < MAX_DEFER) s_defer4[s_defer4_n++] = e & ~3u;
+        (*cell)++;
     }
-    if (s_defer_n > 1) qsort(s_defer, (size_t)s_defer_n, sizeof(s_defer[0]), defer_cmp);
 }
-static int is_deferred(uint32_t faceRecPtr) {
-    int lo = 0, hi = s_defer_n - 1;
+static void terrain_read_defer(CPUState* cpu) {
+    s_defer_n = s_defer4_n = 0;
+    s_defer_hdr2 = s_defer_cell2 = s_defer_hdr1e = s_defer_cell1e = 0;
+    /* a queue address 0: no queue located for this game */
+    defer_read_queue(cpu, game_layout.terrain.defer_q[0], 0, &s_defer_hdr2, &s_defer_cell2);
+    defer_read_queue(cpu, game_layout.terrain.defer_q[1], 1, &s_defer_hdr1e, &s_defer_cell1e);
+    if (s_defer_n > 1) qsort(s_defer, (size_t)s_defer_n, sizeof(s_defer[0]), defer_cmp);
+    if (s_defer4_n > 1) qsort(s_defer4, (size_t)s_defer4_n, sizeof(s_defer4[0]), defer_cmp);
+}
+static int defer_find(const uint32_t* q, int n, uint32_t faceRecPtr) {
+    int lo = 0, hi = n - 1;
     while (lo <= hi) {
         int m = (lo + hi) >> 1;
-        if (s_defer[m] < faceRecPtr) lo = m + 1;
-        else if (s_defer[m] > faceRecPtr) hi = m - 1;
+        if (q[m] < faceRecPtr) lo = m + 1;
+        else if (q[m] > faceRecPtr) hi = m - 1;
         else return 1;
     }
     return 0;
 }
+static int is_deferred(uint32_t faceRecPtr) { return defer_find(s_defer, s_defer_n, faceRecPtr); }
+static int is_deferred4(uint32_t faceRecPtr) { return defer_find(s_defer4, s_defer4_n, faceRecPtr); }
 
 /* Near-cell classifier — replicates func_800258F0's HP-walk defer test (the
  * classifier at r_environment.s 0x80026CFC) from GAMESTATE, so it works in ALL
@@ -1239,6 +1253,215 @@ static int s_near_q_agree, s_near_c_only;   /* classifier vs queue cross-check (
 static int s_caldbg = -1, s_cal_qn;         /* calibration probe (OPENPETE_TERRAIN_CALDBG) */
 static int s_nearq = -2;                     /* OPENPETE_TERRAIN_NEARQ: use queue oracle (debug) */
 static double s_cal_qsum_max, s_cal_qmin_max, s_cal_nqsum_min;
+
+/* ---- 4x4 near cells (the +0x1E00 queue drain) -----------------------------
+ * func_800276A0 drains its +0x1E00 queue (a corner SZ3 under near_corner,
+ * word 3 near_flag_tier2 and near_flag_excl clear) finer than the +0x2000
+ * queue's 2x2: the face becomes a 5x5 vertex grid and 16 cells
+ * (r_environment.s 0x80028590-0x80029498), each inserted into g_WorldOT at
+ * its own (sum of its four corner SZ3 >> 7) + the authored bias
+ * (0x80029450-0x80029498) and textured from its own 16x16 tile. Faces with
+ * word 3 flag 0x40 or no corner under the bound keep the 2x2 path. */
+
+/* The face a near emit draws: its HQ record, identity and facing inputs. */
+typedef struct {
+    uint32_t hqBase;      /* hq_tex + hq_idx * hq_stride */
+    uint32_t rec;         /* face record address (the queue's cell word) */
+    uint32_t w3;          /* face word 3 */
+    int texid, abe;       /* HQ record id; semi-transparent (word 2 & 0x80) */
+    int straddle;         /* a corner at or behind the eye */
+    int flip, dside;      /* NCLIP sign flip; double-sided (w3 & 0x4) */
+} tn_nearface;
+
+/* SZ3 = hqscale * m3: s_hqscale latched on first use. */
+static double tface_hqscale(void) {
+    if (s_hqscale < 0.0) {
+        const char* e = getenv("OPENPETE_TERRAIN_HQSCALE"); s_hqscale = (e && *e) ? atof(e) : 4.0;
+    }
+    return s_hqscale;
+}
+
+/* The canonical tier-4 verdict: a near face with a corner SZ3 under
+ * near_corner and near_flag_tier2 clear (the classifier's .L80026D70 route,
+ * r_environment.s 0x80026D10-0x80026DB4). */
+static int face_near_tier4(double z0, double z1, double z2, double z3, uint32_t word3) {
+    if (!game_layout.terrain.hq_cells4) return 0;
+    if (!face_is_near_canonical(z0, z1, z2, z3, word3)) return 0;
+    if (tface_near_tier2(word3)) return 0;
+    double s = tface_hqscale();
+    double mn = z0;
+    if (z1 < mn) mn = z1;
+    if (z2 < mn) mn = z2;
+    if (z3 < mn) mn = z3;
+    return mn * s < (double)game_layout.terrain.near_corner;
+}
+
+/* The node k/4 of the way from a to b (k = 0..4) by the drain's halving
+ * order: the midpoint first, each quarter point the midpoint of its
+ * endpoint and that midpoint (r_environment.s 0x800286BC-0x800287B4). A grid
+ * row runs between the nodes the same rule puts on the left and right
+ * edges, so node (r, c) = pt(pt(TL, BL, r), pt(TR, BR, r), c). */
+static ngte_cvert nc4_pt(ngte_cvert a, ngte_cvert b, int k) {
+    if (k == 0) return a;
+    if (k == 4) return b;
+    ngte_cvert m = cv_mid(a, b);
+    if (k == 2) return m;
+    return cv_mid(k == 1 ? a : b, m);
+}
+static void nc4_grid(ngte_cvert G[5][5], ngte_cvert TL, ngte_cvert TR,
+                     ngte_cvert BL, ngte_cvert BR) {
+    for (int r = 0; r < 5; r++) {
+        ngte_cvert L = nc4_pt(TL, BL, r), R = nc4_pt(TR, BR, r);
+        for (int c = 0; c < 5; c++) G[r][c] = nc4_pt(L, R, c);
+    }
+}
+
+/* Integer vertex snap of the grid, terrain_near_emit's rule per node: a
+ * corner or interior node takes the floor of its own projection; a node on
+ * a face edge sits on the segment between that edge's two snapped corners
+ * at the parameter of its own projection, collinear with the neighbour
+ * drawing the same edge. A node, or an edge node whose edge has a corner,
+ * inside the near plane gets no override. */
+static void nc4_snap_edge(ngte_cvert* n, const ngte_cvert* a, const ngte_cvert* b,
+                          float px, float py) {
+    if (a->m3 < s_nearz || b->m3 < s_nearz) return;
+    float ax, ay, bx, by;
+    proj_screen(a->m1, a->m2, a->m3, &ax, &ay);
+    proj_screen(b->m1, b->m2, b->m3, &bx, &by);
+    ax = floorf(ax); ay = floorf(ay); bx = floorf(bx); by = floorf(by);
+    float dx = bx - ax, dy = by - ay;
+    float L2 = dx*dx + dy*dy;
+    float tt = L2 > 0.0f ? ((px-ax)*dx + (py-ay)*dy) / L2 : 0.5f;
+    if (tt < 0.0f) tt = 0.0f; else if (tt > 1.0f) tt = 1.0f;
+    n->osx = ax + tt*dx; n->osy = ay + tt*dy; n->oflag = 1;
+}
+static void nc4_snap(ngte_cvert G[5][5]) {
+    for (int i = 0; i < 25; i++) {
+        int r = i / 5, c = i % 5;
+        ngte_cvert* n = &G[r][c];
+        if (n->m3 < s_nearz) continue;
+        float px, py;
+        proj_screen(n->m1, n->m2, n->m3, &px, &py);
+        int er = (r == 0 || r == 4), ec = (c == 0 || c == 4);
+        if (er == ec) { n->osx = floorf(px); n->osy = floorf(py); n->oflag = 1; }
+        else if (er)  nc4_snap_edge(n, &G[r][0], &G[r][4], px, py);
+        else          nc4_snap_edge(n, &G[0][c], &G[4][c], px, py);
+    }
+}
+
+/* A node's emitted screen point: its override, else its projection
+ * (floored under the integer snap, as push_tri does). */
+static void nc4_scr(const ngte_cvert* n, int snap, float* sx, float* sy) {
+    if (n->oflag) { *sx = n->osx; *sy = n->osy; return; }
+    proj_screen(n->m1, n->m2, n->m3, sx, sy);
+    if (snap) { *sx = floorf(*sx); *sy = floorf(*sy); }
+}
+
+/* The drain's off-screen flags on a node's own projection (0x80028CD8-
+ * 0x80028D10): behind the eye, sy <= 0, sy >= 256, sx <= 0 or sx >= 512 on
+ * the GTE's integer SXY. */
+static int nc4_outcode(const ngte_cvert* n) {
+    if (n->m3 <= 0.0) return 1;
+    float px, py;
+    proj_screen(n->m1, n->m2, n->m3, &px, &py);
+    px = floorf(px); py = floorf(py);
+    return py <= 0.0f || py >= 256.0f || px <= 0.0f || px >= 512.0f;
+}
+
+/* The drain's interior screen morph (r_environment.s 0x80028D1C-0x80028E44,
+ * node table D_8006D0D8): with every face corner's SZ3 above 0x40, each
+ * odd-odd node not flagged off-screen moves toward the mean of its
+ * up-right and down-left neighbours, weight at = (least corner SZ3) - 0x40:
+ * s' = ((256 - at) * s + (at / 2) * (s_ur + s_dl)) / 256. At the tier-4
+ * bound (at -> 0xFF) the node lies on the TR-BL diagonal the 2x2 path splits
+ * its quadrants along, so the cell grid meets the 2x2 image where a face
+ * crosses between the queues. Screen only: depth and key stay the node's.
+ * The game's integer at >> 1 is kept as at / 2 in full precision. */
+static void nc4_morph(ngte_cvert G[5][5]) {
+    double mn = G[0][0].m3;
+    if (G[0][4].m3 < mn) mn = G[0][4].m3;
+    if (G[4][0].m3 < mn) mn = G[4][0].m3;
+    if (G[4][4].m3 < mn) mn = G[4][4].m3;
+    double at = mn * tface_hqscale() - 64.0;
+    if (at <= 0.0) return;
+    int snap = openpete_native_vertex_snap_active();
+    static const int P[4][2] = { {1, 1}, {1, 3}, {3, 1}, {3, 3} };
+    float ms[4][2];
+    for (int i = 0; i < 4; i++) {           /* neighbours are even nodes: never morphed */
+        int r = P[i][0], c = P[i][1];
+        float sx, sy, ax, ay, bx, by;
+        nc4_scr(&G[r][c], snap, &sx, &sy);
+        nc4_scr(&G[r - 1][c + 1], snap, &ax, &ay);
+        nc4_scr(&G[r + 1][c - 1], snap, &bx, &by);
+        ms[i][0] = (float)(((256.0 - at) * sx + at * 0.5 * ((double)ax + bx)) / 256.0);
+        ms[i][1] = (float)(((256.0 - at) * sy + at * 0.5 * ((double)ay + by)) / 256.0);
+    }
+    for (int i = 0; i < 4; i++) {
+        ngte_cvert* n = &G[P[i][0]][P[i][1]];
+        if (nc4_outcode(n)) continue;
+        n->osx = snap ? floorf(ms[i][0]) : ms[i][0];
+        n->osy = snap ? floorf(ms[i][1]) : ms[i][1];
+        n->oflag = 1;
+    }
+}
+
+/* Camera-space triple product over three cverts (tface_det3's form). */
+static double cv_det3(const ngte_cvert* a, const ngte_cvert* b, const ngte_cvert* c) {
+    return a->m1 * (b->m2 * c->m3 - b->m3 * c->m2)
+         - a->m2 * (b->m1 * c->m3 - b->m3 * c->m1)
+         + a->m3 * (b->m1 * c->m2 - b->m2 * c->m1);
+}
+/* A straddling face's cell facing: the drain NCLIPs each cell of a face
+ * carrying the straddle bit over (TL,TR,BL) and then (BR,BL,TR), flip-signed,
+ * and draws it when either faces (r_environment.s 0x800292EC-0x80029354). */
+static int nc4_front(const ngte_cvert* tl, const ngte_cvert* tr,
+                     const ngte_cvert* bl, const ngte_cvert* br, int flip) {
+    double d1 = cv_det3(tl, tr, bl);
+    if (flip ? (d1 <= 0.0) : (d1 >= 0.0)) return 1;
+    double d2 = cv_det3(tr, br, bl);
+    return flip ? (d2 <= 0.0) : (d2 >= 0.0);
+}
+
+/* The 16 cells in the drain's row-major order (D_8006CF58); cell i reads the
+ * tile at hq_cells4 + i*8, its V scroll from its row's group. Keys: the
+ * per-quad emit_otkey of emit_quad_cv, the cell's own corner sum. */
+static void nc4_emit_cells(tn_wctx* W, CPUState* cpu, const tn_nearface* nf,
+                           ngte_cvert G[5][5]) {
+    int scroll = s_tanim_have && nf->texid >= 0 && nf->texid < 128 && s_tanim_act[nf->texid];
+    for (int i = 0; i < 16; i++) {
+        int r = i >> 2, c = i & 3;
+        const ngte_cvert *tl = &G[r][c], *tr = &G[r][c + 1];
+        const ngte_cvert *bl = &G[r + 1][c], *br = &G[r + 1][c + 1];
+        if (nf->straddle && !nf->dside && !nc4_front(tl, tr, bl, br, nf->flip)) continue;
+        tmat mat; float u[4], v[4];
+        memset(&mat, 0, sizeof(mat)); mat.bpp = 16;
+        uint32_t e = nf->hqBase + game_layout.terrain.hq_cells4 + (uint32_t)i * 8u;
+        decode_tiledef_span(cpu, e, nf->abe, &mat, u, v, 0x0F);
+        mat.texid = nf->texid;
+        tiledef_apply_ori(cpu, e, u, v);   /* word1 >> 25: the 16-texel half of D_8006D058 */
+        for (int k = 0; scroll && k < 4; k++) v[k] += s_tanim_dvcell[nf->texid][r];
+        emit_quad_cv(W, *tl, *tr, *bl, *br, &mat, u, v);
+    }
+}
+
+/* Near emit of one routed face: the 4x4 cells for a tier-4 face, the 2x2
+ * subdivide otherwise. OPENPETE_TERRAIN_NEARQ routes by the game's filled
+ * +0x1E00 queue instead of the classifier (verify builds). */
+static void terrain_near_emit_face(tn_wctx* W, CPUState* cpu, const tn_nearface* nf,
+                                   ngte_cvert TL, ngte_cvert TR, ngte_cvert BL, ngte_cvert BR) {
+    int t4 = (s_nearq > 0 && s_defer_n > 0)
+           ? (game_layout.terrain.hq_cells4 != 0 && is_deferred4(nf->rec))
+           : face_near_tier4(TL.m3, TR.m3, BR.m3, BL.m3, nf->w3);
+    if (!t4) {
+        terrain_near_emit(W, cpu, nf->hqBase, nf->texid, nf->abe, TL, TR, BL, BR);
+        return;
+    }
+    ngte_cvert G[5][5];
+    nc4_grid(G, TL, TR, BL, BR);
+    if (openpete_native_vertex_snap_active()) nc4_snap(G);
+    nc4_morph(G);
+    nc4_emit_cells(W, cpu, nf, G);
+}
 
 /* ---- sector decode cache (terrain Tier 1, mirrors the moby faceblock cache) --
  * A sector's geometry is STATIC world-space level data: packed vertex words,
@@ -2394,6 +2617,16 @@ static int tsc_scroll_sweep(uint32_t desc, uint32_t ct, uint32_t cur,
     return 1;
 }
 
+/* The fractional V offset `dv` a tile group whose whole-texel base is `base`
+ * draws at, moved by one scroll window `win` when base + dv would leave
+ * [0, win): the sampler truncates toward zero, so a negative V fetches the
+ * wrong row, and the content is periodic over the window. */
+static float tscroll_wrap(double base, double dv, double win) {
+    if (base + dv < 0.0)       dv += win;
+    else if (base + dv >= win) dv -= win;
+    return (float)dv;
+}
+
 /* One scroller descriptor: mark its tile live for the retained-GPU claim,
  * carry the accumulator generation, and publish the tile's fractional V
  * offsets for this build. Returns 1 when a sub-tick sweep was applied. */
@@ -2430,27 +2663,21 @@ static int tsc_scroll_desc(CPUState* cpu, uint32_t desc, int pair,
      * the game's own 31→0 accumulator wrap would otherwise be a visible jump
      * every cycle. */
     double dvq = S.off * 0.25 + (double)(cur & 3u) * 0.25;
-    double baseQ = (double)(cur >> 2);
-    if (baseQ + dvq < 0.0)        dvq += 32.0;
-    else if (baseQ + dvq >= 32.0) dvq -= 32.0;
-    s_tanim_dvlq[ct] = (float)dvq;
+    s_tanim_dvlq[ct] = tscroll_wrap((double)(cur >> 2), dvq, 32.0);
     double dvh = S.off * 0.5 + (double)(cur & 1u) * 0.5;
-    double baseA = (double)(cur >> 1);                  /* HQ entries 1-2 */
-    double baseB = (double)(((cur >> 1) + 32u) & 63u);  /* HQ entries 3-4 (+0x20) */
-    double dvA = dvh, dvB = dvh;
-    if (baseA + dvA < 0.0)        dvA += 64.0;
-    else if (baseA + dvA >= 64.0) dvA -= 64.0;
-    if (baseB + dvB < 0.0)        dvB += 64.0;
-    else if (baseB + dvB >= 64.0) dvB -= 64.0;
-    s_tanim_dvhq[ct][0] = (float)dvA;
-    s_tanim_dvhq[ct][1] = (float)dvB;
+    s_tanim_dvhq[ct][0] = tscroll_wrap((double)(cur >> 1), dvh, 64.0);                  /* HQ entries 1-2 */
+    s_tanim_dvhq[ct][1] = tscroll_wrap((double)(((cur >> 1) + 32u) & 63u), dvh, 64.0);  /* HQ entries 3-4 (+0x20) */
+    /* 4x4 cell row r: ((scroll >> 1) + 16*r) & 0x3F (r_environment.s
+     * 0x8002A978-0x8002AA14); rows 0 and 2 share the quadrant groups' bases. */
+    for (uint32_t r = 0; r < 4u; r++)
+        s_tanim_dvcell[ct][r] = tscroll_wrap((double)(((cur >> 1) + 16u * r) & 63u), dvh, 64.0);
     s_tanim_act[ct] = 1;
     s_tanim_have = 1;
     if (dbg)
         fprintf(stderr, "[tanim f=%u pres=%u] tile=%u prev=%u cur=%u d=%d per=%.1fms "
                         "a=%.3f dvlq=%.3f dvhq=%.3f/%.3f paired=%d\n",
                 openpete_frame, s_vanim_pres, ct, S.prv, cur, S.d,
-                S.per_ms, S.a, dvq, dvA, dvB, paired);
+                S.per_ms, S.a, s_tanim_dvlq[ct], s_tanim_dvhq[ct][0], s_tanim_dvhq[ct][1], paired);
     return paired;
 }
 
@@ -3125,7 +3352,7 @@ static void tgpu_cover_globals_fill(openpete_tercache_globals* g);
  * eye plane — the identical regime every sphere-passing owned sector
  * renders in, so the plain chunks are exact by construction. */
 static int tgpu_near_box_clear(const tscache_t* SC, const int M[3][3],
-                               double camx, double camy, double camz) {
+                               double camx, double camy, double camz, double zt) {
     if (SC->vMinX > SC->vMaxX) return 0;             /* no verts decoded */
     const double s4 = SC->originX - camx, s5 = camy - SC->originY,
                  s6 = camz - SC->originZ;
@@ -3136,11 +3363,29 @@ static int tgpu_near_box_clear(const tscache_t* SC, const int M[3][3],
         double m1, m2, m3;
         ngte_mac(M, s5 - ys[(c >> 1) & 1], s6 - zs[(c >> 2) & 1],
                  xs[c & 1] + s4, &m1, &m2, &m3);
-        if (m3 < 16.0) return 0;
+        if (m3 < zt) return 0;
     }
     return 1;
 }
 static double s_tgpu_l3 = 1.0;        /* ||M row 2||/4096 (near-claim bound) */
+
+/* Does a sector take the near path this present? Every sector whose
+ * bounding sphere, refined by its vertex AABB, may bring a vertex inside the
+ * 16.0 view-Z the near claim guards (poly-anim sectors on the sphere alone).
+ * On a game with the 4x4 near-cell path, also every non-anim sector that may
+ * bring a vertex inside the tier-4 corner bound (near_corner / hqscale view-Z):
+ * only the near-variant twin bakes the cells, so a plain chunk never holds a
+ * face the classifier can route to tier 4. */
+static int tgpu_near_reach(const tscache_t* SC, const int M[3][3], double camx,
+                           double camy, double camz, double oc3) {
+    const double nearBound = s_tgpu_l3 * ((double)SC->radius + 16.0);
+    if (oc3 - nearBound < 16.0 &&
+        (SC->polyanim || !tgpu_near_box_clear(SC, M, camx, camy, camz, 16.0)))
+        return 1;
+    if (SC->polyanim || !game_layout.terrain.hq_cells4) return 0;
+    const double zt = (double)game_layout.terrain.near_corner / tface_hqscale();
+    return oc3 - nearBound < zt && !tgpu_near_box_clear(SC, M, camx, camy, camz, zt);
+}
 
 /* Near-variant chunks (the vertex-stage clip fan) for sectors whose geometry
  * can reach or cross the eye plane, instead of claiming them to the CPU walk.
@@ -3460,6 +3705,157 @@ static int tgpu_hdfold_face(const tmat* m,
     return a;
 }
 
+    /* HQ 2x2 subdivide variant (terrain_near_emit mirror): corners
+     * TL=i0, TR=i1, BL=i3, BR=i2 with RAW near colours; midpoint
+     * positions exact ((a+b)>>1 on even x4 sums), midpoint colours via
+     * the walk's (a+b)>>1; sub-quad q uses the HQ tile half at hq_sub0+q*8 with
+     * the D_8006D058 UV-orientation adjust; triangulation
+     * (TL,TR,BL)+(TR,BL,BR). Camera-space node values are rebuilt in
+     * the vertex stage from the parent corners + the role bits. */
+static int tgpu_bake_hq2(CPUState* cpu, tgpu_buf* buf, int ab, int with_var,
+                         const tgpu_face_t* T, const tgpu_corner_t k[4],
+                         const uint32_t nearC[4], const tsface_t* F,
+                         uint32_t hqBase, int hp_bucket, int hdfold, int* fail) {
+    tgpu_corner_t TL = k[0], TR = k[1], BL = k[3], BR = k[2];
+    TL.rgb_far = TL.rgb_near = nearC[0];
+    TR.rgb_far = TR.rgb_near = nearC[1];
+    BL.rgb_far = BL.rgb_near = nearC[3];
+    BR.rgb_far = BR.rgb_near = nearC[2];
+    tgpu_corner_t mT, mB, mL, mR, Cc;
+    memset(&mT, 0, sizeof(mT)); memset(&mB, 0, sizeof(mB));
+    memset(&mL, 0, sizeof(mL)); memset(&mR, 0, sizeof(mR));
+    memset(&Cc, 0, sizeof(Cc));
+    mT.p = tgpu_p4_mid(TL.p, TR.p); mT.rgb_far = tgpu_rgb_mid(TL.rgb_far, TR.rgb_far);
+    mB.p = tgpu_p4_mid(BL.p, BR.p); mB.rgb_far = tgpu_rgb_mid(BL.rgb_far, BR.rgb_far);
+    mL.p = tgpu_p4_mid(TL.p, BL.p); mL.rgb_far = tgpu_rgb_mid(TL.rgb_far, BL.rgb_far);
+    mR.p = tgpu_p4_mid(TR.p, BR.p); mR.rgb_far = tgpu_rgb_mid(TR.rgb_far, BR.rgb_far);
+    Cc.p = tgpu_p4_mid(mT.p, mB.p); Cc.rgb_far = tgpu_rgb_mid(mT.rgb_far, mB.rgb_far);
+    /* prev twin midpoints (HQ node positions derive from the lerped
+     * PARENT corners in-shader; these per-vertex values are unread
+     * for hqv verts but kept coherent). */
+    mT.pp = tgpu_p4_mid(TL.pp, TR.pp); mB.pp = tgpu_p4_mid(BL.pp, BR.pp);
+    mL.pp = tgpu_p4_mid(TL.pp, BL.pp); mR.pp = tgpu_p4_mid(TR.pp, BR.pp);
+    Cc.pp = tgpu_p4_mid(mT.pp, mB.pp);
+    mT.rgb_near = mT.rgb_far; mB.rgb_near = mB.rgb_far;
+    mL.rgb_near = mL.rgb_far; mR.rgb_near = mR.rgb_far;
+    Cc.rgb_near = Cc.rgb_far;
+    tgpu_corner_t sq[4][4] = {
+        { TL, mT, mL, Cc },   /* SQ0 [TL,TR,BL,BR] order */
+        { mT, TR, Cc, mR },
+        { mL, Cc, BL, mB },
+        { Cc, mR, mB, BR },
+    };
+    for (int q = 0; q < 4; q++) {
+        tmat m; float u[4], v[4];
+        memset(&m, 0, sizeof(m)); m.bpp = 16;
+        uint32_t e = hqBase + game_layout.terrain.hq_sub0 + (uint32_t)q * 8u;
+        decode_tiledef(cpu, e, F->abe, &m, u, v);
+        tiledef_apply_ori(cpu, e, u, v);   /* rotated/flipped HQ tiles */
+        tgpu_face_t H = *T;
+        /* HQ variant + sub-quad + the HQ RECORD's scroll tile id
+         * (the near-emit's dv lookup keys on hq_idx, not tb;
+         * hq_idx is w2 & 0x7F, always in range). */
+        H.flags16 = (uint16_t)(1u | ((uint16_t)q << 1)
+                  | (((uint32_t)F->hq_idx & 0x7Fu) << 5) | 0x1000u
+                  | (m.blend ? 0x4000u : 0u));   /* cover-drop key */
+        /* HQ cells are sub-quads of this HP face: same Tiledef, so
+         * the same bucket (the pack overwrites the whole word). */
+        H.matf0 = tgpu_pack_mat0(&m) | ((uint32_t)hp_bucket << 24);
+        H.matf1 = (uint32_t)(m.clut_raw & 0xFFFF);
+        H.matn0 = 0; H.matn1 = 0;   /* near cells never re-select */
+        tgpu_corner_t c0 = sq[q][0], c1 = sq[q][1], c2 = sq[q][2], c3 = sq[q][3];
+        c0.uf = (uint8_t)u[0]; c0.vf = (uint8_t)v[0]; c0.role = 0;
+        c1.uf = (uint8_t)u[1]; c1.vf = (uint8_t)v[1]; c1.role = 1;
+        c2.uf = (uint8_t)u[2]; c2.vf = (uint8_t)v[2]; c2.role = 2;
+        c3.uf = (uint8_t)u[3]; c3.vf = (uint8_t)v[3]; c3.role = 3;
+        if (hdfold) {   /* HQ tiles replace like any textured half */
+            float uA[3] = { u[0], u[1], u[2] }, vA[3] = { v[0], v[1], v[2] };
+            float uB[3] = { u[1], u[2], u[3] }, vB[3] = { v[1], v[2], v[3] };
+            int hd = tgpu_hdfold_face(&m, uA, vA, uB, vB);
+            if (hd < 0) { *fail = 5; return -1; }
+            H.matf1 |= (uint32_t)hd << 16;
+        }
+        int ha = tgpu_arena_of(&m);
+        if (tgpu_emit_face_tri(buf, ha, ab, with_var, &H, c0, c1, c2, 0) != 0) return -1;
+        if (tgpu_emit_face_tri(buf, ha, ab, with_var, &H, c1, c2, c3, 1) != 0) return -1;
+    }
+    return 0;
+}
+
+/* One node colour of the 4x4 grid: nc4_pt's halving order on tgpu_rgb_mid. */
+static uint32_t tgpu_rgb_pt(uint32_t a, uint32_t b, int k) {
+    if (k == 0) return a;
+    if (k == 4) return b;
+    uint32_t m = tgpu_rgb_mid(a, b);
+    return k == 2 ? m : tgpu_rgb_mid(k == 1 ? a : b, m);
+}
+
+/* Emit one 4x4-cell triangle. The cells bake only where a tier-4 face can
+ * draw from the chunk: the near-variant twin (every non-anim sector with a
+ * vertex inside the tier-4 corner bound takes it, tgpu_near_reach) and the
+ * poly-anim chunk (those sectors have no near twin). */
+static int tgpu_emit_cell_tri(tgpu_buf* buf, int arena, int ab, int with_var,
+                              const tgpu_face_t* F, tgpu_corner_t a,
+                              tgpu_corner_t c1, tgpu_corner_t c2, int tri2) {
+    if (ab && tgpu_emit_tri(&buf[arena + ab], F, a, c1, c2, tri2) != 0) return -1;
+    if (with_var && tgpu_emit_tri_near(&buf[arena + (int)OPTC_ARENA_NEAR_BASE],
+                                       F, a, c1, c2, tri2) != 0) return -1;
+    return 0;
+}
+
+/* 4x4 cell variant (nc4_emit_cells mirror) of an HQ-eligible quad the
+ * classifier can route to tier 4 (near_flag_tier2 clear): 16 cells, cell i
+ * textured from the 16x16 tile at hq_cells4 + i*8, node colours from the
+ * raw near corner colours by the drain's halving order. Node positions,
+ * the snap, the interior morph, the key and the straddler facing are
+ * rebuilt in the vertex stage from the transformed parent corners; a vertex
+ * carries its cell in mat_near1 (bit 31 set, cell in bits 0-3) and its
+ * corner slot in the flags16 role bits. */
+static int tgpu_bake_cells4(CPUState* cpu, tgpu_buf* buf, int ab, int with_var,
+                            const tgpu_face_t* T, const uint32_t nearC[4],
+                            const tsface_t* F, uint32_t hqBase, int hp_bucket,
+                            int hdfold, int* fail) {
+    if (!game_layout.terrain.hq_cells4 || tface_near_tier2(F->w3)) return 0;
+    if (!ab && !with_var) return 0;
+    uint32_t col[5][5];
+    for (int r = 0; r < 5; r++) {
+        uint32_t L = tgpu_rgb_pt(nearC[0], nearC[3], r), R = tgpu_rgb_pt(nearC[1], nearC[2], r);
+        for (int c = 0; c < 5; c++) col[r][c] = tgpu_rgb_pt(L, R, c);
+    }
+    for (int i = 0; i < 16; i++) {
+        int r = i >> 2, c = i & 3;
+        tmat m; float u[4], v[4];
+        memset(&m, 0, sizeof(m)); m.bpp = 16;
+        uint32_t e = hqBase + game_layout.terrain.hq_cells4 + (uint32_t)i * 8u;
+        decode_tiledef_span(cpu, e, F->abe, &m, u, v, 0x0F);
+        tiledef_apply_ori(cpu, e, u, v);
+        tgpu_face_t H = *T;
+        H.flags16 = (uint16_t)(1u | (((uint32_t)F->hq_idx & 0x7Fu) << 5) | 0x1000u
+                  | (m.blend ? 0x4000u : 0u));
+        H.matf0 = tgpu_pack_mat0(&m) | ((uint32_t)hp_bucket << 24);
+        H.matf1 = (uint32_t)(m.clut_raw & 0xFFFF);
+        H.matn0 = 0; H.matn1 = 0x80000000u | (uint32_t)i;
+        tgpu_corner_t k[4];
+        memset(k, 0, sizeof(k));
+        for (int q = 0; q < 4; q++) {
+            k[q].p = T->c[0]; k[q].pp = T->pc[0];   /* unread: nodes rebuild in-shader */
+            k[q].rgb_far = k[q].rgb_near = col[r + (q >> 1)][c + (q & 1)];
+            k[q].uf = (uint8_t)u[q]; k[q].vf = (uint8_t)v[q];
+            k[q].role = (uint8_t)q;
+        }
+        if (hdfold) {
+            float uA[3] = { u[0], u[1], u[2] }, vA[3] = { v[0], v[1], v[2] };
+            float uB[3] = { u[1], u[2], u[3] }, vB[3] = { v[1], v[2], v[3] };
+            int hd = tgpu_hdfold_face(&m, uA, vA, uB, vB);
+            if (hd < 0) { *fail = 5; return -1; }
+            H.matf1 |= (uint32_t)hd << 16;
+        }
+        int ha = tgpu_arena_of(&m);
+        if (tgpu_emit_cell_tri(buf, ha, ab, with_var, &H, k[0], k[1], k[2], 0) != 0) return -1;
+        if (tgpu_emit_cell_tri(buf, ha, ab, with_var, &H, k[1], k[2], k[3], 1) != 0) return -1;
+    }
+    return 0;
+}
 /* Build all of one sector's chunks. Returns 0 on success, 1 arena-full,
  * 2 scroll-anim claim (the flat/HQ UV-scroll rides a fractional per-present
  * accumulator lerp the mesh cannot bake), 5 = HD-fold unbakeable face (see
@@ -3649,78 +4045,11 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
             }
             if (tgpu_emit_face_tri(buf, da, ab, with_var, &T, k[0], k[1], k[2], 0) != 0) goto done;
         }
-        /* HQ 2x2 subdivide variant (terrain_near_emit mirror): corners
-         * TL=i0, TR=i1, BL=i3, BR=i2 with RAW near colours; midpoint
-         * positions exact ((a+b)>>1 on even x4 sums), midpoint colours via
-         * the walk's (a+b)>>1; sub-quad q uses the HQ tile half at hq_sub0+q*8 with
-         * the D_8006D058 UV-orientation adjust; triangulation
-         * (TL,TR,BL)+(TR,BL,BR). Camera-space node values are rebuilt in
-         * the vertex stage from the parent corners + the role bits. */
         if (hq_elig) {
-            tgpu_corner_t TL = k[0], TR = k[1], BL = k[3], BR = k[2];
-            TL.rgb_far = TL.rgb_near = nearC[0];
-            TR.rgb_far = TR.rgb_near = nearC[1];
-            BL.rgb_far = BL.rgb_near = nearC[3];
-            BR.rgb_far = BR.rgb_near = nearC[2];
-            tgpu_corner_t mT, mB, mL, mR, Cc;
-            memset(&mT, 0, sizeof(mT)); memset(&mB, 0, sizeof(mB));
-            memset(&mL, 0, sizeof(mL)); memset(&mR, 0, sizeof(mR));
-            memset(&Cc, 0, sizeof(Cc));
-            mT.p = tgpu_p4_mid(TL.p, TR.p); mT.rgb_far = tgpu_rgb_mid(TL.rgb_far, TR.rgb_far);
-            mB.p = tgpu_p4_mid(BL.p, BR.p); mB.rgb_far = tgpu_rgb_mid(BL.rgb_far, BR.rgb_far);
-            mL.p = tgpu_p4_mid(TL.p, BL.p); mL.rgb_far = tgpu_rgb_mid(TL.rgb_far, BL.rgb_far);
-            mR.p = tgpu_p4_mid(TR.p, BR.p); mR.rgb_far = tgpu_rgb_mid(TR.rgb_far, BR.rgb_far);
-            Cc.p = tgpu_p4_mid(mT.p, mB.p); Cc.rgb_far = tgpu_rgb_mid(mT.rgb_far, mB.rgb_far);
-            /* prev twin midpoints (HQ node positions derive from the lerped
-             * PARENT corners in-shader; these per-vertex values are unread
-             * for hqv verts but kept coherent). */
-            mT.pp = tgpu_p4_mid(TL.pp, TR.pp); mB.pp = tgpu_p4_mid(BL.pp, BR.pp);
-            mL.pp = tgpu_p4_mid(TL.pp, BL.pp); mR.pp = tgpu_p4_mid(TR.pp, BR.pp);
-            Cc.pp = tgpu_p4_mid(mT.pp, mB.pp);
-            mT.rgb_near = mT.rgb_far; mB.rgb_near = mB.rgb_far;
-            mL.rgb_near = mL.rgb_far; mR.rgb_near = mR.rgb_far;
-            Cc.rgb_near = Cc.rgb_far;
-            tgpu_corner_t sq[4][4] = {
-                { TL, mT, mL, Cc },   /* SQ0 [TL,TR,BL,BR] order */
-                { mT, TR, Cc, mR },
-                { mL, Cc, BL, mB },
-                { Cc, mR, mB, BR },
-            };
             uint32_t hqBase = hqTable + (uint32_t)F->hq_idx * game_layout.terrain.hq_stride;
-            for (int q = 0; q < 4; q++) {
-                tmat m; float u[4], v[4];
-                memset(&m, 0, sizeof(m)); m.bpp = 16;
-                uint32_t e = hqBase + game_layout.terrain.hq_sub0 + (uint32_t)q * 8u;
-                decode_tiledef(cpu, e, F->abe, &m, u, v);
-                tiledef_apply_ori(cpu, e, u, v);   /* rotated/flipped HQ tiles */
-                tgpu_face_t H = T;
-                /* HQ variant + sub-quad + the HQ RECORD's scroll tile id
-                 * (the near-emit's dv lookup keys on hq_idx, not tb;
-                 * hq_idx is w2 & 0x7F, always in range). */
-                H.flags16 = (uint16_t)(1u | ((uint16_t)q << 1)
-                          | (((uint32_t)F->hq_idx & 0x7Fu) << 5) | 0x1000u
-                          | (m.blend ? 0x4000u : 0u));   /* cover-drop key */
-                /* HQ cells are sub-quads of this HP face: same Tiledef, so
-                 * the same bucket (the pack overwrites the whole word). */
-                H.matf0 = tgpu_pack_mat0(&m) | ((uint32_t)hp_bucket << 24);
-                H.matf1 = (uint32_t)(m.clut_raw & 0xFFFF);
-                H.matn0 = 0; H.matn1 = 0;   /* near cells never re-select */
-                tgpu_corner_t c0 = sq[q][0], c1 = sq[q][1], c2 = sq[q][2], c3 = sq[q][3];
-                c0.uf = (uint8_t)u[0]; c0.vf = (uint8_t)v[0]; c0.role = 0;
-                c1.uf = (uint8_t)u[1]; c1.vf = (uint8_t)v[1]; c1.role = 1;
-                c2.uf = (uint8_t)u[2]; c2.vf = (uint8_t)v[2]; c2.role = 2;
-                c3.uf = (uint8_t)u[3]; c3.vf = (uint8_t)v[3]; c3.role = 3;
-                if (hdfold) {   /* HQ tiles replace like any textured half */
-                    float uA[3] = { u[0], u[1], u[2] }, vA[3] = { v[0], v[1], v[2] };
-                    float uB[3] = { u[1], u[2], u[3] }, vB[3] = { v[1], v[2], v[3] };
-                    int hd = tgpu_hdfold_face(&m, uA, vA, uB, vB);
-                    if (hd < 0) { fail = 5; goto done; }
-                    H.matf1 |= (uint32_t)hd << 16;
-                }
-                int ha = tgpu_arena_of(&m);
-                if (tgpu_emit_face_tri(buf, ha, ab, with_var, &H, c0, c1, c2, 0) != 0) goto done;
-                if (tgpu_emit_face_tri(buf, ha, ab, with_var, &H, c1, c2, c3, 1) != 0) goto done;
-            }
+            if (tgpu_bake_hq2(cpu, buf, ab, with_var, &T, k, nearC, F, hqBase, hp_bucket, hdfold, &fail) != 0
+             || tgpu_bake_cells4(cpu, buf, ab, with_var, &T, nearC, F, hqBase, hp_bucket, hdfold, &fail) != 0)
+                goto done;
         }
     }
 
@@ -4951,9 +5280,13 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                 ngte_cvert BL = { sv[i3].m1, sv[i3].m2, sv[i3].m3, r3, 0, 0 };
                 ngte_cvert BR = { sv[i2].m1, sv[i2].m2, sv[i2].m3, r2, 0, 0 };
                 int spikeTri0 = W->tri_n;
-                terrain_near_emit(W, cpu,
-                                  hqTable + (uint32_t)F->hq_idx * game_layout.terrain.hq_stride,
-                                  F->hq_idx, abe, TL, TR, BL, BR);
+                const tn_nearface nf = {
+                    .hqBase = hqTable + (uint32_t)F->hq_idx * game_layout.terrain.hq_stride,
+                    .rec = faces + (uint32_t)f * 16u, .w3 = hqW3,
+                    .texid = F->hq_idx, .abe = abe,
+                    .straddle = straddle, .flip = flip, .dside = F->dside,
+                };
+                terrain_near_emit_face(W, cpu, &nf, TL, TR, BL, BR);
                 W->dbg_spike_tris += W->tri_n - spikeTri0;
                 W->dbg_spike++;   /* near/HQ cells subdivided */
                 FARDBG_DROP("nearhq");  /* emitted subdivided — the face-set
@@ -5151,6 +5484,7 @@ static uint32_t tc_global_flags(int nearhq, int lod_handoff) {
          | (hq_pin_active()   ? OPTC_GF_HQPIN   : 0u)
          | (game_layout.terrain.ladder_nearest_corner ? OPTC_GF_LADNEAR : 0u)
          | (game_layout.terrain.nearband_ot_keys      ? OPTC_GF_NBKEYS  : 0u)
+         | (game_layout.terrain.hq_cells4             ? OPTC_GF_CELLS4  : 0u)
          | ((s_otbias_on && openpete_native_key_resolve_on()) ? OPTC_GF_KEYON : 0u);
 }
 
@@ -5565,6 +5899,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                     tcg.scroll_dv[t][0] = s_tanim_dvlq[t];
                     tcg.scroll_dv[t][1] = s_tanim_dvhq[t][0];
                     tcg.scroll_dv[t][2] = s_tanim_dvhq[t][1];
+                    memcpy(tcg.scroll_dvc[t], s_tanim_dvcell[t], sizeof(tcg.scroll_dvc[t]));
                 }
         tcg.fog_ref_base = fogRefBase;
         tcg.cull_ref_s2  = cullRefS2;
@@ -5800,8 +6135,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                  * near-clip and near-band HQ semantics. */
                 s_tgpu_own[vi] = 2;
                 s_tgcl_nodraw++;
-            } else if (oc3 - nearBound < 16.0 &&
-                       (SC->polyanim || !tgpu_near_box_clear(SC, M, camx, camy, camz))) {
+            } else if (tgpu_near_reach(SC, M, camx, camy, camz, oc3)) {
                 /* Sphere-crossing sector: refined by the vertex AABB. The
                  * sphere bound (centre - l3*(radius+16)) inflates in every
                  * direction, so ~1/5 of the sectors it flags provably keep

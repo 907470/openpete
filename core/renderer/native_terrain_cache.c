@@ -144,6 +144,7 @@ typedef struct {
     double  cov_abc[6][4]; /* screen inv-vz plane fit a, b, c; w = pn     */
     float   cov_bbox[6][4];/* outline screen bbox x0, y0, x1, y1          */
     float   cov_poly[96][4];/* outline points (px, py, 0, 0), 16 per plane */
+    float   sdvc[128][4];  /* per-tile 4x4 near-cell row V offsets (rows 0-3) */
 } tc_globals_ubo;
 
 typedef struct {
@@ -1091,6 +1092,7 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
     gu->fog[1] = (int32_t)g->gflags;
     gu->fog[2] = g->cull_ref_s2;
     memcpy(gu->sdv, g->scroll_dv, sizeof(gu->sdv));
+    memcpy(gu->sdvc, g->scroll_dvc, sizeof(gu->sdvc));
     gu->rim_cnt[0]  = g->rim_n;
     gu->rim_oxyH[0] = g->rim_ofx;
     gu->rim_oxyH[1] = g->rim_ofy;

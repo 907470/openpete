@@ -125,6 +125,10 @@ enum {
                                    * near/HQ-classified faces key through the
                                    * ordinary OT insert (authored slots kept,
                                    * key emitted); clear = contest-only      */
+#define OPTC_GF_CELLS4     2048u  /* game_layout.terrain.hq_cells4 != 0: a tier-4
+                                   * face (a corner SZ3 under near_corner, word
+                                   * 3 near_flag_tier2 clear) draws its 4x4
+                                   * cell variant instead of the 2x2          */
 
 /* face_flags bit layout lives with rhi_terrain_vertex in rhi.h. */
 #define OPTC_SLOT_DEAD     511u
@@ -156,6 +160,9 @@ typedef struct {
      * All zero on canonical builds (whole-texel committed decode). Faces
      * carry their tile id in flags16; the vertex stage adds the offset. */
     float   scroll_dv[128][4];
+    /* [r] = the 4x4 near-cell row r's V offset: that row's tiles carry
+     * ((scroll >> 1) + 16*r) & 0x3F, wrapped like [1]/[2]. */
+    float   scroll_dvc[128][4];
     /* Portal inner-rim cull mirror (portal_rim_classify in the vertex
      * stage): the per-plane frames rim_frames_derive builds once per feed,
      * plus the classifier's knob values, all fp64. rim_n = 0 disables the

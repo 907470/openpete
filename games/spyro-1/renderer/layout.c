@@ -109,6 +109,10 @@ const game_layout_t game_layout = {
         .hq_stride    = 168u,                       /* the sibling HQ record */
         .hq_sub0      = 8u,                         /* entry 0 is the detail-path base;
                                                      * the 2x2 quadrants are entries 1..4 */
+        .hq_cells4    = 0x28u,                      /* the 16 cell tiles are entries 5..20:
+                                                     * r_environment.s 0x80029210 steps the
+                                                     * record pointer past entry 0 and the
+                                                     * quadrants before the cell loop */
         .abe_in_tpage = 0,
         .tile_word1_br = 0,
         .lod_dist_default = 0u,
