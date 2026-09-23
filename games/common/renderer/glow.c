@@ -112,7 +112,7 @@ static int glow_prim_sink(void* ctx, const ngte_prim* s) {
     (void)ctx;
     if (s_item_n >= GLOW_MAX_PRIMS) return 0;
     s_item[s_item_n].p = *s;
-    s_item[s_item_n].depth = 0.0f;
+    s_item[s_item_n].depth = 1.0f;   /* unpaired: the near guard (view-Z 1) */
     s_item[s_item_n].paired = 0;
     s_item[s_item_n].blend = 0;
     s_item[s_item_n].dx = 0.0f;
@@ -153,10 +153,10 @@ static float glow_record_depth(double m3, int bias) {
     int key = (int)((uint32_t)(int32_t)m3 >> 7) - bias;
     if (key < 0) {
         if (GW.front_bias >= 0 && bias == GW.front_bias)
-            return openpete_native_depth_from_viewz(openpete_worldvz_full(1.0f));
+            return openpete_native_scene_viewz(openpete_worldvz_full(1.0f));
         key = 0;
     }
-    return openpete_native_depth_from_viewz(openpete_worldvz_owner_slot(key + GW.owner_offset));
+    return openpete_native_scene_viewz(openpete_worldvz_owner_slot(key + GW.owner_offset));
 }
 
 /* Re-walk the pool and mirror the routine's rejects, appending one depth per
@@ -218,14 +218,14 @@ static void glow_pair_depths(CPUState* cpu, const ngte_view* v) {
     const int pair = (s_accepted == s_groups && s_groups <= GLOW_MAX_PRIMS);
 
     int g = -1, blend = 0;
-    float depth = 0.0f;
+    float depth = 1.0f;   /* unpaired: the near guard (view-Z 1) */
     for (int i = 0; i < s_item_n; i++) {
         if (s_item[i].p.code == GLOW_DRMODE) {
             g++;
             /* The draw-mode word's semi-transparency rate, bits 5 and 6. */
             blend = ngte_abr_blend((int)((s_item[i].p.raw[1] >> 5) & 3u),
                                    NGTE_ABR_QUARTER_AS_ADD);
-            depth = pair ? pred[g].depth : 0.0f;
+            depth = pair ? pred[g].depth : 1.0f;
             continue;
         }
         if (g < 0) continue;                  /* a triangle before any draw mode */
@@ -257,6 +257,9 @@ static void glow_feed_native(void) {
             st.v[k].sx = (float)p->x[k] + s_item[i].dx;
             st.v[k].sy = (float)p->y[k] + s_item[i].dy;
             st.v[k].z = s_item[i].depth;
+            /* The fan is flat in view-Z, so any constant W interpolates its
+             * colour screen-linearly: the slot view-Z serves as W. */
+            st.v[k].pvz = s_item[i].depth;
             st.v[k].u = 0.0f; st.v[k].v = 0.0f;
             st.v[k].rgba = (p->rgb[k] & 0xFFFFFFu) | 0xFF000000u;
         }

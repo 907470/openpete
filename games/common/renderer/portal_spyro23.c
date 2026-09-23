@@ -231,10 +231,10 @@ static void p3_emit_tri(const p3_v* a, const p3_v* b, const p3_v* c, float offx,
     openpete_scene_tri t = {0};
     const p3_v* v[3] = { a, b, c };
     openpete_worldvz wz = openpete_worldvz_scaled(depth_world, 1.0f);
-    float z = openpete_native_depth_from_viewz(wz);
+    float z = openpete_native_scene_viewz(wz);
     for (int k = 0; k < 3; k++) {
         t.v[k].sx = v[k]->x + offx; t.v[k].sy = v[k]->y + offy;
-        t.v[k].z = z; t.v[k].pvz = wz.vz;
+        t.v[k].z = z; t.v[k].pvz = z;
         t.v[k].u = 0.0f; t.v[k].v = 0.0f;
         t.v[k].rgba = (v[k]->rgb & 0xFFFFFFu) | 0xFF000000u;
     }

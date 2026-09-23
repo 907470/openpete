@@ -253,9 +253,9 @@ int  openpete_native_get_terrain_visibility(void);
 
 /* One vertex of game-supplied FPS-overlay geometry, in a resolution-independent
  * overlay space: x/y are in units of WINDOW HEIGHT (origin = top-left, +y down,
- * so x and y share one scale → digits stay square at any aspect); z is a depth
- * in [0,1) for the overlay's own mini depth pass (smaller = nearer). rgba is
- * byte order R,G,B,A. */
+ * so x and y share one scale → digits stay square at any aspect); z is a
+ * view-Z (>= 1, the scene vertex unit) for the overlay's own mini depth pass
+ * (smaller = nearer). rgba is byte order R,G,B,A. */
 typedef struct { float x, y, z; uint32_t rgba; } openpete_hud_vert;
 
 /* Hand the native renderer overlay geometry built from the game's own 3D
@@ -409,9 +409,11 @@ void openpete_native_set_draw_clip(int x, int y, int w, int h);
  * Determinism-safe: this is host-side display state only; the game's push
  * reads gamestate but writes nothing PSX-readable. Inert unless the native
  * path is live. */
-/* z is the depth used for the native depth buffer (3a.3): NDC [0,1], 0=near,
- * 1=far. Actors map their view-space Z through openpete_native_depth_from_viewz;
- * the cyclorama/sky passes 1.0 (always the backdrop). */
+/* z is the ORDERING view-Z the native depth buffer is written from (3a.3):
+ * full-world view-Z, >= 1 (see openpete_native_scene_viewz). Actors map their
+ * view-space Z through openpete_native_scene_viewz; the cyclorama/sky passes
+ * OPENPETE_DEPTH_VIEWZ_FAR (always the backdrop); screen-space 2D content
+ * passes 1.0. */
 /* u,v are texel coords within the texture page (PSX integer texel space, 0..255)
  * — only meaningful when the tri is textured. */
 /* pvz is the TRUE full-world view-Z of this vertex — the perspective W the
@@ -422,8 +424,10 @@ void openpete_native_set_draw_clip(int x, int y, int w, int h);
  * pulls the whole player 2488 world units so its nearest vertex sits on the
  * near plane — W varies 2:1 across a face that truly spans 1.01:1, smearing one
  * texel over the snout. State the real view-Z here and `z` stays free to encode
- * ordering. 0 = no shift applied: W is derived from `z` (the historical
- * behaviour, exact for every unbiased feeder). */
+ * ordering. MANDATORY (> 0): an unshifted feeder states the same value as `z`;
+ * screen-space 2D content states 1.0. A vertex that reaches
+ * openpete_native_scene_add_tri with pvz <= 0 is counted
+ * (openpete_native_scene_pvz_missing) and takes its `z`. */
 typedef struct { float sx, sy, z; float u, v; uint32_t rgba; float pvz; } openpete_scene_vert;
 /* A scene triangle. When `textured` is 0 it is gouraud-shaded from the vertex
  * rgba (the cyclorama, and untextured moby faces). When 1, it samples the PSX
@@ -651,16 +655,16 @@ typedef struct {
 #define OPENPETE_SCENE_RANK_ACTOR (-1.0f)
 #define OPENPETE_SCENE_RANK_AURA  (-2.0f)
 
-/* ---- view-Z → depth-buffer conversion: the ONE named point (W0.7b) --------
+/* ---- scene view-Z: the ONE named point (W0.7b) ------------------------------
  *
- * The native depth buffer stores z = vz / (vz + OPENPETE_DEPTH_VIEWZ_SCALE),
- * 0(near)..→1(far), monotonic in distance, where vz is FULL-WORLD view-space Z
- * (the GTE MAC3 of full-world camera-relative coords; larger = farther,
- * 1.0 == 4096 GTE units). Not perspective-exact — the native render needs
- * correct ORDERING, not PSX-bit-identical Z; 4096 spreads typical actor depths
- * across the usable range.
+ * The scene vertex stream carries depth as FULL-WORLD view-space Z (the GTE
+ * MAC3 of full-world camera-relative coords; larger = farther, 1.0 == one GTE
+ * unit), unencoded. The vertex stages clamp it to [1, OPENPETE_DEPTH_VIEWZ_FAR]
+ * and derive the depth-buffer value from it: 1 - 1/vz (screen-affine, the
+ * default), or vz / (vz + OPENPETE_DEPTH_VIEWZ_SCALE) under
+ * OPENPETE_DEPTH_AFFINE=0. Both are monotonic in distance, 0(near)..→1(far).
  *
- * The conversion takes an openpete_worldvz, which can ONLY be built through
+ * The feed takes an openpete_worldvz, which can ONLY be built through
  * the unit-claiming constructors below — a bare float is a compile error. A
  * GTE path that produces sub-scaled Z must normalize through _scaled naming
  * its unit. This enforces the "every feeder hands in the SAME absolute scale"
@@ -672,10 +676,18 @@ typedef struct {
  *   particles (world)  world/4 — normalized at build (PART_VZ_WORLD4); feeds _full
  *   spyro / flame / tracer / portal / glows  full-world  → _full
  *
- * GPU mirrors of this mapping / its inverse (keep in sync if the constant
- * ever changes): core/rhi/shaders/psx_scene.vert, quad.vert, prepass.vert,
- * shadow_decal.frag (viewz_from_scene_depth). */
+ * GPU mirrors of the clamp and the depth curves: core/rhi/shaders/psx_viewz.glsl
+ * (included by psx_scene.vert, quad.vert, prepass.vert, terrain_key.vert,
+ * shadow_decal_tex.vert and terrain.vert). */
+/* The hyperbolic curve's scale: 1.0 == 4096 GTE units spreads typical actor
+ * depths across the usable range. The key images and the legacy scene depth
+ * (OPENPETE_DEPTH_AFFINE=0) store z = vz / (vz + OPENPETE_DEPTH_VIEWZ_SCALE). */
 #define OPENPETE_DEPTH_VIEWZ_SCALE 4096.0f
+/* The farthest view-Z the vertex stages keep: the clamp bounds W. Its value is
+ * 4096 * 0.9999 / (1 - 0.9999) in float, the view-Z whose hyperbolic depth is
+ * 0.9999. Under the screen-affine curve it writes depth 1.0 (1 - 1/W rounds
+ * to 1 at this magnitude), the backdrop value: the cyclorama feeds it. */
+#define OPENPETE_DEPTH_VIEWZ_FAR 0x1.386abap+25f
 
 /* A full-world view-Z. Only the constructors below produce one. */
 typedef struct { float vz; } openpete_worldvz;
@@ -744,10 +756,10 @@ static inline openpete_worldvz openpete_worldvz_owner_slot(int owner_slot) {
     return openpete_worldvz_full((float)((double)owner_slot * OPENPETE_OT_SLOT_VZ
                                          - OPENPETE_MOBY_TIE_PULL_VZ));
 }
-static inline float openpete_native_depth_from_viewz(openpete_worldvz z) {
-    float vz = z.vz;
-    if (vz < 1.0f) vz = 1.0f;              /* near guard (behind-camera is culled) */
-    return vz / (vz + OPENPETE_DEPTH_VIEWZ_SCALE);  /* 0(near) .. ->1(far), never reaches 1 */
+/* The scene vertex depth (openpete_scene_vert.z / .pvz) of a view-Z:
+ * near-guarded at 1 (behind-camera geometry is culled upstream). */
+static inline float openpete_native_scene_viewz(openpete_worldvz z) {
+    return z.vz < 1.0f ? 1.0f : z.vz;
 }
 
 /* ---- depth-aware shadow decal (height-above-ground wall rejection) ----------
@@ -923,6 +935,9 @@ void openpete_native_scene_add_tri(const openpete_scene_tri *tri, int category, 
  * the explicit category/carry args). */
 void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int category,
                                            int carry, int group);
+/* Scene vertices that reached add_tri without a true view-Z (pvz <= 0) since
+ * boot; each took its ordering view-Z. 0 when every feeder states pvz. */
+unsigned openpete_native_scene_pvz_missing(void);
 
 /* Sticky per-tri origin stamped by add_tri until changed (same ambient-state
  * pattern as set_tag; set 0 when leaving the emit loop). 1 marks a triangle the

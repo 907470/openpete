@@ -60,10 +60,17 @@
 #define TXT_GAP       0.004f   /* gap between glyphs (window-height frac) */
 #define TXT_SPACE     0.011f   /* advance for a space / missing glyph (frac) */
 
-/* depth band: map model Z (~±24) to a thin slice around the middle so a glyph's
- * own faces z-sort (front, +Z, nearer = smaller depth) without being huge. */
+/* depth band: map model Z (~±24) to a thin slice of view-Z around 4096 so a
+ * glyph's own faces z-sort (front, +Z, nearer = smaller view-Z) without being
+ * huge. The slice is linear in model Z on the hyperbolic curve
+ * d = vz / (vz + 4096): d = TXT_DEPTH_MID - mz * TXT_DEPTH_K, and the view-Z is
+ * that curve's inverse 4096 * d / (1 - d). */
 #define TXT_DEPTH_MID 0.5f
 #define TXT_DEPTH_K   0.0016f
+static float txt_depth_vz(float d)
+{
+    return OPENPETE_DEPTH_VIEWZ_SCALE * d / (1.0f - d);
+}
 
 /* Screen mapping signs of the host form: +X runs right and +Y down, so both
  * pass through as +1. */
@@ -661,7 +668,7 @@ static float emit_glyph(emit_ctx_t* cx, int slot, float cursor_x, float center_y
         float gx_local = (TXT_XSIGN < 0.0f) ? (vxmax - vx_r) : (vx_r - vxmin);
         cx->gx[i] = cursor_x + gx_local * scale;
         cx->gy[i] = center_y + TXT_YSIGN * my * scale;
-        cx->gz[i] = TXT_DEPTH_MID - mz * TXT_DEPTH_K;        /* front nearer */
+        cx->gz[i] = txt_depth_vz(TXT_DEPTH_MID - mz * TXT_DEPTH_K);   /* front nearer */
     }
     for (int f = 0; f < fcount; f++) {
         int i0 = g->fi[f][0], i1 = g->fi[f][1], i2 = g->fi[f][2], i3 = g->fi[f][3];
@@ -1043,7 +1050,7 @@ static int emit_lit_border(const emit_ctx_t* ecx,
                            float x0, float y0, float x1, float y1, float thickness,
                            openpete_hud_vert* out, int cap) {
     const float cx = 0.5f * (x0 + x1), cy = 0.5f * (y0 + y1);
-    const float bt = thickness, z = TXT_DEPTH_MID;
+    const float bt = thickness, z = txt_depth_vz(TXT_DEPTH_MID);
     const int   S  = MENU_BORDER_SAMP;
     /* {outerA, outerB, innerA, innerB} per strip; inner = outer inset by bt. */
     const float strip[4][8] = {

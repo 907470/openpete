@@ -106,6 +106,7 @@ static void emit_tri(double ax, double ay, double az, uint32_t acol,
     st.v[0].sx = (float)ax; st.v[0].sy = (float)ay; st.v[0].z = (float)az; st.v[0].rgba = acol | 0xFF000000u;
     st.v[1].sx = (float)bx; st.v[1].sy = (float)by; st.v[1].z = (float)bz; st.v[1].rgba = bcol | 0xFF000000u;
     st.v[2].sx = (float)cx; st.v[2].sy = (float)cy; st.v[2].z = (float)cz; st.v[2].rgba = ccol | 0xFF000000u;
+    for (int k = 0; k < 3; k++) st.v[k].pvz = st.v[k].z;   /* true per-vertex view-Z */
     openpete_native_scene_add_tri(&st, OPENPETE_SCENE_ACTOR, 0);  /* category ignored for blend!=0 */
 }
 
@@ -169,8 +170,8 @@ static void tracer_build_and_feed(CPUState* cpu) {
             double c1x = sx - px, c1y = sy - py;
             emitted++;
             if (emitted >= 2 && havePrev && vz < 256000.0) {
-                double dz = openpete_native_depth_from_viewz(openpete_worldvz_full((float)vz));
-                double pz = openpete_native_depth_from_viewz(openpete_worldvz_full((float)pvz));
+                double dz = openpete_native_scene_viewz(openpete_worldvz_full((float)vz));
+                double pz = openpete_native_scene_viewz(openpete_worldvz_full((float)pvz));
                 /* G4: v0=c0(cur) v1=c1(cur) v2=pc0(prev) v3=pc1(prev) -> tris (0,1,2)(1,3,2) */
                 emit_tri(c0x,c0y,dz,col,  c1x,c1y,dz,col,  pc0x,pc0y,pz,pcol);
                 emit_tri(c1x,c1y,dz,col,  pc1x,pc1y,pz,pcol, pc0x,pc0y,pz,pcol);

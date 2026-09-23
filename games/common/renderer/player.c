@@ -712,12 +712,12 @@ static void player_feed_walk_ex(CPUState* cpu, int reproject) {
         for (int k = 0; k < 3; k++) {
             st.v[k].sx = w->v[k].sx; st.v[k].sy = w->v[k].sy;
             double fvz = (double)w->v[k].vz - sp_pull - tie_pull;
-            st.v[k].z  = openpete_native_depth_from_viewz(openpete_worldvz_full((float)fvz));
+            st.v[k].z  = openpete_native_scene_viewz(openpete_worldvz_full((float)fvz));
             /* Perspective W from the UNSHIFTED view-Z: the front-layer pull
              * puts the whole model on the near plane, and a W taken from that
              * depth varies across one model's faces and smears a texel over
              * them. */
-            st.v[k].pvz = w->v[k].vz;
+            st.v[k].pvz = openpete_native_scene_viewz(openpete_worldvz_full(w->v[k].vz));
             st.v[k].u  = (float)w->v[k].u; st.v[k].v = (float)w->v[k].v;
             st.v[k].rgba = w->v[k].rgb | 0xFF000000u;
         }

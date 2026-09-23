@@ -486,7 +486,7 @@ static void feed_ft4(CPUState* cpu, uint32_t p, uint32_t w1) {
         openpete_scene_tri* tri = &quad[t];
         for (int j=0;j<3;j++){ int c=idx[t][j];
             tri->v[j].sx=(float)sx[c]; tri->v[j].sy=(float)sy[c];
-            tri->v[j].z=0.0f; tri->v[j].u=(float)u[c]; tri->v[j].v=(float)v[c]; tri->v[j].rgba=rgba; }
+            tri->v[j].z=1.0f; tri->v[j].pvz=1.0f; tri->v[j].u=(float)u[c]; tri->v[j].v=(float)v[c]; tri->v[j].rgba=rgba; }
         tri->textured=1; tri->tpage_x=tpx; tri->tpage_y=tpy; tri->clut_x=clx; tri->clut_y=cly;
         tri->bpp=bpp; tri->blend = blend;
     }
@@ -551,7 +551,7 @@ static void feed_f4(CPUState* cpu, uint32_t p, uint32_t w1, int category, uint32
         openpete_scene_tri tri; memset(&tri,0,sizeof(tri));
         for (int j=0;j<3;j++){ int c=idx[t][j];
             tri.v[j].sx=(float)sx[c]; tri.v[j].sy=(float)sy[c];
-            tri.v[j].z=0.0f; tri.v[j].rgba=rgba; }
+            tri.v[j].z=1.0f; tri.v[j].pvz=1.0f; tri.v[j].rgba=rgba; }
         tri.textured=0; tri.blend=blend;
         openpete_native_scene_add_tri(&tri, category, 0);
     }
@@ -602,7 +602,7 @@ static void feed_line_quad(uint32_t xy0, uint32_t xy1, uint32_t rgba0, uint32_t 
     for (int t=0;t<2;t++) {
         openpete_scene_tri tri; memset(&tri,0,sizeof(tri));
         for (int j=0;j<3;j++){ int c=idx[t][j];
-            tri.v[j].sx=cx[c]; tri.v[j].sy=cy[c]; tri.v[j].z=0.0f; tri.v[j].rgba=cc[c]; }
+            tri.v[j].sx=cx[c]; tri.v[j].sy=cy[c]; tri.v[j].z=1.0f; tri.v[j].pvz=1.0f; tri.v[j].rgba=cc[c]; }
         tri.textured=0; tri.blend=lay.blend;
         openpete_native_scene_add_tri(&tri, lay.category, 1);
     }
@@ -643,6 +643,7 @@ static void feed_poly_g(CPUState* cpu, uint32_t p, uint32_t w1) {
         const uint32_t c  = k ? cpu->read_word(p + 0x04u + (uint32_t)k * 8u) : w1;
         const uint32_t xy = cpu->read_word(p + 0x08u + (uint32_t)k * 8u);
         vx[k].sx = psx_x(xy); vx[k].sy = psx_y(xy);
+        vx[k].z = 1.0f; vx[k].pvz = 1.0f;   /* screen space: view-Z 1, W 1 */
         vx[k].rgba = (c & 0xFFFFFFu) | (lay.alpha << 24);
     }
     scene_begin_for_feed();
@@ -703,7 +704,7 @@ static void feed_sprt_now(CPUState* cpu, uint32_t prim, unsigned tpage) {
     for (int t = 0; t < 2; t++) {
         openpete_scene_tri* tri = &quad[t];
         for (int j = 0; j < 3; j++) { int c = idx[t][j];
-            tri->v[j].sx = sx[c]; tri->v[j].sy = sy[c]; tri->v[j].z = 0.0f;
+            tri->v[j].sx = sx[c]; tri->v[j].sy = sy[c]; tri->v[j].z = 1.0f; tri->v[j].pvz = 1.0f;
             tri->v[j].u = su[c]; tri->v[j].v = sv[c]; tri->v[j].rgba = rgba; }
         tri->textured = 1; tri->tpage_x = tpx; tri->tpage_y = tpy;
         tri->clut_x = clx; tri->clut_y = cly; tri->bpp = bpp;

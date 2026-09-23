@@ -2,6 +2,7 @@
 #extension GL_ARB_gpu_shader_fp64 : require
 #extension GL_GOOGLE_include_directive : require
 #include "psx_unorm8.glsl"
+#include "psx_viewz.glsl"
 
 /* Terrain sector-mesh vertex stage — the retained-terrain GPU path
  * (extraction rearchitecture, seam 2).
@@ -1604,17 +1605,14 @@ void main()
 
     /* ---- KEY pass: rasterise the flat og key as depth (terrain_key.vert
      * mirror) ----
-     * terrain_key.vert receives the key already encoded as z = K/(K+4096) by
-     * the CPU feed and decodes it back; here the cache holds K itself, so it
-     * is used directly. The two agree to within float rounding (~0.1 world
-     * units at range), orders of magnitude inside the contest's 64-world tie
-     * margin. */
+     * terrain_key.vert receives the key K as view-Z from the CPU feed; the
+     * cache holds K itself. */
     if (keyPass) {
         if (koff <= 0.25) { kill_vert(); return; }   /* keyed faces only */
         float K  = koff - 0.5;
         float kv = max(K, 1.0);
         vec2 cxy = clip_of(sscr);
-        gl_Position = vec4(cxy * kv, kv * kv / (kv + 4096.0), kv);
+        gl_Position = vec4(cxy * kv, kv * kv / (kv + OP_VZ_SCALE), kv);
         float fvz = float(mo.z) * 16.0;              /* TRUE per-vertex view-Z */
         float wq  = AFFINE_UV ? 1.0 : max(fvz, 1.0);
         vUV = uv / wq;
@@ -1639,18 +1637,17 @@ void main()
 #endif
 
     /* ---- position: the feed + psx_scene.vert contract, exactly ----
-     * feed: z = vz/(vz+4096) with vz = float(m3)*16 (near-guarded at 1);
-     * scene VS: vzo decoded back from z, q = vzo/Wu (Wu = the same vz), and
-     * the (zc, W) pair uses W == vzo for clip invariance. The round-trip is
-     * kept so window depth and q match the CPU-fed pipeline bit-for-bit. */
+     * feed: z = pvz = vz with vz = float(m3)*16 (near-guarded at 1);
+     * scene VS: vzo = the clamped z, q = vzo/Wu (Wu = the same vz), and
+     * the (zc, W) pair uses W == vzo for clip invariance, so window depth
+     * and q match the CPU-fed pipeline bit-for-bit. */
     float fvz = float(mo.z) * 16.0;
     float vzs = max(fvz, 1.0);
-    float z   = vzs / (vzs + 4096.0);
-    float zc2 = clamp(z, 0.0, 0.9999);
-    float vzo = max(4096.0 * zc2 / max(1.0 - zc2, 1e-6), 1.0);
+    float vzo = op_scene_vz(vzs);
     float Wu  = vzs;                       /* inW = pvz = the same view-Z */
     float q   = AFFINE_UV ? 1.0 : (vzo / Wu);
     vec2 cxy  = clip_of(sscr);
+    float zc2 = op_vz_hyperbolic(vzo);
     float zcl = DEPTH_AFFINE ? (vzo - 1.0) : (zc2 * vzo);
     gl_Position = AFFINE_UV
         ? vec4(cxy, DEPTH_AFFINE ? (vzo - 1.0) / vzo : zc2, 1.0)

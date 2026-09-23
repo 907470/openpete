@@ -175,7 +175,9 @@ static void crossfade_feed_native(void) {
             uint32_t f = s_cross_bg_flat & 0xFFFFFFu;
             corner[0] = corner[1] = corner[2] = corner[3] = f;
         }
-        const float bz = 0.9995f;
+        /* View-Z 4096 * 0.9995 / (1 - 0.9995) in float: behind the dome
+         * (below), in front of the far clear. */
+        const float bz = 0x1.f3ba04p+22f;
         int qi[2][3] = { {0,1,2}, {1,3,2} };
         for (int ci = 0; ci < 3; ci++)
             for (int ri = 0; ri < 3; ri++) {
@@ -187,7 +189,7 @@ static void crossfade_feed_native(void) {
                     for (int k = 0; k < 3; k++) {
                         int vi = qi[ti][k];
                         int cidx = (row[vi] <= 1 ? 0 : 2) + (col[vi] <= 1 ? 0 : 1);
-                        st.v[k].sx = cx[vi]; st.v[k].sy = cy[vi]; st.v[k].z = bz;
+                        st.v[k].sx = cx[vi]; st.v[k].sy = cy[vi]; st.v[k].z = bz; st.v[k].pvz = bz;
                         st.v[k].u = 0.0f; st.v[k].v = 0.0f;
                         st.v[k].rgba = (corner[cidx] & 0xFFFFFFu) | 0xFF000000u;
                     }
@@ -199,12 +201,15 @@ static void crossfade_feed_native(void) {
             }
     }
 
-    const float depth = 0.999f;                           /* far backdrop, still < 1.0 clear */
+    /* Far backdrop, still < 1.0 clear: view-Z 4096 * 0.999 / (1 - 0.999) in
+     * float. */
+    const float depth = 0x1.f381a6p+21f;
     for (int i = 0; i < s_cross_n; i++) {
         cyclorama_native_tri* t = &s_cross[i];
         openpete_scene_tri st = {0};
         for (int k = 0; k < 3; k++) {
             st.v[k].sx = t->sx[k]; st.v[k].sy = t->sy[k]; st.v[k].z = depth;
+            st.v[k].pvz = depth;
             st.v[k].u = 0.0f; st.v[k].v = 0.0f;
             st.v[k].rgba = (t->rgb[k] & 0xFFFFFFu) | 0xFF000000u;
         }

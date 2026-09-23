@@ -153,7 +153,7 @@ static int glint_prim_sink(void* ctx, const ngte_prim* s) {
     (void)ctx;
     if (s_item_n >= GLINT_MAX_PRIMS) return 0;
     s_item[s_item_n].p = *s;
-    s_item[s_item_n].depth = 0.0f;
+    s_item[s_item_n].depth = 1.0f;   /* unpaired: the near guard (view-Z 1) */
     s_item[s_item_n].paired = 0;
     s_item[s_item_n].blend = 0;
     memset(&s_item[s_item_n].src, 0, sizeof s_item[0].src);
@@ -219,7 +219,7 @@ static int glint_accept(CPUState* cpu, const ngte_view* v, uint32_t rec,
     if (3.0 * fabs(o.m2) - o.m3 - (double)GT.pyr_y >= 0.0) return 0;         /* :2320 */
 
     out->near_mode = (o.m3 < (double)GT.near_vz);
-    out->depth = openpete_native_depth_from_viewz(
+    out->depth = openpete_native_scene_viewz(
         openpete_worldvz_scaled((float)o.m3, 2.0f));
     out->addr = rec;
     for (int k = 0; k < 3; k++) out->w[k] = w[k];
@@ -466,7 +466,7 @@ static void glint_rebase_item(CPUState* cpu, const ngte_view* v, double alpha, i
     glint_project(v, vo, &o);
     r->dx = (float)(o.sx - it->src.psx);
     r->dy = (float)(o.sy - it->src.psy);
-    r->depth = openpete_native_depth_from_viewz(
+    r->depth = openpete_native_scene_viewz(
         openpete_worldvz_scaled((float)o.m3, 2.0f));
     r->active = 1;
     r->rot = ngte_table_rot(cpu, glint_angle(&it->src), show_ang, &r->rc, &r->rs)
@@ -514,6 +514,7 @@ static void glint_add_quad(const float x[4], const float y[4],
         for (int k = 0; k < 3; k++) {
             const int j = split[s][k];
             st.v[k].sx = x[j]; st.v[k].sy = y[j]; st.v[k].z = depth;
+            st.v[k].pvz = depth;   /* fed at one depth: W constant across the prim */
             st.v[k].u = 0.0f;  st.v[k].v = 0.0f;
             st.v[k].rgba = (rgb[j] & 0xFFFFFFu) | 0xFF000000u;
         }

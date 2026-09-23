@@ -123,7 +123,7 @@ static int tr_prim_sink(void* ctx, const ngte_prim* s) {
     (void)ctx;
     if (s_item_n >= TR_MAX_PRIMS) return 0;
     s_item[s_item_n].p = *s;
-    s_item[s_item_n].depth = 0.0f;
+    s_item[s_item_n].depth = 1.0f;   /* unpaired: the near guard (view-Z 1) */
     s_item[s_item_n].paired = 0;
     s_item_n++;
     return 1;
@@ -226,7 +226,7 @@ static int rib_predict(CPUState* cpu, const ngte_view* v, float* out, int cap) {
                 /* The record's halves are quarter world units and the routine
                  * halves the whole vector, so its MAC3 is half the world value. */
                 const double mz = (pt[k].m3 + pt[k + 1].m3) * 0.5;
-                out[n] = openpete_native_depth_from_viewz(
+                out[n] = openpete_native_scene_viewz(
                     openpete_worldvz_scaled((float)mz, 2.0f));
             }
             n++;
@@ -277,7 +277,7 @@ static void msh_pair_depths(CPUState* cpu, uint32_t desc) {
         int32_t key = zsum >> 9;
         key = (int32_t)((uint32_t)key << (unsigned)(shift & 31));
         if (key < 0 || key - 0x7FF > 0) continue;        /* :3262-3264 */
-        s_item[i].depth = openpete_native_depth_from_viewz(
+        s_item[i].depth = openpete_native_scene_viewz(
             openpete_worldvz_scaled((float)zsum * 0.25f, mul));
         s_item[i].paired = 1;
         i++;
@@ -311,6 +311,7 @@ static void tr_add_prim(const ngte_prim* p, float depth) {
         for (int k = 0; k < 3; k++) {
             const int j = split[s][k] == 3 ? last : split[s][k];
             st.v[k].sx = p->x[j]; st.v[k].sy = p->y[j]; st.v[k].z = depth;
+            st.v[k].pvz = depth;   /* fed at one depth: W constant across the prim */
             st.v[k].u = (float)p->u[j]; st.v[k].v = (float)p->v[j];
             st.v[k].rgba = (p->rgb[j] & 0xFFFFFFu) | 0xFF000000u;
         }

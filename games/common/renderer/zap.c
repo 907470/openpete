@@ -148,7 +148,7 @@ static int zap_prim_sink(void* ctx, const ngte_prim* s) {
     (void)ctx;
     if (s_item_n >= ZAP_MAX_PRIMS) return 0;
     s_item[s_item_n].p = *s;
-    s_item[s_item_n].depth = 0.0f;
+    s_item[s_item_n].depth = 1.0f;   /* unpaired: the near guard (view-Z 1) */
     s_item[s_item_n].paired = 0;
     s_item_n++;
     return 1;
@@ -270,7 +270,7 @@ static int zap_replay(CPUState* cpu, int n) {
         uint32_t sum = 0;
         for (int k = 0; k < 4; k++) sum += w1[k] >> 16;
         if ((int)(sum >> 9) - 2 < 0) continue;
-        const float d = openpete_native_depth_from_viewz(
+        const float d = openpete_native_scene_viewz(
             openpete_worldvz_full((float)sum * 0.25f));
         /* :2863 the first triangle is dropped when this point's two entries
          * coincide, :2890 the second when the previous point's do. */
@@ -358,7 +358,7 @@ static void zap_add_prim(const ngte_prim* p, float depth) {
     if (s_reb.active) {
         const double tm = pos_sum / (double)p->nv;
         const double vz = s_reb.head_m3 + (s_reb.tail_m3 - s_reb.head_m3) * tm;
-        depth = openpete_native_depth_from_viewz(openpete_worldvz_full((float)vz));
+        depth = openpete_native_scene_viewz(openpete_worldvz_full((float)vz));
     }
     ngte_tpage tp;
     int blend = p->stp ? 1 : 0;
@@ -374,6 +374,7 @@ static void zap_add_prim(const ngte_prim* p, float depth) {
         for (int k = 0; k < 3; k++) {
             const int j = split[s][k] == 3 ? last : split[s][k];
             st.v[k].sx = px[j]; st.v[k].sy = py[j]; st.v[k].z = depth;
+            st.v[k].pvz = depth;   /* fed at one depth: W constant across the prim */
             st.v[k].u = (float)p->u[j]; st.v[k].v = (float)p->v[j];
             st.v[k].rgba = (p->rgb[j] & 0xFFFFFFu) | 0xFF000000u;
         }

@@ -610,7 +610,8 @@ static void flame_feed_native(CPUState* cpu, int slot, const char* src) {
             for (int k = 0; k < 3; k++) {
                 int j = split[s][k];
                 st.v[k].sx = q->sx[j]; st.v[k].sy = q->sy[j];
-                st.v[k].z  = openpete_native_depth_from_viewz(openpete_worldvz_full(q->sz[j]));
+                st.v[k].z  = openpete_native_scene_viewz(openpete_worldvz_full(q->sz[j]));
+                st.v[k].pvz = st.v[k].z;   /* unshifted: true view-Z */
                 st.v[k].u  = (float)q->u[j]; st.v[k].v = (float)q->v[j];
                 st.v[k].rgba = (q->rgb[j] & 0xFFFFFFu) | 0xFF000000u;
             }
@@ -625,7 +626,8 @@ static void flame_feed_native(CPUState* cpu, int slot, const char* src) {
         openpete_scene_tri st = {0};
         for (int k = 0; k < 3; k++) {
             st.v[k].sx = c->sx[k]; st.v[k].sy = c->sy[k];
-            st.v[k].z  = openpete_native_depth_from_viewz(openpete_worldvz_full(c->sz[k]));
+            st.v[k].z  = openpete_native_scene_viewz(openpete_worldvz_full(c->sz[k]));
+            st.v[k].pvz = st.v[k].z;   /* unshifted: true view-Z */
             st.v[k].u = 0.0f; st.v[k].v = 0.0f;
             st.v[k].rgba = (c->rgb[k] & 0xFFFFFFu) | 0xFF000000u;
         }

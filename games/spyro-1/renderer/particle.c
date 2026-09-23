@@ -219,7 +219,7 @@ static void dump_prims(CPUState* cpu, const char* tag, uint32_t start, uint32_t 
  * glows + sparkles still TODO. */
 /* WORLD particles project through proj2 with camera-relative coords shifted >>2
  * (world/4), so their view-Z (cz) is 1/4 the shared full-world scale that
- * depth_from_viewz + the terrain/actor depths use. Scale cz up by 4 at the build
+ * scene_viewz + the terrain/actor depths use. Scale cz up by 4 at the build
  * sites (where the class is known) so they sort against terrain instead of
  * always being ~4x too near and drawing THROUGH it. HUD bursts (sel 4/5, direct
  * view-space) and glows (raw-cam, full-world) are already full-scale — not
@@ -937,12 +937,12 @@ static void particle_feed_native(CPUState* cpu) {
         float cx[4] = { l->ax-px, l->ax+px, l->bx-px, l->bx+px };
         float cy[4] = { l->ay-py, l->ay+py, l->by-py, l->by+py };
         uint32_t cc[4] = { l->rgb0, l->rgb0, l->rgb1, l->rgb1 };  /* gouraud along the line */
-        float depth = openpete_native_depth_from_viewz(openpete_worldvz_full(l->cz));
+        float depth = openpete_native_scene_viewz(openpete_worldvz_full(l->cz));
         for (int s = 0; s < 2; s++) {
             openpete_scene_tri st = {0};
             for (int k = 0; k < 3; k++) {
                 int j = split[s][k];
-                st.v[k].sx = cx[j]; st.v[k].sy = cy[j]; st.v[k].z = depth;
+                st.v[k].sx = cx[j]; st.v[k].sy = cy[j]; st.v[k].z = depth; st.v[k].pvz = depth;
                 st.v[k].u = 0.0f; st.v[k].v = 0.0f;
                 st.v[k].rgba = (cc[j] & 0xFFFFFFu) | 0xFF000000u;
             }
@@ -984,12 +984,12 @@ static void particle_feed_native(CPUState* cpu) {
          * surface from the camera, so true depth never blocked the puffs —
          * the eater was the SUBTRACT-WORLD draw ORDER, fixed renderer-side
          * by drawing that bucket after the ADD group.) */
-        float depth = openpete_native_depth_from_viewz(openpete_worldvz_full(q->cz));
+        float depth = openpete_native_scene_viewz(openpete_worldvz_full(q->cz));
         for (int s = 0; s < 2; s++) {
             openpete_scene_tri st = {0};
             for (int k = 0; k < 3; k++) {
                 int j = split[s][k];
-                st.v[k].sx = q->sx[j]; st.v[k].sy = q->sy[j]; st.v[k].z = depth;
+                st.v[k].sx = q->sx[j]; st.v[k].sy = q->sy[j]; st.v[k].z = depth; st.v[k].pvz = depth;
                 st.v[k].u = (float)q->u[j]; st.v[k].v = (float)q->v[j];
                 st.v[k].rgba = (q->rgb & 0xFFFFFFu) | 0xFF000000u;
             }
@@ -1185,10 +1185,10 @@ static void glow_feed_native(CPUState* cpu) {
         OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_GLOW, 0, 0));
     for (int i = 0; i < s_gtri_n; i++) {
         gtri* t = &s_gtri[i];
-        float depth = openpete_native_depth_from_viewz(openpete_worldvz_full(t->cz));
+        float depth = openpete_native_scene_viewz(openpete_worldvz_full(t->cz));
         openpete_scene_tri st = {0};
         for (int k = 0; k < 3; k++) {
-            st.v[k].sx = t->sx[k]; st.v[k].sy = t->sy[k]; st.v[k].z = depth;
+            st.v[k].sx = t->sx[k]; st.v[k].sy = t->sy[k]; st.v[k].z = depth; st.v[k].pvz = depth;
             st.v[k].u = 0.0f; st.v[k].v = 0.0f;
             st.v[k].rgba = (t->rgb[k] & 0xFFFFFFu) | 0xFF000000u;
         }
@@ -1494,7 +1494,7 @@ static void sparkle_feed_native(CPUState* cpu) {
         OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_FLARE, 0, 0));
     for (int i = 0; i < s_sstar_n; i++) {
         sstar* st = &s_sstar[i];
-        float depth = openpete_native_depth_from_viewz(
+        float depth = openpete_native_scene_viewz(
             openpete_worldvz_pull(openpete_worldvz_full(st->cz), SPARKLE_OT_PULL));
         uint32_t core, tipc, waistc;
         if (st->hue > 0) {
@@ -1525,7 +1525,7 @@ static void sparkle_feed_native(CPUState* cpu) {
             uint32_t oc2 = (k2 & 1) ? waistc : tipc;
             for (int m = 0; m < 3; m++) {
                 uint32_t c = m == 0 ? core : (m == 1 ? oc1 : oc2);
-                t.v[m].z = depth; t.v[m].u = 0.0f; t.v[m].v = 0.0f;
+                t.v[m].z = depth; t.v[m].pvz = depth; t.v[m].u = 0.0f; t.v[m].v = 0.0f;
                 t.v[m].rgba = (c & 0xFFFFFFu) | 0xFF000000u;
             }
             t.textured = 0;
@@ -1547,13 +1547,13 @@ static void sparkle_feed_native(CPUState* cpu) {
         if (len > 1e-3f) { px = -dy/len*0.5f; py = dx/len*0.5f; }
         float cx[4] = { l->ax-px, l->ax+px, l->bx-px, l->bx+px };
         float cy[4] = { l->ay-py, l->ay+py, l->by-py, l->by+py };
-        float depth = openpete_native_depth_from_viewz(
+        float depth = openpete_native_scene_viewz(
             openpete_worldvz_pull(openpete_worldvz_full(l->cz), SPARKLE_OT_PULL));
         for (int s = 0; s < 2; s++) {
             openpete_scene_tri st = {0};
             for (int k = 0; k < 3; k++) {
                 int j = split[s][k];
-                st.v[k].sx = cx[j]; st.v[k].sy = cy[j]; st.v[k].z = depth;
+                st.v[k].sx = cx[j]; st.v[k].sy = cy[j]; st.v[k].z = depth; st.v[k].pvz = depth;
                 st.v[k].u = 0.0f; st.v[k].v = 0.0f;
                 st.v[k].rgba = (l->rgb & 0xFFFFFFu) | 0xFF000000u;
             }
@@ -1683,17 +1683,18 @@ static void dragonstar_feed_native(CPUState* cpu) {
     openpete_native_scene_begin_frame(openpete_frame);
     /* g_HudOT overlay: the PSX links this into the HUD OT, drawn OVER the whole 3D
      * scene. blend=2 puts it in the native additive group (drawn last, over the
-     * player); z=0 (near plane) so the depth test never rejects a spike that
-     * crosses nearer ground/Spyro — the additive pipe is depth_write_off, so this
-     * is an on-top additive overlay, mirroring the PSX HUD-OT order. */
-    float depth = 0.0f;
+     * player); view-Z 1 (the near plane) so the depth test never rejects a
+     * spike that crosses nearer ground/Spyro — the additive pipe is
+     * depth_write_off, so this is an on-top additive overlay, mirroring the PSX
+     * HUD-OT order. One depth for the whole overlay: W is constant. */
+    float depth = 1.0f;
     openpete_native_scene_set_tag(
         OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_STAR, 0, 0));
     for (int i = 0; i < s_dstri_n; i++) {
         gtri* t = &s_dstri[i];
         openpete_scene_tri st = {0};
         for (int k = 0; k < 3; k++) {
-            st.v[k].sx = t->sx[k]; st.v[k].sy = t->sy[k]; st.v[k].z = depth;
+            st.v[k].sx = t->sx[k]; st.v[k].sy = t->sy[k]; st.v[k].z = depth; st.v[k].pvz = depth;
             st.v[k].u = 0.0f; st.v[k].v = 0.0f;
             st.v[k].rgba = (t->rgb[k] & 0xFFFFFFu) | 0xFF000000u;
         }

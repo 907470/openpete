@@ -1,4 +1,6 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+#include "psx_viewz.glsl"
 
 /* Terrain KEY pass vertex stage: rasterise opaque keyed terrain with depth =
  * the og OT KEY (true view-Z + 128*slots world) instead of true view-Z, into
@@ -17,7 +19,7 @@
  * (zc, W) pair uses W == the key view-Z so window depth survives the
  * hardware clipper (the scene stages' clip-invariance rule). */
 
-layout(location = 0) in vec3 inPos;   /* xy = clip-space screen, z = canonical NDC depth (true vz) */
+layout(location = 0) in vec3 inPos;   /* xy = clip-space screen, z = flat key view-Z */
 layout(location = 1) in vec2 inUV;
 layout(location = 2) in vec4 inColor;
 layout(location = 4) in float inW;    /* TRUE per-vertex view-Z (textured cutout UV) */
@@ -39,11 +41,9 @@ layout(constant_id = 1) const bool AFFINE_UV = false;
 
 void main()
 {
-    float z  = clamp(inPos.z, 0.0, 0.9999);
-    float vz = 4096.0 * z / max(1.0 - z, 1e-6);    /* view-Z the depth encodes */
-    vz = max(vz, 1.0);
+    float vz = op_scene_vz(inPos.z);
     float kv = vz + max(abs(inKoff) - 0.5, 0.0);   /* og key view-Z */
-    gl_Position = vec4(inPos.xy * kv, kv * kv / (kv + 4096.0), kv);   /* z_ndc = kv/(kv+4096) */
+    gl_Position = vec4(inPos.xy * kv, kv * kv / (kv + OP_VZ_SCALE), kv);   /* z_ndc = kv/(kv+4096) */
     float wq = AFFINE_UV ? 1.0 : max(inW, 1.0);
     vColor = inColor;
     vUV = inUV / wq;

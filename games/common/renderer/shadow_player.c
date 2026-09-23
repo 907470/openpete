@@ -231,6 +231,7 @@ static void shadow_player_feed_native(CPUState* cpu, int slot) {
         for (int k = 0; k < 3; k++) {
             st.v[k].sx = c->sx[k]; st.v[k].sy = c->sy[k];
             st.v[k].z  = shadow_depth(c->sz[k], 1.0f, bias);   /* already full-world MAC3 */
+            st.v[k].pvz = shadow_depth(c->sz[k], 1.0f, 1.0f);  /* true (unbiased) view-Z */
             st.v[k].u = 0.0f; st.v[k].v = 0.0f;
             st.v[k].rgba = (c->rgb[k] & 0xFFFFFFu) | 0xFF000000u;
         }

@@ -1118,6 +1118,28 @@ static int category_snaps_vertices(int category) {
     }
 }
 
+/* openpete_scene_vert.pvz is mandatory: every feeder states the vertex's
+ * true view-Z. A vertex arriving without one (pvz <= 0) is counted, named
+ * once per category (with its feeder tag) on stderr, and takes its ordering
+ * view-Z, so its W is the depth's own view-Z. */
+static unsigned s_pvz_missing = 0;
+unsigned openpete_native_scene_pvz_missing(void) { return s_pvz_missing; }
+static void scene_vert_require_pvz(openpete_scene_vert v[3], int category)
+{
+    static uint32_t s_named = 0;
+    for (int k = 0; k < 3; k++) {
+        if (v[k].pvz > 0.0f) continue;
+        s_pvz_missing++;
+        const uint32_t bit = 1u << ((unsigned)category & 31u);
+        if (!(s_named & bit)) {
+            s_named |= bit;
+            OPL_ERROR_F("native", "scene vertex without true view-Z (pvz=%g, z=%g) "
+                        "in category %d, tag %08x", (double)v[k].pvz, (double)v[k].z,
+                        category, s_cur_tag);
+        }
+        v[k].pvz = v[k].z;
+    }
+}
 void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int category,
                                            int carry, int group) {
     if (!tri) return;
@@ -1175,9 +1197,10 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
                 sv[k].sy = floorf(sv[k].sy);
             }
         }
+        scene_vert_require_pvz(s_scene[s_scene_n].v, category);
         /* OPENPETE_TRUE_W: kill switch / bisect mask for the stated perspective
-         * W (openpete_scene_vert.pvz). 0 drops every feeder's value, restoring
-         * the historical "derive W from the ordering depth" behaviour exactly;
+         * W (openpete_scene_vert.pvz). 0 replaces every feeder's value with the
+         * vertex's ordering view-Z (W from the ordering depth);
          * a bitmask keeps it for selected categories only (1 = PLAYER,
          * 2 = ACTOR/HUD3D mobys, 4 = WORLD terrain), which is how a divergence
          * gets attributed to one feeder without a rebuild. Default = all on. */
@@ -1196,7 +1219,8 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
                            category == OPENPETE_SCENE_HUD3D ||
                            category == OPENPETE_SCENE_HUD) ? 2 : 4;
                 if (!(s_tw & bit))
-                    for (int k = 0; k < 3; k++) s_scene[s_scene_n].v[k].pvz = 0.0f;
+                    for (int k = 0; k < 3; k++)
+                        s_scene[s_scene_n].v[k].pvz = s_scene[s_scene_n].v[k].z;
             }
         }
         /* Feed-time carry accumulation (see s_overlay_accum): a fresh 2D-UI /
@@ -4877,6 +4901,9 @@ static void ensure_opaque_depth(void)
  * native_rtt, SSAA, the offscreen panel, and screenshots alike. Must record
  * before the first consumer pass (own render pass; call right after
  * rhi_begin_frame). Display-only. */
+/* The pre-pass far backstop's view-Z: 4096 * 0.999 / (1 - 0.999) in float,
+ * the view-Z whose hyperbolic depth is 0.999. */
+#define NR_PREPASS_BACKSTOP_VZ 0x1.f381a6p+21f
 static void native_depth_prepass(void)
 {
     s_od_ready = 0;
@@ -4921,25 +4948,27 @@ static void native_depth_prepass(void)
     s_render_freeze_wf = openpete_native_widescreen_factor();
     rhi_vertex *pbuf = (rhi_vertex *)s_cz_prepass.data;
     int m = 0;
-    /* Far BACKSTOP: a fullscreen quad at z=0.999 (view-Z ≈ 4.09M — decodes as
-     * the far sentinel) drawn under everything, so every pre-pass texel is
+    /* Far BACKSTOP: a fullscreen quad at view-Z ≈ 4.09M (the far sentinel)
+     * drawn under everything, so every pre-pass texel is
      * DEFINED. Without it, texels no WORLD tri covers (sky, cyclorama gaps)
      * hold only the pass CLEAR — and sampling never-drawn cleared depth
      * returned 0.0 (= nearest possible!) on lavapipe, making the SKY an
      * infinitely-near occluder: every moby seen against sky was culled (the
      * stone-hill tree flicker). Same driver-dependence class as the June
      * storeOp=DONT_CARE trap — make it explicit, not implicit.
-     * z must stay comfortably below the 0.9999 clamp: prepass.vert's
-     * W = 4096z/(1-z) at z=0.9999 is ~4.1e7 where fp32's ulp is 4 — W-1
-     * rounds back to W, NDC depth lands on EXACTLY 1.0 and every fragment
-     * fails the LESS test against the 1.0 clear (a silent no-op backstop).
-     * At z=0.999, W ≈ 4.09e6, depth ≈ 1-2.4e-7 < 1.0 — draws everywhere. */
+     * W must stay comfortably below OPENPETE_DEPTH_VIEWZ_FAR: prepass.vert
+     * writes 1 - 1/W, and at W ~4.1e7, where fp32's ulp is 4, W-1 rounds
+     * back to W, NDC depth lands on EXACTLY 1.0 and every fragment fails the
+     * LESS test against the 1.0 clear (a silent no-op backstop). At
+     * W = 4091956.75 (the view-Z whose hyperbolic depth is 0.999), depth
+     * ≈ 1-2.4e-7 < 1.0 — draws everywhere. */
     {
         static const float bq[6][2] =
             { {-1,-1}, {1,-1}, {1,1}, {-1,-1}, {1,1}, {-1,1} };
         for (int k = 0; k < 6; k++) {
             rhi_vertex* o = &pbuf[m + k];
-            o->x = bq[k][0]; o->y = bq[k][1]; o->z = 0.999f; o->w = 0.0f;
+            o->x = bq[k][0]; o->y = bq[k][1];
+            o->z = NR_PREPASS_BACKSTOP_VZ; o->w = NR_PREPASS_BACKSTOP_VZ;
             o->u = 0.0f; o->v = 0.0f; o->rgba = 0xFF000000u; o->koff = 0.0f;
         }
         m += 6;
@@ -5018,8 +5047,9 @@ static void native_depth_prepass(void)
                 }
                 double P[3][3];
                 for (int k = 0; k < 3; k++) {
-                    double z = scene[t].v[k].z; if (z > 0.9999) z = 0.9999;
-                    double vz = 4096.0 * z / (1.0 - z); if (vz < 1.0) vz = 1.0;
+                    double vz = scene[t].v[k].z;
+                    if (vz > OPENPETE_DEPTH_VIEWZ_FAR) vz = OPENPETE_DEPTH_VIEWZ_FAR;
+                    if (vz < 1.0) vz = 1.0;
                     double M1 = (scene[t].v[k].sx - ps_shadow()->ofx) * vz / ps_shadow()->h;
                     double M2 = (scene[t].v[k].sy - ps_shadow()->ofy) * vz / ps_shadow()->h;
                     double V0 = (W[0][0]*M1 + W[0][1]*M2 + W[0][2]*vz) / 4096.0;
@@ -5033,9 +5063,8 @@ static void native_depth_prepass(void)
                 double nl = sqrt(N[0]*N[0]+N[1]*N[1]+N[2]*N[2]);
                 fprintf(stderr, "[prepass-recon] tri sxy=(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f) vz=(%.0f,%.0f,%.0f) relY=(%.0f,%.0f,%.0f) ny=%.2f relZ=(%.0f,%.0f,%.0f) nz=%.2f\n",
                         x0, y0, x1, y1, x2, y2,
-                        4096.0*scene[t].v[0].z/(1.0-scene[t].v[0].z),
-                        4096.0*scene[t].v[1].z/(1.0-scene[t].v[1].z),
-                        4096.0*scene[t].v[2].z/(1.0-scene[t].v[2].z),
+                        (double)scene[t].v[0].z, (double)scene[t].v[1].z,
+                        (double)scene[t].v[2].z,
                         P[0][1], P[1][1], P[2][1],
                         nl > 1e-9 ? fabs(N[1])/nl : -1.0,
                         P[0][2], P[1][2], P[2][2],
@@ -5284,25 +5313,16 @@ static float pack_player_key_z(float pkey)
 static void pack_key_vert(const scene_tri_t* T, int prop_class, int tex,
                           rhi_vertex* out)
 {
-    float K = T->koff - 0.5f;
     float zflat = T->pkey > 0.25f ? pack_player_key_z(T->pkey)
-                                  : K / (K + OPENPETE_DEPTH_VIEWZ_SCALE);
+                                  : T->koff - 0.5f;   /* the key K as view-Z */
     for (int k = 0; k < 3; k++) {
         float cx, cy;
         scene_to_clip(T->v[k].sx, T->v[k].sy, &cx, &cy);
         rhi_vertex* o = &out[k];
-        /* TRUE per-vertex view-Z: pvz where the tie pull shifted the stored
-         * z, else the stored (canonical) z already IS true. Drives the prop
-         * image's true-depth raster and the cutout stage's perspective UV. */
+        /* TRUE per-vertex view-Z. Drives the prop image's true-depth raster
+         * and the cutout stage's perspective UV. */
         float tv = T->v[k].pvz;
-        if (tv <= 0.0f) {
-            float sz = T->v[k].z;
-            tv = sz < 1.0f ? OPENPETE_DEPTH_VIEWZ_SCALE * sz / (1.0f - sz) : 0.0f;
-        }
-        float z = zflat;
-        if (prop_class == 1)
-            z = tv > 0.0f ? tv / (tv + OPENPETE_DEPTH_VIEWZ_SCALE)
-                          : T->v[k].z;
+        float z = prop_class == 1 ? tv : zflat;
         o->x = cx; o->y = cy; o->z = z; o->w = tex ? tv : 0.0f;
         o->u = tex ? T->v[k].u : 0.0f;
         o->v = tex ? T->v[k].v : 0.0f;
@@ -5386,10 +5406,6 @@ static void pack_rank_vert(const scene_tri_t* T, int tex, rhi_vertex* out)
         scene_to_clip(T->v[k].sx, T->v[k].sy, &cx, &cy);
         rhi_vertex* o = &out[k];
         float tv = T->v[k].pvz;
-        if (tv <= 0.0f) {
-            float sz = T->v[k].z;
-            tv = sz < 1.0f ? OPENPETE_DEPTH_VIEWZ_SCALE * sz / (1.0f - sz) : 0.0f;
-        }
         /* w carries TRUE view-Z for every vertex: the cutout stage's UV
          * perspective (textured) AND the owner-depth the frag encodes into
          * the rank image alpha (the select's near-tie margin). */
@@ -5611,7 +5627,7 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
                 float b2=((x1-x0)*(pcy-y0)-(pcx-x0)*(y1-y0))/det;
                 float b0=1.0f-b1-b2;
                 if (b0 < -0.001f || b1 < -0.001f || b2 < -0.001f) continue;
-                float K = 4096.0f*kbuf[t3].z/(1.0f-kbuf[t3].z);
+                float K = kbuf[t3].z;
                 fprintf(stderr, "[keycover] K=%.0f xy=(%.3f,%.3f)(%.3f,%.3f)(%.3f,%.3f)\n",
                         K, x0,y0,x1,y1,x2,y2);
             }
@@ -5621,7 +5637,7 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
             float y0=kbuf[t3].y, y1=kbuf[t3+1].y, y2=kbuf[t3+2].y;
             float xmin=fminf(x0,fminf(x1,x2)), xmax=fmaxf(x0,fmaxf(x1,x2));
             float ymin=fminf(y0,fminf(y1,y2)), ymax=fmaxf(y0,fmaxf(y1,y2));
-            float K = 4096.0f*kbuf[t3].z/(1.0f-kbuf[t3].z);
+            float K = kbuf[t3].z;
             /* wide-in-clip tris that overlap the viewport: the phantom class */
             if ((xmax-xmin) > 0.8f && xmax > -1.0f && xmin < 1.0f && ymax > -1.0f && ymin < 1.0f)
                 fprintf(stderr, "[keytri] K=%.0f x=[%.2f,%.2f] y=[%.2f,%.2f]\n",
@@ -6048,6 +6064,15 @@ static void cover_rect(int full_extent, float *l, float *r, float *t, float *b)
  * (all the 2D-UI content at z=0) keep submission order — a STABLE descending
  * sort built on qsort. */
 typedef struct { float z; int t; } hud_paint_t;
+/* A HUD tri's painter key: the centroid of its vertices' hyperbolic depths
+ * vz / (vz + 4096), the curve that orders the layer back to front. */
+static float hud_paint_depth(const scene_tri_t* T)
+{
+    float d = 0.0f;
+    for (int k = 0; k < 3; k++)
+        d += T->v[k].z / (T->v[k].z + OPENPETE_DEPTH_VIEWZ_SCALE);
+    return d * (1.0f / 3.0f);
+}
 /* Grow every compose scratch run, and the scene and pre-pass GPU buffers, to
  * hold a scene of `scene_n` triangles. Returns how many of them the smallest
  * run holds: `scene_n` unless an allocation failed, in which case the compose
@@ -7758,9 +7783,11 @@ static void portal_cover_check(const scene_tri_t* sc, int n)
             if (inv <= 1e-9) continue;                  /* plane behind camera here */
             double pvz = 1.0 / inv - (double)s_cvp_m;
             if (pvz < 1.0) pvz = 1.0;
-            const float zlim = openpete_native_depth_from_viewz(
+            /* View-Z throughout; HUGE_VALF = no content at the pixel. */
+            const float zlim = openpete_native_scene_viewz(
                                    openpete_worldvz_full((float)pvz));
-            float zw = 2.0f, zc = 2.0f, zb = 2.0f;
+            const float ztol = zlim * 1e-6f;
+            float zw = HUGE_VALF, zc = HUGE_VALF, zb = HUGE_VALF;
             for (int ci = 0; ci < cn; ci++) {
                 const scene_tri_t* T = &sc[cand[ci]];
                 const float ax = T->v[0].sx, ay = T->v[0].sy;
@@ -7773,7 +7800,9 @@ static void portal_cover_check(const scene_tri_t* sc, int n)
                 const float b2 = (e1x * ry - rx * e1y) / det;
                 const float b0 = 1.0f - b1 - b2;
                 if (b0 < -0.001f || b1 < -0.001f || b2 < -0.001f) continue;
-                const float z = b0 * T->v[0].z + b1 * T->v[1].z + b2 * T->v[2].z;
+                /* 1/vz is screen-affine: interpolate it, not vz. */
+                const float z = 1.0f / (b0 / T->v[0].z + b1 / T->v[1].z +
+                                        b2 / T->v[2].z);
                 if (T->category == OPENPETE_SCENE_PORTAL_CYCLORAMA) {
                     if (z < zc) zc = z;
                 } else if (T->blend != 0) {
@@ -7783,13 +7812,13 @@ static void portal_cover_check(const scene_tri_t* sc, int n)
             /* Transparent terrain draws AFTER the portal sequence and blends
              * over the preview — a behind-plane blended tri at this pixel
              * means the feeder's cover drop failed. */
-            if (zb < 2.0f && zb > zlim + 1e-6f) {
+            if (zb < HUGE_VALF && zb > zlim + ztol) {
                 if (!tviol) { tvx = X; tvy = Y; }
                 tviol++;
             }
-            if (zw >= 2.0f) { empty_px++; continue; }   /* no opaque content */
-            if (zw <= zlim + 1e-6f) { front_px++; continue; }  /* legit front */
-            if (zc <= zw + 1e-6f) { prev_px++; continue; }     /* preview covers */
+            if (zw >= HUGE_VALF) { empty_px++; continue; }   /* no opaque content */
+            if (zw <= zlim + ztol) { front_px++; continue; }  /* legit front */
+            if (zc <= zw * (1.0f + 1e-6f)) { prev_px++; continue; }  /* preview covers */
             if (!viol) { vpx = X; vpy = Y; }
             viol++;
         }
@@ -8249,12 +8278,32 @@ static void scene_probes(scene_tri_t* sc, int n)
     scene_box_probe(sc, n);
 }
 
+/* OPENPETE_DEPTH_TRANSPORT_CENSUS=1: per screenshot, the triangles the last
+ * scene draw composed (untextured / textured) and the boot-cumulative count
+ * of scene vertices that arrived without a true view-Z. */
+static int s_dtc_on = -1, s_dtc_tris = 0, s_dtc_tex = 0;
+static void depth_transport_census_scene(const scene_tri_t* scene, int n)
+{
+    if (s_dtc_on < 0) { const char* e = getenv("OPENPETE_DEPTH_TRANSPORT_CENSUS");
+                        s_dtc_on = (e && *e && *e != '0'); }
+    if (!s_dtc_on) return;
+    s_dtc_tris = n; s_dtc_tex = 0;
+    for (int t = 0; t < n; t++) s_dtc_tex += scene[t].textured ? 1 : 0;
+}
+static void depth_transport_census_shot(const char* path)
+{
+    if (s_dtc_on == 1)
+        fprintf(stderr, "[depth-transport] shot=%s scene_tris=%d textured=%d pvz_missing=%u\n",
+                path, s_dtc_tris, s_dtc_tex, s_pvz_missing);
+}
+
 static bool draw_native_scene(bool full_extent)
 {
     int scene_n; uint32_t scene_bg, scene_fade, scene_freeze; int hud_under = 0, actor_front = 0;
     const scene_tri_t* scene = scene_present_buf(&scene_n, &scene_bg, &scene_fade, &scene_freeze, &hud_under, &actor_front);
     scene_n = compose_reserve(scene_n);
     scene_probes((scene_tri_t*)scene, scene_n);   /* per-present: sees intermediates too */
+    depth_transport_census_scene(scene, scene_n);
 
     /* OPENPETE_TERRAIN_KEY_IDENT=1: prove the hoisted key pass and this draw
      * packed from the SAME scene snapshot + clip mapping — repack here and
@@ -8353,10 +8402,11 @@ static bool draw_native_scene(bool full_extent)
     if (bg != 0) {
         float l, r, t, b;
         cover_rect(full_extent, &l, &r, &t, &b);
-        const rhi_vertex tl = { l, t, 1.0f, 0, 0, bg, 0 };
-        const rhi_vertex tr = { r, t, 1.0f, 0, 0, bg, 0 };
-        const rhi_vertex br = { r, b, 1.0f, 0, 0, bg, 0 };
-        const rhi_vertex bl = { l, b, 1.0f, 0, 0, bg, 0 };
+        const float fz = OPENPETE_DEPTH_VIEWZ_FAR;   /* the backdrop view-Z */
+        const rhi_vertex tl = { l, t, fz, 0, 0, bg, 0, .w = fz };
+        const rhi_vertex tr = { r, t, fz, 0, 0, bg, 0, .w = fz };
+        const rhi_vertex br = { r, b, fz, 0, 0, bg, 0, .w = fz };
+        const rhi_vertex bl = { l, b, fz, 0, 0, bg, 0, .w = fz };
         buf[0] = tl; buf[1] = tr; buf[2] = br;
         buf[3] = tl; buf[4] = br; buf[5] = bl;
         n = 6;
@@ -8510,7 +8560,7 @@ static bool draw_native_scene(bool full_extent)
         int hn = 0;
         for (int t = 0; t < scene_n; t++) {
             if (scene[t].textured || scene[t].category != OPENPETE_SCENE_HUD) continue;
-            ho[hn].z = (scene[t].v[0].z + scene[t].v[1].z + scene[t].v[2].z) * (1.0f/3.0f);
+            ho[hn].z = hud_paint_depth(&scene[t]);
             ho[hn].t = t; hn++;
         }
         static int s_h6sort = -1;   /* OPENPETE_HUD6_NOSORT=1: A/B — submission order */
@@ -8596,7 +8646,7 @@ static bool draw_native_scene(bool full_extent)
     /* HUD3D untextured: the in-game 3D HUD icon mobys (gem/dragon/Spyro-head/key/
      * digits). DEPTH-TESTED (drawn with the opaque gouraud_pipe after a mid-pass
      * depth clear) so their own faces Z-sort — depth-off paints them inside-out.
-     * Per-vertex z is the real view-Z depth (openpete_native_depth_from_viewz),
+     * Per-vertex z is the real view-Z depth (openpete_native_scene_viewz),
      * same as actors. */
     ut_first[9] = n;
     for (int t = 0; t < scene_n; t++) {
@@ -8867,10 +8917,11 @@ static bool draw_native_scene(bool full_extent)
         uint32_t frgba = (uint32_t)fr | ((uint32_t)fg << 8) | ((uint32_t)fb << 16) | (fa << 24);
         float l, r, t, b;
         cover_rect(full_extent, &l, &r, &t, &b);
-        const rhi_vertex tl = { l, t, 0.0f, 0, 0, frgba, 0 };
-        const rhi_vertex tr = { r, t, 0.0f, 0, 0, frgba, 0 };
-        const rhi_vertex br = { r, b, 0.0f, 0, 0, frgba, 0 };
-        const rhi_vertex bl = { l, b, 0.0f, 0, 0, frgba, 0 };
+        /* Screen-space quad: view-Z 1 (the near guard), W 1. */
+        const rhi_vertex tl = { l, t, 1.0f, 0, 0, frgba, 0, .w = 1.0f };
+        const rhi_vertex tr = { r, t, 1.0f, 0, 0, frgba, 0, .w = 1.0f };
+        const rhi_vertex br = { r, b, 1.0f, 0, 0, frgba, 0, .w = 1.0f };
+        const rhi_vertex bl = { l, b, 1.0f, 0, 0, frgba, 0, .w = 1.0f };
         fade_first = n;
         buf[n+0] = tl; buf[n+1] = tr; buf[n+2] = br;
         buf[n+3] = tl; buf[n+4] = br; buf[n+5] = bl;
@@ -9564,7 +9615,8 @@ static bool draw_native_scene(bool full_extent)
     /* Draw the full-screen fade overlay last (over every layer above), in the PSX
      * ABR blend: mode 2 (B-F) subtract -> fade to black; mode 1 (B+F) add -> fade to
      * white; mode 0 ((B+F)/2) -> alpha. These pipes are depth_write_off + the quad
-     * is at z=0, so it tests-passes against the whole frame and writes no depth. */
+     * is at view-Z 1 (depth 0), so it test-passes against the whole frame and
+     * writes no depth. */
     if (fade_first >= 0) {
         /* Mode 2 uses gouraud_sub_FADE_pipe (plain subtractive, depth-off) —
          * NOT gouraud_sub_pipe, which is now the depth-aware shadow decal (it
@@ -10086,7 +10138,7 @@ static bool draw_glyph_list_3d(const openpete_hud_vert *verts, int nverts,
         buf[n].x = (v->x + ox) * ax - 1.0f;
         buf[n].y = 1.0f - (v->y + oy) * ay;
         buf[n].z = v->z; buf[n].u = 0.0f; buf[n].v = 0.0f;
-        buf[n].rgba = v->rgba; buf[n].koff = 0.0f; buf[n].w = 0.0f;
+        buf[n].rgba = v->rgba; buf[n].koff = 0.0f; buf[n].w = v->z;
         if (alpha8 >= 0) {
             const uint32_t a = (uint32_t)(((buf[n].rgba >> 24) * (uint32_t)alpha8) / 255u);
             buf[n].rgba = (buf[n].rgba & 0x00FFFFFFu) | (a << 24);
@@ -10135,7 +10187,7 @@ static void draw_mod_overlay(void) {
         buf[n].x = v->x * ax - 1.0f;
         buf[n].y = 1.0f - v->y * ay;
         buf[n].z = v->z; buf[n].u = 0.0f; buf[n].v = 0.0f;
-        buf[n].rgba = v->rgba; buf[n].koff = 0.0f; buf[n].w = 0.0f;
+        buf[n].rgba = v->rgba; buf[n].koff = 0.0f; buf[n].w = v->z;
         buf[n].sx = 0.0f; buf[n].sy = 0.0f;   /* unranked: rank select off */
         n++;
     }
@@ -10543,10 +10595,11 @@ static int menu_push_quad(rhi_vertex* buf, int n, float ax, float ay,
     if (n + 6 > MENU_MAX_VERTS) return n;
     const float nx0 = x0 * ax - 1.0f, nx1 = x1 * ax - 1.0f;
     const float ny0 = 1.0f - y0 * ay, ny1 = 1.0f - y1 * ay;
-    const rhi_vertex tl = { nx0, ny0, 0.0f, 0,0, rgba, 0, 0,0 };
-    const rhi_vertex tr = { nx1, ny0, 0.0f, 0,0, rgba, 0, 0,0 };
-    const rhi_vertex bl = { nx0, ny1, 0.0f, 0,0, rgba, 0, 0,0 };
-    const rhi_vertex br = { nx1, ny1, 0.0f, 0,0, rgba, 0, 0,0 };
+    /* Screen-space quad: view-Z 1 (the near guard), W 1. */
+    const rhi_vertex tl = { nx0, ny0, 1.0f, 0,0, rgba, 0, 0,0, 1.0f };
+    const rhi_vertex tr = { nx1, ny0, 1.0f, 0,0, rgba, 0, 0,0, 1.0f };
+    const rhi_vertex bl = { nx0, ny1, 1.0f, 0,0, rgba, 0, 0,0, 1.0f };
+    const rhi_vertex br = { nx1, ny1, 1.0f, 0,0, rgba, 0, 0,0, 1.0f };
     buf[n++] = tl; buf[n++] = tr; buf[n++] = bl;
     buf[n++] = tr; buf[n++] = br; buf[n++] = bl;
     return n;
@@ -10568,7 +10621,7 @@ static void draw_menu_glyphs_3d(float ax, float ay) {
         gbuf[gn].y = 1.0f - v->y * ay;
         gbuf[gn].z = v->z; gbuf[gn].u = 0.0f; gbuf[gn].v = 0.0f;
         gbuf[gn].rgba = v->rgba; gbuf[gn].koff = 0.0f; gbuf[gn].sx = 0.0f; gbuf[gn].sy = 0.0f;
-        gbuf[gn].w = 0.0f;
+        gbuf[gn].w = v->z;
         gn++;
     }
     gn -= gn % 3;
@@ -12739,6 +12792,7 @@ static int native_shot_widescreen(const char *base, int H, float cap_wf,
     if (openpete_write_png_rgba(path, nat, Wc, H) == 0)
         OPL_INFO_F("native", "vk screenshot %dx%d (widescreen wf=%.3f) -> %s", Wc, H, (double)cap_wf, path);
     else rc = 1;
+    depth_transport_census_shot(path);
     free(nat);
     return rc;
 }
@@ -13109,6 +13163,7 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
         if (openpete_write_png_rgba(path, nat, W, H) == 0)
             OPL_INFO_F("native", "vk screenshot %dx%d -> %s", W, H, path);
         else rc = 1;
+        depth_transport_census_shot(path);
     }
     free(nat); free(ref);
     return rc;

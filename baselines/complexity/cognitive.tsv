@@ -141,7 +141,7 @@ games/common/renderer/moby.c	moby_reextract_body	48	0
 games/common/renderer/moby.c	moby_reveal_dbg	44	0	
 games/common/renderer/moby.c	project_all_records_inner	60	0	
 games/common/renderer/moby.c	project_all_shaded	190	0	
-games/common/renderer/moby.c	push_scene_moby	58	0	
+games/common/renderer/moby.c	push_scene_moby	55	0	
 games/common/renderer/moby.c	reextract_record_pass	236	0	
 games/common/renderer/moby.c	shaded_color_ab	35	0	
 games/common/renderer/moby.c	shaded_compose_euler	54	0	
@@ -226,7 +226,7 @@ games/spyro-1/renderer/particle.c	sparkle_compare	40	0
 games/spyro-1/renderer/particle.c	sparkle_feed_native	44	0	
 games/spyro-1/renderer/portal.c	dump_leaf	31	0	
 games/spyro-1/renderer/portal.c	dump_portal_table	29	0	
-games/spyro-1/renderer/portal.c	emit_portal_aperture	46	0	
+games/spyro-1/renderer/portal.c	emit_portal_aperture	41	0	
 games/spyro-1/renderer/portal.c	feed_portal_dome	134	0	
 games/spyro-1/renderer/portal.c	feed_portal_quad	77	0	
 games/spyro-1/renderer/portal.c	feed_revealed_portals	90	0	

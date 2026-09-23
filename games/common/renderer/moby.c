@@ -4909,12 +4909,10 @@ static void push_scene_moby(void) {
         for (int k = 0; k < 3; k++) {
             t.v[k].sx   = s_wtri[i].v[k].sx;
             t.v[k].sy   = s_wtri[i].v[k].sy;
-            t.v[k].z    = openpete_native_depth_from_viewz(openpete_worldvz_full(s_wtri[i].v[k].vz));
-            /* State the perspective W only where the OT pulls actually moved
-             * this vertex; an unshifted vertex keeps the derive-from-z path
-             * (identical result, no round-trip difference). */
-            t.v[k].pvz  = (s_wtri[i].v[k].tvz == s_wtri[i].v[k].vz)
-                        ? 0.0f : s_wtri[i].v[k].tvz;
+            t.v[k].z    = openpete_native_scene_viewz(openpete_worldvz_full(s_wtri[i].v[k].vz));
+            /* Perspective W: the vertex's unshifted view-Z (equal to z where
+             * no OT pull moved it). */
+            t.v[k].pvz  = openpete_native_scene_viewz(openpete_worldvz_full(s_wtri[i].v[k].tvz));
             t.v[k].u    = (float)s_wtri[i].v[k].u;
             t.v[k].v    = (float)s_wtri[i].v[k].v;
             t.v[k].rgba = s_wtri[i].v[k].rgb | 0xFF000000u;

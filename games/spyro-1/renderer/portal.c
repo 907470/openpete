@@ -719,7 +719,7 @@ static float portal_cyclorama_depth(double vz) {
      * they want to LOSE honest contests. */
     double v = vz - (double)openpete_portal_plane_margin();
     if (v < 1.0) v = 1.0;
-    return openpete_native_depth_from_viewz(openpete_worldvz_full((float)v));
+    return openpete_native_scene_viewz(openpete_worldvz_full((float)v));
 }
 /* OPENPETE_PORTAL_SKY_DEPTH = ot (default) | plane | ring.
  *
@@ -756,9 +756,8 @@ static void set_sky_ot_push(void) { s_sky_push_vz = sky_ot_push_for(s_ot_vz); }
 static float ring_depth(void) {
     /* +EPS (not −): the ring construction wants the sky BEHIND the outline
      * it was measured from — the same margin, opposite direction. */
-    float z = openpete_native_depth_from_viewz(
-                  openpete_worldvz_full((float)(s_ring_vz + s_sky_push_vz + portal_sky_eps_vz())));
-    return z > 1.0f ? 1.0f : z;
+    return openpete_native_scene_viewz(
+               openpete_worldvz_full((float)(s_ring_vz + s_sky_push_vz + portal_sky_eps_vz())));
 }
 static float ot_depth(void) {
     /* 128 * the mirrored .s OT bucket — the literal PSX OT placement. The
@@ -766,7 +765,7 @@ static float ot_depth(void) {
      * per-face by the PORTAL_GUARD redraw (the PSX mask-bit mirror), not by
      * a depth floor (a blanket floor over-protects the non-deferred
      * through-hole floor, which the preview must cover). */
-    return openpete_native_depth_from_viewz(openpete_worldvz_full((float)s_ot_vz));
+    return openpete_native_scene_viewz(openpete_worldvz_full((float)s_ot_vz));
 }
 /* Returns the active constant-depth mode (0 none, 1 ring, 2 ot) + *z.
  * ot mode COMBINES with the per-pixel plane: the sky z is
@@ -812,9 +811,8 @@ static float plane_depth(double a, double b, double c, double x, double y) {
 static float plane_depth_back(double a, double b, double c, double x, double y) {
     double inv = a * x + b * y + c;
     double vz = (inv > 1e-9) ? 1.0 / inv : 1e9;
-    float z = openpete_native_depth_from_viewz(
-                  openpete_worldvz_full((float)(vz + s_sky_push_vz + portal_sky_eps_vz())));
-    return (z > 1.0f) ? 1.0f : z;
+    return openpete_native_scene_viewz(
+               openpete_worldvz_full((float)(vz + s_sky_push_vz + portal_sky_eps_vz())));
 }
 
 /* Far-path portal preview: the destination dome renders as a single flat colour
@@ -996,12 +994,20 @@ int openpete_portal_sky_planes(CPUState* cpu, const ngte_view* v, openpete_porta
  * still runs; only the scene emission is suppressed. */
 static int portal_scene_emit_enabled(void) { return render_path_enabled(RP_PORTAL); }
 
+/* Every portal tri lies on (or is constructed against) the opening plane at
+ * its own per-vertex depth: its perspective W is that view-Z. */
+static void portal_add_tri(const openpete_scene_tri* t, int category) {
+    openpete_scene_tri w = *t;
+    for (int k = 0; k < 3; k++) w.v[k].pvz = w.v[k].z;
+    openpete_native_scene_add_tri_grouped(&w, category, 0, s_portal_group);
+}
+
 static void portal_add_sky_tri(const openpete_scene_tri* t) {
     if (!portal_scene_emit_enabled()) return;
     openpete_native_scene_set_tag(OPENPETE_TAG_PORTAL(s_portal_kind, 0));
     if (!s_aperture_ok)   /* no opening polygon this feed: footprint IS the mask */
-        openpete_native_scene_add_tri_grouped(t, OPENPETE_SCENE_PORTAL_MASK, 0, s_portal_group);
-    openpete_native_scene_add_tri_grouped(t, OPENPETE_SCENE_PORTAL_CYCLORAMA, 0, s_portal_group);
+        portal_add_tri(t, OPENPETE_SCENE_PORTAL_MASK);
+    portal_add_tri(t, OPENPETE_SCENE_PORTAL_CYCLORAMA);
     openpete_native_scene_set_tag(0);
 }
 
@@ -1478,10 +1484,8 @@ static void emit_aperture_ring(const ppt* poly, int pn, const double* dpx,
          * around the opening. */
         const double vzi = poly[i].vz + s_sky_push_vz + portal_sky_eps_vz();
         const double vzj = poly[j].vz + s_sky_push_vz + portal_sky_eps_vz();
-        float zi = openpete_native_depth_from_viewz(openpete_worldvz_full((float)vzi));
-        float zj = openpete_native_depth_from_viewz(openpete_worldvz_full((float)vzj));
-        if (zi > 1.0f) zi = 1.0f;
-        if (zj > 1.0f) zj = 1.0f;
+        float zi = openpete_native_scene_viewz(openpete_worldvz_full((float)vzi));
+        float zj = openpete_native_scene_viewz(openpete_worldvz_full((float)vzj));
         const float qx[4] = { (float)poly[i].x, (float)poly[j].x, rx[j], rx[i] };
         const float qy[4] = { (float)poly[i].y, (float)poly[j].y, ry[j], ry[i] };
         const float qz[4] = { zi, zj, zj, zi };
@@ -1495,7 +1499,7 @@ static void emit_aperture_ring(const ppt* poly, int pn, const double* dpx,
                 t.v[k].sx = qx[ks[k]]; t.v[k].sy = qy[ks[k]];
                 t.v[k].z = qz[ks[k]]; t.v[k].rgba = rgba;
             }
-            openpete_native_scene_add_tri_grouped(&t, channel, 0, s_portal_group);
+            portal_add_tri(&t, channel);
         }
     }
     openpete_native_scene_set_tag(0);
@@ -1552,7 +1556,7 @@ static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly
             t.v[k].z = sky_min2(pz, cz, cmode);
             t.v[k].rgba = 0xFF000000u;                      /* colour-write is off */
         }
-        openpete_native_scene_add_tri_grouped(&t, OPENPETE_SCENE_PORTAL_MASK, 0, s_portal_group);
+        portal_add_tri(&t, OPENPETE_SCENE_PORTAL_MASK);
     }
     /* The margin ring belongs on the OUTERMOST boundary, which on a corrected
      * portal is the corrected outline, not the authored one. Emitted around the
@@ -1575,13 +1579,12 @@ static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly
                 t.textured = 0; t.blend = 0;
                 for (int k = 0; k < 3; k++) {
                     const ppt* v = q[ks[k]];
-                    float z = openpete_native_depth_from_viewz(
+                    float z = openpete_native_scene_viewz(
                                   openpete_worldvz_full((float)(v->vz + s_sky_push_vz + portal_band_back_vz())));
-                    if (z > 1.0f) z = 1.0f;
                     t.v[k].sx = v->x; t.v[k].sy = v->y;
                     t.v[k].z = z; t.v[k].rgba = 0xFF000000u;
                 }
-                openpete_native_scene_add_tri_grouped(&t, OPENPETE_SCENE_PORTAL_MASK, 0, s_portal_group);
+                portal_add_tri(&t, OPENPETE_SCENE_PORTAL_MASK);
             }
         }
     }
@@ -1893,7 +1896,7 @@ static void dump_leaf(CPUState* cpu, const char* which, uint32_t a0, uint32_t a1
                     "OTdepth=%d matchedViewZ=%.0f nativeZ=%.3f  prims=%u bytes  fogFC=%06X IR0=%u(t=%.3f)\n",
             openpete_frame, which, a0, col, rx0, rx1, ry0, ry1,
             (int32_t)cpu->read_word(D_PORTAL_DEPTH), vz,
-            (double)openpete_native_depth_from_viewz(openpete_worldvz_full((float)(vz > 1.0 ? vz : 16384.0))),
+            (double)openpete_native_scene_viewz(openpete_worldvz_full((float)(vz > 1.0 ? vz : 16384.0))),
             (end > start) ? (end - start) : 0, fog, ir0, (double)ir0 / 4096.0);
     /* Widescreen bug probe: the CLAMPED .s scissor rect (above) vs the native
      * projected-outline bbox (which widens through scene_to_clip). If the outline

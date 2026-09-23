@@ -1,19 +1,19 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 #include "psx_unorm8.glsl"
+#include "psx_viewz.glsl"
 
 /* Scene textured vertex stage — PERSPECTIVE-CORRECT UV/colour with
  * CLIP-INVARIANT depth.
  *
  * The CPU feeds post-projection 2D screen coordinates (already in clip space
- * via scene_to_clip) plus the NDC depth z (openpete_native_depth_from_viewz;
- * the encoding is selected by DEPTH_AFFINE below). Two view-Z values meet
- * here and they are NOT always the same:
+ * via scene_to_clip) plus two view-Z values (psx_viewz.glsl), which are NOT
+ * always the same:
  *
- *   - vzo: the view-Z the DEPTH encodes. Feeders may shift it to port the
- *     PSX OT's authored ordering (terrain slot offsets, moby tie pulls).
- *   - inW: the TRUE view-Z (perspective W) for UV/colour interpolation
- *     (0 = unshifted; derive from z).
+ *   - vzo: the ORDERING view-Z the depth is written from (the depth curve is
+ *     selected by DEPTH_AFFINE below). Feeders may shift it to port the PSX
+ *     OT's authored ordering (terrain slot offsets, moby tie pulls).
+ *   - inW: the TRUE view-Z (perspective W) for UV/colour interpolation.
  *
  * The homogeneous position MUST use W == vzo. gl_Position's (zc, W) pair is
  * linearly interpolated by the hardware CLIPPER; only a matched pair keeps
@@ -31,12 +31,12 @@
  * to hardware W=inW interpolation on unclipped triangles, and exact on
  * clipped ones. */
 
-layout(location = 0) in vec3 inPos;   /* xy = clip-space screen, z = NDC depth */
+layout(location = 0) in vec3 inPos;   /* xy = clip-space screen, z = ordering view-Z */
 layout(location = 1) in vec2 inUV;    /* texel coords within the texture page */
 layout(location = 2) in vec4 inColor; /* R8G8B8A8_UNORM -> 0..1 modulate */
-/* True view-Z, when the feeder shifted z to encode OT ordering (0 = unshifted,
- * derive W from z as above). The depth WRITTEN is always the z the feeder sent
- * — only the UV/colour interpolation basis changes. */
+/* True view-Z (equal to inPos.z unless the feeder shifted z to encode OT
+ * ordering). The depth WRITTEN always follows inPos.z — only the UV/colour
+ * interpolation basis changes. */
 layout(location = 4) in float inW;
 /* Terrain og OT key (rhi_vertex.koff): the face's ABSOLUTE .s insertion key
  * in world units + 0.5 sentinel (0 = not keyed); keyed fragments run the
@@ -56,7 +56,7 @@ layout(location = 2) out float vQ;
 layout(location = 3) flat out float vKoff;
 layout(location = 4) flat out vec2 vRank;
 
-/* Depth encoding, chosen at pipeline creation (RHI vertex spec-constant 0):
+/* Depth curve, chosen at pipeline creation (RHI vertex spec-constant 0):
  * false = legacy z=vz/(vz+4096) (hyperbolic in vz, interpolated screen-linearly
  * => ordering flips at near-coplanar faces); true = z_ndc=(W-1)/W=1-1/vz, which
  * IS affine in 1/vz => screen-affine => exact interpolation. Same monotonic
@@ -73,12 +73,11 @@ layout(constant_id = 1) const bool AFFINE_UV = false;
 
 void main()
 {
-    float z   = clamp(inPos.z, 0.0, 0.9999);        /* bound W (z->1 => W->inf) */
-    float vzo = 4096.0 * z / max(1.0 - z, 1e-6);     /* view-Z the DEPTH encodes */
-    vzo = max(vzo, 1.0);                              /* near-plane / z==0 guard  */
-    float Wu = inW > 0.0 ? max(inW, 1.0) : vzo;      /* UV/colour perspective W  */
-    float q  = AFFINE_UV ? 1.0 : (vzo / Wu);
-    float zc = DEPTH_AFFINE ? (vzo - 1.0) : (z * vzo);   /* z_ndc = zc/vzo */
+    float vzo = op_scene_vz(inPos.z);                /* ordering view-Z (depth) */
+    float Wu  = max(inW, 1.0);                        /* UV/colour perspective W */
+    float q   = AFFINE_UV ? 1.0 : (vzo / Wu);
+    float z   = op_vz_hyperbolic(vzo);                /* legacy curve's z_ndc   */
+    float zc  = DEPTH_AFFINE ? (vzo - 1.0) : (z * vzo);   /* z_ndc = zc/vzo */
     gl_Position = AFFINE_UV ? vec4(inPos.xy, DEPTH_AFFINE ? (vzo - 1.0) / vzo : z, 1.0)
                             : vec4(inPos.xy * vzo, zc, vzo);
     vUV = inUV * q;

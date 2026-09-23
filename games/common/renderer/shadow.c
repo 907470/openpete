@@ -529,9 +529,9 @@ static void shadow_moby_build(CPUState* cpu) {
     }
 }
 
-/* Shadow depth feed. Two corrections over a raw depth_from_viewz(MAC3):
+/* Shadow depth feed. Two corrections over a raw scene_viewz(MAC3):
  *
- *  (1) SCALE — depth_from_viewz wants ONE shared view-Z scale (full-world, what
+ *  (1) SCALE — scene_viewz wants ONE shared view-Z scale (full-world, what
  *      terrain feeds as m3*16 and mobys/player-shadow feed directly). The moby
  *      shadow walk works in world/4 coords (camera + moby positions >>2), so its
  *      MAC3 is 4x too small; passing `scale` (4 for moby shadows, 1 for the
@@ -550,7 +550,7 @@ static void shadow_moby_build(CPUState* cpu) {
  *      depth-write-off/depth-free, so none of this can perturb the opaque
  *      depth field. */
 float shadow_depth(float viewz, float scale, float bias) {
-    return openpete_native_depth_from_viewz(
+    return openpete_native_scene_viewz(
         openpete_worldvz_bias(openpete_worldvz_scaled(viewz, scale), bias));
 }
 /* Both view-Z pulls are RETIRED to 1.0 defaults (true depth); the envs remain
@@ -600,6 +600,7 @@ static void shadow_moby_feed_native(CPUState* cpu) {
         for (int k = 0; k < 3; k++) {
             st.v[k].sx = m->sx[k]; st.v[k].sy = m->sy[k];
             st.v[k].z  = shadow_depth(m->sz[k], 4.0f, bias);  /* world/4 MAC3 -> full-world */
+            st.v[k].pvz = shadow_depth(m->sz[k], 4.0f, 1.0f); /* true (unbiased) view-Z */
             st.v[k].u = (float)m->u[k]; st.v[k].v = (float)m->v[k];
             st.v[k].rgba = (m->rgb & 0xFFFFFFu) | 0xFF000000u;
         }

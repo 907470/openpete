@@ -8176,7 +8176,7 @@ static void terrain_feed_native(CPUState* cpu) {
         for (int k = 0; k < 3; k++) {
             tri.v[k].sx = dsx[k]; tri.v[k].sy = dsy[k];
             /* Terrain view-Z is in world/16 units (cam>>4, verts /16); the
-             * actors feed FULL-scale view-Z. depth_from_viewz expects ONE shared
+             * actors feed FULL-scale view-Z. scene_viewz expects ONE shared
              * scale, so ×16 to match — else terrain's depth is ~16× too small
              * (always nearest) and draws on top of every actor.
              * LP ×1.03: with the stencil hole-fill carrying
@@ -8206,8 +8206,8 @@ static void terrain_feed_native(CPUState* cpu) {
              * buffer — og's keys decide WHICH terrain surface owns a pixel;
              * true geometry decides everything against that surface
              * (mobys, Spyro, particles, decals, the occlusion grid). */
-            tri.v[k].pvz = wz.vz;      /* perspective W == the stored view-Z */
-            tri.v[k].z  = openpete_native_depth_from_viewz(wz);
+            tri.v[k].z  = openpete_native_scene_viewz(wz);
+            tri.v[k].pvz = tri.v[k].z;  /* perspective W == the stored view-Z */
             tri.v[k].u = t->u[k]; tri.v[k].v = t->v[k];
             /* Textured: modulate the sampled texel by the fogged colour (the
              * pipeline does tex*colour/128, so feed the full RGB). Untextured:

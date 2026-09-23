@@ -123,7 +123,7 @@ static int part_prim_sink(void* ctx, const ngte_prim* s) {
     (void)ctx;
     if (s_item_n >= PART_MAX_PRIMS) return 0;
     s_item[s_item_n].p = *s;
-    s_item[s_item_n].depth = 0.0f;
+    s_item[s_item_n].depth = 1.0f;   /* unpaired: the near guard (view-Z 1) */
     s_item[s_item_n].psx = s_item[s_item_n].psy = 0.0;
     s_item[s_item_n].psx2 = s_item[s_item_n].psy2 = 0.0;
     s_item[s_item_n].cls = -1;
@@ -196,9 +196,9 @@ static void part_pair_depths(CPUState* cpu, const ngte_view* v) {
     if (base < 0x80000000u || base >= 0x80800000u) return;
     const uint32_t stride = game_layout.particles.rec_stride;
     /* The fixed front bucket is nearer than bucket 0, which the near guard in
-     * openpete_native_depth_from_viewz already maps to the smallest depth the
+     * openpete_native_scene_viewz already maps to the smallest depth the
      * pipeline carries. */
-    const float front = openpete_native_depth_from_viewz(openpete_worldvz_full(1.0f));
+    const float front = openpete_native_scene_viewz(openpete_worldvz_full(1.0f));
 
     int i = 0;
     for (uint32_t rec = base; i < s_item_n; rec += stride) {
@@ -229,7 +229,7 @@ static void part_pair_depths(CPUState* cpu, const ngte_view* v) {
         it->psy = o.sy;
         it->vz  = o.m3;
         it->depth =
-            openpete_native_depth_from_viewz(openpete_worldvz_scaled((float)o.m3, 4.0f));
+            openpete_native_scene_viewz(openpete_worldvz_scaled((float)o.m3, 4.0f));
         if (cls == PART_TWO_POINT_CLASS) {
             ngte_proj o2;
             part_rec_point(it, 1, NULL, p);
@@ -418,7 +418,7 @@ static void part_rebase_item(CPUState* cpu, const ngte_view* v, double alpha, in
     part_project(v, p, &o);
     r->dx = (float)(o.sx - it->psx);
     r->dy = (float)(o.sy - it->psy);
-    r->depth = openpete_native_depth_from_viewz(openpete_worldvz_scaled((float)o.m3, 4.0f));
+    r->depth = openpete_native_scene_viewz(openpete_worldvz_scaled((float)o.m3, 4.0f));
     r->active = 1;
     if (it->cls == PART_TWO_POINT_CLASS) {
         ngte_proj o2;
@@ -510,6 +510,7 @@ static void part_add_quad(const float x[4], const float y[4], const float u[4],
         for (int k = 0; k < 3; k++) {
             const int j = split[s][k];
             st.v[k].sx = x[j]; st.v[k].sy = y[j]; st.v[k].z = depth;
+            st.v[k].pvz = depth;   /* flat billboard: constant W */
             st.v[k].u = u[j];  st.v[k].v = vv[j];
             st.v[k].rgba = (rgb[j] & 0xFFFFFFu) | 0xFF000000u;
         }
