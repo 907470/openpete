@@ -252,12 +252,8 @@ static int census_enabled(void) {
  * what an interactive run wants. Any other value names a file and the
  * report is written there instead.
  *
- * The file form exists because stderr is not a plain descriptor here:
- * the log mirror dup2's it onto a pipe and a pump thread copies the
- * bytes out. The report is a burst at exit, so its tail races the pump
- * and is lost intermittently — a handful of rows on one run, none on
- * another. A reader that asserts one row per table needs the whole
- * report, and a file is not on the pipe. */
+ * The file form gives a reader that asserts one row per table the report
+ * alone, without the rest of the run's stderr interleaved. */
 static FILE* census_open(int* needs_close) {
     const char* e = getenv("OPENPETE_MOD_TABLE_CENSUS");
     *needs_close = 0;

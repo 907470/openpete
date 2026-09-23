@@ -14,6 +14,11 @@
 // stderr is dup2'd onto a pipe; a pump thread copies every byte to the
 // real stderr and to the file. Terminal and piped output are therefore
 // unchanged, which matters because every gate script captures stderr.
+//
+// The pump is a native thread, not an SDL one: the close runs from atexit,
+// after the renderer teardown has called SDL_Quit, and SDL_Quit invalidates
+// every SDL_Thread handle, so SDL_WaitThread would return without joining
+// and the process would exit with the tail of stderr still in the pipe.
 
 #include "openpete_log.h"
 #include "openpete_paths.h"
@@ -24,18 +29,18 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <SDL3/SDL.h>
-
 #if defined(_WIN32)
 #  include <io.h>
 #  include <sys/stat.h>
 #  include <windows.h>
+#  include <process.h>
 #  define op_pipe(fds)      _pipe((fds), 65536, _O_BINARY)
 #  define op_dup(fd)        _dup(fd)
 #  define op_dup2(a, b)     _dup2((a), (b))
 #  define op_read(f, b, n)  _read((f), (b), (unsigned)(n))
 #  define op_write(f, b, n) _write((f), (b), (unsigned)(n))
 #  define op_close(fd)      _close(fd)
+#  define op_sleep_ms(ms)   Sleep(ms)
 #  define OP_OPEN_MODE      (_S_IREAD | _S_IWRITE)
 #  define OP_PATH_SEP       '\\'
 #  define OP_NULL_DEVICE    "NUL"
@@ -43,6 +48,8 @@
  * handle, in the standard slots. */
 #  define op_fd_is_open(fd) (_get_osfhandle(fd) > 0)
 #else
+#  include <pthread.h>
+#  include <signal.h>
 #  include <sys/file.h>
 #  include <unistd.h>
 #  define op_pipe(fds)      pipe(fds)
@@ -51,6 +58,7 @@
 #  define op_read(f, b, n)  read((f), (b), (n))
 #  define op_write(f, b, n) write((f), (b), (n))
 #  define op_close(fd)      close(fd)
+#  define op_sleep_ms(ms)   usleep((ms) * 1000u)
 #  define OP_OPEN_MODE      0644
 #  define OP_PATH_SEP       '/'
 #  define OP_NULL_DEVICE    "/dev/null"
@@ -71,7 +79,7 @@
 static int         s_log_fd      = -1;
 static int         s_real_stderr = -1;
 static int         s_pipe_r      = -1;
-static SDL_Thread* s_pump        = NULL;
+static int         s_pump_live   = 0;
 static char        s_path[LOG_PATH_MAX];
 static size_t      s_written     = 0;
 static int         s_truncated   = 0;
@@ -120,8 +128,7 @@ static size_t strip_ansi(const char* in, size_t n, char* out) {
     return w;
 }
 
-static int SDLCALL pump_thread(void* unused) {
-    (void)unused;
+static void pump_loop(void) {
     char buf[4096];
     char clean[4096];
     for (;;) {
@@ -143,8 +150,56 @@ static int SDLCALL pump_thread(void* unused) {
             s_written += m;
         }
     }
+}
+
+/* Thread shim: start the pump, and join it. */
+#if defined(_WIN32)
+static HANDLE s_pump;
+
+static unsigned __stdcall pump_entry(void* unused) {
+    (void)unused;
+    pump_loop();
     return 0;
 }
+
+static int pump_start(void) {
+    uintptr_t h = _beginthreadex(NULL, 0, pump_entry, NULL, 0, NULL);
+    if (h == 0) return -1;
+    s_pump = (HANDLE)h;
+    return 0;
+}
+
+static void pump_join(void) {
+    WaitForSingleObject(s_pump, INFINITE);
+    CloseHandle(s_pump);
+    s_pump = NULL;
+}
+#else
+static pthread_t s_pump;
+
+static void* pump_entry(void* unused) {
+    (void)unused;
+    /* Asynchronous signals go to the game's threads, whose handlers expect
+     * them there; the pump only copies bytes. */
+    sigset_t mask;
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGHUP);  sigaddset(&mask, SIGINT);
+    sigaddset(&mask, SIGQUIT); sigaddset(&mask, SIGPIPE);
+    sigaddset(&mask, SIGALRM); sigaddset(&mask, SIGTERM);
+    sigaddset(&mask, SIGWINCH);
+    pthread_sigmask(SIG_BLOCK, &mask, NULL);
+    pump_loop();
+    return NULL;
+}
+
+static int pump_start(void) {
+    return pthread_create(&s_pump, NULL, pump_entry, NULL) == 0 ? 0 : -1;
+}
+
+static void pump_join(void) {
+    pthread_join(s_pump, NULL);
+}
+#endif
 
 static int resolve_path(const char* spec, char* out, size_t cap) {
     if (spec) {
@@ -214,7 +269,7 @@ static void restore_fd2(void) {
 }
 
 int openpete_log_file_open(const char* spec) {
-    if (s_pump) return 0;  /* already open */
+    if (s_pump_live) return 0;  /* already open */
 
     if (!spec) spec = getenv("OPENPETE_LOG_FILE");
     if (spec && (!*spec || strcmp(spec, "off") == 0 || strcmp(spec, "0") == 0))
@@ -270,14 +325,14 @@ int openpete_log_file_open(const char* spec) {
     SetStdHandle(STD_ERROR_HANDLE, (HANDLE)_get_osfhandle(2));
 #endif
 
-    s_pump = SDL_CreateThread(pump_thread, "openpete-log", NULL);
-    if (!s_pump) {
+    if (pump_start() != 0) {
 #if defined(_WIN32)
         SetStdHandle(STD_ERROR_HANDLE, s_win_orig_err);
 #endif
         restore_fd2();
         goto fail_file;
     }
+    s_pump_live = 1;
 
     atexit(openpete_log_file_close);
     return 0;
@@ -296,7 +351,7 @@ fail_pipe:
 }
 
 void openpete_log_file_close(void) {
-    if (!s_pump) return;
+    if (!s_pump_live) return;
 
     fflush(stderr);
 #if defined(_WIN32)
@@ -308,8 +363,8 @@ void openpete_log_file_close(void) {
      * linker, the mod compiler) is waited on before shutdown, and their
      * output landing in the log is exactly why fd 2 is inherited. A
      * future daemonized child would have to close it. */
-    SDL_WaitThread(s_pump, NULL);
-    s_pump = NULL;
+    pump_join();
+    s_pump_live = 0;
 
     op_close(s_pipe_r);      s_pipe_r      = -1;
     op_close(s_real_stderr); s_real_stderr = -1;
@@ -318,15 +373,15 @@ void openpete_log_file_close(void) {
 }
 
 const char* openpete_log_file_path(void) {
-    return s_pump ? s_path : "";
+    return s_pump_live ? s_path : "";
 }
 
 void openpete_log_file_sync(void) {
-    if (!s_pump) return;
+    if (!s_pump_live) return;
     fflush(stderr);
     /* Give the pump a moment to drain what the caller just wrote. Called
      * from the crash handler, which is already past the point of being
      * signal-safe (it uses fprintf and backtrace); without this the
      * crash dump can die in the pipe with the process. */
-    SDL_Delay(50);
+    op_sleep_ms(50);
 }
