@@ -224,6 +224,8 @@ artisans | pos=(69222, 48707, 7142) yaw=1685 pitch=135
 # 16:9 field while its centre lies 197 px outside; the reveal's centre-depth
 # margin drops it (user report 2026-09-21); blessed pre-fix.
 artisans | pos=(68239, 49731, 8905) yaw=1705 pitch=437
+# 4x4 near-cell floor textures warp up close.
+artisans | pos=(85572, 29197, 10208) yaw=2061 pitch=446
 # town_square bull moby: disappears or shrinks when it changes animation
 # pose while interpolation is active (user report 2026-09-19, VBL ~1800;
 # pose corrected the same day); blessed pre-fix. Canonical at 1764 so the
