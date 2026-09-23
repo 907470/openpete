@@ -351,6 +351,8 @@ static int s_dbg_faces, s_dbg_oob, s_dbg_nclip, s_dbg_behind, s_dbg_spike;  /* d
 static int s_dbg_spike_tris;   /* triangles the near/HQ subdivide emitted this walk */
 static int s_trisplit_faces[2], s_trisplit_subs[2], s_trisplit_scull[2], s_trisplit_matdiff[2];
                                    /* tn_wctx trisplit_* sums, [0] tier 4, [1] tier 2 */
+static int s_cells4_faces[2];      /* tn_wctx cells4_faces sums */
+static int s_cells4_quads[3];      /* tn_wctx cells4_quads sums */
 static int s_fardbg = -1, s_fardbg_done = 0, s_fardbg_active = 0;  /* OPENPETE_TERRAIN_FARDBG */
 static int s_fardbg_budget = -1;   /* OPENPETE_TERRAIN_FARDBG_N: walks still to dump */
 static int s_fardbg_lean = -1;     /* OPENPETE_TERRAIN_FARDBG_LEAN: skip the per-prim/per-tri lines */
@@ -757,6 +759,12 @@ typedef struct {
      * sub-triangles a straddler's facing culled, sub-triangles whose formed
      * CLUT/TPAGE words differ from the tile's own */
     int trisplit_faces[2], trisplit_subs[2], trisplit_scull[2], trisplit_matdiff[2];
+    /* tier-4 quads: [0] emitted as cells, [1] of those with a fold weight > 0 */
+    int cells4_faces[2];
+    /* their quadrants where the fold can apply (perspective, not pinned):
+     * [0] all, [1] cells not the quadrant's quarters, [2] on a scrolling
+     * record; [1] and [2] keep the cell UVs at every weight */
+    int cells4_quads[3];
     int tex_faces, tex_tris;
     int near_q_agree, near_c_only;
     int walk_sectors;
@@ -902,21 +910,27 @@ static ngte_cvert cv_mid(ngte_cvert a, ngte_cvert b) {
     return r;
 }
 
-/* Emit a textured camera-space quad (corners TL,TR,BL,BR) with near-clipping.
- * UVs come from a decoded Tiledef (u/v in [TL,TR,BL,BR]); GPU diagonal TR-BL
- * (triangulation (TL,TR,BL)+(TR,BL,BR)) — same as the main loop. */
-static void emit_quad_cv(tn_wctx* W, ngte_cvert tl, ngte_cvert tr, ngte_cvert bl, ngte_cvert br,
-                         const tmat* m, const float u[4], const float v[4]) {
+/* Emit a textured camera-space quad (corners TL,TR,BL,BR) with near-clipping
+ * under the OT key `key`. UVs come from a decoded Tiledef (u/v in
+ * [TL,TR,BL,BR]); GPU diagonal TR-BL (triangulation (TL,TR,BL)+(TR,BL,BR)) —
+ * same as the main loop. */
+static void emit_quad_cv_key(tn_wctx* W, float key, ngte_cvert tl, ngte_cvert tr,
+                             ngte_cvert bl, ngte_cvert br, const tmat* m,
+                             const float u[4], const float v[4]) {
     tl.u=u[0]; tl.v=v[0]; tr.u=u[1]; tr.v=v[1]; bl.u=u[2]; bl.v=v[2]; br.u=u[3]; br.v=v[3];
-    /* Portal OT-conformance key: near-subdivided (deferred) faces are drained
-     * into the OT as 4 SEPARATE sub-quad prims, EACH bucketed by its own
-     * corner sum — the .s sky-vs-floor boundary at a portal base is at
-     * SUB-QUAD granularity (og f2440: the walkway's near sub-quads paint over
-     * the preview, its far ones are covered). Override the parent face's key
-     * with this sub-quad's own. */
-    W->emit_otkey = (float)((tl.m3 + tr.m3 + bl.m3 + br.m3) * 4.0);
+    W->emit_otkey = key;
     clip_push_tri(W, tl, tr, bl, m);
     clip_push_tri(W, tr, bl, br, m);
+}
+/* emit_quad_cv_key keyed by the quad's own corner sum. Portal OT-conformance
+ * key: near-subdivided (deferred) faces are drained into the OT as 4 SEPARATE
+ * sub-quad prims, EACH bucketed by its own corner sum — the .s sky-vs-floor
+ * boundary at a portal base is at SUB-QUAD granularity (og f2440: the
+ * walkway's near sub-quads paint over the preview, its far ones are
+ * covered). */
+static void emit_quad_cv(tn_wctx* W, ngte_cvert tl, ngte_cvert tr, ngte_cvert bl, ngte_cvert br,
+                         const tmat* m, const float u[4], const float v[4]) {
+    emit_quad_cv_key(W, (float)((tl.m3 + tr.m3 + bl.m3 + br.m3) * 4.0), tl, tr, bl, br, m, u, v);
 }
 
 /* Near/HQ subdivide pass — the func_800276A0 simple-emit path (.L80027D7C),
@@ -1401,6 +1415,62 @@ static int tface_pin_cells(int hq_idx) {
     return s_hq_differ[hq_idx & 0x7F];
 }
 
+/* The texel layouts of the two near tiers. The 2x2 maps quadrant tile q's
+ * 32 texels (corner texels 0 and 31) across the quadrant; the 4x4 maps each
+ * of the quadrant's four 16x16 cell tiles across a quarter of it. Where the
+ * cells are the quadrant's quarters (thq_cell_is_quarter), a quadrant row
+ * samples one 31-texel span in the 2x2 and two 15-texel spans (0-15, 16-31)
+ * in the cells, so the same point shows texel floor(31 s) in one and
+ * floor(15 (2 s)) or 16 + floor(15 (2 s - 1)) in the other: a sub-texel
+ * shift across the quadrant. The fold blends each cell corner's UV toward
+ * the quadrant's mapping at that corner (nc4_fold_cell_uv), so at the tier-4
+ * bound the cells sample what the 2x2 samples. */
+
+/* One tile's decoded rectangle (thq_rect_of) and its blend mode. */
+static int thq_rect_blend(CPUState* cpu, uint32_t e, int span, int abe, thq_rect* r) {
+    thq_rect_of(cpu, e, span, r);
+    tmat m; float u[4], v[4];
+    memset(&m, 0, sizeof(m)); m.bpp = 16;
+    decode_tiledef_span(cpu, e, abe, &m, u, v, span);
+    return m.blend;
+}
+/* Can quadrant q take the UV fold? Its tile is a parallelogram in texel
+ * space (its BR is TL + (TR - TL) + (BL - TL), so its bilinear mapping is the
+ * 2x2's), and each of its four cells is the matching quarter with the same
+ * blend mode. uv[k] receives the quadrant's corner k (TL, TR, BL, BR), read
+ * from corner k of the cell at that corner. */
+static int thq_quad_folds(CPUState* cpu, uint32_t hqBase, int abe, int q, int uv[4][2]) {
+    thq_rect Q;
+    const int qb = thq_rect_blend(cpu, hqBase + game_layout.terrain.hq_sub0 + (uint32_t)q * 8u,
+                                  0x1F, abe, &Q);
+    if (((Q.u[0] + Q.u[3] - Q.u[1] - Q.u[2]) & 0xFF) != 0 ||
+        ((Q.v[0] + Q.v[3] - Q.v[1] - Q.v[2]) & 0xFF) != 0)
+        return 0;
+    for (int k = 0; k < 4; k++) {
+        const int i = (((q >> 1) << 1) + (k >> 1)) * 4 + ((q & 1) << 1) + (k & 1);
+        thq_rect C;
+        const int cb = thq_rect_blend(cpu, hqBase + game_layout.terrain.hq_cells4 + (uint32_t)i * 8u,
+                                      0x0F, abe, &C);
+        if (cb != qb || !thq_cell_is_quarter(&Q, &C, i, 0xFF)) return 0;
+        uv[k][0] = C.u[k];
+        uv[k][1] = C.v[k];
+    }
+    return 1;
+}
+/* The face's fold-capable quadrants as a 4-bit mask (bit q), their corner
+ * UVs into uv (may be NULL). A record on the live scroller list
+ * (s_tscroll_tile) takes none: its cell rows and quadrant pairs carry
+ * separately wrapped fractional V offsets. */
+static unsigned tface_qfold_mask(CPUState* cpu, uint32_t hqBase, int abe, int hq_idx,
+                                 int uv[4][4][2]) {
+    if (!game_layout.terrain.hq_cells4 || s_tscroll_tile[hq_idx & 0x7F]) return 0;
+    unsigned mask = 0;
+    int tmp[4][2];
+    for (int q = 0; q < 4; q++)
+        mask |= (unsigned)thq_quad_folds(cpu, hqBase, abe, q, uv ? uv[q] : tmp) << q;
+    return mask;
+}
+
 /* The tier-4 verdict: a near face with a corner SZ3 under near_corner and
  * near_flag_tier2 clear (the classifier's .L80026D70 route,
  * r_environment.s 0x80026D10-0x80026DB4). For a face the pin sends to the
@@ -1541,6 +1611,51 @@ static void nc4_morph(ngte_cvert G[5][5]) {
     }
 }
 
+/* The 3D geomorph between the 2x2 and 4x4 images of a quad. The 2x2 path
+ * folds each quadrant along its TR-BL diagonal (emit_quad_cv's
+ * triangulation), so it shows odd-odd node (r, c) at the camera-space
+ * midpoint of nodes (r-1, c+1) and (r+1, c-1); the 4x4 grid shows it at its
+ * bilinear point. Every other node lies on a straight quadrant edge in both
+ * images. On a non-planar face the two positions differ, and the image
+ * steps where the least corner view-Z crosses zt4 = near_corner / hqscale,
+ * the tier-4 bound of face_near_tier4. The fold weight u moves the node from
+ * the grid point (u = 0) to the fold point (u = 1) over the band
+ * [zt4 - band, zt4], band = zt4 / 4, on the same least corner view-Z the
+ * routing reads, so a face entering tier 4 draws the 2x2 image and reaches
+ * the grid a quarter of the tier-4 range nearer. A face the pin sends to the
+ * cells never draws the 2x2 image and takes u = 0; under affine texture
+ * mapping nc4_morph owns the crossing and u = 0. The vertex stage's
+ * nc4_fold_weight evaluates the same expression. */
+static double nc4_fold_weight(double mn) {
+    const double zt4 = (double)game_layout.terrain.near_corner / tface_hqscale();
+    const double band = zt4 * 0.25;
+    const double u = (mn - (zt4 - band)) / band;
+    return u <= 0.0 ? 0.0 : (u >= 1.0 ? 1.0 : u);
+}
+/* One colour channel at fold weight u from the grid value g to the fold
+ * value f, rounded to nearest; u = 0 returns g. */
+static uint32_t nc4_fold_ch(uint32_t g, uint32_t f, double u) {
+    const double x = (double)g + u * ((double)f - (double)g);
+    return (uint32_t)floor(x + 0.5);
+}
+/* Move the four odd-odd nodes to fold weight u: position and colour (the
+ * fold colour is cv_mid's, the 2x2 grid's own rule). A cell's UVs belong to
+ * its tile corners, not to the node, and stay. */
+static void nc4_geomorph(ngte_cvert G[5][5], double u) {
+    static const int P[4][2] = { {1, 1}, {1, 3}, {3, 1}, {3, 3} };
+    for (int i = 0; i < 4; i++) {
+        ngte_cvert* n = &G[P[i][0]][P[i][1]];
+        const ngte_cvert f = cv_mid(G[P[i][0] - 1][P[i][1] + 1], G[P[i][0] + 1][P[i][1] - 1]);
+        n->m1 = n->m1 + u * (f.m1 - n->m1);
+        n->m2 = n->m2 + u * (f.m2 - n->m2);
+        n->m3 = n->m3 + u * (f.m3 - n->m3);
+        uint32_t rgb = 0;
+        for (int sh = 0; sh < 24; sh += 8)
+            rgb |= nc4_fold_ch((n->rgb >> sh) & 0xFFu, (f.rgb >> sh) & 0xFFu, u) << sh;
+        n->rgb = rgb;
+    }
+}
+
 /* Camera-space triple product over three cverts (tface_det3's form). */
 static double cv_det3(const ngte_cvert* a, const ngte_cvert* b, const ngte_cvert* c) {
     return a->m1 * (b->m2 * c->m3 - b->m3 * c->m2)
@@ -1558,11 +1673,39 @@ static int nc4_front(const ngte_cvert* tl, const ngte_cvert* tr,
     return flip ? (d2 <= 0.0) : (d2 >= 0.0);
 }
 
+/* Cell `cell`'s corner UVs at fold weight u: corner k, at quadrant
+ * parameter (s, t) in {0, 1/2, 1}, moves from its own UV toward the bilinear
+ * UV of the quadrant corners quv at (s, t). The vertex stage's
+ * cell_fold_uv evaluates the same expression. */
+static void nc4_fold_cell_uv(const int quv[4][2], int cell, double u, float uu[4], float vv[4]) {
+    for (int k = 0; k < 4; k++) {
+        const double s = (double)((cell & 1) + (k & 1)) * 0.5;
+        const double t = (double)(((cell >> 2) & 1) + (k >> 1)) * 0.5;
+        float* dst[2] = { &uu[k], &vv[k] };
+        for (int a = 0; a < 2; a++) {
+            const double top = (1.0 - s) * (double)quv[0][a] + s * (double)quv[1][a];
+            const double bot = (1.0 - s) * (double)quv[2][a] + s * (double)quv[3][a];
+            const double uq = (1.0 - t) * top + t * bot;
+            const double c = (double)*dst[a];
+            *dst[a] = (float)(c + u * (uq - c));
+        }
+    }
+}
+
+/* A tier-4 quad's emit inputs beside its nodes: each cell's OT key, the fold
+ * weight and the fold-capable quadrants with their corner UVs. */
+typedef struct {
+    float key[16];
+    double u;
+    unsigned qmask;
+    int quv[4][4][2];
+} nc4_emit_t;
+
 /* The 16 cells in the drain's row-major order (D_8006CF58); cell i reads the
- * tile at hq_cells4 + i*8, its V scroll from its row's group. Keys: the
- * per-quad emit_otkey of emit_quad_cv, the cell's own corner sum. */
+ * tile at hq_cells4 + i*8, its V scroll from its row's group, and takes the
+ * OT key E->key[i]; a cell of a fold-capable quadrant takes the UV fold. */
 static void nc4_emit_cells(tn_wctx* W, CPUState* cpu, const tn_nearface* nf,
-                           ngte_cvert G[5][5]) {
+                           ngte_cvert G[5][5], const nc4_emit_t* E) {
     int scroll = s_tanim_have && nf->texid >= 0 && nf->texid < 128 && s_tanim_act[nf->texid];
     for (int i = 0; i < 16; i++) {
         int r = i >> 2, c = i & 3;
@@ -1576,7 +1719,9 @@ static void nc4_emit_cells(tn_wctx* W, CPUState* cpu, const tn_nearface* nf,
         mat.texid = nf->texid;
         tiledef_apply_ori(cpu, e, u, v);   /* word1 >> 25: the 16-texel half of D_8006D058 */
         for (int k = 0; scroll && k < 4; k++) v[k] += s_tanim_dvcell[nf->texid][r];
-        emit_quad_cv(W, *tl, *tr, *bl, *br, &mat, u, v);
+        const int q = ((r >> 1) << 1) | (c >> 1);
+        if (E->u > 0.0 && ((E->qmask >> q) & 1u)) nc4_fold_cell_uv(E->quv[q], i, E->u, u, v);
+        emit_quad_cv_key(W, E->key[i], *tl, *tr, *bl, *br, &mat, u, v);
     }
 }
 
@@ -1594,10 +1739,33 @@ static void terrain_near_emit_face(tn_wctx* W, CPUState* cpu, const tn_nearface*
     }
     ngte_cvert G[5][5];
     nc4_grid(G, TL, TR, BL, BR);
+    /* Keys stay on the grid depths: the drain inserts each cell at its
+     * nodes' SZ3. */
+    nc4_emit_t E;
+    for (int i = 0; i < 16; i++) {
+        const int r = i >> 2, c = i & 3;
+        E.key[i] = (float)((G[r][c].m3 + G[r][c + 1].m3 + G[r + 1][c].m3 + G[r + 1][c + 1].m3) * 4.0);
+    }
+    const int affine_texturing = openpete_native_get_texture_mapping();
+    const int foldable = !affine_texturing && !tface_pin_cells(nf->texid);
+    double mn = TL.m3;
+    if (TR.m3 < mn) mn = TR.m3;
+    if (BL.m3 < mn) mn = BL.m3;
+    if (BR.m3 < mn) mn = BR.m3;
+    E.u = foldable ? nc4_fold_weight(mn) : 0.0;
+    E.qmask = foldable ? tface_qfold_mask(cpu, nf->hqBase, nf->abe, nf->texid, E.quv) : 0u;
+    if (E.u > 0.0) nc4_geomorph(G, E.u);
+    W->cells4_faces[0]++;
+    W->cells4_faces[1] += E.u > 0.0;
+    if (foldable) {
+        const int scrolling = s_tscroll_tile[nf->texid & 0x7F] != 0;
+        W->cells4_quads[0] += 4;
+        W->cells4_quads[2] += scrolling ? 4 : 0;
+        W->cells4_quads[1] += scrolling ? 0 : 4 - __builtin_popcount(E.qmask);
+    }
     if (openpete_native_vertex_snap_active()) nc4_snap(G);
-    int affine_texturing = openpete_native_get_texture_mapping();
     if (affine_texturing) nc4_morph(G);
-    nc4_emit_cells(W, cpu, nf, G);
+    nc4_emit_cells(W, cpu, nf, G, &E);
 }
 
 /* ---- tier-4 triangles (the +0x1E00 queue's triangle pass) -----------------
@@ -1806,7 +1974,9 @@ static void trisplit_sum(const tn_wctx* W) {
         s_trisplit_subs[k] += W->trisplit_subs[k];
         s_trisplit_scull[k] += W->trisplit_scull[k];
         s_trisplit_matdiff[k] += W->trisplit_matdiff[k];
+        s_cells4_faces[k] += W->cells4_faces[k];
     }
+    for (int k = 0; k < 3; k++) s_cells4_quads[k] += W->cells4_quads[k];
 }
 
 /* Does a triangle face take the tier-4 triangle pass? The classifier's
@@ -4220,10 +4390,14 @@ static void tgpu_cell_rec_init(rhi_terrain_cell_anim* R, const tgpu_face_t* T,
 /* Push a face's 16 cell-record entries as two half records per draw class
  * its entries use, each masked to that class's entries (info bits 8-15)
  * with its blended entries in bits 16-23; `kind` carries the record-kind
- * bits (info bit 24 = triangle). */
+ * bits (info bit 24 = triangle) and, in bits 28-31, the face's
+ * fold-capable quadrants (tface_qfold_mask), which each half stores as
+ * info bits 26-27 for its two quadrants. */
 static int tgpu_push_cell_halves(tgpu_buf* buf, int base, rhi_terrain_cell_anim* R,
                                  const rhi_terrain_cell_tile tiles[16], const uint8_t cls[16],
                                  const uint8_t blended[16], uint32_t hq_idx, uint32_t kind) {
+    const uint32_t qmask = kind >> 28;      /* tface_qfold_mask, quadrants 0-3 */
+    kind &= 0x0FFFFFFFu;
     for (int h = 0; h < 2; h++) {
         uint32_t bl = 0;
         for (int j = 0; j < 8; j++) bl |= (uint32_t)blended[h * 8 + j] << j;
@@ -4232,7 +4406,8 @@ static int tgpu_push_cell_halves(tgpu_buf* buf, int base, rhi_terrain_cell_anim*
             uint32_t mask = 0;
             for (int j = 0; j < 8; j++) mask |= (uint32_t)(cls[h * 8 + j] == c) << j;
             if (!mask) continue;
-            R->cur.info = (hq_idx & 0x7Fu) | ((uint32_t)h << 7) | (mask << 8) | (bl << 16) | kind;
+            R->cur.info = (hq_idx & 0x7Fu) | ((uint32_t)h << 7) | (mask << 8) | (bl << 16) | kind
+                        | (((qmask >> (2 * h)) & 3u) << 26);
             if (tgpu_push_rec(&buf[base + c], R) != 0) return -1;
         }
     }
@@ -4296,8 +4471,9 @@ static int tgpu_bake_cells4(CPUState* cpu, tgpu_buf* buf, int ab, int with_var, 
             return -1;
         }
     }
+    const uint32_t qmask = tface_qfold_mask(cpu, hqBase, F->abe, F->hq_idx, NULL);
     return tgpu_push_cell_families(buf, ab, with_var, pin4, &R, tiles, cls, blended,
-                                   F->hq_idx, 0u);
+                                   F->hq_idx, qmask << 28);
 }
 
 /* One tier-4 sub-triangle's tile (the 16x16 cell tile at `e`): its record
@@ -6113,6 +6289,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     s_dbg_faces = s_dbg_oob = s_dbg_nclip = s_dbg_behind = s_dbg_spike = s_dbg_clipped = 0;
     s_dbg_spike_tris = 0;
     trisplit_reset(s_trisplit_faces, s_trisplit_subs, s_trisplit_scull, s_trisplit_matdiff);
+    memset(s_cells4_faces, 0, sizeof(s_cells4_faces));
+    memset(s_cells4_quads, 0, sizeof(s_cells4_quads));
     s_near_q_agree = s_near_c_only = 0;
     ENV_FLAG_LATCH(s_sectordump, "OPENPETE_TERRAIN_SECTORDUMP");
     s_sd_n = 0;
@@ -6574,6 +6752,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         W->dbg_spike = W->dbg_clipped = 0;
         W->dbg_spike_tris = 0;
         trisplit_reset(W->trisplit_faces, W->trisplit_subs, W->trisplit_scull, W->trisplit_matdiff);
+        memset(W->cells4_faces, 0, sizeof(W->cells4_faces));
+        memset(W->cells4_quads, 0, sizeof(W->cells4_quads));
         W->tex_faces = W->tex_tris = 0;
         W->near_q_agree = W->near_c_only = 0;
         W->walk_sectors = 0;
@@ -6916,11 +7096,15 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         if (s_ncen)
             fprintf(stderr, "[nearcen] frame=%u nearFaces=%d subTris=%d terrainTris=%d sectors=%d "
                     "tri4Faces=%d tri4Subs=%d tri4StraddleCulls=%d tri4MatDiff=%d "
-                    "tri2Faces=%d tri2Subs=%d tri2StraddleCulls=%d tri2MatDiff=%d\n",
+                    "tri2Faces=%d tri2Subs=%d tri2StraddleCulls=%d tri2MatDiff=%d "
+                    "cells4Faces=%d cells4Folded=%d cells4Quads=%d cells4NotQuarter=%d "
+                    "cells4Scroll=%d\n",
                     openpete_frame, s_dbg_spike, s_dbg_spike_tris, s_tri_n, s_walk_sectors,
                     s_trisplit_faces[0], s_trisplit_subs[0], s_trisplit_scull[0],
                     s_trisplit_matdiff[0], s_trisplit_faces[1], s_trisplit_subs[1],
-                    s_trisplit_scull[1], s_trisplit_matdiff[1]);
+                    s_trisplit_scull[1], s_trisplit_matdiff[1], s_cells4_faces[0],
+                    s_cells4_faces[1], s_cells4_quads[0], s_cells4_quads[1],
+                    s_cells4_quads[2]);
     }
     {   /* The glitch-mark walk ring: the same counters, kept for the last N
          * walks so a walk that produced the wrong geometry can be read back

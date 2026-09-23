@@ -93,6 +93,9 @@ layout(location = 15) in ivec4 inPrevC2;
 #endif
 ivec4 inPos;
 uvec4 inUV;
+/* A quad cell vertex's UV and its clip-context members' after the UV fold
+ * (cell_fold_uv); main() reads them in place of inUV / inCtx*UV. */
+vec2  g_cell_uv, g_cell_uv_a, g_cell_uv_b;
 vec4  inColFar;
 vec4  inColNear;
 uvec4 inMat;
@@ -332,6 +335,11 @@ vec2 hq_snap_screen(int node, dvec3 TL, dvec3 TR, dvec3 BL, dvec3 BR, dvec3 m)
     return vec2(rx, ry);
 }
 
+/* This vertex's tier-4 fold weight (terrain.c nc4_fold_weight), set by main()
+ * once the face corners are in camera space; 0 leaves every node on its
+ * grid point. */
+double g_nc4_fold = 0.0lf;
+
 /* ---- 4x4 near cells (terrain.c nc4_* mirrors) ----------------------------
  * A tier-4 face (face_near_tier4) draws as a 5x5 node grid, 16 cells. A
  * cell vertex carries its cell in mat_near1 (bit 31 set, cell in bits 0-3)
@@ -347,6 +355,24 @@ precise dvec3 nc4_pt(dvec3 a, dvec3 b, int k) {
 }
 precise dvec3 nc4_node(int r, int c, dvec3 TL, dvec3 TR, dvec3 BL, dvec3 BR) {
     return nc4_pt(nc4_pt(TL, BL, r), nc4_pt(TR, BR, r), c);
+}
+/* nc4_fold_weight mirror (hqscale 4.0, near_corner 0x140): 0 at and inside
+ * 3/4 of the tier-4 bound zt4, 1 at zt4, linear between. */
+double nc4_fold_weight(double mn) {
+    const double zt4 = 320.0lf / 4.0lf;
+    const double band = zt4 * 0.25lf;
+    precise double u = (mn - (zt4 - band)) / band;
+    return u <= 0.0lf ? 0.0lf : (u >= 1.0lf ? 1.0lf : u);
+}
+/* nc4_geomorph mirror: node (r, c) at fold weight g_nc4_fold, an odd-odd
+ * node moved toward the midpoint of (r-1, c+1) and (r+1, c-1). */
+precise dvec3 nc4_gnode(int r, int c, dvec3 TL, dvec3 TR, dvec3 BL, dvec3 BR) {
+    precise dvec3 n = nc4_node(r, c, TL, TR, BL, BR);
+    if (g_nc4_fold <= 0.0lf || (r & 1) == 0 || (c & 1) == 0) return n;
+    precise dvec3 f = (nc4_node(r - 1, c + 1, TL, TR, BL, BR)
+                     + nc4_node(r + 1, c - 1, TL, TR, BL, BR)) * 0.5lf;
+    precise dvec3 o = n + g_nc4_fold * (f - n);
+    return o;
 }
 
 /* nc4_snap mirror: corner and interior nodes floor their own projection; an
@@ -388,7 +414,7 @@ vec2 nc4_snap_screen(int r, int c, dvec3 TL, dvec3 TR, dvec3 BL, dvec3 BR, dvec3
  * UV and w stay, which perspective-correct texturing renders as a warp. */
 vec2 nc4_screen(int r, int c, dvec3 TL, dvec3 TR, dvec3 BL, dvec3 BR)
 {
-    dvec3 m = nc4_node(r, c, TL, TR, BL, BR);
+    dvec3 m = nc4_gnode(r, c, TL, TR, BL, BR);
     vec2 sc = nc4_snap_screen(r, c, TL, TR, BL, BR, m);
     if (!AFFINE_UV || (r & 1) == 0 || (c & 1) == 0) return sc;
     double mn = min(min(TL.z, TR.z), min(BL.z, BR.z));
@@ -771,10 +797,25 @@ uint cell_rgb_pt(uint a, uint b, int k) {
 }
 /* Node (r, c) colour of the 5x5 grid from the four raw near colours
  * (i0 = TL, i1 = TR, i2 = BR, i3 = BL): rows first, then along the row. */
-uint cell_node_rgb(int r, int c) {
+uint cell_grid_rgb(int r, int c) {
     uint L = cell_rgb_pt(inCellNear.x, inCellNear.w, r);
     uint R = cell_rgb_pt(inCellNear.y, inCellNear.z, r);
     return cell_rgb_pt(L, R, c);
+}
+/* nc4_geomorph's colour: an odd-odd node at fold weight g_nc4_fold between
+ * its grid colour and the cell_rgb_mid of (r-1, c+1) and (r+1, c-1), per
+ * channel rounded to nearest (nc4_fold_ch). */
+uint cell_node_rgb(int r, int c) {
+    uint g = cell_grid_rgb(r, c);
+    if (g_nc4_fold <= 0.0lf || (r & 1) == 0 || (c & 1) == 0) return g;
+    uint f = cell_rgb_mid(cell_grid_rgb(r - 1, c + 1), cell_grid_rgb(r + 1, c - 1));
+    uint o = 0u;
+    for (uint sh = 0u; sh < 24u; sh += 8u) {
+        precise double x = double((g >> sh) & 0xFFu)
+                         + g_nc4_fold * (double((f >> sh) & 0xFFu) - double((g >> sh) & 0xFFu));
+        o |= uint(floor(x + 0.5lf)) << sh;
+    }
+    return o;
 }
 /* nt4_rgb_mid mirror: the triangle drain's colour average, both words
  * masked with 0xFFFEFEFF, added, shifted right once. */
@@ -812,6 +853,32 @@ uvec2 cell_uv(uvec4 t, int q) {
     uint sh = uint(q & 1) * 16u;
     return uvec2((w >> sh) & 0xFFu, (w >> (sh + 8u)) & 0xFFu);
 }
+/* Entry lc (0-7) of this record half. */
+uvec4 cell_tile(int lc) {
+    return lc == 0 ? inCellT0 : lc == 1 ? inCellT1 : lc == 2 ? inCellT2
+         : lc == 3 ? inCellT3 : lc == 4 ? inCellT4 : lc == 5 ? inCellT5
+         : lc == 6 ? inCellT6 : inCellT7;
+}
+/* nc4_fold_cell_uv mirror: corner q of cell `cell` at fold weight
+ * g_nc4_fold, from its own UV toward the bilinear UV of its quadrant's
+ * corners, when info bit 26 + (quadrant column) marks the quadrant
+ * fold-capable. The quadrant's corner k is corner k of its cell at that
+ * corner; the record half holds all four. */
+vec2 cell_fold_uv(int cell, int q, uvec2 own) {
+    int qc = (cell & 3) >> 1;
+    if (g_nc4_fold <= 0.0lf || ((inCellFace.y >> uint(26 + qc)) & 1u) == 0u) return vec2(own);
+    int b = 2 * qc;
+    dvec2 A = dvec2(cell_uv(cell_tile(b), 0)), B = dvec2(cell_uv(cell_tile(b + 1), 1));
+    dvec2 C = dvec2(cell_uv(cell_tile(b + 4), 2)), D = dvec2(cell_uv(cell_tile(b + 5), 3));
+    precise double s = double((cell & 1) + (q & 1)) * 0.5lf;
+    precise double t = double(((cell >> 2) & 1) + (q >> 1)) * 0.5lf;
+    precise dvec2 top = (1.0lf - s) * A + s * B;
+    precise dvec2 bot = (1.0lf - s) * C + s * D;
+    precise dvec2 uq = (1.0lf - t) * top + t * bot;
+    precise dvec2 c = dvec2(own);
+    precise dvec2 o = c + g_nc4_fold * (uq - c);
+    return vec2(o);
+}
 /* Fill the per-vertex names main() reads with what the baked cell vertex at
  * this index carried: an instance draws 8 cells x 2 triangles (TL,TR,BL) +
  * (TR,BL,BR) in cell order, each triangle 6 vertices on the near variant
@@ -825,9 +892,7 @@ uvec2 cell_uv(uvec4 t, int q) {
  * tile uv[0..5] are nodes A, B, C's (u, v) and uv[6] the cell or quadrant. */
 bool tri4_fetch(uint info, int lc, int tri2, int k, bool spare) {
     if (tri2 != 0) return false;
-    uvec4 t = lc == 0 ? inCellT0 : lc == 1 ? inCellT1 : lc == 2 ? inCellT2
-            : lc == 3 ? inCellT3 : lc == 4 ? inCellT4 : lc == 5 ? inCellT5
-            : lc == 6 ? inCellT6 : inCellT7;
+    uvec4 t = cell_tile(lc);
     int sub = (info & 0x2000000u) != 0u ? 16 + lc : int((info >> 7) & 1u) * 8 + lc;
     uint cell = (t.y >> 16) & 15u;
     uint f16 = 1u | (uint(k) << 3) | ((info & 0x7Fu) << 5) | 0x1000u
@@ -870,9 +935,7 @@ bool cells_fetch() {
     if (((info >> uint(8 + lc)) & 1u) == 0u) return false;
     if ((info & 0x1000000u) != 0u) return tri4_fetch(info, lc, tri2, k, spare);
     int cell = int((info >> 7) & 1u) * 8 + lc;
-    uvec4 t = lc == 0 ? inCellT0 : lc == 1 ? inCellT1 : lc == 2 ? inCellT2
-            : lc == 3 ? inCellT3 : lc == 4 ? inCellT4 : lc == 5 ? inCellT5
-            : lc == 6 ? inCellT6 : inCellT7;
+    uvec4 t = cell_tile(lc);
     int cr = cell >> 2, cq = cell & 3;
     int role = k + tri2;
     uint f16 = 1u | (uint(role) << 3) | ((info & 0x7Fu) << 5) | 0x1000u
@@ -881,6 +944,7 @@ bool cells_fetch() {
              | (spare ? 0x8000u : 0u);
     inPos = ivec4(inC0.xyz, int(f16));
     inUV = uvec4(cell_uv(t, role), 0u, 0u);
+    g_cell_uv = cell_fold_uv(cell, role, cell_uv(t, role));
     uint rgb = cell_node_rgb(cr + (role >> 1), cq + (role & 1));
     inColFar = cell_unorm(rgb);
     inColNear = inColFar;
@@ -897,6 +961,8 @@ bool cells_fetch() {
     inCtxACol = uvec2(ca, ca);
     inCtxBUV = uvec4(cell_uv(t, rb), 0u, 0u);
     inCtxBCol = uvec2(cb, cb);
+    g_cell_uv_a = cell_fold_uv(cell, ra, cell_uv(t, ra));
+    g_cell_uv_b = cell_fold_uv(cell, rb, cell_uv(t, rb));
 #endif
     return true;
 }
@@ -1129,6 +1195,15 @@ void main()
      * walk's face_near_tier4 pinned branch; w3 & 0x80 is folded into
      * FF_HQELIG). */
     bool pin = (gf & GF_HQPIN) != 0 && (ff & FF_PINCELLS) != 0u;
+    /* nc4_geomorph: a tier-4 quad's odd-odd nodes on the least corner
+     * view-Z (face_near_tier4's routing term), none for a pinned face or
+     * under affine texture mapping. The cell record is re-read at the
+     * weight for the node colours. */
+    if (is4 && !ist && !pin && !AFFINE_UV)
+        g_nc4_fold = nc4_fold_weight(min(min(m0.z, m1.z), min(m3c.z, m2.z)));
+#ifdef TERRAIN_CELLS
+    if (g_nc4_fold > 0.0lf) cells_fetch();
+#endif
     bool t4 = near && (gf & GF_CELLS4) != 0 &&
               (pin ? (ff & FF_W3_40) == 0u
                    : nc4_tier4(m0.z, m1.z, m2.z, m3c.z, ff & FF_W3_40, ff & FF_W3_80));
@@ -1161,10 +1236,10 @@ void main()
         if (flip ? (d > 0.0lf) : (d < 0.0lf)) { kill_vert(); return; }
     } else if (is4 && straddle && (ff & FF_DSIDE) == 0u) {
         int cr = cell >> 2, cq = cell & 3;
-        precise dvec3 ctl = nc4_node(cr, cq, m0, m1, m3c, m2);
-        precise dvec3 ctr = nc4_node(cr, cq + 1, m0, m1, m3c, m2);
-        precise dvec3 cbl = nc4_node(cr + 1, cq, m0, m1, m3c, m2);
-        precise dvec3 cbr = nc4_node(cr + 1, cq + 1, m0, m1, m3c, m2);
+        precise dvec3 ctl = nc4_gnode(cr, cq, m0, m1, m3c, m2);
+        precise dvec3 ctr = nc4_gnode(cr, cq + 1, m0, m1, m3c, m2);
+        precise dvec3 cbl = nc4_gnode(cr + 1, cq, m0, m1, m3c, m2);
+        precise dvec3 cbr = nc4_gnode(cr + 1, cq + 1, m0, m1, m3c, m2);
         precise double d1 = det3d(ctl, ctr, cbl);
         bool cf = flip ? (d1 <= 0.0lf) : (d1 >= 0.0lf);
         if (!cf) {
@@ -1237,9 +1312,9 @@ void main()
             ivec2 n0 = tri2 ? ivec2(cr, cq + 1) : ivec2(cr, cq);
             ivec2 n1 = tri2 ? ivec2(cr + 1, cq) : ivec2(cr, cq + 1);
             ivec2 n2 = tri2 ? ivec2(cr + 1, cq + 1) : ivec2(cr + 1, cq);
-            precise dvec3 ta = nc4_node(n0.x, n0.y, TL, TR, BL, BR);
-            precise dvec3 tb = nc4_node(n1.x, n1.y, TL, TR, BL, BR);
-            precise dvec3 tc2 = nc4_node(n2.x, n2.y, TL, TR, BL, BR);
+            precise dvec3 ta = nc4_gnode(n0.x, n0.y, TL, TR, BL, BR);
+            precise dvec3 tb = nc4_gnode(n1.x, n1.y, TL, TR, BL, BR);
+            precise dvec3 tc2 = nc4_gnode(n2.x, n2.y, TL, TR, BL, BR);
             vec2 sa = nc4_screen(n0.x, n0.y, TL, TR, BL, BR);
             vec2 sb = nc4_screen(n1.x, n1.y, TL, TR, BL, BR);
             vec2 sc = nc4_screen(n2.x, n2.y, TL, TR, BL, BR);
@@ -1283,6 +1358,9 @@ void main()
     uint mat0 = inMat.x;
     uint clut = inMat.y & 0xFFFFu;
     vec2 uv   = vec2(float(inUV.x), float(inUV.y));
+#ifdef TERRAIN_CELLS
+    if (is4 && !ist) uv = g_cell_uv;
+#endif
     uint dbg_half = 0u, dbg_delta = 0u;
     int  dbg_t0k  = -99999;   /* tint mode 6: exact ladder key (t0k) probe */
     bool ladderFace = false;
@@ -1400,7 +1478,7 @@ void main()
             nn[1] = tri2n ? ivec2(cr + 1, cq) : ivec2(cr, cq + 1);
             nn[2] = tri2n ? ivec2(cr + 1, cq + 1) : ivec2(cr + 1, cq);
             for (int k = 0; k < 3; k++) {
-                tp[k]  = nc4_node(nn[k].x, nn[k].y, TL, TR, BL, BR);
+                tp[k]  = nc4_gnode(nn[k].x, nn[k].y, TL, TR, BL, BR);
                 tos[k] = nc4_screen(nn[k].x, nn[k].y, TL, TR, BL, BR);
             }
             tov = true;
@@ -1441,6 +1519,9 @@ void main()
                                    : vec2(inCtxAUV.x, inCtxAUV.y);
         uvm[ib] = (dbg_half == 1u) ? vec2(inCtxBUV.z, inCtxBUV.w)
                                    : vec2(inCtxBUV.x, inCtxBUV.y);
+#ifdef TERRAIN_CELLS
+        if (is4 && !ist) { uvm[ia] = g_cell_uv_a; uvm[ib] = g_cell_uv_b; }
+#endif
         if (scrollOn) { uvm[ia].y += uvdv; uvm[ib].y += uvdv; }
 
         bool doFog   = !lp && !hqv;
@@ -1525,7 +1606,7 @@ void main()
     } else if (is4) {
         precise dvec3 TL = m0, TR = m1, BL = m3c, BR = m2;
         int nr = (cell >> 2) + (role >> 1), nq = (cell & 3) + (role & 1);
-        mo = nc4_node(nr, nq, TL, TR, BL, BR);
+        mo = nc4_gnode(nr, nq, TL, TR, BL, BR);
         sscr = nc4_screen(nr, nq, TL, TR, BL, BR);
     } else {
         /* Parent corners in .s grid order: TL=i0, TR=i1, BL=i3, BR=i2. */
