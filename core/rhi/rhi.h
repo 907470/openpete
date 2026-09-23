@@ -418,7 +418,7 @@ typedef struct rhi_terrain_nearctx {
 /* 4x4 near-cell records (the terrain cache's cell arenas; one INSTANCE per
  * record, drawn by the terrain_cells vertex stages). A tier-4-eligible HQ face
  * (the near drain's 5x5 node grid, 16 cells, each textured from a 16x16 tile,
- * r_environment.s 0x8002928C) carries its parent corners and raw near
+ * the near drain's tier-4 pass) carries its parent corners and raw near
  * colours once, beside the cell tiles; the vertex stage derives each cell vertex from the record and gl_VertexIndex — node
  * position, colour (the drain's halving order over the four near colours),
  * tile UV and material — so no per-vertex cell data is stored.

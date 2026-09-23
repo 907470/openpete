@@ -251,8 +251,8 @@ typedef struct game_layout {
          * `near_flag_tier2` clear is drained as a 5x5 vertex grid, 16 cells in
          * row-major order, cell i textured from the 16x16 tile at
          * `hq_cells4` + i*8 of the face's HQ record. Spyro 1: 0x28, after the
-         * base entry and the four 2x2 quadrants (r_environment.s
-         * .L80029204-0x80029498, table D_8006CF58). */
+         * base entry and the four 2x2 quadrants (the near drain's tier-4
+         * quad pass, table D_8006CF58). */
         uint32_t hq_cells4;
         /* The same drain's triangle pass, 0 when the port does not draw it.
          * A tier-4 triangle is split into 16 sub-triangles over 15 nodes;
@@ -263,7 +263,7 @@ typedef struct game_layout {
          * `hq_tri_uv` the per-orientation UV offset table (4 blocks of 128
          * bytes) and `hq_tri_uv_mask` the mask on the tile's word1 >> 25
          * index into a block. Spyro 1: D_8006D0F8, D_8006D388, D_8006D3C8,
-         * 0x78 (r_environment.s 0x80029E18-0x80029ECC). */
+         * 0x78 (the near drain's tier-4 triangle pass). */
         uint32_t hq_tri4_nodes;
         uint32_t hq_tri4_cells;
         uint32_t hq_tri_uv;
@@ -275,8 +275,8 @@ typedef struct game_layout {
          * bits 2-3, UV orientation in bits 0-1), `hq_tri2_tiles` the byte
          * table the selector plus the face's UV rotation indexes (quadrant
          * tile * 8 from `hq_sub0`). UVs come from `hq_tri_uv` as for tier 4.
-         * Spyro 1: D_8006D0E8, D_8006D378 (r_environment.s
-         * 0x800283DC-0x80028578). */
+         * Spyro 1: D_8006D0E8, D_8006D378 (the near drain's tier-2
+         * triangle pass). */
         uint32_t hq_tri2_nodes;
         uint32_t hq_tri2_tiles;
         /* Semi-transparency: Spyro 1 flags it per face; Spyro 3 in bit 15 of
