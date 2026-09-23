@@ -30,6 +30,10 @@ artisans | pos=(63965, 43938, 9710) yaw=6134 pitch=-9
 # Tan sliver and flat olive wedge in the grass at original LOD, absent in og;
 # walk and cache alike; appears with the 4x4 morph within the surface.
 artisans | pos=(58245, 42770, 9989) yaw=1599 pitch=-29
+# Geometric step at the 2x2/4x4 tier switch under --lod extended: a non-planar
+# face changes from the 2x2 fold image to the 4x4 grid on the bilinear surface
+# (curved curb and sloped grass move, the flat floor does not).
+artisans | pos=(84319, 31822, 11248) yaw=-3051 pitch=992
 # High above the level looking down, past the .s's own LP culling distance, so
 # the original renderer emits ZERO prims. The extended-LOD leg is the one that
 # matters: the native feed used to run only when the .s had drawn something, so
