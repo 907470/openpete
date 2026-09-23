@@ -15,11 +15,11 @@ N_ALPHA	3714	icy_flight	demo
 N_ADD	21738	icy_flight	demo
 N_SUB	0		
 N_LP	27840	wizard_peak	demo
-CN_OPAQUE	9726	wizard_peak	demo
-CN_ALPHA	48	crystal_flight	spawn
-CN_ADD	818	icy_flight	demo
+CN_OPAQUE	10821	wizard_peak	demo
+CN_ALPHA	53	crystal_flight	spawn
+CN_ADD	877	icy_flight	demo
 CN_SUB	0		
-CA_OPAQUE	17196	gnasty_gnorc	topdown
-CA_ALPHA	0		
-CA_ADD	216	twilight_harbor	topdown
+CA_OPAQUE	18315	gnasty_gnorc	topdown
+CA_ALPHA	75	crystal_flight	topdown
+CA_ADD	276	twilight_harbor	topdown
 CA_SUB	0		
