@@ -1039,8 +1039,10 @@ static void terrain_near_emit(tn_wctx* W, CPUState* cpu, uint32_t hqBase, int te
  * r_environment.s 0x80026CFC): a NEAR foreground face is deferred into one of two
  * per-frame queues in g_SonyImage scratch, which func_800276A0 then drains +
  * subdivides:
- *   +0x2000 (tier 2): depthSum < 0x2000 && !(word3 & 0x80) && no corner SZ3
- *                     < 0x140 && !(word3 & 0x40)         (.L80026D3C, sb 2)
+ *   +0x2000 (tier 2): depthSum < 0x2000 && !(word3 & 0x80) && either no corner
+ *                     SZ3 < 0x140 && !(word3 & 0x40) (.L80026D3C, sb 2), or a corner
+ *                     SZ3 < 0x140 && depthSum != 0 && (word3 & 0x40) (.L80026D70
+ *                     branches back to .L80026D3C: 0x40 caps a tier-4 face at 2x2)
  *   +0x1E00 (tier 4): depthSum < 0x2000 && !(word3 & 0x80) && a corner SZ3
  *                     < 0x140 && depthSum != 0 && !(word3 & 0x40)  (.L80026D70, sb 4)
  * (depthSum = Σ of the 4 corner SZ3; faces with m_LodDistance - depthSum <= 0 are
