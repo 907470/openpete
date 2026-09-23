@@ -1376,7 +1376,13 @@ static int nc4_outcode(const ngte_cvert* n) {
  * bound (at -> 0xFF) the node lies on the TR-BL diagonal the 2x2 path splits
  * its quadrants along, so the cell grid meets the 2x2 image where a face
  * crosses between the queues. Screen only: depth and key stay the node's.
- * The game's integer at >> 1 is kept as at / 2 in full precision. */
+ * The game's integer at >> 1 is kept as at / 2 in full precision.
+ * The morph moves a node's screen point while its UV and depth stay. Under
+ * screen-affine texturing (the PSX GPU's) it matches the cell image to the 2x2
+ * image's affine interpolation across the queue crossing; under
+ * perspective-correct texturing the unmorphed node already lies at its
+ * texel's projection and the moved node samples that texel at the wrong
+ * screen point. The caller applies it under affine texture mapping only. */
 static void nc4_morph(ngte_cvert G[5][5]) {
     double mn = G[0][0].m3;
     if (G[0][4].m3 < mn) mn = G[0][4].m3;
@@ -1459,7 +1465,8 @@ static void terrain_near_emit_face(tn_wctx* W, CPUState* cpu, const tn_nearface*
     ngte_cvert G[5][5];
     nc4_grid(G, TL, TR, BL, BR);
     if (openpete_native_vertex_snap_active()) nc4_snap(G);
-    nc4_morph(G);
+    int affine_texturing = openpete_native_get_texture_mapping();
+    if (affine_texturing) nc4_morph(G);
     nc4_emit_cells(W, cpu, nf, G);
 }
 

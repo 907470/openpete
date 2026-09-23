@@ -329,12 +329,14 @@ vec2 nc4_snap_screen(int r, int c, dvec3 TL, dvec3 TR, dvec3 BL, dvec3 BR, dvec3
 /* nc4_morph mirror: an odd-odd node moves toward the mean of its up-right
  * and down-left neighbours' emitted points, weight at = least corner SZ3 -
  * 0x40, skipped when at <= 0 or the node's own integer projection is off
- * the 512x256 GTE screen (nc4_outcode). */
+ * the 512x256 GTE screen (nc4_outcode). Applied under AFFINE_UV only: the
+ * morph (r_environment.s 0x80028D1C-0x80028E44) moves the screen point while
+ * UV and w stay, which perspective-correct texturing renders as a warp. */
 vec2 nc4_screen(int r, int c, dvec3 TL, dvec3 TR, dvec3 BL, dvec3 BR)
 {
     dvec3 m = nc4_node(r, c, TL, TR, BL, BR);
     vec2 sc = nc4_snap_screen(r, c, TL, TR, BL, BR, m);
-    if ((r & 1) == 0 || (c & 1) == 0) return sc;
+    if (!AFFINE_UV || (r & 1) == 0 || (c & 1) == 0) return sc;
     double mn = min(min(TL.z, TR.z), min(BL.z, BR.z));
     precise double at = mn * 4.0lf - 64.0lf;
     if (at <= 0.0lf || m.z <= 0.0lf) return sc;
