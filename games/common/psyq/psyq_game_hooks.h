@@ -179,7 +179,7 @@ void psyq_game_music_route(int sector, psyq_music_route_t* out);
  * callback. 0 when the game registers through the thunk. */
 uint32_t psyq_game_cd_read_cb_addr(void);
 
-/* Render-path filter and moby ranking consumed by the OT walk. The two
+/* Render-path filter consumed by the OT walk. The two
  * render-path hooks are the one exception to the per-game rule above: the
  * isolation registry they forward to is shared code linked into every game
  * (renderer/render_paths.c), which defines them there. They take no
@@ -187,10 +187,6 @@ uint32_t psyq_game_cd_read_cb_addr(void);
  * the registry without arming the OT filter. */
 int  psyq_game_render_paths_active(void);
 int  psyq_game_render_path_addr_visible(uint32_t addr);
-void psyq_game_ot_begin(void);
-void psyq_game_ot_prim_full(unsigned code_byte, const void* payload,
-                            unsigned payload_bytes);
-void psyq_game_ot_end(void);
 
 /* Re-derive the resident overlay from the id word at psyq_game_overlay_vaddr()
  * and re-point the dispatcher if it names a different overlay. A game passes

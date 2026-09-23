@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 6491de56682ed4be2cabd25049924ea3092b617c
+# head: af954b46b1c85273e618f8561725dacc56847706
 file	function	score	marked	accepted
 core/config/config.c	harvest_args	30	0	
 core/config/config.c	harvest_base	39	0	
@@ -119,7 +119,7 @@ games/common/psyq/psyq_thunks.cpp	cd_command_host	27	0
 games/common/psyq/psyq_thunks.cpp	format_from_mips	91	0	
 games/common/psyq/psyq_thunks.cpp	psyq_CdRead	41	0	
 games/common/psyq/psyq_thunks.cpp	psyq_CdSync	35	0	
-games/common/psyq/psyq_thunks.cpp	psyq_DrawOTag	186	0	
+games/common/psyq/psyq_thunks.cpp	psyq_DrawOTag	181	0	
 games/common/psyq/psyq_thunks.cpp	psyq_SpuWrite	28	0	
 games/common/renderer/cyclorama.c	compare_and_report	45	0	
 games/common/renderer/cyclorama.c	cyc_extract_m	139	0	
@@ -137,11 +137,11 @@ games/common/renderer/moby.c	hex_dump	35	0
 games/common/renderer/moby.c	moby_build_validate	51	0	
 games/common/renderer/moby.c	moby_decode_project	83	0	
 games/common/renderer/moby.c	moby_native_pass	46	0	
-games/common/renderer/moby.c	moby_reextract	48	0	
+games/common/renderer/moby.c	moby_reextract_body	48	0	
 games/common/renderer/moby.c	moby_reveal_dbg	44	0	
 games/common/renderer/moby.c	project_all_records_inner	60	0	
 games/common/renderer/moby.c	project_all_shaded	190	0	
-games/common/renderer/moby.c	push_scene_moby	87	0	
+games/common/renderer/moby.c	push_scene_moby	58	0	
 games/common/renderer/moby.c	reextract_record_pass	236	0	
 games/common/renderer/moby.c	shaded_color_ab	35	0	
 games/common/renderer/moby.c	shaded_compose_euler	54	0	
@@ -155,8 +155,6 @@ games/common/renderer/moby_game_spyro23.c	s23_decode_faces_stride	56	0
 games/common/renderer/moby_game_spyro23.c	s23_env_uv	40	0	
 games/common/renderer/moby_game_spyro23.c	s23_simple_decode	125	0	
 games/common/renderer/moby_game_spyro23.c	s23_special_face	45	0	
-games/common/renderer/moby_rank.c	mr_walk_buckets	30	0	
-games/common/renderer/moby_rank.c	openpete_mobyrank_match	230	0	
 games/common/renderer/native_gte.c	ngte_walk_prims	80	0	
 games/common/renderer/particles.c	part_census	36	0	
 games/common/renderer/player.c	pair_lists	27	0	

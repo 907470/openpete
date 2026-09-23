@@ -1393,10 +1393,6 @@ void psyq_DrawOTag(CPUState* cpu) {
     g_ot_scratch_used = 0;
     g_ot_slot_count = 0;
 
-    /* Same-moby painter rank source: record this walk's geometry prims (walk
-     * position = og paint order) as the FALLBACK rank table — the feeder's
-     * primary source walks the g_WorldOT buckets directly, pose-exact. */
-    psyq_game_ot_begin();
     /* The 2D chokepoint: verify the batch already released for this table, and
      * release one still pending (see ui_sprite_ot_draw_begin). */
     ui_sprite_ot_verify();
@@ -1705,10 +1701,6 @@ void psyq_DrawOTag(CPUState* cpu) {
                 s_total_slots++;
                 if (code_byte >= 0x20u && code_byte < 0x80u)
                     draw_prims_this_call++;
-                { uint8_t hi = code_byte & 0xF0u;
-                  if (hi == 0x20u || hi == 0x30u)
-                      psyq_game_ot_prim_full(code_byte, host + 4,
-                                                (unsigned)payload_bytes); }
             } else {
                 s_anchor_slots++;
             }
@@ -1736,7 +1728,6 @@ void psyq_DrawOTag(CPUState* cpu) {
         addr = next | 0x80000000u;
     }
     if (dump) std::fflush(dump);
-    psyq_game_ot_end();
 
     /* --render-paths: the per-path polybuf intervals were recorded during this
      * frame's render pass and consumed by the walk above. The "canon drawn" mask

@@ -110,19 +110,6 @@ void psyq_game_music_route(int sector, psyq_music_route_t* out) {
 
 /* psyq_game_render_paths_active and psyq_game_render_path_addr_visible have no
  * default here: renderer/render_paths.c defines them for every game. */
-#ifndef PSYQ_GAME_PROVIDES_OT_BEGIN
-void psyq_game_ot_begin(void) {}
-#endif
-#ifndef PSYQ_GAME_PROVIDES_OT_PRIM_FULL
-void psyq_game_ot_prim_full(unsigned code_byte,
-                                           const void* payload,
-                                           unsigned payload_bytes) {
-    (void)code_byte; (void)payload; (void)payload_bytes;
-}
-#endif
-#ifndef PSYQ_GAME_PROVIDES_OT_END
-void psyq_game_ot_end(void) {}
-#endif
 
 #ifndef PSYQ_GAME_PROVIDES_SFX_ARM
 void psyq_game_sfx_arm(void) {}

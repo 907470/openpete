@@ -11,6 +11,7 @@
 
 #include <stdint.h>
 #include "renderer/moby_game.h"   /* moby_wface_t: the shared face record */
+#include "renderer/moby_rank.h"   /* paint-key records and vertices */
 #include "renderer/native_gte.h"  /* ngte_euler_sc: the composed rotation's sin/cos */
 
 #ifdef __cplusplus
@@ -140,11 +141,23 @@ void moby_simple_screen_origin(double ofx, double ofy);
  * provider can run its own winding test on the same coordinates the emit
  * projects with. */
 void moby_simple_project(const double p[3], float* sx, float* sy);
+/* `otk` is the triangle's bucket word in the record's paint order
+ * (moby_rank.h: the face's moby_otk_face_bucket, MOBY_OTK_Q2 set on the
+ * second triangle of one prim), -1 for none; `iv` the draw's integer RTPS of
+ * the three vertices (moby_simple_otk_vertex), or NULL. */
 void moby_simple_tri(const double p[3][3], const uint32_t rgb[3],
                      const int u[3], const int v[3],
                      int textured, int tpage_x, int tpage_y,
                      int clut_x, int clut_y, int bpp, int blend,
-                     uint32_t fkey);
+                     uint32_t fkey, int32_t otk, const moby_otk_vert_t* const iv[3]);
+/* The paint key of the current record under `row`, with the TRZ the draw
+ * loaded: row MOBY_OTK_NONE while the rank is off or the present carries the
+ * tick's verdict. */
+void moby_simple_otk_record(moby_otk_row_t row, int trz, moby_otk_rec_t* out);
+/* One model-space vertex's integer RTPS under rotation R and translation tr,
+ * through the current record's view; nothing when `r` carries no key. */
+void moby_simple_otk_vertex(const moby_otk_rec_t* r, const int tr[3], const int R[3][3],
+                            double vx, double vy, double vz, moby_otk_vert_t* out);
 
 /* ---- extended-LOD reveal for a game with its own record encoding -------
  * Walks the moby array and offers every moby the canonical cull's distance

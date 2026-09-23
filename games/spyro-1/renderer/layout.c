@@ -212,8 +212,8 @@ const game_layout_t game_layout = {
         .blend_shift      = 2,       /* IR0 = (w0 & 0xFF00) >> 2 */
         .blend_mask       = 0x3FC0u,
 
-        .world_ot   = D_WORLDOT,
-        .ot_buckets = 0x800u,        /* r_moby.s links into 2048 buckets */
+        .cal_world_ot   = D_WORLDOT,
+        .cal_ot_buckets = 0x800u,    /* r_moby.s links into 2048 buckets */
 
         .hook_cull          = 0u,    /* the cull is not hooked: it writes
                                       * m_WasDrawn, so the feeder reads its

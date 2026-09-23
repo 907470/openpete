@@ -94,7 +94,8 @@ static int s1_decode_faces(CPUState* cpu, uint32_t fb, uint32_t bytecount,
             F->fresh = (uint8_t)(fresh ? 1 : 0); F->bit0 = (uint8_t)(w0 & 1u);
             F->textured = (uint8_t)(textured ? 1 : 0);
             F->hl = (uint8_t)((!fresh && (w0 & 0x4u)) ? 1 : 0);
-            F->blendbit = (uint8_t)(w1 & 1u); F->otbias = 0;
+            F->blendbit = (uint8_t)(w1 & 1u);
+            F->otbias = (int8_t)((int32_t)w1 >> 28);   /* the walk adds 2*bias local buckets */
             F->tpx = F->tpy = F->clx = F->cly = 0; F->bpp = 16; F->abr = 0;
             memset(F->u, 0, 4); memset(F->v, 0, 4);
             if (textured) {
@@ -242,6 +243,49 @@ static int s1_run_once_hidden(CPUState* cpu, uint32_t m, unsigned cls) {
     return 0;
 }
 
+/* ---- paint-key decodes (moby_rank.h rows MOBY_OTK_S1_REGULAR,
+ * MOBY_OTK_S1_SPECULAR and MOBY_OTK_S1_SHADED) ------------------------------
+ * The regular and specular walks' record: both draws read a1 from w0 bits
+ * 24-28 [r_moby.s 476-479, 2114-2117], where the cull packs the animation
+ * header's byte 0xB, raised to the next animation's header byte 0xB on a
+ * blending record (the larger of the two) [r_moby.s 210-225, 229-240]. A
+ * queued record carries that field but names one header for both keyframes;
+ * a record built from gamestate carries the two headers and a zero field, so
+ * a1 is the largest of the field and the header bytes the cull compares.
+ * The translation the walk loads is (TR << 2) >> m_Scale, or on a record with
+ * a GPF scale byte (w0 & 0xFF) (byte * int16((TR << 2) >> m_Scale)) >> 5
+ * [r_moby.s 506-517]. The face bias is the signed top nibble of the
+ * colour-index word, decoded into moby_wface_t.otbias (r_moby.s 1018, 1141). */
+static moby_otk_row_t s1_otkey_record(CPUState* cpu, uint32_t header, uint32_t header_b,
+                                      uint32_t w0, const int TR_raw[3], int tr[3], int* a) {
+    int ms = cpu->read_byte(header + game_layout.moby.anim_scale_off) & 31;
+    int gpf = (int)(w0 & 0xFFu);
+    for (int k = 0; k < 3; k++)
+        tr[k] = gpf ? (gpf * (int)(int16_t)((TR_raw[k] << 2) >> ms)) >> 5
+                    : (TR_raw[k] << 2) >> ms;
+    int a1 = (int)((w0 >> 24) & 0x1Fu);
+    int ha = cpu->read_byte(header + 0xBu) & 0xFF;
+    if (ha > a1) a1 = ha;
+    if (((w0 >> 8) & 0xFFu) && header_b >= 0x80000000u) {
+        int hb = cpu->read_byte(header_b + 0xBu) & 0xFF;
+        if (hb > a1) a1 = hb;
+    }
+    *a = a1 & 0x1F;
+    return MOBY_OTK_S1_REGULAR;
+}
+
+/* The shaded walk's face words: gouraud faces (word 0 bit 0 clear) carry the
+ * bias in word 1's low two bits (r_moby.s 4619-4620, 4679-4680); flat and
+ * metal faces carry a face normal there. A metal face (word 0 bits 0 and 1)
+ * keeps both facings while TRZ < 0x800 (r_moby.s 4841-4847) and takes the
+ * back-face offset (r_moby.s 4894-4899). */
+static void s1_shaded_otkey_face(uint32_t w0, uint32_t w1, moby_otk_face_t* f) {
+    int metal = (w0 & 3u) == 3u;
+    f->bias = (w0 & 1u) ? 0 : (int)(w1 & 3u);
+    f->back_adds = (int8_t)metal;
+    f->near_limit = metal ? 0x800 : INT32_MIN;
+}
+
 /* The keyframe's faceblock patch list: the keyframe's second word carries the
  * list's byte offset from the keyframe, scaled by four; zero means none. */
 static uint32_t s1_frame_patch_list(CPUState* cpu, uint32_t rec, uint32_t model,
@@ -273,6 +317,10 @@ const moby_game_t moby_game = {
      * re-derive each record against the interpolated camera. */
     .host_reveal       = 1,
     .interp_key        = game_interp_moby_key,
+    .otkey_record        = s1_otkey_record,
+    .specular_otkey_row  = MOBY_OTK_S1_SPECULAR,
+    .shaded_otkey_row    = MOBY_OTK_S1_SHADED,
+    .shaded_otkey_face   = s1_shaded_otkey_face,
 
     .cutscene_actor     = s1_cutscene_actor,
     .cutscene_owns_draw = s1_cutscene_owns_draw,

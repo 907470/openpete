@@ -40,7 +40,8 @@
 #include "openpete_native_render.h"
 #include "openpete_log.h"           /* OPL_ERROR_F — ABR/blend FIXME runtime alarms */
 #include "openpete_interp.h"        /* op_now() — sub-tick clock for rotation interp */
-#include "renderer/moby_rank.h"              /* same-moby painter rank source (OT-chain read) */
+#include "renderer/moby_rank.h"              /* same-moby paint rank (native key) */
+#include "renderer/moby_rank_cal.h"          /* its calibration instrument */
 #include "openpete_interp_objs.h"   /* per-object prev/curr snapshots (rotation interp) */
 #include "renderer/render_paths.h"  /* --render-paths isolation */
 #include "renderer/hook_bracket.h"  /* the shared feeder hook bracket */
@@ -714,7 +715,10 @@ static double reveal_lateral_margin(CPUState* cpu, uint32_t header, double rr,
  * FC(=B) by IR0(=blend) then RTPSs the result). Writes screen XY + view-Z.
  * Returns vertex count. The caller set-matches these vs the emitted prims. */
 typedef struct { float sx, sy, vz; int sat; int unr; int rec;
-                 float ex, ey, ez; float tvz; } proj_xy;  /* vz=view-Z; rec=source record (diag);
+                 float ex, ey, ez; float tvz;
+                 moby_otk_vert_t iv;   /* the draw's integer RTPS output (paint key) */
+                 moby_otk_rec_t otk;   /* the record's paint key; first vertex only */
+               } proj_xy;  /* vz=view-Z; rec=source record (diag);
                  unr = this vertex fell in the GTE divide-overflow regime (see
                  moby_gte_near_fixup); sx/sy are then the hardware-clamped pair;
                  ex/ey/ez = the model->view rotated vertex offset (M.v)/4096 = viewPos-TR,
@@ -733,6 +737,97 @@ static int moby_prev_streams(CPUState* cpu, const moby_pose_t* prev, vstream* A,
     if (blend <= 0 || !moby_pose_live(prev->header_b, prev->frame_b)) return 0;
     vstream_init(cpu, B, prev->header_b, prev->frame_b, s5);
     return blend;
+}
+
+/* ---- paint-key cost instrument (OPENPETE_MOBY_RANK_TIME=1) ----------------
+ * TSC cycles spent in the paint-key stages, summed over the walk's workers and
+ * printed per feed pass: 0 integer RTPS per vertex, 1 per-face NCLIP + key,
+ * 2 intersection census, 3 rank build. Cycles convert to microseconds by the
+ * TSC rate measured against openpete_phase_now_us over the run. */
+enum { RT_RTPS = 0, RT_KEY, RT_ISECT, RT_RANK, RT_N };
+static uint64_t s_rt_cyc[RT_N];
+static long     s_rt_cnt[RT_N];
+static int rank_time_on(void) {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("OPENPETE_MOBY_RANK_TIME"); s = e && *e == '1'; }
+    return s;
+}
+#if defined(__x86_64__) || defined(__i386__)
+#include <x86intrin.h>
+static inline uint64_t rt_now(void) { return rank_time_on() ? __rdtsc() : 0; }
+#else
+static inline uint64_t rt_now(void) { return 0; }
+#endif
+/* A per-vertex or per-face sample above 300000 cycles (about 0.1 ms) is a
+ * descheduling, not work: it is dropped and counted. */
+static long s_rt_drop;
+static inline void rt_add(int slot, uint64_t t0, long n) {
+    if (!t0) return;
+    uint64_t d = rt_now() - t0;
+    if (n > 0 && d > 300000u) { __atomic_fetch_add(&s_rt_drop, 1, __ATOMIC_RELAXED); return; }
+    __atomic_fetch_add(&s_rt_cyc[slot], d, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&s_rt_cnt[slot], n, __ATOMIC_RELAXED);
+}
+/* Thread CPU time of the single-threaded stages, which excludes the time the
+ * thread spent descheduled. */
+#include <time.h>
+static uint64_t rt_cpu_ns(void) {
+    if (!rank_time_on()) return 0;
+    struct timespec ts; clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
+}
+static double s_rt_cpu_us[RT_N];
+static void rt_report(const char* mat, int ntri) {
+    if (!rank_time_on()) return;
+    static uint64_t c0; static uint64_t u0;
+    uint64_t c = rt_now(), u = openpete_phase_now_us();
+    if (!c0) { c0 = c; u0 = u; }
+    double us_per_cyc = (c > c0 && u > u0 + 100000u) ? (double)(u - u0) / (double)(c - c0)
+                                                     : 1.0 / 3000.0;
+    fprintf(stderr, "[rank-time] vbl=%u mat=%s tris=%d rtps_us=%.1f verts=%ld key_us=%.1f "
+                    "faces=%ld isect_us=%.1f rank_us=%.1f isect_cpu_us=%.1f rank_cpu_us=%.1f drop=%ld\n",
+            openpete_frame, mat, ntri, s_rt_cyc[RT_RTPS] * us_per_cyc, s_rt_cnt[RT_RTPS],
+            s_rt_cyc[RT_KEY] * us_per_cyc, s_rt_cnt[RT_KEY], s_rt_cyc[RT_ISECT] * us_per_cyc,
+            s_rt_cyc[RT_RANK] * us_per_cyc, s_rt_cpu_us[RT_ISECT], s_rt_cpu_us[RT_RANK], s_rt_drop);
+    memset(s_rt_cyc, 0, sizeof s_rt_cyc); memset(s_rt_cnt, 0, sizeof s_rt_cnt);
+    memset(s_rt_cpu_us, 0, sizeof s_rt_cpu_us); s_rt_drop = 0;
+}
+
+/* The feed is an intermediate present's (moby_reextract). */
+static int s_in_reextract;
+static int rank_carry_on(void);
+/* The paint key is computed only while the rank select is on, and not on an
+ * intermediate present that carries the tick's verdict. */
+static int moby_otkey_wanted(void) {
+    return openpete_mobyrank_on() && !(s_in_reextract && rank_carry_on());
+}
+
+/* An animated record's paint key through the game's record decode: row
+ * MOBY_OTK_NONE while the rank is off or the game mirrors no key, the game's
+ * specular row on the specular pass ("SPEC", its re-extract "SP"). `tr`
+ * receives the integer translation the draw loads. */
+static void moby_otk_anim_record(CPUState* cpu, uint32_t header, uint32_t headerB, uint32_t w0,
+                                 const int TR_raw[3], int tr[3], moby_otk_rec_t* r) {
+    int a = 0;
+    moby_otk_row_t row = MOBY_OTK_NONE;
+    tr[0] = tr[1] = tr[2] = 0;
+    if (moby_otkey_wanted() && moby_game.otkey_record)
+        row = moby_game.otkey_record(cpu, header, headerB, w0, TR_raw, tr, &a);
+    if (row != MOBY_OTK_NONE && moby_game.specular_otkey_row != MOBY_OTK_NONE &&
+        s_cur_mat[0] == 'S' && s_cur_mat[1] == 'P')
+        row = moby_game.specular_otkey_row;
+    moby_otk_record(row, a, tr[2], r);
+}
+
+/* One vertex's integer RTPS for the record's paint key; nothing when the
+ * record carries none. */
+static void moby_otk_vertex(const moby_otk_rec_t* r, const int tr[3], const int M[3][3],
+                            double vx, double vy, double vz, double ofx, double ofy, int H,
+                            proj_xy* o) {
+    if (r->row == MOBY_OTK_NONE) return;
+    uint64_t rt0 = rt_now();
+    moby_otk_rtps(tr, M, vx, vy, vz, ofx, ofy, H, &o->iv);
+    rt_add(RT_RTPS, rt0, 1);
 }
 
 /* Field-driven decode + float-project core. Both the .s-record path
@@ -918,8 +1013,8 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
     if (s_negctl) lo_tier = !lo_tier;
     int count = cpu->read_byte(lo_tier ? header + game_layout.moby.anim_vcount_lo
                                        : header + game_layout.moby.anim_vcount_hi) & 0xFF;
-    if (count == 0) return 0;
     if (count > cap) count = cap;
+    if (count == 0) return 0;
 
     /* Keyframe blend: IR0 = (w0 & 0xFF00) >> 2 (1.0=4096); frame B at frameB.
      * 0 (or B absent) => the no-blend path (frame A only). */
@@ -927,6 +1022,9 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
     int do_blend = (blend > 0 && moby_pose_live(headerB, frameB));
     double t = (double)blend / 4096.0;
 
+    moby_otk_rec_t otr;
+    int itr[3];
+    moby_otk_anim_record(cpu, header, headerB, w0, TR_raw, itr, &otr);
     double rec_minfvz = 1e30;   /* nearest in-front vertex after the pulls (near-floor lift) */
     vstream A, B, Ap, Bp;
     vstream_init(cpu, &A, header, frameA, s5);
@@ -987,6 +1085,7 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
         if (ot_centre > 0.0) fvz -= OPENPETE_MOBY_TIE_PULL_VZ;
         if (vzz > 0.0 && fvz < rec_minfvz) rec_minfvz = fvz;
         out[i].vz = (float)fvz; out[i].sat = sat; out[i].unr = unr;
+        moby_otk_vertex(&otr, itr, M, vx, vy, vz, v->ofx, v->ofy, (int)v->H_canon, &out[i]);
         /* Perspective W = the view-Z the SCREEN PROJECTION divided by, so it
          * excludes both the OT pulls below and the GPF depth restore: sx/sy came
          * from the rescaled TR, and only that vzz makes their UV interpolation
@@ -1006,6 +1105,7 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
         float lift = (float)(1.0 - rec_minfvz);
         for (int i = 0; i < count; i++) out[i].vz += lift;
     }
+    out[0].otk = otr;
     return count;
 }
 
@@ -2219,6 +2319,12 @@ static uint16_t s_wtri_cls[MAX_NTRI];  /* m_Class of the emitting moby (provenan
  * colour A/B prices those faces against the prims separately, because they are
  * the only ones whose colour the walk computes rather than reads. */
 static uint8_t  s_wtri_special[MAX_NTRI];
+/* The triangle's bucket word in its record's paint order (moby_otk_face_bucket,
+ * MOBY_OTK_Q2 on the second triangle of one prim); -1 for a triangle the
+ * draw's ordering table does not receive. */
+static int16_t  s_wtri_isxy[MAX_NTRI][6];   /* the draw's integer SXY per vertex (calibration) */
+static int32_t  s_wtri_otk[MAX_NTRI];
+static _Thread_local int32_t s_emit_otk = -1;
 static _Thread_local uint32_t s_cur_moby_key;   /* moby for the record currently being walked */
 static _Thread_local uint16_t s_cur_moby_cls;   /* m_Class of that moby (set beside the key) */
 static _Thread_local int8_t   s_cur_moby_dofs;  /* authored OT bias (set beside the key) */
@@ -2312,11 +2418,12 @@ typedef struct {
     ntri_t*   tri;  uint32_t* fkey; uint32_t* moby; uint16_t* cls;
     uint8_t*  ui;   uint8_t*  front; uint8_t* mangle;
     int8_t*   dofs; uint8_t*  special;
+    int32_t*  otk;  int16_t (*isxy)[6];
     int n, cap;
 } mn_out;
 static mn_out s_gout = { s_wtri, s_wtri_fkey, s_wtri_moby, s_wtri_cls, s_wtri_ui,
                          s_wtri_front, s_wtri_mangle, s_wtri_dofs, s_wtri_special,
-                         0, MAX_NTRI };
+                         s_wtri_otk, s_wtri_isxy, 0, MAX_NTRI };
 static _Thread_local mn_out* t_out = &s_gout;
 
 static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
@@ -2366,6 +2473,11 @@ static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
                                  a->sat || b->sat || c->sat) ? 1 : 0);
     O->fkey[O->n] = s_emit_fkey;
     O->special[O->n] = s_emit_special;
+    O->otk[O->n] = s_emit_otk;
+    O->isxy[O->n][0] = a->iv.sx; O->isxy[O->n][1] = a->iv.sy;
+    O->isxy[O->n][2] = b->iv.sx; O->isxy[O->n][3] = b->iv.sy;
+    O->isxy[O->n][4] = c->iv.sx; O->isxy[O->n][5] = c->iv.sy;
+    s_emit_otk = -1;
     O->cls[O->n] = s_cur_moby_cls;            /* provenance tag (mod-shaders S6) */
     ntri_t* t = &O->tri[O->n++];
     t->v[0]=(ntri_vert){a->sx,a->sy,a->vz,ua,va,ca, a->ex,a->ey,a->ez, a->tvz};
@@ -2436,11 +2548,23 @@ void moby_simple_project(const double p[3], float* sx, float* sy) {
     *sx = (float)x; *sy = (float)y;
 }
 
+void moby_simple_otk_record(moby_otk_row_t row, int trz, moby_otk_rec_t* out) {
+    moby_otk_record(moby_otkey_wanted() ? row : MOBY_OTK_NONE, 0, trz, out);
+}
+
+void moby_simple_otk_vertex(const moby_otk_rec_t* r, const int tr[3], const int R[3][3],
+                            double vx, double vy, double vz, moby_otk_vert_t* out) {
+    if (r->row == MOBY_OTK_NONE) return;
+    double ofx, ofy;
+    const ngte_view* view = moby_simple_view(&ofx, &ofy);
+    moby_otk_rtps(tr, R, vx, vy, vz, ofx, ofy, (int)view->H_canon, out);
+}
+
 void moby_simple_tri(const double p[3][3], const uint32_t rgb[3],
                      const int u[3], const int v[3],
                      int textured, int tpage_x, int tpage_y,
                      int clut_x, int clut_y, int bpp, int blend,
-                     uint32_t fkey) {
+                     uint32_t fkey, int32_t otk, const moby_otk_vert_t* const iv[3]) {
     double ofx, ofy;
     const ngte_view* view = moby_simple_view(&ofx, &ofy);
     proj_xy q[3];
@@ -2456,9 +2580,11 @@ void moby_simple_tri(const double p[3][3], const uint32_t rgb[3],
         q[k].vz = (float)vzz; q[k].tvz = (float)vzz;
         q[k].sat = sat; q[k].unr = unr; q[k].rec = -1;
         q[k].ex = q[k].ey = q[k].ez = 0.0f;
+        if (iv) q[k].iv = *iv[k];
     }
     s_emit_fkey = fkey;
     s_emit_special = 0u;
+    s_emit_otk = otk;
     emit_wtri(&q[0], &q[1], &q[2], rgb[0], rgb[1], rgb[2],
               u[0], v[0], u[1], v[1], u[2], v[2],
               textured, tpage_x, tpage_y, clut_x, clut_y, bpp, blend);
@@ -2849,6 +2975,19 @@ static const fcache_t* s_pre_FCp[MAX_RECORDS];
 static float           s_pre_clra[MAX_RECORDS];
 /* Where each record's triangles landed, for the ordered merge. */
 static struct { int worker, start, count; } s_pre_rec[MAX_RECORDS];
+
+/* Bucket word of the prim a regular-walk face becomes to the draw: the
+ * draw's facing test runs on the GTE's integer SXY and picks the prim, and so
+ * the vertices and weights the key sums; a face the float emission draws but
+ * the integer test culls receives -1. A strip face and a fresh triangle take
+ * the single-triangle test. */
+static int moby_face_otkey(const proj_xy* rec0, const wface_t* F, const proj_xy* p0,
+                           const proj_xy* p1, const proj_xy* p2, const proj_xy* p3) {
+    if (rec0->otk.row == MOBY_OTK_NONE) return -1;
+    moby_otk_face_t f = { { &p0->iv, &p1->iv, &p2->iv, (F->fresh && p3) ? &p3->iv : NULL },
+                          F->otbias, INT32_MIN, (int8_t)F->bit0, 0 };
+    return moby_otk_face_bucket(&rec0->otk, &f);
+}
 
 /* Walk records [r0, r1) into the calling worker's emit target. */
 static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
@@ -3302,17 +3441,24 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                             bpp, (int)abr, (int)F->blendbit);
             }
 
+            uint64_t rt0 = rt_now();
+            int ot_bk = moby_face_otkey(&s_proj[base], F, p0, p1, p2, p3);
+            rt_add(RT_KEY, rt0, 1);
             if (emit_a) {
+                s_emit_otk = moby_otk_tri(ot_bk, MOBY_OTK_TRI_A);
                 s_emit_fkey = PACK_FKEY(i0,i1,i2);
                 emit_wtri(p0,p1,p2, c0,c1,c2, u[0],v[0],u[1],v[1],u[2],v[2],
                           textured,tpx,tpy,clx,cly,bpp,blend);
             }
             if (emit_b) {
+                int32_t otk_b = moby_otk_second(ot_bk, emit_a);
                 if (b_is_v3tri) {        /* tri-2nd (v3,v1,v2) */
+                    s_emit_otk = moby_otk_tri(otk_b, MOBY_OTK_TRI_V3);
                     s_emit_fkey = PACK_FKEY(i3,i1,i2);
                     emit_wtri(p3,p1,p2, c3,c1,c2, u[3],v[3],u[1],v[1],u[2],v[2],
                               textured,tpx,tpy,clx,cly,bpp,blend);
                 } else {                 /* quad 2nd half (v1,v3,v2) */
+                    s_emit_otk = moby_otk_tri(otk_b, MOBY_OTK_TRI_QUAD_B);
                     s_emit_fkey = PACK_FKEY(i1,i3,i2);
                     emit_wtri(p1,p3,p2, c1,c3,c2, u[1],v[1],u[3],v[3],u[2],v[2],
                               textured,tpx,tpy,clx,cly,bpp,blend);
@@ -3461,9 +3607,11 @@ static int walk_slabs_ready(int nw) {
         O->mangle = (uint8_t*) malloc(MAX_NTRI);
         O->dofs   = (int8_t*)  malloc(MAX_NTRI);
         O->special= (uint8_t*) malloc(MAX_NTRI);
+        O->otk    = (int32_t*) malloc(sizeof(int32_t) * MAX_NTRI);
+        O->isxy   = (int16_t (*)[6])malloc(sizeof(int16_t[6]) * MAX_NTRI);
         O->cap = MAX_NTRI;
         if (!O->tri || !O->fkey || !O->moby || !O->cls || !O->ui || !O->front ||
-            !O->mangle || !O->dofs || !O->special) return 0;
+            !O->mangle || !O->dofs || !O->special || !O->otk || !O->isxy) return 0;
     }
     return 1;
 }
@@ -3512,6 +3660,8 @@ static void walk_parallel(CPUState* cpu, int is_spec) {
         memcpy(&s_wtri_mangle[s_gout.n], &O->mangle[st], (size_t)n);
         memcpy(&s_wtri_dofs[s_gout.n],   &O->dofs[st],   (size_t)n);
         memcpy(&s_wtri_special[s_gout.n],&O->special[st],(size_t)n);
+        memcpy(&s_wtri_otk[s_gout.n],    &O->otk[st],    (size_t)n * sizeof(int32_t));
+        memcpy(&s_wtri_isxy[s_gout.n],   &O->isxy[st],   (size_t)n * sizeof(int16_t[6]));
         s_gout.n += n;
     }
     if (t_mrg) s_us_merge += (long)(openpete_phase_now_us() - t_mrg);
@@ -4117,6 +4267,438 @@ static void specular_hl_calibrate(CPUState* cpu) {
     }
 }
 
+/* ---- same-moby paint rank ---------------------------------------------------
+ * Under true depth two faces of one moby that cross in 3D show their
+ * intersection contour, which moves with every animation tick; the game
+ * paints each face whole in its ordering-table order and never shows it. With
+ * OPENPETE_MOBY_RANK=1 the rank select (native_render's rank image) orders
+ * such faces by the game's paint order, and every other face keeps true
+ * depth: a face carries its rank only while it intersects another face of the
+ * same moby (the contest flag).
+ *
+ * Intersection space: (sx, sy, K/vz). The perspective map from view space is
+ * projective and bijective for vz > 0, so it preserves incidence (planes,
+ * lines, intersections). Two faces sharing >= 2 vertex positions (a shared
+ * edge) are adjacent and skipped; otherwise the pair intersects when the
+ * overlap of the two plane-clipped segments has a screen length above
+ * ISECT_TOL_PX (a shared single vertex yields a zero-length overlap at that
+ * vertex and is rejected by the same bound). Coplanar pairs are not
+ * contested. */
+#define ISECT_K      1048576.0
+#define ISECT_TOL_PX 0.5
+#define ISECT_EPS    1e-6
+static uint8_t s_wtri_contest[MAX_NTRI];
+static int     s_nrank[MAX_NTRI];   /* position in the record's paint order, 0 = none */
+/* The intersecting pairs of this walk (walk indices), for the calibration. */
+#define ISECT_PAIRS_MAX 65536
+static int s_ip_a[ISECT_PAIRS_MAX], s_ip_b[ISECT_PAIRS_MAX], s_ip_n;
+
+/* OPENPETE_MOBY_ISECT_LOG=1 (instrument): per-VBL per-moby intersection
+ * counts, the select census and the sub-tick carry's engagement. With the rank
+ * off it runs the intersection census alone. */
+static int isect_log_on(void) {
+    static int s = -1;
+    if (s < 0) { const char* l = getenv("OPENPETE_MOBY_ISECT_LOG");
+                 s = (l && *l && *l != '0'); }
+    return s;
+}
+typedef struct { double p[3][3]; double lo[3], hi[3]; } isect_tri;
+static void isect_cross(const double a[3], const double b[3], double o[3]) {
+    o[0] = a[1]*b[2] - a[2]*b[1]; o[1] = a[2]*b[0] - a[0]*b[2]; o[2] = a[0]*b[1] - a[1]*b[0];
+}
+static double isect_dot(const double a[3], const double b[3]) {
+    return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+}
+/* Clip triangle T by the plane (n, d0 = n.q): returns the points of T on the
+ * plane (0..3; edge crossings and on-plane vertices) in pts, -1 when T lies on
+ * one side, -2 when it lies in the plane. */
+static int isect_clip(const isect_tri* T, const double n[3], double nlen, const double q[3],
+                      double pts[4][3]) {
+    double d[3];
+    for (int k = 0; k < 3; k++) {
+        double v[3] = { T->p[k][0]-q[0], T->p[k][1]-q[1], T->p[k][2]-q[2] };
+        d[k] = isect_dot(n, v) / nlen;
+        if (fabs(d[k]) < ISECT_EPS) d[k] = 0.0;
+    }
+    if ((d[0] > 0 && d[1] > 0 && d[2] > 0) || (d[0] < 0 && d[1] < 0 && d[2] < 0)) return -1;
+    if (d[0] == 0 && d[1] == 0 && d[2] == 0) return -2;
+    int m = 0;
+    for (int k = 0; k < 3; k++) {
+        int j = (k + 1) % 3;
+        if (d[k] == 0) { memcpy(pts[m++], T->p[k], sizeof(double)*3); }
+        if ((d[k] < 0 && d[j] > 0) || (d[k] > 0 && d[j] < 0)) {
+            double t = d[k] / (d[k] - d[j]);
+            for (int c = 0; c < 3; c++) pts[m][c] = T->p[k][c] + t*(T->p[j][c] - T->p[k][c]);
+            m++;
+        }
+    }
+    return m;
+}
+/* 1 = intersect (overlap screen length > tol), 0 = no, 2 = coplanar. */
+static int isect_pair(const isect_tri* A, const isect_tri* B) {
+    double ea[3], fa[3], eb[3], fb[3], nA[3], nB[3];
+    for (int c = 0; c < 3; c++) {
+        ea[c] = A->p[1][c]-A->p[0][c]; fa[c] = A->p[2][c]-A->p[0][c];
+        eb[c] = B->p[1][c]-B->p[0][c]; fb[c] = B->p[2][c]-B->p[0][c];
+    }
+    isect_cross(ea, fa, nA); isect_cross(eb, fb, nB);
+    double lA = sqrt(isect_dot(nA, nA)), lB = sqrt(isect_dot(nB, nB));
+    if (lA < 1e-9 || lB < 1e-9) return 0;
+    double pa[4][3], pb[4][3];
+    int ma = isect_clip(A, nB, lB, B->p[0], pa);
+    if (ma == -1) return 0;
+    int mb = isect_clip(B, nA, lA, A->p[0], pb);
+    if (mb == -1) return 0;
+    if (ma == -2 || mb == -2) return 2;
+    if (ma < 1 || mb < 1) return 0;
+    double D[3]; isect_cross(nA, nB, D);
+    double lD = sqrt(isect_dot(D, D));
+    if (lD < 1e-12) return 2;
+    int ia0 = 0, ia1 = 0, ib0 = 0, ib1 = 0;
+    double ta[4], tb[4];
+    for (int k = 0; k < ma; k++) { ta[k] = isect_dot(D, pa[k]) / lD;
+        if (ta[k] < ta[ia0]) ia0 = k; if (ta[k] > ta[ia1]) ia1 = k; }
+    for (int k = 0; k < mb; k++) { tb[k] = isect_dot(D, pb[k]) / lD;
+        if (tb[k] < tb[ib0]) ib0 = k; if (tb[k] > tb[ib1]) ib1 = k; }
+    /* Overlap endpoints as 3D points: the later start and the earlier end. */
+    const double* s = ta[ia0] > tb[ib0] ? pa[ia0] : pb[ib0];
+    const double* e = ta[ia1] < tb[ib1] ? pa[ia1] : pb[ib1];
+    double lo = ta[ia0] > tb[ib0] ? ta[ia0] : tb[ib0];
+    double hi = ta[ia1] < tb[ib1] ? ta[ia1] : tb[ib1];
+    if (hi <= lo) return 0;
+    double dx = e[0]-s[0], dy = e[1]-s[1];
+    return (dx*dx + dy*dy) > ISECT_TOL_PX*ISECT_TOL_PX;
+}
+static int isect_shared(const ntri_t* a, const ntri_t* b) {
+    int n = 0;
+    for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++)
+        if (a->v[i].sx == b->v[j].sx && a->v[i].sy == b->v[j].sy &&
+            a->v[i].tvz == b->v[j].tvz) { n++; break; }
+    return n;
+}
+/* The faces the rank select can order: opaque regular/front-pass moby faces
+ * with a true screen footprint. */
+static int isect_eligible(int i) {
+    return s_wtri[i].blend == 0 && s_wtri_moby[i] && s_wtri_ui[i] == 0 && !s_wtri_mangle[i];
+}
+static void isect_tri_of(int i, isect_tri* t) {
+    for (int k = 0; k < 3; k++) {
+        double w = s_wtri[i].v[k].vz;
+        t->p[k][0] = s_wtri[i].v[k].sx; t->p[k][1] = s_wtri[i].v[k].sy;
+        t->p[k][2] = w > 0.0 ? ISECT_K / w : 0.0;
+    }
+    for (int c = 0; c < 3; c++) {
+        t->lo[c] = fmin(t->p[0][c], fmin(t->p[1][c], t->p[2][c]));
+        t->hi[c] = fmax(t->p[0][c], fmax(t->p[1][c], t->p[2][c]));
+    }
+}
+static int isect_boxes_apart(const isect_tri* A, const isect_tri* B) {
+    for (int c = 0; c < 3; c++)
+        if (A->hi[c] < B->lo[c] || B->hi[c] < A->lo[c]) return 1;
+    return 0;
+}
+typedef struct { long faces, contested, pairs, coplanar, shared; } isect_count;
+/* Tests every pair of the eligible faces idx[0..n) of one moby; sets their
+ * contest flags and records the intersecting pairs. */
+static void isect_moby(const isect_tri* T, const int* idx, int n, isect_count* c) {
+    for (int a = 0; a < n; a++) {
+        for (int b = a + 1; b < n; b++) {
+            if (isect_boxes_apart(&T[a], &T[b])) continue;
+            if (isect_shared(&s_wtri[idx[a]], &s_wtri[idx[b]]) >= 2) { c->shared++; continue; }
+            int r = isect_pair(&T[a], &T[b]);
+            c->coplanar += r == 2;
+            if (r != 1) continue;
+            c->pairs++;
+            s_wtri_contest[idx[a]] = 1; s_wtri_contest[idx[b]] = 1;
+            if (s_ip_n < ISECT_PAIRS_MAX) { s_ip_a[s_ip_n] = idx[a]; s_ip_b[s_ip_n] = idx[b]; s_ip_n++; }
+        }
+    }
+    for (int a = 0; a < n; a++) c->contested += s_wtri_contest[idx[a]];
+    c->faces += n;
+}
+static void isect_log_moby(uint32_t mob, int i0, const isect_count* c) {
+    fprintf(stderr, "[isect] vbl=%u mat=%s m=%08X cls=%u front=%d faces=%ld contested=%ld "
+                    "pairs=%ld coplanar=%ld sharededge=%ld\n",
+            openpete_frame, s_cur_mat, mob, s_wtri_cls[i0], s_wtri_front[i0], c->faces,
+            c->contested, c->pairs, c->coplanar, c->shared);
+}
+/* Fills s_wtri_contest[] and the pair list for the whole walk. */
+static void isect_census(void) {
+    static isect_tri T[MAX_NTRI];
+    static int idx[MAX_NTRI];
+    memset(s_wtri_contest, 0, (size_t)s_gout.n);
+    s_ip_n = 0;
+    int logit = isect_log_on() && openpete_frame != 0;
+    isect_count tot = {0};
+    for (int i0 = 0; i0 < s_gout.n; ) {
+        uint32_t mob = s_wtri_moby[i0];
+        int i1 = i0, n = 0;
+        while (i1 < s_gout.n && s_wtri_moby[i1] == mob) i1++;
+        for (int i = i0; i < i1; i++)
+            if (mob && isect_eligible(i)) { isect_tri_of(i, &T[n]); idx[n++] = i; }
+        isect_count c = {0};
+        isect_moby(T, idx, n, &c);
+        if (logit && n > 0) isect_log_moby(mob, i0, &c);
+        tot.faces += c.faces; tot.contested += c.contested; tot.pairs += c.pairs;
+        tot.coplanar += c.coplanar; tot.shared += c.shared;
+        i0 = i1;
+    }
+    if (logit)
+        fprintf(stderr, "[isect-sum] vbl=%u mat=%s faces=%ld contested=%ld pairs=%ld coplanar=%ld "
+                        "sharededge=%ld\n", openpete_frame, s_cur_mat, tot.faces, tot.contested,
+                tot.pairs, tot.coplanar, tot.shared);
+}
+
+/* ---- native paint rank ------------------------------------------------------
+ * The rank of each triangle is its prim's position in the record's paint
+ * order as the draw's own ordering table produces it (moby_otk_face_bucket):
+ * local bucket descending, then insertion order, which is the walk's emission
+ * order. Both triangles of one prim share its position; triangles the table
+ * does not receive rank 0. OPENPETE_MOBY_RANK_NEGCTL=1 reverses the order:
+ * the negative control that proves a pixel A/B of the rank measures it. */
+typedef struct { int bk, i; } nrank_e;
+static int nrank_cmp(const void* a, const void* b) {
+    const nrank_e *x = (const nrank_e*)a, *y = (const nrank_e*)b;
+    if (x->bk != y->bk) return x->bk > y->bk ? -1 : 1;   /* far buckets paint first */
+    return x->i < y->i ? -1 : x->i > y->i;
+}
+static void native_rank_moby(int i0, int i1, int neg) {
+    static nrank_e E[MAX_NTRI];
+    int n = 0;
+    for (int i = i0; i < i1; i++) {
+        s_nrank[i] = 0;
+        int32_t k = s_wtri_otk[i];
+        if (k < 0 || (k & MOBY_OTK_Q2)) continue;
+        E[n].bk = MOBY_OTK_BUCKET(k); E[n].i = i; n++;
+    }
+    qsort(E, (size_t)n, sizeof E[0], nrank_cmp);
+    for (int k = 0; k < n; k++) s_nrank[E[k].i] = neg ? n - k : k + 1;
+    for (int i = i0 + 1; i < i1; i++)
+        if (s_wtri_otk[i] >= 0 && (s_wtri_otk[i] & MOBY_OTK_Q2)) s_nrank[i] = s_nrank[i - 1];
+}
+static void native_rank_build(void) {
+    static int s_neg = -1;
+    if (s_neg < 0) { const char* e = getenv("OPENPETE_MOBY_RANK_NEGCTL"); s_neg = e && *e == '1'; }
+    for (int i0 = 0; i0 < s_gout.n; ) {
+        int i1 = i0;
+        while (i1 < s_gout.n && s_wtri_moby[i1] == s_wtri_moby[i0]) i1++;
+        native_rank_moby(i0, i1, s_neg);
+        i0 = i1;
+    }
+}
+
+/* ---- sub-tick carry of the paint verdict ------------------------------------
+ * The canonical feed of a tick stores each face's rank and contest flag by
+ * (moby, fkey); an intermediate present reads them back rather than keying
+ * and intersecting its interpolated pose, so the select changes only at a
+ * canonical tick, where the game's own order changes, and a present costs one
+ * lookup per face. A face the tick did not rank (a mesh the present holds from
+ * the previous clip, a face the tick culled) reads rank 0 and keeps true
+ * depth. OPENPETE_MOBY_RANK_CARRY=0 recomputes on every present instead. */
+#define RC_BITS 16
+#define RC_SIZE (1 << RC_BITS)
+typedef struct { uint32_t moby, fkey; int32_t rank; uint8_t cont; } rc_ent;
+static rc_ent   s_rc[RC_SIZE];
+static int      s_rc_n;
+static uint32_t s_rc_epoch;
+static int      s_rc_valid;
+static long     s_rc_hit, s_rc_miss;   /* engagement counters (sub-tick lookups) */
+static int rank_carry_on(void) {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("OPENPETE_MOBY_RANK_CARRY"); s = !(e && *e == '0'); }
+    return s;
+}
+static uint32_t rc_hash(uint32_t m, uint32_t k) {
+    return ((m * 2654435761u) ^ (k * 2246822519u)) >> (32 - RC_BITS);
+}
+static void rank_carry_store(void) {
+    if (!spyro_native_canon_capture_open()) return;
+    uint32_t ep = spyro_native_canon_epoch_stamp();
+    if (!s_rc_valid || ep != s_rc_epoch) {
+        memset(s_rc, 0, sizeof s_rc); s_rc_n = 0; s_rc_epoch = ep; s_rc_valid = 1;
+    }
+    for (int i = 0; i < s_gout.n; i++) {
+        if (s_nrank[i] <= 0 || !s_wtri_moby[i] || s_rc_n >= RC_SIZE - (RC_SIZE >> 2)) continue;
+        uint32_t h = rc_hash(s_wtri_moby[i], s_wtri_fkey[i]);
+        while (s_rc[h].moby && !(s_rc[h].moby == s_wtri_moby[i] && s_rc[h].fkey == s_wtri_fkey[i]))
+            h = (h + 1) & (RC_SIZE - 1);
+        if (!s_rc[h].moby) s_rc_n++;
+        s_rc[h] = (rc_ent){ s_wtri_moby[i], s_wtri_fkey[i], s_nrank[i], s_wtri_contest[i] };
+    }
+}
+static const rc_ent* rank_carry_find(uint32_t moby, uint32_t fkey) {
+    uint32_t h = rc_hash(moby, fkey);
+    for (; s_rc[h].moby; h = (h + 1) & (RC_SIZE - 1))
+        if (s_rc[h].moby == moby && s_rc[h].fkey == fkey) return &s_rc[h];
+    return NULL;
+}
+static void rank_carry_apply(void) {
+    int live = s_rc_valid && spyro_native_canon_epoch_fresh(s_rc_epoch);
+    for (int i = 0; i < s_gout.n; i++) {
+        const rc_ent* e = (live && s_wtri_moby[i]) ? rank_carry_find(s_wtri_moby[i], s_wtri_fkey[i])
+                                                    : NULL;
+        s_nrank[i] = e ? e->rank : 0;
+        s_wtri_contest[i] = e ? e->cont : 0;
+        if (s_nrank[i] > 0) s_rc_hit++; else s_rc_miss++;
+    }
+    s_ip_n = 0;
+}
+
+/* Select census on the PSX pixel grid (pixel centres, either winding),
+ * OPENPETE_MOBY_ISECT_LOG=1: replays the rank image's one-owner-per-pixel rule
+ * (highest rank wins) over the ranked faces of this feed and counts, over
+ * every ranked face's pixels, the discards the select applies (the owner is a
+ * face of the same moby with a higher rank) against the ideal (some face of
+ * the same moby with a higher rank covers the pixel). missed = ideal and not
+ * applied: the owner is a face of another moby. */
+static int s_isect_rk[MAX_NTRI];
+#define ISG_X0 (-256)
+#define ISG_Y0 (-256)
+#define ISG_W 1024
+#define ISG_H 768
+typedef void (*isg_fn)(int face, int px, void* u);
+static void isg_raster(int i, isg_fn fn, void* u) {
+    const ntri_t* w = &s_wtri[i];
+    double x0 = w->v[0].sx, y0 = w->v[0].sy, x1 = w->v[1].sx, y1 = w->v[1].sy,
+           x2 = w->v[2].sx, y2 = w->v[2].sy;
+    double area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
+    if (fabs(area) < 1e-9) return;
+    double sg = area > 0 ? 1.0 : -1.0;
+    int bx0 = (int)floor(fmin(x0, fmin(x1, x2))), bx1 = (int)ceil(fmax(x0, fmax(x1, x2)));
+    int by0 = (int)floor(fmin(y0, fmin(y1, y2))), by1 = (int)ceil(fmax(y0, fmax(y1, y2)));
+    if (bx0 < ISG_X0) bx0 = ISG_X0;
+    if (by0 < ISG_Y0) by0 = ISG_Y0;
+    if (bx1 > ISG_X0 + ISG_W - 1) bx1 = ISG_X0 + ISG_W - 1;
+    if (by1 > ISG_Y0 + ISG_H - 1) by1 = ISG_Y0 + ISG_H - 1;
+    for (int y = by0; y <= by1; y++) for (int x = bx0; x <= bx1; x++) {
+        double px = x + 0.5, py = y + 0.5;
+        double e0 = sg * ((x1 - x0) * (py - y0) - (y1 - y0) * (px - x0));
+        double e1 = sg * ((x2 - x1) * (py - y1) - (y2 - y1) * (px - x1));
+        double e2 = sg * ((x0 - x2) * (py - y2) - (y0 - y2) * (px - x2));
+        if (e0 < 0 || e1 < 0 || e2 < 0) continue;
+        fn(i, (y - ISG_Y0) * ISG_W + (x - ISG_X0), u);
+    }
+}
+static int s_isg_own[ISG_W * ISG_H];   /* face index + 1 of the owner */
+static int s_isg_grp[ISG_W * ISG_H];   /* max rank within the current moby */
+static void isg_own(int f, int p, void* u) {
+    (void)u; int o = s_isg_own[p];
+    if (!o || s_isect_rk[o - 1] < s_isect_rk[f]) s_isg_own[p] = f + 1;
+}
+static void isg_clr(int f, int p, void* u) { (void)f; (void)u; s_isg_grp[p] = 0; s_isg_own[p] = 0; }
+static void isg_clr_grp(int f, int p, void* u) { (void)f; (void)u; s_isg_grp[p] = 0; }
+static void isg_grp(int f, int p, void* u) {
+    (void)u; if (s_isg_grp[p] < s_isect_rk[f]) s_isg_grp[p] = s_isect_rk[f];
+}
+typedef struct { long px, disc, ideal, missed; } isg_stat;
+static void isg_cnt(int f, int p, void* u) {
+    isg_stat* st = (isg_stat*)u;
+    st->px++;
+    int o = s_isg_own[p] - 1;
+    int applied = o >= 0 && s_wtri_moby[o] == s_wtri_moby[f] && s_isect_rk[o] > s_isect_rk[f];
+    int ideal = s_isg_grp[p] > s_isect_rk[f];
+    st->disc += applied;
+    st->ideal += ideal;
+    st->missed += ideal && !applied;
+}
+static void isect_select_census(void) {
+    static int ord[MAX_NTRI];
+    int n = 0;
+    for (int i = 0; i < s_gout.n; i++) {
+        s_isect_rk[i] = (isect_eligible(i) && s_wtri_contest[i]) ? s_nrank[i] : 0;
+        if (s_isect_rk[i] > 0) ord[n++] = i;
+    }
+    isg_stat st = {0};
+    for (int k = 0; k < n; k++) isg_raster(ord[k], isg_clr, NULL);
+    for (int k = 0; k < n; k++) isg_raster(ord[k], isg_own, NULL);
+    for (int k0 = 0; k0 < n; ) {
+        int k1 = k0;
+        while (k1 < n && s_wtri_moby[ord[k1]] == s_wtri_moby[ord[k0]]) k1++;
+        for (int k = k0; k < k1; k++) isg_raster(ord[k], isg_grp, NULL);
+        for (int k = k0; k < k1; k++) isg_raster(ord[k], isg_cnt, &st);
+        for (int k = k0; k < k1; k++) isg_raster(ord[k], isg_clr_grp, NULL);
+        k0 = k1;
+    }
+    fprintf(stderr, "[isect-sel] vbl=%u mat=%s faces=%d px=%ld disc=%ld ideal=%ld missed=%ld\n",
+            openpete_frame, s_cur_mat, n, st.px, st.disc, st.ideal, st.missed);
+}
+
+/* OPENPETE_MOBY_RANK_CAL=1 (instrument): the native rank against the game's
+ * own ordering table (moby_rank_cal.c). */
+static void moby_rank_calibrate(void) {
+    static uint8_t elig[MAX_NTRI];
+    for (int i = 0; i < s_gout.n; i++) elig[i] = (uint8_t)isect_eligible(i);
+    moby_rank_cal_in_t in = { s_gout.n, s_wtri_moby, (const int16_t (*)[6])s_wtri_isxy, s_nrank,
+                              s_wtri_contest, elig, s_wtri_otk, s_wtri_fkey, s_ip_a, s_ip_b,
+                              s_ip_n, s_cur_mat };
+    moby_rank_cal_run(&in);
+}
+
+static void rank_stage_time(int slot, uint64_t t0, uint64_t c0) {
+    rt_add(slot, t0, 0);
+    if (c0) s_rt_cpu_us[slot] += (double)(rt_cpu_ns() - c0) / 1000.0;
+}
+
+/* The contest flags and native ranks of this feed: computed on a canonical
+ * feed (and stored for the sub-tick carry), read back from the carry on an
+ * intermediate present. */
+static void moby_rank_prepare(void) {
+    if (!openpete_mobyrank_on() && !isect_log_on()) return;
+    int carry = s_in_reextract && rank_carry_on();
+    uint64_t t0 = rt_now(), c0 = rt_cpu_ns();
+    if (carry) rank_carry_apply(); else isect_census();
+    rank_stage_time(RT_ISECT, t0, c0);
+    t0 = rt_now(); c0 = rt_cpu_ns();
+    if (!carry) native_rank_build();
+    if (!s_in_reextract) rank_carry_store();
+    rank_stage_time(RT_RANK, t0, c0);
+    rt_report(s_cur_mat, s_gout.n);
+    if (isect_log_on()) {
+        if (carry)
+            fprintf(stderr, "[rank-carry] vbl=%u mat=%s tris=%d hit=%ld miss=%ld epoch=%u\n",
+                    openpete_frame, s_cur_mat, s_gout.n, s_rc_hit, s_rc_miss, s_rc_epoch);
+        isect_select_census();
+    }
+    s_rc_hit = s_rc_miss = 0;
+    if (moby_rank_cal_on()) moby_rank_calibrate();
+}
+
+/* The rank a walk triangle carries into the select: its paint position while
+ * it contests another face of its moby, else 0. */
+static int moby_face_rank(int i) {
+    return (openpete_mobyrank_on() && isect_eligible(i) && s_wtri_contest[i]) ? s_nrank[i] : 0;
+}
+
+/* OPENPETE_MOBY_TRIDBG="x0,y0,x1,y1,fA,fB" (instrument): every walk triangle
+ * whose centroid falls in the PSX-screen box for VBLs [fA,fB], with its
+ * identity (moby, fkey), material, contest flag, rank and bucket word, for an
+ * offline identity diff across VBLs. */
+static void moby_tri_debug(void) {
+    static int s_td = -1; static int tx0, ty0, tx1, ty1, tfa, tfb;
+    if (s_td < 0) {
+        const char* e = getenv("OPENPETE_MOBY_TRIDBG");
+        s_td = (e && sscanf(e, "%d,%d,%d,%d,%d,%d", &tx0, &ty0, &tx1, &ty1, &tfa, &tfb) == 6);
+    }
+    if (!s_td || (int)openpete_frame < tfa || (int)openpete_frame > tfb) return;
+    for (int i = 0; i < s_gout.n; i++) {
+        const ntri_t* w = &s_wtri[i];
+        float cx = (w->v[0].sx + w->v[1].sx + w->v[2].sx) / 3.0f;
+        float cy = (w->v[0].sy + w->v[1].sy + w->v[2].sy) / 3.0f;
+        if (cx < tx0 || cx > tx1 || cy < ty0 || cy > ty1) continue;
+        fprintf(stderr, "[mtri] vbl=%u i=%d m=%08X k=%08X tex=%d tp=%d,%d cl=%d,%d bl=%d fr=%d ui=%d "
+                        "dofs=%d mg=%d ct=%d rk=%d bk=%d",
+                openpete_frame, i, s_wtri_moby[i], s_wtri_fkey[i], w->textured,
+                w->tpage_x, w->tpage_y, w->clut_x, w->clut_y, w->blend,
+                s_wtri_front[i], s_wtri_ui[i], s_wtri_dofs[i], s_wtri_mangle[i],
+                (int)s_wtri_contest[i], s_nrank[i], s_wtri_otk[i]);
+        for (int k = 0; k < 3; k++)
+            fprintf(stderr, " v%d=%.2f,%.2f,%.1f,%.1f,%d,%d,%06X", k,
+                    w->v[k].sx, w->v[k].sy, w->v[k].vz, w->v[k].tvz,
+                    w->v[k].u, w->v[k].v, w->v[k].rgb & 0xFFFFFF);
+        fputc('\n', stderr);
+    }
+}
+
 /* Append the moby triangles to the native scene (panel 0). Frame-keyed begin
  * composes with the cyclorama (drawn first, owns the bg fill) — mobys append
  * on top. Depth ordering is the real per-pixel Z-buffer (3a.3): each vertex
@@ -4131,61 +4713,13 @@ static void push_scene_moby(void) {
                 "(3a.2b independent face-stream walk) frame %u\n", s_gout.n, openpete_frame);
     }
     openpete_native_scene_begin_frame(openpete_frame);
-    /* OPENPETE_MOBY_TRIDBG="x0,y0,x1,y1,fA,fB": dump every walk tri whose
-     * centroid falls in the PSX-screen box for frames [fA,fB] — offline
-     * identity diff (moby+fkey) across frames names which attribute flaps.
-     * (Reinstated from b726f6c — the display-only forensics instrument.) */
-    { static int s_td = -1; static int tx0,ty0,tx1,ty1,tfa,tfb;
-      if (s_td < 0) { const char* e = getenv("OPENPETE_MOBY_TRIDBG");
-          s_td = 0;
-          if (e && sscanf(e, "%d,%d,%d,%d,%d,%d", &tx0,&ty0,&tx1,&ty1,&tfa,&tfb) == 6) s_td = 1; }
-      if (s_td == 1 && (int)openpete_frame >= tfa && (int)openpete_frame <= tfb) {
-          for (int i = 0; i < s_gout.n; i++) {
-              const ntri_t* w = &s_wtri[i];
-              float cx = (w->v[0].sx + w->v[1].sx + w->v[2].sx) / 3.0f;
-              float cy = (w->v[0].sy + w->v[1].sy + w->v[2].sy) / 3.0f;
-              if (cx < tx0 || cx > tx1 || cy < ty0 || cy > ty1) continue;
-              fprintf(stderr, "[mtri] vbl=%u m=%08X k=%08X tex=%d tp=%d,%d cl=%d,%d bl=%d fr=%d ui=%d dofs=%d mg=%d rk=%d",
-                      openpete_frame, s_wtri_moby[i], s_wtri_fkey[i], w->textured,
-                      w->tpage_x, w->tpage_y, w->clut_x, w->clut_y, w->blend,
-                      s_wtri_front[i], s_wtri_ui[i], s_wtri_dofs[i], s_wtri_mangle[i],
-                      openpete_mobyrank_lookup(s_wtri_moby[i], s_wtri_fkey[i]));
-              for (int k = 0; k < 3; k++)
-                  fprintf(stderr, " v%d=%.2f,%.2f,%.1f,%.1f,%d,%d,%06X", k,
-                          w->v[k].sx, w->v[k].sy, w->v[k].vz, w->v[k].tvz,
-                          w->v[k].u, w->v[k].v, w->v[k].rgb & 0xFFFFFF);
-              fputc('\n', stderr);
-          }
-      } }
     /* mobys cover shadows (ACTOR); HUD/UI mobys overlay on top. Stamped per-tri
      * from the walk's UI tag (0=ACTOR, 1=HUD flat overlay, 2=HUD3D depth-sorted
      * icon): the in-game 3D HUD icons (treasure/dragon/lives, the static g_Hud
      * range) go to HUD3D so their own faces Z-sort (depth-off paints them
      * inside-out); the flat near-OT text/2D billboards stay HUD. */
-    /* Production rank source: snapshot THIS pose's eligible faces, then
-     * match — the matcher walks the CURRENT tick's OT chain (complete in
-     * the drawing buffer DrawOTag hasn't submitted yet) for pose-exact
-     * ranks, falling back to the last submitted chain (one tick stale)
-     * when the fresh root is unavailable. Ranks apply by (moby,fkey), so
-     * sub-tick re-extracts inherit them for free. */
-    if (openpete_mobyrank_on()) {
-        openpete_mobyrank_snap_begin(openpete_frame);
-        for (int i = 0; i < s_gout.n; i++) {
-            if (s_wtri[i].blend != 0 || !s_wtri_moby[i] || s_wtri_ui[i] != 0 ||
-                s_wtri_mangle[i]) continue;
-            uint8_t su[3], sv[3];
-            float sxs[3], sys[3];
-            for (int k = 0; k < 3; k++) {
-                sxs[k] = s_wtri[i].v[k].sx; sys[k] = s_wtri[i].v[k].sy;
-                su[k] = (uint8_t)s_wtri[i].v[k].u; sv[k] = (uint8_t)s_wtri[i].v[k].v;
-            }
-            openpete_mobyrank_snap_face(s_wtri_moby[i], s_wtri_fkey[i], sxs, sys,
-                                        su, sv, s_wtri[i].textured,
-                                        s_wtri[i].clut_x, s_wtri[i].clut_y);
-        }
-        openpete_mobyrank_snap_end();
-        openpete_mobyrank_match();
-    }
+    moby_rank_prepare();
+    moby_tri_debug();
     uint32_t rord_moby[256]; int rord_n = 0;  /* this walk's ranked-moby ordinals */
     /* Per-moby memo for the material-slot resolve below (faces of one moby
      * are contiguous in this stream). */
@@ -4261,17 +4795,12 @@ static void push_scene_moby(void) {
               default: break;
               }
           } }
-        /* Rank eligibility: regular/front-pass opaque moby faces with a true
-         * screen footprint. Mangled faces (near fixup / coordinate
-         * saturation) are excluded like they are from koff — their raster is
-         * not the true projection, so a rank stamped across one would
-         * discard content far outside the real silhouette. */
-        int rank_ok = t.blend == 0 && s_wtri_moby[i] && s_wtri_ui[i] == 0 &&
-                      !s_wtri_mangle[i];
-        int rank = 0;
-        if (rank_ok && openpete_mobyrank_on()) {
-            rank = openpete_mobyrank_lookup(s_wtri_moby[i], s_wtri_fkey[i]);
-        }
+        /* Rank: the face's paint position while it intersects another face
+         * of its moby (moby_face_rank). Mangled faces (near fixup / coordinate
+         * saturation) are never ranked, like they are never keyed: their
+         * raster is not the true projection, so a rank stamped across one
+         * would discard content far outside the real silhouette. */
+        int rank = moby_face_rank(i);
         if (rank > 0) {
             int oi;
             for (oi = 0; oi < rord_n; oi++)
@@ -5394,6 +5923,7 @@ typedef struct { int sv_off, vcount; uint32_t faces; int fcount; int cls;
                  uint32_t model, base, moby; int RT[3][3]; int near_ot;
                  int vzspread; float pvzspread;
                  uint32_t ctab; int ctab_len;   /* static baked colour table [model+8] (bytes); 0 len = lit */
+                 moby_otk_rec_t otk;            /* the pass's paint key for this moby */
                } shaded_rec;   /* vzspread = model-space Z extent (max-min);
                  * a large extent means a real 3D model that self-occludes → needs the HUD3D
                  * depth pass, vs a thin text/decal overlay that renders fine depth-off.
@@ -5404,6 +5934,41 @@ typedef struct { int sv_off, vcount; uint32_t faces; int fcount; int cls;
                  * large X extent into view-Z, so it self-occludes despite a small
                  * model-space Z. Either spread ≥ threshold → HUD3D. */
 static shaded_rec s_shrecs[256]; static int s_nshrecs;
+
+/* The integer translation the shaded pass loads for a 3D moby (r_moby.s
+ * 4015-4154): IR = ((camY - Y) >> 2, (camZ - Z) >> 2, (X - camX) >> 2) through
+ * the camera matrix (MVMVA sf=1), doubled; a non-zero draw-scale byte then
+ * runs GPF sf=0 on the int16 of each component and shifts right 5. */
+static void shaded_int_tr(const int PM[3][3], const int32_t cam[3], const int32_t pos[3],
+                          int p57, int tr[3]) {
+    int32_t ir[3] = { (cam[1] - pos[1]) >> 2, (cam[2] - pos[2]) >> 2, (pos[0] - cam[0]) >> 2 };
+    for (int k = 0; k < 3; k++) {
+        int64_t mac = ((int64_t)PM[k][0] * ir[0] + (int64_t)PM[k][1] * ir[1]
+                     + (int64_t)PM[k][2] * ir[2]) >> 12;
+        int t = (int)mac * 2;
+        tr[k] = p57 ? (p57 * (int)(int16_t)t) >> 5 : t;
+    }
+}
+
+/* The shaded pass's paint key for one moby: the row, and the integer
+ * translation and screen offset its RTPS loads. A billboard loads
+ * TR = (0, 0, Z >> 1) and its screen position as the offset (r_moby.s
+ * 4155-4166); a 3D moby loads shaded_int_tr. */
+typedef struct { moby_otk_rec_t rec; int tr[3]; double ofx, ofy; } shaded_otk_t;
+static void shaded_otk_record(CPUState* cpu, uint32_t m, int billboard, const int PM[3][3],
+                              const int32_t cam[3], const int32_t pos[3], double ofx,
+                              double ofy, shaded_otk_t* o) {
+    o->tr[0] = o->tr[1] = o->tr[2] = 0;
+    o->ofx = ofx; o->ofy = ofy;
+    if (billboard) {
+        o->tr[2] = pos[2] >> 1;
+        o->ofx = pos[0]; o->ofy = pos[1];
+    } else {
+        shaded_int_tr(PM, cam, pos, cpu->read_byte(m + game_layout.moby.size_off), o->tr);
+    }
+    moby_otk_record(moby_otkey_wanted() ? moby_game.shaded_otkey_row : MOBY_OTK_NONE, 0,
+                    o->tr[2], &o->rec);
+}
 
 /* Project EVERY shaded moby's verts (billboard or 3D, both verified 100%) into
  * out[]. Returns vertex count. Shared by shaded_verify + the feed. Also records
@@ -5635,6 +6200,11 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
              * p57!=0 -> x64/p57. Sign-preserving (near cull intact); depth-only. */
             vz_scale = p57 ? 64.0 / (double)p57 : 2.0;
         }
+        shaded_otk_t sk;
+        {
+            const int32_t cam3[3] = { cx, cy, cz }, pos3[3] = { px, py, pz };
+            shaded_otk_record(cpu, m, billboard, PM, cam3, pos3, ofx, ofy, &sk);
+        }
         int vzmin=1<<30, vzmax=-(1<<30);   /* model-space Z extent (HUD3D 3D-vs-flat test) */
         double rec_minfvz = 1e30;          /* nearest in-front vertex after pulls (near-floor lift) */
         double pvzmin=1e30, pvzmax=-1e30;  /* projected view-Z extent (rotation-aware half) */
@@ -5684,6 +6254,8 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             out[n].sx=(float)sx; out[n].sy=(float)sy; out[n].vz=(float)fvz; out[n].sat=sat; out[n].unr=unr;
             out[n].tvz=(float)(vzz*vz_scale);            /* pre-bias: the perspective W */
             out[n].ex=out[n].ey=out[n].ez=0.0f;   /* env-UV unused on shaded faces */
+            moby_otk_vertex(&sk.rec, sk.tr, M, VX, VY, VZ, sk.ofx, sk.ofy, (int)rv->H_canon,
+                            &out[n]);
             n++;
         }
         /* Near-floor lift, per moby (see moby_decode_project's twin): uniform,
@@ -5698,7 +6270,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             shaded_rec* R = &s_shrecs[s_nshrecs++];
             R->sv_off=sv_off; R->vcount=n-sv_off; R->faces=faces; R->fcount=fcount; R->cls=(int)cls;
             R->model=model; R->base=base; R->moby=m; R->near_ot=near_ot;
-            R->ctab=ctab; R->ctab_len=ctab_len;
+            R->ctab=ctab; R->ctab_len=ctab_len; R->otk=sk.rec;
             R->vzspread = (vzmax>vzmin) ? (vzmax-vzmin) : 0;
             R->pvzspread = (pvzmax>pvzmin) ? (float)(pvzmax-pvzmin) : 0.0f;
             for (int i=0;i<3;i++) for (int j=0;j<3;j++) R->RT[i][j]=M[i][j];
@@ -5747,6 +6319,19 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
  * marks the METAL env-reflection sub-mode (block_80023720) — NOT yet derived
  * natively (same family as #1 specular reflection); rendered as basic-flat for
  * now (approximate but leak-free). The feed reads ZERO .s prim output. */
+/* Bucket word of one shaded face of the moby whose paint key is `rec` and
+ * whose projected vertices start at `base` (vc of them): the pass's row
+ * through moby_otk_face_bucket, -1 when the pass gives it none. i2 == i3
+ * names a triangle. */
+static int shaded_face_otkey(const moby_otk_rec_t* rec, const proj_xy* base, int i0, int i1,
+                             int i2, int i3, int vc, uint32_t w0, uint32_t w1) {
+    if (rec->row == MOBY_OTK_NONE || (i2 != i3 && i3 >= vc)) return -1;
+    moby_otk_face_t f = { { &base[i0].iv, &base[i1].iv, &base[i2].iv,
+                            i2 == i3 ? NULL : &base[i3].iv }, 0, INT32_MIN, 0, 0 };
+    moby_game.shaded_otkey_face(w0, w1, &f);
+    return moby_otk_face_bucket(rec, &f);
+}
+
 static int build_shaded_walk_tris(CPUState* cpu) {
     static proj_xy sv[8192]; project_all_shaded(cpu, sv, 8192);   /* fills sv[] + s_shrecs[] */
     if (s_sh_nohl < 0) { const char* e=getenv("OPENPETE_SHADED_NOHL"); s_sh_nohl = (e&&*e!='0'); }
@@ -5866,20 +6451,32 @@ static int build_shaded_walk_tris(CPUState* cpu) {
              * blend=1 == ABR0 (50% B/2+F/2), the untextured-ABE default. */
             int sh_blend = (mode == 1 && flat_abe) ? 1 : 0;
             int mt0 = s_gout.n;
+            uint64_t rt0 = rt_now();
+            int ot_bk = shaded_face_otkey(&R->otk, base, i0, i1, i2, i3, vc, w0, w1);
+            rt_add(RT_KEY, rt0, 1);
+            /* Face identity for the paint-verdict carry and the rank
+             * calibration: the face's stream index, bit 0 the quad's half. */
+            s_emit_fkey = 0x80000000u | ((uint32_t)f << 1);
             proj_xy* p0 = &base[i0]; proj_xy* p1 = &base[i1]; proj_xy* p2 = &base[i2];
             double ncl1 = tri_nclip(p0->sx,p0->sy,p1->sx,p1->sy,p2->sx,p2->sy);  /* float backface cull (see build_walk_tris) */
             if (i2 == i3) {                                       /* TRI */
-                if (ncl1 > 0.0)
+                if (ncl1 > 0.0) {
+                    s_emit_otk = ot_bk;
                     emit_wtri(p0,p1,p2, c0,c1,c2, 0,0,0,0,0,0, 0,0,0,0,0,16,sh_blend);
+                }
             } else if (i3 < vc) {                                 /* QUAD */
                 proj_xy* p3 = &base[i3];
                 double ncl2 = tri_nclip(p3->sx,p3->sy,p1->sx,p1->sy,p2->sx,p2->sy);
                 if (ncl1 > 0.0 || ncl2 < 0.0) {
+                    s_emit_otk = ot_bk;
                     emit_wtri(p0,p1,p2, c0,c1,c2, 0,0,0,0,0,0, 0,0,0,0,0,16,sh_blend);
+                    s_emit_fkey |= 1u;
+                    s_emit_otk = moby_otk_second(ot_bk, 1);
                     if (s_gout.n < MAX_NTRI)
                         emit_wtri(p1,p3,p2, c1,c3,c2, 0,0,0,0,0,0, 0,0,0,0,0,16,sh_blend);
                 }
             }
+            s_emit_otk = -1;
             { /* OPENPETE_SHADED_FACEDBG="cls,frameLo": per-face NCLIP forensics for
                * one class over 2 VBLs — float ncl vs the GTE's integer NCLIP (which
                * runs on truncated SXY), to catch sign flips on near-edge-on faces. */
@@ -7287,7 +7884,13 @@ static int moby_census_on(void) {
     return s;
 }
 
+static void moby_reextract_body(CPUState* cpu);
 void moby_reextract(CPUState* cpu) {
+    s_in_reextract = 1;
+    moby_reextract_body(cpu);
+    s_in_reextract = 0;
+}
+static void moby_reextract_body(CPUState* cpu) {
     if (!openpete_native_scene_enabled()) return;
     /* Only replay mobys the canonical frame actually drew. During a level
      * transition the moby render path may not fire (or only for the collected-gem

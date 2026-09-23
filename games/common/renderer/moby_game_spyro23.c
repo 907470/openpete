@@ -31,6 +31,7 @@
 #include "no_lod.h"                    /* openpete_no_lod — the extended-LOD clause */
 #include "openpete_recomp_module.h"    /* the game's own static draw */
 
+#include <math.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -972,6 +973,23 @@ static int s23_simple_place(CPUState* cpu, int r, const int Rcam[3][3],
     return 1;
 }
 
+/* One face's bucket word in the record's paint order (moby_rank.h rows
+ * MOBY_OTK_S23_SIMPLE and MOBY_OTK_S23_SIMPLE_FLAT, `ork` in that order):
+ * face word 1 bit 1 selects the flat-lit branch (mobydraw.s 4720-4722,
+ * 4743-4745), whose back faces the walk keeps while TRZ, less 0x800 under word
+ * 1 bit 0, is negative (4748-4760). A standard face's bias is the signed top
+ * nibble of word 0 (4436, 4584), and word 1 bit 0 lets a standard triangle
+ * pass the facing test either way round (4602-4605, 4743-4745). */
+static int32_t s23_simple_face_otk(const moby_otk_rec_t ork[2], const moby_otk_vert_t* iv,
+                                   const int idx[4], int tri, uint32_t f0, uint32_t f1) {
+    const int flat = (f1 & 2u) != 0;
+    moby_otk_face_t f = { { &iv[idx[0]], &iv[idx[1]], &iv[idx[2]], tri ? NULL : &iv[idx[3]] },
+                          flat ? 0 : (int32_t)f0 >> 28,
+                          flat ? ((f1 & 1u) ? 0x800 : 0) : INT32_MIN,
+                          (int8_t)(!flat && tri && (f1 & 1u)), (int8_t)flat };
+    return moby_otk_face_bucket(&ork[flat], &f);
+}
+
 static int s23_simple_decode(CPUState* cpu) {
     int Rcam[3][3];
     ngte_read_matrix(cpu, game_layout.cam.base, Rcam);   /* mobydraw.s:3898-3908 */
@@ -1007,6 +1025,7 @@ static int s23_simple_decode(CPUState* cpu) {
 
     static double vpos[S23_SIMPLE_VERTS][3];
     static float  vscr[S23_SIMPLE_VERTS][2];
+    static moby_otk_vert_t iv[S23_SIMPLE_VERTS];   /* the draw's integer RTPS (paint key) */
     static uint32_t ctab[S23_SIMPLE_COLS];
     uint32_t flat_w[4];
     memcpy(flat_w, s_flat_entry, sizeof flat_w);
@@ -1078,6 +1097,16 @@ static int s23_simple_decode(CPUState* cpu) {
 
         moby_simple_record(cpu, moby);
         if (pl.screen) moby_simple_screen_origin(pl.ofx, pl.ofy);
+        /* The translation the draw loads into TRX/TRY/TRZ (mobydraw.s
+         * 4190-4192): the MVMVA (sf=1) truncates the rotated delta to an
+         * integer before the rejoin doubles it (mobydraw.s 3946-3952,
+         * 4058-4060), where TR keeps the fraction. With it, the record's
+         * paint key for both face families. */
+        const int itr[3] = { 2 * (int)floor(TR[0] * 0.5), 2 * (int)floor(TR[1] * 0.5),
+                             2 * (int)floor(TR[2] * 0.5) };
+        moby_otk_rec_t ork[2];
+        moby_simple_otk_record(MOBY_OTK_S23_SIMPLE, itr[2], &ork[0]);
+        moby_simple_otk_record(MOBY_OTK_S23_SIMPLE_FLAT, itr[2], &ork[1]);
 
         for (int i = 0; i < nv; i++) {
             uint32_t w = cpu->read_word(H + 0x10u + (uint32_t)i * 4u);
@@ -1091,6 +1120,7 @@ static int s23_simple_decode(CPUState* cpu) {
             vpos[i][1] = (e2 + TR[1]) * 2.0;
             vpos[i][2] = (e3 + TR[2]) * 2.0;
             moby_simple_project(vpos[i], &vscr[i][0], &vscr[i][1]);
+            moby_simple_otk_vertex(&ork[0], itr, R, vx, vy, vz, &iv[i]);
         }
         s_simple_verts += nv;
 
@@ -1227,6 +1257,7 @@ static int s23_simple_decode(CPUState* cpu) {
                     blend = moby_abr_blend(t.abr);
             }
 
+            const int32_t otk = s23_simple_face_otk(ork, iv, idx, tri, f0, f1);
             double p[3][3]; uint32_t rgb[3]; int uu[3], vv[3];
             if (sh.emit_a) {
                 const int o[3] = {0,1,2};
@@ -1234,8 +1265,9 @@ static int s23_simple_decode(CPUState* cpu) {
                     memcpy(p[k], vpos[idx[o[k]]], sizeof p[k]);
                     rgb[k] = col[o[k]]; uu[k] = u[o[k]]; vv[k] = v[o[k]];
                 }
+                const moby_otk_vert_t* const ia[3] = { &iv[idx[0]], &iv[idx[1]], &iv[idx[2]] };
                 moby_simple_tri(p, rgb, uu, vv, sh.textured, tpx, tpy, clx, cly, bpp, blend,
-                                (uint32_t)(idx[0] | (idx[1] << 10) | (idx[2] << 20)));
+                                (uint32_t)(idx[0] | (idx[1] << 10) | (idx[2] << 20)), otk, ia);
                 emitted++; s_simple_tris++;
             }
             if (sh.emit_b) {
@@ -1244,8 +1276,10 @@ static int s23_simple_decode(CPUState* cpu) {
                     memcpy(p[k], vpos[idx[o[k]]], sizeof p[k]);
                     rgb[k] = col[o[k]]; uu[k] = u[o[k]]; vv[k] = v[o[k]];
                 }
+                const moby_otk_vert_t* const ib[3] = { &iv[idx[1]], &iv[idx[3]], &iv[idx[2]] };
                 moby_simple_tri(p, rgb, uu, vv, sh.textured, tpx, tpy, clx, cly, bpp, blend,
-                                (uint32_t)(idx[1] | (idx[3] << 10) | (idx[2] << 20)));
+                                (uint32_t)(idx[1] | (idx[3] << 10) | (idx[2] << 20)),
+                                moby_otk_second(otk, sh.emit_a), ib);
                 emitted++; s_simple_tris++;
             }
             fp += adv;
@@ -1505,6 +1539,27 @@ static int s23_simple_pass(CPUState* cpu) {
     return n;
 }
 
+/* ---- paint-key decode (moby_rank.h row MOBY_OTK_S23_REGULAR) ----------
+ * A = the animation header's byte 3, raised to keyframe B's header byte 3 on
+ * a blending record (w0 bits 8-15 non-zero) (mobydraw.s 474-483, 496, 499);
+ * the translation the draw loads is the record's own (the cull stored the
+ * final one, mobydraw.s 557-560). The face bias is the signed low three bits
+ * of the face's second word, decoded into moby_wface_t.otbias. The
+ * mirrored-winding material modes and the plane walk (record +0x3C) key the
+ * same here. */
+static moby_otk_row_t s23_otkey_record(CPUState* cpu, uint32_t header, uint32_t header_b,
+                                       uint32_t w0, const int TR_raw[3], int tr[3], int* a) {
+    if (header < 0x80000000u) return MOBY_OTK_NONE;
+    for (int k = 0; k < 3; k++) tr[k] = TR_raw[k];
+    int h = cpu->read_byte(header + 3u) & 0xFF;
+    if (((w0 >> 8) & 0xFFu) && header_b >= 0x80000000u) {
+        int b = cpu->read_byte(header_b + 3u) & 0xFF;
+        if (b > h) h = b;
+    }
+    *a = h;
+    return MOBY_OTK_S23_REGULAR;
+}
+
 const moby_game_t moby_game = {
     .vstream_init      = s23_vstream_init,
     .vstream_next      = s23_vstream_next,
@@ -1522,6 +1577,7 @@ const moby_game_t moby_game = {
     .cull_box_threshold = s23_cull_box_threshold,
     .reveal_record      = s23_reveal_record,
     .special_face      = s23_special_face,
+    .otkey_record      = s23_otkey_record,
     /* The cull writes its verdict into a gameplay-readable Moby byte, so
      * nothing the host widens may reach it and the walk feeds the records the
      * cull queued, no more. */

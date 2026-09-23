@@ -389,8 +389,11 @@ const game_layout_t game_layout = {
         .rec_frame_is_word = 1,            /* the record holds each keyframe's own stream word */
         .rec_header_b_off = 0x08u,         /* keyframe B's own AnimationHeader* */
 
-        .world_ot   = 0u,                  /* the OT bucket array is not located */
-        .ot_buckets = 0u,
+        /* The world ordering table: the pointer at D_80066FFC, 0x580 entries
+         * of {tail, head}, linked highest entry first by func_8001B2A8
+         * (stdutil.s:14-16; draw/func_800156FC.s:220-221 passes the count). */
+        .cal_world_ot   = 0x80066FFCu,
+        .cal_ot_buckets = 0x580u,
 
         .hook_cull          = F_MOBY_CULL,
         .hook_draw_regular  = F_MOBY_DRAW_ANIM,

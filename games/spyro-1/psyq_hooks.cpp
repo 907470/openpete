@@ -24,7 +24,6 @@ extern "C" {
 }
 
 #include "mods/mod_wad_overlay.h"
-#include "renderer/moby_rank.h"
 #include "sfx_pack.h"
 #include "psx/libcd.h"
 
@@ -342,12 +341,6 @@ extern "C" void psyq_game_cd_read_done(CPUState* cpu, uint32_t read_cb) {
     }
 }
 
-extern "C" void psyq_game_ot_begin(void) { openpete_mobyrank_ot_begin(openpete_frame); }
-extern "C" void psyq_game_ot_prim_full(unsigned code_byte, const void* payload,
-                            unsigned payload_bytes) {
-    openpete_mobyrank_ot_prim(code_byte, (const uint8_t*)payload, payload_bytes);
-}
-extern "C" void psyq_game_ot_end(void) { openpete_mobyrank_ot_end(); }
 
 #include "spyro1_sfx_names.h" /* generated: all 256 slot names */
 

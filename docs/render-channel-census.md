@@ -51,7 +51,7 @@ All paths under `games/spyro-1/features/`.
 | `transition.c` | WORLD (:196 backdrop grid, :213 faded dome) | none | 0 | no | none — dome re-derived from gamestate | polybuf interval recorded for liveness only |
 | `ui_sprite.c` | HUD (carry=1), OVERLAY (:335), HUD_PANEL (:345) | none | 0/1/3 | mixed | none — per-tick polybuf allocation | core carry/re-apply across sub-ticks |
 
-Non-feeders in the directory (no `add_tri` call): `moby_rank.c`,
+Non-feeders in the directory (no `add_tri` call): `moby_rank.c`, `moby_rank_cal.c`,
 `render_paths.c`, `render_decouple.c`, `polybuf_guard.c`,
 `crash_demo_woah.c`, `vibration.c`, `text_moby.c` (glyphs go
 to the separate overlay-glyph channel, not a scene category),

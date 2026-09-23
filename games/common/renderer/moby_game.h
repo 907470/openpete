@@ -23,6 +23,7 @@
 #include <stdint.h>
 #include <string.h>
 #include "psx_runtime_internal.h"   /* CPUState: the decoders read guest memory */
+#include "renderer/moby_rank.h"      /* the paint-key rows the providers name */
 
 #ifdef __cplusplus
 extern "C" {
@@ -67,7 +68,8 @@ static inline uint32_t moby_vs_read_half(CPUState* cpu, const moby_vstream_t* s,
  * strip face that advances one, `bit0` the winding flag the NCLIP test reads,
  * `hl` the per-face special-material flag, `blendbit` the GPU
  * semi-transparency enable, `abr` its blend mode and `otbias` the signed
- * per-face ordering-table bias a draw subtracts from the face's depth key.
+ * per-face ordering-table bias field the draw applies to the face's depth key
+ * (each game's walk defines the arithmetic).
  * `untested` is the face record's sign bit on its own: a draw that emits every
  * face textured still carries that bit, and reads it as the face's exemption
  * from the back-face test rather than as a texture flag. tpx/tpy/clx/cly/bpp and
@@ -258,6 +260,30 @@ typedef struct moby_game {
      * untouched. */
     int  (*reveal_record)(CPUState* cpu, uint32_t moby, moby_reveal_kind_t kind,
                           moby_reveal_reason_t* why);
+
+    /* ---- paint order inside one moby ----------------------------------
+     * The key arithmetic of each walk is a row of moby_rank.h's table; the
+     * game decodes the fields the row reads.
+     *
+     * `otkey_record` names the row of one animated record and fills `a`, the
+     * animation-header byte the row scales by, and `tr`, the integer
+     * translation the draw loads into GTE TRX/TRY/TRZ for the record's RTPS;
+     * MOBY_OTK_NONE leaves the record's faces unranked (true depth alone
+     * orders them). NULL: no animated record is ranked.
+     *
+     * `specular_otkey_row` replaces the row `otkey_record` names for the
+     * records the specular pass draws (hook_draw_specular), whose walk decodes
+     * the same record fields; MOBY_OTK_NONE keeps `otkey_record`'s row.
+     *
+     * `shaded_otkey_row` is the row of the second material pass (the shaded
+     * list the walk feeds from `shaded_list`), MOBY_OTK_NONE for none, and
+     * `shaded_otkey_face` decodes one of its faces' two words into the bias,
+     * back-face and near-keep fields of `f`. */
+    moby_otk_row_t (*otkey_record)(CPUState* cpu, uint32_t header, uint32_t header_b,
+                                   uint32_t w0, const int TR_raw[3], int tr[3], int* a);
+    moby_otk_row_t specular_otkey_row;
+    moby_otk_row_t shaded_otkey_row;
+    void (*shaded_otkey_face)(uint32_t w0, uint32_t w1, moby_otk_face_t* f);
 
     /* ---- identity ----------------------------------------------------- */
     /* The key the sub-tick interp ring stores a moby's prev/curr snapshots

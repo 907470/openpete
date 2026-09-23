@@ -289,6 +289,7 @@ function(openpete_add_game GAME_ID)
         ${_common}/renderer/particles.c
         ${_common}/renderer/moby.c
         ${_common}/renderer/moby_rank.c
+        ${_common}/renderer/moby_rank_cal.c
         ${_common}/renderer/player.c
         ${_common}/renderer/ui_sprite.c
         # The SPRT text feeder: registered only by a game whose ui_game names a

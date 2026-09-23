@@ -560,11 +560,12 @@ typedef struct game_layout {
          * share the record's first header. */
         uint32_t rec_header_b_off;
 
-        /* The ordering table the same-moby paint rank is read from: the
-         * address of the pointer to the bucket array, and the bucket count.
-         * 0 retires the rank source. */
-        uint32_t world_ot;
-        uint32_t ot_buckets;
+        /* The world ordering table, read only by the paint-rank calibration
+         * instrument (moby_rank_cal.c): the address of the pointer to the
+         * bucket array, and the bucket count. 0: the instrument reports no
+         * table. */
+        uint32_t cal_world_ot;
+        uint32_t cal_ot_buckets;
 
         /* Hook sites: the cull pass and one entry per draw pass. A zero
          * address registers no hook, so a game reaches only the passes it
