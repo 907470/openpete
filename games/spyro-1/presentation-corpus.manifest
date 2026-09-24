@@ -136,3 +136,8 @@ town-square-delvin-rescue                | 1700  | 100  |        | 2574,2621
 town-square-nils-rescue                  | 1700  | 100  |        | 2590
 town-square-portal-entry                 | 1700  | 100  |        | 2200,2767
 widescreen-culling                       | 1700
+# The Artisans hub medallion at the attract demo's VBL 1170: the central
+# platform's centre fan, whose faces are degenerate quads (i2 == i3); the
+# olive ring drew grey until the near-tier triangle subdivide. Plain boot, no
+# bk2.
+attract-demo-medallion                   | 1169  | 2    |        | 1170
