@@ -18,6 +18,7 @@ code span renders as <code><a>...</a></code>.
 
 ## Unreleased
 
+- Spyro 1 and 2: `--skip-to-cutscene` plays the story cutscenes by name (`--skip-to-cutscene zzz` lists them). Spyro 3: `--skip-to-area <level>:<area>` boots into a sub-area. `scripts/check_skip_targets.sh` and the `skip_targets_spyro-N` ctests run every row of `games/<game>/skip-targets.manifest`.
 - Renderer: scene depth is now reversed on the float depth format (`gl_FragCoord.z` = 1/viewZ, larger is nearer),
   so distant surfaces no longer tie and flicker by draw order. Mod shaders reading depth through
   `op_viewz_scene` or `op_vz_from_depth` are unaffected; raw `gl_FragCoord.z` values and the

@@ -33,7 +33,8 @@ jq '.' /tmp/log.json | head -20
 | `--frame-limit N` | Exit after N VBLs. A tick is two VBLs. |
 | `--max-runtime-seconds N` | Wall-clock SIGTERM after N seconds. |
 | `--skip-to-level L` | Boot into level L — numeric id (10 = Artisans, 63 = Gnasty) or `lower_snake_case` name — instead of the attract demo. An unknown name prints the list. |
-| `--skip-to-cutscene C` | Play cutscene C from a live level (`--skip-to-level`'s target, else the game's default). Spyro 1: `credits` / `credits_100`, the short and the 100% roll; the roll returns to the level it started from. An unknown name prints the list. |
+| `--skip-to-cutscene C` | Play story cutscene C. Spyro 1: `intro` (the opening, from the title through New Game; refused with `--skip-to-level`), `ending` (from level 63), `ending_loot` (from level 64; the credits return to Artisans), `credits` / `credits_100` (alias `full_credits`; the short and the 100% roll, from `--skip-to-level`'s target, else Artisans; the roll returns to that level). Spyro 2: `intro`, `intro_arrival`, `summer_forest`, `crush_intro`, `crush_defeated`, `autumn_plains`, `gulp_intro`, `gulp_defeated`, `winter_tundra`, `ripto_intro`, `ending`, each played through the Dragon Shores (level 65) theater replay; playback returns to Dragon Shores. Spyro 3 has no targets. The run loads the source level itself; a `--skip-to-level` to another level refuses the cutscene. No value or an unknown name prints the game's list and exits 3. |
+| `--skip-to-area L:A` | Spyro 3: boot into level L (numeric id or name) and enter its sub-area A through the game's own sub-area transition, as the level's area-0 portal does. A is an index from 1; the game holds no area names. Replaces `--skip-to-level`'s level. No value or an invalid target prints each level's valid indices (17 levels, 38 sub-areas) and exits 3; Spyro 1 and 2 refuse the flag. |
 | `--bk2 PATH` | Replay a BizHawk movie (Octoshock P1 pad) as input. The reproducible input source. |
 | `--screenshot-on-frame N[,N2...]` | Save an image at each listed VBL. `--screenshot-on-tick` keys on canonical draw-ticks instead, which hit the same sim moment run-to-run; the visual gates use the tick form. |
 | `--screenshot-output PATH` | Path template; `{n}` expands to the sim frame, `{p}` to the present index. A `.png` extension writes PNG, otherwise BMP. |
@@ -60,6 +61,26 @@ sub-tick is invisible to a headless capture.
 | Mods | `scripts/check_mods.sh` | The mod PoC ladder, including per-mod `modtest.toml` scenarios (ctest `mod_poc_ladder`, ~10 min). |
 
 Oracle internals are in [`duckstation-oracle.md`](duckstation-oracle.md).
+
+### Skip targets
+
+`scripts/check_skip_targets.sh [--game SLUG] [--build-dir=DIR] [--filter=NAME]`
+(default game `spyro-1`) runs every row of `games/<game>/skip-targets.manifest`
+headless: 5 `--skip-to-cutscene` rows for Spyro 1, 11 for Spyro 2, 38
+`--skip-to-area` rows for Spyro 3. A row is `name | args | frames | expect`:
+`args` the skip flags, `frames` the run's `--frame-limit` in VBLs, `expect` the
+tokens the skip's release line (`[skip-to-level] level playable`) must carry,
+values the skip module reads back from RAM at the release edge. A row passes
+when the run exits 0, prints the release line with every token, and prints no
+fail-safe line (`[skip-to-level] fail-safe release (no playable edge)`). The
+fail-safe deadline is 4000 VBLs after the skip's first check, or
+`OPENPETE_SKIP_FAILSAFE_VBL` when set positive. Negative control: the first row
+runs again with `OPENPETE_SKIP_FAILSAFE_VBL=1` and must fail; a pass there
+fails the harness. `SKIP_TARGETS_JOBS` (default 2) caps concurrent game
+processes; logs land in `<build-dir>/skip-targets/<game>/`. Exit 0 PASS, 1 FAIL,
+64 SKIP (binary, disc or manifest missing). ctest runs it as
+`skip_targets_spyro-1`, `skip_targets_spyro-2` and `skip_targets_spyro-3`,
+labels `slow` and `skip-targets` (`ctest -L skip-targets`).
 
 ## Exit codes
 
