@@ -333,6 +333,10 @@ typedef struct {
     int host_added; /* 1 = geometry the host added beyond the game's own render
                      * (sticky set_host_added value). The scene's content and
                      * world-frame verdicts skip these tris. */
+    int ter_after;  /* 1 = added at or after the start of this scene's terrain
+                     * feed (sticky, set by openpete_native_scene_mark_terrain_feed,
+                     * cleared with the scene). Places the feed in emission order
+                     * when it emits no triangle of its own. */
 } scene_tri_t;
 /* C99 compile-time prefix check: if a field is added to openpete_scene_tri
  * without mirroring it here (or vice versa), this array gets a negative size. */
@@ -463,6 +467,9 @@ void openpete_native_scene_set_tag(uint32_t tag) { s_cur_tag = tag; }
 /* Sticky host-added origin (see openpete_native_scene_set_host_added). */
 static int s_cur_host_added;
 void openpete_native_scene_set_host_added(int on) { s_cur_host_added = on ? 1 : 0; }
+/* Sticky terrain-feed mark (see openpete_native_scene_mark_terrain_feed). */
+static int s_cur_ter_after;
+void openpete_native_scene_mark_terrain_feed(void) { s_cur_ter_after = 1; }
 void openpete_native_scene_tag_family_counts(uint32_t out[16]) {
     memcpy(out, s_scene_fam_n, sizeof s_scene_fam_n);
 }
@@ -848,6 +855,10 @@ static unsigned bw_rank_key(const scene_tri_t* t);
 #define BW_KEY_MAX 16
 static uint32_t s_bw_key_order[BW_KEY_MAX];   /* keys in first-emission order */
 static int      s_bw_key_n;
+/* The terrain feed's place in that order: the number of recorded keys first
+ * emitted before the feed began (the scene's first triangle marked ter_after or
+ * tagged terrain; every key when neither occurs). */
+static int      s_bw_ter_rank;
 /* Recorded rank of a key: its position in the last game-render scene's
  * first-emission order, or s_bw_key_n for a key that scene never emitted (those
  * sort after every recorded key, keeping their relative order). */
@@ -857,13 +868,16 @@ static int bw_key_rank(uint32_t key) {
 }
 static void bw_key_order_record(const scene_tri_t* sc, int n) {
     s_bw_key_n = 0;
+    int ter_rank = -1;
     for (int i = 0; i < n; i++) {
+        if (ter_rank < 0 && (sc[i].ter_after || (sc[i].tag >> 28) == 2u)) ter_rank = s_bw_key_n;
         if (!blended_world_tri(&sc[i])) continue;
         const uint32_t k = bw_rank_key(&sc[i]);
         int seen = 0;
         for (int q = 0; q < s_bw_key_n; q++) if (s_bw_key_order[q] == k) { seen = 1; break; }
         if (!seen && s_bw_key_n < BW_KEY_MAX) s_bw_key_order[s_bw_key_n++] = k;
     }
+    s_bw_ter_rank = ter_rank < 0 ? s_bw_key_n : ter_rank;
 }
 
 /* 1 while the scene being accumulated is a sub-tick / lag re-extract's
@@ -878,7 +892,7 @@ void openpete_native_scene_begin(void) {
      * before it goes. A later re-extract of the same tick must not
      * overwrite the record with its own (already reordered) order. */
     if (!s_scene_replay) bw_key_order_record(s_scene, s_scene_n);
-    s_scene_replay = 1; fov_latch(); s_scene_epoch++; s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; openpete_mods_material_frame_reset(); /* S8b: per-present interned slots */ }
+    s_scene_replay = 1; fov_latch(); s_scene_epoch++; s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; openpete_mods_material_frame_reset(); /* S8b: per-present interned slots */ }
 
 /* Frame-keyed reset: the first feeder of each game frame clears; later feeders
  * (in any order) append, so the cyclorama + world + mobys compose into one
@@ -947,7 +961,7 @@ void openpete_native_scene_begin_frame(unsigned frame) {
         s_scene_epoch++;
         s_cur_seq = 0;
         s_cur_prim = 0;
-        s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_scene_frame = frame;
+        s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; s_scene_frame = frame;
         s_scene_replay = 0;
         /* Per-instance material slots are per-feed-cycle: reset here (the
          * canonical present's reset) as well as in scene_begin (the sub-tick
@@ -975,6 +989,7 @@ static int          s_scene_saved_n = -1;   /* -1 = nothing saved */
 static uint32_t     s_scene_saved_fam[16];
 static uint32_t     s_scene_saved_bg, s_scene_saved_fade, s_scene_saved_freeze;
 static int          s_scene_saved_hud_under, s_scene_saved_actor_front, s_scene_saved_dropped;
+static int          s_scene_saved_ter_after;
 
 int openpete_native_scene_save(void) {
     if (scene_run_fit(&s_scene_saved, "scene.saved", s_scene_n) < s_scene_n) return 1;
@@ -985,6 +1000,7 @@ int openpete_native_scene_save(void) {
     s_scene_saved_freeze = s_scene_freeze;
     s_scene_saved_hud_under = s_scene_hud_under;
     s_scene_saved_actor_front = s_scene_actor_front;
+    s_scene_saved_ter_after = s_cur_ter_after;
     s_scene_saved_dropped = s_scene_dropped;
     return 0;
 }
@@ -999,6 +1015,7 @@ void openpete_native_scene_restore(void) {
     s_scene_freeze = s_scene_saved_freeze;
     s_scene_hud_under = s_scene_saved_hud_under;
     s_scene_actor_front = s_scene_saved_actor_front;
+    s_cur_ter_after = s_scene_saved_ter_after;
     s_scene_dropped = s_scene_saved_dropped;
     s_scene_saved_n = -1;
 }
@@ -1158,6 +1175,7 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
         s_scene[s_scene_n].prim = s_cur_prim;            /* sticky (set_prim) */
         s_scene[s_scene_n].stp_sel = s_cur_stp_sel;      /* sticky (set_stp_select) */
         s_scene[s_scene_n].host_added = s_cur_host_added; /* sticky (set_host_added) */
+        s_scene[s_scene_n].ter_after = s_cur_ter_after;   /* sticky (mark_terrain_feed) */
         if (s_cur_tag && tag_tint_on()) {
             /* Coverage instrument: hash the tag to a stable tint and modulate
              * the vertex colours — "which source produced this pixel".
@@ -1440,7 +1458,7 @@ void openpete_native_scene_commit_fade(void) {
          * it too, and drop the degenerate geometry (reset Spyro + bg) so only the
          * held freeze shows, exactly as on a settled freeze frame. */
         s_scene_freeze = new_freeze;
-        s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n);
+        s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_cur_ter_after = 0;
     }
     s_overlay_prev_freeze  = prev_freeze;
     s_overlay_carry_freeze = new_freeze;
@@ -8003,8 +8021,7 @@ static void bw_draw_run(const scene_tri_t* scene, int tx_start, int first_vert,
 }
 
 /* The retained terrain cache's blended class c (0 alpha, 1 additive,
- * 2 subtractive). Cache geometry carries no emission ordinal, so it keeps the
- * slot it held when the classes drew one after another. */
+ * 2 subtractive). */
 static void bw_draw_tercache(int c, int tercache_on) {
     static const int k_pass[3] = { OPTC_DRAW_ALPHA, OPTC_DRAW_ADD, OPTC_DRAW_SUB };
     if (!tercache_on) return;
@@ -8014,40 +8031,69 @@ static void bw_draw_tercache(int c, int tercache_on) {
                            s_nr.terrain_key_depth, s_nr.moby_key_depth);
 }
 
+/* Where scene triangle t of the blended-world block stands against the terrain
+ * feed in the order the pass draws: 0 before the feed, 1 a terrain triangle,
+ * 2 after the feed. The game render's block draws in scene order, where every
+ * triangle added after the feed began carries ter_after. A re-extract's block
+ * draws in recorded key rank, where the feed sits at the recorded terrain
+ * rank. */
+static int bw_ter_phase(const scene_tri_t* scene, int t, int replay) {
+    if ((scene[t].tag >> 28) == 2u) return 1;
+    if (replay) return bw_key_rank(bw_rank_key(&scene[t])) < s_bw_ter_rank ? 0 : 2;
+    return scene[t].ter_after ? 2 : 0;
+}
+
+/* The block position before which each terrain-cache class draws (ntri: after
+ * the block). The walk emits the cache's sectors inside the terrain feed, so a
+ * cache class draws inside the feed's span: after every block triangle emitted
+ * before the feed, and before the first triangle after it. Inside the span the
+ * class keeps the slot it held when the classes drew one after another: after
+ * the feed's own runs of a class at or before it, before its first run of a
+ * later class. A block of terrain triangles alone is all span, so there the
+ * slot is unchanged. The walk interleaves its blended terrain classes by
+ * sector; one draw per cache class does not reproduce that interleave where
+ * two blended terrain faces of different classes overlap. */
+static void bw_tercache_slots(const scene_tri_t* scene, int base, int ntri, int pos[3]) {
+    pos[0] = pos[1] = pos[2] = ntri;
+    const int replay = scene_present_replay();
+    for (int i = 0; i < ntri && pos[2] == ntri; i++) {
+        const int t = s_txscene[base + i];
+        const int ph = bw_ter_phase(scene, t, replay);
+        if (ph == 0) continue;
+        for (int c = 0; c < 3; c++)
+            if (pos[c] == ntri && (ph == 2 || scene[t].blend > c + 1)) pos[c] = i;
+    }
+}
+
 /* One ordered pass over the blended world classes, in place of one fixed class
  * draw after another. The guest links these classes into the ordering table
  * interleaved -- at the tracer mesh the subtractive pass is chained ahead of
  * the additive pass over the same quads -- and the equations do not commute
  * once a channel clamps, so a fixed class order composites something the GPU
  * never produced. The block is packed in emission order; each maximal run of
- * one class and one texturing mode is one bind and one draw range.
- *
- * A terrain-cache class draws after every run of a class at or before it in
- * the class order and before the first run of a later class, which is its
- * former slot; classes with no run at all still draw. */
+ * one class and one texturing mode is one bind and one draw range. A run also
+ * ends where a terrain-cache class draws (bw_tercache_slots). */
 static void draw_blended_world(const scene_tri_t* scene, int tx_start,
                                int first_vert, int vert_count, int tercache_on) {
     const int base = (first_vert - tx_start) / 3, ntri = vert_count / 3;
-    int tc_done = 0, i = 0;
+    int pos[3] = { ntri, ntri, ntri };
+    if (tercache_on) bw_tercache_slots(scene, base, ntri, pos);
+    int c = 0, i = 0;
     while (i < ntri) {
+        for (; c < 3 && pos[c] == i; c++) bw_draw_tercache(c, tercache_on);
+        const int stop = c < 3 ? pos[c] : ntri;
         const scene_tri_t* s0 = &scene[s_txscene[base + i]];
         const int bl = s0->blend, textured = s0->textured;
         int run = 1;
-        while (i + run < ntri) {
+        while (i + run < stop) {
             const scene_tri_t* sn = &scene[s_txscene[base + i + run]];
             if (sn->blend != bl || sn->textured != textured) break;
             run++;
         }
-        for (int c = 0; c < 3; c++)
-            if (c + 1 < bl && !(tc_done & (1 << c))) {
-                bw_draw_tercache(c, tercache_on);
-                tc_done |= 1 << c;
-            }
         bw_draw_run(scene, tx_start, first_vert + i * 3, run * 3, bl, textured);
         i += run;
     }
-    for (int c = 0; c < 3; c++)
-        if (!(tc_done & (1 << c))) bw_draw_tercache(c, tercache_on);
+    for (; c < 3; c++) bw_draw_tercache(c, tercache_on);
 }
 
 /* Draw ranges one order costs over the blended-world classes of a scene: one
@@ -9454,9 +9500,9 @@ static bool draw_native_scene(bool full_extent)
                                    s_nr.terrain_key_depth, s_nr.moby_key_depth);
         }
         /* The four blended world classes draw here, in the scene's own emission
-         * order, with the terrain cache's blended classes riding the slots they
-         * held when each class drew as one block. The per-class buckets the
-         * groups at gi 4, 5 and 6 used to draw are empty. */
+         * order, with the terrain cache's blended classes inside the terrain
+         * feed's span of that order. The per-class buckets the groups at gi 4,
+         * 5 and 6 used to draw are empty. */
         if (gi == 4)
             draw_blended_world(scene, tx_start, txg_first[11], txg_count[11],
                                openpete_tercache_frame_open());

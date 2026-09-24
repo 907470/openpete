@@ -8158,6 +8158,7 @@ static int portal_sky_covers(const ttri* t) {
 
 static void terrain_feed_native(CPUState* cpu) {
     OP_PROF_SCOPE("ter.feed");
+    openpete_native_scene_mark_terrain_feed();
     {
         static tn_envvbl_t nt_c, tc_c, to_c, ob_c;
         s_notex     = tn_env_vbl(&nt_c, "OPENPETE_TERRAIN_NOTEX", 0, 1);

@@ -947,6 +947,13 @@ unsigned openpete_native_scene_pvz_missing(void);
  * never turns a frame the game drew nothing on into a rendered scene. */
 void openpete_native_scene_set_host_added(int on);
 
+/* Marks the start of the terrain feed in the scene being accumulated: every
+ * triangle added after the call, until the scene resets, is stamped as emitted
+ * at or after the feed. The retained terrain cache draws geometry the feed does
+ * not emit; the mark places the feed in the scene's emission order when the
+ * feed emits no triangle of its own. */
+void openpete_native_scene_mark_terrain_feed(void);
+
 /* ── Provenance tag (mod-shaders S6) ─────────────────────────────────
  * Sticky per-tri provenance stamped by add_tri until changed (same
  * ambient-state pattern as the terrain feeder's s_emit_* context; set
