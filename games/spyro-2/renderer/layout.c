@@ -279,6 +279,8 @@ const game_layout_t game_layout = {
         .cull_layout = SHADOW_CULL_SPYRO3, /* mobyfunc.s:1107-1129: four-corner extent tests */
         .ground_plane = D_PLAYERSHADOW + 0x0Cu,  /* the player shadow's world height,
                                            * mobyfunc.s:631 lw 0xC */
+        .moby_ot_bias = 0x47u,             /* mobyfunc.s 80049AE8 lb 0x47, 80049CA4 addi -3 */
+        .moby_ot_bias_sub = 3,
         .player = {
             .hook         = F_PLAYER_SHADOW,
             .state        = D_PLAYERSHADOW,

@@ -305,19 +305,41 @@ void shadow_push_decal_params(CPUState* cpu, const ngte_view* v, const int C[3][
      * slopes stay >~0.64; wall faces ~0). OPENPETE_SHADOW_STEEP_NY=0 = height-only. */
     const char* sn = getenv("OPENPETE_SHADOW_STEEP_NY");
     p->steep_nup = (sn && *sn) ? (float)atof(sn) : 0.5f;
-    /* Raised-occluder-in-front (curb/platform) clause; 0 disables. */
-    const char* pe = getenv("OPENPETE_SHADOW_PLAT_EPS");
-    const char* ps = getenv("OPENPETE_SHADOW_PLAT_SLACK");
-    p->plat_eps = (pe && *pe) ? (float)atof(pe) : 150.0f;
-    p->plat_slack = (ps && *ps) ? (float)atof(ps) : 48.0f;
     p->valid = 1;
     openpete_native_set_shadow_decal_params(p);
     if (out) *out = *p;
 }
 
+static uint32_t shadow_sz16(float sz) {
+    long z = lrintf(sz);
+    return z < 0 ? 0u : (z > 0xFFFF ? 0xFFFFu : (uint32_t)z);
+}
+
+int shadow_ot_slot(float sza, float sz1, float sz2, int shift, int bias) {
+    uint32_t key = shadow_sz16(sz1) + shadow_sz16(sz2);
+    key += key >> 1;
+    key += shadow_sz16(sza);
+    return (int)(key >> shift) - bias;
+}
+
+float shadow_slot_koff(int slot) {
+    return slot < 0 ? 0.0f : (float)slot * 128.0f + 0.5f;
+}
+
+/* The ordering-table slot of one moby shadow triangle (anchor, p1, p2): the
+ * quarter-world key >> 7 less the moby's signed depth byte less the game's
+ * constant. -1 (not keyed) on a game whose layout does not mirror it. */
+static int moby_shadow_slot(CPUState* cpu, uint32_t mob, const shadow_pt* anchor,
+                            const shadow_pt* p1, const shadow_pt* p2) {
+    const uint32_t off = game_layout.shadow.moby_ot_bias;
+    if (!off) return -1;
+    int bias = (int)(int8_t)cpu->read_byte(mob + off) - game_layout.shadow.moby_ot_bias_sub;
+    return shadow_ot_slot(anchor->sz, p1->sz, p2->sz, 7, bias);
+}
+
 /* native moby-shadow tris (4 FT3 fan tris per moby) */
 typedef struct { float sx[3], sy[3], sz[3]; int u[3], v[3]; uint32_t rgb;
-                 int tpx, tpy, clx, cly, bpp, blend; } moshtri;
+                 int tpx, tpy, clx, cly, bpp, blend, slot; } moshtri;
 #define MAX_MOSH 1024
 static moshtri s_mosh[MAX_MOSH]; static int s_mosh_n;
 
@@ -520,6 +542,7 @@ static void shadow_moby_build(CPUState* cpu) {
             if (s_mosh_n >= MAX_MOSH) break;
             shadow_pt* p1 = &c[k]; shadow_pt* p2 = &c[(k+1)&3];
             moshtri* t = &s_mosh[s_mosh_n++];
+            t->slot = moby_shadow_slot(cpu, mob, &anchor, p1, p2);
             t->sx[0]=anchor.sx; t->sy[0]=anchor.sy; t->sz[0]=anchor.sz; t->u[0]=u0; t->v[0]=v0t;
             t->sx[1]=p1->sx;    t->sy[1]=p1->sy;    t->sz[1]=p1->sz;    t->u[1]=u1; t->v[1]=v1t;
             t->sx[2]=p2->sx;    t->sy[2]=p2->sy;    t->sz[2]=p2->sz;    t->u[2]=u2; t->v[2]=v2t;
@@ -606,6 +629,7 @@ static void shadow_moby_feed_native(CPUState* cpu) {
         }
         st.textured = 1; st.tpage_x = m->tpx; st.tpage_y = m->tpy;
         st.clut_x = m->clx; st.clut_y = m->cly; st.bpp = m->bpp; st.blend = m->blend;
+        st.koff = shadow_slot_koff(m->slot);           /* the decal's paint order against terrain */
         openpete_native_scene_add_tri(&st, OPENPETE_SCENE_SHADOW, 0);
     }
     openpete_native_scene_set_tag(0);

@@ -135,8 +135,7 @@ typedef struct {
     float steep_nup;               /* |up normal| below which a surface is a wall */
     float mode;                    /* 0 = draw all, 1 = height+steep discard, 2 = viz */
     float band;                    /* fallback view-Z band when params invalid */
-    float plat_eps;                /* raised-occluder-in-front: min rise */
-    float plat_slack;              /* raised-occluder-in-front: view-Z slack */
+    float key_contest;             /* 1 = set 2 holds this target's terrain keys */
     float uax, ubx, vay, vby;      /* PSX screen -> pre-pass uv affine */
     float pvw, pvh;                /* pre-pass raster extent (texels) */
     float fax, fbx, fay, fby;      /* gl_FragCoord -> PSX screen affine, this pass */
@@ -151,7 +150,7 @@ typedef struct {
  * fragment recovers its own PSX screen coord from gl_FragCoord through the
  * fax..fby inverse affine of this pass, as the Spyro decal does. The five PSX
  * material fields are packed into two words (VRAM x 10 bits, y 9 bits, bpp code
- * 2 bits) so the block is 29 floats + 2 ints = 124 B, under the 128-byte
+ * 2 bits) so the block is 28 floats + 2 ints = 120 B, under the 128-byte
  * guaranteed maxPushConstantsSize. The layout is the mod decal contract
  * (core/include/openpete_psx_decal.glsl); a change to it recompiles every mod
  * material built from source, the interface hash covering the header. */
@@ -165,8 +164,7 @@ typedef struct {
     float steep_nup;               /* |up normal| below which a surface is a wall */
     float mode;                    /* 0 = draw all (band), 1 = height+steep discard */
     float band;                    /* fallback view-Z band when mode 0 */
-    float plat_eps;                /* raised-occluder-in-front: min rise */
-    float plat_slack;              /* raised-occluder-in-front: view-Z slack */
+    float key_contest;             /* 1 = set 2 holds this target's terrain keys */
     float uax, ubx, vay, vby;      /* PSX screen -> pre-pass uv affine */
     float pvw, pvh;                /* pre-pass raster extent (texels) */
     float fax, fbx, fay, fby;      /* gl_FragCoord -> PSX screen affine, this pass */
@@ -3358,7 +3356,9 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .vert_spv = "quad.vert.spv",
         .frag_spv = "shadow_decal.frag.spv",
         .blend = RHI_BLEND_SUBTRACT, .depth_test = false, .wire_scene = true,
-        .uses_vram = true, .push_const_size = sizeof(shadow_decal_pc), /* set 0 = opaque_depth */
+        /* set 0 = opaque_depth, set 2 = the terrain key image (set 1 unused) */
+        .uses_vram = true, .uses_vram3 = true,
+        .push_const_size = sizeof(shadow_decal_pc),
     };
     /* Fallback for a device whose depth format is not sampleable (the pre-pass
      * RT can't be created): the pre-decal behaviour — plain depth test + the
@@ -3531,7 +3531,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .vert_spv = "shadow_decal_tex.vert.spv",
         .frag_spv = "shadow_decal_tex.frag.spv",
         .blend = RHI_BLEND_SUBTRACT, .depth_test = false, .wire_scene = true,
-        .uses_vram = true, .uses_vram2 = true, /* set 0 = opaque_depth, set 1 = VRAM */
+        /* set 0 = opaque_depth, set 1 = VRAM, set 2 = the terrain key image */
+        .uses_vram = true, .uses_vram2 = true, .uses_vram3 = true,
         .push_const_size = sizeof(shadow_decal_tex_pc),
     };
     /* HUD overlay pipelines (depth_test = false): HUD/UI mobys are a 2D overlay
@@ -5733,6 +5734,16 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
         rhi_end_render_target(s_nr.dev, s_nr.moby_rank_rt);
     }
     s_tk_base += m + mm + am + rr;
+}
+
+/* Bind the terrain key image at set 2 of the bound shadow-decal pipeline.
+ * Returns the push-constant flag: 1 when the image holds this target's keys
+ * (the key pass ran for it), 0 when the decal must not read it. */
+static float shadow_decal_bind_keys(void)
+{
+    if (!openpete_native_key_resolve_on() || !s_nr.terrain_key_depth) return 0.0f;
+    rhi_bind_depth_sampler(s_nr.dev, s_nr.terrain_key_depth, 2);
+    return 1.0f;
 }
 
 /* Bind a pipeline for scene drawing; the key-resolve pipes (layouts carrying
@@ -9273,8 +9284,7 @@ static bool draw_native_scene(bool full_extent)
                     if (mv && *mv) mode = (float)atof(mv);
                     pc.mode = mode;
                     pc.band = shadow_decal_band();
-                    pc.plat_eps = ps_shadow()->plat_eps;
-                    pc.plat_slack = ps_shadow()->plat_slack;
+                    pc.key_contest = shadow_decal_bind_keys();
                     pc.uax = s_od_uax; pc.ubx = s_od_ubx;
                     pc.vay = s_od_vay; pc.vby = s_od_vby;
                     pc.pvw = s_od_vw; pc.pvh = s_od_vh;
@@ -9335,8 +9345,6 @@ static bool draw_native_scene(bool full_extent)
                 if (mv && *mv) mode = (float)atof(mv);
                 pc.mode = mode;
                 pc.band = shadow_decal_band();
-                pc.plat_eps = ps_shadow()->plat_eps;
-                pc.plat_slack = ps_shadow()->plat_slack;
                 pc.uax = s_od_uax; pc.ubx = s_od_ubx;
                 pc.vay = s_od_vay; pc.vby = s_od_vby;
                 pc.pvw = s_od_vw;  pc.pvh = s_od_vh;
@@ -9391,6 +9399,7 @@ static bool draw_native_scene(bool full_extent)
                 bind_scene_pipe(dpipe);
                 rhi_bind_depth_sampler(s_nr.dev, s_nr.opaque_depth, 0); /* set 0 */
                 rhi_bind_vram2(s_nr.dev, s_nr.vram_tex);                /* set 1 */
+                pc.key_contest = shadow_decal_bind_keys();              /* set 2 */
                 if (dslot_ok && s_mat_ubo)
                     rhi_ubo_bind(s_nr.dev, s_mat_ubo, 0,
                                  dmg.uniform_slot > 0 ? 1 + dmg.uniform_slot : 0);

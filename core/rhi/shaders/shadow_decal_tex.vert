@@ -13,9 +13,11 @@ layout(location = 0) in vec3 inPos;       /* xy = clip-space screen, z = orderin
 layout(location = 1) in vec2 inUV;        /* sprite texel coords within the page   */
 layout(location = 2) in vec4 inColor;     /* R8G8B8A8 -> 0..1 modulate             */
 layout(location = 4) in float inW;        /* true view-Z (see psx_scene.vert) */
+layout(location = 5) in float inKoff;     /* the triangle's ordering-table slot key */
 
 layout(location = 0) out vec2 vUV;
 layout(location = 1) out vec4 vColor;
+layout(location = 2) flat out float vKoff;
 
 /* Scene depth convention (RHI spec constant 0) — see psx_scene.vert. */
 layout(constant_id = 0) const bool DEPTH_REVERSED = false;
@@ -32,4 +34,5 @@ void main()
     gl_Position = vec4(inPos.xy * W, sc.z * W, W);
     vUV = inUV;
     vColor = inColor;
+    vKoff = inKoff;
 }

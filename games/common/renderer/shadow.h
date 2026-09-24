@@ -62,6 +62,19 @@ void   shadow_push_decal_params(CPUState* cpu, const ngte_view* v, const int C[3
                                 double ofx, double ofy, double H,
                                 openpete_shadow_decal_params* out);
 
+/* The ordering-table slot a shadow fan triangle is inserted at. Every shadow
+ * routine keys a (anchor, p1, p2) triangle the same way: the sum of the two
+ * rim points' SZ plus half that sum plus the anchor's SZ, shifted into slot
+ * units and less the routine's bias. The SZ values are the GTE's 16-bit
+ * saturated view-Z; `shift` is 9 for the player fans (full-world view-Z) and
+ * 7 for the moby shadows (quarter-world view-Z), so both land on the terrain's
+ * 128-world slots. A negative slot is a triangle the routine does not link. */
+int    shadow_ot_slot(float sza, float sz1, float sz2, int shift, int bias);
+/* A slot as the scene tri's key channel (openpete_scene_tri.koff): the slot's
+ * absolute key in world units plus the 0.5 sentinel; 0 (not keyed) for a
+ * negative slot. */
+float  shadow_slot_koff(int slot);
+
 /* View-Z to native depth. `scale` lifts a walk's view-Z to the one shared
  * full-world scale (4 for a walk working in world/4 coordinates). */
 float  shadow_depth(float viewz, float scale, float bias);

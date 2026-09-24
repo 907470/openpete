@@ -14,19 +14,22 @@
  * A separate include because the draw path differs. Moby drop-shadows are
  * flat fans drawn with the depth test off; their fragment stage decides per
  * pixel whether the shadow is occluded by reconstructing the terrain's
- * world height from the opaque depth pre-pass and rejecting walls, steep
- * faces and raised platforms in front. That path has its own vertex stage,
+ * world height from the opaque depth pre-pass, rejecting walls and steep
+ * faces, and by comparing its ordering-table slot against the terrain key
+ * image, rejecting terrain painted after it. That path has its own vertex stage,
  * push block and samplers. A mod that writes one op_material() can be
  * pointed at either contract.
  *
  * main() applies the occlusion verdict before op_material() runs; a
  * material cannot paint a shadow through a wall.
  *
- * Reserved for the engine: push constants, sets 0-1, input locations 0-2.
+ * Reserved for the engine: push constants, sets 0-2, input locations 0-2.
  * The material's own uniform block is set 3 binding 1 (std140). */
 
 #ifndef OPENPETE_PSX_DECAL_GLSL
 #define OPENPETE_PSX_DECAL_GLSL
+
+#include "psx_key_contest.glsl"
 
 layout(set = 0, binding = 0) uniform sampler2D  op_opaque_depth; /* terrain-opaque pre-pass */
 
@@ -35,6 +38,7 @@ layout(set = 0, binding = 0) uniform sampler2D  op_opaque_depth; /* terrain-opaq
  * interface; op_viewz_scene returns the fan's view-Z. */
 layout(constant_id = 0) const bool OP_DEPTH_REVERSED = false;
 layout(set = 1, binding = 0) uniform usampler2D op_vram;         /* R16_UINT 1024x512       */
+layout(set = 2, binding = 0) uniform sampler2D  op_terrain_key;  /* terrain og-key image    */
 
 layout(push_constant) uniform OP_DECAL_PC {
     float col0x, col0y, col0z;   /* camera rows 4096^2 * C^-1 (world reconstruct) */
@@ -46,8 +50,7 @@ layout(push_constant) uniform OP_DECAL_PC {
     float steep_nup;             /* |up normal| below which a surface is a wall face */
     float mode;                  /* 0 = draw all (band), 1 = height and steepness test */
     float band;                  /* fallback view-Z band (mode 0) */
-    float plat_eps;              /* raised occluder in front: min rise above the plane */
-    float plat_slack;            /* raised occluder in front: view-Z slack */
+    float key_contest;           /* 1 = op_terrain_key holds this target's keys */
     float uax, ubx, vay, vby;    /* PSX screen -> pre-pass uv affine */
     float pvw, pvh;              /* pre-pass raster extent within the depth image */
     float fax, fbx, fay, fby;    /* gl_FragCoord -> PSX screen affine, this pass */
@@ -55,7 +58,7 @@ layout(push_constant) uniform OP_DECAL_PC {
     int   clut;                  /* CLUT origin x | y << 10, bpp code << 20 */
 } op_pc;
 
-/* The material block is 29 floats + 2 ints = 124 bytes, inside the 128-byte
+/* The material block is 28 floats + 2 ints = 120 bytes, inside the 128-byte
  * guaranteed maxPushConstantsSize. VRAM coordinates are 10 bits of x (0..1023)
  * and 9 bits of y (0..511), and the bpp code is 2 bits, so the five PSX
  * material fields ride two words and leave room for the affine. */
@@ -67,6 +70,7 @@ int op_bpp()     { return 4 << ((op_pc.clut >> 20) & 3); }   /* 0/1/2 -> 4/8/16 
 
 layout(location = 0) in vec2 vUV;
 layout(location = 1) in vec4 vColor;
+layout(location = 2) flat in float op_vkoff;   /* the fan triangle's slot key */
 
 /* ---- PSX VRAM decode ------------------------------------------------ */
 uint  op_vram_at(int x, int y) { return texelFetch(op_vram, ivec2(x, y), 0).r; }
@@ -175,7 +179,10 @@ bool op_decal_visible()
     float nup  = (nlen > 1e-6) ? abs(N.z) / nlen : 1.0;
 
     if (op_pc.mode > 0.5) {
-        if (viewZ + op_pc.plat_slack < fanViewZ && height > op_pc.plat_eps) return false;
+        if (op_pc.key_contest > 0.5 &&
+            op_decal_covered(op_key_from_stored(
+                                 texelFetch(op_terrain_key, ivec2(gl_FragCoord.xy), 0).r),
+                             op_vkoff)) return false;
         if (op_pc.steep_nup > 0.0) {
             if (nup < op_pc.steep_nup) return false;
             float flat01 = clamp((nup - op_pc.steep_nup) / (0.9 - op_pc.steep_nup), 0.0, 1.0);

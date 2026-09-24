@@ -86,20 +86,13 @@ static void plsh_matrix(CPUState* cpu, const int C[3][3], uint32_t rot, int R[3]
 }
 
 /* native player-shadow fan tris (untextured G3) */
-typedef struct { float sx[3], sy[3], sz[3]; uint32_t rgb[3]; } plshtri;
+typedef struct { float sx[3], sy[3], sz[3]; uint32_t rgb[3]; int slot; } plshtri;
 static plshtri s_tri[PLSH_RING_N];
 static int     s_tri_n;
 /* The most recent hook's record-bind verdict, reported by the A/B line: < 0
  * means the tick drew no player model for the fan to belong to. */
 static int     s_last_bound = -1;
 static int     s_last_drawn;
-
-/* SZ3: the GTE's view-Z saturated to 16 bits unsigned, the value the ordering
- * key below is computed from. */
-static int plsh_sz3(float m3) {
-    int z = (int)lrintf(m3);
-    return z < 0 ? 0 : (z > 0xFFFF ? 0xFFFF : z);
-}
 
 /* Read the eight silhouette bytes of one animation frame. Returns 0 when the
  * animation pointer is not RAM. */
@@ -199,15 +192,13 @@ static void shadow_player_build(CPUState* cpu) {
      * swallowed the camera from painting over the frame; reproduce it so the
      * fed count is the count the guest linked. */
     const int32_t bias = (int32_t)cpu->read_word(st + PLSH_OT_BIAS);
-    const int sa = plsh_sz3(anchor.sz);
     for (int k = 0; k < PLSH_RING_N; k++) {
         shadow_pt* p1 = &strip[k];
         shadow_pt* p2 = &strip[(k + 1) & (PLSH_RING_N - 1)];
-        uint32_t key = (uint32_t)(plsh_sz3(p1->sz) + plsh_sz3(p2->sz));
-        key += key >> 1;
-        key += (uint32_t)sa;
-        if ((int32_t)(key >> 9) - bias < 0) continue;
+        int slot = shadow_ot_slot(anchor.sz, p1->sz, p2->sz, 9, bias);
+        if (slot < 0) continue;
         plshtri* t = &s_tri[s_tri_n++];
+        t->slot = slot;
         t->sx[0] = anchor.sx; t->sy[0] = anchor.sy; t->sz[0] = anchor.sz; t->rgb[0] = 0x608080u;
         t->sx[1] = p1->sx;    t->sy[1] = p1->sy;    t->sz[1] = p1->sz;    t->rgb[1] = 0;
         t->sx[2] = p2->sx;    t->sy[2] = p2->sy;    t->sz[2] = p2->sz;    t->rgb[2] = 0;
@@ -237,6 +228,7 @@ static void shadow_player_feed_native(CPUState* cpu, int slot) {
         }
         st.textured = 0;
         st.blend = 3;                                  /* untextured subtract (ABR mode 2) */
+        st.koff = shadow_slot_koff(c->slot);           /* the decal's paint order against terrain */
         openpete_native_scene_add_tri(&st, OPENPETE_SCENE_SHADOW, 0);
     }
     openpete_native_scene_set_tag(0);

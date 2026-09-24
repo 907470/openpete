@@ -394,6 +394,12 @@ typedef struct game_layout {
         int      matrix_fold_a;
         int      cull_layout;       /* SHADOW_CULL_* */
         uint32_t ground_plane;
+        /* The ordering-table slot of a moby shadow triangle is its key >> 7
+         * less (signed byte at moby + `moby_ot_bias`) - `moby_ot_bias_sub`.
+         * `moby_ot_bias` = 0: the slot is not mirrored and the triangles
+         * carry no key. */
+        uint32_t moby_ot_bias;
+        int      moby_ot_bias_sub;
 
         /* The player's own ground shadow, where the game draws it as a leg of
          * this feeder. `hook` = 0 on a game whose player shadow is a separate

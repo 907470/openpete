@@ -117,7 +117,7 @@ static void build_heading_matrix(CPUState* cpu, const int C[3][3], int heading, 
 }
 
 /* native Spyro-shadow strip tris (G3 fan, untextured) */
-typedef struct { float sx[3], sy[3], sz[3]; uint32_t rgb[3]; } sptri;
+typedef struct { float sx[3], sy[3], sz[3]; uint32_t rgb[3]; int slot; } sptri;
 #define MAX_SPTRI 64
 static sptri s_sptri[MAX_SPTRI]; static int s_sptri_n;
 
@@ -239,11 +239,15 @@ static void shadow_spyro_build(CPUState* cpu) {
         shadow_project(Rh, TR, ofx, ofy, v, VX, VY, VZ, &strip[k]);
     }
 
-    /* G3 fan: (anchor, strip[k], strip[k+1]); color0=0x608080, c1=c2=0 */
+    /* G3 fan: (anchor, strip[k], strip[k+1]); color0=0x608080, c1=c2=0. Each
+     * triangle's ordering-table slot is (key >> 9) - SpyroShadow+0x1C
+     * (r_shadows.s 80059E9C-80059F34). */
+    const int bias = (int)cpu->read_word(D_SPYROSHADOW + 0x1C);
     for (int k = 0; k < 16; k++) {
         if (s_sptri_n >= MAX_SPTRI) break;
         sptri* t = &s_sptri[s_sptri_n++];
         shadow_pt* p1 = &strip[k]; shadow_pt* p2 = &strip[(k+1) & 15];
+        t->slot = shadow_ot_slot(anchor.sz, p1->sz, p2->sz, 9, bias);
         t->sx[0]=anchor.sx; t->sy[0]=anchor.sy; t->sz[0]=anchor.sz; t->rgb[0]=0x608080u;
         t->sx[1]=p1->sx;    t->sy[1]=p1->sy;    t->sz[1]=p1->sz;    t->rgb[1]=0;
         t->sx[2]=p2->sx;    t->sy[2]=p2->sy;    t->sz[2]=p2->sz;    t->rgb[2]=0;
@@ -272,6 +276,7 @@ static void shadow_spyro_feed_native(CPUState* cpu, int slot) {
         }
         st.textured = 0; st.tpage_x = st.tpage_y = st.clut_x = st.clut_y = st.bpp = 0;
         st.blend = 3;                                  /* untextured subtract (ABR mode 2) */
+        st.koff = shadow_slot_koff(c->slot);           /* the decal's paint order against terrain */
         openpete_native_scene_add_tri(&st, OPENPETE_SCENE_SHADOW, 0);
     }
     openpete_native_scene_set_tag(0);

@@ -126,6 +126,18 @@ bool op_aura_loses(float akey_stored, float own_key)
     return op_key_bucket(op_key_from_stored(akey_stored)) <= own_slot;
 }
 
+/* A shadow decal against the terrain painted after it. Every game's shadow
+ * routines insert their fans into the ordering table before the terrain
+ * pass, so a terrain face keyed into the fan's slot or a nearer one is
+ * appended later and paints over the fan, and a farther one lies under it.
+ * tkey = the decoded terrain key at the pixel; own_koff = the fan
+ * triangle's slot key + 0.5 (0 = not keyed, never covered). */
+bool op_decal_covered(float tkey, float own_koff)
+{
+    return own_koff > 0.25 &&
+           op_key_bucket(tkey) <= floor((own_koff - 0.5) / OP_KEY_SLOT);
+}
+
 /* Same-moby painter select, scoped to near ties. The original renderer
  * paints a moby's faces in walk order, so a fragment loses its pixel when
  * a later-ranked face of the same moby covers it, regardless of depth.
