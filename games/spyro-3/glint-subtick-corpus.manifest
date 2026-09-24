@@ -1,10 +1,12 @@
 # Sub-tick interpolation of the gem-glint stars (scripts/check_glint_subtick.sh).
-#   <bk2> | <V> | gem=<x>,<y> ... [tol=<px>] [step=<px>]
+#   <bk2> | <V> | gem=<x>,<y> rec=<addr> ... [tol=<px>] [step=<px>]
 # V is the tick whose primitives the intermediate present at V+1 replays; V-2
 # opens the interval that present covers. Each gem is named by its mask
 # component's centroid in the canonical capture at V, and must be unoccluded
 # over the interval: a partly covered star's visible centroid measures the
-# depth test rather than the rebase.
+# depth test rather than the rebase. Each gem's rec= names the pool record
+# whose traced outline centroid is judged (PSX px); the mask centroid is
+# reported only, since a rotating star's mask centroid traces an arc.
 #
 # The camera swings 14-17 PSX px per tick here, which is what separates a
 # producer that interpolates from one that holds its tick pose.
@@ -26,4 +28,9 @@
 # fail the bound on the build without the fix as well (1536 1.12 px, 1538 1.60,
 # 1540 0.57), the star partly covered by the terrain it rises from, so 1542 is
 # the nearest V whose reading measures the rebase rather than the depth test.
-sunrise-spring-camera-swing.bk2 | 1542 | gem=417.1,241.8 tol=0.5 step=10
+# Mask centroid at alpha 0.5, capture px: 0.08 with the replay rotating
+# against the routine's sense, 0.74 with its sense (the 29 px mask of a star
+# turning 4 table entries between two rasters, no translation change).
+# Geometric centroid at alpha 0.5, PSX px: 0.076 before, 0.107 after (alpha 0
+# 0.221 before, 0.183 after); identity 0.000.
+sunrise-spring-camera-swing.bk2 | 1542 | gem=417.1,241.8 rec=8006DF38 tol=0.5 step=10

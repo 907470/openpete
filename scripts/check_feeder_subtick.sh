@@ -20,10 +20,15 @@
 #
 # A path is named by --path and carries: what suppresses its feed for the
 # leave-one-out, the manifest it reads and the alphas it judges.
-#   glint   OPENPETE_GLINT=2 against =0, games/<slug>/glint-subtick-corpus.manifest
+#   glint   OPENPETE_GLINT=2 against =0, games/<slug>/glint-subtick-corpus.manifest;
+#           the centroid judged is the traced outline centroid of the record
+#           each gem names (`rec=`), the mask centroid reported only
 #   glint-ext  OPENPETE_GLINT_TRACE=1, one leg per alpha, no leave-one-out, the
 #           ext statistic; OPENPETE_GLINT_EXTENT=0 is the engagement leg;
 #           games/<slug>/glint-ext-subtick-corpus.manifest
+#   glint-rot  OPENPETE_GLINT_TRACE=1, as glint-ext, the rot statistic;
+#           OPENPETE_GLINT_SPIN=0 is the engagement leg;
+#           games/<slug>/glint-rot-subtick-corpus.manifest
 #   glow    OPENPETE_GLOW=1  against =0, games/<slug>/glow-subtick-corpus.manifest
 #   shadow  --render-paths terrain,moby,shadow against terrain,moby,
 #           games/<slug>/shadow-subtick-corpus.manifest
@@ -102,6 +107,17 @@
 # the record's canonical extent step (default 0.5 px). The engagement leg is
 # the alpha-0 present under OPENPETE_GLINT_EXTENT=0, where at least one named
 # record must hold its tick extent (own at least 0.75 of its step).
+#
+# The glint-rot path takes the fourth statistic: the drawn orientation of each
+# glint record's outline, `[glint-rot vbl=<v> leg=canon|inter alpha=<a>]
+# rec=<addr> ori=<e> ph=<e>`, in sine-table entries (256 to the turn) modulo
+# 64, since the star's spikes and the cross's arms repeat every quarter turn.
+# `ori` is read off the fed corners (the argument of their summed fourth-power
+# offset, over four), so it prices what the feed drew; `ph` is the phase the
+# feed asked for and is reported alone. Differences are wrapped to +/-32. The
+# cell, keys, identity leg and engagement leg (OPENPETE_GLINT_SPIN=0) are the
+# glint-ext path's; `step` is the floor on the canonical orientation step in
+# entries (default 1.0).
 #
 # The shadow path is the moby ground shadow, which no env knob switches off on
 # its own, so its two legs are a render-path selection with and without the
@@ -241,7 +257,7 @@
 #                    worst=<px> verdict=PASS|FAIL
 #
 # Usage: scripts/check_feeder_subtick.sh
-#          --path glint|glint-ext|glow|shadow|portal|terrain|cyclorama|particles|flame|
+#          --path glint|glint-ext|glint-rot|glow|shadow|portal|terrain|cyclorama|particles|flame|
 #                 tracer|moby-mask
 #          [--game SLUG] [--build-dir=DIR] [--row '<bk2>|<V>|<keys>']
 # Exit 0 PASS, 1 FAIL or VACUOUS, 64 SKIP (binary, disc, bk2, manifest, python3
@@ -280,9 +296,13 @@ done
 # carries a cap sized for that surface.
 LEG_ENV_ON=(); LEG_ENV_OFF=(); LEG_ARGS_ON=(); LEG_ARGS_OFF=(); SUPPRESS=; STAT=mask
 INTERP_REF=0
+GEOM=0
 MASK_CAP=20000
 case "$PATHNAME" in
-    glint)  LEG_ENV_ON=(OPENPETE_GLINT=2); LEG_ENV_OFF=(OPENPETE_GLINT=0)
+    # The glint's centroid cell reads the feeder's traced outline centroid
+    # (GEOM=1, below) rather than the mask's, so the feed-on legs trace.
+    glint)  LEG_ENV_ON=(OPENPETE_GLINT=2 OPENPETE_GLINT_TRACE=1); LEG_ENV_OFF=(OPENPETE_GLINT=0)
+            GEOM=1
             ALPHAS=(0 0.5 1); JUDGE_DEF=0.5,1;;
     glow)   LEG_ENV_ON=(OPENPETE_GLOW=1); LEG_ENV_OFF=(OPENPETE_GLOW=0)
             ALPHAS=(0 0.25 0.5 0.75 1); JUDGE_DEF=0.25,0.5,0.75,1;;
@@ -292,6 +312,10 @@ case "$PATHNAME" in
     # run per alpha, no leave-one-out, as the portal path does.
     glint-ext) LEG_ENV_ON=(OPENPETE_GLINT_TRACE=1)
             SUPPRESS=OPENPETE_GLINT_EXTENT; STAT=ext
+            ALPHAS=(0 0.5 1); JUDGE_DEF=0.5,1;;
+    # The gem glint's spin, read from the same trace as its extent.
+    glint-rot) LEG_ENV_ON=(OPENPETE_GLINT_TRACE=1)
+            SUPPRESS=OPENPETE_GLINT_SPIN; STAT=rot
             ALPHAS=(0 0.5 1); JUDGE_DEF=0.5,1;;
     portal) LEG_ENV_ON=(OPENPETE_PORTAL3_DBG=1)
             SUPPRESS=OPENPETE_PORTAL3_INTERP; STAT=vertex
@@ -477,7 +501,7 @@ while IFS= read -r line; do
                 shots+=("$OUT/$d/$mid-vk.png")
             done
         done
-    elif [[ "$STAT" == vertex || "$STAT" == ext ]]; then
+    elif [[ "$STAT" == vertex || "$STAT" == ext || "$STAT" == rot ]]; then
         # One run per alpha. The feeder's census in that run's log already
         # carries canon(V-2), canon(V) and the intermediate present, so the
         # separate canonical legs and the leave-one-out partner of the mask
@@ -819,6 +843,134 @@ for b in bad:
     print("[%s]   " % tag + b)
 sys.exit(1 if bad else 0)
 PYEOF
+    elif [[ "$STAT" == rot ]]; then
+    python3 - "$TAG" "$JUDGE_DEF" "$GAME" "$bk2" "$V" "$keys" "$OUT/$tag" "$prev" "$mid" \
+             "$SUPPRESS" ${ALPHAS[@]+"${ALPHAS[@]}"} <<'PYEOF' || fail=1
+import re
+import sys
+
+tag, judge_def, game, bk2, V, keys, base, prev, mid, suppress = sys.argv[1:11]
+alphas = sys.argv[11:]
+V, prev, mid = int(V), int(prev), int(mid)
+
+opts, recs = {}, []
+for tok in keys.split():
+    k, _, v = tok.partition('=')
+    if k == 'rec':
+        recs.append(v.upper())
+    else:
+        opts[k] = v
+rtol = float(opts.get('rtol', '0.25'))
+judged = set(opts.get('judge', judge_def).split(','))
+step_floor = float(opts.get('step', '1.0'))
+engage = opts.get('engage', '1') != '0'
+# The alpha-1 replay applies no rotation, so it must print the canonical
+# orientation to the trace's last digit.
+IDENT_TOL = 0.0005
+
+rx = re.compile(r'\[glint-rot vbl=(\d+) leg=(\w+) alpha=[\d.]+\] rec=(\w+) '
+                r'ori=([\d.]+) ph=([\d.]+) ext=([\d.]+) n=(\d+)')
+
+
+def load(path):
+    """First trace line per (vbl, leg, record) of one replay."""
+    out = {}
+    try:
+        for line in open(path, errors='replace'):
+            m = rx.search(line)
+            if m:
+                out.setdefault((int(m[1]), m[2], m[3].upper()),
+                               (float(m[4]), float(m[5]), float(m[6]), int(m[7])))
+    except OSError:
+        pass
+    return out
+
+
+def wrap(d, period):
+    """d on the shortest arc of a circle of `period` entries."""
+    d = (d + period / 2.0) % period - period / 2.0
+    return d
+
+
+legs = {a: load("%s-i%s.log" % (base, a)) for a in alphas}
+supp = load("%s-s.log" % base) if suppress else {}
+canon = legs.get('1', {})
+vacuous, bad, out = [], [], []
+worst, engaged = 0.0, 0
+if not recs:
+    vacuous.append("the row names no rec=")
+
+
+def cls(r):
+    return "LERPED" if r <= 0.25 else ("SNAP" if r >= 0.75 else "PARTIAL")
+
+
+for rec in recs:
+    c0 = canon.get((prev, 'canon', rec))
+    c1 = canon.get((V, 'canon', rec))
+    if c0 is None or c1 is None:
+        vacuous.append("rec %s: no canonical trace at VBL %d or %d" % (rec, prev, V))
+        continue
+    step = wrap(c1[0] - c0[0], 64.0)
+    pstep = wrap(c1[1] - c0[1], 256.0)
+    line = ("rec %s n=%d ext=%.2f canon%d=%.4f canon%d=%.4f step=%.4f ph%d=%.2f ph%d=%.2f"
+            % (rec, c1[3], c1[2], prev, c0[0], V, c1[0], step, prev, c0[1], V, c1[1]))
+    if abs(step) < step_floor:
+        vacuous.append("rec %s: orientation step %.4f below the %.2f floor"
+                       % (rec, abs(step), step_floor))
+    shown = {}
+    for a in alphas:
+        s = legs[a].get((mid, 'inter', rec))
+        if s is None:
+            vacuous.append("rec %s: no intermediate trace at VBL %d, alpha=%s" % (rec, mid, a))
+            continue
+        shown[a] = s[0]
+        av = float(a)
+        dev = abs(wrap(s[0] - (c0[0] + step * av), 64.0))
+        pdev = abs(wrap(s[1] - (c0[1] + pstep * av), 256.0))
+        line += " a%s=%.4f(D=%.4f ph=%.2f pD=%.2f)" % (a, s[0], dev, s[1], pdev)
+        if av >= 1.0:
+            if abs(wrap(s[0] - c1[0], 64.0)) > IDENT_TOL:
+                bad.append("rec %s: alpha 1 orientation %.4f is not canon(V) %.4f"
+                           % (rec, s[0], c1[0]))
+            continue
+        if abs(step) < step_floor:
+            continue
+        r = dev / ((1.0 - av) * abs(step))
+        line += " r%s=%.2f %s" % (a, r, cls(r))
+        if a in judged:
+            worst = max(worst, r)
+            if r > rtol:
+                bad.append("rec %s: alpha=%s ratio %.2f above the %.2f bound" % (rec, a, r, rtol))
+    if '0' in shown:
+        line += " own=%.4f" % abs(wrap(shown['0'] - c0[0], 64.0))
+    out.append(line)
+    # The engagement leg: with the spin suppressed the replay holds
+    # the tick's orientation, which stands the whole step from canon(V-2).
+    if suppress:
+        s = supp.get((mid, 'inter', rec))
+        if s is not None:
+            own_s = abs(wrap(s[0] - c0[0], 64.0))
+            out.append("  %s=0 own=%.4f of step=%.4f" % (suppress, own_s, abs(step)))
+            if abs(step) >= step_floor and own_s >= 0.75 * abs(step):
+                engaged += 1
+
+if suppress and engage and not engaged and not vacuous:
+    vacuous.append("no record holds its tick orientation under %s=0: the knob "
+                   "suppressed nothing this row can see" % suppress)
+head = "[%s] game=%s bk2=%s V=%d recs=%d worst=%.2f" % (tag, game, bk2, V, len(recs), worst)
+for r in out:
+    print("[%s]   " % tag + r)
+if vacuous:
+    print(head + " VACUOUS")
+    for v in vacuous:
+        print("[%s]   " % tag + v)
+    sys.exit(1)
+print(head + " verdict=%s" % ("FAIL" if bad else "PASS"))
+for b in bad:
+    print("[%s]   " % tag + b)
+sys.exit(1 if bad else 0)
+PYEOF
     elif [[ "$STAT" == vertex ]]; then
     python3 - "$TAG" "$JUDGE_DEF" "$GAME" "$bk2" "$V" "$keys" "$OUT/$tag" "$prev" "$mid" \
              "$SUPPRESS" ${ALPHAS[@]+"${ALPHAS[@]}"} <<'PYEOF' || fail=1
@@ -1049,6 +1201,7 @@ for b in bad:
 sys.exit(1 if bad else 0)
 PYEOF
     else
+    FEEDER_GEOM="$GEOM" \
     python3 - "$TAG" "$JUDGE_DEF" "$GAME" "$bk2" "$V" "$keys" "$OUT/$tag" "$prev" "$mid" \
              "$SUPPRESS" "$MASK_CAP" ${ALPHAS[@]+"${ALPHAS[@]}"} <<'PYEOF' || fail=1
 import os
@@ -1061,15 +1214,44 @@ alphas = sys.argv[12:]
 V, prev, mid = int(V), int(prev), int(mid)
 probe = os.environ.get("OPENPETE_FEEDER_PROBE", "") not in ("", "0")
 
-opts, gems = {}, []
+opts, gems, grecs = {}, [], []
 for tok in keys.split():
     k, _, v = tok.partition('=')
     if k in ('gem', 'blob'):
         x, _, y = v.partition(',')
         gems.append((float(x), float(y)))
+    elif k == 'rec':
+        grecs.append(v.upper())
     else:
         opts[k] = v
 tol = float(opts.get('tol', '0.5'))
+# The geometric centroid (the glint path). A rotating star's mask centroid
+# traces an arc between the two ticks' rasters, and the midpoint of that arc's
+# chord is not its expected value, so the translation is judged on the
+# centroid of the outline corners the feed emitted, which the feeder prints
+# per record per present (`[glint-ext] ... c=(x,y)`, PSX screen pixels). Each
+# gem names its record with a `rec=` key, in order; `tol` and `step` apply to
+# that centroid in PSX pixels, and the mask centroid is reported only.
+geom = os.environ.get("FEEDER_GEOM", "0") not in ("", "0")
+if geom and len(grecs) != len(gems):
+    raise SystemExit("[%s] the glint path needs one rec= per gem (%d gems, %d recs)"
+                     % (tag, len(gems), len(grecs)))
+
+
+def geo_load(path):
+    """(vbl, leg, rec) -> the traced outline corner centroid of one replay."""
+    import re
+    rx = re.compile(r'\[glint-ext vbl=(\d+) leg=(\w+) alpha=[\d.]+\] rec=(\w+) '
+                    r'ext=[\d.]+ n=\d+ at=\([-\d.]+,[-\d.]+\) c=\(([-\d.]+),([-\d.]+)\)')
+    out = {}
+    try:
+        for line in open(path, errors='replace'):
+            m = rx.search(line)
+            if m:
+                out.setdefault((int(m[1]), m[2], m[3].upper()), (float(m[4]), float(m[5])))
+    except OSError:
+        pass
+    return out
 judged = set(opts.get('judge', judge_def).split(','))
 step_floor = float(opts.get('step', '4'))
 engage = opts.get('engage', '1') != '0'
@@ -1219,7 +1401,7 @@ def verdict(resid, hold):
     return "PARTIAL"
 
 
-STATS = (("centroid", st_centroid, step_floor, tol),
+STATS = (("centroid", st_centroid, step_floor, None if geom else tol),
          ("area", st_area, area_floor, atol),
          ("colour", st_colour, col_floor, ctol))
 
@@ -1260,9 +1442,51 @@ worst = 0.0
 engaged = 0
 engaged_stats = 0
 rows_out = []
+geo_legs = {}
+if geom:
+    geo_legs["canon"] = geo_load("%s-c-on.log" % base)
+    for a in alphas:
+        geo_legs[a] = geo_load("%s-i%s-on.log" % (base, a))
+
+
+def judge_geom(rec, gx, gy):
+    """The geometric centroid cell of one gem: its record's traced outline
+    centroid at every captured alpha against the lerp of the two canonical
+    ones, judged against `tol` on the judged alphas."""
+    global worst, engaged_stats
+    g0 = geo_legs["canon"].get((prev, 'canon', rec))
+    g1 = geo_legs["canon"].get((V, 'canon', rec))
+    if g0 is None or g1 is None:
+        vacuous.append("gem (%.1f,%.1f) rec %s: no traced centroid at canon%d or canon%d"
+                       % (gx, gy, rec, prev, V))
+        return
+    gstep = dist(g0, g1)
+    parts = []
+    for a in alphas:
+        gs = geo_legs[a].get((mid, 'inter', rec))
+        if gs is None:
+            vacuous.append("gem (%.1f,%.1f) rec %s: no traced centroid at inter alpha=%s"
+                           % (gx, gy, rec, a))
+            continue
+        r = dist(gs, lerp(g0, g1, float(a)))
+        parts.append("a%s=%.3f" % (a, r))
+        if a not in judged:
+            continue
+        if a == "1" or gstep >= step_floor:
+            worst = max(worst, r)
+            if r > tol:
+                bad.append("gem (%.1f,%.1f) rec %s geometric centroid alpha=%s D=%.3f "
+                           "above the %.2f bound" % (gx, gy, rec, a, r, tol))
+    if gstep < step_floor:
+        notes.append("gem (%.1f,%.1f) rec %s: geometric step %.2f PSX px below the %.2f "
+                     "floor: reported, not judged" % (gx, gy, rec, gstep, step_floor))
+    else:
+        engaged_stats += 1
+    rows_out.append("  cell (%.3f,%.3f)->(%.3f,%.3f) geometric rec=%s step=%.2f %s (PSX px)"
+                    % (g0[0], g0[1], g1[0], g1[1], rec, gstep, " ".join(parts)))
 if not gems:
     vacuous.append("the row names no blob")
-for gx, gy in gems:
+for gi, (gx, gy) in enumerate(gems):
     # The row names the blob where the replayed tick drew it; its partner one
     # tick back opens the interval.
     c1, why = find(legs["canon%d" % V], gx, gy, FIND_R)
@@ -1284,7 +1508,10 @@ for gx, gy in gems:
     # measured either way; the row is VACUOUS only when no statistic of any of
     # its blobs cleared its own floor.
     judge_centroid = step >= step_floor
-    if not judge_centroid:
+    if geom:
+        judge_centroid = False
+        judge_geom(grecs[gi], gx, gy)
+    elif not judge_centroid:
         notes.append("blob (%.1f,%.1f) steps %.2f px over the interval, below the %.2f "
                      "centroid floor: its centroid is reported, not judged"
                      % (gx, gy, step, step_floor))
@@ -1315,7 +1542,7 @@ for gx, gy in gems:
             worst = max(worst, d)
         rows_out.append("  alpha=%s%s shown=(%.1f,%.1f) %dpx rgb=(%.1f,%.1f,%.1f) "
                         "expected=(%.1f,%.1f) D=%.2f"
-                        % (a, "" if a in judged else " (reported)",
+                        % (a, "" if (a in judged and not geom) else " (reported)",
                            ci[0], ci[1], ci[2], ci[3], ci[4], ci[5], ex[0], ex[1], d))
         if a in judged and judge_centroid and d > tol:
             bad.append("blob (%.1f,%.1f) alpha=%s D=%.2f above the %.2f bound"

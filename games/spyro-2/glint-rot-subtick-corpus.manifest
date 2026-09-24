@@ -1,0 +1,13 @@
+# Sub-tick spin of the gem glint (scripts/check_feeder_subtick.sh --path
+# glint-rot). Rows: <bk2> | <V> | rec=<addr> [rtol=] [step=]. rec is the pool
+# record whose drawn orientation is judged, in sine-table entries modulo 64.
+#
+# shady-oasis-flame.bk2 1324, rec 80067D00 (near star, 8.5 px extent): canon1322
+# 41.08, canon1324 48.41, phase 169 to 177. With the replay rotating the corners
+# against the routine's sense the alpha-0.5 ratio read 2.09 (the star turned the
+# step the other way); with the routine's sense 0.09 LERPED.
+shady-oasis-flame.bk2 | 1324 | rec=80067D00 rtol=0.25
+# autumn-plains-skelos-badlands-portal-entry.bk2 912, rec 80067D00 (near star,
+# 50 px to 28 px extent, the largest in the movie): canon910 1.03, canon912
+# 8.89, phase 193 to 201. 2.02 against the routine's sense, 0.02 with it.
+autumn-plains-skelos-badlands-portal-entry.bk2 | 912 | rec=80067D00 rtol=0.25

@@ -1,13 +1,20 @@
 # Sub-tick interpolation of the gem-glint stars (scripts/check_glint_subtick.sh).
-#   <bk2> | <V> | gem=<x>,<y> ... [tol=<px>] [step=<px>]
+#   <bk2> | <V> | gem=<x>,<y> rec=<addr> ... [tol=<px>] [step=<px>]
 # V is the tick whose primitives the intermediate present at V+1 replays; V-2
 # opens the interval that present covers. Each gem is named by its mask
 # component's centroid in the canonical capture at V, and must be unoccluded
 # over the interval: a partly covered star's visible centroid measures the
-# depth test rather than the rebase.
+# depth test rather than the rebase. Each gem's rec= names the pool record
+# whose traced outline centroid is judged (PSX px); the mask centroid is
+# reported only, since a rotating star's mask centroid traces an arc.
 #
 # The camera moves 24-29 PSX px per tick over this portal entry, 29.8 px on the
 # 640-wide capture. The other two crosses in view, near (121.5,69.0) and
 # (587.4,130.2), are partly covered by the terrain the camera passes and are
 # reported, not judged.
-autumn-plains-skelos-badlands-portal-entry.bk2 | 850 | gem=512.3,138.8 tol=0.5 step=10
+# The gem is far cross 80067D00. Mask centroid at alpha 0.5, capture px: 0.29
+# with the replay rotating against the routine's sense, 0.35 with its sense.
+# Geometric centroid at alpha 0.5, PSX px: 0.075 before, 0.050 after (alpha 0
+# 0.350 before, 0.255 after, the cross's extent no longer scaled by view-Z);
+# identity 0.000.
+autumn-plains-skelos-badlands-portal-entry.bk2 | 850 | gem=512.3,138.8 rec=80067D00 tol=0.5 step=10

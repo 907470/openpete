@@ -136,6 +136,7 @@ typedef struct {
     float   dx, dy;   /* the record point's screen displacement */
     double  rc, rs;   /* the corner rotation, cos/sin of the angle change */
     double  scl;      /* the corner-offset scale, the shown extent over the tick's */
+    double  ang;      /* the spin phase this present shows, in sine-table entries */
     float   depth;    /* the depth of the re-projected record point */
     uint8_t active;   /* 1 = translate the corners and take `depth` */
     uint8_t rot;      /* 1 = rotate the corner offsets as well */
@@ -390,12 +391,19 @@ static int glint_feed_mode(void) {
  * rest, at a distance no gem covers in a tick. */
 #define GLINT_REUSE_CEILING 4096.0
 
-/* The record's spin phase in sine-table entries, 256 to the turn: the stored
- * phase byte less four entries per remaining lifetime step (:2270-2277 masks
- * the difference to a byte and doubles it for the halfword index), so a record
- * turns four entries per tick as its lifetime counts down. */
+/* The spin phase in sine-table entries, 256 to the turn, of a record with
+ * phase byte `spin` at remaining lifetime `life`: the phase byte less four
+ * entries per lifetime step (:2270-2277 masks the difference to a byte and
+ * doubles it for the halfword index), so a record turns four entries per
+ * lifetime step as its lifetime counts down. A fractional lifetime gives the
+ * phase between two steps; an integral one gives the routine's own byte. */
+static double glint_phase_at(uint8_t spin, double life) {
+    const double a = fmod((double)spin - 4.0 * life, 256.0);
+    return a < 0.0 ? a + 256.0 : a;
+}
+
 static double glint_angle(const glint_rec* r) {
-    return (double)((unsigned)(r->spin - 4u * (unsigned)r->life) & 0xFFu);
+    return glint_phase_at(r->spin, (double)r->life);
 }
 
 /* The record's displacement between the pose the tick drew and the pose this
@@ -435,18 +443,12 @@ static int glint_record_pair(const glint_rec* r, double alpha, double off[3],
     if (sq > GLINT_REUSE_CEILING * GLINT_REUSE_CEILING) return 0;
     const double rest = 1.0 - alpha;
     for (int k = 0; k < 3; k++) off[k] = d[k] * rest;
-    /* The shortest arc of the 256-entry circle is the way round the record
-     * turned; the phase advances monotonically, so this is the record's own
-     * four-entries-per-tick step at any alpha. */
-    const double ca = glint_angle(r);
-    const double pa = (double)((unsigned)((uint8_t)(pp >> 16) - 4u * (unsigned)(uint8_t)(pp & 0xFFu)) & 0xFFu);
-    double da = pa - ca;
-    while (da > 128.0) da -= 256.0;
-    while (da < -128.0) da += 256.0;
-    *show_ang = ca + da * rest;
     /* The lifetime falls monotonically while the record lives (the reuse tests
-     * above), so the shown lifetime is the straight blend of the two bytes. */
+     * above), so the shown lifetime is the straight blend of the two bytes.
+     * The phase byte is the same in both (the packed-word test above), so the
+     * shown phase is the routine's phase at the shown lifetime. */
     *show_life = (double)r->life + ((double)(pp & 0xFFu) - (double)r->life) * rest;
+    *show_ang = glint_phase_at(r->spin, *show_life);
     return 1;
 }
 
@@ -470,6 +472,15 @@ static double glint_size_ramp(double life) {
  * factor and inversely proportional to that view-Z. The size byte is written
  * once by the spawner, so the size factor's ratio is the ramp's.
  *
+ * The far cross (the branch the routine takes at half-world view-Z 0x2000 and
+ * beyond, Spyro 2 8004AEBC-8004AEC0, Spyro 3 8002F2DC-8002F2E0) first
+ * multiplies both basis terms by that same view-Z and shifts them right by 13
+ * (Spyro 2 8004B004-8004B02C, Spyro 3 8002F424-8002F44C). The perspective
+ * divide then cancels the view-Z, so a cross's screen arm length is the size
+ * factor alone, independent of depth, and its scale is the ramp's ratio
+ * without the view-Z term. `near_mode` is that branch, taken by the tick
+ * whose primitive the replay carries.
+ *
  * At the end of the tick's own interval the scale is one without arithmetic.
  * The band is the discontinuity guard GLINT_REUSE_CEILING gives the
  * displacement: an extent that changed by more than a factor of four inside
@@ -486,11 +497,22 @@ static int glint_extent_enabled(void) {
     return v;
 }
 
+/* OPENPETE_GLINT_SPIN=0 holds the tick's spin phase on the replay, the
+ * engagement leg of the sub-tick phase harness. */
+static int glint_spin_enabled(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_GLINT_SPIN"); v = !(e && *e == '0'); }
+    return v;
+}
+
 static double glint_extent_scale(const glint_rec* r, const ngte_proj* shown,
                                  double show_life, double alpha) {
     if (alpha >= 1.0 || !glint_extent_enabled()) return 1.0;
-    if (!(r->pvz > 0.0) || !(shown->m3 > 0.0)) return 1.0;
-    double scl = r->pvz / shown->m3;
+    double scl = 1.0;
+    if (r->near_mode) {
+        if (!(r->pvz > 0.0) || !(shown->m3 > 0.0)) return 1.0;
+        scl = r->pvz / shown->m3;
+    }
     if (show_life != (double)r->life) {
         const double tick_ramp = glint_size_ramp((double)r->life);
         const double show_ramp = glint_size_ramp(show_life);
@@ -520,6 +542,8 @@ static void glint_rebase_item(CPUState* cpu, const ngte_view* v, double alpha, i
     if (!it->src.addr) return;                   /* an unpaired primitive */
     double off[3], show_ang = 0.0, show_life = 0.0;
     const int paired = glint_record_pair(&it->src, alpha, off, &show_ang, &show_life);
+    if (!glint_spin_enabled()) show_ang = glint_angle(&it->src);
+    r->ang = show_ang;
     s_reb_stat[paired ? 0 : 1]++;
     double p[3], vo[3];
     for (int k = 0; k < 3; k++) p[k] = (double)(int32_t)it->src.w[k] + off[k];
@@ -555,7 +579,14 @@ static void glint_rebase_all(CPUState* cpu, double alpha) {
 
 /* Carry one corner through its primitive's rebase: the corner keeps its offset
  * from the record's projected point through the rotation and the extent scale,
- * then the primitive translates by that point's displacement. */
+ * then the primitive translates by that point's displacement.
+ *
+ * The routine's basis maps an outline point (x, y) to (c*x - s*y, s*x + c*y)
+ * in screen space, c and s the size-scaled table entries at the phase and a
+ * quarter circle on: GTE rotation row one is (c, -s, 0), row two (s, c, 0)
+ * (Spyro 2 8004AEC4-8004AEE0 near, 8004B030-8004B04C far; Spyro 3
+ * 8002F2E4-8002F300, 8002F450-8002F46C). The change from the tick's phase to
+ * the shown phase is therefore the same-sense rotation by (rc, rs). */
 static void glint_rebase_xy(const glint_item* it, const glint_rebase* r,
                             float* x, float* y) {
     if (!r->active) return;
@@ -563,8 +594,8 @@ static void glint_rebase_xy(const glint_item* it, const glint_rebase* r,
         double ox = (double)*x - it->src.psx;
         double oy = (double)*y - it->src.psy;
         if (r->rot) {
-            const double rx = ox * r->rc + oy * r->rs;
-            oy = -ox * r->rs + oy * r->rc;
+            const double rx = ox * r->rc - oy * r->rs;
+            oy = ox * r->rs + oy * r->rc;
             ox = rx;
         }
         *x = (float)(it->src.psx + ox * r->scl);
@@ -660,8 +691,16 @@ static int glint_outline(const glint_item* it, float cx[3], float cy[3]) {
     return 2;
 }
 
-/* One record's extent accumulator in the trace below. */
-typedef struct { uint32_t addr; double sum; int n; double px, py, cx, cy; } glint_ext_acc;
+/* One record's accumulator in the trace below: the extent sum, the corner
+ * centroid, and the fourth-power moment of the corner offsets. */
+typedef struct {
+    uint32_t addr; double sum; int n; double px, py, cx, cy;
+    double mre, mim;   /* sum of (dx + i*dy)^4 over the corners */
+    double ph;         /* the spin phase the feed rotated the record to */
+    int    life;       /* the tick's lifetime byte */
+    int    near_mode;  /* the branch the tick drew the record with */
+    double vz;         /* the tick's half-world view-Z of the record point */
+} glint_ext_acc;
 
 /* The mean distance of one primitive's outline corners from its record's
  * projected point, both carried through the primitive's rebase, added to
@@ -673,21 +712,44 @@ static void glint_ext_add(const glint_item* it, const glint_rebase* rb, glint_ex
     const double py = it->src.psy + (rb->active ? rb->dy : 0.0f);
     acc->px = px;
     acc->py = py;
+    acc->ph = rb->active ? rb->ang : glint_angle(&it->src);
+    acc->life = it->src.life;
+    acc->near_mode = it->src.near_mode;
+    acc->vz = it->src.pvz;
     for (int k = 0; k < nc; k++) {
         glint_rebase_xy(it, rb, &cx[k], &cy[k]);
-        acc->sum += hypot((double)cx[k] - px, (double)cy[k] - py);
+        const double dx = (double)cx[k] - px, dy = (double)cy[k] - py;
+        acc->sum += hypot(dx, dy);
         acc->cx += cx[k];
         acc->cy += cy[k];
+        const double re2 = dx * dx - dy * dy, im2 = 2.0 * dx * dy;
+        acc->mre += re2 * re2 - im2 * im2;
+        acc->mim += 2.0 * re2 * im2;
         acc->n++;
     }
 }
 
-/* OPENPETE_GLINT_TRACE=1: one line per paired record per present that fed this
- * producer, carrying the record's address and the extent the feed drew it at:
- * the mean distance of its outline corners (a star quad's three rim corners, a
- * cross line's two endpoints) from its projected point, both as the feed
- * placed them. On a canonical present that is the routine's own outline; on a
- * sub-tick present it is the outline the rebase carried there. */
+/* The drawn orientation of one record's outline, in sine-table entries (256 to
+ * the turn) modulo 64: the star's four spikes and the cross's four arms repeat
+ * every quarter turn, so the argument of the summed fourth power of the corner
+ * offsets, over four, is the outline's angle and weights the spike tips, the
+ * outermost corners, above the shoulder points between them. */
+static double glint_drawn_orientation(const glint_ext_acc* a) {
+    if (a->mre == 0.0 && a->mim == 0.0) return 0.0;
+    const double t = atan2(a->mim, a->mre) * (32.0 / 3.14159265358979323846);
+    return fmod(t + 64.0, 64.0);
+}
+
+/* OPENPETE_GLINT_TRACE=1: two lines per paired record per present that fed
+ * this producer. `[glint-ext]` carries the record's address and the extent the
+ * feed drew it at: the mean distance of its outline corners (a star quad's
+ * three rim corners, a cross line's two endpoints) from its projected point,
+ * both as the feed placed them. `[glint-rot]` carries the outline's drawn
+ * orientation (glint_drawn_orientation) and the spin phase the feed asked for,
+ * the routine's phase on a canonical present and the rebase's shown phase on a
+ * sub-tick one. On a canonical present the corners are the routine's own
+ * outline; on a sub-tick present they are the outline the rebase carried
+ * there. */
 static void glint_trace(const char* leg, double alpha) {
     static int on = -1;
     if (on < 0) { const char* e = getenv("OPENPETE_GLINT_TRACE"); on = (e && *e && *e != '0'); }
@@ -705,13 +767,19 @@ static void glint_trace(const char* leg, double alpha) {
         }
         glint_ext_add(&s_item[i], &s_reb[i], &acc[r]);
     }
-    for (int r = 0; r < nrec; r++)
-        if (acc[r].n > 0)
-            fprintf(stderr, "[glint-ext vbl=%u leg=%s alpha=%.3f] rec=%08X ext=%.4f n=%d"
-                            " at=(%.2f,%.2f) c=(%.3f,%.3f)\n",
-                    openpete_frame, leg, alpha, acc[r].addr, acc[r].sum / (double)acc[r].n,
-                    acc[r].n, acc[r].px, acc[r].py, acc[r].cx / (double)acc[r].n,
-                    acc[r].cy / (double)acc[r].n);
+    for (int r = 0; r < nrec; r++) {
+        if (acc[r].n <= 0) continue;
+        fprintf(stderr, "[glint-ext vbl=%u leg=%s alpha=%.3f] rec=%08X ext=%.4f n=%d"
+                        " at=(%.2f,%.2f) c=(%.3f,%.3f)\n",
+                openpete_frame, leg, alpha, acc[r].addr, acc[r].sum / (double)acc[r].n,
+                acc[r].n, acc[r].px, acc[r].py, acc[r].cx / (double)acc[r].n,
+                acc[r].cy / (double)acc[r].n);
+        fprintf(stderr, "[glint-rot vbl=%u leg=%s alpha=%.3f] rec=%08X ori=%.4f ph=%.4f"
+                        " ext=%.4f n=%d life=%d near=%d vz=%.1f\n",
+                openpete_frame, leg, alpha, acc[r].addr, glint_drawn_orientation(&acc[r]),
+                acc[r].ph, acc[r].sum / (double)acc[r].n, acc[r].n, acc[r].life,
+                acc[r].near_mode, acc[r].vz);
+    }
 }
 
 /* OPENPETE_GLINT_CENSUS=LO-HI (or a single frame): per call in that frame range,
