@@ -6,9 +6,24 @@
 # over the interval: a partly covered star's visible centroid measures the
 # depth test rather than the rebase.
 #
-# The camera swings 15-16 PSX px per tick here, 19.9 px on the 640-wide
-# capture, which is what separates a producer that interpolates from one that
-# holds its tick pose. The gem named is the far cross standing clear of the
-# terrain; the second cross in view, near (439.7,123.0), is clipped by the hill
-# in front of it and is reported, not judged.
-sunrise-spring-camera-swing.bk2 | 1518 | gem=465.7,172.9 tol=0.5 step=10
+# The camera swings 14-17 PSX px per tick here, which is what separates a
+# producer that interpolates from one that holds its tick pose.
+#
+# The gem judged is record 8006DF38, a near star (eight quads, 24 traced outline
+# corners, extent 4.14 -> 4.00 PSX px over the interval), the only glint
+# component in view: its mask is 25 px at canon(1540) and 29 px at canon(1542),
+# so one flipped pixel is 1/29 of the mask; a rim pixel at the star's ~4 px
+# native radius moves the centroid ~0.14 px against the 0.5 bound. Before the
+# extent fix (OPENPETE_GLINT_EXTENT=0) the alpha-0.5 centroid read 0.14 px, with
+# the fix 0.08 px; identity 0.00 on both.
+#
+# The row judged record 8006DF08 at V=1518 until the extent fix: a far cross
+# with 3.0 px arms whose 21-22 px mask moves ~0.1 px per flipped pixel. It read
+# 0.43 px before the fix, most of it the tick's corner truncation that the
+# replay translates (the alpha-0 carve-out of the glint rebase), and 0.54 after,
+# the whole change one pixel of the mask; the outline's own centre moved 0.003
+# PSX px. No near star shows at 1518. The nearer VBLs with a visible near star
+# fail the bound on the build without the fix as well (1536 1.12 px, 1538 1.60,
+# 1540 0.57), the star partly covered by the terrain it rises from, so 1542 is
+# the nearest V whose reading measures the rebase rather than the depth test.
+sunrise-spring-camera-swing.bk2 | 1542 | gem=417.1,241.8 tol=0.5 step=10

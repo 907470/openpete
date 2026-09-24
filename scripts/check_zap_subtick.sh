@@ -26,7 +26,21 @@
 #     head=(x,y) tail=(x,y)
 # On a canonical present head and tail are the routine's own projection of the
 # record's two world points. On a sub-tick present they are those points moved
-# by the rebase, which is where the ribbon's ends were actually drawn.
+# by the rebase, which is where the ribbon's ends were actually drawn. The line
+# ends ` width=<px> wn=<n>`: the ribbon's mean full width, each widened
+# corner's distance from its own chain point measured across the drawn
+# head-to-tail line, over `wn` corners (the head and tail pairs carry none).
+#
+# The width cell prices that statistic the way check_feeder_subtick.sh prices
+# its area cell: the residual from the lerp of the two canonical widths over
+# the distance a held width stands from that lerp, LERPED at or below 0.25,
+# SNAP at or above 0.75, `own` the alpha-0 width's distance from canon(V-2).
+# The routine redraws each point's jitter per call and the width follows it,
+# so the canonical width steps by up to a pixel between ticks whatever the
+# record does; a row whose width step is below `wstep` cannot separate a
+# lerp from that noise and declares `wengage=0`. A row that judges the width
+# runs one more replay, the alpha-0 present under OPENPETE_ZAP_WIDTH=0, where
+# the width must hold the tick's (own at least 0.75 of the step).
 #
 # A sub-tick present replays the set the most recent canonical tick captured
 # and shows it between the pose of the tick before (alpha 0) and the pose that
@@ -45,6 +59,10 @@
 #                interval. A record that does not move between the two ticks
 #                passes every alpha whatever the producer does, so a row below
 #                this floor is VACUOUS rather than a pass. Default 4.
+#   wtol=<r>     bound on the width cell's alpha-0.5 ratio; absent, the width
+#                is reported and not judged.
+#   wstep=<px>   floor on the canonical width step, default 1.0.
+#   wengage=0    the width cell is reported only: its step is below the floor.
 #
 # Pass criterion, per row: on every alpha, the intermediate head and the
 # intermediate tail each within `tol` of `(1-alpha)*canon(V-2) + alpha*canon(V)`
@@ -89,11 +107,12 @@ mkdir -p "$OUT"
 # trace too. The log and the screenshot are deleted before the run and the
 # screenshot asserted after it.
 run_alpha() {
-    local alpha="$1" tag="$2" mid="$3" flim="$4"
-    local dir="$OUT/$tag-a$alpha" log="$OUT/$tag-a$alpha.log"
+    local alpha="$1" tag="$2" mid="$3" flim="$4" sfx="${5:-}"
+    local dir="$OUT/$tag-a$alpha$sfx" log="$OUT/$tag-a$alpha$sfx.log"
     mkdir -p "$dir"
     find "$dir" -maxdepth 1 -name '*.png' -delete
     PG_CAPTURE_ENV=(OPENPETE_ZAP_TRACE=1 OPENPETE_INTERMEDIATE_ALPHA="$alpha")
+    [[ -n "$sfx" ]] && PG_CAPTURE_ENV+=(OPENPETE_ZAP_WIDTH=0)
     PG_CAPTURE_TIMEOUT=900
     pg_capture "$log" "$dir/$mid-vk.png" -- \
         --renderer vk --mute 1 --aspect 4:3 --lod original \
@@ -132,17 +151,24 @@ while IFS= read -r line; do
         logs+=("$OUT/$tag-a$alpha.log")
     done
     missing=0
+    # The width engagement leg, for a row that judges the width.
+    slog=""
+    if [[ " $keys " == *" wtol="* && " $keys " != *" wengage=0 "* ]]; then
+        run_alpha 0 "$tag" "$mid" "$flim" -s </dev/null || rc=$?
+        slog="$OUT/$tag-a0-s.log"
+        [[ -s "$slog" ]] || missing=1
+    fi
     for l in "${logs[@]}"; do [[ -s "$l" ]] || missing=1; done
     if (( missing || rc )); then
         echo "zap-subtick: FAIL (row $src: no instrument output, rc=$rc; see $OUT)"
         fail=1; continue
     fi
 
-    python3 - "$GAME" "$src" "$V" "$keys" "${ALPHAS[@]}" -- "${logs[@]}" <<'PYEOF' || fail=1
+    python3 - "$GAME" "$src" "$V" "$keys" "$slog" "${ALPHAS[@]}" -- "${logs[@]}" <<'PYEOF' || fail=1
 import re, sys
 
-game, row, V, keys = sys.argv[1:5]
-rest = sys.argv[5:]
+game, row, V, keys, slog = sys.argv[1:6]
+rest = sys.argv[6:]
 sep = rest.index('--')
 alphas, logs = rest[:sep], rest[sep + 1:]
 V = int(V)
@@ -154,9 +180,13 @@ for tok in keys.split():
     opts[k] = v
 tol = float(opts.get('tol', '0.5'))
 step_floor = float(opts.get('step', '4'))
+wtol = float(opts['wtol']) if 'wtol' in opts else None
+wstep_floor = float(opts.get('wstep', '1.0'))
+wengage = opts.get('wengage', '1') != '0'
 
 rx = re.compile(r'\[zap-screen vbl=(\d+) leg=(\w+) alpha=([\d.]+)\] live=(\d+) '
-                r'rec=(\w+) head=\(([-\d.]+),([-\d.]+)\) tail=\(([-\d.]+),([-\d.]+)\)')
+                r'rec=(\w+) head=\(([-\d.]+),([-\d.]+)\) tail=\(([-\d.]+),([-\d.]+)\)'
+                r'(?: width=([\d.]+) wn=(\d+))?')
 
 
 def load(path):
@@ -167,7 +197,8 @@ def load(path):
         if m:
             out.setdefault((int(m[1]), m[2]),
                            (int(m[4]), m[5], float(m[6]), float(m[7]),
-                            float(m[8]), float(m[9])))
+                            float(m[8]), float(m[9]),
+                            float(m[10]) if m[10] else None))
     return out
 
 
@@ -221,6 +252,48 @@ if not vacuous:
             bad.append("alpha=%s head D=%.2f above the %.2f bound" % (a, dh, tol))
         if dt > tol:
             bad.append("alpha=%s tail D=%.2f above the %.2f bound" % (a, dt, tol))
+
+# The width cell.
+if not vacuous and c0[6] is not None and c1[6] is not None:
+    wst = c1[6] - c0[6]
+    wl = "width canon%d=%.3f canon%d=%.3f step=%.3f" % (prev, c0[6], V, c1[6], wst)
+    judge_w = wtol is not None and wengage
+    if judge_w and abs(wst) < wstep_floor:
+        vacuous.append("width step %.3f below the %.2f floor" % (abs(wst), wstep_floor))
+    wshown = {}
+    for a, path in zip(alphas, logs):
+        leg = load(path).get((mid, 'inter'))
+        if leg is None or leg[6] is None:
+            continue
+        av = float(a)
+        wshown[a] = leg[6]
+        ex = c0[6] + wst * av
+        wl += " a%s=%.3f(D=%.3f)" % (a, leg[6], abs(leg[6] - ex))
+        if av >= 1.0:
+            if abs(leg[6] - c1[6]) > 0.0005:
+                bad.append("alpha 1 width %.3f is not canon(V) %.3f" % (leg[6], c1[6]))
+            continue
+        if abs(wst) < 1e-9:
+            continue
+        r = abs(leg[6] - ex) / ((1.0 - av) * abs(wst))
+        wl += " r%s=%.2f %s" % (a, r, "LERPED" if r <= 0.25 else ("SNAP" if r >= 0.75 else "PARTIAL"))
+        if judge_w and a == '0.5' and r > wtol:
+            bad.append("alpha=0.5 width ratio %.2f above the %.2f bound" % (r, wtol))
+    if '0' in wshown:
+        wl += " own=%.3f" % abs(wshown['0'] - c0[6])
+    if not judge_w:
+        wl += " (reported, not judged)"
+    notes.append(wl)
+    if judge_w and slog:
+        s = load(slog).get((mid, 'inter'))
+        if s is None or s[6] is None:
+            vacuous.append("no width trace in the OPENPETE_ZAP_WIDTH=0 leg")
+        else:
+            own_s = abs(s[6] - c0[6])
+            notes.append("OPENPETE_ZAP_WIDTH=0 own=%.3f of step=%.3f" % (own_s, abs(wst)))
+            if own_s < 0.75 * abs(wst):
+                vacuous.append("the width holds no tick state under OPENPETE_ZAP_WIDTH=0: "
+                               "the knob suppressed nothing this row can see")
 
 if live_min is not None and live_min <= 0:
     vacuous.append("a leg reports live=0: the producer fed nothing")

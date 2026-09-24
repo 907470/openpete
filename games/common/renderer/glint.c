@@ -61,8 +61,10 @@
 // coordinates are the tick's alone: the record's address, its position words,
 // its spin phase and its own projected screen point. A replay re-projects the
 // record under the staged camera at the present's alpha, translates the
-// primitive by the screen displacement and rotates its corners about that
-// point by the change in phase.
+// primitive by the screen displacement, rotates its corners about that point
+// by the change in phase and scales them by the ratio of the extent the
+// present shows to the extent the tick drew (the size ramp at the blended
+// lifetime, over the record point's view-Z).
 //
 // Spyro 1's sparkle renderer is fed by a float re-derivation in
 // games/spyro-1/renderer/particle.c over a different record shape (a 0x18-byte
@@ -114,6 +116,7 @@ typedef struct {
     uint8_t  life;       /* its lifetime byte after the routine's decrement */
     uint8_t  spin;       /* its spin-phase byte */
     double   psx, psy;   /* its own projected screen point */
+    double   pvz;        /* that point's half-world view-Z */
 } glint_rec;
 
 typedef struct {
@@ -132,6 +135,7 @@ typedef struct {
 typedef struct {
     float   dx, dy;   /* the record point's screen displacement */
     double  rc, rs;   /* the corner rotation, cos/sin of the angle change */
+    double  scl;      /* the corner-offset scale, the shown extent over the tick's */
     float   depth;    /* the depth of the re-projected record point */
     uint8_t active;   /* 1 = translate the corners and take `depth` */
     uint8_t rot;      /* 1 = rotate the corner offsets as well */
@@ -227,6 +231,7 @@ static int glint_accept(CPUState* cpu, const ngte_view* v, uint32_t rec,
     out->spin = (uint8_t)((packed >> 16) & 0xFFu);
     out->psx = o.sx;
     out->psy = o.sy;
+    out->pvz = o.m3;
     return 1;
 }
 
@@ -360,14 +365,15 @@ static int glint_feed_mode(void) {
  * The primitives are the guest's own int16 output, built under the tick's
  * camera from the tick's pool, so a sub-tick present that re-feeds them draws
  * every star at the pixels the tick drew: neither the camera's motion nor the
- * record's own reaches them, and neither does the spin. The rebase measures
- * the record's screen displacement as the difference of two projections — the
- * position the present shows under the staged camera, against the position the
- * tick drew under the tick's camera — moves the primitive by it, and rotates
- * the corner offsets about the projected point by the change in spin phase. At
- * the end of the tick's own interval the displaced position, the shown phase
- * and the staged camera are all the tick's, so both projections take identical
- * inputs through identical arithmetic and every term is exactly zero.
+ * record's own reaches them, and neither do the spin and the size. The rebase
+ * measures the record's screen displacement as the difference of two
+ * projections — the position the present shows under the staged camera,
+ * against the position the tick drew under the tick's camera — moves the
+ * primitive by it, rotates the corner offsets about the projected point by the
+ * change in spin phase and scales them by the change in extent. At the end of
+ * the tick's own interval the displaced position, the shown phase and the
+ * staged camera are all the tick's, so both projections take identical inputs
+ * through identical arithmetic and every term is exactly zero.
  *
  * Rotating screen offsets about the projected point is the routine's own
  * construction rather than an approximation: it loads a 2x2 rotation-scale
@@ -404,9 +410,10 @@ static double glint_angle(const glint_rec* r) {
  * a new record; the lifetime itself only ever falls while a record lives, so a
  * risen lifetime is a reuse that happened to keep them. */
 static int glint_record_pair(const glint_rec* r, double alpha, double off[3],
-                             double* show_ang) {
+                             double* show_ang, double* show_life) {
     off[0] = off[1] = off[2] = 0.0;
     *show_ang = glint_angle(r);
+    *show_life = (double)r->life;
     const openpete_interp_obj_t* o = openpete_interp_objs_find(r->addr);
     if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return 0;
     if ((uint32_t)o->blob_len < GT.pos_off + 12u ||
@@ -437,7 +444,61 @@ static int glint_record_pair(const glint_rec* r, double alpha, double off[3],
     while (da > 128.0) da -= 256.0;
     while (da < -128.0) da += 256.0;
     *show_ang = ca + da * rest;
+    /* The lifetime falls monotonically while the record lives (the reuse tests
+     * above), so the shown lifetime is the straight blend of the two bytes. */
+    *show_life = (double)r->life + ((double)(pp & 0xFFu) - (double)r->life) * rest;
     return 1;
+}
+
+/* The lifetime factor of the star's size: a triangular ramp on the remaining
+ * lifetime L, L below 0x20 and 2 * (0x30 - L) from there, plus eight
+ * (mobyfunc.s:2278-2285, Spyro 2 8004ADC4-8004ADDC; Spyro 3 8002F1E4-8002F1FC).
+ * The routine multiplies it by the size byte (:2286, 8004ADE0 / 8002F200) and
+ * scales the sine pair of the rotation basis by that product (:2324 and :2333,
+ * 8004AE70 and 8004AE94 / 8002F290 and 8002F2B4), so the star's outline and
+ * the cross's arms are proportional to it. Evaluated at a fractional lifetime
+ * it is the same two line segments, continuous at 0x20. */
+static double glint_size_ramp(double life) {
+    return (life < 32.0 ? life : 2.0 * (48.0 - life)) + 8.0;
+}
+
+/* The scale carrying a primitive's corner offsets from the extent the tick
+ * built to the extent this present shows. The routine loads the size basis
+ * into the GTE rotation registers and projects the outline against the
+ * record's own view-space translation, so every corner of a star shares the
+ * record point's view-Z and the screen extent is proportional to the size
+ * factor and inversely proportional to that view-Z. The size byte is written
+ * once by the spawner, so the size factor's ratio is the ramp's.
+ *
+ * At the end of the tick's own interval the scale is one without arithmetic.
+ * The band is the discontinuity guard GLINT_REUSE_CEILING gives the
+ * displacement: an extent that changed by more than a factor of four inside
+ * one tick is a camera cut or a slot reuse, where the replay holds the tick's
+ * extent as every other term of the rebase does. */
+#define GLINT_SCALE_MIN 0.25
+#define GLINT_SCALE_MAX 4.0
+
+/* OPENPETE_GLINT_EXTENT=0 holds the tick's extent on the replay, the
+ * engagement leg of the sub-tick extent harness. */
+static int glint_extent_enabled(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_GLINT_EXTENT"); v = !(e && *e == '0'); }
+    return v;
+}
+
+static double glint_extent_scale(const glint_rec* r, const ngte_proj* shown,
+                                 double show_life, double alpha) {
+    if (alpha >= 1.0 || !glint_extent_enabled()) return 1.0;
+    if (!(r->pvz > 0.0) || !(shown->m3 > 0.0)) return 1.0;
+    double scl = r->pvz / shown->m3;
+    if (show_life != (double)r->life) {
+        const double tick_ramp = glint_size_ramp((double)r->life);
+        const double show_ramp = glint_size_ramp(show_life);
+        if (!(tick_ramp > 0.0) || !(show_ramp > 0.0)) return 1.0;
+        scl *= show_ramp / tick_ramp;
+    }
+    if (!(scl >= GLINT_SCALE_MIN) || !(scl <= GLINT_SCALE_MAX)) return 1.0;
+    return scl;
 }
 
 /* OPENPETE_GLINT_REBASE_DBG=1: the rebase's verdicts per run. A run whose
@@ -455,9 +516,10 @@ static void glint_rebase_item(CPUState* cpu, const ngte_view* v, double alpha, i
     glint_item* it = &s_item[i];
     glint_rebase* r = &s_reb[i];
     memset(r, 0, sizeof *r);
+    r->scl = 1.0;
     if (!it->src.addr) return;                   /* an unpaired primitive */
-    double off[3], show_ang = 0.0;
-    const int paired = glint_record_pair(&it->src, alpha, off, &show_ang);
+    double off[3], show_ang = 0.0, show_life = 0.0;
+    const int paired = glint_record_pair(&it->src, alpha, off, &show_ang, &show_life);
     s_reb_stat[paired ? 0 : 1]++;
     double p[3], vo[3];
     for (int k = 0; k < 3; k++) p[k] = (double)(int32_t)it->src.w[k] + off[k];
@@ -472,6 +534,7 @@ static void glint_rebase_item(CPUState* cpu, const ngte_view* v, double alpha, i
     r->rot = ngte_table_rot(cpu, glint_angle(&it->src), show_ang, &r->rc, &r->rs)
                  ? 1u : 0u;
     s_reb_stat[2] += r->rot;
+    r->scl = glint_extent_scale(&it->src, &o, show_life, alpha);
 }
 
 /* Rebase the captured set onto the pose this present shows. The staged camera
@@ -491,16 +554,21 @@ static void glint_rebase_all(CPUState* cpu, double alpha) {
 }
 
 /* Carry one corner through its primitive's rebase: the corner keeps its offset
- * from the record's projected point through the rotation, then the primitive
- * translates by that point's displacement. */
+ * from the record's projected point through the rotation and the extent scale,
+ * then the primitive translates by that point's displacement. */
 static void glint_rebase_xy(const glint_item* it, const glint_rebase* r,
                             float* x, float* y) {
     if (!r->active) return;
-    if (r->rot) {
-        const double ox = (double)*x - it->src.psx;
-        const double oy = (double)*y - it->src.psy;
-        *x = (float)(it->src.psx + ox * r->rc + oy * r->rs);
-        *y = (float)(it->src.psy - ox * r->rs + oy * r->rc);
+    if (r->rot || r->scl != 1.0) {
+        double ox = (double)*x - it->src.psx;
+        double oy = (double)*y - it->src.psy;
+        if (r->rot) {
+            const double rx = ox * r->rc + oy * r->rs;
+            oy = -ox * r->rs + oy * r->rc;
+            ox = rx;
+        }
+        *x = (float)(it->src.psx + ox * r->scl);
+        *y = (float)(it->src.psy + oy * r->scl);
     }
     *x += r->dx;
     *y += r->dy;
@@ -572,6 +640,78 @@ static void glint_feed_native(void) {
         }
     }
     openpete_native_scene_set_tag(0);
+}
+
+/* A paired primitive's outline corners as the routine placed them: a star
+ * quad's three rim corners (its fourth is the shared centre) or a cross line's
+ * two endpoints. Returns the count, 0 for any other primitive. */
+static int glint_outline(const glint_item* it, float cx[3], float cy[3]) {
+    static const int rim[3] = { 0, 1, 3 };
+    if (it->p.code == GLINT_QUAD && it->p.nv == 4) {
+        for (int k = 0; k < 3; k++) { cx[k] = it->p.x[rim[k]]; cy[k] = it->p.y[rim[k]]; }
+        return 3;
+    }
+    if (it->p.code != GLINT_LINE) return 0;
+    for (int k = 0; k < 2; k++) {
+        const uint32_t w = it->p.raw[2 + k];
+        cx[k] = (float)(int16_t)(w & 0xFFFFu);
+        cy[k] = (float)(int16_t)(w >> 16);
+    }
+    return 2;
+}
+
+/* One record's extent accumulator in the trace below. */
+typedef struct { uint32_t addr; double sum; int n; double px, py, cx, cy; } glint_ext_acc;
+
+/* The mean distance of one primitive's outline corners from its record's
+ * projected point, both carried through the primitive's rebase, added to
+ * `acc`. */
+static void glint_ext_add(const glint_item* it, const glint_rebase* rb, glint_ext_acc* acc) {
+    float cx[3], cy[3];
+    const int nc = glint_outline(it, cx, cy);
+    const double px = it->src.psx + (rb->active ? rb->dx : 0.0f);
+    const double py = it->src.psy + (rb->active ? rb->dy : 0.0f);
+    acc->px = px;
+    acc->py = py;
+    for (int k = 0; k < nc; k++) {
+        glint_rebase_xy(it, rb, &cx[k], &cy[k]);
+        acc->sum += hypot((double)cx[k] - px, (double)cy[k] - py);
+        acc->cx += cx[k];
+        acc->cy += cy[k];
+        acc->n++;
+    }
+}
+
+/* OPENPETE_GLINT_TRACE=1: one line per paired record per present that fed this
+ * producer, carrying the record's address and the extent the feed drew it at:
+ * the mean distance of its outline corners (a star quad's three rim corners, a
+ * cross line's two endpoints) from its projected point, both as the feed
+ * placed them. On a canonical present that is the routine's own outline; on a
+ * sub-tick present it is the outline the rebase carried there. */
+static void glint_trace(const char* leg, double alpha) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_GLINT_TRACE"); on = (e && *e && *e != '0'); }
+    if (!on) return;
+    glint_ext_acc acc[GLINT_MAX_PRIMS];
+    int nrec = 0;
+    for (int i = 0; i < s_item_n; i++) {
+        if (!s_item[i].src.addr) continue;
+        int r = 0;
+        while (r < nrec && acc[r].addr != s_item[i].src.addr) r++;
+        if (r == nrec) {
+            memset(&acc[r], 0, sizeof acc[r]);
+            acc[r].addr = s_item[i].src.addr;
+            nrec++;
+        }
+        glint_ext_add(&s_item[i], &s_reb[i], &acc[r]);
+    }
+    for (int r = 0; r < nrec; r++)
+        if (acc[r].n > 0)
+            fprintf(stderr, "[glint-ext vbl=%u leg=%s alpha=%.3f] rec=%08X ext=%.4f n=%d"
+                            " at=(%.2f,%.2f) c=(%.3f,%.3f)\n",
+                    openpete_frame, leg, alpha, acc[r].addr, acc[r].sum / (double)acc[r].n,
+                    acc[r].n, acc[r].px, acc[r].py, acc[r].cx / (double)acc[r].n,
+                    acc[r].cy / (double)acc[r].n);
 }
 
 /* OPENPETE_GLINT_CENSUS=LO-HI (or a single frame): per call in that frame range,
@@ -719,7 +859,10 @@ static int on_glint_draw(CPUState* cpu, uint32_t addr) {
         ngte_view view;
         ngte_view_build(cpu, &view);
         glint_pair_depths(cpu, &view);
-        if (feed && render_path_enabled(RP_SPARKLE)) glint_feed_native();
+        if (feed && render_path_enabled(RP_SPARKLE)) {
+            glint_feed_native();
+            glint_trace("canon", 1.0);
+        }
     }
     glint_census(startp, endp, star_before, cross_before);
     return hook_bracket_end(&k_bracket);
@@ -728,8 +871,9 @@ static int on_glint_draw(CPUState* cpu, uint32_t addr) {
 /* Sub-tick re-extract. The primitives are the guest's own output and are gone
  * once the polybuf is reused, so the replay re-feeds the set the canonical tick
  * captured, rebased onto the pose this present shows: the owning record's
- * screen displacement carries its primitive's corners and its depth, and the
- * change in spin phase rotates them about that point. At the end of the tick's
+ * screen displacement carries its primitive's corners and its depth, the
+ * change in spin phase rotates them about that point and the change in extent
+ * scales them about it. At the end of the tick's
  * interval every term of the rebase is zero and the replay reproduces the
  * canonical present exactly, which is what the spine's identity leg
  * measures. */
@@ -737,6 +881,7 @@ void glint_reextract(CPUState* cpu, int bracketed, double alpha) {
     if (!hook_reextract_ready(RP_SPARKLE)) return;
     if (bracketed) glint_rebase_all(cpu, alpha);
     glint_feed_native();
+    glint_trace("inter", bracketed ? alpha : 1.0);
 }
 
 /* The hook address is the layout's glint draw site, bound at boot: a static

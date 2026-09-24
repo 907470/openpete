@@ -104,15 +104,28 @@ extern unsigned openpete_frame;
 #define ZAP_MAX_PRIMS 512
 #define ZAP_MAX_SEG   128
 
+/* Where a triangle corner's chain point projects: the midpoint of the two
+ * entries the routine widened that point into, which is the point the corner
+ * is offset from by the ribbon's half-width. `ok` is 0 for a corner of the
+ * head or the tail, which the routine writes as a coincident pair and so
+ * carries no width. */
+typedef struct {
+    float   x[3], y[3];
+    uint8_t ok[3];
+    uint8_t pt[3];   /* the chain point's index, 0 at the head */
+} zap_pivot;
+
 typedef struct {
     ngte_prim p;
     float     depth;
     int       paired;
+    zap_pivot pv;
 } zap_item;
 
 static zap_item  s_item[ZAP_MAX_PRIMS];
 static int      s_item_n;
 static float    s_pred[ZAP_MAX_PRIMS];   /* one depth per predicted triangle */
+static zap_pivot s_pred_pv[ZAP_MAX_PRIMS]; /* its corners' chain points */
 static int      s_pred_n;
 static int      s_live;                 /* records with a non-zero count byte */
 static int      s_accepted;             /* 1 when the replay accounted for the call */
@@ -128,6 +141,8 @@ static uint32_t s_fed_tris;
 static uint32_t s_rec;
 static uint32_t s_head_w[3], s_tail_w[3];
 static ngte_proj s_head_p, s_tail_p;
+static int      s_seg_n;                     /* the record's segment count */
+static double   s_hw_tick[ZAP_MAX_SEG + 1];  /* each chain point's screen half-width */
 
 /* The sub-tick rebase: each end's screen displacement and re-projected view-Z.
  * Inactive on a canonical feed and at the end of the tick's own interval,
@@ -135,11 +150,12 @@ static ngte_proj s_head_p, s_tail_p;
 static struct {
     double dhx, dhy, dtx, dty;   /* head and tail screen displacement */
     double head_m3, tail_m3;     /* their re-projected view-Z */
+    double hw_scale[ZAP_MAX_SEG + 1];  /* each chain point's half-width, shown over the tick's */
     int    active;
 } s_reb;
 
 /* The tick's captured set, replayed by every sub-tick present of the tick. */
-typedef struct { ngte_prim p; float depth; } zap_held;
+typedef struct { ngte_prim p; float depth; zap_pivot pv; } zap_held;
 static zap_held  s_tick[ZAP_MAX_PRIMS];
 static int      s_tick_n;
 static unsigned s_tick_frame = ~0u;
@@ -150,6 +166,7 @@ static int zap_prim_sink(void* ctx, const ngte_prim* s) {
     s_item[s_item_n].p = *s;
     s_item[s_item_n].depth = 1.0f;   /* unpaired: the near guard (view-Z 1) */
     s_item[s_item_n].paired = 0;
+    memset(&s_item[s_item_n].pv, 0, sizeof s_item[0].pv);
     s_item_n++;
     return 1;
 }
@@ -220,6 +237,105 @@ static void zap_project_point(const ngte_view* v, const uint32_t w[3],
     ngte_project_offset(v, rel, o);
 }
 
+/* The screen half-width of chain point i of n, with the head and tail world
+ * points displaced by `oh` and `ot`. The routine lays the undisplaced point at
+ * head + i * step (:2638-2657) and widens it in camera-relative world units,
+ * before the projection, from the difference d between its two neighbours
+ * (:2693-2745): a vertical offset of max(|dx|, |dy|) + min(|dx|, |dy|) / 2 and
+ * a horizontal offset of |dz| along world X where |dx| < |dy| and along world
+ * Y otherwise, both shifted right by four, the pair's two entries sitting at
+ * the point plus and minus that vector. The neighbours are jittered points
+ * (:2658-2685), so the world offset is the tick's and is held: it is built
+ * from the tick's undisplaced head-to-tail vector, which the step is a fixed
+ * fraction of, and only the point it is carried on is displaced. What varies
+ * is the offset's projection, its view-Z and its orientation to the camera.
+ * Returns the half distance between the two entries' projections, or 0 when
+ * either lies behind the camera. */
+static double zap_half_width(const ngte_view* v, const double oh[3], const double ot[3],
+                             int i, int n) {
+    double d[3], p[3], o[3], q[3];
+    const double f = (double)i / (double)n;
+    for (int k = 0; k < 3; k++) {
+        const double h = (double)(int32_t)s_head_w[k];
+        d[k] = (double)(int32_t)s_tail_w[k] - h;
+        p[k] = h + oh[k] + (d[k] + ot[k] - oh[k]) * f;
+    }
+    /* The neighbours' difference is two steps of d / n. */
+    const double sc = 2.0 / (double)n / 16.0;
+    const double ax = fabs(d[0]) * sc, ay = fabs(d[1]) * sc, az = fabs(d[2]) * sc;
+    o[0] = (ax < ay) ? az : 0.0;
+    o[1] = (ax < ay) ? 0.0 : -az;
+    o[2] = -(fmax(ax, ay) + fmin(ax, ay) * 0.5);
+    ngte_proj a, b;
+    for (int k = 0; k < 3; k++) q[k] = p[k] + o[k];
+    const double ra[3] = { q[0] - v->cam[0], v->cam[1] - q[1], v->cam[2] - q[2] };
+    for (int k = 0; k < 3; k++) q[k] = p[k] - o[k];
+    const double rb[3] = { q[0] - v->cam[0], v->cam[1] - q[1], v->cam[2] - q[2] };
+    ngte_project_offset(v, ra, &a);
+    ngte_project_offset(v, rb, &b);
+    if (!(a.m3 > 0.0) || !(b.m3 > 0.0)) return 0.0;
+    return 0.5 * hypot(a.sx - b.sx, a.sy - b.sy);
+}
+
+/* The band is the discontinuity guard ZAP_REUSE_CEILING gives the
+ * displacement: a half-width that changed by more than a factor of four
+ * inside one tick is a camera cut or a slot reuse, where the replay holds the
+ * tick's width as every other term of the rebase does. */
+#define ZAP_SCALE_MIN 0.25
+#define ZAP_SCALE_MAX 4.0
+
+/* Each interior chain point's half-width scale: the half-width this present
+ * shows over the one the tick drew, both from zap_half_width. A point either
+ * of whose states projects behind the camera holds the tick's width. */
+/* OPENPETE_ZAP_WIDTH=0 holds the tick's width on the replay, the engagement
+ * leg of the sub-tick width harness. */
+static int zap_width_enabled(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_ZAP_WIDTH"); v = !(e && *e == '0'); }
+    return v;
+}
+
+static void zap_width_scales(const ngte_view* v, const double oh[3], const double ot[3]) {
+    const int on = zap_width_enabled();
+    for (int i = 0; i <= s_seg_n; i++) {
+        s_reb.hw_scale[i] = 1.0;
+        if (!on || i == 0 || i == s_seg_n || !(s_hw_tick[i] > 0.0)) continue;
+        const double scl = zap_half_width(v, oh, ot, i, s_seg_n) / s_hw_tick[i];
+        if (scl >= ZAP_SCALE_MIN && scl <= ZAP_SCALE_MAX) s_reb.hw_scale[i] = scl;
+    }
+}
+
+/* The midpoint of two packed screen-XY entries. */
+static void zap_entry_mid(uint32_t a, uint32_t b, float* x, float* y) {
+    *x = ((float)(int16_t)(a & 0xFFFFu) + (float)(int16_t)(b & 0xFFFFu)) * 0.5f;
+    *y = ((float)(int16_t)(a >> 16) + (float)(int16_t)(b >> 16)) * 0.5f;
+}
+
+/* Append one predicted triangle of segment j (points j-1 and j of n) with its
+ * depth and its corners' chain points. The segment's four entries are point
+ * j-1's pair (0, 1) and point j's pair (2, 3); the first triangle's corners
+ * are entries 0, 2, 3 and the second's 0, 1, 3 (the stores after :2863 and
+ * :2890), so each corner's pivot is the midpoint of its own
+ * point's pair. Points 0 and n are the coincident head and tail pairs
+ * (:2747-2766); the tail's second entry is also the one the projection pass
+ * leaves unprojected, so neither end's corners take a pivot. Returns 0 when
+ * the table is full. */
+static int zap_replay_emit(float depth, const uint32_t xy[4], int second, int j, int n) {
+    if (s_pred_n >= ZAP_MAX_PRIMS) return 0;
+    static const int ent[2][3] = { {0, 2, 3}, {0, 1, 3} };
+    zap_pivot* pv = &s_pred_pv[s_pred_n];
+    for (int k = 0; k < 3; k++) {
+        const int e = ent[second][k];
+        const int point = (e < 2) ? j - 1 : j;
+        pv->ok[k] = (uint8_t)(point > 0 && point < n);
+        pv->pt[k] = (uint8_t)point;
+        const int pair = (e < 2) ? 0 : 2;
+        zap_entry_mid(xy[pair], xy[pair + 1], &pv->x[k], &pv->y[k]);
+    }
+    s_pred[s_pred_n++] = depth;
+    return 1;
+}
+
 /* Replay the routine's emit loop out of the entry table it just wrote, and
  * append one depth per triangle it emitted, in emit order.
  *
@@ -274,8 +390,8 @@ static int zap_replay(CPUState* cpu, int n) {
             openpete_worldvz_full((float)sum * 0.25f));
         /* :2863 the first triangle is dropped when this point's two entries
          * coincide, :2890 the second when the previous point's do. */
-        if (xy[2] != xy[3]) { if (s_pred_n >= ZAP_MAX_PRIMS) return -1; s_pred[s_pred_n++] = d; }
-        if (xy[0] != xy[1]) { if (s_pred_n >= ZAP_MAX_PRIMS) return -1; s_pred[s_pred_n++] = d; }
+        if (xy[2] != xy[3] && !zap_replay_emit(d, xy, 0, j, n)) return -1;
+        if (xy[0] != xy[1] && !zap_replay_emit(d, xy, 1, j, n)) return -1;
     }
     return s_pred_n;
 }
@@ -294,12 +410,16 @@ static void zap_pair_depths(CPUState* cpu, const ngte_view* v) {
     zap_project_point(v, s_head_w, NULL, &s_head_p);
     zap_project_point(v, s_tail_w, NULL, &s_tail_p);
     s_rec = rec;
+    s_seg_n = n;
+    static const double k_zero[3] = { 0.0, 0.0, 0.0 };
+    for (int i = 0; i <= n; i++) s_hw_tick[i] = zap_half_width(v, k_zero, k_zero, i, n);
     const int predicted = zap_replay(cpu, n);
     if (predicted != s_item_n) return;   /* every primitive stays unpaired */
     s_accepted = 1;
     for (int i = 0; i < s_item_n; i++) {
         s_item[i].depth = s_pred[i];
         s_item[i].paired = 1;
+        s_item[i].pv = s_pred_pv[i];
     }
 }
 
@@ -328,6 +448,16 @@ static double zap_corner_pos(float x, float y) {
     return t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
 }
 
+/* Carry one widened corner's offset from its chain point through the width
+ * scale. The chain point then moves with the corner through zap_rebase_xy. */
+static void zap_widen_xy(float* x, float* y, const zap_pivot* pv, int k) {
+    if (!s_reb.active || !pv->ok[k]) return;
+    const double scl = s_reb.hw_scale[pv->pt[k]];
+    if (scl == 1.0) return;
+    *x = (float)((double)pv->x[k] + ((double)*x - (double)pv->x[k]) * scl);
+    *y = (float)((double)pv->y[k] + ((double)*y - (double)pv->y[k]) * scl);
+}
+
 /* Carry one corner through the rebase: it moves by the two ends' screen
  * displacement blended at its own position along the ribbon. Both terms are
  * zero when the rebase is inactive, so the canonical feed emits the captured
@@ -340,8 +470,30 @@ static void zap_rebase_xy(float* x, float* y, double* pos) {
     *y = (float)((double)*y + s_reb.dhy + (s_reb.dty - s_reb.dhy) * t);
 }
 
-static void zap_add_prim(const ngte_prim* p, float depth) {
+/* The fed ribbon's half-width: the mean distance of every widened corner from
+ * its own chain point, both as the feed placed them, measured across the
+ * head-to-tail line the feed drew the ribbon along so that the ribbon's
+ * stretch along its own length does not enter it. Accumulated per present for
+ * OPENPETE_ZAP_TRACE. */
+static double s_hw_sum;
+static int    s_hw_n;
+
+static void zap_width_note(float cx, float cy, const zap_pivot* pv, int k) {
+    if (!pv->ok[k]) return;
+    float mx = pv->x[k], my = pv->y[k];
+    zap_rebase_xy(&mx, &my, NULL);
+    const double ux = (s_tail_p.sx + s_reb.dtx) - (s_head_p.sx + s_reb.dhx);
+    const double uy = (s_tail_p.sy + s_reb.dty) - (s_head_p.sy + s_reb.dhy);
+    const double len = hypot(ux, uy);
+    if (!(len > 0.0)) return;
+    s_hw_sum += fabs(((double)cx - (double)mx) * uy - ((double)cy - (double)my) * ux) / len;
+    s_hw_n++;
+}
+
+static void zap_add_prim(const zap_held* h) {
     static const int split[2][3] = { {0, 1, 2}, {1, 3, 2} };
+    const ngte_prim* p = &h->p;
+    float depth = h->depth;
     if (p->nv != 3 && p->nv != 4) return;
     /* Rebase the corners first: the depth the triangle takes is the view-Z of
      * its own mean position along the ribbon, which is the same quantity the
@@ -352,8 +504,10 @@ static void zap_add_prim(const ngte_prim* p, float depth) {
     for (int k = 0; k < p->nv; k++) {
         px[k] = p->x[k]; py[k] = p->y[k];
         double t = 0.0;
+        if (k < 3) zap_widen_xy(&px[k], &py[k], &h->pv, k);
         zap_rebase_xy(&px[k], &py[k], &t);
         pos_sum += t;
+        if (k < 3) zap_width_note(px[k], py[k], &h->pv, k);
     }
     if (s_reb.active) {
         const double tm = pos_sum / (double)p->nv;
@@ -395,7 +549,8 @@ static void zap_feed_set(const zap_held* set, int n) {
     if (n <= 0) return;
     openpete_native_scene_begin_frame(openpete_frame);
     openpete_native_scene_set_tag(OPENPETE_TAG_TRACER(0));
-    for (int i = 0; i < n; i++) zap_add_prim(&set[i].p, set[i].depth);
+    s_hw_sum = 0.0; s_hw_n = 0;
+    for (int i = 0; i < n; i++) zap_add_prim(&set[i]);
     openpete_native_scene_set_tag(0);
 }
 
@@ -410,10 +565,11 @@ static void zap_trace(const char* leg, double alpha) {
     if (on < 0) { const char* e = getenv("OPENPETE_ZAP_TRACE"); on = (e && *e && *e != '0'); }
     if (!on) return;
     fprintf(stderr, "[zap-screen vbl=%u leg=%s alpha=%.3f] live=%d rec=%08X "
-                    "head=(%.2f,%.2f) tail=(%.2f,%.2f)\n",
+                    "head=(%.2f,%.2f) tail=(%.2f,%.2f) width=%.3f wn=%d\n",
             openpete_frame, leg, alpha, s_live, s_rec,
             s_head_p.sx + s_reb.dhx, s_head_p.sy + s_reb.dhy,
-            s_tail_p.sx + s_reb.dtx, s_tail_p.sy + s_reb.dty);
+            s_tail_p.sx + s_reb.dtx, s_tail_p.sy + s_reb.dty,
+            s_hw_n ? 2.0 * s_hw_sum / (double)s_hw_n : 0.0, s_hw_n);
 }
 
 /* Hold the call's primitives for the sub-tick replay. The tick's first hook
@@ -423,6 +579,7 @@ static void zap_hold(void) {
     for (int i = 0; i < s_item_n && s_tick_n < ZAP_MAX_PRIMS; i++) {
         s_tick[s_tick_n].p = s_item[i].p;
         s_tick[s_tick_n].depth = s_item[i].depth;
+        s_tick[s_tick_n].pv = s_item[i].pv;
         s_tick_n++;
     }
 }
@@ -576,14 +733,16 @@ static void zap_rebase_all(CPUState* cpu, double alpha) {
     s_reb.dty = t.sy - s_tail_p.sy;
     s_reb.head_m3 = h.m3;
     s_reb.tail_m3 = t.m3;
+    zap_width_scales(&v, off_head, off_tail);
     s_reb.active = 1;
 }
 
 /* Sub-tick re-extract. The primitives are the guest's own output and are gone
  * once the polybuf is reused, so the replay re-feeds the set the canonical tick
  * captured, rebased onto the pose this present shows: the record's head and
- * tail carry the ribbon's two ends and every corner between them moves by the
- * pair blended at its own position along the chain. The jitter is not
+ * tail carry the ribbon's two ends, every corner between them moves by the
+ * pair blended at its own position along the chain, and each widened corner's
+ * offset from its chain point scales by the change in half-width. The jitter is not
  * re-derived — the routine draws and stores a fresh random halfword per point
  * inside its own call (:2673-2685), and this replay re-feeds the tick's
  * primitives, so a sub-tick present shows the tick's jitter rather than a new

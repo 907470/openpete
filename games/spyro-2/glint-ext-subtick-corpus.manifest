@@ -1,0 +1,10 @@
+# Sub-tick extent of the gem glint (scripts/check_feeder_subtick.sh --path
+# glint-ext). Rows: <bk2> | <V> | rec=<addr> [rtol=] [step=]. rec is the pool
+# record whose extent is judged, a near star (24 traced corners) on its
+# growing lifetime ramp.
+#
+# shady-oasis-flame.bk2 1324, rec 80067D00: canon1322 7.535 px, canon1324
+# 8.524 px. Before the replay scaled the extent the alpha-0.5 ratio read 1.00
+# SNAP with own 0.989 (the whole step); with the scale 0.04 LERPED, own 0.041.
+# Bound rtol=0.25, the LERPED boundary, six times the measured reading.
+shady-oasis-flame.bk2 | 1324 | rec=80067D00 rtol=0.25 step=0.5

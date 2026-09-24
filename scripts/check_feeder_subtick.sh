@@ -21,6 +21,9 @@
 # A path is named by --path and carries: what suppresses its feed for the
 # leave-one-out, the manifest it reads and the alphas it judges.
 #   glint   OPENPETE_GLINT=2 against =0, games/<slug>/glint-subtick-corpus.manifest
+#   glint-ext  OPENPETE_GLINT_TRACE=1, one leg per alpha, no leave-one-out, the
+#           ext statistic; OPENPETE_GLINT_EXTENT=0 is the engagement leg;
+#           games/<slug>/glint-ext-subtick-corpus.manifest
 #   glow    OPENPETE_GLOW=1  against =0, games/<slug>/glow-subtick-corpus.manifest
 #   shadow  --render-paths terrain,moby,shadow against terrain,moby,
 #           games/<slug>/shadow-subtick-corpus.manifest
@@ -64,6 +67,23 @@
 # filter drops the portal prims before the drawing-primitive count, so fast
 # boot never ends and no present is reached — and the vertex list is the
 # isolation instead. The engagement counter is the fed triangle count per leg.
+#
+# The glint-ext path takes the third statistic: the extent each glint record
+# was fed at, the mean distance of its outline corners (a star quad's three
+# rim corners, a cross line's two endpoints) from the record's projected
+# point, which the feeder prints per record per present under
+# OPENPETE_GLINT_TRACE as `[glint-ext vbl=<v> leg=canon|inter alpha=<a>]
+# rec=<addr> ext=<px> n=<corners>`, in PSX screen pixels. A mask cannot price
+# it: a glint paints 7-25 px, so its pixel count moves in whole pixels and its
+# extent step is a fraction of one. Per named record (`rec=<addr>`,
+# repeatable) the cell is the area cell's: the residual from the lerp of the
+# two canonical extents over the distance a held extent stands from that
+# lerp, LERPED at or below 0.25, SNAP at or above 0.75; `own` is the alpha-0
+# extent's distance from canon(V-2). The bound is `rtol` (default 0.25) on the
+# judged alphas; alpha 1 must print canon(V) exactly. `step` is the floor on
+# the record's canonical extent step (default 0.5 px). The engagement leg is
+# the alpha-0 present under OPENPETE_GLINT_EXTENT=0, where at least one named
+# record must hold its tick extent (own at least 0.75 of its step).
 #
 # The shadow path is the moby ground shadow, which no env knob switches off on
 # its own, so its two legs are a render-path selection with and without the
@@ -200,7 +220,7 @@
 #                    worst=<px> verdict=PASS|FAIL
 #
 # Usage: scripts/check_feeder_subtick.sh
-#          --path glint|glow|shadow|portal|terrain|cyclorama|particles|flame|
+#          --path glint|glint-ext|glow|shadow|portal|terrain|cyclorama|particles|flame|
 #                 tracer|moby-mask
 #          [--game SLUG] [--build-dir=DIR] [--row '<bk2>|<V>|<keys>']
 # Exit 0 PASS, 1 FAIL or VACUOUS, 64 SKIP (binary, disc, bk2, manifest, python3
@@ -244,6 +264,13 @@ case "$PATHNAME" in
             ALPHAS=(0 0.5 1); JUDGE_DEF=0.5,1;;
     glow)   LEG_ENV_ON=(OPENPETE_GLOW=1); LEG_ENV_OFF=(OPENPETE_GLOW=0)
             ALPHAS=(0 0.25 0.5 0.75 1); JUDGE_DEF=0.25,0.5,0.75,1;;
+    # The gem glint's extent, read from the feeder's own trace rather than a
+    # mask: a star or cross is 7-25 px painted, so its mask's pixel count steps
+    # by whole pixels and the area cell reads UNMOVED on every glint row. One
+    # run per alpha, no leave-one-out, as the portal path does.
+    glint-ext) LEG_ENV_ON=(OPENPETE_GLINT_TRACE=1)
+            SUPPRESS=OPENPETE_GLINT_EXTENT; STAT=ext
+            ALPHAS=(0 0.5 1); JUDGE_DEF=0.5,1;;
     portal) LEG_ENV_ON=(OPENPETE_PORTAL3_DBG=1)
             SUPPRESS=OPENPETE_PORTAL3_INTERP; STAT=vertex
             ALPHAS=(0 0.5 1); JUDGE_DEF=0.5,1;;
@@ -415,7 +442,7 @@ while IFS= read -r line; do
                 shots+=("$OUT/$d/$mid-vk.png")
             done
         done
-    elif [[ "$STAT" == vertex ]]; then
+    elif [[ "$STAT" == vertex || "$STAT" == ext ]]; then
         # One run per alpha. The feeder's census in that run's log already
         # carries canon(V-2), canon(V) and the intermediate present, so the
         # separate canonical legs and the leave-one-out partner of the mask
@@ -595,6 +622,125 @@ head = ("[%s] game=%s bk2=%s V=%d cells=%d legs=%d diffpx=%d"
 for r in rows_out:
     print("[%s]   " % tag + r)
 if vacuous or not cells:
+    print(head + " VACUOUS")
+    for v in vacuous:
+        print("[%s]   " % tag + v)
+    sys.exit(1)
+print(head + " verdict=%s" % ("FAIL" if bad else "PASS"))
+for b in bad:
+    print("[%s]   " % tag + b)
+sys.exit(1 if bad else 0)
+PYEOF
+    elif [[ "$STAT" == ext ]]; then
+    python3 - "$TAG" "$JUDGE_DEF" "$GAME" "$bk2" "$V" "$keys" "$OUT/$tag" "$prev" "$mid" \
+             "$SUPPRESS" ${ALPHAS[@]+"${ALPHAS[@]}"} <<'PYEOF' || fail=1
+import re
+import sys
+
+tag, judge_def, game, bk2, V, keys, base, prev, mid, suppress = sys.argv[1:11]
+alphas = sys.argv[11:]
+V, prev, mid = int(V), int(prev), int(mid)
+
+opts, recs = {}, []
+for tok in keys.split():
+    k, _, v = tok.partition('=')
+    if k == 'rec':
+        recs.append(v.upper())
+    else:
+        opts[k] = v
+# The bound on the judged alphas' ratio: the residual from the lerp of the two
+# canonical extents over the distance a held extent stands from it. LERPED is
+# at or below 0.25, the class boundary the area cell uses.
+rtol = float(opts.get('rtol', '0.25'))
+judged = set(opts.get('judge', judge_def).split(','))
+step_floor = float(opts.get('step', '0.5'))
+engage = opts.get('engage', '1') != '0'
+# The alpha-1 replay applies no scale, so it must print the canonical extent
+# to the trace's last digit.
+IDENT_TOL = 0.0005
+
+rx = re.compile(r'\[glint-ext vbl=(\d+) leg=(\w+) alpha=[\d.]+\] rec=(\w+) '
+                r'ext=([\d.]+) n=(\d+)')
+
+
+def load(path):
+    """First trace line per (vbl, leg, record) of one replay."""
+    out = {}
+    try:
+        for line in open(path, errors='replace'):
+            m = rx.search(line)
+            if m:
+                out.setdefault((int(m[1]), m[2], m[3].upper()), (float(m[4]), int(m[5])))
+    except OSError:
+        pass
+    return out
+
+
+legs = {a: load("%s-i%s.log" % (base, a)) for a in alphas}
+supp = load("%s-s.log" % base) if suppress else {}
+canon = legs.get('1', {})
+vacuous, bad, out = [], [], []
+worst, engaged = 0.0, 0
+if not recs:
+    vacuous.append("the row names no rec=")
+
+
+def cls(r):
+    return "LERPED" if r <= 0.25 else ("SNAP" if r >= 0.75 else "PARTIAL")
+
+
+for rec in recs:
+    c0 = canon.get((prev, 'canon', rec))
+    c1 = canon.get((V, 'canon', rec))
+    if c0 is None or c1 is None:
+        vacuous.append("rec %s: no canonical trace at VBL %d or %d" % (rec, prev, V))
+        continue
+    step = c1[0] - c0[0]
+    line = "rec %s n=%d canon%d=%.4f canon%d=%.4f step=%.4f" % (rec, c1[1], prev, c0[0], V, c1[0], step)
+    if abs(step) < step_floor:
+        vacuous.append("rec %s: extent step %.4f below the %.2f floor" % (rec, abs(step), step_floor))
+    shown = {}
+    for a in alphas:
+        s = legs[a].get((mid, 'inter', rec))
+        if s is None:
+            vacuous.append("rec %s: no intermediate trace at VBL %d, alpha=%s" % (rec, mid, a))
+            continue
+        shown[a] = s[0]
+        av = float(a)
+        ex = c0[0] + step * av
+        line += " a%s=%.4f(D=%.4f)" % (a, s[0], abs(s[0] - ex))
+        if av >= 1.0:
+            if abs(s[0] - c1[0]) > IDENT_TOL:
+                bad.append("rec %s: alpha 1 extent %.4f is not canon(V) %.4f" % (rec, s[0], c1[0]))
+            continue
+        if abs(step) < step_floor:
+            continue
+        r = abs(s[0] - ex) / ((1.0 - av) * abs(step))
+        line += " r%s=%.2f %s" % (a, r, cls(r))
+        if a in judged:
+            worst = max(worst, r)
+            if r > rtol:
+                bad.append("rec %s: alpha=%s ratio %.2f above the %.2f bound" % (rec, a, r, rtol))
+    if '0' in shown:
+        line += " own=%.4f" % abs(shown['0'] - c0[0])
+    out.append(line)
+    # The engagement leg: with the extent scale suppressed the replay
+    # holds the tick's extent, which stands the whole step from canon(V-2).
+    if suppress:
+        s = supp.get((mid, 'inter', rec))
+        if s is not None:
+            own_s = abs(s[0] - c0[0])
+            out.append("  %s=0 own=%.4f of step=%.4f" % (suppress, own_s, abs(step)))
+            if abs(step) >= step_floor and own_s >= 0.75 * abs(step):
+                engaged += 1
+
+if suppress and engage and not engaged and not vacuous:
+    vacuous.append("no record holds its tick extent under %s=0: the knob suppressed "
+                   "nothing this row can see" % suppress)
+head = "[%s] game=%s bk2=%s V=%d recs=%d worst=%.2f" % (tag, game, bk2, V, len(recs), worst)
+for r in out:
+    print("[%s]   " % tag + r)
+if vacuous:
     print(head + " VACUOUS")
     for v in vacuous:
         print("[%s]   " % tag + v)

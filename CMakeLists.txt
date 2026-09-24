@@ -602,7 +602,8 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             "cyclorama;spyro-2" "cyclorama;spyro-3"
             "particles;spyro-1" "particles;spyro-2" "particles;spyro-3"
             "flame;spyro-2" "flame;spyro-3"
-            "moby_mask;spyro-1")
+            "moby_mask;spyro-1"
+            "glint_ext;spyro-2" "glint_ext;spyro-3")
         list(GET _subtick_path_game 0 _sp)
         list(GET _subtick_path_game 1 _sg)
         add_test(NAME ${_sp}_subtick_${_sg}
