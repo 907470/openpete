@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 26134f04900e90165a59867d9289fd60fd6986e9
+# head: d941b0b19e9b64c3db93cb0199d72eab6ab5bc82
 file	function	score	marked	accepted
 core/config/config.c	harvest_args	30	0	
 core/config/config.c	harvest_base	39	0	
@@ -149,7 +149,7 @@ games/common/renderer/moby.c	shaded_pcol_scratch_check	27	0
 games/common/renderer/moby.c	shaded_verify	48	0	
 games/common/renderer/moby.c	special_census_face	38	0	
 games/common/renderer/moby.c	specular_env_calibrate	47	0	
-games/common/renderer/moby.c	walk_prologue	54	0	
+games/common/renderer/moby.c	walk_prologue	38	0	
 games/common/renderer/moby.c	walk_records	427	0	
 games/common/renderer/moby_game_spyro23.c	s23_decode_faces_stride	56	0	
 games/common/renderer/moby_game_spyro23.c	s23_env_uv	40	0	

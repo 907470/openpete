@@ -2930,12 +2930,28 @@ static const fcache_t* moby_faces_for_record(CPUState* cpu, const rec_meta* R) {
     return moby_faces_for(cpu, R->addr, R->model_held, R->faceblock,
                           R->header, R->frameA, R->zsf4);
 }
+/* The model whose own table resolves the patch list of a keyframe no cull
+ * record names. Where the record holds the keyframe as its stream word
+ * (rec_frame_is_word) the list pointer is the cull's per-record store at
+ * record +0x14, which exists for the keyframe this tick drew only; the
+ * previous tick's keyframe resolves through the table that store was read
+ * from (Model+0x34, mobydraw.s:563-569). Where the record holds a pointer
+ * into the frame array the list sits inside the keyframe and no model is
+ * needed: 0. Returns 0 on a word-form game when the moby has no animated
+ * model, which the caller reads as no previous list. */
+static uint32_t moby_prev_patch_model(CPUState* cpu, const rec_meta* R) {
+    if (!game_layout.moby.rec_frame_is_word || R->moby < 0x80000000u) return 0u;
+    uint32_t cls   = cpu->read_half(R->moby + game_layout.moby.class_off);
+    uint32_t model = cpu->read_word(game_layout.moby.model_table + cls * 4u);
+    return (model >= 0x80000000u) ? model : 0u;
+}
 /* PREV-keyframe faces for the sub-tick COLOUR crossfade (the faces the game
  * drew last tick, with last tick's patches). NULL = snap. Face-for-face
  * colour correspondence needs prev/curr to share faceblock + colour blocks
  * (true within a clip and across the blast's clip switch; anything else
  * snaps). */
-static const fcache_t* moby_faces_for_prev(CPUState* cpu, const rec_meta* R) {
+static const fcache_t* moby_faces_for_prev(CPUState* cpu, const rec_meta* R,
+                                           uint32_t model) {
     if (!moby_pose_live(R->header_p, R->frameA_p)) return NULL;
     uint32_t hp = (R->header_p >= 0x80000000u) ? R->header_p : R->header;
     if (hp != R->header) {
@@ -2943,7 +2959,27 @@ static const fcache_t* moby_faces_for_prev(CPUState* cpu, const rec_meta* R) {
             cpu->read_word(hp + ANIM_COL_HP)   != cpu->read_word(R->header + ANIM_COL_HP)   ||
             cpu->read_word(hp + ANIM_COL_FAR)  != cpu->read_word(R->header + ANIM_COL_FAR)) return NULL;
     }
-    return moby_faces_for(cpu, R->addr, 0u, R->faceblock, hp, R->frameA_p, R->zsf4);
+    return moby_faces_for(cpu, R->addr, model, R->faceblock, hp, R->frameA_p, R->zsf4);
+}
+/* The previous keyframe's faces for a record whose colour crossfade runs this
+ * present, or NULL when it does not: the record is outside the patching tier
+ * (ZSF4 <= 0, the .s gate), has no previous pose, or neither keyframe carries
+ * a patch list, in which case both decodes are the same unpatched faces and
+ * the crossfade is a no-op. Also NULL when the previous decode is the current
+ * one or has another face count, so faces correspond one for one. */
+static const fcache_t* moby_clerp_prev_faces(CPUState* cpu, const rec_meta* R,
+                                             const fcache_t* FC) {
+    if (R->zsf4 <= 0 || R->header < 0x80000000u || !moby_game.frame_patch_list ||
+        !moby_pose_live(R->header_p, R->frameA_p)) return NULL;
+    uint32_t model = moby_prev_patch_model(cpu, R);
+    if (game_layout.moby.rec_frame_is_word && !model) return NULL;
+    int curr_p = moby_pose_live(R->header, R->frameA) &&
+        moby_game.frame_patch_list(cpu, R->addr, R->model_held, R->frameA) >= 0x80000000u;
+    int prev_p = moby_game.frame_patch_list(cpu, R->addr, model, R->frameA_p) >= 0x80000000u;
+    if (!curr_p && !prev_p) return NULL;
+    const fcache_t* FCp = moby_faces_for_prev(cpu, R, model);
+    if (FCp == FC || (FCp && FCp->nfaces != FC->nfaces)) return NULL;
+    return FCp;
 }
 /* Per-channel colour lerp (values are 0x00BBGGRR walk colours). */
 static inline uint32_t moby_clerp(uint32_t a, uint32_t b, float t) {
@@ -3530,21 +3566,8 @@ static int walk_prologue(CPUState* cpu, int is_spec) {
         s_pre_FC[r] = FC;
         if (!FC) continue;
         faces += FC->nfaces;
-        /* Address arithmetic on the prev keyframe: only where the record names
-         * a keyframe by pointer. Where it names it by stream word
-         * (rec_frame_is_word) the patch list hangs off the record, not off the
-         * keyframe, and the prev record is gone by now, so the colour
-         * crossfade has no prev patch list to read and the faces snap. */
-        if (!game_layout.moby.rec_frame_is_word &&
-            R->frameA_p >= 0x80000000u && R->zsf4 > 0 && R->header >= 0x80000000u) {
-            int curr_p = (R->frameA >= 0x80000000u) && (cpu->read_word(R->frameA + 4u) & 0xFFFFu) != 0u;
-            int prev_p = (cpu->read_word(R->frameA_p + 4u) & 0xFFFFu) != 0u;
-            if (curr_p || prev_p) {
-                const fcache_t* FCp = moby_faces_for_prev(cpu, R);
-                if (FCp == FC || (FCp && FCp->nfaces != FC->nfaces)) FCp = NULL;
-                if (FCp) { s_pre_FCp[r] = FCp; s_pre_clra[r] = R->clr_alpha; s_clerp_recs++; }
-            }
-        }
+        const fcache_t* FCp = moby_clerp_prev_faces(cpu, R, FC);
+        if (FCp) { s_pre_FCp[r] = FCp; s_pre_clra[r] = R->clr_alpha; s_clerp_recs++; }
     }
     int nw = openpete_workpool_threads();
     if (nw > MN_MAX_WORKERS) nw = MN_MAX_WORKERS;
