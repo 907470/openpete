@@ -432,7 +432,13 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; float pvz; } openpe
 /* A scene triangle. When `textured` is 0 it is gouraud-shaded from the vertex
  * rgba (the cyclorama, and untextured moby faces). When 1, it samples the PSX
  * VRAM mirror via the material below (tpage/CLUT/bpp in VRAM-pixel units, exactly
- * the GTE/GPU encoding) and modulates by rgba (tex*colour/128). 3a.3. */
+ * the GTE/GPU encoding) and modulates by rgba (tex*colour/128). 3a.3.
+ * A textured tri's vertex ALPHA byte is not a blend alpha. 0xFF, which every
+ * feeder but the moby walk states, draws the tri's CLUT row alone. A value
+ * with a high nibble h below 15 and a nonzero low nibble q, constant over the
+ * tri, blends the drawn colour by q/30 toward the colour the same CLUT index
+ * h - 7 rows from clut_y draws (the moby fog band between two ticks;
+ * psx_scene.frag clut_fog_mix). */
 /* blend: 0 = opaque; 1 = PSX semi-transparent ABR mode 0 ((B+F)/2) -> alpha blend;
  * 2 = ABR mode 1 (B+F) -> additive blend (3b.1, flame/glows: src ONE + dst ONE);
  * 3 = ABR mode 2 (B-F) -> subtractive blend (3b.2, shadows: reverse-subtract,

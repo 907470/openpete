@@ -2305,6 +2305,7 @@ typedef struct {
     ntri_vert v[3];
     int textured, tpage_x, tpage_y, clut_x, clut_y, bpp;  /* PSX material (VRAM px) */
     int blend;   /* 0 = opaque, 1 = semi-transparent (prim ABE bit) */
+    uint8_t tmix;  /* second fogged-CLUT row and weight (moby_texel_fog_mix), 0 = none */
 } ntri_t;
 #define MAX_NTRI (MAX_PRIMS * 2)              /* GT4 quad -> 2 tris */
 
@@ -2393,6 +2394,7 @@ static _Thread_local int8_t   s_cur_moby_dofs;  /* authored OT bias (set beside 
 static _Thread_local float    s_cur_env_az;     /* current record's TR azimuth (env-UV bias) */
 static _Thread_local uint32_t s_emit_fkey;      /* packed index triple for the next emit_wtri */
 static _Thread_local uint8_t  s_emit_special;   /* special-material id for the next emit_wtri */
+static _Thread_local uint8_t  s_emit_tmix;      /* texel fog-row mix for the next emit_wtri */
 #define PACK_FKEY(a,b,c) (((uint32_t)(a)&0x3FFu) | (((uint32_t)(b)&0x3FFu)<<10) | (((uint32_t)(c)&0x3FFu)<<20))
 
 /* signed 2*area of a screen-space triangle (NCLIP analog) -- backface/winding. */
@@ -2546,6 +2548,8 @@ static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
     t->v[1]=(ntri_vert){b->sx,b->sy,b->vz,ub,vb,cb, b->ex,b->ey,b->ez, b->tvz};
     t->v[2]=(ntri_vert){c->sx,c->sy,c->vz,uc,vc,cc, c->ex,c->ey,c->ez, c->tvz};
     t->textured=tex;t->tpage_x=tpx;t->tpage_y=tpy;t->clut_x=clx;t->clut_y=cly;t->bpp=bpp;t->blend=blend;
+    t->tmix = s_emit_tmix;
+    s_emit_tmix = 0;
     t_diag->emitted++;
 }
 
@@ -2703,9 +2707,11 @@ static int moby_color_fade_ir0(CPUState* cpu, int zsf4, uint32_t header, uint32_
 /* A record's colour fade on one present. frac 0: ir0 is the GTE's integer IR0
  * and every channel goes through the bit-exact DPCS mirror. frac 1 (a sub-tick
  * present whose ZSF4 is fractional): ir0f is IR0 at full precision and the
- * channel is the DPCS lerp at that IR0 (dpcs_ch_f); ir0 is its floor, which
- * the CLUT-row fog reads. */
-typedef struct { int ir0; double ir0f; int frac; } moby_fade_t;
+ * channel is the DPCS lerp at that IR0 (dpcs_ch_f); ir0 is its floor.
+ * row is the fogged-CLUT row the textured faces sample (IR0 >> 9 on the
+ * integer path) and tmix the second row and its weight, packed as a textured
+ * scene vertex's alpha byte (moby_texel_fog_mix); 0 = the one row alone. */
+typedef struct { int ir0; double ir0f; int frac; int row; uint8_t tmix; } moby_fade_t;
 
 /* DPCS of one 8-bit channel toward a 12-bit far colour at a fractional IR0:
  * floor((c<<16 + IR0 * (fc - (c<<4))) / 65536), the GTE's own truncation
@@ -2769,6 +2775,39 @@ static uint32_t moby_color_at_host(const uint8_t* cb, const uint8_t* fbp,
                          (int)((fw >> 12) & 0xFF0u), fd);
 }
 
+/* The fog band's IR0 at a ZSF4, clamped to the band's CLUT-row range. */
+static int moby_fog_band_ir0(int zsf4) {
+    int v = (1024 - zsf4) * 4;
+    return v < 0 ? 0 : (v > 4092 ? 4092 : v);
+}
+
+/* The fogged-CLUT rows a fractional fog-band present samples. The draw biases
+ * a textured face's CLUT row by IR0 >> 9 (.s @8001FE04-FE08), so the texel side
+ * of the fade steps once per 512 IR0 while the vertex side (dpcs_ch_f) moves
+ * continuously. The present blends the rows of its two canonical ends instead:
+ * t = (IR0 - IR0_curr) / (IR0_prev - IR0_curr), clamped to 0..1, weights the
+ * previous tick's row, IR0_prev from the previous tick's integer ZSF4 when the
+ * snapshot holds its full-precision centre (the entry fade_snap_present_z
+ * lerps from), IR0_curr = this tick's. The nearer end is the base row (the
+ * face's CLUT y) and the other rides the vertex alpha byte as
+ * ((other - base + 7) << 4) | round(30 w), w = min(t, 1 - t) in 0..0.5; the
+ * scene fragment stages decode it (psx_scene.frag). Both canonical ends read
+ * one row: t 0 is the tick's own row and t 1 the previous tick's. */
+static void moby_texel_fog_mix(const rec_meta* R, moby_fade_t* fd) {
+    const int ir0c = moby_fog_band_ir0(R->zsf4);
+    const fade_ent* p = fade_snap_find(s_fade_prev, s_fade_prev_n, R->moby);
+    const int ir0p = (p && p->dist) ? moby_fog_band_ir0(p->zsf4) : ir0c;
+    const int rc = ir0c >> 9, rp = ir0p >> 9;
+    fd->row = rc; fd->tmix = 0;
+    if (rc == rp) return;
+    double t = (fd->ir0f - (double)ir0c) / (double)(ir0p - ir0c);
+    t = t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
+    const int base = t <= 0.5 ? rc : rp, other = t <= 0.5 ? rp : rc;
+    const int wq = (int)lround((t <= 0.5 ? t : 1.0 - t) * 30.0);
+    fd->row = base;
+    if (wq > 0) fd->tmix = (uint8_t)(((other - base + 7) << 4) | wq);
+}
+
 /* The record's per-vertex colour base and colour fade for this present, by its
  * LOD tier (ladder documented at moby_tier_faceblock; the tier is always the
  * tick's zsf4). NEAR (ZSF4 >= 1024): model colours (hdr+0x18) raw. FOG band
@@ -2792,15 +2831,17 @@ static uint32_t moby_record_fade(CPUState* cpu, const rec_meta* R, uint32_t* far
     const double z = frac ? R->zf : (double)R->zsf4;
     const int hdr_ok = R->header >= 0x80000000u;
     *farbase = 0; *fcc = NULL;
-    fd->ir0 = 0; fd->ir0f = 0.0; fd->frac = frac;
+    fd->ir0 = 0; fd->ir0f = 0.0; fd->frac = frac; fd->row = 0; fd->tmix = 0;
     if (R->zsf4 > 0) {
         if (!frac) {
             fd->ir0 = moby_color_fade_ir0(cpu, R->zsf4, R->header, farbase);
             fd->ir0f = (double)fd->ir0;
+            fd->row = fd->ir0 >> 9;
         } else if ((*farbase = moby_fog_farbase(cpu, R->header)) != 0u) {
             double v = (1024.0 - z) * 4.0;
             fd->ir0f = v < 0.0 ? 0.0 : (v > 4092.0 ? 4092.0 : v);
             fd->ir0 = (int)fd->ir0f;
+            moby_texel_fog_mix(R, fd);
         }
         return hdr_ok ? cpu->read_word(R->header + ANIM_COL_HP) : 0u;
     }
@@ -2817,6 +2858,16 @@ static uint32_t moby_record_fade(CPUState* cpu, const rec_meta* R, uint32_t* far
         *fcc = fogfc;
     }
     return hdr_ok ? cpu->read_word(R->header + ANIM_COL_FAR) : 0u;
+}
+
+/* A face's fogged-CLUT row offset: the fog band's row (moby_fade_t.row); the
+ * LP band's constant-colour fade (fcc) biases no row. */
+static int moby_face_fog_row(const moby_fade_t* fd, const int* fcc) {
+    return fcc ? 0 : fd->row;
+}
+/* The face's second-row mix, 0 wherever the row offset is 0 by fcc. */
+static uint8_t moby_face_fog_mix(const moby_fade_t* fd, const int* fcc) {
+    return fcc ? 0 : fd->tmix;
 }
 
 /* ---- Tier-1 face-decode cache (one entry per faceblock) -------------------
@@ -3431,7 +3482,8 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
              * (the ram's white blowout at the LP boundary, verified +6 rows at
              * ir0=3512 vs the captured .s prims). Per-record and view-dependent,
              * so applied here at emit — never baked into the Tier-1 face cache. */
-            int cly_fog = (dpcs_ir0 > 0 && !fcc) ? (dpcs_ir0 >> 9) : 0;
+            int cly_fog = moby_face_fog_row(&fd, fcc);
+            uint8_t tmix = moby_face_fog_mix(&fd, fcc);
             cly += cly_fog;
             int u[4]={F->u[0],F->u[1],F->u[2],F->u[3]}, v[4]={F->v[0],F->v[1],F->v[2],F->v[3]};
             /* #1 SPECULAR per-face shading. STRIP faces (!fresh) with word0&0x4
@@ -3480,6 +3532,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                 if (umin < 0) for (int q = 0; q < nvtx; q++) u[q] += 128;
                 textured = 1;   /* env faces sample the reflection texture */
                 tpx=s_env_tpx; tpy=s_env_tpy; clx=s_env_clx; cly=s_env_cly; bpp=s_env_bpp;
+                tmix = 0;   /* the reflection CLUT carries no fog row */
                 /* FLAMED-METAL heat red-shift (.L80021FE0, gated heat!=0): the .s
                  * red-shifts the env face's modulating colour by a2=(ms>>16)&0xFF
                  * (R+=a2, G-=a2, B-=a2, clamp) before the env UV -- so a heated
@@ -3606,6 +3659,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
             if (emit_a) {
                 s_emit_otk = moby_otk_tri(ot_bk, MOBY_OTK_TRI_A);
                 s_emit_fkey = PACK_FKEY(i0,i1,i2);
+                s_emit_tmix = tmix;
                 emit_wtri(p0,p1,p2, c0,c1,c2, u[0],v[0],u[1],v[1],u[2],v[2],
                           textured,tpx,tpy,clx,cly,bpp,blend);
             }
@@ -3614,11 +3668,13 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                 if (b_is_v3tri) {        /* tri-2nd (v3,v1,v2) */
                     s_emit_otk = moby_otk_tri(otk_b, MOBY_OTK_TRI_V3);
                     s_emit_fkey = PACK_FKEY(i3,i1,i2);
+                    s_emit_tmix = tmix;
                     emit_wtri(p3,p1,p2, c3,c1,c2, u[3],v[3],u[1],v[1],u[2],v[2],
                               textured,tpx,tpy,clx,cly,bpp,blend);
                 } else {                 /* quad 2nd half (v1,v3,v2) */
                     s_emit_otk = moby_otk_tri(otk_b, MOBY_OTK_TRI_QUAD_B);
                     s_emit_fkey = PACK_FKEY(i1,i3,i2);
+                    s_emit_tmix = tmix;
                     emit_wtri(p1,p3,p2, c1,c3,c2, u[1],v[1],u[3],v[3],u[2],v[2],
                               textured,tpx,tpy,clx,cly,bpp,blend);
                 }
@@ -5021,6 +5077,12 @@ static void moby_tri_debug(void) {
     }
 }
 
+/* A walk triangle's vertex alpha byte: 0xFF, or on a textured face the
+ * second fogged-CLUT row and its weight (openpete_scene_vert.rgba). */
+static uint32_t moby_tri_alpha(const ntri_t* w) {
+    return (w->textured && w->tmix) ? ((uint32_t)w->tmix << 24) : 0xFF000000u;
+}
+
 /* Append the moby triangles to the native scene (panel 0). Frame-keyed begin
  * composes with the cyclorama (drawn first, owns the bg fill) — mobys append
  * on top. Depth ordering is the real per-pixel Z-buffer (3a.3): each vertex
@@ -5061,7 +5123,7 @@ static void push_scene_moby(void) {
             t.v[k].pvz  = openpete_native_scene_viewz(openpete_worldvz_full(s_wtri[i].v[k].tvz));
             t.v[k].u    = (float)s_wtri[i].v[k].u;
             t.v[k].v    = (float)s_wtri[i].v[k].v;
-            t.v[k].rgba = s_wtri[i].v[k].rgb | 0xFF000000u;
+            t.v[k].rgba = (s_wtri[i].v[k].rgb & 0xFFFFFFu) | moby_tri_alpha(&s_wtri[i]);
         }
         t.textured = s_wtri[i].textured;
         t.tpage_x  = s_wtri[i].tpage_x; t.tpage_y = s_wtri[i].tpage_y;
