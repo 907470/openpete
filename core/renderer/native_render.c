@@ -5923,23 +5923,56 @@ static int occl_cam_in_bound(const openpete_occl_camera *q)
     return tr >= occl_cam_turn_trace();
 }
 
+/* The query-outcome index that refuses every verdict on the held grid, or -1
+ * when the grid and its screen affine are usable. */
+static int occl_grid_refusal(void)
+{
+    if (!s_occl_have) return OPENPETE_OCCL_Q_NOGRID;
+    if (s_occl_suspend > 0) return OPENPETE_OCCL_Q_SUSPENDED;
+    if (s_occl_presents - s_occl_stamp > 8u) return OPENPETE_OCCL_Q_STALE;
+    return -1;
+}
+
+typedef struct { float u0, u1, v0, v1; } occl_uv_rect;
+
+/* A PSX-screen-px rect mapped through the grid's affine into [0,1] extent
+ * coordinates, ordered low to high. */
+static occl_uv_rect occl_rect_uv(float sx0, float sy0, float sx1, float sy1)
+{
+    occl_uv_rect r = { s_occl_uax * sx0 + s_occl_ubx, s_occl_uax * sx1 + s_occl_ubx,
+                       s_occl_vay * sy0 + s_occl_vby, s_occl_vay * sy1 + s_occl_vby };
+    if (r.u1 < r.u0) { float t = r.u0; r.u0 = r.u1; r.u1 = t; }
+    if (r.v1 < r.v0) { float t = r.v0; r.v0 = r.v1; r.v1 = t; }
+    return r;
+}
+
+/* Native frustum cull: fully outside the visible extent (the same extent the
+ * affine maps, Hor+ widened when active) contributes zero pixels regardless of
+ * depth. The game's view cone is wider than the screen, so enclosed areas queue
+ * plenty of these. vz guard: behind-camera / near-plane-straddling projections
+ * are garbage coordinates, so their rect is never trusted. (vz_near already
+ * carries the caller's staleness slack.) */
+static int occl_uv_offscreen(const occl_uv_rect *r, float vz_near)
+{
+    return vz_near > 256.0f && (r->u1 < 0.0f || r->u0 > 1.0f || r->v1 < 0.0f || r->v0 > 1.0f);
+}
+
+int openpete_native_occl_offscreen(float sx0, float sy0, float sx1, float sy1, float vz_near)
+{
+    if (occl_grid_refusal() >= 0) return 0;
+    occl_uv_rect r = occl_rect_uv(sx0, sy0, sx1, sy1);
+    if (!occl_uv_offscreen(&r, vz_near)) return 0;
+    s_occl_qstat[OPENPETE_OCCL_Q_OFFSCREEN]++;
+    return 1;
+}
+
 int openpete_native_occl_query(float sx0, float sy0, float sx1, float sy1, float vz_near,
                                const openpete_occl_camera *cam)
 {
-    if (!s_occl_have) { s_occl_qstat[OPENPETE_OCCL_Q_NOGRID]++; return 0; }
-    if (s_occl_suspend > 0) { s_occl_qstat[OPENPETE_OCCL_Q_SUSPENDED]++; return 0; }
-    if (s_occl_presents - s_occl_stamp > 8u) { s_occl_qstat[OPENPETE_OCCL_Q_STALE]++; return 0; }
-    float u0 = s_occl_uax * sx0 + s_occl_ubx, u1 = s_occl_uax * sx1 + s_occl_ubx;
-    float v0 = s_occl_vay * sy0 + s_occl_vby, v1 = s_occl_vay * sy1 + s_occl_vby;
-    if (u1 < u0) { float t = u0; u0 = u1; u1 = t; }
-    if (v1 < v0) { float t = v0; v0 = v1; v1 = t; }
-    /* Native frustum cull: fully outside the visible extent (the same extent
-     * the affine maps — Hor+ widened when active) contributes zero pixels
-     * regardless of depth. The game's view cone is wider than the screen, so
-     * enclosed areas queue plenty of these. vz guard: behind-camera / near-
-     * plane-straddling projections are garbage coordinates — never trust
-     * their rect. (vz_near already carries the caller's staleness slack.) */
-    if (vz_near > 256.0f && (u1 < 0.0f || u0 > 1.0f || v1 < 0.0f || v0 > 1.0f)) {
+    int refusal = occl_grid_refusal();
+    if (refusal >= 0) { s_occl_qstat[refusal]++; return 0; }
+    occl_uv_rect r = occl_rect_uv(sx0, sy0, sx1, sy1);
+    if (occl_uv_offscreen(&r, vz_near)) {
         s_occl_qstat[OPENPETE_OCCL_Q_OFFSCREEN]++;
         return 1;
     }
@@ -5965,8 +5998,8 @@ int openpete_native_occl_query(float sx0, float sy0, float sx1, float sy1, float
      * is outside the visible extent (zero pixels by definition), so only the
      * on-grid slice needs the depth test. All-near cells there ⇒ every pixel
      * the moby could produce is behind nearer opaque WORLD ⇒ cullable. */
-    int cx0 = (int)floorf(u0 * (float)OCCL_GW) - 1, cx1 = (int)floorf(u1 * (float)OCCL_GW) + 1;
-    int cy0 = (int)floorf(v0 * (float)OCCL_GH) - 1, cy1 = (int)floorf(v1 * (float)OCCL_GH) + 1;
+    int cx0 = (int)floorf(r.u0 * (float)OCCL_GW) - 1, cx1 = (int)floorf(r.u1 * (float)OCCL_GW) + 1;
+    int cy0 = (int)floorf(r.v0 * (float)OCCL_GH) - 1, cy1 = (int)floorf(r.v1 * (float)OCCL_GH) + 1;
     if (cx0 < 0) cx0 = 0; if (cy0 < 0) cy0 = 0;
     if (cx1 >= OCCL_GW) cx1 = OCCL_GW - 1;
     if (cy1 >= OCCL_GH) cy1 = OCCL_GH - 1;

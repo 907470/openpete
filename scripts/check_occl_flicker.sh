@@ -47,6 +47,15 @@
 #               view, counted separately as `entering`.
 #   flicker     a sector two neighbouring canonical walks emit and the walk
 #               between them does not.
+#   latoff      sectors a re-extract culls whose canonical walk rejected them
+#               off screen while the re-extract's own rect, under its own
+#               camera, is on screen ([fardbg-hdr] latoff=). The interpolated
+#               camera lags the tick camera, so a reused frustum verdict drops
+#               terrain still in frame. Reported summed over the re-extracts,
+#               as their per-walk maximum, and summed over the canonical walks
+#               (0 by construction: a canonical walk tests its own rect).
+#               offadm is the same set kept, the engagement of the per-walk
+#               frustum test.
 #   wrong       the holes and flicker events at a tick that admitted a query
 #               whose camera was outside the shipped bound, so the grid it
 #               read was rasterized under another camera and the sectors it
@@ -170,7 +179,7 @@ for LEG in $LEGS; do
     while :; do
         rm -f "$LOG"
         env "${WSLENV_ARGS[@]}" "$EXE" \
-            --vibration 0 --no-config --mute 1 --no-card --disc "$DISC_ABS" \
+            --vibration 0 --input-lock --no-config --mute 1 --no-card --disc "$DISC_ABS" \
             --renderer vk --skip-to-level "$LEVEL" --lod extended \
             --vsync 0 --render-fps 60 \
             --freecam-path "ticks=$TICKS;$WP_A;$WP_B" \
@@ -208,6 +217,7 @@ cam_re = re.compile(r"\[cam f=(\d+)\] pos=\((-?\d+), (-?\d+), (-?\d+)\)")
 sec_re = re.compile(r"\[fardbg-secend\] s=(\d+) tris=(\d+)")
 hdr_re = re.compile(r"\[fardbg-hdr\] frame=(\d+) walk=(\d+) sub=(\d) alpha=([-\d.]+) "
                     r"occl=(-?\d+) gridage=(-?\d+)")
+lat_re = re.compile(r"latoff=(\d+) offadm=(\d+)")
 inb_re = re.compile(r"\[occl-inbound\].* d=([\d.]+) tr=([-\d.]+)")
 # The query-outcome census, printed once a second. vis and cull are the
 # verdicts taken from the grid; moved is the refusal when the querying camera
@@ -240,8 +250,11 @@ for line in open(log, errors="replace"):
         continue
     m = hdr_re.search(line)
     if m:
+        la = lat_re.search(line)
         walks.append(dict(frame=int(m.group(1)), sub=int(m.group(3)),
                           occl=int(m.group(5)), gridage=int(m.group(6)),
+                          latoff=int(la.group(1)) if la else -1,
+                          offadm=int(la.group(2)) if la else -1,
                           secs=secs, inbound=inbound))
         secs, inbound = {}, []
 
@@ -300,6 +313,12 @@ occl_total = sum(occl)
 occl_mean = occl_total / len(occl) if occl else 0.0
 admitted = sum(len(w["inbound"]) for w in walks)
 q_depth = q_vis + q_cull + q_moved
+subs = [w for w in walks if w["sub"]]
+lat_inter = sum(max(w["latoff"], 0) for w in subs)
+lat_inter_max = max([w["latoff"] for w in subs], default=0)
+lat_can = sum(max(w["latoff"], 0) for w in walks if not w["sub"])
+off_adm = sum(max(w["offadm"], 0) for w in subs)
+lat_walks = sum(1 for w in subs if w["latoff"] > 0)
 
 # The camera held its waypoints: every sampled position lies on the flown
 # segment, and the samples span most of it. The pose is reported in whole
@@ -344,10 +363,12 @@ else:
 print("[occl-flicker] leg=%s ticks=%d walks=%d inter=%d holes=%d entering=%d "
       "flickerTicks=%d flickerEvents=%d wrong=%d admitted=%d qCull=%d "
       "qMoved=%d occlTotal=%d occlMean=%.3f poseOff=%.1f poseSpan=%.2f "
+      "latoff=%d latoffMax=%d latoffWalks=%d latoffCan=%d offadm=%d "
       "verdict=%s%s"
       % (leg, len(ticks), len(walks), inter, holes, entering, flick_ticks,
          flick_events, wrong, admitted, q_cull, q_moved, occl_total,
-         occl_mean, off_max, span, verdict,
+         occl_mean, off_max, span, lat_inter, lat_inter_max, lat_walks,
+         lat_can, off_adm, verdict,
          (" reason=" + "; ".join(reasons)) if reasons else ""))
 for f, miss, d in wrong_detail[:12]:
     print("[occl-flicker]   wrong frame=%d sectors=%s maxQueryDelta=%.1f" % (f, miss, d))

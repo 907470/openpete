@@ -2093,13 +2093,20 @@ static long s_tocc_culled;   /* sectors occlusion-culled this window (census) */
  * presents of one tick, so terrain that the tick's canonical walk emits
  * disappears for the rest of the tick and returns at the next one. The
  * canonical walk's verdict is latched here and every re-extract of that tick
- * reuses it, so the admitted set is a property of the tick. A sector the
- * canonical walk did not reach is not latched and is kept (conservative:
- * the cull is a perf skip and may only ever remove provably hidden work). */
+ * reuses its depth half (TOCC_DEPTH), so the depth-admitted set is a property
+ * of the tick; the frustum half is re-tested on each walk's own rect
+ * (tocc_sector_verdict), and a latched TOCC_FRUSTUM only feeds the census. A
+ * sector the canonical walk did not reach is not latched and is kept
+ * (conservative: the cull is a perf skip and may only ever remove provably
+ * hidden work). */
 static openpete_occl_camera s_occl_cam;  /* this walk's camera, for the occluder grid */
-static uint8_t  s_tocc_latch[1024];      /* 1 = the tick's canonical walk culled it */
+static uint8_t  s_tocc_latch[1024];      /* TOCC_* verdict the tick's canonical walk took */
 static uint32_t s_tocc_latch_stamp[1024];
 static uint32_t s_tocc_tick;             /* serial of the last canonical walk */
+/* Per-walk census (OPENPETE_TERRAIN_FARDBG header): sectors whose canonical
+ * walk rejected them off screen while this walk's own rect is on screen,
+ * split by whether this walk culled them (latoff) or kept them (offadm). */
+static int s_tocc_latoff, s_tocc_offadm;
 static void tsc_census(void) {   /* OPENPETE_TERRAIN_CACHE_DBG: ~1/sec hit/miss */
     static int on = -1, n;
     ENV_FLAG_LATCH(on, "OPENPETE_TERRAIN_CACHE_DBG");
@@ -6495,6 +6502,47 @@ static uint32_t tc_global_flags(int nearhq, int lod_handoff) {
          | ((s_otbias_on && openpete_native_key_resolve_on()) ? OPTC_GF_KEYON : 0u);
 }
 
+/* Sector occlusion-cull verdicts, in the order they are tested. */
+enum { TOCC_KEEP = 0, TOCC_FRUSTUM = 1, TOCC_DEPTH = 2 };
+
+/* The occlusion-cull verdict for sector i, whose view-space bounding sphere
+ * is (oc1, oc2, oc3) with the given radius, under this walk's camera.
+ *
+ * The frustum reject is a test on the sector's own projected rect, so every
+ * walk evaluates it under its own camera. The depth verdict reads the
+ * occluder grid, which advances once per present while the canonical walk
+ * runs once per tick: a sub-tick re-extract reuses its tick's canonical depth
+ * verdict (s_tocc_latch) instead of querying a grid that has moved on. A
+ * reused frustum verdict would be wrong in the other direction: the
+ * re-extract's interpolated camera lags the tick camera, so a sector the tick
+ * camera has panned off is still in the re-extract's frame. A sector not
+ * wholly in front of the camera has a meaningless rect and is kept. */
+static int tocc_sector_verdict(uint32_t i, double oc1, double oc2, double oc3,
+                               double radius)
+{
+    if (!(oc3 > radius + 1.0)) return TOCC_KEEP;
+    double inv = s_H / oc3;
+    float sx  = (float)(s_ofx + oc1 * inv);
+    float sy  = (float)(s_ofy + oc2 * inv);
+    float rpx = (float)(radius * inv * 1.5 + 8.0);            /* generous bbox */
+    float vz_near = (float)((oc3 - radius) * 16.0);           /* world/16 → full-world */
+    int own_off = openpete_native_occl_offscreen(sx - rpx, sy - rpx,
+                                                 sx + rpx, sy + rpx, vz_near);
+    if (!s_vanim_sub) {
+        if (own_off) return TOCC_FRUSTUM;
+        return openpete_native_occl_query(sx - rpx, sy - rpx, sx + rpx, sy + rpx,
+                                          vz_near, &s_occl_cam) ? TOCC_DEPTH : TOCC_KEEP;
+    }
+    int lat = (i < 1024u && s_tocc_latch_stamp[i] == s_tocc_tick) ? s_tocc_latch[i]
+                                                                  : TOCC_KEEP;
+    int v = own_off ? TOCC_FRUSTUM : (lat == TOCC_DEPTH ? TOCC_DEPTH : TOCC_KEEP);
+    if (lat == TOCC_FRUSTUM && !own_off) {
+        if (v) s_tocc_latoff++;
+        else   s_tocc_offadm++;
+    }
+    return v;
+}
+
 static void terrain_build(CPUState* cpu, int32_t occGroup) {
     ngte_view_build(cpu, &s_view);
     /* Publish this walk's camera for the occluder grid: the depth pre-pass of
@@ -6520,6 +6568,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     }
     if (!s_vanim_sub) s_tocc_tick++;
     s_fardbg_occl0 = s_tocc_culled;
+    s_tocc_latoff = s_tocc_offadm = 0;
     s_tv_n = 0; s_tri_n = 0; s_cv_n = 0; s_walk_sectors = 0;
     s_dbg_faces = s_dbg_oob = s_dbg_nclip = s_dbg_behind = s_dbg_spike = s_dbg_clipped = 0;
     s_dbg_spike_tris = 0;
@@ -7069,33 +7118,14 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             s_secv_stamp[i] = s_vanim_pres;
         }
         if (s_tocc) {
-            int culled = 0;
-            if (s_vanim_sub) {
-                /* Re-extract: reuse this tick's canonical verdict, never the
-                 * grid, which has advanced by whole presents since. The
-                 * front-of-camera test is re-applied so a sector the
-                 * interpolated camera has moved onto keeps its geometry
-                 * whatever the canonical walk decided. */
-                culled = (i < 1024u && s_tocc_latch_stamp[i] == s_tocc_tick
-                          && oc3 > (double)SC->radius + 1.0)
-                         ? s_tocc_latch[i] : 0;
-            } else if (oc3 > (double)SC->radius + 1.0) {   /* wholly in front of camera */
-                double inv = s_H / oc3;
-                float sx  = (float)(s_ofx + oc1 * inv);
-                float sy  = (float)(s_ofy + oc2 * inv);
-                float rpx = (float)((double)SC->radius * inv * 1.5 + 8.0);  /* generous bbox */
-                float vz_near = (float)((oc3 - (double)SC->radius) * 16.0);  /* world/16 → full-world */
-                culled = openpete_native_occl_query(sx - rpx, sy - rpx,
-                                                    sx + rpx, sy + rpx, vz_near,
-                                                    &s_occl_cam);
-            }
+            int culled = tocc_sector_verdict(i, oc1, oc2, oc3, (double)SC->radius);
             if (!s_vanim_sub && i < 1024u) {
                 s_tocc_latch[i] = (uint8_t)culled;
                 s_tocc_latch_stamp[i] = s_tocc_tick;
             }
             if (culled) {
                 s_tocc_culled++;
-                continue;   /* fully behind nearer terrain — skip extraction */
+                continue;   /* off screen or behind nearer terrain: skip extraction */
             }
         }
 
@@ -7525,12 +7555,14 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * (untextured gouraud), 0x34/0x3C = HP (textured gouraud). */
     if (s_fardbg_active) {
         fprintf(stderr, "[fardbg-hdr] frame=%u walk=%d sub=%d alpha=%.4f occl=%ld gridage=%d "
-                        "prims=%u sampled=%d fogRefBase=%d cullS2=%d cullRaw=0x%X\n",
+                        "prims=%u sampled=%d fogRefBase=%d cullS2=%d cullRaw=0x%X "
+                        "latoff=%d offadm=%d\n",
                 openpete_frame, s_fardbg_walk, s_vanim_sub,
                 (s_vanim_sub && s_vanim_on) ? s_vanim_alpha : 1.0,
                 s_tocc_culled - s_fardbg_occl0, openpete_native_occl_grid_age(),
                 s_prim_total, s_gte_n, fogRefBase, cullRefS2,
-                (unsigned)tenv_rd(cpu, game_layout.env.cull_dist));
+                (unsigned)tenv_rd(cpu, game_layout.env.cull_dist),
+                s_tocc_latoff, s_tocc_offadm);
         for (int c = 0; c < 256; c++)
             if (s_code_hist[c])
                 fprintf(stderr, "[fardbg-hist] code=%02X n=%u\n", c, s_code_hist[c]);

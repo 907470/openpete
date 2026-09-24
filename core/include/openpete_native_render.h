@@ -1334,6 +1334,13 @@ typedef struct openpete_occl_camera {
 void openpete_native_occl_set_camera(const openpete_occl_camera *c);
 int  openpete_native_occl_query(float sx0, float sy0, float sx1, float sy1, float vz_near,
                                 const openpete_occl_camera *cam);
+/* The frustum half of openpete_native_occl_query alone: 1 when the rect lies
+ * wholly outside the visible extent, a test on the rect's own geometry that
+ * reads no depth and no camera. It returns 0 whenever the query would refuse
+ * the grid (absent, suspended, stale), since the extent affine arrives with
+ * the grid. A caller that reuses a depth verdict across cameras applies this
+ * to its current rect instead of reusing a stored frustum verdict. */
+int  openpete_native_occl_offscreen(float sx0, float sy0, float sx1, float sy1, float vz_near);
 void openpete_native_occl_suspend(int presents);
 /* Query-outcome census (cumulative counters; diagnostics). OFFSCREEN = culled
  * because the rect lies fully outside the visible extent (native frustum cull

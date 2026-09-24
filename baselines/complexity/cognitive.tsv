@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 0e95f64429f8a6d425e96072624392908a4e54a2
+# head: 01bd99828b0a231a84040fd0566143ac113a0630
 file	function	score	marked	accepted
 core/config/config.c	harvest_args	30	0	
 core/config/config.c	harvest_base	39	0	
@@ -73,7 +73,6 @@ core/renderer/native_render.c	native_postfx_run	53	0
 core/renderer/native_render.c	native_render_screenshot_all_impl	52	0	
 core/renderer/native_render.c	native_terrain_key_pass	66	0	
 core/renderer/native_render.c	openpete_native_hdfold_intern	32	0	
-core/renderer/native_render.c	openpete_native_occl_query	27	0	
 core/renderer/native_render.c	openpete_native_render_init	164	0	
 core/renderer/native_render.c	openpete_native_render_snapshot_frozen	26	0	
 core/renderer/native_render.c	openpete_native_scene_add_tri_grouped	43	0	
@@ -178,7 +177,7 @@ games/common/renderer/terrain.c	portal_rim_classify	66	0
 games/common/renderer/terrain.c	sector_verdicts	27	0	
 games/common/renderer/terrain.c	td_scan_verts	26	0	
 games/common/renderer/terrain.c	terrain_animdbg	44	0	
-games/common/renderer/terrain.c	terrain_build	573	0	
+games/common/renderer/terrain.c	terrain_build	564	0	
 games/common/renderer/terrain.c	terrain_compare	313	0	
 games/common/renderer/terrain.c	terrain_feed_native	463	0	
 games/common/renderer/terrain.c	terrain_near_emit	29	0	
