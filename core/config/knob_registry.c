@@ -559,6 +559,14 @@ static int env_set_str(knob_desc_t *k, const char *v) {
 static double skiplevel_get(const knob_desc_t *k) { (void)k; return g_opts ? (double)g_opts->skip_to_level : 0.0; }
 static double skipcutscene_get(const knob_desc_t *k) { (void)k; return g_opts ? (double)g_opts->skip_to_cutscene : 0.0; }
 
+static void skiparea_get_str(const knob_desc_t *k, char *buf, size_t cap) {
+    (void)k;
+    if (g_opts && g_opts->skip_to_area_level > 0)
+        snprintf(buf, cap, "%d:%d", g_opts->skip_to_area_level, g_opts->skip_to_area);
+    else
+        snprintf(buf, cap, "(none)");
+}
+
 static void cheats_get_str(const knob_desc_t *k, char *buf, size_t cap) {
     (void)k;
     snprintf(buf, cap, "%s",
@@ -982,6 +990,13 @@ static const knob_desc_t g_builtin[] = {
       "boot.",
       KNOB_INT, KNOB_RESTART_ONLY, NULL, 0, 0, 99,
       skipcutscene_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    { "skip_to_area", "Skip to sub-area", "Gameplay", "--skip-to-area", NULL,
+      "Boot into a level's sub-area, level:area (Spyro 3: the skate parks and "
+      "the areas behind a level's portals), entered through the game's own "
+      "sub-area transition once the level is live. One-shot at boot.",
+      KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
+      NULL, NULL, skiparea_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "freecam", "Free camera", "Gameplay", NULL, "OPENPETE_FREECAM",
       "Debug free camera (same toggle as the F key / stick click). "

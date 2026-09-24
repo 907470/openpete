@@ -145,6 +145,16 @@ void game_set_skip_to_cutscene(int cutscene_id);
  * for the list; a game without cutscene targets says so). */
 int game_resolve_cutscene_arg(const char* arg);
 
+/* --skip-to-area <level>:<area>: resolve the argument to the level id and,
+ * through *out_area, the sub-area index. Returns -1 with the valid targets
+ * printed for an empty, unknown or unreachable argument; a game without
+ * sub-area targets says so. */
+int game_resolve_area_arg(const char* arg, int* out_area);
+
+/* Arm --skip-to-area: the level's skip, then the sub-area entry. Called
+ * after game_set_skip_to_level and replaces its level. level 0 = disabled. */
+void game_set_skip_to_area(int level_id, int area);
+
 /* Validate a --cheats spec ("99_lives,unlock_all_levels") against the game's
  * own built-in cheat codes. Returns 0 when every name is known, -1 otherwise
  * (impl prints the valid names to stderr — this runs in CLI-parse context, so

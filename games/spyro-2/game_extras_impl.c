@@ -106,6 +106,13 @@ void game_set_skip_to_cutscene(int cutscene_id) {
     if (level <= 0) spyro2_skip_set(SPYRO2_CUTSCENE_SOURCE_LEVEL);
 }
 int game_resolve_cutscene_arg(const char* arg) { return spyro2_cutscene_resolve(arg); }
+/* No sub-area targets: every --skip-to-area value is refused. */
+void game_set_skip_to_area(int level_id, int area) { (void)level_id; (void)area; }
+int  game_resolve_area_arg(const char* arg, int* out_area) {
+    (void)arg; (void)out_area;
+    fprintf(stderr, "%s has no --skip-to-area targets\n", game_get_display_name());
+    return -1;
+}
 
 /* The recompiler carries a compiled-in substitution for a `lui 0x8007` +
  * `addiu` pair composing into [0x8006FCF4, 0x80072E94), rewriting it to

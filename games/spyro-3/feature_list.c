@@ -20,11 +20,15 @@ extern const feature_module_t flame_module;
 extern const feature_module_t ui_sprite_module;
 extern const feature_module_t text_sprt_module;
 extern const feature_module_t terrain_probe_module;
+extern const feature_module_t transition_call_module;
 
 const feature_module_t* const openpete_features[] = {
     /* The dev-overlay level warp (M): registers its two rows at
      * apply-options time and writes nothing until one is clicked. */
     &levelwarp_module,
+    /* The transition queue: drains a queued WarpToLevel / EnterSubArea call
+     * at Draw's entry. Inert while the queue is empty. */
+    &transition_call_module,
     /* --render-paths: the path-isolation selection (apply_options only). */
     &render_paths_module,
     /* The shared terrain feeder: hooks the world draw and the visibility

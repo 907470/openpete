@@ -876,6 +876,12 @@ typedef struct openpete_options {
      * default. 0 = disabled. */
     int skip_to_cutscene;
 
+    /* --skip-to-area L:A: level L's sub-area A, entered through the game's
+     * own sub-area transition once the level is live (Spyro 3). Replaces
+     * --skip-to-level's level. 0 = disabled. */
+    int skip_to_area_level;
+    int skip_to_area;
+
     /* --cheats a,b,...: comma-separated names of the game's OWN built-in
      * cheat codes to apply automatically, so the pad code never has to be
      * entered. The per-game feature module owns the name table and applies

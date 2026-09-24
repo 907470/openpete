@@ -14,6 +14,7 @@
 #include "freecam_game.h"
 #include "skip_to_level.h"
 #include "features/levelwarp.h"
+#include "features/skip_to_area.h"
 #include "openpete_log.h"
 #include "feature_registry.h"   /* the registered feature modules' dispatch tables */
 #include "openpete_fiber.h"
@@ -58,6 +59,10 @@ void game_apply_runtime_quirks(CPUState* cpu) { (void)cpu; }
 
 /* --- Per-tick hooks --- */
 void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
+    /* --skip-to-area: queues the sub-area entry once the level is live and
+     * reads its release, before the level skip's fast-forward consults it.
+     * Inert without the flag. */
+    spyro3_area_on_tick(cpu, frame_counter);
     /* --skip-to-level: drives the title's demo-timeout transition toward the
      * target and holds isDemoMode clear. Inert without the flag. */
     spyro3_skip_on_tick(cpu, frame_counter);
@@ -110,6 +115,10 @@ int  game_resolve_cutscene_arg(const char* arg) {
     (void)arg;
     fprintf(stderr, "%s has no --skip-to-cutscene targets\n", game_get_display_name());
     return -1;
+}
+void game_set_skip_to_area(int level_id, int area) { spyro3_area_set(level_id, area); }
+int  game_resolve_area_arg(const char* arg, int* out_area) {
+    return spyro3_area_resolve(arg, out_area);
 }
 
 /* The recompiler carries a compiled-in substitution for a `lui 0x8007` +

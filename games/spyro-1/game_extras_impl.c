@@ -213,6 +213,13 @@ void game_set_skip_to_cutscene(int cutscene_id) {
     if (s_skip_to_level <= 0) game_set_skip_to_level(source > 0 ? source : 10);
 }
 int game_resolve_cutscene_arg(const char* arg) { return spyro1_cutscene_resolve(arg); }
+/* No sub-area targets: every --skip-to-area value is refused. */
+void game_set_skip_to_area(int level_id, int area) { (void)level_id; (void)area; }
+int  game_resolve_area_arg(const char* arg, int* out_area) {
+    (void)arg; (void)out_area;
+    fprintf(stderr, "%s has no --skip-to-area targets\n", game_get_display_name());
+    return -1;
+}
 
 int game_resolve_level_arg(const char* arg) {
     return spyro1_level_resolve(arg);

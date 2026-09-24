@@ -547,6 +547,10 @@ static void print_help(const char* display_name, const char* argv0,
         "                             gulp_intro, gulp_defeated, winter_tundra, ripto_intro, ending (the\n"
         "                             Dragon Shores theater's replay, from level 65; playback returns\n"
         "                             to Dragon Shores)\n"
+        "  --skip-to-area L:A         load level L (number or name) and enter its sub-area A through the\n"
+        "                             game's own sub-area transition, as its area-0 portal does. A is\n"
+        "                             an index from 1; no value or an invalid target prints each level's\n"
+        "                             valid indices. Replaces --skip-to-level's level (Spyro 3)\n"
         "  --cheats A,B,...           apply the game's own built-in cheat codes without entering them on\n"
         "                             the pad: 99_lives, unlock_all_levels (an unknown name prints the\n"
         "                             list). Applied once a level is live, and again for each new session\n"
@@ -1324,6 +1328,18 @@ static int parse_flag_chain(openpete_options_t* opts, int argc, char** argv,
             opts->skip_to_cutscene = game_resolve_cutscene_arg(v);
             if (opts->skip_to_cutscene < 0) {
                 fprintf(stderr, "openpete: --skip-to-cutscene: unknown cutscene '%s'\n", v);
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+            i++;
+        } else if (strcmp(a, "--skip-to-area") == 0) {
+            if (i + 1 >= argc || argv[i + 1][0] == '-') {
+                (void)game_resolve_area_arg("", &opts->skip_to_area);
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+            v = argv[i + 1];
+            opts->skip_to_area_level = game_resolve_area_arg(v, &opts->skip_to_area);
+            if (opts->skip_to_area_level < 0) {
+                fprintf(stderr, "openpete: --skip-to-area: no sub-area '%s'\n", v);
                 return OPENPETE_EXIT_SETUP_ERROR;
             }
             i++;

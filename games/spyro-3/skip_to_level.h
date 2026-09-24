@@ -28,6 +28,10 @@ void spyro3_skip_set(int number);
 /* Per-tick driver (game_on_frame_pre). Inert while disarmed. */
 void spyro3_skip_on_tick(CPUState* cpu, uint32_t frame_counter);
 
+/* The loader took the --skip-to-level target; stays set through the level
+ * until the game returns to the title. */
+int spyro3_skip_level_picked(void);
+
 /* A level overlay is resident and the game is in the gameplay state. */
 int spyro3_skip_gameplay_live(CPUState* cpu);
 

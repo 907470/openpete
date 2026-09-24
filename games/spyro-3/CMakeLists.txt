@@ -60,6 +60,11 @@ openpete_add_game(spyro-3
         skip_to_level.c
         features/freecam.c
 
+        # The queue of host-requested calls into the game's transition
+        # functions, drained at Draw's entry, and --skip-to-area on it.
+        features/transition_call.c
+        features/skip_to_area.c
+
         # The dev-overlay level warp (M) and its shared overlay half.
         features/levelwarp.c
         ${CMAKE_SOURCE_DIR}/games/common/features/levelwarp_ui.c
