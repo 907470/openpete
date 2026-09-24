@@ -1189,7 +1189,11 @@ typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, header_b,
                                     * mod-texture face red-shift */
                  int M[3][3];      /* model-to-view rotation, Q12: the per-face
                                     * special material rotates a face normal by
-                                    * it */ } rec_meta;
+                                    * it */
+                 double zf;        /* the present's ZSF4 at full precision,
+                                    * read only when zf_on (fade_snap_present_z);
+                                    * the tier and face set stay zsf4's */
+                 uint8_t zf_on; } rec_meta;
                  /* spec_solo (trailing, set after the positional literal) =
                  * reveal-built record whose moby is in NO .s queue this tick
                  * (beyond canonical range under --lod extended, or off-4:3)
@@ -1218,6 +1222,8 @@ typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, header_b,
                  zsf4 = per-moby colour fade level (high16 of the cull record's matrix word @+0x2C,
                  cfc2 gte_ctrl[30]); see moby_color_fade_ir0 */
 static rec_meta s_recs[MAX_RECORDS]; static int s_nrecs;
+/* Nonzero while a sub-tick re-extract pass runs. */
+static int s_walk_in_rex;
 
 /* Flame-heat scalar from a moby's m_SpecularMetalColor word. TWO writer
  * encodings exist (moby_helpers.c): ApplyFlameHeat bumps byte2 0..96
@@ -1239,20 +1245,77 @@ static int moby_heat_scalar(uint32_t ms) {
  * cull records during the canonical pass; the high-FPS sub-tick re-extract builds
  * host-side records (no live cull record to read +0x2C from) and looks the fade up
  * here, so fading effect mobys (ring puffs) fade on intermediate presents too
- * instead of flickering back to full brightness. Cleared once per canonical frame. */
-static struct { uint32_t moby; int zsf4; } s_fade_snap[MAX_RECORDS]; static int s_fade_snap_n;
-static void fade_snap_clear(void) { s_fade_snap_n = 0; }
-static void fade_snap_put(uint32_t moby, int zsf4) {
-    if (moby < 0x80000000u) return;
-    for (int i = 0; i < s_fade_snap_n; i++)
-        if (s_fade_snap[i].moby == moby) { s_fade_snap[i].zsf4 = zsf4; return; }
-    if (s_fade_snap_n < MAX_RECORDS) {
-        s_fade_snap[s_fade_snap_n].moby = moby; s_fade_snap[s_fade_snap_n].zsf4 = zsf4; s_fade_snap_n++;
+ * instead of flickering back to full brightness. Rolled once per canonical frame:
+ * the table the last tick filled becomes the previous tick's.
+ *
+ * ZSF4 = ((m_Renderer & 0x3F) << 8) - TR.z (cull @8001F404-8001F418, TR.z the
+ * record's quarter-world view Z, truncated). Beside it each entry keeps tz, the
+ * same centre's view Z at full precision (build_moby_record_tr), when the
+ * verdict is that formula of it: A = ZSF4 + tz is then the authored term plus
+ * the cull's truncation residue, and a present at any camera and moby position
+ * reads its own ZSF4 as A - tz_present. `dist` is 0 where tz is not available
+ * or the verdict is not the formula: a game whose record stores the rescaled
+ * translation (rec_tr_final), a game with no host record builder to derive
+ * tz_present on sub-ticks (host_reveal 0), and a verdict the --no-lod read
+ * neutralised or the int16 wrapped (|ZSF4 + tz - (m_Renderer << 8)| >= 4, where
+ * the two truncations of the centre MVMVA stay below that). */
+typedef struct { uint32_t moby; int zsf4; uint8_t dist; double tz; } fade_ent;
+static fade_ent s_fade_snap[MAX_RECORDS], s_fade_prev[MAX_RECORDS];
+static int s_fade_snap_n, s_fade_prev_n;
+static void fade_snap_clear(void) {
+    memcpy(s_fade_prev, s_fade_snap, (size_t)s_fade_snap_n * sizeof s_fade_snap[0]);
+    s_fade_prev_n = s_fade_snap_n;
+    s_fade_snap_n = 0;
+}
+static fade_ent* fade_snap_find(fade_ent* t, int n, uint32_t moby) {
+    for (int i = 0; i < n; i++) if (t[i].moby == moby) return &t[i];
+    return NULL;
+}
+/* The entry's full-precision centre Z, or dist 0 (see the table's comment). */
+static void fade_snap_dist(CPUState* cpu, fade_ent* e) {
+    e->dist = 0; e->tz = 0.0;
+    if (game_layout.moby.rec_tr_final || !moby_game.host_reveal || !moby_game.renderer_off) return;
+    double tr[3];
+    build_moby_record_tr(cpu, e->moby, tr);
+    int md = (int)(cpu->read_byte(e->moby + moby_game.renderer_off) & moby_game.renderer_mask);
+    if (fabs((double)e->zsf4 + tr[2] - (double)(md << 8)) >= 4.0) return;
+    e->dist = 1; e->tz = tr[2];
+}
+/* Canonical pass only: a sub-tick present re-derives what it draws from the
+ * tick's entries and never replaces them. */
+static void fade_snap_put(CPUState* cpu, uint32_t moby, int zsf4) {
+    if (moby < 0x80000000u || s_walk_in_rex) return;
+    fade_ent* e = fade_snap_find(s_fade_snap, s_fade_snap_n, moby);
+    if (!e) {
+        if (s_fade_snap_n >= MAX_RECORDS) return;
+        e = &s_fade_snap[s_fade_snap_n++];
+        e->moby = moby;
     }
+    e->zsf4 = zsf4;
+    fade_snap_dist(cpu, e);
 }
 static int fade_snap_get(uint32_t moby, int dflt) {
-    for (int i = 0; i < s_fade_snap_n; i++) if (s_fade_snap[i].moby == moby) return s_fade_snap[i].zsf4;
-    return dflt;   /* snapshot miss: caller picks the safe tier */
+    const fade_ent* e = fade_snap_find(s_fade_snap, s_fade_snap_n, moby);
+    return e ? e->zsf4 : dflt;   /* snapshot miss: caller picks the safe tier */
+}
+/* The ZSF4 a sub-tick present at `alpha` (prev tick 0 -> this tick 1) draws the
+ * moby's colour fade at, in full precision: the authored term lerped between
+ * the two ticks, less the present's own centre Z (tz_present, the
+ * build_moby_record_tr value this present projects through):
+ *   z = ZSF4 + (1 - alpha)(A_prev - A_curr) + (tz_curr - tz_present).
+ * A moby absent from the previous tick holds A_curr. Both correction terms are
+ * exactly 0 at alpha 1 (tz_present is the tick's own centre there), and the
+ * result is then not marked fractional, so that present runs the integer GTE
+ * mirror. Returns 1 and writes *zf when the present's value is fractional. */
+static int fade_snap_present_z(uint32_t moby, int zsf4, double tz_present, double alpha,
+                               double* zf) {
+    *zf = (double)zsf4;
+    const fade_ent* c = fade_snap_find(s_fade_snap, s_fade_snap_n, moby);
+    if (alpha >= 1.0 || !c || !c->dist || c->zsf4 != zsf4) return 0;
+    const fade_ent* p = fade_snap_find(s_fade_prev, s_fade_prev_n, moby);
+    double dA = (p && p->dist) ? ((double)p->zsf4 + p->tz) - ((double)c->zsf4 + c->tz) : 0.0;
+    *zf = (double)zsf4 + (1.0 - alpha) * dA + (c->tz - tz_present);
+    return *zf != (double)zsf4;
 }
 
 /* Moby pointers fed by the REGULAR pass this frame — the SPECULAR pass dedups
@@ -1357,7 +1420,6 @@ static long s_us_proj, s_us_walk, s_us_walk_rex, s_us_calls;
  * per TICK and the sub-tick re-extract walks once per PRESENT; pooled into one
  * accumulator the total is neither quantity and has to be corrected by hand
  * before it can be compared against a per-present scope. */
-static int s_walk_in_rex;
 /* Re-extract record-loop split, the two halves a worker fan-out would target:
  * the per-record field rebuild and the model decode + projection. */
 static long s_us_dec, s_us_fields;
@@ -1528,7 +1590,7 @@ static int project_all_records_inner(CPUState* cpu) {
                 ? (uint8_t)moby_heat_scalar(
                       cpu->read_word(s_recs[nrec].moby + moby_game.spec_colour_off))
                 : 0u;
-            fade_snap_put(s_recs[nrec].moby, zsf4);
+            fade_snap_put(cpu, s_recs[nrec].moby, zsf4);
             if (moby_trace_target() && s_recs[nrec].moby == moby_trace_target())
                 fprintf(stderr, "[moby-trace vbl=%u] %08X IN-QUEUE rec=%08X zsf4=%d got=%d mat=%s\n",
                         openpete_frame, s_recs[nrec].moby, rec, zsf4, got,
@@ -2079,7 +2141,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
          * else keeps its baked per-vertex colours. */
         s_recs[s_nrecs].spec_solo = (uint8_t)moby_is_shiny(cpu, m);
         TRC("spec_solo=%d", (int)s_recs[s_nrecs].spec_solo);
-        fade_snap_put(m, rzsf4);
+        fade_snap_put(cpu, m, rzsf4);
         if (revealed < MAX_RECORDS) revlist[revealed] = pub;
         /* census diag: projected screen centroid + vert count of this reveal */
         if (revealed < MAX_RECORDS) {
@@ -2609,6 +2671,14 @@ static int dpcs_ch(int c8, int fc12, int ir0) {
     return ngte_dpcs_ch(c8, fc12, ir0);   /* shared bit-exact GTE mirror */
 }
 
+/* The far palette (header+0x20, the .s lw $v0, 0x20($ra) @8001FDF4), 0 when
+ * the header or the pointer does not resolve. */
+static uint32_t moby_fog_farbase(CPUState* cpu, uint32_t header) {
+    if (header < 0x80000000u) return 0u;
+    uint32_t fb = cpu->read_word(header + ANIM_COL_FAR);
+    return fb >= 0x80000000u ? fb : 0u;
+}
+
 /* FOG-band colour fade (the .s moby colour pass, block_8001FDD0/.L8001FDE8).
  * The cull record overloads the high 16 bits of its matrix word at +0x2C as the
  * per-record LOD tier ZSF4 (cfc2 gte_ctrl[30]) — full ladder documented at
@@ -2623,32 +2693,63 @@ static int dpcs_ch(int c8, int fc12, int ir0) {
  * (rec+0x2C high16 for canonical records, the snapshot for sub-tick records). */
 static int moby_color_fade_ir0(CPUState* cpu, int zsf4, uint32_t header, uint32_t* farbase) {
     *farbase = 0;
-    if (header < 0x80000000u) return 0;
     if (zsf4 <= 0 || zsf4 >= 1024) return 0;
-    uint32_t fb = cpu->read_word(header + ANIM_COL_FAR);
-    if (fb < 0x80000000u) return 0;
+    uint32_t fb = moby_fog_farbase(cpu, header);
+    if (!fb) return 0;
     *farbase = fb;
     return (1024 - zsf4) * 4;
 }
 
+/* A record's colour fade on one present. frac 0: ir0 is the GTE's integer IR0
+ * and every channel goes through the bit-exact DPCS mirror. frac 1 (a sub-tick
+ * present whose ZSF4 is fractional): ir0f is IR0 at full precision and the
+ * channel is the DPCS lerp at that IR0 (dpcs_ch_f); ir0 is its floor, which
+ * the CLUT-row fog reads. */
+typedef struct { int ir0; double ir0f; int frac; } moby_fade_t;
+
+/* DPCS of one 8-bit channel toward a 12-bit far colour at a fractional IR0:
+ * floor((c<<16 + IR0 * (fc - (c<<4))) / 65536), the GTE's own truncation
+ * (ngte_dpcs_ch) extended to real IR0. At an integer IR0 the numerator is an
+ * exact integer in double and the division by 2^16 is exact, so the result
+ * equals the integer mirror; between integers it is continuous from the left
+ * and moves by at most one level per IR0 step the mirror takes. The fade then
+ * meets the canonical present at both ends of a tick interval, where
+ * round-to-nearest would stand up to one level off the GTE's value. */
+static int dpcs_ch_f(int c8, int fc12, double ir0) {
+    double v = ((double)c8 * 65536.0 + ir0 * (double)(fc12 - (c8 << 4))) / 65536.0;
+    int o = (int)floor(v);
+    return o < 0 ? 0 : (o > 255 ? 255 : o);
+}
+
+/* One packed colour faded toward (fcr, fcg, fcb) by the record's fade. */
+static uint32_t moby_fade_rgb(uint32_t col, int fcr, int fcg, int fcb, const moby_fade_t* fd) {
+    int r = (int)(col & 0xFFu), g = (int)((col >> 8) & 0xFFu), b = (int)((col >> 16) & 0xFFu);
+    if (fd->frac) {
+        r = dpcs_ch_f(r, fcr, fd->ir0f); g = dpcs_ch_f(g, fcg, fd->ir0f); b = dpcs_ch_f(b, fcb, fd->ir0f);
+    } else {
+        r = dpcs_ch(r, fcr, fd->ir0); g = dpcs_ch(g, fcg, fd->ir0); b = dpcs_ch(b, fcb, fd->ir0);
+    }
+    return (uint32_t)(r | (g << 8) | (b << 16));
+}
+
+/* Nonzero when the fade leaves every channel at its own colour. */
+static int moby_fade_none(const moby_fade_t* fd) {
+    return fd->frac ? fd->ir0f <= 0.0 : !fd->ir0;
+}
+
 /* Read a per-vertex moby colour (cbase + byte-offset ci), applying the DPCS fade
- * when ir0 != 0. Far colour: per-vertex 16-bit packed entry at farbase+ci (the
+ * when the record fades. Far colour: per-vertex 16-bit packed entry at farbase+ci (the
  * fog band, .s 8001FE14-FE2C) — or, when fcc != NULL, a CONSTANT 12-bit-expanded
  * colour (the LP band fades every vertex toward the one cyclorama fog colour,
  * .s 8001FEE4-FF08). */
 static uint32_t moby_color_at(CPUState* cpu, uint32_t cbase, uint32_t farbase,
-                              const int* fcc, int ir0, uint32_t ci) {
+                              const int* fcc, const moby_fade_t* fd, uint32_t ci) {
     uint32_t col = cpu->read_word(cbase + ci) & 0xFFFFFFu;
-    if (!ir0) return col;
-    int r = (int)(col & 0xFFu), g = (int)((col >> 8) & 0xFFu), b = (int)((col >> 16) & 0xFFu);
-    int fcr, fcg, fcb;
-    if (fcc) { fcr = fcc[0]; fcg = fcc[1]; fcb = fcc[2]; }
-    else {
-        uint32_t fw = cpu->read_word(farbase + ci);
-        fcr = (int)((fw << 4) & 0xFF0u); fcg = (int)((fw >> 4) & 0xFF0u); fcb = (int)((fw >> 12) & 0xFF0u);
-    }
-    r = dpcs_ch(r, fcr, ir0); g = dpcs_ch(g, fcg, ir0); b = dpcs_ch(b, fcb, ir0);
-    return (uint32_t)(r | (g << 8) | (b << 16));
+    if (moby_fade_none(fd)) return col;
+    if (fcc) return moby_fade_rgb(col, fcc[0], fcc[1], fcc[2], fd);
+    uint32_t fw = cpu->read_word(farbase + ci);
+    return moby_fade_rgb(col, (int)((fw << 4) & 0xFF0u), (int)((fw >> 4) & 0xFF0u),
+                         (int)((fw >> 12) & 0xFF0u), fd);
 }
 
 /* Host-pointer variant: identical maths, but the colour bases are resolved to
@@ -2659,18 +2760,63 @@ static uint32_t moby_color_at(CPUState* cpu, uint32_t cbase, uint32_t farbase,
  * when a base doesn't resolve. */
 static inline uint32_t le32_at(const uint8_t* p) { uint32_t v; memcpy(&v, p, 4); return v; }
 static uint32_t moby_color_at_host(const uint8_t* cb, const uint8_t* fbp,
-                                   const int* fcc, int ir0, uint32_t ci) {
+                                   const int* fcc, const moby_fade_t* fd, uint32_t ci) {
     uint32_t col = le32_at(cb + ci) & 0xFFFFFFu;
-    if (!ir0) return col;
-    int r = (int)(col & 0xFFu), g = (int)((col >> 8) & 0xFFu), b = (int)((col >> 16) & 0xFFu);
-    int fcr, fcg, fcb;
-    if (fcc) { fcr = fcc[0]; fcg = fcc[1]; fcb = fcc[2]; }
-    else {
-        uint32_t fw = le32_at(fbp + ci);
-        fcr = (int)((fw << 4) & 0xFF0u); fcg = (int)((fw >> 4) & 0xFF0u); fcb = (int)((fw >> 12) & 0xFF0u);
+    if (moby_fade_none(fd)) return col;
+    if (fcc) return moby_fade_rgb(col, fcc[0], fcc[1], fcc[2], fd);
+    uint32_t fw = le32_at(fbp + ci);
+    return moby_fade_rgb(col, (int)((fw << 4) & 0xFF0u), (int)((fw >> 4) & 0xFF0u),
+                         (int)((fw >> 12) & 0xFF0u), fd);
+}
+
+/* The record's per-vertex colour base and colour fade for this present, by its
+ * LOD tier (ladder documented at moby_tier_faceblock; the tier is always the
+ * tick's zsf4). NEAR (ZSF4 >= 1024): model colours (hdr+0x18) raw. FOG band
+ * (0 < ZSF4 < 1024): model colours DPCS-faded toward the per-vertex far palette,
+ * IR0 = (1024 - ZSF4) * 4 (.s @8001FDD0-8001FE54). LP/FAR band (ZSF4 <= 0): the
+ * far palette (hdr+0x20) itself — the .s walks it with the LP faces; under
+ * --no-lod the faces flip to HP but the palette stays, so mirror both —
+ * DPCS-faded toward the ONE cyclorama fog colour once ZSF4 < -2048 while
+ * g_SkipLowPolyWorld > 0 (.L8001FEA0..FECC: IR0 = min(-(ZSF4+2048), 2047) << 1).
+ *
+ * A record carrying a fractional present ZSF4 (zf_on, zf != zsf4) takes the
+ * fade term from zf through the same formula of its colour table, in double:
+ * the HP table fades toward the far palette by (1024 - zf) * 4 clamped to
+ * 0..4092, the band's own range (ZSF4 1..1023; 4096 >> 9 would index a ninth
+ * row past the 8-row fogged-CLUT ladder), the LP table toward the fog colour
+ * by 2 * min(-(zf + 2048), 2047) floored at 0. Every other record runs the
+ * integer path above unchanged. */
+static uint32_t moby_record_fade(CPUState* cpu, const rec_meta* R, uint32_t* farbase,
+                                 int fogfc[3], const int** fcc, moby_fade_t* fd) {
+    const int frac = R->zf_on && R->zf != (double)R->zsf4;
+    const double z = frac ? R->zf : (double)R->zsf4;
+    const int hdr_ok = R->header >= 0x80000000u;
+    *farbase = 0; *fcc = NULL;
+    fd->ir0 = 0; fd->ir0f = 0.0; fd->frac = frac;
+    if (R->zsf4 > 0) {
+        if (!frac) {
+            fd->ir0 = moby_color_fade_ir0(cpu, R->zsf4, R->header, farbase);
+            fd->ir0f = (double)fd->ir0;
+        } else if ((*farbase = moby_fog_farbase(cpu, R->header)) != 0u) {
+            double v = (1024.0 - z) * 4.0;
+            fd->ir0f = v < 0.0 ? 0.0 : (v > 4092.0 ? 4092.0 : v);
+            fd->ir0 = (int)fd->ir0f;
+        }
+        return hdr_ok ? cpu->read_word(R->header + ANIM_COL_HP) : 0u;
     }
-    r = dpcs_ch(r, fcr, ir0); g = dpcs_ch(g, fcg, ir0); b = dpcs_ch(b, fcb, ir0);
-    return (uint32_t)(r | (g << 8) | (b << 16));
+    if (moby_game.skip_lowpoly && (int32_t)cpu->read_word(moby_game.skip_lowpoly) > 0 &&
+        (frac || R->zsf4 < -2048)) {
+        double v = -(z + 2048.0);
+        v = v < 0.0 ? 0.0 : (v > 2047.0 ? 2047.0 : v);
+        fd->ir0f = 2.0 * v;
+        fd->ir0 = (int)fd->ir0f;
+        uint32_t fog = cpu->read_word(game_layout.cyc.bg_colour);
+        fogfc[0] = (int)((fog << 4) & 0xFF0u);   /* 12-bit expand, .s 8001FEF4-FF08 */
+        fogfc[1] = (int)((fog >> 4) & 0xFF0u);
+        fogfc[2] = (int)((fog >> 12) & 0xFF0u);
+        *fcc = fogfc;
+    }
+    return hdr_ok ? cpu->read_word(R->header + ANIM_COL_FAR) : 0u;
 }
 
 /* ---- Tier-1 face-decode cache (one entry per faceblock) -------------------
@@ -3095,34 +3241,11 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
         const fcache_t* FC = s_pre_FC[r];   /* Tier-1 decode, resolved by the prologue */
         if (!FC) { t_diag->desync++; continue; }
         int base = R->proj_off, vcount = R->proj_n;
-        /* per-vertex colour base + fade by the record's LOD tier (ladder documented
-         * at moby_tier_faceblock; indexed by w1f). NEAR: model colours (hdr+0x18)
-         * raw. FOG band: model colours DPCS-faded toward the per-vertex far palette
-         * (moby_color_fade_ir0). LP/FAR band: the far palette (hdr+0x20) itself —
-         * the .s walks it with the LP faces; under --no-lod the faces flip to HP
-         * but the palette stays, so mirror both — DPCS-faded toward the ONE
-         * cyclorama fog colour once ZSF4 < -2048 while g_SkipLowPolyWorld > 0
-         * (.L8001FEA0..FECC: IR0 = min(-(ZSF4+2048), 2047) << 1). */
-        uint32_t farbase = 0; int dpcs_ir0 = 0;
-        int fogfc[3]; const int* fcc = NULL;
-        uint32_t cbase;
-        if (R->zsf4 <= 0) {
-            cbase = (R->header >= 0x80000000u) ? cpu->read_word(R->header + ANIM_COL_FAR) : 0u;
-            if (R->zsf4 < -2048 && moby_game.skip_lowpoly &&
-                (int32_t)cpu->read_word(moby_game.skip_lowpoly) > 0) {
-                int v = -(R->zsf4 + 2048); if (v > 2047) v = 2047;
-                dpcs_ir0 = v << 1;
-                uint32_t fog = cpu->read_word(game_layout.cyc.bg_colour);
-                fogfc[0] = (int)((fog << 4) & 0xFF0u);   /* 12-bit expand, .s 8001FEF4-FF08 */
-                fogfc[1] = (int)((fog >> 4) & 0xFF0u);
-                fogfc[2] = (int)((fog >> 12) & 0xFF0u);
-                fcc = fogfc;
-            }
-        } else {
-            cbase = (R->header >= 0x80000000u) ? cpu->read_word(R->header + ANIM_COL_HP) : 0u;
-            /* Fog-band / effect-moby depth-cue fade (fade-out instead of popping). */
-            dpcs_ir0 = moby_color_fade_ir0(cpu, R->zsf4, R->header, &farbase);
-        }
+        /* per-vertex colour base + fade by the record's LOD tier and the
+         * present's ZSF4 (moby_record_fade) */
+        uint32_t farbase = 0; int fogfc[3]; const int* fcc = NULL; moby_fade_t fd;
+        uint32_t cbase = moby_record_fade(cpu, R, &farbase, fogfc, &fcc, &fd);
+        const int dpcs_ir0 = fd.ir0;
         if (cbase < 0x80000000u) cbase = COLOR_SCRATCH;   /* fall back to fog scratch */
         { /* OPENPETE_MOBY_FADEDBG=frameLo: per-record LOD-fade forensics (4 frames). */
             static int s_fd0 = -2;
@@ -3130,16 +3253,16 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
             if (s_fd0 >= 0 && (int)openpete_frame >= s_fd0 && (int)openpete_frame < s_fd0 + 4) {
                 uint32_t c0 = cpu->read_word(cbase), c1 = cpu->read_word(cbase + 4);
                 uint32_t f0 = farbase ? cpu->read_word(farbase) : 0, f1 = farbase ? cpu->read_word(farbase + 4) : 0;
-                fprintf(stderr, "[fade vbl=%u] rec=%d moby=%08x cls=%03x zsf4=%d hdr=%08x cbase=%08x farbase=%08x ir0=%d "
+                fprintf(stderr, "[fade vbl=%u] rec=%d moby=%08x cls=%03x zsf4=%d zf=%.3f ir0f=%.3f hdr=%08x cbase=%08x farbase=%08x ir0=%d "
                         "c0=%06X c1=%06X f0=%06X f1=%06X\n",
                         openpete_frame, r, R->moby, R->moby >= 0x80000000u ? (cpu->read_half(R->moby + game_layout.moby.class_off) & 0xFFFu) : 0xFFF,
-                        R->zsf4, R->header, cbase, farbase, dpcs_ir0, c0 & 0xFFFFFFu, c1 & 0xFFFFFFu, f0 & 0xFFFFFFu, f1 & 0xFFFFFFu);
+                        R->zsf4, R->zf_on ? R->zf : (double)R->zsf4, fd.ir0f, R->header, cbase, farbase, dpcs_ir0, c0 & 0xFFFFFFu, c1 & 0xFFFFFFu, f0 & 0xFFFFFFu, f1 & 0xFFFFFFu);
                 if (dpcs_ir0 > 0 && farbase) {   /* one fog-band record: full table triplets */
                     int nc = (int)(cpu->read_half(R->header + game_layout.moby.anim_ccount_off) & 0xFFFFu); if (nc > 24) nc = 24;
                     for (int k = 0; k < nc; k++) {
                         uint32_t nw = cpu->read_word(cbase + (uint32_t)k*4u) & 0xFFFFFFu;
                         uint32_t fw2 = cpu->read_word(farbase + (uint32_t)k*4u) & 0xFFFFFFu;
-                        uint32_t ov = moby_color_at(cpu, cbase, farbase, NULL, dpcs_ir0, (uint32_t)k*4u);
+                        uint32_t ov = moby_color_at(cpu, cbase, farbase, NULL, &fd, (uint32_t)k*4u);
                         fprintf(stderr, "  [ftab k=%d] near=%06X far=%06X out=%06X\n", k, nw, fw2, ov);
                     }
                 }
@@ -3221,10 +3344,10 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
              * when the moby carries a fade level (effect ring puffs, etc). */
             uint32_t c0, c1, c2, c3;
             if (host_col) {
-                c0 = moby_color_at_host(cb_host, fb_host, fcc, dpcs_ir0, F->c0);
-                c1 = moby_color_at_host(cb_host, fb_host, fcc, dpcs_ir0, F->c1);
-                c2 = moby_color_at_host(cb_host, fb_host, fcc, dpcs_ir0, F->c2);
-                c3 = moby_color_at_host(cb_host, fb_host, fcc, dpcs_ir0, F->c3);
+                c0 = moby_color_at_host(cb_host, fb_host, fcc, &fd, F->c0);
+                c1 = moby_color_at_host(cb_host, fb_host, fcc, &fd, F->c1);
+                c2 = moby_color_at_host(cb_host, fb_host, fcc, &fd, F->c2);
+                c3 = moby_color_at_host(cb_host, fb_host, fcc, &fd, F->c3);
                 { /* FADEDBG face-level dump for the fog-band record */
                     static int s_ff0 = -2;
                     if (s_ff0 == -2) { const char* e = getenv("OPENPETE_MOBY_FADEDBG"); s_ff0 = (e && *e) ? atoi(e) : -1; }
@@ -3237,24 +3360,24 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                                 c0, c1, c2, F->clx, F->cly, F->tpx, F->tpy);
                 }
             } else {
-                c0 = moby_color_at(cpu, cbase, farbase, fcc, dpcs_ir0, F->c0);
-                c1 = moby_color_at(cpu, cbase, farbase, fcc, dpcs_ir0, F->c1);
-                c2 = moby_color_at(cpu, cbase, farbase, fcc, dpcs_ir0, F->c2);
-                c3 = moby_color_at(cpu, cbase, farbase, fcc, dpcs_ir0, F->c3);
+                c0 = moby_color_at(cpu, cbase, farbase, fcc, &fd, F->c0);
+                c1 = moby_color_at(cpu, cbase, farbase, fcc, &fd, F->c1);
+                c2 = moby_color_at(cpu, cbase, farbase, fcc, &fd, F->c2);
+                c3 = moby_color_at(cpu, cbase, farbase, fcc, &fd, F->c3);
             }
             if (FCp) {   /* colour crossfade: prev-keyframe colours -> curr by clr_a */
                 const wface_t* P = &FCp->f[fi];
                 uint32_t p0, p1, p2, p3v;
                 if (host_col) {
-                    p0 = moby_color_at_host(cb_host, fb_host, fcc, dpcs_ir0, P->c0);
-                    p1 = moby_color_at_host(cb_host, fb_host, fcc, dpcs_ir0, P->c1);
-                    p2 = moby_color_at_host(cb_host, fb_host, fcc, dpcs_ir0, P->c2);
-                    p3v = moby_color_at_host(cb_host, fb_host, fcc, dpcs_ir0, P->c3);
+                    p0 = moby_color_at_host(cb_host, fb_host, fcc, &fd, P->c0);
+                    p1 = moby_color_at_host(cb_host, fb_host, fcc, &fd, P->c1);
+                    p2 = moby_color_at_host(cb_host, fb_host, fcc, &fd, P->c2);
+                    p3v = moby_color_at_host(cb_host, fb_host, fcc, &fd, P->c3);
                 } else {
-                    p0 = moby_color_at(cpu, cbase, farbase, fcc, dpcs_ir0, P->c0);
-                    p1 = moby_color_at(cpu, cbase, farbase, fcc, dpcs_ir0, P->c1);
-                    p2 = moby_color_at(cpu, cbase, farbase, fcc, dpcs_ir0, P->c2);
-                    p3v = moby_color_at(cpu, cbase, farbase, fcc, dpcs_ir0, P->c3);
+                    p0 = moby_color_at(cpu, cbase, farbase, fcc, &fd, P->c0);
+                    p1 = moby_color_at(cpu, cbase, farbase, fcc, &fd, P->c1);
+                    p2 = moby_color_at(cpu, cbase, farbase, fcc, &fd, P->c2);
+                    p3v = moby_color_at(cpu, cbase, farbase, fcc, &fd, P->c3);
                 }
                 uint32_t c0curr = c0;
                 c0 = moby_clerp(p0, c0, clr_a);
@@ -7968,6 +8091,10 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         s_recs[s_nrecs].model_held = model_held;
         memcpy(s_recs[s_nrecs].M, f.M, sizeof s_recs[s_nrecs].M);
         s_recs[s_nrecs].heat = (uint8_t)moby_heat_scalar(f.mscol);
+        /* The colour fade follows this present's centre and the authored term
+         * between the two ticks; the tier above stays the tick's. */
+        s_recs[s_nrecs].zf_on = (uint8_t)fade_snap_present_z(mobys[i], zsf4, f.TR_frac[2],
+                                                             s_rc_alpha, &s_recs[s_nrecs].zf);
         s_proj_n += got; s_nrecs++;
     }
     if (!is_spec) {                            /* REGULAR snapshots its moby set for the SPEC dedup */

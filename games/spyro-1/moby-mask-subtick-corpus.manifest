@@ -17,3 +17,17 @@
 # barely resizes, and its mean colour steps 26 levels over the interval — the
 # keyframe colour crossfade the movie is named for.
 moby-crossfade.bk2 | 1801 | blob=201.6,206.5 blob=321.6,90.7 tol=1.0 step=4
+#
+# dream-weavers-lateef-rescue: moby class 0x069, the only fog-band record on
+# screen, while the camera pulls away: its ZSF4 steps 546 to 344 over the
+# interval (IR0 1912 to 2720), so its colour fade is the colour cell. A fade
+# held at the newest tick read colour a0.5=6.61 own=13.83 (ratio 0.96, SNAP);
+# the fade taken at the present's own ZSF4 reads a0.5=1.77 own=0.00 ident=0.00.
+# The bound is 2.0, not 1.5: the per-vertex colours sit within 0.5 level of the
+# midpoint at alpha 0.5, and the residual is the textured faces' fogged-CLUT
+# row, which steps in eighths of the fade (IR0 >> 9: rows 3, 4, 5 at alpha 0,
+# 0.5, 1) over a ladder that is not linear in the row (row 4 stands 1.35
+# levels of blue off the mean of rows 3 and 5), times the vertex colour it
+# modulates (the product of two lerped factors stands off the lerp of their
+# products by a quarter of the product of their steps, 0.9 levels here).
+dream-weavers-lateef-rescue.bk2 | 2141 | blob=115.6,66.2 ctol=2.0
