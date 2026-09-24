@@ -11,6 +11,7 @@
 #include "psyq/psyq_game_hooks.h"
 #include "skip_to_level.h"
 #include "features/levelwarp.h"
+#include "features/cutscene_skip.h"
 #include "write_census.h"
 #include "freecam_game.h"
 #include "feature_registry.h"
@@ -89,13 +90,22 @@ int game_is_gameplay_live(CPUState* cpu) { return spyro2_skip_gameplay_live(cpu)
 void game_set_skip_to_level(int level_id) { spyro2_skip_set(level_id); }
 int  game_resolve_level_arg(const char* arg) { return spyro2_level_resolve(arg); }
 int  game_validate_cheats_arg(const char* spec) { (void)spec; return -1; }
-/* No cutscene targets: every --skip-to-cutscene value is refused. */
-void game_set_skip_to_cutscene(int cutscene_id) { (void)cutscene_id; }
-int  game_resolve_cutscene_arg(const char* arg) {
-    (void)arg;
-    fprintf(stderr, "%s has no --skip-to-cutscene targets\n", game_get_display_name());
-    return -1;
+/* --skip-to-cutscene (features/cutscene_skip.c): every story cutscene
+ * starts from Dragon Shores, so the target rides a --skip-to-level 65; an
+ * explicit --skip-to-level to another level is refused. */
+void game_set_skip_to_cutscene(int cutscene_id) {
+    if (cutscene_id <= 0) return;
+    int level = spyro2_skip_target();
+    if (level > 0 && level != SPYRO2_CUTSCENE_SOURCE_LEVEL) {
+        fprintf(stderr, "openpete: --skip-to-cutscene: this cutscene starts "
+                        "from level %d, not --skip-to-level %d; refused\n",
+                SPYRO2_CUTSCENE_SOURCE_LEVEL, level);
+        return;
+    }
+    spyro2_cutscene_skip_arm(cutscene_id);
+    if (level <= 0) spyro2_skip_set(SPYRO2_CUTSCENE_SOURCE_LEVEL);
 }
+int game_resolve_cutscene_arg(const char* arg) { return spyro2_cutscene_resolve(arg); }
 
 /* The recompiler carries a compiled-in substitution for a `lui 0x8007` +
  * `addiu` pair composing into [0x8006FCF4, 0x80072E94), rewriting it to

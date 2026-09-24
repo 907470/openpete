@@ -56,6 +56,9 @@ openpete_add_game(spyro-2
         skip_to_level.c
         features/freecam.c
 
+        # --skip-to-cutscene: the Dragon Shores theater's cutscene call.
+        features/cutscene_skip.c
+
         # The dev-overlay level warp (M) and its shared overlay half.
         features/levelwarp.c
         ${CMAKE_SOURCE_DIR}/games/common/features/levelwarp_ui.c

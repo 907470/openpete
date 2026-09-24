@@ -25,6 +25,10 @@ int spyro2_level_resolve(const char* arg);
 /* game_set_skip_to_level: 0 disarms. */
 void spyro2_skip_set(int number);
 
+/* The armed --skip-to-level target, 0 when none is armed or the skip has
+ * ended. */
+int spyro2_skip_target(void);
+
 /* Per-tick driver (game_on_frame_pre). Inert while disarmed. */
 void spyro2_skip_on_tick(CPUState* cpu, uint32_t frame_counter);
 

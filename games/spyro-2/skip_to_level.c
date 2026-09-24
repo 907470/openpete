@@ -28,6 +28,7 @@
 #include "skip_to_level.h"
 #include "openpete_fiber.h"
 #include "named_target.h"
+#include "features/cutscene_skip.h"
 #include "spyro2_symbols.gen.h"
 
 #include <ctype.h>
@@ -123,12 +124,48 @@ void spyro2_skip_set(int number) {
     }
 }
 
+int spyro2_skip_target(void) { return s_phase != SKIP_IDLE ? s_target : 0; }
+
 int spyro2_skip_gameplay_live(CPUState* cpu) {
     /* The loader reports the overlay resident about 45 VBLs before the level
      * runs its first tick; the window would hold the last presented loading
      * frame across that gap, so the level's own tick counter decides. */
     return cpu->read_word(S2_LOADER_STATE) == S2_LOADER_RESIDENT &&
            cpu->read_word(S2_LEVEL_TICK) != 0u;
+}
+
+/* The skip's release block, every tick while a present fast-forward or a
+ * cutscene target is armed, whatever the phase. Presents resume
+ * (openpete_skip_present_until_level clears) on the playable edge: the
+ * picked level's first live tick, or, while a cutscene target is armed,
+ * that target's release predicate (features/cutscene_skip.c), which holds
+ * outside the SKIP_PICKED gate because the cutscene's loader-word-0 store
+ * ends the hold. The line names the engagement values read back at release.
+ * openpete_skip_failsafe_vbls() after the first check is the fail-safe
+ * against a never-reached edge; it logs its own line. The cutscene watch
+ * runs headless too, where there is no fast-forward, so a harness reads the
+ * same lines. */
+static void skip_release_on_tick(CPUState* cpu, uint32_t frame_counter) {
+    int watching = spyro2_cutscene_skip_watching();
+    if (!openpete_skip_present_until_level && !watching) return;
+    if (!s_ffwd_deadline)
+        s_ffwd_deadline = frame_counter + openpete_skip_failsafe_vbls();
+    char eng[128] = "";
+    int playable = watching
+        ? spyro2_cutscene_skip_released(cpu, eng, sizeof eng)
+        : s_phase == SKIP_PICKED && spyro2_skip_gameplay_live(cpu);
+    if (playable) {
+        fprintf(stderr, "[skip-to-level] level playable — presents resume "
+                        "at frame=%u%s\n", (unsigned)frame_counter, eng);
+    } else if (frame_counter > s_ffwd_deadline) {
+        fprintf(stderr, "[skip-to-level] fail-safe release (no playable "
+                        "edge) at frame=%u\n", (unsigned)frame_counter);
+    } else {
+        return;
+    }
+    openpete_skip_present_until_level = 0;
+    s_ffwd_deadline = 0;
+    spyro2_cutscene_skip_finish();
 }
 
 void spyro2_skip_on_tick(CPUState* cpu, uint32_t frame_counter) {
@@ -155,25 +192,14 @@ void spyro2_skip_on_tick(CPUState* cpu, uint32_t frame_counter) {
         /* Hold the demo flag clear from the pick through the level: the pad
          * path reads the controller and the demo-end check never fires. The
          * hold ends when the loader returns to the title (a level exit). */
-        if (cpu->read_word(S2_LOADER_STATE) != 0u)
+        if (cpu->read_word(S2_LOADER_STATE) != 0u) {
             cpu->write_word(S2_DEMO_MODE, 0u);
-        else
+        } else {
             s_phase = SKIP_IDLE;
-    }
-
-    if (openpete_skip_present_until_level) {
-        if (!s_ffwd_deadline)
-            s_ffwd_deadline = frame_counter + 4000u;
-        int playable = s_phase == SKIP_PICKED && spyro2_skip_gameplay_live(cpu);
-        if (playable || frame_counter > s_ffwd_deadline) {
-            openpete_skip_present_until_level = 0;
-            s_ffwd_deadline = 0;
-            fprintf(stderr, playable
-                        ? "[skip-to-level] level playable — presents resume "
-                          "at frame=%u\n"
-                        : "[skip-to-level] fail-safe release (no playable "
-                          "edge) at frame=%u\n",
-                    (unsigned)frame_counter);
+            fprintf(stderr, "[skip-to-level] loader left the level; demo-mode "
+                            "hold ends at frame=%u\n", (unsigned)frame_counter);
         }
     }
+
+    skip_release_on_tick(cpu, frame_counter);
 }

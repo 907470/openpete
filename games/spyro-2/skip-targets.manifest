@@ -1,0 +1,20 @@
+# The --skip-to-cutscene row table (scripts/check_skip_targets.sh).
+# One row per target name. A row passes when its run prints the skip's release
+# line ("[skip-to-level] level playable") carrying every expect token, the
+# engagement values the skip module reads back from RAM at release: the
+# cutscene's k in D_800698F4, the playback state D_800681C8 6 and the
+# pseudo-level in g_NextLevelNum. It fails when the run prints the fail-safe
+# line. Every row enters from Dragon Shores (level 65).
+#
+# name           | args                               | frames | expect
+intro            | --skip-to-cutscene intro           | 2000   | cutscene=intro k=1 D_800681C8=6 next_level=70
+intro_arrival    | --skip-to-cutscene intro_arrival   | 2000   | cutscene=intro_arrival k=2 D_800681C8=6 next_level=71
+summer_forest    | --skip-to-cutscene summer_forest   | 2000   | cutscene=summer_forest k=4 D_800681C8=6 next_level=72
+crush_intro      | --skip-to-cutscene crush_intro     | 2000   | cutscene=crush_intro k=6 D_800681C8=6 next_level=73
+crush_defeated   | --skip-to-cutscene crush_defeated  | 2000   | cutscene=crush_defeated k=7 D_800681C8=6 next_level=74
+autumn_plains    | --skip-to-cutscene autumn_plains   | 2000   | cutscene=autumn_plains k=8 D_800681C8=6 next_level=75
+gulp_intro       | --skip-to-cutscene gulp_intro      | 2000   | cutscene=gulp_intro k=10 D_800681C8=6 next_level=76
+gulp_defeated    | --skip-to-cutscene gulp_defeated   | 2000   | cutscene=gulp_defeated k=11 D_800681C8=6 next_level=77
+winter_tundra    | --skip-to-cutscene winter_tundra   | 2000   | cutscene=winter_tundra k=12 D_800681C8=6 next_level=78
+ripto_intro      | --skip-to-cutscene ripto_intro     | 2000   | cutscene=ripto_intro k=14 D_800681C8=6 next_level=79
+ending           | --skip-to-cutscene ending          | 2000   | cutscene=ending k=15 D_800681C8=6 next_level=80

@@ -4,6 +4,7 @@
 
 extern const feature_module_t render_paths_module;
 extern const feature_module_t levelwarp_module;
+extern const feature_module_t cutscene_skip_module;
 extern const feature_module_t terrain_module;
 extern const feature_module_t cyclorama_module;
 extern const feature_module_t shadow_module;
@@ -24,6 +25,11 @@ const feature_module_t* const openpete_features[] = {
     /* The dev-overlay level warp (M): registers its two rows at
      * apply-options time and writes nothing until one is clicked. */
     &levelwarp_module,
+    /* --skip-to-cutscene: the Dragon Shores theater's func_80019230(k) call
+     * and stores, from a draw-function (func_800156FC) entry hook on the
+     * first gameplay tick of level 65. Inert unless armed by
+     * game_set_skip_to_cutscene. */
+    &cutscene_skip_module,
     /* --render-paths: the path-isolation selection (apply_options only). */
     &render_paths_module,
     /* The shared terrain feeder: hooks the world draw and the visibility

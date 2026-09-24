@@ -386,7 +386,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # the skip's release line carries the row's engagement values (the cutscene
     # index, the credits sequence, the return level), and a negative control
     # with the fail-safe forced must fail. One row per game with a manifest.
-    foreach(_skip_game spyro-1)
+    foreach(_skip_game spyro-1 spyro-2)
         add_test(NAME skip_targets_${_skip_game}
                  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_skip_targets.sh
                          --game ${_skip_game} --build-dir=${CMAKE_BINARY_DIR})

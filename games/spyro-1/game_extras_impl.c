@@ -234,21 +234,11 @@ void game_on_hash_emit(uint32_t frame) {
  * first check is the fail-safe against a never-reached edge; it logs its
  * own line. The cutscene watch runs headless too, where there is no
  * fast-forward, so a harness reads the same lines. */
-static uint32_t skip_failsafe_vbls(void) {
-    static long s_vbls = -1;
-    if (s_vbls < 0) {
-        const char* e = getenv("OPENPETE_SKIP_FAILSAFE_VBL");
-        s_vbls = (e && *e) ? strtol(e, NULL, 10) : 4000;
-        if (s_vbls <= 0) s_vbls = 4000;
-    }
-    return (uint32_t)s_vbls;
-}
-
 static void skip_release_on_tick(CPUState* cpu, uint32_t frame_counter) {
     int watching = spyro1_cutscene_skip_watching();
     if (!openpete_skip_present_until_level && !watching) return;
     if (!s_skip_ffwd_deadline)
-        s_skip_ffwd_deadline = frame_counter + skip_failsafe_vbls();
+        s_skip_ffwd_deadline = frame_counter + openpete_skip_failsafe_vbls();
     char eng[128] = "";
     int playable = watching
         ? spyro1_cutscene_skip_released(cpu, eng, sizeof eng)
