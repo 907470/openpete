@@ -519,7 +519,7 @@ static void game_reextract_body(CPUState* cpu) {
     RX_CENSUS_STEP("particles");
     flame_records_present(cpu, bracketed, 0, bracketed ? alpha : 0.0, NULL);
     RX_CENSUS_STEP("flame");
-    tracers_reextract(cpu);         /* the tracer primitives the tick captured */
+    tracers_reextract(cpu, bracketed, alpha);   /* the tracer primitives the tick captured */
     RX_CENSUS_STEP("tracers");
     glow_reextract(cpu, bracketed, alpha);            /* the glow fans the tick captured */
     RX_CENSUS_STEP("glow");

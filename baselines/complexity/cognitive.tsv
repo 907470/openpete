@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: d941b0b19e9b64c3db93cb0199d72eab6ab5bc82
+# head: 17767a728a49481c0fcfbb54c7bc308682ac0589
 file	function	score	marked	accepted
 core/config/config.c	harvest_args	30	0	
 core/config/config.c	harvest_base	39	0	
@@ -196,7 +196,6 @@ games/common/renderer/terrain.c	walk_sector	703	0
 games/common/renderer/text_moby.c	emit_glyph	26	0	
 games/common/renderer/text_moby.c	font_file_load	39	0	
 games/common/renderer/text_moby.c	text_moby_native_cache	49	0	
-games/common/renderer/tracers.c	rib_predict	30	0	
 games/common/renderer/ui_sprite.c	build_ot_rank_map	43	0	
 games/spyro-1/dist/disc_library.cpp	spyro1_config_disc_identity	44	0	
 games/spyro-1/dist/disc_library.cpp	spyro1_library_resolve	53	0	

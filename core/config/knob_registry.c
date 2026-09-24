@@ -1154,6 +1154,9 @@ static const knob_desc_t g_builtin[] = {
         "Particle feed enable (default 1); the guest draw runs either way."),
     ENVROW_LATCHED("TRACERS", "Debug", "1",
         "Tracer ribbon and mesh feed enable (default 1); the guest draws run either way."),
+    ENVROW_LATCHED("TRACERS_INTERP", "Debug", "1",
+        "Spyro 2 and Spyro 3 tracer sub-tick rebase (default 1); "
+        "0 replays every ribbon and mesh at the screen positions its tick drew."),
     ENVROW_LATCHED("GLOW", "Debug", "1",
         "Glow-ring feed enable (default 1); the guest draw runs either way."),
     ENVROW_LATCHED("ZAP", "Debug", "1",

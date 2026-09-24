@@ -37,7 +37,8 @@
 #   cyclorama  --render-paths cyclorama,terrain against terrain
 #   flame      --render-paths terrain,moby,flame against terrain,moby
 #   particles  --render-paths terrain,moby,particles against terrain,moby
-#   tracer     --render-paths terrain,moby,tracer against terrain,moby
+#   tracer     --render-paths terrain,moby,tracer against terrain,moby;
+#              OPENPETE_TRACERS_INTERP=0 is the engagement leg
 #   moby-mask  --render-paths terrain,moby against terrain: the moby's painted
 #              extent and colour, which check_moby_subtick.sh does not separate
 #   terrain        OPENPETE_TERRAIN_VANIM=1 against =0, the interp statistic
@@ -195,8 +196,12 @@
 # A path with a suppress knob also runs an engagement leg: the alpha-0
 # present captured again with the knob at 0, where the producer must hold its
 # tick pose. At least one of an `engage=1` row's blobs must read `own` of at
-# least its canonical step there; with none the knob reached nothing this row
-# can see, the normal legs prove nothing, and the row is VACUOUS. One blob
+# least 0.75 of its canonical step there, the SNAP bound of the cells: a
+# replay of the tick's own screen corners still sits under the interpolated
+# camera, so the terrain and mobys that cover part of the blob move and its
+# visible centroid lands short of canon(V) by the occlusion's shift. With no
+# such blob the knob reached nothing this row can see, the normal legs prove
+# nothing, and the row is VACUOUS. One blob
 # suffices because a row may name a control blob the knob cannot move — a
 # producer already at rest in the world, whose whole step is the camera's.
 #
@@ -373,6 +378,7 @@ case "$PATHNAME" in
             ALPHAS=(0 0.5 1); JUDGE_DEF=0.5,1;;
     tracer) LEG_ARGS_ON=(--render-paths terrain,moby,tracer)
             LEG_ARGS_OFF=(--render-paths terrain,moby)
+            SUPPRESS=OPENPETE_TRACERS_INTERP
             MASK_CAP=60000
             ALPHAS=(0 0.5 1); JUDGE_DEF=0.5,1;;
     # Spyro 1's moby scale and colour cells, which the moby path's own harness
@@ -1587,7 +1593,8 @@ for gi, (gx, gy) in enumerate(gems):
                         % (own, step, prev, c0[2], V, c1[2], shown0[2]))
     # The engagement leg: with the path's interpolation suppressed the
     # producer must hold its tick pose, which is the whole step away from the
-    # previous tick's. A smaller reading means the knob reached nothing.
+    # previous tick's less the occlusion's shift; the SNAP bound separates it
+    # from a knob that reached nothing.
     if suppress:
         cand = sorted(((seg_dist(c, c0, c1), c) for c in legs["suppressed"]))
         if not cand or cand[0][0] > FIND_R:
@@ -1597,7 +1604,7 @@ for gi, (gx, gy) in enumerate(gems):
             cs = cand[0][1]
             own_s = ((cs[0] - c0[0]) ** 2 + (cs[1] - c0[1]) ** 2) ** 0.5
             rows_out.append("  %s=0 own=%.2f of step=%.2f %dpx" % (suppress, own_s, step, cs[2]))
-            if own_s >= step:
+            if own_s >= 0.75 * step:
                 engaged += 1
 
 if suppress and engage and not engaged:

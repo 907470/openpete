@@ -66,8 +66,11 @@
 #include "renderer/render_paths.h"
 #include "renderer/hook_bracket.h"
 #include "renderer/env_knob.h"
+#include "renderer/tracers.h"
 #include "psx_runtime_internal.h"
 #include "openpete_native_render.h"
+#include "openpete_interp_objs.h"   /* the per-record prev/curr snapshots */
+#include "openpete_psx.h"           /* openpete_psx_to_host_ptr */
 #include "game_layout.h"
 
 #include <math.h>
@@ -85,7 +88,8 @@ extern unsigned openpete_frame;
 #define RIB_LIVE         0x00u
 #define RIB_POINT_MAX    256
 
-/* Descriptor shape of the indexed mesh (asm/mobyfunc.s:3225-3246). */
+/* Descriptor shape of the indexed mesh (asm/mobyfunc.s:3217-3218, 3277-3279). */
+#define MSH_VERTS        0x00u
 #define MSH_INDICES      0x08u
 #define MSH_SHIFT        0x10u
 
@@ -95,11 +99,33 @@ extern unsigned openpete_frame;
 
 #define TR_MAX_PRIMS     512    /* primitives one call may contribute */
 #define TR_MAX_TICK      2048   /* primitives one tick may contribute */
+#define TR_MAX_LISTS     8      /* mesh vertex lists one tick may draw */
+
+/* Where one corner of a primitive came from: the point the routine projected
+ * to place it, as the sub-tick rebase needs it back. `key` names the point's
+ * previous state in the keyed store — the ribbon record, or the mesh vertex's
+ * own address — and is 0 on a corner with no source. `age` is the ribbon
+ * point's place counted back from the record's head. `w` is the point in full
+ * world units as the tick drew it and (sx, sy) its screen position under the
+ * tick's camera, projected by the same arithmetic the rebase projects the
+ * shown point with. */
+typedef struct {
+    uint32_t key;
+    int      age;
+    int32_t  w[3];
+    double   sx, sy;
+    int      ok;       /* the point stood in front of the near floor */
+} tr_corner;
+
+enum { TR_SRC_NONE = 0, TR_SRC_RIBBON, TR_SRC_MESH };
 
 typedef struct {
     ngte_prim p;
     float     depth;
     int       paired;
+    int       src;             /* TR_SRC_*: which producer's point each corner holds */
+    tr_corner c[4];
+    float     dx[4], dy[4];    /* the sub-tick screen displacement of each corner */
 } tr_item;
 
 static tr_item  s_item[TR_MAX_PRIMS];
@@ -107,10 +133,17 @@ static int      s_item_n;
 
 /* The tick's whole set, replayed by the sub-tick leg: nine calls contribute to
  * one canonical present and the polybuf is reused before the next one. */
-typedef struct { ngte_prim p; float depth; } tr_held;
-static tr_held  s_tick[TR_MAX_TICK];
+static tr_item  s_tick[TR_MAX_TICK];
 static int      s_tick_n;
 static unsigned s_tick_frame = 0xFFFFFFFFu;
+
+/* The mesh vertex lists the most recent drawing frame read: address and
+ * vertex count. The set stands until the next frame that draws a mesh, so
+ * every capture between two draws sees it. */
+static uint32_t s_list_addr[TR_MAX_LISTS];
+static uint32_t s_list_n[TR_MAX_LISTS];
+static int      s_lists;
+static unsigned s_list_frame = 0xFFFFFFFFu;
 
 static uint32_t s_code_hist[256];
 static uint32_t s_tag_hist[256];
@@ -125,6 +158,10 @@ static int tr_prim_sink(void* ctx, const ngte_prim* s) {
     s_item[s_item_n].p = *s;
     s_item[s_item_n].depth = 1.0f;   /* unpaired: the near guard (view-Z 1) */
     s_item[s_item_n].paired = 0;
+    s_item[s_item_n].src = TR_SRC_NONE;
+    memset(s_item[s_item_n].c, 0, sizeof s_item[s_item_n].c);
+    memset(s_item[s_item_n].dx, 0, sizeof s_item[s_item_n].dx);
+    memset(s_item[s_item_n].dy, 0, sizeof s_item[s_item_n].dy);
     s_item_n++;
     return 1;
 }
@@ -141,9 +178,46 @@ static void tr_capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
     ngte_walk_prims(cpu, start, end, &pol, tr_prim_sink, NULL);
 }
 
+/* ---- corner sources --------------------------------------------------------
+ *
+ * The rebase needs, per corner, the point the routine placed it at. Both
+ * routines load the camera-relative offset (x - cx, cy - y, cz - z) as
+ * (VZ0, VX0, VY0) (ribbon :2974-2999, mesh :3223-3237); a uniform scale of that
+ * vector, the ribbon's halving or the mesh's right shift, leaves the
+ * perspective divide's quotient unchanged, so both project here in full world
+ * units through one function. */
+
+/* The view-Z below which a point has no stable screen position: the ribbon
+ * drops a segment whose two ends average under 128 in its halved units
+ * (:3152-3154), which is 256 in full world units. */
+#define TR_NEAR_M3 256.0
+
+static void tr_project_world(const ngte_view* v, const double p[3], ngte_proj* o) {
+    const double vo[3] = { p[0] - v->cam[0], v->cam[1] - p[1], v->cam[2] - p[2] };
+    ngte_project_offset(v, vo, o);
+}
+
+static void tr_corner_set(tr_corner* c, const ngte_view* v, uint32_t key, int age,
+                          const int32_t w[3]) {
+    c->key = key;
+    c->age = age;
+    memcpy(c->w, w, sizeof c->w);
+    const double p[3] = { (double)w[0], (double)w[1], (double)w[2] };
+    ngte_proj o;
+    tr_project_world(v, p, &o);
+    c->sx = o.sx;
+    c->sy = o.sy;
+    c->ok = o.m3 >= TR_NEAR_M3;
+}
+
 /* ---- ribbon leg: predict the segments the record walk emitted -------------- */
 
-typedef struct { int32_t oc; int32_t sz3; double m3; } rib_pt;
+typedef struct { int32_t oc; int32_t sz3; double m3; tr_corner c; } rib_pt;
+
+/* One predicted segment: its depth and the two points it joins, the head-side
+ * one first. The routine writes corners 0 and 2 about the head-side point and
+ * corners 1 and 3 about the next one (:3125-3141). */
+typedef struct { float depth; tr_corner a, b; } rib_seg;
 
 /* The routine's own outcode word (:2488-2508): the packed screen coordinate
  * shifted left five with one bit per frame edge the point falls outside. Only
@@ -171,53 +245,79 @@ static int32_t rib_sz3(double m3) {
     return (int32_t)z;
 }
 
+/* The point `age` places back from the head of a ring, decoded out of a record
+ * image `rec` (guest RAM or a keyed-store blob): the packed unsigned halves
+ * shifted left one as the routine loads them, which are half world units.
+ * Returns 0 when the packed word holds no walkable ring. */
+static int rib_ring_point(const uint8_t* rec, uint32_t len, int age, int32_t hw[3]) {
+    if (len < TR.packed_off + 4u) return 0;
+    uint32_t packed;
+    memcpy(&packed, rec + TR.packed_off, 4);
+    const int head  = (int)(packed & 0xFFu);
+    const int count = (int)((packed >> 8) & 0xFFu);
+    if (count < 2 || count > TR.ring_n || head >= count) return 0;
+    if (age >= count) age = count - 1;
+    const int idx = ((head - age) % count + count) % count;
+    const uint32_t off = TR.points_off + (uint32_t)idx * 6u;
+    if (off + 6u > len) return 0;
+    uint16_t h[3];
+    memcpy(h, rec + off, 6);
+    for (int k = 0; k < 3; k++) hw[k] = (int32_t)((uint32_t)h[k] << 1);
+    return count;
+}
+
+/* Project one record's points head first, mirroring the routine's per-record
+ * rejects: any point outside the camera-relative box (:2408-2437), every point
+ * off one screen edge (:2496) and the head too far (:2540). Returns the point
+ * count, or 0 when the routine drops the record. */
+static int rib_project_record(CPUState* cpu, const ngte_view* v, uint32_t rec,
+                              const int32_t cam[3], rib_pt* pt) {
+    const uint8_t* host = (const uint8_t*)openpete_psx_to_host_ptr(rec);
+    if (!host) return 0;
+    int32_t hw[3];
+    const int count = rib_ring_point(host, TR.stride, 0, hw);
+    if (count == 0) return 0;
+    int32_t and_oc = -1;
+    for (int k = 0; k < count; k++) {
+        rib_ring_point(host, TR.stride, k, hw);
+        const int32_t vx = hw[0] - cam[0];   /* the routine's IR3 */
+        const int32_t vy = cam[1] - hw[1];   /* IR1 */
+        const int32_t vz = cam[2] - hw[2];   /* IR2 */
+        if (vx <= -TR.box || vx >= TR.box || vy <= -TR.box || vy >= TR.box ||
+            vz <= -TR.box || vz >= TR.box) { s_boxed++; return 0; }
+        ngte_proj o;
+        ngte_project_gte(v->cam_M, NULL, (double)vy, (double)vz, (double)vx,
+                         v->ofx, v->ofy, v, 0, &o);
+        pt[k].m3  = o.m3;
+        pt[k].sz3 = rib_sz3(o.m3);
+        pt[k].oc  = rib_outcode((int)lrint(o.sx), (int)lrint(o.sy));
+        and_oc &= pt[k].oc;
+        const int32_t w[3] = { hw[0] * 2, hw[1] * 2, hw[2] * 2 };
+        tr_corner_set(&pt[k].c, v, rec, k, w);
+    }
+    if ((and_oc & 0xF) > 0) return 0;
+    if (pt[0].sz3 - TR.far_sz >= 0) return 0;
+    return count;
+}
+
 /* Re-walk the record array and mirror the routine's rejects, appending one
- * predicted depth per segment it would have emitted. Returns the count. */
-static int rib_predict(CPUState* cpu, const ngte_view* v, float* out, int cap) {
+ * predicted segment per segment it would have emitted. Returns the count. */
+static int rib_predict(CPUState* cpu, const ngte_view* v, rib_seg* out, int cap) {
     int n = 0;
     s_live = 0; s_boxed = 0;
     /* The camera position the routine reads, shifted right one like its own
-     * `srl` so the box test below compares the same values. */
-    const uint32_t cx = cpu->read_word(game_layout.cam.position + 0u) >> 1;
-    const uint32_t cy = cpu->read_word(game_layout.cam.position + 4u) >> 1;
-    const uint32_t cz = cpu->read_word(game_layout.cam.position + 8u) >> 1;
-
+     * `srl` so the box test compares the same values. */
+    const int32_t cam[3] = {
+        (int32_t)(cpu->read_word(game_layout.cam.position + 0u) >> 1),
+        (int32_t)(cpu->read_word(game_layout.cam.position + 4u) >> 1),
+        (int32_t)(cpu->read_word(game_layout.cam.position + 8u) >> 1),
+    };
     static rib_pt pt[RIB_POINT_MAX];
     for (uint32_t s = 0; s < TR.slots; s++) {
         const uint32_t rec = TR.ring + s * TR.stride;
         if (cpu->read_word(rec + RIB_LIVE) == 0) continue;
         s_live++;
-        const uint32_t packed = cpu->read_word(rec + TR.packed_off);
-        const int head  = (int)(packed & 0xFFu);
-        const int count = (int)((packed >> 8) & 0xFFu);
-        if (count < 2 || count > TR.ring_n || head >= count) continue;
-
-        int rejected = 0;
-        int32_t and_oc = -1;
-        for (int k = 0; k < count && !rejected; k++) {
-            const int idx = ((head - k) % count + count) % count;
-            const uint32_t p = rec + TR.points_off + (uint32_t)idx * 6u;
-            const int32_t px = (int32_t)((uint32_t)cpu->read_half(p + 0u) << 1);
-            const int32_t py = (int32_t)((uint32_t)cpu->read_half(p + 2u) << 1);
-            const int32_t pz = (int32_t)((uint32_t)cpu->read_half(p + 4u) << 1);
-            const int32_t vx = px - (int32_t)cx;   /* the routine's IR3 */
-            const int32_t vy = (int32_t)cy - py;   /* IR1 */
-            const int32_t vz = (int32_t)cz - pz;   /* IR2 */
-            /* :2408-2437 drops the whole record when any point leaves the box. */
-            if (vx <= -TR.box || vx >= TR.box || vy <= -TR.box || vy >= TR.box ||
-                vz <= -TR.box || vz >= TR.box) { rejected = 1; break; }
-            ngte_proj o;
-            ngte_project_gte(v->cam_M, NULL, (double)vy, (double)vz, (double)vx,
-                             v->ofx, v->ofy, v, 0, &o);
-            pt[k].m3  = o.m3;
-            pt[k].sz3 = rib_sz3(o.m3);
-            pt[k].oc  = rib_outcode((int)lrint(o.sx), (int)lrint(o.sy));
-            and_oc &= pt[k].oc;
-        }
-        if (rejected) { s_boxed++; continue; }
-        if ((and_oc & 0xF) > 0) continue;            /* :2496 every point off one edge */
-        if (pt[0].sz3 - TR.far_sz >= 0) continue;    /* :2540 the whole record too far */
-
+        const int count = rib_project_record(cpu, v, rec, cam, pt);
         for (int k = 0; k + 1 < count; k++) {
             if ((pt[k].oc & pt[k + 1].oc & 0xF) > 0) continue;        /* :2652 */
             const int32_t key = ((pt[k].sz3 + pt[k + 1].sz3) >> 7) - 2;
@@ -226,8 +326,10 @@ static int rib_predict(CPUState* cpu, const ngte_view* v, float* out, int cap) {
                 /* The record's halves are quarter world units and the routine
                  * halves the whole vector, so its MAC3 is half the world value. */
                 const double mz = (pt[k].m3 + pt[k + 1].m3) * 0.5;
-                out[n] = openpete_native_scene_viewz(
+                out[n].depth = openpete_native_scene_viewz(
                     openpete_worldvz_scaled((float)mz, 2.0f));
+                out[n].a = pt[k].c;
+                out[n].b = pt[k + 1].c;
             }
             n++;
         }
@@ -236,21 +338,70 @@ static int rib_predict(CPUState* cpu, const ngte_view* v, float* out, int cap) {
 }
 
 static void rib_pair_depths(CPUState* cpu, const ngte_view* v) {
-    static float pred[TR_MAX_PRIMS];
+    static rib_seg pred[TR_MAX_PRIMS];
     const int n = rib_predict(cpu, v, pred, TR_MAX_PRIMS);
     s_last_predicted = n;
     if (n != s_item_n || n > TR_MAX_PRIMS) return;   /* every primitive stays unpaired */
     for (int i = 0; i < n; i++) {
-        s_item[i].depth = pred[i];
-        s_item[i].paired = 1;
+        tr_item* it = &s_item[i];
+        it->depth = pred[i].depth;
+        it->paired = 1;
+        it->src = TR_SRC_RIBBON;
+        it->c[0] = it->c[2] = pred[i].a;
+        it->c[1] = it->c[3] = pred[i].b;
     }
 }
 
 /* ---- mesh leg: replay the emit test out of the routine's own scratchpad ---- */
 
-static void msh_pair_depths(CPUState* cpu, uint32_t desc) {
+/* Note a vertex list the draw read, for the per-object capture. The list ends
+ * at the routine's -1 terminator (:3223-3225), bounded by the scratchpad
+ * table. The capture runs on every VBL and the draw once per tick, so the set
+ * is replaced by the next frame that draws, not taken by the capture: a vertex
+ * missing from one capture is evicted from the store and pairs as a spawn. */
+static void msh_note_list(CPUState* cpu, uint32_t vlist) {
+    if (s_list_frame != openpete_frame) { s_list_frame = openpete_frame; s_lists = 0; }
+    if (vlist < 0x80000000u || vlist >= 0x80800000u) return;
+    for (int i = 0; i < s_lists; i++) if (s_list_addr[i] == vlist) return;
+    if (s_lists >= TR_MAX_LISTS) return;
+    uint32_t n = 0;
+    while (n < SPAD_MAX_VERTS && cpu->read_word(vlist + n * 12u) != 0xFFFFFFFFu) n++;
+    s_list_addr[s_lists] = vlist;
+    s_list_n[s_lists] = n;
+    s_lists++;
+}
+
+int tracers_mesh_lists(uint32_t* addr, uint32_t* nverts, int max) {
+    int n = 0;
+    for (int i = 0; i < s_lists && n < max; i++, n++) {
+        addr[n] = s_list_addr[i];
+        nverts[n] = s_list_n[i];
+    }
+    return n;
+}
+
+/* Each corner's vertex, out of the list the descriptor names: corner k is the
+ * entry's index byte k (:3358-3378 store them at +0x08, +0x14, +0x20, +0x2C). */
+static void msh_set_corners(CPUState* cpu, const ngte_view* v, tr_item* it,
+                            uint32_t vlist, const uint32_t off[4]) {
+    it->src = TR_SRC_MESH;
+    for (int k = 0; k < 4; k++) {
+        const uint32_t va = vlist + (off[k] >> 3) * 12u;
+        const int32_t w[3] = {
+            (int32_t)cpu->read_word(va + 0u),
+            (int32_t)cpu->read_word(va + 4u),
+            (int32_t)cpu->read_word(va + 8u),
+        };
+        tr_corner_set(&it->c[k], v, va, 0, w);
+    }
+}
+
+static void msh_pair_depths(CPUState* cpu, const ngte_view* v, uint32_t desc) {
     const uint32_t ilist = cpu->read_word(desc + MSH_INDICES);
     if (ilist < 0x80000000u || ilist >= 0x80800000u) return;
+    const uint32_t vlist = cpu->read_word(desc + MSH_VERTS);
+    const int have_verts = vlist >= 0x80000000u && vlist < 0x80800000u;
+    if (have_verts) msh_note_list(cpu, vlist);
     const int shift = (int)cpu->read_word(desc + MSH_SHIFT);
     const float mul = (shift >= 0 && shift < 24) ? (float)(1u << (unsigned)shift) : 1.0f;
 
@@ -280,6 +431,7 @@ static void msh_pair_depths(CPUState* cpu, uint32_t desc) {
         s_item[i].depth = openpete_native_scene_viewz(
             openpete_worldvz_scaled((float)zsum * 0.25f, mul));
         s_item[i].paired = 1;
+        if (have_verts) msh_set_corners(cpu, v, &s_item[i], vlist, off);
         i++;
     }
 }
@@ -294,8 +446,15 @@ static int tr_feed_enabled(void) {
     return v;
 }
 
-static void tr_add_prim(const ngte_prim* p, float depth) {
+/* Whether the held set carries a sub-tick displacement. Clear on every
+ * canonical feed and at the end of the tick's interval, where the replay emits
+ * the captured corners verbatim. */
+static int s_reb_active;
+
+static void tr_add_prim(const tr_item* it) {
     static const int split[2][3] = { {0, 1, 2}, {1, 3, 2} };
+    const ngte_prim* p = &it->p;
+    const float depth = it->depth;
     if (p->nv != 3 && p->nv != 4) return;
     ngte_tpage tp;
     int blend = p->stp ? 1 : 0;
@@ -311,6 +470,7 @@ static void tr_add_prim(const ngte_prim* p, float depth) {
         for (int k = 0; k < 3; k++) {
             const int j = split[s][k] == 3 ? last : split[s][k];
             st.v[k].sx = p->x[j]; st.v[k].sy = p->y[j]; st.v[k].z = depth;
+            if (s_reb_active) { st.v[k].sx += it->dx[j]; st.v[k].sy += it->dy[j]; }
             st.v[k].pvz = depth;   /* fed at one depth: W constant across the prim */
             st.v[k].u = (float)p->u[j]; st.v[k].v = (float)p->v[j];
             st.v[k].rgba = (p->rgb[j] & 0xFFFFFFu) | 0xFF000000u;
@@ -326,12 +486,12 @@ static void tr_add_prim(const ngte_prim* p, float depth) {
     }
 }
 
-static void tr_feed_native(const tr_held* set, int n) {
+static void tr_feed_native(const tr_item* set, int n) {
     if (!tr_feed_enabled()) return;
     if (n <= 0) return;
     openpete_native_scene_begin_frame(openpete_frame);
     openpete_native_scene_set_tag(OPENPETE_TAG_TRACER(0));
-    for (int i = 0; i < n; i++) tr_add_prim(&set[i].p, set[i].depth);
+    for (int i = 0; i < n; i++) tr_add_prim(&set[i]);
     openpete_native_scene_set_tag(0);
 }
 
@@ -341,11 +501,8 @@ static void tr_feed_native(const tr_held* set, int n) {
 static int tr_hold(void) {
     if (s_tick_frame != openpete_frame) { s_tick_frame = openpete_frame; s_tick_n = 0; }
     const int first = s_tick_n;
-    for (int i = 0; i < s_item_n && s_tick_n < TR_MAX_TICK; i++) {
-        s_tick[s_tick_n].p = s_item[i].p;
-        s_tick[s_tick_n].depth = s_item[i].depth;
-        s_tick_n++;
-    }
+    for (int i = 0; i < s_item_n && s_tick_n < TR_MAX_TICK; i++) s_tick[s_tick_n++] = s_item[i];
+    s_reb_active = 0;
     return first;
 }
 
@@ -416,7 +573,9 @@ static int on_mesh(CPUState* cpu, uint32_t addr) {
     const uint32_t fed_before = s_fed_tris;
     if (endp > startp) {
         tr_capture_prims(cpu, startp, endp);
-        msh_pair_depths(cpu, s_msh_desc);
+        ngte_view view;
+        ngte_view_build(cpu, &view);
+        msh_pair_depths(cpu, &view, s_msh_desc);
         const int first = tr_hold();
         if (feed && render_path_enabled(RP_TRACER))
             tr_feed_native(&s_tick[first], s_tick_n - first);
@@ -425,14 +584,148 @@ static int on_mesh(CPUState* cpu, uint32_t addr) {
     return hook_bracket_end(&k_msh);
 }
 
+/* ---- sub-tick rebase ------------------------------------------------------
+ *
+ * The primitives are the guest's own int16 output, built under the tick's
+ * camera from the tick's records, so a present that re-feeds them draws every
+ * ribbon where the tick drew it: neither the camera's motion nor the records'
+ * own reaches it. The rebase moves each corner by the screen displacement of
+ * the point the routine placed it about: that point as the present shows it,
+ * projected under the staged camera, against the point as the tick drew it,
+ * projected under the tick's camera by the same function. The shown point is
+ * the lerp of the previous tick's point and the tick's, paired by the record's
+ * slot and the point's place counted back from the ring's head, so at alpha 0
+ * the ribbon lies along the previous tick's ring and the head sweeps to the
+ * tick's head over the interval; a ring that grew this tick holds its new tail
+ * on the previous tail. A mesh corner pairs its own vertex by address. A point
+ * with no usable previous state holds the tick's world position, and the
+ * camera's motion alone rebases it. At the end of the tick's interval the
+ * replay emits the captured corners verbatim.
+ *
+ * Out of scope, each its own channel of the same record: the ribbon's width,
+ * which the routine tapers in screen units from the record's width byte, its
+ * DPCS fade by the head's depth, and the primitives' depth, which the replay
+ * keeps from the canonical pairing. */
+
+/* A point's speed ceiling, in full world units per tick. The store is keyed by
+ * slot address, so a slot a new record respawns into inside one tick pairs
+ * across two different ribbons; the owner test catches a reuse by another
+ * owner and this one a reuse by the same owner, at a distance no point covers
+ * in a tick. */
+#define TR_REUSE_CEILING 4096.0
+
+/* A pair spanning more than this is a discontinuity rather than motion. */
+#define TR_PAIR_STALE_NS (g_openpete_tick_period_ns + g_openpete_tick_period_ns / 2)
+
+static unsigned long s_reb_stat[3][2]; /* corners per TR_SRC_*: 0 lerped, 1 held */
+static double        s_reb_worldmax;  /* the largest per-tick world step paired */
+static double        s_reb_screenmax; /* the largest screen displacement applied */
+
+static const openpete_interp_obj_t* tr_pair(uint32_t key, uint32_t need) {
+    const openpete_interp_obj_t* o = openpete_interp_objs_find(key);
+    if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return NULL;
+    if ((uint32_t)o->blob_len < need) return NULL;
+    if (o->curr_ns - o->prev_ns > TR_PAIR_STALE_NS) return NULL;
+    return o;
+}
+
+/* The corner's point in the previous tick's state, in full world units.
+ * Returns 0 when there is none: a record or vertex that appeared this tick, a
+ * pair spanning more than a capture interval, or a ribbon slot whose owner
+ * pointer changed. */
+static int tr_prev_point(const tr_item* it, const tr_corner* c, int32_t w[3]) {
+    if (it->src == TR_SRC_MESH) {
+        const openpete_interp_obj_t* o = tr_pair(c->key, 12u);
+        if (!o) return 0;
+        memcpy(w, o->prev, 12);
+        return 1;
+    }
+    const openpete_interp_obj_t* o = tr_pair(c->key, TR.packed_off + 4u);
+    if (!o || memcmp(o->prev + RIB_LIVE, o->curr + RIB_LIVE, 4) != 0) return 0;
+    int32_t hw[3];
+    if (!rib_ring_point(o->prev, o->blob_len, c->age, hw)) return 0;
+    for (int k = 0; k < 3; k++) w[k] = hw[k] * 2;
+    return 1;
+}
+
+static void tr_rebase_corner(tr_item* it, int k, const ngte_view* v, double alpha) {
+    const tr_corner* c = &it->c[k];
+    it->dx[k] = 0.0f;
+    it->dy[k] = 0.0f;
+    if (!c->key || !c->ok) return;
+    double p[3] = { (double)c->w[0], (double)c->w[1], (double)c->w[2] };
+    int32_t pw[3];
+    int lerped = 0;
+    if (tr_prev_point(it, c, pw)) {
+        double d[3], sq = 0.0;
+        for (int j = 0; j < 3; j++) { d[j] = (double)pw[j] - p[j]; sq += d[j] * d[j]; }
+        if (sq <= TR_REUSE_CEILING * TR_REUSE_CEILING) {
+            for (int j = 0; j < 3; j++) p[j] += d[j] * (1.0 - alpha);
+            if (sqrt(sq) > s_reb_worldmax) s_reb_worldmax = sqrt(sq);
+            lerped = 1;
+        }
+    }
+    s_reb_stat[it->src][lerped ? 0 : 1]++;
+    ngte_proj o;
+    tr_project_world(v, p, &o);
+    /* A shown point behind the near floor has no screen position to move to;
+     * the corner holds the tick's. */
+    if (o.m3 < TR_NEAR_M3) return;
+    it->dx[k] = (float)(o.sx - c->sx);
+    it->dy[k] = (float)(o.sy - c->sy);
+    const double m = fmax(fabs((double)it->dx[k]), fabs((double)it->dy[k]));
+    if (m > s_reb_screenmax) s_reb_screenmax = m;
+}
+
+/* OPENPETE_TRACERS_INTERP=0 leaves the replay at the tick's screen positions,
+ * the engagement leg of the sub-tick harness. */
+static int tr_interp_enabled(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_TRACERS_INTERP"); v = !(e && *e && *e == '0'); }
+    return v;
+}
+
+/* OPENPETE_TRACER_REBASE_DBG=1: the rebase's verdicts per run. A run whose
+ * lerped count is zero rebased nothing against a previous point and measured
+ * nothing. */
+static void tr_rebase_report(void) {
+    fprintf(stderr, "[tracer-rebase] ribbon lerped=%lu held=%lu mesh lerped=%lu held=%lu "
+            "worldmax=%.3f screenmax=%.3f\n",
+            s_reb_stat[TR_SRC_RIBBON][0], s_reb_stat[TR_SRC_RIBBON][1],
+            s_reb_stat[TR_SRC_MESH][0], s_reb_stat[TR_SRC_MESH][1],
+            s_reb_worldmax, s_reb_screenmax);
+}
+
+/* Rebase the held set onto the pose this present shows. The staged camera
+ * resolves through the sub-tick view, so building a view here reads the
+ * interpolated transform the rest of the pass draws under. */
+static void tr_rebase_all(CPUState* cpu, double alpha) {
+    s_reb_active = 0;
+    if (alpha >= 1.0 || s_tick_n <= 0 || !tr_interp_enabled()) return;
+    static int dbg = -1;
+    if (dbg < 0) {
+        const char* e = getenv("OPENPETE_TRACER_REBASE_DBG");
+        dbg = (e && *e && *e != '0');
+        if (dbg) atexit(tr_rebase_report);
+    }
+    ngte_view v;
+    ngte_view_build(cpu, &v);
+    for (int i = 0; i < s_tick_n; i++)
+        for (int k = 0; k < 4; k++) tr_rebase_corner(&s_tick[i], k, &v, alpha);
+    s_reb_active = 1;
+}
+
 /* Sub-tick re-extract. The primitives are the guest's own output and are gone
  * once the polybuf is reused, so the replay re-feeds the set the canonical tick
- * captured, at the depths paired then. At alpha 1 it reproduces the canonical
- * present exactly, which is what the spine's identity leg measures. */
-void tracers_reextract(CPUState* cpu) {
-    (void)cpu;
+ * captured, at the depths paired then, rebased onto the pose this present
+ * shows. At alpha 1, and on a present outside a bracket, it emits the captured
+ * corners verbatim and so reproduces the canonical present exactly, which is
+ * what the spine's identity leg measures. */
+void tracers_reextract(CPUState* cpu, int bracketed, double alpha) {
     if (!hook_reextract_ready(RP_TRACER)) return;
+    tr_rebase_all(cpu, bracketed ? alpha : 1.0);
     tr_feed_native(s_tick, s_tick_n);
+    s_reb_active = 0;
 }
 
 /* The hook addresses are the layout's two tracer draw sites, bound at boot: a

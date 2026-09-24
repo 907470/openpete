@@ -83,6 +83,13 @@ void game_interp_capture_glow_pool(void);
  * sub-tick replay of its ribbon has a previous head and tail to rebase onto. */
 void game_interp_capture_zap_pool(void);
 
+/* Snapshot one whole record per live slot of the tracer ribbon array
+ * (game_layout.tracers: ring, slots, stride), keyed by the record's PSX
+ * address, and every vertex of the mesh vertex lists the most recent tracer
+ * mesh draw read, keyed by the vertex's address, so the sub-tick replay of both
+ * producers has each point's previous position to rebase onto. */
+void game_interp_capture_tracer_pool(void);
+
 /* Every pool above in one call: the extra-pool walk a game passes to
  * game_interp_register_common when its particle and glint renderers link their
  * own primitives. */

@@ -8,6 +8,7 @@
 #include "openpete_psx.h"          /* openpete_psx_to_host_ptr */
 #include "game_layout.h"
 #include "renderer/env_knob.h"
+#include "renderer/tracers.h"      /* the mesh vertex lists the tick drew */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -143,7 +144,11 @@ void game_interp_capture_moby_array(void) {
     if (arr < 0x80000000u) return;
 
     const uint32_t stride = game_layout.moby.array_stride;
-    const uint32_t blob   = openpete_interp_objs_blob_bytes();
+    /* The store's blob may be sized for a longer record than a moby's (see
+     * game_interp_register_common), so the capture takes one record and no
+     * bytes of the next. */
+    const uint32_t blob   = openpete_interp_objs_blob_bytes() < stride
+                                ? openpete_interp_objs_blob_bytes() : stride;
     /* OPENPETE_CAPTRACE_CLS=<class|0xFFFF>: the per-TICK canonical position of
      * every moby of that class, the capture side of the staircase-vs-smooth
      * comparison against the sub-tick trace. */
@@ -281,6 +286,42 @@ void game_interp_capture_zap_pool(void) {
     }
 }
 
+/* The tracer producers (game_layout.tracers). The ribbon array is `slots`
+ * records of `stride` bytes whose word at +0x00 is the owner pointer and 0 on a
+ * free slot; the record holds the whole point ring, so one blob per record
+ * gives the replay the previous tick's ring in one consistent image. The mesh
+ * vertices are world XYZ int32 triples in lists the draw's descriptors name,
+ * which the feeder notes per draw; each vertex is keyed by its own address.
+ * The routines project both under the tick's camera and emit the screen
+ * corners themselves, so a sub-tick present that replays those corners needs
+ * each point's previous position to rebase them onto the pose it shows.
+ * Read-only against guest RAM. */
+void game_interp_capture_tracer_pool(void) {
+    const uint32_t stride = game_layout.tracers.stride;
+    if (game_layout.tracers.ring && stride) {
+        const uint32_t len = openpete_interp_objs_blob_bytes() < stride
+                                 ? openpete_interp_objs_blob_bytes() : stride;
+        for (uint32_t s = 0; s < game_layout.tracers.slots; ++s) {
+            const uint32_t rec = game_layout.tracers.ring + s * stride;
+            const void* host = openpete_psx_to_host_ptr(rec);
+            if (!host) break;
+            uint32_t live;
+            memcpy(&live, host, 4);
+            if (live == 0u) continue;                     /* free slot */
+            openpete_interp_objs_capture(rec, host, len);
+        }
+    }
+    uint32_t addr[8], nv[8];
+    const int lists = tracers_mesh_lists(addr, nv, 8);
+    for (int l = 0; l < lists; ++l) {
+        for (uint32_t i = 0; i < nv[l]; ++i) {
+            const uint32_t va = addr[l] + i * 12u;
+            const void* host = openpete_psx_to_host_ptr(va);
+            if (host) openpete_interp_objs_capture(va, host, 12u);
+        }
+    }
+}
+
 /* The pools a game's own primitive-linking feeders replay from, in one call so
  * a game registers one extra-pool walk rather than a list that has to be kept
  * in step with the feeders. A game with no located pool skips its own walk. */
@@ -289,6 +330,7 @@ void game_interp_capture_feeder_pools(void) {
     game_interp_capture_glint_pool();
     game_interp_capture_glow_pool();
     game_interp_capture_zap_pool();
+    game_interp_capture_tracer_pool();
 }
 
 /* Scrolling-texture env-anim descriptors (flowing water and waterfalls). The
@@ -351,11 +393,13 @@ void game_interp_register_common(const game_interp_row_t* rows, unsigned count,
     game_interp_rows_add(rows, count);
     game_interp_rows_commit();
     s_extra_pools = extra_pools;
-    /* One whole Moby record per object, so every consumer reads its fields at
-     * their natural offsets, and the store's default capacity. */
-    game_interp_rows_obj_capture(capture_objs_common,
-                                 game_layout.moby.array_stride,
-                                 OPENPETE_INTERP_OBJ_SLOTS);
+    /* One whole record per object, so every consumer reads its fields at their
+     * natural offsets, and the store's default capacity. The blob is the
+     * longest record a walk captures whole: the Moby, or the tracer ribbon
+     * record, whose point ring runs to its end. */
+    const uint32_t blob = game_layout.tracers.stride > game_layout.moby.array_stride
+                              ? game_layout.tracers.stride : game_layout.moby.array_stride;
+    game_interp_rows_obj_capture(capture_objs_common, blob, OPENPETE_INTERP_OBJ_SLOTS);
 }
 
 void game_interp_rows_commit(void) {

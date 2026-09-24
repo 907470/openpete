@@ -6,9 +6,15 @@
 # terrain and moby in both.
 #
 # The source is not a movie: the plain boot's attract demo charges through
-# Sunrise Spring at VBL 4500, the same present the presentation corpus pins as
-# its tracer row. The ribbon is one 2272-2717 px component whose head crosses
-# 21.9 px over the interval while its tail grows, so all three cells carry
-# signal: the centroid is the head's translation, the area the ribbon's own
-# length ramp, the mean colour its additive fade.
-title-demo | 4500 | blob=285.0,202.0 tol=1.0 step=10
+# Sunrise Spring, two live ribbon records drawing 18 segments per tick. A tick
+# spans VBLs 4499-4500 and 4501-4502 here, so V is 4501 and the intermediate
+# present at 4502 covers [4499, 4501]; at V=4500 the present at 4501 falls in
+# the next tick and every intermediate leg reads the next tick's ribbon. The
+# charge ribbon is one 2818-3192 px component whose head crosses 20.8 px over
+# the interval while its tail grows, so all three cells carry signal: the
+# centroid is the head's translation, the area the ribbon's own length ramp,
+# the mean colour its additive fade. The second record's ribbon, the 436-453 px
+# streak at (129.4,78.8), is not named: its head runs off the top of the frame
+# and terrain covers its lower half, so its visible centroid is not the lerp
+# of its two canonical ones.
+title-demo | 4501 | blob=305.3,196.0 tol=1.0 step=10

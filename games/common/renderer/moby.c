@@ -7542,10 +7542,9 @@ int moby_record_world_offset(uint32_t moby, double out[3]) {
 
 int moby_record_halfword_offset(uint32_t moby, uint32_t off, double* out) {
     *out = 0.0;
-    if (off + 2u > openpete_interp_objs_blob_bytes()) return 0;
     double t = 0.0;
     const openpete_interp_obj_t* o = moby_record_pair(moby, &t);
-    if (!o) return 0;
+    if (!o || off + 2u > (uint32_t)o->blob_len) return 0;
     uint16_t pv, cv;
     memcpy(&pv, o->prev + off, 2);
     memcpy(&cv, o->curr + off, 2);
