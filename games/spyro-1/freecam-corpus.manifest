@@ -34,6 +34,11 @@ artisans | pos=(58245, 42770, 9989) yaw=1599 pitch=-29
 # face changes from the 2x2 fold image to the 4x4 grid on the bilinear surface
 # (curved curb and sloped grass move, the flat floor does not).
 artisans | pos=(84319, 31822, 11248) yaw=-3051 pitch=992
+# Warp on approach between these two poses under --lod extended (user report on
+# the geomorph build 26134f04): the near grass and curb faces cross the tier-4
+# blend band between them.
+artisans | pos=(85079, 28860, 10795) yaw=9461 pitch=394
+artisans | pos=(85007, 29125, 10602) yaw=9461 pitch=394
 # High above the level looking down, past the .s's own LP culling distance, so
 # the original renderer emits ZERO prims. The extended-LOD leg is the one that
 # matters: the native feed used to run only when the .s had drawn something, so
