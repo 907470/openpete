@@ -381,6 +381,8 @@ typedef struct rhi_terrain_vertex {   /* tagged: forward-declared by the
                                  * admit(5)<<19 (LP authored admission) |
                                  * pincells<<19 (HP: the always-HQ pin sends
                                  * the face to the 4x4 cells) |
+                                 * cellok<<20 (HP: the face may take the
+                                 * 4x4 cells) |
                                  * otbias(5)<<24 (authored OT-slot bias)     */
     int16_t  c0x, c0y, c0z;     /* parent face corners in i0,i1,i2,i3 order, */
     int16_t  c1x, c1y, c1z;     /* sector-local, same x4 fixed point         */
@@ -458,10 +460,7 @@ typedef struct rhi_terrain_cell {
                                  * uv[6] its cell;
                                  * bit 25 (with bit 24): a tier-2 triangle's
                                  * record, entries 0-3 its sub-triangles and
-                                 * uv[6] the quadrant tile;
-                                 * bits 26-27 (a quad's record): quadrant
-                                 * 2*half + 0 / + 1 takes the UV fold
-                                 * (tface_qfold_mask)                        */
+                                 * uv[6] the quadrant tile                   */
     uint32_t near_rgb[4];       /* raw near colours of corners i0..i3 (a
                                  * triangle's C colour, word 1 byte 0, in [3]) */
     rhi_terrain_cell_tile tile[8];
