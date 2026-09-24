@@ -1,0 +1,15 @@
+# The --skip-to-cutscene / --skip-to-area row table (scripts/check_skip_targets.sh).
+# One row per target name. A row passes when its run prints the skip's release
+# line ("[skip-to-level] level playable") carrying every expect token, the
+# engagement values the skip module reads back from RAM at release, and does
+# not print the fail-safe line. frames is the run's VBL limit (the release
+# edges measured at VBL 1584 to 1617). The credits rows read g_CreditsSequence
+# on the first GS_Credits tick, after the credits overlay's first update
+# (func_credits_8007AA50) advanced it from the 0 / 10 the skip entered with.
+#
+# name      | args                            | frames | expect
+intro       | --skip-to-cutscene intro        | 2400   | cutscene=intro g_CutsceneIdx=1
+ending      | --skip-to-cutscene ending       | 2400   | cutscene=ending g_CutsceneIdx=2
+ending_loot | --skip-to-cutscene ending_loot  | 2400   | cutscene=ending_loot g_CutsceneIdx=3 return_level=10
+credits     | --skip-to-cutscene credits      | 2400   | cutscene=credits credits_sequence=1 return_level=10
+credits_100 | --skip-to-cutscene credits_100  | 2400   | cutscene=credits_100 credits_sequence=11 return_level=10

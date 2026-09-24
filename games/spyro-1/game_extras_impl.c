@@ -186,15 +186,31 @@ void game_set_skip_to_level(int level_id) {
 /* The level id/name table lives with the dev-overlay warp feature
  * (features/levelwarp.c) so the dropdown and --skip-to-level
  * resolve against exactly one list. */
-/* The credits are entered from a live level (features/credits_skip.c
- * replays the "CREDITS" pad code on the first playable tick), so a credits
- * target rides a level skip: --skip-to-level's own target when armed, else
- * Artisans. The roll returns to that level. */
+/* --skip-to-cutscene (features/credits_skip.c). `intro` starts from the
+ * title through New Game and runs no level skip; the endings ride a level
+ * skip to their boss level; the credits ride --skip-to-level's own target,
+ * else Artisans, and the roll returns to that level. A target whose source
+ * level contradicts an explicit --skip-to-level is refused. */
 void game_set_skip_to_cutscene(int cutscene_id) {
-    if (cutscene_id != SPYRO1_CUTSCENE_CREDITS &&
-        cutscene_id != SPYRO1_CUTSCENE_CREDITS_FULL) return;
-    spyro1_credits_skip_arm(cutscene_id == SPYRO1_CUTSCENE_CREDITS_FULL);
-    if (s_skip_to_level <= 0) game_set_skip_to_level(10);
+    if (cutscene_id <= 0) return;
+    int source = spyro1_cutscene_source_level(cutscene_id);
+    if (source >= 0 && s_skip_to_level > 0 && s_skip_to_level != source) {
+        char from[24] = "the title";
+        if (source > 0) snprintf(from, sizeof from, "level %d", source);
+        fprintf(stderr, "openpete: --skip-to-cutscene: this cutscene starts "
+                        "from %s, not --skip-to-level %d; refused\n",
+                from, s_skip_to_level);
+        return;
+    }
+    spyro1_cutscene_skip_arm(cutscene_id);
+    if (source == 0) {
+        if (openpete_skip_ffwd_windowed) {
+            openpete_skip_present_until_level = 1;
+            s_skip_ffwd_deadline = 0;
+        }
+        return;
+    }
+    if (s_skip_to_level <= 0) game_set_skip_to_level(source > 0 ? source : 10);
 }
 int game_resolve_cutscene_arg(const char* arg) { return spyro1_cutscene_resolve(arg); }
 
@@ -206,6 +222,49 @@ void game_on_hash_emit(uint32_t frame) {
     (void)frame;
     /* Hook point for per-game state dumps aligned with the hash log's
      * timing. Spyro needs none. */
+}
+
+/* The skip's release block, every tick while a skip fast-forward or a
+ * cutscene target is armed. Presents resume (openpete_skip_present_until_level
+ * clears) on the playable edge: g_Gamestate reaching GS_Playing after the
+ * level skip's induction (TSS_Active is not the edge: the homeworld flyby
+ * after it is a title card over black for ~380 frames), or, while a cutscene
+ * target is armed, that target's release predicate. The line names the
+ * engagement values read back at release. A deadline 4000 VBLs after the
+ * first check is the fail-safe against a never-reached edge; it logs its
+ * own line. The cutscene watch runs headless too, where there is no
+ * fast-forward, so a harness reads the same lines. */
+static uint32_t skip_failsafe_vbls(void) {
+    static long s_vbls = -1;
+    if (s_vbls < 0) {
+        const char* e = getenv("OPENPETE_SKIP_FAILSAFE_VBL");
+        s_vbls = (e && *e) ? strtol(e, NULL, 10) : 4000;
+        if (s_vbls <= 0) s_vbls = 4000;
+    }
+    return (uint32_t)s_vbls;
+}
+
+static void skip_release_on_tick(CPUState* cpu, uint32_t frame_counter) {
+    int watching = spyro1_cutscene_skip_watching();
+    if (!openpete_skip_present_until_level && !watching) return;
+    if (!s_skip_ffwd_deadline)
+        s_skip_ffwd_deadline = frame_counter + skip_failsafe_vbls();
+    char eng[128] = "";
+    int playable = watching
+        ? spyro1_cutscene_skip_released(cpu, eng, sizeof eng)
+        : s_skip_applied && cpu->read_word(0x800757D8u) == 0u; /* GS_Playing */
+    if (playable) {
+        fprintf(stderr, "[skip-to-level] level playable — presents resume "
+                        "at frame=%u%s\n", (unsigned)frame_counter, eng);
+    } else if (frame_counter > s_skip_ffwd_deadline) {
+        fprintf(stderr, "[skip-to-level] fail-safe release (no playable "
+                        "edge) at frame=%u\n", (unsigned)frame_counter);
+    } else {
+        return;
+    }
+    openpete_skip_present_until_level = 0;
+    s_skip_ffwd_deadline = 0;
+    spyro1_cutscene_skip_finish();
 }
 
 void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
@@ -385,33 +444,7 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
         }
     }
 
-    /* --skip-to-level fast-forward (openpete_skip_present_until_level): the host
-     * loop skips presents + pacing until the target level is actually PLAYABLE.
-     * Resume the moment g_Gamestate reaches GS_Playing (0). Note TSS_Active (the
-     * LoadLevel-complete signal) is NOT the right stop — the homeworld-entrance
-     * flyby that follows is a "THE ADVENTURE BEGINS" title card over black for
-     * ~380 frames; the level itself only appears when the flyby hands off to
-     * GS_Playing. Gated on s_skip_applied so early-boot GS_Playing (before the
-     * title) can't trip it; the frame cap is a fail-safe so a never-induced skip
-     * can't leave a permanently black window. */
-    if (openpete_skip_present_until_level) {
-        uint32_t gs = cpu->read_word(0x800757D8u); /* g_Gamestate */
-        if (!s_skip_ffwd_deadline)
-            s_skip_ffwd_deadline = frame_counter + 4000u;
-        /* A credits skip passes through GS_Playing for one tick on its way
-         * to GS_Credits (15); presents resume on the roll, not the level. */
-        int playable = (gs == 0u /*GS_Playing*/ &&
-                        !spyro1_credits_skip_pending()) ||
-                       gs == 15u /*GS_Credits*/;
-        if ((s_skip_applied && playable) ||
-            frame_counter > s_skip_ffwd_deadline) {
-            openpete_skip_present_until_level = 0;
-            s_skip_ffwd_deadline = 0;
-            fprintf(stderr,
-                    "[skip-to-level] level playable — presents resume at "
-                    "frame=%u\n", (unsigned)frame_counter);
-        }
-    }
+    skip_release_on_tick(cpu, frame_counter);
 }
 
 void game_on_frame(CPUState* cpu, uint32_t frame_counter) {

@@ -974,8 +974,9 @@ static const knob_desc_t g_builtin[] = {
       skiplevel_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "skip_to_cutscene", "Skip to cutscene", "Gameplay", "--skip-to-cutscene", NULL,
-      "Play a cutscene id from a live level (Spyro 1: 1 short credits, 2 "
-      "full credits). One-shot at boot.",
+      "Play a named cutscene (Spyro 1: intro from the title; ending, "
+      "ending_loot from Gnasty's levels; credits, credits_100 from a live "
+      "level). One-shot at boot.",
       KNOB_INT, KNOB_RESTART_ONLY, NULL, 0, 0, 99,
       skipcutscene_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 

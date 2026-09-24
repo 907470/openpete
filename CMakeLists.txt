@@ -381,6 +381,23 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Skip-target rows: every --skip-to-cutscene (and --skip-to-area) row of
+    # games/<slug>/skip-targets.manifest runs headless; a row passes only when
+    # the skip's release line carries the row's engagement values (the cutscene
+    # index, the credits sequence, the return level), and a negative control
+    # with the fail-safe forced must fail. One row per game with a manifest.
+    foreach(_skip_game spyro-1)
+        add_test(NAME skip_targets_${_skip_game}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_skip_targets.sh
+                         --game ${_skip_game} --build-dir=${CMAKE_BINARY_DIR})
+        set_tests_properties(skip_targets_${_skip_game} PROPERTIES
+            LABELS "slow;skip-targets"
+            RESOURCE_LOCK openpete_game
+            TIMEOUT 900
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
+
     # The 3D glyph text gate: the settings menu, the OSD toasts and the
     # performance readout publish glyph vertices from the game's own font, and
     # Spyro 3's glyph cache file round-trips and rejects a tampered copy. Rows

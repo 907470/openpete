@@ -168,8 +168,12 @@ void spyro2_skip_on_tick(CPUState* cpu, uint32_t frame_counter) {
         if (playable || frame_counter > s_ffwd_deadline) {
             openpete_skip_present_until_level = 0;
             s_ffwd_deadline = 0;
-            fprintf(stderr, "[skip-to-level] level playable — presents resume "
-                            "at frame=%u\n", (unsigned)frame_counter);
+            fprintf(stderr, playable
+                        ? "[skip-to-level] level playable — presents resume "
+                          "at frame=%u\n"
+                        : "[skip-to-level] fail-safe release (no playable "
+                          "edge) at frame=%u\n",
+                    (unsigned)frame_counter);
         }
     }
 }
