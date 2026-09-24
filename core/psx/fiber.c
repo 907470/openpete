@@ -9,7 +9,6 @@
 
 #include <libco.h>
 #include <stddef.h>
-#include <stdlib.h>
 
 void*        openpete_host_fiber       = NULL;
 void*        openpete_game_fiber       = NULL;
@@ -26,16 +25,6 @@ int          openpete_cd_load_delay    = 0;
 int          openpete_skip_present_until_level = 0;
 int          openpete_skip_ffwd_windowed       = 0;
 /* openpete_no_lod lives in core/renderer/no_lod.c. */
-
-unsigned openpete_skip_failsafe_vbls(void) {
-    static long s_vbls = -1;
-    if (s_vbls < 0) {
-        const char* e = getenv("OPENPETE_SKIP_FAILSAFE_VBL");
-        s_vbls = (e && *e) ? strtol(e, NULL, 10) : 4000;
-        if (s_vbls <= 0) s_vbls = 4000;
-    }
-    return (unsigned)s_vbls;
-}
 
 void openpete_yield_to_host(void) {
     if (!openpete_host_fiber) return;  /* not in fiber mode (smoke test path) */

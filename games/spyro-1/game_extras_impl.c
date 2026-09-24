@@ -13,6 +13,7 @@
 #include "openpete_psx.h"
 #include "openpete_ui_moby.h"
 #include "openpete_fiber.h"
+#include "openpete_skip.h"
 #include "psx_runtime_internal.h"
 #include "spyro_overlay_table.h"
 #include "renderer/text_moby.h"

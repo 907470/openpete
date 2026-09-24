@@ -27,6 +27,7 @@
 
 #include "skip_to_level.h"
 #include "openpete_fiber.h"
+#include "openpete_skip.h"
 #include "named_target.h"
 #include "features/cutscene_skip.h"
 #include "spyro2_symbols.gen.h"

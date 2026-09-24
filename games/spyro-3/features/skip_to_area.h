@@ -4,6 +4,7 @@
  * func_80052918, called through the transition queue with the level's
  * area-0 portal pair. See skip_to_area.c. */
 
+#include <stddef.h>
 #include <stdint.h>
 
 typedef struct CPUState CPUState;
@@ -20,12 +21,16 @@ void spyro3_area_set(int level, int area);
 /* Per-tick driver (game_on_frame_pre). Inert while disarmed. */
 void spyro3_area_on_tick(CPUState* cpu, uint32_t frame_counter);
 
-/* An area target is armed (from the arm until its release). */
-int spyro3_area_armed(void);
+/* An area target is armed and its release or fail-safe line is not yet
+ * logged: the skip release block (skip_to_level.c) watches it every tick,
+ * headless too. */
+int spyro3_area_watching(void);
 
 /* The armed target's release predicate held: game.state 13 was seen after
- * the call, then gameplay went live with the area word == the target. */
-int spyro3_area_released(void);
+ * the call, then gameplay went live with the area word == the target. On a
+ * release, writes " level=L area=A" read back from 0x8006C5BC and
+ * 0x8006C5C8 to eng. */
+int spyro3_area_released(CPUState* cpu, char* eng, size_t cap);
 
-/* The armed target's area index, for the release line. */
-int spyro3_area_target(void);
+/* The release block logged its line; the watch ends. */
+void spyro3_area_finish(void);

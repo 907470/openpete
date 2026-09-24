@@ -137,20 +137,29 @@ typedef enum {
     AREA_RELEASED,  /* live in the sub-area */
 } area_phase_t;
 
-static area_phase_t s_phase = AREA_IDLE;
-static int          s_level = 0;
-static int          s_area  = 0;
+static area_phase_t s_phase    = AREA_IDLE;
+static int          s_level    = 0;
+static int          s_area     = 0;
+static int          s_reported = 0;
 
 void spyro3_area_set(int level, int area) {
-    s_level = level;
-    s_area  = area;
-    s_phase = level > 0 ? AREA_ARMED : AREA_IDLE;
+    s_level    = level;
+    s_area     = area;
+    s_reported = 0;
+    s_phase    = level > 0 ? AREA_ARMED : AREA_IDLE;
     if (level > 0) spyro3_skip_set(level);
 }
 
-int spyro3_area_armed(void)    { return s_phase != AREA_IDLE; }
-int spyro3_area_released(void) { return s_phase == AREA_RELEASED; }
-int spyro3_area_target(void)   { return s_area; }
+int  spyro3_area_watching(void) { return s_phase != AREA_IDLE && !s_reported; }
+void spyro3_area_finish(void)   { s_reported = 1; }
+
+int spyro3_area_released(CPUState* cpu, char* eng, size_t cap) {
+    if (s_phase != AREA_RELEASED) return 0;
+    snprintf(eng, cap, " level=%u area=%u",
+             (unsigned)cpu->read_word(S3_CURRENT_LEVEL),
+             (unsigned)cpu->read_word(S3_AREA));
+    return 1;
+}
 
 static int area_route(CPUState* cpu) {
     return spyro3_skip_gameplay_live(cpu) &&

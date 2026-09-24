@@ -120,12 +120,6 @@ extern int      openpete_skip_present_until_level;
  * screenshot capture). */
 extern int      openpete_skip_ffwd_windowed;
 
-/* The skip release blocks' fail-safe: VBLs from a skip's first check to its
- * "fail-safe release (no playable edge)" line. 4000, or
- * OPENPETE_SKIP_FAILSAFE_VBL when set positive (the skip-target harness's
- * negative control sets 1). Read once. */
-unsigned openpete_skip_failsafe_vbls(void);
-
 /* Game fiber → host fiber. Bumps `openpete_frame` on the way through;
  * `openpete_vbl` is *not* touched here — psyq_VSync owns that counter,
  * so a yield and a VBL stay separately accountable. Used by the

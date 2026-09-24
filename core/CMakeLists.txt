@@ -75,6 +75,7 @@ add_library(openpete_core STATIC
     renderer/subtick_view.c
     renderer/screenshot.c
     runtime/run.c
+    runtime/skip_common.c
 
     # Recording and savestates: true-VFR gameplay video capture (--record;
     # links libav* in-process and reads the present FBO so output is

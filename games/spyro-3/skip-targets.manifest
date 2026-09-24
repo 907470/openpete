@@ -1,45 +1,51 @@
-# --skip-to-area rows for Spyro 3 (fields: flag | target | engagement | frame_limit | bk2).
-# A row runs headless with `<flag> <target>` and passes only when stderr
-# carries the engagement text before frame_limit VBLs; the fail-safe line or
-# no engagement line fails it. bk2 is a movie replayed with
-# --bk2-frame-offset 0 for a row whose route needs pad input, or `-`.
-# Every sub-area 1..N-1 of the 17 multi-area levels is entered by one area-0
-# portal.
---skip-to-area | 11:1 | [skip-to-area] released: level=11 area=1 | 6000 | -
---skip-to-area | 11:2 | [skip-to-area] released: level=11 area=2 | 6000 | -
---skip-to-area | 12:1 | [skip-to-area] released: level=12 area=1 | 6000 | -
---skip-to-area | 12:2 | [skip-to-area] released: level=12 area=2 | 6000 | -
---skip-to-area | 13:1 | [skip-to-area] released: level=13 area=1 | 6000 | -
---skip-to-area | 13:2 | [skip-to-area] released: level=13 area=2 | 6000 | -
---skip-to-area | 14:1 | [skip-to-area] released: level=14 area=1 | 6000 | -
---skip-to-area | 14:2 | [skip-to-area] released: level=14 area=2 | 6000 | -
---skip-to-area | 14:3 | [skip-to-area] released: level=14 area=3 | 6000 | -
---skip-to-area | 21:1 | [skip-to-area] released: level=21 area=1 | 6000 | -
---skip-to-area | 21:2 | [skip-to-area] released: level=21 area=2 | 6000 | -
---skip-to-area | 22:1 | [skip-to-area] released: level=22 area=1 | 6000 | -
---skip-to-area | 22:2 | [skip-to-area] released: level=22 area=2 | 6000 | -
---skip-to-area | 23:1 | [skip-to-area] released: level=23 area=1 | 6000 | -
---skip-to-area | 23:2 | [skip-to-area] released: level=23 area=2 | 6000 | -
---skip-to-area | 24:1 | [skip-to-area] released: level=24 area=1 | 6000 | -
---skip-to-area | 24:2 | [skip-to-area] released: level=24 area=2 | 6000 | -
---skip-to-area | 31:1 | [skip-to-area] released: level=31 area=1 | 6000 | games/spyro-3/bk2/frozen-altars-speech-dismiss.bk2
---skip-to-area | 31:2 | [skip-to-area] released: level=31 area=2 | 6000 | games/spyro-3/bk2/frozen-altars-speech-dismiss.bk2
---skip-to-area | 32:1 | [skip-to-area] released: level=32 area=1 | 6000 | -
---skip-to-area | 32:2 | [skip-to-area] released: level=32 area=2 | 6000 | -
---skip-to-area | 33:1 | [skip-to-area] released: level=33 area=1 | 6000 | -
---skip-to-area | 33:2 | [skip-to-area] released: level=33 area=2 | 6000 | -
---skip-to-area | 33:3 | [skip-to-area] released: level=33 area=3 | 6000 | -
---skip-to-area | 34:1 | [skip-to-area] released: level=34 area=1 | 6000 | -
---skip-to-area | 34:2 | [skip-to-area] released: level=34 area=2 | 6000 | -
---skip-to-area | 41:1 | [skip-to-area] released: level=41 area=1 | 6000 | -
---skip-to-area | 41:2 | [skip-to-area] released: level=41 area=2 | 6000 | -
---skip-to-area | 42:1 | [skip-to-area] released: level=42 area=1 | 6000 | -
---skip-to-area | 42:2 | [skip-to-area] released: level=42 area=2 | 6000 | -
---skip-to-area | 43:1 | [skip-to-area] released: level=43 area=1 | 6000 | -
---skip-to-area | 43:2 | [skip-to-area] released: level=43 area=2 | 6000 | -
---skip-to-area | 44:1 | [skip-to-area] released: level=44 area=1 | 6000 | -
---skip-to-area | 44:2 | [skip-to-area] released: level=44 area=2 | 6000 | -
---skip-to-area | 44:3 | [skip-to-area] released: level=44 area=3 | 6000 | -
---skip-to-area | 50:1 | [skip-to-area] released: level=50 area=1 | 6000 | -
---skip-to-area | 50:2 | [skip-to-area] released: level=50 area=2 | 6000 | -
---skip-to-area | 50:3 | [skip-to-area] released: level=50 area=3 | 6000 | -
+# The --skip-to-area row table (scripts/check_skip_targets.sh).
+# One row per sub-area: every sub-area 1..N-1 of the 17 multi-area levels
+# (38), each entered by one area-0 portal. A row passes when its run prints
+# the skip's release line ("[skip-to-level] level playable") carrying every
+# expect token, the level and area words (0x8006C5BC, 0x8006C5C8) read back
+# from RAM at release: game.state 13 seen after the EnterSubArea call, then
+# gameplay live in the target area. It fails when the run prints the
+# fail-safe line. Level 31 arrives in the first-visit speech (game.state 1),
+# which the area-0 portal refuses; its rows replay a movie that dismisses
+# it. frames is the run's VBL limit (releases measured at VBL 1113, 1327
+# for level 31).
+#
+# name | args                                                                                              | frames | expect
+11_1   | --skip-to-area 11:1                                                                               | 2000   | level=11 area=1
+11_2   | --skip-to-area 11:2                                                                               | 2000   | level=11 area=2
+12_1   | --skip-to-area 12:1                                                                               | 2000   | level=12 area=1
+12_2   | --skip-to-area 12:2                                                                               | 2000   | level=12 area=2
+13_1   | --skip-to-area 13:1                                                                               | 2000   | level=13 area=1
+13_2   | --skip-to-area 13:2                                                                               | 2000   | level=13 area=2
+14_1   | --skip-to-area 14:1                                                                               | 2000   | level=14 area=1
+14_2   | --skip-to-area 14:2                                                                               | 2000   | level=14 area=2
+14_3   | --skip-to-area 14:3                                                                               | 2000   | level=14 area=3
+21_1   | --skip-to-area 21:1                                                                               | 2000   | level=21 area=1
+21_2   | --skip-to-area 21:2                                                                               | 2000   | level=21 area=2
+22_1   | --skip-to-area 22:1                                                                               | 2000   | level=22 area=1
+22_2   | --skip-to-area 22:2                                                                               | 2000   | level=22 area=2
+23_1   | --skip-to-area 23:1                                                                               | 2000   | level=23 area=1
+23_2   | --skip-to-area 23:2                                                                               | 2000   | level=23 area=2
+24_1   | --skip-to-area 24:1                                                                               | 2000   | level=24 area=1
+24_2   | --skip-to-area 24:2                                                                               | 2000   | level=24 area=2
+31_1   | --skip-to-area 31:1 --bk2 games/spyro-3/bk2/frozen-altars-speech-dismiss.bk2 --bk2-frame-offset 0 | 2000   | level=31 area=1
+31_2   | --skip-to-area 31:2 --bk2 games/spyro-3/bk2/frozen-altars-speech-dismiss.bk2 --bk2-frame-offset 0 | 2000   | level=31 area=2
+32_1   | --skip-to-area 32:1                                                                               | 2000   | level=32 area=1
+32_2   | --skip-to-area 32:2                                                                               | 2000   | level=32 area=2
+33_1   | --skip-to-area 33:1                                                                               | 2000   | level=33 area=1
+33_2   | --skip-to-area 33:2                                                                               | 2000   | level=33 area=2
+33_3   | --skip-to-area 33:3                                                                               | 2000   | level=33 area=3
+34_1   | --skip-to-area 34:1                                                                               | 2000   | level=34 area=1
+34_2   | --skip-to-area 34:2                                                                               | 2000   | level=34 area=2
+41_1   | --skip-to-area 41:1                                                                               | 2000   | level=41 area=1
+41_2   | --skip-to-area 41:2                                                                               | 2000   | level=41 area=2
+42_1   | --skip-to-area 42:1                                                                               | 2000   | level=42 area=1
+42_2   | --skip-to-area 42:2                                                                               | 2000   | level=42 area=2
+43_1   | --skip-to-area 43:1                                                                               | 2000   | level=43 area=1
+43_2   | --skip-to-area 43:2                                                                               | 2000   | level=43 area=2
+44_1   | --skip-to-area 44:1                                                                               | 2000   | level=44 area=1
+44_2   | --skip-to-area 44:2                                                                               | 2000   | level=44 area=2
+44_3   | --skip-to-area 44:3                                                                               | 2000   | level=44 area=3
+50_1   | --skip-to-area 50:1                                                                               | 2000   | level=50 area=1
+50_2   | --skip-to-area 50:2                                                                               | 2000   | level=50 area=2
+50_3   | --skip-to-area 50:3                                                                               | 2000   | level=50 area=3
