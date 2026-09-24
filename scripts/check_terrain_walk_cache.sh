@@ -10,11 +10,22 @@
 # one row per such pose and fails on any change of its count. A drop is a fix
 # and is promoted with --bless, as a golden tile is.
 #
-# Rows: games/<game>/walk-cache.manifest, `<level> | <pose> | [lod]` (default
-# lod extended). A row's id is `<level>-<first 6 hex of the pose's md5>__<lod>`.
+# Rows: games/<game>/walk-cache.manifest, one of two forms (lod default
+# extended):
+#   pose row  `<level> | <pose> | [lod]`, a --skip-to-level boot to a freecam
+#             pose captured at the freecam corpus's canonical VBL (START).
+#             Id `<level>-<first 6 hex of the pose's md5>__<lod>`.
+#   bk2 row   `<bk2> | <VBL> | <canon|inter> | [lod]`, a movie replay captured
+#             at VBL, on the canonical present (canon) or on the deterministic
+#             sub-tick present at alpha 0.5 (inter,
+#             --screenshot-intermediate-on-frame). <bk2> names
+#             games/<game>/bk2/<bk2>.bk2; a name with no movie file is the plain
+#             boot (title screen and attract demo), as in the presentation
+#             corpus. Id `<bk2>@<VBL>__<leg>__<lod>`.
+# A row whose second field is a bare integer is a bk2 row.
 #
 # Instrument: two headless legs of one build per row, 16:9, native-only, at the
-# freecam corpus's canonical VBL (START), differing only in the feed:
+# row's VBL, differing only in the feed:
 #   walk   the software-vk default: the terrain cache is not initialized, every
 #          sector goes through the CPU walk
 #   cache  OPENPETE_TERRAIN_CACHE_FORCE=1: the retained cache, forced on under
@@ -26,7 +37,9 @@
 #          n > 0
 #   cache  `[tgpu-cen f=<VBL>] sub=<n> secs=<n>` (OPENPETE_TERRAIN_GPU_CENSUS=1),
 #          secs > 0; the walk leg reports no retained sector (walk secs == 0)
-# The value is the line whose VBL equals START, else the last line before it.
+# The value is the line whose VBL equals the row's VBL, else the last line
+# before it; on an inter row that is the sub-tick re-extract's own line, which
+# follows the canonical walk of the same VBL.
 # A missing capture or a zero count is VACUOUS and fails the row.
 #
 # Baseline: tests/golden/<game>/walk-cache-baseline.tsv, `<row id>\t<px>`. A row
@@ -92,34 +105,71 @@ mkdir -p "$OUT"
 # The freecam corpus's canonical post-load VBL (scripts/freecam-corpus.sh).
 START=1900
 
-# run_leg ID LEG LOD LEVEL POSE [ENV=VAL...]: one capture; writes
-# $OUT/ID__LEG.log and $OUT/ID__LEG-vk.png, both deleted first by pg_capture.
+# run_leg ID LEG VBL SHOTFLAG [ENV=VAL...] -- <boot args>: one capture at VBL;
+# writes $OUT/ID__LEG.log and $OUT/ID__LEG-vk.png, both deleted first by
+# pg_capture. SHOTFLAG is --screenshot-on-frame (canonical present) or
+# --screenshot-intermediate-on-frame (sub-tick present).
 run_leg() {
-    local id="$1" leg="$2" lod="$3" level="$4" pose="$5"; shift 5
+    local id="$1" leg="$2" vbl="$3" shotflag="$4"; shift 4
+    local -a envs=()
+    while [[ $# -gt 0 && "$1" != "--" ]]; do envs+=("$1"); shift; done
+    [[ "${1:-}" == "--" ]] && shift
     local stem="$OUT/${id}__${leg}"
     rm -f "$stem.png"
-    PG_CAPTURE_ENV=(OPENPETE_TERRAIN_NEARCEN=1 OPENPETE_TERRAIN_GPU_CENSUS=1 "$@")
+    PG_CAPTURE_ENV=(OPENPETE_TERRAIN_NEARCEN=1 OPENPETE_TERRAIN_GPU_CENSUS=1 "${envs[@]}")
     PG_CAPTURE_TIMEOUT=600
     pg_capture "$stem.log" "$stem-vk.png" -- \
-        --renderer vk --mute 1 --aspect 16:9 --lod "$lod" --no-card \
-        --skip-to-level "$level" --freecam-pose "$pose" \
-        --screenshot-native-only --screenshot-on-frame "$START" \
+        --renderer vk --mute 1 --aspect 16:9 --no-card "$@" \
+        --screenshot-native-only "$shotflag" "$vbl" \
         --screenshot-output "$stem.png" \
-        --frame-limit $((START + 10)) --max-runtime-seconds 580
+        --frame-limit $((vbl + 10)) --max-runtime-seconds 580
+}
+
+# row_boot I: the boot arguments of row I into BOOT (array), its VBL into
+# ROW_VBL and its screenshot flag into ROW_SHOT.
+row_boot() {
+    local i="$1"
+    BOOT=(--lod "${LODS[$i]}")
+    if [[ "${KINDS[$i]}" == pose ]]; then
+        BOOT+=(--skip-to-level "${LEVELS[$i]}" --freecam-pose "${POSES[$i]}")
+        ROW_VBL="$START"; ROW_SHOT=--screenshot-on-frame
+    else
+        local movie="$PG_BK2_DIR/${LEVELS[$i]}.bk2"
+        [[ -f "$movie" ]] && BOOT+=(--bk2 "$movie")
+        ROW_VBL="${POSES[$i]}"
+        if [[ "${LEGS[$i]}" == inter ]]; then
+            ROW_SHOT=--screenshot-intermediate-on-frame
+        else
+            ROW_SHOT=--screenshot-on-frame
+        fi
+    fi
 }
 
 # The manifest is read into arrays before any run: a child that inherits the
 # loop's stdin would eat the rows it has not reached yet.
-IDS=(); LEVELS=(); POSES=(); LODS=()
-while IFS='|' read -r level pose lod; do
-    level="$(echo "$level" | tr -d ' \t')"
-    [[ -z "$level" || "${level:0:1}" == "#" ]] && continue
-    pose="$(echo "$pose" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
-    lod="$(echo "${lod:-}" | tr -d ' \t')"; lod="${lod:-extended}"
-    [[ -z "$pose" ]] && continue
-    id="$level-$(printf '%s' "$pose" | md5sum | cut -c1-6)__$lod"
+IDS=(); KINDS=(); LEVELS=(); POSES=(); LEGS=(); LODS=(); VBLS=()
+trim() { sed 's/^[[:space:]]*//; s/[[:space:]]*$//' <<<"$1"; }
+while IFS='|' read -r f1 f2 f3 f4; do
+    f1="$(echo "$f1" | tr -d ' \t')"
+    [[ -z "$f1" || "${f1:0:1}" == "#" ]] && continue
+    f2="$(trim "$f2")"; f3="$(echo "${f3:-}" | tr -d ' \t')"; f4="$(echo "${f4:-}" | tr -d ' \t')"
+    [[ -z "$f2" ]] && continue
+    if [[ "$f2" =~ ^[0-9]+$ ]]; then
+        # bk2 row: <bk2> | <VBL> | <canon|inter> | [lod]
+        [[ "$f3" == canon || "$f3" == inter ]] ||
+            { echo "walk-cache: bad leg '$f3' on bk2 row $f1 (canon or inter)"; exit 1; }
+        lod="${f4:-extended}"
+        id="${f1}@${f2}__${f3}__${lod}"
+        kind=bk2; leg="$f3"; vbl="$f2"
+    else
+        # pose row: <level> | <pose> | [lod]
+        lod="${f3:-extended}"
+        id="$f1-$(printf '%s' "$f2" | md5sum | cut -c1-6)__$lod"
+        kind=pose; leg=canon; vbl="$START"
+    fi
     [[ -n "$FILTER" && "$id" != *"$FILTER"* ]] && continue
-    IDS+=("$id"); LEVELS+=("$level"); POSES+=("$pose"); LODS+=("$lod")
+    IDS+=("$id"); KINDS+=("$kind"); LEVELS+=("$f1"); POSES+=("$f2")
+    LEGS+=("$leg"); LODS+=("$lod"); VBLS+=("$vbl")
 done < "$MAN"
 
 if [[ ${#IDS[@]} -eq 0 ]]; then
@@ -133,27 +183,30 @@ RESULTS="$OUT/results.tsv"
 rm -f "$RESULTS"
 for i in "${!IDS[@]}"; do
     id="${IDS[$i]}"
-    run_leg "$id" walk  "${LODS[$i]}" "${LEVELS[$i]}" "${POSES[$i]}" & pw=$!
-    run_leg "$id" cache "${LODS[$i]}" "${LEVELS[$i]}" "${POSES[$i]}" \
-        OPENPETE_TERRAIN_CACHE_FORCE=1 & pc=$!
+    row_boot "$i"
+    run_leg "$id" walk  "$ROW_VBL" "$ROW_SHOT" -- "${BOOT[@]}" & pw=$!
+    run_leg "$id" cache "$ROW_VBL" "$ROW_SHOT" OPENPETE_TERRAIN_CACHE_FORCE=1 \
+        -- "${BOOT[@]}" & pc=$!
     wait "$pw"; rw=$?
     wait "$pc"; rc=$?
-    echo "  [$id] level=${LEVELS[$i]} lod=${LODS[$i]} rc walk=$rw cache=$rc"
-    printf '%s\n' "$id" >> "$RESULTS"
+    src="${LEVELS[$i]}"
+    [[ "${KINDS[$i]}" == bk2 && ! -f "$PG_BK2_DIR/${LEVELS[$i]}.bk2" ]] && src="${LEVELS[$i]} (plain boot)"
+    echo "  [$id] ${KINDS[$i]}=$src vbl=$ROW_VBL leg=${LEGS[$i]} lod=${LODS[$i]} rc walk=$rw cache=$rc"
+    printf '%s\t%s\n' "$id" "$ROW_VBL" >> "$RESULTS"
 done
 
-python3 - "$OUT" "$RESULTS" "$BASE" "$START" "$BLESS" "$PG_GAME" <<'WC_PY'
+python3 - "$OUT" "$RESULTS" "$BASE" "$BLESS" "$PG_GAME" <<'WC_PY'
 import os, re, sys
 from PIL import Image, ImageChops
 
-out, results, base_path, start, bless, game = sys.argv[1:7]
-start, bless = int(start), bless == "1"
+out, results, base_path, bless, game = sys.argv[1:6]
+bless = bless == "1"
 tri = re.compile(r"\[nearcen\] frame=(\d+) .*?terrainTris=(\d+)")
 cen = re.compile(r"\[tgpu-cen f=(\d+)\] sub=\d+ secs=(\d+)")
 
 
-def at_start(path, pat):
-    """The count on the line of the captured VBL, else the last line before it."""
+def at_vbl(path, pat, start):
+    """The count on the last line at the captured VBL, else the last line before it."""
     v = None
     if not os.path.isfile(path):
         return 0
@@ -177,13 +230,15 @@ def read_base(path):
 
 base = read_base(base_path)
 counts, fails = {}, 0
-ids = [l.strip() for l in open(results) if l.strip()]
-for rid in ids:
+rows = [l.split("\t") for l in open(results) if l.strip()]
+ids = [r[0] for r in rows]
+for rid, vbl in rows:
+    vbl = int(vbl)
     walk_png = os.path.join(out, f"{rid}__walk-vk.png")
     cache_png = os.path.join(out, f"{rid}__cache-vk.png")
-    tris = at_start(os.path.join(out, f"{rid}__walk.log"), tri)
-    secs = at_start(os.path.join(out, f"{rid}__cache.log"), cen)
-    walk_secs = at_start(os.path.join(out, f"{rid}__walk.log"), cen)
+    tris = at_vbl(os.path.join(out, f"{rid}__walk.log"), tri, vbl)
+    secs = at_vbl(os.path.join(out, f"{rid}__cache.log"), cen, vbl)
+    walk_secs = at_vbl(os.path.join(out, f"{rid}__walk.log"), cen, vbl)
     missing = [p for p in (walk_png, cache_png) if not os.path.isfile(p)]
     if missing or tris == 0 or secs == 0 or walk_secs != 0:
         print(f"[walk-cache] row={rid} verdict=VACUOUS walkTris={tris} cacheSecs={secs}"
@@ -197,7 +252,10 @@ for rid in ids:
         print(f"[walk-cache] row={rid} verdict=FAIL reason=size {A.size} vs {B.size}")
         fails += 1
         continue
-    d = ImageChops.difference(A, B).convert("L").point(lambda v: 255 if v else 0)
+    # The per-pixel maximum over the channels: a luma conversion rounds a
+    # one-level difference in blue alone (weight 0.114) to 0.
+    r, g, b = ImageChops.difference(A, B).split()
+    d = ImageChops.lighter(ImageChops.lighter(r, g), b).point(lambda v: 255 if v else 0)
     px = d.histogram()[255]
     counts[rid] = px
     want = base.get(rid)

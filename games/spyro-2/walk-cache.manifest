@@ -1,0 +1,16 @@
+# walk-cache.manifest — rows for the terrain walk-vs-cache check
+# (scripts/check_terrain_walk_cache.sh); both row forms are described there.
+#
+#   pose row  <level> | pos=(x, y, z) yaw=Y pitch=P | [lod]
+#   bk2 row   <bk2> | <VBL> | <canon|inter> | [lod]
+#
+# Each row is captured native-only at 16:9 twice, once through the CPU terrain
+# walk and once through the retained GPU terrain cache
+# (OPENPETE_TERRAIN_CACHE_FORCE=1); the differing pixel count per row is
+# compared with tests/golden/spyro-2/walk-cache-baseline.tsv.
+#
+# Plain boot (no attract-demo.bk2: the title screen and attract demo), VBL 3400
+# sub-tick present at alpha 0.5, --lod original: 1 px at (357,185) on one
+# untextured LP face (sector 96 face 5, one level in blue); the canonical
+# present at the same VBL reads 0.
+attract-demo | 3400 | inter | original

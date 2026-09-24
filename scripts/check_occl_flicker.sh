@@ -63,7 +63,17 @@
 #               queries were all in bound is a sound cull: the grid and the
 #               querying camera agree, and the sector is genuinely hidden.
 #
-# Pass criterion: wrong == 0 on every leg. holes, entering and flicker are
+# Game-visibility bk2 leg: a movie replay under --terrain-visibility game,
+# where the terrain cull's candidate set is the game's own visibility list and
+# an inflated rect can lie wholly off screen, so the per-walk frustum test
+# engages. Written "<bk2>:<first VBL>:<last VBL>:<tick scale>"; the replay runs
+# at --tick-scale so each tick carries many re-extracts. Counted over the
+# window: latoff and offadm summed over the re-extracts, latoffCan over the
+# canonical walks, and admitted queries. Pass: latoff == 0 with offadm > 0 and
+# admitted > 0; VACUOUS when either count is 0, when fewer than MIN_WALKS
+# walks fall in the window, or when the build carries no latoff column.
+#
+# Pass criterion: wrong == 0 on every freecam leg; the bk2 leg as above. holes, entering and flicker are
 # reported as diagnostics; they carry sound culls and view entries as well as
 # defects, so they name where to look rather than decide.
 # Engagement: each leg needs at least MIN_WALKS walks, at least one
@@ -79,7 +89,9 @@
 #
 # Usage: scripts/check_occl_flicker.sh [--game SLUG] [--build-dir=DIR]
 #   OPENPETE_OCCL_FLICKER_EXE   the exe to drive (default: the worktree's
-#                               windows-mingw build of the game)
+#                               windows-mingw build of the game); a Linux
+#                               binary runs windowed on $DISPLAY
+#   OPENPETE_OCCL_FLICKER_ONLY  freecam or bk2: run that leg kind alone
 #   OPENPETE_OCCL_FLICKER_OUT   output directory (default: the build tree)
 # Exit 0 PASS, 1 FAIL, 64 SKIP (exe, disc or python3 missing, or the game has
 # no measured flicker path).
@@ -116,8 +128,17 @@ case "$GAME" in
     LEGS="240:240:admitted 60:120:queries"
     DUMP_FROM=1100
     MIN_WALKS=200
+    BK2_LEGS="sunrise-spring-camera-swing:1500:2300:0.1"
     ;;
   *) LEVEL="";;
+esac
+BK2_LEGS="${BK2_LEGS:-}"
+ONLY="${OPENPETE_OCCL_FLICKER_ONLY:-}"
+case "$ONLY" in
+  "")      ;;
+  freecam) BK2_LEGS="";;
+  bk2)     LEGS="";;
+  *) echo "occl-flicker: OPENPETE_OCCL_FLICKER_ONLY must be freecam or bk2"; exit 64;;
 esac
 [[ -n "$LEVEL" ]] || { echo "occl-flicker: SKIP ($GAME has no measured flicker path)"; exit 64; }
 
@@ -384,6 +405,93 @@ CENSUS_PY
     cat "$OUT/$GAME-t$TICKS.verdict"
     sleep 15
 done
+# Game-visibility bk2 legs. The per-walk dump opens at the window's first VBL
+# and the run stops just past its last.
+for LEG in $BK2_LEGS; do
+    IFS=: read -r BK2 VLO VHI TSCALE <<<"$LEG"
+    MOVIE="$PG_BK2_DIR/$BK2.bk2"
+    [[ -f "$MOVIE" ]] || { echo "occl-flicker: SKIP bk2 leg ($MOVIE missing)"; exit 64; }
+    MOVIE_ABS="$(cd "$(dirname "$MOVIE")" && pwd -P)/$(basename "$MOVIE")"
+    LOG="$OUT/$GAME-$BK2.log"
+    BENVS=("${ENVS[@]}")
+    for k in "${!BENVS[@]}"; do
+        [[ "${BENVS[$k]}" == OPENPETE_TERRAIN_FARDBG=* ]] && BENVS[$k]="OPENPETE_TERRAIN_FARDBG=$VLO"
+    done
+    wslenv_forward "${BENVS[@]}"
+    rm -f "$LOG"
+    env "${WSLENV_ARGS[@]}" "$EXE" \
+        --vibration 0 --input-lock --no-config --mute 1 --no-card --disc "$DISC_ABS" \
+        --renderer vk --lod extended --terrain-visibility game \
+        --tick-scale "$TSCALE" --vsync 0 --render-fps 60 \
+        --bk2 "$MOVIE_ABS" --frame-limit "$((VHI + 10))" 2>&1 | tr -d '\r' |
+        grep -E --line-buffered '^\[fardbg-hdr\]|^\[occl-inbound\]|^\[moby-occl |exit: reason|panic|assert' \
+            > "$LOG"
+    [[ -s "$LOG" ]] || { echo "occl-flicker: FAIL ($BK2 produced no output, see $LOG)"; exit 1; }
+
+    python3 - "$LOG" "$BK2" "$VLO" "$VHI" "$MIN_WALKS" \
+             > "$OUT/$GAME-$BK2.verdict" <<'BK2_PY'
+import re, sys
+
+log, leg = sys.argv[1], sys.argv[2]
+lo, hi, floor = (int(x) for x in sys.argv[3:6])
+hdr_re = re.compile(r"\[fardbg-hdr\] frame=(\d+) walk=(\d+) sub=(\d)")
+lat_re = re.compile(r"latoff=(\d+) offadm=(\d+)")
+occ_re = re.compile(r"occl=(-?\d+)")
+# [occl-inbound] lines precede the [fardbg-hdr] of the walk that issued them.
+walks, pending = [], 0
+for line in open(log, errors="replace"):
+    if line.startswith("[occl-inbound]"):
+        pending += 1
+        continue
+    m = hdr_re.search(line)
+    if not m:
+        continue
+    la = lat_re.search(line)
+    oc = occ_re.search(line)
+    walks.append(dict(frame=int(m.group(1)), sub=int(m.group(3)),
+                      latoff=int(la.group(1)) if la else -1,
+                      offadm=int(la.group(2)) if la else -1,
+                      occl=int(oc.group(1)) if oc else 0, admitted=pending))
+    pending = 0
+walks = [w for w in walks if lo <= w["frame"] <= hi]
+subs = [w for w in walks if w["sub"]]
+cans = [w for w in walks if not w["sub"]]
+latoff = sum(max(w["latoff"], 0) for w in subs)
+latoff_max = max((w["latoff"] for w in subs), default=0)
+latoff_walks = sum(1 for w in subs if w["latoff"] > 0)
+latoff_can = sum(max(w["latoff"], 0) for w in cans)
+offadm = sum(max(w["offadm"], 0) for w in subs)
+admitted = sum(w["admitted"] for w in walks)
+occl_total = sum(max(w["occl"], 0) for w in walks)
+reasons = []
+if len(walks) < floor:
+    reasons.append("walks=%d<%d" % (len(walks), floor))
+if any(w["latoff"] < 0 for w in walks):
+    reasons.append("no latoff column")
+if offadm < 1:
+    reasons.append("offadm=0")
+if admitted < 1:
+    reasons.append("no admitted query")
+if reasons:
+    verdict, rc = "VACUOUS", 1
+elif latoff:
+    verdict, rc = "FAIL", 1
+else:
+    verdict, rc = "PASS", 0
+print("[occl-flicker] leg=%s vbl=%d-%d walks=%d inter=%d canon=%d latoff=%d "
+      "latoffMax=%d latoffWalks=%d latoffCan=%d offadm=%d admitted=%d "
+      "occlTotal=%d verdict=%s%s"
+      % (leg, lo, hi, len(walks), len(subs), len(cans), latoff, latoff_max,
+         latoff_walks, latoff_can, offadm, admitted, occl_total, verdict,
+         (" reason=" + "; ".join(reasons)) if reasons else ""))
+sys.exit(rc)
+BK2_PY
+    [[ $? -eq 0 ]] || rc_all=1
+    legs_n=$((legs_n + 1))
+    cat "$OUT/$GAME-$BK2.verdict"
+    sleep 15
+done
+
 # A leg that admitted no query judged no verdict, so it neither passes nor
 # fails the check; a check whose every leg did that reports SKIP.
 [[ "$rc_all" == 0 && "$legs_skipped" == "$legs_n" ]] && exit 64

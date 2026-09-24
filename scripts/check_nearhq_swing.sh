@@ -1,34 +1,48 @@
 #!/usr/bin/env bash
-# check_nearhq_swing.sh — terrain triangle-swing census under --lod extended.
+# check_nearhq_swing.sh — terrain triangle-swing census under --lod original.
 #
 # The near/HQ subdivide routes a foreground quad through a 2x2 split, six
-# extra triangles per face. Where the classifier has no distance band, quad
-# membership changes as a corner crosses the camera plane, so the emitted
-# triangle count of the scene oscillates by hundreds between neighbouring
-# walks and the terrain visibly boils. This harness replays a camera-swing
-# bk2 headless and reads the triangle count of every canonical terrain walk
-# over a fixed VBL window. Headless runs one walk per tick and emits no
-# intermediate presents, so a walk line is that tick's triangle count.
+# extra triangles per face. Under --lod original the classifier keeps the
+# game's foreground band (face_is_near_canonical in terrain.c): a face
+# subdivides only while its corner-depth sum lies inside the band. Where the
+# classifier loses the band, every front-or-straddling face subdivides at
+# every distance, quad membership follows the camera plane instead of the
+# band, and the emitted triangle count of the scene swings by a thousand or
+# more between neighbouring walks. This harness replays a camera-swing bk2
+# headless and reads the triangle count of every canonical terrain walk over a
+# fixed VBL window. Headless runs one walk per tick and emits no intermediate
+# presents, so a walk line is that tick's triangle count.
+#
+# Why --lod original: --lod extended pins the highest tier on every front face
+# at every distance (hq_pin_active), which is the band-free routing by design.
+# Its jumps are the visible set changing under the swinging camera, eight
+# triangles per face entering or leaving the frustum, and the band scale below
+# has no effect on it, so no bound on the extended count separates a routing
+# defect from the pin. The band exists only under --lod original, and so does
+# the defect this check guards.
 #
 # Instrument (stderr, one line per walk), OPENPETE_TERRAIN_NEARCEN=1:
 #   [nearcen] frame=<VBL> nearFaces=<n> subTris=<n> terrainTris=<n> sectors=<n>
 #
 # Verdict line:
-#   [swing] game=<g> walks=<n> jumps=<n> maxJump=<n> spikes=<n> maxSpike=<n>
-#           meanTris=<f> nearFaces=<f> subTris=<f> verdict=PASS|FAIL
+#   [swing] game=<g> lod=original walks=<n> jumps=<n> maxJump=<n> maxDelta=<n>
+#           spikes=<n> maxSpike=<n> meanTris=<f> nearFaces=<f> subTris=<f>
+#           verdict=PASS|FAIL
 #
-# jumps  adjacent-walk terrain-triangle deltas of SWING_LIMIT or more.
-# spikes one walk SWING_LIMIT or more away from BOTH of its neighbours.
+# jumps    adjacent-walk terrain-triangle deltas of SWING_LIMIT or more.
+# maxDelta the largest adjacent-walk delta, jump or not (the margin to the limit).
+# spikes   one walk SWING_LIMIT or more away from BOTH of its neighbours.
 #
 # Pass criterion: jumps == 0.
-# Engagement: at least MIN_WALKS walk lines inside the window, so a
-# run that booted somewhere else, or that never reached the swing, refuses
-# instead of reporting a vacuous zero.
+# Engagement: at least MIN_WALKS walk lines inside the window, and a nonzero
+# mean nearFaces (the subdivide ran), so a run that booted somewhere else, never
+# reached the swing, or never subdivided refuses instead of reporting a
+# vacuous zero.
 #
 # The census reads the classifier through OPENPETE_TERRAIN_HQSCALE, the
 # foreground-band scale. Shrinking it drives every front-or-straddling quad
-# below the band and restores the distance-gate-free routing the swing comes
-# from, which is the harness's own negative control:
+# inside the band and restores the band-free routing, which is the harness's
+# own negative control:
 #
 #   OPENPETE_TERRAIN_HQSCALE=0.001 scripts/check_nearhq_swing.sh --game spyro-3
 #
@@ -86,7 +100,7 @@ PG_CAPTURE_TIMEOUT=900
 # so the census needs a screenshot request to make the terrain walk run; the
 # image itself is the harness's proof that the run reached the window.
 pg_capture "$LOG" "$SHOT_VK" -- \
-    --renderer vk --mute 1 --aspect 4:3 --lod extended \
+    --renderer vk --mute 1 --aspect 4:3 --lod original \
     --bk2 "$MOVIE" --terrain-cache 0 --vsync 0 \
     --screenshot-native-only --screenshot-on-frame "$VBL_HI" \
     --screenshot-output "$SHOT" \
@@ -109,14 +123,15 @@ for line in open(log, errors='replace'):
         if lo <= f <= hi:
             rows.append((f, nf, st, tt))
 
-if len(rows) < floor:
-    print("[swing] game=%s walks=%d VACUOUS: fewer than %d walks in VBL %d-%d"
-          % (game, len(rows), floor, lo, hi))
+near_mean = sum(r[1] for r in rows) / len(rows) if rows else 0.0
+if len(rows) < floor or near_mean <= 0.0:
+    print("[swing] game=%s lod=original walks=%d nearFaces=%.1f VACUOUS: fewer than %d "
+          "walks in VBL %d-%d or no subdivided face" % (game, len(rows), near_mean, floor, lo, hi))
     sys.exit(1)
 
 tris = [r[3] for r in rows]
-jumps = [(rows[i][0], abs(tris[i] - tris[i - 1]))
-         for i in range(1, len(tris)) if abs(tris[i] - tris[i - 1]) >= limit]
+deltas = [abs(tris[i] - tris[i - 1]) for i in range(1, len(tris))]
+jumps = [(rows[i + 1][0], d) for i, d in enumerate(deltas) if d >= limit]
 spikes = []
 for i in range(1, len(tris) - 1):
     a, b, c = tris[i - 1], tris[i], tris[i + 1]
@@ -124,12 +139,11 @@ for i in range(1, len(tris) - 1):
         spikes.append((rows[i][0], min(abs(b - a), abs(b - c))))
 
 ok = not jumps
-print("[swing] game=%s walks=%d jumps=%d maxJump=%d spikes=%d maxSpike=%d "
-      "meanTris=%.1f nearFaces=%.1f subTris=%.1f verdict=%s"
+print("[swing] game=%s lod=original walks=%d jumps=%d maxJump=%d maxDelta=%d spikes=%d "
+      "maxSpike=%d meanTris=%.1f nearFaces=%.1f subTris=%.1f verdict=%s"
       % (game, len(rows), len(jumps), max((j[1] for j in jumps), default=0),
-         len(spikes), max((s[1] for s in spikes), default=0),
-         sum(tris) / len(tris),
-         sum(r[1] for r in rows) / len(rows),
+         max(deltas, default=0), len(spikes), max((s[1] for s in spikes), default=0),
+         sum(tris) / len(tris), near_mean,
          sum(r[2] for r in rows) / len(rows),
          "PASS" if ok else "FAIL"))
 for f, d in jumps[:12]:

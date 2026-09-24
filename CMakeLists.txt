@@ -398,12 +398,14 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
 
-    # Terrain triangle-swing census under --lod extended. Replays a
-    # camera-swing bk2 headless and reads the terrain triangle count of every
-    # canonical walk over a fixed VBL window; fails on any adjacent-walk jump
-    # of 1000 triangles or more, the signature of a near/HQ subdivide whose
-    # face membership is not stable between neighbouring walks. Engagement
-    # floor: at least 300 walks in the window. Spyro 3 is the game whose draw
+    # Terrain triangle-swing census under --lod original, where the near/HQ
+    # classifier keeps the game's foreground band (--lod extended pins the
+    # highest tier on every front face by design). Replays a camera-swing bk2
+    # headless and reads the terrain triangle count of every canonical walk
+    # over a fixed VBL window; fails on any adjacent-walk jump of 1000
+    # triangles or more, the signature of a near/HQ subdivide routed without
+    # the band. Engagement floor: at least 300 walks in the window and a
+    # nonzero mean near-face count. Spyro 3 is the game whose draw
     # bins the HP list by distance; the check skips for the others.
     add_test(NAME nearhq_swing_spyro3
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_nearhq_swing.sh
@@ -1096,6 +1098,20 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         # Three rows of two concurrent boots, each self-limited at
         # --max-runtime-seconds 580.
         TIMEOUT 1800
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+    # The same check on Spyro 2, whose row is a bk2 row
+    # (games/spyro-2/walk-cache.manifest): the plain boot's attract demo at
+    # one VBL on the deterministic sub-tick present, walk against cache.
+    add_test(NAME terrain_walk_cache_spyro-2
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_terrain_walk_cache.sh
+                     --game spyro-2 --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(terrain_walk_cache_spyro-2 PROPERTIES
+        LABELS "presentation;terrain;spyro-2"
+        # One row of two concurrent boots, each self-limited at
+        # --max-runtime-seconds 580.
+        TIMEOUT 900
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
