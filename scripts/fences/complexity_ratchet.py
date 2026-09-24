@@ -82,6 +82,7 @@ UNSCORED = (
     "core/mods/sdk/openpete_mod_abi.c",         # shipped SDK source, built with mods
     # openpete_add_game() defaults that every linux-release game overrides
     "games/common/feature_list_none.c",
+    "games/common/game_icon_none.c",
     "games/common/renderer/interp_regions_none.c",
     "games/common/renderer/layout_none.c",
     "games/common/renderer/moby_game_none.c",
