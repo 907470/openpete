@@ -1075,4 +1075,23 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         TIMEOUT 3600
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+    # CPU terrain walk vs retained terrain cache, per-pose residual against a
+    # committed baseline. Per row of games/spyro-1/walk-cache.manifest, two
+    # headless legs at the freecam corpus's canonical VBL (the walk, and the
+    # cache forced on under software vk); the count of pixels whose RGB differ
+    # must equal the row of tests/golden/spyro-1/walk-cache-baseline.tsv, in
+    # either direction. VACUOUS when a capture is missing, the walk leg draws
+    # no terrain triangle or the cache leg retains no sector. Skips (exit 64)
+    # without a binary, a disc, a Vulkan loader or PIL.
+    add_test(NAME terrain_walk_cache_spyro-1
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_terrain_walk_cache.sh
+                     --game spyro-1 --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(terrain_walk_cache_spyro-1 PROPERTIES
+        LABELS "presentation;terrain;spyro-1"
+        # Three rows of two concurrent boots, each self-limited at
+        # --max-runtime-seconds 580.
+        TIMEOUT 1800
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endif()

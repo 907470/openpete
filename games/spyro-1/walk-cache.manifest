@@ -1,0 +1,21 @@
+# walk-cache.manifest — (level, pose) tuples for the terrain walk-vs-cache check
+# (scripts/check_terrain_walk_cache.sh).
+#
+# One row per pose:  <level> | pos=(x, y, z) yaw=Y pitch=P | [lod]
+#   level  a --skip-to-level name
+#   pose   a freecam pose string (the per-tick freecam log format, verbatim)
+#   lod    optional --lod mode (default extended)
+#
+# Each pose is captured native-only at 16:9 on the freecam corpus's canonical
+# VBL (1900) twice, once through the CPU terrain walk and once through the
+# retained GPU terrain cache (OPENPETE_TERRAIN_CACHE_FORCE=1); the differing
+# pixel count per row is compared with tests/golden/spyro-1/walk-cache-baseline.tsv.
+# Depth tie under z = 1 - 1/vz: floor 115/1-2 vs pinned wall 115/13,15 (0.17% apart),
+# walk vs cache 11 px at y=334 under --lod extended; the walk shows the nearer face.
+metalhead | pos=(84248, 47616, 229368) yaw=0 pitch=992
+# Depth tie under z = 1 - 1/vz: faces 96/76 vs 36/52 (0.39% apart), walk vs cache 1 px
+# at (421,154) under --lod extended.
+cliff_town | pos=(108752, 84992, 255090) yaw=0 pitch=992
+# Terrain vs moby: 4 px depth-encoding ties; (490,244) terrain alpha vs moby additive
+# blend order differs walk vs cache, under --lod extended.
+crystal_flight | pos=(130240, 115736, 218978) yaw=0 pitch=992
