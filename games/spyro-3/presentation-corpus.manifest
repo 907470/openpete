@@ -38,6 +38,10 @@ sunrise-spring-surface-swim|1900|150||1900,2000,2200
 # it: 5011 to 7167 pixels of the frame move when the reflection is suppressed,
 # against 588 to 1421 on the grid samples after 2025.
 icy-peak-reflective-mirror|1900|150||1900,1921,1950,1961,2000,2001
+# icy-peak-reflective-mirror-1856: the same movie at the tick the user reports
+# Spyro's reflection on the ice (VBL 1856), before the row above starts; the
+# player colour-block swap (P11t.10) is measured here.
+icy-peak-reflective-mirror-1856|1856|200||1856
 
 # sunrise-spring-camera-swing holds R2 from VBL 1500 so the camera orbits the
 # player while two animated-kind mobys and the simple-kind gems, baskets and
