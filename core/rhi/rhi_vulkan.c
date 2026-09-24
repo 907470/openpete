@@ -602,6 +602,21 @@ static bool layer_available(const char *name)
     return found;
 }
 
+/* The Khronos validation layer and its debug-utils messenger are opt-in:
+ * OPENPETE_VK_VALIDATION=1 requests them, and only when the loader offers
+ * the layer (it ships with the Vulkan SDK, not with drivers). Unset or 0
+ * requests neither, so a machine with the SDK installed runs the same
+ * instance as one without it. Read once, at instance creation. */
+static bool want_validation_layer(void)
+{
+    const char *e = getenv("OPENPETE_VK_VALIDATION");
+    if (!(e && *e && *e != '0')) return false;
+    if (layer_available("VK_LAYER_KHRONOS_validation")) return true;
+    RHI_LOG("OPENPETE_VK_VALIDATION set but VK_LAYER_KHRONOS_validation is "
+            "not installed; validation off\n");
+    return false;
+}
+
 /* ------------------------------------------------------------------ */
 
 static bool create_instance(rhi_device *dev, const char *app_name)
@@ -618,7 +633,7 @@ static bool create_instance(rhi_device *dev, const char *app_name)
         }
     }
 
-    bool want_validation = layer_available("VK_LAYER_KHRONOS_validation");
+    bool want_validation = want_validation_layer();
 
     /* Copy SDL's required extensions (none when headless), optionally append
      * debug utils. */

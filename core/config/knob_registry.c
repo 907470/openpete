@@ -1105,6 +1105,11 @@ static const knob_desc_t g_builtin[] = {
       "stars alone, 2 the near stars and the far crosses. The guest draw "
       "runs at every setting, so 0 and 1 price the feed's painted pixels "
       "against 2 from one binary. Latched at first use."),
+    ENVROW_LATCHED("VK_VALIDATION", "Debug", "0",
+        "1 = enable the Khronos Vulkan validation layer and log its warnings "
+        "and errors as 'validation:' lines. Needs the Vulkan SDK (the layer "
+        "is not part of a driver install); costs CPU time on every Vulkan "
+        "call. Read at instance creation."),
     ENVROW_LATCHED("GPU_TIMERS", "Debug", "0",
         "Per-pass GPU timestamp zones (query pools created at device init)."),
     ENVROW_LIVE("PHASE_TIMERS", "Debug", "0",
