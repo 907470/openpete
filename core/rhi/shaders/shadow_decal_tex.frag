@@ -91,8 +91,13 @@ uint sample_word(int u, int v)
 }
 
 /* ---- world reconstruction (shadow_decal.frag) ----------------------------- */
-/* canonical scene curve (the FAN's own gl_FragCoord.z): z = vz/(vz+4096) */
-float viewz_from_scene_depth(float d)   { return 4096.0 * d / max(1.0 - d, 1e-6); }
+/* Scene depth convention of the FAN's own gl_FragCoord.z (RHI spec constant
+ * 0, written by shadow_decal_tex.vert): reversed z = 1/vz, forward z = 1 - 1/vz. */
+layout(constant_id = 0) const bool DEPTH_REVERSED = false;
+float viewz_from_scene_depth(float d)
+{
+    return DEPTH_REVERSED ? 1.0 / max(d, 1e-12) : 1.0 / max(1.0 - d, 1e-9);
+}
 /* pre-pass curve (prepass.vert): z = 1 - 1/vz — TRUE perspective (planar-exact). */
 float viewz_from_prepass_depth(float d) { return 1.0 / max(1.0 - d, 1e-9); }
 

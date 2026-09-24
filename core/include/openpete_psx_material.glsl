@@ -165,10 +165,12 @@ layout(set = 4, binding = 0) uniform sampler2D op_key_moby;
 layout(set = 5, binding = 0) uniform sampler2D op_key_actor;
 layout(set = 6, binding = 0) uniform sampler2D op_moby_rank;
 
-/* Engine-selected depth encoding, key scope and per-game contest rule
+/* Engine-selected depth convention, key scope and per-game contest rule
  * (ordering-table slot contest, on for Spyro 3); see psx_key_contest.glsl.
- * The engine sets all three per pipeline, as on its own scene stages. */
-layout(constant_id = 0) const bool OP_DEPTH_AFFINE = false;
+ * The engine sets all three per pipeline, as on its own scene stages. The
+ * stored value of gl_FragCoord.z follows the convention and is not an
+ * interface; op_vz_from_depth returns the fragment's view-Z. */
+layout(constant_id = 0) const bool OP_DEPTH_REVERSED = false;
 layout(constant_id = 3) const bool OP_MOBY_TRUESCOPE = true;
 layout(constant_id = 4) const bool OP_SLOT_CONTEST = false;
 
@@ -288,7 +290,7 @@ void main()
     /* The painter verdicts, as the stock stages run them: which surface
      * exists at this pixel is the engine's decision. */
     bool ranked = vRank.x > 0.5;
-    float own = op_vz_from_depth(gl_FragCoord.z, OP_DEPTH_AFFINE);
+    float own = op_vz_from_depth(gl_FragCoord.z, OP_DEPTH_REVERSED);
     if (ranked &&
         op_rank_loses(texelFetch(op_moby_rank, ivec2(gl_FragCoord.xy), 0), vRank, own))
         discard;

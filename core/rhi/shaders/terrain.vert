@@ -245,9 +245,11 @@ layout(std140, set = 6, binding = 0) uniform TerrainSectors {
 #define FF_CELLOK     (1u << 20)   /* HP: the face may take the 4x4 cells */
 /* admit (LP): bits 19-23; otbias: bits 24-28 */
 
-/* Depth encoding + PSX-affine interpolation — the scene stages' spec
- * constants (psx_scene.vert), captured at pipeline creation. */
-layout(constant_id = 0) const bool DEPTH_AFFINE = false;
+/* Depth convention + PSX-affine interpolation — the scene stages' spec
+ * constants (psx_scene.vert), captured at pipeline creation. The cache's
+ * pre-pass pipelines are FORWARD-class, so DEPTH_REVERSED is false there and
+ * they write the pre-pass image's 1 - 1/vz beside prepass.vert. */
+layout(constant_id = 0) const bool DEPTH_REVERSED = false;
 layout(constant_id = 1) const bool AFFINE_UV = false;
 
 layout(location = 0)      out vec2  vUV;    /* pre-multiplied by q (scene contract) */
@@ -1672,12 +1674,7 @@ void main()
     float vzo = op_scene_vz(vzs);
     float Wu  = vzs;                       /* inW = pvz = the same view-Z */
     float q   = AFFINE_UV ? 1.0 : (vzo / Wu);
-    vec2 cxy  = clip_of(sscr);
-    float zc2 = op_vz_hyperbolic(vzo);
-    float zcl = DEPTH_AFFINE ? (vzo - 1.0) : (zc2 * vzo);
-    gl_Position = AFFINE_UV
-        ? vec4(cxy, DEPTH_AFFINE ? (vzo - 1.0) / vzo : zc2, 1.0)
-        : vec4(cxy * vzo, zcl, vzo);
+    gl_Position = op_scene_clip(clip_of(sscr), vzo, AFFINE_UV, DEPTH_REVERSED);
     vUV    = uv * q;
     vColor = col * q;
     vQ     = q;

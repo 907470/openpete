@@ -47,8 +47,8 @@ layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
     vec4  hd_ent[1664];  /* 416 entries x 4 vec4 (rect/atlas/fogA/fogB)    */
 } g;
 
-/* gl_FragCoord.z encoding, matching the vertex stage's selection. */
-layout(constant_id = 0) const bool DEPTH_AFFINE = false;
+/* gl_FragCoord.z convention, matching the vertex stage's selection. */
+layout(constant_id = 0) const bool DEPTH_REVERSED = false;
 /* Fragment spec-constant 4 (`SLOT_CONTEST`): the key contest compares
  * 128-world ordering-table slot indices and resolves an equal slot to the
  * terrain. Set per game from game_layout.terrain.slot_ot_contest. */
@@ -116,7 +116,7 @@ bool ter_key_loses()
         op_key_from_stored(texelFetch(u_hpkey,   ivec2(gl_FragCoord.xy), 0).r),
         OP_KEY_NONE,
         op_key_from_stored(texelFetch(u_mobykey, ivec2(gl_FragCoord.xy), 0).r),
-        op_vz_from_depth(gl_FragCoord.z, DEPTH_AFFINE), vKoff,
+        op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED), vKoff,
         false, true, SLOT_CONTEST);
 }
 
@@ -162,8 +162,7 @@ vec4 ter_stock_shade()
         if (hc.a < 0.5) return vec4(0.0);
         if (NOTEX) return vec4(clamp(col.rgb, 0.0, 1.0), 1.0);
         if ((vHd & 0x10000u) != 0u && g.hd_lad.x != 0.0) {
-            float w = DEPTH_AFFINE ? 1.0 / max(1.0 - gl_FragCoord.z, 1e-9)
-                                   : 4096.0 * gl_FragCoord.z / max(1.0 - gl_FragCoord.z, 1e-9);
+            float w = op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED);
             float tt = clamp(w * g.hd_lad.x +
                              (g.hd_lad.y - ((vHd & 0x20000u) != 0u ? 8192.0 / 3840.0 : 0.0)),
                              0.0, 1.0);

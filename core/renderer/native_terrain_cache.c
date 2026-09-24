@@ -514,7 +514,9 @@ static int tc_make_cell_pipes(rhi_device *dev, const char *vert, int anim,
     d[TC_CP_SUB].blend   = RHI_BLEND_SUBTRACT; d[TC_CP_SUB].depth_write_off = true;
     d[TC_CP_PREPASS].frag_spv = "terrain_prepass.frag.spv";
     d[TC_CP_PREPASS].color_write_off = true;
+    d[TC_CP_PREPASS].depth_class = RHI_DEPTH_FORWARD;
     d[TC_CP_KEY].frag_spv = "terrain_key_cache.frag.spv";
+    d[TC_CP_KEY].depth_class = RHI_DEPTH_FORWARD;
     int ok = 1;
     for (int i = 0; i < TC_CP_N; i++) {
         out[i] = rhi_create_pipeline(dev, &d[i]);
@@ -548,8 +550,10 @@ int openpete_tercache_init(rhi_device *dev)
     d = world_desc; d.stencil = RHI_STENCIL_TEST_ZERO;
     s_tc.pipe_fill = rhi_create_pipeline(dev, &d);
     d = world_desc; d.frag_spv = "terrain_prepass.frag.spv"; d.color_write_off = true;
+    d.depth_class = RHI_DEPTH_FORWARD;
     s_tc.pipe_prepass = rhi_create_pipeline(dev, &d);
     d = world_desc; d.frag_spv = "terrain_key_cache.frag.spv";
+    d.depth_class = RHI_DEPTH_FORWARD;
     s_tc.pipe_key = rhi_create_pipeline(dev, &d);
     /* Anim variants: identical state, the anim vertex stage + the
      * binding-1 prev twin. The FILL variant serves the env-anim colour
@@ -572,8 +576,10 @@ int openpete_tercache_init(rhi_device *dev)
     d = anim_desc; d.blend = RHI_BLEND_SUBTRACT; d.depth_write_off = true;
     s_tc.pipe_a_sub = rhi_create_pipeline(dev, &d);
     d = anim_desc; d.frag_spv = "terrain_prepass.frag.spv"; d.color_write_off = true;
+    d.depth_class = RHI_DEPTH_FORWARD;
     s_tc.pipe_a_prepass = rhi_create_pipeline(dev, &d);
     d = anim_desc; d.frag_spv = "terrain_key_cache.frag.spv";
+    d.depth_class = RHI_DEPTH_FORWARD;
     s_tc.pipe_a_key = rhi_create_pipeline(dev, &d);
     d = anim_desc; d.stencil = RHI_STENCIL_TEST_ZERO;
     s_tc.pipe_a_fill = rhi_create_pipeline(dev, &d);
@@ -599,8 +605,10 @@ int openpete_tercache_init(rhi_device *dev)
     d = near_desc; d.stencil = RHI_STENCIL_TEST_ZERO;
     s_tc.pipe_n_fill = rhi_create_pipeline(dev, &d);
     d = near_desc; d.frag_spv = "terrain_prepass.frag.spv"; d.color_write_off = true;
+    d.depth_class = RHI_DEPTH_FORWARD;
     s_tc.pipe_n_prepass = rhi_create_pipeline(dev, &d);
     d = near_desc; d.frag_spv = "terrain_key_cache.frag.spv";
+    d.depth_class = RHI_DEPTH_FORWARD;
     s_tc.pipe_n_key = rhi_create_pipeline(dev, &d);
 
     /* Cell-record variants: the same states over the instanced cell stages. */

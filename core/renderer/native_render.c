@@ -3273,19 +3273,6 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_terrain_vis = (opts->terrain_visibility == OPENPETE_TERRAIN_VIS_GAME)
                     ? OPENPETE_TERRAIN_VIS_GAME : OPENPETE_TERRAIN_VIS_FRUSTUM;
 
-    /* Scene depth encoding (OPENPETE_DEPTH_AFFINE): drives the scene shaders'
-     * vertex spec-constant 0. Must be set BEFORE the scene pipelines are built
-     * below. 1 = screen-affine z_ndc=1-1/vz (exact depth interpolation, no near-
-     * coplanar ordering flips) — the DEFAULT; 0 = legacy z=vz/(vz+4096). Screen-
-     * affine is the correct depth curve (the shadow/occlusion pre-pass already
-     * uses it) and it fixes real z-fighting on coplanar terrain/portal/cyclorama
-     * surfaces; the env forces the legacy encoding as an A/B escape hatch. */
-    { const char* e = getenv("OPENPETE_DEPTH_AFFINE");
-      int affine = (e && *e) ? (*e != '0') : 1;   /* default ON; =0 reverts to legacy */
-      rhi_set_depth_affine(affine);
-      OPL_INFO_F("native", "depth: %s",
-                 affine ? "screen-affine z_ndc=1-1/vz (default)"
-                        : "legacy z=vz/(vz+4096) (OPENPETE_DEPTH_AFFINE=0)"); }
     /* Key-contest granularity (SLOT_CONTEST, fragment spec-constant 4): a
      * game whose draw submits mobys and terrain through ONE ordering table
      * has both classes' keys on one 128-world scale, so the contest compares
@@ -3408,7 +3395,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline_desc prepass_desc = {
         .vert_spv = "prepass.vert.spv",
         .frag_spv = "terrain_prepass.frag.spv",
-        .blend = RHI_BLEND_NONE, .depth_test = true,
+        .blend = RHI_BLEND_NONE, .depth_test = true, .depth_class = RHI_DEPTH_FORWARD,
         .color_write_off = true,
         .uses_vram = false, .push_const_size = 0,
     };
@@ -3420,7 +3407,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline_desc terrain_key_desc = {
         .vert_spv = "terrain_key.vert.spv",
         .frag_spv = "quad.frag.spv",
-        .blend = RHI_BLEND_NONE, .depth_test = true,
+        .blend = RHI_BLEND_NONE, .depth_test = true, .depth_class = RHI_DEPTH_FORWARD,
         .uses_vram = false, .push_const_size = 0,
     };
     /* Additive UNTEXTURED gouraud pipeline (3b.3, the glow rings): POLY_G3 with
@@ -3794,7 +3781,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline_desc terrain_key_tex_desc = {
         .vert_spv = "terrain_key.vert.spv",
         .frag_spv = "psx_key_cutout.frag.spv",
-        .blend = RHI_BLEND_NONE, .depth_test = true,
+        .blend = RHI_BLEND_NONE, .depth_test = true, .depth_class = RHI_DEPTH_FORWARD,
         .uses_vram = true, .push_const_size = sizeof(psx_material),
     };
     rhi_pipeline *terrain_key_tex_pipe = terrain_key_pipe
@@ -3810,13 +3797,13 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline_desc moby_rank_desc = {
         .vert_spv = "moby_rank.vert.spv",
         .frag_spv = "moby_rank.frag.spv",
-        .blend = RHI_BLEND_NONE, .depth_test = true,
+        .blend = RHI_BLEND_NONE, .depth_test = true, .depth_class = RHI_DEPTH_FORWARD,
         .uses_vram = false, .push_const_size = 0,
     };
     rhi_pipeline_desc moby_rank_cutout_desc = {
         .vert_spv = "moby_rank.vert.spv",
         .frag_spv = "moby_rank_cutout.frag.spv",
-        .blend = RHI_BLEND_NONE, .depth_test = true,
+        .blend = RHI_BLEND_NONE, .depth_test = true, .depth_class = RHI_DEPTH_FORWARD,
         .uses_vram = true, .push_const_size = sizeof(psx_material),
     };
     rhi_pipeline *moby_rank_pipe = terrain_key_pipe
@@ -3986,6 +3973,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * the next fence wait, which is past the pacer's slip clamp. Paying it
      * during bring-up costs the same time where no deadline is running. */
     if (openpete_native_hdfold_on()) openpete_native_hdfold_prime(dev);
+    rhi_depth_report(dev);
 
     OPL_INFO_F("native", "Vulkan vk window up (%dx%d, device='%s'); PsyCross hidden",
                w, h, rhi_device_name(dev));
@@ -4900,6 +4888,7 @@ static void ensure_opaque_depth(void)
     rhi_wait_idle(s_nr.dev);
     if (s_nr.opaque_depth) { rhi_destroy_texture(s_nr.dev, s_nr.opaque_depth); s_nr.opaque_depth = NULL; }
     s_nr.opaque_depth = rhi_create_render_target_depth_sampled(s_nr.dev, (uint32_t)want_w, (uint32_t)want_h);
+    rhi_set_render_target_depth_class(s_nr.opaque_depth, RHI_DEPTH_FORWARD);
     if (s_nr.opaque_depth) {
         rhi_texture_extent(s_nr.opaque_depth, &s_nr.od_w, &s_nr.od_h);
         OPL_INFO_F("native", "opaque-depth pre-pass target %dx%d (shadow decal occlusion)",
@@ -5163,6 +5152,10 @@ static void ensure_terrain_key_depth(int w, int h)
     s_nr.moby_key_depth    = rhi_create_render_target_depth_sampled(s_nr.dev, (uint32_t)w, (uint32_t)h);
     s_nr.actor_key_depth   = rhi_create_render_target_depth_sampled(s_nr.dev, (uint32_t)w, (uint32_t)h);
     s_nr.moby_rank_rt      = rhi_create_render_target(s_nr.dev, (uint32_t)w, (uint32_t)h);
+    rhi_set_render_target_depth_class(s_nr.terrain_key_depth, RHI_DEPTH_FORWARD);
+    rhi_set_render_target_depth_class(s_nr.moby_key_depth, RHI_DEPTH_FORWARD);
+    rhi_set_render_target_depth_class(s_nr.actor_key_depth, RHI_DEPTH_FORWARD);
+    rhi_set_render_target_depth_class(s_nr.moby_rank_rt, RHI_DEPTH_FORWARD);
     if (s_nr.terrain_key_depth && s_nr.moby_key_depth && s_nr.actor_key_depth &&
         s_nr.moby_rank_rt)
         rhi_texture_extent(s_nr.terrain_key_depth, &s_nr.tk_w, &s_nr.tk_h);
@@ -7661,19 +7654,26 @@ static void alpha_census(const scene_tri_t* scene, int scene_n)
 }
 
 /* W2.5 — hardware depth-bias factors for the shadow decal group (the
- * SUBTRACT pipes). vkCmdSetDepthBias order semantics: bias = constant×r +
- * slope×m, floored at clamp (all negative here → pull toward the camera under
- * LESS_OR_EQUAL). r ≈ 2^-24 relative for D32_SFLOAT, m = max per-pixel depth
- * slope. Defaults: constant -64 (~4e-6 NDC — kills float-rounding ties vs the
- * coplanar ground), slope -2 (grows the pull exactly at grazing angles), clamp
- * -0.002 (total pull bounded well under the retired ×0.96 view-Z pull's
- * ~5-9e-3, so a genuine occluder is never reordered).
+ * SUBTRACT pipes, the fallback when the depth-aware decal pipes are
+ * unavailable). vkCmdSetDepthBias order semantics: bias = constant×r +
+ * slope×m, floored at clamp, all given in the forward sign (negative = toward
+ * the camera; rhi_set_depth_bias flips them under reversed depth). m = max
+ * per-pixel depth slope; slope -2 grows the pull at grazing angles and clamp
+ * -0.002 bounds it, both with the same view-Z meaning in either encoding.
+ * r is the stored value's resolvable step, so the constant is per encoding:
+ * forward (D24 fallback) r = 2^-24 near z = 1 and -64 pulls 64×2^-24×vz²
+ * view-Z (15 at vz 2000); reversed r is 2^-24..2^-23 of z = 1/vz, so the
+ * constant pulls a fraction of the distance, and -131072 (0.8%..1.6% of vz)
+ * keeps the moby shadow fans that ride a few units under the ground drawn
+ * where 64 ulps lost them.
  * Tunable: OPENPETE_SHADOW_HW_BIAS="constant,slope,clamp". */
 static void shadow_hw_bias(float* c, float* s, float* cl)
 {
+    static const float k_constant[2] = { -64.0f, -131072.0f };  /* forward, reversed */
     static int init = 0;
-    static float vc = -64.0f, vs = -2.0f, vcl = -0.002f;
+    static float vc, vs = -2.0f, vcl = -0.002f;
     if (!init) {
+        vc = k_constant[(int)rhi_depth_reversed(s_nr.dev)];
         const char* e = getenv("OPENPETE_SHADOW_HW_BIAS");
         if (e && *e) sscanf(e, "%f,%f,%f", &vc, &vs, &vcl);
         init = 1;
@@ -7688,7 +7688,9 @@ static void shadow_hw_bias(float* c, float* s, float* cl)
  * arch threshold step at very close range) beat the preview, reproducing the
  * PSX painter look where the sky bucket covered the step. Default NEUTRAL
  * (0,0,0 = current behaviour: real near geometry occludes the preview); tune
- * live via OPENPETE_PORTAL_MASK_BIAS="c,s,clamp" (try "-64,-4,-0.02"). */
+ * live via OPENPETE_PORTAL_MASK_BIAS="c,s,clamp" in the forward sign
+ * (negative = toward the camera; the constant is in units of the stored
+ * value's step, see shadow_hw_bias). */
 static void portal_mask_bias(float* c, float* s, float* cl)
 {
     static int init = 0;
@@ -13281,6 +13283,7 @@ void openpete_native_render_record_flush(void)
 void openpete_native_render_shutdown(void)
 {
     scene_box_summary();
+    rhi_depth_report(s_nr.dev);   /* every pipeline compiled over the run */
     /* Sub-tick view engagement. Reported unconditionally because a run that
      * never opened it cannot support any claim about the sub-tick path, and
      * that fact is invisible in the pixels. */

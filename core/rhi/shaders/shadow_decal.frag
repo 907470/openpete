@@ -80,8 +80,14 @@ layout(location = 3) in float vQ;     /* perspective ratio (see quad.vert) */
 
 layout(location = 0) out vec4 outColor;
 
-/* canonical scene curve (the FAN's own gl_FragCoord.z): z = vz/(vz+4096) */
-float viewz_from_scene_depth(float d) { return 4096.0 * d / max(1.0 - d, 1e-6); }
+/* Scene depth convention of the FAN's own gl_FragCoord.z (RHI spec constant
+ * 0, written by quad.vert through op_scene_clip): reversed z = 1/vz, forward
+ * z = 1 - 1/vz. */
+layout(constant_id = 0) const bool DEPTH_REVERSED = false;
+float viewz_from_scene_depth(float d)
+{
+    return DEPTH_REVERSED ? 1.0 / max(d, 1e-12) : 1.0 / max(1.0 - d, 1e-9);
+}
 /* pre-pass curve (prepass.vert): z = 1 - 1/vz — TRUE perspective, so the
  * rasterizer's screen-linear interpolation is exact on planes and the
  * neighbour-texel normal reconstruction below is trustworthy. */

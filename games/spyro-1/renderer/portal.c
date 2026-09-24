@@ -657,8 +657,8 @@ static int portal_plane_invz(CPUState* cpu, const ngte_view* v, uint32_t p,
  * few units in FRONT of the opening plane, not exactly on it. */
 #define PORTAL_SKY_EPS_VZ_DEFAULT 24.0
 /* Runtime-tunable so the margin can be re-calibrated against the depth encoding
- * (OPENPETE_DEPTH_AFFINE) without a rebuild: the affine curve resolves the inner-
- * frame z-fight this margin was inflated to overpower, so it wants a smaller pull.
+ * without a rebuild: an encoding affine in 1/vz resolves the inner-frame
+ * z-fight this margin was inflated to overpower, so it wants a smaller pull.
  * OPENPETE_PORTAL_SKY_EPS=0 disables the forward bias entirely. */
 /* How far BEHIND the opening plane a correction band is marked, world units.
  * Only needs to exceed the depth quantum plus any authoring slop in the stone

@@ -660,9 +660,10 @@ typedef struct {
  * The scene vertex stream carries depth as FULL-WORLD view-space Z (the GTE
  * MAC3 of full-world camera-relative coords; larger = farther, 1.0 == one GTE
  * unit), unencoded. The vertex stages clamp it to [1, OPENPETE_DEPTH_VIEWZ_FAR]
- * and derive the depth-buffer value from it: 1 - 1/vz (screen-affine, the
- * default), or vz / (vz + OPENPETE_DEPTH_VIEWZ_SCALE) under
- * OPENPETE_DEPTH_AFFINE=0. Both are monotonic in distance, 0(near)..→1(far).
+ * and derive the depth-buffer value from it: 1/vz on the float depth format
+ * (reversed: larger is nearer, GREATER_OR_EQUAL, clear 0), 1 - 1/vz on the
+ * D24 fallback (LESS_OR_EQUAL, clear 1). Both are affine in 1/vz, so they
+ * interpolate exactly in screen space.
  *
  * The feed takes an openpete_worldvz, which can ONLY be built through
  * the unit-claiming constructors below — a bare float is a compile error. A
@@ -680,13 +681,14 @@ typedef struct {
  * (included by psx_scene.vert, quad.vert, prepass.vert, terrain_key.vert,
  * shadow_decal_tex.vert and terrain.vert). */
 /* The hyperbolic curve's scale: 1.0 == 4096 GTE units spreads typical actor
- * depths across the usable range. The key images and the legacy scene depth
- * (OPENPETE_DEPTH_AFFINE=0) store z = vz / (vz + OPENPETE_DEPTH_VIEWZ_SCALE). */
+ * depths across the usable range. The key images store
+ * z = vz / (vz + OPENPETE_DEPTH_VIEWZ_SCALE). */
 #define OPENPETE_DEPTH_VIEWZ_SCALE 4096.0f
 /* The farthest view-Z the vertex stages keep: the clamp bounds W. Its value is
  * 4096 * 0.9999 / (1 - 0.9999) in float, the view-Z whose hyperbolic depth is
- * 0.9999. Under the screen-affine curve it writes depth 1.0 (1 - 1/W rounds
- * to 1 at this magnitude), the backdrop value: the cyclorama feeds it. */
+ * 0.9999. It is the backdrop view-Z the cyclorama feeds: reversed depth
+ * 1/W = 2.4e-8, above the clear of 0 and below every nearer surface; forward
+ * depth 1 - 1/W rounds to the clear of 1. */
 #define OPENPETE_DEPTH_VIEWZ_FAR 0x1.386abap+25f
 
 /* A full-world view-Z. Only the constructors below produce one. */

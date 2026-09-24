@@ -1,4 +1,6 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+#include "psx_key_contest.glsl"
 
 /* HD replacement sampling for OPAQUE (depth-tested, depth-writing) scene
  * geometry: like hd_tex.frag but alpha works as a CUTOUT (discard below 0.5,
@@ -28,8 +30,8 @@ layout(location = 4) flat in vec2 vRank;  /* x = own rank (0 = unranked), y = mo
 
 layout(location = 0) out vec4 outColor;
 
-/* gl_FragCoord.z encoding — see psx_scene_key.frag. */
-layout(constant_id = 0) const bool DEPTH_AFFINE = false;
+/* gl_FragCoord.z convention — see psx_scene_key.frag. */
+layout(constant_id = 0) const bool DEPTH_REVERSED = false;
 
 /* Scope moby og-key yields by the fragment's own TRUE view-Z (see the
  * contest block). Default true; false restores og's compound painter. */
@@ -50,8 +52,7 @@ void main()
         float iord  = floor(e.b * 255.0 + 0.5);
         if (abs(iord - vRank.y) < 0.5 && irank > vRank.x + 0.5) {
             float ownerVz = e.a * 32640.0;
-            float ownVz = DEPTH_AFFINE ? 1.0 / max(1.0 - gl_FragCoord.z, 1e-9)
-                                       : 4096.0 * gl_FragCoord.z / max(1.0 - gl_FragCoord.z, 1e-9);
+            float ownVz = op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED);
             if (abs(ownerVz - ownVz) < 384.0) discard;
         }
     }
@@ -65,8 +66,7 @@ void main()
         float tkey = hk < 0.999999 ? 4096.0 * hk / max(1.0 - hk, 1e-9) : 1e30;
         float akey = ak < 0.999999 ? 4096.0 * ak / max(1.0 - ak, 1e-9) : 1e30;
         float mkey = mk < 0.999999 ? 4096.0 * mk / max(1.0 - mk, 1e-9) : 1e30;
-        float own = DEPTH_AFFINE ? 1.0 / max(1.0 - gl_FragCoord.z, 1e-9)
-                                 : 4096.0 * gl_FragCoord.z / max(1.0 - gl_FragCoord.z, 1e-9);
+        float own = op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED);
         bool actor = vRank.x < -0.5;   /* unranked moby faces mark rank -1 */
         if (vKoff > 0.0) {
             if (SLOT_CONTEST) {
@@ -109,8 +109,7 @@ void main()
      * wrote — terrain stores TRUE depth), which is the fade the rows
      * quantize, minus the steps. */
     if (pc.fogAN.a > 0.0) {
-        float w = DEPTH_AFFINE ? 1.0 / max(1.0 - gl_FragCoord.z, 1e-9)
-                               : 4096.0 * gl_FragCoord.z / max(1.0 - gl_FragCoord.z, 1e-9);
+        float w = op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED);
         float t = clamp(w * pc.fogLad.x + pc.fogLad.y, 0.0, 1.0);
         c.rgb = clamp(c.rgb * mix(vec3(1.0), pc.fogAN.rgb, t) + pc.fogBN.rgb * t,
                       0.0, 1.0);

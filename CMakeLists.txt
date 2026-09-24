@@ -1114,4 +1114,14 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         TIMEOUT 900
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME terrain_walk_cache_spyro-3
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_terrain_walk_cache.sh
+                     --game spyro-3 --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(terrain_walk_cache_spyro-3 PROPERTIES
+        LABELS "presentation;terrain;spyro-3"
+        # One row of two concurrent boots, self-limited at
+        # --max-runtime-seconds 580.
+        TIMEOUT 900
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endif()

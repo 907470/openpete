@@ -512,6 +512,20 @@ typedef enum { RHI_BLEND_NONE, RHI_BLEND_ALPHA, RHI_BLEND_ADD, RHI_BLEND_SUBTRAC
 typedef enum { RHI_STENCIL_NONE, RHI_STENCIL_MARK, RHI_STENCIL_TEST,
                RHI_STENCIL_TEST_ZERO } rhi_stencil_mode;
 
+/* Depth convention of a pipeline or a render target. The compare op, the
+ * clear value and the scene stages' depth encoding (vertex and fragment spec
+ * constant 0) are device tables indexed by this class, filled once the depth
+ * format is chosen (rhi_depth_* below):
+ *  - SCENE: the scene depth the colour passes test against (the offscreen
+ *    pass, the scene render targets and the overlay targets drawn with the
+ *    scene pipelines).
+ *  - FORWARD: images with a private encoding that stores nearer as smaller
+ *    and clears to 1.0, tested LESS_OR_EQUAL whatever the scene convention:
+ *    the WORLD-opaque depth pre-pass, the og key images and the moby rank
+ *    image, and the pipelines that draw into them. */
+typedef enum { RHI_DEPTH_SCENE = 0, RHI_DEPTH_FORWARD = 1,
+               RHI_DEPTH_CLASSES } rhi_depth_class;
+
 typedef struct {
     const char    *vert_spv;    /* filename within RHI_SHADER_DIR */
     const char    *frag_spv;
@@ -537,6 +551,11 @@ typedef struct {
                                  * caller MUST rhi_set_depth_bias after EVERY
                                  * bind of a depth_bias pipeline, before its
                                  * draws. */
+    rhi_depth_class depth_class; /* SCENE (default) or FORWARD: selects the
+                                 * compare op and spec constant 0 from the
+                                 * device's tables (rhi_depth_class). A
+                                 * FORWARD pipeline draws only into a FORWARD
+                                 * render target.                             */
     rhi_stencil_mode stencil;   /* NONE (default) / MARK / TEST — see enum docs */
     bool           color_write_off; /* rasterize without writing colour (an
                                  * invisible stencil-mask pass)               */
@@ -689,11 +708,19 @@ size_t      rhi_vertex_buffer_slot_bytes(const rhi_buffer *buf);
 rhi_pipeline *rhi_create_pipeline(rhi_device *dev, const rhi_pipeline_desc *desc);
 void          rhi_destroy_pipeline(rhi_device *dev, rhi_pipeline *pipe);
 
-/* Select the scene shaders' depth encoding (vertex spec-constant 0), applied to
- * pipelines created AFTER this call: 0 = legacy z=vz/(vz+4096), 1 = screen-affine
- * z_ndc=1-1/vz. Call once at bring-up (from OPENPETE_DEPTH_AFFINE) before the
- * scene pipelines are built. Default 0. */
-void          rhi_set_depth_affine(int on);
+/* True when the SCENE depth convention is reversed: z_ndc = 1/vz,
+ * GREATER_OR_EQUAL, clear 0 (the D32_SFLOAT_S8 format). False on the
+ * D24_UNORM_S8 fallback: z_ndc = 1 - 1/vz, LESS_OR_EQUAL, clear 1. The
+ * format selects all three together; FORWARD-class images are forward on
+ * every device. */
+bool          rhi_depth_reversed(const rhi_device *dev);
+
+/* The chosen depth attachment format (a VkFormat value) and the pipelines
+ * compiled so far per depth compare op (a VkCompareOp value, 0..7): the depth
+ * convention's engagement counters. rhi_depth_report logs both. */
+int           rhi_depth_format(const rhi_device *dev);
+unsigned      rhi_depth_pipelines_by_compare(const rhi_device *dev, int compare_op);
+void          rhi_depth_report(const rhi_device *dev);
 
 /* Select PSX-affine UV/colour interpolation (vertex spec-constant 1, w=1 —
  * the PSX GPU's screen-linear texture/gouraud swim), applied to pipelines
@@ -733,8 +760,8 @@ void          rhi_set_moby_truescope(int on);
 void          rhi_set_slot_contest(int on);
 
 /* Re-bake EVERY live pipeline on the device from its stored desc + shader
- * sources, capturing the current spec-constant values (rhi_set_depth_affine /
- * rhi_set_affine_uv) — the live-toggle path for constants that are otherwise
+ * sources, capturing the current spec-constant values (rhi_set_affine_uv /
+ * rhi_set_notex) — the live-toggle path for constants that are otherwise
  * latched at pipeline creation. Waits for device idle (one-time hitch), then
  * swaps each pipeline's Vulkan objects IN PLACE: every rhi_pipeline* handle
  * stays valid, so owners (renderer fields, mod material/mesh caches) need no
@@ -917,8 +944,13 @@ void rhi_swapchain_extent(const rhi_device *dev, int *w, int *h);
  * pass. */
 void rhi_pass_extent(const rhi_device *dev, int *w, int *h);
 
+/* Mark a render target's depth convention (default RHI_DEPTH_SCENE). Its
+ * begin-pass depth clear and rhi_clear_depth inside its pass use the class's
+ * far value. The offscreen pass is always RHI_DEPTH_SCENE. */
+void rhi_set_render_target_depth_class(rhi_texture *rt, rhi_depth_class cls);
+
 /* Clear the depth attachment to far WITHIN the current pass (offscreen or render
- * target). Used to depth-isolate a late on-top overlay (3D HUD icons) so it
+ * target); far is the pass's depth class's clear value. Used to depth-isolate a late on-top overlay (3D HUD icons) so it
  * Z-sorts internally without being occluded by, or occluding, world geometry. */
 void rhi_clear_depth(rhi_device *dev);
 
@@ -974,11 +1006,14 @@ void rhi_set_scissor(rhi_device *dev, int x, int y, int w, int h);
 void rhi_reset_scissor(rhi_device *dev);
 /* Set the hardware depth-bias factors (vkCmdSetDepthBias order: constant,
  * clamp, slope) for subsequent draws whose pipeline was created with
- * desc.depth_bias. Negative values pull fragments TOWARD the camera under the
- * LESS_OR_EQUAL compare — the decal tie-break: constant×r beats
- * rasterization-rounding ties against coplanar geometry, slope×m grows the
- * pull at grazing angles, clamp bounds the total. r is the minimum resolvable
- * depth delta (~2^-24 relative for a float depth attachment). MUST be called
+ * desc.depth_bias. Negative values pull fragments TOWARD the camera under
+ * either scene convention (the RHI negates all three under the reversed
+ * one) — the decal tie-break: constant×r beats rasterization-rounding ties
+ * against coplanar geometry, slope×m grows the pull at grazing angles, clamp
+ * bounds the total. r is the minimum resolvable depth delta of the stored
+ * value: 2^-24 near z = 1 (forward), about z×2^-23.5 (reversed, z = 1/vz), so
+ * a constant pulls 2^-24×vz² view-Z forward and about 2^-23.5×vz reversed.
+ * Slope and clamp are in depth units, where |dz/dvz| = 1/vz² in both. MUST be called
  * after every bind of a depth_bias pipeline, before its draws — binding any
  * non-depth_bias pipeline in between invalidates the dynamic state (Vulkan
  * static-state invalidation rule). If the depthBiasClamp device feature is

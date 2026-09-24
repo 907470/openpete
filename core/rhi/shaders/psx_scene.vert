@@ -11,7 +11,7 @@
  * always the same:
  *
  *   - vzo: the ORDERING view-Z the depth is written from (the depth curve is
- *     selected by DEPTH_AFFINE below). Feeders may shift it to port the PSX
+ *     is op_scene_clip, selected by DEPTH_REVERSED below). Feeders may shift it to port the PSX
  *     OT's authored ordering (terrain slot offsets, moby tie pulls).
  *   - inW: the TRUE view-Z (perspective W) for UV/colour interpolation.
  *
@@ -56,12 +56,10 @@ layout(location = 2) out float vQ;
 layout(location = 3) flat out float vKoff;
 layout(location = 4) flat out vec2 vRank;
 
-/* Depth curve, chosen at pipeline creation (RHI vertex spec-constant 0):
- * false = legacy z=vz/(vz+4096) (hyperbolic in vz, interpolated screen-linearly
- * => ordering flips at near-coplanar faces); true = z_ndc=(W-1)/W=1-1/vz, which
- * IS affine in 1/vz => screen-affine => exact interpolation. Same monotonic
- * near->far mapping, so compare op / clear value are unchanged. */
-layout(constant_id = 0) const bool DEPTH_AFFINE = false;
+/* Scene depth convention, chosen at pipeline creation (RHI spec constant 0,
+ * from the pipeline's depth class and the device's depth format): true =
+ * reversed z_ndc = 1/vz, false = forward z_ndc = 1 - 1/vz (op_scene_clip). */
+layout(constant_id = 0) const bool DEPTH_REVERSED = false;
 
 /* PSX-affine interpolation (--texture-mapping affine, spec-constant 1): emit
  * w=1 so the rasterizer interpolates UV/colour SCREEN-LINEARLY — the PSX GPU
@@ -76,10 +74,7 @@ void main()
     float vzo = op_scene_vz(inPos.z);                /* ordering view-Z (depth) */
     float Wu  = max(inW, 1.0);                        /* UV/colour perspective W */
     float q   = AFFINE_UV ? 1.0 : (vzo / Wu);
-    float z   = op_vz_hyperbolic(vzo);                /* legacy curve's z_ndc   */
-    float zc  = DEPTH_AFFINE ? (vzo - 1.0) : (z * vzo);   /* z_ndc = zc/vzo */
-    gl_Position = AFFINE_UV ? vec4(inPos.xy, DEPTH_AFFINE ? (vzo - 1.0) / vzo : z, 1.0)
-                            : vec4(inPos.xy * vzo, zc, vzo);
+    gl_Position = op_scene_clip(inPos.xy, vzo, AFFINE_UV, DEPTH_REVERSED);
     vUV = inUV * q;
     vColor = op_unorm8(inColor) * q;
     vQ = q;

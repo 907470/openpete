@@ -1085,8 +1085,10 @@ static const knob_desc_t g_builtin[] = {
       KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_logfmt_names), 0, 0,
       logfmt_get, logfmt_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
-    ENVROW_LATCHED("DEPTH_AFFINE", "Debug", "1",
-        "0 = legacy depth curve; 1 (default) screen-affine; baked into pipelines at boot."),
+    ENVROW_LATCHED("RHI_DEPTH_D24", "Debug", "0",
+        "1 = take the D24_UNORM_S8 depth format even where D32_SFLOAT_S8 is "
+        "available, running the fallback's depth convention. Read at device "
+        "creation."),
     ENVROW_LATCHED("EAGER", "Debug", "1",
       "Eager production (default on): the span of presents is extracted "
       "AHEAD of each tick and presented from a dedicated thread's scene "

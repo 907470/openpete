@@ -11,7 +11,7 @@
 #ifndef OPENPETE_PSX_VIEWZ_GLSL
 #define OPENPETE_PSX_VIEWZ_GLSL
 
-/* The hyperbolic depth curve's scale (key images, legacy scene depth). */
+/* The hyperbolic depth curve's scale (the key images). */
 #define OP_VZ_SCALE 4096.0
 /* The farthest kept view-Z: 4096 * 0.9999 / (1 - 0.9999) in float, the
  * view-Z whose hyperbolic depth is 0.9999. Bounds W. */
@@ -28,6 +28,24 @@ float op_scene_vz(float vz)
 float op_vz_hyperbolic(float vz)
 {
     return vz / (vz + OP_VZ_SCALE);
+}
+
+/* Scene depth, written by every scene vertex stage through this one
+ * expression. Reversed (spec constant 0 true: the float depth attachment):
+ * z_ndc = 1/vz, compared GREATER_OR_EQUAL against a clear of 0, so float32
+ * keeps about 2^-24 relative precision at every distance. Forward (the D24
+ * fallback and the FORWARD-class pre-pass): z_ndc = 1 - 1/vz, compared
+ * LESS_OR_EQUAL against a clear of 1. Both are affine in 1/vz, so the
+ * rasteriser interpolates them exactly in screen space. Returns the clip
+ * position of clip-space screen cxy at ordering view-Z vzo: on the
+ * perspective path w = vzo and z is the numerator of z_ndc (1 or vzo - 1),
+ * a (z, w) pair the clipper interpolates linearly without disturbing the
+ * window depth; on the screen-affine UV path w = 1 and z = z_ndc. The near
+ * clip z <= w holds at vzo >= 1, which op_scene_vz guarantees. */
+vec4 op_scene_clip(vec2 cxy, float vzo, bool affineUV, bool reversed)
+{
+    float zc = reversed ? 1.0 : vzo - 1.0;
+    return affineUV ? vec4(cxy, zc / vzo, 1.0) : vec4(cxy * vzo, zc, vzo);
 }
 
 #endif

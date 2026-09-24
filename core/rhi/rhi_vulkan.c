@@ -226,6 +226,14 @@ struct rhi_device {
     VkFormat       depth_format;  /* combined depth+stencil (W2.6): D32_SFLOAT_S8
                                    * preferred, D24_UNORM_S8 fallback — picked at
                                    * device selection (pick_depth_format). */
+    /* The depth convention per rhi_depth_class, set with the format
+     * (depth_convention_init): the compare op a pipeline of the class
+     * tests with, and the value a pass of the class clears depth to. */
+    VkCompareOp    depth_cmp[RHI_DEPTH_CLASSES];
+    float          depth_clear[RHI_DEPTH_CLASSES];
+    VkBool32       depth_rev[RHI_DEPTH_CLASSES]; /* spec constant 0 (DEPTH_REVERSED) */
+    float          cur_depth_clear;  /* clear value of the current pass (rhi_clear_depth) */
+    unsigned       pipes_by_cmp[8];  /* pipelines compiled per VkCompareOp (engagement) */
     bool           has_depth_bias_clamp; /* depthBiasClamp feature enabled */
     bool           has_shader_float64;   /* shaderFloat64 feature enabled  */
     bool           has_fill_non_solid;   /* fillModeNonSolid feature enabled */
@@ -556,6 +564,7 @@ struct rhi_texture {
      * as a combined image sampler. NULL on a plain render target. */
     VkImageView     rt_depth_sample_view;
     VkDescriptorSet depth_set;
+    rhi_depth_class depth_class; /* the depth convention of its pass (SCENE default) */
 };
 
 /* ------------------------------------------------------------------ */
@@ -698,13 +707,47 @@ static VkFormat pick_depth_format(VkPhysicalDevice phys)
 {
     const VkFormat cand[2] = { VK_FORMAT_D32_SFLOAT_S8_UINT,
                                VK_FORMAT_D24_UNORM_S8_UINT };
-    for (int i = 0; i < 2; i++) {
+    /* OPENPETE_RHI_DEPTH_D24=1 starts at the fallback, so the D24 selection
+     * runs on a device that has both. */
+    const char *force = getenv("OPENPETE_RHI_DEPTH_D24");
+    for (int i = (force && *force == '1') ? 1 : 0; i < 2; i++) {
         VkFormatProperties fp;
         vkGetPhysicalDeviceFormatProperties(phys, cand[i], &fp);
         if (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)
             return cand[i];
     }
     return VK_FORMAT_D32_SFLOAT_S8_UINT;  /* unreachable per spec */
+}
+
+static const char *depth_format_name(VkFormat f)
+{
+    return f == VK_FORMAT_D32_SFLOAT_S8_UINT ? "D32_SFLOAT_S8_UINT"
+         : f == VK_FORMAT_D24_UNORM_S8_UINT  ? "D24_UNORM_S8_UINT" : "other";
+}
+
+/* The depth convention per class for the chosen format. FORWARD images
+ * store nearer as smaller: LESS_OR_EQUAL, clear 1. The SCENE convention on
+ * the float format is reversed (the scene stages write z_ndc = 1/vz,
+ * psx_viewz.glsl op_scene_clip): GREATER_OR_EQUAL, clear 0, so the float's
+ * exponent tracks 1/vz and every distance keeps about 2^-24 relative
+ * precision. D24_UNORM has one absolute step everywhere, where 1/vz would
+ * spend it near the camera, so the fallback keeps the forward convention and
+ * z_ndc = 1 - 1/vz. */
+static void depth_convention_init(rhi_device *dev)
+{
+    const bool rev = dev->depth_format == VK_FORMAT_D32_SFLOAT_S8_UINT;
+    for (int c = 0; c < RHI_DEPTH_CLASSES; c++) {
+        dev->depth_cmp[c]   = VK_COMPARE_OP_LESS_OR_EQUAL;
+        dev->depth_clear[c] = 1.0f;
+        dev->depth_rev[c]   = VK_FALSE;
+    }
+    if (rev) {
+        dev->depth_cmp[RHI_DEPTH_SCENE]   = VK_COMPARE_OP_GREATER_OR_EQUAL;
+        dev->depth_clear[RHI_DEPTH_SCENE] = 0.0f;
+        dev->depth_rev[RHI_DEPTH_SCENE]   = VK_TRUE;
+    }
+    dev->cur_depth_clear = dev->depth_clear[RHI_DEPTH_SCENE];
+    RHI_LOG("depth format %s\n", depth_format_name(dev->depth_format));
 }
 
 static bool pick_physical_and_device(rhi_device *dev)
@@ -783,6 +826,7 @@ static bool pick_physical_and_device(rhi_device *dev)
     dev->phys = chosen;
     dev->gfx_family = chosen_family;
     dev->depth_format = pick_depth_format(chosen);
+    depth_convention_init(dev);
 
     float prio = 1.0f;
     VkDeviceQueueCreateInfo qci = {
@@ -2449,7 +2493,7 @@ void rhi_begin_offscreen(rhi_device *dev, float r, float g, float b, float a)
     VkClearValue cv[2];
     cv[0].color.float32[0] = r; cv[0].color.float32[1] = g;
     cv[0].color.float32[2] = b; cv[0].color.float32[3] = a;
-    cv[1].depthStencil.depth = 1.0f; cv[1].depthStencil.stencil = 0; /* far */
+    cv[1].depthStencil.depth = dev->depth_clear[RHI_DEPTH_SCENE]; cv[1].depthStencil.stencil = 0; /* far */
     VkRenderPassBeginInfo rp = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         .renderPass = dev->off_rp,
@@ -2460,6 +2504,7 @@ void rhi_begin_offscreen(rhi_device *dev, float r, float g, float b, float a)
     };
     vkCmdBeginRenderPass(dev->cmd[dev->frame], &rp, VK_SUBPASS_CONTENTS_INLINE);
     dev->cur_extent = dev->sc_extent;   /* render area of this (offscreen) pass */
+    dev->cur_depth_clear = cv[1].depthStencil.depth;
 
     /* Y-flipped viewport (Vulkan clip-space Y is down) so NDC/UV match the
      * GL/texture convention the ported PSX shaders assume. Dynamic so a
@@ -2497,7 +2542,7 @@ void rhi_begin_offscreen_load(rhi_device *dev)
                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
     VkClearValue cv[2];
     memset(&cv[0], 0, sizeof cv[0]);   /* color LOADs; value ignored */
-    cv[1].depthStencil.depth = 1.0f; cv[1].depthStencil.stencil = 0;
+    cv[1].depthStencil.depth = dev->depth_clear[RHI_DEPTH_SCENE]; cv[1].depthStencil.stencil = 0;
     VkRenderPassBeginInfo rp = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         .renderPass = dev->off_load_rp,
@@ -2508,6 +2553,7 @@ void rhi_begin_offscreen_load(rhi_device *dev)
     };
     vkCmdBeginRenderPass(dev->cmd[dev->frame], &rp, VK_SUBPASS_CONTENTS_INLINE);
     dev->cur_extent = dev->sc_extent;
+    dev->cur_depth_clear = cv[1].depthStencil.depth;
     VkViewport vp = {
         .x = 0.0f, .y = (float)dev->sc_extent.height,
         .width = (float)dev->sc_extent.width, .height = -(float)dev->sc_extent.height,
@@ -3706,7 +3752,7 @@ void rhi_begin_render_target(rhi_device *dev, rhi_texture *rt,
     VkClearValue cv[2];
     cv[0].color.float32[0] = r; cv[0].color.float32[1] = g;
     cv[0].color.float32[2] = b; cv[0].color.float32[3] = a;
-    cv[1].depthStencil.depth = 1.0f; cv[1].depthStencil.stencil = 0;
+    cv[1].depthStencil.depth = dev->depth_clear[rt->depth_class]; cv[1].depthStencil.stencil = 0;
     VkExtent2D ext = { rt->width, rt->height };
     VkRenderPassBeginInfo rp = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
@@ -3716,6 +3762,7 @@ void rhi_begin_render_target(rhi_device *dev, rhi_texture *rt,
     };
     vkCmdBeginRenderPass(dev->cmd[dev->frame], &rp, VK_SUBPASS_CONTENTS_INLINE);
     dev->cur_extent = ext;   /* render area of this (render-target) pass */
+    dev->cur_depth_clear = cv[1].depthStencil.depth;
     /* Y-flipped viewport, matching rhi_begin_offscreen. */
     VkViewport vp = { .x = 0.0f, .y = (float)rt->height,
                       .width = (float)rt->width, .height = -(float)rt->height,
@@ -3737,7 +3784,13 @@ void rhi_end_render_target(rhi_device *dev, rhi_texture *rt)
     rt->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; /* rt_rp finalLayout */
 }
 
-/* Clear the depth attachment to far (1.0) WITHIN the current render pass — used
+void rhi_set_render_target_depth_class(rhi_texture *rt, rhi_depth_class cls)
+{
+    if (rt && rt->is_rt) rt->depth_class = cls;
+}
+
+/* Clear the depth attachment to far (the pass's depth class's clear value)
+ * WITHIN the current render pass — used
  * to isolate a late depth-tested overlay (the 3D HUD icons) from world depth so
  * it sorts internally yet always draws on top. vkCmdClearAttachments clears in
  * the active subpass over the given rect (no new render pass). */
@@ -3746,7 +3799,7 @@ void rhi_clear_depth(rhi_device *dev)
     if (!dev->frame_active) return;
     VkClearAttachment att = {
         .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
-        .clearValue = { .depthStencil = { .depth = 1.0f, .stencil = 0 } },
+        .clearValue = { .depthStencil = { .depth = dev->cur_depth_clear, .stencil = 0 } },
     };
     VkClearRect rect = {
         .rect = { .offset = {0, 0}, .extent = dev->cur_extent },
@@ -4456,17 +4509,20 @@ static VkShaderModule load_shader_module(rhi_device *dev, const char *filename)
  * change. desc->postfx selects the mod-postfx layout — no vertex input
  * (fullscreen triangle from gl_VertexIndex), sets 0..2 = one sampler
  * each, set 3 = the dynamic-UBO pair. */
-/* Specialization constant 0 (`DEPTH_AFFINE`): selects the scene shaders' depth
- * encoding at pipeline creation — 0 = legacy z=vz/(vz+4096), 1 = screen-affine
- * z_ndc=1-1/vz. Set once from OPENPETE_DEPTH_AFFINE before the pipelines are
- * built. Declared by the stages that emit the depth (psx_scene.vert, quad.vert,
- * terrain.vert) and by every stage that decodes gl_FragCoord.z back to view-Z
- * (hd_tex_cutout.frag, quad_key.frag, psx_scene_key.frag, terrain_shade.glsl,
- * openpete_psx_material.glsl) — the decode must follow the encode, which is why
- * the entry is attached to BOTH stages below. A stage that declares no spec
- * constant ignores it, so attaching it everywhere is a no-op elsewhere. */
-static VkBool32 s_vs_depth_affine = VK_FALSE;
-void rhi_set_depth_affine(int on) { s_vs_depth_affine = on ? VK_TRUE : VK_FALSE; }
+/* Specialization constant 0 (`DEPTH_REVERSED`): the pipeline's depth class's
+ * convention on this device (depth_convention_init): true = reversed
+ * z_ndc = 1/vz, false = forward z_ndc = 1 - 1/vz (psx_viewz.glsl
+ * op_scene_clip). Declared by the stages that emit scene depth
+ * (psx_scene.vert, quad.vert, terrain.vert, shadow_decal_tex.vert) and by
+ * every stage that decodes gl_FragCoord.z back to view-Z (hd_tex_cutout.frag,
+ * quad_key.frag, psx_scene_key.frag, terrain_shade.glsl, shadow_decal.frag,
+ * shadow_decal_tex.frag, openpete_psx_material.glsl, openpete_psx_decal.glsl)
+ * — the decode must follow the encode, which is why the entry is attached to
+ * BOTH stages below. A stage that declares no spec constant ignores it. */
+bool rhi_depth_reversed(const rhi_device *dev)
+{
+    return dev && dev->depth_rev[RHI_DEPTH_SCENE];
+}
 
 /* Vertex-stage specialization constant 1 (`AFFINE_UV`): PSX-affine UV/colour
  * interpolation (--texture-mapping affine). Like DEPTH_AFFINE it is captured
@@ -4477,6 +4533,27 @@ void rhi_set_depth_affine(int on) { s_vs_depth_affine = on ? VK_TRUE : VK_FALSE;
  * lookups the scene draw samples, or a raster stamps where the face's own
  * paint discards. */
 static VkBool32 s_vs_affine_uv = VK_FALSE;
+
+int rhi_depth_format(const rhi_device *dev) { return dev ? (int)dev->depth_format : 0; }
+
+unsigned rhi_depth_pipelines_by_compare(const rhi_device *dev, int compare_op)
+{
+    return (dev && compare_op >= 0 && compare_op < 8) ? dev->pipes_by_cmp[compare_op] : 0u;
+}
+
+void rhi_depth_report(const rhi_device *dev)
+{
+    if (!dev) return;
+    RHI_LOG("depth: format %s, scene %s compare %d clear %g, forward compare %d clear %g; "
+            "pipelines LESS_OR_EQUAL=%u GREATER_OR_EQUAL=%u ALWAYS=%u\n",
+            depth_format_name(dev->depth_format),
+            dev->depth_rev[RHI_DEPTH_SCENE] ? "reversed 1/vz" : "forward 1-1/vz",
+            (int)dev->depth_cmp[RHI_DEPTH_SCENE], (double)dev->depth_clear[RHI_DEPTH_SCENE],
+            (int)dev->depth_cmp[RHI_DEPTH_FORWARD], (double)dev->depth_clear[RHI_DEPTH_FORWARD],
+            dev->pipes_by_cmp[VK_COMPARE_OP_LESS_OR_EQUAL],
+            dev->pipes_by_cmp[VK_COMPARE_OP_GREATER_OR_EQUAL],
+            dev->pipes_by_cmp[VK_COMPARE_OP_ALWAYS]);
+}
 void rhi_set_affine_uv(int on) { s_vs_affine_uv = on ? VK_TRUE : VK_FALSE; }
 
 /* Fragment-stage specialization constant 2 (`NOTEX`): untextured lighting
@@ -4674,7 +4751,8 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
     };
     /* Constant 5 (`STP_SELECT`) is per pipeline, from its desc: the texel STP
      * selection of psx_scene.frag (rhi_pipeline_desc.texel_stp_select). */
-    VkBool32 vsSpecData[6] = { s_vs_depth_affine, s_vs_affine_uv, pipeline_notex(desc),
+    VkBool32 vsSpecData[6] = { dev->depth_rev[desc->depth_class], s_vs_affine_uv,
+                               pipeline_notex(desc),
                                s_fs_moby_truescope, s_fs_slot_contest,
                                (VkBool32)desc->texel_stp_select };
     VkSpecializationInfo vsSpec = {
@@ -4686,7 +4764,7 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
           .stage = VK_SHADER_STAGE_VERTEX_BIT,   .module = vs, .pName = "main",
           .pSpecializationInfo = &vsSpec },
         /* The fragment stage sees the SAME spec constants (constant_id 0 =
-         * DEPTH_AFFINE): the terrain key-resolve fragments invert
+         * DEPTH_REVERSED): the terrain key-resolve fragments invert
          * gl_FragCoord.z back to view-Z, and the inversion formula follows
          * the encoding the vertex stage selected. Frags that declare no
          * spec constants ignore the info. */
@@ -4791,17 +4869,20 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
     };
     /* Depth: the offscreen target always carries a depth attachment (3a.3);
      * a pipeline opts into testing/writing it via desc->depth_test. The 2D
-     * panels (depth_test=false) ignore it and never write it. LESS_OR_EQUAL so
+     * panels (depth_test=false) ignore it and never write it. The compare is
+     * the pipeline's depth class's (depth_convention_init), an OR_EQUAL op so
      * equal-depth later draws (e.g. coincident prims) still paint.
      * depth_overwrite swaps the compare for ALWAYS (unconditional replace);
      * the test stays ENABLED because Vulkan forces depth writes off whenever
      * depthTestEnable is VK_FALSE. */
+    const VkCompareOp cmp = desc->depth_overwrite ? VK_COMPARE_OP_ALWAYS
+                                                  : dev->depth_cmp[desc->depth_class];
+    dev->pipes_by_cmp[cmp] += (unsigned)desc->depth_test;
     VkPipelineDepthStencilStateCreateInfo dss = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
         .depthTestEnable  = desc->depth_test ? VK_TRUE : VK_FALSE,
         .depthWriteEnable = (desc->depth_test && !desc->depth_write_off) ? VK_TRUE : VK_FALSE,
-        .depthCompareOp = desc->depth_overwrite ? VK_COMPARE_OP_ALWAYS
-                                                : VK_COMPARE_OP_LESS_OR_EQUAL,
+        .depthCompareOp = cmp,
     };
     /* Stencil roles (W2.6): MARK writes 1 where the fragment passes the depth
      * test (depth-fail keeps 0, so nearer world geometry punches the mask
@@ -5497,5 +5578,12 @@ void rhi_set_depth_bias(rhi_device *dev, float constant, float clamp, float slop
      * depthBiasClamp feature the clamp param MUST be 0.0 (spec 00790) — the
      * pull is then bounded only by the slope term; acceptable degradation. */
     if (!dev->has_depth_bias_clamp) clamp = 0.0f;
-    vkCmdSetDepthBias(dev->cmd[dev->frame], constant, clamp, slope);
+    /* The caller's sign convention is forward: negative pulls toward the
+     * camera. Under the reversed scene convention nearer is larger, so all
+     * three factors flip. The slope and clamp keep their view-Z meaning
+     * exactly (|dz/dvz| = 1/vz^2 in both encodings); the constant is in
+     * units of the stored value's resolvable step r, 2^-24 near z = 1
+     * forward and about z * 2^-23.5 reversed. */
+    const float sgn = dev->depth_rev[RHI_DEPTH_SCENE] ? -1.0f : 1.0f;
+    vkCmdSetDepthBias(dev->cmd[dev->frame], sgn * constant, sgn * clamp, sgn * slope);
 }

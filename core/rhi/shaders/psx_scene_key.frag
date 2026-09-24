@@ -42,11 +42,10 @@ layout(location = 4) flat in vec2 vRank;  /* x = own rank (0 = unranked), y = mo
 
 layout(location = 0) out vec4 outColor;
 
-/* Depth encoding of gl_FragCoord.z (matches the vertex stage's selection):
- * false = canonical z=vz/(vz+4096), true = screen-affine z=1-1/vz. Needed
- * to invert the fragment's own window depth back to view-Z for the
- * near-band per-pixel contest key. */
-layout(constant_id = 0) const bool DEPTH_AFFINE = false;
+/* Depth convention of gl_FragCoord.z (the vertex stage's selection, see
+ * op_scene_clip): needed to invert the fragment's own window depth back to
+ * view-Z for the near-band per-pixel contest key. */
+layout(constant_id = 0) const bool DEPTH_REVERSED = false;
 
 /* Scope moby og-key yields by the fragment's own TRUE view-Z (see the
  * contest block). Default true; false restores og's compound painter. */
@@ -96,7 +95,7 @@ void main()
      * (curated embedded-prop faces only). Set 4 = the moby og-RANK raster.
      * The verdicts themselves live in psx_key_contest.glsl. */
     bool ranked = vRank.x > 0.5;
-    float own = op_vz_from_depth(gl_FragCoord.z, DEPTH_AFFINE);
+    float own = op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED);
     if (ranked &&
         op_rank_loses(texelFetch(u_mobyrank, ivec2(gl_FragCoord.xy), 0), vRank, own))
         discard;

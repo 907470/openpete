@@ -35,10 +35,8 @@ layout(location = 5) in float inKoff;
 layout(location = 3) in vec2 inRank;
 layout(location = 5) flat out vec2 vRank;
 
-/* Depth curve, chosen at pipeline creation (RHI vertex spec-constant 0) —
- * see psx_scene.vert: false = legacy z=vz/(vz+4096), true = screen-affine
- * z_ndc=1-1/vz. Must match psx_scene.vert so both scene pipes share one buffer. */
-layout(constant_id = 0) const bool DEPTH_AFFINE = false;
+/* Scene depth convention (RHI spec constant 0) — see psx_scene.vert. */
+layout(constant_id = 0) const bool DEPTH_REVERSED = false;
 
 /* PSX-affine interpolation (--texture-mapping affine, spec-constant 1): w=1
  * makes the gouraud colour interpolate SCREEN-LINEARLY like the PSX GPU
@@ -57,10 +55,7 @@ void main()
     float vzo = op_scene_vz(inPos.z);                /* ordering view-Z (depth) */
     float Wu  = max(inW, 1.0);                        /* colour perspective W   */
     float q   = AFFINE_UV ? 1.0 : (vzo / Wu);
-    float z   = op_vz_hyperbolic(vzo);                /* legacy curve's z_ndc   */
-    float zc  = DEPTH_AFFINE ? (vzo - 1.0) : (z * vzo);   /* z_ndc = zc/vzo */
-    gl_Position = AFFINE_UV ? vec4(inPos.xy, DEPTH_AFFINE ? (vzo - 1.0) / vzo : z, 1.0)
-                            : vec4(inPos.xy * vzo, zc, vzo);
+    gl_Position = op_scene_clip(inPos.xy, vzo, AFFINE_UV, DEPTH_REVERSED);
     vColor = inColor * q;
     vUV = inUV * q;
     vQ = q;

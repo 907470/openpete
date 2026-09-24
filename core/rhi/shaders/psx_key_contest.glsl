@@ -26,13 +26,12 @@
 /* World view-Z per ordering-table bucket. */
 #define OP_KEY_SLOT 128.0
 
-/* Window depth -> view-Z for the vertex stage's encoding. affine:
- * z = 1 - 1/vz (screen-affine, exact under interpolation); otherwise the
- * hyperbolic z = vz/(vz+4096). */
-float op_vz_from_depth(float z, bool affine)
+/* Window depth -> view-Z for the scene stages' encoding (psx_viewz.glsl
+ * op_scene_clip): reversed z = 1/vz, forward z = 1 - 1/vz. */
+float op_vz_from_depth(float z, bool reversed)
 {
-    return affine ? 1.0 / max(1.0 - z, 1e-9)
-                  : 4096.0 * z / max(1.0 - z, 1e-9);
+    return reversed ? 1.0 / max(z, 1e-12)
+                    : 1.0 / max(1.0 - z, 1e-9);
 }
 
 /* A key image's stored value -> key view-Z. Key images are written with

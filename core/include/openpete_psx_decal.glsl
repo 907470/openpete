@@ -29,6 +29,11 @@
 #define OPENPETE_PSX_DECAL_GLSL
 
 layout(set = 0, binding = 0) uniform sampler2D  op_opaque_depth; /* terrain-opaque pre-pass */
+
+/* Engine-selected scene depth convention of the fan's own gl_FragCoord.z
+ * (reversed 1/vz or forward 1 - 1/vz). The stored value is not an
+ * interface; op_viewz_scene returns the fan's view-Z. */
+layout(constant_id = 0) const bool OP_DEPTH_REVERSED = false;
 layout(set = 1, binding = 0) uniform usampler2D op_vram;         /* R16_UINT 1024x512       */
 
 layout(push_constant) uniform OP_DECAL_PC {
@@ -102,7 +107,10 @@ vec4 op_decal_shade()
 }
 
 /* ---- world reconstruction ------------------------------------------- */
-float op_viewz_scene(float d)   { return 4096.0 * d / max(1.0 - d, 1e-6); }
+float op_viewz_scene(float d)
+{
+    return OP_DEPTH_REVERSED ? 1.0 / max(d, 1e-12) : 1.0 / max(1.0 - d, 1e-9);
+}
 float op_viewz_prepass(float d) { return 1.0 / max(1.0 - d, 1e-9); }
 
 vec2 op_screen_of_texel(ivec2 t)

@@ -21,8 +21,8 @@ layout(location = 5) flat in vec2 vRank;  /* x = own rank (0 = unranked), y = mo
 
 layout(location = 0) out vec4 outColor;
 
-/* gl_FragCoord.z encoding — see psx_scene_key.frag. */
-layout(constant_id = 0) const bool DEPTH_AFFINE = false;
+/* gl_FragCoord.z convention — see psx_scene_key.frag. */
+layout(constant_id = 0) const bool DEPTH_REVERSED = false;
 
 /* Scope moby og-key yields by the fragment's own TRUE view-Z (see the
  * contest block). Default true; false restores og's compound painter. */
@@ -36,7 +36,7 @@ layout(constant_id = 4) const bool SLOT_CONTEST = false;
 void main()
 {
     bool ranked = vRank.x > 0.5;
-    float own = op_vz_from_depth(gl_FragCoord.z, DEPTH_AFFINE);
+    float own = op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED);
     if (ranked &&
         op_rank_loses(texelFetch(u_mobyrank, ivec2(gl_FragCoord.xy), 0), vRank, own))
         discard;
