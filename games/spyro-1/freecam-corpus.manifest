@@ -255,3 +255,12 @@ stone_hill | pos=(74035, 203225, 34658) yaw=6884 pitch=311
 # them, centre of frame (user report 2026-09-20). Canonical class: the
 # extended-LOD leg is the defect's leg; blessed pre-fix.
 town_square | pos=(135549, 111171, 39041) yaw=1509 pitch=678
+# Depth tie under z = 1 - 1/vz: floor 115/1-2 vs pinned wall 115/13,15 (0.17% apart),
+# walk vs cache 11 px at y=334 under --lod extended; the walk shows the nearer face.
+metalhead | pos=(84248, 47616, 229368) yaw=0 pitch=992
+# Depth tie under z = 1 - 1/vz: faces 96/76 vs 36/52 (0.39% apart), walk vs cache 1 px
+# at (421,154) under --lod extended.
+cliff_town | pos=(108752, 84992, 255090) yaw=0 pitch=992
+# Terrain vs moby: 4 px depth-encoding ties; (490,244) terrain alpha vs moby additive
+# blend order differs walk vs cache, under --lod extended.
+crystal_flight | pos=(130240, 115736, 218978) yaw=0 pitch=992
