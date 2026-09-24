@@ -16,6 +16,19 @@ Markdown has none (<kbd>M</kbd>, &times;). A link whose whole text is one
 code span renders as <code><a>...</a></code>.
 -->
 
+## Unreleased
+
+- Renderer: scene depth is now reversed on the float depth format (`gl_FragCoord.z` = 1/viewZ, larger is nearer),
+  so distant surfaces no longer tie and flicker by draw order. Mod shaders reading depth through
+  `op_viewz_scene` or `op_vz_from_depth` are unaffected; raw `gl_FragCoord.z` values and the
+  `OP_DEPTH_AFFINE` constant (now `OP_DEPTH_REVERSED`) are not a stable interface.
+- Spyro 1: the fog-band fade of distant characters follows every displayed frame with interpolation active
+- Spyro 2/3: gem glints keep their size and spin between ticks; zaps keep their width; tracer ribbons and
+  meshes move smoothly; the terrain's animated colours blend between ticks
+- Spyro 3: terrain sectors no longer vanish on in-between frames while the camera pans under
+  `--terrain-visibility game`
+- Spyro 3: `--skip-to-level` gains a movie of the New Game path for the test corpus
+
 ## v0.4.1 - 2026-09-22 (Current)
 
 - Spyro 1: Fixed the HUD eggs swimming between each other with interpolation active
