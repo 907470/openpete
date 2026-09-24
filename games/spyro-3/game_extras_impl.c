@@ -14,6 +14,7 @@
 #include "freecam_game.h"
 #include "skip_to_level.h"
 #include "features/levelwarp.h"
+#include "features/cutscene_skip.h"
 #include "features/skip_to_area.h"
 #include "openpete_log.h"
 #include "feature_registry.h"   /* the registered feature modules' dispatch tables */
@@ -63,6 +64,9 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
      * reads its release, before the level skip's fast-forward consults it.
      * Inert without the flag. */
     spyro3_area_on_tick(cpu, frame_counter);
+    /* --skip-to-cutscene: queues the row's WarpToLevel call on its route's
+     * tick. Inert without the flag. */
+    spyro3_cutscene_on_tick(cpu, frame_counter);
     /* --skip-to-level: drives the title's demo-timeout transition toward the
      * target and holds isDemoMode clear. Inert without the flag. */
     spyro3_skip_on_tick(cpu, frame_counter);
@@ -109,13 +113,13 @@ int game_is_gameplay_live(CPUState* cpu) { return spyro3_skip_gameplay_live(cpu)
 void game_set_skip_to_level(int level_id) { spyro3_skip_set(level_id); }
 int  game_resolve_level_arg(const char* arg) { return spyro3_level_resolve(arg); }
 int  game_validate_cheats_arg(const char* spec) { (void)spec; return -1; }
-/* No cutscene targets: every --skip-to-cutscene value is refused. */
-void game_set_skip_to_cutscene(int cutscene_id) { (void)cutscene_id; }
-int  game_resolve_cutscene_arg(const char* arg) {
-    (void)arg;
-    fprintf(stderr, "%s has no --skip-to-cutscene targets\n", game_get_display_name());
-    return -1;
+/* --skip-to-cutscene (features/cutscene_skip.c): a row starting from a
+ * level rides a --skip-to-level to that level; a contradicting
+ * --skip-to-level is refused. */
+void game_set_skip_to_cutscene(int cutscene_id) {
+    if (cutscene_id > 0) spyro3_cutscene_arm(cutscene_id, spyro3_skip_target());
 }
+int game_resolve_cutscene_arg(const char* arg) { return spyro3_cutscene_resolve(arg); }
 void game_set_skip_to_area(int level_id, int area) { spyro3_area_set(level_id, area); }
 int  game_resolve_area_arg(const char* arg, int* out_area) {
     return spyro3_area_resolve(arg, out_area);

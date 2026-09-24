@@ -25,6 +25,13 @@ int spyro3_level_resolve(const char* arg);
 /* game_set_skip_to_level: 0 disarms. */
 void spyro3_skip_set(int number);
 
+/* The --skip-to-level target, 0 when none. */
+int spyro3_skip_target(void);
+
+/* Windowed runs: hold presents until the skip's release line; `until` names
+ * the edge in the log line. Headless: nothing. */
+void spyro3_skip_ffwd_arm(const char* until);
+
 /* Per-tick driver (game_on_frame_pre). Inert while disarmed. */
 void spyro3_skip_on_tick(CPUState* cpu, uint32_t frame_counter);
 

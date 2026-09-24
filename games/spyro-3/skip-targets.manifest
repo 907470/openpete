@@ -1,14 +1,25 @@
-# The --skip-to-area row table (scripts/check_skip_targets.sh).
-# One row per sub-area: every sub-area 1..N-1 of the 17 multi-area levels
-# (38), each entered by one area-0 portal. A row passes when its run prints
-# the skip's release line ("[skip-to-level] level playable") carrying every
-# expect token, the level and area words (0x8006C5BC, 0x8006C5C8) read back
-# from RAM at release: game.state 13 seen after the EnterSubArea call, then
-# gameplay live in the target area. It fails when the run prints the
-# fail-safe line. Level 31 arrives in the first-visit speech (game.state 1),
-# which the area-0 portal refuses; its rows replay a movie that dismisses
-# it. frames is the run's VBL limit (releases measured at VBL 1113, 1327
-# for level 31).
+# The --skip-to-area and --skip-to-cutscene row table
+# (scripts/check_skip_targets.sh).
+#
+# --skip-to-area: one row per sub-area, every sub-area 1..N-1 of the 17
+# multi-area levels (38), each entered by one area-0 portal. A row passes
+# when its run prints the skip's release line ("[skip-to-level] level
+# playable") carrying every expect token, the level and area words
+# (0x8006C5BC, 0x8006C5C8) read back from RAM at release: game.state 13 seen
+# after the EnterSubArea call, then gameplay live in the target area. It
+# fails when the run prints the fail-safe line. Level 31 arrives in the
+# first-visit speech (game.state 1), which the area-0 portal refuses; its
+# rows replay a movie that dismisses it. frames is the run's VBL limit
+# (releases measured at VBL 1113, 1327 for level 31).
+#
+# --skip-to-cutscene: one row per story cutscene (19). The release line
+# carries the row's name, the cutscene index 0x8006EDD8 and currentLevel
+# 0x8006C5BC (the cutscene id) read back from RAM at release: game.state 6
+# with the row's index after the row's WarpToLevel(6, id) call. Chain rows
+# (75, 76 after 61; 70, 71, 73 after 69) release when the game's own chain
+# reaches them. Levels 37 and 47 open a speech (game.state 1) before their
+# first live tick; their rows replay a movie whose Cross taps dismiss it and
+# end before the call (a Cross press during playback ends a cutscene).
 #
 # name | args                                                                                              | frames | expect
 11_1   | --skip-to-area 11:1                                                                               | 2000   | level=11 area=1
@@ -49,3 +60,24 @@
 50_1   | --skip-to-area 50:1                                                                               | 2000   | level=50 area=1
 50_2   | --skip-to-area 50:2                                                                               | 2000   | level=50 area=2
 50_3   | --skip-to-area 50:3                                                                               | 2000   | level=50 area=3
+
+# name                         | args                                                                                                                      | frames | expect
+an_evil_plot_unfolds           | --skip-to-cutscene an_evil_plot_unfolds                                                                                   | 1200   | cutscene=an_evil_plot_unfolds n=1 level=61
+the_second_warning             | --skip-to-cutscene the_second_warning                                                                                     | 1400   | cutscene=the_second_warning n=7 level=62
+bianca_strikes_back            | --skip-to-cutscene bianca_strikes_back                                                                                    | 1400   | cutscene=bianca_strikes_back n=4 level=63
+hunters_tussle                 | --skip-to-cutscene hunters_tussle                                                                                         | 1400   | cutscene=hunters_tussle n=8 level=64
+spike_is_born                  | --skip-to-cutscene spike_is_born                                                                                          | 1400   | cutscene=spike_is_born n=5 level=65
+an_apology_and_lunch           | --skip-to-cutscene an_apology_and_lunch                                                                                   | 1400   | cutscene=an_apology_and_lunch n=9 level=66
+a_monster_to_end_all_monsters  | --skip-to-cutscene a_monster_to_end_all_monsters                                                                          | 1400   | cutscene=a_monster_to_end_all_monsters n=6 level=67
+the_escape                     | --skip-to-cutscene the_escape --bk2 games/spyro-3/bk2/scorchs-pit-speech-dismiss.bk2 --bk2-frame-offset 0                 | 1700   | cutscene=the_escape n=10 level=68
+deja_vu                        | --skip-to-cutscene deja_vu --bk2 games/spyro-3/bk2/sorceresss-lair-speech-dismiss.bk2 --bk2-frame-offset 0                | 1600   | cutscene=deja_vu n=15 level=69
+a_familiar_face                | --skip-to-cutscene a_familiar_face --bk2 games/spyro-3/bk2/sorceresss-lair-speech-dismiss.bk2 --bk2-frame-offset 0        | 5000   | cutscene=a_familiar_face n=16 level=70
+billy_in_the_wall              | --skip-to-cutscene billy_in_the_wall --bk2 games/spyro-3/bk2/sorceresss-lair-speech-dismiss.bk2 --bk2-frame-offset 0      | 9000   | cutscene=billy_in_the_wall n=17 level=71
+one_less_noble_warrior         | --skip-to-cutscene one_less_noble_warrior --bk2 games/spyro-3/bk2/sorceresss-lair-speech-dismiss.bk2 --bk2-frame-offset 0 | 11100  | cutscene=one_less_noble_warrior n=18 level=73
+the_end                        | --skip-to-cutscene the_end                                                                                                | 1400   | cutscene=the_end n=19 level=74
+a_powerful_villain_emerges     | --skip-to-cutscene a_powerful_villain_emerges                                                                             | 5000   | cutscene=a_powerful_villain_emerges n=2 level=75
+a_desperate_rescue_begins      | --skip-to-cutscene a_desperate_rescue_begins                                                                              | 6600   | cutscene=a_desperate_rescue_begins n=3 level=76
+no_hard_feelings               | --skip-to-cutscene no_hard_feelings                                                                                       | 1400   | cutscene=no_hard_feelings n=11 level=77
+byrd_james_byrd                | --skip-to-cutscene byrd_james_byrd                                                                                        | 1400   | cutscene=byrd_james_byrd n=12 level=78
+a_duplicitous_larcenous_ursine | --skip-to-cutscene a_duplicitous_larcenous_ursine                                                                         | 1400   | cutscene=a_duplicitous_larcenous_ursine n=13 level=79
+the_dancing_bear               | --skip-to-cutscene the_dancing_bear                                                                                       | 1400   | cutscene=the_dancing_bear n=14 level=80

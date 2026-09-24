@@ -39,6 +39,7 @@
 // case 1) and takes the demo branch of its fade-in (case 3).
 
 #include "skip_to_level.h"
+#include "features/cutscene_skip.h"
 #include "features/skip_to_area.h"
 #include "openpete_fiber.h"
 #include "openpete_skip.h"
@@ -139,16 +140,23 @@ static skip_phase_t s_phase  = SKIP_IDLE;
  * (armed tens of thousands of frames in) is not cleared instantly. */
 static uint32_t     s_ffwd_deadline = 0;
 
+void spyro3_skip_ffwd_arm(const char* until) {
+    if (!openpete_skip_ffwd_windowed) return;
+    openpete_skip_present_until_level = 1;
+    s_ffwd_deadline = 0;
+    fprintf(stderr, "[skip-to-level] fast-forwarding presents until %s\n", until);
+}
+
 void spyro3_skip_set(int number) {
+    char until[40];
     s_target = number;
     s_phase  = number > 0 ? SKIP_ARMED : SKIP_IDLE;
-    if (number > 0 && openpete_skip_ffwd_windowed) {
-        openpete_skip_present_until_level = 1;
-        s_ffwd_deadline = 0;
-        fprintf(stderr, "[skip-to-level] fast-forwarding presents until "
-                        "level %d loads\n", number);
-    }
+    if (number <= 0) return;
+    snprintf(until, sizeof until, "level %d loads", number);
+    spyro3_skip_ffwd_arm(until);
 }
+
+int spyro3_skip_target(void) { return s_target; }
 
 int spyro3_skip_level_picked(void) { return s_phase == SKIP_PICKED; }
 
@@ -157,30 +165,37 @@ int spyro3_skip_gameplay_live(CPUState* cpu) {
            cpu->read_word(S3_GAME_STATE) == S3_GS_GAMEPLAY;
 }
 
-/* The skip release block, every tick while a present fast-forward or a
- * --skip-to-area target is armed. Presents resume
- * (openpete_skip_present_until_level clears) on the playable edge: the armed
- * sub-area's release predicate while one is armed, else the level's first
- * live tick after the pick. The area line names the level and area words
- * read back at release. openpete_skip_failsafe_vbls() after the first check
- * is the fail-safe against a never-reached edge; it logs its own line and
- * re-arms on each game.state 6 (cutscene) entry: a cutscene chain holds the
- * game out of gameplay for longer than one deadline. The area watch runs
- * headless too, where there is no fast-forward, so a harness reads the same
- * lines. */
+/* The playable edge: the armed sub-area's or cutscene's release predicate
+ * while one is armed, else the level's first live tick after the pick. */
+static int target_released(CPUState* cpu, char* eng, size_t cap) {
+    if (spyro3_area_watching()) return spyro3_area_released(cpu, eng, cap);
+    if (spyro3_cutscene_watching()) return spyro3_cutscene_released(cpu, eng, cap);
+    return s_phase == SKIP_PICKED && spyro3_skip_gameplay_live(cpu);
+}
+
+static void target_finish(void) {
+    if (spyro3_area_watching()) spyro3_area_finish();
+    if (spyro3_cutscene_watching()) spyro3_cutscene_finish();
+}
+
+/* The skip release block, every tick while a present fast-forward, a
+ * --skip-to-area target or a --skip-to-cutscene target is armed. Presents
+ * resume (openpete_skip_present_until_level clears) on the playable edge
+ * (target_released). The area and cutscene lines carry the words their
+ * modules read back at release. openpete_skip_failsafe_vbls() after the
+ * first check is the fail-safe against a never-reached edge; it logs its own
+ * line and re-arms on each game.state 6 (cutscene) entry: a cutscene chain
+ * holds the game out of gameplay for longer than one deadline. The area and
+ * cutscene watches run headless too, where there is no fast-forward, so a
+ * harness reads the same lines. */
 static void skip_release_tick(CPUState* cpu, uint32_t frame_counter) {
     static uint32_t s_prev_state = 0;
     uint32_t state = cpu->read_word(S3_GAME_STATE);
-    int watching = spyro3_area_watching();
-    char eng[64] = "";
-    int playable;
+    char eng[96] = "";
     if (!s_ffwd_deadline || (state == S3_GS_CUTSCENE && s_prev_state != S3_GS_CUTSCENE))
         s_ffwd_deadline = frame_counter + openpete_skip_failsafe_vbls();
     s_prev_state = state;
-    playable = watching
-                   ? spyro3_area_released(cpu, eng, sizeof eng)
-                   : (s_phase == SKIP_PICKED && spyro3_skip_gameplay_live(cpu));
-    if (playable) {
+    if (target_released(cpu, eng, sizeof eng)) {
         fprintf(stderr, "[skip-to-level] level playable — presents resume "
                         "at frame=%u%s\n", (unsigned)frame_counter, eng);
     } else if (frame_counter > s_ffwd_deadline) {
@@ -191,7 +206,7 @@ static void skip_release_tick(CPUState* cpu, uint32_t frame_counter) {
     }
     openpete_skip_present_until_level = 0;
     s_ffwd_deadline = 0;
-    if (watching) spyro3_area_finish();
+    target_finish();
 }
 
 void spyro3_skip_on_tick(CPUState* cpu, uint32_t frame_counter) {
@@ -235,6 +250,7 @@ void spyro3_skip_on_tick(CPUState* cpu, uint32_t frame_counter) {
             s_phase = SKIP_IDLE;
     }
 
-    if (openpete_skip_present_until_level || spyro3_area_watching())
+    if (openpete_skip_present_until_level || spyro3_area_watching() ||
+        spyro3_cutscene_watching())
         skip_release_tick(cpu, frame_counter);
 }
