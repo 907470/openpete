@@ -46,10 +46,18 @@ PALETTE = {
 
 W = H = 16
 
+# The mark per game. Every game currently ships the one mark above; a game
+# gains its own by naming a different grid here.
+GAME_GRIDS = {
+    "spyro-1": GRID,
+    "spyro-2": GRID,
+    "spyro-3": GRID,
+}
 
-def pixels():
+
+def pixels(grid):
     out = []
-    for row in GRID:
+    for row in grid:
         assert len(row) == W
         for ch in row:
             out.append(PALETTE[ch])
@@ -120,11 +128,13 @@ def main() -> int:
     ap.add_argument("--c", type=Path)
     ap.add_argument("--ico", type=Path)
     ap.add_argument("--png", type=Path)
+    ap.add_argument("--game", choices=sorted(GAME_GRIDS), default="spyro-1",
+                    help="which game's mark to emit")
     ap.add_argument("--png-size", type=int, default=256,
                     help="PNG edge in pixels; rounded down to a whole "
                          "multiple of the 16px mark")
     args = ap.parse_args()
-    px = pixels()
+    px = pixels(GAME_GRIDS[args.game])
     if args.c:
         write_c(args.c, px)
     if args.ico:
