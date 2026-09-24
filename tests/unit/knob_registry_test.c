@@ -119,6 +119,8 @@ int    openpete_native_get_texture_mapping(void)   { return s_native_texmap; }
 void   openpete_native_set_texture_mapping(int m)  { s_native_texmap = m ? 1 : 0; }
 int    openpete_native_get_notex(void)             { return 0; }
 void   openpete_native_set_notex(int on)           { (void)on; }
+int    openpete_native_get_wireframe(void)         { return 0; }
+void   openpete_native_set_wireframe(int on)       { (void)on; }
 int    openpete_log_get_format(void)           { return 0; }
 void   openpete_log_set_format(int f)          { (void)f; }
 const char *openpete_log_get_spec(void)        { return ""; }

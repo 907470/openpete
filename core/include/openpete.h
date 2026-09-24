@@ -252,6 +252,12 @@ typedef struct openpete_options {
      * Display-only; native renderer only. Default 0. */
     int dither;
 
+    /* Wireframe view (`--wireframe 0|1`, env OPENPETE_WIREFRAME; the flag
+     * wins). 1 = every 3D scene draw rasterizes as triangle edges coloured
+     * by the gouraud vertex lighting (the NOTEX colouring); the 2D layers
+     * stay filled. Display-only; native renderer only. Default 0. */
+    int wireframe;
+
     /* Reference-renderer raster (`--psycross-native-raster 0|1`). 1 renders the
      * PsyCross scene at the console's own 512x240 display grid rather than a
      * square-pixel 4:3 grid derived from the window height, so a screenshot or

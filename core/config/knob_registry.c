@@ -270,6 +270,17 @@ static int notex_set(knob_desc_t *k, double v) {
     return 0;
 }
 
+/* Live getter (queued like notex): wireframe view. */
+static double wireframe_get(const knob_desc_t *k) {
+    (void)k;
+    return openpete_native_get_wireframe();
+}
+static int wireframe_set(knob_desc_t *k, double v) {
+    (void)k;
+    openpete_native_set_wireframe(v != 0.0);
+    return 0;
+}
+
 /* Live getter: the O-menu DITHER row moves the same renderer flag. */
 static double dither_get(const knob_desc_t *k) {
     KNOB_LIVE_OR_STORED(k);
@@ -730,6 +741,17 @@ static const knob_desc_t g_builtin[] = {
       "Applying re-bakes every scene pipeline (one-time hitch). Display-only.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       notex_get, notex_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    { "wireframe", "Wireframe (lighting)", "Display", "--wireframe", "OPENPETE_WIREFRAME",
+      "Debug view: draw every 3D scene triangle as its three edges, coloured "
+      "by the gouraud vertex lighting (textures replaced by neutral grey, as "
+      "in the untextured view), so the terrain subdivision shows as drawn. "
+      "Depth-tested: a line hides the lines behind it, not the faces. HUD and "
+      "menus stay filled. Falls back to the filled untextured view on a GPU "
+      "without line rasterization. Applying re-bakes every scene pipeline "
+      "(one-time hitch). Display-only.",
+      KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
+      wireframe_get, wireframe_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "dither", "Dither (15-bit)", "Display", "--dither", NULL,
       "PS1 15-bit colour: quantize the 3D scene to RGB555 with the GPU's 4x4 "

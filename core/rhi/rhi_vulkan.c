@@ -228,6 +228,7 @@ struct rhi_device {
                                    * device selection (pick_depth_format). */
     bool           has_depth_bias_clamp; /* depthBiasClamp feature enabled */
     bool           has_shader_float64;   /* shaderFloat64 feature enabled  */
+    bool           has_fill_non_solid;   /* fillModeNonSolid feature enabled */
     VkExtent2D     sc_extent;
     uint32_t       sc_count;
     VkImage        sc_images[RHI_MAX_SC_IMAGES];
@@ -791,6 +792,10 @@ static bool pick_physical_and_device(rhi_device *dev)
      * terrain cache simply stays disabled without it. */
     enable.shaderFloat64 = supported.shaderFloat64;
     dev->has_shader_float64 = (supported.shaderFloat64 == VK_TRUE);
+    /* fillModeNonSolid: VK_POLYGON_MODE_LINE for the wireframe view
+     * (rhi_set_wireframe); without it that view falls back to filled. */
+    enable.fillModeNonSolid = supported.fillModeNonSolid;
+    dev->has_fill_non_solid = (supported.fillModeNonSolid == VK_TRUE);
     /* Optional display-timing pair. present_id tags each present with a
      * monotonically increasing id; present_wait blocks until the present
      * carrying that id has actually been DISPLAYED. Together they are the only
@@ -3044,6 +3049,11 @@ bool rhi_device_has_float64(const rhi_device *dev)
     return dev ? dev->has_shader_float64 : false;
 }
 
+bool rhi_device_has_fill_non_solid(const rhi_device *dev)
+{
+    return dev ? dev->has_fill_non_solid : false;
+}
+
 /* ------------------------------------------------------------------ */
 /* Buffers                                                            */
 /* ------------------------------------------------------------------ */
@@ -4462,6 +4472,38 @@ void rhi_set_affine_uv(int on) { s_vs_affine_uv = on ? VK_TRUE : VK_FALSE; }
 static VkBool32 s_fs_notex = VK_FALSE;
 void rhi_set_notex(int on) { s_fs_notex = on ? VK_TRUE : VK_FALSE; }
 
+/* Wireframe view (rhi.h rhi_set_wireframe): the scene pipelines rasterize
+ * as lines and bake NOTEX on. Captured at pipeline creation like the
+ * specialization constants, so a live change rebuilds every pipeline in
+ * place (rhi_rebuild_pipelines); there is no second pipeline set. */
+static bool s_wireframe = false;
+void rhi_set_wireframe(int on) { s_wireframe = on != 0; }
+
+/* A scene draw under the wireframe view: depth-tested, or marked
+ * wire_scene; a colour-write-off pass that keeps the stored depth (the
+ * pre-pass into the sampled opaque depth, the portal aperture mask) stays
+ * filled so its coverage stays whole-face. */
+static bool pipeline_wire(const rhi_pipeline_desc *desc)
+{
+    if (!s_wireframe || desc->postfx) return false;
+    if (desc->wire_scene) return true;
+    return desc->depth_test && (!desc->color_write_off || desc->depth_overwrite);
+}
+
+static VkPolygonMode pipeline_polygon_mode(const rhi_device *dev,
+                                           const rhi_pipeline_desc *desc)
+{
+    return (pipeline_wire(desc) && dev->has_fill_non_solid)
+               ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
+}
+
+/* Spec constant 2 per pipeline: the global NOTEX view, or the wireframe
+ * view's lighting colour on a wired pipeline. */
+static VkBool32 pipeline_notex(const rhi_pipeline_desc *desc)
+{
+    return (s_fs_notex || pipeline_wire(desc)) ? VK_TRUE : VK_FALSE;
+}
+
 /* Fragment-stage specialization constant 3 (`MOBY_TRUESCOPE`): scopes the
  * key-contest's moby og-key yields by the covering fragment's own TRUE
  * view-Z. Default 1 — og's pull+push OT compounding reads as
@@ -4616,7 +4658,7 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
     };
     /* Constant 5 (`STP_SELECT`) is per pipeline, from its desc: the texel STP
      * selection of psx_scene.frag (rhi_pipeline_desc.texel_stp_select). */
-    VkBool32 vsSpecData[6] = { s_vs_depth_affine, s_vs_affine_uv, s_fs_notex,
+    VkBool32 vsSpecData[6] = { s_vs_depth_affine, s_vs_affine_uv, pipeline_notex(desc),
                                s_fs_moby_truescope, s_fs_slot_contest,
                                (VkBool32)desc->texel_stp_select };
     VkSpecializationInfo vsSpec = {
@@ -4679,7 +4721,7 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
     };
     VkPipelineRasterizationStateCreateInfo rs = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-        .polygonMode = VK_POLYGON_MODE_FILL,
+        .polygonMode = pipeline_polygon_mode(dev, desc),
         .cullMode = VK_CULL_MODE_NONE,
         .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
         /* Decal pipelines (desc->depth_bias) enable the hardware polygon

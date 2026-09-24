@@ -258,6 +258,9 @@ bool        rhi_device_is_software(const rhi_device *dev);
 /* shaderFloat64 enabled on this device (the retained-terrain vertex stage
  * needs fp64 to mirror the CPU walk's double math bit-for-bit). */
 bool        rhi_device_has_float64(const rhi_device *dev);
+/* fillModeNonSolid enabled on this device: pipelines may rasterize with
+ * VK_POLYGON_MODE_LINE (the wireframe view, rhi_set_wireframe). */
+bool        rhi_device_has_fill_non_solid(const rhi_device *dev);
 
 /* Read the offscreen color target into a host RGBA8 buffer (byte order
  * R,G,B,A, alpha forced opaque), for screenshots. Call after a rendered
@@ -618,6 +621,12 @@ typedef struct {
                                  * the previous corners at 13..15) and no
                                  * per-vertex binding. Draw with
                                  * rhi_draw_instanced.                        */
+    bool           wire_scene;  /* a depth_test=false draw that belongs to
+                                 * the 3D scene (the shadow decals, whose
+                                 * fragment stage owns occlusion): the
+                                 * wireframe view lines it like the
+                                 * depth-tested scene pipelines. The 2D
+                                 * layers leave it false and stay filled.     */
 } rhi_pipeline_desc;
 
 /* Host-visible vertex buffer (map-and-memcpy updates).
@@ -694,6 +703,22 @@ void          rhi_set_affine_uv(int on);
  * real texel shapes. Applied to pipelines created after this call; live
  * toggle via rhi_rebuild_pipelines. Default 0. */
 void          rhi_set_notex(int on);
+
+/* Wireframe view: every scene pipeline rasterizes its triangles as their
+ * three edges (VK_POLYGON_MODE_LINE, line width 1) and carries the NOTEX
+ * specialization, so each edge is coloured by the interpolated gouraud
+ * vertex colour. A scene pipeline is one that tests depth, or one marked
+ * wire_scene; a colour-write-off pass that does not overwrite depth (the
+ * opaque-depth pre-pass, the portal aperture mask) stays filled, so the
+ * occlusion grid, the decals' occlusion test and the aperture stencil keep
+ * whole-face coverage. Depth and stencil state is unchanged: a line pixel
+ * tests and writes depth like the fill it replaces, so a line is hidden
+ * only by a nearer line (the decals, whose fragment stage samples the
+ * filled pre-pass depth, also by nearer faces). On a device without
+ * fillModeNonSolid the pipelines stay filled and only the NOTEX colouring
+ * applies. Applied to pipelines created after this call; live toggle via
+ * rhi_rebuild_pipelines. Default 0. */
+void          rhi_set_wireframe(int on);
 
 /* Key-contest scoping (fragment spec-constant 3): moby og-key yields
  * additionally require the key to beat the covering fragment's own TRUE

@@ -1098,6 +1098,8 @@ static int s_texmap_affine  = 0;
 static int s_notex          = 0;   /* untextured lighting view (spec-const 2) */
 static int s_notex_pending  = 0;
 static int s_texmap_pending = 0;
+static int s_wireframe         = 0;   /* line-mode scene pipelines + NOTEX colour */
+static int s_wireframe_pending = 0;
 
 /* --vertex-precision integer: which draw layers get the PSX integer-grid vertex
  * snap. The 3D-world-projected layers wobbled on hardware (the GTE stored screen
@@ -3024,6 +3026,18 @@ static void blend_family_create(rhi_device* dev, const rhi_pipeline_desc* base,
     if (!ok) blend_family_destroy(dev, fam, nsel);
 }
 
+/* Log the wireframe view's raster mode: line pipelines, or the filled
+ * NOTEX fallback on a device without fillModeNonSolid. */
+static void wireframe_report(const rhi_device *dev)
+{
+    if (!s_wireframe) return;
+    if (rhi_device_has_fill_non_solid(dev))
+        OPL_INFO_F("native", "%s", "wireframe: scene pipelines draw triangle edges (line mode)");
+    else
+        OPL_WARN_F("native", "%s", "wireframe: device lacks fillModeNonSolid; "
+                                   "drawing the filled NOTEX view instead");
+}
+
 int openpete_native_render_init(const openpete_options_t *opts, int win_w, int win_h)
 {
     if (!opts)
@@ -3085,6 +3099,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         if (s_notex)
             OPL_INFO_F("native", "%s", "notex: untextured lighting view ON");
     }
+    s_wireframe = s_wireframe_pending = (opts->wireframe != 0);
+    rhi_set_wireframe(s_wireframe);
 
     /* Render aspect from --aspect (W/H); 0 → AUTO (follow the window shape,
      * filling it live on resize). >0 fixes the Hor+ amount + letterbox/
@@ -3312,7 +3328,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline_desc gouraud_sub_desc = {
         .vert_spv = "quad.vert.spv",
         .frag_spv = "shadow_decal.frag.spv",
-        .blend = RHI_BLEND_SUBTRACT, .depth_test = false,
+        .blend = RHI_BLEND_SUBTRACT, .depth_test = false, .wire_scene = true,
         .uses_vram = true, .push_const_size = sizeof(shadow_decal_pc), /* set 0 = opaque_depth */
     };
     /* Fallback for a device whose depth format is not sampleable (the pre-pass
@@ -3485,7 +3501,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline_desc scene_tex_sub_decal_desc = {
         .vert_spv = "shadow_decal_tex.vert.spv",
         .frag_spv = "shadow_decal_tex.frag.spv",
-        .blend = RHI_BLEND_SUBTRACT, .depth_test = false,
+        .blend = RHI_BLEND_SUBTRACT, .depth_test = false, .wire_scene = true,
         .uses_vram = true, .uses_vram2 = true, /* set 0 = opaque_depth, set 1 = VRAM */
         .push_const_size = sizeof(shadow_decal_tex_pc),
     };
@@ -3640,6 +3656,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .blend = RHI_BLEND_ALPHA, .depth_test = false,
         .uses_vram = true, .push_const_size = sizeof(int),
     };
+    wireframe_report(dev);
     rhi_pipeline *blit_pipe    = rhi_create_pipeline(dev, &blit_desc);
     rhi_pipeline *vram_pipe    = rhi_create_pipeline(dev, &vram_desc);
     rhi_pipeline *gouraud_pipe = rhi_create_pipeline(dev, &gouraud_desc);
@@ -9224,7 +9241,7 @@ static bool draw_native_scene(bool full_extent)
                                 .vert_spv = "shadow_decal_tex.vert.spv",
                                 .frag_spv = "shadow_decal_tex.frag.spv",
                                 .blend = RHI_BLEND_SUBTRACT,
-                                .depth_test = false,
+                                .depth_test = false, .wire_scene = true,
                                 .mod_pipeline = true,
                                 .push_const_size = sizeof(shadow_decal_tex_pc),
                             };
@@ -9814,6 +9831,24 @@ void openpete_native_set_notex(int on) {
 }
 
 int openpete_native_get_notex(void) { return s_notex; }
+
+/* Wireframe view — the same queued-rebuild shape as notex. */
+void openpete_native_set_wireframe(int on) {
+    s_wireframe_pending = on ? 1 : 0;
+}
+
+int openpete_native_get_wireframe(void) { return s_wireframe; }
+
+static void wireframe_apply_pending(void) {
+    if (s_wireframe_pending == s_wireframe || !s_nr.dev) return;
+    rhi_set_wireframe(s_wireframe_pending);
+    int fails = rhi_rebuild_pipelines(s_nr.dev);
+    s_wireframe = s_wireframe_pending;
+    OPL_INFO_F("native", "wireframe -> %s (pipelines re-baked)", s_wireframe ? "on" : "off");
+    wireframe_report(s_nr.dev);
+    if (fails)
+        OPL_ERROR_F("native", "wireframe: %d pipeline(s) failed to rebuild (kept previous mode)", fails);
+}
 
 static void notex_apply_pending(void) {
     if (s_notex_pending == s_notex || !s_nr.dev) return;
@@ -12114,6 +12149,7 @@ void openpete_native_render_frame(uint64_t record_pts_us)
      * frame, before any command buffer records against them. No-op normally. */
     texmap_apply_pending();
     notex_apply_pending();
+    wireframe_apply_pending();
     truescope_apply_pending();
 
 
@@ -12214,6 +12250,7 @@ static int render_scene_impl(int slot, int stage, uint64_t record_pts_us)
     rhi_set_present_blocking(s_nr.dev, true);
     texmap_apply_pending();
     notex_apply_pending();
+    wireframe_apply_pending();
     truescope_apply_pending();
     s_ps_slot = sl;
     openpete_mods_material_view_set(&sl->matview);

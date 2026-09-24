@@ -53,6 +53,11 @@ layout(constant_id = 0) const bool DEPTH_AFFINE = false;
  * 128-world ordering-table slot indices and resolves an equal slot to the
  * terrain. Set per game from game_layout.terrain.slot_ot_contest. */
 layout(constant_id = 4) const bool SLOT_CONTEST = false;
+/* Fragment spec-constant 2 (`NOTEX`): the untextured lighting view (and the
+ * wireframe view, which bakes it on): a textured face's texel colour is
+ * replaced by the modulation-neutral grey, so the output is the gouraud
+ * vertex colour; transparent texels still cut out. */
+layout(constant_id = 2) const bool NOTEX = false;
 
 
 uint ter_vram_at(int x, int y) { return texelFetch(u_vram, ivec2(x, y), 0).r; }
@@ -155,6 +160,7 @@ vec4 ter_stock_shade()
             hc = texelFetch(u_hdatlas, ivec2(auv), 0);
         }
         if (hc.a < 0.5) return vec4(0.0);
+        if (NOTEX) return vec4(clamp(col.rgb, 0.0, 1.0), 1.0);
         if ((vHd & 0x10000u) != 0u && g.hd_lad.x != 0.0) {
             float w = DEPTH_AFFINE ? 1.0 / max(1.0 - gl_FragCoord.z, 1e-9)
                                    : 4096.0 * gl_FragCoord.z / max(1.0 - gl_FragCoord.z, 1e-9);
@@ -187,6 +193,7 @@ vec4 ter_stock_shade()
     }
     vec4 c = ter_decode555(p);
     if (c.a == 0.0) return vec4(0.0);
+    if (NOTEX) c.rgb = vec3(128.0 / 255.0);
     /* PSX texture modulation: texel * vertexColour / 128 (clamped). */
     return vec4(clamp(c.rgb * col.rgb * (255.0 / 128.0), 0.0, 1.0), c.a);
 }

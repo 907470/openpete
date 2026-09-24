@@ -234,6 +234,14 @@ int  openpete_native_get_texture_mapping(void);
 void openpete_native_set_notex(int on);
 int  openpete_native_get_notex(void);
 
+/* Wireframe view: every 3D scene draw rasterizes as triangle edges coloured
+ * by the gouraud vertex lighting (the NOTEX colouring); the 2D layers stay
+ * filled. Seeded from --wireframe / OPENPETE_WIREFRAME at init; same
+ * queued-rebuild contract as openpete_native_set_texture_mapping.
+ * Display-only. */
+void openpete_native_set_wireframe(int on);
+int  openpete_native_get_wireframe(void);
+
 /* Terrain candidate-set policy (openpete_terrain_visibility_t): GAME = the
  * game's own visibility verdict, FRUSTUM = every sector whose bounding sphere
  * is inside the displayed frame. Seeded from --terrain-visibility at init; the

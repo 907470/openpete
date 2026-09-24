@@ -607,6 +607,11 @@ static void print_help(const char* display_name, const char* argv0,
         "                             cyclorama,spyro,moby,terrain,shadow,flame,particles,glow,sparkle,\n"
         "                             tracer,transition,portal. Lets a path be\n"
         "                             compared in isolation. Presentation-only; gameplay state unaffected.\n"
+        "  --wireframe 0|1            1 = draw every 3D scene triangle as its three edges, coloured by the\n"
+        "                             vertex lighting (textures replaced by neutral grey, as NOTEX); the\n"
+        "                             HUD and menus stay filled. Shows the terrain subdivision as drawn.\n"
+        "                             Default: env OPENPETE_WIREFRAME, else 0. Native renderer only.\n"
+        "                             Display-only.\n"
         "  --devui-open 0|1           open the dev config overlay (M panel) as soon as it\n"
         "                             initializes instead of waiting for the M key, with the Mods\n"
         "                             list and every mod node expanded once, so an unattended run\n"
@@ -763,6 +768,10 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->raster_quantize = -1;   /* auto: 1x under --vertex-precision integer, else off */
     opts->extract_threads = 0;    /* auto: logical cores / 2, clamped to [1, 8] */
     opts->dither          = 0;    /* --dither 1 for PS1 15-bit colour + hardware dither */
+    /* Wireframe view: OPENPETE_WIREFRAME is the env spelling; --wireframe,
+     * parsed later, wins. */
+    { const char* e = getenv("OPENPETE_WIREFRAME");
+      opts->wireframe = (e && *e && *e != '0'); }
     opts->psycross_native_raster = 0;  /* reference renders on the window-derived square-pixel grid */
     opts->texture_mapping = OPENPETE_TEXTURE_MAPPING_PERSPECTIVE;  /* --texture-mapping affine for the PSX texture swim */
     /* Retained-terrain GPU cache, default ON; --terrain-cache 0 is the kill
@@ -1019,6 +1028,10 @@ static int parse_flag_chain(openpete_options_t* opts, int argc, char** argv,
         } else if (strcmp(a, "--dither") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->dither = (atoi(v) != 0);
+            i++;
+        } else if (strcmp(a, "--wireframe") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->wireframe = (atoi(v) != 0);
             i++;
         } else if (strcmp(a, "--psycross-native-raster") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
