@@ -36,7 +36,7 @@ static const uint32_t k_arena_cap[OPTC_ARENA_COUNT] = {
     /* Poly-anim twins: a level names a handful of anim sectors (<= 256
      * faces each), so these stay small; overflow claims back to the CPU
      * walk like any arena-full. Each also carries a parallel prev buffer
-     * (rhi_terrain_prev, 32 B/vert). */
+     * (rhi_terrain_prev, 40 B/vert). */
     [OPTC_ARENA_A_OPAQUE] = 65536,
     [OPTC_ARENA_A_ALPHA]  = 16384,
     [OPTC_ARENA_A_ADD]    = 16384,
@@ -127,7 +127,7 @@ typedef struct {
     double dof_xy[2];  /* ofx, ofy        */
     double dH[2];      /* H, poly-anim alpha */
     double dnear[2];   /* near-plane view-Z (clip mirror), reserved */
-    double dspare[2];  /* x: H_canon (limit-regime mirrors); y unused — see the 32-byte stride note below */
+    double dspare[2];  /* x: H_canon (limit-regime mirrors); y: env-anim colour alpha */
     int32_t fog[4];    /* fogRefBase, gflags, cullRefS2, 0 */
     float sdv[128][4]; /* per-tile scroll V offsets (lq, hqA, hqB, 0) */
     /* Portal inner-rim cull frames (portal_rim_classify mirror; all fp64).
@@ -222,11 +222,13 @@ static struct {
     rhi_pipeline *pipe_fill;          /* stencil TEST_ZERO                    */
     rhi_pipeline *pipe_prepass;       /* colour-write-off depth-only          */
     rhi_pipeline *pipe_key;           /* og OT-key emit (pass_sel 2)          */
-    /* terrain_anim variants (binding-1 prev twin + vertex-stage lerp); no
-     * anim FILL — poly-anim sectors never backstop-fill. */
+    /* terrain_anim variants (binding-1 prev twin + vertex-stage lerp). */
     rhi_pipeline *pipe_a_world, *pipe_a_world_mark;
     rhi_pipeline *pipe_a_alpha, *pipe_a_add, *pipe_a_sub;
     rhi_pipeline *pipe_a_prepass, *pipe_a_key;
+    rhi_pipeline *pipe_a_fill;        /* anim LP hole-fill: env-anim colour
+                                       * sectors fill, poly-anim sectors do
+                                       * not (their SF_FILLLP stays clear)   */
     /* terrain_near variants (binding-1 member-context twin + the vertex-stage
      * near-plane clip fan). Full set: near sectors carry every draw class. */
     rhi_pipeline *pipe_n_world, *pipe_n_world_mark;
@@ -549,8 +551,10 @@ int openpete_tercache_init(rhi_device *dev)
     s_tc.pipe_prepass = rhi_create_pipeline(dev, &d);
     d = world_desc; d.frag_spv = "terrain_key_cache.frag.spv";
     s_tc.pipe_key = rhi_create_pipeline(dev, &d);
-    /* Poly-anim variants: identical state, the anim vertex stage + the
-     * binding-1 prev twin. No anim fill pipeline by design. */
+    /* Anim variants: identical state, the anim vertex stage + the
+     * binding-1 prev twin. The FILL variant serves the env-anim colour
+     * sectors' LP hole-fill backing; a poly-anim sector never publishes
+     * SF_FILLLP, so the vertex stage kills its LP in that pass. */
     const rhi_pipeline_desc anim_desc = {
         .vert_spv = "terrain_anim.vert.spv", .frag_spv = "terrain.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true,
@@ -571,6 +575,8 @@ int openpete_tercache_init(rhi_device *dev)
     s_tc.pipe_a_prepass = rhi_create_pipeline(dev, &d);
     d = anim_desc; d.frag_spv = "terrain_key_cache.frag.spv";
     s_tc.pipe_a_key = rhi_create_pipeline(dev, &d);
+    d = anim_desc; d.stencil = RHI_STENCIL_TEST_ZERO;
+    s_tc.pipe_a_fill = rhi_create_pipeline(dev, &d);
     /* Near variants: identical state, the clip-fan vertex stage + the
      * binding-1 member-context twin. Includes FILL — near sectors keep the
      * LP hole-fill backing (unlike poly-anim, which is excluded from it). */
@@ -606,7 +612,7 @@ int openpete_tercache_init(rhi_device *dev)
              s_tc.pipe_key &&
              s_tc.pipe_a_world && s_tc.pipe_a_world_mark && s_tc.pipe_a_alpha &&
              s_tc.pipe_a_add && s_tc.pipe_a_sub && s_tc.pipe_a_prepass &&
-             s_tc.pipe_a_key &&
+             s_tc.pipe_a_key && s_tc.pipe_a_fill &&
              s_tc.pipe_n_world && s_tc.pipe_n_world_mark && s_tc.pipe_n_alpha &&
              s_tc.pipe_n_add && s_tc.pipe_n_sub && s_tc.pipe_n_fill &&
              s_tc.pipe_n_prepass && s_tc.pipe_n_key;
@@ -651,6 +657,7 @@ void openpete_tercache_shutdown(rhi_device *dev)
         &s_tc.pipe_sub, &s_tc.pipe_fill, &s_tc.pipe_prepass, &s_tc.pipe_key,
         &s_tc.pipe_a_world, &s_tc.pipe_a_world_mark, &s_tc.pipe_a_alpha,
         &s_tc.pipe_a_add, &s_tc.pipe_a_sub, &s_tc.pipe_a_prepass, &s_tc.pipe_a_key,
+        &s_tc.pipe_a_fill,
         &s_tc.pipe_n_world, &s_tc.pipe_n_world_mark, &s_tc.pipe_n_alpha,
         &s_tc.pipe_n_add, &s_tc.pipe_n_sub, &s_tc.pipe_n_fill, &s_tc.pipe_n_prepass,
         &s_tc.pipe_n_key,
@@ -1171,6 +1178,7 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
     gu->dH[1]      = g->vanim_alpha;   /* poly-anim lerp alpha (anim stage) */
     gu->dnear[0]   = g->nearz;         /* near-plane clip zc (near stage)   */
     gu->dspare[0]  = g->H_canon;       /* canonical H (limit-regime mirrors) */
+    gu->dspare[1]  = g->canim_alpha;   /* env-anim colour lerp alpha (anim stage) */
     gu->fog[0] = g->fog_ref_base;
     gu->fog[1] = (int32_t)g->gflags;
     gu->fog[2] = g->cull_ref_s2;
@@ -1581,6 +1589,8 @@ static void tc_draw_material_passes(int which, const int *buckets, int bn,
         case OPTC_DRAW_FILL:
             if (tc_bind_material(b, 0, 2, s_tc.pipe_fill))
                 tc_draw_arena(OPTC_ARENA_LP,   1, clip);
+            if (tc_bind_material(b, 1, 2, s_tc.pipe_a_fill))
+                tc_draw_arena(OPTC_ARENA_A_LP, 1, clip);
             if (tc_bind_material(b, 2, 2, s_tc.pipe_n_fill))
                 tc_draw_arena(OPTC_ARENA_N_LP, 1, clip);
             break;
@@ -1694,8 +1704,10 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
             tc_draw_anim(s_tc.pipe_cn[TC_CP_SUB], OPTC_ARENA_CN_SUB, 0, clip);
             break;
         case OPTC_DRAW_FILL:
-            /* LP only: poly-anim sectors never backstop-fill, near ones do. */
+            /* LP only: poly-anim sectors never backstop-fill (their
+             * SF_FILLLP is clear), env-anim colour and near ones do. */
             tc_draw_arena(OPTC_ARENA_LP,    1, clip);
+            tc_draw_anim(s_tc.pipe_a_fill, OPTC_ARENA_A_LP, 1, clip);
             tc_draw_anim(s_tc.pipe_n_fill, OPTC_ARENA_N_LP, 1, clip);
             break;
         case OPTC_DRAW_PREPASS:

@@ -49,7 +49,8 @@ enum { ENV_ANIM_NONE = 0, ENV_ANIM_LISTS = 1, ENV_ANIM_ARENA = 2 };
 
 /* What a sub-list rewrites in the sector it names. The terrain decode cache
  * re-reads colours live, so only KIND_VERT makes a cached sector's geometry
- * stale and only KIND_VERT sectors need the prev/cur vertex banks. */
+ * stale and only KIND_VERT sectors need the prev/cur vertex banks; KIND_COLOUR
+ * sectors take the prev/cur colour-word copies the sub-tick colour lerp reads. */
 enum { ENV_ANIM_KIND_VERT = 0, ENV_ANIM_KIND_COLOUR = 1 };
 
 #define ENV_ANIM_SUBLISTS 3
@@ -117,11 +118,14 @@ typedef struct game_layout {
 
         /* Each is {count, pointer to a descriptor-pointer array}; the field
          * is the address of the count and the array pointer follows at +4.
-         * `lp_poly` and `hp_poly` are the ENV_ANIM_LISTS geometry registry;
+         * `lp_poly` and `hp_poly` are the ENV_ANIM_LISTS geometry registry
+         * and `lp_col` and `hp_col` its vertex-colour registry;
          * `scroll` carries the same shape under either form. */
         uint32_t scroll;            /* scrolling-texture descriptors */
         uint32_t lp_poly;           /* LP geometry animations */
         uint32_t hp_poly;           /* HP geometry animations */
+        uint32_t lp_col;            /* LP vertex-colour animations */
+        uint32_t hp_col;            /* HP vertex-colour animations */
 
         /* ENV_ANIM_ARENA. `block_ptr` is the address of the word holding the
          * block base. `live_table` is a byte table indexed by an entry's low

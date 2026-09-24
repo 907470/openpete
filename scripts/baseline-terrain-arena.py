@@ -302,7 +302,7 @@ def census_segments(lines):
     segs = []
     for c in lines:
         if not segs or segs[-1]["gen"] != c["gen"]:
-            segs.append({"gen": c["gen"], "first": list(c["high"]),
+            segs.append({"gen": c["gen"], "level": c["level"], "first": list(c["high"]),
                          "peak": list(c["high"]), "lines": 1})
             continue
         s = segs[-1]
@@ -587,7 +587,9 @@ def print_static_vs_traversal(out_dir=OUT_DIR):
 
 # ---- attract demo ----------------------------------------------------------
 
-def read_union_rows(out_dir=OUT_DIR):
+def read_union_rows(out_dir=OUT_DIR, kinds=None):
+    """level -> per-arena maximum `high` over the level's pose rows, every
+    row kind or only those named in `kinds`."""
     if not os.path.exists(os.path.join(out_dir, "union.tsv")):
         die("no committed union.tsv — run `generate` first")
     per_level = {}
@@ -596,7 +598,8 @@ def read_union_rows(out_dir=OUT_DIR):
         if not os.path.exists(lp):
             continue
         _, r = read_level(lp)
-        per_level[level] = {a: max([r[p].get(a, (0, 0))[0] for p in r] or [0])
+        rows = [p for p in r if kinds is None or p in kinds]
+        per_level[level] = {a: max([r[p].get(a, (0, 0))[0] for p in rows] or [0])
                             for a in ARENAS}
     return per_level
 
@@ -605,6 +608,10 @@ def cmd_demo(out_dir=OUT_DIR):
     work = tempfile.mkdtemp(prefix="terarena-demo-")
     try:
         per_level = read_union_rows(out_dir)
+        # A level's own demand measured without a predecessor in the same
+        # buffers: its static and movie rows, never the demo row this mode
+        # rewrites.
+        own = read_union_rows(out_dir, kinds=("spawn", "topdown", "bk2"))
         p, log, _ = launch(work, "demo", GEN_CAP, DEMO_SHOT_VBL, DEMO_FRAME_LIMIT, [])
         rc = p.wait()
         p._log_file.close()
@@ -636,7 +643,12 @@ def cmd_demo(out_dir=OUT_DIR):
         # The sawtooth. Each segment is one set of buffers; the mark measured
         # first after an edge must sit below the previous segment's peak, or
         # that segment's geometry survived the edge. Arenas the previous
-        # segment never touched carry no claim.
+        # segment never touched carry no claim, and neither does a first mark
+        # the incoming level's own demand covers (its spawn, topdown and bk2
+        # rows): a level whose first sampled walks already bake past the
+        # outgoing level's small peak on an arena that level barely used (the
+        # anim arenas of a level with populated colour lists after one
+        # without) reads above that peak with nothing surviving.
         segs = row["segments"]
         print("  segments (one per buffer generation): %s"
               % ", ".join("gen=%d lines=%d" % (s["gen"], s["lines"]) for s in segs))
@@ -644,7 +656,11 @@ def cmd_demo(out_dir=OUT_DIR):
             bad.append("only %d census segment(s) — the sawtooth is unmeasured" % len(segs))
         for i in range(1, len(segs)):
             prev, cur = segs[i - 1], segs[i]
+            lv = LEVEL_BY_ID.get(cur["level"])
+            bound = own.get(lv, {}) if lv else {}
             for a, name in enumerate(ARENAS):
+                if cur["first"][a] <= bound.get(name, 0):
+                    continue
                 if prev["peak"][a] and cur["first"][a] >= prev["peak"][a]:
                     bad.append("%s: first mark after the edge into gen %d is %d, not below "
                                "gen %d's peak of %d — the outgoing level's geometry survived"

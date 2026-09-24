@@ -4558,12 +4558,13 @@ static const VkVertexInputBindingDescription k_terrain_anim_binds[2] = {
     { .binding = 1, .stride = sizeof(rhi_terrain_prev),
       .inputRate = VK_VERTEX_INPUT_RATE_VERTEX },
 };
-static const VkVertexInputAttributeDescription k_terrain_anim_attrs[13] = {
+static const VkVertexInputAttributeDescription k_terrain_anim_attrs[14] = {
     TERRAIN_VERTEX_ATTRS,
     { .location = 9,  .binding = 1, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_prev, px) },
     { .location = 10, .binding = 1, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_prev, c0x) },
     { .location = 11, .binding = 1, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_prev, c1y) },
     { .location = 12, .binding = 1, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_prev, c2z) },
+    { .location = 13, .binding = 1, .format = VK_FORMAT_R32G32_UINT,       .offset = offsetof(rhi_terrain_prev, rgb_far) },
 };
 /* terrain_near: cur verts at binding 0 + the emitted-tri member context
  * at binding 1 (a parallel array — see rhi_terrain_nearctx). */
@@ -4632,7 +4633,7 @@ static void terrain_vertex_input(const rhi_pipeline_desc *desc,
     } else if (desc->terrain_anim) {
         vi->vertexBindingDescriptionCount = 2;
         vi->pVertexBindingDescriptions = k_terrain_anim_binds;
-        vi->vertexAttributeDescriptionCount = 13;
+        vi->vertexAttributeDescriptionCount = 14;
         vi->pVertexAttributeDescriptions = k_terrain_anim_attrs;
     } else if (desc->terrain_near) {
         vi->vertexBindingDescriptionCount = 2;

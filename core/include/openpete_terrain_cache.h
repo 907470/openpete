@@ -185,6 +185,9 @@ typedef struct {
     double  fogscale;     /* s_fogscale (SZ = fogscale * m3)                   */
     double  vanim_alpha;  /* poly-anim sub-tick lerp alpha (1.0 = canonical /
                            * unpaired build: the anim chunks draw cur exactly) */
+    double  canim_alpha;  /* env-anim colour lerp alpha: the anim chunks'
+                           * previous -> current colour words, 1.0 selects the
+                           * current words (canonical and unpaired builds)     */
     double  nearz;        /* near-plane camera-space view-Z (s_nearz): the
                            * near-variant vertex stage clips against it        */
     int32_t fog_ref_base; /* ENV_LODDIST >> 2                                  */

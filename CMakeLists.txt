@@ -599,6 +599,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # today, and each manifest records why the games left out have no row.
     foreach(_subtick_path_game
             "terrain;spyro-1" "terrain_tanim;spyro-1" "terrain_tanim;spyro-3"
+            "terrain_canim;spyro-1" "terrain_canim;spyro-2"
             "cyclorama;spyro-2" "cyclorama;spyro-3"
             "particles;spyro-1" "particles;spyro-2" "particles;spyro-3"
             "flame;spyro-2" "flame;spyro-3"

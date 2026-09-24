@@ -1,0 +1,18 @@
+# Sub-tick corpus for the terrain env-anim colour path (terrain-canim). Row
+# grammar and what the statistic means: see
+# games/spyro-1/terrain-canim-subtick-corpus.manifest.
+#
+# No movie in this game's corpus visits a level whose colour sub-list is
+# populated: sunrise_spring, sheilas_alp, icy_peak, crystal_islands and
+# spikes_arena name 0 sectors on it. Evening Lake names 5; the row boots it
+# with --skip-to-level and holds a freecam above the lake sectors, where the
+# legs separate by 6438 px at alpha 1, a mean step of 1.18 levels, and the
+# retained cache draws 6 of the animated sectors (the capture under
+# OPENPETE_TERRAIN_CACHE_FORCE=1 is pixel-identical to the walk's).
+#
+# The row reads PARTIAL (alpha 0.5: 0.25 levels from the lerp, ratio 0.42;
+# alpha 0.25 differs in 0 px): the lake's per-tick steps are 1-5 levels per
+# channel, and the lerped words sit on the RGB888 grid the terrain colour path
+# carries, so a 1-level step reads 0 below alpha 0.5 and 1 from it. The row is
+# kept out of the ctest list until that path carries fractional colour.
+evening-lake | 2400 | level=evening_lake pose=36800,70400,40000,0,992

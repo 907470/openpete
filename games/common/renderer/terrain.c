@@ -2000,6 +2000,9 @@ typedef struct {
      * the decoded verts (content hash, not the unconditional per-tick
      * re-decode). */
     uint32_t decodeGen, texGen, vertGen, vertHash;
+    const struct canim* canim;   /* this sector's env-anim colour slot ... */
+    uint32_t canimPres;          /* ... valid while this equals s_vanim_pres
+                                  * (stamped per build by tsc_col_anim_refresh) */
 } tscache_t;
 #define TSC_SLOTS 512
 /* Linear-probe window for lookup, placement, and eviction (must agree
@@ -2485,8 +2488,9 @@ static void tsc_retag_fill(CPUState* cpu, tscache_t* C,
  * game's own animation walkers would touch this tick, whatever form the game
  * stores its registry in (game_layout.env_anim.form).
  *
- * ENV_ANIM_LISTS (Spyro 1): the LP and HP {count, descriptor-pointer array}
- * pairs, each descriptor naming its sector in the u16 at +4.
+ * ENV_ANIM_LISTS (Spyro 1): the LP and HP geometry and colour {count,
+ * descriptor-pointer array} pairs, each descriptor naming its sector in the
+ * u16 at +4.
  * ENV_ANIM_ARENA (Spyro 3): the sub-lists of the block at env+0x1C, each a
  * count word followed by one-word entries whose low byte is the sector index.
  * An arena entry is live only while bit 0 of the liveness byte for that index
@@ -2520,40 +2524,45 @@ static void env_anim_iter_init(env_anim_iter_t* it, CPUState* cpu, uint32_t sect
         it->blk = rd(cpu, game_layout.env_anim.block_ptr);
 }
 
+/* ENV_ANIM_LISTS: open the next located, non-empty {count, pointer} pair of
+ * the four the game walks (LP and HP geometry, LP and HP colour); 0 when all
+ * four are spent. */
+static int env_anim_lists_open(env_anim_iter_t* it) {
+    const uint32_t off[4] = { game_layout.env_anim.lp_poly, game_layout.env_anim.hp_poly,
+                              game_layout.env_anim.lp_col,  game_layout.env_anim.hp_col };
+    while (it->list < 4) {
+        int l = it->list++;
+        if (!off[l]) continue;                       /* list not located */
+        uint32_t cnt  = rd(it->cpu, off[l]);
+        uint32_t base = rd(it->cpu, off[l] + 4);
+        if (!base || cnt == 0 || cnt > ENV_ANIM_COUNT_MAX) continue;
+        it->cnt = cnt; it->base = base; it->k = 0;
+        it->kind = l < 2 ? ENV_ANIM_KIND_VERT : ENV_ANIM_KIND_COLOUR;
+        it->skip_top = 0;
+        return 1;
+    }
+    return 0;
+}
+
 /* Open the next non-empty list; 0 when the registry is exhausted. */
 static int env_anim_iter_open(env_anim_iter_t* it) {
     CPUState* cpu = it->cpu;
-    for (;;) {
-        if (game_layout.env_anim.form == ENV_ANIM_LISTS) {
-            if (it->list >= 2) return 0;
-            uint32_t off = it->list ? game_layout.env_anim.hp_poly
-                                    : game_layout.env_anim.lp_poly;
-            it->list++;
-            if (!off) continue;                      /* list not located */
-            uint32_t cnt  = rd(cpu, off);
-            uint32_t base = rd(cpu, off + 4);
-            if (!base || cnt == 0 || cnt > ENV_ANIM_COUNT_MAX) continue;
-            it->cnt = cnt; it->base = base; it->k = 0;
-            it->kind = ENV_ANIM_KIND_VERT;
-            it->skip_top = 0;
-            return 1;
-        }
-        if (game_layout.env_anim.form == ENV_ANIM_ARENA && it->blk >= 0x80000000u) {
-            if (it->list >= ENV_ANIM_SUBLISTS) return 0;
-            const env_anim_sublist_t* S = &game_layout.env_anim.sub[it->list];
-            it->list++;
-            if (!S->entry_off) continue;             /* unused row */
-            uint32_t hdr = it->blk + S->hdr_off;
-            uint32_t lst = S->indirect ? it->blk + rd(cpu, hdr) : hdr;
-            uint32_t cnt = rd(cpu, lst);
-            if (cnt == 0 || cnt > ENV_ANIM_COUNT_MAX) continue;
-            it->cnt = cnt; it->base = lst + S->entry_off; it->k = 0;
-            it->kind = S->kind;
-            it->skip_top = S->skip_top;
-            return 1;
-        }
-        return 0;
+    if (game_layout.env_anim.form == ENV_ANIM_LISTS) return env_anim_lists_open(it);
+    if (game_layout.env_anim.form != ENV_ANIM_ARENA || it->blk < 0x80000000u) return 0;
+    while (it->list < ENV_ANIM_SUBLISTS) {
+        const env_anim_sublist_t* S = &game_layout.env_anim.sub[it->list];
+        it->list++;
+        if (!S->entry_off) continue;                 /* unused row */
+        uint32_t hdr = it->blk + S->hdr_off;
+        uint32_t lst = S->indirect ? it->blk + rd(cpu, hdr) : hdr;
+        uint32_t cnt = rd(cpu, lst);
+        if (cnt == 0 || cnt > ENV_ANIM_COUNT_MAX) continue;
+        it->cnt = cnt; it->base = lst + S->entry_off; it->k = 0;
+        it->kind = S->kind;
+        it->skip_top = S->skip_top;
+        return 1;
     }
+    return 0;
 }
 
 /* Yield the next animated sector index and what the animation rewrites. */
@@ -2935,6 +2944,212 @@ static void tsc_vert_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t se
     if (s_vdbg && dbg_seen)
         fprintf(stderr, "[vanim-scan f=%u sub=%d on=%d entries=%u desc=%d cached=%d prev=%d filled=%d]\n",
                 openpete_frame, s_vanim_sub, s_vanim_on, dbg_seen, dbg_desc, dbg_cached, dbg_prev, dbg_filled);
+}
+
+/* Colour env-anim sub-tick interpolation. The colour sub-lists (Spyro 1
+ * m_LowColorAnimations / m_HighColorAnimations, the Spyro 2 and Spyro 3 arena
+ * sub-list at block+0x08) rewrite a sector's vertex colour words in place once
+ * per tick: Spyro 1's world draw INTPLs the keyframe pair into them
+ * (r_environment.s:80025D14-80025E58 LP, 80025FD8-80026148 HP near and far),
+ * Spyro 3's func_80021FF4 writes them from the update. Every colour the walk
+ * and the GPU-cache bake read comes from the sector's LP colour array and its
+ * HP near and far arrays, so the mirror keeps a previous-tick and a
+ * current-tick copy of those arrays per animated sector, rolled on the first
+ * canonical build of a VBL (after the game's rewrite).
+ *
+ * The present's colour is canim_lerp(prev, cur, s_canim_a) per word, before
+ * the fog blend. The walk reads it from the slot's host-side `mix` copy,
+ * filled once per build when the alpha is below 1; the GPU cache bakes these
+ * sectors into the anim arenas with the previous words in rhi_terrain_prev
+ * and terrain.vert applies the same lerp at the build's alpha (globals
+ * dspare.y). Both round each channel to nearest on the RGB888 grid the
+ * terrain colour path carries, so walk and cache agree bit for bit, and
+ * alpha 1 selects the current words exactly. A sector whose faces can take
+ * a near subdivide claims to the walk (tgpu_canim_band): the cell and
+ * split-triangle records carry the current near colours alone.
+ * OPENPETE_TERRAIN_CANIM: 1 (default) lerps at the spine's alpha; 0 holds the
+ * previous tick's words at every alpha, the leg the sub-tick harness
+ * differences the default against. */
+#define CANIM_SLOTS 256
+typedef struct canim {
+    uint32_t s;                   /* sector pointer; 0 = free slot */
+    uint32_t lpBase, hpBase;      /* LP colour array; HP near array (far follows) */
+    uint32_t nLp, nHp;            /* words: nLpC; 2 * nHpC */
+    uint32_t* prev; uint32_t* cur;/* nLp + nHp words each */
+    uint32_t* mix;                /* the walk's present colours (alpha < 1) */
+    uint32_t rollPres;            /* s_vanim_pres of the canonical build that rolled it */
+    int havePrev;
+} canim_t;
+static canim_t  s_canim[CANIM_SLOTS];
+static uint32_t s_canim_canon_pres;   /* s_vanim_pres of the last canonical roll */
+static int      s_canim_en = 1;       /* OPENPETE_TERRAIN_CANIM (re-extract only) */
+static double   s_canim_a = 1.0;      /* this build's colour alpha (1 = current words) */
+
+/* The three colour arrays of sector `s`, from its header words +0x10/+0x14
+ * (the same decode tsc_get applies). */
+static void canim_geom(CPUState* cpu, uint32_t s, canim_t* g) {
+    uint32_t w3 = rd(cpu, s + 0x10), w4 = rd(cpu, s + 0x14);
+    g->nLp = (w3 >> 8) & 0xFFu;
+    g->lpBase = s + 0x1Cu + (w3 & 0xFFu) * 4u;
+    g->nHp = ((w4 >> 8) & 0xFFu) * 2u;
+    g->hpBase = s + 0x1Cu + ((w4 >> 24) & 0xFFu) * 4u + (w4 & 0xFFu) * 4u;
+}
+
+static void canim_free(canim_t* A) {
+    free(A->prev); free(A->cur); free(A->mix);
+    memset(A, 0, sizeof(*A));
+}
+
+static canim_t* canim_slot(uint32_t s) {
+    canim_t* freeSlot = NULL;
+    for (int i = 0; i < CANIM_SLOTS; i++) {
+        if (s_canim[i].s == s) return &s_canim[i];
+        if (!s_canim[i].s && !freeSlot) freeSlot = &s_canim[i];
+    }
+    return freeSlot;
+}
+
+static void canim_read(CPUState* cpu, const canim_t* A, uint32_t* out) {
+    for (uint32_t k = 0; k < A->nLp; k++) out[k] = rd(cpu, A->lpBase + k * 4u);
+    for (uint32_t k = 0; k < A->nHp; k++) out[A->nLp + k] = rd(cpu, A->hpBase + k * 4u);
+}
+
+/* Canonical build: prev = the last roll's words, cur = the words in RAM now.
+ * A slot whose header geometry moved (a new level reusing the address)
+ * restarts without a previous tick. */
+static void canim_roll(CPUState* cpu, uint32_t s) {
+    canim_t g; canim_geom(cpu, s, &g);
+    canim_t* A = canim_slot(s);
+    if (!A || A->rollPres == s_vanim_pres) return;   /* table full, or named twice */
+    if (A->s != s || A->lpBase != g.lpBase || A->hpBase != g.hpBase
+        || A->nLp != g.nLp || A->nHp != g.nHp) {
+        canim_free(A);
+        A->s = s; A->lpBase = g.lpBase; A->hpBase = g.hpBase;
+        A->nLp = g.nLp; A->nHp = g.nHp;
+        size_t n = (size_t)(A->nLp + A->nHp);
+        A->prev = (uint32_t*)malloc(sizeof(uint32_t) * (n ? n : 1u));
+        A->cur  = (uint32_t*)malloc(sizeof(uint32_t) * (n ? n : 1u));
+        A->mix  = (uint32_t*)malloc(sizeof(uint32_t) * (n ? n : 1u));
+        if (!A->prev || !A->cur || !A->mix) { canim_free(A); return; }
+    } else {
+        uint32_t* t = A->prev; A->prev = A->cur; A->cur = t;
+        A->havePrev = 1;
+    }
+    canim_read(cpu, A, A->cur);
+    A->rollPres = s_vanim_pres;
+}
+
+/* The widest channel step of one slot's last roll, 0 without a previous tick
+ * (the census's engagement figure). */
+static int canim_maxd(const canim_t* A) {
+    int m = 0;
+    if (!A->havePrev) return 0;
+    for (uint32_t k = 0; k < A->nLp + A->nHp; k++)
+        for (int sh = 0; sh < 24; sh += 8) {
+            int d = abs((int)((A->cur[k] >> sh) & 0xFFu) - (int)((A->prev[k] >> sh) & 0xFFu));
+            if (d > m) m = d;
+        }
+    return m;
+}
+
+/* One colour word at `a` of the interval prev->cur, per channel, rounded to
+ * nearest (terrain.vert canim_col mirrors it). a == 1 selects cur. */
+static uint32_t canim_lerp(uint32_t p, uint32_t c, double a) {
+    if (a == 1.0) return c;
+    uint32_t out = c & 0xFF000000u;
+    for (int sh = 0; sh < 24; sh += 8) {
+        double pv = (double)((p >> sh) & 0xFFu), cv = (double)((c >> sh) & 0xFFu);
+        out |= (uint32_t)(int)(pv + (cv - pv) * a + 0.5) << sh;
+    }
+    return out;
+}
+
+/* The decode-cache slot holding sector `s` (the probe window tsc_get places
+ * it in), NULL when it is not cached. */
+static tscache_t* tsc_find(uint32_t s) {
+    uint32_t h = (((s >> 2) * 2654435761u) >> 14) & (TSC_SLOTS - 1);
+    for (uint32_t w = 0; w < TSC_WINDOW; w++) {
+        tscache_t* W = &s_tsc[(h + w) & (TSC_SLOTS - 1)];
+        if (W->s == s) return W;
+    }
+    return NULL;
+}
+
+/* The colour-anim slot of a decoded sector for this build: stamped by
+ * tsc_col_anim_refresh, and only while its arrays sit where the decode put
+ * them. NULL for every other sector. */
+static const canim_t* tsc_canim(const tscache_t* SC) {
+    const canim_t* A = SC->canimPres == s_vanim_pres ? SC->canim : NULL;
+    if (!A || A->lpBase != SC->lpColBase || A->hpBase != SC->nearBase
+        || A->nLp != (uint32_t)SC->nLpC || A->nHp != 2u * (uint32_t)SC->nHpC) return NULL;
+    return A;
+}
+
+/* The walk's colour source: the slot's `mix` words while this build's alpha
+ * is below 1 and the slot holds a previous tick; NULL = read guest RAM. */
+static const canim_t* tsc_canim_mix(const tscache_t* SC) {
+    const canim_t* A = tsc_canim(SC);
+    return (A && A->havePrev && s_canim_a != 1.0) ? A : NULL;
+}
+
+/* Canonical build: roll every sector the colour sub-lists name, drop the
+ * slots whose sector left them. Returns the count named; *maxd the widest
+ * channel step (census only). */
+static int canim_roll_all(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt,
+                          int census, int* maxd) {
+    env_anim_iter_t it;
+    uint32_t idx; int kind, named = 0;
+    env_anim_iter_init(&it, cpu, sectorCnt);
+    while (sectorPtr && env_anim_iter_next(&it, &idx, &kind)) {
+        uint32_t s = kind == ENV_ANIM_KIND_COLOUR ? rd(cpu, sectorPtr + idx * 4) : 0u;
+        if (!s) continue;
+        canim_roll(cpu, s);
+        named++;
+        const canim_t* A = census ? canim_slot(s) : NULL;
+        int d = (A && A->s == s) ? canim_maxd(A) : 0;
+        if (d > *maxd) *maxd = d;
+    }
+    for (int i = 0; i < CANIM_SLOTS; i++)
+        if (s_canim[i].s && s_canim[i].rollPres != s_vanim_pres) canim_free(&s_canim[i]);
+    s_canim_canon_pres = s_vanim_pres;
+    return named;
+}
+
+/* Every build: stamp each live slot on its decode-cache slot and, while the
+ * alpha is below 1, fill its `mix` words. Returns the slots stamped. */
+static int canim_stamp_all(double a) {
+    int stamped = 0;
+    for (int i = 0; i < CANIM_SLOTS; i++) {
+        canim_t* A = &s_canim[i];
+        if (!A->s || A->rollPres != s_canim_canon_pres) continue;
+        tscache_t* C = tsc_find(A->s);
+        if (!C) continue;
+        C->canim = A; C->canimPres = s_vanim_pres;
+        stamped++;
+        if (a == 1.0 || !A->havePrev) continue;
+        for (uint32_t k = 0; k < A->nLp + A->nHp; k++)
+            A->mix[k] = canim_lerp(A->prev[k], A->cur[k], a);
+    }
+    return stamped;
+}
+
+static void tsc_col_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt) {
+    static int s_cdbg = -1;
+    ENV_FLAG_LATCH(s_cdbg, "OPENPETE_TERRAIN_VANIMDBG");
+    /* One tick can run several canonical builds (a portal preview renders the
+     * environment twice); only the first rolls, so prev stays the last tick. */
+    static unsigned s_roll_frame = 0xFFFFFFFFu;
+    int named = 0, maxd = 0;
+    if (!s_vanim_sub && openpete_frame != s_roll_frame) {
+        named = canim_roll_all(cpu, sectorPtr, sectorCnt, s_cdbg, &maxd);
+        s_roll_frame = openpete_frame;
+    }
+    s_canim_a = (s_vanim_sub && s_vanim_on) ? (s_canim_en ? s_vanim_alpha : 0.0) : 1.0;
+    int stamped = canim_stamp_all(s_canim_a);
+    if (s_cdbg)
+        fprintf(stderr, "[canim f=%u sub=%d on=%d en=%d a=%.3f named=%d stamped=%d maxd=%d]\n",
+                openpete_frame, s_vanim_sub, s_vanim_on, s_canim_en, s_canim_a, named,
+                stamped, maxd);
 }
 
 /* Texture (UV-scroll) env-anim sub-tick interpolation — the artisans waterfall
@@ -3653,8 +3868,9 @@ static double   s_rim_rowmax = 1.0;   /* max ||M row||/4096 — world->view scal
  * draw-class arena — and keeps them valid against the moving-terrain inputs:
  * decodeGen (slot re-decode / reuse), texGen (env texture anim re-decoded
  * texmats + the HQ sibling records), vertGen (geometry env anim content
- * change), and a per-VBL colour-array hash (terrain colours are read live by
- * the CPU walk; gameplay can only change them at tick boundaries). Everything
+ * change), a per-VBL colour-array hash (terrain colours are read live by the
+ * CPU walk; gameplay can only change them at tick boundaries), and the
+ * env-anim colour roll (tgpu_canim_stale). Everything
  * baked here is exactly what the CPU face walk reads per present; the
  * camera-dependent selections happen in terrain.vert.
  *
@@ -3713,6 +3929,9 @@ typedef struct {
                                        * the pin sends to the cells, so a
                                        * toggle of the pin or a moved
                                        * s_hq_differ verdict re-bakes */
+    uint8_t  bakeCanim;               /* baked as an env-anim colour sector
+                                       * (anim arenas, previous colours)      */
+    uint32_t canimRoll;               /* its colour slot's rollPres at build */
     uint32_t animRoll;                /* poly-anim: SC->vrollPres at build — a
                                        * new canonical roll re-bakes (prev,cur)
                                        * even when the content hash is stable
@@ -3751,6 +3970,8 @@ static long s_tgcl_near, s_tgcl_portal, s_tgcl_anim, s_tgcl_scroll,
                                          * blended-cover (portal = their sum
                                          * plus claim-all + no-refine claims) */
 static int  s_tgpu_secs_walk, s_tgpu_claims_walk;
+static int  s_tgpu_canim_walk;   /* env-anim colour sectors drawn from the cache (census) */
+static int  s_tgpu_canim_mv;     /* ... of them, those whose last roll moved a colour */
 
 /* Active portal-sky planes for the per-sector portal claim. Of the feed's
  * portal semantics, only two ever DROP a CPU-fed terrain tri — the inner-rim
@@ -3824,8 +4045,24 @@ static uint32_t tgpu_pin_key(void) {
  * records of a face the pin does not send to the cells (tgpu_bake_cells4),
  * so a sector drawn from its plain chunks never holds such a face the
  * classifier can route to tier 4. */
+/* An env-anim colour sector draws from the cache only while no face of it
+ * can take a near subdivide: the 2x2 carries previous colours, but the cell
+ * and split-triangle records carry the current near colours alone and have
+ * no vertex input left for more. A face is near only while its four corner
+ * SZ3 (hqscale * m3) sum below near_band (face_is_near_canonical), so a
+ * sector whose every vertex sits at or beyond near_band / (4 * hqscale)
+ * view-Z has none; under the always-HQ pin every face is near. */
+static int tgpu_canim_band(const tscache_t* SC, const int M[3][3], double camx,
+                           double camy, double camz, double oc3) {
+    if (hq_pin_active()) return 1;
+    const double zb = (double)game_layout.terrain.near_band / (4.0 * tface_hqscale());
+    const double nearBound = s_tgpu_l3 * ((double)SC->radius + 16.0);
+    return oc3 - nearBound < zb && !tgpu_near_box_clear(SC, M, camx, camy, camz, zb);
+}
+
 static int tgpu_near_reach(const tscache_t* SC, const int M[3][3], double camx,
                            double camy, double camz, double oc3) {
+    if (tsc_canim(SC)) return tgpu_canim_band(SC, M, camx, camy, camz, oc3);
     const double nearBound = s_tgpu_l3 * ((double)SC->radius + 16.0);
     if (oc3 - nearBound < 16.0 &&
         (SC->polyanim || !tgpu_near_box_clear(SC, M, camx, camy, camz, 16.0)))
@@ -4037,6 +4274,7 @@ typedef struct {
     uint16_t flags16;
 } tgpu_face_t;
 typedef struct { tgpu_p4 p, pp; uint32_t rgb_far, rgb_near;
+                 uint32_t prgb_far, prgb_near;   /* anim arenas: previous-tick colours */
                  uint8_t uf, vf, un, vn, role; } tgpu_corner_t;
 
 static void tgpu_fill_vert(rhi_terrain_vertex* v, const tgpu_face_t* F,
@@ -4072,6 +4310,8 @@ static int tgpu_emit_tri(tgpu_buf* b, const tgpu_face_t* F,
             pr.c1x = F->pc[1].x; pr.c1y = F->pc[1].y; pr.c1z = F->pc[1].z;
             pr.c2x = F->pc[2].x; pr.c2y = F->pc[2].y; pr.c2z = F->pc[2].z;
             pr.c3x = F->pc[3].x; pr.c3y = F->pc[3].y; pr.c3z = F->pc[3].z;
+            pr.rgb_far  = 0xFF000000u | (cs[k].prgb_far  & 0xFFFFFFu);
+            pr.rgb_near = 0xFF000000u | (cs[k].prgb_near & 0xFFFFFFu);
         }
         rhi_terrain_vertex v;
         tgpu_fill_vert(&v, F, &cs[k], tri2, 0);
@@ -4183,6 +4423,10 @@ static int tgpu_bake_hq2(CPUState* cpu, tgpu_buf* buf, int ab, int with_var,
     TR.rgb_far = TR.rgb_near = nearC[1];
     BL.rgb_far = BL.rgb_near = nearC[3];
     BR.rgb_far = BR.rgb_near = nearC[2];
+    TL.prgb_far = TL.prgb_near = k[0].prgb_near;
+    TR.prgb_far = TR.prgb_near = k[1].prgb_near;
+    BL.prgb_far = BL.prgb_near = k[3].prgb_near;
+    BR.prgb_far = BR.prgb_near = k[2].prgb_near;
     tgpu_corner_t mT, mB, mL, mR, Cc;
     memset(&mT, 0, sizeof(mT)); memset(&mB, 0, sizeof(mB));
     memset(&mL, 0, sizeof(mL)); memset(&mR, 0, sizeof(mR));
@@ -4201,6 +4445,11 @@ static int tgpu_bake_hq2(CPUState* cpu, tgpu_buf* buf, int ab, int with_var,
     mT.rgb_near = mT.rgb_far; mB.rgb_near = mB.rgb_far;
     mL.rgb_near = mL.rgb_far; mR.rgb_near = mR.rgb_far;
     Cc.rgb_near = Cc.rgb_far;
+    mT.prgb_far = mT.prgb_near = tgpu_rgb_mid(TL.prgb_far, TR.prgb_far);
+    mB.prgb_far = mB.prgb_near = tgpu_rgb_mid(BL.prgb_far, BR.prgb_far);
+    mL.prgb_far = mL.prgb_near = tgpu_rgb_mid(TL.prgb_far, BL.prgb_far);
+    mR.prgb_far = mR.prgb_near = tgpu_rgb_mid(TR.prgb_far, BR.prgb_far);
+    Cc.prgb_far = Cc.prgb_near = tgpu_rgb_mid(mT.prgb_far, mB.prgb_far);
     tgpu_corner_t sq[4][4] = {
         { TL, mT, mL, Cc },   /* SQ0 [TL,TR,BL,BR] order */
         { mT, TR, Cc, mR },
@@ -4523,6 +4772,30 @@ static int tgpu_upload_chunks(tgpu_slot_t* S, const tgpu_buf* buf) {
     return 0;
 }
 
+/* A sector bakes into the anim arenas: poly-anim, or on the colour lists. */
+static int tgpu_sector_anim(const tscache_t* SC) {
+    return SC->polyanim != 0 || tsc_canim(SC) != NULL;
+}
+/* The anim arenas' buffers carry the parallel previous-tick records. */
+static void tgpu_buf_anim(tgpu_buf* buf, int anim) {
+    for (int a = OPTC_ARENA_ANIM_BASE; anim && a < OPTC_ARENA_NEAR_BASE; a++)
+        buf[a].anim = 1;
+}
+
+/* The previous-tick words of four colour indices (byte offsets) in one of a
+ * colour-anim slot's arrays (0 LP, 1 HP near, 2 HP far); without a slot, or
+ * before its first roll, the current words `cur`. */
+static void tgpu_prev_cols(const canim_t* CA, int arr, uint32_t c0, uint32_t c1,
+                           uint32_t c2, uint32_t c3, const uint32_t cur[4],
+                           uint32_t out[4]) {
+    const uint32_t co[4] = { c0, c1, c2, c3 };
+    if (!CA || !CA->havePrev) { memcpy(out, cur, sizeof(uint32_t) * 4u); return; }
+    const uint32_t base = arr == 0 ? 0u : CA->nLp + (arr == 2 ? CA->nHp / 2u : 0u);
+    const uint32_t n    = arr == 0 ? CA->nLp : CA->nHp / 2u;
+    for (int q = 0; q < 4; q++)
+        out[q] = (co[q] / 4u < n) ? (CA->prev[base + co[q] / 4u] & 0xFFFFFFu) : cur[q];
+}
+
 /* Build all of one sector's chunks. Returns 0 on success, 1 arena-full,
  * 2 scroll-anim claim (the flat/HQ UV-scroll rides a fractional per-present
  * accumulator lerp the mesh cannot bake), 5 = HD-fold unbakeable face (see
@@ -4546,7 +4819,11 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
      * prev->cur at the build's alpha). Snap rule mirror: a sector with no
      * prev bank yet, or whose banks jumped (keyframe reset — the CPU skips
      * the lerp fill and draws cur), bakes prev == cur. */
-    const int anim = SC->polyanim != 0;
+    /* Env-anim colour sectors bake there too, their previous-tick colours
+     * in the same record (tsc_canim; positions carry prev == cur). */
+    const canim_t* CA = tsc_canim(SC);
+    const int anim = tgpu_sector_anim(SC);
+    const int canim_only = CA != NULL && !SC->polyanim;
     const int ab = anim ? (int)OPTC_ARENA_ANIM_BASE : 0;
     /* Near-variant chunks are never poly-anim: those sectors keep the CPU
      * claim, so the two twin arena families are mutually exclusive (one
@@ -4559,9 +4836,8 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
         buf[a].rsz = OPTC_ARENA_IS_CELL_ANIM(a) ? sizeof(rhi_terrain_cell_anim)
                                                 : sizeof(rhi_terrain_cell);
     int vsnap = 1;
-    if (anim) {
-        for (int a = OPTC_ARENA_ANIM_BASE; a < OPTC_ARENA_NEAR_BASE; a++)
-            buf[a].anim = 1;
+    tgpu_buf_anim(buf, anim);
+    if (SC->polyanim) {
         const int nLp = (SC->lpV && SC->lpVprev) ? SC->nLpV : 0;
         const int nHp = (SC->hpV && SC->hpVprev) ? SC->nHpV : 0;
         const int havePrev = (!SC->lpV || SC->lpVprev) && (!SC->hpV || SC->hpVprev);
@@ -4596,11 +4872,13 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
         rc[1] = rd(cpu, SC->lpColBase + F->c1) & 0xFFFFFFu;
         rc[2] = rd(cpu, SC->lpColBase + F->c2) & 0xFFFFFFu;
         rc[3] = F->quad ? (rd(cpu, SC->lpColBase + F->c3) & 0xFFFFFFu) : 0u;
+        uint32_t prc[4];
+        tgpu_prev_cols(CA, 0, F->c0, F->c1, F->c2, F->quad ? F->c3 : F->c2, rc, prc);
         {   /* authored-data corrections (unpainted vertex colours) — the
              * walk applies these per emit; bake them (static per level). */
             uint32_t fixrgb;
             if (lp_artfix_lookup(cpu, sec_index, f, &fixrgb))
-                rc[0] = rc[1] = rc[2] = rc[3] = fixrgb;
+                rc[0] = rc[1] = rc[2] = rc[3] = prc[0] = prc[1] = prc[2] = prc[3] = fixrgb;
         }
         tgpu_corner_t k[4];
         memset(k, 0, sizeof(k));
@@ -4610,6 +4888,7 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
             k[q].pp = (anim && !vsnap) ? tgpu_p4_of(&SC->lpVprev[vi[q]]) : k[q].p;
             T.pc[q] = k[q].pp;
             k[q].rgb_far = k[q].rgb_near = rc[q];
+            k[q].prgb_far = k[q].prgb_near = prc[q];
         }
         /* flags16 bit 14 = blended face: the vertex stage's portal
          * transparent-cover drop keys on it (raw mat blend, not the draw
@@ -4660,12 +4939,14 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
         if (F->tb != -1)
             T.flags16 = (uint16_t)((((uint32_t)F->tb & 0x7Fu) << 5) | 0x1000u);
         if (F->mat.blend) T.flags16 |= 0x4000u;   /* cover-drop key (bit 14) */
-        uint32_t nearC[4], farC[4];
+        uint32_t nearC[4], farC[4], pnearC[4], pfarC[4];
         const uint16_t co[4] = { F->c0, F->c1, F->c2, F->c3 };
         for (int q = 0; q < 4; q++) {
             nearC[q] = rd(cpu, SC->nearBase + co[q]) & 0xFFFFFFu;
             farC[q]  = rd(cpu, SC->farBase  + co[q]) & 0xFFFFFFu;
         }
+        tgpu_prev_cols(CA, 1, co[0], co[1], co[2], co[3], nearC, pnearC);
+        tgpu_prev_cols(CA, 2, co[0], co[1], co[2], co[3], farC, pfarC);
         const int vi[4] = { F->i0, F->i1, F->i2, F->i3 };
         tgpu_corner_t k[4];
         memset(k, 0, sizeof(k));
@@ -4674,6 +4955,7 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
             k[q].pp = (anim && !vsnap) ? tgpu_p4_of(&SC->hpVprev[vi[q]]) : k[q].p;
             T.pc[q] = k[q].pp;
             k[q].rgb_near = nearC[q]; k[q].rgb_far = farC[q];
+            k[q].prgb_near = pnearC[q]; k[q].prgb_far = pfarC[q];
         }
         int da = tgpu_arena_of(&F->mat);
         if (F->quad) {
@@ -4718,8 +5000,12 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
             }
             if (tgpu_emit_face_tri(buf, da, ab, with_var, &T, k[0], k[1], k[2], 0) != 0) goto done;
         }
-        if (hq_elig && tgpu_bake_near(cpu, buf, ab, with_var, pin4, &T, k, nearC, F, hqTable,
-                                      hp_bucket, hdfold, &fail) != 0)
+        /* An env-anim colour sector is drawn from the cache only while none
+         * of its faces can be near (tgpu_canim_band), so it bakes no near
+         * variant: the 2x2, the cells and the split-triangle records would
+         * occupy the anim arenas and never draw. */
+        if (hq_elig && !canim_only && tgpu_bake_near(cpu, buf, ab, with_var, pin4, &T, k, nearC,
+                                                     F, hqTable, hp_bucket, hdfold, &fail) != 0)
             goto done;
     }
 
@@ -4764,6 +5050,28 @@ static int tgpu_pack_scan(const tscache_t* SC) {
         }
     }
     return 0;
+}
+
+/* Census (OPENPETE_TERRAIN_GPU_CENSUS): a GPU-owned sector on the colour
+ * lists, and whether its last roll moved a colour (the engagement of the
+ * vertex stage's colour lerp). */
+static void tgpu_canim_census(const tscache_t* SC, int on) {
+    const canim_t* CA = on ? tsc_canim(SC) : NULL;
+    s_tgpu_canim_walk += (CA != NULL);
+    s_tgpu_canim_mv += (CA != NULL && canim_maxd(CA) > 0);
+}
+
+/* An env-anim colour sector's bake is stale when the sector joined or left
+ * the colour lists since, or its slot rolled a new (prev, cur) pair. */
+static void tgpu_canim_latch(tgpu_slot_t* T, const tscache_t* SC) {
+    const canim_t* CA = tsc_canim(SC);
+    T->bakeCanim = (uint8_t)(CA != NULL);
+    T->canimRoll = CA ? CA->rollPres : 0u;
+}
+static int tgpu_canim_stale(const tgpu_slot_t* T, const tscache_t* SC) {
+    const canim_t* CA = tsc_canim(SC);
+    if ((CA != NULL) != (T->bakeCanim != 0)) return 1;
+    return CA && T->canimRoll != CA->rollPres;
 }
 
 /* Validate-or-rebuild a sector's chunks. Returns 0 when the GPU may draw it
@@ -4833,6 +5141,10 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
               * its last step forever. Sub-tick builds don't roll, so this
               * stays clean between ticks. */
              || (SC->polyanim && T->animRoll != SC->vrollPres)
+             /* env-anim colour: joining or leaving the colour lists moves
+              * the sector between arena families, and each roll re-bakes
+              * its (prev, cur) colour pair for the same reason. */
+             || tgpu_canim_stale(T, SC)
              /* HD fold: the pack registry moved since this bake (files
               * uploaded/cleared) — re-intern the sector's entries; a
               * fold-claimed sector retries when the fold state moved
@@ -4865,6 +5177,7 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
         T->s = SC->s;
         T->decodeGen = SC->decodeGen; T->texGen = SC->texGen; T->vertGen = SC->vertGen;
         T->animRoll = SC->vrollPres;
+        tgpu_canim_latch(T, SC);
         T->bakeTpGen = T->tpGen;
         T->bakeHdEpoch = openpete_native_hdfold_epoch();
         T->bakeAllocEpoch = openpete_tercache_alloc_epoch();
@@ -5116,6 +5429,27 @@ static void tn_near_face(tn_wctx* W, CPUState* cpu, const lvert* sv, const tsfac
     W->dbg_spike++;   /* near/HQ cells subdivided */
 }
 
+/* A pass's colour arrays as host pointers: guest RAM through the sub-tick
+ * view, or an env-anim colour sector's lerped words between ticks (`CA`,
+ * tsc_canim_mix). The LP pass reads one array, the HP pass the near and far
+ * pair; the other pointers are NULL. */
+static void tn_col_ptrs(const canim_t* CA, int passLP, uint32_t lpColBase,
+                        uint32_t nearBase, uint32_t farBase, const uint8_t** h_lp,
+                        const uint8_t** h_near, const uint8_t** h_far) {
+    *h_lp = *h_near = *h_far = NULL;
+    if (passLP) {
+        *h_lp = CA ? (const uint8_t*)CA->mix : (const uint8_t*)openpete_subtick_host_ptr(lpColBase);
+        return;
+    }
+    if (CA) {
+        *h_near = (const uint8_t*)(CA->mix + CA->nLp);
+        *h_far  = (const uint8_t*)(CA->mix + CA->nLp + CA->nHp / 2u);
+        return;
+    }
+    *h_near = (const uint8_t*)openpete_subtick_host_ptr(nearBase);
+    *h_far  = (const uint8_t*)openpete_subtick_host_ptr(farBase);
+}
+
 /* One sector's face walk (all three passes), emitting into W. Extracted
  * verbatim from the build loop; the aliases below stand in for what used to
  * be the enclosing function's locals. */
@@ -5305,7 +5639,8 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                 | (drawLP    ? OPTC_SF_DRAWLP    : 0u)
                 | (lpFarOnly ? OPTC_SF_LPFARONLY : 0u)
                 | (lpGapOnly ? OPTC_SF_LPGAPONLY : 0u)
-                | (fillLP    ? OPTC_SF_FILLLP    : 0u)
+                /* the walk never fills a poly-anim sector (stale LP bank) */
+                | (fillLP && !SC->polyanim ? OPTC_SF_FILLLP : 0u)
                 | (secInLOD  ? OPTC_SF_SECINLOD  : 0u)
                 /* own == 3: near-variant present — draw the clip-fan chunks
                  * and kill the plain ones (the two sets are exclusive). */
@@ -5338,6 +5673,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
         float sd_bx0 = 1e18f, sd_by0 = 1e18f, sd_bx1 = -1e18f, sd_by1 = -1e18f;
         int sd_vfront = 0, sd_nv = 0, sd_nf = 0;
 
+      const canim_t* CAm = tsc_canim_mix(SC);   /* env-anim colours, sub-tick */
       for (int pass = 0; pass < 3; pass++) {
         int passFill = (pass == 2);               /* LP hole-fill backing */
         int passLP = (pass != 1);                 /* 0 = WORLD LP (behind HP), 1 = HP, 2 = fill LP */
@@ -5374,9 +5710,8 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
         }
         if (!cverts || !cfaces) continue;                  /* alloc failure: skip pass */
         /* Colour bases → host pointers (fallback: the cpu read path). */
-        const uint8_t* h_lp   = passLP ? (const uint8_t*)openpete_subtick_host_ptr(lpColBase) : NULL;
-        const uint8_t* h_near = passLP ? NULL : (const uint8_t*)openpete_subtick_host_ptr(nearBase);
-        const uint8_t* h_far  = passLP ? NULL : (const uint8_t*)openpete_subtick_host_ptr(farBase);
+        const uint8_t *h_lp, *h_near, *h_far;
+        tn_col_ptrs(CAm, passLP, lpColBase, nearBase, farBase, &h_lp, &h_near, &h_far);
         int host_col = passLP ? (h_lp != NULL) : (h_near != NULL && h_far != NULL);
         W->emit_noHP = passLP;     /* tag emitted tris with this pass's tier */
         W->emit_fill = passFill;   /* fill pass -> WORLD_FILL category in the feed */
@@ -6439,6 +6774,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     uint32_t sectorPtr = tenv_rd(cpu, game_layout.env.sector_ptr);
     uint32_t sectorCnt = tenv_rd(cpu, game_layout.env.sector_count);
     tsc_vert_anim_refresh(cpu, sectorPtr, sectorCnt);  /* geometry env-anim liveness */
+    tsc_col_anim_refresh(cpu, sectorPtr, sectorCnt);   /* colour env-anim (sub-tick) */
     /* Visible-sector index set: canonical 4:3 verdict (D_800771C8) at native
      * aspect; occlusion-group candidate set in widescreen (terrain_vislist). */
     static uint16_t visidx[1024];
@@ -6563,6 +6899,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         /* Poly-anim lerp alpha: sub-tick paired builds carry the spine's
          * alpha; canonical (and unpaired) builds draw cur exactly. */
         tcg.vanim_alpha = (s_vanim_sub && s_vanim_on) ? s_vanim_alpha : 1.0;
+        tcg.canim_alpha = s_canim_a;   /* env-anim colour lerp alpha (1 = current) */
         tcg.nearz = s_nearz;   /* near-variant clip plane (clip_push_tri) */
         /* Per-tile UV-scroll offsets for this build (zero for a tile that is
          * not on the scroller list). The retained cache and the CPU walk read
@@ -6620,7 +6957,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     /* Per-walk counters reset AFTER the retry label: an eviction-conflict
      * serial retry replaces the aborted walk's numbers instead of summing
      * with them (summed lines inflated census rows exactly 2x). */
-    s_tgpu_secs_walk = 0; s_tgpu_claims_walk = 0;
+    s_tgpu_secs_walk = 0; s_tgpu_claims_walk = 0; s_tgpu_canim_walk = 0; s_tgpu_canim_mv = 0;
     if (s_cen) {
         cen0[0] = s_tgcl_near;   cen0[1] = s_tgcl_portal;
         cen0[2] = s_tgcl_anim;   cen0[3] = s_tgcl_scroll;
@@ -6830,7 +7167,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                  * and its straddle waivers, so the sector still renders from
                  * the GPU. Poly-anim sectors keep the claim (no anim x near
                  * twin), as does the lever-off A/B. */
-                if (!SC->polyanim && tgpu_nearvar_on()) {
+                if (!SC->polyanim && !tsc_canim(SC) && tgpu_nearvar_on()) {
                     want_near = 1;
                 } else {
                     claim = 1; s_tgcl_near++;
@@ -6876,6 +7213,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                     s_tgpu_own[vi] = want_near ? 3 : 1;
                     if (want_near) s_tgpu_nvsecs++;
                     s_tgpu_secs++; s_tgpu_secs_walk++;
+                    tgpu_canim_census(SC, s_cen);
                 } else {
                     claim = 1;
                     if (r == 2) s_tgcl_scroll++;
@@ -7023,7 +7361,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             fprintf(stderr, "[tgpu-cen f=%u] sub=%d secs=%d claims=%d "
                     "near=%ld portal=%ld anim=%ld scroll=%ld fill=%ld "
                     "arena=%ld col=%ld slot=%ld tp=%ld nearb=%ld "
-                    "nodraw=%ld prim=%ld pcov=%ld\n",
+                    "nodraw=%ld prim=%ld pcov=%ld canim=%d canim_moved=%d\n",
                     openpete_frame, s_vanim_sub,
                     s_tgpu_secs_walk, s_tgpu_claims_walk,
                     s_tgcl_near - cen0[0], s_tgcl_portal - cen0[1],
@@ -7032,7 +7370,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                     s_tgcl_colour - cen0[6], s_tgcl_slot - cen0[7],
                     s_tgcl_texpack - cen0[8],
                     s_tgcl_nearb - cen0[9], s_tgcl_nodraw - cen0[10],
-                    s_tgcl_prim - cen0[11], s_tgcl_pcov - cen0[12]);
+                    s_tgcl_prim - cen0[11], s_tgcl_pcov - cen0[12], s_tgpu_canim_walk, s_tgpu_canim_mv);
         tgpu_census();
         if (op_prof_on()) {   /* the claim-ratchet metric, per present */
             static int id_secs = -1, id_claims = -1;
@@ -8838,10 +9176,12 @@ void terrain_reextract(CPUState* cpu, double alpha, int interp_on) {
      * mask is clear for RP_TERRAIN on those frames, so we skip. */
     if (!render_path_canon_drawn(RP_TERRAIN)) return;
     /* OPENPETE_TERRAIN_VANIM=0: snap poly-anim verts to cur (A/B)
-     * OPENPETE_TERRAIN_TANIM=0: snap UV-scroll texture anim to cur (A/B) */
-    static tn_envvbl_t vanim_c, tanim_c;
+     * OPENPETE_TERRAIN_TANIM=0: snap UV-scroll texture anim to cur (A/B)
+     * OPENPETE_TERRAIN_CANIM=0: hold env-anim colours at the previous tick (census) */
+    static tn_envvbl_t vanim_c, tanim_c, canim_c;
     int s_vanim_en = tn_env_vbl(&vanim_c, "OPENPETE_TERRAIN_VANIM", 1, 1);
     s_tanim_en = tn_env_vbl(&tanim_c, "OPENPETE_TERRAIN_TANIM", 1, 1);
+    s_canim_en = tn_env_vbl(&canim_c, "OPENPETE_TERRAIN_CANIM", 1, 1);
     s_vanim_sub = 1; s_vanim_on = interp_on && s_vanim_en; s_vanim_alpha = alpha;
     terrain_build(cpu, s_terrain_saved_occGroup);
     terrain_feed_native(cpu);

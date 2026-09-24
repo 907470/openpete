@@ -18,9 +18,9 @@ spawn	N_ALPHA	0	0
 spawn	N_ADD	996	0
 spawn	N_SUB	0	0
 spawn	N_LP	282	0
-spawn	CN_OPAQUE	143	0
+spawn	CN_OPAQUE	3	0
 spawn	CN_ALPHA	0	0
-spawn	CN_ADD	30	0
+spawn	CN_ADD	0	0
 spawn	CN_SUB	0	0
 spawn	CA_OPAQUE	132	0
 spawn	CA_ALPHA	0	0
@@ -31,11 +31,11 @@ topdown	ALPHA	0	0
 topdown	ADD	31812	0
 topdown	SUB	0	0
 topdown	LP	31527	0
-topdown	A_OPAQUE	52956	0
+topdown	A_OPAQUE	43776	0
 topdown	A_ALPHA	0	0
 topdown	A_ADD	3582	0
 topdown	A_SUB	0	0
-topdown	A_LP	3240	0
+topdown	A_LP	2250	0
 topdown	N_OPAQUE	0	0
 topdown	N_ALPHA	0	0
 topdown	N_ADD	0	0
@@ -45,7 +45,7 @@ topdown	CN_OPAQUE	0	0
 topdown	CN_ALPHA	0	0
 topdown	CN_ADD	0	0
 topdown	CN_SUB	0	0
-topdown	CA_OPAQUE	4741	0
+topdown	CA_OPAQUE	620	0
 topdown	CA_ALPHA	0	0
-topdown	CA_ADD	276	0
+topdown	CA_ADD	45	0
 topdown	CA_SUB	0	0

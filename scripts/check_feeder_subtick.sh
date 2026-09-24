@@ -38,6 +38,8 @@
 #   terrain        OPENPETE_TERRAIN_VANIM=1 against =0, the interp statistic
 #   terrain-tanim  OPENPETE_TERRAIN_TANIM=1 against =0, the interp statistic;
 #                  both read games/<slug>/terrain-subtick-corpus.manifest
+#   terrain-canim  OPENPETE_TERRAIN_CANIM=1 against =0, the interp statistic
+#                  referenced at alpha 1, games/<slug>/terrain-canim-subtick-corpus.manifest
 #
 # The interp statistic (STAT=interp) is for a knob that suppresses a channel's
 # sub-tick interpolation rather than its feed. The canonical presents are then
@@ -47,6 +49,22 @@
 # tick's own instant), above the floor at alpha 0 (the knob moved something
 # this cell can see), and a channel that holds its tick state renders the same
 # present in both legs at every alpha and the count collapses to zero.
+#
+# terrain-canim is the interp statistic referenced at alpha 1 (INTERP_REF=1).
+# Its knob at 0 does not snap the channel to the newest tick: it holds the
+# env-anim vertex colours at the previous tick's words at every alpha, which is
+# the lerp's alpha-0 end. The legs then differ by alpha of the colour step, so
+# the roles of the ends swap: alpha 0 is the identity leg (no pixel may
+# differ), alpha 1 the engagement leg (the whole step, above the floor). A
+# colour lerp changes how much each pixel differs rather than how many differ,
+# so the cell's statistic is the summed per-pixel mean channel difference S(a):
+# the step is S(1) over the alpha-1 pixel count in levels, a lerped channel
+# reads S(a) = a*S(1) and a channel holding the newest tick reads S(a) = S(1).
+# The residual |S(a) - a*S(1)| over the hold distance (1-a)*S(1) is the ratio
+# the mask statistic classifies by: LERPED at or below 0.25, SNAP at or above
+# 0.75. `own` is S(0) in levels, the alpha-0 distance from the previous tick.
+# Pass: alpha 0 differs in no pixel, `own` under 10% of the step, and every
+# judged interior alpha LERPED within `ctol` levels of the lerp (default 1.5).
 #
 # Row authoring: --row '<bk2>|<V>|<keys>' runs one row from the command line
 # instead of the manifest, and OPENPETE_FEEDER_PROBE=1 with it captures the two
@@ -180,7 +198,10 @@
 # <source> is a movie under games/<slug>/bk2, or any name not ending in .bk2,
 # which is the plain boot — the title screen and the attract demo, which need
 # no input — replayed with no movie, the same movie-less row form the
-# presentation corpus takes.
+# presentation corpus takes. A movie-less row may name `level=<name>` (booted
+# with --skip-to-level) and `pose=<x>,<y>,<z>,<yaw>,<pitch>` (a --freecam-pose
+# held once the level is live), which is how a row reaches a level no movie in
+# the corpus visits.
 # V is the canonical VBL whose primitives the intermediate present replays;
 # V-2 opens the interval and the intermediate present is captured at V+1. A
 # tick spans two VBLs, so V must be the first VBL of its tick: V+1 otherwise
@@ -258,6 +279,7 @@ done
 # would be meaningless. A path whose feed paints a surface rather than a blob
 # carries a cap sized for that surface.
 LEG_ENV_ON=(); LEG_ENV_OFF=(); LEG_ARGS_ON=(); LEG_ARGS_OFF=(); SUPPRESS=; STAT=mask
+INTERP_REF=0
 MASK_CAP=20000
 case "$PATHNAME" in
     glint)  LEG_ENV_ON=(OPENPETE_GLINT=2); LEG_ENV_OFF=(OPENPETE_GLINT=0)
@@ -297,6 +319,11 @@ case "$PATHNAME" in
             LEG_ARGS_OFF=(--render-paths terrain)
             STAT=interp; MASK_CAP=320000
             ALPHAS=(0 0.25 0.5 0.75 1); JUDGE_DEF=0.5,1;;
+    terrain-canim) LEG_ENV_ON=(OPENPETE_TERRAIN_CANIM=1); LEG_ENV_OFF=(OPENPETE_TERRAIN_CANIM=0)
+            LEG_ARGS_ON=(--render-paths terrain)
+            LEG_ARGS_OFF=(--render-paths terrain)
+            STAT=interp; INTERP_REF=1; MASK_CAP=320000
+            ALPHAS=(0 0.25 0.5 0.75 1); JUDGE_DEF=0,0.5;;
     # The cyclorama has no suppress knob; the two legs are a render-path
     # selection with and without it, terrain in both so the horizon the
     # cyclorama is seen against is identical between them. The feed covers the
@@ -409,6 +436,14 @@ while IFS= read -r line; do
         MOVIE_ARG=(--bk2 "$MOVIE")
     else
         MOVIE_ARG=()
+        for kv in $keys; do
+            case "$kv" in
+                level=*) MOVIE_ARG+=(--skip-to-level "${kv#level=}");;
+                pose=*)  IFS=',' read -r px py pz pyaw ppitch <<<"${kv#pose=}"
+                         MOVIE_ARG+=(--freecam-pose
+                                     "pos=($px, $py, $pz) yaw=$pyaw pitch=$ppitch");;
+            esac
+        done
     fi
     rows=$((rows + 1))
     # The capture directories carry V as well as the movie: a manifest may hold
@@ -499,13 +534,14 @@ while IFS= read -r line; do
 
     if [[ "$STAT" == interp ]]; then
     python3 - "$TAG" "$JUDGE_DEF" "$GAME" "$bk2" "$V" "$keys" "$OUT/$tag" "$prev" "$mid" \
-             "$SUPPRESS" "$MASK_CAP" ${ALPHAS[@]+"${ALPHAS[@]}"} <<'PYEOF' || fail=1
+             "$SUPPRESS" "$MASK_CAP" "$INTERP_REF" ${ALPHAS[@]+"${ALPHAS[@]}"} <<'PYEOF' || fail=1
 import sys
 from PIL import Image
 
 tag, judge_def, game, bk2, V, keys, base, prev, mid, suppress = sys.argv[1:11]
 mask_cap = int(sys.argv[11])
-alphas = sys.argv[12:]
+ref1 = sys.argv[12] == '1'
+alphas = sys.argv[13:]
 V, prev, mid = int(V), int(prev), int(mid)
 
 opts, rects = {}, []
@@ -585,6 +621,39 @@ for rect in rects:
         rows_out.append("  alpha=%s%s px=%d meanD=%.2f centroid=%s"
                         % (a, "" if a in judged else " (reported)", n, m,
                            "-" if c is None else "(%.1f,%.1f)" % c))
+    if ref1:
+        # Referenced at alpha 1: alpha 0 is the identity leg, alpha 1 the
+        # engagement leg, and the statistic is the summed colour difference.
+        if "0" in d and n0 > IDENT_PX:
+            bad.append("identity: alpha 0 differs in %d px, above the %.0f bound" % (n0, IDENT_PX))
+        if n1 < px_floor:
+            vacuous.append("%s: alpha 1 differs in %d px, below the %.0f floor: the knob "
+                           "moved nothing this cell can see" % (name, n1, px_floor))
+            continue
+        cells += 1
+        S = dict((a, d[a][0] * d[a][2]) for a in alphas)
+        step = S["1"] / n1
+        own = S.get("0", 0.0) / n1
+        rows_out.append("  step=%.2f levels over %d px, own=%.2f (%.1f%% of the step)"
+                        % (step, n1, own, 100.0 * own / step if step else 0.0))
+        ctol = float(opts.get('ctol', '1.5'))
+        for a in alphas:
+            av = float(a)
+            if av <= 0.0 or av >= 1.0:
+                continue
+            dist = abs(S[a] - av * S["1"]) / n1
+            hold = (1.0 - av) * S["1"] / n1
+            r = dist / hold if hold else 0.0
+            vd = "LERPED" if r <= 0.25 else ("SNAP" if r >= 0.75 else "PARTIAL")
+            rows_out.append("  alpha=%s dist=%.2f hold=%.2f ratio=%.3f %s"
+                            % (a, dist, hold, r, vd))
+            if a in judged and (vd != "LERPED" or dist >= ctol):
+                bad.append("alpha %s: %s, %.2f levels from the lerp (bound %.2f)"
+                           % (a, vd, dist, ctol))
+        if "0" in judged and own >= 0.1 * step:
+            bad.append("own: alpha 0 stands %.2f levels from the previous tick, "
+                       "above 10%% of the %.2f step" % (own, step))
+        continue
     # The identity leg: at alpha 1 the interpolation term is zero, so the two
     # legs render the same present and no pixel may differ.
     if "1" in d and n1 > IDENT_PX:

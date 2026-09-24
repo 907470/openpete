@@ -390,9 +390,10 @@ typedef struct rhi_terrain_vertex {   /* tagged: forward-declared by the
     int16_t  c3x, c3y, c3z;
 } rhi_terrain_vertex;           /* 64 bytes */
 
-/* Poly-anim chunks only: previous-tick twin of the animated fields, a
- * PARALLEL array in the anim arenas' prev buffer (vertex binding 1). The
- * vertex stage lerps prev->cur in fp64 at the build's sub-tick alpha —
+/* Anim chunks only (poly-anim and env-anim colour sectors): previous-tick
+ * twin of the animated fields, a PARALLEL array in the anim arenas' prev
+ * buffer (vertex binding 1). The vertex stage lerps prev->cur in fp64 at the
+ * build's sub-tick alpha —
  * position for flat/LP verts, parent corners for everything corner-derived
  * (HQ nodes, fog ladder, NCLIP) — mirroring tsc_vanim_lerp's
  * float(p + (c-p)*a) cast exactly. A sector whose banks jumped (keyframe
@@ -403,7 +404,12 @@ typedef struct rhi_terrain_prev {
     int16_t  c1x, c1y, c1z;
     int16_t  c2x, c2y, c2z;
     int16_t  c3x, c3y, c3z;
-} rhi_terrain_prev;             /* 32 bytes */
+    uint32_t rgb_far, rgb_near; /* prev far / near colour words (R,G,B,A):
+                                 * the vertex stage lerps them to the current
+                                 * colours at the globals' colour alpha
+                                 * (canim_lerp mirror); == current on a sector
+                                 * whose colours do not animate            */
+} rhi_terrain_prev;             /* 40 bytes */
 
 /* Near-variant chunks only: the OTHER two emitted-tri members' attribute
  * context, a parallel array in the near arenas' ctx buffer (vertex binding

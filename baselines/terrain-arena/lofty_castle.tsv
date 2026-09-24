@@ -18,7 +18,7 @@ spawn	N_ALPHA	0	0
 spawn	N_ADD	0	0
 spawn	N_SUB	0	0
 spawn	N_LP	3312	0
-spawn	CN_OPAQUE	3378	0
+spawn	CN_OPAQUE	534	0
 spawn	CN_ALPHA	0	0
 spawn	CN_ADD	0	0
 spawn	CN_SUB	0	0

@@ -50,6 +50,14 @@ const game_layout_t game_layout = {
         .scroll  = G_ENVANIM + offsetof(EnvironmentAnimations, m_ScrollingTextureCount),
         .lp_poly = G_ENVANIM + offsetof(EnvironmentAnimations, m_LowPolyAnimationCount),
         .hp_poly = G_ENVANIM + offsetof(EnvironmentAnimations, m_HighPolyAnimationCount),
+        /* Walked by func_8002A6FC (r_environment.s:8002AAE8 LP, 8002AC88 HP),
+         * which only advances each descriptor's keyframe and stamps its list
+         * index into sector+0x19 / +0x1B; the world draw then INTPLs or
+         * copies the keyframe colours into the sector's LP colour array
+         * (r_environment.s:80025D14-80025E58) and HP colour arrays
+         * (80025FD0 onward) in place. */
+        .lp_col  = G_ENVANIM + offsetof(EnvironmentAnimations, m_LowColorAnimationCount),
+        .hp_col  = G_ENVANIM + offsetof(EnvironmentAnimations, m_HighColorAnimationCount),
     },
     .visibility = {
         .base = D_VISIBILITY,

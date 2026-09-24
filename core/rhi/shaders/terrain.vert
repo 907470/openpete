@@ -54,6 +54,9 @@ layout(location = 9)  in ivec4 inPrevPos; /* prev xyz (x4 fixed), pad     */
 layout(location = 10) in ivec4 inPrevC0;
 layout(location = 11) in ivec4 inPrevC1;
 layout(location = 12) in ivec4 inPrevC2;
+/* Previous-tick far and near colour words (R,G,B,A bytes): equal to the
+ * current colours except on an env-anim colour sector. */
+layout(location = 13) in uvec2 inPrevCol;
 #endif
 #if defined(TERRAIN_NEAR) && !defined(TERRAIN_CELLS)
 /* Near-variant chunks (binding 1, rhi_terrain_nearctx): the OTHER two
@@ -155,7 +158,9 @@ layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
     dvec2 dH;       /* x: H (projection distance), y: poly-anim sub-tick
                      * alpha (1.0 on canonical builds; TERRAIN_ANIM only)   */
     dvec2 dnear;    /* x: near-plane view-Z (TERRAIN_NEAR clip mirror)      */
-    dvec2 dspare;   /* x: H_canon, the GTE's H (limit-regime mirrors); y unused */
+    dvec2 dspare;   /* x: H_canon, the GTE's H (limit-regime mirrors);
+                     * y: env-anim colour alpha (1.0 selects the current
+                     * colours; TERRAIN_ANIM only)                          */
     ivec4 fog;      /* x: fogRefBase, y: gflags, z: cullRefS2, w: unused  */
     vec4  sdv[128]; /* per-tile scroll V offsets (lq, hqA, hqB, 0)        */
     /* Portal inner-rim cull frames (portal_rim_classify mirror, fp64).
@@ -477,6 +482,21 @@ int dpcs_ch(int c8, int fc12, int ir0) {
  * baked raw colour, and an active replacement pack regrades LP. This is the
  * colour the feed resolves per corner BEFORE any near-plane clip, so the
  * clip mirror interpolates its output rather than re-fogging a cut vertex. */
+#if defined(TERRAIN_ANIM) && !defined(TERRAIN_CELLS)
+/* Env-anim colour lerp (canim_lerp mirror): one colour word at the build's
+ * colour alpha of the interval prev -> cur, per channel, rounded to nearest
+ * onto the 8-bit grid before the fog blend. Alpha 1 selects cur. */
+vec3 canim_col(uint prev, vec3 cur)
+{
+    double a = g.dspare.y;
+    if (a == 1.0lf) return cur;
+    ivec3 c = ivec3(round(cur * 255.0));
+    ivec3 p = ivec3(int(prev & 0xFFu), int((prev >> 8) & 0xFFu), int((prev >> 16) & 0xFFu));
+    precise dvec3 v = dvec3(p) + dvec3(c - p) * a + 0.5lf;
+    return vec3(ivec3(v)) / 255.0;
+}
+#endif
+
 vec3 terrain_col(double mz, vec3 cfar, vec3 cnear, bool doFog, int fogRef,
                  double fogscale, bool grade, vec4 gp, vec4 gq)
 {
@@ -1624,8 +1644,14 @@ void main()
 #ifndef TERRAIN_NEAR
     /* ---- colour: GTE-exact DPCS fog (flat HP); baked raw otherwise. The
      * near variant resolved this per member before its clip. ---- */
-    vec4 col = vec4(terrain_col(mo.z, op_unorm8(inColFar.rgb),
-                                op_unorm8(inColNear.rgb),
+#if defined(TERRAIN_ANIM) && !defined(TERRAIN_CELLS)
+    vec3 cfar8  = canim_col(inPrevCol.x, op_unorm8(inColFar.rgb));
+    vec3 cnear8 = canim_col(inPrevCol.y, op_unorm8(inColNear.rgb));
+#else
+    vec3 cfar8  = op_unorm8(inColFar.rgb);
+    vec3 cnear8 = op_unorm8(inColNear.rgb);
+#endif
+    vec4 col = vec4(terrain_col(mo.z, cfar8, cnear8,
                                 !lp && !hqv, fogRef, fogscale,
                                 lp && (sf & SF_LPGRADE) != 0u,
                                 s.sec[slot].gp, s.sec[slot].gq), 1.0);

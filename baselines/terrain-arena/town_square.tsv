@@ -19,7 +19,7 @@ spawn	N_ALPHA	0	0
 spawn	N_ADD	0	0
 spawn	N_SUB	0	0
 spawn	N_LP	948	0
-spawn	CN_OPAQUE	695	0
+spawn	CN_OPAQUE	193	0
 spawn	CN_ALPHA	0	0
 spawn	CN_ADD	0	0
 spawn	CN_SUB	0	0
@@ -65,11 +65,11 @@ bk2	N_ALPHA	0	0
 bk2	N_ADD	0	0
 bk2	N_SUB	0	0
 bk2	N_LP	11346	0
-bk2	CN_OPAQUE	3953	0
+bk2	CN_OPAQUE	951	0
 bk2	CN_ALPHA	0	0
 bk2	CN_ADD	0	0
 bk2	CN_SUB	0	0
-bk2	CA_OPAQUE	5148	0
+bk2	CA_OPAQUE	942	0
 bk2	CA_ALPHA	0	0
 bk2	CA_ADD	0	0
 bk2	CA_SUB	0	0

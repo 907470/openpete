@@ -1,0 +1,19 @@
+# Sub-tick corpus for the terrain env-anim colour path (terrain-canim): the
+# rows check_feeder_subtick.sh --path terrain-canim replays. Same row form as
+# terrain-subtick-corpus.manifest: <source> | VBL | optional keys.
+#
+# OPENPETE_TERRAIN_CANIM=0 holds the env-anim vertex colours at the previous
+# tick's words at every alpha, so under a lerp the legs are identical at
+# alpha 0 and differ by the whole colour step at alpha 1 (the path's reference
+# leg); a channel that shows the newest tick's colours differs by the whole
+# step at every alpha.
+#
+# dark-hollow-shadow: Dark Hollow names 20 sectors on its LP and HP colour
+# lists; at V=2700 the animated sectors in frame separate the legs by 13276 px
+# at alpha 1, a mean step of 0.63 levels. They stand inside the near band, so
+# the CPU walk draws them with the retained cache on as well. Rows on
+# dark-hollow-shadow-2 (2068), beast_makers_wall (1828),
+# peace-keepers-terrain-culling (3230), dream-weavers-crash (1656) and
+# dark-hollow-shadow at 1620 differ in 0 px at every alpha: no animated colour
+# face that the colours reach stands in those frames.
+dark-hollow-shadow.bk2 | 2700 |
