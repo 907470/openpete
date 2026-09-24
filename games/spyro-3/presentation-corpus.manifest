@@ -42,6 +42,10 @@ icy-peak-reflective-mirror|1900|150||1900,1921,1950,1961,2000,2001
 # Spyro's reflection on the ice (VBL 1856), before the row above starts; the
 # player colour-block swap (P11t.10) is measured here.
 icy-peak-reflective-mirror-1856|1856|200||1856
+# icy-peak-reflective-mirror-1864: the same movie where the player shadow fan,
+# cast onto the reflective floor's plane, lands on the ice ramp that stands
+# above that plane; the decal's raised-occluder test is measured here.
+icy-peak-reflective-mirror-1864|1864|200||1864,1870
 
 # sunrise-spring-camera-swing holds R2 from VBL 1500 so the camera orbits the
 # player while two animated-kind mobys and the simple-kind gems, baskets and
