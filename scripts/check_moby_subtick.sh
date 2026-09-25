@@ -42,8 +42,9 @@
 #
 # Input: games/<slug>/moby-subtick-corpus.manifest, rows
 #   <source> | <lo>-<hi> | <key>=<value> ... [| <exclusion>]...
-# where <source> is a movie under games/<slug>/bk2 or `pose:<level>:<pose>`,
-# which skips to the level and places the freecam (the pose's spaces are kept).
+# where <source> is a movie under games/<slug>/bk2, `pose:<level>:<pose>`,
+# which skips to the level and places the freecam (the pose's spaces are kept),
+# or `pose:<level>:<area>:<pose>`, which skips to the integer sub-area.
 # The span is the intermediate-capture VBLs, two apart; the [moby-anim] and
 # [moby-screen] traces name each present by the VBL they print (the trace
 # VBL), which is what the exclusions use. Keys:
@@ -51,6 +52,11 @@
 #   class=<n>   floor on the defect-class legs measured
 #   hold=<n>    floor on the held (prevkf=2) legs measured
 #   mirror=<n>  floor on the facing-reversal legs measured
+#   turn=<n>    floor on the turn legs measured; the key adds a replay at
+#               alpha 0.5 and the turn bin: no leg whose euler steps (not
+#               held, not a facing reversal, centroid step at least 0.5 px)
+#               shows a channel drawn at the current tick through the
+#               interval (see TURN_MIN_PX below)
 #   dmax=<px>   optional: every leg's D at or below this bound
 # An exclusion is a known-open leg, named with its reason:
 #   leg <vbl> <moby> <reason>    left out of both checks
@@ -74,6 +80,8 @@
 #                  mismatches=<n> snaps=<n> excluded=<n> verdict=PASS|FAIL
 #
 # Usage: scripts/check_moby_subtick.sh [--game SLUG] [--build-dir=DIR]
+#                                      [--filter=SUBSTR]
+# --filter runs only the rows whose source contains SUBSTR.
 # Exit 0 PASS, 1 FAIL or VACUOUS, 64 SKIP (binary, disc, bk2, manifest or
 # python3 missing).
 set -u
@@ -81,9 +89,11 @@ cd "$(dirname "$0")/.."
 # shellcheck source=scripts/lib/game.sh
 source scripts/lib/game.sh
 
+FILTER=""
 for a in "$@"; do
     case "$a" in
         --build-dir=*) PG_BUILD_DIR="${a#--build-dir=}";;
+        --filter=*) FILTER="${a#--filter=}";;
     esac
 done
 
@@ -112,7 +122,7 @@ run_alpha() {
     find "$dir" -maxdepth 1 -name '*.png' -delete
     rm -f "$log" "$log.part"
     PG_CAPTURE_ENV=(OPENPETE_MOBY_POSTRACE_CLS=0xFFFF
-                    OPENPETE_INTERMEDIATE_ALPHA="$alpha")
+                    OPENPETE_INTERMEDIATE_ALPHA="$alpha" "${ROW_ENV[@]}")
     PG_CAPTURE_TIMEOUT=600
     local i n=${#vbls[@]}
     for ((i = 0; i < n; i += CHUNK)); do
@@ -135,17 +145,33 @@ while IFS= read -r line; do
     line="${line%%#*}"
     [[ -n "${line// /}" ]] || continue
     IFS='|' read -r src span keys excl <<<"$line"
+    [[ -z "$FILTER" || "$src" == *"$FILTER"* ]] || continue
     span="${span// /}"
     # A row names either a movie or a freecam pose: `<bk2>` replays the movie,
     # `pose:<level>:<pose>` skips to the level and places the freecam, whose
-    # internal spaces survive the trim. A pose row's tag is the level plus a
-    # short hash of the pose, the same slug form the freecam corpus uses.
+    # internal spaces survive the trim; `pose:<level>:<area>:<pose>`, with an
+    # integer area, skips to that sub-area (--skip-to-area) instead. A pose
+    # row's tag is the level (and area) plus a short hash of the pose, the same
+    # slug form the freecam corpus uses.
+    area_row=0
     if [[ "$src" == *pose:* ]]; then
         src="${src#"${src%%[![:space:]]*}"}"; src="${src%"${src##*[![:space:]]}"}"
         rest="${src#pose:}"; level="${rest%%:*}"; pose="${rest#*:}"
-        SRC=(--skip-to-level "$level" --freecam-pose "$pose")
-        tag="$level-$(printf '%s' "$pose" | md5sum | cut -c1-6)"
-        row="$level"
+        area="${pose%%:*}"
+        if [[ "$pose" == *:* && "$area" =~ ^[0-9]+$ ]]; then
+            pose="${pose#*:}"
+            SRC=(--skip-to-area "$level:$area" --freecam-pose "$pose")
+            # The scripted freecam waits for the area's release, since the
+            # sub-area transition re-seeds the camera from the game's; the
+            # run's log order is checked for that below.
+            area_row=1
+            tag="$level-$area-$(printf '%s' "$pose" | md5sum | cut -c1-6)"
+            row="$level:$area"
+        else
+            SRC=(--skip-to-level "$level" --freecam-pose "$pose")
+            tag="$level-$(printf '%s' "$pose" | md5sum | cut -c1-6)"
+            row="$level"
+        fi
     else
         src="${src// /}"
         movie="$PG_BK2_DIR/$src"
@@ -157,24 +183,40 @@ while IFS= read -r line; do
     rows=$((rows + 1))
 
     lo="${span%-*}"; hi="${span#*-}"
+    ROW_ENV=()
     if (( (hi - lo) % 2 != 0 || hi < lo + 2 )); then
         echo "moby-subtick: FAIL (row $row: span $span is not lo-hi with hi = lo + 2k)"; exit 1
     fi
     vbls=()
     for ((f = lo; f <= hi; f += 2)); do vbls+=("$f"); done
 
-    rc0=0 rc1=0
+    rc0=0 rc1=0 rch=0
     run_alpha 0 "$tag" "${vbls[@]}" </dev/null || rc0=$?
     run_alpha 1 "$tag" "${vbls[@]}" </dev/null || rc1=$?
-    if [[ ! -s "$OUT/$tag-a0.log" || ! -s "$OUT/$tag-a1.log" ]] || (( rc0 || rc1 )); then
-        echo "moby-subtick: FAIL (row $row: no instrument output, rc=$rc0/$rc1; see $OUT)"
+    # The turn bin reads a third replay at the interval's midpoint.
+    logh=""
+    if [[ "$keys" == *turn=* ]]; then
+        run_alpha 0.5 "$tag" "${vbls[@]}" </dev/null || rch=$?
+        logh="$OUT/$tag-a0.5.log"
+        [[ -s "$logh" ]] || rch=1
+    fi
+    if [[ ! -s "$OUT/$tag-a0.log" || ! -s "$OUT/$tag-a1.log" ]] || (( rc0 || rc1 || rch )); then
+        echo "moby-subtick: FAIL (row $row: no instrument output, rc=$rc0/$rc1/$rch; see $OUT)"
         fail=1; continue
     fi
+    if (( area_row )); then
+        rel="$(grep -n -m1 '\[skip-to-area\] released' "$OUT/$tag-a1.log" | cut -d: -f1)"
+        fc="$(grep -n 'freecam: pose set to' "$OUT/$tag-a1.log" | tail -1 | cut -d: -f1)"
+        if [[ -z "$rel" || -z "$fc" ]] || (( fc < rel )); then
+            echo "moby-subtick: FAIL (row $row: the freecam pose is not placed after the area release; see $OUT/$tag-a1.log)"
+            fail=1; continue
+        fi
+    fi
 
-    python3 - "$OUT/$tag-a0.log" "$OUT/$tag-a1.log" "$GAME" "$row" "$keys" "${excl:-}" <<'PYEOF' || fail=1
+    python3 - "$OUT/$tag-a0.log" "$OUT/$tag-a1.log" "$GAME" "$row" "$keys" "${excl:-}" "$logh" <<'PYEOF' || fail=1
 import re, sys, collections
 
-log0, log1, game, bk2, keys, excl = sys.argv[1:7]
+log0, log1, game, bk2, keys, excl, logh = sys.argv[1:8]
 opts = {}
 for tok in keys.split():
     k, _, v = tok.partition('=')
@@ -183,6 +225,21 @@ min_pairs = int(opts.get('pairs', '1'))
 min_class = int(opts.get('class', '0'))
 min_hold = int(opts.get('hold', '0'))
 min_mirror = int(opts.get('mirror', '0'))
+min_turn = int(opts.get('turn', '0'))
+# A turn leg: the interval steps the moby's euler on some axis, is neither
+# held nor a facing reversal, and moves the screen centroid at least
+# TURN_MIN_PX between the two canonical ticks (D = c_1(v) - c_1(v-2)). Every
+# channel that sweeps is at the previous tick's value at alpha 0 and halfway
+# at alpha 0.5; a channel drawn at the current tick's value through the
+# interval shows its whole centroid step R at alpha 0, e0 = c_0(v) - c_1(v-2)
+# = R, and half of it again at the midpoint, eh = c_0.5(v) - (c_1(v-2) +
+# c_1(v)) / 2 = R / 2. The stepped channel's midpoint progress
+# rho = 0.5 + eh.e0 / |e0|^2 reads 1 for that snap and is undefined for a
+# sweep (e0 = 0). A leg whose |e0| is at least TURN_MIN_PX and whose rho is
+# within TURN_TOL of 1 is a snap; the record replay's translation floor reads
+# at most 0.43 px of e0 on the rows' non-turning legs.
+TURN_MIN_PX = 0.5
+TURN_TOL = 0.25
 dmax = float(opts['dmax']) if 'dmax' in opts else None
 # A facing reversal: an interval whose euler steps this far on any axis, in
 # byte angle units (256 = one turn), while the keyframe pair changes. Read off
@@ -254,7 +311,10 @@ def reversal(prv, cur):
           or (bl != 0 and blp != 0 and prv[12] != cur[12]))
     return step, kf
 
-pairs = nclass = nhold = nsnap = nmirror = 0
+AH, SH = load(logh) if logh else ({}, {})
+
+pairs = nclass = nhold = nsnap = nmirror = nturn = nturnsnap = 0
+turns = []
 bad, notes, holds = [], [], []
 per = collections.defaultdict(lambda: {'cls': [], 'other': 0.0, 'n': 0})
 for (v, mob), g in sorted(A0.items()):
@@ -292,6 +352,30 @@ for (v, mob), g in sorted(A0.items()):
                 bad.append("vbl=%d m=%s cls=%s turns %d byte angles on one axis with its "
                            "keyframe pair changed and reads prevkf=%s: the interval lerps "
                            "a facing reversal" % (v, mob, g[3], step, g[4]))
+    gh = AH.get((v, mob))
+    if (logh and cur is not None and gh is not None and not held
+            and (v, mob) in SH and (v, mob) in S1 and (v, mob) in S0):
+        step, kf = reversal(p, cur)
+        if step > 0 and not (step >= MIRROR_THRESH and kf) and gh[4] != '2':
+            (xp, yp), (xc, yc), (xh, yh) = S1[(v - 2, mob)], S1[(v, mob)], SH[(v, mob)]
+            (x0, y0) = S0[(v, mob)]
+            dd = ((xc - xp) ** 2 + (yc - yp) ** 2) ** 0.5
+            if dd >= TURN_MIN_PX:
+                e0 = (x0 - xp, y0 - yp)
+                eh = (xh - (xp + xc) / 2, yh - (yp + yc) / 2)
+                n0 = (e0[0] ** 2 + e0[1] ** 2) ** 0.5
+                rho = 0.5 + (eh[0] * e0[0] + eh[1] * e0[1]) / max(n0 * n0, 1e-12)
+                nturn += 1
+                snap = n0 >= TURN_MIN_PX and abs(rho - 1.0) <= TURN_TOL
+                nturnsnap += snap
+                turns.append("turn vbl=%d m=%s cls=%s step=%d |D|=%.3f |e0|=%.3f |eh|=%.3f rho=%.3f%s"
+                             % (v, mob, g[3], step, dd, n0, (eh[0] ** 2 + eh[1] ** 2) ** 0.5,
+                                rho, " SNAP" if snap else ""))
+                if snap:
+                    bad.append("vbl=%d m=%s cls=%s turns %d byte angles and shows %.3f px of its "
+                               "%.3f px tick step at alpha 0 with midpoint progress %.3f: a channel "
+                               "is drawn at the current tick through the interval"
+                               % (v, mob, g[3], step, n0, dd, rho))
     if (v, mob) in skip_seam:
         notes.append("excluded seam vbl=%d m=%s D=%.3f: %s" % (v, mob, D, skip_seam[(v, mob)]))
         continue
@@ -324,19 +408,24 @@ for (mob, c), rec in sorted(per.items()):
             bad.append("vbl=%d m=%s cls=%s classD=%.3f above the moby's non-class max %.3f"
                        % (v, mob, c, d, rec['other']))
 
-head = ("[moby-subtick] game=%s bk2=%s pairs=%d class=%d hold=%d mirror=%d mismatches=%d snaps=%d excluded=%d"
-        % (game, bk2, pairs, nclass, nhold, nmirror, sum(' tuple ' in b for b in bad), nsnap, len(notes)))
+head = ("[moby-subtick] game=%s bk2=%s pairs=%d class=%d hold=%d mirror=%d%s mismatches=%d snaps=%d excluded=%d"
+        % (game, bk2, pairs, nclass, nhold, nmirror,
+           (" turn=%d turnsnaps=%d" % (nturn, nturnsnap)) if logh else "",
+           sum(' tuple ' in b for b in bad), nsnap, len(notes)))
 for n in notes:
     print("[moby-subtick]   " + n)
-if pairs < min_pairs or nclass < min_class or nhold < min_hold or nmirror < min_mirror:
-    print(head + " VACUOUS: floor pairs>=%d class>=%d hold>=%d mirror>=%d"
-          % (min_pairs, min_class, min_hold, min_mirror))
+if (pairs < min_pairs or nclass < min_class or nhold < min_hold or nmirror < min_mirror
+        or nturn < min_turn):
+    print(head + " VACUOUS: floor pairs>=%d class>=%d hold>=%d mirror>=%d turn>=%d"
+          % (min_pairs, min_class, min_hold, min_mirror, min_turn))
     sys.exit(1)
 print(head + " verdict=%s" % ("FAIL" if bad else "PASS"))
 for v, mob, c, d in holds:
     print("[moby-subtick]   held vbl=%d m=%s cls=%s D=%.3f" % (v, mob, c, d))
 for m in mobys:
     print("[moby-subtick]   " + m)
+for t in turns:
+    print("[moby-subtick]   " + t)
 for b in bad[:40]:
     print("[moby-subtick]   " + b)
 sys.exit(1 if bad else 0)

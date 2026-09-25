@@ -7801,6 +7801,88 @@ static void record_rebase_to_present(CPUState* cpu, moby_fields* f, uint32_t mob
     }
 }
 
+/* The euler composition in unit doubles: Ry·Rx·Rz from table sin/cos pairs,
+ * the order and axis signs of ngte_compose_euler. inv builds the inverse,
+ * Rz⁻¹·Rx⁻¹·Ry⁻¹, each axis inverted exactly over its own c² + s² since the
+ * table's pairs are not unit length. */
+static void euler_mat_d(const ngte_euler_sc* e, int inv, double out[3][3]) {
+    const double ny = (double)e->cy * e->cy + (double)e->sy * e->sy;
+    const double nx = (double)e->cx * e->cx + (double)e->sx * e->sx;
+    const double nz = (double)e->cz * e->cz + (double)e->sz * e->sz;
+    const double sg = inv ? -1.0 : 1.0;
+    const double ky = inv ? 4096.0 / ny : 1.0 / 4096.0, kx = inv ? 4096.0 / nx : 1.0 / 4096.0,
+                 kz = inv ? 4096.0 / nz : 1.0 / 4096.0;
+    const double cy = e->cy * ky, sy = sg * e->sy * ky, cx = e->cx * kx, sx = sg * e->sx * kx,
+                 cz = e->cz * kz, sz = sg * e->sz * kz;
+    const double Ry[3][3] = {{cy, 0, -sy}, {0, 1, 0}, {sy, 0, cy}};
+    const double Rx[3][3] = {{1, 0, 0}, {0, cx, -sx}, {0, sx, cx}};
+    const double Rz[3][3] = {{cz, -sz, 0}, {sz, cz, 0}, {0, 0, 1}};
+    const double (*A)[3] = inv ? Rz : Ry, (*C)[3] = inv ? Ry : Rz;
+    double t[3][3];
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++)
+            t[r][c] = A[r][0] * Rx[0][c] + A[r][1] * Rx[1][c] + A[r][2] * Rx[2][c];
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++)
+            out[r][c] = t[r][0] * C[0][c] + t[r][1] * C[1][c] + t[r][2] * C[2][c];
+}
+
+/* Outcome of record_rotation_to_present, one census bin each. */
+enum { REC_ROT_NOPAIR = 0, REC_ROT_SAME, REC_ROT_SWAPPED, REC_ROT_OTHER_FORM, REC_ROT_N };
+
+/* A replayed cull record carries the rotation the tick composed:
+ * M = camera · Ry · Rx · Rz from the moby's three angle bytes, each factor one
+ * MVMVA pair and stored at record +0x28 (Spyro 3 mobydraw.s:230-359, Spyro 2
+ * mobydraw.s:232-361), with no scale in the matrix: the moby's scale rides
+ * the translation and the vertex decode. The rotation this present displays is E(present) from
+ * moby_record_euler_at_present, so the matrix becomes M · E(curr)⁻¹ ·
+ * E(present); translation and scale are untouched. Where E(present) equals
+ * E(curr) — every alpha-1 present, a moby that did not turn — M is kept
+ * bit-exact.
+ *
+ * A moby whose colour word has bit 30 set takes the other composition
+ * (Spyro 3 mobydraw.s:227-228 to .L80030DBC): the same axis order from angles
+ * carrying a 4-bit fraction out of that word, which the byte-angle pair does
+ * not describe, so it keeps the tick's rotation. */
+static int record_rotation_to_present(CPUState* cpu, moby_fields* f, uint32_t moby) {
+    if (game_layout.moby.colour_off &&
+        (cpu->read_word(moby + game_layout.moby.colour_off) & 0x40000000u))
+        return REC_ROT_OTHER_FORM;
+    const openpete_interp_obj_t* o = openpete_interp_objs_find(moby_interp_key(moby));
+    if (!o) return REC_ROT_NOPAIR;
+    ngte_euler_sc ep, ec;
+    if (!moby_record_euler_at_present(cpu, moby, &ep)) return REC_ROT_NOPAIR;
+    const uint32_t ao = game_layout.moby.angle_off;
+    ngte_euler_sincos(cpu, (uint32_t)o->curr[ao] | ((uint32_t)o->curr[ao + 1u] << 8)
+                           | ((uint32_t)o->curr[ao + 2u] << 16), &ec);
+    if (memcmp(&ep, &ec, sizeof ep) == 0) return REC_ROT_SAME;
+    double Ei[3][3], Ep[3][3], Q[3][3];
+    euler_mat_d(&ec, 1, Ei);
+    euler_mat_d(&ep, 0, Ep);
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++)
+            Q[r][c] = Ei[r][0] * Ep[0][c] + Ei[r][1] * Ep[1][c] + Ei[r][2] * Ep[2][c];
+    int M[3][3];
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++)
+            M[r][c] = (int)lround((double)f->M[r][0] * Q[0][c] + (double)f->M[r][1] * Q[1][c]
+                                  + (double)f->M[r][2] * Q[2][c]);
+    memcpy(f->M, M, sizeof M);
+    return REC_ROT_SWAPPED;
+}
+
+/* OPENPETE_MOBY_CENSUS: one line per record-replay pass that replayed a
+ * record, with the bins of record_rotation_to_present. */
+static void moby_rot_census(const char* pass, const long bins[REC_ROT_N]) {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("OPENPETE_MOBY_CENSUS"); s = (e && *e && *e != '0'); }
+    if (!s || bins[REC_ROT_NOPAIR] + bins[REC_ROT_SAME] + bins[REC_ROT_SWAPPED]
+              + bins[REC_ROT_OTHER_FORM] == 0) return;
+    fprintf(stderr, "[moby-rot-census vbl=%u] pass=%s swapped=%ld same=%ld nopair=%ld other_form=%ld\n",
+            openpete_frame, pass, bins[REC_ROT_SWAPPED], bins[REC_ROT_SAME],
+            bins[REC_ROT_NOPAIR], bins[REC_ROT_OTHER_FORM]);
+}
+
 /* Led coherence (runahead): build_moby_record_fields read the LIVE moby's
  * anim state — under runahead that is the restored REAL tick, which is about
  * the table's PREV (led-1): the sub-tick pose pair degenerated and keyframe
@@ -7860,6 +7942,7 @@ static void moby_fields_pose_from_snapshot(CPUState* cpu, uint32_t moby, moby_fi
 
 static int reextract_record_pass(CPUState* cpu, const char* mat) {
     int is_spec = (mat && mat[0] == 'S' && mat[1] == 'P');
+    long rot_bins[REC_ROT_N] = {0};
     s_walk_in_rex = 1;
     static uint32_t mobys[MAX_RECORDS], recs[MAX_RECORDS]; int nm = 0;
     /* Tier-2 hold pool is per canonical epoch: a new tick invalidates every
@@ -7975,6 +8058,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                 f.TR_frac[k] = (double)LR.TR_raw[k];
             }
             record_rebase_to_present(cpu, &f, mobys[i]);
+            rot_bins[record_rotation_to_present(cpu, &f, mobys[i])]++;
         } else {
         { int bok;
           uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
@@ -8259,6 +8343,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         }
     }
     push_scene_moby();
+    moby_rot_census(mat, rot_bins);
     s_walk_in_rex = 0;
     return nm;
 }

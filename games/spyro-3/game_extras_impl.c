@@ -76,9 +76,11 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
     /* Scripted player placement (--player-pose) on the first placeable
      * tick, then scripted engage of the debug free camera (OPENPETE_FREECAM=1
      * / OPENPETE_FREECAM_POSE / OPENPETE_FREECAM_PATH) once gameplay is live;
-     * placement first so one run can view the placed player. */
+     * placement first so one run can view the placed player. The engage
+     * waits for a --skip-to-area target's release: the sub-area transition
+     * re-seeds the camera from the game's and would discard the pose. */
     freecam_player_pose_maybe_apply(cpu);
-    freecam_maybe_autoengage(cpu);
+    if (!spyro3_area_pending()) freecam_maybe_autoengage(cpu);
     /* Write census: every fiber resume in a tick happens inside Draw's VSync
      * waits, after the view matrix has been built, so a store seen from here
      * until the next phase entry precedes it for that tick. */

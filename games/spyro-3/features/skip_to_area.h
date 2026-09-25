@@ -26,6 +26,11 @@ void spyro3_area_on_tick(CPUState* cpu, uint32_t frame_counter);
  * headless too. */
 int spyro3_area_watching(void);
 
+/* An area target is armed and not yet released: from the level skip through
+ * the sub-area load. A scripted freecam pose waits on it, since the sub-area
+ * transition re-seeds the camera from the game's. */
+int spyro3_area_pending(void);
+
 /* The armed target's release predicate held: game.state 13 was seen after
  * the call, then gameplay went live with the area word == the target. On a
  * release, writes " level=L area=A" read back from 0x8006C5BC and

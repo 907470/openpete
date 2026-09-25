@@ -151,6 +151,7 @@ void spyro3_area_set(int level, int area) {
 }
 
 int  spyro3_area_watching(void) { return s_phase != AREA_IDLE && !s_reported; }
+int  spyro3_area_pending(void)  { return s_phase != AREA_IDLE && s_phase != AREA_RELEASED; }
 void spyro3_area_finish(void)   { s_reported = 1; }
 
 int spyro3_area_released(CPUState* cpu, char* eng, size_t cap) {

@@ -6,11 +6,20 @@
 # Sheila (class 0x39) blends from animation 1 into 3 and from 3 into 14
 # (switches at trace VBLs 4499 and 4513); two class 0x7e NPCs walk and switch
 # animation at 4509, 4533 and 4541.
-# Three class legs are left out of the seam bound, each with its tuple exact.
-# At 4529 and 4531 the class 0x7e NPC turns (rotation byte 0x54, 0x59, 0x5e)
-# while it blends, and the record replay draws the current tick's rotation
-# from alpha 0; the seam without its translation term reads 0.25 px against
-# the moby's 0.15. At 4537 the seam is the translation term alone: the
-# centroid step (-0.750, -0.080) px equals H times the step of the view-space
-# translation over its depth, and 0.11 px remains against the moby's 0.19.
-sheilas-alp-sheila-water-invisible.bk2 | 4490-4556 | pairs=195 class=18 | seam 4529 801697e4 rotation step on the record replay | seam 4531 801697e4 rotation step on the record replay | seam 4537 80169734 translation floor of the record replay
+# Two class legs are left out of the seam bound, each with its tuple exact;
+# both are the translation term alone. At 4533 the class 0x7e NPC turns
+# (rotation byte 0x5e to 0x63) while it switches clip: its rotation sweeps, and
+# the seam (0.32, 0.08) px is the step of the view-space translation (4.91,
+# 1.59, -0.95) at depth 5808 projected with H = 340 +- 30, and reads 0.330
+# against the moby's 0.281. At 4537 the centroid step (-0.750, -0.080) px equals H times the step
+# of the view-space translation over its depth, and 0.11 px remains against the
+# moby's 0.19.
+sheilas-alp-sheila-water-invisible.bk2 | 4490-4556 | pairs=195 class=18 | seam 4533 801697e4 translation floor of the record replay | seam 4537 80169734 translation floor of the record replay
+# Sunny Villa area 2 (skateboard hologram): the class 0x1ce record spins 8
+# byte angles per tick on its Y euler byte before a static freecam. The two
+# class 0x1cd records are left out: their record frame word stays fixed while
+# the animation state the tuple rebuilds from steps.
+pose:sunny_villa:2:pos=(189567, 68825, 19072) yaw=-2031 pitch=197 | 1200-1230 | pairs=30 turn=14 | leg 1203 801834dc class 0x1cd record frame word fixed while its animation state steps, open | leg 1203 80183534 class 0x1cd record frame word fixed while its animation state steps, open | leg 1205 801834dc class 0x1cd record frame word fixed while its animation state steps, open | leg 1205 80183534 class 0x1cd record frame word fixed while its animation state steps, open | leg 1207 801834dc class 0x1cd record frame word fixed while its animation state steps, open | leg 1207 80183534 class 0x1cd record frame word fixed while its animation state steps, open | leg 1209 801834dc class 0x1cd record frame word fixed while its animation state steps, open | leg 1209 80183534 class 0x1cd record frame word fixed while its animation state steps, open | leg 1211 801834dc class 0x1cd record frame word fixed while its animation state steps, open | leg 1211 80183534 class 0x1cd record frame word fixed while its animation state steps, open | leg 1213 801834dc class 0x1cd record frame word fixed while its animation state steps, open | leg 1213 80183534 class 0x1cd record frame word fixed while its animation state steps, open | leg 1215 801834dc class 0x1cd record frame word fixed while its animation state steps, open | leg 1215 80183534 class 0x1cd record frame word fixed while its animation state steps, open | leg 1217 801834dc class 0x1cd record frame word fixed while its animation state steps, open | leg 1217 80183534 class 0x1cd record frame word fixed while its animation state steps, open | leg 1219 801834dc class 0x1cd record frame word fixed while its animation state steps, open | leg 1219 80183534 class 0x1cd record frame word fixed while its animation state steps, open | leg 1221 801834dc class 0x1cd record frame word fixed while its animation state steps, open | leg 1221 80183534 class 0x1cd record frame word fixed while its animation state steps, open | leg 1223 801834dc class 0x1cd record frame word fixed while its animation state steps, open | leg 1223 80183534 class 0x1cd record frame word fixed while its animation state steps, open | leg 1225 801834dc class 0x1cd record frame word fixed while its animation state steps, open | leg 1225 80183534 class 0x1cd record frame word fixed while its animation state steps, open | leg 1227 801834dc class 0x1cd record frame word fixed while its animation state steps, open | leg 1227 80183534 class 0x1cd record frame word fixed while its animation state steps, open | leg 1229 801834dc class 0x1cd record frame word fixed while its animation state steps, open | leg 1229 80183534 class 0x1cd record frame word fixed while its animation state steps, open | leg 1231 801834dc class 0x1cd record frame word fixed while its animation state steps, open | leg 1231 80183534 class 0x1cd record frame word fixed while its animation state steps, open
+# Sheila (class 0x39) turns 8 byte angles per tick through trace VBL 4063;
+# the turn bin requires her rotation to sweep.
+sheilas-alp-sheila-water-invisible.bk2 | 4056-4068 | pairs=43 turn=6 | seam 4059 8016a54c class leg above the non-class bound, open, outside the turn bin | seam 4061 80169d0c class leg above the non-class bound, open, outside the turn bin | seam 4065 80169d0c class leg above the non-class bound, open, outside the turn bin | seam 4065 801677ec class leg above the non-class bound, open, outside the turn bin | seam 4069 80169cb4 class leg with no non-class leg in the span, open, outside the turn bin
