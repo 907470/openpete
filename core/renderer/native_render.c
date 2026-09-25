@@ -5133,6 +5133,16 @@ int openpete_native_key_resolve_on(void)
     return s_nr.enabled && s_nr.terrain_key_pipe && s_nr.terrain_key_vb;
 }
 
+/* OPENPETE_TERRAIN_KEY_READBACK=1: the terrain key image is created readable
+ * and every native screenshot writes it beside the PNG (terrain_key_dump). */
+static int terrain_key_readback_on(void)
+{
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_TERRAIN_KEY_READBACK");
+                 v = (e && *e && *e != '0'); }
+    return v;
+}
+
 static void ensure_terrain_key_depth(int w, int h)
 {
     if (w <= 0 || h <= 0) return;
@@ -5161,7 +5171,9 @@ static void ensure_terrain_key_depth(int w, int h)
     if (s_nr.moby_key_depth)    { rhi_destroy_texture(s_nr.dev, s_nr.moby_key_depth);    s_nr.moby_key_depth = NULL; }
     if (s_nr.actor_key_depth)   { rhi_destroy_texture(s_nr.dev, s_nr.actor_key_depth);   s_nr.actor_key_depth = NULL; }
     if (s_nr.moby_rank_rt)      { rhi_destroy_texture(s_nr.dev, s_nr.moby_rank_rt);      s_nr.moby_rank_rt = NULL; }
-    s_nr.terrain_key_depth = rhi_create_render_target_depth_sampled(s_nr.dev, (uint32_t)w, (uint32_t)h);
+    s_nr.terrain_key_depth = terrain_key_readback_on()
+        ? rhi_create_render_target_depth_readable(s_nr.dev, (uint32_t)w, (uint32_t)h)
+        : rhi_create_render_target_depth_sampled(s_nr.dev, (uint32_t)w, (uint32_t)h);
     s_nr.moby_key_depth    = rhi_create_render_target_depth_sampled(s_nr.dev, (uint32_t)w, (uint32_t)h);
     s_nr.actor_key_depth   = rhi_create_render_target_depth_sampled(s_nr.dev, (uint32_t)w, (uint32_t)h);
     s_nr.moby_rank_rt      = rhi_create_render_target(s_nr.dev, (uint32_t)w, (uint32_t)h);
@@ -5503,7 +5515,9 @@ static struct {
     const mod_fvec* buf;     /* runs, not bases: a later compose_reserve may move them */
     const mod_fvec* mbuf;
     const mod_fvec* abuf;
-} s_tk_last = { NULL, 0, -1, -1, -1, -1, NULL, NULL, NULL };
+    int vw, vh;                     /* the pass's viewport in the key image */
+    openpete_tercache_clip clip;    /* the pass's screen->clip mapping */
+} s_tk_last = { NULL, 0, -1, -1, -1, -1, NULL, NULL, NULL, 0, 0, { 0 } };
 
 /* Draw one packed key batch into the currently-open key render pass:
  * untextured prefix through the flat full-footprint pipe, textured material
@@ -5578,6 +5592,16 @@ static void draw_rank_batch(int base, int m, int untex,
     }
 }
 
+/* The pass's viewport and screen->clip mapping, for terrain_key_dump. */
+static void terrain_key_pass_record(int full_extent, int vw, int vh)
+{
+    int prev_fe = s_render_full_extent;
+    s_render_full_extent = full_extent ? 1 : 0;
+    tercache_clip_params(&s_tk_last.clip);
+    s_render_full_extent = prev_fe;
+    s_tk_last.vw = vw; s_tk_last.vh = vh;
+}
+
 static void native_terrain_key_pass(int full_extent, int vw, int vh)
 {
     if (!openpete_native_key_resolve_on()) return;
@@ -5621,6 +5645,7 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
     s_tk_last.m = m; s_tk_last.buf = &s_cz_key[0];
     s_tk_last.mm = mm; s_tk_last.mbuf = &s_cz_key[1];
     s_tk_last.am = am; s_tk_last.abuf = &s_cz_key[2];
+    terrain_key_pass_record(full_extent, vw, vh);
     { static int kdbg = -1;
       if (kdbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_KEY_DBG"); kdbg = (e && *e && *e != '0'); }
       if (kdbg) {
@@ -12736,6 +12761,48 @@ static void path_with_suffix(const char *base, const char *suffix,
     else     snprintf(out, cap, "%s%s", base, suffix);
 }
 
+/* Under OPENPETE_TERRAIN_KEY_READBACK: the terrain key image the capture's
+ * key pass left, as <shot>-key.f32 (the depth value per texel, rows top-down,
+ * key view-Z = 4096 z / (1 - z), 1.0 = no terrain key) and <shot>-key.txt
+ * (image and viewport extents and the pass's screen->clip mapping, so a PSX
+ * screen point maps to its texel). */
+static void terrain_key_dump(const char *base, int in_memory)
+{
+    extern unsigned openpete_frame;
+    if (in_memory || !terrain_key_readback_on() || !s_nr.terrain_key_depth ||
+        s_tk_last.m < 0)
+        return;
+    int w = 0, h = 0;
+    rhi_texture_extent(s_nr.terrain_key_depth, &w, &h);
+    if (w <= 0 || h <= 0) return;
+    float *z = (float *)malloc((size_t)w * (size_t)h * sizeof(float));
+    if (!z) return;
+    if (rhi_read_render_target_depth(s_nr.dev, s_nr.terrain_key_depth, z,
+                                     (size_t)w * (size_t)h, &w, &h)) {
+        char stem[1100], path[1110];
+        path_with_suffix(base, "-key", stem, sizeof(stem));
+        char *dot = strrchr(stem, '.');
+        if (dot) *dot = 0;
+        snprintf(path, sizeof(path), "%s.f32", stem);
+        FILE *fp = fopen(path, "wb");
+        if (fp) { fwrite(z, sizeof(float), (size_t)w * (size_t)h, fp); fclose(fp); }
+        snprintf(path, sizeof(path), "%s.txt", stem);
+        fp = fopen(path, "w");
+        if (fp) {
+            const openpete_tercache_clip *c = &s_tk_last.clip;
+            fprintf(fp, "w=%d h=%d vw=%d vh=%d x_base=%.9g x_span=%.9g y_base=%.9g "
+                        "y_span=%.9g disp_w=%.9g clip_h=%.9g band=%.9g freeze_wf=%.9g "
+                        "full_extent=%d frame=%u\n",
+                    w, h, s_tk_last.vw, s_tk_last.vh, (double)c->x_base, (double)c->x_span,
+                    (double)c->y_base, (double)c->y_span, (double)c->disp_w,
+                    (double)c->clip_h, (double)c->band, (double)c->freeze_wf,
+                    c->full_extent, openpete_frame);
+            fclose(fp);
+        }
+    }
+    free(z);
+}
+
 /* cap_out/cap_w/cap_h: when cap_out is non-NULL the composed native RGBA frame
  * is handed to the caller (malloc'd, top-down, alpha forced opaque) and no PNG
  * is written — the in-memory form of the same compose the -vk dump writes. */
@@ -12885,6 +12952,7 @@ static int native_shot_widescreen(const char *base, int H, float cap_wf,
     if (!nat) return 1;
     int nw = 0, nh = 0;
     if (!rhi_read_render_target(s_nr.dev, rt, nat, px * 4, &nw, &nh)) { free(nat); return 1; }
+    terrain_key_dump(base, cap_out != NULL);
     for (size_t i = 0; i < px; i++) nat[i * 4 + 3] = 0xFF;   /* GPU blend alpha → opaque */
 
     if (cap_out) {   /* in-memory readback: hand over the buffer, write no PNG */
@@ -13241,6 +13309,7 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
         free(nat); free(ref);
         return 1;
     }
+    terrain_key_dump(base, cap_out != NULL);
     /* RT alpha is whatever the blend ops left (fractional on discrete GPUs) —
      * force opaque so the PNGs don't show viewer transparency checkerboard. */
     for (size_t i = 0; i < frame_px; i++) nat[i * 4 + 3] = 0xFF;

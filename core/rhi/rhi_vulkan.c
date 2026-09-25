@@ -577,6 +577,8 @@ struct rhi_texture {
      * as a combined image sampler. NULL on a plain render target. */
     VkImageView     rt_depth_sample_view;
     VkDescriptorSet depth_set;
+    bool            depth_readable; /* depth image carries TRANSFER_SRC
+                                     * (rhi_read_render_target_depth) */
     rhi_depth_class depth_class; /* the depth convention of its pass (SCENE default) */
 };
 
@@ -3541,8 +3543,19 @@ rhi_texture *rhi_create_rgba8(rhi_device *dev, uint32_t width, uint32_t height)
     return create_sampled_image(dev, width, height, VK_FORMAT_R8G8B8A8_UNORM, 4);
 }
 
+/* A render target's depth image usage: the attachment, sampled for a
+ * depth-sampled target, a transfer source for a readable one. */
+static VkImageUsageFlags rt_depth_usage(bool depth_sampleable, bool depth_readable)
+{
+    VkImageUsageFlags u = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    if (depth_sampleable) u |= VK_IMAGE_USAGE_SAMPLED_BIT;
+    if (depth_readable)   u |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    return u;
+}
+
 static rhi_texture *create_render_target_impl(rhi_device *dev, uint32_t width,
-                                              uint32_t height, bool depth_sampleable)
+                                              uint32_t height, bool depth_sampleable,
+                                              bool depth_readable)
 {
     if (depth_sampleable) {
         /* SAMPLED_IMAGE is not in the spec's REQUIRED feature set for the
@@ -3608,8 +3621,7 @@ static rhi_texture *create_render_target_impl(rhi_device *dev, uint32_t width,
         .imageType = VK_IMAGE_TYPE_2D, .format = dev->depth_format,
         .extent = { width, height, 1 }, .mipLevels = 1, .arrayLayers = 1,
         .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
-        .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
-                 (depth_sampleable ? VK_IMAGE_USAGE_SAMPLED_BIT : 0u),
+        .usage = rt_depth_usage(depth_sampleable, depth_readable),
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
     if (vkCreateImage(dev->device, &dici, NULL, &t->rt_depth_image) != VK_SUCCESS) {
@@ -3634,6 +3646,7 @@ static rhi_texture *create_render_target_impl(rhi_device *dev, uint32_t width,
     if (vkCreateImageView(dev->device, &dvci, NULL, &t->rt_depth_view) != VK_SUCCESS) {
         RHI_LOG("rt depth vkCreateImageView failed\n"); goto fail;
     }
+    t->depth_readable = depth_readable;
     t->rt_pass = depth_sampleable ? dev->rt_ds_rp : dev->rt_rp;
     VkImageView fb_atts[2] = { t->view, t->rt_depth_view };
     VkFramebufferCreateInfo fci = {
@@ -3731,13 +3744,19 @@ fail:
 
 rhi_texture *rhi_create_render_target(rhi_device *dev, uint32_t width, uint32_t height)
 {
-    return create_render_target_impl(dev, width, height, false);
+    return create_render_target_impl(dev, width, height, false, false);
 }
 
 rhi_texture *rhi_create_render_target_depth_sampled(rhi_device *dev,
                                                     uint32_t width, uint32_t height)
 {
-    return create_render_target_impl(dev, width, height, true);
+    return create_render_target_impl(dev, width, height, true, false);
+}
+
+rhi_texture *rhi_create_render_target_depth_readable(rhi_device *dev,
+                                                     uint32_t width, uint32_t height)
+{
+    return create_render_target_impl(dev, width, height, true, true);
 }
 
 void rhi_bind_depth_sampler(rhi_device *dev, rhi_texture *rt, uint32_t set)
@@ -4415,6 +4434,66 @@ bool rhi_read_render_target(rhi_device *dev, rhi_texture *rt, void *out,
         dst[i*4+1] = c1;
         dst[i*4+2] = swap_rb ? c0 : c2;
         dst[i*4+3] = 0xFF;
+    }
+    rhi_destroy_buffer(dev, rb);
+    return true;
+}
+
+bool rhi_read_render_target_depth(rhi_device *dev, rhi_texture *rt, float *out,
+                                  size_t out_count, int *out_w, int *out_h)
+{
+    if (!rt || !rt->is_rt || !rt->depth_readable || !rt->rt_depth_image) return false;
+    int w = (int)rt->width, h = (int)rt->height;
+    if (out_w) *out_w = w;
+    if (out_h) *out_h = h;
+    size_t n = (size_t)w * (size_t)h;
+    if (!out || out_count < n || w <= 0 || h <= 0) return false;
+
+    /* The depth image is left in SHADER_READ_ONLY by the depth-sampled pass
+     * (both aspects: a combined image transitions as a whole). The depth
+     * aspect copies out as 4 bytes per texel on both formats: a float on
+     * D32_SFLOAT_S8_UINT, 24 unorm bits in the low bytes on
+     * D24_UNORM_S8_UINT. */
+    vkDeviceWaitIdle(dev->device);
+    rhi_buffer *rb = create_host_buffer(dev, n * 4u, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                        /*prefer_cached=*/true);
+    if (!rb) return false;
+    VkImageMemoryBarrier b = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
+        .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = rt->rt_depth_image,
+        .subresourceRange = { .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT |
+                                            VK_IMAGE_ASPECT_STENCIL_BIT,
+                              .levelCount = 1, .layerCount = 1 },
+    };
+    VkCommandBuffer cb = one_shot_begin(dev);
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+    VkBufferImageCopy region = {
+        .imageSubresource = { .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT, .layerCount = 1 },
+        .imageExtent = { (uint32_t)w, (uint32_t)h, 1 },
+    };
+    vkCmdCopyImageToBuffer(cb, rt->rt_depth_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           rb->buffer, 1, &region);
+    b.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+    one_shot_end(dev, cb);
+    const uint8_t *src = (const uint8_t *)rb->mapped;
+    const bool f32 = dev->depth_format == VK_FORMAT_D32_SFLOAT_S8_UINT;
+    for (size_t i = 0; i < n; i++) {
+        uint32_t u;
+        memcpy(&u, src + i * 4u, 4);
+        if (f32) memcpy(&out[i], &u, 4);
+        else     out[i] = (float)(u & 0xFFFFFFu) / 16777215.0f;
     }
     rhi_destroy_buffer(dev, rb);
     return true;

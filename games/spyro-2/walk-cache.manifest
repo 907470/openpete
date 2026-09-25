@@ -14,3 +14,15 @@
 # untextured LP face (sector 96 face 5, one level in blue); the canonical
 # present at the same VBL reads 0.
 attract-demo | 3400 | inter | original
+#
+# Near-band sub-cell keys: the drain inserts a near face's sub-cells at their
+# own keys, finer than the 2x2 and the whole triangles the mesh draws, and the
+# key image carries those cells on both feeds. Close camera over near-band
+# ground under a moby shadow, canonical present and the sub-tick present.
+# autumn-plains 850: 3 px (canonical) and 4 px (sub-tick), each one level in
+# one channel on upper-screen terrain whose two key images agree texel for
+# texel; the same pixels differ at the same values when the cache carries
+# no key-only records.
+glimmer-pogo-dialogue | 903 | canon | original
+autumn-plains-skelos-badlands-portal-entry | 850 | canon | original
+autumn-plains-skelos-badlands-portal-entry | 850 | inter | original

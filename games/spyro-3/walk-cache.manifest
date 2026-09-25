@@ -12,3 +12,6 @@
 # pixel count per row is compared with tests/golden/spyro-3/walk-cache-baseline.tsv.
 # Depth tie inside one key bucket (153) under z = 1 - 1/vz: walk vs cache 1 px.
 sunrise_spring | pos=(93293, 45901, 25017) yaw=-1494 pitch=-24 | original
+#
+# Near-band sub-cell keys under a close camera (see the Spyro 2 manifest).
+icy-peak-reflective-mirror | 1864 | canon | original

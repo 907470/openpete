@@ -383,6 +383,8 @@ typedef struct rhi_terrain_vertex {   /* tagged: forward-declared by the
                                  * the face to the 4x4 cells) |
                                  * cellok<<20 (HP: the face may take the
                                  * 4x4 cells) |
+                                 * keycells<<21 (HP: the face's drain sub-cells
+                                 * ride key-only records) |
                                  * otbias(5)<<24 (authored OT-slot bias)     */
     int16_t  c0x, c0y, c0z;     /* parent face corners in i0,i1,i2,i3 order, */
     int16_t  c1x, c1y, c1z;     /* sector-local, same x4 fixed point         */
@@ -466,7 +468,18 @@ typedef struct rhi_terrain_cell {
                                  * uv[6] its cell;
                                  * bit 25 (with bit 24): a tier-2 triangle's
                                  * record, entries 0-3 its sub-triangles and
-                                 * uv[6] the quadrant tile                   */
+                                 * uv[6] the quadrant tile;
+                                 * bit 26: a key-only record (the key arenas):
+                                 * alone, a quad's drain cells, entry j cell
+                                 * half*8 + j, tile[0..1] the quadrant tiles
+                                 * of its two rows' halves; with bit 24, a
+                                 * tier-4 triangle's sub-triangles as above;
+                                 * with bit 27, a triangle drawn whole, entry
+                                 * j's two triangles its sub-triangles 2j and
+                                 * 2j + 1 (tier 4) or 16 + 2j + t (tier 2),
+                                 * tile[0] and tile[1] the far and near
+                                 * halves' corner UVs (uv[0..5] = A, B, C)
+                                 * and materials, bit 28 its UV scroll on    */
     uint32_t near_rgb[4];       /* raw near colours of corners i0..i3 (a
                                  * triangle's C colour, word 1 byte 0, in [3]) */
     rhi_terrain_cell_tile tile[8];
@@ -975,6 +988,18 @@ void rhi_clear_stencil(rhi_device *dev);
  * window letterbox) regardless of window size. */
 bool rhi_read_render_target(rhi_device *dev, rhi_texture *rt, void *out,
                             size_t out_bytes, int *out_w, int *out_h);
+
+/* A depth-sampled render target whose depth image also allows transfer reads,
+ * for rhi_read_render_target_depth. */
+rhi_texture *rhi_create_render_target_depth_readable(rhi_device *dev,
+                                                     uint32_t width, uint32_t height);
+/* Read the depth aspect of a render target made by
+ * rhi_create_render_target_depth_readable into `out`, one value in [0, 1] per
+ * texel, rows in framebuffer order. Same preconditions as
+ * rhi_read_render_target (the pass ended and its frame submitted); blocks the
+ * GPU. Returns false for a target that is not readable. */
+bool rhi_read_render_target_depth(rhi_device *dev, rhi_texture *rt, float *out,
+                                  size_t out_count, int *out_w, int *out_h);
 
 /* Hardware-blit a pixel region [sx,sy,sw,sh] of the (clean, window-sized)
  * offscreen into a render target, scaled to fill it. The native freeze backdrop

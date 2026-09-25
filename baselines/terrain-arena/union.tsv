@@ -23,3 +23,5 @@ CA_OPAQUE	8666	crystal_flight	topdown
 CA_ALPHA	75	crystal_flight	topdown
 CA_ADD	101	icy_flight	topdown
 CA_SUB	0		
+KN	8038	cliff_town	bk2
+KA	28138	lofty_castle	topdown

@@ -63,6 +63,10 @@ static const uint32_t k_arena_cap[OPTC_ARENA_COUNT] = {
     [OPTC_ARENA_CA_ALPHA]  =  1024,
     [OPTC_ARENA_CA_ADD]    =  1024,
     [OPTC_ARENA_CA_SUB]    =  1024,
+    /* Key-only records: two per eligible HP face of every resident sector
+     * (KA), and of the near-variant sectors (KN). */
+    [OPTC_ARENA_KN]        =  8192,
+    [OPTC_ARENA_KA]        = 65536,
 };
 
 #define TC_FREE_MAX   1024   /* free-list spans per arena */
@@ -195,9 +199,14 @@ _Static_assert(offsetof(tc_globals_ubo, rim_oxyH) % 32 == 0 &&
  * moving cameras render one tick ahead of the CPU-fed scene around them.
  * Re-extracted presents (windowed intermediates + canon-lag re-extract)
  * publish immediately: their build IS the displayed state. */
+/* One slot's key-only record chunks (openpete_tercache_sector_keys) in the
+ * KN and KA arenas. */
+typedef struct { openpete_tercache_keyrange kn, ka; } tc_keys;
+
 typedef struct {
     tc_globals_ubo g;
     tc_sector_ubo  sec[OPTC_SLOTS];
+    tc_keys        keys[OPTC_SLOTS];  /* read with OPTC_SF_KEYBAND alone     */
     uint32_t       stamp;             /* openpete_frame of the build, or a scene id */
     int            valid;
     uint32_t       build_serial;      /* present_ctr at the build: ranges freed at a
@@ -254,6 +263,11 @@ static struct {
                                        * fresher camera/fog/colour-generation
                                        * set (rung flips, sub-pixel skew) */
     tc_sector_ubo *build_target;      /* where sector_set writes this build   */
+    tc_keys      *build_keys;         /* where sector_keys writes this build  */
+    uint32_t      key_draws;          /* key-only record draws (census)       */
+    uint64_t      key_instances;      /* records they covered                 */
+    uint32_t      key_inst_last;      /* accumulating (this present)          */
+    uint32_t      key_inst_prev;      /* completed previous present           */
     int           draw_open;
     int  sel_src;      /* 0 closed, 1 scene ring, 2 live, 3 staged */          /* frame_select verdict for this present */
     uint64_t      ubo_flush_serial;   /* rhi_frame_serial of the last UBO flush
@@ -1131,6 +1145,8 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
     tc_adopt_overflow();
     s_tc.draws_prev = s_tc.draws_last;
     s_tc.draws_last = 0;
+    s_tc.key_inst_prev = s_tc.key_inst_last;
+    s_tc.key_inst_last = 0;
     /* release deferred ranges older than the in-flight window */
     int w = 0;
     /* Eager: a range freed at build serial F was drawn by ring states built
@@ -1230,7 +1246,9 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
 
     /* reset sector flags; origins are rewritten by sector_set */
     for (int i = 0; i < OPTC_SLOTS; i++) T->sec[i].o[3] = 0.0f;
+    memset(T->keys, 0, sizeof(T->keys));
     s_tc.build_target = T->sec;
+    s_tc.build_keys = T->keys;
 }
 
 void openpete_tercache_frame_skip(uint32_t stamp, int immediate)
@@ -1244,7 +1262,9 @@ void openpete_tercache_frame_skip(uint32_t stamp, int immediate)
     tc_state *T = tc_begin_state(stamp, immediate);
     memset(&T->g, 0, sizeof(T->g));
     for (int i = 0; i < OPTC_SLOTS; i++) T->sec[i].o[3] = 0.0f;
+    memset(T->keys, 0, sizeof(T->keys));
     s_tc.build_target = T->sec;
+    s_tc.build_keys = T->keys;
 }
 
 /* Called once per rendered present: open the retained draws only for the
@@ -1304,11 +1324,21 @@ void openpete_tercache_sector_set(int slot, float ox, float oy, float oz,
     }
 }
 
+void openpete_tercache_sector_keys(int slot, const openpete_tercache_keyrange *kn,
+                                   const openpete_tercache_keyrange *ka)
+{
+    if (!s_tc.build_keys || slot < 0 || slot >= OPTC_SLOTS || slot == (int)OPTC_SLOT_DEAD)
+        return;
+    s_tc.build_keys[slot].kn = *kn;
+    s_tc.build_keys[slot].ka = *ka;
+}
+
 void openpete_tercache_frame_commit(void)
 {
     /* Build staging is complete; promotion happens at the next frame_begin
      * (hook builds) and the UBO flush at the present's first draw. */
     s_tc.build_target = NULL;
+    s_tc.build_keys = NULL;
 }
 
 /* ---- draw --------------------------------------------------------------- */
@@ -1399,20 +1429,100 @@ static uint32_t tc_arena_high(int arena)
     return h;
 }
 
+static void tc_pc_fill(tc_pc *pc, int pass_sel, const openpete_tercache_clip *c)
+{
+    memset(pc, 0, sizeof(*pc));
+    pc->x_base = c->x_base; pc->x_span = c->x_span;
+    pc->y_base = c->y_base; pc->y_span = c->y_span;
+    pc->disp_w = c->disp_w; pc->clip_h = c->clip_h;
+    pc->band = c->band; pc->freeze_wf = c->freeze_wf;
+    pc->pass_sel = pass_sel; pc->full_extent = c->full_extent;
+    pc->mat_pass = s_tc_mat_pass;
+    pc->snap = s_tc_snap;
+}
+
 static void tc_draw_arena(int arena, int pass_sel, const openpete_tercache_clip *c)
 {
     const tc_arena *a = &s_tc.arena[arena];
     tc_pc pc;
-    memset(&pc, 0, sizeof(pc));
-    pc.x_base = c->x_base; pc.x_span = c->x_span;
-    pc.y_base = c->y_base; pc.y_span = c->y_span;
-    pc.disp_w = c->disp_w; pc.clip_h = c->clip_h;
-    pc.band = c->band; pc.freeze_wf = c->freeze_wf;
-    pc.pass_sel = pass_sel; pc.full_extent = c->full_extent;
-    pc.mat_pass = s_tc_mat_pass;
-    pc.snap = s_tc_snap;
+    tc_pc_fill(&pc, pass_sel, c);
     for (int b = 0, n = atomic_load_explicit(&a->n, memory_order_acquire); b < n; b++)
         tc_draw_buf(arena, &a->buf[b], &pc);
+}
+
+/* A selected slot's key-only record range: its KN chunk under
+ * OPTC_SF_NEARVAR, its KA chunk otherwise; without OPTC_SF_KEYT4 the
+ * whole-triangle records alone. Clamped to the buffer it names. Returns 0
+ * when the slot has none to draw this present. */
+static int tc_key_range(int slot, uint32_t sf, int *nearv, const tc_pair **pr,
+                        uint32_t *first, uint32_t *count)
+{
+    if ((sf & (OPTC_SF_DRAWN | OPTC_SF_KEYBAND)) != (OPTC_SF_DRAWN | OPTC_SF_KEYBAND))
+        return 0;
+    *nearv = (sf & OPTC_SF_NEARVAR) != 0;
+    const openpete_tercache_keyrange *k = *nearv ? &s_tc.sel.keys[slot].kn
+                                                 : &s_tc.sel.keys[slot].ka;
+    const int arena = *nearv ? OPTC_ARENA_KN : OPTC_ARENA_KA;
+    const uint32_t skip = (sf & OPTC_SF_KEYT4) ? 0u : k->count_t4;
+    if (skip >= k->count) return 0;
+    *first = k->first + skip;
+    *count = k->count - skip;
+    if (k->buf < 0 ||
+        k->buf >= atomic_load_explicit(&s_tc.arena[arena].n, memory_order_acquire))
+        return 0;
+    const int b = k->buf;
+    *pr = atomic_load_explicit(&s_tc.arena[arena].buf[b].pair, memory_order_acquire);
+    if (!*pr || *first >= (*pr)->cap) return 0;
+    if (*count > (*pr)->cap - *first) *count = (*pr)->cap - *first;
+    return 1;
+}
+
+/* OPENPETE_TERRAIN_KEY_DBG=1 (the key pass census): one KEY slot's key-only
+ * record draws and instances. */
+static void tc_key_census(uint32_t draws, uint64_t instances)
+{
+    static int dbg = -1;
+    if (dbg < 0) { const char *e = getenv("OPENPETE_TERRAIN_KEY_DBG"); dbg = (e && *e && *e != '0'); }
+    if (dbg)
+        fprintf(stderr, "[keypass-retained] key-draws=%u key-records=%llu\n",
+                draws, (unsigned long long)instances);
+}
+
+/* The key-only records of every sector the selected build marked
+ * OPTC_SF_KEYBAND: one instanced draw over the sector's KN range (a
+ * near-variant sector) or KA range, so the KEY slot shades the records of
+ * the sectors that may hold a near-band face and no others. A range read
+ * from a state older than its chunk's reuse draws records that name another
+ * slot or generation, which the vertex stage kills as it kills any stale
+ * element. */
+static void tc_draw_keys(const openpete_tercache_clip *c)
+{
+    tc_pc pc;
+    tc_pc_fill(&pc, 2, c);
+    const rhi_pipeline *bound = NULL;
+    const uint64_t inst0 = s_tc.key_instances;
+    const uint32_t draws0 = s_tc.key_draws;
+    for (int slot = 0; slot < OPTC_SLOTS; slot++) {
+        union { float f; uint32_t u; } w;
+        w.f = s_tc.sel.sec[slot].o[3];
+        int nearv = 0;
+        const tc_pair *pr = NULL;
+        uint32_t first = 0, count = 0;
+        if (!tc_key_range(slot, w.u, &nearv, &pr, &first, &count)) continue;
+        rhi_pipeline *p = nearv ? s_tc.pipe_cn[TC_CP_KEY] : s_tc.pipe_ca[TC_CP_KEY];
+        if (!p) continue;
+        if (p != bound) { rhi_bind_pipeline(s_tc.dev, p); bound = p; }
+        rhi_push_constants(s_tc.dev, &pc, sizeof(pc));
+        rhi_bind_vertex_buffer(s_tc.dev, pr->vb);
+        rhi_draw_instanced(s_tc.dev, nearv ? RHI_TERRAIN_CELL_VERTS_NEAR
+                                           : RHI_TERRAIN_CELL_VERTS_ANIM,
+                           count, 0, first);
+        s_tc.key_draws++;
+        s_tc.key_instances += count;
+        s_tc.key_inst_last += count;
+        s_tc.draws_last++;
+    }
+    tc_key_census(s_tc.key_draws - draws0, s_tc.key_instances - inst0);
 }
 
 /* Draw a twin arena (poly-anim or near variant): rebind that variant of the
@@ -1741,6 +1851,7 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
             tc_draw_anim(s_tc.pipe_n_key, OPTC_ARENA_N_OPAQUE, 2, clip);
             tc_draw_anim(s_tc.pipe_cn[TC_CP_KEY], OPTC_ARENA_CN_OPAQUE, 2, clip);
             tc_draw_anim(s_tc.pipe_n_key, OPTC_ARENA_N_LP,     2, clip);
+            tc_draw_keys(clip);
             break;
     }
     tc_draw_material_passes(which, buckets, bn, use_mark ? 1 : 0, clip);
@@ -1778,4 +1889,7 @@ void openpete_tercache_get_stats(openpete_tercache_stats_t *out)
     out->draws_retired = atomic_load_explicit(&s_tc.draws_retired, memory_order_relaxed);
     out->cell_draws     = s_tc.cell_draws;
     out->cell_instances = s_tc.cell_instances;
+    out->key_draws      = s_tc.key_draws;
+    out->key_instances  = s_tc.key_instances;
+    out->key_instances_last_present = s_tc.key_inst_prev;
 }
