@@ -602,13 +602,6 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; float pvz; } openpe
  * HP only +4b), so the og-key verdict breaks wherever tier and distance
  * decouple. No feeder emits this category any more. */
 #define OPENPETE_SCENE_TERRAIN_KEY 14
-/* WORLD_KEY: key-only terrain. A terrain face that the game inserts into the
- * ordering table as finer sub-cells than the visible mesh draws it feeds
- * those sub-cells here, each carrying its own key: the terrain key pass
- * rasters them, and no colour pass draws them. The face's visible WORLD
- * triangles are stamped by openpete_native_scene_set_key_cells and contest
- * without emitting. Opaque only. */
-#define OPENPETE_SCENE_WORLD_KEY 15
 /* carry: 1 = a tri is screen-space 2D-UI that the sub-tick re-extract canNOT
  * re-derive (it has no 2D-prim chokepoint to hook), so it must be snapshotted
  * before the rebuild and re-applied after — like the OVERLAY/HUD_PANEL carry, but
@@ -984,11 +977,14 @@ unsigned openpete_native_scene_pvz_missing(void);
  * never turns a frame the game drew nothing on into a rendered scene. */
 void openpete_native_scene_set_host_added(int on);
 
-/* Sticky per-tri stamp, the set_host_added pattern: 1 marks a WORLD triangle
- * whose key raster its face's OPENPETE_SCENE_WORLD_KEY sub-cells carry. Its
- * koff is the minimum of those sub-cells' keys, contested by its own
- * fragments and not rastered into the terrain key image. */
-void openpete_native_scene_set_key_cells(int on);
+/* Sticky per-tri stamp, the set_host_added pattern: the drain sub-cell keys
+ * of a WORLD triangle whose face the game's near drain inserts into the
+ * ordering table as finer sub-cells than the triangle. fl holds each
+ * vertex's face-local coordinate (x0, y0, x1, y1, x2, y2), kc the face's
+ * key table (psx_key_contest.glsl op_drain_delta); the triangle's koff is
+ * the least sub-cell key, and each fragment keys and contests at its own
+ * sub-cell's. NULL clears the stamp. */
+void openpete_native_scene_set_key_cells(const float fl[6], const uint32_t kc[8]);
 
 /* Marks the start of the terrain feed in the scene being accumulated: every
  * triangle added after the call, until the scene resets, is stamped as emitted

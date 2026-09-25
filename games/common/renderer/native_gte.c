@@ -334,6 +334,8 @@ ngte_cvert ngte_clip_lerp(ngte_cvert a, ngte_cvert b, double zc) {
     r.m3 = zc;
     r.u  = a.u + (float)t * (b.u - a.u);
     r.v  = a.v + (float)t * (b.v - a.v);
+    r.fx = a.fx + (float)t * (b.fx - a.fx);
+    r.fy = a.fy + (float)t * (b.fy - a.fy);
     int ar=a.rgb&0xFF, ag=(a.rgb>>8)&0xFF, ab=(a.rgb>>16)&0xFF;
     int br=b.rgb&0xFF, bg=(b.rgb>>8)&0xFF, bb=(b.rgb>>16)&0xFF;
     int rr=(int)(ar+t*(br-ar)+0.5), rg=(int)(ag+t*(bg-ag)+0.5), rb=(int)(ab+t*(bb-ab)+0.5);

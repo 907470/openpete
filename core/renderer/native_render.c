@@ -339,9 +339,11 @@ typedef struct {
     int host_added; /* 1 = geometry the host added beyond the game's own render
                      * (sticky set_host_added value). The scene's content and
                      * world-frame verdicts skip these tris. */
-    int key_cells;  /* 1 = a WORLD tri whose key its face's WORLD_KEY sub-cells
-                     * raster (sticky set_key_cells value); contests, never
-                     * emits */
+    float kfl[3][2]; /* drain coordinate p per vertex and ...                 */
+    uint32_t kc[8];  /* ... the face's drain sub-cell key table (sticky
+                      * set_key_cells value; all zero = none): each fragment
+                      * keys and contests at its own sub-cell's key, through
+                      * the present's drain records (drain_records_build) */
     int ter_after;  /* 1 = added at or after the start of this scene's terrain
                      * feed (sticky, set by openpete_native_scene_mark_terrain_feed,
                      * cleared with the scene). Places the feed in emission order
@@ -351,6 +353,34 @@ typedef struct {
  * without mirroring it here (or vice versa), this array gets a negative size. */
 typedef char nr_assert_scene_tri_prefix[
     (offsetof(scene_tri_t, category) == sizeof(openpete_scene_tri)) ? 1 : -1];
+
+/* The present's drain records (psx_key_contest.glsl op_drain_record): one
+ * per scene triangle with a drain sub-cell key table, packed into the
+ * records image the key-resolve stages read, indexed by the tag the
+ * triangle's vertices carry in their rank ordinal. idx maps a triangle of
+ * `scene` to its record (-1: none). */
+#define DRAIN_REC_PER_ROW 64            /* 4 texels per record, 256 texels a row */
+#define DRAIN_REC_ROWS    64
+static struct {
+    const void* scene; int n;           /* the scene the records describe       */
+    uint64_t    serial;                 /* rhi frame serial of the build        */
+    int*        idx; int idx_cap;
+    int         nrec;
+    int         untex;                  /* tables on triangles with no UV map   */
+    uint32_t    words[DRAIN_REC_PER_ROW * DRAIN_REC_ROWS * 16];
+} s_drain;
+
+/* A scene vertex's rank ordinal: -(record + 1) on a triangle with a drain
+ * record of this present, its own ordinal otherwise. */
+static inline void rv_drain(rhi_vertex* o, const scene_tri_t* t, int k)
+{
+    (void)k;
+    const uintptr_t a = (uintptr_t)t, b = (uintptr_t)s_drain.scene;
+    if (!s_drain.idx || a < b) return;
+    const uintptr_t i = (a - b) / sizeof(scene_tri_t);
+    if (i >= (uintptr_t)s_drain.n || s_drain.idx[i] < 0) return;
+    o->sy = -(float)(s_drain.idx[i] + 1);
+}
 static mod_fvec           s_scene_v;              /* accumulating (frame N) */
 #define s_scene ((scene_tri_t*)s_scene_v.data)    /* moves on growth: index, never hold */
 static int                s_scene_n;
@@ -478,8 +508,18 @@ void openpete_native_scene_set_tag(uint32_t tag) { s_cur_tag = tag; }
 /* Sticky host-added origin (see openpete_native_scene_set_host_added). */
 static int s_cur_host_added;
 void openpete_native_scene_set_host_added(int on) { s_cur_host_added = on ? 1 : 0; }
-static int s_cur_key_cells;
-void openpete_native_scene_set_key_cells(int on) { s_cur_key_cells = on ? 1 : 0; }
+static float    s_cur_kfl[3][2];
+static uint32_t s_cur_kc[8];
+void openpete_native_scene_set_key_cells(const float fl[6], const uint32_t kc[8])
+{
+    if (!fl || !kc) {
+        memset(s_cur_kfl, 0, sizeof s_cur_kfl);
+        memset(s_cur_kc, 0, sizeof s_cur_kc);
+        return;
+    }
+    memcpy(s_cur_kfl, fl, sizeof s_cur_kfl);
+    memcpy(s_cur_kc, kc, sizeof s_cur_kc);
+}
 /* Sticky terrain-feed mark (see openpete_native_scene_mark_terrain_feed). */
 static int s_cur_ter_after;
 void openpete_native_scene_mark_terrain_feed(void) { s_cur_ter_after = 1; }
@@ -1188,7 +1228,8 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
         s_scene[s_scene_n].prim = s_cur_prim;            /* sticky (set_prim) */
         s_scene[s_scene_n].stp_sel = s_cur_stp_sel;      /* sticky (set_stp_select) */
         s_scene[s_scene_n].host_added = s_cur_host_added; /* sticky (set_host_added) */
-        s_scene[s_scene_n].key_cells = s_cur_key_cells;   /* sticky (set_key_cells) */
+        memcpy(s_scene[s_scene_n].kfl, s_cur_kfl, sizeof s_cur_kfl);   /* sticky (set_key_cells) */
+        memcpy(s_scene[s_scene_n].kc, s_cur_kc, sizeof s_cur_kc);
         s_scene[s_scene_n].ter_after = s_cur_ter_after;   /* sticky (mark_terrain_feed) */
         if (s_cur_tag && tag_tint_on()) {
             /* Coverage instrument: hash the tag to a stable tint and modulate
@@ -2771,6 +2812,7 @@ static struct {
      * the ported PSX sampler. */
     rhi_pipeline *vram_pipe;
     rhi_texture  *vram_tex;
+    rhi_texture  *drain_tex;   /* drain sub-cell key records (drain_records_build) */
     uint16_t     *vram_mirror;  /* NR_VRAM_W*NR_VRAM_H */
 
     /* Native 3D render: gouraud triangles (quad.vert/quad.frag) for
@@ -3800,7 +3842,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .vert_spv = "terrain_key.vert.spv",
         .frag_spv = "psx_key_cutout.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true, .depth_class = RHI_DEPTH_FORWARD,
-        .uses_vram = true, .push_const_size = sizeof(psx_material),
+        .uses_vram = true, .uses_vram2 = true,   /* set 1: drain records */
+        .push_const_size = sizeof(psx_material),
     };
     rhi_pipeline *terrain_key_tex_pipe = terrain_key_pipe
         ? rhi_create_pipeline(dev, &terrain_key_tex_desc) : NULL;
@@ -3831,6 +3874,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     if (terrain_key_pipe && !moby_rank_pipe)
         OPL_ERROR_F("native", "moby rank pass unavailable; same-moby painter select disabled");
     rhi_texture  *vram_tex  = rhi_create_vram(dev, NR_VRAM_W, NR_VRAM_H);
+    rhi_texture  *drain_tex = rhi_create_u32x4(dev, DRAIN_REC_PER_ROW * 4, DRAIN_REC_ROWS);
     /* W2.4: the CPU mirror IS the owned native VRAM model (static storage in
      * native_vram.c) — written by the native ops at op time and shadow-synced
      * from PsyCross's mirror per dirty rect at present time. */
@@ -3958,6 +4002,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.occl_pipe    = occl_pipe;              /* may be NULL → no moby occlusion culling */
     s_nr.occl_grid    = occl_grid;              /* may be NULL → no moby occlusion culling */
     s_nr.vram_tex     = vram_tex;
+    s_nr.drain_tex    = drain_tex;
     s_nr.vram_mirror  = mirror;
     /* W2.4: subscribe to PsyCross VRAM writes (dirty-rect tracked mirror) and
      * install the native op implementations (1b — verified via
@@ -5025,7 +5070,7 @@ static void native_depth_prepass(void)
             /* Vertex colour retained for vertex-struct completeness; the shadow
              * and occlusion consumers sample the pre-pass depth only. */
             o->u = 0.0f; o->v = 0.0f; o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
-                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
+                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal; rv_drain(o, &scene[t], k);
         }
         m += 3;
     }
@@ -5342,10 +5387,7 @@ static int key_batch_admits(const scene_tri_t* t, int prop_class,
         return t->category == OPENPETE_SCENE_PLAYER && t->pkey > 0.25f &&
                box_hits_any(tri_box(t), aura, naura);
     }
-    /* Terrain: every keyed WORLD triangle, except one whose face's
-     * WORLD_KEY sub-cells carry its key, and those sub-cells. */
-    if (t->category == OPENPETE_SCENE_WORLD_KEY) return t->koff > 0.25f;
-    return t->category == OPENPETE_SCENE_WORLD && !t->key_cells && t->koff > 0.25f;
+    return t->category == OPENPETE_SCENE_WORLD && t->koff > 0.25f;
 }
 
 /* The player band's C mirror (psx_key_contest.glsl, op_pkey_is): slot s
@@ -5377,11 +5419,15 @@ static void pack_key_vert(const scene_tri_t* T, int prop_class, int tex,
          * and the cutout stage's perspective UV. */
         float tv = T->v[k].pvz;
         float z = prop_class == 1 ? tv : zflat;
-        o->x = cx; o->y = cy; o->z = z; o->w = tex ? tv : 0.0f;
+        /* w: the cutout UV's perspective W, and the drain face-local
+         * coordinate's (terrain_key.vert), so every face carries it. */
+        o->x = cx; o->y = cy; o->z = z; o->w = tv;
         o->u = tex ? T->v[k].u : 0.0f;
         o->v = tex ? T->v[k].v : 0.0f;
         o->rgba = 0xFF000000u;
         o->koff = 0.5f;
+        o->sx = 0.0f; o->sy = 0.0f;
+        rv_drain(o, T, k);
     }
 }
 
@@ -5392,8 +5438,9 @@ static void pack_key_vert(const scene_tri_t* T, int prop_class, int tex,
  * its opaque texels paint (og OT occupancy — a cloak edge or fence lattice
  * must not key-discard what its holes show). *out_untex receives the
  * untextured prefix length; spans/nspans the textured runs. Span-table
- * overflow degrades the remainder to the untextured (full-footprint) pipe —
- * the pre-cutout behaviour, drawn as a trailing sentinel span (bpp < 0). */
+ * overflow keys the remainder full-footprint, drawn as a trailing sentinel
+ * span (bpp < 0) through the cutout pipe, which skips the texel cutout at
+ * bpp < 0 and still keys a drain record's sub-cell by its UV. */
 static int pack_terrain_key_batch(const scene_tri_t* scene, int scene_n,
                                   int full_extent, int prop_class, rhi_vertex* out,
                                   int* out_untex, keytex_span_t* spans, int* nspans)
@@ -5433,13 +5480,14 @@ static int pack_terrain_key_batch(const scene_tri_t* scene, int scene_n,
                 sp->mat.clut_x = T->clut_x; sp->mat.clut_y = T->clut_y;
                 sp->mat.bpp = T->bpp;
             } else {
-                /* table full: remainder rasters full-footprint (flat pipe) */
+                /* table full: remainder rasters full-footprint */
                 sp = &spans[(*nspans)++];
                 sp->first = m; sp->count = 0;
+                memset(&sp->mat, 0, sizeof sp->mat);
                 sp->mat.bpp = -1;
             }
         }
-        pack_key_vert(T, prop_class, sp->mat.bpp >= 0, &out[m]);
+        pack_key_vert(T, prop_class, 1, &out[m]);
         m += 3;
         sp->count += 3;
     }
@@ -5534,6 +5582,15 @@ static struct {
     openpete_tercache_clip clip;    /* the pass's screen->clip mapping */
 } s_tk_last = { NULL, 0, -1, -1, -1, -1, NULL, NULL, NULL, 0, 0, { 0 } };
 
+/* The triangles of a packed key batch of m vertices that key per drain
+ * sub-cell (a drain record, rv_drain). */
+static int key_batch_drain_tris(const rhi_vertex* kbuf, int m)
+{
+    int n = 0;
+    for (int t3 = 0; t3 + 3 <= m; t3 += 3) n += kbuf[t3].sy < -0.5f;
+    return n;
+}
+
 /* Draw one packed key batch into the currently-open key render pass:
  * untextured prefix through the flat full-footprint pipe, textured material
  * runs through the alpha-aware cutout pipe (transparent texels stamp no
@@ -5550,13 +5607,6 @@ static void draw_key_batch(int base, int m, int untex,
     int tex_bound = 0;
     for (int i = 0; i < nspans; i++) {
         if (spans[i].count <= 0) continue;
-        if (spans[i].mat.bpp < 0) {   /* span-table overflow: full-footprint */
-            rhi_bind_pipeline(s_nr.dev, s_nr.terrain_key_pipe);
-            rhi_draw(s_nr.dev, (uint32_t)spans[i].count,
-                     (uint32_t)(base + spans[i].first));
-            tex_bound = 0;
-            continue;
-        }
         if (!s_nr.terrain_key_tex_pipe) {   /* no cutout pipe: degrade flat */
             rhi_bind_pipeline(s_nr.dev, s_nr.terrain_key_pipe);
             rhi_draw(s_nr.dev, (uint32_t)spans[i].count,
@@ -5566,6 +5616,7 @@ static void draw_key_batch(int base, int m, int untex,
         if (!tex_bound) {
             rhi_bind_pipeline(s_nr.dev, s_nr.terrain_key_tex_pipe);
             rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+            if (s_nr.drain_tex) rhi_bind_texture_set(s_nr.dev, s_nr.drain_tex, 1);
             tex_bound = 1;
         }
         rhi_push_constants(s_nr.dev, &spans[i].mat, sizeof(spans[i].mat));
@@ -5617,6 +5668,66 @@ static void terrain_key_pass_record(int full_extent, int vw, int vh)
     s_tk_last.vw = vw; s_tk_last.vh = vh;
 }
 
+/* Triangle t's drain record: its table, then the affine map from its
+ * texture coordinate to its drain coordinate p (psx_key_contest.glsl
+ * op_drain_record), solved from its three vertices. Returns 0 when the
+ * texture coordinates are collinear (no map). */
+static int drain_record_pack(const scene_tri_t* t, uint32_t w[16])
+{
+    memcpy(w, t->kc, 8 * sizeof(uint32_t));
+    memset(w + 8, 0, 8 * sizeof(uint32_t));
+    const double u0 = t->v[0].u, v0 = t->v[0].v;
+    const double du1 = t->v[1].u - u0, dv1 = t->v[1].v - v0;
+    const double du2 = t->v[2].u - u0, dv2 = t->v[2].v - v0;
+    const double det = du1 * dv2 - du2 * dv1;
+    if (!t->textured || fabs(det) < 1e-6) return 0;
+    float m[6];
+    for (int c = 0; c < 2; c++) {
+        const double p0 = t->kfl[0][c];
+        const double dp1 = t->kfl[1][c] - p0, dp2 = t->kfl[2][c] - p0;
+        const double a = (dp1 * dv2 - dp2 * dv1) / det;
+        const double b = (du1 * dp2 - du2 * dp1) / det;
+        m[c * 3 + 0] = (float)a;
+        m[c * 3 + 1] = (float)b;
+        m[c * 3 + 2] = (float)(p0 - a * u0 - b * v0);
+    }
+    memcpy(w + 8, m, 6 * sizeof(float));
+    w[14] = 1u;   /* valid */
+    return 1;
+}
+
+/* Build and upload the drain records of `scene` for this frame (once per
+ * scene and frame serial), before any render pass opens: one record per
+ * triangle whose table is set, up to the image's capacity (a triangle past
+ * it keeps its face's least key). */
+static void drain_records_build(const scene_tri_t* scene, int scene_n)
+{
+    const uint64_t serial = rhi_frame_serial(s_nr.dev);
+    if (s_drain.scene == scene && s_drain.n == scene_n && s_drain.serial == serial) return;
+    if (scene_n > s_drain.idx_cap) {
+        int* g = (int*)realloc(s_drain.idx, (size_t)scene_n * sizeof(int));
+        if (!g) { s_drain.scene = NULL; s_drain.n = 0; return; }
+        s_drain.idx = g; s_drain.idx_cap = scene_n;
+    }
+    s_drain.scene = scene; s_drain.n = scene_n; s_drain.serial = serial;
+    s_drain.nrec = 0; s_drain.untex = 0;
+    const int cap = DRAIN_REC_PER_ROW * DRAIN_REC_ROWS;
+    for (int t = 0; t < scene_n; t++) {
+        s_drain.idx[t] = -1;
+        if (!scene[t].kc[0] || s_drain.nrec >= cap) continue;
+        if (!drain_record_pack(&scene[t], &s_drain.words[(size_t)s_drain.nrec * 16])) {
+            s_drain.untex++;
+            continue;
+        }
+        s_drain.idx[t] = s_drain.nrec++;
+    }
+    if (s_drain.nrec == 0 || !s_nr.drain_tex) return;
+    const int rows = (s_drain.nrec + DRAIN_REC_PER_ROW - 1) / DRAIN_REC_PER_ROW;
+    rhi_rect r = { 0, 0, DRAIN_REC_PER_ROW * 4, rows };
+    rhi_update_vram_rects_packed(s_nr.dev, s_nr.drain_tex, (const uint8_t*)s_drain.words,
+                                 (size_t)rows * DRAIN_REC_PER_ROW * 64u, &r, 1);
+}
+
 static void native_terrain_key_pass(int full_extent, int vw, int vh)
 {
     if (!openpete_native_key_resolve_on()) return;
@@ -5629,6 +5740,7 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
     int scene_n; uint32_t bg_, fade_, freeze_; int hud_;
     const scene_tri_t* scene = scene_present_buf(&scene_n, &bg_, &fade_, &freeze_, &hud_, NULL);
     scene_n = compose_reserve(scene_n);
+    drain_records_build(scene, scene_n);
     rhi_vertex *kbuf  = (rhi_vertex *)s_cz_key[0].data;
     rhi_vertex *mkbuf = (rhi_vertex *)s_cz_key[1].data;
     rhi_vertex *akbuf = (rhi_vertex *)s_cz_key[2].data;
@@ -5665,7 +5777,9 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
       if (kdbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_KEY_DBG"); kdbg = (e && *e && *e != '0'); }
       if (kdbg) {
         extern unsigned openpete_frame;
-        fprintf(stderr, "[keypass f=%u] vw=%d vh=%d tris=%d\n", openpete_frame, vw, vh, m/3);
+        fprintf(stderr, "[keypass f=%u] vw=%d vh=%d tris=%d cells=%d records=%d untex=%d\n",
+                openpete_frame, vw, vh, m/3, key_batch_drain_tris(kbuf, m), s_drain.nrec,
+                s_drain.untex);
         { const char* kd = getenv("OPENPETE_TERRAIN_KEY_DUMP");
           if (kd && *kd) { FILE* fp = fopen(kd, "a");
             if (fp) { fprintf(fp, "# pass vw=%d vh=%d fe=%d m=%d\n", vw, vh, full_extent, m);
@@ -5821,7 +5935,7 @@ static void bind_scene_pipe(rhi_pipeline* p)
         p == s_nr.gouraud_punch_pipe || p == s_nr.scene_tex_punch_pipe ||
         p == s_nr.hd_cutout_punch_pipe) {
         rhi_bind_depth_sampler(s_nr.dev, s_nr.actor_key_depth, 1);
-        rhi_bind_depth_sampler(s_nr.dev, s_nr.terrain_key_depth, 2);
+        rhi_bind_depth_tex_pair(s_nr.dev, s_nr.terrain_key_depth, s_nr.drain_tex, 2);
         rhi_bind_depth_sampler(s_nr.dev, s_nr.moby_key_depth, 3);
         if (s_nr.moby_rank_rt)
             rhi_bind_texture_set(s_nr.dev, s_nr.moby_rank_rt, 4);
@@ -5896,7 +6010,7 @@ static void bind_player_shadow_decal(void)
 static void bind_material_keys(void)
 {
     if (!s_nr.terrain_key_depth || !s_nr.moby_key_depth || !s_nr.actor_key_depth) return;
-    rhi_bind_depth_sampler(s_nr.dev, s_nr.terrain_key_depth, 2);
+    rhi_bind_depth_tex_pair(s_nr.dev, s_nr.terrain_key_depth, s_nr.drain_tex, 2);
     rhi_bind_depth_sampler(s_nr.dev, s_nr.moby_key_depth, 4);
     rhi_bind_depth_sampler(s_nr.dev, s_nr.actor_key_depth, 5);
     if (s_nr.moby_rank_rt)
@@ -6730,7 +6844,7 @@ static int ut_emit_deferred(int gi, const scene_tri_t* scene, rhi_vertex* buf,
             o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
             o->u = 0.0f; o->v = 0.0f;
             o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
-            o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
+            o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal; rv_drain(o, &scene[t], k);
         }
         n += 3;
     }
@@ -8113,8 +8227,7 @@ static int blended_world_tri(const scene_tri_t* s) {
     int bl = s->blend; if (bl < 0 || bl > 4) bl = 0;
     if (bl == 0) return 0;
     const int c = s->category;
-    if (c == OPENPETE_SCENE_HUD || c == OPENPETE_SCENE_HUD3D ||
-        c == OPENPETE_SCENE_WORLD_KEY) return 0;
+    if (c == OPENPETE_SCENE_HUD || c == OPENPETE_SCENE_HUD3D) return 0;
     if (s->textured) { if (c == OPENPETE_SCENE_PORTAL_GUARD) return 0; }
     else if (c == OPENPETE_SCENE_HUD_PANEL) return 0;
     if (bl == 3 && c == OPENPETE_SCENE_SHADOW) return 0;
@@ -8744,7 +8857,7 @@ static bool draw_native_scene(bool full_extent)
                 o->u = is_shadow ? scene[t].v[k].sx : 0.0f;
                 o->v = is_shadow ? scene[t].v[k].sy : 0.0f;
                 o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
-                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
+                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal; rv_drain(o, &scene[t], k);
             }
             n += 3;
         }
@@ -8812,7 +8925,7 @@ static bool draw_native_scene(bool full_extent)
                 o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
             o->u = 0.0f; o->v = 0.0f;
                 o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
-                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
+                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal; rv_drain(o, &scene[t], k);
             }
             n += 3;
         }
@@ -8830,7 +8943,7 @@ static bool draw_native_scene(bool full_extent)
             o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
             o->u = 0.0f; o->v = 0.0f;
             o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
-                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
+                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal; rv_drain(o, &scene[t], k);
         }
         n += 3;
     }
@@ -8848,7 +8961,7 @@ static bool draw_native_scene(bool full_extent)
             o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
             o->u = 0.0f; o->v = 0.0f;
             o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
-                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
+                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal; rv_drain(o, &scene[t], k);
         }
         n += 3;
     }
@@ -8868,7 +8981,7 @@ static bool draw_native_scene(bool full_extent)
             o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
             o->u = 0.0f; o->v = 0.0f;
             o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
-                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
+                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal; rv_drain(o, &scene[t], k);
         }
         n += 3;
     }
@@ -8886,7 +8999,7 @@ static bool draw_native_scene(bool full_extent)
             o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
             o->u = 0.0f; o->v = 0.0f;
             o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
-                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
+                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal; rv_drain(o, &scene[t], k);
         }
         n += 3;
     }
@@ -8921,7 +9034,7 @@ static bool draw_native_scene(bool full_extent)
                 o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
                 o->u = 0.0f; o->v = 0.0f;
                 o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
-                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
+                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal; rv_drain(o, &scene[t], k);
             }
             n += 3;
         }
@@ -8938,7 +9051,7 @@ static bool draw_native_scene(bool full_extent)
             o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
             o->u = 0.0f; o->v = 0.0f;
             o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
-                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
+                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal; rv_drain(o, &scene[t], k);
         }
         n += 3;
     }
@@ -8964,7 +9077,7 @@ static bool draw_native_scene(bool full_extent)
             o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
             o->u = 0.0f; o->v = 0.0f;
             o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
-                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
+                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal; rv_drain(o, &scene[t], k);
         }
         n += 3;
     }
@@ -9023,7 +9136,7 @@ static bool draw_native_scene(bool full_extent)
                 o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
             o->u = 0.0f; o->v = 0.0f;
                 o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
-                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
+                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal; rv_drain(o, &scene[t], k);
             }
             runs[cur].count += 3;
             if (cat && pseg_n && pseg[pseg_n - 1].run == cur) pseg[pseg_n - 1].count += 3;
@@ -9106,6 +9219,7 @@ static bool draw_native_scene(bool full_extent)
              * its fragment stage read that coord as a varying; the decal now
              * recovers the coord from gl_FragCoord and reads no attribute. */
             o->sx = st->rank; o->sy = (float)st->mordinal;
+            rv_drain(o, st, k);
         }
     }
     n = tx_start + txtri * 3;
@@ -13500,6 +13614,7 @@ void openpete_native_render_shutdown(void)
     rhi_destroy_buffer(s_nr.dev, s_nr.menu_quad_vb);
     rhi_destroy_pipeline(s_nr.dev, s_nr.ovl_resolve_pipe);
     rhi_destroy_texture(s_nr.dev, s_nr.vram_tex);
+    if (s_nr.drain_tex) rhi_destroy_texture(s_nr.dev, s_nr.drain_tex);
     rhi_destroy_buffer(s_nr.dev, s_nr.fs_quad_vb);
     rhi_destroy_buffer(s_nr.dev, s_nr.overlay_vb);
     if (s_nr.version_vb) rhi_destroy_buffer(s_nr.dev, s_nr.version_vb);

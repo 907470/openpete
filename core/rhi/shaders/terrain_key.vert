@@ -17,18 +17,24 @@
  * out past kv ~= 3e6. Keys are FLAT per face (all three verts carry the
  * same kv), so any monotone encoding raster-interpolates exactly; the
  * (zc, W) pair uses W == the key view-Z so window depth survives the
- * hardware clipper (the scene stages' clip-invariance rule). */
+ * hardware clipper (the scene stages' clip-invariance rule). A textured
+ * triangle with a drain record writes its fragment depth from the key of
+ * the drain sub-cell under the fragment instead (psx_key_cutout.frag). */
 
 layout(location = 0) in vec3 inPos;   /* xy = clip-space screen, z = flat key view-Z */
 layout(location = 1) in vec2 inUV;
 layout(location = 2) in vec4 inColor;
 layout(location = 4) in float inW;    /* TRUE per-vertex view-Z (textured cutout UV) */
 layout(location = 5) in float inKoff; /* +key offset + 0.5 sentinel (HP) */
+/* y: the drain record tag (psx_key_contest.glsl op_drain_record). */
+layout(location = 3) in vec2 inRank;
 
 layout(location = 0) out vec4 vColor;
 layout(location = 1) out vec2 vUV;
 layout(location = 2) noperspective out vec2 vScreenPSX;
 layout(location = 3) out float vQ;
+layout(location = 4) flat out float vDrain;   /* the drain record tag */
+layout(location = 5) flat out float vKv;      /* the flat key view-Z */
 
 /* PSX-affine UV (--texture-mapping affine, spec-constant 1) — must track the
  * SCENE stages' selection: the cutout fragment's texel lookups have to land on
@@ -49,4 +55,6 @@ void main()
     vUV = inUV / wq;
     vScreenPSX = inUV;
     vQ = 1.0 / wq;
+    vDrain = inRank.y;
+    vKv = kv;
 }

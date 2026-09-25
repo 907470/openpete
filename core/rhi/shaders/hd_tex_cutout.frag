@@ -10,6 +10,9 @@
 layout(set = 0, binding = 0) uniform sampler2D u_hd;
 layout(set = 1, binding = 0) uniform sampler2D u_actorkey; /* moby og-key image */
 layout(set = 2, binding = 0) uniform sampler2D u_hpkey;   /* terrain og-key image */
+/* Drain sub-cell key records (psx_key_contest.glsl op_drain_record), the
+ * terrain key image's set at binding 1. */
+layout(set = 2, binding = 1) uniform usampler2D u_drain;
 layout(set = 3, binding = 0) uniform sampler2D u_mobykey; /* prop TRUE-depth image */
 /* Moby og-RANK image — same-moby painter select; see psx_scene_key.frag. */
 layout(set = 4, binding = 0) uniform sampler2D u_mobyrank;
@@ -59,7 +62,8 @@ void main()
     /* Terrain KEY-RESOLVE: same contest as psx_scene_key.frag so
      * HD-replaced terrain keeps og's per-pixel face select. Ranked faces
      * skip the positive-koff contest — see psx_scene_key.frag. */
-    if (!ranked && abs(vKoff) > 0.25) {   /* contest rules in psx_scene_key.frag */
+    float koff = op_drain_koff(vKoff, vRank.y, vUVq / vQ, u_drain);
+    if (!ranked && abs(koff) > 0.25) {   /* contest rules in psx_scene_key.frag */
         float hk = texelFetch(u_hpkey,    ivec2(gl_FragCoord.xy), 0).r;
         float ak = texelFetch(u_actorkey, ivec2(gl_FragCoord.xy), 0).r;
         float mk = texelFetch(u_mobykey,  ivec2(gl_FragCoord.xy), 0).r;
@@ -68,16 +72,16 @@ void main()
         float mkey = mk < 0.999999 ? 4096.0 * mk / max(1.0 - mk, 1e-9) : 1e30;
         float own = op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED);
         bool actor = vRank.x < -0.5;   /* unranked moby faces mark rank -1 */
-        if (vKoff > 0.0) {
+        if (koff > 0.0) {
             if (SLOT_CONTEST) {
                 /* Slot-quantized arm, psx_key_contest.glsl's rule: an actor
                  * face loses a tie to the terrain, a terrain face keeps one. */
-                float own_slot = floor((vKoff - 0.5) / 128.0);
+                float own_slot = floor((koff - 0.5) / 128.0);
                 float t_slot   = floor(tkey / 128.0);
                 if (actor ? (t_slot <= own_slot) : (t_slot < own_slot)) discard;
-            } else if (tkey < (vKoff - 0.5) - 64.0) discard;
+            } else if (tkey < (koff - 0.5) - 64.0) discard;
             if ((actor || !MOBY_TRUESCOPE) &&
-                akey < (vKoff - 0.5) - 64.0 &&
+                akey < (koff - 0.5) - 64.0 &&
                 (!MOBY_TRUESCOPE || akey < own - 64.0)) discard;
             /* Prop EMBED rule on the OT band (terrain fragments only, the
              * near-band rule's twin): a curated embedded prop within 1024

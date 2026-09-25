@@ -1,4 +1,6 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+#include "psx_key_contest.glsl"
 
 /* Retained-terrain KEY-pass fragment stage — the psx_key_cutout.frag
  * counterpart for terrain.vert's pass_sel==2 output: rasterise the flat og
@@ -6,13 +8,22 @@
  * opaque texels paint (og OT occupancy — a fence lattice must not
  * key-discard what its holes show). Untextured faces raster full-footprint.
  * The material comes from the vMat varying (the vertex stage already ran
- * the near-tile / CLUT-ladder select), not a push constant. */
+ * the near-tile / CLUT-ladder select), not a push constant. A face with a
+ * drain sub-cell table writes the key of the sub-cell containing the
+ * fragment (psx_key_contest.glsl) as its depth, as psx_key_cutout.frag and
+ * terrain_key.frag do on the walk; every other face writes the rasterised
+ * depth back unchanged. */
 
 layout(set = 0, binding = 0) uniform usampler2D u_vram; /* R16_UINT 1024x512 */
 
 layout(location = 0)      in vec2  vUV;    /* u/wq (recover via vQ)          */
 layout(location = 2) flat in uvec2 vMat;
+layout(location = 3) flat in float vKoff;  /* the face's key + 0.5           */
 layout(location = 4)      in float vQ;     /* 1/wq                           */
+layout(location = 6)      in vec2  vKfl;   /* face-local coordinate x vKq    */
+layout(location = 7)      in float vKq;
+layout(location = 8) flat in uvec4 vKc0;
+layout(location = 9) flat in uvec4 vKc1;
 
 layout(location = 0) out vec4 outColor;
 
@@ -43,5 +54,8 @@ void main()
         }
         if (p == 0u) discard;                  /* PSX transparent sentinel */
     }
+    gl_FragDepth = op_drain_grid(vKc0) == OP_DRAIN_NONE
+        ? gl_FragCoord.z
+        : op_key_store(max(vKoff - 0.5, 1.0) + op_drain_delta(vKfl / vKq, vKc0, vKc1, 0.0));
     outColor = vec4(1.0);                      /* colour attachment unused */
 }

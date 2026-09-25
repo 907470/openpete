@@ -112,16 +112,6 @@ uvec2 inCtxBCol;
 #endif
 #endif
 
-/* A key-only record's vertex (cells_fetch, info bit 26): kind 1 a quad's
- * drain cell, 2 a tier-4 sub-triangle, 3 a sub-triangle of a triangle drawn
- * whole; 0 every other vertex. keySub: kind 3's tier-4 sub-triangle (its
- * tier-2 one is 16 + keySub). keyT0 / keyT1: kind 1's quadrant tile, kind 3's
- * far and near halves' corner UVs. */
-int   keyKind = 0;
-int   keySub  = 0;
-uvec4 keyT0   = uvec4(0u);
-uvec4 keyT1   = uvec4(0u);
-
 layout(push_constant) uniform TerrainPC {
     vec4 cbase;   /* x_base, x_span, y_base, y_span (scene_to_clip terms)  */
     vec4 cdims;   /* disp_w, clip_h, band, freeze_wf                       */
@@ -269,6 +259,10 @@ layout(location = 1)      out vec4  vColor; /* pre-multiplied by q              
 layout(location = 2) flat out uvec2 vMat;   /* x: mat0, y: clx | cly<<16 (post-ladder) */
 layout(location = 3) flat out float vKoff;  /* og OT key (feed koff mirror)         */
 layout(location = 4)      out float vQ;     /* q (frag divides UV/colour by it)     */
+layout(location = 6)      out vec2  vKfl;   /* drain face-local coordinate x vKq   */
+layout(location = 7)      out float vKq;    /* vQ: p interpolates as the UV does    */
+layout(location = 8) flat out uvec4 vKc0;   /* drain sub-cell key table            */
+layout(location = 9) flat out uvec4 vKc1;   /*   (psx_key_contest.glsl)            */
 layout(location = 5) flat out uint  vHd;    /* HD-fold: entry id (bits 0-15, 0=none)
                                              * | ladder-face 1<<16 | fogbias 1<<17  */
 
@@ -503,63 +497,138 @@ float drain_key3(double a, double b, double c, bool drained) {
 
 double det3d(dvec3 a, dvec3 b, dvec3 c);
 
-/* tn_quad_cell_keys mirror: the least key of the 16 cells the drain inserts
- * a tier-4 quad as, over the grid of corners TL, TR, BL, BR; a cell whose key
+/* Node n's place (r, c) in the 15-node triangle grid (terrain.c k_nt4_rc). */
+const int NT4_RC[30] = int[30](0, 0,  0, 1,  0, 2,  0, 3,  0, 4,  1, 0,  1, 1,  1, 2,
+                               1, 3,  2, 0,  2, 1,  2, 2,  3, 0,  3, 1,  4, 0);
+
+/* The drain key table (psx_key_contest.glsl): a face's sub-cell keys packed
+ * as their excess over the least one, by grid position. */
+struct dtab { uvec4 t0; uvec4 t1; float kmin; int n; };
+
+void dtab_put(inout dtab T, int slot, uint v) {
+    uint sh = uint(slot & 1) * 16u;
+    int w = (slot >> 1) & 3;
+    if (slot < 8) T.t0[w] |= v << sh; else T.t1[w] |= v << sh;
+}
+
+/* tn_sub_slot mirror: a sub-triangle's table entry from its nodes' grid
+ * places, h the grid step (1 tier 4, 2 tier 2). An upward sub-triangle has
+ * two nodes on its top row, a downward one a single node. */
+int drain_sub_slot(int a, int b, int c, int h) {
+    int ra = NT4_RC[a * 2], rb = NT4_RC[b * 2], rc = NT4_RC[c * 2];
+    int rmin = min(ra, min(rb, rc));
+    int cmin = min(NT4_RC[a * 2 + 1], min(NT4_RC[b * 2 + 1], NT4_RC[c * 2 + 1]));
+    int top = int(ra == rmin) + int(rb == rmin) + int(rc == rmin);
+    int i = cmin / h, j = rmin / h;
+    return top == 2 ? j * 4 + i : (3 - j) * 4 + (3 - i);
+}
+
+/* Pack keys[] (on[] the sub-cells the drain inserts, slot[] their entries)
+ * over their least key, a skipped sub-cell at 0; grid in entry 0's top
+ * bits (terrain.c tn_keycells_pack). */
+void dtab_pack(inout dtab T, float keys[16], bool on[16], int slot[16], int cnt, uint grid) {
+    T.t0 = uvec4(0u); T.t1 = uvec4(0u);
+    if (T.n == 0) return;
+    for (int i = 0; i < cnt; i++)
+        if (on[i]) dtab_put(T, slot[i], uint(keys[i] - T.kmin));
+    T.t0.x |= grid << 14;
+}
+
+/* tn_quad_cell_keys mirror: the keys of the 16 cells the drain inserts a
+ * tier-4 quad as, over the grid of corners TL, TR, BL, BR; a cell whose key
  * is 0 carries none, nor, when `cull` (a straddling single-sided face), one
- * facing away over both of its triples (nc4_front). n receives the count of
- * cells carrying a key. */
-float quad_cells_kmin(dvec3 TL, dvec3 TR, dvec3 BL, dvec3 BR, bool cull, bool flip,
-                      out int n)
+ * facing away over both of its triples (nc4_front). */
+dtab quad_cells_tab(dvec3 TL, dvec3 TR, dvec3 BL, dvec3 BR, bool cull, bool flip)
 {
     dvec3 G[25];
     for (int r = 0; r < 5; r++)
         for (int c = 0; c < 5; c++) G[r * 5 + c] = nc4_node(r, c, TL, TR, BL, BR);
-    float kmin = 0.0;
-    n = 0;
+    dtab T;
+    T.kmin = 0.0; T.n = 0;
+    float keys[16]; bool on[16]; int slot[16];
     for (int i = 0; i < 16; i++) {
         int r = i >> 2, c = i & 3;
         dvec3 tl = G[r * 5 + c], tr = G[r * 5 + c + 1];
         dvec3 bl = G[r * 5 + c + 5], br = G[r * 5 + c + 6];
         float key = drain_key4(tl.z, tr.z, bl.z, br.z, true);
-        if (!(key > 0.0)) continue;
+        bool f = true;
         if (cull) {
             precise double d1 = det3d(tl, tr, bl);
-            bool f = flip ? (d1 <= 0.0lf) : (d1 >= 0.0lf);
+            f = flip ? (d1 <= 0.0lf) : (d1 >= 0.0lf);
             if (!f) {
                 precise double d2 = det3d(tr, br, bl);
                 f = flip ? (d2 <= 0.0lf) : (d2 >= 0.0lf);
             }
-            if (!f) continue;
         }
-        if (n == 0 || key < kmin) kmin = key;
-        n++;
+        keys[i] = key; slot[i] = i;
+        on[i] = f && key > 0.0;
+        if (!on[i]) continue;
+        if (T.n == 0 || key < T.kmin) T.kmin = key;
+        T.n++;
     }
-    return kmin;
+    dtab_pack(T, keys, on, slot, 16, 1u);
+    return T;
 }
 
 /* tn_tri_cell_keys mirror: the same over a triangle's tier-4 (16) or tier-2
  * (4) sub-triangles, a sub-triangle facing away over its own triple
  * skipped when `cull`. */
-float tri_cells_kmin(dvec3 A, dvec3 B, dvec3 C, bool tier2, bool cull, bool flip, out int n)
+dtab tri_cells_tab(dvec3 A, dvec3 B, dvec3 C, bool tier2, bool cull, bool flip)
 {
     dvec3 N[15];
     for (int k = 0; k < 15; k++) N[k] = nt4_node(k, A, B, C);
     int base = tier2 ? 16 : 0, cnt = tier2 ? 4 : 16;
-    float kmin = 0.0;
-    n = 0;
+    dtab T;
+    T.kmin = 0.0; T.n = 0;
+    float keys[16]; bool on[16]; int slot[16];
+    for (int i = 0; i < 16; i++) { keys[i] = 0.0; on[i] = false; slot[i] = 0; }
     for (int i = 0; i < cnt; i++) {
         int t = (base + i) * 3;
         dvec3 a = N[NT_SUB[t]], b = N[NT_SUB[t + 1]], c = N[NT_SUB[t + 2]];
         float key = drain_key3(a.z, b.z, c.z, true);
-        if (!(key > 0.0)) continue;
+        bool f = true;
         if (cull) {
             precise double d = det3d(a, b, c);
-            if (flip ? (d > 0.0lf) : (d < 0.0lf)) continue;
+            f = !(flip ? (d > 0.0lf) : (d < 0.0lf));
         }
-        if (n == 0 || key < kmin) kmin = key;
-        n++;
+        keys[i] = key;
+        slot[i] = drain_sub_slot(NT_SUB[t], NT_SUB[t + 1], NT_SUB[t + 2], tier2 ? 2 : 1);
+        on[i] = f && key > 0.0;
+        if (!on[i]) continue;
+        if (T.n == 0 || key < T.kmin) T.kmin = key;
+        T.n++;
     }
-    return kmin;
+    dtab_pack(T, keys, on, slot, cnt, tier2 ? 3u : 2u);
+    return T;
+}
+
+/* The drain coordinate (psx_key_contest.glsl) of a 15-node triangle grid
+ * node: its face-local place in quarter-edge units. */
+vec2 nt4_fl(int n) { return vec2(float(NT4_RC[n * 2 + 1]), float(NT4_RC[n * 2])); }
+
+/* terrain.c tn_quad_sides mirror: point V's side coordinates of the 2x2
+ * quadrant with corners Q0..Q3 (TL, TR, BL, BR), term by term as the walk
+ * computes them: the eye-plane normals of its column and row isolines,
+ * dotted with V and scaled to 1 at TR and BL. */
+dvec3 eye_normal(dvec3 a, dvec3 b) {
+    precise double x = a.y * b.z - b.y * a.z;
+    precise double y = a.z * b.x - b.z * a.x;
+    precise double z = a.x * b.y - b.x * a.y;
+    return dvec3(x, y, z);
+}
+double eye_side(dvec3 n, dvec3 v) {
+    precise double d = n.x * v.x + n.y * v.y;
+    d = d + n.z * v.z;
+    return d;
+}
+vec2 quad_side_fl(dvec3 Q0, dvec3 Q1, dvec3 Q2, dvec3 Q3, dvec3 V) {
+    precise dvec3 ct = (Q0 + Q1) * 0.5lf, cb = (Q2 + Q3) * 0.5lf;
+    precise dvec3 rl = (Q0 + Q2) * 0.5lf, rr = (Q1 + Q3) * 0.5lf;
+    dvec3 nc = eye_normal(ct, cb), nr = eye_normal(rl, rr);
+    double sc = eye_side(nc, Q1), sr = eye_side(nr, Q2);
+    if (sc == 0.0lf) sc = 1.0lf;
+    if (sr == 0.0lf) sr = 1.0lf;
+    return vec2(float(eye_side(nc, V) / sc), float(eye_side(nr, V) / sr));
 }
 
 /* GTE_SAT mirror (double of the FLOAT screen coord, like the CPU's
@@ -670,6 +739,7 @@ void kill_vert() {
     gl_Position = vec4(0.0, 0.0, 0.0, 1.0);   /* degenerate: no raster */
     vUV = vec2(0.0); vColor = vec4(0.0); vMat = uvec2(0u);
     vKoff = 0.0; vQ = 1.0;
+    vKfl = vec2(0.0); vKq = 1.0; vKc0 = uvec4(0u); vKc1 = uvec4(0u);
 }
 
 /* ---- portal inner-rim cull (portal_rim_classify mirror) --------------------
@@ -838,7 +908,7 @@ bool cover_dropped(vec2 s0, vec2 s1, vec2 s2, double z0, double z1, double z2) {
  * subdivide installs on its own nodes under the integer snap. A cut vertex
  * rebuilt by the clip carries none (ngte_clip_lerp zeroes oflag) and falls
  * back to the floor of its own projection, as push_tri does. */
-struct cvx { dvec3 m; ivec3 c; vec2 uv; vec2 os; bool ov; };
+struct cvx { dvec3 m; ivec3 c; vec2 uv; vec2 os; bool ov; vec2 fl; };
 
 /* Unpack a baked R8G8B8A8 colour word the way the vertex-input UNORM
  * conversion unpacks the same bytes at locations 2/3. */
@@ -854,6 +924,8 @@ cvx cv_lerp_n(cvx a, cvx b, double zc) {
     precise double py = a.m.y + t * (b.m.y - a.m.y);
     precise float  pu = a.uv.x + float(t) * (b.uv.x - a.uv.x);
     precise float  pv = a.uv.y + float(t) * (b.uv.y - a.uv.y);
+    precise float  fx = a.fl.x + float(t) * (b.fl.x - a.fl.x);
+    precise float  fy = a.fl.y + float(t) * (b.fl.y - a.fl.y);
     precise double cr = double(a.c.x) + t * double(b.c.x - a.c.x) + 0.5lf;
     precise double cg = double(a.c.y) + t * double(b.c.y - a.c.y) + 0.5lf;
     precise double cb = double(a.c.z) + t * double(b.c.z - a.c.z) + 0.5lf;
@@ -862,6 +934,7 @@ cvx cv_lerp_n(cvx a, cvx b, double zc) {
     r.uv = vec2(pu, pv);
     r.c  = ivec3(int(cr), int(cg), int(cb));
     r.os = vec2(0.0); r.ov = false;
+    r.fl = vec2(fx, fy);
     return r;
 }
 
@@ -976,84 +1049,6 @@ bool tri4_fetch(uint info, int lc, int tri2, int k, bool spare) {
     return true;
 }
 
-/* Kind 1's corner UV (tn_quad_cells_emit): the corners of its quadrant tile,
- * V scrolled by dv, interpolated bilinearly (tn_bilerp, in float) at the
- * corner's place in the quadrant, half a quadrant per cell. */
-vec2 key_cell_uv(int corner, int cell, float dv) {
-    int r = cell >> 2, c = cell & 3;
-    float qu[4], qv[4];
-    for (int k = 0; k < 4; k++) {
-        uvec2 t = cell_uv(keyT0, k);
-        qu[k] = float(t.x);
-        qv[k] = float(t.y) + dv;
-    }
-    float s = 0.5 * float((c & 1) + (corner & 1));
-    float t = 0.5 * float((r & 1) + (corner >> 1));
-    precise float u = (1.0 - s) * (1.0 - t) * qu[0] + s * (1.0 - t) * qu[1]
-                    + (1.0 - s) * t * qu[2] + s * t * qu[3];
-    precise float v = (1.0 - s) * (1.0 - t) * qv[0] + s * (1.0 - t) * qv[1]
-                    + (1.0 - s) * t * qv[2] + s * t * qv[3];
-    return vec2(u, v);
-}
-/* Kind 3's node UV (tn_flat_tri_keys): the drawn half's corner UVs A, B, C,
- * V scrolled by dv, at node (r, c) of the 15-node grid weighted
- * (4 - r - c, c, r) / 4, in float. */
-const int NT4_RC[30] = int[30](0, 0,  0, 1,  0, 2,  0, 3,  0, 4,  1, 0,  1, 1,  1, 2,
-                               1, 3,  2, 0,  2, 1,  2, 2,  3, 0,  3, 1,  4, 0);
-vec2 key_flat_uv(int node, bool nearHalf, float dv) {
-    uvec4 t = nearHalf ? keyT1 : keyT0;
-    vec2 A = vec2(cell_uv(t, 0)), B = vec2(cell_uv(t, 1)), C = vec2(cell_uv(t, 2));
-    A.y += dv; B.y += dv; C.y += dv;
-    float r = float(NT4_RC[node * 2]), c = float(NT4_RC[node * 2 + 1]);
-    precise float u = (A.x * (4.0 - r - c) + B.x * c + C.x * r) * 0.25;
-    precise float v = (A.y * (4.0 - r - c) + B.y * c + C.y * r) * 0.25;
-    return vec2(u, v);
-}
-
-/* A key-only record's vertex: kind 2 reads as a tier-4 triangle record;
- * kinds 1 and 3 take their UVs in main (key_cell_uv, key_flat_uv) from the
- * tiles kept in keyT0 / keyT1, and carry no colour (the KEY slot shades
- * nothing). */
-bool key_fetch(uint info, int lc, int tri2, int k, bool spare) {
-    if ((info & 0x1000000u) != 0u) {
-        keyKind = 2;
-        return tri4_fetch(info, lc, tri2, k, spare);
-    }
-    uint f16;
-    if ((info & 0x8000000u) == 0u) {
-        keyKind = 1;
-        int cell = int((info >> 7) & 1u) * 8 + lc;
-        int role = k + tri2;
-        keyT0 = ((cell & 3) >> 1) == 0 ? inCellT0 : inCellT1;
-        f16 = 1u | (uint(role) << 3) | ((info & 0x7Fu) << 5) | 0x1000u
-            | (tri2 != 0 ? 0x2000u : 0u) | (spare ? 0x8000u : 0u);
-        inMat = uvec4(keyT0.z, keyT0.w, 0u, 0x80000000u | uint(cell));
-    } else {
-        keyKind = 3;
-        keySub = lc * 2 + tri2;
-        keyT0 = inCellT0;
-        keyT1 = inCellT1;
-        f16 = 1u | (uint(k) << 3) | ((info & 0x7Fu) << 5)
-            | ((info & 0x10000000u) != 0u ? 0x1000u : 0u) | (spare ? 0x8000u : 0u);
-        inMat = uvec4(inCellT0.z, inCellT0.w, inCellT1.z, inCellT1.w);
-    }
-    inPos = ivec4(inC0.xyz, int(f16));
-    inUV = uvec4(0u);
-    inColFar = vec4(1.0);
-    inColNear = inColFar;
-    inFaceFlags = inCellFace.x;
-#ifdef TERRAIN_ANIM
-    inPrevPos = ivec4(inPrevC0.xyz, 0);
-#endif
-#ifdef TERRAIN_NEAR
-    inCtxAUV = uvec4(0u);
-    inCtxACol = uvec2(0xFFFFFFFFu);
-    inCtxBUV = uvec4(0u);
-    inCtxBCol = uvec2(0xFFFFFFFFu);
-#endif
-    return true;
-}
-
 bool cells_fetch() {
     uint info = inCellFace.y;
 #ifdef TERRAIN_NEAR
@@ -1068,7 +1063,6 @@ bool cells_fetch() {
 #endif
     int lc = tri >> 1, tri2 = tri & 1;
     if (((info >> uint(8 + lc)) & 1u) == 0u) return false;
-    if ((info & 0x4000000u) != 0u) return key_fetch(info, lc, tri2, k, spare);
     if ((info & 0x1000000u) != 0u) return tri4_fetch(info, lc, tri2, k, spare);
     int cell = int((info >> 7) & 1u) * 8 + lc;
     uvec4 t = lc == 0 ? inCellT0 : lc == 1 ? inCellT1 : lc == 2 ? inCellT2
@@ -1125,10 +1119,6 @@ void main()
     bool ist2 = ist && tsub >= 16;            /* a tier-2 sub-triangle      */
     bool fillPass = (pc.pass_sel == 1);
     bool keyPass  = (pc.pass_sel == 2);
-    /* A key-only record rasters the KEY slot alone. Kind 3 builds its nodes
-     * as a sub-triangle; its tier (tsub) waits for the corner transforms. */
-    if (keyKind != 0 && !keyPass) { kill_vert(); return; }
-    if (keyKind == 3) { is4 = true; ist = true; cell = 0; tsub = keySub; ist2 = false; }
 
     if ((sf & SF_DRAWN) == 0u) { kill_vert(); return; }
     /* Plain vs near-variant chunk sets: a slot holds both, and the sector's
@@ -1355,15 +1345,15 @@ void main()
               && ((gf & GF_HQPIN) != 0 ? trifront
                                        : near_canonical(m0.z, m1.z, m2.z, m2.z,
                                                         ff & FF_W3_40, ff & FF_W3_80));
-    /* Key-only sub-cells (FF_KEYCELLS, terrain.c terrain_near_emit_face,
-     * terrain_near_emit_tri, tn_flat_tri_keys): where the drain inserts a
+    /* Drain sub-cell keys (FF_KEYCELLS, terrain.c terrain_near_emit_face,
+     * terrain_near_emit_tri, tn_flat_tri_emit): where the drain inserts a
      * near-band face as finer sub-cells than the variant drawn here (the 2x2
      * of a quad the drain takes to tier 4, the tier-2 split of a triangle it
-     * takes to tier 4, a triangle drawn whole), those sub-cells key the face
-     * from its key-only records and its drawn triangles contest at their
-     * least key. A record's sub-cell lives while its face draws that
-     * variant under that drain tier; kind 3 takes the tier-4 sub-triangles
-     * or, outside tier 4, the tier-2 ones. */
+     * takes to tier 4, a triangle drawn whole), each fragment of the drawn
+     * triangles keys and contests at its own sub-cell's key: the vertex
+     * carries the face's sub-cell key table and its face-local coordinate
+     * (psx_key_contest.glsl). A triangle drawn whole takes the tier-4
+     * sub-triangles or, outside tier 4, the tier-2 ones. */
     bool keyFace = !lp && (ff & FF_KEYCELLS) != 0u;
     bool drain4q = keyFace && quad
                 && nc4_tier4(m0.z, m1.z, m2.z, m3c.z, ff & FF_W3_40, ff & FF_W3_80);
@@ -1371,16 +1361,8 @@ void main()
                 && nc4_tier4(m0.z, m1.z, m2.z, m2.z, ff & FF_W3_40, ff & FF_W3_80);
     bool flatKeys = keyFace && !quad && !fillPass && !(t4tri || t2tri)
                  && near_canonical(m0.z, m1.z, m2.z, m2.z, ff & FF_W3_40, ff & FF_W3_80);
-    if (keyKind == 0) {
-        if (hqv != (near || t4tri || t2tri) || is4 != (t4 || t4tri || t2tri) || ist2 != t2tri) {
-            kill_vert(); return;
-        }
-    } else {
-        bool alive = keyKind == 1 ? (near && !t4 && drain4q)
-                   : keyKind == 2 ? (t2tri && (gf & GF_TRI4) != 0 && drain4t)
-                   :                (flatKeys && (drain4t || keySub < 4));
-        if (!alive) { kill_vert(); return; }
-        if (keyKind == 3) { tsub = drain4t ? keySub : 16 + keySub; ist2 = tsub >= 16; }
+    if (hqv != (near || t4tri || t2tri) || is4 != (t4 || t4tri || t2tri) || ist2 != t2tri) {
+        kill_vert(); return;
     }
     /* nc4_front mirror: a straddling face's cell draws only when one of its
      * two triples faces. */
@@ -1517,7 +1499,7 @@ void main()
     uint dbg_half = 0u, dbg_delta = 0u;
     int  dbg_t0k  = -99999;   /* tint mode 6: exact ladder key (t0k) probe */
     bool ladderFace = false;
-    if (!lp && (!hqv || keyKind == 3) && (gf & GF_CLUTFOG) != 0 && (sf & SF_SECINLOD) != 0u
+    if (!lp && !hqv && (gf & GF_CLUTFOG) != 0 && (sf & SF_SECINLOD) != 0u
         && (mat0 & (1u << 23)) != 0u) {
         ladderFace = true;
         /* per-corner int casts, then sum — the walk's exact quantisation */
@@ -1567,22 +1549,13 @@ void main()
      * scroll ring). Zero for a tile that is not on the scroller list. */
     bool scrollOn = (f16 & 0x1000u) != 0u;
     float uvdv = 0.0;
-    /* Kinds 1 and 3 interpolate their UVs from scrolled corners
-     * (key_cell_uv, key_flat_uv). */
-    bool keyUV = keyKind == 1 || keyKind == 3;
     if (scrollOn) {
         int stile = int((f16 >> 5) & 0x7Fu);
-        uvdv = keyKind == 1 ? g.sdv[stile][(cell >> 3) + 1]
-             : keyKind == 3 ? g.sdv[stile].x
-             : ist2 ? g.sdv[stile][(cell >> 1) + 1]
+        uvdv = ist2 ? g.sdv[stile][(cell >> 1) + 1]
              : is4 ? g.sdvc[stile][cell >> 2]
              : hqv ? g.sdv[stile][(subq >> 1) + 1] : g.sdv[stile].x;
-        if (!keyUV) uv.y += uvdv;
+        uv.y += uvdv;
     }
-#ifdef TERRAIN_CELLS
-    if (keyKind == 1) uv = key_cell_uv(role, cell, uvdv);
-    if (keyKind == 3) uv = key_flat_uv(NT_SUB[tsub * 3 + role], dbg_half == 1u, uvdv);
-#endif
     vMat = uvec2(mat0, (clut & 0x3Fu) * 16u | (((clut >> 6) & 0x1FFu) << 16));
     if ((gf & (1 << 29)) != 0) {               /* debug tint: ladder verdict */
         vMat.y |= (dbg_half << 30) | (dbg_delta << 25);
@@ -1602,6 +1575,7 @@ void main()
      * against the near plane and becomes one corner of the clipped fan. */
     precise dvec3 mo;
     vec2 sscr;      /* the emitted screen point: push_tri's t->sx/sy mirror */
+    vec2 mfl;       /* its drain face-local coordinate (psx_key_contest.glsl) */
 #ifdef TERRAIN_NEAR
     vec4 col;
     {
@@ -1612,8 +1586,14 @@ void main()
          * ngte_cvert.oflag), absent on a flat face's own corners. */
         vec2 tos[3] = vec2[3](vec2(0.0), vec2(0.0), vec2(0.0));
         bool tov = false;
+        /* Members' drain coordinates (psx_key_contest.glsl): a triangle's
+         * corners A, B, C at (0,0), (4,0), (0,4), a split's nodes at their
+         * grid places, a 2x2 quadrant's corners at their isoline sides; a
+         * flat quad keys whole and carries none. */
+        vec2 tfl[3] = vec2[3](vec2(0.0), vec2(0.0), vec2(0.0));
         if (!hqv) {
-            if (!quad)      { tp[0] = m0; tp[1] = m1; tp[2] = m2;  }
+            if (!quad)      { tp[0] = m0; tp[1] = m1; tp[2] = m2;
+                              tfl[1] = vec2(4.0, 0.0); tfl[2] = vec2(0.0, 4.0); }
             else if (lp) {
                 if (tri2n)  { tp[0] = m1; tp[1] = m2; tp[2] = m3c; }
                 else        { tp[0] = m0; tp[1] = m1; tp[2] = m2;  }
@@ -1628,6 +1608,7 @@ void main()
                 int n = NT_SUB[tsub * 3 + k];
                 tp[k]  = nt4_node(n, m0, m1, m2);
                 tos[k] = nt4_screen(n, m0, m1, m2);
+                tfl[k] = nt4_fl(n);
             }
             tov = true;
         } else if (is4) {
@@ -1642,6 +1623,7 @@ void main()
             for (int k = 0; k < 3; k++) {
                 tp[k]  = nc4_node(nn[k].x, nn[k].y, TL, TR, BL, BR);
                 tos[k] = nc4_screen(nn[k].x, nn[k].y, TL, TR, BL, BR);
+                tfl[k] = vec2(float(nn[k].y), float(nn[k].x));
             }
             tov = true;
         } else {
@@ -1657,6 +1639,7 @@ void main()
             int base = tri2n ? 1 : 0;
             if (tri2n) { tp[0] = q1; tp[1] = q2; tp[2] = q3; }
             else       { tp[0] = q0; tp[1] = q1; tp[2] = q2; }
+            for (int k = 0; k < 3; k++) tfl[k] = quad_side_fl(q0, q1, q2, q3, tp[k]);
             if (pc.snap != 0) {
                 for (int k = 0; k < 3; k++)
                     tos[k] = hq_snap_screen(NODEMAP[subq][base + k],
@@ -1681,14 +1664,7 @@ void main()
                                    : vec2(inCtxAUV.x, inCtxAUV.y);
         uvm[ib] = (dbg_half == 1u) ? vec2(inCtxBUV.z, inCtxBUV.w)
                                    : vec2(inCtxBUV.x, inCtxBUV.y);
-        if (scrollOn && !keyUV) { uvm[ia].y += uvdv; uvm[ib].y += uvdv; }
-#ifdef TERRAIN_CELLS
-        if (keyKind == 1)
-            for (int m = 0; m < 3; m++) uvm[m] = key_cell_uv(m + (tri2n ? 1 : 0), cell, uvdv);
-        if (keyKind == 3)
-            for (int m = 0; m < 3; m++)
-                uvm[m] = key_flat_uv(NT_SUB[tsub * 3 + m], dbg_half == 1u, uvdv);
-#endif
+        if (scrollOn) { uvm[ia].y += uvdv; uvm[ib].y += uvdv; }
 
         bool doFog   = !lp && !hqv;
         bool doGrade = lp && (sf & SF_LPGRADE) != 0u;
@@ -1704,6 +1680,7 @@ void main()
             cin[k].uv = uvm[k];
             cin[k].os = tos[k];
             cin[k].ov = tov;
+            cin[k].fl = tfl[k];
         }
 
         /* Sutherland-Hodgman against m3 >= zc, with the walk's doubling
@@ -1753,6 +1730,7 @@ void main()
         cvx V = outv[self == 0 ? e0 : (self == 1 ? e1 : e2)];
         mo  = V.m;
         sscr = scr_of(V);
+        mfl = V.fl;
         uv  = V.uv;
         col = vec4(vec3(V.c) / 255.0, 1.0);
     }
@@ -1765,15 +1743,22 @@ void main()
 #endif
         mo = mac_of(lown, sdel);
         sscr = snap_of(proj_of(mo));
+        /* A triangle's corner A, B or C at (0,0), (4,0), (0,4); a flat
+         * quad keys whole and carries none. */
+        ivec3 op = inPos.xyz;
+        mfl = quad || op == inC0.xyz ? vec2(0.0)
+            : op == ivec3(inC0.w, inC1.x, inC1.y) ? vec2(4.0, 0.0) : vec2(0.0, 4.0);
     } else if (ist) {
         int n = NT_SUB[tsub * 3 + role];
         mo = nt4_node(n, m0, m1, m2);
         sscr = nt4_screen(n, m0, m1, m2);
+        mfl = nt4_fl(n);
     } else if (is4) {
         precise dvec3 TL = m0, TR = m1, BL = m3c, BR = m2;
         int nr = (cell >> 2) + (role >> 1), nq = (cell & 3) + (role & 1);
         mo = nc4_node(nr, nq, TL, TR, BL, BR);
         sscr = nc4_screen(nr, nq, TL, TR, BL, BR);
+        mfl = vec2(float(nq), float(nr));
     } else {
         /* Parent corners in .s grid order: TL=i0, TR=i1, BL=i3, BR=i2. */
         precise dvec3 TL = m0, TR = m1, BL = m3c, BR = m2;
@@ -1784,12 +1769,17 @@ void main()
         mo = node == 0 ? TL : node == 1 ? TR : node == 2 ? BR : node == 3 ? BL
            : node == 4 ? mT : node == 5 ? mB : node == 6 ? mL : node == 7 ? mR : C;
         sscr = hq_snap_screen(node, TL, TR, BL, BR, mo);
+        mfl = subq == 0 ? quad_side_fl(TL, mT, mL, C, mo)
+            : subq == 1 ? quad_side_fl(mT, TR, C, mR, mo)
+            : subq == 2 ? quad_side_fl(mL, C, BL, mB, mo)
+            :             quad_side_fl(C, mR, mB, BR, mo);
     }
 #endif
 
     /* ---- og OT key (feed koff mirror; ambient per face / per HQ sub-quad) ---- */
     float koff = 0.0;
-    bool keyVis = false;
+    dtab ktab;
+    ktab.t0 = uvec4(0u); ktab.t1 = uvec4(0u); ktab.kmin = 0.0; ktab.n = 0;
     if ((gf & GF_KEYON) != 0 && !fillPass) {
         /* Foreground (near-band) faces: ALWAYS the canonical classifier
          * here (LP tests the distance band alone — word3 = 0), independent
@@ -1832,24 +1822,18 @@ void main()
               :             dvec4(C.z, mR.z, mB.z, BR.z);
             ok = drain_key4(sq.x, sq.y, sq.z, sq.w, nearband);
         }
-        /* A drawn triangle whose face's key-only sub-cells carry its key
-         * contests at their least key and rasters no key of its own
-         * (keyVis); a key-only sub-cell whose key is 0 carries none. */
-        if (keyKind == 0) {
-            bool kcull = straddle && (ff & FF_DSIDE) == 0u;
-            bool kflip = (ff & FF_FLIP) != 0u;
-            int kn = 0;
-            float km = 0.0;
-            if (hqv && !is4 && drain4q)
-                km = quad_cells_kmin(m0, m1, m3c, m2, kcull, kflip, kn);
-            else if (ist2 && (gf & GF_TRI4) != 0 && drain4t)
-                km = tri_cells_kmin(m0, m1, m2, false, kcull, kflip, kn);
-            else if (!hqv && flatKeys)
-                km = tri_cells_kmin(m0, m1, m2, !drain4t, kcull, kflip, kn);
-            if (kn > 0) { ok = km; keyVis = true; }
-        } else if (!(ok > 0.0)) {
-            kill_vert(); return;
-        }
+        /* A drawn triangle of a face the drain inserts finer keys at the
+         * least of its sub-cell keys; the fragment adds its own sub-cell's
+         * excess from the table (psx_key_contest.glsl op_drain_delta). */
+        bool kcull = straddle && (ff & FF_DSIDE) == 0u;
+        bool kflip = (ff & FF_FLIP) != 0u;
+        if (hqv && !is4 && drain4q)
+            ktab = quad_cells_tab(m0, m1, m3c, m2, kcull, kflip);
+        else if (ist2 && (gf & GF_TRI4) != 0 && drain4t)
+            ktab = tri_cells_tab(m0, m1, m2, false, kcull, kflip);
+        else if (!hqv && flatKeys)
+            ktab = tri_cells_tab(m0, m1, m2, !drain4t, kcull, kflip);
+        if (ktab.n > 0) ok = ktab.kmin;
         if (nearband && (((mat0 >> 21) & 3u) != 0u)) {
             koff = 0.0;
         } else if (nearband && (gf & GF_NBKEYS) == 0) {
@@ -1861,13 +1845,23 @@ void main()
         }
     }
     vKoff = koff;
+    /* The table rides only a positively keyed textured face: the key pass
+     * rasters nothing else, op_drain_koff_p moves nothing else, and the
+     * walked scene locates the sub-cell through the texture coordinate
+     * (psx_key_contest.glsl op_drain_record), which an untextured face
+     * lacks. */
+    if (koff > 0.25 && ktab.n > 0 && (mat0 & (1u << 23)) != 0u) {
+        vKc0 = ktab.t0; vKc1 = ktab.t1;
+        if (hqv && !is4) vKc0.x |= uint(subq) << 30;   /* the drawn quadrant */
+    }
+    else                           { vKc0 = uvec4(0u); vKc1 = uvec4(0u); }
 
     /* ---- KEY pass: rasterise the flat og key as depth (terrain_key.vert
      * mirror) ----
      * terrain_key.vert receives the key K as view-Z from the CPU feed; the
      * cache holds K itself. */
     if (keyPass) {
-        if (koff <= 0.25 || keyVis) { kill_vert(); return; }   /* keyed faces only */
+        if (koff <= 0.25) { kill_vert(); return; }   /* keyed faces only */
         float K  = koff - 0.5;
         float kv = max(K, 1.0);
         vec2 cxy = clip_of(sscr);
@@ -1877,6 +1871,9 @@ void main()
         vUV = uv / wq;
         vQ  = 1.0 / wq;
         vColor = vec4(1.0);
+        /* p interpolates as the UV does (psx_key_contest.glsl). */
+        vKfl = mfl / wq;
+        vKq  = 1.0 / wq;
         return;
     }
 
@@ -1915,4 +1912,6 @@ void main()
     vUV    = uv * q;
     vColor = col * q;
     vQ     = q;
+    vKfl = mfl * q;      /* p interpolates as the UV does (psx_key_contest.glsl) */
+    vKq  = q;
 }

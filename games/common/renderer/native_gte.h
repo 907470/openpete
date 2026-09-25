@@ -342,12 +342,17 @@ void ngte_walk_prims(CPUState* cpu, uint32_t start, uint32_t end,
  * the midpoint at the exact screen midpoint of the snapped parent corners
  * (integer or exact-.5, which the renderer's snap preserves), collinear with
  * the neighbour's snapped edge.
+ *
+ * fx/fy: a terrain producer's face-local coordinate of the corner (the
+ * near drain's grid in quarter-edge units, psx_key_contest.glsl), carried
+ * through a cut as the UVs are. Zero where no producer sets it.
  */
 typedef struct { double m1, m2, m3; uint32_t rgb; float u, v;
-                 float osx, osy; uint8_t oflag; } ngte_cvert;
+                 float osx, osy; uint8_t oflag;
+                 float fx, fy; } ngte_cvert;
 
-/* The point where the edge a->b crosses the plane m3 == zc. Position and UV
- * interpolate linearly in camera space; each colour channel rounds to nearest.
+/* The point where the edge a->b crosses the plane m3 == zc. Position, UV
+ * and the face-local coordinate interpolate linearly in camera space; each colour channel rounds to nearest.
  * The parameter is clamped to [0,1], so an edge that does not cross returns
  * whichever endpoint the caller's inside test already picked. The result
  * projects normally: a crossing point is not one of the parent corners, so it

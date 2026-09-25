@@ -383,8 +383,8 @@ typedef struct rhi_terrain_vertex {   /* tagged: forward-declared by the
                                  * the face to the 4x4 cells) |
                                  * cellok<<20 (HP: the face may take the
                                  * 4x4 cells) |
-                                 * keycells<<21 (HP: the face's drain sub-cells
-                                 * ride key-only records) |
+                                 * keycells<<21 (HP: the drawn triangles key
+                                 * each fragment by its drain sub-cell) |
                                  * otbias(5)<<24 (authored OT-slot bias)     */
     int16_t  c0x, c0y, c0z;     /* parent face corners in i0,i1,i2,i3 order, */
     int16_t  c1x, c1y, c1z;     /* sector-local, same x4 fixed point         */
@@ -468,18 +468,7 @@ typedef struct rhi_terrain_cell {
                                  * uv[6] its cell;
                                  * bit 25 (with bit 24): a tier-2 triangle's
                                  * record, entries 0-3 its sub-triangles and
-                                 * uv[6] the quadrant tile;
-                                 * bit 26: a key-only record (the key arenas):
-                                 * alone, a quad's drain cells, entry j cell
-                                 * half*8 + j, tile[0..1] the quadrant tiles
-                                 * of its two rows' halves; with bit 24, a
-                                 * tier-4 triangle's sub-triangles as above;
-                                 * with bit 27, a triangle drawn whole, entry
-                                 * j's two triangles its sub-triangles 2j and
-                                 * 2j + 1 (tier 4) or 16 + 2j + t (tier 2),
-                                 * tile[0] and tile[1] the far and near
-                                 * halves' corner UVs (uv[0..5] = A, B, C)
-                                 * and materials, bit 28 its UV scroll on    */
+                                 * uv[6] the quadrant tile                   */
     uint32_t near_rgb[4];       /* raw near colours of corners i0..i3 (a
                                  * triangle's C colour, word 1 byte 0, in [3]) */
     rhi_terrain_cell_tile tile[8];
@@ -580,10 +569,13 @@ typedef struct {
     bool           uses_vram;   /* layout includes a sampler at set 0          */
     bool           uses_vram2;  /* second sampler at set 1 (e.g. the diff pass:
                                  * set 0 = native render, set 1 = reference)   */
-    bool           uses_vram3;  /* third sampler at set 2 (the terrain og-key
-                                 * image). Implies sets 0..2 exist in the
-                                 * layout; sets a shader never statically
-                                 * accesses need no binding at draw.           */
+    bool           uses_vram3;  /* set 2: the terrain og-key image at binding 0
+                                 * and the drain sub-cell key records at
+                                 * binding 1 (the pair layout, bound with
+                                 * rhi_bind_depth_tex_pair). Implies sets 0..2
+                                 * exist in the layout; sets a shader never
+                                 * statically accesses need no binding at
+                                 * draw.                                       */
     bool           uses_vram4;  /* fourth sampler at set 3 (the MOBY og-key
                                  * image — split from the terrain keys so the
                                  * near-band embed rule applies to moby keys
@@ -893,6 +885,10 @@ void rhi_update_vram_rects(rhi_device *dev, rhi_texture *tex,
  * pipeline that samples a normal sampler2D (shaders/blit.frag). `pixels` is
  * width*height*4 bytes. */
 rhi_texture *rhi_create_rgba8(rhi_device *dev, uint32_t width, uint32_t height);
+/* A texelFetch-only R32G32B32A32_UINT image (usampler2D), bound with
+ * rhi_bind_texture_set or a pair bind and written through
+ * rhi_update_vram_rects_packed (16 bytes per texel). */
+rhi_texture *rhi_create_u32x4(rhi_device *dev, uint32_t width, uint32_t height);
 void rhi_update_rgba8(rhi_device *dev, rhi_texture *tex, const void *pixels);
 
 /* Sub-rect uploads from TIGHT per-rect source buffers (pixels = w*h*4 RGBA8
@@ -1036,6 +1032,11 @@ void rhi_bind_vram2(rhi_device *dev, rhi_texture *tex);
 /* Bind `tex` (binding 0) and the sampled depth of the depth-sampled render
  * target `depth_rt` (binding 1) at `set` of the current set1_vram_depth
  * pipeline. Both images must be in shader-read layout for the draw. */
+/* The pair layout with the sampled depth image at binding 0 and a colour
+ * texture at binding 1: the terrain key image's set of the key-resolve and
+ * material layouts (key image, drain sub-cell key records). */
+void rhi_bind_depth_tex_pair(rhi_device *dev, rhi_texture *depth_rt, rhi_texture *tex,
+                             uint32_t set);
 void rhi_bind_vram_depth_pair(rhi_device *dev, rhi_texture *tex, rhi_texture *depth_rt,
                               uint32_t set);
 /* Restrict rasterization to a framebuffer-pixel rect (top-left origin, y

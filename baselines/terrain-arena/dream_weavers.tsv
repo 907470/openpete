@@ -27,8 +27,6 @@ spawn	CA_OPAQUE	1229	0
 spawn	CA_ALPHA	0	0
 spawn	CA_ADD	24	0
 spawn	CA_SUB	0	0
-spawn	KN	52	0
-spawn	KA	9684	0
 topdown	OPAQUE	240174	0
 topdown	ALPHA	0	0
 topdown	ADD	34902	0
@@ -52,8 +50,6 @@ topdown	CA_OPAQUE	2766	0
 topdown	CA_ALPHA	0	0
 topdown	CA_ADD	48	0
 topdown	CA_SUB	0	0
-topdown	KN	0	0
-topdown	KA	22134	0
 bk2	OPAQUE	103608	0
 bk2	ALPHA	0	0
 bk2	ADD	11736	0
@@ -77,5 +73,3 @@ bk2	CA_OPAQUE	1229	0
 bk2	CA_ALPHA	0	0
 bk2	CA_ADD	24	0
 bk2	CA_SUB	0	0
-bk2	KN	2666	0
-bk2	KA	9684	0

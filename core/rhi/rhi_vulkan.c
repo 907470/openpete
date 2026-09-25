@@ -421,6 +421,10 @@ struct rhi_device {
     VkDescriptorSet pair_sets[RHI_FRAMES_IN_FLIGHT][RHI_PAIR_SETS_MAX];
     uint32_t        pair_alloc[RHI_FRAMES_IN_FLIGHT]; /* sets allocated per slot */
     uint32_t        pair_used[RHI_FRAMES_IN_FLIGHT];  /* sets taken this frame   */
+    VkImageView     pair_views[RHI_FRAMES_IN_FLIGHT][RHI_PAIR_SETS_MAX][2]; /* each taken
+                                                 * set's two views: a bind of
+                                                 * the same pair this frame
+                                                 * rebinds it                */
 
     bool        gpu_timers;                 /* env set AND queue has timestamps */
     float       gpu_ts_period;              /* ns per timestamp tick */
@@ -3536,6 +3540,13 @@ rhi_texture *rhi_create_vram(rhi_device *dev, uint32_t width, uint32_t height)
     return create_sampled_image(dev, width, height, VK_FORMAT_R16_UINT, 2);
 }
 
+rhi_texture *rhi_create_u32x4(rhi_device *dev, uint32_t width, uint32_t height)
+{
+    /* R32G32B32A32_UINT: four 32-bit words per texel, read with texelFetch
+     * through a usampler2D (no filtering, no normalization). */
+    return create_sampled_image(dev, width, height, VK_FORMAT_R32G32B32A32_UINT, 16);
+}
+
 rhi_texture *rhi_create_rgba8(rhi_device *dev, uint32_t width, uint32_t height)
 {
     /* R8G8B8A8_UNORM: bytes laid out R,G,B,A — matches a GL_RGBA readback;
@@ -3875,9 +3886,9 @@ struct rhi_stage_chunk {
 
 /* A `need`-byte range of host-visible staging for an in-frame upload to
  * `tex`, disjoint from every range handed out for this texture in the
- * current frame. Offsets are 4-byte aligned (VkBufferImageCopy.bufferOffset
- * for 2- and 4-byte texels). Returns false only when a chunk could not be
- * allocated. */
+ * current frame. Offsets are 16-byte aligned (VkBufferImageCopy.bufferOffset
+ * is a multiple of the texel size: 2, 4 or 16 bytes). Returns false only when
+ * a chunk could not be allocated. */
 static bool stage_acquire(rhi_device *dev, rhi_texture *tex, size_t need,
                           VkBuffer *out_buf, uint8_t **out_map, size_t *out_off)
 {
@@ -3888,7 +3899,7 @@ static bool stage_acquire(rhi_device *dev, rhi_texture *tex, size_t need,
     }
     struct rhi_stage_chunk *c = tex->stage_arena[slot], *last = NULL;
     for (; c; last = c, c = c->next) {
-        size_t off = (c->used + 3) & ~(size_t)3;
+        size_t off = (c->used + 15) & ~(size_t)15;
         if (off + need <= c->cap) {
             *out_buf = c->buf->buffer; *out_map = (uint8_t *)c->buf->mapped + off; *out_off = off;
             c->used = off + need;
@@ -4855,6 +4866,11 @@ static uint32_t pipeline_set_layouts(const rhi_device *dev, const rhi_pipeline_d
     out[6] = high;
     if (desc->set1_vram_depth) out[1] = dev->pair_set_layout;
     if (desc->uniform_set2) out[2] = dev->ubo1_set_layout;
+    /* The terrain key image's set of the key-resolve and material layouts
+     * carries the drain sub-cell key records at binding 1. */
+    if (desc->material_pipeline ||
+        (desc->uses_vram3 && !desc->terrain_pipeline && !desc->postfx && !desc->mod_pipeline))
+        out[2] = dev->pair_set_layout;
     uint32_t n = desc->material_pipeline ? 7u  /* + sets 4..6: og keys, rank */
                : desc->terrain_pipeline ? 7u   /* + 4: HD atlas, 5/6: blocks */
                : (desc->postfx || desc->mod_pipeline) ? 4u
@@ -5626,11 +5642,19 @@ void rhi_bind_vram2(rhi_device *dev, rhi_texture *tex)
                             dev->cur_layout, 1, 1, &tex->set, 0, NULL);
 }
 
-void rhi_bind_vram_depth_pair(rhi_device *dev, rhi_texture *tex, rhi_texture *depth_rt,
-                              uint32_t set)
+/* Bind the two-sampler pair set holding views v0 (binding 0) and v1
+ * (binding 1) at `set`: the frame slot's set already written with the same
+ * pair, else the next one of the slot's list, grown on demand. */
+static void bind_view_pair(rhi_device *dev, VkImageView v0, VkImageView v1, uint32_t set)
 {
-    if (!dev->frame_active || !tex || !depth_rt || !depth_rt->rt_depth_sample_view) return;
     uint32_t f = dev->frame;
+    for (uint32_t i = 0; i < dev->pair_used[f]; i++) {
+        if (dev->pair_views[f][i][0] == v0 && dev->pair_views[f][i][1] == v1) {
+            vkCmdBindDescriptorSets(dev->cmd[f], VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    dev->cur_layout, set, 1, &dev->pair_sets[f][i], 0, NULL);
+            return;
+        }
+    }
     if (dev->pair_used[f] == dev->pair_alloc[f]) {
         if (dev->pair_alloc[f] == RHI_PAIR_SETS_MAX) {
             static bool s_warned;
@@ -5653,11 +5677,14 @@ void rhi_bind_vram_depth_pair(rhi_device *dev, rhi_texture *tex, rhi_texture *de
         }
         dev->pair_alloc[f]++;
     }
-    VkDescriptorSet ds = dev->pair_sets[f][dev->pair_used[f]++];
+    const uint32_t slot = dev->pair_used[f]++;
+    VkDescriptorSet ds = dev->pair_sets[f][slot];
+    dev->pair_views[f][slot][0] = v0;
+    dev->pair_views[f][slot][1] = v1;
     VkDescriptorImageInfo ii[2] = {
-        { .sampler = dev->vram_sampler, .imageView = tex->view,
+        { .sampler = dev->vram_sampler, .imageView = v0,
           .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
-        { .sampler = dev->vram_sampler, .imageView = depth_rt->rt_depth_sample_view,
+        { .sampler = dev->vram_sampler, .imageView = v1,
           .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
     };
     VkWriteDescriptorSet w[2] = {
@@ -5671,6 +5698,20 @@ void rhi_bind_vram_depth_pair(rhi_device *dev, rhi_texture *tex, rhi_texture *de
     vkUpdateDescriptorSets(dev->device, 2, w, 0, NULL);
     vkCmdBindDescriptorSets(dev->cmd[f], VK_PIPELINE_BIND_POINT_GRAPHICS,
                             dev->cur_layout, set, 1, &ds, 0, NULL);
+}
+
+void rhi_bind_vram_depth_pair(rhi_device *dev, rhi_texture *tex, rhi_texture *depth_rt,
+                              uint32_t set)
+{
+    if (!dev->frame_active || !tex || !depth_rt || !depth_rt->rt_depth_sample_view) return;
+    bind_view_pair(dev, tex->view, depth_rt->rt_depth_sample_view, set);
+}
+
+void rhi_bind_depth_tex_pair(rhi_device *dev, rhi_texture *depth_rt, rhi_texture *tex,
+                             uint32_t set)
+{
+    if (!dev->frame_active || !tex || !depth_rt || !depth_rt->rt_depth_sample_view) return;
+    bind_view_pair(dev, depth_rt->rt_depth_sample_view, tex->view, set);
 }
 
 void rhi_push_constants(rhi_device *dev, const void *data, uint32_t size)

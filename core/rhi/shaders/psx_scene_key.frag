@@ -19,6 +19,9 @@
 layout(set = 0, binding = 0) uniform usampler2D u_vram; /* R16_UINT 1024x512 */
 layout(set = 1, binding = 0) uniform sampler2D u_actorkey; /* moby og-key image */
 layout(set = 2, binding = 0) uniform sampler2D u_hpkey;   /* terrain og-key image */
+/* Drain sub-cell key records (psx_key_contest.glsl op_drain_record), the
+ * terrain key image's set at binding 1. */
+layout(set = 2, binding = 1) uniform usampler2D u_drain;
 layout(set = 3, binding = 0) uniform sampler2D u_mobykey; /* prop TRUE-depth image */
 /* Moby og-RANK image (RGBA8): r+g*256 = the winning face's OT walk rank at
  * this pixel (max rank wins the raster), b = that face's present-local moby
@@ -97,18 +100,19 @@ void main()
      * the 64-world margin, so the contest would kill the rank winner while
      * the select kills everything under it (a hole to the clear). The face
      * still STAMPS its key, so keyed terrain keeps yielding to it. */
-    if (!ranked && abs(vKoff) > 0.25) {
+    float koff = op_drain_koff(vKoff, vRank.y, vUV / vQ, u_drain);
+    if (!ranked && abs(koff) > 0.25) {
         /* The additive glow fan (rank -2) runs the aura contest instead —
          * see psx_key_contest.glsl. */
         if (vRank.x < -1.5) {
             if (op_aura_loses(texelFetch(u_actorkey, ivec2(gl_FragCoord.xy), 0).r,
-                              vKoff - 0.5))
+                              koff - 0.5))
                 discard;
         } else if (op_key_loses(
                 op_key_from_stored(texelFetch(u_hpkey,    ivec2(gl_FragCoord.xy), 0).r),
                 op_akey_contest(texelFetch(u_actorkey, ivec2(gl_FragCoord.xy), 0).r),
                 op_key_from_stored(texelFetch(u_mobykey,  ivec2(gl_FragCoord.xy), 0).r),
-                own, vKoff,
+                own, koff,
                 vRank.x < -0.5,     /* unranked moby faces mark rank -1 */
                 MOBY_TRUESCOPE, SLOT_CONTEST))
             discard;

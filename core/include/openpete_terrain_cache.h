@@ -82,18 +82,6 @@ enum {
     OPTC_ARENA_CA_ALPHA,
     OPTC_ARENA_CA_ADD,
     OPTC_ARENA_CA_SUB,
-    /* Key-only records (cell-record layouts, info bit 26): the ordering-table
-     * sub-cells a near-band face is inserted as where the port draws it
-     * coarser (the 2x2 of a tier-4 quad, the tier-2 split of a tier-4
-     * triangle, a near triangle drawn whole). Drawn by the KEY slot alone,
-     * one instanced draw per sector the build marks OPTC_SF_KEYBAND over the
-     * range openpete_tercache_sector_keys published: the whole range under
-     * OPTC_SF_KEYT4, else the whole-triangle records that follow the tier-4
-     * ones. KN holds a near-variant sector's copy (rhi_terrain_cell, the
-     * clip-fan stage), KA every sector's copy for its plain chunk set
-     * (rhi_terrain_cell_anim). */
-    OPTC_ARENA_KN,
-    OPTC_ARENA_KA,
     OPTC_ARENA_COUNT
 };
 #define OPTC_ARENA_ANIM_BASE OPTC_ARENA_A_OPAQUE   /* base + class = twin */
@@ -103,9 +91,7 @@ enum {
 #define OPTC_ARENA_IS_ANIM(a) ((a) >= OPTC_ARENA_A_OPAQUE && (a) < OPTC_ARENA_N_OPAQUE)
 #define OPTC_ARENA_IS_NEAR(a) ((a) >= OPTC_ARENA_N_OPAQUE && (a) < OPTC_ARENA_CN_OPAQUE)
 #define OPTC_ARENA_IS_CELL(a) ((a) >= OPTC_ARENA_CN_OPAQUE && (a) < OPTC_ARENA_COUNT)
-#define OPTC_ARENA_IS_CELL_ANIM(a) \
-    (((a) >= OPTC_ARENA_CA_OPAQUE && (a) < OPTC_ARENA_KN) || (a) == OPTC_ARENA_KA)
-#define OPTC_ARENA_IS_KEY(a) ((a) == OPTC_ARENA_KN || (a) == OPTC_ARENA_KA)
+#define OPTC_ARENA_IS_CELL_ANIM(a) ((a) >= OPTC_ARENA_CA_OPAQUE && (a) < OPTC_ARENA_COUNT)
 
 /* Draw slots — native_render.c calls these at the matching point of its
  * draw order. WORLD = opaque arena + LP arena (pass WORLD); FILL = LP arena
@@ -140,13 +126,6 @@ enum {
                                    * clip-fan vertex stage) instead of its plain
                                    * ones: exactly one of the two sets survives,
                                    * so a sector never draws twice */
-#define OPTC_SF_KEYBAND    1024u  /* a vertex of this sector may sit inside the
-                                   * near band this build: the KEY slot draws
-                                   * its key-only records (KN under
-                                   * OPTC_SF_NEARVAR, KA otherwise)          */
-#define OPTC_SF_KEYT4      2048u  /* ... and inside the tier-4 corner bound:
-                                   * the tier-4 records at the head of the
-                                   * range draw too                          */
 
 /* Global flag bits (globals UBO; mirrored in terrain.vert). */
 #define OPTC_GF_NEARHQ     1u
@@ -282,18 +261,6 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
  * is active. Pair a non-NULL grade with OPTC_SF_LPGRADE in sflags. */
 void openpete_tercache_sector_set(int slot, float ox, float oy, float oz,
                                   uint32_t sflags, const float *grade6);
-/* One arena's key-only chunk of a slot: buffer index, first record, record
- * count (0 = none), and the count of the tier-4 records (quad cells and
- * tier-4 sub-triangles) at its head; whole-triangle records follow them. */
-typedef struct {
-    int      buf;
-    uint32_t first, count, count_t4;
-} openpete_tercache_keyrange;
-/* The slot's key-only record ranges for this build in the KN and KA arenas,
- * drawn by the KEY slot while the slot's sector_set flags carry
- * OPTC_SF_KEYBAND. */
-void openpete_tercache_sector_keys(int slot, const openpete_tercache_keyrange *kn,
-                                   const openpete_tercache_keyrange *ka);
 void openpete_tercache_frame_commit(void);
 void openpete_tercache_frame_skip(uint32_t stamp, int immediate);
 /* Renderer side, once per rendered present: gate the retained draws on the
@@ -507,11 +474,6 @@ typedef struct {
      * covered, summed over the session. */
     uint32_t cell_draws;
     uint64_t cell_instances;
-    /* Key-only record draws of the KEY slot and their instances, summed over
-     * the session; the last completed present's instances alone. */
-    uint32_t key_draws;
-    uint64_t key_instances;
-    uint32_t key_instances_last_present;
 } openpete_tercache_stats_t;
 void openpete_tercache_get_stats(openpete_tercache_stats_t *out);
 

@@ -1,4 +1,6 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+#include "psx_key_contest.glsl"
 
 /* TEXTURED key-pass fragment stage: alpha-aware og-key rasterisation.
  *
@@ -16,7 +18,9 @@
  * lands nowhere. Texel decode mirrors psx_scene_key.frag; UVs interpolate
  * against the position's own W (flat key => screen-affine, the PSX
  * rasteriser's own sampling; true-depth prop faces get perspective UV,
- * matching the scene draw). */
+ * matching the scene draw). A triangle with a drain record writes the key
+ * of the drain sub-cell under the fragment (psx_key_contest.glsl) as its
+ * depth; every other face writes the rasterised depth back unchanged. */
 
 layout(set = 0, binding = 0) uniform usampler2D u_vram; /* R16_UINT 1024x512 */
 
@@ -28,6 +32,10 @@ layout(push_constant) uniform PsxMaterial {
 
 layout(location = 1) in vec2 vUV;   /* u/w — see terrain_key.vert */
 layout(location = 3) in float vQ;   /* 1/w */
+layout(location = 4) flat in float vDrain; /* drain record tag */
+layout(location = 5) flat in float vKv;    /* flat key view-Z */
+/* Drain sub-cell key records (psx_key_contest.glsl op_drain_record). */
+layout(set = 1, binding = 0) uniform usampler2D u_drain;
 
 layout(location = 0) out vec4 outColor;
 
@@ -51,6 +59,12 @@ uint sample_word(int u, int v)
 void main()
 {
     vec2 uv = vUV / vQ;
-    if (sample_word(int(uv.x), int(uv.y)) == 0u) discard;
+    /* bpp < 0: a material-run overflow tail, keyed full-footprint. */
+    if (pc.bpp >= 0 && sample_word(int(uv.x), int(uv.y)) == 0u) discard;
+    uvec4 t0, t1;
+    vec2 p;
+    gl_FragDepth = op_drain_record(u_drain, vDrain, uv, t0, t1, p)
+        ? op_key_store(vKv + op_drain_delta(p, t0, t1, 0.0))
+        : gl_FragCoord.z;
     outColor = vec4(0.0);
 }

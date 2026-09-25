@@ -61,6 +61,165 @@ float op_key_bucket(float tkey)
     return floor((tkey + res) / OP_KEY_SLOT);
 }
 
+/* ---- drain sub-cell keys ---------------------------------------------
+ *
+ * The game's near drain inserts a near-band terrain face into the ordering
+ * table as sub-cells, each at its own key: a quad as a 4x4 grid of cells, a
+ * triangle as the 16 sub-triangles of a 4-subdivided grid (tier 4) or the 4
+ * of a 2-subdivided one (tier 2). Where the port draws such a face coarser
+ * (a quad as its 2x2, a tier-4 triangle as its tier-2 split, a triangle
+ * whole), one drawn triangle spans sub-cells of different keys, and a
+ * fragment's key is the key of the sub-cell the game draws at its pixel.
+ *
+ * A drawn triangle of such a face has a coordinate p over it and a table
+ * of 16 entries of 16 bits in two uvec4 (entry i in word i >> 1, halfword
+ * i & 1): bits 0-13 the sub-cell's key above the face's contest key (koff),
+ * in entry 0 bits 14-15 the grid (OP_DRAIN_*), in entry 1 bits 14-15 the
+ * quadrant of a quad's drawn triangle. p interpolates as the triangle's
+ * texture coordinates do (both are affine over the triangle in camera
+ * space): the retained cache carries it per vertex (terrain.vert), the
+ * walked scene evaluates it from the fragment's texture coordinate through
+ * the triangle's record (op_drain_record).
+ *
+ * A triangle is planar and its sub-triangles are pieces of its plane, so p
+ * is the drain grid's face-local coordinate in quarter-edge units (x = 4 x
+ * the weight of corner B, y = 4 x the weight of corner C) and the
+ * sub-triangle containing p is the one at the pixel. Table order: the
+ * upward sub-triangle at column i and row j (nodes (j, i), (j, i + 1),
+ * (j + 1, i)) at 4j + i, the downward one (nodes (j, i + 1), (j + 1, i),
+ * (j + 1, i + 1)) at 4(3 - j) + 3 - i.
+ *
+ * A quad's 4x4 cells lie on its bilinear surface, which the 2x2 drawn
+ * triangles depart from wherever a quadrant is not a parallelogram. The
+ * cells of one quadrant meet along the quadrant's two interior isolines
+ * (the straight segments joining its edge midpoints), and a quadrant's
+ * outline is its drawn triangles' outline, so the cell at a pixel of a
+ * drawn triangle is fixed by the side of each isoline's eye plane the
+ * pixel's view ray lies on. p holds those two sides, (column, row), each
+ * the dot product of the eye plane's normal with the vertex's camera-space
+ * position scaled to 1 at the quadrant's far corner: positive on the far
+ * column (row) of the quadrant. The cell is table entry 4r + c.
+ *
+ * A sub-cell the drain skips carries 0, the face's minimum. The keys come
+ * from the drain's own sums (terrain.c tn_quad_cell_keys and
+ * tn_tri_cell_keys on the walk, the terrain.vert mirrors on the retained
+ * cache); these functions only locate the entry. */
+#define OP_DRAIN_NONE  0u
+#define OP_DRAIN_QUAD  1u   /* 4x4 cells                    */
+#define OP_DRAIN_TRI4  2u   /* 16 sub-triangles, cell 1     */
+#define OP_DRAIN_TRI2  3u   /* 4 sub-triangles, cell 2      */
+
+uint op_drain_grid(uvec4 t0)
+{
+    return (t0.x >> 14) & 3u;
+}
+
+/* The table entry of the sub-cell at coordinate p (quadrant q of a quad). */
+int op_drain_slot(vec2 p, uint grid, uint q)
+{
+    if (grid == OP_DRAIN_QUAD) {
+        int r = int(q >> 1) * 2 + (p.y > 0.0 ? 1 : 0);
+        int c = int(q & 1u) * 2 + (p.x > 0.0 ? 1 : 0);
+        return r * 4 + c;
+    }
+    float h = grid == OP_DRAIN_TRI4 ? 1.0 : 2.0;
+    int n = grid == OP_DRAIN_TRI4 ? 4 : 2;
+    vec2 g = p / h;
+    int i = clamp(int(floor(g.x)), 0, n - 1), j = clamp(int(floor(g.y)), 0, n - 1);
+    bool up = (g.x - float(i)) + (g.y - float(j)) < 1.0;
+    if (i + j > n - 1) {            /* past the hypotenuse: its nearest row cell */
+        if (i >= j) i = n - 1 - j; else j = n - 1 - i;
+        up = true;
+    } else if (!up && i + j > n - 2) {
+        up = true;                   /* no downward sub-triangle on the edge row */
+    }
+    return up ? j * 4 + i : (3 - j) * 4 + (3 - i);
+}
+
+float op_drain_entry(int slot, uvec4 t0, uvec4 t1)
+{
+    uint w = slot < 8 ? t0[slot >> 1] : t1[(slot - 8) >> 1];
+    return float((w >> (uint(slot & 1) * 16u)) & 0x3FFFu);
+}
+
+/* The key of the sub-cell at p above the face's contest key; 0 for a face
+ * without a table. The rasters of the colour and the key passes
+ * interpolate p through different clip-space W, so on a pixel whose centre
+ * lies on a sub-cell border the two can pick adjacent sub-cells. The key
+ * pass writes the exact sub-cell (margin 0); the colour pass contests at
+ * the least key within `margin` of p, so a fragment never contests at a
+ * key above the one its own key raster wrote there. */
+float op_drain_delta(vec2 p, uvec4 t0, uvec4 t1, float margin)
+{
+    uint grid = op_drain_grid(t0);
+    if (grid == OP_DRAIN_NONE) return 0.0;
+    uint q = (t0.x >> 30) & 3u;
+    if (margin <= 0.0) return op_drain_entry(op_drain_slot(p, grid, q), t0, t1);
+    float d = op_drain_entry(op_drain_slot(p + vec2(-margin, -margin), grid, q), t0, t1);
+    d = min(d, op_drain_entry(op_drain_slot(p + vec2( margin, -margin), grid, q), t0, t1));
+    d = min(d, op_drain_entry(op_drain_slot(p + vec2(-margin,  margin), grid, q), t0, t1));
+    d = min(d, op_drain_entry(op_drain_slot(p + vec2( margin,  margin), grid, q), t0, t1));
+    return d;
+}
+
+/* The colour pass's border margin in p's units (quarter edges on a
+ * triangle, 1 at a quad quadrant's far corner): above the float error of
+ * an interpolated coordinate, far below a pixel of any sub-cell the camera
+ * can resolve. */
+#define OP_DRAIN_MARGIN 0.0001
+
+/* A contesting fragment's key channel: koff plus its sub-cell's key above
+ * the face's contest key. Only a positive (ordering-table) key moves; a
+ * near-band contest-only key (negative) and an unkeyed face (0) keep koff. */
+float op_drain_koff_p(float koff, vec2 p, uvec4 t0, uvec4 t1)
+{
+    return koff > 0.25 ? koff + op_drain_delta(p, t0, t1, OP_DRAIN_MARGIN) : koff;
+}
+
+/* A walked triangle's drain record. The scene vertex's rank ordinal (tag)
+ * holds -(index + 1) on a triangle with one, >= 0 on every other. Record
+ * `index` is four texels of the records image at row index >> 6, columns
+ * 4 (index & 63) + 0..3: the table (t0, t1), then the affine map from the
+ * triangle's texture coordinate to p, (ax, bx, cx, ay) and (by, cy,
+ * valid, 0), p = (ax u + bx v + cx, ay u + by v + cy). A triangle whose
+ * texture coordinates are collinear (an untextured face) has no map and
+ * keys at the face minimum. Returns false when the fragment has no record. */
+bool op_drain_record(usampler2D rec, float tag, vec2 uv,
+                     out uvec4 t0, out uvec4 t1, out vec2 p)
+{
+    t0 = uvec4(0u); t1 = uvec4(0u); p = vec2(0.0);
+    if (tag > -0.5) return false;
+    int r = int(-tag + 0.5) - 1;
+    ivec2 b = ivec2((r & 63) * 4, r >> 6);
+    uvec4 m1 = texelFetch(rec, b + ivec2(3, 0), 0);
+    if ((m1.z & 1u) == 0u) return false;
+    vec4 a = uintBitsToFloat(texelFetch(rec, b + ivec2(2, 0), 0));
+    vec2 c = uintBitsToFloat(m1.xy);
+    t0 = texelFetch(rec, b, 0);
+    t1 = texelFetch(rec, b + ivec2(1, 0), 0);
+    precise float px = a.x * uv.x + a.y * uv.y + a.z;
+    precise float py = a.w * uv.x + c.x * uv.y + c.y;
+    p = vec2(px, py);
+    return true;
+}
+
+/* op_drain_koff_p for a walked triangle: its record by the vertex tag,
+ * evaluated at texture coordinate uv. */
+float op_drain_koff(float koff, float tag, vec2 uv, usampler2D rec)
+{
+    uvec4 t0, t1;
+    vec2 p;
+    if (koff <= 0.25 || !op_drain_record(rec, tag, uv, t0, t1, p)) return koff;
+    return koff + op_drain_delta(p, t0, t1, OP_DRAIN_MARGIN);
+}
+
+/* The key pass's stored value for key view-Z kv (the key images' encoding,
+ * op_key_from_stored's inverse). */
+float op_key_store(float kv)
+{
+    return kv / (kv + 4096.0);
+}
+
 /* ---- the player band of the actor key image ----------------------------
  *
  * The avatar's draw keys every part at max(0, (part-origin view-Z >> 7) -

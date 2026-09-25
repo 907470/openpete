@@ -162,6 +162,9 @@ layout(set = 1, binding = 0) uniform sampler2D op_pack_tex;
 
 /* Engine occlusion inputs. main() applies them before op_material() runs. */
 layout(set = 2, binding = 0) uniform sampler2D op_key_terrain;
+/* Drain sub-cell key records (psx_key_contest.glsl op_drain_record), the
+ * terrain key image's set at binding 1. */
+layout(set = 2, binding = 1) uniform usampler2D op_drain_records;
 layout(set = 4, binding = 0) uniform sampler2D op_key_moby;
 layout(set = 5, binding = 0) uniform sampler2D op_key_actor;
 layout(set = 6, binding = 0) uniform sampler2D op_moby_rank;
@@ -287,18 +290,19 @@ void main()
     if (ranked &&
         op_rank_loses(texelFetch(op_moby_rank, ivec2(gl_FragCoord.xy), 0), vRank, own))
         discard;
-    if (!ranked && abs(vKoff) > 0.25) {
+    float koff = op_drain_koff(vKoff, vRank.y, op_uv(), op_drain_records);
+    if (!ranked && abs(koff) > 0.25) {
         /* The additive glow fan (rank -2) runs the aura contest instead —
          * see psx_key_contest.glsl. */
         if (vRank.x < -1.5) {
             if (op_aura_loses(texelFetch(op_key_actor, ivec2(gl_FragCoord.xy), 0).r,
-                              vKoff - 0.5))
+                              koff - 0.5))
                 discard;
         } else if (op_key_loses(
                 op_key_from_stored(texelFetch(op_key_terrain, ivec2(gl_FragCoord.xy), 0).r),
                 op_akey_contest(texelFetch(op_key_actor,   ivec2(gl_FragCoord.xy), 0).r),
                 op_key_from_stored(texelFetch(op_key_moby,    ivec2(gl_FragCoord.xy), 0).r),
-                own, vKoff,
+                own, koff,
                 vRank.x < -0.5,     /* unranked moby faces carry rank -1 */
                 OP_MOBY_TRUESCOPE, OP_SLOT_CONTEST))
             discard;

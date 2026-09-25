@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """gen-terrain-arena-caps.py — per-level terrain-arena capacities, generated.
 
-The retained terrain cache allocates fifteen vertex arenas and ten
-cell-record arenas (CN_*, CA_*, and the key-only KN and KA) per level. Sizing
+The retained terrain cache allocates fifteen vertex arenas and eight
+cell-record arenas per level. Sizing
 them by guess costs device memory where the guess is high and sends sectors
 back to the CPU walk where it is low, so the capacities come from the measured
 high-water baseline under baselines/terrain-arena/ instead: per level, the
@@ -32,13 +32,12 @@ ARENAS = [
     "N_OPAQUE", "N_ALPHA", "N_ADD", "N_SUB", "N_LP",
     "CN_OPAQUE", "CN_ALPHA", "CN_ADD", "CN_SUB",
     "CA_OPAQUE", "CA_ALPHA", "CA_ADD", "CA_SUB",
-    "KN", "KA",
 ]
 
 HEADROOM = 1.25      # the level's measured peak is not its bound
 STEP = 16384         # allocation granularity, vertices
 FLOOR = 16384        # smallest arena worth a buffer of its own
-# The cell-record arenas (CN_*, CA_*, KN, KA) count records of 176-200 bytes, each
+# The cell-record arenas (CN_*, CA_*) count records of 176-200 bytes, each
 # standing in for 48-96 baked vertices, so their granularity and floor are
 # record counts of about the same byte size as a few thousand vertices.
 CELL_STEP = 256
@@ -72,7 +71,7 @@ def read_rows(path):
 
 
 def cap_of(high, name):
-    step, floor = (CELL_STEP, CELL_FLOOR) if name[0] in "CK" else (STEP, FLOOR)
+    step, floor = (CELL_STEP, CELL_FLOOR) if name.startswith("C") else (STEP, FLOOR)
     n = int(math.ceil(high * HEADROOM / step)) * step
     return max(n, floor)
 
@@ -103,7 +102,7 @@ def main():
     o.append(" * baselines/terrain-arena/. Per-arena vertex capacities: the level's")
     o.append(" * measured high-water mark over every baseline row, times %.2f, rounded" % HEADROOM)
     o.append(" * up to a multiple of %d and never below %d; the cell-record arenas" % (STEP, FLOOR))
-    o.append(" * (CN_*, CA_*, KN, KA) count records, multiples of %d, never below %d." % (CELL_STEP, CELL_FLOOR))
+    o.append(" * (CN_*, CA_*) count records, multiples of %d, never below %d." % (CELL_STEP, CELL_FLOOR))
     o.append(" * Do not edit.")
     o.append(" */")
     o.append("#ifndef OPENPETE_TERRAIN_ARENA_CAPS_GEN_H")
