@@ -46,6 +46,12 @@ icy-peak-reflective-mirror-1856|1856|200||1856
 # cast onto the reflective floor's plane, lands on the ice ramp that stands
 # above that plane; the decal's raised-occluder test is measured here.
 icy-peak-reflective-mirror-1864|1864|200||1864,1870
+# an-evil-plot-unfolds-egg-edge: the opening cutscene under 16:9; animated-kind
+# mobys inside the cull's distance box that fail its 4:3 lateral arm get no
+# widened-view re-admission, so two eggs are absent from the right band at 1206
+# and 1210. The left egg's disappearance between 1208 and 1209 is the game
+# moving it (its 4:3 staging, kept).
+an-evil-plot-unfolds-egg-edge|1200|10||1200,1206,1210,1220|--skip-to-cutscene an_evil_plot_unfolds
 
 # sunrise-spring-camera-swing holds R2 from VBL 1500 so the camera orbits the
 # player while two animated-kind mobys and the simple-kind gems, baskets and
