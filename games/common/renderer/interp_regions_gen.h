@@ -62,6 +62,17 @@ int game_interp_row_index(const char* name);
  * openpete_interp_objs_end_tick(); game_interp_register_common() does. */
 void game_interp_capture_moby_array(void);
 
+/* Draw-time records for game_interp_capture_moby_array(). A draw hook calls
+ * _begin(), then _put() per moby the draw read, while the records hold the
+ * state the draw left and no later routine of the tick has written them;
+ * while the draw's canonical-render epoch is in flight or last committed, the
+ * capture takes the stashed record for those mobys instead of the live one. A
+ * _begin() in a later epoch replaces the stash; one on a speculative pass
+ * blocks it until the next committed _begin(), and _put() is then ignored.
+ * Host memory only. */
+void game_interp_moby_stash_begin(void);
+void game_interp_moby_stash_put(uint32_t moby);
+
 /* Snapshot one whole record per active slot of the game's particle pool
  * (game_layout.particles: array_ptr, rec_stride, sel_off), keyed by the
  * record's PSX address. A game whose particle renderer links its own

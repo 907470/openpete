@@ -9,6 +9,7 @@
 #include "game_layout.h"
 #include "renderer/env_knob.h"
 #include "renderer/tracers.h"      /* the mesh vertex lists the tick drew */
+#include "renderer/orchestrator.h" /* the canonical-render epoch the moby stash carries */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -137,18 +138,150 @@ static uint32_t rd32(uint32_t addr) {
     return v;
 }
 
+/* The moby record bytes the per-object capture takes: one record and no
+ * bytes of the next, since the store's blob may be sized for a longer record
+ * than a moby's (see game_interp_register_common). */
+static uint32_t moby_blob_bytes(void) {
+    const uint32_t stride = game_layout.moby.array_stride;
+    return openpete_interp_objs_blob_bytes() < stride
+               ? openpete_interp_objs_blob_bytes() : stride;
+}
+
+/* Draw-time moby records. A game that writes a moby's state after the tick's
+ * draw read it (Spyro 2's HUD update, called from the render routine after the
+ * moby draw, advances a HUD moby's angle) leaves the tick-end record one tick
+ * ahead of the pose the tick drew. The draw hook stashes each queued moby's
+ * record as the draw left it; every capture until the next draw
+ * substitutes the stash for those mobys, so the object ring's pair holds drawn
+ * states. The stash carries the canonical-render epoch of its draw: a draw in
+ * a later epoch replaces it, draws in one epoch add to it, and a capture takes
+ * it only while that epoch is in flight or is the last committed one, so a
+ * present without the draw (a load, a menu) retires it. A speculative draw
+ * blocks the stash until the next committed draw: the capture then runs at the
+ * speculation head, whose draw is not the committed one, and takes live RAM.
+ * Host memory only; guest RAM is read. */
+#define MOBY_STASH_CAP 1024u
+static struct {
+    uint32_t key;
+    uint32_t blob;     /* blob index, in stash order: the later stash of a moby wins */
+} s_stash_ent[MOBY_STASH_CAP];
+static unsigned char* s_stash_blob;
+static uint32_t       s_stash_len;
+static unsigned       s_stash_n;        /* entries */
+static unsigned       s_stash_nblob;    /* blobs written since the replace */
+static int            s_stash_sorted;
+static int            s_stash_blocked;
+static uint32_t       s_stash_epoch;
+
+static int stash_census_on(void) {
+    static int on = -1;
+    ENV_FLAG_LATCH(on, "OPENPETE_MOBY_STASH_CENSUS");
+    return on;
+}
+
+void game_interp_moby_stash_begin(void) {
+    extern int openpete_speculative;
+    if (openpete_speculative) { s_stash_blocked = 1; return; }
+    const uint32_t epoch = spyro_native_canon_epoch_stamp();
+    if (s_stash_blocked || epoch != s_stash_epoch) {
+        s_stash_n = s_stash_nblob = 0;
+        s_stash_sorted = 1;
+    }
+    s_stash_blocked = 0;
+    s_stash_epoch = epoch;
+}
+
+void game_interp_moby_stash_put(uint32_t moby) {
+    if (s_stash_blocked || s_stash_nblob >= MOBY_STASH_CAP) return;
+    const uint32_t len = moby_blob_bytes();
+    if (!len) return;
+    if (!s_stash_blob || s_stash_len != len) {
+        unsigned char* b = (unsigned char*)realloc(s_stash_blob, (size_t)MOBY_STASH_CAP * len);
+        if (!b) return;
+        s_stash_blob = b;
+        s_stash_len  = len;
+        s_stash_n = s_stash_nblob = 0;
+    }
+    const void* host = openpete_psx_to_host_ptr(moby);
+    if (!host) return;
+    memcpy(s_stash_blob + (size_t)s_stash_nblob * len, host, len);
+    s_stash_ent[s_stash_n].key  = moby;
+    s_stash_ent[s_stash_n].blob = s_stash_nblob;
+    s_stash_n++;
+    s_stash_nblob++;
+    s_stash_sorted = 0;
+}
+
+static int stash_cmp(const void* a, const void* b) {
+    const uint32_t ka = ((const uint32_t*)a)[0], kb = ((const uint32_t*)b)[0];
+    if (ka != kb) return ka < kb ? -1 : 1;
+    const uint32_t sa = ((const uint32_t*)a)[1], sb = ((const uint32_t*)b)[1];
+    return sa < sb ? -1 : (sa > sb ? 1 : 0);
+}
+
+/* Orders the stash by moby address, keeping the last stash of each moby, so
+ * the ascending array walk consumes it with one cursor. Returns the count the
+ * capture may use: 0 while the stash is blocked or its epoch retired. */
+static unsigned stash_prepare(void) {
+    if (s_stash_blocked) return 0;
+    if (s_stash_epoch != spyro_native_canon_epoch_stamp() &&
+        !spyro_native_canon_epoch_fresh(s_stash_epoch)) return 0;
+    if (!s_stash_sorted) {
+        qsort(s_stash_ent, s_stash_n, sizeof s_stash_ent[0], stash_cmp);
+        unsigned w = 0;
+        for (unsigned r = 0; r < s_stash_n; ++r) {
+            if (r + 1 < s_stash_n && s_stash_ent[r + 1].key == s_stash_ent[r].key) continue;
+            s_stash_ent[w++] = s_stash_ent[r];
+        }
+        s_stash_n = w;
+        s_stash_sorted = 1;
+    }
+    return s_stash_n;
+}
+
+/* The capture's cursor over the prepared stash, and its census counts:
+ * mobys served from the stash, and of those the ones whose stashed record
+ * differs from the tick-end record (OPENPETE_MOBY_STASH_CENSUS=1). */
+typedef struct {
+    unsigned n, cur, served, differ;
+    int      census;
+} stash_walk_t;
+
+static void stash_census_differ(uint32_t m, const uint8_t* drawn, const uint8_t* end,
+                                uint32_t blob) {
+    unsigned o = 0;
+    while (o < blob && drawn[o] == end[o]) ++o;
+    if (o >= blob) return;
+    uint16_t c2;
+    memcpy(&c2, end + game_layout.moby.class_off, 2);
+    fprintf(stderr, "[moby-stash f=%u] differ m=%08x cls=%03x first=+0x%02x drawn=%02x end=%02x\n",
+            openpete_frame, m, c2, o, drawn[o], end[o]);
+}
+
+/* The record the capture takes for moby `m`: the stashed one when the stash
+ * holds `m`, else the live one. `m` ascends across calls. */
+static const void* stash_source(stash_walk_t* w, uint32_t m, const void* host, uint32_t blob) {
+    while (w->cur < w->n && s_stash_ent[w->cur].key < m) ++w->cur;
+    if (w->cur >= w->n || s_stash_ent[w->cur].key != m || s_stash_len != blob) return host;
+    const uint8_t* src = s_stash_blob + (size_t)s_stash_ent[w->cur].blob * blob;
+    ++w->served;
+    if (w->census && memcmp(src, host, blob) != 0) {
+        ++w->differ;
+        stash_census_differ(m, src, (const uint8_t*)host, blob);
+    }
+    return src;
+}
+
 void game_interp_capture_moby_array(void) {
+    stash_walk_t sw = { stash_prepare(), 0, 0, 0, stash_census_on() };
+
     const uint32_t head = game_layout.moby.array_head;
     if (!head) return;
     uint32_t arr = game_layout.moby.array_direct ? head : rd32(head);
     if (arr < 0x80000000u) return;
 
     const uint32_t stride = game_layout.moby.array_stride;
-    /* The store's blob may be sized for a longer record than a moby's (see
-     * game_interp_register_common), so the capture takes one record and no
-     * bytes of the next. */
-    const uint32_t blob   = openpete_interp_objs_blob_bytes() < stride
-                                ? openpete_interp_objs_blob_bytes() : stride;
+    const uint32_t blob   = moby_blob_bytes();
     /* OPENPETE_CAPTRACE_CLS=<class|0xFFFF>: the per-TICK canonical position of
      * every moby of that class, the capture side of the staircase-vs-smooth
      * comparison against the sub-tick trace. */
@@ -166,7 +299,8 @@ void game_interp_capture_moby_array(void) {
         uint8_t st = ((const uint8_t*)host)[game_layout.moby.state_off];
         if (st == (uint8_t)game_layout.moby.state_term) break;   /* end of the array */
         if (st < 0x80) {                                         /* the rest are dormant */
-            openpete_interp_objs_capture(m, host, blob);
+            const void* src = stash_source(&sw, m, host, blob);
+            openpete_interp_objs_capture(m, src, blob);
             if (s_ctc >= 0) {
                 uint16_t c2; memcpy(&c2, (const uint8_t*)host + game_layout.moby.class_off, 2);
                 if (s_ctc == 0xFFFF || c2 == (uint16_t)s_ctc) {
@@ -178,6 +312,9 @@ void game_interp_capture_moby_array(void) {
         }
         m += stride;
     }
+    if (sw.census)
+        fprintf(stderr, "[moby-stash f=%u] stashed=%u served=%u differ=%u\n",
+                openpete_frame, sw.n, sw.served, sw.differ);
 }
 
 /* The particle pool of a game whose particle renderer links its own primitives

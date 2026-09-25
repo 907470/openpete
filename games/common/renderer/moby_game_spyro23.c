@@ -30,6 +30,7 @@
 #include "game_layout.h"
 #include "no_lod.h"                    /* openpete_no_lod — the extended-LOD clause */
 #include "openpete_recomp_module.h"    /* the game's own static draw */
+#include "renderer/interp_regions_gen.h"  /* game_interp_moby_stash_begin/_put */
 
 #include <math.h>
 #include <stddef.h>
@@ -1591,6 +1592,12 @@ static int s23_simple_pass(CPUState* cpu) {
     for (int i = 0; i < 4; i++)
         s_flat_entry[i] = cpu->read_word(S23_FLAT_SCRATCH + (uint32_t)i * 4u);
     openpete_recomp_module_get()->dispatch(cpu, game_layout.moby.hook_draw_simple);
+    /* The records as the decode below reads them, after the draw's own stores
+     * (byte +0x4D) and before any later routine of the tick writes a queued
+     * moby (the HUD update advances a HUD moby's angle after this draw), so
+     * the object ring's pair takes the drawn records, not the tick-end ones. */
+    game_interp_moby_stash_begin();
+    for (int i = 0; i < s_simple_qn; i++) game_interp_moby_stash_put(s_simple_q[i][0]);
     int n = s23_simple_decode(cpu);
     if (moby_verify_vbl())
         fprintf(stderr, "[moby-simple vbl=%u] queued=%d drawn=%ld culled=%ld screenkind=%ld "
