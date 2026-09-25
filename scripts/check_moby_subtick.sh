@@ -58,6 +58,16 @@
 #               shows a channel drawn at the current tick through the
 #               interval (see TURN_MIN_PX below)
 #   dmax=<px>   optional: every leg's D at or below this bound
+#   spin=<n>    pose rows: the freecam engages at VBL lo - 10 instead of at
+#               the level's release and turns n yaw units (4096 = one turn)
+#               per tick from the row's pose (OPENPETE_FREECAM_AT_VBL,
+#               OPENPETE_FREECAM_SPIN), so the span presents a camera in motion
+#   still=<n>   floor on the still legs measured; the key adds the still bin:
+#               a leg whose moby reads the same world position and angle word
+#               on the two canonical ticks ([moby-world] at alpha 1 of v - 2
+#               and of v) draws the same pose under the same camera at alpha 0
+#               of v and alpha 1 of v - 2, so its D is at most STILL_EPS
+#               whatever the camera does between ticks
 # An exclusion is a known-open leg, named with its reason:
 #   leg <vbl> <moby> <reason>    left out of both checks
 #   seam <vbl> <moby> <reason>   left out of the D bound only
@@ -71,9 +81,10 @@
 #
 # Pass criterion, per row: 0 tuple mismatches; every class leg's D at or
 # below the largest D the same moby reads on its other legs; every held leg's
-# D zero to HOLD_EPS; with dmax, every leg's D at or below it. VACUOUS
-# (exit 1) when the bracketed, the class or the held leg count is below the
-# row's floor.
+# D zero to HOLD_EPS; with dmax, every leg's D at or below it; with still,
+# every still leg's D at or below STILL_EPS. VACUOUS (exit 1) when the
+# bracketed, the class, the held or the still leg count is below the row's
+# floor.
 #
 # Verdict line per row:
 #   [moby-subtick] game=<g> bk2=<b> pairs=<n> class=<n> hold=<n>
@@ -184,6 +195,12 @@ while IFS= read -r line; do
 
     lo="${span%-*}"; hi="${span#*-}"
     ROW_ENV=()
+    if [[ "$keys" =~ (^|[[:space:]])spin=(-?[0-9]+) ]]; then
+        if [[ "$src" != pose:* ]]; then
+            echo "moby-subtick: FAIL (row $row: spin= needs a pose row)"; exit 1
+        fi
+        ROW_ENV=(OPENPETE_FREECAM_SPIN="${BASH_REMATCH[2]}" OPENPETE_FREECAM_AT_VBL=$((lo - 10)))
+    fi
     if (( (hi - lo) % 2 != 0 || hi < lo + 2 )); then
         echo "moby-subtick: FAIL (row $row: span $span is not lo-hi with hi = lo + 2k)"; exit 1
     fi
@@ -226,6 +243,15 @@ min_class = int(opts.get('class', '0'))
 min_hold = int(opts.get('hold', '0'))
 min_mirror = int(opts.get('mirror', '0'))
 min_turn = int(opts.get('turn', '0'))
+min_still = int(opts.get('still', '0'))
+# A still leg: the moby's world position and angle word are equal on the two
+# canonical ticks bounding the interval. Alpha 0 of v and alpha 1 of v - 2 then
+# present the same pose under the same camera, so D is the float residue of
+# two derivations of one centroid. STILL_EPS bounds it; the replayed record's
+# integer translation, stored on the cull's 4-world-unit grid and re-derived
+# for a new camera each tick, reads that grid's residue instead (0.19 px per
+# unit at view depth 1880).
+STILL_EPS = 0.05
 # A turn leg: the interval steps the moby's euler on some axis, is neither
 # held nor a facing reversal, and moves the screen centroid at least
 # TURN_MIN_PX between the two canonical ticks (D = c_1(v) - c_1(v-2)). Every
@@ -265,12 +291,17 @@ ani = re.compile(r'\[moby-anim vbl=(\d+)\] m=(\w+) cls=(\w+) prevkf=(\d) balpha=
                  r'curr\(frm=(\d+) nfrm=(\d+) prog=(\d+) anim=(\d+)(?: nid=(\d+))?\) '
                  r'fa=(\w+) fb=(\w+) fap=(\w+) fbp=(\w+) w0=(\w+) w0p=(\w+) '
                  r'hdr=(\w+) hdrp=\w+ rot=(\w+)')
+wld = re.compile(r'\[moby-world vbl=(\d+)\] m=(\w+) rot=(\w+) kf=\S+ wpos=\(([-\d,]+)\)')
 scr = re.compile(r'\[moby-screen vbl=(\d+)\] leg=inter now=\S+ m=(\w+) cls=\w+ n=\d+ '
                  r'c=\(([-\d.]+),([-\d.]+)\)')
 
 def load(path):
     anim, screen = {}, {}
     for line in open(path, errors='replace'):
+        m = wld.search(line)
+        if m:
+            WORLD.setdefault(path, {}).setdefault((int(m[1]), m[2].lower()), (m[3].upper(), m[4]))
+            continue
         m = ani.search(line)
         if m:
             anim.setdefault((int(m[1]), m[2].lower()), m)
@@ -280,6 +311,7 @@ def load(path):
             screen.setdefault((int(m[1]), m[2].lower()), (float(m[3]), float(m[4])))
     return anim, screen
 
+WORLD = {}
 A0, S0 = load(log0)
 # The alpha-1 leg is the identity leg: every present there shows the pose its
 # own tick drew. The alpha-0 leg does not, because a held leg shows the pose
@@ -313,7 +345,9 @@ def reversal(prv, cur):
 
 AH, SH = load(logh) if logh else ({}, {})
 
-pairs = nclass = nhold = nsnap = nmirror = nturn = nturnsnap = 0
+pairs = nclass = nhold = nsnap = nmirror = nturn = nturnsnap = nstill = 0
+stills = []
+W1 = WORLD.get(log1, {})
 turns = []
 bad, notes, holds = [], [], []
 per = collections.defaultdict(lambda: {'cls': [], 'other': 0.0, 'n': 0})
@@ -331,6 +365,19 @@ for (v, mob), g in sorted(A0.items()):
     if not (fa == fap and bl == blp and (bl == 0 or fb == fbp)):
         bad.append("vbl=%d m=%s cls=%s%s tuple drawn(a=%s b=%s bl=%02x) rebuilt(a=%s b=%s bl=%02x)"
                    % (v, mob, g[3], " snapped" if snapped else "", fa, fb, bl, fap, fbp, blp))
+    # The still bin reads every leg with both centroids, including the legs
+    # whose record carries no blend (balpha 1), which the seam bound skips.
+    wp, wc = W1.get((v - 2, mob)), W1.get((v, mob))
+    if (min_still and wp is not None and wp == wc and g[4] != '2'
+            and (v, mob) in S0 and (v - 2, mob) in S1):
+        (x0, y0), (x1, y1) = S0[(v, mob)], S1[(v - 2, mob)]
+        Ds = ((x0 - x1) ** 2 + (y0 - y1) ** 2) ** 0.5
+        nstill += 1
+        stills.append((v, mob, g[3], Ds))
+        if Ds > STILL_EPS and (v, mob) not in skip_seam:
+            bad.append("vbl=%d m=%s cls=%s still D=%.3f above %.2f: a moby that did not move "
+                       "or turn between the ticks moves across the tick boundary"
+                       % (v, mob, g[3], Ds, STILL_EPS))
     if float(g[5]) >= 1.0 or (v, mob) not in S0 or (v - 2, mob) not in S1:
         continue
     pairs += 1
@@ -408,16 +455,17 @@ for (mob, c), rec in sorted(per.items()):
             bad.append("vbl=%d m=%s cls=%s classD=%.3f above the moby's non-class max %.3f"
                        % (v, mob, c, d, rec['other']))
 
-head = ("[moby-subtick] game=%s bk2=%s pairs=%d class=%d hold=%d mirror=%d%s mismatches=%d snaps=%d excluded=%d"
+head = ("[moby-subtick] game=%s bk2=%s pairs=%d class=%d hold=%d mirror=%d%s%s mismatches=%d snaps=%d excluded=%d"
         % (game, bk2, pairs, nclass, nhold, nmirror,
            (" turn=%d turnsnaps=%d" % (nturn, nturnsnap)) if logh else "",
+           (" still=%d stillmax=%.3f" % (nstill, max([s[3] for s in stills] or [0.0]))) if min_still else "",
            sum(' tuple ' in b for b in bad), nsnap, len(notes)))
 for n in notes:
     print("[moby-subtick]   " + n)
 if (pairs < min_pairs or nclass < min_class or nhold < min_hold or nmirror < min_mirror
-        or nturn < min_turn):
-    print(head + " VACUOUS: floor pairs>=%d class>=%d hold>=%d mirror>=%d turn>=%d"
-          % (min_pairs, min_class, min_hold, min_mirror, min_turn))
+        or nturn < min_turn or nstill < min_still):
+    print(head + " VACUOUS: floor pairs>=%d class>=%d hold>=%d mirror>=%d turn>=%d still>=%d"
+          % (min_pairs, min_class, min_hold, min_mirror, min_turn, min_still))
     sys.exit(1)
 print(head + " verdict=%s" % ("FAIL" if bad else "PASS"))
 for v, mob, c, d in holds:

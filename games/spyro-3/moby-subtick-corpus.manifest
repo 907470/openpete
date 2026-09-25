@@ -23,3 +23,7 @@ pose:sunny_villa:2:pos=(189567, 68825, 19072) yaw=-2031 pitch=197 | 1200-1230 | 
 # Sheila (class 0x39) turns 8 byte angles per tick through trace VBL 4063;
 # the turn bin requires her rotation to sweep.
 sheilas-alp-sheila-water-invisible.bk2 | 4056-4068 | pairs=43 turn=6 | seam 4059 8016a54c class leg above the non-class bound, open, outside the turn bin | seam 4061 80169d0c class leg above the non-class bound, open, outside the turn bin | seam 4065 80169d0c class leg above the non-class bound, open, outside the turn bin | seam 4065 801677ec class leg above the non-class bound, open, outside the turn bin | seam 4069 80169cb4 class leg with no non-class leg in the span, open, outside the turn bin
+# Sunrise Spring egg (class 0x084, record replay) before a freecam turning 4
+# yaw units per tick from the reported pose, engaged at VBL 1890: the egg's
+# world position and angle word are fixed, so every leg is a still leg.
+pose:sunrise_spring:pos=(28471, 32424, 18245) yaw=-1727 pitch=183 | 1900-1960 | pairs=0 spin=4 still=25

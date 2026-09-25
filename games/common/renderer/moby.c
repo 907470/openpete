@@ -1133,6 +1133,8 @@ static int record_zsf4(CPUState* cpu, const moby_record_t* R) {
  * alpha 1 are the same point of the same tick and read the same number by
  * construction, not by two derivations agreeing. */
 static void build_moby_record_tr(CPUState* cpu, uint32_t moby, double tr[3]);
+static int moby_record_centre_final(CPUState* cpu, uint32_t moby, uint32_t header, double tr[3]);
+static void moby_centre_census(const char* pass);
 
 /* Project one live cull record, whose fields the game's record reader already
  * extracted. zsf4 = the record's (--no-lod-adjusted) tier verdict, computed by
@@ -1146,13 +1148,11 @@ static void build_moby_record_tr(CPUState* cpu, uint32_t moby, double tr[3]);
  * goes to the decode: the GPF far-skip mirrors a .s test on the stored
  * int16, and the builder A/B compares against the stored value.
  *
- * Only where the cull stores the unscaled translation. On a game whose cull
- * stores the final one (rec_tr_final), that translation already carries the
- * cull's unit scaling — the factor of 4 off the quarter-world grid times the
- * per-moby size rescale — and the decode passes a fractional centre straight
- * to the GTE, so substituting the unscaled derivation there would project
- * every moby at a fraction of its distance. The record's own integer
- * translation stays on those games. */
+ * On a game whose cull stores the final translation (rec_tr_final), that
+ * translation also carries the cull's unit scaling — the factor of 4 off the
+ * quarter-world grid, the header's shift and the per-moby size rescale — and
+ * the decode passes a fractional centre straight to the GTE, so the centre is
+ * scaled the same way first (moby_record_centre_final). */
 static int moby_project_record(CPUState* cpu, const moby_record_t* R, int zsf4,
                                proj_xy* out, int cap) {
     const ngte_view* v = moby_record_view(R->moby);
@@ -1160,6 +1160,8 @@ static int moby_project_record(CPUState* cpu, const moby_record_t* R, int zsf4,
     const double* TR_frac = NULL;
     if (!game_layout.moby.rec_tr_final && R->moby >= 0x80000000u) {
         build_moby_record_tr(cpu, R->moby, tr); TR_frac = tr;
+    } else if (moby_record_centre_final(cpu, R->moby, R->header, tr)) {
+        TR_frac = tr;
     }
     return moby_decode_project(cpu, R->header, R->header_b, R->frame_a, R->frame_b, R->w0,
                                NULL, 0.0, -1.0, R->TR_raw, TR_frac, R->M,
@@ -1626,6 +1628,7 @@ static int project_all_records_inner(CPUState* cpu) {
         if (s_proj_n >= MAX_PROJ) break;
     }
     s_nrecs = nrec;
+    moby_centre_census("canon");
     return nrec;
 }
 
@@ -1714,7 +1717,15 @@ static int build_moby_record_fields(CPUState* cpu, uint32_t moby, moby_fields* f
  * replay needs only the origin projection, and the compose was most of that
  * path's cost. Callers on the hold path guarantee the moby extracted as an
  * animated record this epoch, so the model checks are skipped. */
+static void moby_centre_at(CPUState* cpu, uint32_t moby, const double woff[3], double tr[3]);
 static void build_moby_record_tr(CPUState* cpu, uint32_t moby, double tr[3]) {
+    moby_centre_at(cpu, moby, NULL, tr);
+}
+
+/* woff: the moby's world displacement to add to its RAM position when no
+ * fractional position resolves for it (the record-replay games, whose moby
+ * positions reach the present through moby_record_world_offset). */
+static void moby_centre_at(CPUState* cpu, uint32_t moby, const double woff[3], double tr[3]) {
     const int (*PM)[3] = s_view.cam_M;
     double cfx=s_view.cam[0], cfy=s_view.cam[1], cfz=s_view.cam[2];
     int32_t mx=(int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 0u),
@@ -1724,6 +1735,7 @@ static void build_moby_record_tr(CPUState* cpu, uint32_t moby, double tr[3]) {
     int fpos_hit = 0;
     { double mf[3];
       if (openpete_native_interp_pos(moby,     mf)) { mfx=mf[0]; mfy=mf[1]; mfz=mf[2]; fpos_hit=1; } }
+    if (!fpos_hit && woff) { mfx += woff[0]; mfy += woff[1]; mfz += woff[2]; }
     /* OPENPETE_REG_INTERP_MISS: regular/specular mobys with NO fractional position
      * (not reached by the spine's lerp walk → they step at the sim rate while the
      * camera interpolates around them). The shaded twin is
@@ -7738,6 +7750,67 @@ int moby_record_halfword_offset(uint32_t moby, uint32_t off, double* out) {
     return 1;
 }
 
+/* Records whose translation moby_record_centre_final replaced, per pass:
+ * replaced counts every replacement, sized the ones carrying a nonzero size
+ * byte, wrapped the sized ones left on the record's translation. */
+static struct { long replaced, sized, wrapped; } s_ctr_census;
+
+/* OPENPETE_MOBY_CENSUS: one line per pass that replaced a record centre. */
+static void moby_centre_census(const char* pass) {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("OPENPETE_MOBY_CENSUS"); s = (e && *e && *e != '0'); }
+    if (s && (s_ctr_census.replaced || s_ctr_census.wrapped))
+        fprintf(stderr, "[moby-centre-census vbl=%u] pass=%s replaced=%ld sized=%ld wrapped=%ld\n",
+                openpete_frame, pass ? pass : "rex", s_ctr_census.replaced, s_ctr_census.sized,
+                s_ctr_census.wrapped);
+    memset(&s_ctr_census, 0, sizeof s_ctr_census);
+}
+
+/* The translation a rec_tr_final cull stores, at full precision. The cull
+ * takes the centre on the quarter-world grid (build_moby_record_tr's
+ * derivation, truncated), shifts it left 2 and right by the animation
+ * header's +2 low byte, and, when the moby's size byte (+0x4F) is nonzero,
+ * runs it through GPF with IR0 = that byte and shifts right 5 (Spyro 3
+ * func_80030478 0x80030B0C-0x80030C8C, Spyro 2 func_80043858
+ * 0x80043EEC-0x8004406C, in the recompiled C). The stored
+ * value is therefore k times the centre, k = 4 / 2^shift times size / 32 where
+ * the byte is set, carried by the record in integers on the 4k-world-unit
+ * grid. This returns k times the untruncated centre at this present's camera
+ * and the moby's position at this present, so a still moby under a moving
+ * camera does not carry a different grid residue on each tick, and the
+ * canonical present and the alpha-1 sub-tick present read one number. The
+ * size byte is interpolated between the two ticks where both are nonzero.
+ *
+ * GPF reads the shifted centre from IR1-3, which the mtc2 truncates to
+ * int16: a sized centre past that range is stored wrapped, which no float
+ * form reproduces, so those records keep their own translation (returns 0). */
+static int moby_record_centre_final(CPUState* cpu, uint32_t moby, uint32_t header, double tr[3]) {
+    if (!game_layout.moby.rec_tr_final || moby < 0x80000000u || header < 0x80000000u) return 0;
+    int sh = (int)(cpu->read_byte(header + game_layout.moby.anim_scale_off) & 0xFFu);
+    if (sh > 30) sh = 30;
+    const double k = 4.0 / (double)(1u << sh);
+    double mw[3], c[3];
+    moby_record_world_offset(moby, mw);
+    moby_centre_at(cpu, moby, mw, c);
+    double size = (double)(cpu->read_byte(moby + game_layout.moby.size_off) & 0xFFu);
+    if (size != 0.0) {
+        for (int i = 0; i < 3; i++)
+            if (fabs(c[i] * k) >= 32768.0) { s_ctr_census.wrapped++; return 0; }
+        double ds = 0.0, t = 0.0;
+        const openpete_interp_obj_t* o = moby_record_pair(moby, &t);
+        if (o && game_layout.moby.size_off < (uint32_t)o->blob_len &&
+            o->prev[game_layout.moby.size_off] && o->curr[game_layout.moby.size_off])
+            ds = ((double)o->prev[game_layout.moby.size_off]
+                - (double)o->curr[game_layout.moby.size_off]) * (1.0 - t);
+        size += ds;
+        s_ctr_census.sized++;
+    }
+    const double ks = size != 0.0 ? k * size / 32.0 : k;
+    for (int i = 0; i < 3; i++) tr[i] = c[i] * ks;
+    s_ctr_census.replaced++;
+    return 1;
+}
+
 static void record_rebase_to_present(CPUState* cpu, moby_fields* f, uint32_t moby) {
     if (!s_tickcam_have || f->header < 0x80000000u) return;
 
@@ -7782,6 +7855,11 @@ static void record_rebase_to_present(CPUState* cpu, moby_fields* f, uint32_t mob
      * that byte means something else, which is how the decode reads it too. */
     int gpf = game_layout.moby.rec_tr_final ? 0 : (int)(f->w0 & 0xFFu);
     if (gpf) S *= (double)gpf / 32.0;
+    /* That cull's own rescale is the moby's size byte over 32 where the byte
+     * is nonzero (moby_record_centre_final). */
+    int size = game_layout.moby.rec_tr_final
+             ? (int)(cpu->read_byte(moby + game_layout.moby.size_off) & 0xFFu) : 0;
+    if (size) S *= (double)size / 32.0;
 
     double TR[3], M[3][3];
     for (int r = 0; r < 3; r++) {
@@ -7940,6 +8018,40 @@ static void moby_fields_pose_from_snapshot(CPUState* cpu, uint32_t moby, moby_fi
     moby_fields_set_pose(f, &pose);
 }
 
+/* A game with no host record builder replays the record the cull wrote,
+ * read exactly as the canonical pass read it. The pose is then the one the
+ * tick drew — identical to canonical at alpha 1. Its matrix and translation
+ * are view-space against the camera the tick composed them with, so
+ * record_rebase_to_present turns them onto the camera this present stages;
+ * without that the record would be the one thing in the scene that does not
+ * follow the interpolated view. The rebased translation still carries the
+ * tick's grid residue turned onto this camera, so the centre at this present
+ * replaces it where the game stores the scaled centre; TR_raw keeps the
+ * rebased integer for the paint key. rot_bins takes the rotation outcome.
+ * Returns 0 when the record does not read. */
+static int record_replay_fields(CPUState* cpu, uint32_t rec, uint32_t moby, moby_fields* f,
+                                long rot_bins[REC_ROT_N]) {
+    moby_record_t LR;
+    if (!moby_game.read_record(cpu, rec, &LR)) return 0;
+    memset(f, 0, sizeof *f);
+    f->header  = LR.header;  f->header_b = LR.header_b;
+    f->frameA  = LR.frame_a; f->frameB   = LR.frame_b;
+    f->w0      = LR.w0;
+    f->mscol   = LR.material;
+    f->metal   = (int)((LR.material >> 24) & 0xFFu);
+    memcpy(f->M, LR.M, sizeof f->M);
+    for (int k = 0; k < 3; k++) {
+        f->TR_raw[k]  = LR.TR_raw[k];
+        f->TR_frac[k] = (double)LR.TR_raw[k];
+    }
+    record_rebase_to_present(cpu, f, moby);
+    rot_bins[record_rotation_to_present(cpu, f, moby)]++;
+    double ctr[3];
+    if (moby_record_centre_final(cpu, moby, f->header, ctr))
+        memcpy(f->TR_frac, ctr, sizeof ctr);
+    return 1;
+}
+
 static int reextract_record_pass(CPUState* cpu, const char* mat) {
     int is_spec = (mat && mat[0] == 'S' && mat[1] == 'P');
     long rot_bins[REC_ROT_N] = {0};
@@ -8036,29 +8148,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         moby_fields f;
         double gpf_frac = -1.0;
         if (!moby_game.host_reveal) {
-            /* No host record builder on this game: replay the record the cull
-             * wrote, read exactly as the canonical pass read it. The pose is
-             * then the one the tick drew — identical to canonical at alpha 1.
-             * Its matrix and translation are view-space against the camera the
-             * tick composed them with, so record_rebase_to_present turns them
-             * onto the camera this present stages; without that the record
-             * would be the one thing in the scene that does not follow the
-             * interpolated view. */
-            moby_record_t LR;
-            if (!moby_game.read_record(cpu, recs[i], &LR)) continue;
-            memset(&f, 0, sizeof f);
-            f.header  = LR.header;  f.header_b = LR.header_b;
-            f.frameA  = LR.frame_a; f.frameB   = LR.frame_b;
-            f.w0      = LR.w0;
-            f.mscol   = LR.material;
-            f.metal   = (int)((LR.material >> 24) & 0xFFu);
-            memcpy(f.M, LR.M, sizeof f.M);
-            for (int k = 0; k < 3; k++) {
-                f.TR_raw[k]  = LR.TR_raw[k];
-                f.TR_frac[k] = (double)LR.TR_raw[k];
-            }
-            record_rebase_to_present(cpu, &f, mobys[i]);
-            rot_bins[record_rotation_to_present(cpu, &f, mobys[i])]++;
+            if (!record_replay_fields(cpu, recs[i], mobys[i], &f, rot_bins)) continue;
         } else {
         { int bok;
           uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
@@ -8344,6 +8434,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
     }
     push_scene_moby();
     moby_rot_census(mat, rot_bins);
+    moby_centre_census(mat);
     s_walk_in_rex = 0;
     return nm;
 }
