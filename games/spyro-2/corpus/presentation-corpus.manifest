@@ -40,6 +40,12 @@ autumn-plains-skelos-badlands-portal-entry|1150|200||850,851,852,1073,1085,1139,
 # under the ice. 921, 1121 and 1161 are intermediate legs whose tick pair spans a
 # body keyframe advance; 1123 is the leg after one.
 colossus-ice-skating|900|200||921,930,1121,1123,1161
+
+# summer-forest-collect-orb: the orb pickup with the 3D orb HUD icon at the
+# bottom edge. 882 is the reported tick where the guest frames the orb icon
+# with four golden facets and the native draws the orb alone; 870 and 894
+# bracket it. The bk2 is 884 frames, so the grid stops at 886.
+summer-forest-collect-orb|882|2||870,882,894
 #
 # shady-oasis-flame: two flame breaths in Shady Oasis. The flame's primitives
 # are written at VBL 842-858 (peak 846) and 960-976 (peak 964); 848 is an
