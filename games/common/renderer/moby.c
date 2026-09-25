@@ -2296,61 +2296,145 @@ int moby_reveal_anim_fields(CPUState* cpu, uint32_t moby, moby_anim_fields_t* f)
     return 1;
 }
 
-int moby_reveal_candidates(CPUState* cpu, moby_reveal_kind_t kind) {
-    long seen = 0, canon = 0, occl = 0;
-    long declined[MOBY_REVEAL_REASONS]; memset(declined, 0, sizeof declined);
-    const char* kname = (kind == MOBY_REVEAL_ANIMATED) ? "anim" : "simple";
-    if (!openpete_no_lod) return 0;          /* the extended-LOD clause only */
-    if (!moby_game.cull_box_threshold || !moby_game.reveal_record) return 0;
+/* The drawn-verdict byte of every moby as the cull read it, before it cleared
+ * and rewrote it. The cull's distance box widens by that byte's low two bits,
+ * so re-evaluating the cull's admission needs the byte the cull tested, not the
+ * verdict it wrote. Indexed by array slot; taken at the cull hook, and kept
+ * until the next one, since a regular pass with no cull behind it still shows
+ * that cull's verdicts. */
+#define PRECULL_SLOTS 4096
+static uint8_t  s_precull_drawn[PRECULL_SLOTS];
+static uint32_t s_precull_head;
+static uint32_t s_precull_n;
+
+static void moby_precull_snapshot(CPUState* cpu) {
+    s_precull_n = 0;
+    if (!moby_game.cull_view_admits) return;
     const uint32_t stride = game_layout.moby.array_stride;
-    int PM[3][3]; memcpy(PM, s_view.cam_M, sizeof PM);
+    s_precull_head = moby_array_head(cpu);
+    if (s_precull_head < 0x80000000u || !stride) return;
+    uint32_t m = s_precull_head;
+    while (s_precull_n < PRECULL_SLOTS &&
+           cpu->read_byte(m + game_layout.moby.state_off) != 0xFFu) {
+        s_precull_drawn[s_precull_n++] = cpu->read_byte(m + game_layout.moby.drawn_off);
+        m += stride;
+    }
+}
+
+/* The byte the cull read for moby `m`, or the live byte when the snapshot does
+ * not cover the slot. */
+static unsigned moby_precull_drawn(CPUState* cpu, uint32_t m, uint32_t head) {
+    const uint32_t stride = game_layout.moby.array_stride;
+    const uint32_t k = stride ? (m - head) / stride : PRECULL_SLOTS;
+    if (head == s_precull_head && k < s_precull_n) return s_precull_drawn[k];
+    return cpu->read_byte(m + game_layout.moby.drawn_off);
+}
+
+/* The widened-view clause. The cull tests an animated moby against a 4:3
+ * cone, so under a wider presentation view a moby inside its distance box that
+ * the lateral arm alone rejected is in the frame but has no record. A moby
+ * whose drawn-verdict byte the cull left at 0 is offered to the game's record
+ * builder when moby_game.cull_view_admits, the cull's admission re-evaluated
+ * with the lateral slope scaled to the view, admits it. The drawn byte is read,
+ * never written. Returns 1 when a record was appended; tallies each verdict. */
+static int moby_reveal_widened(CPUState* cpu, uint32_t m, uint32_t head, double widen,
+                               long verdicts[MOBY_WIDE_VERDICTS], long* occl) {
+    if (cpu->read_byte(m + game_layout.moby.drawn_off) != 0u) return 0;
+    const moby_wide_verdict_t v = moby_game.cull_view_admits(
+        cpu, m, moby_precull_drawn(cpu, m, head), widen);
+    verdicts[v]++;
+    if (v != MOBY_WIDE_ADMIT) return 0;
+    if (occl_record_culled(cpu, m)) { (*occl)++; return 0; }
+    moby_reveal_reason_t why = MOBY_REVEAL_OK;
+    if (!moby_game.reveal_record(cpu, m, MOBY_REVEAL_ANIMATED, &why)) return 0;
+    moby_rec_append_note(m);
+    return 1;
+}
+
+/* One pass's candidate-walk tallies, printed on its census line. */
+typedef struct {
+    long seen, canon, occl;
+    long declined[MOBY_REVEAL_REASONS];
+    long wide_v[MOBY_WIDE_VERDICTS];
+    int  added, wide_added;
+} moby_reveal_census_t;
+
+/* The extended-LOD clause for one live moby: offer it to the game's record
+ * builder when the cull's distance box rejected it and it stands in front of
+ * the camera plane and outside the occlusion cull. */
+static void moby_reveal_extended(CPUState* cpu, uint32_t m, moby_reveal_kind_t kind,
+                                 moby_reveal_census_t* c) {
+    /* The cull's own threshold, read with the moby's live verdict byte:
+     * inside the box is the cull's territory, and a moby there that is not
+     * in the queue was rejected for a reason the box does not express. */
+    const int t = moby_game.cull_box_threshold(cpu, m,
+                      cpu->read_byte(m + game_layout.moby.drawn_off));
+    if (t <= 0) return;                     /* degenerate box: dormant slot */
+    const int (*PM)[3] = s_view.cam_M;
     const int32_t cx = (int32_t)s_view.cam_ram[0],
                   cy = (int32_t)s_view.cam_ram[1],
                   cz = (int32_t)s_view.cam_ram[2];
-    int added = 0, guard = 0;
-    uint32_t m = moby_array_head(cpu);
-    while (m >= 0x80000000u && guard++ < 4096) {
+    const int32_t px = (int32_t)cpu->read_word(m + game_layout.moby.pos_off + 0u),
+                  py = (int32_t)cpu->read_word(m + game_layout.moby.pos_off + 4u),
+                  pz = (int32_t)cpu->read_word(m + game_layout.moby.pos_off + 8u);
+    const int32_t d0 = (px - cx) >> 2, d1 = (py - cy) >> 2, d2 = (pz - cz) >> 2;
+    /* View-space centre through the cull's own axis order: IR1 = the Y
+     * delta, IR2 the Z, IR3 the X, MAC = (M . IR) >> 12. */
+    const int32_t Vy = -d1, Vz = -d2, Vx = d0;
+    int64_t rz = ((int64_t)PM[2][0]*Vy + (int64_t)PM[2][1]*Vz
+                + (int64_t)PM[2][2]*Vx) >> 12;
+    const int inbox = (d0 > -t && d0 < t && d1 > -t && d1 < t &&
+                       d2 > -t && d2 < t && rz < (int64_t)t);
+    if (inbox) { c->canon++; return; }
+    if (rz <= 0) return;                    /* behind the camera plane */
+    if (occl_record_culled(cpu, m)) { c->occl++; return; }
+    moby_reveal_reason_t why = MOBY_REVEAL_OK;
+    if (moby_game.reveal_record(cpu, m, kind, &why)) { c->added++; moby_rec_append_note(m); }
+    else c->declined[why]++;
+}
+
+static void moby_reveal_census_print(const moby_reveal_census_t* c, moby_reveal_kind_t kind,
+                                     double widen) {
+    fprintf(stderr, "[moby-reveal vbl=%u] kind=%s live=%ld canon=%ld occluded=%ld added=%d "
+                    "declined{nomodel=%ld otherkind=%ld dup=%ld nopose=%ld full=%ld} "
+                    "wide{widen=%.4f added=%d outside=%ld sector=%ld otherkind=%ld range=%ld "
+                    "near=%ld lateral=%ld vertical=%ld canonical=%ld admit=%ld}\n",
+            openpete_frame, (kind == MOBY_REVEAL_ANIMATED) ? "anim" : "simple",
+            c->seen, c->canon, c->occl, c->added,
+            c->declined[MOBY_REVEAL_NO_MODEL], c->declined[MOBY_REVEAL_OTHER_KIND],
+            c->declined[MOBY_REVEAL_DUPLICATE], c->declined[MOBY_REVEAL_NO_POSE],
+            c->declined[MOBY_REVEAL_QUEUE_FULL],
+            widen, c->wide_added, c->wide_v[MOBY_WIDE_OUTSIDE],
+            c->wide_v[MOBY_WIDE_SECTOR], c->wide_v[MOBY_WIDE_OTHER_KIND],
+            c->wide_v[MOBY_WIDE_RANGE], c->wide_v[MOBY_WIDE_NEAR],
+            c->wide_v[MOBY_WIDE_LATERAL], c->wide_v[MOBY_WIDE_VERTICAL],
+            c->wide_v[MOBY_WIDE_CANONICAL], c->wide_v[MOBY_WIDE_ADMIT]);
+}
+
+int moby_reveal_candidates(CPUState* cpu, moby_reveal_kind_t kind) {
+    if (!moby_game.cull_box_threshold || !moby_game.reveal_record) return 0;
+    const double widen = moby_native_view_widen();
+    const int wide = kind == MOBY_REVEAL_ANIMATED && moby_game.cull_view_admits && widen > 1.0;
+    if (!openpete_no_lod && !wide) return 0; /* the widened-view and extended-LOD clauses only */
+    moby_reveal_census_t c;
+    memset(&c, 0, sizeof c);
+    const uint32_t stride = game_layout.moby.array_stride;
+    const uint32_t head = moby_array_head(cpu);
+    int guard = 0;
+    for (uint32_t m = head; m >= 0x80000000u && guard++ < 4096; m += stride) {
         const uint8_t stt = cpu->read_byte(m + game_layout.moby.state_off);
         if (stt == 0xFFu) break;                            /* array sentinel */
-        if (stt >= 0x80u) { m += stride; continue; }        /* dead / inactive */
+        if (stt >= 0x80u) continue;                         /* dead / inactive */
         if (moby_run_once_hidden(cpu, m,
-                (unsigned)cpu->read_half(m + game_layout.moby.class_off))) {
-            m += stride; continue;
+                (unsigned)cpu->read_half(m + game_layout.moby.class_off))) continue;
+        c.seen++;
+        if (wide && moby_reveal_widened(cpu, m, head, widen, c.wide_v, &c.occl)) {
+            c.wide_added++; continue;
         }
-        seen++;
-        /* The cull's own threshold, read with the moby's live verdict byte:
-         * inside the box is the cull's territory, and a moby there that is not
-         * in the queue was rejected for a reason the box does not express. */
-        const int t = moby_game.cull_box_threshold(cpu, m,
-                          cpu->read_byte(m + game_layout.moby.drawn_off));
-        if (t <= 0) { m += stride; continue; }   /* degenerate box: dormant slot */
-        const int32_t px = (int32_t)cpu->read_word(m + game_layout.moby.pos_off + 0u),
-                      py = (int32_t)cpu->read_word(m + game_layout.moby.pos_off + 4u),
-                      pz = (int32_t)cpu->read_word(m + game_layout.moby.pos_off + 8u);
-        const int32_t d0 = (px - cx) >> 2, d1 = (py - cy) >> 2, d2 = (pz - cz) >> 2;
-        /* View-space centre through the cull's own axis order: IR1 = the Y
-         * delta, IR2 the Z, IR3 the X, MAC = (M . IR) >> 12. */
-        const int32_t Vy = -d1, Vz = -d2, Vx = d0;
-        int64_t rz = ((int64_t)PM[2][0]*Vy + (int64_t)PM[2][1]*Vz
-                    + (int64_t)PM[2][2]*Vx) >> 12;
-        const int inbox = (d0 > -t && d0 < t && d1 > -t && d1 < t &&
-                           d2 > -t && d2 < t && rz < (int64_t)t);
-        if (inbox) { canon++; m += stride; continue; }
-        if (rz <= 0) { m += stride; continue; }   /* behind the camera plane */
-        if (occl_record_culled(cpu, m)) { occl++; m += stride; continue; }
-        moby_reveal_reason_t why = MOBY_REVEAL_OK;
-        if (moby_game.reveal_record(cpu, m, kind, &why)) { added++; moby_rec_append_note(m); }
-        else declined[why]++;
-        m += stride;
+        if (openpete_no_lod) moby_reveal_extended(cpu, m, kind, &c);
     }
-    if (moby_verify_enabled())
-        fprintf(stderr, "[moby-reveal vbl=%u] kind=%s live=%ld canon=%ld occluded=%ld added=%d "
-                        "declined{nomodel=%ld otherkind=%ld dup=%ld nopose=%ld full=%ld}\n",
-                openpete_frame, kname, seen, canon, occl, added,
-                declined[MOBY_REVEAL_NO_MODEL], declined[MOBY_REVEAL_OTHER_KIND],
-                declined[MOBY_REVEAL_DUPLICATE], declined[MOBY_REVEAL_NO_POSE],
-                declined[MOBY_REVEAL_QUEUE_FULL]);
-    return added;
+    if (moby_verify_enabled()) moby_reveal_census_print(&c, kind, wide ? widen : 1.0);
+    return c.added + c.wide_added;
 }
 
 /* ---- native scene triangle (fed to panel 0) ------------------------------
@@ -5692,6 +5776,7 @@ static void moby_reveal_dbg(CPUState* cpu) {
 static int on_cull(CPUState* cpu, uint32_t addr) {
     if (!moby_verify_enabled() && !openpete_native_scene_enabled() && !render_paths_active()) return 0;
     static int s_in = 0; if (s_in) return 0; s_in = 1;
+    moby_precull_snapshot(cpu);
     moby_run_draw(cpu, addr);
     moby_rec_snapshot(cpu);
     s_in = 0;

@@ -1320,6 +1320,72 @@ static int s23_cull_box_threshold(CPUState* cpu, uint32_t moby, unsigned drawn_b
     return (rad << 8) + (int)((drawn_bits & 3u) << 8);
 }
 
+/* The animated kind's admission as the cull runs it (mobydraw.s:62-187; Spyro
+ * 2 0x80043920-0x80043AFC, the same instructions), with the lateral slope
+ * scaled by `widen`. The cull clears the drawn-verdict byte and writes 1 or 2
+ * only on a moby that passes every test (mobydraw.s:73,224), so a byte of 0
+ * inside the box names a moby one of these tests rejected; under a view wider
+ * than 4:3 the lateral arm is the one whose answer changes.
+ *
+ * The box is the cull's own (s23_cull_box_threshold) on the quarter-world
+ * deltas (moby - cam) >> 2, (cam - moby) >> 2 and (cam - moby) >> 2
+ * (mobydraw.s:77-100). A sector byte at Moby+0x52 below 0xFE must name a
+ * sector whose byte in the table $gp holds (D_80072330, mobydraw.s:49-50, the
+ * layout's env_anim.live_table) is non-zero (mobydraw.s:95-106); a
+ * KUSEG model-table entry is the simple kind, which the second queue tests
+ * (mobydraw.s:109-116). The draw radius is the animation header's byte 7
+ * scaled by 16 (mobydraw.s:118-124), and the three thresholds are its sums of
+ * shifts (mobydraw.s:128-138, 158-163). The centre is the GTE MVMVA of the
+ * deltas through the camera matrix at G_CAMERA+0x00, IR1 the Y delta, IR2 the
+ * Z and IR3 the X, each loaded into a 16-bit IR register (mobydraw.s:119-141).
+ * The arms, in the cull's order:
+ *   range     MAC3 - box >= 0 rejects                     (mobydraw.s:142-143)
+ *   near      MAC3 + r <= 0 rejects                       (mobydraw.s:144-145)
+ *   lateral   4(|MAC1| - a2) - 3(MAC3 + a3) >= 0 rejects  (mobydraw.s:147-157)
+ *   vertical  (MAC3 + t1) - 3(|MAC2| - t0) <= 0 rejects   (mobydraw.s:178-187)
+ * The lateral arm's 3:4 slope is the 4:3 half-angle, so the widened view
+ * multiplies its MAC3 term by `widen`; the vertical arm keeps the game's
+ * slope, since Hor+ leaves the vertical field of view alone. At `widen` 1.0 the
+ * widened and canonical lateral arms are one test and nothing is admitted. */
+static moby_wide_verdict_t s23_cull_view_admits(CPUState* cpu, uint32_t moby,
+                                                unsigned drawn_bits, double widen) {
+    const int64_t t = s23_cull_box_threshold(cpu, moby, drawn_bits);
+    if (t <= 0) return MOBY_WIDE_OUTSIDE;
+    const uint32_t cam = game_layout.cam.base;
+    const int32_t dx = (int32_t)(cpu->read_word(moby + 0x0Cu) - cpu->read_word(cam + 0x28u)) >> 2;
+    const int32_t dy = (int32_t)(cpu->read_word(cam + 0x2Cu) - cpu->read_word(moby + 0x10u)) >> 2;
+    const int32_t dz = (int32_t)(cpu->read_word(cam + 0x30u) - cpu->read_word(moby + 0x14u)) >> 2;
+    if (dx <= -t || dx >= t || dy <= -t || dy >= t || dz <= -t || dz >= t)
+        return MOBY_WIDE_OUTSIDE;
+    const uint32_t sector = cpu->read_byte(moby + 0x52u);
+    if (sector < 0xFEu && game_layout.env_anim.live_table &&
+        cpu->read_byte(game_layout.env_anim.live_table + sector) == 0u)
+        return MOBY_WIDE_SECTOR;
+    const uint32_t cls   = cpu->read_half(moby + game_layout.moby.class_off);
+    const uint32_t model = cpu->read_word(game_layout.moby.model_table + cls * 4u);
+    if (model < 0x80000000u) return MOBY_WIDE_OTHER_KIND;
+    const uint32_t id     = cpu->read_byte(moby + game_layout.moby.anim_state_off);
+    const uint32_t header = cpu->read_word(model + game_layout.moby.model_anims_off + id * 4u);
+    if (header < 0x80000000u) return MOBY_WIDE_OTHER_KIND;
+    const int64_t r  = (int64_t)cpu->read_byte(header + 7u) << 4;
+    const int64_t a2 = (r >> 1) + (r >> 2) + (r >> 5), a3 = (r >> 1) + (r >> 4) + (r >> 5);
+    const int64_t t0 = (r >> 1) + (r >> 4),            t1 = (r >> 2) + (r >> 4);
+    int R[3][3];
+    ngte_read_matrix(cpu, cam, R);
+    const int64_t ir1 = (int16_t)dy, ir2 = (int16_t)dz, ir3 = (int16_t)dx;
+    int64_t mac[3];
+    for (int i = 0; i < 3; i++)
+        mac[i] = ((int64_t)R[i][0] * ir1 + (int64_t)R[i][1] * ir2 + (int64_t)R[i][2] * ir3) >> 12;
+    const int64_t ax = mac[0] < 0 ? -mac[0] : mac[0], ay = mac[1] < 0 ? -mac[1] : mac[1];
+    if (mac[2] - t >= 0) return MOBY_WIDE_RANGE;
+    if (mac[2] + r <= 0) return MOBY_WIDE_NEAR;
+    const double lat = 4.0 * (double)(ax - a2);
+    if (lat - 3.0 * widen * (double)(mac[2] + a3) >= 0.0) return MOBY_WIDE_LATERAL;
+    if ((mac[2] + t1) - 3 * (ay - t0) <= 0) return MOBY_WIDE_VERTICAL;
+    if (lat - 3.0 * (double)(mac[2] + a3) < 0.0) return MOBY_WIDE_CANONICAL;
+    return MOBY_WIDE_ADMIT;
+}
+
 /* Saturating narrow. Every intermediate the cull stores lands in an int16 GTE
  * register or an int16 record field, which wraps once extended LOD reveals a
  * moby past the range the cull could ever queue. Inside that range this is the
@@ -1576,6 +1642,7 @@ const moby_game_t moby_game = {
      * to this game's own queue builder instead. */
     .cull_box_threshold = s23_cull_box_threshold,
     .reveal_record      = s23_reveal_record,
+    .cull_view_admits   = s23_cull_view_admits,
     .special_face      = s23_special_face,
     .otkey_record      = s23_otkey_record,
     /* The cull writes its verdict into a gameplay-readable Moby byte, so

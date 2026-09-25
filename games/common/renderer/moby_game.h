@@ -150,6 +150,25 @@ typedef enum moby_reveal_reason {
     MOBY_REVEAL_REASONS
 } moby_reveal_reason_t;
 
+/* The widened-view verdict on one animated moby whose drawn-verdict byte the
+ * cull left at 0: the first admission test it fails, re-evaluated natively
+ * with the lateral arm widened to the presentation's view, or ADMIT when the
+ * widened view shows it and the canonical 4:3 view does not. The candidate
+ * walk tallies these on its census line. */
+typedef enum moby_wide_verdict {
+    MOBY_WIDE_OUTSIDE = 0,      /* outside the cull's distance box */
+    MOBY_WIDE_SECTOR,           /* the moby's sector byte names a dormant sector */
+    MOBY_WIDE_OTHER_KIND,       /* no model, or the simple kind */
+    MOBY_WIDE_RANGE,            /* view depth at or past the box threshold */
+    MOBY_WIDE_NEAR,             /* behind the near bound */
+    MOBY_WIDE_LATERAL,          /* outside the widened horizontal cone */
+    MOBY_WIDE_VERTICAL,         /* outside the vertical cone */
+    MOBY_WIDE_CANONICAL,        /* passes the 4:3 cone too: the cull rejected it
+                                 * for a reason these arms do not express */
+    MOBY_WIDE_ADMIT,
+    MOBY_WIDE_VERDICTS
+} moby_wide_verdict_t;
+
 typedef struct moby_game {
     /* ---- stream decoders --------------------------------------------- */
     /* Open one keyframe's vertex stream. `header` is the AnimationHeader, so
@@ -260,6 +279,15 @@ typedef struct moby_game {
      * untouched. */
     int  (*reveal_record)(CPUState* cpu, uint32_t moby, moby_reveal_kind_t kind,
                           moby_reveal_reason_t* why);
+    /* The canonical cull's admission of one animated moby, re-evaluated under a
+     * view `widen` times wider than 4:3: the distance box with `drawn_bits` as
+     * the verdict byte the cull read, the sector byte, the model kind, then
+     * the range, near, lateral and vertical arms, the lateral slope scaled by
+     * `widen`. ADMIT only when the widened lateral arm passes where the 4:3 one
+     * fails. Reads gamestate only. NULL: the walk re-admits nothing inside the
+     * box. */
+    moby_wide_verdict_t (*cull_view_admits)(CPUState* cpu, uint32_t moby,
+                                            unsigned drawn_bits, double widen);
 
     /* ---- paint order inside one moby ----------------------------------
      * The key arithmetic of each walk is a row of moby_rank.h's table; the
