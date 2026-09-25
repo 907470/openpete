@@ -32,9 +32,8 @@ code span renders as <code><a>...</a></code>.
 - Spyro 3: `--skip-to-level` gains a movie of the New Game path for the test corpus
 - Tests: the 60 harness scripts and `spyro-records-corpus.txt` moved from `scripts/<x>` to
   `tests/harness/<x>`, and the corpus manifests from `games/<game>/<x>.manifest` to
-  `games/<game>/corpus/<x>.manifest`; `scripts/check_psx_oracle.sh` stays where it was
-- Tests: the oracle gate moved from `scripts/check_psx_oracle.sh` to `tests/harness/check_psx_oracle.sh`;
-  its flags, exit codes and golden capture are unchanged
+  `games/<game>/corpus/<x>.manifest`; the oracle gate `check_psx_oracle.sh` moved with them,
+  its flags, exit codes and golden capture unchanged
 
 ## v0.4.1 - 2026-09-22 (Current)
 
