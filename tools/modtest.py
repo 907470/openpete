@@ -169,7 +169,7 @@ def run_one(mod_dir: Path, bin_path: str, disc: str, verbose: bool):
         env = dict(os.environ)
         if mode in ("pass", "fail"):
             env["OPENPETE_FRAME_LIMIT"] = frames
-            cmd = [str(REPO / "scripts/check_psx_oracle.sh"),
+            cmd = [str(REPO / "tests/harness/check_psx_oracle.sh"),
                    "--", "--mods-dir", str(fixture)]
         else:
             cmd = [bin_path, "--headless", "--disc", disc,

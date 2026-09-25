@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# scripts/check_psx_oracle.sh — run openpete --psxtrace-verify against a
+# tests/harness/check_psx_oracle.sh — run openpete --psxtrace-verify against a
 # DuckStation (real SCPH1001 BIOS) baseline trace. The trace's per-tick
 # oracle hashes (one per gameplay-state region) are value-equality
 # compared against openpete's live hashes; first mismatch = first leak.
@@ -16,7 +16,7 @@
 # re-converges, is a hard failure.
 #
 # Usage:
-#   scripts/check_psx_oracle.sh [--game SLUG] [trace-path] [-- <extra openpete flags>]
+#   tests/harness/check_psx_oracle.sh [--game SLUG] [trace-path] [-- <extra openpete flags>]
 #
 # --game SLUG (default spyro-1) sources games/SLUG/oracle.conf: the golden's
 # path, the disc, the openpete binary and the flags the run needs. The
@@ -30,9 +30,9 @@
 # gameplay-neutral — run openpete WITH the feature flag against the STOCK
 # golden; a PASS means the flag perturbed no gameplay-state region vs real
 # hardware:
-#   scripts/check_psx_oracle.sh -- --no-lod
-#   scripts/check_psx_oracle.sh -- --renderer psycross
-#   scripts/check_psx_oracle.sh custom.bin -- --no-lod
+#   tests/harness/check_psx_oracle.sh -- --no-lod
+#   tests/harness/check_psx_oracle.sh -- --renderer psycross
+#   tests/harness/check_psx_oracle.sh custom.bin -- --no-lod
 # A native-renderer display flag (--aspect, --fov, --ssaa) has no game-side
 # producer: the run hashes the stock gameplay stream whatever its value and
 # proves nothing about the flag; the windowed oracle row covers that class.
@@ -88,7 +88,7 @@ set -euo pipefail
 # (scripts/fences/rumble_guard.py enforces this.)
 export OPENPETE_VIBRATION=0
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 # Split args at `--`: an optional [trace-path] before, openpete pass-through
 # flags after. Lets `check_psx_oracle.sh -- --no-lod` test a feature flag

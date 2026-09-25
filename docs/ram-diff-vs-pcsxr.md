@@ -7,7 +7,7 @@ RAMs. Any diverging byte is a candidate recompiler or PSYQ-thunk defect.
 ## Relationship to the DuckStation oracle
 
 The canonical PSX oracle is DuckStation (`docs/duckstation-oracle.md`,
-`scripts/check_psx_oracle.sh`): real SCPH1001 BIOS, per-tick hashes of
+`tests/harness/check_psx_oracle.sh`): real SCPH1001 BIOS, per-tick hashes of
 the regions in `games/spyro-1/manifest/gameplay_state_regions.toml`, 20k-tick soak.
 PCSX-Redux runs OpenBIOS and its GPU emulation wedges in Spyro 1's
 cyclorama renderer around VBL 120, so it cannot produce a long trace.

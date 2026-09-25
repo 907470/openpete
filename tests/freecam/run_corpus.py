@@ -7,7 +7,7 @@ OFF, and asserts the expectations.  Software-Vulkan (llvmpipe) is forced
 when available so results are deterministic across machines.
 
 Exit codes: 0 = all PASS, 1 = a check FAILed, 64 = SKIP (binary/disc/
-prereqs missing — mirrors scripts/check_psx_oracle.sh).
+prereqs missing — mirrors tests/harness/check_psx_oracle.sh).
 """
 import argparse, concurrent.futures, os, re, subprocess, sys, tempfile
 

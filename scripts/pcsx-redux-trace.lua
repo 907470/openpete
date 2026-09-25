@@ -25,7 +25,7 @@
 -- Two BPs at the same PC crash Redux, and folding the seed I/O into the
 -- trace BP wedges the breakpoint after the first hit. The two runs are
 -- deterministic so the seed state at the Nth hit matches the trace at
--- the Nth hit. See scripts/check_psx_oracle.sh for the orchestrated
+-- the Nth hit. See tests/harness/check_psx_oracle.sh for the orchestrated
 -- workflow.
 --
 -- Memcards are flipped off + hard-reset for parity with openpete (no

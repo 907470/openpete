@@ -128,7 +128,7 @@ names; `--check` re-derives it in ctest); `games/<game>/oracle.conf` is
 the capture and gate recipe (golden path, record count, disc, anchor,
 recorder options from `psyq.toml`, the flags the run needs, the
 music-routing bounds). The golden itself is generated, never committed:
-`scripts/check_psx_oracle.sh --game <game>` captures it from the pinned
+`tests/harness/check_psx_oracle.sh --game <game>` captures it from the pinned
 DuckStation fork on the first run and verifies against it after; a ctest
 row `psx_oracle_match_<game>` runs it under `ctest -L oracle`. A new game's
 acceptance is the gate at PASS over 20000 records with a POKE negative

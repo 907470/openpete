@@ -5,7 +5,7 @@ DuckStation capture of Spyro 1 running on a real Sony SCPH1001 BIOS is the
 project's proxy for hardware, and openpete must reproduce its
 gameplay-state hashes tick for tick. This document covers both halves — the
 capture side (the DuckStation fork) and the verify side
-(`scripts/check_psx_oracle.sh`).
+(`tests/harness/check_psx_oracle.sh`).
 
 ## Why DuckStation
 
@@ -274,11 +274,11 @@ never blind-overwritten to make a red gate go green.
 ## The gate
 
 ```sh
-scripts/check_psx_oracle.sh [--game SLUG] [trace-path] [-- <extra openpete flags>]
+tests/harness/check_psx_oracle.sh [--game SLUG] [trace-path] [-- <extra openpete flags>]
 ```
 
 ```sh
-scripts/check_psx_oracle.sh --game spyro-3
+tests/harness/check_psx_oracle.sh --game spyro-3
 ```
 
 `--game` (default `spyro-1`) sources `games/SLUG/oracle.conf` for the
@@ -332,9 +332,9 @@ with the feature flag against the stock golden, and a PASS means the flag
 perturbed no gameplay-state region relative to hardware.
 
 ```sh
-scripts/check_psx_oracle.sh -- --no-lod
-scripts/check_psx_oracle.sh -- --renderer psycross
-scripts/check_psx_oracle.sh custom.bin -- --no-lod
+tests/harness/check_psx_oracle.sh -- --no-lod
+tests/harness/check_psx_oracle.sh -- --renderer psycross
+tests/harness/check_psx_oracle.sh custom.bin -- --no-lod
 ```
 
 A native-renderer display flag (`--aspect`, `--fov`, `--ssaa`) has no

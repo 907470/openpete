@@ -56,7 +56,7 @@ sub-tick is invisible to a headless capture.
 
 | Gate | Script | Proves |
 |---|---|---|
-| Oracle | `scripts/check_psx_oracle.sh` | Gameplay state matches the PSX reference capture, tick for tick. |
+| Oracle | `tests/harness/check_psx_oracle.sh` | Gameplay state matches the PSX reference capture, tick for tick. |
 | Presentation golden | `tests/harness/check_presentation_golden.sh` | The rendered screenshot corpus is unchanged, or intentionally re-blessed with `--bless`. |
 | Mods | `tests/harness/check_mods.sh` | The mod PoC ladder, including per-mod `modtest.toml` scenarios (ctest `mod_poc_ladder`, ~10 min). |
 

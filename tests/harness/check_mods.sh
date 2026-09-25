@@ -157,7 +157,7 @@ fi
 # ── 1. observer-neutrality oracle: all log-only mods stacked ────────────
 say "observer-neutrality: hello-anchor + raw-probe + chain-duo vs oracle"
 fixture "$WORK/observers" hello-anchor raw-probe chain-duo-a chain-duo-b
-out="$(OPENPETE_FRAME_LIMIT=$SMOKE_FRAMES scripts/check_psx_oracle.sh -- \
+out="$(OPENPETE_FRAME_LIMIT=$SMOKE_FRAMES tests/harness/check_psx_oracle.sh -- \
         --mods-dir "$WORK/observers" 2>&1)"
 if printf '%s\n' "$out" | grep -q "verdict: PASS"; then
     ok "oracle PASS with 4 observer mods enabled"
@@ -573,7 +573,7 @@ if python3 tools/extract_wad_entry.py --disc "$DISC" --level 11 \
     mkdir -p "$WORK/wadid"
     ln -sfn "$WORK/wadsrc/wad-identity" "$WORK/wadid/wad-identity"
     printf 'wad-identity\n' > "$WORK/wadid/enabled.txt"
-    out="$(OPENPETE_FRAME_LIMIT=$SMOKE_FRAMES scripts/check_psx_oracle.sh -- \
+    out="$(OPENPETE_FRAME_LIMIT=$SMOKE_FRAMES tests/harness/check_psx_oracle.sh -- \
             --mods-dir "$WORK/wadid" 2>&1)"
     if printf '%s\n' "$out" | grep -q "wad overlay: level 11 data served from wad-identity"; then
         ok "level-11 (demo 1) data served through the CdRead chokepoint"

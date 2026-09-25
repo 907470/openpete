@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scripts/check_psx_oracle_all.sh — run every game's oracle gate
-# (scripts/check_psx_oracle.sh --game SLUG for each games/*/oracle.conf) in
+# (tests/harness/check_psx_oracle.sh --game SLUG for each games/*/oracle.conf) in
 # parallel and print one table: game, verdict, records, first divergence.
 #
 # Usage:
@@ -28,7 +28,7 @@ fi
 declare -A PID
 for g in "${GAMES[@]}"; do
     rm -f "$LOGDIR/$g.log"
-    scripts/check_psx_oracle.sh --game "$g" "${PASSTHRU[@]}" >"$LOGDIR/$g.log" 2>&1 &
+    tests/harness/check_psx_oracle.sh --game "$g" "${PASSTHRU[@]}" >"$LOGDIR/$g.log" 2>&1 &
     PID[$g]=$!
 done
 

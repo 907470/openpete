@@ -956,7 +956,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # (about fifteen minutes, hence the timeout) and skips when the fork is
     # not built (see docs/duckstation-oracle.md).
     add_test(NAME psx_oracle_match
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_psx_oracle.sh)
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_psx_oracle.sh)
     set_tests_properties(psx_oracle_match PROPERTIES
         LABELS "slow;oracle"
         RESOURCE_LOCK openpete_game
@@ -969,7 +969,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     foreach(_g spyro-2 spyro-3)
         string(REPLACE "-" "" _tag "${_g}")
         add_test(NAME psx_oracle_match_${_g}
-                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_psx_oracle.sh --game ${_g})
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_psx_oracle.sh --game ${_g})
         set_tests_properties(psx_oracle_match_${_g} PROPERTIES
             LABELS "slow;oracle"
             RESOURCE_LOCK openpete_game
@@ -987,7 +987,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # included); FAIL unless the present thread presented; SKIP without a
     # display or the lvp ICD.
     add_test(NAME psx_oracle_windowed
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_psx_oracle.sh)
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_psx_oracle.sh)
     set_tests_properties(psx_oracle_windowed PROPERTIES
         LABELS "slow;oracle"
         RESOURCE_LOCK openpete_game
@@ -1004,7 +1004,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # 2903-3475 in the golden's load schedule), so the sub-tick leg is
     # verified across a load transient and not only in steady gameplay.
     add_test(NAME psx_oracle_windowed_spyro-3
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_psx_oracle.sh
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_psx_oracle.sh
                      --game spyro-3 -- --render-fps 60)
     set_tests_properties(psx_oracle_windowed_spyro-3 PROPERTIES
         LABELS "slow;oracle"

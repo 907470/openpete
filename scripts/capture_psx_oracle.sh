@@ -28,7 +28,7 @@
 # Stage 2 input replay: if --bk2 is given, the file is converted to a
 # padstream and pcsx-redux-bk2-replay.lua is co-loaded so both engines
 # can run from the same input. The .bk2 itself is copied to <out>.bk2 so
-# scripts/check_psx_oracle.sh forwards it to openpete.
+# tests/harness/check_psx_oracle.sh forwards it to openpete.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

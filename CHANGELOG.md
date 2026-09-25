@@ -33,6 +33,8 @@ code span renders as <code><a>...</a></code>.
 - Tests: the 60 harness scripts and `spyro-records-corpus.txt` moved from `scripts/<x>` to
   `tests/harness/<x>`, and the corpus manifests from `games/<game>/<x>.manifest` to
   `games/<game>/corpus/<x>.manifest`; `scripts/check_psx_oracle.sh` stays where it was
+- Tests: the oracle gate moved from `scripts/check_psx_oracle.sh` to `tests/harness/check_psx_oracle.sh`;
+  its flags, exit codes and golden capture are unchanged
 
 ## v0.4.1 - 2026-09-22 (Current)
 
