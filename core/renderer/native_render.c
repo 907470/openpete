@@ -6341,6 +6341,9 @@ static void cover_rect(int full_extent, float *l, float *r, float *t, float *b)
  * scene index of each textured block-tri, in VB order, so the draw side can read
  * a tri's material and coalesce adjacent same-material runs into one draw. */
 #define s_txscene ((int *)s_cz_txscene.data)
+/* Textured draw buckets the composer partitions the scene into (see the
+ * bucket table above the partition loop in draw_native_scene). */
+#define TX_BUCKETS 13
 /* Set for a scene triangle the untextured bucket build deferred into a mod
  * material span. A deferred triangle draws from that span at its group's slot,
  * so the emission-ordered blended-world block leaves it out. */
@@ -8493,7 +8496,7 @@ static void bw_rank_sort(const scene_tri_t* scene, int* idx, int n) {
  * (ABR0 alpha is rare and single-layer, the flat-HUD backdrops want painter's
  * order). */
 static void tx_bucket_order(int b, const scene_tri_t* scene, int* idx, int n) {
-    if (b == 0 || b == 2 || b == 3 || b == 9) {
+    if (b == 0 || b == 2 || b == 3 || b == 9 || b == 12) {
         NR_PROF_BEGIN("cmp.sort");
         tex_mat_sort(scene, idx, n);
         NR_PROF_END();
@@ -8618,6 +8621,84 @@ static void depth_transport_census_shot(const char* path)
     if (s_dtc_on == 1)
         fprintf(stderr, "[depth-transport] shot=%s scene_tris=%d textured=%d pvz_missing=%u\n",
                 path, s_dtc_tris, s_dtc_tex, s_pvz_missing);
+}
+
+/* Textured bucket membership of scene triangle t. Bucket 11 is the
+ * emission-ordered blended-world block and is the one bucket that carries
+ * untextured triangles too, so its runs keep the order the guest linked the
+ * two texturing modes in. Buckets 4, 5, 8 and 10, the former fixed per-class
+ * blended buckets, are empty; their content is in bucket 11. Buckets 0-3 are
+ * the layered groups, selected by the group's blend class and category
+ * (gblend, gcat). */
+static int tx_bucket_belongs(int b, const scene_tri_t* scene, int t, int gblend, int gcat) {
+    const scene_tri_t* st = &scene[t];
+    if (b == 11) return blended_world_tri(st) && !(!st->textured && s_bw_deferred[t]);
+    if (!st->textured) return 0;
+    const int cat = st->category;
+    const int bl = (st->blend < 0 || st->blend > 4) ? 0 : st->blend;
+    switch (b) {
+    case 4: case 5: case 8: case 10: return 0;
+    case 6:  return cat == OPENPETE_SCENE_HUD;
+    case 7:  return cat == OPENPETE_SCENE_PORTAL_GUARD;
+    /* ACTOR_FRONT (opaque): the rescue actors' textured faces, the ACTOR
+     * textured group's class split out for the front pass. */
+    case 9:  return cat == OPENPETE_SCENE_ACTOR_FRONT && bl == 0;
+    /* HUD3D (opaque): the textured faces of the 3D HUD icon models, drawn by
+     * the HUD3D layer beside its untextured faces. */
+    case 12: return cat == OPENPETE_SCENE_HUD3D && bl == 0;
+    default: break;
+    }
+    return cat != OPENPETE_SCENE_HUD && cat != OPENPETE_SCENE_HUD3D &&
+           cat != OPENPETE_SCENE_PORTAL_GUARD &&
+           bl == gblend &&
+           !(gblend == 0 && gcat >= 0 && cat != gcat) &&
+           !(gblend == 3 && cat != OPENPETE_SCENE_SHADOW);
+}
+
+/* Load-window census companion (OPENPETE_LOAD_CENSUS=1): per present, the
+ * textured HUD3D triangles the scene fed, the number the HUD3D layer drew, and
+ * the fed ones whose blend class is not opaque. */
+static void hud3d_tex_census(const scene_tri_t* scene, int scene_n, int drawn) {
+    static int s_on = -1;
+    if (s_on < 0) { const char* e = getenv("OPENPETE_LOAD_CENSUS"); s_on = (e && *e && *e != '0'); }
+    if (!s_on) return;
+    int fed = 0, blended = 0;
+    for (int t = 0; t < scene_n; t++) {
+        if (!scene[t].textured || scene[t].category != OPENPETE_SCENE_HUD3D) continue;
+        fed++;
+        if (scene[t].blend >= 1 && scene[t].blend <= 4) blended++;
+    }
+    fprintf(stderr, "[census f=%u HUD3D-TEX] fed=%d drawn=%d blended=%d\n",
+            s_scene_frame, fed, drawn, blended);
+}
+
+/* HUD3D layer: the in-game 3D HUD icon mobys (gem/dragon/Spyro-head/key/
+ * digits/orb). They are real 3D models, so depth-off (the flat HUD layer)
+ * paints their own faces inside-out. They draw last, on top of the whole
+ * scene, with the depth buffer cleared first so they Z-sort among their own
+ * faces while no world/actor/player geometry occludes them. The untextured
+ * faces (untextured bucket 9, opaque gouraud_pipe) and the opaque textured
+ * faces (textured bucket 12, scene_tex_pipe) share that one depth pass, so a
+ * textured band in front of an untextured face hides it by Z. Returns the
+ * textured triangles drawn. */
+static int draw_hud3d_layer(const scene_tri_t* scene, int tx_start,
+                            int ut_first, int ut_count, int tx_first, int tx_count) {
+    const int ut_ok = s_nr.gouraud_pipe && ut_count > 0;
+    const int tx_ok = s_nr.vram_tex && s_nr.scene_tex_pipe && tx_count > 0;
+    if (!ut_ok && !tx_ok) return 0;
+    rhi_clear_depth(s_nr.dev);
+    if (ut_ok) {
+        bind_scene_pipe(s_nr.gouraud_pipe);
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+        rhi_draw(s_nr.dev, (uint32_t)ut_count, (uint32_t)ut_first);
+    }
+    if (!tx_ok) return 0;
+    bind_scene_pipe(s_nr.scene_tex_pipe);
+    rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+    rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+    draw_tex_runs(tx_first, tx_count, tx_start, scene, &s_nr.scene_tex_pipe, 1,
+                  s_nr.hd_cutout_pipe, 0, 0);
+    return tx_count / 3;
 }
 
 static bool draw_native_scene(bool full_extent)
@@ -9150,50 +9231,24 @@ static bool draw_native_scene(bool full_extent)
      * material-sorting collapses that ~36× (terrain/mobys share few tpages).
      *   buckets 0..5 = the 6 layered groups (SAME partition as the draw loop)
      *   bucket  6    = HUD 2D textured backdrops (draw_hud_flat_layer)
-     * HUD3D-textured and unmatched textured tris are not drawn by anyone (prior
-     * behaviour), so they're dropped from the block. Opaque buckets (0,2,3) are
-     * material-sorted — depth resolves visibility regardless of draw order, so it
+     *   bucket 12    = HUD3D opaque textured faces (draw_hud3d_layer)
+     * Textured tris no bucket matches (HUD3D with a blend class) are dropped
+     * from the block. Opaque buckets (0,2,3,9,12) are material-sorted — depth resolves visibility regardless of draw order, so it
      * is exact. Transparent buckets (1,4,5) and HUD (6) keep submission order
      * (additive/subtractive commute; ABR0 alpha is rare/single-layer; the flat-HUD
      * backdrops want painter's order) and only coalesce already-adjacent runs. */
     NR_PROF_END();   /* cmp.build_ut */
     NR_PROF_BEGIN("cmp.build_tex");
     int tx_start = n;
-    int txg_first[12], txg_count[12], txtri = 0;
-    for (int b = 0; b < 12; b++) {
+    int txg_first[TX_BUCKETS], txg_count[TX_BUCKETS], txtri = 0;
+    for (int b = 0; b < TX_BUCKETS; b++) {
         txg_first[b] = tx_start + txtri * 3;
         int run_start = txtri;
+        const int gblend = b < 4 ? groups[b].blend : 0;
+        const int gcat   = b < 4 ? groups[b].gcat : -1;
         for (int t = 0; t < scene_n; t++) {
             if (tx_start + (txtri + 1) * 3 > s_cz_verts) break;
-            int cat = scene[t].category;
-            int belongs;
-            /* Bucket 11 is the emission-ordered blended-world block and is the
-             * one bucket that carries untextured triangles too, so its
-             * runs keep the order the guest linked the two texturing modes in.
-             * Buckets 4, 5, 8 and 10 — the former fixed per-class blended
-             * buckets — are empty; their content is here. */
-            if (b == 11) belongs = blended_world_tri(&scene[t]) &&
-                                   !(!scene[t].textured && s_bw_deferred[t]);
-            else if (!scene[t].textured) continue;
-            else if (b == 4 || b == 5 || b == 8 || b == 10) belongs = 0;
-            else if (b == 6) belongs = (cat == OPENPETE_SCENE_HUD);
-            else if (b == 9) {
-                /* ACTOR_FRONT (opaque): the rescue actors' textured faces — same
-                 * class as the ACTOR textured group (b==2), split for the front
-                 * pass. */
-                int bl = scene[t].blend; if (bl < 0 || bl > 4) bl = 0;
-                belongs = cat == OPENPETE_SCENE_ACTOR_FRONT && bl == 0;
-            }
-            else if (b == 7) belongs = (cat == OPENPETE_SCENE_PORTAL_GUARD);
-            else {
-                int bl = scene[t].blend; if (bl < 0 || bl > 4) bl = 0;
-                belongs = cat != OPENPETE_SCENE_HUD && cat != OPENPETE_SCENE_HUD3D &&
-                          cat != OPENPETE_SCENE_PORTAL_GUARD &&
-                          bl == groups[b].blend &&
-                          !(groups[b].blend == 0 && groups[b].gcat >= 0 && cat != groups[b].gcat) &&
-                          !(groups[b].blend == 3 && cat != OPENPETE_SCENE_SHADOW);
-            }
-            if (belongs) s_txscene[txtri++] = t;
+            if (tx_bucket_belongs(b, scene, t, gblend, gcat)) s_txscene[txtri++] = t;
         }
         tx_bucket_order(b, scene, &s_txscene[run_start], txtri - run_start);
         txg_count[b] = (tx_start + txtri * 3) - txg_first[b];
@@ -9883,19 +9938,9 @@ static bool draw_native_scene(bool full_extent)
     if (!hud_under)
         draw_hud_flat_layer(scene, scene_n, ut_first, ut_count, tx_start, txg_first[6], txg_count[6]);
 
-    /* HUD3D layer — the in-game 3D HUD icon mobys (gem/dragon/Spyro-head/key/
-     * digits). They are real 3D models, so depth-off (the flat HUD layer) paints
-     * their own faces inside-out. Draw them LAST, on top of the whole scene, but
-     * with the depth buffer CLEARED first (rhi_clear_depth) so they Z-sort among
-     * their own faces (depth-test ON via the opaque gouraud_pipe) while never being
-     * occluded by world/actor/player geometry. Their vertex positions already match
-     * the .s to <1px; this only fixes their internal depth ordering. */
-    if (s_nr.gouraud_pipe && ut_count[9] > 0) {
-        rhi_clear_depth(s_nr.dev);
-        bind_scene_pipe(s_nr.gouraud_pipe);
-        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-        rhi_draw(s_nr.dev, (uint32_t)ut_count[9], (uint32_t)ut_first[9]);
-    }
+    hud3d_tex_census(scene, scene_n,
+                     draw_hud3d_layer(scene, tx_start, ut_first[9], ut_count[9],
+                                      txg_first[12], txg_count[12]));
 
     /* OVERLAY layer (HUD-OT 2D flat quads — the cutscene letterbox bars): drawn
      * after every scene group, over everything incl. the player, depth-test off
