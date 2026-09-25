@@ -6,7 +6,8 @@
 # Each case boots headless (software Vulkan — deterministic), jumps the
 # freecam to a recorded pose, screenshots at `frame`, and asserts metric
 # expectations — never golden images, so unrelated renderer changes don't
-# break it.  Check kinds (A/B knob = `ab_env`, default OPENPETE_TERRAIN_GAPFILL):
+# break it.  Check kinds (A/B knob = `ab_env`, default OPENPETE_TERRAIN_GAPFILL;
+# the ON and OFF legs set it to `ab_on` / `ab_off`, default "1" / "0"):
 #   ab-identical  ON vs OFF must differ by <= max_px (in bbox if set)
 #                 -> encodes "this feature must NOT paint here"
 #   ab-active     ON vs OFF must differ by >= min_px (in bbox if set)
@@ -153,26 +154,29 @@ mode  = "terrain"
 # magic_crafters waterfall room (found in testing, 2026-07-09): the outside
 # waterfall sheet and the room's inner wall are back-to-back surfaces a
 # few world units apart -- under emit-all the sheet's BACK-face is
-# genuinely nearer and wins the true-Z depth test, punching a blue
-# column through the room (PSX hides it via the .s NCLIP cull, which
+# genuinely nearer and wins the true-Z depth test, punching blue patches
+# through the room (PSX hides it via the .s NCLIP cull, which
 # native now mirrors exactly: two-half quad acceptance, w3&4
 # draw-anyway, straddle bypass).  CULL on-vs-off must differ by the
-# column (feature active) inside its bbox and nowhere else.
-# (History: while the authored OT-slot offsets applied to FOREGROUND faces
-# too, the LP wall tested 8192+ world behind the HP interior and the cull
-# was briefly a no-op here — the case asserted ab-identical during that
-# window. The foreground band carries no offsets — those faces never
-# receive a main-OT index in the .s — so the cull is load-bearing again.)
+# punch-through inside its bbox.  The near-band faces carry the authored
+# OT slot bias, so with the cull off the back-face loses to the back wall
+# and shows only through the right-hand wall (x 517-639); the bbox covers
+# that wall.  The ON leg is the shipped mask 3 on the retained terrain
+# cache (CACHE_FORCE waives the software-vk exclusion; any other mask
+# routes terrain to the CPU walk); the OFF leg, mask 0, is the CPU walk.
+# The cache and walk legs at mask 3 are pixel-identical at this pose.
 [[case]]
 name   = "magiccrafters-waterfall-room-culled"
 level  = "magic_crafters"
 pose   = "69519,93695,26535,619,26"
 mode   = "terrain"
 ab_env = "OPENPETE_TERRAIN_CULL"
+ab_on  = "3"
+pin_env = { OPENPETE_TERRAIN_CACHE_FORCE = "1" }
   [[case.check]]
   kind   = "ab-active"
-  min_px = 4000
-  bbox   = [230, 45, 340, 285]
+  min_px = 3960
+  bbox   = [520, 55, 639, 300]
 
 # Dragon-rescue cutscene (found in testing, 2026-07-10): the cutscene actors
 # draw in FRONT of terrain (depth-isolated ACTOR pass, the HUD3D trick;

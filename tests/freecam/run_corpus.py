@@ -32,7 +32,10 @@ def run_game(binary, disc, case, gapfill, outdir, tag):
     env = dict(os.environ)
     # ab_env: which feature toggle the on/off pair flips (default: the gapfill
     # classifier; e.g. "OPENPETE_TERRAIN_HOLEFILL" for fill-neutrality cases).
-    env[case.get("ab_env", "OPENPETE_TERRAIN_GAPFILL")] = "1" if gapfill else "0"
+    # ab_on / ab_off: the values the two legs set (default "1" / "0"); a knob
+    # that is a mask rather than a boolean names its shipped value as ab_on.
+    on_off = (str(case.get("ab_on", "1")), str(case.get("ab_off", "0")))
+    env[case.get("ab_env", "OPENPETE_TERRAIN_GAPFILL")] = on_off[0] if gapfill else on_off[1]
     # pin_env: fixed KEY=VALUE pairs applied to BOTH runs of the pair — for
     # isolating one mechanism when two independently produce the same pixels
     # (e.g. the actor-front pass vs the moby OT-bias pull).
