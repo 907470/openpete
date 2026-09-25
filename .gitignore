@@ -82,3 +82,7 @@ ram-*.bin
 # Oracle goldens are derived from the disc and the pinned DuckStation fork
 # (games/<game>/oracle.conf); the gate captures them on first run.
 tests/golden/*/psxtrace-*
+
+# The dragon-rescue tier's tiles are generated: tests/harness/check_dragon_golden.sh
+# captures them on its first run. Its identity baseline stays committed.
+tests/golden/spyro-1/dragons/*.png

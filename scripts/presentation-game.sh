@@ -19,11 +19,13 @@
 #   PG_DISC              the game's disc image (OPENPETE_DISC overrides)
 #   PG_RUN_ARGS          per-game boot flags the game needs (array)
 #   PG_BK2_DIR           where the corpus bk2 movies live
-#   PG_GOLDEN            the committed golden image directory
+#   PG_TIER              the corpus tier (PRESENTATION_TIER, default presentation)
+#   PG_GOLDEN            the tier's committed golden image directory
 #   PG_IDENT_BASELINE    the identity leg's per-tile baseline
 #   PG_CORPUS_DIR        the game's corpus manifest directory
-#   PG_CORPUS_MANIFEST   the bk2 corpus manifest
-#   PG_FREECAM_MANIFEST  the freecam pose manifest
+#   PG_CORPUS_MANIFEST   the tier's row manifest (bk2 and pose rows)
+#   PG_FREECAM_MANIFEST  the freecam pose manifest; empty for a tier without one
+#   PG_CAND_DIR          the tier's default kept-candidate directory
 #
 # PG_BUILD_DIR defaults to build/linux-release and is honoured by pg_resolve,
 # so a caller parsing --build-dir=DIR sets it before calling.
@@ -78,12 +80,32 @@ pg_resolve() {
   [[ -n "$runargs" ]] && read -ra PG_RUN_ARGS <<<"$runargs"
 
   PG_BK2_DIR="games/$PG_GAME/bk2"
-  PG_GOLDEN="tests/golden/$PG_GAME/presentation"
-  PG_IDENT_BASELINE="$PG_GOLDEN/ident-baseline.tsv"
-
   PG_CORPUS_DIR="$(pg_corpus_dir "$PG_GAME")"
-  PG_CORPUS_MANIFEST="$PG_CORPUS_DIR/presentation-corpus.manifest"
-  PG_FREECAM_MANIFEST="$PG_CORPUS_DIR/freecam-corpus.manifest"
+
+  # A tier is a corpus with its own manifest, golden and candidate directory,
+  # captured and diffed by the same scripts. `presentation` is the gate the
+  # default chains run; `dragons` (Spyro 1's dragon-rescue cutscenes) runs on
+  # its trigger policy through tests/harness/check_dragon_golden.sh and has no
+  # freecam leg.
+  PG_TIER="${PRESENTATION_TIER:-presentation}"
+  case "$PG_TIER" in
+    presentation)
+      PG_GOLDEN="tests/golden/$PG_GAME/presentation"
+      PG_CORPUS_MANIFEST="$PG_CORPUS_DIR/presentation-corpus.manifest"
+      PG_FREECAM_MANIFEST="$PG_CORPUS_DIR/freecam-corpus.manifest"
+      PG_CAND_DIR="build/presentation-candidate"
+      [[ "$PG_GAME" != "spyro-1" ]] && PG_CAND_DIR="build/presentation-candidate-$PG_GAME"
+      ;;
+    dragons)
+      PG_GOLDEN="tests/golden/$PG_GAME/dragons"
+      PG_CORPUS_MANIFEST="$PG_CORPUS_DIR/dragon-rescue-corpus.manifest"
+      PG_FREECAM_MANIFEST=""
+      PG_CAND_DIR="build/dragon-candidate"
+      [[ "$PG_GAME" != "spyro-1" ]] && PG_CAND_DIR="build/dragon-candidate-$PG_GAME"
+      ;;
+    *) echo "unknown PRESENTATION_TIER '$PG_TIER' (expected presentation or dragons)" >&2; return 1;;
+  esac
+  PG_IDENT_BASELINE="$PG_GOLDEN/ident-baseline.tsv"
   return 0
 }
 

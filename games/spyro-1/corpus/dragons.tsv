@@ -1,0 +1,106 @@
+# Spyro 1 dragon statues: one row per rescue, the source of
+# dragon-rescue-corpus.manifest (tools/gen_dragon_corpus.py writes it).
+#
+# Columns (tab-separated):
+#   level        the level holding the statue (--skip-to-level name)
+#   dragon       g_DragonNames[m_NameIndex] of the statue's
+#                RescuedDragonMobyProps; not unique across the game
+#   moby_idx     the statue's index in g_LevelMobys (class 250,
+#                MOBYCLASS_CRYSTAL_DRAGON); with level, the row identity
+#   name_index   m_NameIndex
+#   statue_pos   the statue moby's world position x,y,z
+#   pose         --player-pose value: 300 units above the statue, facing it
+#                (yaw = rot_z*16 + 2048); the landing triggers the rescue
+#   trigger      first VBL with g_Gamestate == GS_Dragon (8)
+#   cuts         camera cuts inside the cutscene (VBLs, comma-separated; -
+#                for none): |dpos| > 1440, a matrix-row angle > 256/4096,
+#                or a step change > 700 after a hold
+#   end          first VBL after the trigger with g_Gamestate != 8
+#   route        extra launch arguments before the pose; - for none. The
+#                second Gnorc Gnexus rescue (MAGNUS, after Gnasty's defeat)
+#                is reached through the ending chain, which returns to the
+#                level live at VBL 11674
+#
+# VBLs are measured headless from boot with --skip-to-level (--disc-cache 0);
+# a capture that launches the same way reaches the same VBLs.
+level	dragon	moby_idx	name_index	statue_pos	pose	trigger	cuts	end	route
+artisans	NESTOR	88	3	84992,52224,9186	pos=(84992, 52224, 9486) yaw=2048	1690	1690,2296,2500,2696	3120	-
+artisans	ARGUS	91	1	121836,82821,5643	pos=(121836, 82821, 5943) yaw=1024	1692	1692,1954,2094	2788	-
+artisans	TOMAS	93	13	124058,51220,4607	pos=(124058, 51220, 4907) yaw=912	1692	1692,2250,2396,2658	2956	-
+artisans	DELBIN	143	2	70175,43766,6324	pos=(70175, 43766, 6624) yaw=2624	1690	1690,1934,2134,2576,2634	3238	-
+stone_hill	LINDAR	86	4	90276,143299,20603	pos=(90276, 143299, 20903) yaw=3072	1692	2204	2786	-
+stone_hill	GILDAS	141	5	196639,152340,25299	pos=(196639, 152340, 25599) yaw=688	1692	1768,2162,2208	2922	-
+stone_hill	ASTOR	144	6	141312,169165,20603	pos=(141312, 169165, 20903) yaw=2048	1692	2556	2814	-
+stone_hill	GAVIN	170	7	126976,129229,10491	pos=(126976, 129229, 10791) yaw=1360	1690	1690,2226,2468	2752	-
+dark_hollow	ALBAN	65	10	47708,66335,20725	pos=(47708, 66335, 21025) yaw=688	1692	-	2890	-
+dark_hollow	OSWIN	95	8	85043,13548,12149	pos=(85043, 13548, 12449) yaw=2736	1692	2134,2348	2680	-
+dark_hollow	DARIUS	111	9	79852,47135,20346	pos=(79852, 47135, 20646) yaw=3872	1692	-	2450	-
+town_square	NILS	12	11	128829,111882,11387	pos=(128829, 111882, 11687) yaw=3072	1690	1690	2794	-
+town_square	DEVLIN	13	12	116275,129823,9805	pos=(116275, 129823, 10105) yaw=576	1690	1690,2172	2694	-
+town_square	ALVAR	49	14	134083,129638,11899	pos=(134083, 129638, 12199) yaw=3760	1690	1690,2228	3016	-
+town_square	THOR	101	23	129638,123085,13835	pos=(129638, 123085, 14135) yaw=448	1690	1690	2290	-
+toasty	NEVIN	24	15	81920,133540,18517	pos=(81920, 133540, 18817) yaw=1936	1692	2272,2474	2966	-
+peace_keepers	TITAN	57	18	107612,101970,55419	pos=(107612, 101970, 55719) yaw=2848	1690	1690,2444,2538	2746	-
+peace_keepers	GUNNAR	59	17	63754,160317,53126	pos=(63754, 160317, 53426) yaw=576	1692	2320,2458	2804	-
+peace_keepers	MAGNUS	61	16	30536,113818,54233	pos=(30536, 113818, 54533) yaw=2048	1692	2268	2752	-
+dry_canyon	BORIS	80	19	138240,82749,20273	pos=(138240, 82749, 20573) yaw=1824	1692	1692,1742,1744,1746,2254,2396	2608	-
+dry_canyon	IVOR	82	22	111380,88556,14478	pos=(111380, 88556, 14778) yaw=2624	1692	2494,2580	2858	-
+dry_canyon	MAXIMOS	85	20	155023,99727,21491	pos=(155023, 99727, 21791) yaw=3760	1690	1690	2794	-
+dry_canyon	CONAN	165	21	171500,82545,15483	pos=(171500, 82545, 15783) yaw=2048	1692	1692	2214	-
+cliff_town	MARCO	57	24	135588,86569,22463	pos=(135588, 86569, 22763) yaw=1600	1692	2094,2414	2666	-
+cliff_town	ENZO	59	25	132096,136192,24187	pos=(132096, 136192, 24487) yaw=912	1692	1922,2094	2438	-
+cliff_town	HALVOR	159	26	140083,105472,15483	pos=(140083, 105472, 15783) yaw=2048	1692	1906,2116	2720	-
+ice_cavern	ANDOR	30	28	123904,103424,18068	pos=(123904, 103424, 18368) yaw=2624	1692	-	2216	-
+ice_cavern	RAGNAR	70	29	135168,42394,22449	pos=(135168, 42394, 22749) yaw=0	1692	2242,2432	2622	-
+ice_cavern	ULRIC	123	30	47278,76790,23848	pos=(47278, 76790, 24148) yaw=2384	1692	2240	2556	-
+ice_cavern	TODOR	202	31	85934,115599,21921	pos=(85934, 115599, 22221) yaw=3520	1692	2286,2580,2698	2900	-
+ice_cavern	ASHER	211	32	123914,50156,19079	pos=(123914, 50156, 19379) yaw=3872	1692	-	2248	-
+doctor_shemp	TRONDO	67	33	47155,45107,19564	pos=(47155, 45107, 19864) yaw=3872	1692	1692,1762,2276	2764	-
+magic_crafters	COSMOS	6	34	63150,90184,25723	pos=(63150, 90184, 26023) yaw=1248	1692	-	2712	-
+magic_crafters	ZANTOR	22	35	118170,105329,34421	pos=(118170, 105329, 34721) yaw=576	1692	2254,2400	2676	-
+magic_crafters	BOLDAR	24	36	125594,55788,27515	pos=(125594, 55788, 27815) yaw=688	1692	2486	2822	-
+alpine_ridge	ZANE	9	37	119470,86006,26708	pos=(119470, 86006, 27008) yaw=112	1692	2316,2406	2640	-
+alpine_ridge	ELDRID	21	38	61522,76175,18463	pos=(61522, 76175, 18763) yaw=2384	1692	-	2298	-
+alpine_ridge	KELVIN	32	39	54231,60283,21595	pos=(54231, 60283, 21895) yaw=3072	1692	2288	2564	-
+alpine_ridge	ZANDER	172	40	77435,91832,28725	pos=(77435, 91832, 29025) yaw=2496	1692	-	2422	-
+high_caves	CYRUS	59	41	51077,98130,44155	pos=(51077, 98130, 44455) yaw=448	1692	-	2462	-
+high_caves	AJAX	74	42	105841,67727,40571	pos=(105841, 67727, 40871) yaw=1824	1692	1956,2366	2790	-
+high_caves	CEDRIC	143	43	121651,92856,41638	pos=(121651, 92856, 41938) yaw=3072	1692	-	2486	-
+wizard_peak	LUCAS	0	46	136212,101437,22649	pos=(136212, 101437, 22949) yaw=2048	1692	2054,2412	2758	-
+wizard_peak	HEXUS	62	44	116572,84081,16511	pos=(116572, 84081, 16811) yaw=3408	1692	-	2208	-
+wizard_peak	JARVIS	63	45	68618,54292,27771	pos=(68618, 54292, 28071) yaw=0	1692	-	2540	-
+blowhard	ALTAIR	26	47	60959,80312,17003	pos=(60959, 80312, 17303) yaw=3520	1692	2068,2508	2794	-
+beast_makers	BRUNO	6	50	114668,114616,16360	pos=(114668, 114616, 16660) yaw=3760	1690	1690,2200,2374,2484	2688	-
+beast_makers	CLEETUS	13	51	162447,109988,16360	pos=(162447, 109988, 16660) yaw=3296	1692	-	2360	-
+terrace_village	CLAUDE	45	52	120494,101079,12411	pos=(120494, 101079, 12711) yaw=0	1692	2320	2620	-
+terrace_village	CYPRIN	47	53	137984,51651,12411	pos=(137984, 51651, 12711) yaw=2048	1692	2326,2580	2774	-
+misty_bog	ROSCO	90	54	138772,110807,12623	pos=(138772, 110807, 12923) yaw=336	1692	2266,2392	2786	-
+misty_bog	DAMON	92	55	171725,132782,14921	pos=(171725, 132782, 15221) yaw=1600	1692	2238,2318,2492,2556	2760	-
+misty_bog	BUBBA	94	56	73861,104714,6729	pos=(73861, 104714, 7029) yaw=1936	1692	2094,2394,2712	2902	-
+misty_bog	ZEKE	123	57	91617,72817,3657	pos=(91617, 72817, 3957) yaw=3072	1692	-	2168	-
+tree_tops	ISAAK	117	58	110510,75090,31867	pos=(110510, 75090, 32167) yaw=3760	1692	2276	2572	-
+tree_tops	LYLE	119	59	81367,64584,37499	pos=(81367, 64584, 37799) yaw=2736	1692	2364	2610	-
+tree_tops	JED	121	60	41830,93133,32635	pos=(41830, 93133, 32935) yaw=688	1692	2026,2222,2436	2664	-
+metalhead	SADIKI	35	61	82616,50842,7302	pos=(82616, 50842, 7602) yaw=1936	1692	-	2538	-
+dream_weavers	ZIKOMO	5	62	84173,35492,14452	pos=(84173, 35492, 14752) yaw=448	1692	2108	2464	-
+dream_weavers	MAZI	7	63	116081,39240,12411	pos=(116081, 39240, 12711) yaw=224	1692	2328	2584	-
+dream_weavers	LATEEF	137	64	34877,43008,13418	pos=(34877, 43008, 13718) yaw=1024	1692	2044	2638	-
+dark_passage	KASIYA	2	65	78725,41933,39043	pos=(78725, 41933, 39343) yaw=576	1692	2200,2362	2634	-
+dark_passage	AZIZI	5	66	102615,80097,43650	pos=(102615, 80097, 43950) yaw=1024	1692	-	2230	-
+dark_passage	BAKARI	6	67	89436,68506,46211	pos=(89436, 68506, 46511) yaw=3648	1692	2254	2490	-
+dark_passage	APARA	69	68	23593,28672,39043	pos=(23593, 28672, 39343) yaw=2048	1692	2288	2694	-
+dark_passage	OBASI	112	69	39721,31683,44162	pos=(39721, 31683, 44462) yaw=2960	1692	-	2234	-
+lofty_castle	USENI	8	70	59382,34888,38523	pos=(59382, 34888, 38823) yaw=2960	1692	-	2564	-
+lofty_castle	BARUTI	10	71	34591,97321,27771	pos=(34591, 97321, 28071) yaw=1824	1692	-	2220	-
+lofty_castle	MUDADA	56	72	83548,81029,28795	pos=(83548, 81029, 29095) yaw=2048	1692	-	2278	-
+haunted_towers	KOSOKO	61	73	104694,113275,27771	pos=(104694, 113275, 28071) yaw=336	1692	2176	2500	-
+haunted_towers	COPANO	63	74	110080,81172,33915	pos=(110080, 81172, 34215) yaw=2384	1692	-	2350	-
+haunted_towers	LUTALO	65	75	138107,103045,29819	pos=(138107, 103045, 30119) yaw=688	1692	2120	2764	-
+jacques	UNIKA	31	76	47176,61174,28795	pos=(47176, 61174, 29095) yaw=1136	1692	-	2244	-
+jacques	REVILO	47	78	98796,97700,26837	pos=(98796, 97700, 27137) yaw=3184	1692	2106,2514	2760	-
+gnorc_gnexus	DELBIN	0	2	82514,81951,7334	pos=(82514, 81951, 7634) yaw=1136	1690	1690,1904,2042,2340,2484	2978	-
+gnorc_cove	TOMAS	6	13	133243,91116,20603	pos=(133243, 91116, 20903) yaw=2048	1692	1742,1744,1746,2556,2734	2938	-
+gnorc_cove	LATEEF	69	64	70257,125010,21627	pos=(70257, 125010, 21927) yaw=1824	1692	2314,2524	2740	-
+twilight_harbor	COSMOS	10	34	24392,26726,8315	pos=(24392, 26726, 8615) yaw=2496	1692	-	2220	-
+twilight_harbor	CLEETUS	116	51	96594,72038,8315	pos=(96594, 72038, 8615) yaw=2048	1692	2166	2488	-
+gnorc_gnexus	MAGNUS	0	16	82514,81951,7334	pos=(82514, 81951, 7634) yaw=1136	11782	11782,12070,12370	13194	--skip-to-level gnasty_gnorc --skip-to-cutscene ending

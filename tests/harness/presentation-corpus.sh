@@ -23,6 +23,14 @@
 #     --game     game slug (default spyro-1); selects binary, disc, bk2 dir
 #                and manifest through scripts/presentation-game.sh
 #
+# Environment:
+#   PRESENTATION_TIER         corpus tier (default presentation); selects the
+#                             manifest through scripts/presentation-game.sh
+#   PRESENTATION_LEG_TIMEOUT  seconds one capture process may run (default
+#                             300); the binary's own --max-runtime-seconds is
+#                             20 less. A tier whose rows run past the default
+#                             (a row reached through the ending chain) raises it.
+#
 # Exit: 0 = all captures produced, 1 = a capture is missing (hard failure) or
 #           the corpus manifest is missing (the message names the path),
 #       64 = SKIP (binary / disc / Vulkan loader missing),
@@ -66,12 +74,16 @@ CAP_ASPECT="${OPENPETE_CAP_ASPECT:-16:9}"
 # extended = --no-lod full detail). Override to one mode for a faster spot-check.
 CAP_LODS="${OPENPETE_CAP_LODS:-original extended}"
 
+LEG_TIMEOUT="${PRESENTATION_LEG_TIMEOUT:-300}"
+if ! [[ "$LEG_TIMEOUT" =~ ^[0-9]+$ ]] || (( LEG_TIMEOUT <= 20 )); then
+  echo "presentation-corpus: PRESENTATION_LEG_TIMEOUT must be an integer above 20 (got '$LEG_TIMEOUT')" >&2; exit 64; fi
+
 # --build-dir=DIR override (ctest passes this); else the default release tree.
 BUILD_DIR="build/linux-release"
 for a in "$@"; do case "$a" in --build-dir=*) BUILD_DIR="${a#--build-dir=}";; esac; done
 
 GAME="$(pg_parse_game "$@")" || exit 64
-PG_BUILD_DIR="$BUILD_DIR" pg_resolve "$GAME"
+PG_BUILD_DIR="$BUILD_DIR" pg_resolve "$GAME" || exit 64
 BIN="$PG_BIN"
 DISC="$PG_DISC"
 MANIFEST="$PG_CORPUS_MANIFEST"
@@ -146,11 +158,11 @@ run_one() {  # name frame_limit leg flag targets lodmode freeze launch
   # to be independent of any openpete.toml on the machine capturing them.
   # The row's own launch env and arguments go last, on every leg of the row, so
   # a variant row differs from its plain twin by exactly that field.
-  env "${leg_env[@]}" "${ROW_ENV[@]}" timeout 300 "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 --renderer vk \
+  env "${leg_env[@]}" "${ROW_ENV[@]}" timeout "$LEG_TIMEOUT" "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 --renderer vk \
     --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" "${freeze_arg[@]}" "${PG_RUN_ARGS[@]}" \
     "${bk2_arg[@]}" --screenshot-native-only \
     "$flag" "$targets" --screenshot-output "$out" \
-    --frame-limit "$flim" --max-runtime-seconds 280 "${ROW_ARGS[@]}" >"$log" 2>&1
+    --frame-limit "$flim" --max-runtime-seconds "$((LEG_TIMEOUT - 20))" "${ROW_ARGS[@]}" >"$log" 2>&1
   local rc=$?
   # Assert every requested target produced a -vk PNG (fail loudly, never silently
   # capture a partial corpus that would read as "all clean" downstream).

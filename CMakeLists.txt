@@ -380,6 +380,20 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         TIMEOUT 1800
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    # Spyro 1 dragon-rescue tier (tests/harness/check_dragon_golden.sh): one
+    # pose row per dragon rescue, sampled every 60 VBLs through the cutscene,
+    # stock LOD, golden tests/golden/spyro-1/dragons. Labelled `dragons`, not
+    # `presentation`, so `ctest -L presentation` and the default gate chains
+    # skip it; the harness header states when it runs.
+    add_test(NAME dragon_golden_spyro-1
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_dragon_golden.sh
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(dragon_golden_spyro-1 PROPERTIES
+        LABELS "slow;dragons"
+        RESOURCE_LOCK openpete_game
+        TIMEOUT 3600
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
     # Skip-target rows: every --skip-to-cutscene (and --skip-to-area) row of
     # games/<slug>/corpus/skip-targets.manifest runs headless; a row passes only when
