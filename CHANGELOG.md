@@ -30,6 +30,9 @@ code span renders as <code><a>...</a></code>.
 - Spyro 3: terrain sectors no longer vanish on in-between frames while the camera pans under
   `--terrain-visibility game`
 - Spyro 3: `--skip-to-level` gains a movie of the New Game path for the test corpus
+- Tests: the 60 harness scripts and `spyro-records-corpus.txt` moved from `scripts/<x>` to
+  `tests/harness/<x>`, and the corpus manifests from `games/<game>/<x>.manifest` to
+  `games/<game>/corpus/<x>.manifest`; `scripts/check_psx_oracle.sh` stays where it was
 
 ## v0.4.1 - 2026-09-22 (Current)
 
