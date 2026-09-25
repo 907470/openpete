@@ -17,7 +17,11 @@
 //   0x8007F12C 1, byte 0x8007F12E 1, the level skip's induction gate) the
 //   request makes New Game's commit (func_title_8007566C sub-state 20):
 //   func_title_80079B94 in guest context, D_8006C534 = 1, WarpToLevel(6,
-//   61).
+//   61). The natural path reaches sub-state 20 through sub-state 19, whose
+//   phase 0 calls the card teardown func_title_8007C268 (VSyncCallbacks(7,
+//   0), then CloseEvent on the four card events); the request calls it
+//   first, as interrupt line 7 otherwise keeps the title-only callback
+//   0x8007D5AC after the loading overlay replaces the title.
 // - Level rows: --skip-to-level to the trigger's level, then on its first
 //   live tick (loadStage -1, game.state 0, isDemoMode clear) the constant
 //   stores the trigger's branch makes before its call, then WarpToLevel(6,
@@ -61,6 +65,7 @@
 #define S3_TITLE_SUBSTATE  0x8007F12Cu /* byte; 1 press-start idle */
 #define S3_TITLE_PHASE     0x8007F12Eu /* byte; the idle sub-state's phase */
 #define S3_FN_TITLE_CUTSCENE_END 0x80079B94u /* func_title_80079B94 */
+#define S3_FN_TITLE_CARD_CLOSE   0x8007C268u /* func_title_8007C268 */
 
 #define S3_GS_CUTSCENE 6u
 #define S3_GS_TITLE    11u
@@ -74,7 +79,9 @@
 
 /* New Game's store between its guest call and WarpToLevel(6, 61). */
 static const s3_transition_store_t k_st_61[] = { W32(0x8006C534u, 1u) };
-static const uint32_t k_pre_61[] = { S3_FN_TITLE_CUTSCENE_END };
+/* Sub-state 19 phase 0's teardown, then New Game's guest call. */
+static const uint32_t k_pre_61[] = { S3_FN_TITLE_CARD_CLOSE,
+                                     S3_FN_TITLE_CUTSCENE_END };
 
 /* The homeworld portal branch (func_level_10_8007F0BC state 6 and its level
  * 20 and 30 copies) and Scorch's (func_level_37_800818EC), in path order. */

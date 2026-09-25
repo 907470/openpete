@@ -70,8 +70,11 @@ headless: 5 `--skip-to-cutscene` rows for Spyro 1, 11 for Spyro 2, 38
 `--skip-to-area` and 19 `--skip-to-cutscene` rows for Spyro 3. A row is `name | args | frames | expect`:
 `args` the skip flags, `frames` the run's `--frame-limit` in VBLs, `expect` the
 tokens the skip's release line (`[skip-to-level] level playable`) must carry,
-values the skip module reads back from RAM at the release edge. A row passes
-when the run exits 0, prints the release line with every token, and prints no
+values the skip module reads back from RAM at the release edge. Log tokens
+test the whole log instead, `~` standing for a space: `log:TEXT` requires a
+line containing TEXT, `log:A>>B` a line containing A before the first line
+containing B, `!log:TEXT` no line containing TEXT. A row passes
+when the run exits 0, prints the release line with every token met, and prints no
 fail-safe line (`[skip-to-level] fail-safe release (no playable edge)`). The
 fail-safe deadline is 4000 VBLs after the skip's first check, or
 `OPENPETE_SKIP_FAILSAFE_VBL` when set positive. Negative control: the first row

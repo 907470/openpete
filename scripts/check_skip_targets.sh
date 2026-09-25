@@ -23,7 +23,13 @@
 # Manifest fields, pipe-separated: name | args | frames | expect
 #   args    the skip flags of the row (word-split)
 #   frames  --frame-limit of the run, in VBLs
-#   expect  whitespace-separated tokens the release line must contain
+#   expect  whitespace-separated tokens. A plain token must occur in the
+#           release line. Log tokens test the whole log, with `~` standing
+#           for a space inside TEXT:
+#             log:TEXT      some log line contains TEXT
+#             log:A>>B      a line containing A precedes the first line
+#                           containing B, and B occurs
+#             !log:TEXT     no log line contains TEXT
 #
 #   scripts/check_skip_targets.sh [--game SLUG] [--build-dir=DIR] [--filter=NAME]
 #
@@ -78,6 +84,22 @@ run() {
     echo $? >"$OUT/$tag.rc"
 }
 
+# log_token LOG TOKEN: status 0 when LOG meets the log token (see the
+# expect field above).
+log_token() {
+    local log="$1" tok="$2" body a b na nb
+    if [[ "$tok" == '!log:'* ]]; then
+        body="${tok#'!log:'}"; body="${body//\~/ }"
+        ! grep -qF -- "$body" "$log"; return
+    fi
+    body="${tok#log:}"; body="${body//\~/ }"
+    if [[ "$body" != *'>>'* ]]; then grep -qF -- "$body" "$log"; return; fi
+    a="${body%%>>*}"; b="${body#*>>}"
+    na="$(grep -nF -m1 -- "$a" "$log" | cut -d: -f1)"
+    nb="$(grep -nF -m1 -- "$b" "$log" | cut -d: -f1)"
+    [[ -n "$na" && -n "$nb" ]] && (( na < nb ))
+}
+
 # classify TAG EXPECT: prints "PASS <line>" or "FAIL <reason>".
 classify() {
     local tag="$1" expect="$2" log="$OUT/$1.log" rc line tok
@@ -89,7 +111,12 @@ classify() {
     line="$(grep -m1 '\[skip-to-level\] level playable' "$log")"
     [[ -n "$line" ]] || { echo "FAIL no release line (exit $rc)"; return; }
     for tok in $expect; do
-        [[ " $line " == *" $tok "* ]] || { echo "FAIL token '$tok' absent: $line"; return; }
+        case "$tok" in
+            '!log:'*|log:*)
+                log_token "$log" "$tok" || { echo "FAIL log token '$tok' unmet: $line"; return; };;
+            *)
+                [[ " $line " == *" $tok "* ]] || { echo "FAIL token '$tok' absent: $line"; return; };;
+        esac
     done
     [[ "$rc" == 0 ]] || { echo "FAIL exit $rc: $line"; return; }
     echo "PASS $line"

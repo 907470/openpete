@@ -21,6 +21,15 @@
 # first live tick; their rows replay a movie whose Cross taps dismiss it and
 # end before the call (a Cross press during playback ends a cutscene).
 #
+# Expect tokens match the release line; `log:TEXT`, `log:A>>B` and
+# `!log:TEXT` match the whole log (`~` for a space; forms in
+# scripts/check_skip_targets.sh). Row 61 commits New Game from the title's
+# idle sub-state instead of sub-state 19, whose phase 0 teardown
+# func_title_8007C268 clears interrupt callback line 7; the skip calls that
+# teardown before the commit. The row's log tokens require the clear
+# before the loading overlay replaces the title and no callback dispatch to
+# an address without a compiled body.
+#
 # name | args                                                                                              | frames | expect
 11_1   | --skip-to-area 11:1                                                                               | 2000   | level=11 area=1
 11_2   | --skip-to-area 11:2                                                                               | 2000   | level=11 area=2
@@ -62,7 +71,7 @@
 50_3   | --skip-to-area 50:3                                                                               | 2000   | level=50 area=3
 
 # name                         | args                                                                                                                      | frames | expect
-an_evil_plot_unfolds           | --skip-to-cutscene an_evil_plot_unfolds                                                                                   | 1200   | cutscene=an_evil_plot_unfolds n=1 level=61
+an_evil_plot_unfolds           | --skip-to-cutscene an_evil_plot_unfolds                                                                                   | 1200   | cutscene=an_evil_plot_unfolds n=1 level=61 log:interrupt~callback~line~7~->~0x00000000>>active~overlay:~title~->~loading !log:has~no~compiled~body
 the_second_warning             | --skip-to-cutscene the_second_warning                                                                                     | 1400   | cutscene=the_second_warning n=7 level=62
 bianca_strikes_back            | --skip-to-cutscene bianca_strikes_back                                                                                    | 1400   | cutscene=bianca_strikes_back n=4 level=63
 hunters_tussle                 | --skip-to-cutscene hunters_tussle                                                                                         | 1400   | cutscene=hunters_tussle n=8 level=64
