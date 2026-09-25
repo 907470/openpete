@@ -188,6 +188,10 @@ const game_layout_t game_layout = {
                                                      * +0x28; quadrant order TL, TR, BL, BR from the
                                                      * vertex-base table D_80065C28 over the 3x3
                                                      * subdivide grid */
+        .hq_tri4_nodes = 0x80065D68u,               /* the tier-4 triangle pass's sub-triangle table
+                                                     * (environment.s 80026A0C); the textures are not
+                                                     * located, so the port draws the triangle whole */
+        .hq_tri2_nodes = 0x80065D58u,               /* the tier-2 triangle pass's (environment.s 80025294) */
         .abe_in_tpage = 1,
         .tile_word1_br = 1,                         /* GT4 emit: uv1 = word1 - 0x1F00, uv3 = word1 */
         .lod_dist_default = 0x8000u,                /* Spyro 1's authored value; the Spyro 3 draw bins

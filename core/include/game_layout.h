@@ -258,29 +258,31 @@ typedef struct game_layout {
          * base entry and the four 2x2 quadrants (the near drain's tier-4
          * quad pass, table D_8006CF58). */
         uint32_t hq_cells4;
-        /* The same drain's triangle pass, 0 when the port does not draw it.
-         * A tier-4 triangle is split into 16 sub-triangles over 15 nodes;
-         * `hq_tri4_nodes` is its 16-word sub-triangle table (node ids A, B, C
-         * in bytes 3, 2, 1, cell selector in bits 2-5, UV orientation in bits
-         * 0-1), `hq_tri4_cells` the byte table the selector plus the face's
-         * UV rotation indexes (cell * 8, the rotated 4x4 grid),
-         * `hq_tri_uv` the per-orientation UV offset table (4 blocks of 128
-         * bytes) and `hq_tri_uv_mask` the mask on the tile's word1 >> 25
-         * index into a block. Spyro 1: D_8006D0F8, D_8006D388, D_8006D3C8,
-         * 0x78 (the near drain's tier-4 triangle pass). */
+        /* The same drain's triangle pass. A tier-4 triangle is split into 16
+         * sub-triangles over 15 nodes; `hq_tri4_nodes` is its 16-word
+         * sub-triangle table (node ids A, B, C in bytes 3, 2, 1, cell
+         * selector in bits 2-5, UV orientation in bits 0-1), read for the
+         * sub-triangles' ordering keys wherever it is located. The textures
+         * are 0 when the port does not draw the pass: `hq_tri4_cells` the
+         * byte table the selector plus the face's UV rotation indexes (cell *
+         * 8, the rotated 4x4 grid), `hq_tri_uv` the per-orientation UV offset
+         * table (4 blocks of 128 bytes) and `hq_tri_uv_mask` the mask on the
+         * tile's word1 >> 25 index into a block. Spyro 1: D_8006D0F8,
+         * D_8006D388, D_8006D3C8, 0x78 (the near drain's tier-4 triangle
+         * pass). The node tables are the same words in all three games. */
         uint32_t hq_tri4_nodes;
         uint32_t hq_tri4_cells;
         uint32_t hq_tri_uv;
         uint32_t hq_tri_uv_mask;
-        /* The +0x2000 queue's triangle pass, 0 when the port does not draw
-         * it. A tier-2 triangle is split into 4 sub-triangles over 6 nodes
-         * (the corners and the edge midpoints); `hq_tri2_nodes` is its 4-word
-         * sub-triangle table (node ids 0-5 in bytes 3, 2, 1, tile selector in
-         * bits 2-3, UV orientation in bits 0-1), `hq_tri2_tiles` the byte
-         * table the selector plus the face's UV rotation indexes (quadrant
-         * tile * 8 from `hq_sub0`). UVs come from `hq_tri_uv` as for tier 4.
-         * Spyro 1: D_8006D0E8, D_8006D378 (the near drain's tier-2
-         * triangle pass). */
+        /* The +0x2000 queue's triangle pass. A tier-2 triangle is split into
+         * 4 sub-triangles over 6 nodes (the corners and the edge midpoints);
+         * `hq_tri2_nodes` is its 4-word sub-triangle table (node ids 0-5 in
+         * bytes 3, 2, 1, tile selector in bits 2-3, UV orientation in bits
+         * 0-1), read for the keys as `hq_tri4_nodes` is. `hq_tri2_tiles`, 0
+         * when the port does not draw the pass, is the byte table the
+         * selector plus the face's UV rotation indexes (quadrant tile * 8
+         * from `hq_sub0`). UVs come from `hq_tri_uv` as for tier 4. Spyro 1:
+         * D_8006D0E8, D_8006D378 (the near drain's tier-2 triangle pass). */
         uint32_t hq_tri2_nodes;
         uint32_t hq_tri2_tiles;
         /* Semi-transparency: Spyro 1 flags it per face; Spyro 3 in bit 15 of

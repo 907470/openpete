@@ -195,6 +195,10 @@ const game_layout_t game_layout = {
                                                      * +0x8/+0xC of it, so the four quadrant halves
                                                      * are +0x10, +0x18, +0x20, +0x28; quadrant order
                                                      * TL, TR, BL, BR over the 3x3 subdivide grid */
+        .hq_tri4_nodes = 0x800620A0u,               /* the tier-4 triangle pass's sub-triangle table
+                                                     * (environment.s 80028248); the textures are not
+                                                     * located, so the port draws the triangle whole */
+        .hq_tri2_nodes = 0x80062090u,               /* the tier-2 triangle pass's (environment.s 80026AD0) */
         .abe_in_tpage = 1,
         .tile_word1_br = 1,                         /* GT4 emit: uv1 = word1 - 0x1F00, uv3 = word1
                                                      * (environment.s:2680,2669-2671) */

@@ -156,12 +156,12 @@ enum {
                                    * face (a corner SZ3 under near_corner, word
                                    * 3 near_flag_tier2 clear) draws its 4x4
                                    * cell variant instead of the 2x2          */
-#define OPTC_GF_TRI4       4096u  /* game_layout.terrain.hq_tri4_nodes != 0: a
+#define OPTC_GF_TRI4       4096u  /* game_layout.terrain.hq_tri4_cells != 0: a
                                    * tier-4 triangle (the same verdict over
                                    * corners A, B, C, C) draws its 16
                                    * sub-triangle records instead of the flat
                                    * GT3                                      */
-#define OPTC_GF_TRI2       8192u  /* game_layout.terrain.hq_tri2_nodes != 0: a
+#define OPTC_GF_TRI2       8192u  /* game_layout.terrain.hq_tri2_tiles != 0: a
                                    * near triangle outside tier 4 draws its 4
                                    * tier-2 sub-triangle records instead of
                                    * the flat GT3                             */

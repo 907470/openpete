@@ -328,13 +328,20 @@ float shadow_slot_koff(int slot) {
 
 /* The ordering-table slot of one moby shadow triangle (anchor, p1, p2): the
  * quarter-world key >> 7 less the moby's signed depth byte less the game's
- * constant. -1 (not keyed) on a game whose layout does not mirror it. */
+ * constant. -1 (not keyed) on a game whose layout does not mirror it. A
+ * mirrored slot below zero is returned as MOBY_SHADOW_SKIP: the game does not
+ * insert that triangle (the bltz after the subtraction, Spyro 1 r_shadows.s
+ * 0x8005A414, Spyro 2 mobyfunc.s 0x80049E7C, Spyro 3 mobyfunc.s 0x8002E250),
+ * so the feed does not draw it; the build keeps it, where the GTE A/B
+ * compares four triangles per moby. */
+#define MOBY_SHADOW_SKIP (-2)
 static int moby_shadow_slot(CPUState* cpu, uint32_t mob, const shadow_pt* anchor,
                             const shadow_pt* p1, const shadow_pt* p2) {
     const uint32_t off = game_layout.shadow.moby_ot_bias;
     if (!off) return -1;
     int bias = (int)(int8_t)cpu->read_byte(mob + off) - game_layout.shadow.moby_ot_bias_sub;
-    return shadow_ot_slot(anchor->sz, p1->sz, p2->sz, 7, bias);
+    int slot = shadow_ot_slot(anchor->sz, p1->sz, p2->sz, 7, bias);
+    return slot < 0 ? MOBY_SHADOW_SKIP : slot;
 }
 
 /* native moby-shadow tris (4 FT3 fan tris per moby) */
@@ -618,6 +625,7 @@ static void shadow_moby_feed_native(CPUState* cpu) {
     openpete_native_scene_set_tag(OPENPETE_TAG_SHADOW(OPENPETE_TAG_SHADOW_MOBY, 0));
     for (int i = 0; i < s_mosh_n; i++) {
         moshtri* m = &s_mosh[i];
+        if (m->slot == MOBY_SHADOW_SKIP) continue;
         openpete_scene_tri st = {0};
         float bias = shadow_bias_moby();
         for (int k = 0; k < 3; k++) {

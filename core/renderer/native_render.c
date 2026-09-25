@@ -337,6 +337,9 @@ typedef struct {
     int host_added; /* 1 = geometry the host added beyond the game's own render
                      * (sticky set_host_added value). The scene's content and
                      * world-frame verdicts skip these tris. */
+    int key_cells;  /* 1 = a WORLD tri whose key its face's WORLD_KEY sub-cells
+                     * raster (sticky set_key_cells value); contests, never
+                     * emits */
     int ter_after;  /* 1 = added at or after the start of this scene's terrain
                      * feed (sticky, set by openpete_native_scene_mark_terrain_feed,
                      * cleared with the scene). Places the feed in emission order
@@ -471,6 +474,8 @@ void openpete_native_scene_set_tag(uint32_t tag) { s_cur_tag = tag; }
 /* Sticky host-added origin (see openpete_native_scene_set_host_added). */
 static int s_cur_host_added;
 void openpete_native_scene_set_host_added(int on) { s_cur_host_added = on ? 1 : 0; }
+static int s_cur_key_cells;
+void openpete_native_scene_set_key_cells(int on) { s_cur_key_cells = on ? 1 : 0; }
 /* Sticky terrain-feed mark (see openpete_native_scene_mark_terrain_feed). */
 static int s_cur_ter_after;
 void openpete_native_scene_mark_terrain_feed(void) { s_cur_ter_after = 1; }
@@ -1179,6 +1184,7 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
         s_scene[s_scene_n].prim = s_cur_prim;            /* sticky (set_prim) */
         s_scene[s_scene_n].stp_sel = s_cur_stp_sel;      /* sticky (set_stp_select) */
         s_scene[s_scene_n].host_added = s_cur_host_added; /* sticky (set_host_added) */
+        s_scene[s_scene_n].key_cells = s_cur_key_cells;   /* sticky (set_key_cells) */
         s_scene[s_scene_n].ter_after = s_cur_ter_after;   /* sticky (mark_terrain_feed) */
         if (s_cur_tag && tag_tint_on()) {
             /* Coverage instrument: hash the tag to a stable tint and modulate
@@ -5309,7 +5315,10 @@ static int key_batch_admits(const scene_tri_t* t, int prop_class,
         return t->category == OPENPETE_SCENE_PLAYER && t->pkey > 0.25f &&
                box_hits_any(tri_box(t), aura, naura);
     }
-    return t->category == OPENPETE_SCENE_WORLD && t->koff > 0.25f;
+    /* Terrain: every keyed WORLD triangle, except one whose face's
+     * WORLD_KEY sub-cells carry its key, and those sub-cells. */
+    if (t->category == OPENPETE_SCENE_WORLD_KEY) return t->koff > 0.25f;
+    return t->category == OPENPETE_SCENE_WORLD && !t->key_cells && t->koff > 0.25f;
 }
 
 /* The player band's C mirror (psx_key_contest.glsl, op_pkey_is): slot s
@@ -8005,7 +8014,8 @@ static int blended_world_tri(const scene_tri_t* s) {
     int bl = s->blend; if (bl < 0 || bl > 4) bl = 0;
     if (bl == 0) return 0;
     const int c = s->category;
-    if (c == OPENPETE_SCENE_HUD || c == OPENPETE_SCENE_HUD3D) return 0;
+    if (c == OPENPETE_SCENE_HUD || c == OPENPETE_SCENE_HUD3D ||
+        c == OPENPETE_SCENE_WORLD_KEY) return 0;
     if (s->textured) { if (c == OPENPETE_SCENE_PORTAL_GUARD) return 0; }
     else if (c == OPENPETE_SCENE_HUD_PANEL) return 0;
     if (bl == 3 && c == OPENPETE_SCENE_SHADOW) return 0;

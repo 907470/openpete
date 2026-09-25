@@ -325,6 +325,11 @@ typedef struct {
     uint16_t otslots;                              /* .s OT-slot depth offset for the TEST depth:
                                                     * LP 0x40+8*((w1>>3)&0x1F), HP 4*((w3>>3)&0x7);
                                                     * 1 slot = 128 world units */
+    uint8_t keyonly;                               /* a drain sub-cell's key, fed to the key
+                                                    * raster only (OPENPETE_SCENE_WORLD_KEY) */
+    uint8_t keycells;                              /* a visible face whose key raster its
+                                                    * keyonly sub-cells carry; otkey is their
+                                                    * minimum, contested and not emitted */
 } ttri;
 static int s_emit_noHP = 0;     /* tier of the sector currently being emitted */
 static int s_emit_guard = 0;    /* current face is .s-DEFERRED (near band) -> portal-guard dup */
@@ -751,6 +756,7 @@ typedef struct {
     /* ambient per-face emit state (consumed by push_tri) */
     int emit_noHP, emit_guard, emit_fill, emit_fptag, emit_sec, emit_face, emit_env;
     float emit_otkey; uint16_t emit_otslots; uint8_t emit_nearband;
+    uint8_t emit_keyonly, emit_keycells;
     /* census (summed into the s_dbg_* / s_tex_* globals after the walk) */
     int dbg_faces, dbg_oob, dbg_nclip, dbg_behind, dbg_spike, dbg_clipped;
     int dbg_spike_tris;                  /* triangles emitted by the near/HQ subdivide */
@@ -806,7 +812,7 @@ static void push_tri(tn_wctx* W, ngte_cvert a, ngte_cvert b, ngte_cvert c, const
             if (fsnap) { t->sx[k] = floorf(t->sx[k]); t->sy[k] = floorf(t->sy[k]); }
         }
         t->vz[k] = cc[k].m3; t->rgb[k] = cc[k].rgb; t->u[k] = cc[k].u; t->v[k] = cc[k].v;
-        if (W->serial && s_cv_n < TN_CV_MAX) {       /* colour-A/B verts (verify) */
+        if (W->serial && !W->emit_keyonly && s_cv_n < TN_CV_MAX) {   /* colour-A/B verts (verify) */
             s_cvx[s_cv_n]=t->sx[k]; s_cvy[s_cv_n]=t->sy[k]; s_cvz[s_cv_n]=cc[k].m3; s_cvrgb[s_cv_n]=cc[k].rgb; s_cv_n++;
         }
     }
@@ -823,7 +829,9 @@ static void push_tri(tn_wctx* W, ngte_cvert a, ngte_cvert b, ngte_cvert c, const
     t->otkey = W->emit_otkey;
     t->otslots = W->emit_otslots;
     t->nearband = W->emit_nearband;
-    if (m->textured) W->tex_tris++;
+    t->keyonly = W->emit_keyonly;
+    t->keycells = W->emit_keycells;
+    if (m->textured && !W->emit_keyonly) W->tex_tris++;
 }
 
 /* Max distance (PSX px) a near-clip CROSSING vertex may project from the screen
@@ -892,6 +900,12 @@ static void emit_tri(tn_wctx* W, const lvert* sv, int a, int b, int c,
     clip_push_tri(W, A, B, C, m);
 }
 
+/* A projected vertex and its corner's colour and UVs as a cvert. */
+static ngte_cvert tn_cv(const lvert* p, lcorner k) {
+    ngte_cvert c = { p->m1, p->m2, p->m3, k.rgb, k.u, k.v };
+    return c;
+}
+
 /* Camera-space midpoint of two cverts: position averaged, colour per-channel
  * averaged (UVs filled later by the caller). Mirrors the .s near-pass's
  * `(a+b)>>1` grid build (§near-HQ). */
@@ -906,19 +920,47 @@ static ngte_cvert cv_mid(ngte_cvert a, ngte_cvert b) {
     return r;
 }
 
+/* ---- drain sub-cell keys ------------------------------------------------
+ * Every near drain inserts each sub-cell it draws into the ordering table at
+ * that sub-cell's own key: the sum of its corner nodes' depth terms >> 7 plus
+ * the face's authored bias. A quad cell sums its four corners, a
+ * sub-triangle SZ A + SZ B + 2 SZ C. A node's term is its SZ3, which the GTE
+ * saturates to [0, 0xFFFF] (a node at or behind the eye adds 0), masked to
+ * the 12 bits the node word keeps below its outcode flags. The 2x2
+ * sub-quad, the 4x4 cell and the sub-triangle inserts: Spyro 1
+ * r_environment.s 0x80027DC0-0x80027EF8, 0x8002924C-0x80029460 and
+ * 0x800284B0-0x80028524; Spyro 2 environment.s 0x8002647C-0x80026548,
+ * 0x800277B4-0x800277D0 with 0x80027A2C-0x80027A38, and 0x80026BA8-0x80026C1C;
+ * Spyro 3 environment.s 0x80024C40-0x80024D0C, 0x80025F78-0x80025F88 with
+ * 0x800261F0-0x800261FC, and 0x8002536C-0x800253E0.
+ * The keys are in emit_otkey units, the whole-face key's scale (SZ3 =
+ * hqscale * m3). */
+static double tface_hqscale(void);
+static double tn_drain_sz(double m3) {
+    double sz = floor(m3 * tface_hqscale());
+    if (sz <= 0.0) return 0.0;
+    if (sz > 65535.0) sz = 65535.0;
+    return (double)((int)sz & 0xFFF);
+}
+static float tn_drain_key4(const ngte_cvert* a, const ngte_cvert* b,
+                           const ngte_cvert* c, const ngte_cvert* d) {
+    return (float)(tn_drain_sz(a->m3) + tn_drain_sz(b->m3) + tn_drain_sz(c->m3) +
+                   tn_drain_sz(d->m3));
+}
+static float tn_drain_key3(const ngte_cvert* a, const ngte_cvert* b, const ngte_cvert* c) {
+    return (float)(tn_drain_sz(a->m3) + tn_drain_sz(b->m3) + 2.0 * tn_drain_sz(c->m3));
+}
+
 /* Emit a textured camera-space quad (corners TL,TR,BL,BR) with near-clipping.
  * UVs come from a decoded Tiledef (u/v in [TL,TR,BL,BR]); GPU diagonal TR-BL
- * (triangulation (TL,TR,BL)+(TR,BL,BR)) — same as the main loop. */
+ * (triangulation (TL,TR,BL)+(TR,BL,BR)) — same as the main loop. The quad is
+ * one drain sub-cell and carries its own key, except under emit_keycells,
+ * where the face's key-only cells carry the keys and the caller has set the
+ * contest key. */
 static void emit_quad_cv(tn_wctx* W, ngte_cvert tl, ngte_cvert tr, ngte_cvert bl, ngte_cvert br,
                          const tmat* m, const float u[4], const float v[4]) {
     tl.u=u[0]; tl.v=v[0]; tr.u=u[1]; tr.v=v[1]; bl.u=u[2]; bl.v=v[2]; br.u=u[3]; br.v=v[3];
-    /* Portal OT-conformance key: near-subdivided (deferred) faces are drained
-     * into the OT as 4 SEPARATE sub-quad prims, EACH bucketed by its own
-     * corner sum — the .s sky-vs-floor boundary at a portal base is at
-     * SUB-QUAD granularity (og f2440: the walkway's near sub-quads paint over
-     * the preview, its far ones are covered). Override the parent face's key
-     * with this sub-quad's own. */
-    W->emit_otkey = (float)((tl.m3 + tr.m3 + bl.m3 + br.m3) * 4.0);
+    if (!W->emit_keycells) W->emit_otkey = tn_drain_key4(&tl, &tr, &bl, &br);
     clip_push_tri(W, tl, tr, bl, m);
     clip_push_tri(W, tr, bl, br, m);
 }
@@ -1016,6 +1058,40 @@ static void tface_facing(const lvert* sv, int i0, int i1, int i2, int i3,
         hp ? tface_front3d(sv, i0, i1, i2, i3, quad, flip, dside) : 1;
 }
 
+/* Quadrant i's tile of a near face's HQ record (i = TL, TR, BL, BR): its
+ * material and corner UVs [TL,TR,BL,BR], orientation and UV scroll applied. */
+static void tn_near_quad_tile(CPUState* cpu, uint32_t hqBase, int texid, int abe, int i,
+                              tmat* out, float u[4], float v[4]) {
+    tmat mat; memset(&mat, 0, sizeof(mat)); mat.bpp = 16;
+    /* Sub-quad i reads the 8-byte tile half at terrain.hq_sub0 + i*8 of the
+     * face's HQ record. Both games' emit loops bump the record pointer by 8
+     * in a branch delay slot before the first Tiledef read, so the first
+     * quadrant is already one half in: Spyro 1's 168-byte record starts the
+     * quadrants at +8 (entry 0 is the detail-path base, unused by the 2x2),
+     * Spyro 3's inline block at +0x10. Reading from offset 0 shifts every
+     * sub-tile by one quadrant. */
+    uint32_t e = hqBase + game_layout.terrain.hq_sub0 + (uint32_t)i * 8u;
+    decode_tiledef(cpu, e, abe, &mat, u, v);
+    mat.texid = texid;                /* HQ quadrants share the record's id */
+    tiledef_apply_ori(cpu, e, u, v);  /* rotated/flipped HQ tiles (word1>>25) */
+    /* UV scroll (env texture anim). Applied after the orientation: the
+     * offset is a pure V translation in texel space and apply_ori never
+     * moves V into U (its per-corner deltas only carry within the u/v byte
+     * pair), so scrolling here is identical to scrolling the base entry —
+     * a rotated tile scrolls along its rotated axis, exactly as the game's
+     * whole-texel writes do. Sub-quads 0-1 read the first HQ group and 2-3
+     * the second; the two groups sit half a window apart in the scroll
+     * ring, so they carry separately-wrapped offsets. Spyro 3's scroll walker
+     * writes the same two groups into its inline sub-tiles (acc>>1 into the
+     * first pair, ((acc>>1)+32)&0x3F into the second), so the same pair of
+     * offsets applies. */
+    if (s_tanim_have && texid >= 0 && texid < 128 && s_tanim_act[texid]) {
+        float dv = s_tanim_dvhq[texid][i >> 1];
+        for (int k = 0; k < 4; k++) v[k] += dv;
+    }
+    *out = mat;
+}
+
 static void terrain_near_emit(tn_wctx* W, CPUState* cpu, uint32_t hqBase, int texid, int abe,
                               ngte_cvert TL, ngte_cvert TR, ngte_cvert BL, ngte_cvert BR) {
     ngte_cvert mT = cv_mid(TL, TR), mB = cv_mid(BL, BR);
@@ -1078,33 +1154,8 @@ static void terrain_near_emit(tn_wctx* W, CPUState* cpu, uint32_t hqBase, int te
         { C,  mR, mB, BR },                    /* SQ3: bottom-right        → entry 3 */
     };
     for (int i = 0; i < 4; i++) {
-        tmat mat; float u[4], v[4]; memset(&mat, 0, sizeof(mat)); mat.bpp = 16;
-        /* Sub-quad i reads the 8-byte tile half at terrain.hq_sub0 + i*8 of the
-         * face's HQ record. Both games' emit loops bump the record pointer by 8
-         * in a branch delay slot before the first Tiledef read, so the first
-         * quadrant is already one half in: Spyro 1's 168-byte record starts the
-         * quadrants at +8 (entry 0 is the detail-path base, unused by the 2x2),
-         * Spyro 3's inline block at +0x10. Reading from offset 0 shifts every
-         * sub-tile by one quadrant. */
-        uint32_t e = hqBase + game_layout.terrain.hq_sub0 + (uint32_t)i * 8u;
-        decode_tiledef(cpu, e, abe, &mat, u, v);
-        mat.texid = texid;                /* HQ quadrants share the record's id */
-        tiledef_apply_ori(cpu, e, u, v);  /* rotated/flipped HQ tiles (word1>>25) */
-        /* UV scroll (env texture anim). Applied after the orientation: the
-         * offset is a pure V translation in texel space and apply_ori never
-         * moves V into U (its per-corner deltas only carry within the u/v byte
-         * pair), so scrolling here is identical to scrolling the base entry —
-         * a rotated tile scrolls along its rotated axis, exactly as the game's
-         * whole-texel writes do. Sub-quads 0-1 read the first HQ group and 2-3
-         * the second; the two groups sit half a window apart in the scroll
-         * ring, so they carry separately-wrapped offsets. Spyro 3's scroll walker
-         * writes the same two groups into its inline sub-tiles (acc>>1 into the
-         * first pair, ((acc>>1)+32)&0x3F into the second), so the same pair of
-         * offsets applies. */
-        if (s_tanim_have && texid >= 0 && texid < 128 && s_tanim_act[texid]) {
-            float dv = s_tanim_dvhq[texid][i >> 1];
-            for (int k = 0; k < 4; k++) v[k] += dv;
-        }
+        tmat mat; float u[4], v[4];
+        tn_near_quad_tile(cpu, hqBase, texid, abe, i, &mat, u, v);
         emit_quad_cv(W, q[i][0], q[i][1], q[i][2], q[i][3], &mat, u, v);
     }
 }
@@ -1470,11 +1521,19 @@ static int tface_cells_pin(int hq_idx) {
  * distance (`pin`: tface_cells_pin) the distance terms drop and the flag
  * term stays: every such near face with near_flag_tier2 clear takes the cells (a
  * quad) or the 16 sub-triangles (a triangle, through face_tri4_routed). */
+static int face_drain_tier4(double z0, double z1, double z2, double z3, uint32_t word3);
 static int face_near_tier4(double z0, double z1, double z2, double z3, uint32_t word3,
                            int ok, int pin) {
     if (!game_layout.terrain.hq_cells4 || !ok) return 0;
     if (pin)
         return face_is_near(z0, z1, z2, z3, word3) && !tface_near_tier2(word3);
+    return face_drain_tier4(z0, z1, z2, z3, word3);
+}
+/* The drain's own tier-4 route, whatever the port draws: a canonical near
+ * face with near_flag_tier2 clear and a corner SZ3 under near_corner
+ * (Spyro 2 environment.s 0x80024B90-0x80024BAC, the four corner tests
+ * before the second queue's append at 0x80024BE8). */
+static int face_drain_tier4(double z0, double z1, double z2, double z3, uint32_t word3) {
     if (!face_is_near_canonical(z0, z1, z2, z3, word3)) return 0;
     if (tface_near_tier2(word3)) return 0;
     double s = tface_hqscale();
@@ -1643,6 +1702,73 @@ static void nc4_emit_cells(tn_wctx* W, CPUState* cpu, const tn_nearface* nf,
     }
 }
 
+/* ---- key-only drain cells --------------------------------------------------
+ * A face the drain inserts as finer sub-cells than the visual mesh draws it
+ * (a tier-4 quad drawn as the 2x2, a tier-4 triangle drawn as the tier-2
+ * split, a near triangle drawn whole) takes one ordering-table bucket per
+ * sub-cell, and a triangle of the visual mesh spans cells of different
+ * buckets. Those sub-cells are emitted a second time, key-only
+ * (emit_keyonly: the key raster draws them, no colour pass does), each at
+ * its own drain key; the visual triangles carry the minimum of the face's
+ * cell keys and do not emit (emit_keycells), so a visual fragment contests
+ * other faces' keys without losing to its own face's cells. */
+typedef struct { float key[16]; uint8_t on[16]; float kmin; int n; } tn_keycells;
+
+static void tn_keycells_add(tn_keycells* K, int i, int on, float key) {
+    K->on[i] = (uint8_t)on;
+    K->key[i] = key;
+    if (!on) return;
+    if (K->n == 0 || key < K->kmin) K->kmin = key;
+    K->n++;
+}
+
+/* The keys of a tier-4 quad's 16 cells over grid G, in the drain's
+ * row-major order. A straddling face's back-facing cell (the drain's
+ * per-cell NCLIP, nc4_front) and a cell whose corner sum is 0 are skipped,
+ * as the drain skips them. */
+static void tn_quad_cell_keys(const tn_nearface* nf, ngte_cvert G[5][5], tn_keycells* K) {
+    K->n = 0; K->kmin = 0.0f;
+    for (int i = 0; i < 16; i++) {
+        const int r = i >> 2, c = i & 3;
+        const ngte_cvert *tl = &G[r][c], *tr = &G[r][c + 1];
+        const ngte_cvert *bl = &G[r + 1][c], *br = &G[r + 1][c + 1];
+        const float key = tn_drain_key4(tl, tr, bl, br);
+        const int front = !(nf->straddle && !nf->dside && !nc4_front(tl, tr, bl, br, nf->flip));
+        tn_keycells_add(K, i, front && key > 0.0f, key);
+    }
+}
+
+/* Bilinear interpolation of four corner values [TL,TR,BL,BR] at (s, t). */
+static float tn_bilerp(const float a[4], float s, float t) {
+    return (1.0f - s) * (1.0f - t) * a[0] + s * (1.0f - t) * a[1]
+         + (1.0f - s) * t * a[2] + s * t * a[3];
+}
+
+/* The key-only cells of a tier-4 quad drawn as the 2x2: each cell textured
+ * as its quarter of the quadrant tile the 2x2 draws there, so the key
+ * cutout drops the texels the visual mesh shows transparent. */
+static void tn_quad_cells_emit(tn_wctx* W, CPUState* cpu, const tn_nearface* nf,
+                               ngte_cvert G[5][5], const tn_keycells* K) {
+    tmat qm[4]; float qu[4][4], qv[4][4];
+    for (int q = 0; q < 4; q++)
+        tn_near_quad_tile(cpu, nf->hqBase, nf->texid, nf->abe, q, &qm[q], qu[q], qv[q]);
+    W->emit_keyonly = 1;
+    for (int i = 0; i < 16; i++) {
+        if (!K->on[i]) continue;
+        const int r = i >> 2, c = i & 3, q = ((r >> 1) << 1) | (c >> 1);
+        if (qm[q].blend) continue;       /* a semi-transparent tile keys nothing */
+        float u[4], v[4];
+        for (int k = 0; k < 4; k++) {     /* TL, TR, BL, BR */
+            const float cs = 0.5f * (float)((c & 1) + (k & 1));
+            const float ct = 0.5f * (float)((r & 1) + (k >> 1));
+            u[k] = tn_bilerp(qu[q], cs, ct);
+            v[k] = tn_bilerp(qv[q], cs, ct);
+        }
+        emit_quad_cv(W, G[r][c], G[r][c + 1], G[r + 1][c], G[r + 1][c + 1], &qm[q], u, v);
+    }
+    W->emit_keyonly = 0;
+}
+
 /* Near emit of one routed face: the 4x4 cells for a tier-4 face, the 2x2
  * subdivide otherwise. OPENPETE_TERRAIN_NEARQ routes by the game's filled
  * +0x1E00 queue instead of the classifier (verify builds). */
@@ -1653,7 +1779,19 @@ static void terrain_near_emit_face(tn_wctx* W, CPUState* cpu, const tn_nearface*
            : face_near_tier4(TL.m3, TR.m3, BR.m3, BL.m3, nf->w3,
                              tface_cells_ok(nf->texid), tface_cells_pin(nf->texid));
     if (!t4) {
+        /* The drain inserts a tier-4 face as its 16 cells: key-only cells
+         * carry the keys, the 2x2 contests at their minimum. */
+        ngte_cvert G[5][5];
+        tn_keycells K; K.n = 0;
+        if (!nf->abe && face_drain_tier4(TL.m3, TR.m3, BR.m3, BL.m3, nf->w3)) {
+            nc4_grid(G, TL, TR, BL, BR);
+            if (openpete_native_vertex_snap_active()) nc4_snap(G);
+            tn_quad_cell_keys(nf, G, &K);
+        }
+        if (K.n) { W->emit_keycells = 1; W->emit_otkey = K.kmin; }
         terrain_near_emit(W, cpu, nf->hqBase, nf->texid, nf->abe, TL, TR, BL, BR);
+        W->emit_keycells = 0;
+        if (K.n) tn_quad_cells_emit(W, cpu, nf, G, &K);
         return;
     }
     W->cells4_faces[0]++;
@@ -1792,20 +1930,30 @@ static int nt2_tile(CPUState* cpu, uint32_t row, int rot) {
 
 /* Sub-triangle i of a tier-4 (16, cells, cell-row scroll) or tier-2 (4,
  * quadrants, quadrant-pair scroll) split. */
+/* Sub-triangle i's table word and its nodes A, B, C in the 15-node
+ * numbering. */
+static uint32_t nt_sub_nodes(CPUState* cpu, int tier2, int i, int* a, int* b, int* c) {
+    if (tier2) {
+        uint32_t row = rd(cpu, game_layout.terrain.hq_tri2_nodes + (uint32_t)i * 4u);
+        *a = k_nt2_node[(row >> 24) % 6u];
+        *b = k_nt2_node[((row >> 16) & 0xFFu) % 6u];
+        *c = k_nt2_node[((row >> 8) & 0xFFu) % 6u];
+        return row;
+    }
+    uint32_t row = rd(cpu, game_layout.terrain.hq_tri4_nodes + (uint32_t)i * 4u);
+    *a = (int)(row >> 24) % 15; *b = (int)((row >> 16) & 0xFFu) % 15;
+    *c = (int)((row >> 8) & 0xFFu) % 15;
+    return row;
+}
+
 static void nt_sub_of(CPUState* cpu, const tn_nearface* nf, int tier2, int i, int scroll,
                       nt_sub* s) {
-    uint32_t row;
+    uint32_t row = nt_sub_nodes(cpu, tier2, i, &s->a, &s->b, &s->c);
     if (tier2) {
-        row = rd(cpu, game_layout.terrain.hq_tri2_nodes + (uint32_t)i * 4u);
-        s->a = k_nt2_node[(row >> 24) % 6u];
-        s->b = k_nt2_node[((row >> 16) & 0xFFu) % 6u];
-        s->c = k_nt2_node[((row >> 8) & 0xFFu) % 6u];
         s->cell = nt2_tile(cpu, row, nf->rot);
         s->e = nf->hqBase + game_layout.terrain.hq_sub0 + (uint32_t)s->cell * 8u;
         s->dv = scroll ? s_tanim_dvhq[nf->texid][s->cell >> 1] : 0.0f;
     } else {
-        row = rd(cpu, game_layout.terrain.hq_tri4_nodes + (uint32_t)i * 4u);
-        s->a = (int)(row >> 24); s->b = (int)((row >> 16) & 0xFFu); s->c = (int)((row >> 8) & 0xFFu);
         s->cell = nt4_cell(cpu, row, nf->rot);
         s->e = nf->hqBase + game_layout.terrain.hq_cells4 + (uint32_t)s->cell * 8u;
         s->dv = scroll ? s_tanim_dvcell[nf->texid][s->cell >> 2] : 0.0f;
@@ -1830,20 +1978,20 @@ static void nt_emit(tn_wctx* W, CPUState* cpu, const tn_nearface* nf, const ngte
         ngte_cvert A = N[s.a], B = N[s.b], C = N[s.c];
         if (nf->straddle && !nf->dside) {
             double d = cv_det3(&A, &B, &C);
-            if (nf->flip ? d > 0.0 : d < 0.0) { W->trisplit_scull[tier2]++; continue; }
+            if (nf->flip ? d > 0.0 : d < 0.0) { W->trisplit_scull[tier2] += !W->emit_keyonly; continue; }
         }
         tmat mat; float u4[4], v4[4], u[3], v[3]; int matdiff;
         memset(&mat, 0, sizeof(mat)); mat.bpp = 16;
         decode_tiledef_span(cpu, s.e, nf->abe, &mat, u4, v4, 0x0F);
         mat.texid = nf->texid;
         tiledef_tri_uv(cpu, s.e, nf->rot, s.o, u, v, &matdiff);
-        W->trisplit_matdiff[tier2] += matdiff;
+        W->trisplit_matdiff[tier2] += matdiff && !W->emit_keyonly;
         A.u = u[0]; A.v = v[0] + s.dv;
         B.u = u[1]; B.v = v[1] + s.dv;
         C.u = u[2]; C.v = v[2] + s.dv;
-        W->emit_otkey = (float)((A.m3 + B.m3 + 2.0 * C.m3) * 4.0);
+        if (!W->emit_keycells) W->emit_otkey = tn_drain_key3(&A, &B, &C);
         clip_push_tri(W, A, B, C, &mat);
-        W->trisplit_subs[tier2]++;
+        if (!W->emit_keyonly) W->trisplit_subs[tier2]++;
     }
 }
 
@@ -1851,12 +1999,41 @@ static void nt_emit(tn_wctx* W, CPUState* cpu, const tn_nearface* nf, const ngte
  * split: its three corners carry the raw near colours of word 1 bytes 3, 2
  * and 0 (C's from byte 0, 0x80029834 and 0x8002807C; the flat GT3 emit
  * reads byte 1). */
+/* The keys of a split's sub-triangles over nodes N (tier 2: 4, tier 4: 16);
+ * a straddling face's back-facing sub-triangle carries none, as the drains
+ * skip it (nt_emit's facing test). */
+static void tn_tri_cell_keys(CPUState* cpu, const tn_nearface* nf, const ngte_cvert N[15],
+                             int tier2, tn_keycells* K) {
+    K->n = 0; K->kmin = 0.0f;
+    const int n = tier2 ? 4 : 16;
+    for (int i = 0; i < n; i++) {
+        int a, b, c;
+        nt_sub_nodes(cpu, tier2, i, &a, &b, &c);
+        int front = 1;
+        if (nf->straddle && !nf->dside) {
+            double d = cv_det3(&N[a], &N[b], &N[c]);
+            front = nf->flip ? d <= 0.0 : d >= 0.0;
+        }
+        tn_keycells_add(K, i, front, tn_drain_key3(&N[a], &N[b], &N[c]));
+    }
+}
+
 static void terrain_near_emit_tri(tn_wctx* W, CPUState* cpu, const tn_nearface* nf,
                                   ngte_cvert A, ngte_cvert B, ngte_cvert C, int tier2) {
     ngte_cvert N[15];
     nt4_grid(N, A, B, C);
     if (openpete_native_vertex_snap_active()) nt4_snap(N);
+    /* A tier-4 triangle drawn as the tier-2 split: the drain's 16
+     * sub-triangles carry the keys, key-only, and the split contests at
+     * their minimum. */
+    tn_keycells K; K.n = 0;
+    if (tier2 && !nf->abe && game_layout.terrain.hq_tri4_cells &&
+        face_drain_tier4(A.m3, B.m3, C.m3, C.m3, nf->w3))
+        tn_tri_cell_keys(cpu, nf, N, 0, &K);
+    if (K.n) { W->emit_keycells = 1; W->emit_otkey = K.kmin; }
     nt_emit(W, cpu, nf, N, tier2);
+    W->emit_keycells = 0;
+    if (K.n) { W->emit_keyonly = 1; nt_emit(W, cpu, nf, N, 0); W->emit_keyonly = 0; }
     W->trisplit_faces[tier2]++;
 }
 
@@ -1882,7 +2059,7 @@ static void trisplit_sum(const tn_wctx* W) {
  * face's presence in the game's filled +0x1E00 queue. */
 static int face_tri4_routed(double zA, double zB, double zC, uint32_t w3, uint32_t rec,
                             int hq_idx) {
-    if (!game_layout.terrain.hq_tri4_nodes) return 0;
+    if (!game_layout.terrain.hq_tri4_cells) return 0;
     if (s_nearq > 0 && s_defer_n > 0) return is_deferred4(rec);
     return face_near_tier4(zA, zB, zC, zC, w3, tface_cells_ok(hq_idx), tface_cells_pin(hq_idx));
 }
@@ -4696,12 +4873,12 @@ static int tgpu_bake_tri(CPUState* cpu, tgpu_buf* buf, int ab, int with_var, int
 }
 
 /* An HP face carries near variants when it has an HQ record and word 3
- * does not exclude it: every such quad, and a triangle on a game with a
- * triangle split. */
+ * does not exclude it: every such quad, and a triangle on a game whose
+ * triangle split the port draws. */
 static int tgpu_hq_elig(const tsface_t* F, uint32_t hqTable) {
     if (hqTable == 0 || tface_near_excl(F->w3)) return 0;
-    return F->quad || game_layout.terrain.hq_tri4_nodes != 0
-        || game_layout.terrain.hq_tri2_nodes != 0;
+    return F->quad || game_layout.terrain.hq_tri4_cells != 0
+        || game_layout.terrain.hq_tri2_tiles != 0;
 }
 
 /* A triangle's split variants: the tier-4 records where the classifier can
@@ -4711,12 +4888,12 @@ static int tgpu_bake_tris(CPUState* cpu, tgpu_buf* buf, int ab, int with_var, in
                           const tgpu_face_t* T, const uint32_t nearC[4],
                           const tsface_t* F, uint32_t hqBase, int hp_bucket,
                           int hdfold, int* fail) {
-    if (game_layout.terrain.hq_tri4_nodes && !tface_near_tier2(F->w3) && (ab || with_var || pin4)
+    if (game_layout.terrain.hq_tri4_cells && !tface_near_tier2(F->w3) && (ab || with_var || pin4)
      && tface_cells_ok(F->hq_idx)
      && tgpu_bake_tri(cpu, buf, ab, with_var, pin4, T, nearC, F, hqBase, hp_bucket, hdfold, 0,
                       fail) != 0)
         return -1;
-    if (game_layout.terrain.hq_tri2_nodes)
+    if (game_layout.terrain.hq_tri2_tiles)
         return tgpu_bake_tri(cpu, buf, ab, with_var, pin4, T, nearC, F, hqBase, hp_bucket,
                              hdfold, 1, fail);
     return 0;
@@ -5383,6 +5560,55 @@ static const tscache_t* s_pre_SC[1024];
 static uint32_t s_pre_sec[1024];
 static struct { uint8_t worker; int start, count; } s_pre_rec[1024];
 
+/* A near triangle the port draws whole (no split textures located, or the
+ * face not routed to the near path) that the drain inserts as its tier-2 or
+ * tier-4 sub-triangles. tn_flat_tri_keys prepares the sub-triangles and
+ * puts the whole triangle in contest-only mode at their minimum;
+ * tn_flat_tri_keys_emit, after the whole triangle is emitted, emits them
+ * key-only, textured by the whole triangle's UVs at their nodes (node (r, c)
+ * of the 15-node grid weighs A (4 - r - c)/4 + B c/4 + C r/4). */
+typedef struct { ngte_cvert N[15]; tn_keycells K; int tier2; } tn_flat_keys;
+static const uint8_t k_nt4_rc[15][2] = {
+    { 0, 0 }, { 0, 1 }, { 0, 2 }, { 0, 3 }, { 0, 4 }, { 1, 0 }, { 1, 1 }, { 1, 2 },
+    { 1, 3 }, { 2, 0 }, { 2, 1 }, { 2, 2 }, { 3, 0 }, { 3, 1 }, { 4, 0 },
+};
+static void tn_flat_tri_keys(tn_wctx* W, CPUState* cpu, const tsface_t* F, int hp, int straddle,
+                             const tmat* m, ngte_cvert A, ngte_cvert B, ngte_cvert C,
+                             tn_flat_keys* FK) {
+    FK->K.n = 0;
+    if (!hp || !game_layout.terrain.hq_tri4_nodes || !game_layout.terrain.hq_tri2_nodes ||
+        F->abe || m->blend || !face_is_near_canonical(A.m3, B.m3, C.m3, C.m3, F->w3))
+        return;
+    const tn_nearface nfv = { .w3 = F->w3, .abe = F->abe, .straddle = straddle,
+                              .flip = F->flip, .dside = F->dside };
+    const tn_nearface* nf = &nfv;
+    FK->tier2 = !face_drain_tier4(A.m3, B.m3, C.m3, C.m3, nf->w3);
+    nt4_grid(FK->N, A, B, C);
+    for (int k = 0; k < 15; k++) {
+        const float r = (float)k_nt4_rc[k][0], c = (float)k_nt4_rc[k][1];
+        FK->N[k].u = (A.u * (4.0f - r - c) + B.u * c + C.u * r) * 0.25f;
+        FK->N[k].v = (A.v * (4.0f - r - c) + B.v * c + C.v * r) * 0.25f;
+    }
+    if (openpete_native_vertex_snap_active()) nt4_snap(FK->N);
+    tn_tri_cell_keys(cpu, nf, FK->N, FK->tier2, &FK->K);
+    if (FK->K.n) { W->emit_keycells = 1; W->emit_otkey = FK->K.kmin; }
+}
+static void tn_flat_tri_keys_emit(tn_wctx* W, CPUState* cpu, const tn_flat_keys* FK,
+                                  const tmat* m) {
+    W->emit_keycells = 0;
+    if (!FK->K.n) return;
+    W->emit_keyonly = 1;
+    const int n = FK->tier2 ? 4 : 16;
+    for (int i = 0; i < n; i++) {
+        if (!FK->K.on[i]) continue;
+        int a, b, c;
+        nt_sub_nodes(cpu, FK->tier2, i, &a, &b, &c);
+        W->emit_otkey = FK->K.key[i];
+        clip_push_tri(W, FK->N[a], FK->N[b], FK->N[c], m);
+    }
+    W->emit_keyonly = 0;
+}
+
 /* The walk's near-path verdict for an HP face (the caller holds the facing
  * and table gates): a quad by face_is_near; a triangle, on a game with the
  * tier-2 triangle pass, by face_is_near over (A, B, C, C) (the triangle
@@ -5392,7 +5618,7 @@ static struct { uint8_t worker; int start, count; } s_pre_rec[1024];
  * GT3 emit. */
 static int tn_face_near(const lvert* sv, const tsface_t* F, uint32_t rec) {
     if (F->quad) return face_is_near(sv[F->i0].m3, sv[F->i1].m3, sv[F->i2].m3, sv[F->i3].m3, F->w3);
-    if (game_layout.terrain.hq_tri2_nodes)
+    if (game_layout.terrain.hq_tri2_tiles)
         return face_is_near(sv[F->i0].m3, sv[F->i1].m3, sv[F->i2].m3, sv[F->i2].m3, F->w3);
     return face_tri4_routed(sv[F->i0].m3, sv[F->i1].m3, sv[F->i2].m3, F->w3, rec, F->hq_idx);
 }
@@ -5400,8 +5626,8 @@ static int tn_face_near(const lvert* sv, const tsface_t* F, uint32_t rec) {
  * debug): a quad in either queue, a triangle in either queue with the tier-2
  * pass or in the +0x1E00 queue without it. */
 static int tn_queue_near(int quad, uint32_t rec) {
-    if (quad || game_layout.terrain.hq_tri2_nodes) return is_deferred(rec);
-    return game_layout.terrain.hq_tri4_nodes != 0 && is_deferred4(rec);
+    if (quad || game_layout.terrain.hq_tri2_tiles) return is_deferred(rec);
+    return game_layout.terrain.hq_tri4_cells != 0 && is_deferred4(rec);
 }
 
 /* Near emit of one routed HP face: the raw near colours of its corners
@@ -6438,7 +6664,11 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                 lcorner t0 = { rc0, tu[tcn[0]], tv[tcn[0]] };
                 lcorner t1 = { rc1, tu[tcn[1]], tv[tcn[1]] };
                 lcorner t2 = { rc2, tu[tcn[2]], tv[tcn[2]] };
+                tn_flat_keys FK;
+                tn_flat_tri_keys(W, cpu, F, faceStride == 16, straddle, mat,
+                                 tn_cv(&sv[i0], t0), tn_cv(&sv[i1], t1), tn_cv(&sv[i2], t2), &FK);
                 emit_tri(W, sv, i0, i1, i2, t0, t1, t2, mat);
+                tn_flat_tri_keys_emit(W, cpu, &FK, mat);
             }
         }
       }  /* pass (LP / HP) */
@@ -6497,8 +6727,8 @@ static uint32_t tc_global_flags(int nearhq, int lod_handoff) {
          | (game_layout.terrain.ladder_nearest_corner ? OPTC_GF_LADNEAR : 0u)
          | (game_layout.terrain.nearband_ot_keys      ? OPTC_GF_NBKEYS  : 0u)
          | (game_layout.terrain.hq_cells4             ? OPTC_GF_CELLS4  : 0u)
-         | (game_layout.terrain.hq_tri4_nodes         ? OPTC_GF_TRI4    : 0u)
-         | (game_layout.terrain.hq_tri2_nodes         ? OPTC_GF_TRI2    : 0u)
+         | (game_layout.terrain.hq_tri4_cells         ? OPTC_GF_TRI4    : 0u)
+         | (game_layout.terrain.hq_tri2_tiles         ? OPTC_GF_TRI2    : 0u)
          | ((s_otbias_on && openpete_native_key_resolve_on()) ? OPTC_GF_KEYON : 0u);
 }
 
@@ -8439,19 +8669,20 @@ static void terrain_feed_native(CPUState* cpu) {
         if (fp) {
             fprintf(fp, "# frame=%u n=%d\n", openpete_frame, s_tri_n);
             fprintf(fp, "# sec,face,tier,fill,blend,textured,slots,"
-                        "x0,y0,vz0,x1,y1,vz1,x2,y2,vz2,otkey,nearband"
+                        "x0,y0,vz0,x1,y1,vz1,x2,y2,vz2,otkey,nearband,keyonly,keycells"
                         "  (vz/otkey true world units)\n");
             for (int i = 0; i < s_tri_n; i++) {
                 const ttri* t = &s_tri[i];
                 fprintf(fp, "%d,%d,%d,%d,%d,%d,%d,"
                             "%.2f,%.2f,%.1f,%.2f,%.2f,%.1f,%.2f,%.2f,%.1f,"
-                            "%.1f,%d\n",
+                            "%.1f,%d,%d,%d\n",
                         t->sec, t->face, t->tier, t->fill, t->blend, t->textured,
                         (int)t->otslots,
                         (double)t->sx[0], (double)t->sy[0], (double)t->vz[0]*16.0,
                         (double)t->sx[1], (double)t->sy[1], (double)t->vz[1]*16.0,
                         (double)t->sx[2], (double)t->sy[2], (double)t->vz[2]*16.0,
-                        (double)t->otkey, (int)t->nearband);
+                        (double)t->otkey, (int)t->nearband, (int)t->keyonly,
+                        (int)t->keycells);
             }
             fclose(fp);
         }
@@ -8739,8 +8970,13 @@ static void terrain_feed_native(CPUState* cpu) {
                 }
             }
         }
-        openpete_native_scene_add_tri(&tri, t->fill ? OPENPETE_SCENE_WORLD_FILL
+        /* A drain sub-cell's key-only copy feeds the key raster alone; the
+         * visible triangles of its face contest without emitting. */
+        openpete_native_scene_set_key_cells(t->keycells);
+        openpete_native_scene_add_tri(&tri, t->keyonly ? OPENPETE_SCENE_WORLD_KEY
+                                          : t->fill ? OPENPETE_SCENE_WORLD_FILL
                                                     : OPENPETE_SCENE_WORLD, 0);
+        openpete_native_scene_set_key_cells(0);
         openpete_native_scene_set_tag(0);
         /* PSX mask-bit mirror: re-feed .s-deferred (near-band) tris as the
          * portal guard, drawn after the portal sky (see the category doc).
@@ -8756,7 +8992,8 @@ static void terrain_feed_native(CPUState* cpu) {
              * DrawOTag split order). */
             static int gen = -1;
             ENV_FLAG_LATCH(gen, "OPENPETE_PORTAL_GUARD");
-            if (gen && t->guard && tri.blend == 0 && terrain_game.portal_sky_recent())
+            if (gen && t->guard && !t->keyonly && tri.blend == 0 &&
+                terrain_game.portal_sky_recent())
                 openpete_native_scene_add_tri(&tri, OPENPETE_SCENE_PORTAL_GUARD, 0);
         }
         openpete_native_scene_set_fog_delta(0);   /* never leak past this feeder */
