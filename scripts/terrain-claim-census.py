@@ -192,7 +192,7 @@ def main():
 
     jobs = []  # (kind, slug, args, target_frame)
     if not opts.freecam_only:
-        for row in read_manifest(os.path.join(ROOT, "games/spyro-1/presentation-corpus.manifest")):
+        for row in read_manifest(os.path.join(ROOT, "games/spyro-1/corpus/presentation-corpus.manifest")):
             name = row[0]
             if opts.filter and opts.filter not in name:
                 continue
@@ -202,7 +202,7 @@ def main():
             jobs.append(("bk2", name,
                          ["--bk2", f"games/spyro-1/bk2/{name}.bk2"], start))
     if not opts.bk2_only:
-        for row in read_manifest(os.path.join(ROOT, "games/spyro-1/freecam-corpus.manifest")):
+        for row in read_manifest(os.path.join(ROOT, "games/spyro-1/corpus/freecam-corpus.manifest")):
             level, pose = row[0], row[1]
             if opts.filter and opts.filter not in level:
                 continue
