@@ -29,7 +29,7 @@
 
 layout(set = 0, binding = 0) uniform sampler2D  uOpaqueDepth; /* WORLD-opaque pre-pass depth */
 layout(set = 1, binding = 0) uniform usampler2D u_vram;       /* R16_UINT 1024x512 VRAM      */
-layout(set = 2, binding = 0) uniform sampler2D  uTerrainKey;  /* terrain og-key image        */
+layout(set = 1, binding = 1) uniform sampler2D  uTerrainKey;  /* terrain og-key image        */
 
 layout(push_constant) uniform PC {
     float col0x, col0y, col0z;   /* camera rows 4096^2 * C^-1 (world reconstruct) */
@@ -41,17 +41,19 @@ layout(push_constant) uniform PC {
     float steep_nup;             /* |up normal| below which a surface is a wall face */
     float mode;                  /* 0 = draw all (band), 1 = height+steep test */
     float band;                  /* fallback view-Z band (mode 0) */
-    float key_contest;           /* 1 = uTerrainKey holds this target's keys */
+    float plat_eps;              /* inert, reads nothing */
+    float plat_slack;            /* inert, reads nothing */
     float uax, ubx, vay, vby;    /* PSX screen -> pre-pass uv affine (u=uax*SX+ubx) */
     float pvw, pvh;              /* pre-pass raster extent within the depth image */
     float fax, fbx, fay, fby;    /* gl_FragCoord -> PSX screen affine, this pass */
     int   tpage;                 /* texture page origin, x | y << 10 */
     int   clut;                  /* CLUT origin x | y << 10, bpp code << 20 */
+    float key_contest;           /* 1 = uTerrainKey holds this target's keys */
 } pc;
 
-/* 28 floats + 2 ints = 120 B, inside the 128-byte guaranteed
- * maxPushConstantsSize. VRAM x is 10 bits (0..1023), y 9 (0..511) and the bpp
- * code 2, so the five PSX material fields ride two words (the layout the mod
+/* 30 floats + 2 ints = 128 B, the guaranteed maxPushConstantsSize; plat_eps
+ * and plat_slack are inert. VRAM x is 10 bits (0..1023), y 9 (0..511) and the
+ * bpp code 2, so the five PSX material fields ride two words (the layout the mod
  * decal contract openpete_psx_decal.glsl declares). */
 int tpage_x() { return  pc.tpage        & 0x3FF; }
 int tpage_y() { return (pc.tpage >> 10) & 0x1FF; }

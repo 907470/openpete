@@ -56,7 +56,7 @@
  * are subtracted from the framebuffer — read them with a diff tool, not eyes. */
 
 layout(set = 0, binding = 0) uniform sampler2D uOpaqueDepth; /* WORLD-opaque pre-pass depth */
-layout(set = 2, binding = 0) uniform sampler2D uTerrainKey;  /* terrain og-key image, this target */
+layout(set = 1, binding = 1) uniform sampler2D uTerrainKey;  /* terrain og-key image, this target */
 
 layout(push_constant) uniform PC {
     float col0x, col0y, col0z;   /* camera rotation matrix columns (Q12 int16) */

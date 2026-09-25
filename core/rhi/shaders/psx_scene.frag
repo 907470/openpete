@@ -1,4 +1,6 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+#include "psx_clut.glsl"
 
 /* Phase 3a.3 — textured native-scene fragment stage.
  *
@@ -41,52 +43,21 @@ layout(constant_id = 5) const int STP_SELECT = 0;
 
 uint vram_at(int x, int y) { return texelFetch(u_vram, ivec2(x, y), 0).r; }
 
-float expand5(uint v) { return float((v << 3) | (v >> 2)) / 255.0; }
-
-vec4 decode555(uint p)
-{
-    if (p == 0u) return vec4(0.0);            /* PSX transparent sentinel */
-    return vec4(expand5( p        & 31u),
-                expand5((p >> 5)  & 31u),
-                expand5((p >> 10) & 31u),
-                1.0 - 0.5 * float((p >> 15) & 1u));
-}
-
-/* The CLUT index of a paletted texel (4 or 8 bpp). */
-uint clut_index(int u, int v)
-{
-    if (pc.bpp == 8) {
-        uint word = vram_at(pc.tpage_x + (u >> 1), pc.tpage_y + v);
-        return (word >> (8 * (u & 1))) & 0xFFu;
-    }
-    uint word = vram_at(pc.tpage_x + (u >> 2), pc.tpage_y + v);
-    return (word >> (4 * (u & 3))) & 0xFu;
-}
-
 uint sample_word(int u, int v)
 {
     if (pc.bpp == 16) return vram_at(pc.tpage_x + u, pc.tpage_y + v);
-    return vram_at(pc.clut_x + int(clut_index(u, v)), pc.clut_y);
+    return vram_at(pc.clut_x + int(op_clut_index(u_vram, ivec2(pc.tpage_x, pc.tpage_y),
+                                                 pc.bpp, u, v)),
+                   pc.clut_y);
 }
 
-/* Second fogged-CLUT row of a textured face (the moby fog band between two
- * ticks). The vertex alpha byte, constant over the face and unread otherwise
- * on a textured face, is 0xFF for none, else ((d + 7) << 4) | q: the fragment
- * blends by q / 30 (q 1..15, weight up to 0.5) toward the modulated, clamped
- * colour of the same CLUT index d rows from the face's CLUT (d in -7..7), so
- * the result is the lerp of the two rows' drawn colours, clamp included.
- * High nibble 15 or q 0 draws the face's row alone, the path every other
- * textured face takes. A transparent (0) word in the second row keeps the
- * first row's colour. */
+/* The second fogged-CLUT row of a textured face (op_clut_fog_mix); the
+ * untextured lighting view keeps the vertex colour alone. */
 vec3 clut_fog_mix(vec3 rgb, vec4 col, int u, int v)
 {
-    uint code = uint(round(clamp(col.a, 0.0, 1.0) * 255.0));
-    uint q = code & 15u, hi = code >> 4;
-    if (NOTEX || pc.bpp == 16 || hi == 15u || q == 0u) return rgb;
-    uint w2 = vram_at(pc.clut_x + int(clut_index(u, v)), pc.clut_y + int(hi) - 7);
-    if (w2 == 0u) return rgb;
-    vec3 rgb2 = clamp(decode555(w2).rgb * col.rgb * (255.0 / 128.0), 0.0, 1.0);
-    return mix(rgb, rgb2, float(q) / 30.0);
+    if (NOTEX) return rgb;
+    return op_clut_fog_mix(u_vram, rgb, col, ivec2(pc.tpage_x, pc.tpage_y),
+                           ivec2(pc.clut_x, pc.clut_y), pc.bpp, u, v);
 }
 
 void main()
@@ -94,7 +65,7 @@ void main()
     vec2 uv = vUV / vQ;
     vec4 col = vColor / vQ;
     uint word = sample_word(int(uv.x), int(uv.y));
-    vec4 c = decode555(word);
+    vec4 c = op_decode555(word);
     if (c.a == 0.0) discard;
     if (STP_SELECT == 1 && (word & 0x8000u) != 0u) discard;
     if (STP_SELECT == 2 && (word & 0x8000u) == 0u) discard;

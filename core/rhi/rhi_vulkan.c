@@ -190,6 +190,9 @@ static void rhi_signal_device_lost(const char *where) {
         }                                                                    \
     } while (0)
 
+/* Two-sampler sets one frame slot may take (rhi_bind_vram_depth_pair). */
+#define RHI_PAIR_SETS_MAX 32
+
 struct rhi_device {
     struct SDL_Window *window;
 
@@ -408,6 +411,16 @@ struct rhi_device {
     uint32_t        off_sampled_gen[RHI_FRAMES_IN_FLIGHT];
     VkDeviceSize    ubo_align;                        /* minUniformBufferOffsetAlignment */
     uint32_t        max_desc_sets;                    /* maxBoundDescriptorSets          */
+    /* Two-sampler set layout (binding 0 = a colour texture, binding 1 = a
+     * sampled depth image) for pipelines with set1_vram_depth. Its sets are
+     * written per bind: each bind in a frame takes the next set of the frame
+     * slot's list, grown on demand, and the list's cursor rewinds when the
+     * slot's fence has retired (begin_frame_impl), so a set is never
+     * rewritten while a recorded draw still reads it. */
+    VkDescriptorSetLayout pair_set_layout;
+    VkDescriptorSet pair_sets[RHI_FRAMES_IN_FLIGHT][RHI_PAIR_SETS_MAX];
+    uint32_t        pair_alloc[RHI_FRAMES_IN_FLIGHT]; /* sets allocated per slot */
+    uint32_t        pair_used[RHI_FRAMES_IN_FLIGHT];  /* sets taken this frame   */
 
     bool        gpu_timers;                 /* env set AND queue has timestamps */
     float       gpu_ts_period;              /* ns per timestamp tick */
@@ -1664,6 +1677,15 @@ static bool create_descriptor_infra(rhi_device *dev)
     if (vkCreateDescriptorSetLayout(dev->device, &li, NULL, &dev->vram_set_layout) != VK_SUCCESS) {
         RHI_LOG("vkCreateDescriptorSetLayout failed\n"); return false;
     }
+    VkDescriptorSetLayoutBinding pb[2] = { b, b };
+    pb[1].binding = 1;
+    VkDescriptorSetLayoutCreateInfo pli = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = 2, .pBindings = pb,
+    };
+    if (vkCreateDescriptorSetLayout(dev->device, &pli, NULL, &dev->pair_set_layout) != VK_SUCCESS) {
+        RHI_LOG("vkCreateDescriptorSetLayout (pair) failed\n"); return false;
+    }
     /* S2: dynamic-UBO pair layout (postfx set 3: binding 0 = engine block,
      * binding 1 = mod block), vertex+fragment visible. */
     VkDescriptorSetLayoutBinding ub[2] = {
@@ -2117,6 +2139,7 @@ void rhi_destroy(rhi_device *dev)
     if (dev->vram_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->vram_set_layout, NULL);
     if (dev->ubo_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->ubo_set_layout, NULL);
     if (dev->ubo1_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->ubo1_set_layout, NULL);
+    vkDestroyDescriptorSetLayout(dev->device, dev->pair_set_layout, NULL);  /* null: no-op */
     if (dev->vram_sampler)   vkDestroySampler(dev->device, dev->vram_sampler, NULL);
     if (dev->linear_sampler) vkDestroySampler(dev->device, dev->linear_sampler, NULL);
 
@@ -2471,6 +2494,7 @@ static bool begin_frame_impl(rhi_device *dev, bool acquire)
      * its submit, so slot alternation is exact and the promise holds. */
     s_frame_serial++;
     retired_reclaim(dev, false);
+    dev->pair_used[dev->frame] = 0;   /* the slot's pair sets have retired */
     dev->frame_active = true;
     dev->draw_calls = 0;
     if (dev->gpu_timers) {
@@ -4720,6 +4744,45 @@ static void terrain_vertex_input(const rhi_pipeline_desc *desc,
     }
 }
 
+/* The descriptor set layouts of a pipeline described by `desc`, written to
+ * out[0..6]; returns how many of them the pipeline layout uses.
+ *
+ * set 0 (uses_vram) + optional set 1 (uses_vram2, e.g. the diff pass's
+ * reference sampler) both reuse the single-binding vram set layout.
+ * postfx: sets 0..2 samplers + set 3 the dynamic-UBO pair. terrain: set 0 =
+ * VRAM sampler, set 3 = the UBO pair (globals + sector params); sets 1/2 are
+ * declared for layout continuity but never bound/used, and terrain keeps its
+ * own two blocks at 5/6 — set 3 binding 1 is the mod's, and a set views one
+ * buffer per binding. set1_vram_depth replaces set 1 with the two-sampler
+ * layout.
+ *
+ * material: the mod layout PLUS the engine's occlusion inputs, which a
+ * material's fragment stage runs before the mod's colour maths. They sit
+ * ABOVE the UBO pair (sets 4..6) rather than replacing sets 1/2 so a
+ * material's own uniform block stays at set 3 binding 1 — the one part of
+ * the layout mod source actually writes. */
+static uint32_t pipeline_set_layouts(const rhi_device *dev, const rhi_pipeline_desc *desc,
+                                     VkDescriptorSetLayout out[7])
+{
+    const bool ubo_pair = desc->postfx || desc->mod_pipeline ||
+                          desc->material_pipeline || desc->terrain_pipeline;
+    const VkDescriptorSetLayout high = desc->terrain_pipeline ? dev->ubo1_set_layout
+                                                              : dev->vram_set_layout;
+    for (int i = 0; i < 7; i++) out[i] = dev->vram_set_layout;
+    out[3] = ubo_pair ? dev->ubo_set_layout : dev->vram_set_layout;
+    out[5] = high;
+    out[6] = high;
+    if (desc->set1_vram_depth) out[1] = dev->pair_set_layout;
+    uint32_t n = desc->material_pipeline ? 7u  /* + sets 4..6: og keys, rank */
+               : desc->terrain_pipeline ? 7u   /* + 4: HD atlas, 5/6: blocks */
+               : (desc->postfx || desc->mod_pipeline) ? 4u
+               : desc->uses_vram5 ? 5u
+               : desc->uses_vram4 ? 4u
+               : desc->uses_vram3 ? 3u
+               : desc->uses_vram ? (desc->uses_vram2 ? 2u : 1u) : 0u;
+    return (desc->set1_vram_depth && n < 2u) ? 2u : n;
+}
+
 /* Compile a pipeline's Vulkan objects from its stored sources (desc + shader
  * names/words) without touching the rhi_pipeline's live handles: the create
  * path assigns the result to a fresh pipeline, the rebuild path swaps it into
@@ -4933,37 +4996,8 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
                           : VK_SHADER_STAGE_FRAGMENT_BIT,
         .offset = 0, .size = desc->push_const_size,
     };
-    /* set 0 (uses_vram) + optional set 1 (uses_vram2, e.g. the diff pass's
-     * reference sampler) — both reuse the single-binding vram set layout.
-     * postfx: sets 0..2 samplers + set 3 the dynamic-UBO pair. terrain:
-     * set 0 = VRAM sampler, set 3 = the UBO pair (globals + sector params);
-     * sets 1/2 are declared for layout continuity but never bound/used. */
-    VkDescriptorSetLayout set_layouts[7] = { dev->vram_set_layout, dev->vram_set_layout,
-                                             dev->vram_set_layout,
-                                             (desc->postfx || desc->mod_pipeline ||
-                                              desc->material_pipeline || desc->terrain_pipeline)
-                                                 ? dev->ubo_set_layout : dev->vram_set_layout,
-                                             dev->vram_set_layout,
-                                             /* terrain keeps its own two blocks
-                                              * at 5/6 — set 3 binding 1 is the
-                                              * mod's, and a set views one
-                                              * buffer per binding. */
-                                             desc->terrain_pipeline ? dev->ubo1_set_layout
-                                                                    : dev->vram_set_layout,
-                                             desc->terrain_pipeline ? dev->ubo1_set_layout
-                                                                    : dev->vram_set_layout };
-    /* material: the mod layout PLUS the engine's occlusion inputs, which a
-     * material's fragment stage runs before the mod's colour maths. They sit
-     * ABOVE the UBO pair (sets 4..6) rather than replacing sets 1/2 so a
-     * material's own uniform block stays at set 3 binding 1 — the one part
-     * of the layout mod source actually writes. */
-    uint32_t set_count = desc->material_pipeline ? 7u  /* + sets 4..6: og keys, rank */
-                       : desc->terrain_pipeline ? 7u   /* + 4: HD atlas, 5/6: blocks */
-                       : (desc->postfx || desc->mod_pipeline) ? 4u
-                       : desc->uses_vram5 ? 5u
-                       : desc->uses_vram4 ? 4u
-                       : desc->uses_vram3 ? 3u
-                       : desc->uses_vram ? (desc->uses_vram2 ? 2u : 1u) : 0u;
+    VkDescriptorSetLayout set_layouts[7];
+    uint32_t set_count = pipeline_set_layouts(dev, desc, set_layouts);
     if (set_count > dev->max_desc_sets) {
         /* Degrade, never crash: the caller treats a NULL pipeline as "draw
          * this run stock", so a device too small for the material layout
@@ -5505,6 +5539,53 @@ void rhi_bind_vram2(rhi_device *dev, rhi_texture *tex)
     if (!dev->frame_active) return;
     vkCmdBindDescriptorSets(dev->cmd[dev->frame], VK_PIPELINE_BIND_POINT_GRAPHICS,
                             dev->cur_layout, 1, 1, &tex->set, 0, NULL);
+}
+
+void rhi_bind_vram_depth_pair(rhi_device *dev, rhi_texture *tex, rhi_texture *depth_rt,
+                              uint32_t set)
+{
+    if (!dev->frame_active || !tex || !depth_rt || !depth_rt->rt_depth_sample_view) return;
+    uint32_t f = dev->frame;
+    if (dev->pair_used[f] == dev->pair_alloc[f]) {
+        if (dev->pair_alloc[f] == RHI_PAIR_SETS_MAX) {
+            static bool s_warned;
+            if (!s_warned) {
+                RHI_LOG("pair sets: %d binds in one frame exceed the slot list; "
+                        "further binds this frame are dropped\n", RHI_PAIR_SETS_MAX);
+                s_warned = true;
+            }
+            return;
+        }
+        VkDescriptorSetAllocateInfo ai = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = dev->desc_pool, .descriptorSetCount = 1,
+            .pSetLayouts = &dev->pair_set_layout,
+        };
+        if (vkAllocateDescriptorSets(dev->device, &ai,
+                                     &dev->pair_sets[f][dev->pair_alloc[f]]) != VK_SUCCESS) {
+            RHI_LOG("pair set vkAllocateDescriptorSets failed\n");
+            return;
+        }
+        dev->pair_alloc[f]++;
+    }
+    VkDescriptorSet ds = dev->pair_sets[f][dev->pair_used[f]++];
+    VkDescriptorImageInfo ii[2] = {
+        { .sampler = dev->vram_sampler, .imageView = tex->view,
+          .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+        { .sampler = dev->vram_sampler, .imageView = depth_rt->rt_depth_sample_view,
+          .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+    };
+    VkWriteDescriptorSet w[2] = {
+        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 0,
+          .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+          .pImageInfo = &ii[0] },
+        { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 1,
+          .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+          .pImageInfo = &ii[1] },
+    };
+    vkUpdateDescriptorSets(dev->device, 2, w, 0, NULL);
+    vkCmdBindDescriptorSets(dev->cmd[f], VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            dev->cur_layout, set, 1, &ds, 0, NULL);
 }
 
 void rhi_push_constants(rhi_device *dev, const void *data, uint32_t size)

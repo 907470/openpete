@@ -23,7 +23,7 @@
  * main() applies the occlusion verdict before op_material() runs; a
  * material cannot paint a shadow through a wall.
  *
- * Reserved for the engine: push constants, sets 0-2, input locations 0-2.
+ * Reserved for the engine: push constants, sets 0-1, input locations 0-2.
  * The material's own uniform block is set 3 binding 1 (std140). */
 
 #ifndef OPENPETE_PSX_DECAL_GLSL
@@ -37,8 +37,11 @@ layout(set = 0, binding = 0) uniform sampler2D  op_opaque_depth; /* terrain-opaq
  * (reversed 1/vz or forward 1 - 1/vz). The stored value is not an
  * interface; op_viewz_scene returns the fan's view-Z. */
 layout(constant_id = 0) const bool OP_DEPTH_REVERSED = false;
+/* The earlier name of OP_DEPTH_REVERSED, kept for shaders written against
+ * it; it reads the pipeline's own depth convention. */
+#define OP_DEPTH_AFFINE OP_DEPTH_REVERSED
 layout(set = 1, binding = 0) uniform usampler2D op_vram;         /* R16_UINT 1024x512       */
-layout(set = 2, binding = 0) uniform sampler2D  op_terrain_key;  /* terrain og-key image    */
+layout(set = 1, binding = 1) uniform sampler2D  op_terrain_key;  /* terrain og-key image    */
 
 layout(push_constant) uniform OP_DECAL_PC {
     float col0x, col0y, col0z;   /* camera rows 4096^2 * C^-1 (world reconstruct) */
@@ -50,18 +53,22 @@ layout(push_constant) uniform OP_DECAL_PC {
     float steep_nup;             /* |up normal| below which a surface is a wall face */
     float mode;                  /* 0 = draw all (band), 1 = height and steepness test */
     float band;                  /* fallback view-Z band (mode 0) */
-    float key_contest;           /* 1 = op_terrain_key holds this target's keys */
+    float plat_eps;              /* inert, reads nothing */
+    float plat_slack;            /* inert, reads nothing */
     float uax, ubx, vay, vby;    /* PSX screen -> pre-pass uv affine */
     float pvw, pvh;              /* pre-pass raster extent within the depth image */
     float fax, fbx, fay, fby;    /* gl_FragCoord -> PSX screen affine, this pass */
     int   tpage;                 /* texture page origin, x | y << 10 */
     int   clut;                  /* CLUT origin x | y << 10, bpp code << 20 */
+    float key_contest;           /* 1 = op_terrain_key holds this target's keys */
 } op_pc;
 
-/* The material block is 28 floats + 2 ints = 120 bytes, inside the 128-byte
- * guaranteed maxPushConstantsSize. VRAM coordinates are 10 bits of x (0..1023)
- * and 9 bits of y (0..511), and the bpp code is 2 bits, so the five PSX
- * material fields ride two words and leave room for the affine. */
+/* The material block is 30 floats + 2 ints = 128 bytes, the guaranteed
+ * maxPushConstantsSize. plat_eps and plat_slack are inert and keep every
+ * later field at the offset that shaders written against the earlier block
+ * read; key_contest follows them at the end. VRAM coordinates are 10 bits of
+ * x (0..1023) and 9 bits of y (0..511), and the bpp code is 2 bits, so the
+ * five PSX material fields ride two words and leave room for the affine. */
 int op_tpage_x() { return  op_pc.tpage        & 0x3FF; }
 int op_tpage_y() { return (op_pc.tpage >> 10) & 0x1FF; }
 int op_clut_x()  { return  op_pc.clut         & 0x3FF; }

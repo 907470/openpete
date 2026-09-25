@@ -192,6 +192,7 @@ static const char* const k_iface_files[] = {
     "openpete_psx_material.glsl",   /* material tier: both engine halves  */
     "openpete_psx_decal.glsl",      /* decal draw path                    */
     "psx_key_contest.glsl",         /* og painter verdicts (both halves)  */
+    "psx_clut.glsl",                /* texel decode, fogged-CLUT row mix  */
     "terrain_shade.glsl",           /* retained-terrain engine half       */
 };
 

@@ -49,6 +49,9 @@ layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
 
 /* gl_FragCoord.z convention, matching the vertex stage's selection. */
 layout(constant_id = 0) const bool DEPTH_REVERSED = false;
+/* The earlier name of DEPTH_REVERSED, kept for mod materials written
+ * against it; it reads the pipeline's own depth convention. */
+#define DEPTH_AFFINE DEPTH_REVERSED
 /* Fragment spec-constant 4 (`SLOT_CONTEST`): the key contest compares
  * 128-world ordering-table slot indices and resolves an equal slot to the
  * terrain. Set per game from game_layout.terrain.slot_ot_contest. */

@@ -152,6 +152,7 @@ void main()
 /* ---- engine half: the walked scene pipelines ------------------------- */
 
 #include "psx_key_contest.glsl"
+#include "psx_clut.glsl"
 
 layout(set = 0, binding = 0) uniform usampler2D op_vram; /* R16_UINT 1024x512 */
 
@@ -171,6 +172,9 @@ layout(set = 6, binding = 0) uniform sampler2D op_moby_rank;
  * stored value of gl_FragCoord.z follows the convention and is not an
  * interface; op_vz_from_depth returns the fragment's view-Z. */
 layout(constant_id = 0) const bool OP_DEPTH_REVERSED = false;
+/* The earlier name of OP_DEPTH_REVERSED, kept for shaders written against
+ * it; it reads the pipeline's own depth convention. */
+#define OP_DEPTH_AFFINE OP_DEPTH_REVERSED
 layout(constant_id = 3) const bool OP_MOBY_TRUESCOPE = true;
 layout(constant_id = 4) const bool OP_SLOT_CONTEST = false;
 
@@ -204,36 +208,19 @@ vec4 op_color() { return vColor / vQ; }
 
 uint op_vram_at(int x, int y) { return texelFetch(op_vram, ivec2(x, y), 0).r; }
 
-float op_expand5(uint v) { return float((v << 3) | (v >> 2)) / 255.0; }
-
-/* 15-bit VRAM word -> RGBA. a: 0 = the PSX transparent sentinel, which the
- * engine discards; 0.5 = STP-set (semi-transparent) texel; 1 = opaque. */
-vec4 op_decode555(uint p)
-{
-    if (p == 0u) return vec4(0.0);
-    return vec4(op_expand5( p        & 31u),
-                op_expand5((p >> 5)  & 31u),
-                op_expand5((p >> 10) & 31u),
-                1.0 - 0.5 * float((p >> 15) & 1u));
-}
+/* op_expand5 and op_decode555 (15-bit VRAM word -> RGBA; a: 0 = the PSX
+ * transparent sentinel, 0.5 = STP-set texel, 1 = opaque) come from
+ * psx_clut.glsl. */
 
 /* Raw texel at page-relative texel coords through this draw's bpp and
  * CLUT. Pass op_uv() for the fragment's own texel. */
 vec4 op_psx_texel(ivec2 uv)
 {
-    uint word;
-    if (op_pc.bpp == 16) {
-        word = op_vram_at(op_pc.tpage_x + uv.x, op_pc.tpage_y + uv.y);
-    } else if (op_pc.bpp == 8) {
-        uint w   = op_vram_at(op_pc.tpage_x + (uv.x >> 1), op_pc.tpage_y + uv.y);
-        uint idx = (w >> (8 * (uv.x & 1))) & 0xFFu;
-        word = op_vram_at(op_pc.clut_x + int(idx), op_pc.clut_y);
-    } else { /* 4bpp */
-        uint w   = op_vram_at(op_pc.tpage_x + (uv.x >> 2), op_pc.tpage_y + uv.y);
-        uint nib = (w >> (4 * (uv.x & 3))) & 0xFu;
-        word = op_vram_at(op_pc.clut_x + int(nib), op_pc.clut_y);
-    }
-    return op_decode555(word);
+    if (op_pc.bpp == 16)
+        return op_decode555(op_vram_at(op_pc.tpage_x + uv.x, op_pc.tpage_y + uv.y));
+    uint idx = op_clut_index(op_vram, ivec2(op_pc.tpage_x, op_pc.tpage_y), op_pc.bpp,
+                             uv.x, uv.y);
+    return op_decode555(op_vram_at(op_pc.clut_x + int(idx), op_pc.clut_y));
 }
 
 /* PSX texture modulation: texel * vertexColour / 128 (128 = unchanged). */
@@ -243,13 +230,19 @@ vec3 op_psx_modulate(vec3 texel, vec3 vcol)
 }
 
 /* The stock result for this fragment from VRAM alone. An untextured draw
- * (bpp 0) is the vertex colour, with no texel fetch and no modulation. */
+ * (bpp 0) is the vertex colour, with no texel fetch and no modulation. A
+ * textured face on the moby fog band between two ticks blends in its second
+ * fogged-CLUT row after the modulation (op_clut_fog_mix). */
 vec4 op_psx_shade()
 {
     vec4 col = op_color();
     if (op_pc.bpp == 0) return vec4(col.rgb, 1.0);
-    vec4 c = op_psx_texel(ivec2(op_uv()));
-    return vec4(op_psx_modulate(c.rgb, col.rgb), c.a);
+    ivec2 uv = ivec2(op_uv());
+    vec4 c = op_psx_texel(uv);
+    vec3 rgb = op_clut_fog_mix(op_vram, op_psx_modulate(c.rgb, col.rgb), col,
+                               ivec2(op_pc.tpage_x, op_pc.tpage_y),
+                               ivec2(op_pc.clut_x, op_pc.clut_y), op_pc.bpp, uv.x, uv.y);
+    return vec4(rgb, c.a);
 }
 
 /* ---- HD texture-pack access ------------------------------------------ */

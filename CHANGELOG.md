@@ -21,8 +21,9 @@ code span renders as <code><a>...</a></code>.
 - Spyro 1 and 2: `--skip-to-cutscene` plays the story cutscenes by name (`--skip-to-cutscene zzz` lists them). Spyro 3: `--skip-to-cutscene` plays the 19 story cutscenes by their loading captions, and `--skip-to-area <level>:<area>` boots into a sub-area. `scripts/check_skip_targets.sh` and the `skip_targets_spyro-N` ctests run every row of `games/<game>/skip-targets.manifest`.
 - Renderer: scene depth is now reversed on the float depth format (`gl_FragCoord.z` = 1/viewZ, larger is nearer),
   so distant surfaces no longer tie and flicker by draw order. Mod shaders reading depth through
-  `op_viewz_scene` or `op_vz_from_depth` are unaffected; raw `gl_FragCoord.z` values and the
-  `OP_DEPTH_AFFINE` constant (now `OP_DEPTH_REVERSED`) are not a stable interface.
+  `op_viewz_scene` or `op_vz_from_depth` are unaffected. The constants `OP_DEPTH_AFFINE` and
+  `DEPTH_AFFINE` are renamed `OP_DEPTH_REVERSED` and `DEPTH_REVERSED`; the old names stay as aliases.
+  Raw `gl_FragCoord.z` values are not a stable interface.
 - Spyro 1: the fog-band fade of distant characters follows every displayed frame with interpolation active
 - Spyro 2/3: gem glints keep their size and spin between ticks; zaps keep their width; tracer ribbons and
   meshes move smoothly; the terrain's animated colours blend between ticks

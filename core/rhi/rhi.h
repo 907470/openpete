@@ -580,6 +580,12 @@ typedef struct {
                                  * present-local moby ordinal, RGBA8 — the
                                  * same-moby painter select). Implies
                                  * uses_vram4.                                 */
+    bool           set1_vram_depth; /* set 1 holds two samplers: binding 0 a
+                                 * colour texture (the VRAM image), binding 1
+                                 * a sampled depth image (the terrain key
+                                 * image). Replaces set 1 of any layout above
+                                 * and implies sets 0..1. Bind it with
+                                 * rhi_bind_vram_depth_pair.                   */
     uint32_t       push_const_size; /* fragment push-constant block bytes (0=none) */
     bool           postfx;      /* mod-postfx layout: NO vertex input (fullscreen
                                  * triangle from gl_VertexIndex — pair with the
@@ -998,6 +1004,11 @@ void rhi_bind_vram(rhi_device *dev, rhi_texture *tex);
 /* Bind a second texture to set 1 (for a uses_vram2 pipeline — e.g. the diff
  * pass's reference sampler). Call after rhi_bind_pipeline + rhi_bind_vram. */
 void rhi_bind_vram2(rhi_device *dev, rhi_texture *tex);
+/* Bind `tex` (binding 0) and the sampled depth of the depth-sampled render
+ * target `depth_rt` (binding 1) at `set` of the current set1_vram_depth
+ * pipeline. Both images must be in shader-read layout for the draw. */
+void rhi_bind_vram_depth_pair(rhi_device *dev, rhi_texture *tex, rhi_texture *depth_rt,
+                              uint32_t set);
 /* Restrict rasterization to a framebuffer-pixel rect (top-left origin, y
  * down) for subsequent draws this frame — e.g. confine one panel's geometry
  * to its region so off-panel triangles are clipped. rhi_reset_scissor

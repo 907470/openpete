@@ -23,7 +23,8 @@ set(RHI_SHADERS quad.vert quad.frag quad_key.frag psx_sample.vert psx_scene.vert
 # Shared .glsl includes (GL_GOOGLE_include_directive). Every shader DEPENDS
 # on all of them: the set is tiny, and a per-shader dependency scan would be
 # one more thing to keep in sync with the #include lines.
-set(RHI_SHADER_INCLUDES ${RHI_SHADER_SRC_DIR}/psx_key_contest.glsl
+set(RHI_SHADER_INCLUDES ${RHI_SHADER_SRC_DIR}/psx_clut.glsl
+                        ${RHI_SHADER_SRC_DIR}/psx_key_contest.glsl
                         ${RHI_SHADER_SRC_DIR}/psx_unorm8.glsl
                         ${RHI_SHADER_SRC_DIR}/psx_viewz.glsl
                         ${RHI_SHADER_SRC_DIR}/terrain_shade.glsl)
