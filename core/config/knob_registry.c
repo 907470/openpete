@@ -986,7 +986,10 @@ static const knob_desc_t g_builtin[] = {
       "ending_loot from Gnasty's levels; credits, credits_100 from a live "
       "level; Spyro 2: intro, intro_arrival, summer_forest, crush_intro, "
       "crush_defeated, autumn_plains, gulp_intro, gulp_defeated, "
-      "winter_tundra, ripto_intro, ending from Dragon Shores; Spyro 3: the "
+      "winter_tundra, ripto_intro, ending from Dragon Shores, and "
+      "LEVEL_intro / LEVEL_outro for the 17 levels with a level cutscene "
+      "(idol_springs_intro, metropolis_outro, ...), from the homeworld "
+      "portal / the completed level; Spyro 3: the "
       "19 story cutscenes by their loading captions, an_evil_plot_unfolds "
       "and its chain from the title, the rest from their trigger's level). "
       "One-shot at boot.",

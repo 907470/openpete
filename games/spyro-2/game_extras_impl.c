@@ -90,20 +90,24 @@ int game_is_gameplay_live(CPUState* cpu) { return spyro2_skip_gameplay_live(cpu)
 void game_set_skip_to_level(int level_id) { spyro2_skip_set(level_id); }
 int  game_resolve_level_arg(const char* arg) { return spyro2_level_resolve(arg); }
 int  game_validate_cheats_arg(const char* spec) { (void)spec; return -1; }
-/* --skip-to-cutscene (features/cutscene_skip.c): every story cutscene
- * starts from Dragon Shores, so the target rides a --skip-to-level 65; an
- * explicit --skip-to-level to another level is refused. */
+/* --skip-to-cutscene (features/cutscene_skip.c): each cutscene starts from
+ * its source level (Dragon Shores for the story cutscenes, the homeworld
+ * for a level intro, the level for its outro), so the target rides a
+ * --skip-to-level there; an explicit --skip-to-level to another level is
+ * refused. */
 void game_set_skip_to_cutscene(int cutscene_id) {
     if (cutscene_id <= 0) return;
+    int source = spyro2_cutscene_source_level(cutscene_id);
+    if (source <= 0) return;
     int level = spyro2_skip_target();
-    if (level > 0 && level != SPYRO2_CUTSCENE_SOURCE_LEVEL) {
+    if (level > 0 && level != source) {
         fprintf(stderr, "openpete: --skip-to-cutscene: this cutscene starts "
                         "from level %d, not --skip-to-level %d; refused\n",
-                SPYRO2_CUTSCENE_SOURCE_LEVEL, level);
+                source, level);
         return;
     }
     spyro2_cutscene_skip_arm(cutscene_id);
-    if (level <= 0) spyro2_skip_set(SPYRO2_CUTSCENE_SOURCE_LEVEL);
+    if (level <= 0) spyro2_skip_set(source);
 }
 int game_resolve_cutscene_arg(const char* arg) { return spyro2_cutscene_resolve(arg); }
 /* No sub-area targets: every --skip-to-area value is refused. */

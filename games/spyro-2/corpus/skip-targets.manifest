@@ -4,7 +4,10 @@
 # engagement values the skip module reads back from RAM at release: the
 # cutscene's k in D_800698F4, the playback state D_800681C8 6 and the
 # pseudo-level in g_NextLevelNum. It fails when the run prints the fail-safe
-# line. Every row enters from Dragon Shores (level 65).
+# line. The story rows enter from Dragon Shores (level 65). The level intro
+# and outro rows carry StartCutscene's slot (0 intro, 1 outro) and WAD entry
+# words and g_NextLevelNum, the level the cutscene belongs to; an intro
+# enters from the level's homeworld, an outro from the level.
 #
 # name           | args                               | frames | expect
 intro            | --skip-to-cutscene intro           | 2000   | cutscene=intro k=1 D_800681C8=6 next_level=70
@@ -18,3 +21,37 @@ gulp_defeated    | --skip-to-cutscene gulp_defeated   | 2000   | cutscene=gulp_d
 winter_tundra    | --skip-to-cutscene winter_tundra   | 2000   | cutscene=winter_tundra k=12 D_800681C8=6 next_level=78
 ripto_intro      | --skip-to-cutscene ripto_intro     | 2000   | cutscene=ripto_intro k=14 D_800681C8=6 next_level=79
 ending           | --skip-to-cutscene ending          | 2000   | cutscene=ending k=15 D_800681C8=6 next_level=80
+idol_springs_intro     | --skip-to-cutscene idol_springs_intro     | 3000   | cutscene=idol_springs_intro slot=0 entry=2 level=12
+idol_springs_outro     | --skip-to-cutscene idol_springs_outro     | 3000   | cutscene=idol_springs_outro slot=1 entry=3 level=12
+colossus_intro         | --skip-to-cutscene colossus_intro         | 3000   | cutscene=colossus_intro slot=0 entry=4 level=13
+colossus_outro         | --skip-to-cutscene colossus_outro         | 3000   | cutscene=colossus_outro slot=1 entry=5 level=13
+hurricos_intro         | --skip-to-cutscene hurricos_intro         | 3000   | cutscene=hurricos_intro slot=0 entry=6 level=21
+hurricos_outro         | --skip-to-cutscene hurricos_outro         | 3000   | cutscene=hurricos_outro slot=1 entry=7 level=21
+aquaria_towers_intro   | --skip-to-cutscene aquaria_towers_intro   | 3000   | cutscene=aquaria_towers_intro slot=0 entry=8 level=22
+aquaria_towers_outro   | --skip-to-cutscene aquaria_towers_outro   | 3000   | cutscene=aquaria_towers_outro slot=1 entry=9 level=22
+sunny_beach_intro      | --skip-to-cutscene sunny_beach_intro      | 3000   | cutscene=sunny_beach_intro slot=0 entry=10 level=23
+sunny_beach_outro      | --skip-to-cutscene sunny_beach_outro      | 3000   | cutscene=sunny_beach_outro slot=1 entry=11 level=23
+skelos_badlands_intro  | --skip-to-cutscene skelos_badlands_intro  | 3000   | cutscene=skelos_badlands_intro slot=0 entry=12 level=31
+skelos_badlands_outro  | --skip-to-cutscene skelos_badlands_outro  | 3000   | cutscene=skelos_badlands_outro slot=1 entry=13 level=31
+crystal_glacier_intro  | --skip-to-cutscene crystal_glacier_intro  | 3000   | cutscene=crystal_glacier_intro slot=0 entry=14 level=32
+crystal_glacier_outro  | --skip-to-cutscene crystal_glacier_outro  | 3000   | cutscene=crystal_glacier_outro slot=1 entry=15 level=32
+breeze_harbor_intro    | --skip-to-cutscene breeze_harbor_intro    | 3000   | cutscene=breeze_harbor_intro slot=0 entry=16 level=33
+breeze_harbor_outro    | --skip-to-cutscene breeze_harbor_outro    | 3000   | cutscene=breeze_harbor_outro slot=1 entry=17 level=33
+zephyr_intro           | --skip-to-cutscene zephyr_intro           | 3000   | cutscene=zephyr_intro slot=0 entry=18 level=34
+zephyr_outro           | --skip-to-cutscene zephyr_outro           | 3000   | cutscene=zephyr_outro slot=1 entry=19 level=34
+scorch_intro           | --skip-to-cutscene scorch_intro           | 3000   | cutscene=scorch_intro slot=0 entry=20 level=41
+scorch_outro           | --skip-to-cutscene scorch_outro           | 3000   | cutscene=scorch_outro slot=1 entry=21 level=41
+shady_oasis_intro      | --skip-to-cutscene shady_oasis_intro      | 3000   | cutscene=shady_oasis_intro slot=0 entry=22 level=42
+shady_oasis_outro      | --skip-to-cutscene shady_oasis_outro      | 3000   | cutscene=shady_oasis_outro slot=1 entry=23 level=42
+magma_cone_intro       | --skip-to-cutscene magma_cone_intro       | 3000   | cutscene=magma_cone_intro slot=0 entry=24 level=43
+magma_cone_outro       | --skip-to-cutscene magma_cone_outro       | 3000   | cutscene=magma_cone_outro slot=1 entry=25 level=43
+fracture_hills_intro   | --skip-to-cutscene fracture_hills_intro   | 3000   | cutscene=fracture_hills_intro slot=0 entry=26 level=44
+fracture_hills_outro   | --skip-to-cutscene fracture_hills_outro   | 3000   | cutscene=fracture_hills_outro slot=1 entry=27 level=44
+mystic_marsh_intro     | --skip-to-cutscene mystic_marsh_intro     | 3000   | cutscene=mystic_marsh_intro slot=0 entry=28 level=51
+mystic_marsh_outro     | --skip-to-cutscene mystic_marsh_outro     | 3000   | cutscene=mystic_marsh_outro slot=1 entry=29 level=51
+cloud_temples_intro    | --skip-to-cutscene cloud_temples_intro    | 3000   | cutscene=cloud_temples_intro slot=0 entry=30 level=52
+cloud_temples_outro    | --skip-to-cutscene cloud_temples_outro    | 3000   | cutscene=cloud_temples_outro slot=1 entry=31 level=52
+robotica_farms_intro   | --skip-to-cutscene robotica_farms_intro   | 3000   | cutscene=robotica_farms_intro slot=0 entry=32 level=61
+robotica_farms_outro   | --skip-to-cutscene robotica_farms_outro   | 3000   | cutscene=robotica_farms_outro slot=1 entry=33 level=61
+metropolis_intro       | --skip-to-cutscene metropolis_intro       | 3000   | cutscene=metropolis_intro slot=0 entry=34 level=62
+metropolis_outro       | --skip-to-cutscene metropolis_outro       | 3000   | cutscene=metropolis_outro slot=1 entry=35 level=62
