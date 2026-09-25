@@ -666,6 +666,10 @@ static uint8_t* s_body_cam = NULL;              /* the camera bytes the feeders 
 static uint8_t  s_prod_cam_saved[CAM_XFORM_BYTES];
 static int      s_prod_cam_active = 0;
 
+/* Set per present: the camera pair is a cut the present shows at tick N
+ * (no hold), so every channel shows tick N. */
+static int s_cut_cam_snap;
+
 /* Hold this moby's previous tick for the rest of the interval: stage the whole
  * previous record, so position, class, model and animation state all read N-1
  * through the view, and pin the fractional position table to it. Returns 1 when
@@ -680,6 +684,9 @@ static int moby_cut_hold(uint32_t m, const uint8_t* mh,
         cut_census_note(kind, m, 0, "alpha1", pp, cp);
         return 0;
     }
+    /* The camera cut this present and could not hold, so the view is tick N;
+     * a record held at N-1 under it stands where tick N no longer has it. */
+    if (s_cut_cam_snap) { cut_census_note(kind, m, 0, "camsnap", pp, cp); return 0; }
     uint8_t* st = (uint8_t*)openpete_subtick_view_stage(m, MOBY_STRIDE);
     if (!st) { cut_census_note(kind, m, 0, "unstaged", pp, cp); return 0; }
     uint32_t len = o->blob_len < MOBY_STRIDE ? o->blob_len : MOBY_STRIDE;
@@ -1297,6 +1304,8 @@ static void game_reextract_body(void* cpu_v) {
     const int cam_hold = cam_cut && !pair_stale &&
                          cut_camera_hold(interp_period_ns(prev->tick_ns, curr->tick_ns),
                                          curr->tick_ns, gs_edge);
+    const int cam_snap = cam_cut && !cam_hold;
+    s_cut_cam_snap = cam_snap;
 
     if (paired && cam && prev && curr && (!cam_cut || cam_hold)) {
         /* 1-tick-lag alpha: at the instant tick N completed (now≈curr.tick_ns)
@@ -2094,12 +2103,12 @@ static void game_reextract_body(void* cpu_v) {
      * without record 14+ mobys (Sparx, distant chests) being clobbered earlier. */
     scratch_bracket_seg_restore(cpu);
     if (pt_on) pt_t0 = openpete_phase_now_us();
-    player_records_loop(cpu, paired, cam_cut && !cam_hold, cam_bracketed, alpha, use_herm,
+    player_records_loop(cpu, paired, cam_snap, cam_bracketed, alpha, use_herm,
                        sp, sp_staged, prev ? prev->data + prev->region_offsets[SPYRO_REGION()] : NULL,
                        sh);
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_REX_SPYRO, pt_t1 - pt_t0); }
     particle_reextract(cpu);       /* particles / glows / sparkles (Sparx) */
-    flame_records_present(cpu, paired, cam_cut && !cam_hold, alpha, fl);   /* fire breath, one ribbon per flame record */
+    flame_records_present(cpu, paired, cam_snap, alpha, fl);   /* fire breath, one ribbon per flame record */
     tracer_reextract(cpu);          /* additive tracer/beam (replay snapshot, interp camera) */
     moby_native_set_rot_interp(0);        /* reset: canonical inline render uses byte-exact rotation */
     player_native_set_rot_interp(NULL, NULL); /* reset: canonical inline render uses byte-exact rotation */
