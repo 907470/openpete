@@ -52,6 +52,11 @@ icy-peak-reflective-mirror-1864|1864|200||1864,1870
 # and 1210. The left egg's disappearance between 1208 and 1209 is the game
 # moving it (its 4:3 staging, kept).
 an-evil-plot-unfolds-egg-edge|1200|10||1200,1206,1210,1220|--skip-to-cutscene an_evil_plot_unfolds
+# a-powerful-villain-emerges-throne: the throne record switches clip at VBL 5068
+# after a static span; the interp store's dedupe stretches its pair across the
+# span, the COUNTSW hold re-derives the previous pose from a header the game
+# has rewritten, and the throne vanishes on intermediate presents 5070-5158.
+a-powerful-villain-emerges-throne|5080|10||5094|--skip-to-cutscene a_powerful_villain_emerges
 
 # sunrise-spring-camera-swing holds R2 from VBL 1500 so the camera orbits the
 # player while two animated-kind mobys and the simple-kind gems, baskets and
