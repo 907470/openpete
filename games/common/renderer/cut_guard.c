@@ -100,7 +100,11 @@ const char* cut_camera_reason(const uint8_t* pcam, const uint8_t* ccam,
 
 int cut_pair_is_tick(const openpete_interp_obj_t* o) {
     if (!o || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return 0;
-    return (double)(o->curr_ns - o->prev_ns) <= 1.5 * (double)g_openpete_tick_period_ns;
+    /* The capture rolls only on a change, so prev_ns is when prev was first
+     * captured; prev_seen_ns is the last capture that still observed it. */
+    const op_time_t prev_at = o->prev_seen_ns > o->prev_ns ? o->prev_seen_ns : o->prev_ns;
+    return o->curr_ns > prev_at &&
+           (double)(o->curr_ns - prev_at) <= 1.5 * (double)g_openpete_tick_period_ns;
 }
 
 /* Whether the canonical tick drew this record: the cull writes its verdict back
@@ -110,9 +114,9 @@ static int cut_rec_drawn(const uint8_t* mh) {
     return off ? (mh[off] != 0) : 1;
 }
 
-/* One record's own verdict for cut_scene_holdable. The census names the first
+/* One record's own verdict for cut_scene_holdable. The census names every
  * record that refuses, since "the scene cannot hold" is not diagnosable
- * without it. */
+ * without them. */
 static int cut_rec_holdable(uint32_t m, const uint8_t* mh) {
     const uint32_t key = moby_game.interp_key ? moby_game.interp_key(m) : m;
     const openpete_interp_obj_t* o = openpete_interp_objs_find(key);
@@ -131,12 +135,22 @@ static int cut_rec_holdable(uint32_t m, const uint8_t* mh) {
         memcpy(&cc, o->curr + game_layout.moby.class_off, 2);
         if (pc != cc) return 1;
     }
-    if (cut_pair_is_tick(o)) return 1;
+    if (cut_pair_is_tick(o)) {
+        /* Engagement of the seen stamp: a pair whose roll stamps are further
+         * apart than a tick, accepted because prev was observed up to curr. */
+        if (cut_census_on() &&
+            (double)(o->curr_ns - o->prev_ns) > 1.5 * (double)g_openpete_tick_period_ns)
+            fprintf(stderr, "[cut-census vbl=%u] scene=seenpair rec=%08x prev_ns=%lld "
+                            "prev_seen_ns=%lld curr_ns=%lld\n",
+                    openpete_frame, m, (long long)o->prev_ns,
+                    (long long)o->prev_seen_ns, (long long)o->curr_ns);
+        return 1;
+    }
     if (cut_census_on())
         fprintf(stderr, "[cut-census vbl=%u] scene=stalepair rec=%08x key=%08x "
-                        "prev_ns=%lld curr_ns=%lld\n",
-                openpete_frame, m, key,
-                (long long)o->prev_ns, (long long)o->curr_ns);
+                        "prev_ns=%lld prev_seen_ns=%lld curr_ns=%lld\n",
+                openpete_frame, m, key, (long long)o->prev_ns,
+                (long long)o->prev_seen_ns, (long long)o->curr_ns);
     return 0;
 }
 
@@ -151,36 +165,47 @@ static uint32_t cut_moby_array_head(void) {
     return arr >= 0x80000000u ? arr : 0;
 }
 
-/* The live records of the moby array, up to its state sentinel. */
-static int cut_array_holdable(void) {
+/* The live records of the moby array, up to its state sentinel. Returns the
+ * number of refusing records; the walk stops at the first unless the census
+ * is on, which counts them all. */
+static int cut_array_refusals(void) {
     const uint32_t stride = game_layout.moby.array_stride;
     const uint32_t soff   = game_layout.moby.state_off;
+    const int all = cut_census_on();
+    int n = 0;
     uint32_t m = stride ? cut_moby_array_head() : 0;
-    for (int g = 0; m && g < 4096; g++, m += stride) {
+    for (int g = 0; m && g < 4096 && (all || n == 0); g++, m += stride) {
         const uint8_t* mh = (const uint8_t*)openpete_psx_to_host_ptr(m);
         if (!mh || mh[soff] == (uint8_t)game_layout.moby.state_term) break;
         if (mh[soff] >= 0x80) continue;          /* dormant: not drawn */
-        if (cut_rec_drawn(mh) && !cut_rec_holdable(m, mh)) return 0;
+        if (cut_rec_drawn(mh) && !cut_rec_holdable(m, mh)) n++;
     }
-    return 1;
+    return n;
 }
 
 /* The records the canonical render drew from outside that array (a relocated
- * actor): the replay draws them too, and the cull drew each by definition. */
-static int cut_drawn_set_holdable(void) {
+ * actor): the replay draws them too, and the cull drew each by definition.
+ * Counts refusals as cut_array_refusals does. */
+static int cut_drawn_set_refusals(void) {
     const uint32_t soff = game_layout.moby.state_off;
     const uint32_t* drawn = NULL;
-    const int n = moby_native_canon_drawn_mobys(&drawn);
-    for (int i = 0; drawn && i < n; i++) {
+    const int all = cut_census_on();
+    const int cnt = moby_native_canon_drawn_mobys(&drawn);
+    int n = 0;
+    for (int i = 0; drawn && i < cnt && (all || n == 0); i++) {
         const uint8_t* mh = (const uint8_t*)openpete_psx_to_host_ptr(drawn[i]);
         if (!mh || mh[soff] >= 0x80) continue;
-        if (!cut_rec_holdable(drawn[i], mh)) return 0;
+        if (!cut_rec_holdable(drawn[i], mh)) n++;
     }
-    return 1;
+    return n;
 }
 
 int cut_scene_holdable(void) {
-    return cut_array_holdable() && cut_drawn_set_holdable();
+    if (!cut_census_on()) return cut_array_refusals() == 0 && cut_drawn_set_refusals() == 0;
+    const int na = cut_array_refusals(), nd = cut_drawn_set_refusals();
+    fprintf(stderr, "[cut-census vbl=%u] scene refusals array=%d drawn=%d\n",
+            openpete_frame, na, nd);
+    return na == 0 && nd == 0;
 }
 
 int cut_camera_hold(double period_ns, op_time_t curr_tick_ns, int gs_edge) {

@@ -69,10 +69,13 @@ const char* cut_camera_reason(const uint8_t* pcam, const uint8_t* ccam,
                               const void* pgs, const void* cgs,
                               cut_cam_metrics_t* out);
 
-/* Whether an object's prev/curr pair IS two consecutive ticks. An object whose
- * prev snapshot is older than one tick has no tick N-1 to show: a level load
- * leaves pre-load records in the table, and a slot that resumes after a static
- * stretch names a state the interval does not span. */
+/* Whether an object's prev/curr pair IS two consecutive ticks: prev was last
+ * observed by a capture within 1.5 ticks of curr's roll. A record that held
+ * prev unchanged on every capture up to curr qualifies however long it held
+ * it. An object whose prev was last observed earlier than that has no tick N-1
+ * to show: a level load leaves pre-load records in the table, and a slot the
+ * capture did not observe in between names a state the interval does not
+ * span. */
 int cut_pair_is_tick(const openpete_interp_obj_t* o);
 
 /* Whether this present can show tick N-1 whole. A held cut shows the previous

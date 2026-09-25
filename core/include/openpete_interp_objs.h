@@ -82,6 +82,13 @@ typedef struct {
      * equivalent of the DIRECT ring's tick_ns alpha. */
     op_time_t prev_ns, curr_ns;
     op_time_t prev2_ns;   /* roll time of prev2 (for pred1's centered tangent) */
+    /* The stamp of the last capture that observed curr (curr_seen_ns) and the
+     * last capture that observed prev before it rolled out (prev_seen_ns, 0
+     * before the first roll). Unchanged ticks update curr_seen_ns, so a record
+     * that holds one state for K ticks and then changes has prev_ns K ticks
+     * back while prev_seen_ns is the tick before curr_ns: prev IS its tick N-1
+     * state. */
+    op_time_t prev_seen_ns, curr_seen_ns;
 } openpete_interp_obj_t;
 
 /* Per-tick capture callback supplied by the game. Invoked once per sim tick

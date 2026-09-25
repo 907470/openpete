@@ -171,8 +171,9 @@ void openpete_interp_objs_capture(uint32_t key, const void* data, uint32_t len) 
          * boundaries makes the shared alpha consistent. */
         if (s_tab[i].blob_len == (uint16_t)len &&
             memcmp(s_tab[i].curr, data, len) == 0) {
-            s_tab[i].seen = 1;
-            return;                       /* unchanged — keep prev/curr + their timestamps */
+            s_tab[i].seen         = 1;
+            s_tab[i].curr_seen_ns = objs_tick_stamp();
+            return;                       /* unchanged — keep prev/curr + their roll timestamps */
         }
         /* Existing object that moved: roll prev -> prev2 (for the pred1 centered
          * tangent), then curr -> prev, write curr, and stamp the roll times so
@@ -186,6 +187,7 @@ void openpete_interp_objs_capture(uint32_t key, const void* data, uint32_t len) 
         memcpy(s_tab[i].prev, s_tab[i].curr, s_tab[i].blob_len);
         s_tab[i].have_prev = 1;
         s_tab[i].prev_ns   = s_tab[i].curr_ns;
+        s_tab[i].prev_seen_ns = s_tab[i].curr_seen_ns;
         s_tab[i].curr_ns   = objs_tick_stamp();
     } else {
         /* Spawn: occupy the slot, no previous tick to pair against. */
@@ -194,6 +196,7 @@ void openpete_interp_objs_capture(uint32_t key, const void* data, uint32_t len) 
         s_tab[i].have_prev = 0;
         s_tab[i].have_prev2 = 0;
         s_tab[i].prev_ns   = 0;
+        s_tab[i].prev_seen_ns = 0;
         s_tab[i].curr_ns   = objs_tick_stamp();
         s_stat_spawned++;
         /* OPENPETE_INTERP_OBJS_KEYLOG: one stderr line per spawn, with the
@@ -210,8 +213,9 @@ void openpete_interp_objs_capture(uint32_t key, const void* data, uint32_t len) 
         }
     }
     memcpy(s_tab[i].curr, data, len);
-    s_tab[i].blob_len = (uint16_t)len;
-    s_tab[i].seen     = 1;
+    s_tab[i].blob_len     = (uint16_t)len;
+    s_tab[i].seen         = 1;
+    s_tab[i].curr_seen_ns = s_tab[i].curr_ns;
 }
 
 void openpete_interp_objs_end_tick(void) {
