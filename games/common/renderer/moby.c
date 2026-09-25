@@ -81,6 +81,12 @@ static const char* s_cur_mat = "REG";   /* material tag for the current pass (RE
  * shape-lerp spans a clip switch (prev m_Animation != curr) — crossfaded when the two
  * clips share vertex count, snapped when they don't. Pure instrument, no behaviour. */
 static long s_animsw_cross = 0, s_animsw_snap = 0, s_animsw_mirror = 0;
+/* Sub-tick previous-pose guard census, counted on presents below alpha 1:
+ * holds shown, holds ended by the tick-period rule, and clip-switch pairs
+ * refused because the previous header's content no longer matches the
+ * signature the canonical pass drew it with (sig) or no canonical pass drew
+ * that header for the moby within the last two headers it showed (unk). */
+static long s_hold_shown = 0, s_hold_period = 0, s_prevhdr_sig = 0, s_prevhdr_unk = 0;
 static long s_shmode[3]; /* shaded face-mode census: [0]=gouraud [1]=flat-basic [2]=flat-metal(bit1) */
 static int  s_sh_nohl = -1; /* OPENPETE_SHADED_NOHL=1 disables the gouraud spec boost (A/B) */
 
@@ -638,10 +644,21 @@ static double model_extent_compute(CPUState* cpu, uint32_t header) {
     return best > 0.0 ? sqrt(best) : -1.0;
 }
 
+/* An AnimationHeader's content signature: its first word and the first word
+ * of its geometry pointer block. A header slot the game refills
+ * with another clip (a level load, or a streamed animation buffer) reads a
+ * different signature at the same address. */
+typedef struct { uint32_t w0, w1; } anim_sig_t;
+static anim_sig_t anim_header_sig(CPUState* cpu, uint32_t header) {
+    anim_sig_t g = { cpu->read_word(header),
+                     cpu->read_word(header + game_layout.moby.anim_ptr_block) };
+    return g;
+}
+
 static double model_extent(CPUState* cpu, uint32_t header) {
     if (!moby_game.anim_frame_count || header < 0x80000000u) return -1.0;
-    uint32_t sig1 = cpu->read_word(header);
-    uint32_t sig2 = cpu->read_word(header + game_layout.moby.anim_ptr_block);
+    anim_sig_t g = anim_header_sig(cpu, header);
+    uint32_t sig1 = g.w0, sig2 = g.w1;
     mext_t* E = &s_mext[(header >> 4) & (MEXT_SLOTS - 1)];
     if (E->header == header && E->sig1 == sig1 && E->sig2 == sig2) { s_mext_hit++; return (double)E->ext; }
     s_mext_miss++;
@@ -1260,8 +1277,16 @@ static int moby_heat_scalar(uint32_t ms) {
  * translation (rec_tr_final), a game with no host record builder to derive
  * tz_present on sub-ticks (host_reveal 0), and a verdict the --no-lod read
  * neutralised or the int16 wrapped (|ZSF4 + tz - (m_Renderer << 8)| >= 4, where
- * the two truncations of the centre MVMVA stay below that). */
-typedef struct { uint32_t moby; int zsf4; uint8_t dist; double tz; } fade_ent;
+ * the two truncations of the centre MVMVA stay below that).
+ *
+ * Each entry also keeps the AnimationHeader the pass drew the moby with and
+ * that header's content signature at the pass, and the header and signature
+ * of the last different header an earlier pass drew it with (carried from
+ * the previous table while the header stays unchanged). A sub-tick present
+ * that shows a previous pose from another header checks that header against
+ * these: the game may refill a header slot it no longer draws. */
+typedef struct { uint32_t moby; int zsf4; uint8_t dist; double tz;
+                 uint32_t hdr, hdr_p; anim_sig_t sig, sig_p; } fade_ent;
 static fade_ent s_fade_snap[MAX_RECORDS], s_fade_prev[MAX_RECORDS];
 static int s_fade_snap_n, s_fade_prev_n;
 static void fade_snap_clear(void) {
@@ -1283,9 +1308,19 @@ static void fade_snap_dist(CPUState* cpu, fade_ent* e) {
     if (fabs((double)e->zsf4 + tr[2] - (double)(md << 8)) >= 4.0) return;
     e->dist = 1; e->tz = tr[2];
 }
+/* The drawn header and its signature, and the last different header before
+ * it, carried from the previous pass's entry. */
+static void fade_snap_header(CPUState* cpu, fade_ent* e, uint32_t header) {
+    const fade_ent* p = fade_snap_find(s_fade_prev, s_fade_prev_n, e->moby);
+    e->hdr = header;
+    e->sig = anim_header_sig(cpu, header);
+    if (!p)                    { e->hdr_p = 0u; }
+    else if (p->hdr == header) { e->hdr_p = p->hdr_p; e->sig_p = p->sig_p; }
+    else                       { e->hdr_p = p->hdr;   e->sig_p = p->sig; }
+}
 /* Canonical pass only: a sub-tick present re-derives what it draws from the
  * tick's entries and never replaces them. */
-static void fade_snap_put(CPUState* cpu, uint32_t moby, int zsf4) {
+static void fade_snap_put(CPUState* cpu, uint32_t moby, int zsf4, uint32_t header) {
     if (moby < 0x80000000u || s_walk_in_rex) return;
     fade_ent* e = fade_snap_find(s_fade_snap, s_fade_snap_n, moby);
     if (!e) {
@@ -1295,6 +1330,21 @@ static void fade_snap_put(CPUState* cpu, uint32_t moby, int zsf4) {
     }
     e->zsf4 = zsf4;
     fade_snap_dist(cpu, e);
+    if (header >= 0x80000000u) fade_snap_header(cpu, e, header);
+    else                       e->hdr = e->hdr_p = 0u;
+}
+/* Whether `header`, one of the last two headers a canonical pass's table `t`
+ * records for this moby, still holds the content it held when drawn: 1 it
+ * does, 0 its signature changed, -1 no entry names it. */
+static int fade_header_intact(CPUState* cpu, fade_ent* t, int n, uint32_t moby,
+                              uint32_t header) {
+    const fade_ent* e = fade_snap_find(t, n, moby);
+    if (!e || header < 0x80000000u) return -1;
+    const anim_sig_t* want = (e->hdr == header) ? &e->sig
+                           : (e->hdr_p == header) ? &e->sig_p : NULL;
+    if (!want) return -1;
+    anim_sig_t now = anim_header_sig(cpu, header);
+    return now.w0 == want->w0 && now.w1 == want->w1;
 }
 static int fade_snap_get(uint32_t moby, int dflt) {
     const fade_ent* e = fade_snap_find(s_fade_snap, s_fade_snap_n, moby);
@@ -1592,7 +1642,7 @@ static int project_all_records_inner(CPUState* cpu) {
                 ? (uint8_t)moby_heat_scalar(
                       cpu->read_word(s_recs[nrec].moby + moby_game.spec_colour_off))
                 : 0u;
-            fade_snap_put(cpu, s_recs[nrec].moby, zsf4);
+            fade_snap_put(cpu, s_recs[nrec].moby, zsf4, header);
             if (moby_trace_target() && s_recs[nrec].moby == moby_trace_target())
                 fprintf(stderr, "[moby-trace vbl=%u] %08X IN-QUEUE rec=%08X zsf4=%d got=%d mat=%s\n",
                         openpete_frame, s_recs[nrec].moby, rec, zsf4, got,
@@ -2153,7 +2203,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
          * else keeps its baked per-vertex colours. */
         s_recs[s_nrecs].spec_solo = (uint8_t)moby_is_shiny(cpu, m);
         TRC("spec_solo=%d", (int)s_recs[s_nrecs].spec_solo);
-        fade_snap_put(cpu, m, rzsf4);
+        fade_snap_put(cpu, m, rzsf4, f.header);
         if (revealed < MAX_RECORDS) revlist[revealed] = pub;
         /* census diag: projected screen centroid + vert count of this reveal */
         if (revealed < MAX_RECORDS) {
@@ -5863,6 +5913,23 @@ static int moby_turn_interval(CPUState* cpu, uint32_t moby, int* step, int* kf_c
     return 1;
 }
 
+/* A hold shows the pose of the tick before the current snapshot. The pair's
+ * previous snapshot is the last distinct state, which for a moby static
+ * before the change is many ticks old, so the pair's own alpha would stretch
+ * the hold over the static span; the tick before the current one is over
+ * once the present clock is one tick period past the current stamp. */
+static int moby_hold_expired(const openpete_interp_obj_t* o) {
+    return s_rot_now - o->curr_ns >= g_openpete_tick_period_ns;
+}
+
+/* A pair's alpha at this present on the per-object clock: the present clock
+ * past the current stamp over the pair's distinct interval, clamped to
+ * [0, 1]. The caller has checked curr_ns > prev_ns. */
+static double moby_pair_alpha(const openpete_interp_obj_t* o) {
+    double t = (double)(s_rot_now - o->curr_ns) / (double)(o->curr_ns - o->prev_ns);
+    return t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
+}
+
 /* Facing reversal: one verdict per record per present, read by both sub-tick
  * channels — the per-vertex model-space shape lerp and the euler sweep.
  *
@@ -5874,7 +5941,8 @@ static int moby_turn_interval(CPUState* cpu, uint32_t moby, int* step, int* kf_c
  * flip's invariant axis at alpha 0.5 and the euler sweep turns that line to
  * face the camera. No pose lies between the two, so the interval holds the
  * previous shape and the previous rotation and reaches the current tick's at
- * alpha 1, where every other channel reaches its canonical value.
+ * alpha 1, where every other channel reaches its canonical value, or one tick
+ * period past the current stamp, whichever comes first (moby_hold_expired).
  *
  * The verdict is a pure function of the record's interp pair and the model's
  * tables, so the two readers cannot disagree; the one-entry memo on (moby,
@@ -5917,12 +5985,11 @@ int moby_record_euler_at_present(CPUState* cpu, uint32_t moby, ngte_euler_sc* e)
     memcpy(&pcls, o->prev + game_layout.moby.class_off, 2);
     memcpy(&ccls, o->curr + game_layout.moby.class_off, 2);
     if (pcls != ccls) return 0;
-    double t = (double)(s_rot_now - o->curr_ns) / (double)(o->curr_ns - o->prev_ns);
-    if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
+    double t = moby_pair_alpha(o);
     /* A facing reversal steps instead of sweeping: the previous tick's angles
      * through the whole interval, this tick's at alpha 1, the same schedule
      * the shape channel takes for the same verdict. */
-    if (t < 1.0 && moby_mirror_hold(cpu, moby)) t = 0.0;
+    if (t < 1.0 && moby_mirror_hold(cpu, moby)) t = moby_hold_expired(o) ? 1.0 : 0.0;
     const uint32_t ao = game_layout.moby.angle_off;
     double fZ = lerp_byte_angle(o->prev[ao + 0u], o->curr[ao + 0u], t);
     double fX = lerp_byte_angle(o->prev[ao + 1u], o->curr[ao + 1u], t);
@@ -6507,8 +6574,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
                      * swimming from the previous word's position. */
                     if (pcls2 == ccls2 && ddx*ddx + ddy*ddy <= 64.0*64.0 &&
                         !moby_interp_pair_stale(o->prev_ns, o->curr_ns)) {
-                        double t = (double)(s_rot_now - o->curr_ns) / (double)(o->curr_ns - o->prev_ns);
-                        if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
+                        double t = moby_pair_alpha(o);
                         bfx = (double)pp[0] + ddx * t;
                         bfy = (double)pp[1] + ddy * t;
                         bfz = (double)pp[2] + ddz * t;
@@ -7111,7 +7177,10 @@ static int on_draw_simple(CPUState* cpu, uint32_t addr) {
  * MOBY_PREV_HOLD (prev + alpha filled) when the two clips have no vertex
  * correspondence, so the pass shows the prev pose whole until alpha 1;
  * MOBY_PREV_SNAP when it should show the curr pose from alpha 0: interp off,
- * spawn / no prev interval, or a cutscene path-follower's clip switch.
+ * spawn / no prev interval, a cutscene path-follower's clip switch, a clip
+ * switch whose previous header no longer holds the content a canonical pass
+ * drew it with (fade_header_intact), or a hold past its tick period
+ * (moby_hold_expired).
  * The pose is the one the cull drew from
  * the prev snapshot's animation state bytes (moby_pose_derive, the rule the
  * live pose takes too), so on a tick where the moby blends into another
@@ -7127,8 +7196,9 @@ static int on_draw_simple(CPUState* cpu, uint32_t addr) {
  * makes Spyro's cross-clip lerp safe, applied per moby). When the counts differ the
  * meshes genuinely differ, and the pass HOLDS the prev pose whole — its own
  * header, vertex count, face list and keyframe patch list — for every present
- * below alpha 1, reaching the curr pose at alpha 1, where every other channel
- * reaches its canonical value for this tick. prev->header is the previous clip's
+ * below alpha 1 and within one tick period of the current stamp, reaching the
+ * curr pose at alpha 1, where every other channel reaches its canonical value
+ * for this tick. prev->header is the previous clip's
  * header so the decoder can use its own ShortShift (the two clips' s5 may
  * differ; the decoded coords are real model-space either way). */
 /* What the sub-tick pass may do with a clip switch, shared by the pass and the
@@ -7211,12 +7281,45 @@ static void moby_animsw_census(CPUState* cpu, uint32_t moby) {
     int np = 0, nc = 0;
     moby_clip_t k = moby_clip_switch_kind(cpu, moby, pp.header, pc.header, &np, &nc);
     static const char* const kind[] = { "cross", "cutpath", "countsw" };
+    /* span: the pair's interval in tick periods (above 1 after a static
+     * stretch); intact: the previous header against the signature the
+     * previous canonical pass drew it with (1 same, 0 changed, -1 no entry). */
+    int intact = fade_header_intact(cpu, s_fade_prev, s_fade_prev_n, moby, pp.header);
     fprintf(stderr, "[moby-animsw-census vbl=%u] m=%08x cls=%03x kind=%s anim=%u->%u "
-                    "hdr=%08x->%08x n=%d->%d\n",
+                    "hdr=%08x->%08x n=%d->%d span=%.2f intact=%d\n",
             openpete_frame, moby, (unsigned)ccls, kind[k],
             (unsigned)o->prev[game_layout.moby.anim_state_off],
             (unsigned)o->curr[game_layout.moby.anim_state_off],
-            pp.header, pc.header, np, nc);
+            pp.header, pc.header, np, nc,
+            (double)(o->curr_ns - o->prev_ns) / (double)g_openpete_tick_period_ns, intact);
+}
+
+/* The verdict for a pair whose previous pose sits in another clip. The
+ * previous pose is read from its header at this present; a header the game no
+ * longer draws may already hold another clip, and with its content gone there
+ * is no previous pose to show, so the record snaps to the current one. The
+ * refusal census counts presents below alpha 1 only. */
+static int moby_clip_switch_verdict(CPUState* cpu, uint32_t moby, uint32_t header_prev,
+                                    uint32_t header_curr, double t) {
+    int intact = fade_header_intact(cpu, s_fade_snap, s_fade_snap_n, moby, header_prev);
+    s_prevhdr_sig += (intact == 0 && t < 1.0);
+    s_prevhdr_unk += (intact < 0 && t < 1.0);
+    if (intact != 1) return MOBY_PREV_SNAP;
+    int count_p = 0, count_c = 0;
+    switch (moby_clip_switch_kind(cpu, moby, header_prev, header_curr, &count_p, &count_c)) {
+    case MOBY_CLIP_CUTPATH: s_animsw_snap++;  return MOBY_PREV_SNAP;
+    case MOBY_CLIP_COUNTSW: s_animsw_snap++;  return MOBY_PREV_HOLD;
+    default:                s_animsw_cross++; return MOBY_PREV_LERP;
+    }
+}
+
+/* A hold below alpha 1 lasts one tick period past the current stamp
+ * (moby_hold_expired) and snaps to the current pose after it. */
+static int moby_hold_schedule(const openpete_interp_obj_t* o, int verdict, double t) {
+    if (verdict != MOBY_PREV_HOLD || t >= 1.0) return verdict;
+    if (moby_hold_expired(o)) { s_hold_period++; return MOBY_PREV_SNAP; }
+    s_hold_shown++;
+    return MOBY_PREV_HOLD;
 }
 
 static int moby_prev_keyframe(CPUState* cpu, uint32_t moby, uint32_t header_curr,
@@ -7244,26 +7347,18 @@ static int moby_prev_keyframe(CPUState* cpu, uint32_t moby, uint32_t header_curr
     uint32_t model = cpu->read_word(game_layout.moby.model_table + cls * 4u);
     if (model < 0x80000000u) return 0;
     if (!moby_pose_derive(cpu, model, o->prev + game_layout.moby.anim_state_off, prev)) return 0;
-    int verdict = MOBY_PREV_LERP;
-    if (prev->header != header_curr) {                        /* clip switch */
-        int count_p = 0, count_c = 0;
-        switch (moby_clip_switch_kind(cpu, moby, prev->header, header_curr,
-                                      &count_p, &count_c)) {
-        case MOBY_CLIP_CUTPATH: s_animsw_snap++;  return MOBY_PREV_SNAP;
-        case MOBY_CLIP_COUNTSW: s_animsw_snap++;  verdict = MOBY_PREV_HOLD; break;
-        default:                s_animsw_cross++; break;
-        }
-    }
+    double t = moby_pair_alpha(o);
+    *alpha = t;
+    int verdict = (prev->header != header_curr)
+                ? moby_clip_switch_verdict(cpu, moby, prev->header, header_curr, t)
+                : MOBY_PREV_LERP;
     /* A facing reversal has no pose between its two keyframe pairs either, so
      * it takes the same hold, clip switch or not. */
     if (verdict == MOBY_PREV_LERP && moby_mirror_hold(cpu, moby)) {
         s_animsw_mirror++;
         verdict = MOBY_PREV_HOLD;
     }
-    double t = (double)(s_rot_now - o->curr_ns) / (double)(o->curr_ns - o->prev_ns);
-    if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
-    *alpha = t;
-    return verdict;
+    return moby_hold_schedule(o, verdict, t);
 }
 
 /* ---- moby occlusion cull (native-side, display-only) ------------------------
@@ -8188,9 +8283,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                         int gprev = (int)og->prev[game_layout.moby.size_off];
                         int gnow  = (int)(rw0 & 0xFFu);
                         if (gprev > 0) {
-                            double t = (double)(s_rot_now - og->curr_ns)
-                                     / (double)(og->curr_ns - og->prev_ns);
-                            if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
+                            double t = moby_pair_alpha(og);
                             gpf_frac = (double)gprev + ((double)gnow - (double)gprev) * t;
                         }
                         /* OPENPETE_MOBY_GPF_DBG=1: one line per GPF re-extract —
@@ -8590,11 +8683,15 @@ static void moby_reextract_body(CPUState* cpu) {
     if (animswdbg < 0) { const char* e = getenv("OPENPETE_MOBY_ANIMSW_DBG"); animswdbg = (e && *e && *e != '0'); }
     if (animswdbg) {
         static long last_cross = -1, last_snap = -1;
-        if (s_animsw_cross != last_cross || s_animsw_snap != last_snap) {
-            last_cross = s_animsw_cross; last_snap = s_animsw_snap;
+        static long last_guard = -1;
+        long guard = s_hold_shown + s_hold_period + s_prevhdr_sig + s_prevhdr_unk;
+        if (s_animsw_cross != last_cross || s_animsw_snap != last_snap || guard != last_guard) {
+            last_cross = s_animsw_cross; last_snap = s_animsw_snap; last_guard = guard;
             fprintf(stderr, "[moby-animsw vbl=%u] clip-switch crossfaded=%ld snapped(count-mismatch)=%ld "
-                            "held(facing-reversal)=%ld\n",
-                    openpete_frame, s_animsw_cross, s_animsw_snap, s_animsw_mirror);
+                            "held(facing-reversal)=%ld hold-shown=%ld hold-period-ended=%ld "
+                            "prevhdr-refused(sig)=%ld prevhdr-refused(unknown)=%ld\n",
+                    openpete_frame, s_animsw_cross, s_animsw_snap, s_animsw_mirror,
+                    s_hold_shown, s_hold_period, s_prevhdr_sig, s_prevhdr_unk);
         }
     }
 }
