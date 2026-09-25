@@ -1,5 +1,5 @@
 # Sub-tick interpolation of the cyclorama. Row grammar and the leave-one-out:
-# see games/spyro-2/cyclorama-subtick-corpus.manifest.
+# see games/spyro-2/corpus/cyclorama-subtick-corpus.manifest.
 #
 # camera-swing: the camera turns through the Sunrise Spring homeworld and the
 # sky scrolls with it. The mask is one 15-16k-px component, the whole visible

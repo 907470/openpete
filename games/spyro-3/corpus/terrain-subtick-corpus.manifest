@@ -1,5 +1,5 @@
 # Sub-tick interpolation of the animated terrain. Row grammar and what the
-# counts mean: see games/spyro-1/terrain-subtick-corpus.manifest.
+# counts mean: see games/spyro-1/corpus/terrain-subtick-corpus.manifest.
 #
 # surface-swim: Spyro swims across the Sunrise Spring pond, so the animated
 # water fills the lower frame. sheilas-alp: a second level, its waterfall and

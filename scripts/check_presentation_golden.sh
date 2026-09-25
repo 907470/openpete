@@ -38,8 +38,9 @@
 # refused as VACUOUS rather than reported as a pass.
 #
 # Exit: 0 = matches golden, the identity leg is within baseline and the credits
-#       leg passes; 1 = divergence, identity exceed, credits failure or a
-#       vacuous (zero-row) run; 64 = SKIP (prereqs missing).
+#       leg passes; 1 = divergence, identity exceed, credits failure, a
+#       vacuous (zero-row) run, or a missing corpus manifest (either one; the
+#       message names the path); 64 = SKIP (prereqs missing).
 #
 # See notes/plans/openpete-presentation-golden.md.
 set -u
@@ -62,6 +63,9 @@ BUILD_DIR="build/linux-release"
 [[ -n "$BUILD_ARG" ]] && BUILD_DIR="${BUILD_ARG#--build-dir=}"
 PG_BUILD_DIR="$BUILD_DIR" pg_resolve "$GAME"
 GAME_ARG="--game=$GAME"
+pg_manifest_load "$PG_CORPUS_MANIFEST" pipe
+pg_manifest_load "$PG_FREECAM_MANIFEST" pipe
+pg_manifest_dry_run_exit
 
 # The candidate images OUTLIVE the run, in a stable per-build path. A capture is
 # ~24 minutes; discarding it on exit meant that adjudicating a divergence — or
@@ -90,9 +94,9 @@ if [[ $rc -eq 64 ]]; then echo "[presentation-golden] SKIP (capture prereqs miss
 # freecam corpus may still carry rows, and the row count below decides.
 if [[ $rc -ne 0 && $rc -ne 65 ]]; then echo "[presentation-golden] FAIL: capture incomplete"; exit 1; fi
 
-# The freecam corpus is additive: an absent/empty manifest returns 0 (nothing to
+# The freecam corpus is additive: a manifest with no rows returns 0 (nothing to
 # capture), a missing Vulkan loader returns 64 (skip that corpus, keep the bk2
-# result), and only a genuine missing capture (1) fails the gate.
+# result), and a missing capture or a missing manifest (1) fails the gate.
 scripts/freecam-corpus.sh default "$OUT" "$FREECAM_FILTER" $BUILD_ARG "$GAME_ARG"
 frc=$?
 if [[ $frc -eq 1 ]]; then echo "[presentation-golden] FAIL: freecam capture incomplete"; exit 1; fi

@@ -13,7 +13,7 @@
 # A part placed from the wrong tick's data breaks continuity by the distance
 # that part moves in a tick, while identity still holds.
 #
-# Input: games/<slug>/player-subtick-corpus.manifest, rows
+# Input: games/<slug>/corpus/player-subtick-corpus.manifest, rows
 #   <bk2> | <lo>-<hi>[,<lo>-<hi>...]
 # Each range is a span of intermediate-present VBLs, two apart. Which VBL
 # parity the intermediates fall on is the movie's own (the tick phase at the
@@ -39,8 +39,8 @@
 #                    maxLagBB=<px> maxIdent=<px> verdict=PASS|FAIL
 #
 # Usage: scripts/check_player_subtick.sh [--game SLUG] [--build-dir=DIR]
-# Exit 0 PASS, 1 FAIL, 64 SKIP (binary, disc, bk2, manifest or python3
-# missing).
+# Exit 0 PASS, 1 FAIL or a missing corpus manifest (the message names the
+# path), 64 SKIP (binary, disc, bk2 or python3 missing).
 set -u
 cd "$(dirname "$0")/.."
 # shellcheck source=scripts/lib/game.sh
@@ -56,8 +56,8 @@ GAME="$(pg_parse_game "$@")" || exit 64
 pg_resolve "$GAME"
 
 LIMIT=0.01
-MANIFEST="games/$GAME/player-subtick-corpus.manifest"
-[[ -f "$MANIFEST" ]] || { echo "player-subtick: SKIP ($GAME has no $MANIFEST)"; exit 64; }
+MANIFEST="$(pg_corpus_manifest "$GAME" player-subtick-corpus.manifest)"
+pg_manifest "$MANIFEST" line
 [[ -x "$PG_BIN" && -f "$PG_DISC" ]] ||
     { echo "player-subtick: SKIP (binary or disc missing)"; exit 64; }
 python3 -c '' 2>/dev/null || { echo "player-subtick: SKIP (python3 missing)"; exit 64; }

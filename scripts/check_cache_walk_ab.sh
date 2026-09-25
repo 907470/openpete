@@ -27,12 +27,13 @@
 #
 # The rows are the poses the class was measured on, named by their
 # freecam-corpus slug <level>-<first 6 hex of the pose's md5> so the pose text
-# keeps its one authority, games/<game>/freecam-corpus.manifest.
+# keeps its one authority, games/<game>/corpus/freecam-corpus.manifest.
 #
 # Usage:
 #   scripts/check_cache_walk_ab.sh [--game SLUG] [--build-dir=DIR] [--out DIR]
-# Exit 0 PASS, 1 FAIL or VACUOUS, 64 SKIP (no binary, no disc, no python3/PIL,
-# or the game has no measured rows).
+# Exit 0 PASS, 1 FAIL or VACUOUS or a missing corpus manifest (the message
+# names the path), 64 SKIP (no binary, no disc, no python3/PIL, or the game
+# has no measured rows).
 set -u
 
 # Unattended launcher: every run this script starts is silenced. Vibration
@@ -69,10 +70,10 @@ case "$PG_GAME" in
   *) echo "cache-walk-ab: SKIP ($PG_GAME has no measured cache-vs-walk rows)"; exit 64;;
 esac
 
-MAN="games/$PG_GAME/freecam-corpus.manifest"
+MAN="$PG_FREECAM_MANIFEST"
+pg_manifest "$MAN" pipe
 [[ -x "$PG_BIN"  ]] || { echo "cache-walk-ab: SKIP (no binary at $PG_BIN)"; exit 64; }
 [[ -f "$PG_DISC" ]] || { echo "cache-walk-ab: SKIP (no disc at $PG_DISC)"; exit 64; }
-[[ -f "$MAN"     ]] || { echo "cache-walk-ab: SKIP (no manifest at $MAN)"; exit 64; }
 python3 -c 'import PIL' 2>/dev/null ||
     { echo "cache-walk-ab: SKIP (python3 or PIL missing)"; exit 64; }
 

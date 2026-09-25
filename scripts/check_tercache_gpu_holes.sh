@@ -55,8 +55,9 @@
 #                                       [--out DIR]
 #   --filter  substring matched against the row's level name and pose slug
 #   --exe     the executable to drive (default: the windows-mingw build)
-# Exit 0 PASS, 1 FAIL, 64 SKIP (no display, no exe, no disc, no python3/PIL,
-# or every row skipped for engagement).
+# Exit 0 PASS, 1 FAIL or a missing corpus manifest (the message names the
+# path), 64 SKIP (no display, no exe, no disc, no python3/PIL, or every row
+# skipped for engagement).
 set -u
 cd "$(dirname "$0")/.."
 # shellcheck source=scripts/lib/game.sh
@@ -113,6 +114,8 @@ LEG_TIMEOUT=660
 MIN_SECS=50
 MIN_TRIS=1000
 
+pg_manifest "$PG_FREECAM_MANIFEST" pipe
+
 # A live window on a real GPU is the whole point of the check; a headless
 # invocation (ctest on a build box, a session with no display) has nothing to
 # measure and skips rather than reporting a verdict it did not earn.
@@ -122,8 +125,6 @@ MIN_TRIS=1000
 [[ -n "$EXE" ]] || EXE="$WIN_BUILD_DIR/games/$GAME/$(pg_bin_name "$GAME").exe"
 [[ -x "$EXE" ]] || { echo "tercache-holes: SKIP (no exe at $EXE)"; exit 64; }
 [[ -f "$PG_DISC" ]] || { echo "tercache-holes: SKIP (no disc at $PG_DISC)"; exit 64; }
-[[ -f "$PG_FREECAM_MANIFEST" ]] ||
-    { echo "tercache-holes: SKIP ($GAME has no freecam corpus)"; exit 64; }
 python3 -c 'import PIL' 2>/dev/null ||
     { echo "tercache-holes: SKIP (python3 or PIL missing)"; exit 64; }
 

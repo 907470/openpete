@@ -1,5 +1,5 @@
 # Presentation-golden corpus manifest for Spyro 2 (fields as in
-# scripts/presentation-corpus.manifest: name|start|interval|freeze|pins).
+# games/spyro-1/corpus/presentation-corpus.manifest: name|start|interval|freeze|pins).
 #
 # attract-demo has no bk2: the row is the plain boot, the title screen and the
 # attract demo, which need no input. A movie-less row takes its length from its

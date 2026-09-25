@@ -1,6 +1,6 @@
 # Sub-tick interpolation of the moby ground shadows
 # (scripts/check_shadow_subtick.sh). Row grammar: see
-# games/spyro-3/shadow-subtick-corpus.manifest. V is odd here: the tick
+# games/spyro-3/corpus/shadow-subtick-corpus.manifest. V is odd here: the tick
 # boundaries of this replay fall on the odd VBL, so 1823 and 1824 are one
 # tick's two VBLs and the intermediate present at 1824 sits inside it. The
 # alpha-1 identity leg is what catches a row of the wrong parity, and it does:

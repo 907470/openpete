@@ -5,7 +5,7 @@
 # game's own glyph models (games/common/renderer/text_moby.c). Spyro 1 has its
 # font in every session; Spyro 3 has it only while a home world is loaded, so
 # the producer keeps the decoded glyphs in a cache file (OPENPETE_FONT_CACHE).
-# This gate runs each row of games/<slug>/text-font-corpus.manifest with the
+# This gate runs each row of games/<slug>/corpus/text-font-corpus.manifest with the
 # three consumers forced live (OPENPETE_OSD_DEMO, OPENPETE_MENU_DEMO,
 # --perf-stats fps) and reads the glyph vertex counts the producer published
 # (OPENPETE_TEXT_GLYPH_CENSUS).
@@ -28,7 +28,8 @@
 #
 #   scripts/check_text_font.sh [--game SLUG] [--build-dir=DIR]
 #
-# Exit 0 PASS, 1 FAIL, 64 SKIP (binary, disc, manifest or display missing).
+# Exit 0 PASS, 1 FAIL or a missing corpus manifest (the message names the
+# path), 64 SKIP (binary, disc or display missing).
 # OPENPETE_FRAME_LIMIT overrides the 1800 VBLs per row.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -39,12 +40,13 @@ BUILD="build/linux-release"
 for a in "$@"; do case "$a" in --build-dir=*) BUILD="${a#--build-dir=}";; esac; done
 GAME="$(pg_parse_game "$@")" || exit 64
 PG_BUILD_DIR="$BUILD" pg_resolve "$GAME" || exit 64
-MANIFEST="games/$GAME/text-font-corpus.manifest"
+MANIFEST="$(pg_corpus_manifest "$GAME" text-font-corpus.manifest)"
+pg_manifest "$MANIFEST" pipe
 FRAMES="${OPENPETE_FRAME_LIMIT:-1800}"
 OUT="${TEXT_FONT_OUT:-$BUILD/text-font/$GAME}"
 
-if [[ ! -x "$PG_BIN" || ! -f "$PG_DISC" || ! -f "$MANIFEST" ]]; then
-    echo "check_text_font: SKIP ($PG_BIN, $PG_DISC or $MANIFEST missing)"; exit 64
+if [[ ! -x "$PG_BIN" || ! -f "$PG_DISC" ]]; then
+    echo "check_text_font: SKIP ($PG_BIN or $PG_DISC missing)"; exit 64
 fi
 if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
     echo "check_text_font: SKIP (no display; the producer is inert headless)"; exit 64

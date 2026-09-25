@@ -36,9 +36,11 @@
 #     --game        game slug (default spyro-1); selects binary, disc and
 #                   manifest through scripts/presentation-game.sh
 #
-# Exit: 0 = all captures produced (or no manifest = nothing to do),
-#       1 = a capture is missing, or an intermediate leg was unbracketed
-#           (hard failure),
+# Exit: 0 = all captures produced (or a manifest with no rows = nothing to
+#           do),
+#       1 = a capture is missing, an intermediate leg was unbracketed
+#           (hard failure), or the manifest is missing (the message names
+#           the path),
 #       64 = SKIP (binary / disc / Vulkan loader missing).
 #
 # See notes/plans/openpete-presentation-golden.md.
@@ -86,11 +88,10 @@ case "$AFFINE" in
   default|def)  AFFINE_ENV=default;;
   *) echo "freecam-corpus: first arg must be off|on|default (got '$AFFINE')" >&2; exit 64;; esac
 
+pg_manifest "$MANIFEST" pipe
+
 if [[ ! -x "$BIN" ]]; then echo "[freecam-corpus] SKIP: no binary at $BIN"; exit 64; fi
 if [[ ! -f "$DISC" ]]; then echo "[freecam-corpus] SKIP: no disc at $DISC"; exit 64; fi
-# An absent (or comment-only) manifest is not a failure — the freecam corpus is
-# additive and may not be populated yet. Nothing to capture = success.
-if [[ ! -f "$MANIFEST" ]]; then echo "[freecam-corpus] $GAME: no manifest ($MANIFEST) — 0 rows"; exit 0; fi
 if ! ldconfig -p 2>/dev/null | grep -q 'libvulkan\.so\.1'; then
   echo "[freecam-corpus] SKIP: no Vulkan loader (libvulkan.so.1)"; exit 64; fi
 

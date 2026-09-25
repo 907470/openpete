@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # check_skip_targets.sh — the skip-target row harness.
 #
-# Runs every row of games/<slug>/skip-targets.manifest headless. Each row is
+# Runs every row of games/<slug>/corpus/skip-targets.manifest headless. Each row is
 # a target of --skip-to-cutscene (or --skip-to-area); the skip module prints
 # one release line, "[skip-to-level] level playable — presents resume at
 # frame=N" followed by the engagement values it reads back from RAM at the
@@ -33,7 +33,8 @@
 #
 #   scripts/check_skip_targets.sh [--game SLUG] [--build-dir=DIR] [--filter=NAME]
 #
-# Exit 0 PASS, 1 FAIL, 64 SKIP (binary, disc or manifest missing). At most
+# Exit 0 PASS, 1 FAIL or a missing corpus manifest (the message names the
+# path), 64 SKIP (binary or disc missing). At most
 # SKIP_TARGETS_JOBS (default 2) game processes run at once.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -50,12 +51,13 @@ for a in "$@"; do
 done
 GAME="$(pg_parse_game "$@")" || exit 64
 PG_BUILD_DIR="$BUILD" pg_resolve "$GAME" || exit 64
-MANIFEST="games/$GAME/skip-targets.manifest"
+MANIFEST="$(pg_corpus_manifest "$GAME" skip-targets.manifest)"
+pg_manifest "$MANIFEST" pipe
 OUT="${SKIP_TARGETS_OUT:-$BUILD/skip-targets/$GAME}"
 JOBS="${SKIP_TARGETS_JOBS:-2}"
 
-if [[ ! -x "$PG_BIN" || ! -f "$PG_DISC" || ! -f "$MANIFEST" ]]; then
-    echo "check_skip_targets: SKIP ($PG_BIN, $PG_DISC or $MANIFEST missing)"; exit 64
+if [[ ! -x "$PG_BIN" || ! -f "$PG_DISC" ]]; then
+    echo "check_skip_targets: SKIP ($PG_BIN or $PG_DISC missing)"; exit 64
 fi
 
 mkdir -p "$OUT"

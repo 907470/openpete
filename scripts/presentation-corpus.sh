@@ -23,10 +23,12 @@
 #     --game     game slug (default spyro-1); selects binary, disc, bk2 dir
 #                and manifest through scripts/presentation-game.sh
 #
-# Exit: 0 = all captures produced, 1 = a capture is missing (hard failure),
+# Exit: 0 = all captures produced, 1 = a capture is missing (hard failure) or
+#           the corpus manifest is missing (the message names the path),
 #       64 = SKIP (binary / disc / Vulkan loader missing),
-#       65 = no rows (no manifest, or the filter matched none) — the caller
-#            decides whether an empty corpus is a skip or a vacuous run.
+#       65 = no rows (the manifest holds none, or the filter matched none) —
+#            the caller decides whether an empty corpus is a skip or a
+#            vacuous run.
 #
 # See notes/plans/openpete-presentation-golden.md.
 set -u
@@ -84,10 +86,10 @@ case "$AFFINE" in
   default|def)  AFFINE_ENV=default;;
   *) echo "presentation-corpus: first arg must be off|on|default (got '$AFFINE')" >&2; exit 64;; esac
 
+pg_manifest "$MANIFEST" pipe
+
 if [[ ! -x "$BIN" ]]; then echo "[presentation-corpus] SKIP: no binary at $BIN"; exit 64; fi
 if [[ ! -f "$DISC" ]]; then echo "[presentation-corpus] SKIP: no disc at $DISC"; exit 64; fi
-if [[ ! -f "$MANIFEST" ]]; then
-  echo "[presentation-corpus] $GAME: no manifest $MANIFEST — 0 rows"; exit 65; fi
 if ! ldconfig -p 2>/dev/null | grep -q 'libvulkan\.so\.1'; then
   echo "[presentation-corpus] SKIP: no Vulkan loader (libvulkan.so.1)"; exit 64; fi
 

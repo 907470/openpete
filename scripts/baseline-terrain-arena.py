@@ -48,7 +48,9 @@ Modes:
 Every mode rewrites only the rows it owns and then recomputes union.tsv from
 the files, so the four row kinds accumulate across modes.
 
-Exit: 0 pass, 1 fail, 64 skip (binary or disc missing).
+Exit: 0 pass, 1 fail or a missing corpus manifest (check and bk2-corpus; the
+message names the path), 64 skip (binary or disc missing).
+OPENPETE_MANIFEST_DRY_RUN=1 loads and reports the manifest, then exits 0.
 """
 import argparse
 import filecmp
@@ -61,7 +63,9 @@ import tempfile
 import zipfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "fences"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
 import bench_guard  # noqa: F401  (import-time launcher preconditions)
+import corpus_manifest
 
 # Unattended launcher: no pad is being held, and the buzzing shows up in no
 # log, so it would never surface on its own. (scripts/fences/rumble_guard.py)
@@ -72,7 +76,7 @@ DISC = os.path.join(ROOT, "games/spyro-1/spyro-1/build/SCUS-94228.cue")
 EXE = os.path.join(ROOT, "build/linux-release/games/spyro-1/openpete-spyro1")
 OUT_DIR = os.path.join(ROOT, "baselines/terrain-arena")
 BK2_DIR = os.path.join(ROOT, "games/spyro-1/bk2")
-MANIFEST = os.path.join(ROOT, "games/spyro-1/presentation-corpus.manifest")
+MANIFEST = corpus_manifest.corpus_manifest(ROOT, "spyro-1", "presentation-corpus.manifest")
 EXIT_SKIP = 64
 
 # games/spyro-1/features/levelwarp.c k_levels — every warpable level, in that
@@ -478,6 +482,17 @@ def cmd_generate(levels, jobs):
 
 # ---- bk2 corpus ------------------------------------------------------------
 
+_MANIFEST_ROWS = None
+
+
+def manifest_rows():
+    """The corpus manifest's rows, loaded once; a missing manifest exits 1."""
+    global _MANIFEST_ROWS
+    if _MANIFEST_ROWS is None:
+        _MANIFEST_ROWS = corpus_manifest.load(ROOT, MANIFEST, "pipe")
+    return _MANIFEST_ROWS
+
+
 def manifest_bk2s():
     """Every distinct movie named by a presentation-golden manifest row.
 
@@ -486,14 +501,7 @@ def manifest_bk2s():
     an arena, so one replay per movie covers the row set. The movie's own
     .bk2.args sidecar (its level, its LOD mode) is spliced by the binary.
     """
-    if not os.path.exists(MANIFEST):
-        die("no corpus manifest at %s" % MANIFEST)
-    names = []
-    for line in open(MANIFEST):
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        names.append(line.split("|")[0].strip().split("@")[0])
+    names = [row.split("|")[0].strip().split("@")[0] for row in manifest_rows()]
     out = []
     for n in sorted(set(names)):
         if os.path.exists(os.path.join(BK2_DIR, n + ".bk2")):
@@ -833,6 +841,11 @@ def main():
     if args.mode == "report":
         print_static_vs_traversal()
         return 0
+    # The modes that replay the bk2 corpus load its manifest before any
+    # prerequisite check, so a missing manifest fails on every machine.
+    if args.mode in ("check", "bk2-corpus"):
+        manifest_rows()
+    corpus_manifest.dry_run_exit()
     if not os.path.exists(EXE) or not os.path.exists(DISC):
         sys.stderr.write("baseline-terrain-arena: SKIP (no binary or no disc)\n")
         return EXIT_SKIP

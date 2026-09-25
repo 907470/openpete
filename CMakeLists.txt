@@ -369,7 +369,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         TIMEOUT 3600
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-    # Spyro 3: one bk2 row (games/spyro-3/presentation-corpus.manifest), the
+    # Spyro 3: one bk2 row (games/spyro-3/corpus/presentation-corpus.manifest), the
     # native terrain feeder's rows; the same gate, scoped by --game.
     add_test(NAME presentation_golden_spyro3
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_presentation_golden.sh
@@ -382,7 +382,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
     # Skip-target rows: every --skip-to-cutscene (and --skip-to-area) row of
-    # games/<slug>/skip-targets.manifest runs headless; a row passes only when
+    # games/<slug>/corpus/skip-targets.manifest runs headless; a row passes only when
     # the skip's release line carries the row's engagement values (the cutscene
     # index, the credits sequence, the return level, the level and area words),
     # and a negative control with the fail-safe forced must fail. One row per
@@ -402,7 +402,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # The 3D glyph text gate: the settings menu, the OSD toasts and the
     # performance readout publish glyph vertices from the game's own font, and
     # Spyro 3's glyph cache file round-trips and rejects a tampered copy. Rows
-    # in games/<slug>/text-font-corpus.manifest. Windowed (the producer is
+    # in games/<slug>/corpus/text-font-corpus.manifest. Windowed (the producer is
     # inert headless); exits 64 without a display.
     foreach(_font_game spyro-1 spyro-3)
         add_test(NAME text_font_${_font_game}
@@ -435,7 +435,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
     # Player sub-tick continuity. Per row of
-    # games/<slug>/player-subtick-corpus.manifest, two headless replays of one
+    # games/<slug>/corpus/player-subtick-corpus.manifest, two headless replays of one
     # bk2 with the intermediate presents pinned at alpha 0 and at alpha 1, and
     # the player model's screen centroid and bounding box read per present:
     # the alpha-0 present of one tick interval must equal the alpha-1 present
@@ -455,7 +455,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     endforeach()
 
     # Moby sub-tick continuity. Per row of
-    # games/<slug>/moby-subtick-corpus.manifest, two headless replays of one
+    # games/<slug>/corpus/moby-subtick-corpus.manifest, two headless replays of one
     # bk2 with the intermediate presents pinned at alpha 0 and at alpha 1, and
     # every animated moby's keyframe pose and screen centroid read per
     # present: the previous pose rebuilt at each leg must equal the pose the
@@ -493,7 +493,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     endforeach()
 
     # Runahead prediction contract. Per row of
-    # games/<slug>/runahead-corpus.manifest, two headless replays of one bk2:
+    # games/<slug>/corpus/runahead-corpus.manifest, two headless replays of one bk2:
     # the native capture at the row's VBL under --runahead <depth>, and the
     # capture at that VBL plus 2*<depth> without runahead. --runahead presents
     # the state <depth> ticks ahead of the committed timeline, so the two are
@@ -513,7 +513,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     endforeach()
 
     # 2D-UI carry identity across sub-tick presents. Per row of
-    # games/<slug>/carry-subtick-corpus.manifest, three headless replays of one
+    # games/<slug>/corpus/carry-subtick-corpus.manifest, three headless replays of one
     # bk2 with the intermediate presents pinned at alpha 0.25, 0.5 and 0.75,
     # and every interpolated carry triangle checked for a crossed pair: one
     # whose partner is another entry's predecessor, so the interpolation sweeps
@@ -531,7 +531,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     endforeach()
 
     # Sub-tick interpolation of the gem-glint stars. Per row of
-    # games/<slug>/glint-subtick-corpus.manifest, six headless replays of one
+    # games/<slug>/corpus/glint-subtick-corpus.manifest, six headless replays of one
     # bk2 — the two canonical ticks of an interval and the intermediate present
     # inside it, each captured with the glint feed on and off — and the
     # leave-one-out mask's per-star centroid compared against
@@ -540,7 +540,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # named gem resolves ambiguously, or when its canonical motion over the
     # interval is below the row's floor.
     # Sub-tick interpolation of Zoe's zap. Per row of
-    # games/<slug>/zap-subtick-corpus.manifest, three headless replays pinning
+    # games/<slug>/corpus/zap-subtick-corpus.manifest, three headless replays pinning
     # the intermediate present at alpha 0, 0.5 and 1, with the record's own
     # projected head and tail traced per present and each required to sit on
     # the alpha blend of the two canonical ticks. Spyro 1 has no such routine
@@ -640,7 +640,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     endforeach()
 
     # Sub-tick interpolation of the homeworld portal preview's aperture. Per
-    # row of games/<slug>/portal-subtick-corpus.manifest, four headless replays
+    # row of games/<slug>/corpus/portal-subtick-corpus.manifest, four headless replays
     # of one bk2 — the intermediate present at alpha 0, 0.5 and 1, and once
     # more with the replay's own interpolation suppressed — with the feeder's
     # emitted aperture polygon read out of each run's census and every named
@@ -719,15 +719,23 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     endforeach()
 
     # Freeze-backdrop source frame, windowed. Per row of
-    # games/<slug>/freeze-backdrop-corpus.manifest, one windowed replay of a
-    # bk2 that enters the pause menu, counting the composed presents the live
-    # path accepted as the backdrop's source frame. When that count is zero
-    # nothing is ever snapshotted and the pause backdrop is a flat fill of the
-    # clear colour. The source frame is chosen in the live compose, which no
-    # headless run executes, so the presentation golden cannot see the class
+    # games/<slug>/corpus/freeze-backdrop-corpus.manifest, one windowed replay
+    # of a bk2 that enters the pause menu, counting the composed presents the
+    # live path accepted as the backdrop's source frame. When that count is
+    # zero nothing is ever snapshotted and the pause backdrop is a flat fill of
+    # the clear colour. The source frame is chosen in the live compose, which
+    # no headless run executes, so the presentation golden cannot see the class
     # and this check drives a real window. Skips (exit 64) without a display,
-    # a binary, a disc, the bk2 or the manifest.
+    # a binary, a disc or the bk2; a missing manifest fails (exit 1), so a row
+    # exists only for a game that has the manifest. The corpus directory is a
+    # configure dependency: adding a game's manifest adds its row on the next
+    # build.
     foreach(_freeze_game spyro-1 spyro-2 spyro-3)
+        set(_freeze_corpus ${CMAKE_CURRENT_SOURCE_DIR}/games/${_freeze_game}/corpus)
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_freeze_corpus})
+        if(NOT EXISTS ${_freeze_corpus}/freeze-backdrop-corpus.manifest)
+            continue()
+        endif()
         add_test(NAME freeze_backdrop_${_freeze_game}
                  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_freeze_backdrop.sh
                          --game ${_freeze_game} --build-dir=${CMAKE_BINARY_DIR})
@@ -1101,7 +1109,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
     # CPU terrain walk vs retained terrain cache, per-pose residual against a
-    # committed baseline. Per row of games/spyro-1/walk-cache.manifest, two
+    # committed baseline. Per row of games/spyro-1/corpus/walk-cache.manifest, two
     # headless legs at the freecam corpus's canonical VBL (the walk, and the
     # cache forced on under software vk); the count of pixels whose RGB differ
     # must equal the row of tests/golden/spyro-1/walk-cache-baseline.tsv, in
@@ -1120,7 +1128,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
     # The same check on Spyro 2, whose row is a bk2 row
-    # (games/spyro-2/walk-cache.manifest): the plain boot's attract demo at
+    # (games/spyro-2/corpus/walk-cache.manifest): the plain boot's attract demo at
     # one VBL on the deterministic sub-tick present, walk against cache.
     add_test(NAME terrain_walk_cache_spyro-2
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_terrain_walk_cache.sh

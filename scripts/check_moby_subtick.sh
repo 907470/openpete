@@ -40,7 +40,7 @@
 # alpha-1 leg of v and of v - 2), so the bin measures the interval rather than
 # the engine's verdict on it.
 #
-# Input: games/<slug>/moby-subtick-corpus.manifest, rows
+# Input: games/<slug>/corpus/moby-subtick-corpus.manifest, rows
 #   <source> | <lo>-<hi> | <key>=<value> ... [| <exclusion>]...
 # where <source> is a movie under games/<slug>/bk2, `pose:<level>:<pose>`,
 # which skips to the level and places the freecam (the pose's spaces are kept),
@@ -93,8 +93,8 @@
 # Usage: scripts/check_moby_subtick.sh [--game SLUG] [--build-dir=DIR]
 #                                      [--filter=SUBSTR]
 # --filter runs only the rows whose source contains SUBSTR.
-# Exit 0 PASS, 1 FAIL or VACUOUS, 64 SKIP (binary, disc, bk2, manifest or
-# python3 missing).
+# Exit 0 PASS, 1 FAIL or VACUOUS or a missing corpus manifest (the message
+# names the path), 64 SKIP (binary, disc, bk2 or python3 missing).
 set -u
 cd "$(dirname "$0")/.."
 # shellcheck source=scripts/lib/game.sh
@@ -112,8 +112,8 @@ GAME="$(pg_parse_game "$@")" || exit 64
 pg_resolve "$GAME"
 
 CHUNK=60
-MANIFEST="games/$GAME/moby-subtick-corpus.manifest"
-[[ -f "$MANIFEST" ]] || { echo "moby-subtick: SKIP ($GAME has no $MANIFEST)"; exit 64; }
+MANIFEST="$(pg_corpus_manifest "$GAME" moby-subtick-corpus.manifest)"
+pg_manifest "$MANIFEST" line
 [[ -x "$PG_BIN" && -f "$PG_DISC" ]] ||
     { echo "moby-subtick: SKIP (binary or disc missing)"; exit 64; }
 python3 -c '' 2>/dev/null || { echo "moby-subtick: SKIP (python3 missing)"; exit 64; }

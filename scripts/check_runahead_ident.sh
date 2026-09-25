@@ -20,7 +20,7 @@
 # pixels). Headless presents one canonical picture per tick, so both members
 # of a tick's VBL pair carry the same image.
 #
-# Per row of games/<slug>/runahead-corpus.manifest (bk2 | vbl | depth), two
+# Per row of games/<slug>/corpus/runahead-corpus.manifest (bk2 | vbl | depth), two
 # headless replays of the movie:
 #   (a) --runahead <depth>, native capture at <vbl>;
 #   (b) no runahead, native capture at <vbl> + 2*<depth>.
@@ -44,8 +44,8 @@
 #
 # Usage: scripts/check_runahead_ident.sh [--game SLUG] [--filter SUBSTR]
 #                                        [--build-dir=DIR] [--help]
-# Exit 0 PASS, 1 FAIL/VACUOUS, 64 SKIP (binary, disc, bk2, manifest, python3
-# or PIL missing).
+# Exit 0 PASS, 1 FAIL/VACUOUS or a missing corpus manifest (the message names
+# the path), 64 SKIP (binary, disc, bk2, python3 or PIL missing).
 set -u
 cd "$(dirname "$0")/.."
 # shellcheck source=scripts/lib/game.sh
@@ -68,8 +68,8 @@ done
 GAME="$(pg_parse_game "$@")" || exit 64
 pg_resolve "$GAME"
 
-MANIFEST="games/$GAME/runahead-corpus.manifest"
-[[ -f "$MANIFEST" ]] || { echo "runahead-ident: SKIP ($GAME has no $MANIFEST)"; exit 64; }
+MANIFEST="$(pg_corpus_manifest "$GAME" runahead-corpus.manifest)"
+pg_manifest "$MANIFEST" pipe
 [[ -x "$PG_BIN" && -f "$PG_DISC" ]] || { echo "runahead-ident: SKIP (binary or disc missing)"; exit 64; }
 python3 -c 'import PIL' 2>/dev/null || { echo "runahead-ident: SKIP (python3 or PIL missing)"; exit 64; }
 

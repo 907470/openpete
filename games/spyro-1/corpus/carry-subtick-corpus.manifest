@@ -1,5 +1,5 @@
 # carry-subtick-corpus.manifest — rows for scripts/check_carry_subtick.sh.
-# Row grammar and the instrument: see games/spyro-2/carry-subtick-corpus.manifest.
+# Row grammar and the instrument: see games/spyro-2/corpus/carry-subtick-corpus.manifest.
 #
 # pause-menu: the pause panel and its glyph rows. 33 presents carry 396
 # interpolated triangles in 66 runs, every run carried by its own translation,

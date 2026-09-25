@@ -48,7 +48,7 @@
 # at V-2 and V drew. One replay per alpha yields all three legs: the trace
 # prints the canonical presents of the same run.
 #
-# Input: games/<slug>/zap-subtick-corpus.manifest, rows
+# Input: games/<slug>/corpus/zap-subtick-corpus.manifest, rows
 #   <source> | <V> | <key>=<value> ...
 # <source> is a movie under games/<slug>/bk2, or any name not ending in .bk2,
 # which is the plain boot — the title screen and the attract demo, which need
@@ -75,8 +75,8 @@
 #                 worst=<px> verdict=PASS|FAIL
 #
 # Usage: scripts/check_zap_subtick.sh [--game SLUG] [--build-dir=DIR]
-# Exit 0 PASS, 1 FAIL or VACUOUS, 64 SKIP (binary, disc, bk2, manifest or
-# python3 missing).
+# Exit 0 PASS, 1 FAIL or VACUOUS or a missing corpus manifest (the message
+# names the path), 64 SKIP (binary, disc, bk2 or python3 missing).
 set -u
 cd "$(dirname "$0")/.."
 # shellcheck source=scripts/lib/game.sh
@@ -92,8 +92,8 @@ GAME="$(pg_parse_game "$@")" || exit 64
 pg_resolve "$GAME"
 
 ALPHAS=(0 0.5 1)
-MANIFEST="games/$GAME/zap-subtick-corpus.manifest"
-[[ -f "$MANIFEST" ]] || { echo "zap-subtick: SKIP ($GAME has no $MANIFEST)"; exit 64; }
+MANIFEST="$(pg_corpus_manifest "$GAME" zap-subtick-corpus.manifest)"
+pg_manifest "$MANIFEST" line
 [[ -x "$PG_BIN" && -f "$PG_DISC" ]] ||
     { echo "zap-subtick: SKIP (binary or disc missing)"; exit 64; }
 python3 -c '' 2>/dev/null || { echo "zap-subtick: SKIP (python3 missing)"; exit 64; }

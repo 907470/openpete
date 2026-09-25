@@ -29,7 +29,7 @@
 # when either leg dumps no run at all — a row whose tick draws nothing blended
 # measures nothing.
 #
-# Input: games/<slug>/blendorder-ident-corpus.manifest, rows
+# Input: games/<slug>/corpus/blendorder-ident-corpus.manifest, rows
 #   <source> | <V>
 # <source> is a movie under games/<slug>/bk2, or any name not ending in .bk2,
 # which is the plain boot — the title screen and the attract demo, which need no
@@ -40,8 +40,8 @@
 #   [blendorder-ident] game=<g> row=<r> V=<v> runs=<n> tris=<n> verdict=PASS|FAIL
 #
 # Usage: scripts/check_blendorder_ident.sh [--game SLUG] [--build-dir=DIR]
-# Exit 0 PASS, 1 FAIL or VACUOUS, 64 SKIP (binary, disc, bk2 or manifest
-# missing).
+# Exit 0 PASS, 1 FAIL or VACUOUS or a missing corpus manifest (the message
+# names the path), 64 SKIP (binary, disc or bk2 missing).
 set -u
 cd "$(dirname "$0")/.."
 # shellcheck source=scripts/lib/game.sh
@@ -56,8 +56,8 @@ done
 GAME="$(pg_parse_game "$@")" || exit 64
 pg_resolve "$GAME"
 
-MANIFEST="games/$GAME/blendorder-ident-corpus.manifest"
-[[ -f "$MANIFEST" ]] || { echo "blendorder-ident: SKIP ($GAME has no $MANIFEST)"; exit 64; }
+MANIFEST="$(pg_corpus_manifest "$GAME" blendorder-ident-corpus.manifest)"
+pg_manifest "$MANIFEST" line
 [[ -x "$PG_BIN" && -f "$PG_DISC" ]] ||
     { echo "blendorder-ident: SKIP (binary or disc missing)"; exit 64; }
 

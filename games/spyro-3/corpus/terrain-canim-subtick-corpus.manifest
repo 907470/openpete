@@ -1,6 +1,6 @@
 # Sub-tick corpus for the terrain env-anim colour path (terrain-canim). Row
 # grammar and what the statistic means: see
-# games/spyro-1/terrain-canim-subtick-corpus.manifest.
+# games/spyro-1/corpus/terrain-canim-subtick-corpus.manifest.
 #
 # No movie in this game's corpus visits a level whose colour sub-list is
 # populated: sunrise_spring, sheilas_alp, icy_peak, crystal_islands and

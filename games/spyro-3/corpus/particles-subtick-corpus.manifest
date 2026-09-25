@@ -1,5 +1,5 @@
 # Sub-tick interpolation of the particle systems. Row grammar and the
-# leave-one-out: see games/spyro-1/particles-subtick-corpus.manifest.
+# leave-one-out: see games/spyro-1/corpus/particles-subtick-corpus.manifest.
 #
 # icy-peak-ice-crystal-destruction: the shards a smashed ice crystal throws.
 # The mask holds 53-57 components; the row names the largest, a 150-px shard

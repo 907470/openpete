@@ -10,7 +10,7 @@
 # one row per such pose and fails on any change of its count. A drop is a fix
 # and is promoted with --bless, as a golden tile is.
 #
-# Rows: games/<game>/walk-cache.manifest, one of two forms (lod default
+# Rows: games/<game>/corpus/walk-cache.manifest, one of two forms (lod default
 # extended):
 #   pose row  `<level> | <pose> | [lod]`, a --skip-to-level boot to a freecam
 #             pose captured at the freecam corpus's canonical VBL (START).
@@ -50,8 +50,8 @@
 # Usage:
 #   scripts/check_terrain_walk_cache.sh [--game SLUG] [--build-dir DIR]
 #                                       [--filter SUBSTR] [--bless]
-# Exit 0 PASS, 1 FAIL or VACUOUS, 64 SKIP (no binary, disc, manifest,
-# Vulkan loader, or python3/PIL).
+# Exit 0 PASS, 1 FAIL or VACUOUS or a missing corpus manifest (the message
+# names the path), 64 SKIP (no binary, disc, Vulkan loader, or python3/PIL).
 set -u
 
 # Unattended launcher: every run this script starts is silenced. Vibration
@@ -85,11 +85,11 @@ GAME="$(pg_parse_game "$@")" || exit 64
 PG_BUILD_DIR="$BUILD_DIR"
 pg_resolve "$GAME" || exit 64
 
-MAN="games/$PG_GAME/walk-cache.manifest"
+MAN="$(pg_corpus_manifest "$PG_GAME" walk-cache.manifest)"
+pg_manifest "$MAN" pipe
 BASE="tests/golden/$PG_GAME/walk-cache-baseline.tsv"
 [[ -x "$PG_BIN"  ]] || { echo "walk-cache: SKIP (no binary at $PG_BIN)"; exit 64; }
 [[ -f "$PG_DISC" ]] || { echo "walk-cache: SKIP (no disc at $PG_DISC)"; exit 64; }
-[[ -f "$MAN"     ]] || { echo "walk-cache: SKIP (no manifest at $MAN)"; exit 64; }
 ldconfig -p 2>/dev/null | grep -q 'libvulkan\.so\.1' ||
     { echo "walk-cache: SKIP (no Vulkan loader)"; exit 64; }
 python3 -c 'import PIL' 2>/dev/null ||

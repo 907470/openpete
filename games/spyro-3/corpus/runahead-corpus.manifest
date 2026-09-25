@@ -1,5 +1,5 @@
 # Runahead prediction-contract corpus for Spyro 3 (fields: bk2 | vbl | depth).
-# See games/spyro-1/runahead-corpus.manifest for the contract.
+# See games/spyro-1/corpus/runahead-corpus.manifest for the contract.
 #
 # sunrise-spring-sunny-villa-portal-entry at 1712: the camera is bit-identical
 # at 1712 and at 1716, so the whole 2N window is one view and every differing

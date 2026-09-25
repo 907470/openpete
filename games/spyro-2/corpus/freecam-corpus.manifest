@@ -1,5 +1,5 @@
 # freecam-corpus.manifest, (level, pose) tuples for the Spyro 2 debug-freecam
-# golden. Same row form as scripts/freecam-corpus.manifest:
+# golden. Same row form as games/spyro-1/corpus/freecam-corpus.manifest:
 #   <level> | pos=(x, y, z) yaw=Y pitch=P | [start]
 #
 # Coverage rows, one per two levels of the game's 29: the terrain feeder reads

@@ -1,5 +1,5 @@
 # Sub-tick interpolation of Spyro's flame breath. Row grammar and the
-# leave-one-out: see games/spyro-1/flame-subtick-corpus.manifest. The centroid
+# leave-one-out: see games/spyro-1/corpus/flame-subtick-corpus.manifest. The centroid
 # crosses 0.45 px here and the ribbon grows from 2923 px to 3510 px, so the
 # area cell carries the row.
 shady-oasis-flame.bk2 | 848 | blob=320.9,176.4 tol=1.0 step=4

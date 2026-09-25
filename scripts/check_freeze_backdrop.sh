@@ -20,7 +20,7 @@
 # that carries the defect from one that does not. This harness therefore drives
 # a real window.
 #
-# Input: games/<slug>/freeze-backdrop-corpus.manifest, rows
+# Input: games/<slug>/corpus/freeze-backdrop-corpus.manifest, rows
 #   <bk2> | <frame-limit> | <launch tokens> | world_min=<n>
 # The bk2 replays to the frame limit, which is past the frame the backdrop is
 # entered on. `launch` is whitespace-separated tokens, the same convention the
@@ -67,8 +67,8 @@
 # Usage:
 #   scripts/check_freeze_backdrop.sh [--game SLUG] [--build-dir=DIR]
 #                                    [--filter=SUBSTR] [--out DIR]
-# Exit 0 PASS, 1 FAIL or VACUOUS, 64 SKIP (no display, binary, disc, bk2 or
-# manifest missing).
+# Exit 0 PASS, 1 FAIL or VACUOUS or a missing corpus manifest (the message
+# names the path), 64 SKIP (no display, binary, disc or bk2 missing).
 set -u
 cd "$(dirname "$0")/.."
 # shellcheck source=scripts/lib/game.sh
@@ -110,9 +110,8 @@ HEIGHT=448
 ROW_RUNTIME=900
 ROW_TIMEOUT=960
 
-MANIFEST="games/$GAME/freeze-backdrop-corpus.manifest"
-[[ -f "$MANIFEST" ]] ||
-    { echo "freeze-backdrop: SKIP ($GAME has no $MANIFEST)"; exit 64; }
+MANIFEST="$(pg_corpus_manifest "$GAME" freeze-backdrop-corpus.manifest)"
+pg_manifest "$MANIFEST" pipe
 # A live window is the whole point of the check; a session with no display has
 # nothing to measure and skips rather than reporting a verdict it did not earn.
 [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]] ||

@@ -20,20 +20,20 @@
 #
 # A path is named by --path and carries: what suppresses its feed for the
 # leave-one-out, the manifest it reads and the alphas it judges.
-#   glint   OPENPETE_GLINT=2 against =0, games/<slug>/glint-subtick-corpus.manifest;
+#   glint   OPENPETE_GLINT=2 against =0, games/<slug>/corpus/glint-subtick-corpus.manifest;
 #           the centroid judged is the traced outline centroid of the record
 #           each gem names (`rec=`), the mask centroid reported only
 #   glint-ext  OPENPETE_GLINT_TRACE=1, one leg per alpha, no leave-one-out, the
 #           ext statistic; OPENPETE_GLINT_EXTENT=0 is the engagement leg;
-#           games/<slug>/glint-ext-subtick-corpus.manifest
+#           games/<slug>/corpus/glint-ext-subtick-corpus.manifest
 #   glint-rot  OPENPETE_GLINT_TRACE=1, as glint-ext, the rot statistic;
 #           OPENPETE_GLINT_SPIN=0 is the engagement leg;
-#           games/<slug>/glint-rot-subtick-corpus.manifest
-#   glow    OPENPETE_GLOW=1  against =0, games/<slug>/glow-subtick-corpus.manifest
+#           games/<slug>/corpus/glint-rot-subtick-corpus.manifest
+#   glow    OPENPETE_GLOW=1  against =0, games/<slug>/corpus/glow-subtick-corpus.manifest
 #   shadow  --render-paths terrain,moby,shadow against terrain,moby,
-#           games/<slug>/shadow-subtick-corpus.manifest
+#           games/<slug>/corpus/shadow-subtick-corpus.manifest
 #   portal  OPENPETE_PORTAL3_DBG=1, one leg per alpha, no leave-one-out,
-#           games/<slug>/portal-subtick-corpus.manifest
+#           games/<slug>/corpus/portal-subtick-corpus.manifest
 #   cyclorama  --render-paths cyclorama,terrain against terrain
 #   flame      --render-paths terrain,moby,flame against terrain,moby
 #   particles  --render-paths terrain,moby,particles against terrain,moby
@@ -43,9 +43,9 @@
 #              extent and colour, which check_moby_subtick.sh does not separate
 #   terrain        OPENPETE_TERRAIN_VANIM=1 against =0, the interp statistic
 #   terrain-tanim  OPENPETE_TERRAIN_TANIM=1 against =0, the interp statistic;
-#                  both read games/<slug>/terrain-subtick-corpus.manifest
+#                  both read games/<slug>/corpus/terrain-subtick-corpus.manifest
 #   terrain-canim  OPENPETE_TERRAIN_CANIM=1 against =0, the interp statistic
-#                  referenced at alpha 1, games/<slug>/terrain-canim-subtick-corpus.manifest
+#                  referenced at alpha 1, games/<slug>/corpus/terrain-canim-subtick-corpus.manifest
 #
 # The interp statistic (STAT=interp) is for a knob that suppresses a channel's
 # sub-tick interpolation rather than its feed. The canonical presents are then
@@ -265,8 +265,8 @@
 #          --path glint|glint-ext|glint-rot|glow|shadow|portal|terrain|cyclorama|particles|flame|
 #                 tracer|moby-mask
 #          [--game SLUG] [--build-dir=DIR] [--row '<bk2>|<V>|<keys>']
-# Exit 0 PASS, 1 FAIL or VACUOUS, 64 SKIP (binary, disc, bk2, manifest, python3
-# or PIL missing).
+# Exit 0 PASS, 1 FAIL or VACUOUS or a missing corpus manifest (the message
+# names the path), 64 SKIP (binary, disc, bk2, python3 or PIL missing).
 set -u
 cd "$(dirname "$0")/.."
 # shellcheck source=scripts/lib/game.sh
@@ -406,14 +406,15 @@ pg_resolve "$GAME"
 # as its base path (the -tanim suffix) falls back to the base manifest. The
 # two terrain knobs animate different surfaces, so a row that engages one
 # can be vacuous under the other and the UV-scroll path keeps its own rows.
-MANIFEST="games/$GAME/${PATHNAME}-subtick-corpus.manifest"
-[[ -f "$MANIFEST" ]] || MANIFEST="games/$GAME/${PATHNAME%-tanim}-subtick-corpus.manifest"
+MANIFEST="$(pg_corpus_manifest "$GAME" "${PATHNAME}-subtick-corpus.manifest")"
+[[ -f "$MANIFEST" ]] ||
+    MANIFEST="$(pg_corpus_manifest "$GAME" "${PATHNAME%-tanim}-subtick-corpus.manifest")"
 if [[ -n "$ROW" ]]; then
     MANIFEST="$(mktemp)"
     trap 'rm -f "$MANIFEST"' EXIT
     printf '%s\n' "$ROW" >"$MANIFEST"
 fi
-[[ -f "$MANIFEST" ]] || { echo "$TAG: SKIP ($GAME has no $MANIFEST)"; exit 64; }
+pg_manifest "$MANIFEST" line
 if [[ "${OPENPETE_FEEDER_PROBE:-0}" != 0 ]]; then ALPHAS=(); fi
 [[ -x "$PG_BIN" && -f "$PG_DISC" ]] ||
     { echo "$TAG: SKIP (binary or disc missing)"; exit 64; }

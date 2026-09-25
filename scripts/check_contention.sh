@@ -35,8 +35,8 @@
 #                verdict=PASS|FAIL
 #
 # Usage: scripts/check_contention.sh [--game SLUG] [--rounds N] [--build-dir=DIR]
-# Exit 0 PASS, 1 FAIL or VACUOUS, 64 SKIP (the golden reported its own
-# prereqs missing).
+# Exit 0 PASS, 1 FAIL or VACUOUS or a missing corpus manifest (the message
+# names the path), 64 SKIP (the golden reported its own prereqs missing).
 set -u
 cd "$(dirname "$0")/.."
 # shellcheck source=scripts/lib/game.sh
@@ -58,6 +58,11 @@ done
 
 GAME="$(pg_parse_game "$@")" || exit 64
 pg_resolve "$GAME"
+# The golden reads both corpus manifests; loading them here fails a missing one
+# before any round starts and reports the rows every round runs.
+pg_manifest_load "$PG_CORPUS_MANIFEST" pipe
+pg_manifest_load "$PG_FREECAM_MANIFEST" pipe
+pg_manifest_dry_run_exit
 [[ -x "$PG_BIN" && -f "$PG_DISC" ]] ||
     { echo "contention: SKIP (binary or disc missing)"; exit 64; }
 

@@ -12,9 +12,14 @@ aggregates the per-row `particle path census:` exit line.
   scripts/particle-path-census.py [--out DIR] [--filter SUBSTR] [--jobs N] [--no-demo]
 
 Output: <out>/report.md, <out>/logs/<row>.txt (the exit line).
+A missing corpus manifest exits 1 with the path in the message;
+OPENPETE_MANIFEST_DRY_RUN=1 loads and reports the manifest, then exits 0.
 """
-import argparse, os, re, subprocess, zipfile
+import argparse, os, re, subprocess, sys, zipfile
 from concurrent.futures import ThreadPoolExecutor
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+import corpus_manifest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN = os.environ.get("OPENPETE_BIN", os.path.join(ROOT, "build/linux-release/games/spyro-1/openpete-spyro1"))
@@ -30,13 +35,9 @@ KEYS = ["ticks", "glow_active", "glow_ran", "glow_exposed", "glow_first",
 
 
 def read_manifest(path):
-    rows = []
-    for ln in open(path):
-        ln = ln.split("#", 1)[0].strip()
-        if not ln:
-            continue
-        rows.append([c.strip() for c in ln.split("|")])
-    return rows
+    """Rows split on `|`; a missing manifest exits 1 (corpus_manifest.load)."""
+    return [[c.strip() for c in ln.split("|")]
+            for ln in corpus_manifest.load(ROOT, path, "line")]
 
 
 def bk2_frames(name):
@@ -118,9 +119,11 @@ def main():
     ap.add_argument("--demo-frames", type=int, default=40000)
     ap.add_argument("--settle", type=int, default=400)
     opts = ap.parse_args()
+    rows = read_manifest(corpus_manifest.corpus_manifest(ROOT, "spyro-1", "presentation-corpus.manifest"))
+    corpus_manifest.dry_run_exit()
     os.makedirs(opts.out, exist_ok=True)
     jobs = []
-    for row in read_manifest(os.path.join(ROOT, "games/spyro-1/presentation-corpus.manifest")):
+    for row in rows:
         name = row[0]
         if opts.filter and opts.filter not in name:
             continue

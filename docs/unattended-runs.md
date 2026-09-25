@@ -65,7 +65,7 @@ Oracle internals are in [`duckstation-oracle.md`](duckstation-oracle.md).
 ### Skip targets
 
 `scripts/check_skip_targets.sh [--game SLUG] [--build-dir=DIR] [--filter=NAME]`
-(default game `spyro-1`) runs every row of `games/<game>/skip-targets.manifest`
+(default game `spyro-1`) runs every row of `games/<game>/corpus/skip-targets.manifest`
 headless: 5 `--skip-to-cutscene` rows for Spyro 1, 11 for Spyro 2, 38
 `--skip-to-area` and 19 `--skip-to-cutscene` rows for Spyro 3. A row is `name | args | frames | expect`:
 `args` the skip flags, `frames` the run's `--frame-limit` in VBLs, `expect` the

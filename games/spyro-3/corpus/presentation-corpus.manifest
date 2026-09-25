@@ -1,5 +1,5 @@
 # Presentation-golden corpus manifest for Spyro 3 (fields as in
-# scripts/presentation-corpus.manifest: name|start|interval|freeze|pins).
+# games/spyro-1/corpus/presentation-corpus.manifest: name|start|interval|freeze|pins).
 # The level loads by VBL ~841 under --skip-to-level and gameplay is live by
 # ~1200; 1500 leaves the fade settled.
 # The pin holds VBL 1500 on the sub-tick leg as well as the canonical one: the

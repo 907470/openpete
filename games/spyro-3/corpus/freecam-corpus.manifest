@@ -1,5 +1,5 @@
 # freecam-corpus.manifest — (level, pose) tuples for the Spyro 3 debug-freecam
-# golden. Same row form as scripts/freecam-corpus.manifest:
+# golden. Same row form as games/spyro-1/corpus/freecam-corpus.manifest:
 #   <level> | pos=(x, y, z) yaw=Y pitch=P | [start]
 # Each row is a reported defect; the class it belongs to is named on
 # the row's comment and the plan ticks it when the fix lands.

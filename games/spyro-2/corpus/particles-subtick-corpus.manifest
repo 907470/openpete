@@ -1,5 +1,5 @@
 # Sub-tick interpolation of the particle systems. Row grammar and the
-# leave-one-out: see games/spyro-1/particles-subtick-corpus.manifest.
+# leave-one-out: see games/spyro-1/corpus/particles-subtick-corpus.manifest.
 #
 # shady-oasis-flame: the sparks the flame breath throws off the oasis rock.
 # The row names the larger of the two established puffs, 302 px at 848 against

@@ -1,6 +1,6 @@
 # Sub-tick corpus for the terrain env-anim colour path (terrain-canim). Row
 # grammar and what the statistic means: see
-# games/spyro-1/terrain-canim-subtick-corpus.manifest.
+# games/spyro-1/corpus/terrain-canim-subtick-corpus.manifest.
 #
 # Census of the colour sub-list (sectors named at --skip-to-level, VBL
 # 2300): idol_springs 6, aquaria_towers 4, mystic_marsh 4, summer_forest 3,

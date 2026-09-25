@@ -21,8 +21,9 @@
 #   PG_BK2_DIR           where the corpus bk2 movies live
 #   PG_GOLDEN            the committed golden image directory
 #   PG_IDENT_BASELINE    the identity leg's per-tile baseline
-#   PG_CORPUS_MANIFEST   the bk2 corpus manifest (may not exist)
-#   PG_FREECAM_MANIFEST  the freecam pose manifest (may not exist)
+#   PG_CORPUS_DIR        the game's corpus manifest directory
+#   PG_CORPUS_MANIFEST   the bk2 corpus manifest
+#   PG_FREECAM_MANIFEST  the freecam pose manifest
 #
 # PG_BUILD_DIR defaults to build/linux-release and is honoured by pg_resolve,
 # so a caller parsing --build-dir=DIR sets it before calling.
@@ -80,11 +81,64 @@ pg_resolve() {
   PG_GOLDEN="tests/golden/$PG_GAME/presentation"
   PG_IDENT_BASELINE="$PG_GOLDEN/ident-baseline.tsv"
 
-  # Every game's corpus manifests sit with the rest of its per-game data under
-  # games/<slug>/, where the oracle recipe and the state-region manifest live.
-  PG_CORPUS_MANIFEST="games/$PG_GAME/presentation-corpus.manifest"
-  PG_FREECAM_MANIFEST="games/$PG_GAME/freecam-corpus.manifest"
+  PG_CORPUS_DIR="$(pg_corpus_dir "$PG_GAME")"
+  PG_CORPUS_MANIFEST="$PG_CORPUS_DIR/presentation-corpus.manifest"
+  PG_FREECAM_MANIFEST="$PG_CORPUS_DIR/freecam-corpus.manifest"
   return 0
+}
+
+# ---- corpus manifests ------------------------------------------------------
+#
+# A corpus manifest lists the rows a harness runs. Each game's corpus
+# manifests sit in games/<slug>/corpus/; games/<slug>/manifest/ holds the
+# recompiler's state manifests, which no harness row set reads.
+#
+# Every harness loads its manifest through pg_manifest_load, so a manifest is
+# found, counted and reported one way:
+#   - a missing manifest is FAIL: the message names the path and the script
+#     exits 1. A wrong path is a defect in the harness, never a skip.
+#   - the row count under the manifest's row rule is printed as
+#     `rows=N path=<manifest>` and left in PG_MANIFEST_ROWS. A manifest with
+#     zero rows is not refused here; the harness keeps its own zero-row exit.
+#   - OPENPETE_MANIFEST_DRY_RUN=1 makes pg_manifest_dry_run_exit exit 0, so a
+#     harness run under it loads and reports its manifests and runs nothing.
+#
+# Row rules:
+#   line  strip from the first `#`; a row is a line left with a non-blank
+#         character.
+#   pipe  split on `|`; a row is a line whose trimmed first field is non-empty
+#         and does not start with `#`.
+
+pg_corpus_dir() { echo "games/$1/corpus"; }            # args: slug
+pg_corpus_manifest() { echo "games/$1/corpus/$2"; }    # args: slug file-name
+
+# args: path form(line|pipe)
+pg_manifest_load() {
+  local path="$1" form="$2"
+  if [[ ! -f "$path" ]]; then
+    echo "FAIL: corpus manifest missing: $path" >&2
+    exit 1
+  fi
+  case "$form" in
+    line) PG_MANIFEST_ROWS="$(awk '{ sub(/#.*/, "") } /[^[:space:]]/ { n++ }
+                                   END { print n + 0 }' "$path")";;
+    pipe) PG_MANIFEST_ROWS="$(awk -F'|' '{ f = $1; gsub(/^[[:space:]]+|[[:space:]]+$/, "", f) }
+                                         f != "" && f !~ /^#/ { n++ }
+                                         END { print n + 0 }' "$path")";;
+    *) echo "FAIL: pg_manifest_load: unknown row form '$form' for $path" >&2; exit 1;;
+  esac
+  echo "rows=$PG_MANIFEST_ROWS path=$path"
+}
+
+pg_manifest_dry_run_exit() {
+  if [[ "${OPENPETE_MANIFEST_DRY_RUN:-0}" == "1" ]]; then exit 0; fi
+  return 0
+}
+
+# One manifest, then the dry-run exit. args: path form(line|pipe)
+pg_manifest() {
+  pg_manifest_load "$1" "$2"
+  pg_manifest_dry_run_exit
 }
 
 # ---- per-row launch field --------------------------------------------------

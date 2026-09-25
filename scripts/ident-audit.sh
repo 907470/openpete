@@ -23,8 +23,9 @@
 # Per-row output: build/ident-audit/<name>.tsv, columns vbl/tick/px/maxch.
 # Then a corpus summary sorted by each row's worst tick.
 #
-# Exit: 0 = every matched row produced a TSV, 1 = a row produced none,
-#       64 = SKIP (binary / disc / Vulkan loader / manifest missing).
+# Exit: 0 = every matched row produced a TSV, 1 = a row produced none or the
+#       corpus manifest is missing (the message names the path),
+#       64 = SKIP (binary / disc / Vulkan loader missing).
 set -u
 
 # Unattended launcher: silence controller vibration for every run this script
@@ -35,6 +36,8 @@ export OPENPETE_VIBRATION=0
 cd "$(dirname "$0")/.."
 # shellcheck source=scripts/corpus-jobs.sh
 source scripts/corpus-jobs.sh
+# shellcheck source=scripts/presentation-game.sh
+source scripts/presentation-game.sh
 
 FILTER=""
 BUILD_DIR="build/linux-release"
@@ -50,7 +53,7 @@ done
 
 BIN="${OPENPETE_BIN:-$BUILD_DIR/games/spyro-1/openpete-spyro1}"
 DISC="${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}"
-MANIFEST="games/spyro-1/presentation-corpus.manifest"
+MANIFEST="$(pg_corpus_manifest spyro-1 presentation-corpus.manifest)"
 OUTDIR="build/ident-audit"
 
 # The LOD band each row is swept at. One run per row by default; set to
@@ -59,9 +62,9 @@ CAP_LODS="${OPENPETE_CAP_LODS:-original}"
 # Capture aspect — 16:9 like the corpus, so the audit sees the Hor+ reveal too.
 CAP_ASPECT="${OPENPETE_CAP_ASPECT:-16:9}"
 
+pg_manifest "$MANIFEST" pipe
 if [[ ! -x "$BIN" ]];    then echo "[ident-audit] SKIP: no binary at $BIN"; exit 64; fi
 if [[ ! -f "$DISC" ]];   then echo "[ident-audit] SKIP: no disc at $DISC"; exit 64; fi
-if [[ ! -f "$MANIFEST" ]]; then echo "[ident-audit] SKIP: no manifest $MANIFEST"; exit 64; fi
 if ! ldconfig -p 2>/dev/null | grep -q 'libvulkan\.so\.1'; then
   echo "[ident-audit] SKIP: no Vulkan loader (libvulkan.so.1)"; exit 64; fi
 

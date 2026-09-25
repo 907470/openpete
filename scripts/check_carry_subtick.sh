@@ -22,7 +22,7 @@
 # a genuinely sliding sprite's new position was occupied by nothing last tick,
 # so no twin exists and nothing fires, however far it moved.
 #
-# Input: games/<slug>/carry-subtick-corpus.manifest, rows
+# Input: games/<slug>/corpus/carry-subtick-corpus.manifest, rows
 #   <bk2> | <lo>-<hi> | <key>=<value> ...
 # The span is the intermediate-capture VBLs, one apart, inclusive. Keys:
 #   lerps=<n>   floor on the interpolated carry triangles measured over the row
@@ -65,8 +65,8 @@
 #                   segments_lerped=<n> ambiguous_lerp=<n> verdict=PASS|FAIL
 #
 # Usage: scripts/check_carry_subtick.sh [--game SLUG] [--build-dir=DIR]
-# Exit 0 PASS, 1 FAIL or VACUOUS, 64 SKIP (binary, disc, bk2, manifest or
-# python3 missing).
+# Exit 0 PASS, 1 FAIL or VACUOUS or a missing corpus manifest (the message
+# names the path), 64 SKIP (binary, disc, bk2 or python3 missing).
 set -u
 cd "$(dirname "$0")/.."
 # shellcheck source=scripts/lib/game.sh
@@ -83,8 +83,8 @@ pg_resolve "$GAME"
 
 CHUNK=60
 ALPHAS=(0.25 0.5 0.75)
-MANIFEST="games/$GAME/carry-subtick-corpus.manifest"
-[[ -f "$MANIFEST" ]] || { echo "carry-subtick: SKIP ($GAME has no $MANIFEST)"; exit 64; }
+MANIFEST="$(pg_corpus_manifest "$GAME" carry-subtick-corpus.manifest)"
+pg_manifest "$MANIFEST" line
 [[ -x "$PG_BIN" && -f "$PG_DISC" ]] ||
     { echo "carry-subtick: SKIP (binary or disc missing)"; exit 64; }
 python3 -c '' 2>/dev/null || { echo "carry-subtick: SKIP (python3 missing)"; exit 64; }
