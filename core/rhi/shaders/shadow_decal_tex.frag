@@ -12,7 +12,7 @@
  *   (1) HEIGHT — terrain standing more than wall_height ABOVE the shadow's
  *       ground plane (a wall/ledge); bumps/ramps/pits near ground stay shadowed.
  *   (2) STEEPNESS (opt-in) — a wall FACE by surface orientation (small up-normal).
- *   (3) PAINTED AFTER — terrain whose ordering key is in the fan's slot or nearer.
+ *   (3) RAISED-IN-FRONT — a curb/platform nearer than the fan yet above its plane.
  * This stops the flat textured fan clipping through slanted floors (the old
  * depth-test path Z-fought the slope) and painting up wall bases.
  *
@@ -41,18 +41,18 @@ layout(push_constant) uniform PC {
     float steep_nup;             /* |up normal| below which a surface is a wall face */
     float mode;                  /* 0 = draw all (band), 1 = height+steep test */
     float band;                  /* fallback view-Z band (mode 0) */
-    float plat_eps;              /* inert, reads nothing */
-    float plat_slack;            /* inert, reads nothing */
+    float plat_eps;              /* raised-occluder-in-front: min rise above the plane */
+    float plat_slack;            /* raised-occluder-in-front: view-Z slack */
     float uax, ubx, vay, vby;    /* PSX screen -> pre-pass uv affine (u=uax*SX+ubx) */
     float pvw, pvh;              /* pre-pass raster extent within the depth image */
     float fax, fbx, fay, fby;    /* gl_FragCoord -> PSX screen affine, this pass */
     int   tpage;                 /* texture page origin, x | y << 10 */
     int   clut;                  /* CLUT origin x | y << 10, bpp code << 20 */
-    float key_contest;           /* 1 = uTerrainKey holds this target's keys */
+    float key_contest;           /* 1 = uTerrainKey holds this target's keys; unread */
 } pc;
 
-/* 30 floats + 2 ints = 128 B, the guaranteed maxPushConstantsSize; plat_eps
- * and plat_slack are inert. VRAM x is 10 bits (0..1023), y 9 (0..511) and the
+/* 30 floats + 2 ints = 128 B, the guaranteed maxPushConstantsSize; key_contest
+ * is unread. VRAM x is 10 bits (0..1023), y 9 (0..511) and the
  * bpp code 2, so the five PSX material fields ride two words (the layout the mod
  * decal contract openpete_psx_decal.glsl declares). */
 int tpage_x() { return  pc.tpage        & 0x3FF; }
@@ -189,14 +189,11 @@ void main()
         return;
     }
     if (pc.mode > 0.5) {
-        /* Terrain painted after the fan covers it: a terrain face keyed into
-         * the fan's ordering-table slot or a nearer one (a raised platform or
-         * curb in front) paints over it; the receiving ground's key lies
-         * farther than the fan's. */
-        if (pc.key_contest > 0.5 &&
-            op_decal_covered(op_key_from_stored(
-                                 texelFetch(uTerrainKey, ivec2(gl_FragCoord.xy), 0).r),
-                             vKoff)) discard;
+        /* Raised occluder in front (curb / platform): terrain meaningfully nearer
+         * than the fan AND meaningfully above the shadow plane covers the fan by
+         * depth. Receiving ground keeps the fan (bumps below plat_eps; draped far
+         * slopes are farther, not nearer). */
+        if (viewZ + pc.plat_slack < fanViewZ && height > pc.plat_eps) discard;
         if (pc.steep_nup > 0.0) {
             /* (1) wall FACE receiver: steep surface -> unconditional (the fan oval
              *     can poke THROUGH a wall, its near rim in front of the base).

@@ -135,7 +135,9 @@ typedef struct {
     float steep_nup;               /* |up normal| below which a surface is a wall */
     float mode;                    /* 0 = draw all, 1 = height+steep discard, 2 = viz */
     float band;                    /* fallback view-Z band when params invalid */
-    float key_contest;             /* 1 = set 1 binding 1 holds this target's terrain keys */
+    float plat_eps;                /* raised-occluder-in-front: min rise */
+    float plat_slack;              /* raised-occluder-in-front: view-Z slack */
+    float key_contest;             /* 1 = set 1 binding 1 holds this target's terrain keys; unread */
     float uax, ubx, vay, vby;      /* PSX screen -> pre-pass uv affine */
     float pvw, pvh;                /* pre-pass raster extent (texels) */
     float fax, fbx, fay, fby;      /* gl_FragCoord -> PSX screen affine, this pass */
@@ -151,9 +153,9 @@ typedef struct {
  * fax..fby inverse affine of this pass, as the Spyro decal does. The five PSX
  * material fields are packed into two words (VRAM x 10 bits, y 9 bits, bpp code
  * 2 bits) so the block is 30 floats + 2 ints = 128 B, the guaranteed
- * maxPushConstantsSize. plat_eps and plat_slack are inert: they hold the
- * offsets of every later field for shaders written against the earlier
- * block, and nothing reads them. The layout is the mod decal contract
+ * maxPushConstantsSize. key_contest is written and not read by the stock
+ * decal: the key image stays bound at set 1 binding 1 for the contract's
+ * set layout. The layout is the mod decal contract
  * (core/include/openpete_psx_decal.glsl); a change to it recompiles every mod
  * material built from source, the interface hash covering the header. */
 typedef struct {
@@ -166,8 +168,8 @@ typedef struct {
     float steep_nup;               /* |up normal| below which a surface is a wall */
     float mode;                    /* 0 = draw all (band), 1 = height+steep discard */
     float band;                    /* fallback view-Z band when mode 0 */
-    float plat_eps;                /* inert, reads nothing */
-    float plat_slack;              /* inert, reads nothing */
+    float plat_eps;                /* raised-occluder-in-front: min rise */
+    float plat_slack;              /* raised-occluder-in-front: view-Z slack */
     float uax, ubx, vay, vby;      /* PSX screen -> pre-pass uv affine */
     float pvw, pvh;                /* pre-pass raster extent (texels) */
     float fax, fbx, fay, fby;      /* gl_FragCoord -> PSX screen affine, this pass */
@@ -9328,6 +9330,8 @@ static bool draw_native_scene(bool full_extent)
                     if (mv && *mv) mode = (float)atof(mv);
                     pc.mode = mode;
                     pc.band = shadow_decal_band();
+                    pc.plat_eps = ps_shadow()->plat_eps;
+                    pc.plat_slack = ps_shadow()->plat_slack;
                     pc.key_contest = shadow_decal_bind_keys();
                     pc.uax = s_od_uax; pc.ubx = s_od_ubx;
                     pc.vay = s_od_vay; pc.vby = s_od_vby;
@@ -9389,6 +9393,8 @@ static bool draw_native_scene(bool full_extent)
                 if (mv && *mv) mode = (float)atof(mv);
                 pc.mode = mode;
                 pc.band = shadow_decal_band();
+                pc.plat_eps = ps_shadow()->plat_eps;
+                pc.plat_slack = ps_shadow()->plat_slack;
                 pc.uax = s_od_uax; pc.ubx = s_od_ubx;
                 pc.vay = s_od_vay; pc.vby = s_od_vby;
                 pc.pvw = s_od_vw;  pc.pvh = s_od_vh;

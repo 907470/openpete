@@ -5,9 +5,8 @@
  *
  * Moby drop-shadows draw through a pass whose stock fragment stage
  * decides per pixel whether the shadow is occluded: it reconstructs the
- * terrain height from a depth pre-pass and rejects walls and steep faces,
- * and rejects terrain whose ordering key places it after the shadow in
- * the original paint order. That verdict is the engine's, applied by main()
+ * terrain height from a depth pre-pass and rejects walls, steep faces
+ * and raised platforms. That verdict is the engine's, applied by main()
  * before this function runs, so a material on this path cannot paint
  * through a wall.
  *

@@ -228,7 +228,7 @@ static void shadow_player_feed_native(CPUState* cpu, int slot) {
         }
         st.textured = 0;
         st.blend = 3;                                  /* untextured subtract (ABR mode 2) */
-        st.koff = shadow_slot_koff(c->slot);           /* the decal's paint order against terrain */
+        st.koff = shadow_slot_koff(c->slot);           /* the fan triangle's ordering-table slot; the decal does not read it */
         openpete_native_scene_add_tri(&st, OPENPETE_SCENE_SHADOW, 0);
     }
     openpete_native_scene_set_tag(0);

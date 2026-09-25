@@ -305,6 +305,11 @@ void shadow_push_decal_params(CPUState* cpu, const ngte_view* v, const int C[3][
      * slopes stay >~0.64; wall faces ~0). OPENPETE_SHADOW_STEEP_NY=0 = height-only. */
     const char* sn = getenv("OPENPETE_SHADOW_STEEP_NY");
     p->steep_nup = (sn && *sn) ? (float)atof(sn) : 0.5f;
+    /* Raised-occluder-in-front (curb/platform) clause; PLAT_EPS=1e5 disables. */
+    const char* pe = getenv("OPENPETE_SHADOW_PLAT_EPS");
+    const char* ps = getenv("OPENPETE_SHADOW_PLAT_SLACK");
+    p->plat_eps = (pe && *pe) ? (float)atof(pe) : 150.0f;
+    p->plat_slack = (ps && *ps) ? (float)atof(ps) : 48.0f;
     p->valid = 1;
     openpete_native_set_shadow_decal_params(p);
     if (out) *out = *p;
@@ -637,7 +642,7 @@ static void shadow_moby_feed_native(CPUState* cpu) {
         }
         st.textured = 1; st.tpage_x = m->tpx; st.tpage_y = m->tpy;
         st.clut_x = m->clx; st.clut_y = m->cly; st.bpp = m->bpp; st.blend = m->blend;
-        st.koff = shadow_slot_koff(m->slot);           /* the decal's paint order against terrain */
+        st.koff = shadow_slot_koff(m->slot);           /* the fan triangle's ordering-table slot; the decal does not read it */
         openpete_native_scene_add_tri(&st, OPENPETE_SCENE_SHADOW, 0);
     }
     openpete_native_scene_set_tag(0);

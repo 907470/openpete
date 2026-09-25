@@ -14,9 +14,8 @@
  * A separate include because the draw path differs. Moby drop-shadows are
  * flat fans drawn with the depth test off; their fragment stage decides per
  * pixel whether the shadow is occluded by reconstructing the terrain's
- * world height from the opaque depth pre-pass, rejecting walls and steep
- * faces, and by comparing its ordering-table slot against the terrain key
- * image, rejecting terrain painted after it. That path has its own vertex stage,
+ * world height from the opaque depth pre-pass and rejecting walls, steep
+ * faces and raised platforms in front. That path has its own vertex stage,
  * push block and samplers. A mod that writes one op_material() can be
  * pointed at either contract.
  *
@@ -53,20 +52,19 @@ layout(push_constant) uniform OP_DECAL_PC {
     float steep_nup;             /* |up normal| below which a surface is a wall face */
     float mode;                  /* 0 = draw all (band), 1 = height and steepness test */
     float band;                  /* fallback view-Z band (mode 0) */
-    float plat_eps;              /* inert, reads nothing */
-    float plat_slack;            /* inert, reads nothing */
+    float plat_eps;              /* raised occluder in front: min rise above the plane */
+    float plat_slack;            /* raised occluder in front: view-Z slack */
     float uax, ubx, vay, vby;    /* PSX screen -> pre-pass uv affine */
     float pvw, pvh;              /* pre-pass raster extent within the depth image */
     float fax, fbx, fay, fby;    /* gl_FragCoord -> PSX screen affine, this pass */
     int   tpage;                 /* texture page origin, x | y << 10 */
     int   clut;                  /* CLUT origin x | y << 10, bpp code << 20 */
-    float key_contest;           /* 1 = op_terrain_key holds this target's keys */
+    float key_contest;           /* 1 = op_terrain_key holds this target's keys; unread */
 } op_pc;
 
 /* The material block is 30 floats + 2 ints = 128 bytes, the guaranteed
- * maxPushConstantsSize. plat_eps and plat_slack are inert and keep every
- * later field at the offset that shaders written against the earlier block
- * read; key_contest follows them at the end. VRAM coordinates are 10 bits of
+ * maxPushConstantsSize. key_contest follows the earlier block at the end;
+ * the engine's occlusion test does not read it. VRAM coordinates are 10 bits of
  * x (0..1023) and 9 bits of y (0..511), and the bpp code is 2 bits, so the
  * five PSX material fields ride two words and leave room for the affine. */
 int op_tpage_x() { return  op_pc.tpage        & 0x3FF; }
@@ -186,10 +184,7 @@ bool op_decal_visible()
     float nup  = (nlen > 1e-6) ? abs(N.z) / nlen : 1.0;
 
     if (op_pc.mode > 0.5) {
-        if (op_pc.key_contest > 0.5 &&
-            op_decal_covered(op_key_from_stored(
-                                 texelFetch(op_terrain_key, ivec2(gl_FragCoord.xy), 0).r),
-                             op_vkoff)) return false;
+        if (viewZ + op_pc.plat_slack < fanViewZ && height > op_pc.plat_eps) return false;
         if (op_pc.steep_nup > 0.0) {
             if (nup < op_pc.steep_nup) return false;
             float flat01 = clamp((nup - op_pc.steep_nup) / (0.9 - op_pc.steep_nup), 0.0, 1.0);

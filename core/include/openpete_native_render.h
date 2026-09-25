@@ -817,6 +817,12 @@ typedef struct {
     float ground_up;      /* shadow ground-plane height (SpyroShadow z) */
     float wall_height;
     float steep_nup;
+    /* Raised-occluder-in-front clause: discard fan pixels whose pre-pass
+     * terrain is nearer than the fan fragment by more than plat_slack view-Z
+     * units AND raised more than plat_eps above the shadow plane (a curb or
+     * raised platform between the camera and the shadow). */
+    float plat_eps;
+    float plat_slack;
     int   valid;
 } openpete_shadow_decal_params;
 void openpete_native_set_shadow_decal_params(const openpete_shadow_decal_params *p);

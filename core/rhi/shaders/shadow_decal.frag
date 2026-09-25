@@ -69,7 +69,10 @@ layout(push_constant) uniform PC {
     float steep_nup;             /* |up normal| below which a surface is a wall face */
     float mode;                  /* 0 = draw all, 1 = height+steep test, 2 = viz */
     float band;                  /* fallback view-Z band (mode 0/invalid params) */
-    float key_contest;           /* 1 = uTerrainKey holds this target's keys */
+    float plat_eps;              /* min rise above the shadow plane for a raised
+                                  * in-front surface to occlude (platform/curb) */
+    float plat_slack;            /* view-Z slack for "meaningfully in front" */
+    float key_contest;           /* 1 = uTerrainKey holds this target's keys; unread */
     float uax, ubx, vay, vby;    /* PSX screen -> pre-pass uv affine (u=uax*SX+ubx) */
     float pvw, pvh;              /* pre-pass raster extent within the depth image */
     float fax, fbx, fay, fby;    /* gl_FragCoord -> PSX screen affine, this pass */
@@ -217,17 +220,16 @@ void main()
         return;
     }
     if (pc.mode > 0.5) {
-        /* Terrain painted after the fan covers it: the fan is inserted into
-         * the ordering table at its own slot before the terrain pass, so a
-         * terrain face keyed into that slot or a nearer one paints over it.
-         * This covers a raised platform or curb in front of the fan, which
-         * passes the steep test (its top is flat) and the wall-height test,
-         * and leaves the fan on a nearer receiving face whose key lies
-         * farther than the fan's. */
-        if (pc.key_contest > 0.5 &&
-            op_decal_covered(op_key_from_stored(
-                                 texelFetch(uTerrainKey, ivec2(gl_FragCoord.xy), 0).r),
-                             vKoff)) discard;
+        /* Raised occluder in front (curb / raised platform): terrain between
+         * the camera and the fan covers it by depth. A flat raised path
+         * passes both the steep test (top is flat) and the wall-height test
+         * (dark-hollow platform: +368 < 400), yet must occlude. "In front" =
+         * the pre-pass terrain is meaningfully nearer than the fan fragment
+         * itself; "raised" = meaningfully above the shadow plane. The
+         * receiving ground keeps the shadow: its bumps are below plat_eps,
+         * and draped far slopes are farther, not nearer. */
+        if (viewZ + pc.plat_slack < viewz_from_scene_depth(dS) &&
+            height > pc.plat_eps) discard;
         if (pc.steep_nup > 0.0) {
             /* ORIENTATION-AWARE tests (opt-in via OPENPETE_SHADOW_STEEP_NY).
              * 2026-07-02: the old blocker ("terrain feeder view-Z skewed off
