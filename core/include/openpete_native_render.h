@@ -827,6 +827,28 @@ typedef struct {
 } openpete_shadow_decal_params;
 void openpete_native_set_shadow_decal_params(const openpete_shadow_decal_params *p);
 
+/* The player ground-shadow fan in the form the footprint decal reads
+ * (shadow_decal.frag, the std140 block at set 2). The decal shadows (A) the
+ * fan's own surface where the depth rule keeps it and (B) the opaque terrain
+ * whose world (x, y) lies under the ring, which is not steep, and whose height
+ * lies between the fan less `below` and `caster_up`. Point 0 is the anchor,
+ * points 1..16 the ring. `scr` is each point as fed: PSX screen x, y, the
+ * ordering view-Z and the perspective W, so the fragment stage re-rasterizes
+ * the fan exactly as the scene pipe would; `wrel` is the camera-relative world
+ * (x, y, up) through the decal's own reconstruction. `tri_mask` bit k: the
+ * triangle (anchor, ring k, ring k+1) was linked. Display-only. */
+#define OPENPETE_SHADOW_FAN_POINTS 17
+typedef struct {
+    float caster_up;      /* world height (game z) of the caster */
+    float footprint;      /* 1 = term (B) runs; 0 = term (A) alone */
+    float tri_mask;       /* bits 0..15, exact in a float */
+    float below;          /* world units a (B) receiver may lie below the fan */
+    float anchor_rgb[4];  /* the fan's gouraud at the anchor, 0..1; the rim is 0 */
+    float scr[OPENPETE_SHADOW_FAN_POINTS][4];
+    float wrel[OPENPETE_SHADOW_FAN_POINTS][4];
+} openpete_shadow_footprint;
+void openpete_native_set_shadow_footprint(const openpete_shadow_footprint *f);
+
 /* Begin a fresh native-scene frame (clears the triangle list). Called by
  * the game at the start of its scene extraction. */
 void openpete_native_scene_begin(void);

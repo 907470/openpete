@@ -1210,6 +1210,9 @@ static const knob_desc_t g_builtin[] = {
         "Raised-occluder clause epsilon (default 150; 1e5 disables)."),
     ENVROW_LIVE("SHADOW_PLAT_SLACK", "Debug", "48",
         "Platform-clause slack (default 48)."),
+    ENVROW_LIVE("SHADOW_FOOTPRINT", "Debug", "1",
+        "Player-shadow footprint term: the terrain under the ring below the caster "
+        "(default 1); 0 leaves the fan's own surface under the depth rule."),
     ENVROW_LATCHED("SHADOW_BIAS_SPYRO", "Debug", "1.0",
         "Spyro-shadow depth-bias multiplier."),
     ENVROW_LATCHED("SHADOW_BIAS_MOBY", "Debug", "1.0",

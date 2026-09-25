@@ -120,6 +120,8 @@ static void build_heading_matrix(CPUState* cpu, const int C[3][3], int heading, 
 typedef struct { float sx[3], sy[3], sz[3]; uint32_t rgb[3]; int slot; } sptri;
 #define MAX_SPTRI 64
 static sptri s_sptri[MAX_SPTRI]; static int s_sptri_n;
+/* The same fan in the footprint decal's form, fed in place of s_sptri. */
+static shadow_fan s_fan;
 
 static void shadow_spyro_build(CPUState* cpu) {
     s_sptri_n = 0;
@@ -243,18 +245,28 @@ static void shadow_spyro_build(CPUState* cpu) {
      * triangle's ordering-table slot is (key >> 9) - SpyroShadow+0x1C
      * (r_shadows.s 80059E9C-80059F34). */
     const int bias = (int)cpu->read_word(D_SPYROSHADOW + 0x1C);
+    s_fan.anchor = anchor;
+    memcpy(s_fan.ring, strip, sizeof strip);
+    s_fan.tri_mask = 0xFFFFu;           /* the routine links all sixteen */
+    s_fan.anchor_rgb = 0x608080u;
+    s_fan.anchor_up = (double)sposz;
+    s_fan.caster_up = shadow_caster_up(cpu, (double)sposz);   /* the staged record, as the anchor */
+    memcpy(s_fan.C, C, sizeof C);
+    s_fan.ofx = ofx; s_fan.ofy = ofy; s_fan.H = H;
     for (int k = 0; k < 16; k++) {
         if (s_sptri_n >= MAX_SPTRI) break;
         sptri* t = &s_sptri[s_sptri_n++];
         shadow_pt* p1 = &strip[k]; shadow_pt* p2 = &strip[(k+1) & 15];
         t->slot = shadow_ot_slot(anchor.sz, p1->sz, p2->sz, 9, bias);
+        s_fan.slot[k] = t->slot;
         t->sx[0]=anchor.sx; t->sy[0]=anchor.sy; t->sz[0]=anchor.sz; t->rgb[0]=0x608080u;
         t->sx[1]=p1->sx;    t->sy[1]=p1->sy;    t->sz[1]=p1->sz;    t->rgb[1]=0;
         t->sx[2]=p2->sx;    t->sy[2]=p2->sy;    t->sz[2]=p2->sz;    t->rgb[2]=0;
     }
 }
 
-/* feed the native Spyro shadow (untextured G3 fan, ABR mode 2 -> blend=3).
+/* feed the native Spyro shadow: the fan's footprint prism hull, subtractive
+ * (ABR mode 2 -> blend=3), coloured per pixel by the footprint decal.
  * `slot`: the model record the shadow renders under (spyro_records.h), the
  * PLAYER slot of its tag. */
 static void shadow_spyro_feed_native(CPUState* cpu, int slot) {
@@ -263,22 +275,7 @@ static void shadow_spyro_feed_native(CPUState* cpu, int slot) {
     if (s_sptri_n <= 0) return;
     openpete_native_scene_begin_frame(openpete_frame);
     openpete_native_scene_set_tag(OPENPETE_TAG_SHADOW(OPENPETE_TAG_SHADOW_PLAYER, (uint32_t)(slot < 0 ? 0 : slot)));
-    for (int i = 0; i < s_sptri_n; i++) {
-        sptri* c = &s_sptri[i];
-        openpete_scene_tri st = {0};
-        float bias = shadow_bias_spyro();
-        for (int k = 0; k < 3; k++) {
-            st.v[k].sx = c->sx[k]; st.v[k].sy = c->sy[k];
-            st.v[k].z  = shadow_depth(c->sz[k], 1.0f, bias);  /* already full-world MAC3 */
-            st.v[k].pvz = shadow_depth(c->sz[k], 1.0f, 1.0f); /* true (unbiased) view-Z */
-            st.v[k].u = 0.0f; st.v[k].v = 0.0f;
-            st.v[k].rgba = (c->rgb[k] & 0xFFFFFFu) | 0xFF000000u;
-        }
-        st.textured = 0; st.tpage_x = st.tpage_y = st.clut_x = st.clut_y = st.bpp = 0;
-        st.blend = 3;                                  /* untextured subtract (ABR mode 2) */
-        st.koff = shadow_slot_koff(c->slot);           /* the fan triangle's ordering-table slot; the decal does not read it */
-        openpete_native_scene_add_tri(&st, OPENPETE_SCENE_SHADOW, 0);
-    }
+    shadow_fan_feed(cpu, &s_fan);
     openpete_native_scene_set_tag(0);
 }
 

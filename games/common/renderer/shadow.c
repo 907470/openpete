@@ -206,6 +206,7 @@ void shadow_project(const int R[3][3], const double TR[3], double ofx, double of
     ngte_proj r;   /* shared GTE-faithful pipeline, ±1024 SXY bound ON */
     ngte_project_gte(R, TR, vx, vy, vz, ofx, ofy, v, 1, &r);
     o->sx = (float)r.sx; o->sy = (float)r.sy; o->sz = (float)r.m3;
+    o->m1 = (float)r.m1; o->m2 = (float)r.m2;
 }
 
 /* signed 2*area on the native FLOAT SXY == GTE NCLIP MAC0 sign, WITHOUT the GTE's
@@ -260,6 +261,23 @@ static void assemble_matrix(CPUState* cpu, const int C[3][3], int idxA, int idxB
     }
 }
 
+/* 4096² · C⁻¹ via the adjugate: the rows the decal reconstructs a view-space
+ * point's camera-relative GTE input vector with, V_j = (inv[j] · MAC) / 4096. */
+static void shadow_cam_inverse(const int C[3][3], double inv[3][3]) {
+    double a = C[0][0], b = C[0][1], c = C[0][2];
+    double d = C[1][0], e = C[1][1], f = C[1][2];
+    double g = C[2][0], hh = C[2][1], ii = C[2][2];
+    double det = a*(e*ii - f*hh) - b*(d*ii - f*g) + c*(d*hh - e*g);
+    if (det > -1e-6 && det < 1e-6) det = det < 0.0 ? -1e-6 : 1e-6;
+    double k = 4096.0 * 4096.0 / det;
+    const double r[3][3] = {
+        { (e*ii - f*hh) * k, (c*hh - b*ii) * k, (b*f - c*e) * k },
+        { (f*g  - d*ii) * k, (a*ii - c*g)  * k, (c*d - a*f) * k },
+        { (d*hh - e*g)  * k, (b*g  - a*hh) * k, (a*e - b*d) * k },
+    };
+    memcpy(inv, r, sizeof r);
+}
+
 /* Fill the depth-aware shadow decal's camera-reconstruction params — SHARED by
  * every shadow feeder. The shader recovers each terrain pixel's world height
  * from the WORLD-opaque depth pre-pass via V_j = (4096²·C⁻¹[j]·MAC) / 4096 — a
@@ -279,17 +297,8 @@ void shadow_push_decal_params(CPUState* cpu, const ngte_view* v, const int C[3][
                               openpete_shadow_decal_params* out) {
     openpete_shadow_decal_params sp;
     openpete_shadow_decal_params* p = &sp;
-    double a = C[0][0], b = C[0][1], c = C[0][2];
-    double d = C[1][0], e = C[1][1], f = C[1][2];
-    double g = C[2][0], hh = C[2][1], ii = C[2][2];
-    double det = a*(e*ii - f*hh) - b*(d*ii - f*g) + c*(d*hh - e*g);
-    if (det > -1e-6 && det < 1e-6) det = det < 0.0 ? -1e-6 : 1e-6;
-    double k = 4096.0 * 4096.0 / det;   /* 4096² · C⁻¹ via the adjugate */
-    double inv[3][3] = {
-        { (e*ii - f*hh) * k, (c*hh - b*ii) * k, (b*f - c*e) * k },
-        { (f*g  - d*ii) * k, (a*ii - c*g)  * k, (c*d - a*f) * k },
-        { (d*hh - e*g)  * k, (b*g  - a*hh) * k, (a*e - b*d) * k },
-    };
+    double inv[3][3];
+    shadow_cam_inverse(C, inv);
     for (int i = 0; i < 3; i++) {
         p->cam_col0[i] = (float)inv[0][i];
         p->cam_col1[i] = (float)inv[1][i];
@@ -620,6 +629,184 @@ float shadow_bias_moby(void) {
     static float b = -1.0f;
     if (b < 0.0f) { const char* e = getenv("OPENPETE_SHADOW_BIAS_MOBY"); b = (e && *e) ? (float)atof(e) : 1.0f; }
     return b;
+}
+
+/* ---- the player fan's footprint decal ------------------------------------- */
+
+/* A footprint receiver lies between the fan's own surface less this margin and
+ * the caster height. The margin holds the pre-pass reconstruction error (a few
+ * world units) on a receiver that is the fan's own ground; the prism hull the
+ * feed draws spans the same interval, so no receiver the rule admits falls
+ * outside the drawn cover. */
+#define SHADOW_FOOT_BELOW 16.0
+/* A hull vertex nearer the eye plane than this view-Z, or projecting farther
+ * off screen than this bound, replaces the hull by a full-screen cover: the
+ * fragment stage decides every pixel from the fan data, so a larger cover
+ * costs fragments and never changes the image. */
+#define SHADOW_HULL_NEAR  16.0
+#define SHADOW_HULL_BOUND 4096.0
+
+/* OPENPETE_SHADOW_FOOTPRINT=0 drops the footprint term, leaving the fan's own
+ * surface under the depth rule: the negative control of the term's count. */
+static int shadow_footprint_on(void) {
+    const char* e = getenv("OPENPETE_SHADOW_FOOTPRINT");
+    return !(e && *e == '0');
+}
+
+/* The caster's world height: the player position's z in the player state
+ * block, read through the same view as the shadow block (the sub-tick
+ * re-extract stages both from one record, position bracketed); the anchor's
+ * height when the game has no player block, which flattens the prism. */
+double shadow_caster_up(CPUState* cpu, double anchor_up) {
+    const uint32_t pl = game_layout.player.base;
+    if (!pl) return anchor_up;
+    return (double)(int32_t)cpu->read_word(pl + game_layout.player.pos_off + 8u);
+}
+
+/* Camera-relative world position (x, y, up) of a projected point, through the
+ * same 4096² · C⁻¹ rows the decal reconstructs the pre-pass terrain with, so
+ * both sides of the footprint test live in one frame. */
+static void fan_wrel(const double inv[3][3], const shadow_pt* p, double w[3]) {
+    const double m[3] = { p->m1, p->m2, p->sz };
+    double V[3];
+    for (int j = 0; j < 3; j++)
+        V[j] = (inv[j][0] * m[0] + inv[j][1] * m[1] + inv[j][2] * m[2]) / 4096.0;
+    w[0] = V[2]; w[1] = -V[0]; w[2] = -V[1];
+}
+
+typedef struct { double x, y; } fan_xy;
+
+static double hull_cross(fan_xy o, fan_xy a, fan_xy b) {
+    return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+}
+static int hull_cmp(const void* pa, const void* pb) {
+    const fan_xy* a = (const fan_xy*)pa; const fan_xy* b = (const fan_xy*)pb;
+    if (a->x != b->x) return a->x < b->x ? -1 : 1;
+    if (a->y != b->y) return a->y < b->y ? -1 : 1;
+    return 0;
+}
+/* Andrew's monotone chain: the convex hull of p[0..n) (sorted in place) into
+ * h (room for 2n points), counter-clockwise; returns the vertex count. */
+static int convex_hull(fan_xy* p, int n, fan_xy* h) {
+    qsort(p, (size_t)n, sizeof *p, hull_cmp);
+    int k = 0;
+    for (int i = 0; i < n; i++) {
+        while (k >= 2 && hull_cross(h[k - 2], h[k - 1], p[i]) <= 0.0) k--;
+        h[k++] = p[i];
+    }
+    for (int i = n - 2, t = k + 1; i >= 0; i--) {
+        while (k >= t && hull_cross(h[k - 2], h[k - 1], p[i]) <= 0.0) k--;
+        h[k++] = p[i];
+    }
+    return k > 1 ? k - 1 : k;
+}
+
+/* The screen position of a view-space point by the GTE's divide without its
+ * saturation. 0 when the point cannot stand as a hull vertex. */
+static int hull_project(const shadow_fan* f, const double m[3], fan_xy* o) {
+    if (m[2] < SHADOW_HULL_NEAR) return 0;
+    o->x = f->ofx + f->H * m[0] / m[2];
+    o->y = f->ofy + f->H * m[1] / m[2];
+    return fabs(o->x) < SHADOW_HULL_BOUND && fabs(o->y) < SHADOW_HULL_BOUND;
+}
+
+/* The footprint block's point i (0 the anchor, 1..16 the ring) and the two
+ * hull points vertically over it: the prism floor (the fan less the margin)
+ * and its roof (the caster height). Returns 0 when a hull point is unusable. */
+static int fan_point(const shadow_fan* f, const double inv[3][3], const double w0[3],
+                     double caster, int i, openpete_shadow_footprint* fp, fan_xy out[3]) {
+    const shadow_pt* p = i ? &f->ring[i - 1] : &f->anchor;
+    const int snap = openpete_native_vertex_snap_active();
+    const float sx = snap ? floorf(p->sx) : p->sx, sy = snap ? floorf(p->sy) : p->sy;
+    fp->scr[i][0] = sx; fp->scr[i][1] = sy;
+    fp->scr[i][2] = shadow_depth(p->sz, 1.0f, shadow_bias_spyro());
+    fp->scr[i][3] = shadow_depth(p->sz, 1.0f, 1.0f);
+    double w[3]; fan_wrel(inv, p, w);
+    for (int c = 0; c < 3; c++) fp->wrel[i][c] = (float)w[c];
+    out[0].x = sx; out[0].y = sy;
+    const double up = f->anchor_up + (w[2] - w0[2]);
+    const double dz[2] = { -SHADOW_FOOT_BELOW, caster - up };
+    int ok = 1;
+    for (int e = 0; e < 2; e++) {
+        /* a world rise dz lowers the GTE input's second component by dz */
+        const double m[3] = { p->m1 - f->C[0][1] * dz[e] / 4096.0,
+                              p->m2 - f->C[1][1] * dz[e] / 4096.0,
+                              p->sz - f->C[2][1] * dz[e] / 4096.0 };
+        ok &= hull_project(f, m, &out[1 + e]);
+    }
+    return ok;
+}
+
+/* The linked fan triangles as the guest draws them: gouraud 0x608080 at the
+ * anchor to 0 at the rim, vertex alpha 1 marking them as the fan. */
+static void fan_feed_tris(const shadow_fan* f) {
+    const float bias = shadow_bias_spyro();
+    for (int k = 0; k < SHADOW_FAN_RING; k++) {
+        if (!(f->tri_mask & (1u << k))) continue;
+        const shadow_pt* p[3] = { &f->anchor, &f->ring[k], &f->ring[(k + 1) & (SHADOW_FAN_RING - 1)] };
+        openpete_scene_tri st = {0};
+        for (int i = 0; i < 3; i++) {
+            st.v[i].sx = p[i]->sx; st.v[i].sy = p[i]->sy;
+            st.v[i].z  = shadow_depth(p[i]->sz, 1.0f, bias);   /* already full-world MAC3 */
+            st.v[i].pvz = shadow_depth(p[i]->sz, 1.0f, 1.0f);  /* true (unbiased) view-Z */
+            st.v[i].rgba = (i == 0 ? (f->anchor_rgb & 0xFFFFFFu) : 0u) | 0xFF000000u;
+        }
+        st.textured = 0;
+        st.blend = 3;                                  /* untextured subtract (ABR mode 2) */
+        st.koff = shadow_slot_koff(f->slot[k]);        /* the triangle's ordering-table slot; unread */
+        openpete_native_scene_add_tri(&st, OPENPETE_SCENE_SHADOW, 0);
+    }
+}
+
+void shadow_fan_feed(CPUState* cpu, const shadow_fan* f) {
+    (void)cpu;
+    double inv[3][3]; shadow_cam_inverse(f->C, inv);
+    const double caster = f->caster_up;
+    openpete_shadow_footprint fp; memset(&fp, 0, sizeof fp);
+    fp.caster_up = (float)caster;
+    fp.footprint = shadow_footprint_on() ? 1.0f : 0.0f;
+    fp.tri_mask  = (float)(f->tri_mask & 0xFFFFu);
+    fp.below     = (float)SHADOW_FOOT_BELOW;
+    for (int c = 0; c < 3; c++) fp.anchor_rgb[c] = (float)((f->anchor_rgb >> (8 * c)) & 0xFFu) / 255.0f;
+    fp.anchor_rgb[3] = 1.0f;
+
+    enum { NPT = 3 * (SHADOW_FAN_RING + 1) };
+    fan_xy pts[NPT], hull[2 * NPT];
+    double w0[3]; fan_wrel(inv, &f->anchor, w0);
+    int cover = 1;
+    for (int i = 0; i <= SHADOW_FAN_RING; i++)
+        cover &= fan_point(f, inv, w0, caster, i, &fp, &pts[3 * i]);
+    openpete_native_set_shadow_footprint(&fp);
+
+    int h;
+    if (cover) {
+        h = convex_hull(pts, NPT, hull);
+    } else {
+        const double b = SHADOW_HULL_BOUND;
+        const fan_xy screen[4] = { { -b, -b }, { b, -b }, { b, b }, { -b, b } };
+        memcpy(hull, screen, sizeof screen);
+        h = 4;
+    }
+    fan_feed_tris(f);
+    /* The fragment stage colours every hull pixel from the block; the vertex
+     * colour is black with alpha 0, so the depth-tested fallback pipe (no
+     * pre-pass) subtracts nothing and the decal tells hull from fan. The
+     * depth test is off on the decal pipe, so the vertex depth only has to be
+     * a valid view-Z. */
+    float vz = shadow_depth(f->anchor.sz, 1.0f, 1.0f);
+    if (!(vz >= 1.0f)) vz = 1.0f;
+    for (int i = 1; i + 1 < h; i++) {
+        const fan_xy* tv[3] = { &hull[0], &hull[i], &hull[i + 1] };
+        openpete_scene_tri st = {0};
+        for (int k = 0; k < 3; k++) {
+            st.v[k].sx = (float)tv[k]->x; st.v[k].sy = (float)tv[k]->y;
+            st.v[k].z = vz; st.v[k].pvz = vz;
+            st.v[k].rgba = 0u;
+        }
+        st.textured = 0;
+        st.blend = 3;                                  /* untextured subtract (ABR mode 2) */
+        openpete_native_scene_add_tri(&st, OPENPETE_SCENE_SHADOW, 0);
+    }
 }
 
 /* feed the native moby shadows (textured FT3, blend from the tpage's ABR) */

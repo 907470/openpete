@@ -399,6 +399,7 @@ typedef struct {
     int       geom[8];
     openpete_hud_vert *ovl; int ovl_cap, ovl_n;
     openpete_shadow_decal_params shadow;
+    openpete_shadow_footprint shadow_foot;   /* the player fan the decal re-rasterizes */
     openpete_occl_camera occl_cam;           /* camera this scene was projected from */
     openpete_glitch_walk_t gwalk;            /* census of the walk that built this scene */
     uint32_t  pctx_tick; float pctx_alpha; int pctx_canonical;
@@ -416,6 +417,7 @@ static SDL_Mutex   *s_ring_mx;
 static const scene_slot_t *s_ps_slot;          /* compose source: NULL = live */
 static uint32_t ps_drawenv_clear(void);
 static const openpete_shadow_decal_params *ps_shadow(void);
+static const openpete_shadow_footprint *ps_shadow_foot(void);
 static const openpete_occl_camera *ps_occl_cam(void);
 static unsigned ps_frame(void);
 static void     ps_apply_geometry(void);
@@ -3370,8 +3372,9 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .vert_spv = "quad.vert.spv",
         .frag_spv = "shadow_decal.frag.spv",
         .blend = RHI_BLEND_SUBTRACT, .depth_test = false, .wire_scene = true,
-        /* set 0 = opaque_depth; set 1 = VRAM (unread) + the terrain key image */
-        .uses_vram = true, .set1_vram_depth = true,
+        /* set 0 = opaque_depth; set 1 = VRAM (unread) + the terrain key
+         * image; set 2 = the player fan's footprint block */
+        .uses_vram = true, .set1_vram_depth = true, .uniform_set2 = true,
         .push_const_size = sizeof(shadow_decal_pc),
     };
     /* Fallback for a device whose depth format is not sampleable (the pre-pass
@@ -4784,6 +4787,16 @@ void openpete_native_set_shadow_decal_params(const openpete_shadow_decal_params 
     if (p) s_shadow_decal = *p; else s_shadow_decal.valid = 0;
 }
 
+/* The player fan's footprint block (openpete_native_render.h). Only a player
+ * shadow feed emits the untextured SHADOW triangles that read it, and that
+ * feed writes it in the same call, so a scene never pairs its hull with
+ * another extraction's fan. Snapshotted into each scene slot. */
+static openpete_shadow_footprint s_shadow_foot;
+void openpete_native_set_shadow_footprint(const openpete_shadow_footprint *f)
+{
+    if (f) s_shadow_foot = *f;
+}
+
 /* Per-present pre-pass state consumed by draw_native_scene's SUBTRACT group:
  * whether the pre-pass rendered this present, the raster extent inside the
  * (grow-only) opaque_depth allocation, and the PSX-screen→uv affine of the
@@ -5813,6 +5826,65 @@ static void bind_scene_pipe(rhi_pipeline* p)
         if (s_nr.moby_rank_rt)
             rhi_bind_texture_set(s_nr.dev, s_nr.moby_rank_rt, 4);
     }
+}
+
+/* The player fan's footprint block at set 2 of the Spyro shadow decal pipe.
+ * Written on the first bind of each RHI frame and again when the composed
+ * scene's block differs from the last written one (a rewrite after a bind
+ * moves to a fresh generation), so every consumer pass of one present reads
+ * the block its own scene carries. */
+static rhi_ubo* s_shfoot_ubo;
+static void bind_shadow_footprint(void)
+{
+    static uint64_t s_serial = UINT64_MAX;
+    static openpete_shadow_footprint s_last;
+    if (!s_shfoot_ubo)
+        s_shfoot_ubo = rhi_create_ubo(s_nr.dev, (uint32_t)sizeof(openpete_shadow_footprint), 1);
+    if (!s_shfoot_ubo) return;
+    const openpete_shadow_footprint* f = ps_shadow_foot();
+    const uint64_t fs = rhi_frame_serial(s_nr.dev);
+    if (fs != s_serial || memcmp(f, &s_last, sizeof s_last) != 0) {
+        rhi_ubo_write(s_shfoot_ubo, 0, f, (uint32_t)sizeof *f);
+        s_last = *f;
+        s_serial = fs;
+    }
+    rhi_ubo_bind_at(s_nr.dev, s_shfoot_ubo, 2, 0);
+}
+
+/* Bind the Spyro shadow decal (shadow_decal.frag) with its push block: the
+ * camera reconstruction, the depth-rule thresholds, the pre-pass lookup
+ * affine and this pass's fragment-coordinate affine; the footprint block at
+ * set 2. OPENPETE_SHADOW_DECAL_MODE overrides the mode for the calibration and
+ * census views; otherwise the rule runs when the game supplied valid
+ * parameters and the plain fan (mode 0) draws when it did not. */
+static void bind_player_shadow_decal(void)
+{
+    bind_scene_pipe(s_nr.gouraud_sub_pipe);
+    rhi_bind_depth_sampler(s_nr.dev, s_nr.opaque_depth, 0);
+    const openpete_shadow_decal_params* sp = ps_shadow();
+    shadow_decal_pc pc;
+    pc.col0x = sp->cam_col0[0]; pc.col0y = sp->cam_col0[1]; pc.col0z = sp->cam_col0[2];
+    pc.col1x = sp->cam_col1[0]; pc.col1y = sp->cam_col1[1]; pc.col1z = sp->cam_col1[2];
+    pc.col2x = sp->cam_col2[0]; pc.col2y = sp->cam_col2[1]; pc.col2z = sp->cam_col2[2];
+    pc.cam_pos_up = sp->cam_pos_up;
+    pc.ofx = sp->ofx; pc.ofy = sp->ofy; pc.h = sp->h;
+    pc.ground_up = sp->ground_up;
+    pc.wall_height = sp->wall_height;
+    pc.steep_nup = sp->steep_nup;
+    const char* mv = getenv("OPENPETE_SHADOW_DECAL_MODE");
+    pc.mode = (mv && *mv) ? (float)atof(mv) : (sp->valid ? 1.0f : 0.0f);
+    pc.band = shadow_decal_band();
+    pc.plat_eps = sp->plat_eps;
+    pc.plat_slack = sp->plat_slack;
+    pc.key_contest = shadow_decal_bind_keys();
+    pc.uax = s_od_uax; pc.ubx = s_od_ubx;
+    pc.vay = s_od_vay; pc.vby = s_od_vby;
+    pc.pvw = s_od_vw; pc.pvh = s_od_vh;
+    scene_fc_affine fc; scene_fragcoord_affine(&fc);
+    pc.fax = fc.fax; pc.fbx = fc.fbx;
+    pc.fay = fc.fay; pc.fby = fc.fby;
+    rhi_push_constants(s_nr.dev, &pc, sizeof pc);
+    bind_shadow_footprint();
 }
 
 /* The same four images for a MATERIAL pipeline, whose layout puts them at
@@ -9299,47 +9371,17 @@ static bool draw_native_scene(bool full_extent)
          * draws — never rely on a value set earlier in the pass. */
         if (g->utex && ut_count[utb] > 0) {
             if (gi == 1) {
-                /* Untextured SUBTRACT = the Spyro silhouette shadow. Preferred
-                 * path: the DEPTH-AWARE decal (shadow_decal.frag samples the
-                 * shared WORLD-opaque pre-pass depth; per-pixel world-height
-                 * wall rejection, no bias). Fallback (pre-pass unavailable this
-                 * present / unsupported device): plain depth test + W2.5 bias. */
+                /* Untextured SUBTRACT = the Spyro silhouette shadow, fed as
+                 * its fan plus the screen hull of its footprint prism. Preferred path: the
+                 * DEPTH-AWARE decal (shadow_decal.frag samples the shared
+                 * WORLD-opaque pre-pass depth and decides every hull pixel
+                 * from the fan's footprint block). Fallback (pre-pass
+                 * unavailable this present / unsupported device): plain depth
+                 * test + W2.5 bias: the fed fan triangles draw with their
+                 * gouraud as before, and the hull's black vertices subtract
+                 * nothing. The decal discards the fan triangles. */
                 if (s_od_ready && s_nr.opaque_depth) {
-                    bind_scene_pipe(s_nr.gouraud_sub_pipe);
-                    rhi_bind_depth_sampler(s_nr.dev, s_nr.opaque_depth, 0);
-                    shadow_decal_pc pc;
-                    pc.col0x = ps_shadow()->cam_col0[0];
-                    pc.col0y = ps_shadow()->cam_col0[1];
-                    pc.col0z = ps_shadow()->cam_col0[2];
-                    pc.col1x = ps_shadow()->cam_col1[0];
-                    pc.col1y = ps_shadow()->cam_col1[1];
-                    pc.col1z = ps_shadow()->cam_col1[2];
-                    pc.col2x = ps_shadow()->cam_col2[0];
-                    pc.col2y = ps_shadow()->cam_col2[1];
-                    pc.col2z = ps_shadow()->cam_col2[2];
-                    pc.cam_pos_up = ps_shadow()->cam_pos_up;
-                    pc.ofx = ps_shadow()->ofx; pc.ofy = ps_shadow()->ofy;
-                    pc.h = ps_shadow()->h;
-                    pc.ground_up = ps_shadow()->ground_up;
-                    pc.wall_height = ps_shadow()->wall_height;
-                    pc.steep_nup = ps_shadow()->steep_nup;
-                    /* mode: env override for calibration; else height-test when
-                     * the game supplied valid params, else draw-all (no mask). */
-                    float mode = ps_shadow()->valid ? 1.0f : 0.0f;
-                    const char* mv = getenv("OPENPETE_SHADOW_DECAL_MODE");
-                    if (mv && *mv) mode = (float)atof(mv);
-                    pc.mode = mode;
-                    pc.band = shadow_decal_band();
-                    pc.plat_eps = ps_shadow()->plat_eps;
-                    pc.plat_slack = ps_shadow()->plat_slack;
-                    pc.key_contest = shadow_decal_bind_keys();
-                    pc.uax = s_od_uax; pc.ubx = s_od_ubx;
-                    pc.vay = s_od_vay; pc.vby = s_od_vby;
-                    pc.pvw = s_od_vw; pc.pvh = s_od_vh;
-                    scene_fc_affine fc; scene_fragcoord_affine(&fc);
-                    pc.fax = fc.fax; pc.fbx = fc.fbx;
-                    pc.fay = fc.fay; pc.fby = fc.fby;
-                    rhi_push_constants(s_nr.dev, &pc, sizeof pc);
+                    bind_player_shadow_decal();
                 } else {
                     bind_scene_pipe(s_nr.gouraud_sub_ztest_pipe);
                     float c, s, cl;
@@ -12155,6 +12197,7 @@ static void ps_apply_geometry(void) {
 }
 static uint32_t ps_drawenv_clear(void)  { return s_ps_slot ? s_ps_slot->drawenv_clear : s_drawenv_clear; }
 static const openpete_shadow_decal_params *ps_shadow(void) { return s_ps_slot ? &s_ps_slot->shadow : &s_shadow_decal; }
+static const openpete_shadow_footprint *ps_shadow_foot(void) { return s_ps_slot ? &s_ps_slot->shadow_foot : &s_shadow_foot; }
 static const openpete_occl_camera *ps_occl_cam(void) { return s_ps_slot ? &s_ps_slot->occl_cam : &s_occl_cam_live; }
 static unsigned ps_frame(void)          { return s_ps_slot ? s_ps_slot->frame : s_scene_frame; }
 
@@ -12214,6 +12257,7 @@ int openpete_native_scene_publish(int64_t target_ns, int kind, double alpha, int
     sl->ovl_n = sl->ovl_cap >= s_mod_overlay_n ? s_mod_overlay_n : 0;
     if (sl->ovl_n > 0) memcpy(sl->ovl, s_mod_overlay_verts, (size_t)sl->ovl_n * sizeof(openpete_hud_vert));
     sl->shadow = s_shadow_decal;
+    sl->shadow_foot = s_shadow_foot;
     sl->occl_cam = s_occl_cam_live;
     /* The walk ran on this thread just now; the compose may run on another,
      * a tick later, so the census travels with the scene rather than being
@@ -13416,6 +13460,7 @@ void openpete_native_render_shutdown(void)
                 s_pfx_pool[i].t[j] = NULL;
             }
     if (s_pfx_ubo) { rhi_destroy_ubo(s_nr.dev, s_pfx_ubo); s_pfx_ubo = NULL; }
+    if (s_shfoot_ubo) { rhi_destroy_ubo(s_nr.dev, s_shfoot_ubo); s_shfoot_ubo = NULL; }
     if (s_pfx_prev) { rhi_destroy_texture(s_nr.dev, s_pfx_prev); s_pfx_prev = NULL; }
     {
         openpete_mods_postfx_retire_all();   /* incl. disabled passes' caches */

@@ -3,11 +3,14 @@
 // harness. Every engine address comes from game_layout.shadow.player, so a
 // game without the leg leaves `hook` at 0 and never registers this module.
 //
-// The draw is an untextured gouraud fan (GPU code 0x32, semi-transparent) of
-// one triangle per ring point, fanned from the ground anchor and flat in the
-// shadow's own plane, drawn with PSX semi-transparency mode 2 (B-F,
-// SUBTRACTIVE: the grey darkens the ground). Each triangle carries its own
-// bundled draw-mode mini-packet (0xE1000640, whose ABR bits are 0b10).
+// The guest draw is an untextured gouraud fan (GPU code 0x32,
+// semi-transparent) of one triangle per ring point, fanned from the ground
+// anchor and flat in the shadow's own plane, drawn with PSX semi-transparency
+// mode 2 (B-F, SUBTRACTIVE: the grey darkens the ground). Each triangle
+// carries its own bundled draw-mode mini-packet (0xE1000640, whose ABR bits
+// are 0b10). The native feed hands the same fan to the footprint decal
+// (shadow_fan_feed), which also shadows the terrain under the ring between the
+// fan and the caster.
 //
 // STATIC ASM FINDINGS (asm/mobyfunc.s:622-884, asm/stdutil.s:func_8004EA90):
 //   * the anchor is the camera-relative shadow position swizzled into the
@@ -89,6 +92,8 @@ static void plsh_matrix(CPUState* cpu, const int C[3][3], uint32_t rot, int R[3]
 typedef struct { float sx[3], sy[3], sz[3]; uint32_t rgb[3]; int slot; } plshtri;
 static plshtri s_tri[PLSH_RING_N];
 static int     s_tri_n;
+/* The same fan in the footprint decal's form, fed in place of s_tri. */
+static shadow_fan s_fan;
 /* The most recent hook's record-bind verdict, reported by the A/B line: < 0
  * means the tick drew no player model for the fan to belong to. */
 static int     s_last_bound = -1;
@@ -107,6 +112,7 @@ static int plsh_frame_bytes(CPUState* cpu, uint32_t table, uint32_t anim_sel,
 
 static void shadow_player_build(CPUState* cpu) {
     s_tri_n = 0;
+    s_fan.tri_mask = 0;
     const uint32_t st = game_layout.shadow.player.state;
     if (!st) return;
     if (cpu->read_byte(st + PLSH_SUPPRESS) != 0) return;   /* swimming, or another avatar */
@@ -192,11 +198,20 @@ static void shadow_player_build(CPUState* cpu) {
      * swallowed the camera from painting over the frame; reproduce it so the
      * fed count is the count the guest linked. */
     const int32_t bias = (int32_t)cpu->read_word(st + PLSH_OT_BIAS);
+    s_fan.anchor = anchor;
+    memcpy(s_fan.ring, strip, sizeof strip);
+    s_fan.anchor_rgb = 0x608080u;
+    s_fan.anchor_up = shz;
+    s_fan.caster_up = shadow_caster_up(cpu, shz);   /* the staged record, as the anchor */
+    memcpy(s_fan.C, C, sizeof C);
+    s_fan.ofx = ofx; s_fan.ofy = ofy; s_fan.H = H;
     for (int k = 0; k < PLSH_RING_N; k++) {
         shadow_pt* p1 = &strip[k];
         shadow_pt* p2 = &strip[(k + 1) & (PLSH_RING_N - 1)];
         int slot = shadow_ot_slot(anchor.sz, p1->sz, p2->sz, 9, bias);
         if (slot < 0) continue;
+        s_fan.tri_mask |= 1u << k;
+        s_fan.slot[k] = slot;
         plshtri* t = &s_tri[s_tri_n++];
         t->slot = slot;
         t->sx[0] = anchor.sx; t->sy[0] = anchor.sy; t->sz[0] = anchor.sz; t->rgb[0] = 0x608080u;
@@ -205,7 +220,8 @@ static void shadow_player_build(CPUState* cpu) {
     }
 }
 
-/* Feed the native player shadow (untextured G3 fan, ABR mode 2 -> blend 3).
+/* Feed the native player shadow: the fan's footprint prism hull, subtractive
+ * (ABR mode 2 -> blend 3), coloured per pixel by the footprint decal.
  * `slot`: the model record the shadow renders under, the PLAYER slot of its
  * scene tag. */
 static void shadow_player_feed_native(CPUState* cpu, int slot) {
@@ -215,22 +231,7 @@ static void shadow_player_feed_native(CPUState* cpu, int slot) {
     openpete_native_scene_begin_frame(openpete_frame);
     openpete_native_scene_set_tag(OPENPETE_TAG_SHADOW(OPENPETE_TAG_SHADOW_PLAYER,
                                                       (uint32_t)(slot < 0 ? 0 : slot)));
-    for (int i = 0; i < s_tri_n; i++) {
-        plshtri* c = &s_tri[i];
-        openpete_scene_tri st = {0};
-        float bias = shadow_bias_spyro();
-        for (int k = 0; k < 3; k++) {
-            st.v[k].sx = c->sx[k]; st.v[k].sy = c->sy[k];
-            st.v[k].z  = shadow_depth(c->sz[k], 1.0f, bias);   /* already full-world MAC3 */
-            st.v[k].pvz = shadow_depth(c->sz[k], 1.0f, 1.0f);  /* true (unbiased) view-Z */
-            st.v[k].u = 0.0f; st.v[k].v = 0.0f;
-            st.v[k].rgba = (c->rgb[k] & 0xFFFFFFu) | 0xFF000000u;
-        }
-        st.textured = 0;
-        st.blend = 3;                                  /* untextured subtract (ABR mode 2) */
-        st.koff = shadow_slot_koff(c->slot);           /* the fan triangle's ordering-table slot; the decal does not read it */
-        openpete_native_scene_add_tri(&st, OPENPETE_SCENE_SHADOW, 0);
-    }
+    shadow_fan_feed(cpu, &s_fan);
     openpete_native_scene_set_tag(0);
 }
 

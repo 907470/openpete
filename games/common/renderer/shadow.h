@@ -41,8 +41,9 @@ const shadow_prim*  shadow_prim_at(int i);
 /* Print the capture's code histogram and the first few decoded primitives. */
 void                shadow_dump_prims(const char* tag);
 
-/* A projected point: screen position in float plus the GTE's view-Z (MAC3). */
-typedef struct { float sx, sy, sz; } shadow_pt;
+/* A projected point: screen position in float plus the GTE's MAC1..MAC3
+ * (sz = MAC3, the view-Z). */
+typedef struct { float sx, sy, sz; float m1, m2; } shadow_pt;
 
 int    shadow_s16(int v);
 int    shadow_rd_s16(CPUState* cpu, uint32_t addr);
@@ -61,6 +62,38 @@ void   shadow_project(const int R[3][3], const double TR[3], double ofx, double 
 void   shadow_push_decal_params(CPUState* cpu, const ngte_view* v, const int C[3][3],
                                 double ofx, double ofy, double H,
                                 openpete_shadow_decal_params* out);
+
+/* A player ground-shadow fan as the footprint decal (shadow_decal.frag) draws
+ * it: the anchor and the 16 ring points as projected, the triangles the
+ * routine linked, and the camera the points were projected through. The
+ * shadow is the fan's own surface where the depth rule keeps it, united with
+ * the terrain under the ring's vertical projection between the fan and the
+ * caster; the drawn geometry is the screen convex hull of that prism, and the
+ * fragment stage decides every pixel from the fan data the feed hands the
+ * renderer (openpete_shadow_footprint). */
+#define SHADOW_FAN_RING 16
+typedef struct {
+    shadow_pt anchor;
+    shadow_pt ring[SHADOW_FAN_RING];
+    uint32_t  tri_mask;      /* bit k: (anchor, ring k, ring k+1) is linked */
+    int       slot[SHADOW_FAN_RING]; /* triangle k's ordering-table slot */
+    uint32_t  anchor_rgb;    /* the gouraud at the anchor; the rim is 0 */
+    double    anchor_up;     /* world height (game z) of the anchor */
+    double    caster_up;     /* world height of the caster, read from the same
+                              * staged player record as the anchor's block */
+    int       C[3][3];       /* camera matrix the points projected through */
+    double    ofx, ofy, H;   /* projection registers of that view */
+} shadow_fan;
+
+/* Hand the renderer the fan's footprint data and feed, as untextured
+ * subtractive SHADOW triangles under the current scene tag, the linked fan
+ * triangles with their gouraud (vertex alpha 1: what the depth-tested
+ * fallback pipe draws; the decal discards them) and the prism hull (vertex
+ * alpha 0, black: what the decal shades; the fallback subtracts nothing). */
+void   shadow_fan_feed(CPUState* cpu, const shadow_fan* f);
+/* The caster height a player feeder stores beside its anchor
+ * (shadow_fan.caster_up); `anchor_up` when the game has no player block. */
+double shadow_caster_up(CPUState* cpu, double anchor_up);
 
 /* The ordering-table slot a shadow fan triangle is inserted at. Every shadow
  * routine keys a (anchor, p1, p2) triangle the same way: the sum of the two

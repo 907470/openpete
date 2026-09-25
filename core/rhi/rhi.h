@@ -599,6 +599,10 @@ typedef struct {
                                  * image). Replaces set 1 of any layout above
                                  * and implies sets 0..1. Bind it with
                                  * rhi_bind_vram_depth_pair.                   */
+    bool           uniform_set2; /* set 2 holds one dynamic-UBO binding (bind
+                                 * with rhi_ubo_bind_at(.., 2, ..)), visible
+                                 * to both stages. Replaces set 2 of any layout
+                                 * above and implies sets 0..2.               */
     uint32_t       push_const_size; /* fragment push-constant block bytes (0=none) */
     bool           postfx;      /* mod-postfx layout: NO vertex input (fullscreen
                                  * triangle from gl_VertexIndex — pair with the

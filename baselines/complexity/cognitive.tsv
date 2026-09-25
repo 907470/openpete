@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 054b47e1462ba0ac6027d10441ce49c952daa2b1
+# head: 6f5659e92bafed3e9b8d9edea71fc078872d1b2c
 file	function	score	marked	accepted
 core/config/config.c	harvest_args	30	0	
 core/config/config.c	harvest_base	39	0	
@@ -62,7 +62,7 @@ core/renderer/debug_render.cpp	openpete_psyx_take_screenshot_ext	30	0
 core/renderer/glitch_mark.c	dump	27	0	
 core/renderer/native_render.c	alpha_census	53	0	
 core/renderer/native_render.c	compose_variant	52	0	
-core/renderer/native_render.c	draw_native_scene	710	0	
+core/renderer/native_render.c	draw_native_scene	699	0	
 core/renderer/native_render.c	draw_osd_overlay	52	0	
 core/renderer/native_render.c	draw_tex_runs	99	0	
 core/renderer/native_render.c	draw_ut_mat_spans	48	0	
@@ -92,7 +92,7 @@ core/renderer/openpete_interp.c	openpete_interp_capture	29	0
 core/rhi/rhi_vulkan.c	create_render_target_impl	33	0	
 core/rhi/rhi_vulkan.c	pick_physical_and_device	43	0	
 core/rhi/rhi_vulkan.c	pipeline_compile	34	0	
-core/rhi/rhi_vulkan.c	pipeline_set_layouts	44	0	
+core/rhi/rhi_vulkan.c	pipeline_set_layouts	43	0	
 core/rhi/rhi_vulkan.c	rhi_create_impl	27	0	
 core/rhi/rhi_vulkan.c	rhi_cycle_readback	26	0	
 core/rhi/rhi_vulkan.c	rhi_destroy	38	0	

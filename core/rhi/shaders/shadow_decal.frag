@@ -1,11 +1,12 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 #include "psx_key_contest.glsl"
+#include "psx_viewz.glsl"
 
 /* Depth-aware shadow decal (UNTEXTURED) — the Spyro silhouette shadow.
  *
- * Keeps the FLAT fan's look unchanged; only the keep/discard decision changes.
- * The flat fan sits behind the bumpy near-terrain it's cast on, so a pure depth
+ * On the fan's own surface (term A below) the flat fan's look is unchanged;
+ * the depth rule decides keep or discard. The flat fan sits behind the bumpy near-terrain it's cast on, so a pure depth
  * test/band can't separate "my own ground" (keep) from "a wall in front"
  * (discard) — both put terrain nearer than the fan, by the same view-Z. Instead
  * the shader reconstructs the opaque terrain per pixel from the depth pre-pass
@@ -52,11 +53,38 @@
  * EXPLICIT neighbour texels (not dFdx/dFdy), so it is identical in every pass
  * and immune to same-texel quad derivatives at high render res.
  *
+ * Footprint. The feed draws the screen convex hull of the ring's vertical
+ * prism from the fan less a margin up to the caster height, and hands the fan
+ * itself to this stage (the ShadowFan block). A pixel is shadowed when
+ *  (A) the fan's own surface covers it and the depth rule keeps it: the fan is
+ *      re-rasterized here from its fed screen points, with the ordering view-Z
+ *      the scene pipe would have written and the gouraud weight it would have
+ *      interpolated, so (A) is the fan draw of the plain depth rule; or
+ *  (B) the opaque terrain at the pixel stands under the ring's vertical
+ *      projection (its world x, y inside the ring), is not steep, lies no
+ *      higher than the caster and no lower than the fan less the margin. The
+ *      colour is the fan's gouraud at the fan point vertically over or under
+ *      the receiver.
+ * (A) takes the pixel when both hold: the fan's own surface is then the
+ * visible receiver. OPENPETE_SHADOW_FOOTPRINT=0 zeroes the block's term flag
+ * and leaves (A) alone.
+ *
  * NB (viz mode 2): the pipe blends SUBTRACTIVE, so on screen the viz colours
- * are subtracted from the framebuffer — read them with a diff tool, not eyes. */
+ * are subtracted from the framebuffer — read them with a diff tool, not eyes.
+ * The viz and census modes mark every hull fragment. */
 
 layout(set = 0, binding = 0) uniform sampler2D uOpaqueDepth; /* WORLD-opaque pre-pass depth */
 layout(set = 1, binding = 1) uniform sampler2D uTerrainKey;  /* terrain og-key image, this target */
+
+/* The player fan (openpete_shadow_footprint): point 0 the anchor, 1..16 the
+ * ring. scr = PSX screen x, y, ordering view-Z, perspective W as fed; wrel =
+ * camera-relative world x, y, up through this stage's reconstruction. */
+layout(std140, set = 2, binding = 0) uniform ShadowFan {
+    vec4 hdr;          /* caster world height, footprint on, triangle mask, margin below */
+    vec4 anchor_rgb;   /* the gouraud at the anchor; the rim is 0 */
+    vec4 scr[17];
+    vec4 wrel[17];
+} uf;
 
 layout(push_constant) uniform PC {
     float col0x, col0y, col0z;   /* camera rotation matrix columns (Q12 int16) */
@@ -78,10 +106,10 @@ layout(push_constant) uniform PC {
     float fax, fbx, fay, fby;    /* gl_FragCoord -> PSX screen affine, this pass */
 } pc;
 
-layout(location = 0) in vec4 vColor;  /* x ratio (divide by vQ) */
+layout(location = 0) in vec4 vColor;  /* alpha x vQ: 1 on the fan, 0 on the hull */
 layout(location = 1) in vec2 vUV;
-layout(location = 3) in float vQ;     /* perspective ratio (see quad.vert) */
-layout(location = 4) flat in float vKoff; /* the fan triangle's slot key (quad.vert) */
+layout(location = 3) in float vQ;
+layout(location = 4) flat in float vKoff;
 
 layout(location = 0) out vec4 outColor;
 
@@ -89,10 +117,9 @@ layout(location = 0) out vec4 outColor;
  * 0, written by quad.vert through op_scene_clip): reversed z = 1/vz, forward
  * z = 1 - 1/vz. */
 layout(constant_id = 0) const bool DEPTH_REVERSED = false;
-float viewz_from_scene_depth(float d)
-{
-    return DEPTH_REVERSED ? 1.0 / max(d, 1e-12) : 1.0 / max(1.0 - d, 1e-9);
-}
+/* --texture-mapping affine: the scene pipe interpolates the gouraud screen-
+ * linearly (quad.vert), so the fan's re-raster does the same. */
+layout(constant_id = 1) const bool AFFINE_UV = false;
 /* pre-pass curve (prepass.vert): z = 1 - 1/vz — TRUE perspective, so the
  * rasterizer's screen-linear interpolation is exact on planes and the
  * neighbour-texel normal reconstruction below is trustworthy. */
@@ -120,8 +147,107 @@ vec3 world_of_texel(ivec2 t)
     return vec3(V2, -V0, -V1);
 }
 
+/* The fan's own surface at PSX screen point s: the first linked triangle
+ * (anchor, ring k, ring k+1) whose fed screen triangle holds s. vz is the
+ * view-Z the scene pipe's depth would carry there (1/vz screen-linear over the
+ * ordering view-Z), wa the anchor's gouraud weight it would interpolate. */
+bool fan_hit(vec2 s, out float vz, out float wa)
+{
+    int mask = int(uf.hdr.z + 0.5);
+    vec4 a = uf.scr[0];
+    for (int k = 0; k < 16; k++) {
+        if ((mask & (1 << k)) == 0) continue;
+        vec4 b = uf.scr[1 + k], c = uf.scr[1 + ((k + 1) & 15)];
+        float d = (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
+        if (abs(d) < 1e-9) continue;
+        float l1 = ((s.x - a.x) * (c.y - a.y) - (c.x - a.x) * (s.y - a.y)) / d;
+        float l2 = ((b.x - a.x) * (s.y - a.y) - (s.x - a.x) * (b.y - a.y)) / d;
+        float l0 = 1.0 - l1 - l2;
+        if (min(l0, min(l1, l2)) < -1e-5) continue;
+        vec3 z = vec3(op_scene_vz(a.z), op_scene_vz(b.z), op_scene_vz(c.z));
+        vz = 1.0 / (l0 / z.x + l1 / z.y + l2 / z.z);
+        vec3 w = AFFINE_UV ? vec3(1.0) : max(vec3(a.w, b.w, c.w), vec3(1.0));
+        wa = (l0 / w.x) / (l0 / w.x + l1 / w.y + l2 / w.z);
+        return true;
+    }
+    return false;
+}
+
+/* The ring's vertical projection at camera-relative world point p: the first
+ * linked triangle whose world (x, y) holds p.xy. wa is the anchor's weight at
+ * that (x, y), up the fan's camera-relative height there. */
+bool foot_hit(vec3 p, out float wa, out float up)
+{
+    int mask = int(uf.hdr.z + 0.5);
+    vec3 a = uf.wrel[0].xyz;
+    for (int k = 0; k < 16; k++) {
+        if ((mask & (1 << k)) == 0) continue;
+        vec3 b = uf.wrel[1 + k].xyz, c = uf.wrel[1 + ((k + 1) & 15)].xyz;
+        float d = (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
+        if (abs(d) < 1e-6) continue;
+        float l1 = ((p.x - a.x) * (c.y - a.y) - (c.x - a.x) * (p.y - a.y)) / d;
+        float l2 = ((b.x - a.x) * (p.y - a.y) - (p.x - a.x) * (b.y - a.y)) / d;
+        float l0 = 1.0 - l1 - l2;
+        if (min(l0, min(l1, l2)) < -1e-5) continue;
+        wa = l0;
+        up = l0 * a.z + l1 * b.z + l2 * c.z;
+        return true;
+    }
+    return false;
+}
+
+/* The depth rule on the fan's own surface (fanVz its view-Z at this pixel):
+ * the raised occluder in front, then the steepness and wall-height tests. */
+bool own_plane_keeps(float viewZ, float fanVz, float height, float nup)
+{
+    /* Raised occluder in front (curb / raised platform): terrain between
+     * the camera and the fan covers it by depth. A flat raised path
+     * passes both the steep test (top is flat) and the wall-height test
+     * (dark-hollow platform: +368 < 400), yet must occlude. "In front" =
+     * the pre-pass terrain is meaningfully nearer than the fan fragment
+     * itself; "raised" = meaningfully above the shadow plane. The
+     * receiving ground keeps the shadow: its bumps are below plat_eps,
+     * and draped far slopes are farther, not nearer. */
+    if (viewZ + pc.plat_slack < fanVz && height > pc.plat_eps) return false;
+    if (pc.steep_nup > 0.0) {
+        /* ORIENTATION-AWARE tests (the default; OPENPETE_SHADOW_STEEP_NY=0
+         * selects height-only).
+         * (1) wall face receiver: steep surface — unconditional (the fan
+         *     oval can poke THROUGH a wall, putting its near rim in front
+         *     of the wall base, so no depth guard);
+         * (2) rising occluder, FLATNESS-SCALED: the flatter the receiver,
+         *     the more rise above the shadow plane is forgiven — catches
+         *     chamfered wall SKIRTS (nup~0.5 rising 200-340). */
+        if (nup < pc.steep_nup) return false;
+        float flat01 = clamp((nup - pc.steep_nup) / (0.9 - pc.steep_nup), 0.0, 1.0);
+        return height <= pc.wall_height * flat01;
+    }
+    /* HEIGHT-ONLY: terrain standing more than wall_height above the
+     * shadow's ground plane is a wall/ledge; at-or-below (bumps, slopes,
+     * pits) keeps the fan. The bottom wall_height units of a wall face
+     * pass this test (a small dark notch where the fan meets a wall base). */
+    return height <= pc.wall_height;
+}
+
+/* Term (B): the terrain point p (camera-relative world, worldUp its absolute
+ * height) under the ring, not steep, between the fan less the margin and the
+ * caster. wa is the anchor's weight at the receiver's (x, y). */
+bool footprint_keeps(float dT, vec3 p, float worldUp, float nup, out float wa)
+{
+    wa = 0.0;
+    if (uf.hdr.y < 0.5 || dT >= 1.0) return false;
+    if (pc.steep_nup > 0.0 && nup < pc.steep_nup) return false;
+    if (worldUp > uf.hdr.x) return false;
+    float up;
+    if (!foot_hit(p, wa, up)) return false;
+    return p.z >= up - uf.hdr.w;
+}
+
 void main()
 {
+    /* The feed carries the fan itself (vertex alpha 1) for the depth-tested
+     * fallback pipe; this stage shades the prism hull (alpha 0) alone. */
+    if (vColor.a > 0.5 * vQ) discard;
     /* This fragment's own PSX screen position, from its window coordinate
      * through the pass's inverse affine (exact; see scene_fragcoord_affine). */
     vec2 sOwn = vec2(pc.fax * gl_FragCoord.x + pc.fbx,
@@ -132,7 +258,6 @@ void main()
     ivec2 tx = min(ivec2(clamp(uv, vec2(0.0), vec2(1.0)) * vec2(pc.pvw, pc.pvh)), hi);
     float dT = texelFetch(uOpaqueDepth, tx, 0).r;
     float viewZ = viewz_from_prepass_depth(dT);
-    float dS = gl_FragCoord.z;
 
     /* Reconstruct the terrain point's world HEIGHT at this pixel. AXIS NOTE
      * (2026-07-02): Spyro's vertical world axis is the z FIELD, carried by V1
@@ -144,9 +269,12 @@ void main()
     float MAC1 = (SX - pc.ofx) * viewZ / pc.h;
     float MAC2 = (SY - pc.ofy) * viewZ / pc.h;
     float MAC3 = viewZ;
+    float V0   = (pc.col0x * MAC1 + pc.col0y * MAC2 + pc.col0z * MAC3) / 4096.0;
     float V1   = (pc.col1x * MAC1 + pc.col1y * MAC2 + pc.col1z * MAC3) / 4096.0;
+    float V2   = (pc.col2x * MAC1 + pc.col2y * MAC2 + pc.col2z * MAC3) / 4096.0;
     float worldUp = pc.cam_pos_up - V1;
     float height  = worldUp - pc.ground_up;   /* terrain height above the shadow's ground */
+    vec3  Tw      = vec3(V2, -V0, -V1);       /* camera-relative world point */
 
     /* terrain surface normal from neighbouring pre-pass texels */
     vec3 P0 = world_of_texel(tx);
@@ -158,6 +286,26 @@ void main()
      * (P = (V2, -V0, -V1), vertical = -V1). Degenerate -> "flat" (keep). */
     float nup = (nlen > 1e-6) ? abs(N.z) / nlen : 1.0;
 
+    float fanVz = 0.0, wA = 0.0;
+    bool onFan = fan_hit(sOwn, fanVz, wA);
+    if ((pc.mode > 0.5 && pc.mode < 1.5) || pc.mode > 9.5) {
+        /* the rule: 1 = shade, 10 = term marker, 11 = shade with the
+         * footprint's colour taken from the fan at this screen pixel */
+        bool keepA = onFan && own_plane_keeps(viewZ, fanVz, height, nup);
+        float wB;
+        bool keepB = footprint_keeps(dT, Tw, worldUp, nup, wB);
+        if (pc.mode > 9.5 && pc.mode < 10.5) {
+            /* TERM MARKER (machine-read only; subtractive): r = (A) keeps,
+             * g = (B) keeps, b = every hull fragment, 0.4 on the fan's own
+             * raster and 0.15 off it. */
+            outColor = vec4(keepA ? 0.4 : 0.0, keepB ? 0.4 : 0.0, onFan ? 0.4 : 0.15, 1.0);
+            return;
+        }
+        if (!keepA && !keepB) discard;
+        float w = keepA ? wA : (pc.mode > 10.5 ? (onFan ? wA : 0.0) : wB);
+        outColor = vec4(uf.anchor_rgb.rgb * w, 1.0);
+        return;
+    }
     if (pc.mode > 7.5) {                       /* lookup census (machine-read only) */
         /* Does the sampled pre-pass texel cover this fragment's own screen
          * position? The texel centre is within half a texel of it whenever the
@@ -219,44 +367,9 @@ void main()
                         0.4 * clamp(-height / 1024.0, 0.0, 1.0), 1.0);
         return;
     }
-    if (pc.mode > 0.5) {
-        /* Raised occluder in front (curb / raised platform): terrain between
-         * the camera and the fan covers it by depth. A flat raised path
-         * passes both the steep test (top is flat) and the wall-height test
-         * (dark-hollow platform: +368 < 400), yet must occlude. "In front" =
-         * the pre-pass terrain is meaningfully nearer than the fan fragment
-         * itself; "raised" = meaningfully above the shadow plane. The
-         * receiving ground keeps the shadow: its bumps are below plat_eps,
-         * and draped far slopes are farther, not nearer. */
-        if (viewZ + pc.plat_slack < viewz_from_scene_depth(dS) &&
-            height > pc.plat_eps) discard;
-        if (pc.steep_nup > 0.0) {
-            /* ORIENTATION-AWARE tests (opt-in via OPENPETE_SHADOW_STEEP_NY).
-             * 2026-07-02: the old blocker ("terrain feeder view-Z skewed off
-             * the camera model") was DISPROVEN — it was an axis misread in the
-             * measuring harness; fed terrain floors reconstruct flat to the
-             * unit. The up-normal is now taken from the correct vertical axis.
-             * (1) wall face receiver: steep surface — unconditional (the fan
-             *     oval can poke THROUGH a wall, putting its near rim in front
-             *     of the wall base, so no depth guard);
-             * (2) rising occluder, FLATNESS-SCALED: the flatter the receiver,
-             *     the more rise above the shadow plane is forgiven — catches
-             *     chamfered wall SKIRTS (nup~0.5 rising 200-340). */
-            if (nup < pc.steep_nup) discard;
-            float flat01 = clamp((nup - pc.steep_nup) / (0.9 - pc.steep_nup), 0.0, 1.0);
-            if (height > pc.wall_height * flat01) discard;
-        } else {
-            /* HEIGHT-ONLY (shipping default): terrain standing more than
-             * wall_height above the shadow's ground plane is a wall/ledge —
-             * discard; at-or-below (bumps, slopes, pits) keeps the fan.
-             * CARVE-OUT: the bottom wall_height units of a wall face rise from
-             * ground level and pass this test (a small dark notch where the
-             * fan meets a wall base — dark-hollow f2700); the orientation
-             * tests above (now unblocked) retire it. */
-            if (height > pc.wall_height) discard;
-        }
-    } else {                                   /* fallback: view-Z band (params invalid) */
-        if (viewZ + pc.band < viewz_from_scene_depth(dS)) discard;
-    }
-    outColor = vColor / vQ;
+    /* mode 0 (parameters invalid): the fan, less terrain nearer than it by
+     * more than the fallback band */
+    if (!onFan || viewZ + pc.band < fanVz) discard;
+    outColor = vec4(uf.anchor_rgb.rgb * wA, 1.0);
 }
+

@@ -4833,13 +4833,15 @@ static void terrain_vertex_input(const rhi_pipeline_desc *desc,
  * declared for layout continuity but never bound/used, and terrain keeps its
  * own two blocks at 5/6 — set 3 binding 1 is the mod's, and a set views one
  * buffer per binding. set1_vram_depth replaces set 1 with the two-sampler
- * layout.
+ * layout; uniform_set2 replaces set 2 with the single dynamic-UBO layout.
  *
  * material: the mod layout PLUS the engine's occlusion inputs, which a
  * material's fragment stage runs before the mod's colour maths. They sit
  * ABOVE the UBO pair (sets 4..6) rather than replacing sets 1/2 so a
  * material's own uniform block stays at set 3 binding 1 — the one part of
  * the layout mod source actually writes. */
+static uint32_t rhi_max_u32(uint32_t a, uint32_t b) { return a > b ? a : b; }
+
 static uint32_t pipeline_set_layouts(const rhi_device *dev, const rhi_pipeline_desc *desc,
                                      VkDescriptorSetLayout out[7])
 {
@@ -4852,6 +4854,7 @@ static uint32_t pipeline_set_layouts(const rhi_device *dev, const rhi_pipeline_d
     out[5] = high;
     out[6] = high;
     if (desc->set1_vram_depth) out[1] = dev->pair_set_layout;
+    if (desc->uniform_set2) out[2] = dev->ubo1_set_layout;
     uint32_t n = desc->material_pipeline ? 7u  /* + sets 4..6: og keys, rank */
                : desc->terrain_pipeline ? 7u   /* + 4: HD atlas, 5/6: blocks */
                : (desc->postfx || desc->mod_pipeline) ? 4u
@@ -4859,7 +4862,10 @@ static uint32_t pipeline_set_layouts(const rhi_device *dev, const rhi_pipeline_d
                : desc->uses_vram4 ? 4u
                : desc->uses_vram3 ? 3u
                : desc->uses_vram ? (desc->uses_vram2 ? 2u : 1u) : 0u;
-    return (desc->set1_vram_depth && n < 2u) ? 2u : n;
+    /* set1_vram_depth implies sets 0..1, uniform_set2 sets 0..2 */
+    const uint32_t lo = rhi_max_u32(2u * (uint32_t)desc->set1_vram_depth,
+                                    3u * (uint32_t)desc->uniform_set2);
+    return rhi_max_u32(n, lo);
 }
 
 /* Compile a pipeline's Vulkan objects from its stored sources (desc + shader
