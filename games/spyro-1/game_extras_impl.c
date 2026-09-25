@@ -576,8 +576,7 @@ const game_disc_layout_t* game_get_disc_layout(void) {
     return &k_disc_layout;
 }
 
-/* See docs/missing-geometry-bug.md — Option B (recomp self-instrumentation).
- * On entry to func_80023AC4 (Spyro's renderer, hand-written asm), wrap
+/* Recomp self-instrumentation. On entry to func_80023AC4 (Spyro's renderer, hand-written asm), wrap
  * cpu->write_word with a frame-gated tracer to capture the prim-buffer
  * write stream and diff bad vs good frames. The depth flag prevents the
  * recursive call into the function body from re-entering this branch. */

@@ -7,7 +7,7 @@
 // carve-equivalence gate (scripts/check_carve_equivalence.sh proves the
 // carved bytes == the decomp's build outputs that regen consumes).
 //
-// WAD layout (docs/level-format.md §1, spyro-1/include/wad.h,
+// WAD layout (docs/src/spyro/level-format.md §1, spyro-1/include/wad.h,
 // WadInitialize + CDLoadSync in the decomp): the header is the first
 // 2048 bytes of WAD.WAD at disc LBA 37 (g_CdState.m_WadSector); every
 // entry is {int byte_offset, int byte_length} into the WAD; reads

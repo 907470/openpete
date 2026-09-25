@@ -1,7 +1,7 @@
 # Shared helper for cmake/presets/<preset>.cmake files.
 #
 # These files exist to kill the sticky-cache-variable footgun (see
-# "Cache variables are sticky" in docs/building.md): CMakePresets.json
+# "Cache variables are sticky" in docs/src/developer/building.md): CMakePresets.json
 # pins ONE immutable cache entry per preset — CMAKE_PROJECT_openpete_INCLUDE
 # pointing at the preset's .cmake file — and every knob lives here as a
 # tracked NORMAL variable, re-evaluated at the end of project() on EVERY

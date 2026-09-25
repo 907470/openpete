@@ -132,7 +132,7 @@ music-routing bounds). The golden itself is generated, never committed:
 DuckStation fork on the first run and verifies against it after; a ctest
 row `psx_oracle_match_<game>` runs it under `ctest -L oracle`. A new game's
 acceptance is the gate at PASS over 20000 records with a POKE negative
-control failing at its record (`docs/duckstation-oracle.md`).
+control failing at its record ([`duckstation-oracle.md`](duckstation-oracle.md)).
 
 ## 7. What stays Spyro-1-specific
 

@@ -1048,7 +1048,7 @@ void openpete_native_scene_mark_terrain_feed(void);
  * 0 and the tag identifies the channel only — that is a real limit,
  * not a placeholder to fill in later: a per-element selector cannot be
  * built on a feeder that never knew which element it was drawing.
- * `docs/render-channel-census.md` records the per-feeder evidence. */
+ * `docs/src/developer/render-channel-census.md` records the per-feeder evidence. */
 #define OPENPETE_TAG_PATH(p, ident, slot) \
     (((uint32_t)(p) & 0xFu) << 28 | (((uint32_t)(slot) & 0xFFFu) << 16) | \
      ((uint32_t)(ident) & 0xFFFFu))

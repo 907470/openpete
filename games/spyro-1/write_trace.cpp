@@ -1,6 +1,6 @@
 /* games/spyro-1/write_trace.cpp — frame-gated write_word trace for one
- * recompiled function. Used to bisect the missing-geometry bug — see
- * docs/missing-geometry-bug.md. Activated by setting:
+ * recompiled function: logs the prim-buffer write stream so a bad and a
+ * good openpete_frame can be diffed. Activated by setting:
  *
  *   OPENPETE_WRITE_TRACE_FRAMES=A-B   (inclusive openpete_frame range)
  *   OPENPETE_WRITE_TRACE_PATH=path    (default /tmp/write-trace.csv)

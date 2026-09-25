@@ -1,0 +1,1 @@
+../../../modding/pages/assets/javascripts/iframe-worker-shim.js

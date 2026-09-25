@@ -1,0 +1,106 @@
+# Preview config for the openpete documentation site (User, Modding,
+# Developer, Spyro). No CMake target or packaging step reads it.
+#   mkdocs serve -f docs/mkdocs.yml            live preview
+#   mkdocs build --strict -f docs/mkdocs.yml   build to build/docs-site/
+# Modding is a navigation link to the published site; its source stays
+# under docs/modding/ with its own mkdocs.yml.
+
+site_name: openpete
+site_description: Documentation for openpete, the PC port of Spyro the Dragon.
+docs_dir: src
+site_dir: ../build/docs-site
+use_directory_urls: false
+
+theme:
+  name: material
+  font: false # no Google-Fonts CDN: the site renders fully offline
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/weather-night
+        name: dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/weather-sunny
+        name: light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.tabs.link
+
+# Opened from disk (file://), the material bundle loads
+# search/search_index.js, which only the offline plugin emits.
+plugins:
+  - search
+  - offline
+
+# The offline plugin's search worker shim, vendored (a symlink to the
+# modding site's copy): the plugin points at unpkg.com only when no
+# polyfill path contains "iframe-worker".
+extra:
+  polyfills:
+    - assets/javascripts/iframe-worker-shim.js
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.keys
+
+# Anchor links are info-level by default, so a stale #section target would
+# survive --strict.
+validation:
+  anchors: warn
+
+nav:
+  - Home: index.md
+  - User:
+      - user/index.md
+  - Modding: https://openpete.com/docs/modding/
+  - Developer:
+      - developer/README.md
+      - Architecture: developer/architecture.md
+      - Building: developer/building.md
+      - Unattended runs: developer/unattended-runs.md
+      - Recording video: developer/recording-video.md
+      - Adding a game: developer/adding-a-game.md
+      - Render channel census: developer/render-channel-census.md
+      - PsyCross boundary: developer/psycross-boundary.md
+      - PsyCross changes:
+          - developer/psycross/README.md
+          - "0001 — Linux build fixes": developer/psycross/0001-linux-build-fixes.md
+          - "0002 — Stub stateless CD commands (CdlSetmode + state mgmt + CdlReadS in CdControlB)": developer/psycross/0002-cd-stub-stateless-commands.md
+          - "0003 — Disable PGXP (half-float vertex coords)": developer/psycross/0003-disable-pgxp-half-float-verts.md
+          - "0004 — Renderer bad-rect clamp (don't abort on degenerate VRAM upload)": developer/psycross/0004-renderer-bad-rect-clamp.md
+          - "0005 — MinGW: include MSVC-implicit headers explicitly": developer/psycross/0005-mingw-msvc-only-headers.md
+          - "0006: DRAWENV struct PSYQ-alignment": developer/psycross/0006-drawenv-struct-psyq-alignment.md
+          - "0007: post-render overlay hook": developer/psycross/0007-post-render-overlay-hook.md
+          - "0008 — Pad input override hook": developer/psycross/0008-pad-input-override-hook.md
+          - "0009 — Keyboard-driven left analog stick (WASD)": developer/psycross/0009-keyboard-left-analog-stick.md
+          - "0010 — Pad GetLastP1Bits accessor": developer/psycross/0010-pad-get-last-p1-bits.md
+          - "0011 — Make the PsyCross log file opt-in": developer/psycross/0011-optional-log-file.md
+          - "0012 — Load GL entry points through SDL, not glad's GLX-only loader": developer/psycross/0012-glad-load-via-sdl-for-egl.md
+          - "0013 — Tear down GL before destroying the SDL window": developer/psycross/0013-gl-shutdown-before-window-destroy.md
+      - DuckStation oracle: developer/duckstation-oracle.md
+      - GTE trace vs reference: developer/gte-trace-vs-reference.md
+      - RAM diff vs pcsx-redux: developer/ram-diff-vs-pcsxr.md
+  - Spyro:
+      - spyro/index.md
+      - Level format: spyro/level-format.md
+      - Level overlays: spyro/level-overlays.md

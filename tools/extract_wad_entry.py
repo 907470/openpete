@@ -71,7 +71,7 @@ def level_entry(disc: Disc, level_id: int):
 
 def recolor_bg(blob: bytearray, rgb):
     """Walk LevelHeader -> environment payload -> skip components 1..5 ->
-    cyclorama background colour (docs/level-format.md §3-§4)."""
+    cyclorama background colour (docs/src/spyro/level-format.md §3-§4)."""
     data_off, _data_size = struct.unpack_from("<ii", blob, 8)
     pos = data_off
     for _ in range(5):  # textures, sectors, occlusion, surfaces, collision

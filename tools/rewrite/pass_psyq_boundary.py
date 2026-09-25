@@ -1,6 +1,6 @@
 """Pass 5b — PsyCross ``u_long *`` boundary guard.
 
-Per the Phase 1.5 audit (``docs/psycross-boundary.md``), PsyCross declares many
+Per the Phase 1.5 audit (``docs/src/developer/psycross-boundary.md``), PsyCross declares many
 public APIs as taking ``u_long *``. ``u_long`` is a typedef for host
 ``unsigned long`` — 4 bytes on LLP64 (MinGW), **8 bytes on LP64 (Linux x86_64)**.
 PSX-side callers pass buffers laid out at 4-byte stride. Routines that

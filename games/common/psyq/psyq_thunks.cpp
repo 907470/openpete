@@ -332,7 +332,7 @@ void psyq___main(CPUState* cpu) {
      * comparison against pcsx-redux shows the 5 bytes as diffs at the very
      * first halt point inside Initialize(). Replicating them keeps the
      * "first frame == pcsx-redux RAM" invariant intact for the diff loop
-     * (see docs/ram-diff-vs-pcsxr.md). */
+     * (see docs/src/developer/ram-diff-vs-pcsxr.md). */
     psyq_game_mirror_main(cpu);
     psyq_mirror_stack_frame(cpu, PSYQ_FRAME_MAIN);
 }

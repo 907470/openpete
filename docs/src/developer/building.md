@@ -325,6 +325,22 @@ dev testing of the shared path; without them the exe looks in
 `recomp/tools/` next to itself, then the repo build dir, then the system
 compiler.
 
+## Disc image
+
+The retail disc is *Spyro the Dragon* (NTSC-U, SCUS-94228) as a BIN/CUE
+pair, a single MODE2/2352 data track of 281270 sectors. The .bin's SHA256
+is `fc866b2a02e010a6658f8af2de28bb3001eb33513e5924af014e35643c6dee37`
+(the Redump image; SHA1 `cf3ce6bedeb89dfbc40990336180f3b9b0f40d9f`, MD5
+`387185f71cd0043fd75a19521dc75104`). The same image covers the Original,
+Greatest Hits and Collectors' Edition pressings. The disc library checks
+the SHA256 at ingest (`games/spyro-1/dist/disc_library.cpp`).
+
+Development runs use the disc rebuilt from the decomp output,
+`games/spyro-1/spyro-1/build/SCUS-94228.cue`, the default of every script
+and run command; `OPENPETE_DISC` or `--disc` overrides it. Distribution
+builds do not read this path: they ingest a disc into a local library on
+first run.
+
 ## SDL
 
 SDL3 is built from source from the `third_party/SDL/` submodule, pinned to

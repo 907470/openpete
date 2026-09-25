@@ -261,7 +261,7 @@ def main(argv=None) -> int:
 
     # --- Pass 5b: PsyCross u_long* boundary guard -------------------------
     # Hard-error on any call to a non-audited u_long*-taking PsyCross API.
-    # Per docs/psycross-boundary.md the current TU set is no-op (CdRead /
+    # Per docs/src/developer/psycross-boundary.md the current TU set is no-op (CdRead /
     # LoadImage internally byte-walk); the guard catches future migrations.
     pb = run_psyq_boundary(parsed.cursor, main_path)
     if pb.violations:

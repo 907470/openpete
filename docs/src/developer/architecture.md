@@ -7,6 +7,33 @@ renderer draws the scene from gameplay state. The binding constraint is the
 north star — every gameplay-readable byte matches
 SCPH-1001 hardware, tick for tick, under any presentation layer.
 
+## Repository layout
+
+- `core/` — game-agnostic runtime; no Spyro-specific address or symbol.
+  `psx/` (CPU state, dispatch, BIOS, CD-ROM, disc cache), `runtime/` (run
+  loop, ticker, present thread), `renderer/` and `rhi/` (native renderer
+  over Vulkan), `input/`, `host/` (memory cards, music and sfx overrides),
+  `record/` (bk2 movies, savestates, rewind, video), `config/` (options,
+  config file, knob registry), `ui/` (settings menu, dev overlay,
+  notifications, free camera), `diag/` (logs, traces, profiling), `mods/`,
+  `include/`.
+- `games/<game>/` — one executable per game: `recomp.conf`, `manifest/`,
+  `generated/` (recompiler output, gitignored), `game_extras_impl.c`,
+  per-game `features/`, `renderer/` and `corpus/`; `games/<game>/<game>/`
+  is the matching-decomp submodule. `games/common/` holds code shared by
+  the games (PSYQ thunks, overlay dispatch, the default hooks).
+- `mods/` — shipped and example mods; `mods-attic/` — retired mods.
+- `tests/` — `golden/`, `harness/`, `unit/`, `recomp/`, `bench/`,
+  `freecam/`, `state-baselines/`.
+- `scripts/` — build, gate and release scripts; `scripts/fences/` holds
+  the mechanical rule checks.
+- `tools/` — code generators and analysis scripts.
+- `third_party/` — vendored dependencies (psxrecomp, libco, glad, stb,
+  volk, Vulkan headers, miniz, tomlc99, xxhash, among others) and
+  submodules (PsyCross, SDL, cubeb, duckstation, glslang, imgui).
+- `docs/` — this site's source under `docs/src/`, the modding site under
+  `docs/modding/`, and the release inputs.
+
 ## Code that runs the game
 
 Three bodies of C are linked into one binary and share one address space
@@ -104,10 +131,10 @@ is under `modding/`.
 How Spyro 1 stores, loads, and runs its levels, reverse-engineered from the
 matching decomp's loader and cross-checked against SpyroEdit:
 
-- `level-format.md` — on-disc WAD layout, the length-prefixed component
+- [`level-format.md`](../spyro/level-format.md) — on-disc WAD layout, the length-prefixed component
   container format, the environment and scene parsers, and the geometry,
   texture, collision, and object (moby) interiors.
-- `level-overlays.md` — per-level code overlays, how they bind to data via
+- [`level-overlays.md`](../spyro/level-overlays.md) — per-level code overlays, how they bind to data via
   the `SetOverlayPointers` callback slots, and how openpete recompiles
   same-address overlays into co-resident C.
 

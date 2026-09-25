@@ -968,7 +968,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # cd_load_transient flag). The golden is generated, not committed: the
     # script captures it from the pinned DuckStation fork on the first run
     # (about fifteen minutes, hence the timeout) and skips when the fork is
-    # not built (see docs/duckstation-oracle.md).
+    # not built (see docs/src/developer/duckstation-oracle.md).
     add_test(NAME psx_oracle_match
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_psx_oracle.sh)
     set_tests_properties(psx_oracle_match PROPERTIES
