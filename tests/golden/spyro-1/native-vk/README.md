@@ -3,7 +3,7 @@
 Frozen output of the **native Vulkan renderer** over a curated set of scenes,
 captured **headless** through a software rasterizer (surfaceless Vulkan / lavapipe
 — plan W1.1, no GPU and no display). These are the goldens for the
-`native_visual_regression` ctest (`scripts/check_native_visual.sh`).
+`native_visual_regression` ctest (`tests/harness/check_native_visual.sh`).
 
 ## What these are (and aren't)
 
@@ -54,11 +54,11 @@ out of scope for this CI gate.
 Re-bless only when a native-render change is intentional; review the diffs first.
 
 ```sh
-scripts/check_native_visual.sh --build-dir=build/linux-release --bless
+tests/harness/check_native_visual.sh --build-dir=build/linux-release --bless
 ```
 
 Verify with a plain (compare) run before committing:
 
 ```sh
-scripts/check_native_visual.sh --build-dir=build/linux-release
+tests/harness/check_native_visual.sh --build-dir=build/linux-release
 ```

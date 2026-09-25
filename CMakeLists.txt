@@ -140,8 +140,8 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # RESOURCE_LOCK openpete_game: every test below that launches a game
     # process holds it, so ctest never co-schedules two of them. A second
     # game process invalidates any timing measurement and is refused
-    # outright by scripts/fences/bench_guard.py (scripts/bench-corpus.py,
-    # scripts/baseline-terrain-arena.py, scripts/check_pacing.sh), and a
+    # outright by scripts/fences/bench_guard.py (tests/harness/bench-corpus.py,
+    # tests/harness/baseline-terrain-arena.py, tests/harness/check_pacing.sh), and a
     # run that shares the machine also overruns its TIMEOUT. The
     # presentation-labelled per-feature tests keep their parallelism:
     # they carry no timing threshold and run under `ctest -L presentation`.
@@ -149,10 +149,10 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # Modding-framework PoC-ladder gate (modtest v0): chain-order matrix,
     # observer-neutrality vs the PSX oracle, raw-tier warning, and the
     # double-gems expected-divergence assertion. Slow (four headless
-    # sessions); `ctest -L mods` or scripts/check_mods.sh directly.
+    # sessions); `ctest -L mods` or tests/harness/check_mods.sh directly.
     # See notes/plans/openpete-modding-framework.md.
     add_test(NAME mod_poc_ladder
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_mods.sh)
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_mods.sh)
     set_tests_properties(mod_poc_ladder PROPERTIES
         LABELS "slow;mods"
         RESOURCE_LOCK openpete_game
@@ -167,7 +167,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # out-of-body refusal off the log. Skips (64) with no display.
     # See notes/plans/openpete-mod-imgui-escape-hatch.md.
     add_test(NAME mod_imgui
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_mod_imgui.sh)
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_mod_imgui.sh)
     set_tests_properties(mod_imgui PROPERTIES
         LABELS "mods"
         RESOURCE_LOCK openpete_game
@@ -185,7 +185,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # at all, so this is the only gate that exercises the selector seam.
     # Slow (a dozen headless sessions); `ctest -L mods` or the script.
     add_test(NAME mod_channel_selectors
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_mod_channels.sh)
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_mod_channels.sh)
     set_tests_properties(mod_channel_selectors PROPERTIES
         LABELS "slow;mods"
         RESOURCE_LOCK openpete_game
@@ -199,7 +199,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # keep clear of it; this cross-compiles one such translation unit and
     # fails on a redefinition. Skips (64) with no mingw cross compiler.
     add_test(NAME sdk_windows_include
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_sdk_windows_include.sh
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_sdk_windows_include.sh
                      --sdk ${CMAKE_BINARY_DIR}/games/spyro-1/sdk)
     set_tests_properties(sdk_windows_include PROPERTIES
         LABELS "mods"
@@ -213,7 +213,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # expectations with the feature on vs off. Slow (boots ~7 headless
     # sessions); `ctest -L gapfill` or the script directly.
     add_test(NAME gapfill_corpus
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_gapfill_corpus.sh
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_gapfill_corpus.sh
                      --build-dir=${CMAKE_BINARY_DIR})
     set_tests_properties(gapfill_corpus PROPERTIES
         LABELS "slow;gapfill"
@@ -229,7 +229,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # stretching + sub-pixel projection drift leak into the central
     # region. Closing the leak makes this gate green.
     add_test(NAME aspect_screenshot_symmetry
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_aspect_screenshot.sh
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_aspect_screenshot.sh
                      --build-dir=${CMAKE_BINARY_DIR}
                      --frame=850)
     set_tests_properties(aspect_screenshot_symmetry PROPERTIES
@@ -244,7 +244,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # walk; the uninjected leg names the type it allocated on. Two headless
     # llvmpipe boots. Exit 64 = no binary or disc.
     add_test(NAME tercache_alloc
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_tercache_alloc.sh
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_tercache_alloc.sh
                      --build-dir=${CMAKE_BINARY_DIR})
     set_tests_properties(tercache_alloc PROPERTIES
         LABELS "slow;renderer"
@@ -263,7 +263,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # Its own label: far too long for the per-build ctest run. Exit 64 = no
     # binary or disc.
     add_test(NAME terrain_arena_baseline
-             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/baseline-terrain-arena.py check
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/baseline-terrain-arena.py check
              WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     set_tests_properties(terrain_arena_baseline PROPERTIES
         LABELS "slow;terrain-baseline"
@@ -281,7 +281,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # Without the level-edge replacement the marks never fall and climb
     # toward the caps over a session, far past any single level's demand.
     add_test(NAME terrain_arena_demo
-             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/baseline-terrain-arena.py demo
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/baseline-terrain-arena.py demo
              WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     set_tests_properties(terrain_arena_demo PROPERTIES
         LABELS "slow;terrain-baseline"
@@ -296,7 +296,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # need neither, and that the squeezed run's image is identical to the
     # stock-cap run's, which is what makes the claim-back invisible.
     add_test(NAME terrain_arena_overflow
-             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/baseline-terrain-arena.py overflow
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/baseline-terrain-arena.py overflow
              WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     set_tests_properties(terrain_arena_overflow PROPERTIES
         LABELS "slow;terrain-baseline"
@@ -330,7 +330,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # +PIL are absent. See notes/plans/openpete-native-renderer.md (Wave 1)
     # and tests/golden/spyro-1/native-vk/README.md.
     add_test(NAME native_visual_regression
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_native_visual.sh
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_native_visual.sh
                      --build-dir=${CMAKE_BINARY_DIR})
     set_tests_properties(native_visual_regression PROPERTIES
         LABELS "slow;visual"
@@ -350,16 +350,16 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # gameplay oracle can't see. Covers the fanned-out corpus: the 53 skip-to-level
     # bk2s (capped to a few evenly-spaced samples each, 16:9, both LOD modes) plus
     # the debug-freecam poses. Re-bless an intended change with
-    # scripts/check_presentation_golden.sh --bless; scope a fast subset with
+    # tests/harness/check_presentation_golden.sh --bless; scope a fast subset with
     # --filter=<bk2-substr>. Skips (exit 64) if the binary / disc / Vulkan loader /
     # PIL are absent. Also runs the credits-roll interpolation leg
-    # (scripts/check_credits_interp.sh) so it cannot be skipped separately.
+    # (tests/harness/check_credits_interp.sh) so it cannot be skipped separately.
     # The gate takes --game SLUG and derives binary, disc, bk2 dir, manifests and
     # golden from it; a game is registered once it has a corpus and a golden
     # (a run without them refuses as VACUOUS at zero captured rows).
     # See notes/plans/openpete-presentation-golden.md.
     add_test(NAME presentation_golden
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_presentation_golden.sh
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_presentation_golden.sh
                      --build-dir=${CMAKE_BINARY_DIR})
     set_tests_properties(presentation_golden PROPERTIES
         LABELS "slow;presentation"
@@ -372,7 +372,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # Spyro 3: one bk2 row (games/spyro-3/corpus/presentation-corpus.manifest), the
     # native terrain feeder's rows; the same gate, scoped by --game.
     add_test(NAME presentation_golden_spyro3
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_presentation_golden.sh
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_presentation_golden.sh
                      --game spyro-3 --build-dir=${CMAKE_BINARY_DIR})
     set_tests_properties(presentation_golden_spyro3 PROPERTIES
         LABELS "slow;presentation"
@@ -389,7 +389,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # game with a manifest.
     foreach(_skip_game spyro-1 spyro-2 spyro-3)
         add_test(NAME skip_targets_${_skip_game}
-                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_skip_targets.sh
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_skip_targets.sh
                          --game ${_skip_game} --build-dir=${CMAKE_BINARY_DIR})
         set_tests_properties(skip_targets_${_skip_game} PROPERTIES
             LABELS "slow;skip-targets"
@@ -406,7 +406,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # inert headless); exits 64 without a display.
     foreach(_font_game spyro-1 spyro-3)
         add_test(NAME text_font_${_font_game}
-                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_text_font.sh
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_text_font.sh
                          --game ${_font_game} --build-dir=${CMAKE_BINARY_DIR})
         set_tests_properties(text_font_${_font_game} PROPERTIES
             LABELS "slow;presentation"
@@ -426,7 +426,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # nonzero mean near-face count. Spyro 3 is the game whose draw
     # bins the HP list by distance; the check skips for the others.
     add_test(NAME nearhq_swing_spyro3
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_nearhq_swing.sh
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_nearhq_swing.sh
                      --game spyro-3 --build-dir=${CMAKE_BINARY_DIR})
     set_tests_properties(nearhq_swing_spyro3 PROPERTIES
         LABELS "presentation;terrain"
@@ -445,7 +445,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # bracketed, so a row cannot pass on tick presents alone.
     foreach(_subtick_game spyro-1 spyro-2 spyro-3)
         add_test(NAME player_subtick_${_subtick_game}
-                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_player_subtick.sh
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_player_subtick.sh
                          --game ${_subtick_game} --build-dir=${CMAKE_BINARY_DIR})
         set_tests_properties(player_subtick_${_subtick_game} PROPERTIES
             LABELS "presentation;player"
@@ -465,7 +465,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # its floor.
     foreach(_subtick_game spyro-1 spyro-2 spyro-3)
         add_test(NAME moby_subtick_${_subtick_game}
-                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_moby_subtick.sh
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_moby_subtick.sh
                          --game ${_subtick_game} --build-dir=${CMAKE_BINARY_DIR})
         set_tests_properties(moby_subtick_${_subtick_game} PROPERTIES
             LABELS "presentation;moby"
@@ -483,7 +483,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # vacuous when the layer did not load or the render path drew nothing.
     foreach(_vkval_game spyro-1 spyro-2 spyro-3)
         add_test(NAME vk_validation_${_vkval_game}
-                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_vk_validation.sh
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_vk_validation.sh
                          --game ${_vkval_game} --build-dir=${CMAKE_BINARY_DIR})
         set_tests_properties(vk_validation_${_vkval_game} PROPERTIES
             LABELS "presentation;validation"
@@ -503,7 +503,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # adopted into the real timeline before the row's VBL.
     foreach(_ra_game spyro-1 spyro-2 spyro-3)
         add_test(NAME runahead_ident_${_ra_game}
-                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_runahead_ident.sh
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_runahead_ident.sh
                          --game ${_ra_game} --build-dir=${CMAKE_BINARY_DIR})
         set_tests_properties(runahead_ident_${_ra_game} PROPERTIES
             LABELS "presentation;runahead"
@@ -521,7 +521,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # as vacuous when the row interpolates fewer triangles than its floor.
     foreach(_subtick_game spyro-1 spyro-2 spyro-3)
         add_test(NAME carry_subtick_${_subtick_game}
-                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_carry_subtick.sh
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_carry_subtick.sh
                          --game ${_subtick_game} --build-dir=${CMAKE_BINARY_DIR})
         set_tests_properties(carry_subtick_${_subtick_game} PROPERTIES
             LABELS "presentation;carry"
@@ -549,7 +549,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # row's floor.
     foreach(_zap_game spyro-2 spyro-3)
         add_test(NAME zap_subtick_${_zap_game}
-                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_zap_subtick.sh
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_zap_subtick.sh
                          --game ${_zap_game} --build-dir=${CMAKE_BINARY_DIR})
         set_tests_properties(zap_subtick_${_zap_game} PROPERTIES
             LABELS "presentation;zap"
@@ -567,7 +567,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # either leg draws no blended run.
     foreach(_bwo_game spyro-2)
         add_test(NAME blendorder_ident_${_bwo_game}
-                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_blendorder_ident.sh
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_blendorder_ident.sh
                          --game ${_bwo_game} --build-dir=${CMAKE_BINARY_DIR})
         set_tests_properties(blendorder_ident_${_bwo_game} PROPERTIES
             LABELS "presentation;blendorder"
@@ -578,7 +578,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
 
     foreach(_subtick_game spyro-2 spyro-3)
         add_test(NAME glint_subtick_${_subtick_game}
-                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_glint_subtick.sh
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_glint_subtick.sh
                          --game ${_subtick_game} --build-dir=${CMAKE_BINARY_DIR})
         set_tests_properties(glint_subtick_${_subtick_game} PROPERTIES
             LABELS "presentation;glint"
@@ -589,7 +589,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
 
     foreach(_subtick_game spyro-2 spyro-3)
         add_test(NAME glow_subtick_${_subtick_game}
-                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_glow_subtick.sh
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_glow_subtick.sh
                          --game ${_subtick_game} --build-dir=${CMAKE_BINARY_DIR})
         set_tests_properties(glow_subtick_${_subtick_game} PROPERTIES
             LABELS "presentation;glow"
@@ -604,7 +604,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # of the manifest until a movie with a moving shadowed moby is recorded.
     foreach(_subtick_game spyro-1 spyro-3)
         add_test(NAME shadow_subtick_${_subtick_game}
-                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_shadow_subtick.sh
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_shadow_subtick.sh
                          --game ${_subtick_game} --build-dir=${CMAKE_BINARY_DIR})
         set_tests_properties(shadow_subtick_${_subtick_game} PROPERTIES
             LABELS "presentation;shadow"
@@ -614,7 +614,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     endforeach()
 
     # The remaining render paths of the shared feeder harness. Each is one
-    # channel of scripts/check_feeder_subtick.sh, with its own manifest per
+    # channel of tests/harness/check_feeder_subtick.sh, with its own manifest per
     # game; the game list per path is the set whose rows engage and pass
     # today, and each manifest records why the games left out have no row.
     foreach(_subtick_path_game
@@ -630,7 +630,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         list(GET _subtick_path_game 0 _sp)
         list(GET _subtick_path_game 1 _sg)
         add_test(NAME ${_sp}_subtick_${_sg}
-                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_${_sp}_subtick.sh
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_${_sp}_subtick.sh
                          --game ${_sg} --build-dir=${CMAKE_BINARY_DIR})
         set_tests_properties(${_sp}_subtick_${_sg} PROPERTIES
             LABELS "presentation;subtick;${_sp}"
@@ -652,7 +652,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # when its canonical motion over the interval is below the row's floor.
     foreach(_subtick_game spyro-2 spyro-3)
         add_test(NAME portal_subtick_${_subtick_game}
-                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_portal_subtick.sh
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_portal_subtick.sh
                          --game ${_subtick_game} --build-dir=${CMAKE_BINARY_DIR})
         set_tests_properties(portal_subtick_${_subtick_game} PROPERTIES
             LABELS "presentation;portal"
@@ -670,7 +670,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # (games/spyro-1/renderer/moby_game.c, s1_vstream_init), so on the others
     # the run decodes no field and the case could only read as vacuous.
     add_test(NAME vstream_boot_spyro-1
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_vstream_boot.sh
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_vstream_boot.sh
                      --game spyro-1 --build-dir=${CMAKE_BINARY_DIR})
     set_tests_properties(vstream_boot_spyro-1 PROPERTIES
         LABELS "presentation;vstream"
@@ -686,7 +686,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # walk ring is what the row measures. Engagement: the full 600-row ring,
     # with nothing lost to recycling. Spyro 1 holds the window measured clean.
     add_test(NAME glitch_mark_spyro-1
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_glitch_mark.sh
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_glitch_mark.sh
                      --game spyro-1 --build-dir=${CMAKE_BINARY_DIR})
     set_tests_properties(glitch_mark_spyro-1 PROPERTIES
         LABELS "presentation;terrain"
@@ -702,7 +702,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # Registered for the games that have a golden to run.
     foreach(_contention_game spyro-1 spyro-3)
         add_test(NAME contention_${_contention_game}
-                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_contention.sh
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_contention.sh
                          --game ${_contention_game} --rounds 3
                          --build-dir=${CMAKE_BINARY_DIR})
         set_tests_properties(contention_${_contention_game} PROPERTIES
@@ -737,7 +737,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             continue()
         endif()
         add_test(NAME freeze_backdrop_${_freeze_game}
-                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_freeze_backdrop.sh
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_freeze_backdrop.sh
                          --game ${_freeze_game} --build-dir=${CMAKE_BINARY_DIR})
         set_tests_properties(freeze_backdrop_${_freeze_game} PROPERTIES
             LABELS "presentation;freeze;windowed"
@@ -758,7 +758,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     foreach(tcgh_game spyro-1 spyro-2 spyro-3)
         string(REPLACE "-" "" tcgh_slug ${tcgh_game})
         add_test(NAME tercache_gpu_holes_${tcgh_slug}
-                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_tercache_gpu_holes.sh
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_tercache_gpu_holes.sh
                          --game ${tcgh_game})
         set_tests_properties(tercache_gpu_holes_${tcgh_slug} PROPERTIES
             LABELS "slow;presentation;terrain;windowed"
@@ -779,7 +779,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # report retained sectors and the cache-off legs report none. Skips (exit
     # 64) without a display, a windows-mingw exe, a disc, the bk2 or PIL.
     add_test(NAME tercache_cache_ab_spyro3
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_tercache_cache_ab.sh
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_tercache_cache_ab.sh
                      --game spyro-3)
     set_tests_properties(tercache_cache_ab_spyro3 PROPERTIES
         LABELS "slow;presentation;terrain;windowed"
@@ -795,7 +795,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # mod loaded. The mod is out of tree: SPYRO_COOP_DIR names its source dir,
     # else the test skips (exit 64).
     add_test(NAME spyro_records
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_spyro_records.sh
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_spyro_records.sh
                      --build-dir=${CMAKE_BINARY_DIR})
     set_tests_properties(spyro_records PROPERTIES
         LABELS "slow;presentation;mods"
@@ -826,7 +826,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # NOT in the default set: it runs four 120 s legs and needs a display for
     # three of them. Run with `ctest -L pacing`.
     add_test(NAME pacing_strict
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_pacing.sh)
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_pacing.sh)
     set_tests_properties(pacing_strict PROPERTIES
         LABELS "slow;pacing"
         RESOURCE_LOCK openpete_game
@@ -841,7 +841,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # (exit 64) if the disc/binary/ffprobe are absent. See
     # notes/plans/openpete-record-video.md.
     add_test(NAME record_smoke
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_record.sh
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_record.sh
                      --build-dir=${CMAKE_BINARY_DIR}
                      --frames=300)
     set_tests_properties(record_smoke PROPERTIES
@@ -858,7 +858,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # all respond), and marked as injected under the lock (still flows).
     # Exit 2 when the negative control did not engage.
     add_test(NAME input_lock
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_input_lock.sh
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_input_lock.sh
                      --build-dir=${CMAKE_BINARY_DIR})
     set_tests_properties(input_lock PROPERTIES
         LABELS "slow;input"
@@ -870,10 +870,10 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # Performance benchmark pipeline smoke — replays a few bk2 movies through
     # the profiler (--profile-out) and asserts the trace/summary/rollup pipeline
     # runs and parses. NOT a perf-threshold gate (CI hardware varies); the
-    # baseline regression check (scripts/bench-corpus.py --baseline) is a
+    # baseline regression check (tests/harness/bench-corpus.py --baseline) is a
     # manually-run tool. See notes/plans/openpete-perf-profiling.md.
     add_test(NAME bench_corpus_smoke
-             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/bench-corpus.py
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/bench-corpus.py
                      --exe $<TARGET_FILE:openpete-spyro1>
                      --movies artisans-bridge,stone-hill-entry
                      --frame-limit 4000 --max-runtime-seconds 90
@@ -937,7 +937,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # with PSXRecomp and runs the emitted C against a harness. Skips when
     # PSXRecomp is not built.
     add_test(NAME recomp_gte_sideeffects
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_recomp_gte.sh
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_recomp_gte.sh
                      --build-dir=${CMAKE_BINARY_DIR}
                      --cc=${CMAKE_C_COMPILER})
     set_tests_properties(recomp_gte_sideeffects PROPERTIES
@@ -1021,7 +1021,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # Slow (boots N PSX sessions); only runs under `ctest -L slow`.
     # Phase 6 of openpete-determinism-enforcement.md.
     add_test(NAME determinism_matrix
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_determinism_matrix.sh
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_determinism_matrix.sh
                      --build-dir=${CMAKE_BINARY_DIR}
                      --frames=2000)
     set_tests_properties(determinism_matrix PROPERTIES
@@ -1037,7 +1037,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # exits on movie end. Not part of the default ctest run; opt in
     # via `ctest -L soak`. Substantially slower than matrix.
     add_test(NAME determinism_soak
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_determinism_matrix.sh
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_determinism_matrix.sh
                      --build-dir=${CMAKE_BINARY_DIR}
                      --soak)
     set_tests_properties(determinism_soak PROPERTIES
@@ -1057,7 +1057,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # script directly. Skips (exit 64) if the binary / disc / movies are
     # absent. See notes/plans/openpete-savestate-frame-step-rewind.md.
     add_test(NAME state_roundtrip
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_state_roundtrip.sh)
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_state_roundtrip.sh)
     set_tests_properties(state_roundtrip PROPERTIES
         LABELS "slow;determinism;savestate"
         RESOURCE_LOCK openpete_game
@@ -1078,7 +1078,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # corpus here; `--corpus full` is the arc-end sweep. Skips (exit 64) if
     # the binary or disc are absent.
     add_test(NAME subtick_state
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_subtick_state.py)
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_subtick_state.py)
     set_tests_properties(subtick_state PROPERTIES
         LABELS "slow;determinism"
         RESOURCE_LOCK openpete_game
@@ -1097,7 +1097,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # triangles. Skips (exit 64) without a binary, a disc, PIL, or measured
     # rows for the game.
     add_test(NAME cache_walk_ab_spyro-1
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_cache_walk_ab.sh
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_cache_walk_ab.sh
                      --game spyro-1 --build-dir=${CMAKE_BINARY_DIR})
     set_tests_properties(cache_walk_ab_spyro-1 PROPERTIES
         LABELS "slow;presentation;terrain"
@@ -1117,7 +1117,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # no terrain triangle or the cache leg retains no sector. Skips (exit 64)
     # without a binary, a disc, a Vulkan loader or PIL.
     add_test(NAME terrain_walk_cache_spyro-1
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_terrain_walk_cache.sh
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_terrain_walk_cache.sh
                      --game spyro-1 --build-dir=${CMAKE_BINARY_DIR})
     set_tests_properties(terrain_walk_cache_spyro-1 PROPERTIES
         LABELS "presentation;terrain;spyro-1"
@@ -1131,7 +1131,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # (games/spyro-2/corpus/walk-cache.manifest): the plain boot's attract demo at
     # one VBL on the deterministic sub-tick present, walk against cache.
     add_test(NAME terrain_walk_cache_spyro-2
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_terrain_walk_cache.sh
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_terrain_walk_cache.sh
                      --game spyro-2 --build-dir=${CMAKE_BINARY_DIR})
     set_tests_properties(terrain_walk_cache_spyro-2 PROPERTIES
         LABELS "presentation;terrain;spyro-2"
@@ -1141,7 +1141,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME terrain_walk_cache_spyro-3
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_terrain_walk_cache.sh
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_terrain_walk_cache.sh
                      --game spyro-3 --build-dir=${CMAKE_BINARY_DIR})
     set_tests_properties(terrain_walk_cache_spyro-3 PROPERTIES
         LABELS "presentation;terrain;spyro-3"

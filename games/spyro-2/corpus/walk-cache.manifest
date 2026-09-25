@@ -1,5 +1,5 @@
 # walk-cache.manifest — rows for the terrain walk-vs-cache check
-# (scripts/check_terrain_walk_cache.sh); both row forms are described there.
+# (tests/harness/check_terrain_walk_cache.sh); both row forms are described there.
 #
 #   pose row  <level> | pos=(x, y, z) yaw=Y pitch=P | [lod]
 #   bk2 row   <bk2> | <VBL> | <canon|inter> | [lod]

@@ -1,4 +1,4 @@
-# Blended-world draw-order identity (scripts/check_blendorder_ident.sh).
+# Blended-world draw-order identity (tests/harness/check_blendorder_ident.sh).
 #   <source> | <V>
 # <source> is a movie under games/spyro-2/bk2, or any other name for the plain
 # boot (title screen + attract demo), which needs no input.

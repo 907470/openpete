@@ -7,7 +7,7 @@
  * definitions coexist; without the prefix this unit fails to compile with a
  * redefinition of `RECT`.
  *
- * Cross-compiled by scripts/check_sdk_windows_include.sh. The static
+ * Cross-compiled by tests/harness/check_sdk_windows_include.sh. The static
  * assertions prove both types reached the compile (a unit that included
  * neither would also compile).
  */

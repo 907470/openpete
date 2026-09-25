@@ -1,4 +1,4 @@
-# Freeze-backdrop source corpus — scripts/check_freeze_backdrop.sh
+# Freeze-backdrop source corpus — tests/harness/check_freeze_backdrop.sh
 #
 # One windowed replay per row, to the frame limit, counting the composed
 # presents that qualified as the freeze backdrop's source frame.

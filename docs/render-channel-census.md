@@ -149,7 +149,7 @@ The instrument that keeps this honest is the identity material: one whose
 `op_material` returns `base` unchanged must be pixel-identical to no
 material at all. Any nonzero pixel delta is contract leakage by definition,
 because the mod asked for nothing. It is a rung in
-`scripts/check_mod_channels.sh:152-196` for every reshadeable channel.
+`tests/harness/check_mod_channels.sh:152-196` for every reshadeable channel.
 
 ## Retention identity
 

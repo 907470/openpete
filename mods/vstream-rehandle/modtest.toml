@@ -1,5 +1,5 @@
 # modtest.toml — this repo's CI declaration for tools/modtest.py. The
-# pixel-identity check against stock lives in scripts/check_mods.sh.
+# pixel-identity check against stock lives in tests/harness/check_mods.sh.
 [test]
 frames        = 3000
 args          = "--skip-to-level stone_hill"

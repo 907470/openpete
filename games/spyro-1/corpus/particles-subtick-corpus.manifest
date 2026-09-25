@@ -1,5 +1,5 @@
 # Sub-tick interpolation of the particle systems
-# (scripts/check_feeder_subtick.sh --path particles).
+# (tests/harness/check_feeder_subtick.sh --path particles).
 #   <bk2> | <V> | blob=<x>,<y> ... [tol=<px>] [step=<px>] [astep=<px>] [cstep=<n>]
 #
 # The two legs are a render-path selection with and without the particle path,

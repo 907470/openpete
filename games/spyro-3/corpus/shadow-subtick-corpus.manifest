@@ -1,5 +1,5 @@
 # Sub-tick interpolation of the moby ground shadows
-# (scripts/check_shadow_subtick.sh).
+# (tests/harness/check_shadow_subtick.sh).
 #   <bk2> | <V> | blob=<x>,<y> ... [tol=<px>] [step=<px>] [judge=<a>,...]
 # V is the canonical VBL the intermediate present at V+1 sits above; V-2 opens
 # the interval that present covers. V is even because a tick spans two VBLs

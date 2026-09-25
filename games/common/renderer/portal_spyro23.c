@@ -376,7 +376,7 @@ static int p3_opening_poly(const p3_preview* p, p3_v* out, int maxn);
 /* The aperture census: one uncapped line per fed preview, holding the opening
  * polygon in the screen space p3_emit_tri draws into and the per-record
  * channels the replay carries. It is the statistic
- * scripts/check_feeder_subtick.sh --path portal judges, the aperture being far
+ * tests/harness/check_feeder_subtick.sh --path portal judges, the aperture being far
  * larger than the compact blob a pixel mask models. */
 static void p3_census(const p3_tick* T, const ngte_view* vw) {
     const float offx = (float)(vw->ofx - 256.0), offy = (float)(vw->ofy - 120.0);

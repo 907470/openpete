@@ -1,5 +1,5 @@
 # Sub-tick interpolation of Spyro's flame breath
-# (scripts/check_feeder_subtick.sh --path flame).
+# (tests/harness/check_feeder_subtick.sh --path flame).
 #   <bk2> | <V> | blob=<x>,<y> ... [tol=<px>] [step=<px>] [astep=<px>] [cstep=<n>]
 #
 # The flame has no feed knob; the two legs are a render-path selection with and

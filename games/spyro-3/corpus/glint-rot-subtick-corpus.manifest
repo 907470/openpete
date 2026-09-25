@@ -1,4 +1,4 @@
-# Sub-tick spin of the gem glint (scripts/check_feeder_subtick.sh --path
+# Sub-tick spin of the gem glint (tests/harness/check_feeder_subtick.sh --path
 # glint-rot). Rows: <bk2> | <V> | rec=<addr> [rtol=] [step=]. rec is the pool
 # record whose drawn orientation is judged, in sine-table entries modulo 64.
 #

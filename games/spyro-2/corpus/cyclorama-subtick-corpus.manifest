@@ -1,4 +1,4 @@
-# Sub-tick interpolation of the cyclorama (scripts/check_feeder_subtick.sh
+# Sub-tick interpolation of the cyclorama (tests/harness/check_feeder_subtick.sh
 # --path cyclorama).
 #   <bk2> | <V> | blob=<x>,<y> ... [tol=<px>] [step=<px>] [atol=<px>] [ctol=<n>]
 # V is the tick whose primitives the intermediate present at V+1 replays; V-2

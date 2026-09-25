@@ -1,4 +1,4 @@
-# The 3D glyph text gate's rows (scripts/check_text_font.sh). The HUD font
+# The 3D glyph text gate's rows (tests/harness/check_text_font.sh). The HUD font
 # loads with the title in every session, so there is no cache file and one
 # row.
 #

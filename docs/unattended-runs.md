@@ -57,14 +57,14 @@ sub-tick is invisible to a headless capture.
 | Gate | Script | Proves |
 |---|---|---|
 | Oracle | `scripts/check_psx_oracle.sh` | Gameplay state matches the PSX reference capture, tick for tick. |
-| Presentation golden | `scripts/check_presentation_golden.sh` | The rendered screenshot corpus is unchanged, or intentionally re-blessed with `--bless`. |
-| Mods | `scripts/check_mods.sh` | The mod PoC ladder, including per-mod `modtest.toml` scenarios (ctest `mod_poc_ladder`, ~10 min). |
+| Presentation golden | `tests/harness/check_presentation_golden.sh` | The rendered screenshot corpus is unchanged, or intentionally re-blessed with `--bless`. |
+| Mods | `tests/harness/check_mods.sh` | The mod PoC ladder, including per-mod `modtest.toml` scenarios (ctest `mod_poc_ladder`, ~10 min). |
 
 Oracle internals are in [`duckstation-oracle.md`](duckstation-oracle.md).
 
 ### Skip targets
 
-`scripts/check_skip_targets.sh [--game SLUG] [--build-dir=DIR] [--filter=NAME]`
+`tests/harness/check_skip_targets.sh [--game SLUG] [--build-dir=DIR] [--filter=NAME]`
 (default game `spyro-1`) runs every row of `games/<game>/corpus/skip-targets.manifest`
 headless: 5 `--skip-to-cutscene` rows for Spyro 1, 11 for Spyro 2, 38
 `--skip-to-area` and 19 `--skip-to-cutscene` rows for Spyro 3. A row is `name | args | frames | expect`:
@@ -106,5 +106,5 @@ the dumps before the run, then read them after it exits.
 
 Screenshots answer what the render looks like. They do not settle whether it
 is correct; that is the presentation golden's job, and
-`scripts/center_crop_diff.py A.png B.png` turns a pair of captures into a
+`tests/harness/center_crop_diff.py A.png B.png` turns a pair of captures into a
 pixel-identity number rather than an impression.

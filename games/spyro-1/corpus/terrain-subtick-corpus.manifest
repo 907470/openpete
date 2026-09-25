@@ -1,5 +1,5 @@
 # Sub-tick interpolation of the animated terrain
-# (scripts/check_feeder_subtick.sh --path terrain, --path terrain-tanim).
+# (tests/harness/check_feeder_subtick.sh --path terrain, --path terrain-tanim).
 #   <source> | <V> | [rect=<x0>,<y0>,<x1>,<y1> ...] [step=<px>] [itol=<px>]
 #
 # This path's knobs, OPENPETE_TERRAIN_VANIM and OPENPETE_TERRAIN_TANIM, do not

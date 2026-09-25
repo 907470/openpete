@@ -2,7 +2,7 @@
 #
 # With chain-duo-b, checks that enabled-list order sets chain priority:
 # the mod listed later runs first and base() descends toward the earlier
-# one, then the original. scripts/check_mods.sh runs both orderings and
+# one, then the original. tests/harness/check_mods.sh runs both orderings and
 # asserts the nesting flips. Log-only.
 
 [mod]

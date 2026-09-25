@@ -10,7 +10,7 @@
 # detail window waits for the overlay.
 #
 # Two Containment toggles ship off. Each drives one of the engine's
-# containment paths for scripts/check_mod_imgui.sh: one omits an
+# containment paths for tests/harness/check_mod_imgui.sh: one omits an
 # ImGui_End so the error bracket has something to recover, the other
 # calls ImGui_Text from a present hook so the guard has something to drop.
 #

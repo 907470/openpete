@@ -1,5 +1,5 @@
 # Sub-tick interpolation of the tracer ribbon and mesh
-# (scripts/check_feeder_subtick.sh --path tracer).
+# (tests/harness/check_feeder_subtick.sh --path tracer).
 #   <bk2> | <V> | blob=<x>,<y> ... [tol=<px>] [step=<px>]
 #
 # The two legs are a render-path selection with and without the tracer path,

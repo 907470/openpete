@@ -1,8 +1,8 @@
 # Sub-tick interpolation of a moby's painted extent and colour
-# (scripts/check_feeder_subtick.sh --path moby-mask).
+# (tests/harness/check_feeder_subtick.sh --path moby-mask).
 #   <bk2> | <V> | blob=<x>,<y> ... [tol=<px>] [step=<px>] [astep=<px>] [cstep=<n>]
 #
-# scripts/check_moby_subtick.sh answers for a moby's vertex and keyframe
+# tests/harness/check_moby_subtick.sh answers for a moby's vertex and keyframe
 # animation, by comparing host-side poses. It does not separate the two cells
 # this row measures: the screen scale the moby is drawn at, which is its mask's
 # pixel count, and the colour it is drawn in, which is that mask's mean.

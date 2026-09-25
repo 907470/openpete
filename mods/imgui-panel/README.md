@@ -54,6 +54,6 @@ paths visible:
   hook, both outside any section body. The engine drops each call, returns
   a zeroed value, and names the mod and the function once.
 
-`scripts/check_mod_imgui.sh` drives both rows, the engagement counter and
+`tests/harness/check_mod_imgui.sh` drives both rows, the engagement counter and
 the hover tally in a windowed run; `modtest.toml` covers compile, load and
 bind headless.

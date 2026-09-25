@@ -4,7 +4,7 @@
 The P1 "modtest harness" of notes/plans/openpete-modding-framework.md:
 a mod declares its own regression test in its manifest; this runner
 replays it and checks the assertions. In-tree PoC rungs run through it
-in CI (scripts/check_mods.sh); third-party modders run the *identical*
+in CI (tests/harness/check_mods.sh); third-party modders run the *identical*
 harness locally:
 
     tools/modtest.py mods/my-mod

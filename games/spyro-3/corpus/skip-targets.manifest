@@ -1,5 +1,5 @@
 # The --skip-to-area and --skip-to-cutscene row table
-# (scripts/check_skip_targets.sh).
+# (tests/harness/check_skip_targets.sh).
 #
 # --skip-to-area: one row per sub-area, every sub-area 1..N-1 of the 17
 # multi-area levels (38), each entered by one area-0 portal. A row passes
@@ -23,7 +23,7 @@
 #
 # Expect tokens match the release line; `log:TEXT`, `log:A>>B` and
 # `!log:TEXT` match the whole log (`~` for a space; forms in
-# scripts/check_skip_targets.sh). Row 61 commits New Game from the title's
+# tests/harness/check_skip_targets.sh). Row 61 commits New Game from the title's
 # idle sub-state instead of sub-state 19, whose phase 0 teardown
 # func_title_8007C268 clears interrupt callback line 7; the skip calls that
 # teardown before the commit. The row's log tokens require the clear

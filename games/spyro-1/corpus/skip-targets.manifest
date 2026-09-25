@@ -1,4 +1,4 @@
-# The --skip-to-cutscene / --skip-to-area row table (scripts/check_skip_targets.sh).
+# The --skip-to-cutscene / --skip-to-area row table (tests/harness/check_skip_targets.sh).
 # One row per target name. A row passes when its run prints the skip's release
 # line ("[skip-to-level] level playable") carrying every expect token, the
 # engagement values the skip module reads back from RAM at release, and does

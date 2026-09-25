@@ -701,7 +701,7 @@ typedef struct openpete_options {
      * with FNV1a-64 and append `frame,vbl,hex_hash` to PATH. The
      * regions are loaded statically (compiled-in copy of the manifest)
      * so the runtime has zero runtime-config requirement. Used by
-     * scripts/check_aspect_determinism.sh as the primary determinism
+     * tests/harness/check_determinism_matrix.sh as the primary determinism
      * gate — the per-position log is a coarse proxy that misses leaks
      * not yet propagated to Spyro's m_Position. NULL = disabled. */
     const char* gameplay_hash_log_path;

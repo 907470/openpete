@@ -414,7 +414,7 @@ static int cull_corners(const shadow_pt c[4]) {
 
 /* OPENPETE_SHADOW_INTERP=0 suppresses the two own-motion offsets below,
  * leaving every entry at the newest tick's world pose. It is the engagement
- * leg of scripts/check_feeder_subtick.sh --path shadow: the harness reads the
+ * leg of tests/harness/check_feeder_subtick.sh --path shadow: the harness reads the
  * whole tick step back under it. */
 static int shadow_interp_on(void) {
     static int v = -1;

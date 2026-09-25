@@ -1,4 +1,4 @@
-# terrain-arena high-water baseline (scripts/baseline-terrain-arena.py)
+# terrain-arena high-water baseline (tests/harness/baseline-terrain-arena.py)
 # level	wizard_peak
 # pose	spawn	exit=0	freecam=0	svc=1071/1	draws_retired=0	rebake=72
 # pose	topdown	exit=0	freecam=1	svc=1071/1	draws_retired=0	rebake=72

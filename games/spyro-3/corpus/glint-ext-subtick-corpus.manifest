@@ -1,4 +1,4 @@
-# Sub-tick extent of the gem glint (scripts/check_feeder_subtick.sh --path
+# Sub-tick extent of the gem glint (tests/harness/check_feeder_subtick.sh --path
 # glint-ext). Rows: <bk2> | <V> | rec=<addr> [rtol=] [step=]. rec is the pool
 # record whose extent is judged, a near star (24 traced corners).
 #

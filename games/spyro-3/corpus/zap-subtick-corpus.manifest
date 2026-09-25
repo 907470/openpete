@@ -1,4 +1,4 @@
-# Sub-tick interpolation of Zoe's zap (scripts/check_zap_subtick.sh).
+# Sub-tick interpolation of Zoe's zap (tests/harness/check_zap_subtick.sh).
 #   <source> | <V> | [tol=<px>] [step=<px>] [wtol=<r>] [wstep=<px>] [wengage=0]
 # <source> is a movie under games/spyro-3/bk2, or a name not ending in .bk2,
 # which is the plain boot replayed with no input. V is the tick whose

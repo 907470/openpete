@@ -1,4 +1,4 @@
-# The 3D glyph text gate's rows (scripts/check_text_font.sh; fields and cache
+# The 3D glyph text gate's rows (tests/harness/check_text_font.sh; fields and cache
 # modes are documented there). The font model (class 265) is resident only in
 # the home worlds.
 #

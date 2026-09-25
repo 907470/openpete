@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Emit the raw MIPS probe binary for scripts/check_recomp_gte.sh.
+"""Emit the raw MIPS probe binary for tests/harness/check_recomp_gte.sh.
 
 Five leaf functions, 64 bytes apart, loaded at 0x80010000. Each has the
 standard prologue/epilogue so the recompiler's function analyzer accepts

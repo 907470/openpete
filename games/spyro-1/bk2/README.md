@@ -5,7 +5,7 @@ openpete's headless harness for regression testing. Each file is a
 sealed reproduction of a gameplay scenario — same input every run,
 forever.
 
-The determinism matrix harness (`scripts/check_determinism_matrix.sh`,
+The determinism matrix harness (`tests/harness/check_determinism_matrix.sh`,
 ctest target `determinism_matrix`) iterates this corpus across the
 presentation matrix (aspect × fov × ...) and asserts every cell is
 bit-identical to its `(4:3, default-fov)` baseline. Adding a new BK2

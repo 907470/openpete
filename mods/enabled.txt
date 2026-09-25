@@ -5,5 +5,5 @@
 #
 # The in-tree gallery ships with only the sim-neutral observer enabled;
 # the divergent rungs (double-gems) and test pairs are exercised by
-# scripts/check_mods.sh with per-case lists.
+# tests/harness/check_mods.sh with per-case lists.
 hello-anchor

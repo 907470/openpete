@@ -1,4 +1,4 @@
-# Sub-tick interpolation of the gem-glint stars (scripts/check_glint_subtick.sh).
+# Sub-tick interpolation of the gem-glint stars (tests/harness/check_glint_subtick.sh).
 #   <bk2> | <V> | gem=<x>,<y> rec=<addr> ... [tol=<px>] [step=<px>]
 # V is the tick whose primitives the intermediate present at V+1 replays; V-2
 # opens the interval that present covers. Each gem is named by its mask
