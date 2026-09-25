@@ -75,7 +75,7 @@ cliff-town-vista                         | 1700  | 100  |        | 1783,2000
 cliff-town-vista@vpint                   | 1700  | 100  |        | 1783,2000 | --vertex-precision integer
 cyclorama-portal                         | 1700  | 100  |        | 1905,2075
 dark-hollow-shadow                       | 1700  | 100  |        | 2700
-dark-hollow-shadow-2                     | 1700  | 100  |        | 2068
+dark-hollow-shadow-2                     | 1700  | 100  |        | 2050,2068
 dream-weavers-crash                      | 1700  | 100  |        | 1657
 egg                                      | 1700  | 100  |        | 3015,3603
 exit-level                               | 1700  | 100  | freeze | 1689,1800
