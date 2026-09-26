@@ -121,24 +121,53 @@ typedef struct knob_desc {
     const char *zero_label;
 } knob_desc_t;
 
-/* The table (mutable: boot stamps + stored values live in the rows). */
+/** @brief The knob table; mutable, since boot stamps and stored values live in the rows.
+ *
+ * The first call copies the built-in rows in; openpete_knob_add inserts
+ * rows after the last row of their section.
+ * @param count Receives the row count; may be NULL.
+ * @return The first row. */
 knob_desc_t *knob_registry(size_t *count);
 
-/* Resolve boot values + sources from the parsed options + environment.
- * Call once, after openpete_options_parse, before the overlay first draws.
- * Keeps the opts pointer (main's options outlive the process loop). */
+/** @brief Stamp every row's boot source and boot value.
+ *
+ * The source comes from the config resolver (openpete_config_knob_layer).
+ * The stored value is seeded from the row's openpete_options field; vsync,
+ * devui_open and record_fps_overlay read their env var when the option is
+ * unset, and freecam and camlock start at 0. Each non-action row's boot
+ * value is then stamped from its getter, or from the stored value when it
+ * has none. The dev UI calls it at init, after openpete_options_parse.
+ * @param opts Parsed options; the pointer is kept and must outlive the registry. */
 void knob_registry_init(const struct openpete_options *opts);
-/* Live-edit epoch: re-resolve a cached env knob when this changes. */
+/** @brief Counter bumped on every env var write by a live registry row.
+ *
+ * A consumer that caches an env knob re-reads it when the epoch changes,
+ * paying one getenv per edit instead of one per poll.
+ * @return The current epoch; it starts at 1. */
 unsigned knob_registry_env_epoch(void);
 
-/* Convenience for the UI: current value of any row as a display string. */
+/** @brief Write a row's current value as a display string.
+ *
+ * Action rows show their get_str output, else action_label ("Apply" when
+ * NULL); string rows their get_str output, else "?". Numeric rows read
+ * get_num, else the stored value: bool as "on"/"off", int as %d, float as
+ * %.3g, enum as its value name, or the index when out of range.
+ * @param k Row.
+ * @param buf Output buffer.
+ * @param cap Size of `buf`. */
 void knob_value_str(const knob_desc_t *k, char *buf, size_t cap);
 
-/* The row's current value in the vocabulary openpete.toml stores — which is
- * the CLI's vocabulary, not the overlay's. Mostly the same string, but not
- * always: the SSAA row displays "4x" where the flag wants "4". Returns 0 when
- * the row can be persisted at all (it has a config schema entry and a real
- * value; action rows and placeholder strings like "(default)" cannot). */
+/** @brief Write a row's current value in the vocabulary openpete.toml stores, the CLI's.
+ *
+ * The string is knob_value_str's except for the SSAA row, which displays
+ * "4x" where the flag takes "4". A value starting with '(' is a get_str
+ * placeholder ("(default)", "(none)") and is refused, so it is never saved
+ * as a literal.
+ * @param k Row.
+ * @param buf Output buffer.
+ * @param cap Size of `buf`.
+ * @return 0 when the value can be persisted; -1 for a NULL or action row,
+ *         a row with no config schema entry, or a placeholder. */
 int knob_config_value_str(const knob_desc_t *k, char *buf, size_t cap);
 
 /** @brief Write every row whose live value differs from its boot value into openpete.toml's [saved] zone.
@@ -153,9 +182,12 @@ int knob_config_value_str(const knob_desc_t *k, char *buf, size_t cap);
  * @return The number of rows saved, or -1 when the flush failed. */
 int knob_registry_save_edited(void);
 
-/* Re-stamp boot values that only settle after init (the render-fps pacer
- * resolves its launch target at host-loop start, after the registry seeds).
- * The overlay calls this once, on its first open. */
+/** @brief Re-stamp the boot values of the rows that settle after knob_registry_init.
+ *
+ * The pacer resolves the render_fps target, tick_scale and the gated
+ * runahead depth at host-loop start. Each of those rows adopts its getter's
+ * value as both boot and stored value, so it does not read as edited. The
+ * dev UI calls it once, on the overlay's first open. */
 void knob_registry_late_stamp(void);
 
 /* Late-bind a live string channel onto an existing row. Some knobs' setters

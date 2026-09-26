@@ -58,14 +58,29 @@ typedef struct {
 
 const cfg_knob_t *cfg_schema(size_t *count);
 
-/* Lookup helpers. All return NULL / -1 when there is no such knob. */
+/** @brief Index of the schema row whose id is `id`.
+ *
+ * @param id Knob id; NULL returns -1.
+ * @return The row index, or -1 when no row has that id. */
 int cfg_schema_find_id(const char *id);
+/** @brief Index of the schema row whose flag or alias flag is `flag`.
+ *
+ * @param flag Flag spelling ("--lod"); NULL returns -1.
+ * @return The row index, or -1 when no row has that flag. */
 int cfg_schema_find_cli(const char *flag);      /* matches alias too */
+/** @brief Index of the schema row whose env var is `var`.
+ *
+ * @param var Env var name; NULL returns -1.
+ * @return The row index, or -1 when no row has that variable. */
 int cfg_schema_find_env(const char *var);
 
-/* Flags that cannot coexist: if a higher tier supplies one, config-sourced
- * copies of the others are dropped rather than left to collide in the
- * parser. Returns a NULL-terminated group containing `flag`, or NULL. */
+/** @brief The group of mutually exclusive flags that contains `flag`.
+ *
+ * Flags in one group cannot coexist: when a higher tier supplies one, the
+ * config drops its own copies of the others rather than leave them to
+ * collide in the parser.
+ * @param flag Flag spelling; NULL returns NULL.
+ * @return The NULL-terminated group, or NULL when `flag` is in none. */
 const char *const *cfg_schema_mutex_group(const char *flag);
 
 #ifdef __cplusplus

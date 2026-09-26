@@ -64,8 +64,11 @@ extern "C" {
 int openpete_config_apply(int argc, char** argv, int typed_argc,
                           int* out_argc, char*** out_argv);
 
-/* The game id selecting the [game.<id>] scope ("spyro-1"). Set before
- * openpete_config_apply; unset means that scope never matches. */
+/** @brief Set the game id that selects the [game.<id>] scope ("spyro-1").
+ *
+ * Call before openpete_config_apply. An empty or unset id matches no
+ * scope; the id is truncated to 63 characters.
+ * @param id Game id; NULL clears it. */
 void openpete_config_set_game_id(const char* id);
 
 /* How the [disc.*] scopes get their keys. openpete_config_apply calls this
@@ -103,9 +106,14 @@ void openpete_config_report(FILE* out);
  * @return 1 when --config-report was passed, else 0. */
 int openpete_config_report_requested(void);
 
-/* Source label for a token the config spliced into argv ("game.spyro-1.args"),
- * or NULL when the token came from the command line. Lets the flag parser
- * point at the config file instead of at a flag the user never typed. */
+/** @brief Source label of a token the config spliced into argv ("game.spyro-1.args").
+ *
+ * The flag parser prints it for an unknown flag so the message names the
+ * config scope rather than the command line. Tokens match by pointer or by
+ * string, so a typed token equal to a spliced one also returns the spliced
+ * token's label.
+ * @param token An argv token.
+ * @return The label, or NULL when no spliced token matches. */
 const char* openpete_config_token_source(const char* token);
 
 /* ---- provenance (the M overlay / O menu) ---------------------------- */
@@ -137,8 +145,14 @@ const char* openpete_config_knob_pin_spelling(const char* knob_id);
 
 /* ---- persistence (the in-game menus) -------------------------------- */
 
-/* Write `value` (already in the knob's CLI vocabulary) into the managed
- * [saved] zone, in memory. Call openpete_config_save_flush to commit. */
+/** @brief Record a knob's value in the in-memory [saved] zone.
+ *
+ * An existing entry for the knob is overwritten; a new one is appended.
+ * Nothing reaches disk until openpete_config_save_flush.
+ * @param knob_id Schema knob id.
+ * @param value Value in the knob's CLI vocabulary.
+ * @return 0, or -1 for a NULL argument, an id with no schema row, or a full
+ *         table (CFG_MAX_SAVED entries). */
 int openpete_config_save_knob(const char* knob_id, const char* value);
 
 /** @brief Write the in-memory [saved] zone to the save target.
@@ -159,7 +173,12 @@ int openpete_config_save_flush(void);
  * @return openpete_config_save_flush's result. */
 int openpete_config_reset_saved(void);
 
-/* Path the managed zone is written to, for UI display. Never NULL. */
+/** @brief The file the managed [saved] zone is written to, for UI display.
+ *
+ * openpete_config_apply sets it to the write target: the --config file,
+ * the executable directory's openpete.toml under a portable layout, else
+ * the per-user openpete.toml.
+ * @return The path, or "(none)" when there is no write target; never NULL. */
 const char* openpete_config_save_path(void);
 
 #ifdef __cplusplus

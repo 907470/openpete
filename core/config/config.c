@@ -146,8 +146,10 @@ static contrib_t *contrib_new(void) {
     return c;
 }
 
-/* True when `a` and `b` name the same setting: the same schema knob, or —
- * for entries with no schema row — the same literal key. */
+/** @brief Whether `a` and `b` name the same setting.
+ *
+ * When either entry has a schema knob the two match on the knob index; two
+ * entries with no schema row match on the same spelling and literal key. */
 static int same_setting(const contrib_t *a, const contrib_t *b) {
     if (a->knob >= 0 || b->knob >= 0) return a->knob == b->knob;
     return a->spelling == b->spelling && !strcmp(a->key, b->key);
@@ -157,10 +159,13 @@ static int same_setting(const contrib_t *a, const contrib_t *b) {
 /* value normalization                                                */
 /* ------------------------------------------------------------------ */
 
-/* Render one TOML scalar into the flag vocabulary. Returns 0 on success,
- * -1 on a type the config never accepts (arrays, tables, timestamps).
- * `is_bool` reports a bare true/false, which the [args] spelling reads as
- * "emit the flag" / "suppress the flag" rather than as a value. */
+/** @brief Render one TOML scalar into `out` in the flag vocabulary.
+ *
+ * Tries bool, string, integer and float in that order. A bool is written
+ * "1"/"0" and sets `*is_bool` with its value in `*bool_val`, which the
+ * [args] spelling reads as emitting or suppressing the flag rather than as
+ * a value. A float is written with %g ("0.5", "100"). Returns 0, or -1 for
+ * a NULL `raw` (an array or table) or a timestamp. */
 static int toml_scalar_to_string(toml_raw_t raw, char *out, size_t cap,
                                  int *is_bool, int *bool_val) {
     *is_bool = 0;
@@ -280,8 +285,10 @@ static const cfg_renamed_t *renamed_for(const char *key) {
     return NULL;
 }
 
-/* Truthiness of an old bool key, in every spelling TOML and the flag parser
- * both accept. */
+/** @brief Truthiness of a renamed bool key's value.
+ *
+ * A TOML bool gives its own value; a string value is true when it is "1",
+ * "on" or "true". */
 static int renamed_truth(const char *val, int is_bool, int bool_val) {
     if (is_bool) return bool_val;
     return !strcmp(val, "1") || !strcmp(val, "on") || !strcmp(val, "true");
@@ -803,18 +810,21 @@ static int harvest_saved(int file) {
 /* argv tokenizing                                                    */
 /* ------------------------------------------------------------------ */
 
-/* Every openpete flag starts with "--", so a following token that doesn't
- * is this flag's value. That keeps negative numbers ("--bk2-frame-offset
- * -100") working, which an "any leading dash" rule would break. */
+/** @brief Whether `t` is non-NULL and starts with "--".
+ *
+ * Every openpete flag starts with "--", so a following token that does not
+ * is the flag's value. Negative numbers ("--bk2-frame-offset -100") stay
+ * values, which an any-leading-dash rule would break. */
 static int token_is_flag(const char *t) { return t && t[0] == '-' && t[1] == '-'; }
 
 /* ------------------------------------------------------------------ */
 /* retired sidecars                                                   */
 /* ------------------------------------------------------------------ */
 
-/* openpete.opts (an argv splice) and openpete.env (a setenv pass) are no
- * longer read. Say so once per file rather than letting a settings file
- * that used to work go silently dead. */
+/** @brief Print a stderr notice for each openpete.opts or openpete.env in `dir`.
+ *
+ * Those files (an argv splice and a setenv pass) are not read; the notice
+ * names each one present and points at openpete.toml. */
 static void warn_retired_sidecars(const char *dir) {
     static const char *const names[] = { "openpete.opts", "openpete.env" };
     char path[CFG_PATH_MAX];
@@ -830,10 +840,13 @@ static void warn_retired_sidecars(const char *dir) {
 /* launch tiers                                                       */
 /* ------------------------------------------------------------------ */
 
-/* Flags already present in argv (from the bk2 sidecar or typed) and env
- * vars already exported: these outrank every file tier, so their only
- * effect here is to suppress the file's copy. Recorded as contributions
- * so one comparison decides everything. */
+/** @brief Record every "--" token in argv as a launch-tier contribution.
+ *
+ * Tokens at `typed_from` and later rank as TIER_CLI (origin "cli"), earlier
+ * ones as TIER_SIDECAR ("bk2 sidecar"). The contribution's value is the
+ * next token when that is not a flag, else "". These tiers outrank every
+ * file tier and are already in argv, so the contribution only shadows the
+ * files' copies of the same setting. */
 static void scan_launch(int argc, char **argv, int typed_from) {
     for (int i = 1; i < argc; i++) {
         if (!token_is_flag(argv[i])) continue;
@@ -855,8 +868,10 @@ static void scan_launch(int argc, char **argv, int typed_from) {
     }
 }
 
-/* Must run BEFORE any [env] tier is applied, or the file's own variables
- * would read back as if the user had exported them. */
+/** @brief Record every set schema env var as a TIER_REAL_ENV contribution.
+ *
+ * Runs before any [env] tier is applied, or the files' own variables would
+ * read back as exported by the user. */
 static void scan_real_env(void) {
     size_t n;
     const cfg_knob_t *sch = cfg_schema(&n);
@@ -880,6 +895,10 @@ static void scan_real_env(void) {
 /* materialization                                                    */
 /* ------------------------------------------------------------------ */
 
+/** @brief Set env var `k` to `v` (NULL as "") only when `k` is unset.
+ *
+ * The real environment wins over a config-file value. Returns the
+ * setenv/_putenv_s result, or 0 when `k` was already set on Windows. */
 static int portable_setenv_soft(const char *k, const char *v) {
 #ifdef _WIN32
     if (getenv(k)) return 0;              /* the real environment wins */
@@ -1046,8 +1065,12 @@ void openpete_config_set_disc_identity_fn(openpete_disc_identity_fn fn) {
     s_disc_identity = fn;
 }
 
-/* Best guess at the image this launch will boot, from everything ranked
- * below the [disc.*] scopes. Only used to pick those scopes. */
+/** @brief Best guess at the disc image this launch boots, used only to pick the [disc.*] scopes.
+ *
+ * The last --disc or --ingest value in argv, else the value of the
+ * highest-ranked `disc` contribution harvested so far (the tiers below the
+ * [disc.*] scopes). A bare image path in argv is not considered. Returns a
+ * static buffer, or NULL when neither source names an image. */
 static const char *provisional_disc(int argc, char **argv) {
     static char path[CFG_PATH_MAX];
     path[0] = '\0';
@@ -1366,9 +1389,12 @@ int openpete_config_save_knob(const char *knob_id, const char *value) {
     return 0;
 }
 
-/* A saved value is written as the type its knob declares, so the file
- * round-trips through the reader unchanged (`fullscreen = true`, not
- * `fullscreen = "1"`). */
+/** @brief Write a [saved] value and newline as the TOML type its knob declares.
+ *
+ * A bool is `false` for "0" or "off" and `true` otherwise; an int or float
+ * is written bare, "0" when empty; every other type is a quoted string. The
+ * file round-trips through the reader (`fullscreen = true`, not
+ * `fullscreen = "1"`). The string is written without escaping. */
 static void write_saved_value(FILE *f, const cfg_knob_t *k, const char *v) {
     switch (k->type) {
     case CFG_BOOL:

@@ -2,7 +2,7 @@
 # library: libclang 14
 # requirement: @brief of one sentence on one line on every function; @param per named parameter and @return on non-void for external linkage
 # written-by: hook
-# head: b7e8f72dc5bc520537cf03f91d383e178ba9e654
+# head: a87012d1513619178ebed6c54e271de4246b5f85
 file	function	form	accepted
 core/config/config.c	decision_for	none	
 core/config/config.c	dup_str	none	
@@ -12,35 +12,15 @@ core/config/config.c	enum_vocab_str	none
 core/config/config.c	harvest_keys	none	
 core/config/config.c	harvest_named	none	
 core/config/config.c	load_toml	none	
-core/config/config.c	openpete_config_save_knob	plain	
-core/config/config.c	openpete_config_save_path	plain	
 core/config/config.c	openpete_config_set_disc_identity_fn	none	
-core/config/config.c	openpete_config_set_game_id	plain	
-core/config/config.c	openpete_config_token_source	plain	
-core/config/config.c	portable_setenv_soft	plain	
-core/config/config.c	provisional_disc	plain	
 core/config/config.c	record_decision	none	
 core/config/config.c	renamed_for	none	
-core/config/config.c	renamed_truth	plain	
-core/config/config.c	same_setting	plain	
-core/config/config.c	scan_launch	plain	
-core/config/config.c	scan_real_env	plain	
-core/config/config.c	token_is_flag	plain	
-core/config/config.c	toml_scalar_to_string	plain	
-core/config/config.c	warn_retired_sidecars	plain	
-core/config/config.c	write_saved_value	plain	
 core/config/config_schema.c	cfg_schema	none	
-core/config/config_schema.c	cfg_schema_find_cli	none	
-core/config/config_schema.c	cfg_schema_find_env	none	
-core/config/config_schema.c	cfg_schema_find_id	plain	
-core/config/config_schema.c	cfg_schema_mutex_group	plain	
-core/config/knob_registry.c	aspect_get	plain	
 core/config/knob_registry.c	aspect_set	none	
 core/config/knob_registry.c	camlock_get	none	
 core/config/knob_registry.c	camlock_set	none	
 core/config/knob_registry.c	cheats_get_str	none	
 core/config/knob_registry.c	disccache_get	none	
-core/config/knob_registry.c	dither_get	plain	
 core/config/knob_registry.c	dither_set	none	
 core/config/knob_registry.c	env_get_str	none	
 core/config/knob_registry.c	env_set_str	none	
@@ -57,17 +37,7 @@ core/config/knob_registry.c	fov_get	none
 core/config/knob_registry.c	fov_set	none	
 core/config/knob_registry.c	freecam_get	none	
 core/config/knob_registry.c	freecam_set	none	
-core/config/knob_registry.c	fullscreen_get	plain	
 core/config/knob_registry.c	fullscreen_set	none	
-core/config/knob_registry.c	get_stored	plain	
-core/config/knob_registry.c	injectmouse_get_str	plain	
-core/config/knob_registry.c	knob_config_value_str	plain	
-core/config/knob_registry.c	knob_registry	plain	
-core/config/knob_registry.c	knob_registry_env_epoch	plain	
-core/config/knob_registry.c	knob_registry_init	plain	
-core/config/knob_registry.c	knob_registry_late_stamp	plain	
-core/config/knob_registry.c	knob_src_from_config	plain	
-core/config/knob_registry.c	knob_value_str	plain	
 core/config/knob_registry.c	loaddelay_get	none	
 core/config/knob_registry.c	lod_get	none	
 core/config/knob_registry.c	lod_set	none	
@@ -78,7 +48,6 @@ core/config/knob_registry.c	loglevel_get_str	none
 core/config/knob_registry.c	loglevel_set_str	none	
 core/config/knob_registry.c	mouse_get	none	
 core/config/knob_registry.c	mouse_set	none	
-core/config/knob_registry.c	mousesens_get	plain	
 core/config/knob_registry.c	mousesens_set	none	
 core/config/knob_registry.c	musicvol_get	none	
 core/config/knob_registry.c	musicvol_set	none	
@@ -131,7 +100,6 @@ core/config/knob_registry.c	tickscale_get	none
 core/config/knob_registry.c	tickscale_set	none	
 core/config/knob_registry.c	versionosd_get	none	
 core/config/knob_registry.c	versionosd_set	none	
-core/config/knob_registry.c	vibration_get	none	
 core/config/knob_registry.c	vibration_set	none	
 core/config/knob_registry.c	vprec_get	none	
 core/config/knob_registry.c	vprec_set	none	

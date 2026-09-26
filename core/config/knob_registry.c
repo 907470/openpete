@@ -40,6 +40,7 @@ static const openpete_options_t *g_opts;
 /* value plumbing helpers                                             */
 /* ------------------------------------------------------------------ */
 
+/** @brief Numeric getter that returns the row's stored value. */
 static double get_stored(const knob_desc_t *k) { return k->stored_num; }
 
 static int nearest_enum_idx(const float *vals, int n, float v) {
@@ -65,6 +66,7 @@ static int nearest_enum_idx(const float *vals, int n, float v) {
 
 /* ---- Display ---- */
 
+/** @brief 1 when the native window is fullscreen, else 0. */
 static double fullscreen_get(const knob_desc_t *k) {
     (void)k; return openpete_native_fullscreen_active() ? 1.0 : 0.0;
 }
@@ -77,8 +79,12 @@ static int fullscreen_set(knob_desc_t *k, double v) {
 
 static const char *const k_aspect_names[] = { "auto", "4:3", "16:10", "16:9", "21:9", "32:9" };
 static const float       k_aspect_vals[]  = { 0.0f, 4.f/3.f, 16.f/10.f, 16.f/9.f, 21.f/9.f, 32.f/9.f };
-/* Index 0 is AUTO, whose 0.0 is a sentinel rather than a ratio — the nearest
- * match runs over the fixed ratios only (the same +1 offset init uses). */
+/** @brief Index in k_aspect_names of the renderer's live aspect ratio.
+ *
+ * Returns the stored value until the native renderer is up. Index 0 is
+ * auto, whose 0.0 is a sentinel rather than a ratio: a renderer aspect of
+ * 0 or less reads as 0, and a positive one as the nearest of the five fixed
+ * ratios plus 1 (the same offset knob_registry_init uses). */
 static double aspect_get(const knob_desc_t *k) {
     KNOB_LIVE_OR_STORED(k);
     float wh = openpete_native_get_aspect();
@@ -281,7 +287,9 @@ static int wireframe_set(knob_desc_t *k, double v) {
     return 0;
 }
 
-/* Live getter: the O-menu DITHER row moves the same renderer flag. */
+/** @brief The renderer's dither flag, which the O menu's DITHER row also sets.
+ *
+ * Returns the stored value until the native renderer is up. */
 static double dither_get(const knob_desc_t *k) {
     KNOB_LIVE_OR_STORED(k);
     return openpete_native_get_dither();
@@ -399,8 +407,7 @@ static int musicvol_set(knob_desc_t *k, double v) { (void)k; openpete_set_music_
 
 /* ---- Input ---- */
 
-/* Vibration is the same shape: the setter moves a host request, and the guest
- * enable flag is written by the per-game feature on its tick hook. */
+/** @brief The freecam mouse sensitivity. */
 static double mousesens_get(const knob_desc_t *k) { (void)k; return (double)openpete_freecam_mouse_sensitivity(); }
 static int mousesens_set(knob_desc_t *k, double v) {
     if (!(v >= 0.0) || v > 100.0) return -1;
@@ -410,6 +417,10 @@ static int mousesens_set(knob_desc_t *k, double v) {
 }
 static double mouse_get(const knob_desc_t *k) { (void)k; return openpete_host_mouse_enabled() ? 1.0 : 0.0; }
 static int mouse_set(knob_desc_t *k, double v) { (void)k; openpete_host_mouse_set_enabled(v != 0.0); return 0; }
+/** @brief The host rumble strength.
+ *
+ * The setter moves this host request; the per-game feature writes the guest
+ * enable flag on its tick hook. */
 static double vibration_get(const knob_desc_t *k) { (void)k; return (double)openpete_get_vibration(); }
 static int vibration_set(knob_desc_t *k, double v) { (void)k; openpete_set_vibration((int)v); return 0; }
 
@@ -456,6 +467,7 @@ static void path_get_str(const knob_desc_t *k, char *buf, size_t cap) {
 
 /* ---- CLI debug rows (boot-parsed; display-only) ---- */
 
+/** @brief The row's env var value, or "(off)" when it is unset or empty. */
 static void injectmouse_get_str(const knob_desc_t *k, char *buf, size_t cap) {
     const char *env = k->env ? getenv(k->env) : NULL;
     snprintf(buf, cap, "%s", (env && *env) ? env : "(off)");
@@ -1607,15 +1619,14 @@ int openpete_knob_add(const knob_desc_t *row) {
 /* boot resolution: value + source stamping                           */
 /* ------------------------------------------------------------------ */
 
-/* Where this row's value came from, straight from the config resolver's
- * decision table — the one place the layer order is implemented.
+/** @brief The overlay source tag of a row, from the config resolver's winning layer.
  *
- * The overlay's three-way source tag predates openpete.toml, so a file
- * layer has to land in one of its buckets: an [args]-or-bare-key layer
- * reads as CLI and an [env] layer reads as ENV, matching the spelling
- * that was actually materialized. The precise layer name (and whether a
- * launch-tier override is pinning the row) is shown separately, from
- * openpete_config_knob_layer / _pinned. */
+ * openpete_config_knob_layer holds the layer order; this maps its label to
+ * the overlay's three tags: "default" (or NULL) is DEFAULT, "env" or a
+ * label ending ".env" is ENV, and every other layer (the command line, the
+ * bk2 sidecar, saved, an [args] or bare-key file layer) is CLI. The overlay
+ * shows the precise layer and the pinned state separately, from
+ * openpete_config_knob_layer and openpete_config_knob_pinned. */
 static knob_src_t knob_src_from_config(const knob_desc_t *k) {
     const char *layer = openpete_config_knob_layer(k->id);
     if (!layer || !strcmp(layer, "default")) return KNOB_SRC_DEFAULT;
