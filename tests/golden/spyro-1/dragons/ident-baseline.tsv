@@ -1,3 +1,16 @@
+# presentation identity-leg baseline
+# game: spyro-1
+# tier: dragons
+# recipe-hash: 3847f0d03070b91feb43691053ab02f0511969adb456323eb32699669e2eb1bc
+# mesa: Mesa 23.2.1-1ubuntu3.1~22.04.4 (LLVM 15.0.7)
+# device: llvmpipe (LLVM 15.0.7, 256 bits)
+# compiler: gcc-11 (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0
+# preset: linux-release-container
+# image-digest: sha256:85443b3bf7f717efaacd3fcb5732cb7dd2acabdc448aed236a0c6cb0001371dd
+# libvulkan: 1.3.204.1-2
+# disc-bin: b29c2a3c41e2af13ce0b1d6526217df43a395d4bf53860c29a7bcec47bd76be5 games/spyro-1/spyro-1/build/SCUS-94228.bin
+# disc-cue: 7305aa586d195a617de5998d56a5e9188222616f252ae492e646154e110e274d games/spyro-1/spyro-1/build/SCUS-94228.cue
+# environment-accept: first capture-environment record: every non-held row reproduced in the pinned capture image
 # tile	differing pixels vs the canon tile of the same frame (target 0)
 alpine_ridge-eldrid-21__ident__1692-vk.png	0
 alpine_ridge-eldrid-21__ident__1752-vk.png	0
@@ -120,13 +133,13 @@ artisans-delbin-143__ident__2830-vk.png	0
 artisans-delbin-143__ident__2890-vk.png	0
 artisans-delbin-143__ident__2950-vk.png	0
 artisans-delbin-143__ident__3010-vk.png	0
-artisans-delbin-143__ident__3070-vk.png	5
-artisans-delbin-143__ident__3130-vk.png	2733
-artisans-delbin-143__ident__3190-vk.png	2304
-artisans-delbin-143__ident__3237-vk.png	2
-artisans-delbin-143__ident__3238-vk.png	2
-artisans-delbin-143__ident__3239-vk.png	3
-artisans-nestor-88__ident__1690-vk.png	7
+artisans-delbin-143__ident__3070-vk.png	0
+artisans-delbin-143__ident__3130-vk.png	0
+artisans-delbin-143__ident__3190-vk.png	0
+artisans-delbin-143__ident__3237-vk.png	0
+artisans-delbin-143__ident__3238-vk.png	0
+artisans-delbin-143__ident__3239-vk.png	0
+artisans-nestor-88__ident__1690-vk.png	0
 artisans-nestor-88__ident__1750-vk.png	0
 artisans-nestor-88__ident__1810-vk.png	0
 artisans-nestor-88__ident__1870-vk.png	0
@@ -135,8 +148,8 @@ artisans-nestor-88__ident__1990-vk.png	0
 artisans-nestor-88__ident__2050-vk.png	0
 artisans-nestor-88__ident__2110-vk.png	0
 artisans-nestor-88__ident__2170-vk.png	0
-artisans-nestor-88__ident__2230-vk.png	9
-artisans-nestor-88__ident__2290-vk.png	8
+artisans-nestor-88__ident__2230-vk.png	0
+artisans-nestor-88__ident__2290-vk.png	0
 artisans-nestor-88__ident__2296-vk.png	0
 artisans-nestor-88__ident__2350-vk.png	0
 artisans-nestor-88__ident__2410-vk.png	0
@@ -184,7 +197,7 @@ artisans-tomas-93__ident__2952-vk.png	0
 artisans-tomas-93__ident__2955-vk.png	0
 artisans-tomas-93__ident__2956-vk.png	0
 artisans-tomas-93__ident__2957-vk.png	0
-beast_makers-bruno-6__ident__1690-vk.png	3637
+beast_makers-bruno-6__ident__1690-vk.png	0
 beast_makers-bruno-6__ident__1750-vk.png	0
 beast_makers-bruno-6__ident__1810-vk.png	0
 beast_makers-bruno-6__ident__1870-vk.png	0
@@ -200,13 +213,13 @@ beast_makers-bruno-6__ident__2350-vk.png	0
 beast_makers-bruno-6__ident__2374-vk.png	0
 beast_makers-bruno-6__ident__2410-vk.png	0
 beast_makers-bruno-6__ident__2470-vk.png	0
-beast_makers-bruno-6__ident__2484-vk.png	2222
-beast_makers-bruno-6__ident__2530-vk.png	190
-beast_makers-bruno-6__ident__2590-vk.png	12
-beast_makers-bruno-6__ident__2650-vk.png	75
-beast_makers-bruno-6__ident__2687-vk.png	75
-beast_makers-bruno-6__ident__2688-vk.png	75
-beast_makers-bruno-6__ident__2689-vk.png	301
+beast_makers-bruno-6__ident__2484-vk.png	0
+beast_makers-bruno-6__ident__2530-vk.png	0
+beast_makers-bruno-6__ident__2590-vk.png	0
+beast_makers-bruno-6__ident__2650-vk.png	0
+beast_makers-bruno-6__ident__2687-vk.png	0
+beast_makers-bruno-6__ident__2688-vk.png	0
+beast_makers-bruno-6__ident__2689-vk.png	0
 beast_makers-cleetus-13__ident__1692-vk.png	0
 beast_makers-cleetus-13__ident__1752-vk.png	0
 beast_makers-cleetus-13__ident__1812-vk.png	0
@@ -478,7 +491,7 @@ doctor_shemp-trondo-67__ident__2712-vk.png	0
 doctor_shemp-trondo-67__ident__2763-vk.png	0
 doctor_shemp-trondo-67__ident__2764-vk.png	0
 doctor_shemp-trondo-67__ident__2765-vk.png	0
-dream_weavers-lateef-137__ident__1692-vk.png	886
+dream_weavers-lateef-137__ident__1692-vk.png	0
 dream_weavers-lateef-137__ident__1752-vk.png	0
 dream_weavers-lateef-137__ident__1812-vk.png	0
 dream_weavers-lateef-137__ident__1872-vk.png	0
@@ -486,18 +499,18 @@ dream_weavers-lateef-137__ident__1932-vk.png	0
 dream_weavers-lateef-137__ident__1992-vk.png	0
 dream_weavers-lateef-137__ident__2044-vk.png	0
 dream_weavers-lateef-137__ident__2052-vk.png	0
-dream_weavers-lateef-137__ident__2112-vk.png	22
-dream_weavers-lateef-137__ident__2172-vk.png	9
-dream_weavers-lateef-137__ident__2232-vk.png	71
-dream_weavers-lateef-137__ident__2292-vk.png	38
-dream_weavers-lateef-137__ident__2352-vk.png	7
+dream_weavers-lateef-137__ident__2112-vk.png	0
+dream_weavers-lateef-137__ident__2172-vk.png	0
+dream_weavers-lateef-137__ident__2232-vk.png	0
+dream_weavers-lateef-137__ident__2292-vk.png	0
+dream_weavers-lateef-137__ident__2352-vk.png	0
 dream_weavers-lateef-137__ident__2412-vk.png	0
-dream_weavers-lateef-137__ident__2472-vk.png	30
-dream_weavers-lateef-137__ident__2532-vk.png	338
-dream_weavers-lateef-137__ident__2592-vk.png	316
-dream_weavers-lateef-137__ident__2637-vk.png	505
-dream_weavers-lateef-137__ident__2638-vk.png	505
-dream_weavers-lateef-137__ident__2639-vk.png	130
+dream_weavers-lateef-137__ident__2472-vk.png	0
+dream_weavers-lateef-137__ident__2532-vk.png	0
+dream_weavers-lateef-137__ident__2592-vk.png	0
+dream_weavers-lateef-137__ident__2637-vk.png	0
+dream_weavers-lateef-137__ident__2638-vk.png	0
+dream_weavers-lateef-137__ident__2639-vk.png	0
 dream_weavers-mazi-7__ident__1692-vk.png	0
 dream_weavers-mazi-7__ident__1752-vk.png	0
 dream_weavers-mazi-7__ident__1812-vk.png	0
@@ -565,8 +578,8 @@ dry_canyon-conan-165__ident__1872-vk.png	0
 dry_canyon-conan-165__ident__1932-vk.png	0
 dry_canyon-conan-165__ident__1992-vk.png	0
 dry_canyon-conan-165__ident__2052-vk.png	0
-dry_canyon-conan-165__ident__2112-vk.png	3918
-dry_canyon-conan-165__ident__2172-vk.png	3523
+dry_canyon-conan-165__ident__2112-vk.png	0
+dry_canyon-conan-165__ident__2172-vk.png	0
 dry_canyon-conan-165__ident__2213-vk.png	0
 dry_canyon-conan-165__ident__2214-vk.png	0
 dry_canyon-conan-165__ident__2215-vk.png	0
@@ -673,18 +686,18 @@ gnorc_gnexus-delbin-0__ident__1690-vk.png	0
 gnorc_gnexus-delbin-0__ident__1750-vk.png	0
 gnorc_gnexus-delbin-0__ident__1810-vk.png	0
 gnorc_gnexus-delbin-0__ident__1870-vk.png	0
-gnorc_gnexus-delbin-0__ident__1904-vk.png	16
-gnorc_gnexus-delbin-0__ident__1930-vk.png	13
-gnorc_gnexus-delbin-0__ident__1990-vk.png	48
+gnorc_gnexus-delbin-0__ident__1904-vk.png	0
+gnorc_gnexus-delbin-0__ident__1930-vk.png	0
+gnorc_gnexus-delbin-0__ident__1990-vk.png	0
 gnorc_gnexus-delbin-0__ident__2042-vk.png	0
 gnorc_gnexus-delbin-0__ident__2050-vk.png	0
 gnorc_gnexus-delbin-0__ident__2110-vk.png	0
 gnorc_gnexus-delbin-0__ident__2170-vk.png	0
 gnorc_gnexus-delbin-0__ident__2230-vk.png	0
 gnorc_gnexus-delbin-0__ident__2290-vk.png	0
-gnorc_gnexus-delbin-0__ident__2340-vk.png	19
-gnorc_gnexus-delbin-0__ident__2350-vk.png	39
-gnorc_gnexus-delbin-0__ident__2410-vk.png	5
+gnorc_gnexus-delbin-0__ident__2340-vk.png	0
+gnorc_gnexus-delbin-0__ident__2350-vk.png	0
+gnorc_gnexus-delbin-0__ident__2410-vk.png	0
 gnorc_gnexus-delbin-0__ident__2470-vk.png	0
 gnorc_gnexus-delbin-0__ident__2484-vk.png	0
 gnorc_gnexus-delbin-0__ident__2530-vk.png	0
@@ -703,30 +716,30 @@ gnorc_gnexus-magnus-0__ident__11842-vk.png	0
 gnorc_gnexus-magnus-0__ident__11902-vk.png	0
 gnorc_gnexus-magnus-0__ident__11962-vk.png	0
 gnorc_gnexus-magnus-0__ident__12022-vk.png	0
-gnorc_gnexus-magnus-0__ident__12070-vk.png	355
-gnorc_gnexus-magnus-0__ident__12082-vk.png	198
-gnorc_gnexus-magnus-0__ident__12142-vk.png	56
-gnorc_gnexus-magnus-0__ident__12202-vk.png	530
-gnorc_gnexus-magnus-0__ident__12262-vk.png	229
-gnorc_gnexus-magnus-0__ident__12322-vk.png	392
+gnorc_gnexus-magnus-0__ident__12070-vk.png	0
+gnorc_gnexus-magnus-0__ident__12082-vk.png	0
+gnorc_gnexus-magnus-0__ident__12142-vk.png	0
+gnorc_gnexus-magnus-0__ident__12202-vk.png	0
+gnorc_gnexus-magnus-0__ident__12262-vk.png	0
+gnorc_gnexus-magnus-0__ident__12322-vk.png	0
 gnorc_gnexus-magnus-0__ident__12370-vk.png	0
 gnorc_gnexus-magnus-0__ident__12382-vk.png	0
 gnorc_gnexus-magnus-0__ident__12442-vk.png	0
 gnorc_gnexus-magnus-0__ident__12502-vk.png	0
 gnorc_gnexus-magnus-0__ident__12562-vk.png	0
 gnorc_gnexus-magnus-0__ident__12622-vk.png	0
-gnorc_gnexus-magnus-0__ident__12682-vk.png	9
-gnorc_gnexus-magnus-0__ident__12742-vk.png	453
-gnorc_gnexus-magnus-0__ident__12802-vk.png	750
-gnorc_gnexus-magnus-0__ident__12862-vk.png	849
-gnorc_gnexus-magnus-0__ident__12922-vk.png	266
-gnorc_gnexus-magnus-0__ident__12982-vk.png	131
-gnorc_gnexus-magnus-0__ident__13042-vk.png	522
-gnorc_gnexus-magnus-0__ident__13102-vk.png	457
-gnorc_gnexus-magnus-0__ident__13162-vk.png	1298
-gnorc_gnexus-magnus-0__ident__13193-vk.png	1242
-gnorc_gnexus-magnus-0__ident__13194-vk.png	1242
-gnorc_gnexus-magnus-0__ident__13195-vk.png	1142
+gnorc_gnexus-magnus-0__ident__12682-vk.png	0
+gnorc_gnexus-magnus-0__ident__12742-vk.png	0
+gnorc_gnexus-magnus-0__ident__12802-vk.png	0
+gnorc_gnexus-magnus-0__ident__12862-vk.png	0
+gnorc_gnexus-magnus-0__ident__12922-vk.png	0
+gnorc_gnexus-magnus-0__ident__12982-vk.png	0
+gnorc_gnexus-magnus-0__ident__13042-vk.png	0
+gnorc_gnexus-magnus-0__ident__13102-vk.png	0
+gnorc_gnexus-magnus-0__ident__13162-vk.png	0
+gnorc_gnexus-magnus-0__ident__13193-vk.png	0
+gnorc_gnexus-magnus-0__ident__13194-vk.png	0
+gnorc_gnexus-magnus-0__ident__13195-vk.png	0
 haunted_towers-copano-63__ident__1692-vk.png	0
 haunted_towers-copano-63__ident__1752-vk.png	0
 haunted_towers-copano-63__ident__1812-vk.png	0
@@ -1011,18 +1024,18 @@ lofty_castle-useni-8__ident__2564-vk.png	0
 lofty_castle-useni-8__ident__2565-vk.png	0
 magic_crafters-boldar-24__ident__1692-vk.png	0
 magic_crafters-boldar-24__ident__1752-vk.png	0
-magic_crafters-boldar-24__ident__1812-vk.png	696
-magic_crafters-boldar-24__ident__1872-vk.png	436
-magic_crafters-boldar-24__ident__1932-vk.png	730
-magic_crafters-boldar-24__ident__1992-vk.png	24
-magic_crafters-boldar-24__ident__2052-vk.png	795
-magic_crafters-boldar-24__ident__2112-vk.png	915
-magic_crafters-boldar-24__ident__2172-vk.png	16
-magic_crafters-boldar-24__ident__2232-vk.png	752
-magic_crafters-boldar-24__ident__2292-vk.png	1293
-magic_crafters-boldar-24__ident__2352-vk.png	1936
-magic_crafters-boldar-24__ident__2412-vk.png	85
-magic_crafters-boldar-24__ident__2472-vk.png	1108
+magic_crafters-boldar-24__ident__1812-vk.png	0
+magic_crafters-boldar-24__ident__1872-vk.png	0
+magic_crafters-boldar-24__ident__1932-vk.png	0
+magic_crafters-boldar-24__ident__1992-vk.png	0
+magic_crafters-boldar-24__ident__2052-vk.png	0
+magic_crafters-boldar-24__ident__2112-vk.png	0
+magic_crafters-boldar-24__ident__2172-vk.png	0
+magic_crafters-boldar-24__ident__2232-vk.png	0
+magic_crafters-boldar-24__ident__2292-vk.png	0
+magic_crafters-boldar-24__ident__2352-vk.png	0
+magic_crafters-boldar-24__ident__2412-vk.png	0
+magic_crafters-boldar-24__ident__2472-vk.png	0
 magic_crafters-boldar-24__ident__2486-vk.png	0
 magic_crafters-boldar-24__ident__2532-vk.png	0
 magic_crafters-boldar-24__ident__2592-vk.png	0
@@ -1047,12 +1060,12 @@ magic_crafters-cosmos-6__ident__2352-vk.png	0
 magic_crafters-cosmos-6__ident__2412-vk.png	0
 magic_crafters-cosmos-6__ident__2472-vk.png	0
 magic_crafters-cosmos-6__ident__2532-vk.png	0
-magic_crafters-cosmos-6__ident__2592-vk.png	854
-magic_crafters-cosmos-6__ident__2652-vk.png	636
+magic_crafters-cosmos-6__ident__2592-vk.png	0
+magic_crafters-cosmos-6__ident__2652-vk.png	0
 magic_crafters-cosmos-6__ident__2711-vk.png	0
 magic_crafters-cosmos-6__ident__2712-vk.png	0
 magic_crafters-cosmos-6__ident__2713-vk.png	0
-magic_crafters-zantor-22__ident__1692-vk.png	193
+magic_crafters-zantor-22__ident__1692-vk.png	0
 magic_crafters-zantor-22__ident__1752-vk.png	0
 magic_crafters-zantor-22__ident__1812-vk.png	0
 magic_crafters-zantor-22__ident__1872-vk.png	0
@@ -1065,11 +1078,11 @@ magic_crafters-zantor-22__ident__2232-vk.png	0
 magic_crafters-zantor-22__ident__2254-vk.png	0
 magic_crafters-zantor-22__ident__2292-vk.png	0
 magic_crafters-zantor-22__ident__2352-vk.png	0
-magic_crafters-zantor-22__ident__2400-vk.png	47
-magic_crafters-zantor-22__ident__2412-vk.png	1
+magic_crafters-zantor-22__ident__2400-vk.png	0
+magic_crafters-zantor-22__ident__2412-vk.png	0
 magic_crafters-zantor-22__ident__2472-vk.png	0
-magic_crafters-zantor-22__ident__2532-vk.png	2483
-magic_crafters-zantor-22__ident__2592-vk.png	2915
+magic_crafters-zantor-22__ident__2532-vk.png	0
+magic_crafters-zantor-22__ident__2592-vk.png	0
 magic_crafters-zantor-22__ident__2652-vk.png	0
 magic_crafters-zantor-22__ident__2675-vk.png	0
 magic_crafters-zantor-22__ident__2676-vk.png	0
@@ -1242,8 +1255,8 @@ peace_keepers-titan-57__ident__2470-vk.png	0
 peace_keepers-titan-57__ident__2530-vk.png	0
 peace_keepers-titan-57__ident__2538-vk.png	0
 peace_keepers-titan-57__ident__2590-vk.png	0
-peace_keepers-titan-57__ident__2650-vk.png	2846
-peace_keepers-titan-57__ident__2710-vk.png	2490
+peace_keepers-titan-57__ident__2650-vk.png	0
+peace_keepers-titan-57__ident__2710-vk.png	0
 peace_keepers-titan-57__ident__2745-vk.png	0
 peace_keepers-titan-57__ident__2746-vk.png	0
 peace_keepers-titan-57__ident__2747-vk.png	0

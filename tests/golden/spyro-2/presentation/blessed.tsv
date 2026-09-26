@@ -5,15 +5,16 @@
 # mode: RGB
 # channel-order: R,G,B
 # size: 853x432
-# recipe-hash: unrecorded
-# mesa: unrecorded
-# device: unrecorded
-# compiler: cc (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0
-# preset: linux-release
-# image-digest: unrecorded
-# disc-bin: absent Spyro 2 - Ripto's Rage.bin
-# disc-cue: 51448cef393383b175d88aa11b7173db710a66549bd8276d38a2ac9a5bc197eb SCUS-94425.cue
-# environment-accept: none
+# recipe-hash: 3847f0d03070b91feb43691053ab02f0511969adb456323eb32699669e2eb1bc
+# mesa: Mesa 23.2.1-1ubuntu3.1~22.04.4 (LLVM 15.0.7)
+# device: llvmpipe (LLVM 15.0.7, 256 bits)
+# compiler: gcc-11 (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0
+# preset: linux-release-container
+# image-digest: sha256:85443b3bf7f717efaacd3fcb5732cb7dd2acabdc448aed236a0c6cb0001371dd
+# libvulkan: 1.3.204.1-2
+# disc-bin: b3fd9fdb24b115fee4583dbe3c36ab788fd8679fb4592dbec8736392dec64551 games/spyro-2/spyro-2/build/SCUS-94425.bin
+# disc-cue: 51448cef393383b175d88aa11b7173db710a66549bd8276d38a2ac9a5bc197eb games/spyro-2/spyro-2/build/SCUS-94425.cue
+# environment-accept: first capture-environment record: every non-held row reproduced in the pinned capture image
 tile	digest	revision	recomp_input	generated_tree	origin
 attract-demo__canon__10200-vk.png	bb42d0e9da1ce81519eedc145f19a3f27a2eaeae6b68e3d426b877d54ac45c13	d8258b96b6ee71056666385aab329de3cdbeb6a7	a33f6a9352055a51d85325f61fbbfc011f9889eac63c3a8420bfd5665a561c3c	15310ae40139c477d6ab35660808976167747592c8d5b23690f6e0ee9de78eae	mapped
 attract-demo__canon__1400-vk.png	5469b8ddb4945bc9abd141ca6d0b71b72bad400b59128c0d8029bd5831290d8e	d8258b96b6ee71056666385aab329de3cdbeb6a7	a33f6a9352055a51d85325f61fbbfc011f9889eac63c3a8420bfd5665a561c3c	15310ae40139c477d6ab35660808976167747592c8d5b23690f6e0ee9de78eae	mapped
