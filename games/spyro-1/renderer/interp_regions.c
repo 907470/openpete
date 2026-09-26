@@ -274,8 +274,9 @@ static uint32_t rd32(uint32_t addr) {
     return v;
 }
 
-/* The captured state outside g_LevelMobys: the HUD-icon and particle pools,
- * the sparkle, glow and dragon-star records, and the two render lists whose
+/** The captured state outside g_LevelMobys: the HUD-icon and particle pools,
+ * the sparkle, glow and dragon-star records, the rescue cutscene's state and
+ * tick counter, and the two render lists whose
  * entries the array walk cannot reach. Runs after the shared moby-array walk
  * (game_interp_capture_moby_array), inside the same begin/end tick pair.
  *
@@ -396,6 +397,16 @@ static void spyro_interp_extra_pools(void) {
         uint32_t gate = 0; if (host) memcpy(&gate, host, 4);
         if (gate != 0)
             openpete_interp_objs_capture(D_DRAGONSTAR, host, 0x2Cu);
+    }
+
+    /* g_DragonCutscene m_State (+0x28) through m_CutsceneTicks (+0x3C): the
+     * rescue draw scales the departing dragon's record by a function of the
+     * tick counter in state 5, and a sub-tick present lerps those factors
+     * between this pair. Keyed by the m_State address. */
+    {
+        const void* host = openpete_psx_to_host_ptr(G_DRAGON_CUTSCENE + 0x28u);
+        if (host && rd32(G_GAMESTATE) == 8u)
+            openpete_interp_objs_capture(G_DRAGON_CUTSCENE + 0x28u, host, 0x18u);
     }
 
 }

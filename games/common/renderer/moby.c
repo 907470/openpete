@@ -1599,8 +1599,82 @@ static void special_census_face(const moby_wface_t* F, uint32_t mscol, uint32_t 
     if (openpete_frame >= s_cen_at + 200u) { s_cen_at = openpete_frame; special_census_report(); }
 }
 
+/** Appends one line to the file OPENPETE_ROWSCALE_CENSUS names: which
+ * row-scale source fired on which record, moby and row, and the factor. A
+ * harness sets it to count the firings over a corpus; unset, nothing is
+ * written. */
+static void rowscale_census(const char* src, uint32_t rec, uint32_t moby, int row, double sc) {
+    static const char* s_path = NULL;
+    static int s_init = 0;
+    if (!s_init) { s_init = 1; s_path = getenv("OPENPETE_ROWSCALE_CENSUS"); }
+    if (!s_path || !*s_path) return;
+    FILE* fp = fopen(s_path, "a");
+    if (!fp) return;
+    fprintf(fp, "%s vbl=%u rec=%08x moby=%08x row=%d sc=%.5f\n",
+            src, openpete_frame, rec, moby, row, sc);
+    fclose(fp);
+}
+
+/** Applies the factors the game's draw multiplies into the record at `rec`
+ * after its cull (moby_game.record_row_scale) to a matrix built for that
+ * record, each row scaled in double and rounded once. The specular queue
+ * shares the record addresses and is never scaled, so a specular pass
+ * ("SP"/"SPEC") applies nothing. Returns 1 when the game scales the record. */
+static int moby_draw_row_scale(CPUState* cpu, uint32_t rec, const char* mat, int M[3][3]) {
+    if (!moby_game.record_row_scale || (mat && mat[0] == 'S' && mat[1] == 'P')) return 0;
+    double sc[3];
+    if (!moby_game.record_row_scale(cpu, rec, sc)) return 0;
+    for (int row = 0; row < 3; row++) {
+        for (int c = 0; c < 3; c++) M[row][c] = (int)lround(M[row][c] * sc[row]);
+        rowscale_census("hook", rec, cpu->read_word(rec + game_layout.moby.rec_moby_off), row, sc[row]);
+    }
+    return 1;
+}
+
+/** The canonical record of a draw-time row scale, rebuilt as the sub-tick
+ * rebuild derives it: the camera·euler compose of the record's moby
+ * (shaded_compose_euler, the builder's compose) with the game's factors
+ * applied by moby_draw_row_scale. The record's own matrix carries the draw's
+ * FIXED_MUL truncation of the same product; replacing it makes the canonical
+ * present and the alpha-1 sub-tick present one computation. Records the draw
+ * does not scale keep the cull's matrix. */
+static void moby_canon_row_scale(CPUState* cpu, uint32_t rec, moby_record_t* R) {
+    double sc[3];
+    if (!moby_game.host_reveal || !moby_game.record_row_scale ||
+        (s_cur_mat && s_cur_mat[0] == 'S' && s_cur_mat[1] == 'P') ||
+        R->moby < 0x80000000u || !moby_game.record_row_scale(cpu, rec, sc))
+        return;
+    int PM[3][3]; memcpy(PM, s_view.cam_M, sizeof PM);
+    shaded_compose_euler(cpu, PM, R->moby, R->M);
+    moby_draw_row_scale(cpu, rec, s_cur_mat, R->M);
+}
+
+/** Re-applies a render-time per-row scale the game baked into the record's
+ * matrix that no moby_game.record_row_scale source names and that the
+ * euler rebuild in M cannot see. The rebuild is a camera·euler rotation, so
+ * |rebuild row| equals |unscaled record row| and the ratio |record row| /
+ * |rebuild row| is that scale; a ratio inside 0.99-1.01 is Q12 truncation
+ * noise and is left alone. */
+static void moby_ratio_row_scale(CPUState* cpu, uint32_t rec, uint32_t moby, int M[3][3]) {
+    int rM[3][3]; moby_rec_matrix(cpu, rec + game_layout.moby.rec_matrix_off, rM);
+    for (int row = 0; row < 3; row++) {
+        double mr = sqrt((double)rM[row][0]*rM[row][0] + (double)rM[row][1]*rM[row][1] + (double)rM[row][2]*rM[row][2]);
+        double mb = sqrt((double)M[row][0]*M[row][0] + (double)M[row][1]*M[row][1] + (double)M[row][2]*M[row][2]);
+        if (mb <= 1.0) continue;
+        double sc = mr / mb;
+        if (sc >= 0.99 && sc <= 1.01) continue;
+        for (int c = 0; c < 3; c++) M[row][c] = (int)lround(M[row][c] * sc);
+        rowscale_census("ratio", rec, moby, row, sc);
+    }
+}
+
 static void moby_animsw_census(CPUState* cpu, uint32_t moby);
 
+/** Projects every live cull record's vertices into s_proj (native float
+ * decode, RTPS and TR) for the canonical pass and fills s_recs, the record
+ * metadata the walk and the sub-tick replays read. A record the game's draw
+ * row-scales takes the rebuilt matrix (moby_canon_row_scale). Returns the
+ * record count. */
 static int project_all_records_inner(CPUState* cpu) {
     s_proj_n = 0; s_max_blend = 0; s_nrecs = 0;
     s_special_faces[0] = s_special_faces[1] = s_special_faces[2] = 0;
@@ -1620,6 +1694,7 @@ static int project_all_records_inner(CPUState* cpu) {
          * inherits the (--no-lod-neutralized) tier too. */
         int zsf4 = record_zsf4(cpu, &R);
         moby_animsw_census(cpu, R.moby);
+        moby_canon_row_scale(cpu, rec, &R);
         int got = moby_project_record(cpu, &R, zsf4, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
         for (int j = 0; j < got; j++) s_proj[s_proj_n + j].rec = nrec;  /* tag source record */
         if (nrec < MAX_RECORDS) {
@@ -8232,6 +8307,11 @@ static int record_replay_fields(CPUState* cpu, uint32_t rec, uint32_t moby, moby
     return 1;
 }
 
+/** One sub-tick record pass over the cull queue for material `mat` ("REG" or
+ * "SP"): rebuilds each record's fields from gamestate under the present's
+ * camera (or replays the captured record on a game without host reveal),
+ * applies the game's draw-time row scale, lerps the shape between the tick
+ * pair, and walks the result into the scene. Returns the records queued. */
 static int reextract_record_pass(CPUState* cpu, const char* mat) {
     int is_spec = (mat && mat[0] == 'S' && mat[1] == 'P');
     long rot_bins[REC_ROT_N] = {0};
@@ -8381,27 +8461,8 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                 }
             }
         }
-        /* Re-apply any render-time per-row scale the game baked into the
-         * cull-record matrix that build_moby_record_fields' euler rebuild
-         * cannot see — a cutscene disappear scales the record's M rows by a
-         * shrink and a squash. The rebuild is a pure camera·euler rotation, so
-         * |rebuild row| == |UNSCALED record row|; the ratio |record row|/|rebuild row|
-         * is exactly that render-time scale (camera-independent — both are rotations).
-         * Without it, cutscene mobys that squash/shrink render full-size on every
-         * sub-tick present (--render-fps), i.e. they "don't animate out". The deadband
-         * leaves normal mobys (ratio≈1, only Q12 truncation noise) untouched. */
-        {
-            int rM[3][3]; moby_rec_matrix(cpu, recs[i] + game_layout.moby.rec_matrix_off, rM);
-            for (int row = 0; row < 3; row++) {
-                double mr = sqrt((double)rM[row][0]*rM[row][0] + (double)rM[row][1]*rM[row][1] + (double)rM[row][2]*rM[row][2]);
-                double mb = sqrt((double)f.M[row][0]*f.M[row][0] + (double)f.M[row][1]*f.M[row][1] + (double)f.M[row][2]*f.M[row][2]);
-                if (mb > 1.0) {
-                    double sc = mr / mb;
-                    if (sc < 0.99 || sc > 1.01)       /* a real render-time scale, not truncation noise */
-                        for (int c = 0; c < 3; c++) f.M[row][c] = (int)lround(f.M[row][c] * sc);
-                }
-            }
-        }
+        if (!moby_draw_row_scale(cpu, recs[i], s_cur_mat, f.M))
+            moby_ratio_row_scale(cpu, recs[i], mobys[i], f.M);
         }
         if (s_nrecs >= MAX_RECORDS || s_proj_n >= MAX_PROJ) break;
         int off = s_proj_n;

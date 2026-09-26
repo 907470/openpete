@@ -257,6 +257,24 @@ void ngte_compose_euler(const int start[3][3], const ngte_euler_sc* e, int out[3
     ngte_mat_mul3(t2, Rz, out);
 }
 
+void ngte_compose_euler_f(CPUState* cpu, const int start[3][3], const double ang[3],
+                          double out[3][3]) {
+    double sz, cz, sx, cx, sy, cy;
+    ngte_sincos_f(cpu, ang[0], &sz, &cz);
+    ngte_sincos_f(cpu, ang[1], &sx, &cx);
+    ngte_sincos_f(cpu, ang[2], &sy, &cy);
+    const double Ry[3][3] = {{cy, 0.0, -sy}, {0.0, 4096.0, 0.0}, {sy, 0.0, cy}};
+    const double Rx[3][3] = {{4096.0, 0.0, 0.0}, {0.0, cx, -sx}, {0.0, sx, cx}};
+    const double Rz[3][3] = {{cz, -sz, 0.0}, {sz, cz, 0.0}, {0.0, 0.0, 4096.0}};
+    double t1[3][3], t2[3][3];
+    for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++)
+        t1[i][j] = (start[i][0]*Ry[0][j] + start[i][1]*Ry[1][j] + start[i][2]*Ry[2][j]) / 4096.0;
+    for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++)
+        t2[i][j] = (t1[i][0]*Rx[0][j] + t1[i][1]*Rx[1][j] + t1[i][2]*Rx[2][j]) / 4096.0;
+    for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++)
+        out[i][j] = (t2[i][0]*Rz[0][j] + t2[i][1]*Rz[1][j] + t2[i][2]*Rz[2][j]) / 4096.0;
+}
+
 /* ---- texture page / CLUT bitfields -------------------------------------- */
 
 void ngte_decode_tpage(unsigned tp, unsigned clut, unsigned flags, ngte_tpage* out) {

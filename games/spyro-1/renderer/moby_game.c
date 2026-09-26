@@ -13,9 +13,14 @@
 #include "spyro1_symbols.gen.h"
 #include "game_layout.h"
 #include "openpete_game_structs.h"   /* offsets pinned to the probed MIPS layout */
+#include "openpete_interp.h"         /* openpete_interp_present_now */
+#include "openpete_interp_objs.h"    /* the g_DragonCutscene tick pair */
+#include "openpete_subtick_view.h"   /* openpete_subtick_view_active */
+#include "openpete_psx.h"            /* openpete_psx_to_host_ptr */
 
 #include <stddef.h>
 #include <stdlib.h>
+#include <string.h>
 
 /* ---- vertex stream -------------------------------------------------
  * Packed 11/11/10 literals interleaved with 5/5/5 short-deltas, the bit-0
@@ -189,6 +194,52 @@ static int s1_cutscene_owns_draw(CPUState* cpu) {
     return cpu->read_word(G_GAMESTATE) == 8u && st >= 1u && st <= 6u;
 }
 
+/** The rescue cutscene's departure factors for record 0, as func_8001CFDC
+ * applies them in m_State 5 (draw.c state 5): row 0 by
+ * D_8006F3C0[m_CutsceneTicks], row 1 by Cos((m_CutsceneTicks - 8) * 42)
+ * once the ticks pass 8, row 2 unscaled; every other state scales nothing.
+ * `cs` is g_DragonCutscene from m_State (+0x28), so m_CutsceneTicks is at
+ * +0x14. Cos is the game's 4096-per-turn angle over the 256-entry table with
+ * its 16-step linear interpolation, taken in double; the factors are Q12
+ * values over 4096 with no FIXED_MUL truncation. Returns 1 in state 5. */
+static int s1_departure_factors(CPUState* cpu, const uint8_t* cs, double f[3]) {
+    uint32_t st, ticks;
+    memcpy(&st, cs, 4);
+    memcpy(&ticks, cs + 0x14, 4);
+    f[0] = f[1] = f[2] = 1.0;
+    if (st != 5u) return 0;
+    f[0] = (double)(int16_t)cpu->read_half(D_DRAGON_SHRINK + ticks * 2u) / 4096.0;
+    if ((int32_t)ticks > 8) {
+        double s, c;
+        ngte_sincos_f(cpu, (double)(((ticks - 8u) * 42u) & 0xFFFu) / 16.0, &s, &c);
+        f[1] = c / 4096.0;
+    }
+    return 1;
+}
+
+/** Record 0's draw-time row scale in the rescue cutscene's departure
+ * (g_Gamestate 8, m_State 5): func_8001CFDC scales rows 0 and 1 of the first
+ * cull record (the queue holds m_CutsceneSpyro alone) after
+ * func_8001F158 builds it. A canonical present takes the live
+ * g_DragonCutscene; a sub-tick present lerps each factor between the
+ * captured tick pair at the pair's alpha, a factor of the previous tick
+ * outside state 5 being 1. */
+static int s1_record_row_scale(CPUState* cpu, uint32_t rec, double scale[3]) {
+    if (rec != game_layout.moby.rec_base || cpu->read_word(G_GAMESTATE) != 8u) return 0;
+    const uint8_t* live = (const uint8_t*)openpete_psx_to_host_ptr(G_DRAGONCUTSCENE_STATE);
+    if (!live || !s1_departure_factors(cpu, live, scale)) return 0;
+    if (!openpete_subtick_view_active()) return 1;
+    const openpete_interp_obj_t* o = openpete_interp_objs_find(G_DRAGONCUTSCENE_STATE);
+    if (!o || !o->have_prev || o->curr_ns <= o->prev_ns) return 1;
+    double fp[3], fc[3];
+    s1_departure_factors(cpu, o->prev, fp);
+    if (!s1_departure_factors(cpu, o->curr, fc)) return 1;
+    double a = (double)(openpete_interp_present_now() - o->curr_ns) / (double)(o->curr_ns - o->prev_ns);
+    a = a < 0.0 ? 0.0 : (a > 1.0 ? 1.0 : a);
+    for (int r = 0; r < 3; r++) scale[r] = fp[r] + (fc[r] - fp[r]) * a;
+    return 1;
+}
+
 extern int spyro_cutpath_is_actor(uint32_t m);
 static int s1_cutpath_actor(uint32_t m) { return spyro_cutpath_is_actor(m); }
 
@@ -327,6 +378,7 @@ const moby_game_t moby_game = {
     .cutpath_actor      = s1_cutpath_actor,
     .run_once_hidden    = s1_run_once_hidden,
     .hud_under_player   = s1_hud_under_player,
+    .record_row_scale   = s1_record_row_scale,
 
     .scratch         = G_SCRATCH,
     .colour_scratch  = G_SCRATCH + 0x1100u,  /* per-vertex depth-cued RGB (.s DPCS output) */

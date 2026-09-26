@@ -1159,7 +1159,56 @@ static int camera_cut(const openpete_interp_snapshot_t* prev,
     return why != NULL;
 }
 
-/* The sub-tick present body. Always entered through the wrapper below, which
+/** Sub-tick bracket for the dragon-rescue star record D_DRAGONSTAR (0x2C
+ * bytes: +0x00 gate, +0x04 world position, +0x10 the draw's spoke matrix,
+ * +0x24 spoke size, +0x28 euler bytes Z/X/Y, +0x2B colour), which
+ * func_8002F3E4 animates once per tick and the star feeder re-reads on every
+ * present. Stages the record through the view with position, size and colour
+ * lerped prev->curr at the record's own alpha, and hands the feeder the euler
+ * bytes lerped along the shortest arc at float precision; the feeder composes
+ * them through the resolved camera matrix, the product gamestate 8 builds
+ * with RotVec8ToMatrix (func_8001CFDC), so at alpha 1 the matrix is the
+ * canonical present's. The staged +0x10 is left as captured and is unread.
+ * Snaps (no staging, no override) when either snapshot is inactive (a
+ * re-trigger), on a move over 5000 world units, or on a turn over 64 byte
+ * units on any axis. Guest memory is never written: a refused stage leaves
+ * the record canonical. */
+static void dragonstar_bracket(void) {
+    const uint8_t* live = (const uint8_t*)openpete_psx_to_host_ptr(D_DRAGONSTAR);
+    uint32_t gate = 0;
+    if (live) memcpy(&gate, live, 4);
+    const openpete_interp_obj_t* o = (gate != 0) ? openpete_interp_objs_find(D_DRAGONSTAR) : NULL;
+    if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return;
+    uint32_t pg, cg; memcpy(&pg, o->prev, 4); memcpy(&cg, o->curr, 4);
+    int32_t pp[3], cp[3];
+    memcpy(pp, o->prev + 0x04, 12); memcpy(cp, o->curr + 0x04, 12);
+    double dx = (double)cp[0]-pp[0], dy = (double)cp[1]-pp[1], dz = (double)cp[2]-pp[2];
+    double dang[3];
+    int turn = 0;
+    for (int k = 0; k < 3; k++) {
+        dang[k] = (double)((((int)o->curr[0x28 + k] - (int)o->prev[0x28 + k] + 128) & 0xFF) - 128);
+        turn |= (fabs(dang[k]) > 64.0);
+    }
+    if (pg == 0 || cg == 0 || turn || dx*dx + dy*dy + dz*dz > 5000.0*5000.0) return;
+    uint8_t* st = (uint8_t*)openpete_subtick_view_stage(D_DRAGONSTAR, 0x2Cu);
+    if (!st) return;
+    double a2 = (double)(openpete_interp_present_now() - o->curr_ns) / interp_period_ns(o->prev_ns, o->curr_ns);
+    if (a2 < 0.0) a2 = 0.0; else if (a2 > 1.0) a2 = 1.0;
+    for (int k = 0; k < 3; k++) {
+        int32_t v = pp[k] + (int32_t)llround(((double)cp[k] - pp[k]) * a2);
+        memcpy(st + 0x04 + 4*k, &v, 4);
+    }
+    int32_t psz, csz; memcpy(&psz, o->prev + 0x24, 4); memcpy(&csz, o->curr + 0x24, 4);
+    int32_t lsz = psz + (int32_t)llround(((double)csz - psz) * a2);
+    memcpy(st + 0x24, &lsz, 4);
+    int pc = o->prev[0x2B], ccol = o->curr[0x2B];
+    st[0x2B] = (uint8_t)(pc + (int)llround(((double)ccol - pc) * a2));
+    double ang[3];
+    for (int k = 0; k < 3; k++) ang[k] = (double)o->prev[0x28 + k] + dang[k] * a2;
+    dragonstar_native_set_rot_interp(ang);
+}
+
+/** The sub-tick present body. Always entered through the wrapper below, which
  * owns the view's begin/end pairing — this function has many exit paths and
  * an unpaired view would leave staged bytes visible to the next tick. */
 static void game_reextract_body(void* cpu_v) {
@@ -1950,63 +1999,10 @@ static void game_reextract_body(void* cpu_v) {
         }
     }
 
-    /* Dragon-star record (D_DRAGONSTAR — the circling damage stars): a single
-     * gamestate record (pos +0x04, per-effect rotation SHORTMATRIX +0x10, spoke
-     * size +0x24, colour byte +0x2B) that func_8002F3E4 animates once per tick;
-     * the feeder re-reads it every present, so un-bracketed the stars circle at
-     * the tick rate regardless of --render-fps (particle-circling-stars.bk2
-     * f1850). Lerp prev→curr at the record's own distinct-roll alpha — position
-     * (int32), matrix (componentwise int16, then the two USED column vectors
-     * — [r][0]/[r][2], the spoke basis — renormalized to Q12 so the chord lerp
-     * can't shrink the ring), size and colour. Guards: active in BOTH snapshots
-     * (re-trigger → snap), teleport (>5000 world units), rotation >90°/tick
-     * (column-0 cosine < 0 → snap; lerp would arc the wrong way). Bracketed:
-     * saved here, restored with the other brackets below. */
-    uint8_t* ds_host = NULL; int ds_bracketed = 0; static uint8_t ds_saved[0x2C];
-    {
-        ds_host = (uint8_t*)openpete_psx_to_host_ptr(D_DRAGONSTAR);
-        uint32_t gate = 0; if (ds_host) memcpy(&gate, ds_host, 4);
-        const openpete_interp_obj_t* o = (gate != 0) ? openpete_interp_objs_find(D_DRAGONSTAR) : NULL;
-        if (o && o->have_prev && o->prev_ns != 0 && o->curr_ns > o->prev_ns) {
-            uint32_t pg, cg; memcpy(&pg, o->prev, 4); memcpy(&cg, o->curr, 4);
-            int32_t pp[3], cp[3];
-            memcpy(pp, o->prev + 0x04, 12); memcpy(cp, o->curr + 0x04, 12);
-            double dx = (double)cp[0]-pp[0], dy = (double)cp[1]-pp[1], dz = (double)cp[2]-pp[2];
-            int16_t pm[9], cm[9];
-            memcpy(pm, o->prev + 0x10, 18); memcpy(cm, o->curr + 0x10, 18);
-            /* column-0 rotation magnitude between snapshots (Q12 dot) */
-            double c0dot = ((double)pm[0]*cm[0] + (double)pm[3]*cm[3] + (double)pm[6]*cm[6]) / (4096.0*4096.0);
-            if (pg != 0 && cg != 0 &&
-                dx*dx + dy*dy + dz*dz <= 5000.0*5000.0 &&
-                c0dot > 0.0) {
-                double a2 = (double)(openpete_interp_present_now() - o->curr_ns) / interp_period_ns(o->prev_ns, o->curr_ns);
-                if (a2 < 0.0) a2 = 0.0; else if (a2 > 1.0) a2 = 1.0;
-                memcpy(ds_saved, ds_host, 0x2C); ds_bracketed = 1;
-                for (int k = 0; k < 3; k++) {
-                    int32_t v = pp[k] + (int32_t)llround(((double)cp[k] - pp[k]) * a2);
-                    memcpy(ds_host + 0x04 + 4*k, &v, 4);
-                }
-                double lm[9];
-                for (int j = 0; j < 9; j++) lm[j] = (double)pm[j] + ((double)cm[j] - pm[j]) * a2;
-                for (int col = 0; col <= 2; col += 2) {   /* the used spoke basis columns */
-                    double n = sqrt(lm[0+col]*lm[0+col] + lm[3+col]*lm[3+col] + lm[6+col]*lm[6+col]);
-                    if (n > 1.0) {
-                        double s = 4096.0 / n;
-                        lm[0+col] *= s; lm[3+col] *= s; lm[6+col] *= s;
-                    }
-                }
-                for (int j = 0; j < 9; j++) {
-                    int16_t v16 = (int16_t)llround(lm[j]);
-                    memcpy(ds_host + 0x10 + 2*j, &v16, 2);
-                }
-                int32_t psz, csz; memcpy(&psz, o->prev + 0x24, 4); memcpy(&csz, o->curr + 0x24, 4);
-                int32_t lsz = psz + (int32_t)llround(((double)csz - psz) * a2);
-                memcpy(ds_host + 0x24, &lsz, 4);
-                int pc = o->prev[0x2B], ccol = o->curr[0x2B];
-                ds_host[0x2B] = (uint8_t)(pc + (int)llround(((double)ccol - pc) * a2));
-            }
-        }
-    }
+    /* Dragon-star record (D_DRAGONSTAR): staged through the view with the
+     * sub-tick position, size and colour; its rotation reaches the feeder as
+     * float euler angles (dragonstar_bracket). */
+    dragonstar_bracket();
 
     /* The 2D-UI overlay (fade + cutscene letterbox + menu panel + the 2D-UI
      * sprites/lines) is ACCUMULATED at feed time inside add_tri (so this rebuild's
@@ -2144,7 +2140,7 @@ static void game_reextract_body(void* cpu_v) {
         if (ph) { memcpy(ph + PART_POS_OFF, &s_part_save[i].w1, 4);
                   memcpy(ph + 0x08u,        &s_part_save[i].w2, 4); }
     }
-    if (ds_bracketed && ds_host) memcpy(ds_host, ds_saved, 0x2C);
+    dragonstar_native_set_rot_interp(NULL);   /* canonical presents compose from the bytes */
     if (sh_bracketed && !sh_staged)  memcpy(sh, sh_saved, SHADOW_SAVE);
     if (fl_bracketed && !fl_staged)  memcpy(fl, fl_saved, FLAME_SAVE);
     if (sp_bracketed && !sp_staged)  memcpy(sp, sp_saved, SPYRO_SAVE);

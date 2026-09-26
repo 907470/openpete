@@ -223,6 +223,19 @@ void ngte_euler_sincos(CPUState* cpu, uint32_t rot, ngte_euler_sc* e);
  * (func_80022A2C block_80022DBC..80022F34). */
 void ngte_compose_euler(const int start[3][3], const ngte_euler_sc* e, int out[3][3]);
 
+/** out = start·Ry·Rx·Rz in double, the order of ngte_compose_euler, with
+ * each axis's sin/cos read through ngte_sincos_f at a fractional byte angle.
+ * ang is {Z, X, Y} in byte angles, 256 to the turn (the packed euler word's
+ * byte0, byte1, byte2). At integer angles the factors are the table's own
+ * entries, so the result differs from the GTE compose only by the GTE's
+ * per-step >>12 truncation, which this form does not take.
+ * @param cpu    reads the game's sin/cos table.
+ * @param start  the left factor, Q12.
+ * @param ang    {Z, X, Y} byte angles.
+ * @param out    the product, Q12 scale, unrounded. */
+void ngte_compose_euler_f(CPUState* cpu, const int start[3][3], const double ang[3],
+                          double out[3][3]);
+
 /* ---- texture page / CLUT bitfields --------------------------------------
  * One decode of the GPU's two texture words, shared by every feeder that
  * samples VRAM. `tp` is the texture-page bitfield (bits 0-3 page X in

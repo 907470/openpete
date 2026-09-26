@@ -2,7 +2,7 @@
 # library: libclang 14
 # requirement: brief on every function; @param per named parameter and @return on non-void for external linkage
 # written-by: hook
-# head: e776c01091c81917c30a3495b4cf896c896a4312
+# head: 06bc7f1a02bcb893135de431b959b318e12eb322
 file	function	form	accepted
 core/config/build_id.c	openpete_build_shared_recomp	plain	
 core/config/build_id.c	openpete_build_tagged	plain	
@@ -3196,7 +3196,6 @@ games/common/renderer/moby.c	on_draw_simple	none
 games/common/renderer/moby.c	on_draw_specular	none	
 games/common/renderer/moby.c	project	plain	
 games/common/renderer/moby.c	project_all_records	none	
-games/common/renderer/moby.c	project_all_records_inner	none	
 games/common/renderer/moby.c	project_all_shaded	plain	
 games/common/renderer/moby.c	push_scene_moby	plain	
 games/common/renderer/moby.c	rank_carry_apply	none	
@@ -3213,7 +3212,6 @@ games/common/renderer/moby.c	record_rebase_to_present	none
 games/common/renderer/moby.c	record_replay_fields	plain	
 games/common/renderer/moby.c	record_rotation_to_present	plain	
 games/common/renderer/moby.c	record_zsf4	plain	
-games/common/renderer/moby.c	reextract_record_pass	none	
 games/common/renderer/moby.c	report_code_hist	plain	
 games/common/renderer/moby.c	reveal_lateral_extent	plain	
 games/common/renderer/moby.c	reveal_lateral_margin	plain	
@@ -4220,7 +4218,6 @@ games/spyro-1/renderer/interp_regions.c	credits_track_generations	none
 games/spyro-1/renderer/interp_regions.c	game_interp_moby_key	plain	
 games/spyro-1/renderer/interp_regions.c	game_interp_register	plain	
 games/spyro-1/renderer/interp_regions.c	rd32	none	
-games/spyro-1/renderer/interp_regions.c	spyro_interp_extra_pools	plain	
 games/spyro-1/renderer/layout.c	flame_cap_colour_off	plain	
 games/spyro-1/renderer/moby_game.c	s1_anim_frame_count	plain	
 games/spyro-1/renderer/moby_game.c	s1_cutpath_actor	none	
@@ -4240,7 +4237,6 @@ games/spyro-1/renderer/particle.c	capture_prims	plain
 games/spyro-1/renderer/particle.c	clamp16	none	
 games/spyro-1/renderer/particle.c	clip4_cull	plain	
 games/spyro-1/renderer/particle.c	decode_material	plain	
-games/spyro-1/renderer/particle.c	dragonstar_build	none	
 games/spyro-1/renderer/particle.c	dragonstar_compare	plain	
 games/spyro-1/renderer/particle.c	dragonstar_feed_native	plain	
 games/spyro-1/renderer/particle.c	dragonstar_run_draw	plain	
@@ -4252,7 +4248,6 @@ games/spyro-1/renderer/particle.c	glow_compare	plain
 games/spyro-1/renderer/particle.c	glow_feed_native	plain	
 games/spyro-1/renderer/particle.c	lerp_b	plain	
 games/spyro-1/renderer/particle.c	lerp_wrap_b	none	
-games/spyro-1/renderer/particle.c	load_matrix_at	plain	
 games/spyro-1/renderer/particle.c	on_800573C8_particles	none	
 games/spyro-1/renderer/particle.c	on_800580F4_glows	none	
 games/spyro-1/renderer/particle.c	on_800584C4_sparkles	none	
@@ -4380,7 +4375,6 @@ games/spyro-1/renderer/reextract.c	fpos_put	none
 games/spyro-1/renderer/reextract.c	fpos_reset	none	
 games/spyro-1/renderer/reextract.c	fpos_set	none	
 games/spyro-1/renderer/reextract.c	fpos_set_h	plain	
-games/spyro-1/renderer/reextract.c	game_reextract_body	plain	
 games/spyro-1/renderer/reextract.c	game_reextract_init	none	
 games/spyro-1/renderer/reextract.c	herm_matrix	none	
 games/spyro-1/renderer/reextract.c	herm_vec3	none	

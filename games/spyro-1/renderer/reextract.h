@@ -62,6 +62,14 @@ void player_native_set_flat_key(uint32_t key);
  * the canonical inline render stays byte-exact. Defined in renderer/spyro.c. */
 void player_native_set_rot_interp(const int* active, const double* ang);
 
+/** Sub-tick rotation for the dragon-rescue star (D_80076248): the record's
+ * +0x28 euler bytes lerped at float precision, {Z, X, Y} byte angles, which
+ * the star feeder composes through the resolved camera matrix in place of
+ * the record's bytes. NULL resets, so a canonical present composes from the
+ * bytes. Defined in renderer/particle.c.
+ * @param ang_zxy three byte angles {Z, X, Y}, or NULL. */
+void dragonstar_native_set_rot_interp(const double* ang_zxy);
+
 /* Portal previews: the dome rotation matrix is captured prev+curr per canonical
  * tick and lerped by the spine's sub-tick `alpha` (componentwise, like the camera
  * matrix); `interp_on` = camera bracketed (else snap to curr). */

@@ -332,6 +332,13 @@ typedef struct moby_game {
     int  (*run_once_hidden)(CPUState* cpu, uint32_t moby, unsigned cls);
     /* The game is in a state that draws the HUD under the player model. */
     int  (*hud_under_player)(CPUState* cpu);
+    /* Per-row factors the game's draw multiplies into a cull record's
+     * matrix after the cull built it and before the record draws: 1 with
+     * scale[3] filled (row 0..2) when the draw scales the record at `rec`,
+     * 0 when it does not. On a sub-tick present the factors are lerped
+     * between the tick pair; at alpha 1 they are the canonical present's.
+     * NULL = the game scales no record. */
+    int  (*record_row_scale)(CPUState* cpu, uint32_t rec, double scale[3]);
 
     /* ---- addresses outside the descriptor (0 = the path is skipped) --- */
     /* The render scratch block the draw passes build their transient data in,

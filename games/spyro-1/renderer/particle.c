@@ -367,10 +367,6 @@ static int glow_anim_dbg(void) {
     return s;
 }
 
-/* generic SHORTMATRIX loader (5 packed words -> 9 int16) at an arbitrary base */
-static void load_matrix_at(CPUState* cpu, uint32_t base, int R[3][3]) {
-    ngte_read_matrix(cpu, base, R);
-}
 /* The projection view of the running build (camera, offsets, H, Hor+
  * bounds); each build entry rebuilds it, the cull helpers read it. */
 static ngte_view s_pv;
@@ -1599,8 +1595,9 @@ static void sparkle_compare(CPUState* cpu) {
  * captured prims:
  *   +0x00 gate (active flag; skip when 0)   +0x04 Vector3D world position
  *   +0x10 SHORTMATRIX (per-effect rotation; built each frame by
- *         RotVec8ToMatrix(rot8,mat,g_Camera.projMat) so it already folds in the
- *         camera projection -> RTPS through it maps local spoke -> view space)
+ *         RotVec8ToMatrix(+0x28 rot8,mat,g_Camera.projMat) so it already folds
+ *         in the camera projection -> RTPS through it maps local spoke -> view
+ *         space; dragonstar_matrix recomposes it in double from the angles)
  *   +0x24 spoke size      +0x2B centre colour byte (broadcast to (c,c,c))
  * The .s sets TR = view-space centre = camR·(camY-py,camZ-pz,px-camX) (the same
  * swizzle particles/glows use), projects the centre (V=0), then RTPS-projects 16
@@ -1613,6 +1610,41 @@ static void sparkle_compare(CPUState* cpu) {
 
 static gtri s_dstri[16]; static int s_dstri_n;
 
+/* Sub-tick euler override for the star's +0x28 angles, {Z, X, Y} byte angles
+ * at float precision; s_ds_rot_on 0 reads the record's own bytes. */
+static double s_ds_rot[3];
+static int    s_ds_rot_on;
+
+void dragonstar_native_set_rot_interp(const double* ang_zxy) {
+    s_ds_rot_on = (ang_zxy != NULL);
+    if (ang_zxy) memcpy(s_ds_rot, ang_zxy, sizeof s_ds_rot);
+}
+
+/** The star's spoke matrix as gamestate 8 builds it before func_80058864:
+ * RotVec8ToMatrix(+0x28 angles, g_Camera.m_ProjectionMatrix) into +0x10
+ * (func_8001CFDC), composed here in double from the camera matrix the view
+ * resolves (the bracketed camera on a sub-tick present) and the angles, which
+ * are the record's bytes on a canonical present and the orchestrator's float
+ * lerp on a sub-tick one. The record's +0x10 holds the GTE's truncated copy
+ * of the same product and is not read. */
+static void dragonstar_matrix(CPUState* cpu, const ngte_view* v, double Me[3][3]) {
+    double ang[3];
+    if (s_ds_rot_on) {
+        memcpy(ang, s_ds_rot, sizeof ang);
+    } else {
+        uint32_t w = cpu->read_word(D_DRAGONSTAR + 0x28);
+        ang[0] = (double)(w & 0xFFu);
+        ang[1] = (double)((w >> 8) & 0xFFu);
+        ang[2] = (double)((w >> 16) & 0xFFu);
+    }
+    ngte_compose_euler_f(cpu, v->cam_M, ang, Me);
+}
+
+/** Builds the star's 16-triangle centre fan into s_dstri: projects the
+ * record's centre, then the 16 ring spokes (even points at size, odd points
+ * at 4x size) through the spoke matrix and the centre's view translation.
+ * Leaves s_dstri_n 0 when the record's gate is clear or the centre is behind
+ * the camera. */
 static void dragonstar_build(CPUState* cpu) {
     s_dstri_n = 0;
     if (cpu->read_word(D_DRAGONSTAR + 0x00) == 0) return;       /* inactive */
@@ -1634,7 +1666,7 @@ static void dragonstar_build(CPUState* cpu) {
     double trx = c.m1, try_ = c.m2, trz = c.m3;
     if (trz <= 0.0) return;                                     /* behind camera */
 
-    int Me[3][3]; load_matrix_at(cpu, D_DRAGONSTAR+0x10, Me);   /* per-effect rotation */
+    double Me[3][3]; dragonstar_matrix(cpu, v, Me);             /* per-effect rotation */
     int size = (int)cpu->read_word(D_DRAGONSTAR+0x24);
     uint32_t cc = cpu->read_word(D_DRAGONSTAR+0x28) >> 24;      /* +0x2B colour byte */
     cc &= 0xFF;

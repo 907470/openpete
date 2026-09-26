@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: beeb238ba797eaa62e423dd857a8dc54f713d12e
+# head: 06bc7f1a02bcb893135de431b959b318e12eb322
 file	function	score	marked	accepted
 core/config/config.c	harvest_args	30	0	
 core/config/config.c	harvest_base	39	0	
@@ -142,7 +142,7 @@ games/common/renderer/moby.c	moby_reveal_dbg	44	0
 games/common/renderer/moby.c	project_all_records_inner	60	0	
 games/common/renderer/moby.c	project_all_shaded	183	0	
 games/common/renderer/moby.c	push_scene_moby	55	0	
-games/common/renderer/moby.c	reextract_record_pass	225	0	
+games/common/renderer/moby.c	reextract_record_pass	215	0	
 games/common/renderer/moby.c	shaded_color_ab	35	0	
 games/common/renderer/moby.c	shaded_compose_euler	54	0	
 games/common/renderer/moby.c	shaded_pcol_scratch_check	27	0	
@@ -209,7 +209,7 @@ games/spyro-1/mods/mod_level_ops.c	leveltext_hook	75	0
 games/spyro-1/mods/mod_wad_overlay.c	mod_wad_apply	87	0	
 games/spyro-1/mods/mod_wad_overlay.c	wad_find_override	28	0	
 games/spyro-1/renderer/interp_regions.c	game_interp_moby_key	57	0	
-games/spyro-1/renderer/interp_regions.c	spyro_interp_extra_pools	36	0	
+games/spyro-1/renderer/interp_regions.c	spyro_interp_extra_pools	38	0	
 games/spyro-1/renderer/moby_game.c	s1_decode_faces	39	0	
 games/spyro-1/renderer/particle.c	dragonstar_compare	40	0	
 games/spyro-1/renderer/particle.c	glow_build	66	0	
@@ -232,7 +232,7 @@ games/spyro-1/renderer/portal.c	openpete_portal_sky_planes	74	0
 games/spyro-1/renderer/portal.c	portal_nudge_for	27	0	
 games/spyro-1/renderer/portal.c	portal_reextract	125	0	
 games/spyro-1/renderer/reextract.c	cl_fit_pose	26	0	
-games/spyro-1/renderer/reextract.c	game_reextract_body	437	0	
+games/spyro-1/renderer/reextract.c	game_reextract_body	408	0	
 games/spyro-1/renderer/reextract.c	player_records_loop	86	0	
 games/spyro-1/renderer/shadow_spyro.c	shadow_spyro_compare	31	0	
 games/spyro-1/renderer/spyro.c	spyro_aggregate	41	0	
