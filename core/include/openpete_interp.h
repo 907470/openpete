@@ -1,13 +1,13 @@
 /* core/include/openpete_interp.h — render-side state interpolation ring.
  *
- * Phase 2 scaffolding of notes/plans/openpete-fps-unlock.md. Captures
- * gameplay-transform state at the end of each PSX sim tick (29.913 Hz)
- * so the render path can later lerp between snapshots N-1 and N and
- * re-emit DrawOTag at host refresh cadence (60/144/unlimited Hz).
+ * Captures gameplay-transform state once per VBL the guest advanced so the
+ * render path can lerp between the two newest distinct states and present
+ * at the host's render rate.
  *
- * Three-stage ring: the last three distinct ticks (prev2, prev, curr).
- * Alpha = (op_now() - curr.tick_ns) / sim_period_ns. Re-emission shows
- * the world at virtual time `prev.tick + alpha * sim_period`, accepting
+ * Three-stage ring: the last three stored states (prev2, prev, curr).
+ * Alpha = (openpete_interp_present_now() - prev.tick_ns) / sim_period_ns,
+ * clamped to [0, 1]. Re-emission shows the world at virtual time
+ * `prev.tick_ns + alpha * sim_period`, accepting
  * one tick of latency in exchange for never extrapolating. prev2 is kept
  * so the render side can build a cubic (Hermite) interpolant with a
  * centered start-tangent — halving the velocity discontinuity at tick
@@ -20,7 +20,7 @@
  * here: core stays address-free, and the game owns which regions/feeders it
  * brackets plus its own restore discipline (see the game's bracket-integrity
  * self-check, OPENPETE_BRACKET_CHECK). Capturing here is read-only against
- * PSX RAM — landing capture alone has zero gameplay impact and is unconditional.
+ * PSX RAM and runs only while openpete_interp_set_enabled(1) holds.
  *
  * This DIRECT ring drives the camera/Spyro alpha. Per-OBJECT (indirect pool)
  * state uses a parallel store (openpete_interp_objs.h) with its OWN per-object
@@ -70,15 +70,16 @@ typedef struct {
     int         ra_commit;
 } openpete_interp_region_t;
 
-/* Game registers its region table via this call before openpete_interp_init.
- * Explicit registration (instead of weak symbols) so we don't depend on
- * cross-toolchain weak-symbol semantics — MinGW's PE/COFF link rules don't
- * reliably let a strong override in an executable object override a weak
- * definition pulled from a static library archive. Call once at game
- * startup; pass NULL/0 to keep capture disabled.
+/** @brief Register the game's direct-region table for capture.
  *
- * Safe to call multiple times — last call wins. Caller retains ownership
- * of the table; openpete_interp captures the pointer + count by value. */
+ * Called from the game's startup (games/common/renderer/interp_regions_gen.c)
+ * before openpete_interp_init, which sizes the snapshot layout from it.
+ * Explicit registration replaces a weak symbol: MinGW's PE/COFF link does not
+ * reliably let a strong definition in the executable override a weak one
+ * pulled from a static library archive. The last call wins. The pointer and
+ * count are stored by value; the caller keeps the table alive.
+ * @param regions Region table, or NULL to keep capture disabled.
+ * @param count Entries in @p regions; ignored when @p regions is NULL. */
 void openpete_interp_register_regions(const openpete_interp_region_t* regions,
                                       size_t count);
 
@@ -95,29 +96,50 @@ typedef struct {
     uint8_t   data[OPENPETE_INTERP_MAX_SNAPSHOT_BYTES];
 } openpete_interp_snapshot_t;
 
-/* Lifecycle. init computes the per-region offsets from the table; fails
- * (returns non-zero) if the total exceeds OPENPETE_INTERP_MAX_SNAPSHOT_BYTES
- * — bumping the cap is a deliberate decision, not a silent runtime error. */
+/** @brief Register the discontinuity handler and lay out the snapshot ring from the region table.
+ *
+ * Idempotent once it has succeeded. Registers the guest-discontinuity
+ * handler that resets this ring and the object table, even with no regions
+ * registered (capture then stays a no-op and init succeeds). Computes each
+ * region's offset within a snapshot and clears the three slots. A table
+ * with more than OPENPETE_INTERP_MAX_REGIONS entries or a byte total over
+ * OPENPETE_INTERP_MAX_SNAPSHOT_BYTES logs an error and fails; the caps are
+ * raised by editing them, not at run time.
+ * @return 0 on success, 1 when the table exceeds a cap. */
 int  openpete_interp_init(void);
+/** @brief Mark the ring uninitialised and disable capture. */
 void openpete_interp_shutdown(void);
 
-/* Invalidate the snapshot ring (keeps the region config). Guest-state
- * discontinuity (savestate load, rewind restore): the ring's snapshots
- * describe the pre-jump timeline; dropping them makes the next present
- * snap to the restored state instead of sweeping a full-scene lerp across
- * the jump. init() self-registers this (plus the objs-table reset) with
- * the openpete_discontinuity broadcast. */
+/** @brief Invalidate every snapshot slot, keeping the region layout.
+ *
+ * Also clears the latest-capture tick, restores the distinct-state gap to
+ * its floor of 2 and increments the reset generation. Called on a
+ * guest-state discontinuity (the handler openpete_interp_init registers:
+ * savestate load, rewind restore) and by run.c beside
+ * openpete_interp_objs_reset where the timeline jumps otherwise. The stored
+ * snapshots describe the pre-jump timeline; dropping them makes the next
+ * present snap to the restored state instead of lerping across the jump. */
 void openpete_interp_reset(void);
-/* Counts openpete_interp_reset calls. A game-side store that must reset
- * wherever the ring resets (savestate load, rewind, the runahead depth
- * switch, adoption) compares this at its own commit instead of registering
- * at each of those sites. */
+/** @brief Return the count of openpete_interp_reset calls.
+ *
+ * A game-side store that must reset wherever the ring resets (the player
+ * record store in games/common/renderer/player.c) compares this at its own
+ * commit instead of registering at each reset site.
+ * @return The reset generation, starting at 0. */
 uint32_t openpete_interp_reset_generation(void);
 
-/* Active iff init() succeeded AND the game supplied a non-empty region
- * table AND `--render-fps` is set above the sim rate (caller's choice).
- * Defaults to "off"; flip on via openpete_interp_set_enabled. */
+/** @brief Enable or disable capture, the queries and the object table.
+ *
+ * run.c enables it when --render-fps exceeds the sim rate, under offline
+ * capture at two or more presents per tick, and for intermediate
+ * screenshots, and re-evaluates it when the render rate changes. Capture
+ * also needs a successful openpete_interp_init with a non-empty region
+ * table; this flag does not check that. Off by default.
+ * @param on Nonzero enables. */
 void openpete_interp_set_enabled(int on);
+/** @brief Return the flag openpete_interp_set_enabled last stored.
+ *
+ * @return 1 when enabled, else 0. */
 int  openpete_interp_enabled(void);
 
 /** @brief Snapshot every registered region into the ring, committing only a new state or a held one.
@@ -138,38 +160,53 @@ int  openpete_interp_enabled(void);
  * @param tick_ns Present-clock stamp of the capture. */
 void openpete_interp_capture(uint32_t tick, op_time_t tick_ns);
 
-/* Virtual present clock: the run loop sets, before each present's re-extract,
- * the EVENLY-SPACED wall time this present will effectively be DISPLAYED at
- * (a PLL over the present stream). Sub-tick phase (alpha) computations must
- * use openpete_interp_present_now() instead of op_now(): presents are
- * GENERATED at uneven wall offsets (the canonical present fires off the
- * render pacer's grid), but FIFO displays them at even refresh slots — phase
- * from raw generation time re-creates 3:1 velocity judder on the display no
- * matter how linear the generation-time mapping is. Falls back to op_now()
- * when unset (canonical-only paths, harnesses). */
+/** @brief Set the virtual present clock that sub-tick alpha is computed against.
+ *
+ * The run loop sets, before a present's re-extract, the instant that
+ * present is displayed at: the output of a phase-locked loop over the
+ * present stream, the eager producer's display instant minus its lag, or a
+ * forced sub-tick point for the intermediate screenshot and the identity
+ * audit. Presents are generated at uneven wall offsets but displayed at
+ * even refresh slots; a phase taken from generation time reproduces a 3:1
+ * velocity judder on the display. Callers restore 0 after the re-extract.
+ * @param t Display instant on the op_now() clock, or 0 to fall back to
+ *          op_now(). */
 void      openpete_interp_set_present_target(op_time_t t);
+/** @brief Return the present target, or op_now() when none is set.
+ *
+ * Every sub-tick alpha reads this clock, never op_now() directly.
+ * @return The display instant of the present being produced. */
 op_time_t openpete_interp_present_now(void);
 
-/* Deterministic capture (presentation-golden intermediate corpus). When on,
- * openpete_interp_capture IGNORES the wall-clock stamp it is passed and stamps
- * each STORED (post-dedupe) snapshot on a fixed grid: 0, P, 2P, … exactly
- * `period_ns` apart. This makes curr->tick_ns - prev->tick_ns == period_ns
- * always, so a caller that sets the present target to curr_tick_ns + period_ns/2
- * gets alpha == 0.5 EXACTLY, reproducibly, with no dependency on host pacing.
- * Enabling resets the grid counter to 0. Off in normal play (wall-clock stamps
- * drive the display pacer). */
+/** @brief Arm or disarm deterministic capture stamps.
+ *
+ * Armed by run.c for intermediate screenshots. While armed,
+ * openpete_interp_capture ignores the stamp it is passed and stamps each
+ * stored distinct state on a fixed grid 0, P, 2P, ... with P = @p period_ns;
+ * a duplicate commit takes the copied state's stamp plus P. A caller that
+ * sets the present target to curr_tick_ns + P/2 then gets alpha 0.5 with no
+ * dependence on host pacing. Arming resets the grid index to 0.
+ * @param on Nonzero arms.
+ * @param period_ns Grid spacing, stored whether or not @p on is set. */
 void      openpete_interp_set_deterministic(int on, op_time_t period_ns);
-/* 1 while deterministic capture is armed. Sub-tick consumers that would otherwise
- * read wall-clock (op_now) — e.g. the 2D-UI overlay's own animation alpha — must
- * switch to the pinned present clock + tick grid here so captures reproduce. */
+/** @brief Report whether deterministic capture is armed.
+ *
+ * Sub-tick consumers that keep their own stamps (the native 2D overlay's
+ * animation alpha, the player record store) switch to the tick grid while
+ * it is armed so captures reproduce.
+ * @return 1 when armed, else 0. */
 int       openpete_interp_deterministic(void);
-/* The deterministic-capture tick period (0 when not armed); the fixed grid spacing
- * passed to openpete_interp_set_deterministic. */
+/** @brief Return the period last passed to openpete_interp_set_deterministic.
+ *
+ * @return The grid spacing in ns; 0 when never set. */
 op_time_t openpete_interp_det_period(void);
 
-/* The newest stored snapshot's timestamp (curr->tick_ns), or 0 if the ring holds
- * no valid slot yet. With deterministic capture on, this is a fixed grid point;
- * add period_ns/2 to target the sub-tick midpoint. */
+/** @brief Return the newest stored snapshot's stamp.
+ *
+ * Under deterministic capture the stamp is a grid point; adding half the
+ * period targets the sub-tick midpoint.
+ * @return curr->tick_ns, or 0 before init or while the head slot is
+ *         invalid. */
 op_time_t openpete_interp_curr_tick_ns(void);
 /** @brief Return the newest stored snapshot.
  *
@@ -180,12 +217,13 @@ op_time_t openpete_interp_curr_tick_ns(void);
  *         one. */
 const openpete_interp_snapshot_t* openpete_interp_curr_snapshot(void);
 
-/* 1 iff the ring holds two valid most-recent slots — i.e. a sub-tick
- * interpolation bracket is available right now. 0 until the ring has two
- * (spawn, the first ticks after a reset). The endpoints may be byte-identical:
- * a screen whose registered regions are held still (the debug freecam) pairs
- * the held state with itself, and the bracket interpolates it as the
- * identity. */
+/** @brief Report whether a sub-tick interpolation bracket is available.
+ *
+ * The endpoints may be byte-identical: a screen whose registered regions
+ * are held still (the debug freecam) pairs the held state with itself, and
+ * the bracket interpolates it as the identity.
+ * @return 1 when enabled and the two newest slots are valid with equal byte
+ *         counts; 0 otherwise, including the first captures after a reset. */
 int       openpete_interp_paired(void);
 
 /** @brief Report whether the ring's head is older than the latest capture by more than the pair's cadence.
@@ -204,24 +242,41 @@ int       openpete_interp_paired(void);
  *         head, or when the head is within the cadence. */
 int       openpete_interp_curr_is_stale(void);
 
-/* Returns the most recent two snapshots (prev = the earlier stored tick,
- * curr = the newest) via out params. Returns 1 if both are valid and carry the
- * same byte count, 0 otherwise. The endpoints may be byte-identical (a held
- * screen), in which case the lerp across them is the identity; the ring, not
- * the query, decides when such a pair is stored.
+/** @brief Return the two newest snapshots and the alpha of @p now_ns between them.
  *
- * `*out_alpha` is clamped to [0, 1] when returning 1; undefined otherwise. */
+ * alpha = (@p now_ns - prev->tick_ns) / @p sim_period_ns, clamped to [0, 1]:
+ * the present shows the state at prev->tick_ns + alpha * period, one tick
+ * behind the newest capture, so the query never extrapolates. The endpoints
+ * may be byte-identical (a held screen), in which case the lerp across them
+ * is the identity; the ring, not the query, decides when such a pair is
+ * stored. The out pointers are written only on success; each may be NULL.
+ * @param now_ns Present instant, normally openpete_interp_present_now().
+ * @param sim_period_ns Tick period; a non-positive value fails the query.
+ * @param out_alpha Receives alpha.
+ * @param out_prev Receives the earlier stored snapshot.
+ * @param out_curr Receives the newest snapshot.
+ * @return 1 when enabled and both slots are valid with equal byte counts,
+ *         else 0. */
 int openpete_interp_query(op_time_t now_ns,
                           op_time_t sim_period_ns,
                           double*   out_alpha,
                           const openpete_interp_snapshot_t** out_prev,
                           const openpete_interp_snapshot_t** out_curr);
 
-/* Like openpete_interp_query, but also returns prev2 = the distinct tick BEFORE
- * prev (two back from curr), for cubic/Hermite interpolation with a centered
- * start-tangent. `*out_prev2` is NULL until the ring holds three ticks
- * or when the pairing fails — callers fall back to the linear prev→curr path.
- * Return value + alpha + prev/curr semantics are identical to openpete_interp_query. */
+/** @brief Run openpete_interp_query and also return the snapshot before prev.
+ *
+ * prev2 serves a cubic (Hermite) interpolant with a centred start tangent.
+ * Called by each game's reextract.c and by the cut guard with
+ * openpete_interp_present_now().
+ * @param now_ns Present instant.
+ * @param sim_period_ns Tick period.
+ * @param out_alpha Receives alpha, as openpete_interp_query.
+ * @param out_prev2 Receives the third-newest snapshot, or NULL when that slot
+ *        is invalid or the query failed; callers then fall back to the linear
+ *        prev-to-curr path. May be NULL.
+ * @param out_prev Receives the earlier stored snapshot.
+ * @param out_curr Receives the newest snapshot.
+ * @return The openpete_interp_query result. */
 int openpete_interp_query3(op_time_t now_ns,
                            op_time_t sim_period_ns,
                            double*   out_alpha,
@@ -229,24 +284,34 @@ int openpete_interp_query3(op_time_t now_ns,
                            const openpete_interp_snapshot_t** out_prev,
                            const openpete_interp_snapshot_t** out_curr);
 
-/* Runahead committed-region recapture. The driver calls this AFTER rolling
- * guest RAM back to the committed tick (the ring was captured at the led
- * speculation head): every region flagged `ra_commit` is re-read from the
- * now-committed guest RAM into the ring's newest slot. Flagged regions
- * thus always pair committed(T-1)→committed(T) — a branch-free timeline
- * identical to runahead-off, so they can never show a misprediction (and
- * never need the correction rebase). No-op when disabled, when no region
- * is flagged, or under OPENPETE_RA_CAM_COMMIT=0 (A/B kill switch). */
+/** @brief Re-read the ra_commit regions from committed guest RAM into the newest slot.
+ *
+ * The runahead driver in run.c calls this after rolling guest RAM back to
+ * the committed tick; the ring was captured at the led speculation head.
+ * Flagged regions then pair committed(T-1) with committed(T), the timeline
+ * runahead-off produces, so they never show a misprediction. The slot is
+ * overwritten in place even when this tick's capture deduped, and its
+ * tick and tick_ns are kept. An unmapped region is left as it was. No-op
+ * unless openpete_interp_ra_commit_active() or while the head is invalid. */
 void openpete_interp_recapture_committed(void);
 
-/* 1 iff the committed-region recapture is live (capture enabled + at least
- * one ra_commit region + not killed by OPENPETE_RA_CAM_COMMIT=0). Game-side
- * brackets use this to suppress input-edge handling (the correction rebase)
- * for regions that are committed-timeline by construction. */
+/** @brief Report whether the committed-region recapture is live.
+ *
+ * The spyro-1 re-extract uses this to skip the input-edge correction rebase
+ * for regions that are committed-timeline by construction.
+ * @return 1 when initialised, enabled, at least one region carries
+ *         ra_commit and OPENPETE_RA_CAM_COMMIT is not 0 (read once);
+ *         else 0. */
 int openpete_interp_ra_commit_active(void);
 
-/* Diagnostics. */
+/** @brief Return the number of candidates openpete_interp_capture has built.
+ *
+ * Counts every capture that read the regions, committed or deduped.
+ * @return Candidate count since start. */
 uint64_t openpete_interp_total_captures(void);
+/** @brief Return the number of candidates openpete_interp_capture skipped as duplicates.
+ *
+ * @return Skipped-candidate count since start. */
 uint64_t openpete_interp_total_dedupe_skips(void);
 
 #ifdef __cplusplus

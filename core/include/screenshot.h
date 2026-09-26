@@ -9,20 +9,40 @@
 extern "C" {
 #endif
 
-/* Save the current renderer's framebuffer to `path`. The format is selected
- * by `path`'s extension: `.png` writes PNG via stb_image_write, anything
- * else writes BMP via SDL_SaveBMP. Returns 0 on success, nonzero on error. */
+/** @brief Save the SDL renderer's current target to an image file.
+ *
+ * Reads the pixels with SDL_RenderReadPixels and converts them to RGBA32
+ * when the renderer's format differs; the rows are already top-down. A path
+ * ending in `.png` (any case) is written with stb_image_write, any other
+ * path as BMP with SDL_SaveBMP. Used by run.c's SDL-renderer screenshot
+ * path.
+ * @param renderer Renderer to read.
+ * @param path Output path.
+ * @return 0 on success; -1 on a NULL argument or a read, convert or write
+ *         failure. */
 int openpete_screenshot_save_png(SDL_Renderer* renderer, const char* path);
 
-/* Substitute `{n}` (sim frame) and `{p}` (present index) in `tmpl` with the
- * given decimals. If a placeholder doesn't appear, that field is omitted.
- * Output is always NUL-terminated. Pass present=0 when capturing a single
- * present per frame (the historical screenshot-on-frame behaviour).  */
+/** @brief Expand the `{n}` and `{p}` placeholders of a screenshot path template.
+ *
+ * Each `{n}` becomes @p frame and each `{p}` becomes @p present in decimal;
+ * every other character is copied. Output longer than @p out_sz is
+ * truncated and always NUL-terminated. A NULL template yields an empty
+ * string. A `{` as the template's last character reads one byte past the
+ * terminator.
+ * @param tmpl Template, such as the --screenshot-output value.
+ * @param frame VBL number substituted for `{n}`.
+ * @param present Present index substituted for `{p}`; callers capturing one
+ *        present per VBL pass 0.
+ * @param out Output buffer; nothing is written when NULL.
+ * @param out_sz Size of @p out; nothing is written when 0. */
 void openpete_screenshot_format_path(const char* tmpl, int frame,
                                      int present,
                                      char* out, size_t out_sz);
 
-/* True if `path`'s extension (case-insensitive) is `.png`. */
+/** @brief Report whether a path ends in `.png`, ignoring case.
+ *
+ * @param path Path to test; NULL returns 0.
+ * @return 1 for a `.png` suffix, else 0. */
 int  openpete_screenshot_path_is_png(const char* path);
 
 /** @brief Write a top-down RGBA8 buffer to a PNG file with stb_image_write.
@@ -38,9 +58,17 @@ int  openpete_screenshot_path_is_png(const char* path);
  *         or a write failure. */
 int  openpete_write_png_rgba(const char* path, const void* pixels, int w, int h);
 
-/* Name the next player-facing screenshot: "<screenshots dir>/openpete-<local
- * timestamp>.png", with a numeric suffix when that name is taken. Creates the
- * directory. Returns 0 on success, -1 on failure (nothing written to `out`). */
+/** @brief Name the next player-facing screenshot and create its directory.
+ *
+ * The name is `<dir>/openpete-<YYYYmmdd-HHMMSS>.png` in local time, then
+ * `-2` to `-999` suffixes when the name exists. The directory is the
+ * per-user or portable `screenshots` data directory
+ * (openpete_paths_data_dir), else the relative path `screenshots`. Used by
+ * run.c's screenshot key.
+ * @param out Receives the path; emptied on failure.
+ * @param cap Size of @p out.
+ * @return 0 on success; -1 when @p out is NULL or @p cap is 0, the
+ *         directory cannot be created, or every suffix is taken. */
 int  openpete_screenshot_user_path(char* out, size_t cap);
 
 #ifdef __cplusplus

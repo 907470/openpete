@@ -49,55 +49,88 @@
 extern "C" {
 #endif
 
-/* Open/close the view around one intermediate present. begin() drops every
- * span staged by the previous present and installs the view-aware read
- * callbacks; end() restores the originals. Calls do not nest, and every
- * begin() must be paired — leaving the view open would let guest code read
- * staged bytes on the next tick. */
+/** @brief Open the view around one re-extract pass.
+ *
+ * games/common/renderer/reextract_view.c brackets each game re-extract with
+ * begin and openpete_subtick_view_end. Drops every span staged by the
+ * previous pass (a generation bump invalidates the block index), zeroes the
+ * per-present counters, counts the open, arms the RAM guard when
+ * OPENPETE_SUBTICK_RAM_GUARD is set, and swaps the CPU's read, write, swl,
+ * swr, lwl and lwr callbacks for view-aware ones. Calls do not nest, and
+ * every begin must be paired: a view left open would let guest code read
+ * staged bytes on the next tick.
+ * @param cpu CPU whose callbacks are swapped; NULL opens the view without
+ *        swapping them. */
 void openpete_subtick_view_begin(CPUState* cpu);
+/** @brief Close the view and restore the CPU callbacks begin displaced.
+ *
+ * Disarms the RAM guard. Staged spans stay in the arena until the next
+ * begin but are no longer served.
+ * @param cpu CPU to restore; NULL, or no preceding swap, restores nothing. */
 void openpete_subtick_view_end(CPUState* cpu);
 
-/* 1 while a view is open. Feeders that must behave differently on canonical
- * vs intermediate presents can ask, but most should not need to: resolving
- * through openpete_subtick_host_ptr() is the whole contract. */
+/** @brief Report whether a view is open.
+ *
+ * Feeders that behave differently on canonical and intermediate presents
+ * can ask; resolving through openpete_subtick_host_ptr() needs no check.
+ * @return 1 while open, else 0. */
 int  openpete_subtick_view_active(void);
 
-/* Stage [addr, addr+len) and return a writable host pointer to the copy,
- * pre-filled with the current bytes at `addr` so a caller may overwrite only
- * the fields it interpolates. Every subsequent resolve landing inside the
- * span returns a pointer into this copy for as long as the view is open.
+/** @brief Stage a guest range and return a writable host pointer to its copy.
  *
- * Returns NULL if the view is closed, the address is unmapped, or the staging
- * arena is exhausted; callers must fall back to leaving the value canonical
- * rather than writing guest memory. Re-staging an address already covered
- * returns the existing copy, so a region may be staged once and refined by
- * several producers.
+ * The copy is seeded from canonical guest memory, never from another span,
+ * so a caller may overwrite only the fields it interpolates. Every later
+ * resolve inside the span returns a pointer into this copy while the view
+ * is open; where spans overlap the latest staged one wins. An address
+ * already covered by a span with at least @p len bytes left returns the
+ * existing copy, so several producers may refine one region.
  *
- * `len` must cover everything a feeder will read from the returned pointer —
- * a feeder that indexes past the staged span silently reads canonical bytes
- * from the next allocation, which is the one failure mode here that is not
- * self-announcing. */
+ * @p len must cover everything a feeder reads from the returned pointer: a
+ * feeder that indexes past the span reads whatever the arena holds next,
+ * the one failure mode here that is not reported.
+ * @param addr Guest address of the first byte.
+ * @param len Bytes to stage.
+ * @return The copy, or NULL when the view is closed, @p len is 0, an
+ *         existing span covers @p addr with fewer bytes (a partial
+ *         overlap), the address is unmapped, the span or arena capacity is
+ *         exhausted, or OPENPETE_SUBTICK_VIEW=0 disables staging. The
+ *         partial-overlap, unmapped and capacity refusals are counted. On
+ *         NULL the caller keeps the value canonical. */
 void* openpete_subtick_view_stage(uint32_t addr, uint32_t len);
 
-/* The feeder-facing resolver. Passthrough when the view is closed or the
- * address is unstaged.
+/** @brief Resolve one guest address through the view.
  *
- * It resolves ONE address. A producer that writes a window wider than the
- * span covering its first address must use openpete_subtick_view_poke()
- * instead: the pointer returned here carries no length, so a memcpy past the
- * covering span's end lands in whatever the arena staged next. */
+ * Returns a pointer into the latest staged span covering @p addr (counted
+ * as a served read) while the view is open, else openpete_psx_to_host_ptr().
+ * The pointer carries no length: a producer that writes a window wider than
+ * the span covering its first address uses openpete_subtick_view_poke(),
+ * since a memcpy past the span's end lands in whatever the arena staged
+ * next.
+ * @param addr Guest address.
+ * @return Host pointer, or NULL for an unmapped unstaged address. */
 void* openpete_subtick_host_ptr(uint32_t addr);
 
-/* Publish `len` bytes of producer output at guest `addr` through the view.
- * Bytes a staged span covers land in that copy; an uncovered run is staged
- * first, and a run staging refuses is DROPPED (that range keeps canonical
- * bytes for this present). Guest memory is never written. Returns the number
- * of dropped bytes, 0 when the whole window was routed. */
+/** @brief Publish producer output at a guest address through the view, span by span.
+ *
+ * Bytes a staged span covers land in that copy; each uncovered run is
+ * staged first, and a run staging refuses is dropped, keeping canonical
+ * bytes for this present. Guest memory is never written. With the view
+ * closed the whole window is dropped. Dropped bytes add to
+ * openpete_subtick_view_poke_drops().
+ * @param addr Guest address of the first byte.
+ * @param src Bytes to publish.
+ * @param len Byte count.
+ * @return Bytes dropped; 0 when the whole window was routed. */
 uint32_t openpete_subtick_view_poke(uint32_t addr, const void* src, uint32_t len);
 
-/* Read `len` bytes at guest `addr` as the view presents them: staged where a
- * span covers, canonical elsewhere. The counterpart of poke for a producer
- * that saves a window before overwriting it. */
+/** @brief Read guest bytes as the view presents them.
+ *
+ * Staged where a span covers, canonical elsewhere, and canonical throughout
+ * while the view is closed; an unmapped run reads as zeros. The counterpart
+ * of poke for a producer that saves a window before overwriting it.
+ * @param addr Guest address of the first byte.
+ * @param dst Receives @p len bytes.
+ * @param len Byte count. */
 void openpete_subtick_view_peek(uint32_t addr, void* dst, uint32_t len);
 
 /** @brief Read the view's engagement counters for the most recent present.
@@ -117,23 +150,35 @@ void openpete_subtick_view_peek(uint32_t addr, void* dst, uint32_t len);
 void openpete_subtick_view_stats(uint32_t* out_spans, uint32_t* out_served,
                                  uint32_t* out_writes);
 
-/* Presents this view has been opened for, for the run. Zero means an A/B or
- * gate never reached the sub-tick path, which makes any neutral result from it
- * vacuous rather than passing. */
+/** @brief Return the number of times the view has been opened this run.
+ *
+ * Zero means an A/B or gate never reached the re-extract path, which makes
+ * a neutral result from it vacuous rather than passing.
+ * @return Lifetime open count. */
 uint32_t openpete_subtick_view_opens(void);
 
-/* Writes absorbed by a staged span (so they never reached guest memory) and
- * bytes a poke could not route. The first is the engagement counter for the
- * write redirect: a zero means no producer wrote into staging this run, which
- * makes "no producer writes guest RAM" a statement about a path that may not
- * have executed. */
+/** @brief Return the run's count of writes absorbed by staged spans.
+ *
+ * Counts CPU stores a staged span absorbed and each chunk a poke copied
+ * into an existing span; none of them reached guest memory. It is the
+ * engagement counter for the write redirect: zero means no producer wrote
+ * into staging this run, and a claim that no producer writes guest RAM
+ * then describes a path that may not have executed.
+ * @return Lifetime absorbed-write count. */
 uint32_t openpete_subtick_view_staged_writes(void);
+/** @brief Return the run's count of bytes a poke could not route.
+ *
+ * @return Lifetime dropped-byte count. */
 uint32_t openpete_subtick_view_poke_drops(void);
 
-/* Log every distinct guest address written while a view was open, for the run.
- * This is the census that says which producers still publish through gameplay
- * memory -- note it sees only CPU-path writes, so a producer that writes a host
- * pointer directly is invisible to it and must be found another way. */
+/** @brief Log the run's staging refusals, poke drops, unaligned staged reads and written guest addresses.
+ *
+ * Called by openpete_native_render_shutdown. Each nonzero counter logs a
+ * warning, then every distinct guest address written by a CPU store while
+ * a view was open is listed with its hit count (256 addresses at most,
+ * overflow noted). The address list covers CPU-path writes only; a producer
+ * that writes through a host pointer is found by the RAM guard
+ * (OPENPETE_SUBTICK_RAM_GUARD). */
 void openpete_subtick_view_report_writes(void);
 
 #ifdef __cplusplus

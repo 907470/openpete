@@ -1,7 +1,6 @@
 /* core/include/openpete_interp_objs.h — per-object prev-state snapshot table.
  *
- * Step 1 of the native-renderer high-FPS plan
- * (notes/plans/openpete-native-renderer.md §"Movement"). The singleton
+ * The singleton
  * interp ring (openpete_interp.h) snapshots fixed DIRECT regions (g_Camera,
  * g_Spyro). This table is its INDIRECT counterpart: a per-object,
  * double-buffered snapshot keyed by a stable object identity (for Spyro 1,
@@ -12,7 +11,7 @@
  *
  *   begin_tick()                  // mark every tracked object unseen
  *   for each live object:
- *       capture(key, blob, len)   // roll its curr->prev, write curr, seen=1
+ *       capture(key, blob, len)   // on a changed blob roll curr->prev, write curr; seen=1
  *   end_tick()                    // evict objects not seen (despawned)
  *
  * Then, during an intermediate (sub-tick) present, a feeder pairs an object
@@ -28,7 +27,7 @@
  *
  * Determinism: this TU never writes PSX RAM. The blob bytes are copied out
  * of host-mapped PSX RAM; nothing is written back. Capture is gated by the
- * same enable as the interp ring, so it is inert unless --render-fps > sim.
+ * same enable as the interp ring (openpete_interp_set_enabled).
  *
  * Game-agnostic: core owns the store + the pairing/eviction logic; the game
  * supplies the per-tick walk (which objects, which bytes) via a registered
@@ -58,7 +57,7 @@ extern "C" {
 
 typedef struct {
     uint32_t key;        /* object identity (0 = empty slot) */
-    uint8_t  have_prev;  /* 1 iff prev[] holds the previous tick's blob */
+    uint8_t  have_prev;  /* 1 iff prev[] holds the previous distinct state's blob */
     uint8_t  seen;       /* 1 iff captured this tick (despawn eviction) */
     uint8_t  have_prev2; /* 1 iff prev2[] holds the DISTINCT tick before prev
                           * (two back from curr) — enables cubic/pred1 interp
@@ -97,51 +96,87 @@ typedef struct {
  * itself — core does not auto-bracket, so a game with several object pools
  * can capture them all inside one begin/end pair. NULL disables it. */
 typedef void (*openpete_interp_obj_capture_fn)(void);
-/* `blob_bytes` is one object record of this game (its array stride) and
- * `slots` the table capacity, rounded up to a power of two. The table is
- * allocated here, so the sizes are the game's rather than the build's; 0 for
- * either keeps the default above. Registering again with different sizes
- * reallocates and drops every tracked object. */
+/** @brief Register the game's per-tick object capture callback and size the table.
+ *
+ * Called from games/common/renderer/interp_regions_gen.c at startup. The
+ * table is allocated here, so the sizes are the game's rather than the
+ * build's. Registering again with the sizes in force keeps the table;
+ * different sizes free it, reallocate it and drop every tracked object.
+ * @param fn Capture callback, or NULL to disable object capture.
+ * @param blob_bytes One object record of this game (its array stride); 0
+ *        keeps OPENPETE_INTERP_OBJ_BLOB_BYTES.
+ * @param slots Table capacity, rounded up to a power of two; 0 keeps
+ *        OPENPETE_INTERP_OBJ_SLOTS. */
 void openpete_interp_register_obj_capture(openpete_interp_obj_capture_fn fn,
                                           uint32_t blob_bytes, uint32_t slots);
-/* The sizes in force, for a capture walk that bounds itself by them. */
+/** @brief Return the per-object blob size in force.
+ *
+ * A capture walk bounds its copy length by it.
+ * @return Blob size in bytes. */
 uint32_t openpete_interp_objs_blob_bytes(void);
+/** @brief Return the table capacity in force.
+ *
+ * @return Slot count, a power of two. */
 uint32_t openpete_interp_objs_slots(void);
 
-/* Invoked by core (run.c) once per sim tick. No-op when capture is disabled
- * or no callback is registered. */
+/** @brief Run the registered object capture callback.
+ *
+ * Called by run.c once per sim tick after the direct-region capture, except
+ * on a runahead tick that skips capture. No-op when openpete_interp_enabled()
+ * is 0 or no callback is registered. */
 void openpete_interp_objs_run_capture(void);
 
 /* --- the store, driven by the game's capture callback --- */
 
-/* Begin a capture tick: marks every tracked object unseen (for despawn
- * detection in end_tick). */
+/** @brief Begin a capture tick by marking every tracked object unseen.
+ *
+ * Allocates the table on first use. Clears the spawn count; end_tick
+ * evicts the objects still unseen. */
 void openpete_interp_objs_begin_tick(void);
 
-/* Record object `key`'s current blob. If the key was captured last tick its
- * curr[] rolls to prev[] (have_prev=1); a brand-new key gets have_prev=0
- * (spawn). `len` is clamped to BLOB_BYTES. Marks the object seen. */
+/** @brief Record object @p key's current blob.
+ *
+ * A tracked key whose blob is byte-identical to its curr[] only refreshes
+ * curr_seen_ns: the logic did not advance it, and prev stays pinned to the
+ * last distinct state, the same dedupe the direct ring applies. A changed
+ * blob rolls prev into prev2 (when have_prev), curr into prev, and stamps
+ * curr_ns with openpete_interp_tick_stamp(). A new key occupies an empty
+ * slot with have_prev = 0 (spawn). A full table drops the capture. Marks
+ * the object seen.
+ * @param key Object identity; 0 is ignored.
+ * @param data Blob source; NULL is ignored.
+ * @param len Bytes to record, clamped to the registered blob size. */
 void openpete_interp_objs_capture(uint32_t key, const void* data, uint32_t len);
 
-/* End a capture tick: evict every object not seen this tick (despawned), so
- * a later slot reuse pairs as a fresh spawn rather than across the gap. */
+/** @brief End a capture tick by evicting every object not seen since begin_tick.
+ *
+ * The survivors are rehashed into a cleared table so linear-probe chains
+ * stay intact, and a later reuse of an evicted key pairs as a fresh spawn
+ * rather than across the gap. Finalises the tracked, paired and despawned
+ * counts. */
 void openpete_interp_objs_end_tick(void);
 
-/* Drop every tracked object (guest-state discontinuity: savestate load,
- * rewind restore). Every entry describes the pre-jump timeline; after this,
- * the next capture tick re-registers everything as a spawn (have_prev=0) so
- * feeders snap instead of lerping across the discontinuity. Fired via the
- * openpete_discontinuity broadcast — see openpete_discontinuity.h. */
+/** @brief Drop every tracked object and zero the stats.
+ *
+ * Called on a guest-state discontinuity (the handler openpete_interp_init
+ * registers: savestate load, rewind restore) and by run.c beside
+ * openpete_interp_reset. The next capture tick records every object as a
+ * spawn (have_prev = 0), so feeders snap instead of lerping across the
+ * jump. */
 void openpete_interp_objs_reset(void);
 
-/* Look up an object by identity. Returns NULL if not tracked. The returned
- * pointer is valid until the next end_tick(). */
+/** @brief Look up a tracked object by identity.
+ *
+ * @param key Object identity; 0 returns NULL.
+ * @return The entry, valid until the next end_tick(), or NULL when not
+ *         tracked. */
 const openpete_interp_obj_t* openpete_interp_objs_find(uint32_t key);
 
-/* The present-clock instant at which every per-object consumer has reached its
- * curr state — the clock the identity capture legs phase onto.
+/** @brief Return the present-clock instant at which every per-object consumer has reached its curr state.
  *
- * A per-object consumer's sub-tick phase is
+ * The identity legs (the alpha-1 intermediate screenshot, the identity
+ * audit) set the present target to it. A per-object consumer's sub-tick
+ * phase is
  * (present_now - o->curr_ns) / (o->curr_ns - o->prev_ns), clamped at 1, and the
  * store pins prev to the last distinct state. An object whose state advances
  * slower than the tick therefore carries a denominator of two or three tick
@@ -151,10 +186,17 @@ const openpete_interp_obj_t* openpete_interp_objs_find(uint32_t key);
  * objects, floored at one nominal period past the ring's curr stamp, so the
  * slowest live gap saturates and every faster consumer clamps at 1.
  * Reads no wall clock: the value is built from the stamps the store already
- * holds. */
+ * holds.
+ * @return The identity present instant. */
 op_time_t openpete_interp_identity_present_ns(void);
 
-/* Diagnostics (counts from the most recently completed capture tick). */
+/** @brief Return the counts of the most recently completed capture tick.
+ *
+ * Each out pointer may be NULL.
+ * @param tracked Receives the objects kept by the last end_tick.
+ * @param paired Receives the kept objects with have_prev set.
+ * @param spawned Receives the new keys since the last begin_tick.
+ * @param despawned Receives the objects the last end_tick evicted. */
 void openpete_interp_objs_stats(int* tracked, int* paired,
                                 int* spawned, int* despawned);
 
@@ -171,13 +213,15 @@ void openpete_interp_objs_stats(int* tracked, int* paired,
  * freezes the other half). */
 extern op_time_t g_openpete_tick_period_ns;
 
-/* The instant the most recent sim tick is stamped at — the PLL-smoothed VBL
- * grid the objs ring rolls on (gridded under deterministic capture). Any
- * per-tick channel that interpolates against the present clock stamps its
- * captures with THIS, never op_now(): the wall-clock capture time drifts
- * from the tick grid by scheduling jitter, and under eager production the
- * scene is extracted long before the instant it displays. Falls back to
- * op_now() when the run loop has not stamped a tick yet. */
+/** @brief Return the stamp of the most recent sim tick.
+ *
+ * run.c sets it beside openpete_interp_capture: the PLL-smoothed VBL grid
+ * stamp, or the direct ring's curr_tick_ns under deterministic capture.
+ * Any per-tick channel that interpolates against the present clock stamps
+ * its captures with this, never op_now(): the wall-clock capture time
+ * drifts from the tick grid by scheduling jitter, and under eager
+ * production the scene is extracted long before the instant it displays.
+ * @return The tick stamp, or op_now() while the run loop has not set one. */
 op_time_t openpete_interp_tick_stamp(void);
 
 #ifdef __cplusplus

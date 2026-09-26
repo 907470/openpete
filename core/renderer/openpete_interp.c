@@ -232,9 +232,8 @@ void openpete_interp_capture(uint32_t tick, op_time_t tick_ns) {
      * as flicker and judder). By skipping the advance when the candidate is
      * byte-identical to the current head, the ring always holds the two most-
      * recent DISTINCT states, and curr->tick_ns stays pinned to when that state
-     * FIRST appeared — exactly the [prev,curr] bracket alpha spans. (A truly
-     * static screen keeps the last two motion frames; the query's alpha clamps
-     * to 1 → shows curr, i.e. frozen, which is correct.) */
+     * FIRST appeared — exactly the [prev,curr] bracket alpha spans. A state
+     * held past the cadence is committed as a duplicate (below). */
     const int identical = (curr->valid && total > 0 &&
                            memcmp(s_cap_scratch, curr->data, total) == 0);
     int dup_roll = 0;
@@ -372,12 +371,10 @@ int openpete_interp_query(op_time_t now_ns,
      * the lerp across it is the identity. The frozen-pair case the query used
      * to reject here — a pair that carried motion which has since ended — is
      * held by openpete_interp_curr_is_stale(), which forces alpha 1. */
-    /* Compute alpha against the LATEST tick's timestamp. Render shows
-     * state at `prev->tick_ns + alpha * sim_period`, so alpha in
-     * [0, 1] maps to [prev, curr]. We measure relative to curr->tick_ns
-     * because that's the most recent reference point; the host loop is
-     * always "between curr and the next, yet-uncaptured tick" — we
-     * accept a 1-tick latency by lerping into the past. */
+    /* Alpha is measured from prev->tick_ns. Render shows state at
+     * `prev->tick_ns + alpha * sim_period`, so alpha in [0, 1] maps to
+     * [prev, curr]; the host loop runs between curr and the next,
+     * yet-uncaptured tick, so the present lerps one tick in the past. */
     op_time_t delta = now_ns - prev->tick_ns;
     if (delta < 0) delta = 0;
     if (sim_period_ns <= 0) return 0;

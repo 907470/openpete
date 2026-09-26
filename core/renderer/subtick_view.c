@@ -473,14 +473,7 @@ void* openpete_subtick_view_stage(uint32_t addr, uint32_t len)
     return s_arena + sp->off;
 }
 
-/* Route `len` bytes of producer output at `addr` into the view. A range a
- * span already covers lands in that copy; an uncovered run is staged first
- * and, when staging refuses, dropped. Guest memory is never written.
- *
- * Producers that publish a window wider than one staged span cannot use a
- * single host pointer: openpete_subtick_host_ptr() resolves the window's
- * FIRST address, and a memcpy from there runs off the end of that span into
- * whatever the arena holds next. This walks the window span by span instead. */
+/* Walks the window span by span; see the header. */
 uint32_t openpete_subtick_view_poke(uint32_t addr, const void* src, uint32_t len)
 {
     const uint8_t* p = (const uint8_t*)src;
@@ -518,9 +511,7 @@ uint32_t openpete_subtick_view_poke(uint32_t addr, const void* src, uint32_t len
     return dropped;
 }
 
-/* Read `len` bytes at `addr` as the view presents them: staged where a span
- * covers, canonical elsewhere. The counterpart of poke, for a producer that
- * saves a window before overwriting it. */
+/* Staged where a span covers, canonical elsewhere; see the header. */
 void openpete_subtick_view_peek(uint32_t addr, void* dst, uint32_t len)
 {
     uint8_t* p = (uint8_t*)dst;

@@ -63,7 +63,9 @@ static void bind_blobs(openpete_interp_obj_t* tab, uint8_t* blob) {
     }
 }
 
-/* Clear every entry without dropping the blob bindings. */
+/** @brief Zero every entry of @p tab, keeping each entry's blob pointers.
+ *
+ * @param tab Table of SLOTS entries. */
 static void table_clear(openpete_interp_obj_t* tab) {
     for (uint32_t i = 0; i < SLOTS; ++i) {
         uint8_t *p = tab[i].prev, *c = tab[i].curr, *p2 = tab[i].prev2;
@@ -72,8 +74,13 @@ static void table_clear(openpete_interp_obj_t* tab) {
     }
 }
 
-/* Copy one entry into another slot, blob bytes included: the destination keeps
- * its own storage, so the two entries never alias. */
+/** @brief Copy one entry into another slot, blob bytes included.
+ *
+ * The destination keeps its own blob pointers and receives the source's
+ * bytes, so the two entries never alias. Copies the full registered blob
+ * size of each of prev, curr and prev2.
+ * @param dst Destination entry.
+ * @param src Source entry. */
 static void entry_move(openpete_interp_obj_t* dst, const openpete_interp_obj_t* src) {
     uint8_t *p = dst->prev, *c = dst->curr, *p2 = dst->prev2;
     *dst = *src;
@@ -122,14 +129,22 @@ void openpete_interp_register_obj_capture(openpete_interp_obj_capture_fn fn,
     objs_alloc();
 }
 
-/* Multiplicative (Knuth) hash → slot index. key is never 0 for a live
- * object (0 marks an empty slot). */
+/** @brief Map a key to its home slot with a multiplicative (Knuth) hash.
+ *
+ * Takes bits 20 and up of key * 2654435761, masked to SLOTS - 1; with more
+ * than 4096 slots the home slots are the first 4096. A live key is never 0,
+ * which marks an empty slot.
+ * @param key Object identity.
+ * @return Home slot index. */
 static inline uint32_t slot_of(uint32_t key) {
     return (uint32_t)((key * 2654435761u) >> 20) & (SLOTS - 1u);
 }
 
-/* Find the slot holding `key`, or the first empty slot on its probe chain.
- * Returns the index; *found = 1 if the slot already holds `key`. */
+/** @brief Find the slot holding @p key, or the first empty slot on its linear-probe chain.
+ *
+ * @param key Object identity.
+ * @param found Receives 1 when the returned slot holds @p key, else 0.
+ * @return The slot index, or SLOTS when the table is unallocated or full. */
 static uint32_t probe(uint32_t key, int* found) {
     uint32_t i = slot_of(key);
     if (!s_tab) { *found = 0; return SLOTS; }
