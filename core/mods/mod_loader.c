@@ -557,11 +557,7 @@ void openpete_mods_set_symbol_table(const openpete_sdk_symbol_t* table,
     s_symbol_count = count;
 }
 
-/* Nearest preceding function symbol, for naming a guest pc in a crash or
- * watchdog dump. The table is sorted by name, so the scan is linear; a
- * non-legacy row wins a tie because the legacy rows are raw-name aliases of
- * the same address. The bound is one generous function span: without sizes,
- * a farther match names a function the address is not in. */
+/* Bound on addr minus the symbol openpete_mods_symbol_for_addr names. */
 #define SYM_ADDR_SPAN_MAX 0x10000u
 
 const char* openpete_mods_symbol_for_addr(uint32_t addr, uint32_t* off_out) {
@@ -581,6 +577,11 @@ const char* openpete_mods_symbol_for_addr(uint32_t addr, uint32_t* off_out) {
 
 /* ---- mod-facing API impl ------------------------------------------- */
 
+/** @brief Find an SDK symbol by exact name with a binary search.
+ *
+ * The generator sorts the table by strcmp, so the search needs no index.
+ * @param name Symbol name; NULL returns NULL.
+ * @return The table row, or NULL when absent or no table is registered. */
 static const openpete_sdk_symbol_t* sym_find(const char* name) {
     if (!name || !s_symbols) return NULL;
     size_t lo = 0, hi = s_symbol_count;
@@ -633,8 +634,14 @@ static const char* const k_psx_render_fns[] = {
     "TitlescreenDraw", "TitlescreenDrawSprite",        /* titlescreen render    */
 };
 
-/* If addr is one of the native-bypassed render functions (resolved against the
- * SDK symbol table), return its name; else NULL. */
+/** @brief Name the native-bypassed PSX render function at a guest address.
+ *
+ * Resolves each k_psx_render_fns name against the SDK symbol table and
+ * compares addresses. warn_render_bypassed uses it to warn a mod whose
+ * override targets a function the native renderer does not rasterize.
+ * @param addr Guest address; 0 returns NULL.
+ * @return The function name, or NULL when addr is none of them or no
+ *         symbol table is registered. */
 static const char* psx_render_fn_name(uint32_t addr) {
     if (!addr || !s_symbols) return NULL;
     for (size_t i = 0; i < sizeof k_psx_render_fns / sizeof k_psx_render_fns[0]; i++) {
@@ -1557,12 +1564,7 @@ const char* openpete_mods_build_key(const char* id) {
     return NULL;
 }
 
-/* 1 iff every ENABLED code mod declares a runahead posture (manifest
- * runahead = "pure" | "host-fx"). Assets-only mods run zero code and are
- * trivially capable. An undeclared code mod makes runahead unarmable;
- * *offender names the first one. "Code mod" = a loaded object, so a
- * binary-only mod (prebuilt object, no src/) is held to the same
- * declaration as a source one. */
+/* A code mod is one with a loaded object (mod->dl), source or prebuilt. */
 int openpete_mods_runahead_capable(const char** offender) {
     for (int i = 0; i < mod_count(); i++) {
         if (!mod_at(i)->enabled || !mod_at(i)->dl) continue;
@@ -1575,10 +1577,7 @@ int openpete_mods_runahead_capable(const char** offender) {
     return 1;
 }
 
-/* 1 iff every ENABLED code mod declares a host-state posture (manifest
- * state = "none" | "rebuildable") — the gate for timeline jumps
- * (rewind): an undeclared mod's host state may silently desync when the
- * guest world moves under it. Assets-only mods hold no host state. */
+/* Same scan as openpete_mods_runahead_capable over state_decl. */
 int openpete_mods_state_safe(const char** offender) {
     for (int i = 0; i < mod_count(); i++) {
         if (!mod_at(i)->enabled || !mod_at(i)->dl) continue;
@@ -1605,10 +1604,7 @@ static int mod_is_mutative(const struct openpete_mod* m) {
     return (m->dl != NULL) || (mod_level_count(m) > 0);
 }
 
-/* Save modset tag (per-modset save safety): the canonical identity of
- * the running gameplay-relevant modset — "id@ver+id@ver", ids sorted,
- * non-mutative mods excluded. Empty string = vanilla. Consumed by the
- * host memcard module to tag save cards and warn on mismatch. */
+/* The cached save modset tag; mod_enter_deferred clears s_tag_built. */
 static char s_tag[1024];
 static int  s_tag_built = 0;
 
@@ -2072,9 +2068,23 @@ static int level_count_key(toml_table_t* lt, const char* key, int max,
     return (int)d.u.i;
 }
 
-/* [mod] header: identity, the api floor, and the declarations that gate
- * savestate, rewind and runahead. Returns 0, or -1 when the table is
- * missing or the mod needs a newer engine. */
+/** @brief Parse the [mod] table: identity, the api floor, and the declarations that gate savestate, rewind and runahead.
+ *
+ * id and version are required; name defaults to the id; dir and log_tag
+ * are filled. api is the minimum mod API the mod needs: source mods
+ * recompile against the current SDK and the api struct is append-only, so
+ * only an api above OPENPETE_MOD_API_VERSION refuses. sim_mutative stays
+ * -1 when absent so mod_is_mutative decides; the obsolete sim_neutral key,
+ * of inverted sense, is honoured with a warning when sim_mutative is
+ * absent. state ("none" or "rebuildable") and runahead ("pure" or
+ * "host-fx") set state_decl and ra_decl; an unknown value logs an error
+ * and leaves the declaration unset.
+ * @param t The [mod] table.
+ * @param mod The mod being parsed.
+ * @param mod_dir The mod directory.
+ * @param path Manifest path for log lines.
+ * @return 0, or -1 when id or version is missing or the api is newer than
+ *         the engine's. */
 static int parse_mod_header(toml_table_t* t, struct openpete_mod* mod,
                             const char* mod_dir, const char* path) {
     toml_datum_t id = toml_string_in(t, "id");
@@ -2157,9 +2167,13 @@ static int parse_mod_header(toml_table_t* t, struct openpete_mod* mod,
     return 0;
 }
 
-/* Hard dependencies: deps = ["other-mod", ...]. Topo-sorted before
- * loading (a dep's entry runs before its dependents'); a missing or
- * cyclic dep disables the mod with an actionable error. */
+/** @brief Parse the [mod] deps array of mod ids into the mod's dependency rows.
+ *
+ * Non-string elements are ignored. openpete_mods_init topo-sorts on these
+ * rows so a dependency's entry runs before its dependents'; a missing or
+ * cyclic dependency disables the mod with an error.
+ * @param t The [mod] table.
+ * @param mod The mod being parsed. */
 static void parse_deps(toml_table_t* t, struct openpete_mod* mod) {
     toml_array_t* deps = toml_array_in(t, "deps");
     if (!deps) return;
@@ -2177,10 +2191,16 @@ static void parse_deps(toml_table_t* t, struct openpete_mod* mod) {
     }
 }
 
-/* Declared input bindings ([[binding]] name/key/purpose): the registry
- * that makes host-key use visible — conflicts across the enabled set are
- * detected after loading (advisory warn; reads are non-exclusive), and a
- * future mod menu rebinds by editing the registry, not the mod. */
+/** @brief Parse the [[binding]] tables (name, key, optional purpose) into the mod's binding rows.
+ *
+ * A table missing name or key is skipped with an error. The rows make
+ * host-key use visible: mod_register_key_defaults registers them with the
+ * keymap, openpete_mods_init warns when two loaded mods resolve to the same
+ * effective key (reads are non-exclusive), and a [keys.mod.<id>] config
+ * row rebinds one without editing the mod.
+ * @param root The manifest root table.
+ * @param mod The mod being parsed.
+ * @param path Manifest path for log lines. */
 static void parse_bindings(toml_table_t* root, struct openpete_mod* mod,
                            const char* path) {
     toml_array_t* binds = toml_array_in(root, "binding");
@@ -2213,7 +2233,12 @@ static void parse_bindings(toml_table_t* root, struct openpete_mod* mod,
     }
 }
 
-/* The default value a [[config]] row declares, in the row's own type. */
+/** @brief Read the default key of a [[config]] table in the row's own type.
+ *
+ * A float row also accepts an integer default. A missing or mistyped
+ * default leaves the row's default unchanged.
+ * @param c The [[config]] table.
+ * @param r The row, whose type is already set. */
 static void parse_config_default(toml_table_t* c, mod_cfg_row_t* r) {
     toml_datum_t d;
     switch (r->type) {
@@ -2238,8 +2263,16 @@ static void parse_config_default(toml_table_t* c, mod_cfg_row_t* r) {
     }
 }
 
-/* One [[config]] row into `r`. Returns 0, or -1 when the row is missing
- * a key or names a type the panel cannot render. */
+/** @brief Parse one [[config]] table into a schema row.
+ *
+ * key and type are required; type is bool, int, float or string. label,
+ * group, help, numeric min and max, the default, and for a string row an
+ * items list are optional.
+ * @param c The [[config]] table.
+ * @param r The row to fill.
+ * @param path Manifest path for log lines.
+ * @return 0, or -1 after an error line when key or type is missing or the
+ *         type is unknown. */
 static int parse_config_row(toml_table_t* c, mod_cfg_row_t* r,
                             const char* path) {
     toml_datum_t ck = toml_string_in(c, "key");
@@ -2300,10 +2333,14 @@ static int parse_config_row(toml_table_t* c, mod_cfg_row_t* r,
     return 0;
 }
 
-/* [[config]] schema rows: key + type (+ default/label/group/help,
- * numeric min/max, string items). The engine renders these in the Mods
- * panel; a row with a bad or missing type/key is skipped with an error
- * rather than guessing. */
+/** @brief Parse the [[config]] schema rows that the Mods panel renders.
+ *
+ * Each table goes through parse_config_row; a row it refuses is dropped
+ * after its error line rather than guessed at. Logs the row count when
+ * nonzero.
+ * @param root The manifest root table.
+ * @param mod The mod being parsed.
+ * @param path Manifest path for log lines. */
 static void parse_config(toml_table_t* root, struct openpete_mod* mod,
                          const char* path) {
     toml_array_t* cfgs = toml_array_in(root, "config");
@@ -2329,7 +2366,15 @@ static void parse_config(toml_table_t* root, struct openpete_mod* mod,
                    mod_cfg_count(mod));
 }
 
-/* [[level]] — declarative custom levels. */
+/** @brief Parse the [[level]] tables, declarative custom levels, into the mod's level rows.
+ *
+ * name, files and donor are required; a table missing one is skipped with
+ * an error. replace, music and title are optional. dragons, gems and eggs
+ * are bounded by the guest tables' element types (u_char, short, u_char)
+ * and read -1 when absent or out of range (level_count_key).
+ * @param root The manifest root table.
+ * @param mod The mod being parsed.
+ * @param path Manifest path for log lines. */
 static void parse_levels(toml_table_t* root, struct openpete_mod* mod,
                          const char* path) {
     toml_array_t* la = toml_array_in(root, "level");
@@ -2380,8 +2425,16 @@ static void parse_levels(toml_table_t* root, struct openpete_mod* mod,
     }
 }
 
-/* The float list a [[material]] row hands its shader as a uniform block.
- * Returns 0, or -1 when an element is not a number. */
+/** @brief Parse a [[material]] row's params list, the floats handed to its shader as a uniform block.
+ *
+ * Integer elements are accepted and converted. An absent list returns 0
+ * and leaves the row's params unchanged.
+ * @param mt The [[material]] table.
+ * @param r The row to fill.
+ * @param path Manifest path for log lines.
+ * @return 0, or -1 after an error line when the list holds more than
+ *         MOD_MATERIAL_PARAMS_MAX elements or an element is not a
+ *         number. */
 static int parse_material_params(toml_table_t* mt, mod_material_row_t* r,
                                  const char* path) {
     toml_array_t* pa = toml_array_in(mt, "params");
@@ -2407,8 +2460,17 @@ static int parse_material_params(toml_table_t* mt, mod_material_row_t* r,
     return 0;
 }
 
-/* The narrowing selector keys of one [[material]] row. Returns 0, or -1
- * when a key names something the engine does not know. */
+/** @brief Parse the narrowing selector keys of one [[material]] row.
+ *
+ * channel (by name, through mod_channel_from_name), ident, class,
+ * texture, level and enabled set the row's fields; tier ("hp" or "lp"),
+ * textured and env_anim add OP_SEL_* flags, and an absent tier or
+ * textured narrows nothing. A key of the wrong TOML type is ignored.
+ * @param mt The [[material]] table.
+ * @param r The row to fill.
+ * @param path Manifest path for log lines.
+ * @return 0, or -1 after an error line when channel or tier names a value
+ *         the engine does not know. */
 static int parse_material_selector(toml_table_t* mt, mod_material_row_t* r,
                                    const char* path) {
     toml_datum_t d;
@@ -2447,11 +2509,16 @@ static int parse_material_selector(toml_table_t* mt, mod_material_row_t* r,
     return 0;
 }
 
-/* [[material]] — declarative reshade rows (zero-C material tier).
- * Unknown channel/tier/textured spellings are refused, never defaulted:
- * a typo'd key that silently widened the selection would repaint
- * geometry the author never asked for, and the whole selector contract
- * is "never match wider than asked". */
+/** @brief Parse the [[material]] tables, declarative reshade rows that need no C, into the mod's material rows.
+ *
+ * A row needs frag or vert. Selector fields default to -1 (match any) and
+ * enabled to 1. An unknown channel or tier spelling refuses the row
+ * instead of defaulting: a typo that widened the selection would repaint
+ * geometry the author did not select, and a selector never matches wider
+ * than written. Logs the row count when nonzero.
+ * @param root The manifest root table.
+ * @param mod The mod being parsed.
+ * @param path Manifest path for log lines. */
 static void parse_materials(toml_table_t* root, struct openpete_mod* mod,
                             const char* path) {
     toml_array_t* ma = toml_array_in(root, "material");
@@ -2591,12 +2658,16 @@ static int cmp_src(const void* a, const void* b) {
 }
 
 
-/* The compiler for mod builds. OPENPETE_MOD_CC is the explicit dev
- * override; under it, the bundled toolchain the distribution package
- * stages next to the exe (same paths as the first-boot module build in
- * recomp_build.cpp) is the zero-config default; then the module build's
- * env override; then the system compiler (POSIX only — Windows has
- * none, "" = fall back to a prebuilt DLL). */
+/** @brief Resolve the compiler for mod builds into @p cc.
+ *
+ * Order: env OPENPETE_MOD_CC; the bundled toolchain the distribution
+ * package stages next to the exe
+ * (recomp/tools/llvm-mingw/bin/x86_64-w64-mingw32-clang.exe on Windows,
+ * recomp/tools/clang/bin/clang elsewhere); env OPENPETE_CC; then, on
+ * POSIX only, env CC or cc. On Windows with none of the first three,
+ * @p cc is the empty string and callers fall back to a prebuilt object.
+ * @param cc Output buffer.
+ * @param cap Size of @p cc. */
 static void mods_resolve_cc(char* cc, size_t cap) {
     const char* env = getenv("OPENPETE_MOD_CC");
     if (env && env[0]) {
@@ -2631,11 +2702,14 @@ static void mods_resolve_cc(char* cc, size_t cap) {
 #endif
 }
 
-/* First line of `<cc> --version`, cached per process — folded into the
- * build key so a toolchain bump (or an author's stamp from a different
- * box) invalidates the cache instead of silently reusing an object
- * built by a different compiler. "" if the probe fails (degrades to
- * source+SDK keying, the prior behavior). */
+/** @brief Return the first line of the resolved mod compiler's --version output, probed once per process.
+ *
+ * sdk_prefix folds it into every build key, so a toolchain change, or a
+ * stamp written on a machine with a different compiler, invalidates the
+ * cache instead of reusing an object another compiler built. With no
+ * compiler resolved or a failed probe it is the empty string, and the key
+ * covers the API version, the SDK and the sources only.
+ * @return The identity string, owned by the function. */
 static const char* mods_cc_identity(void) {
     static int  s_probed = 0;
     static char s_identity[256];
@@ -2721,9 +2795,12 @@ static const char* const sdk_inputs[] = {
 };
 #define SDK_INPUT_COUNT (sizeof sdk_inputs / sizeof sdk_inputs[0])
 
-/* mtime and size of every hashed input, folded into one number. The
- * digest is what decides a build key; this only decides whether the
- * digest is recomputed. */
+/** @brief Fold the mtime and size of every SDK build-key input into one FNV-1a-style number.
+ *
+ * The digest decides a build key; this stamp only decides whether
+ * sdk_prefix_recheck drops the cached digest. A missing input folds as 0.
+ * @param sdk_dir The staged SDK directory.
+ * @return The stamp. */
 static uint64_t sdk_prefix_stamp(const char* sdk_dir) {
     uint64_t h = 1469598103934665603ull;
     for (size_t i = 0; i < SDK_INPUT_COUNT; i++) {
@@ -2738,10 +2815,12 @@ static uint64_t sdk_prefix_stamp(const char* sdk_dir) {
     return h;
 }
 
-/* Drop the cached prefix only when one of its inputs moved. The SDK half
- * is about 600 KB and hashing it costs a few milliseconds; the hot-reload
- * watch runs on the sim thread every 64 ticks, where stat()ing twelve
- * files instead is microseconds. */
+/** @brief Drop the cached SDK prefix digest when the SDK directory or the stamp of its inputs changed.
+ *
+ * The hot-reload poll calls it on the sim thread every 64 ticks, where
+ * stat()ing the inputs is far cheaper than rehashing their bytes. No-op
+ * when no prefix is cached.
+ * @param sdk_dir The staged SDK directory. */
 static void sdk_prefix_recheck(const char* sdk_dir) {
     if (!s_sdk_prefix_ok) return;
     if (strcmp(s_sdk_prefix_dir, sdk_dir) != 0 ||
@@ -3475,18 +3554,18 @@ static mod_ref_t* ref_at(const mod_fvec* v, int i) {
     return (mod_ref_t*)mod_fvec_at(v, (size_t)i);
 }
 
-/* Resolve the mods dir (opts → env → <exe>/mods), unpack zips, and
- * produce the ordered enabled set (enabled.txt order = priority;
- * fallback: all discovered, lexicographic). Returns the count (0 = no
- * mods directory / nothing enabled: inert). openpete_mods_prepare and
- * openpete_mods_init both run this so they see the same set; everything
- * here is idempotent (zip unpack is content-stamped). */
-/* Resolve the mods root: opts → env → the writable-data location.
- * Mods are user-authored and get compiled in place (.build/, .unpacked/),
- * so the root has to be writable: openpete_paths puts it next to the exe
- * in a portable install and under the per-user data directory otherwise,
- * which is what a read-only install medium leaves. Returns 0 with
- * mods_dir filled, -1 if no base path is resolvable. */
+/** @brief Resolve the mods root directory.
+ *
+ * Order: opts->mods_dir, env OPENPETE_MODS_DIR, then the writable data
+ * location openpete_paths_data_dir resolves for "mods". Mods are compiled
+ * and unpacked in place (.build/, .unpacked/), so the root must be
+ * writable: openpete_paths puts it next to the exe in a portable install
+ * and under the per-user data directory otherwise, which is what a
+ * read-only install medium leaves.
+ * @param opts Parsed options, or NULL.
+ * @param mods_dir Output buffer.
+ * @param mods_dir_cap Size of @p mods_dir.
+ * @return 0 with @p mods_dir filled, or -1 when no base path resolves. */
 static int mods_root(const openpete_options_t* opts, char* mods_dir,
                      size_t mods_dir_cap) {
     const char* src = opts && opts->mods_dir ? opts->mods_dir
@@ -3512,9 +3591,15 @@ static void mod_ref_resolve(const char* mods_dir, const char* id,
         snprintf(r->dir, sizeof r->dir, "%s/.unpacked/%s", mods_dir, id);
 }
 
-/* Append one declared game id to the mismatch text, comma-separated,
- * saturating at the buffer rather than overrunning it. Returns the new
- * used length. */
+/** @brief Append one declared game id to the mismatch text, comma-separated.
+ *
+ * Saturates at the buffer instead of overrunning it: once full, the
+ * length stays at cap - 1.
+ * @param want The text buffer.
+ * @param cap Size of @p want.
+ * @param used Current length of the text.
+ * @param id The id to append.
+ * @return The new length. */
 static size_t want_append(char* want, size_t cap, size_t used,
                           const char* id) {
     if (used + 1 >= cap) return used;
@@ -3581,8 +3666,14 @@ static int mod_targets_this_game(const char* mod_dir, char* want,
     return match;
 }
 
-/* Discovery-time filter: resolve the candidate's dir and drop it when
- * its manifest targets another game, saying so once per boot. */
+/** @brief Keep or drop a discovery candidate by its manifest's game key.
+ *
+ * Resolves the candidate's dir (folder or .unpacked zip) and asks
+ * mod_targets_this_game. A mod for another game is dropped with an info
+ * line naming the ids it declares; each scan logs it again.
+ * @param mods_dir The mods root.
+ * @param id The candidate id.
+ * @return 1 to keep the candidate, 0 to drop it. */
 static int scan_keep_for_game(const char* mods_dir, const char* id) {
     mod_ref_t r;
     mod_ref_resolve(mods_dir, id, &r);
@@ -3597,13 +3688,19 @@ static int scan_keep_for_game(const char* mods_dir, const char* id) {
     return 0;
 }
 
-/* Scan the mods root for candidate ids: subdirs containing mod.toml,
- * plus <id>.zip archives (unpacked to .unpacked/<id>/, content-hash
- * stamped so re-extraction only happens when the zip changes). A
- * folder and a zip with the same id: the folder wins (consumers probe
- * the folder first when resolving the dir). A mod whose manifest names
- * another game is not a candidate here at all. Appends mod_id_row_t rows
- * to `ids` and returns the count. */
+/** @brief Scan the mods root for candidate ids and append one mod_id_row_t per candidate to @p ids.
+ *
+ * A candidate is a subdirectory holding mod.toml, or an <id>.zip archive
+ * that mod_unpack_zip extracts to .unpacked/<id>/ (content-hash stamped,
+ * so it re-extracts only when the zip changes). Names starting with '.'
+ * are skipped. A folder and a zip with the same id each append a row, and
+ * mod_ref_resolve resolves the id to the folder. A mod whose manifest
+ * names another game is dropped by scan_keep_for_game. Rows are in
+ * readdir order.
+ * @param mods_dir The mods root.
+ * @param ids Row vector the ids are appended to.
+ * @return The row count of @p ids, or 0 when the directory does not
+ *         open. */
 static int mods_scan(const char* mods_dir, mod_fvec* ids) {
     DIR* d = opendir(mods_dir);
     if (!d) return 0; /* no mods directory: inert */
@@ -3643,8 +3740,12 @@ static int cmp_id_row(const void* a, const void* b) {
     return strcmp((const char*)a, (const char*)b);
 }
 
-/* Trim leading/trailing blanks in place; ids compare exactly, so an
- * invisible "crt-beans " would skip as unknown. Returns the start. */
+/** @brief Trim leading and trailing spaces and tabs from an id in place.
+ *
+ * Ids compare exactly, so an untrimmed "crt-beans " would be skipped as
+ * unknown.
+ * @param s The id text; trailing blanks are overwritten with NULs.
+ * @return The first non-blank character of @p s. */
 static char* trim_id(char* s) {
     while (*s == ' ' || *s == '\t') s++;
     char* t = s + strlen(s);
@@ -3652,7 +3753,11 @@ static char* trim_id(char* s) {
     return s;
 }
 
-/* Append one id to an order list. Returns 1 when it was appended. */
+/** @brief Append one id to an order list.
+ *
+ * @param order The order list of mod_id_row_t.
+ * @param id The id; copied, truncated to MOD_ID_MAX - 1 characters.
+ * @return 1 when appended, 0 when the push fails. */
 static int order_push(mod_fvec* order, const char* id) {
     int n = (int)mod_fvec_count(order);
     if (!mod_fvec_push(order)) return 0;
@@ -3660,7 +3765,13 @@ static int order_push(mod_fvec* order, const char* id) {
     return 1;
 }
 
-/* Order from a --mods / OPENPETE_MODS comma list. Returns the count. */
+/** @brief Build the order list from a --mods or OPENPETE_MODS comma-separated id list.
+ *
+ * Each item is trimmed; an empty item is ignored and an id of MOD_ID_MAX
+ * characters or more is skipped with a warning.
+ * @param list The comma-separated list.
+ * @param order The order list appended to.
+ * @return The number of ids appended. */
 static int order_from_mods_flag(const char* list, mod_fvec* order) {
     int n = 0;
     for (const char* p = list; *p; ) {
@@ -3681,18 +3792,19 @@ static int order_from_mods_flag(const char* list, mod_fvec* order) {
     return n;
 }
 
-/* Order from an open enabled.txt, one id per line, '#' comments.
+/** @brief Build the order list from an open enabled.txt, one id per line.
  *
- * One whole line per iteration: a comment (or any text) longer than the
- * buffer must not come back as fragments, or each tail reads as a bogus
- * id and warns at every boot.
- *
- * fgets drops the newline in two very different cases: the line outran
- * the buffer, or the file simply ended without a trailing newline. Only
- * the first is truncation — telling them apart by "did fgets fill the
- * buffer" rather than by the missing newline, because a final line with
- * no newline is the norm for editors that don't add one, and treating it
- * as truncated silently drops whatever mod the user appended last. */
+ * Blank lines and lines whose first non-blank character is '#' are
+ * skipped. Each iteration consumes one whole line: the rest of a line
+ * longer than the 511-character buffer is drained, so its tail never
+ * reads as a separate id, and an over-long non-comment line is skipped
+ * with a warning. A line counts as truncated only when fgets filled the
+ * buffer without a newline; a final line without a newline, which many
+ * editors write, is a complete line and loads. An id of MOD_ID_MAX
+ * characters or more is skipped with a warning.
+ * @param en The open enabled.txt.
+ * @param order The order list appended to.
+ * @return The number of ids appended. */
 static int order_from_enabled_txt(FILE* en, mod_fvec* order) {
     char line[512];
     int n = 0;
@@ -3720,7 +3832,13 @@ static int order_from_enabled_txt(FILE* en, mod_fvec* order) {
     return n;
 }
 
-/* Order with no list to follow: every scanned id, lexicographic. */
+/** @brief Build the order list from every scanned id in lexicographic order.
+ *
+ * Used when neither --mods, OPENPETE_MODS nor enabled.txt gives a list.
+ * @param ids The scanned ids; sorted in place.
+ * @param n_ids Number of rows in @p ids.
+ * @param order The order list appended to.
+ * @return The number of ids appended. */
 static int order_from_scan(mod_fvec* ids, int n_ids, mod_fvec* order) {
     int n = 0;
     qsort(mod_fvec_data(ids), (size_t)n_ids, sizeof(mod_id_row_t),
@@ -3732,8 +3850,27 @@ static int order_from_scan(mod_fvec* ids, int n_ids, mod_fvec* order) {
     return n;
 }
 
-/* Resolve the mods dir and append one mod_ref_t per discovered mod to
- * `out`, enabled set first in priority order. Returns the count. */
+/** @brief Resolve the mods root and append one mod_ref_t per mod to load to @p out, the enabled set first in priority order.
+ *
+ * openpete_mods_prepare, openpete_mods_init and
+ * openpete_mods_register_key_defaults all run it, so they see the same
+ * set; it is idempotent (zip unpack is content-stamped). The enabled set
+ * is opts->mods_enabled or env OPENPETE_MODS (a comma list that replaces
+ * enabled.txt; an empty list enables nothing), else enabled.txt, else
+ * every scanned id in lexicographic order; the order is the priority
+ * (later is higher). An enabled id with no scanned candidate is skipped
+ * with a warning that says whether the folder or only its mod.toml is
+ * missing. Enabled refs get boot_on = 1. When the set came from
+ * enabled.txt and the run is not headless, every other scanned mod is
+ * appended with boot_on = 0 (loaded, entry deferred to its first enable),
+ * so the Mods panel can list and enable it. Sets s_order_src for the
+ * warnings.
+ * @param opts Parsed options, or NULL.
+ * @param mods_dir Receives the mods root.
+ * @param mods_dir_cap Size of @p mods_dir.
+ * @param out Vector of mod_ref_t appended to.
+ * @return The number of refs appended; 0 when no root resolves, no mod is
+ *         scanned, or the --mods list names none. */
 static int mods_discover(const openpete_options_t* opts,
                          char* mods_dir, size_t mods_dir_cap,
                          mod_fvec* out) {
@@ -3834,11 +3971,15 @@ static void mods_sdk_dir(char* out, size_t cap) {
     snprintf(out, cap, "%ssdk", base ? base : "./");
 }
 
-/* An install packaged without --with-mod-sdk has no <exe>/sdk. The
- * compile would then fail inside the compiler with a header-not-found in
- * compile.log, which names nothing; this check names the cause once and
- * lets the callers skip the compile. The api header is the probe: it is
- * the one file every compile line includes. */
+/** @brief Test whether the staged SDK exists, probing for its openpete_mod_api.h.
+ *
+ * An install packaged without --with-mod-sdk has no <exe>/sdk, and a
+ * compile would fail inside the compiler with a header-not-found in
+ * compile.log that names nothing. Callers check this first, skip the
+ * compile, and name the cause once through mods_sdk_missing_notice. The
+ * api header is the probe because every compile line includes it.
+ * @param sdk_dir The staged SDK directory.
+ * @return 1 when the header exists as a regular file, else 0. */
 static int mods_sdk_present(const char* sdk_dir) {
     char p[MOD_PATH_MAX + 32];
     snprintf(p, sizeof p, "%s/openpete_mod_api.h", sdk_dir);

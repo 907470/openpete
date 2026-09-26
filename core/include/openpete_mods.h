@@ -65,26 +65,40 @@ typedef struct {
 void openpete_mods_set_symbol_table(const openpete_sdk_symbol_t* table,
                                     size_t count);
 
-/* Name the guest function containing `addr`: the registered symbol with the
- * largest address <= addr, provided the distance is under a function-sized
- * bound (the table carries no sizes, so a farther match would name an
- * unrelated function). Returns NULL when no table is registered or nothing
- * is near enough; on a hit, *off_out is addr minus the symbol address.
- * Read-only over a static table, so a crash handler may call it. */
+/** @brief Name the guest function that contains a guest address.
+ *
+ * Picks the registered symbol with the largest address <= addr by a
+ * linear scan (the table is sorted by name); on an address tie a
+ * non-legacy row wins, since legacy rows are raw-name aliases of the same
+ * address. The table carries no sizes, so a symbol 0x10000 bytes or more
+ * below addr (SYM_ADDR_SPAN_MAX in mod_loader.c) is rejected as an
+ * unrelated function. Read-only over a static table, so the crash handler
+ * (core/diag/crash.c) may call it.
+ * @param addr Guest address; 0 returns NULL.
+ * @param off_out Receives addr minus the symbol address on a hit; may be
+ *        NULL.
+ * @return The symbol name, or NULL when no table is registered or no
+ *         symbol is near enough. */
 const char* openpete_mods_symbol_for_addr(uint32_t addr, uint32_t* off_out);
 
-/* Discover, build, load, and initialize mods. Called once at boot after
- * options parsing (core/runtime/run.c). Resolution order for the mods
- * directory: opts->mods_dir → env OPENPETE_MODS_DIR → <exe>/mods.
- * Resolution order for the enabled SET within that directory:
- * opts->mods_enabled (--mods) → env OPENPETE_MODS → enabled.txt → all
- * discovered mods lexicographically; in every case the order IS the
- * priority (later = higher).
- * A missing/empty directory is not an error: zero mods loaded,
- * openpete_mods_active stays 0, and the sim path is byte-identical to a
- * modless build (inertness gate #1/#2). Returns the number of mods
- * loaded (>= 0), or -1 on a hard setup error (which disables mods and
- * continues; mods never brick a launch). */
+/** @brief Discover, build, load and enter mods, once at boot.
+ *
+ * core/runtime/run.c calls it after options parsing. The mods root is
+ * opts->mods_dir, else env OPENPETE_MODS_DIR, else the writable data
+ * location openpete_paths_data_dir resolves for "mods" (next to the exe in
+ * a portable install, the per-user data directory otherwise). The enabled
+ * set is opts->mods_enabled (--mods), else env OPENPETE_MODS, else
+ * enabled.txt, else every discovered mod in lexicographic order; the order
+ * is the priority (later is higher). With enabled.txt present, no --mods
+ * list and a windowed run, every other discovered mod also loads with its
+ * entry deferred to its first enable. Manifests are parsed, topo-sorted by
+ * hard deps, then built and loaded in that order; a failed load disables
+ * its dependents. A missing or empty directory loads nothing, leaves
+ * openpete_mods_active at 0 and keeps the sim path identical to a modless
+ * build. A broken mod is disabled with a log line and never fails the
+ * launch.
+ * @param opts Parsed options.
+ * @return The number of mods loaded, including those loaded disabled. */
 int openpete_mods_init(const openpete_options_t* opts);
 
 /** @brief Register every discovered mod's [[binding]] defaults with the keymap without loading any mod.
@@ -127,15 +141,19 @@ int openpete_mods_prepare(const openpete_options_t* opts,
                           openpete_mods_progress_fn progress,
                           openpete_mods_run_task_fn run_task);
 
-/* --compile-mods utility mode (build-time gate): compile EVERY mod with
- * src/ in the resolved mods dir — enabled.txt deliberately ignored, so a
- * disabled mod's breakage still surfaces — against <exe>/sdk, through
- * the same key/stamp/compile path boot uses (a warm cache stays warm; a
- * boot after a clean pass recompiles nothing). Returns the number of
- * failed compiles (0 = success), -1 on hard setup errors (no compiler /
- * no mods dir resolvable). The cmake `spyro1_mods` step runs this on
- * native presets; cross presets compile staged mods cmake-side instead
- * (games/spyro-1/CMakeLists.txt). */
+/** @brief Compile every source mod in the resolved mods root, for the --compile-mods utility mode.
+ *
+ * Scans every candidate in the directory, ignoring enabled.txt so a
+ * disabled mod's breakage still surfaces, and compiles against <exe>/sdk
+ * through the same key, stamp and compile path boot uses: a mod whose
+ * cached build matches its key is skipped, so a boot after a clean pass
+ * recompiles nothing. Assets-only and binary-only mods are skipped. The
+ * CMake target spyro1_mods runs it on native presets; cross presets
+ * compile the staged mods in CMake instead (games/spyro-1/CMakeLists.txt).
+ * @param opts Parsed options; opts->mods_dir overrides the mods root.
+ * @return The number of failed compiles (0 on success), or -1 when no
+ *         compiler resolves, no mods root resolves, or the SDK is
+ *         missing. */
 int openpete_mods_compile_all(const openpete_options_t* opts);
 
 /** @brief Run the override chain registered for a guest function at its entry.
@@ -275,6 +293,9 @@ void openpete_mod_sound_set_mute(int on);
  * canonical present commit with the running canonical-tick counter;
  * OPENPETE_MODS_TOGGLE="tick:id:0|1[,...]" schedules for CI/dev. */
 /* Loaded-mod enumeration (the mod menu's data source). */
+/** @brief Return the number of loaded mods, enabled or disabled.
+ *
+ * @return The row count of the loaded mod table. */
 int         openpete_mods_count(void);
 const char* openpete_mods_id(int i);
 int         openpete_mods_is_enabled(const char* id);
@@ -338,9 +359,18 @@ typedef struct {
 int openpete_mods_cfg_row_count(int mod_index);
 int openpete_mods_cfg_row(int mod_index, int row,
                           openpete_mods_cfg_row_t* out);
-/* Write the edits into the mod's config.toml and queue a reload at the
- * next tick boundary (entry re-reads the fresh values through
- * config_*). 0 = written; the reload itself is asynchronous. */
+/** @brief Write config edits into a mod's config.toml and queue its reload for the next tick boundary.
+ *
+ * openpete_mods_config_write writes the file. openpete_mods_tick_boundary
+ * then reloads a source mod whose entry has run, so the entry re-reads
+ * the values through config_*, and re-parses the file for any other mod.
+ * The dev overlay's Mods panel and the OPENPETE_MODS_CFG_APPLY schedule
+ * call it.
+ * @param mod_index Index into the loaded mod table.
+ * @param n Number of edits.
+ * @param edits The edits.
+ * @return 0 when written (the reload is asynchronous), -1 for an index
+ *         out of range, n <= 0, NULL edits, or a failed write. */
 int openpete_mods_cfg_apply(int mod_index, int n,
                             const openpete_mods_cfg_edit_t* edits);
 
@@ -354,19 +384,28 @@ int openpete_mods_cfg_apply(int mod_index, int n,
 struct openpete_mod_ui;
 void openpete_mods_ui_draw(int i, const struct openpete_mod_ui* ui);
 
-/* The always pass: run mod i's body if, and only if, its section is
- * flagged OPENPETE_MOD_UI_ALWAYS. No ui_status lines — those stay in the
- * mod's node of the Mods panel. @p no_input raises the guard bit that puts
- * ImGuiWindowFlags_NoInputs on every window the body opens, which the
- * caller sets while the dev overlay is closed and the game owns the mouse. */
+/** @brief Run a mod's UI body in the always pass when its section is flagged OPENPETE_MOD_UI_ALWAYS.
+ *
+ * No-op for an index out of range, a NULL @p ui, a disabled mod, an
+ * unflagged section or a mod without a body. Draws no ui_status lines;
+ * those stay in the mod's node of the Mods panel. The body runs under the
+ * render-purity guard (openpete_mods_in_present).
+ * @param i Index into the loaded mod table.
+ * @param ui The overlay's widget vtable.
+ * @param no_input Nonzero raises the guard bit that puts
+ *        ImGuiWindowFlags_NoInputs on every window the body opens; the
+ *        caller sets it while the dev overlay is closed and the game owns
+ *        the mouse. */
 void openpete_mods_ui_draw_always(int i, const struct openpete_mod_ui* ui,
                                   int no_input);
 
-/* Enabled mods with an always-flagged body, counted by one scan of the mod
- * table. The overlay asks per present whether an ImGui frame is wanted at
- * all; a count derived here cannot drift out of step with the loader's own
- * enable flips and registration strips the way a cross-thread counter
- * would. */
+/** @brief Count the enabled mods whose UI section is flagged OPENPETE_MOD_UI_ALWAYS and still has a body.
+ *
+ * One scan of the mod table. The overlay asks per present whether an
+ * ImGui frame is wanted at all; a count derived here cannot drift out of
+ * step with the loader's enable flips and body clears (a registration
+ * strip, a refused section) the way a cross-thread counter would.
+ * @return The count. */
 int openpete_mods_ui_always_count(void);
 
 /** @brief Stop drawing a mod's UI section for the rest of the run.
@@ -374,14 +413,30 @@ int openpete_mods_ui_always_count(void);
  * Clears the mod's ui_body and its per-present ImGui call count and logs
  * one error line naming @p why; the mod keeps running. The overlay calls it
  * after a mod's body raises an ImGui error on three consecutive presents.
+ * A section already refused returns 0 with no log line.
  * @param i Index into the loaded mod table.
  * @param why Reason text for the log line, or NULL.
  * @return 0, or -1 for an index out of range. */
 int openpete_mods_ui_refuse_section(int i, const char* why);
 
 int  openpete_mods_set_mod_enabled(const char* id, int on);
-/* cpu: live game CPU — applied toggles notify the mod's toggle hook in
- * tick context (guest access legal). */
+/** @brief Apply the queued mod state changes at a canonical tick boundary.
+ *
+ * core/mods/mod_draw.c calls it at the canonical present commit, when any
+ * mod is loaded, with the running canonical-tick counter. In order: fires
+ * this tick's OPENPETE_MODS_TOGGLE and OPENPETE_MODS_CFG_APPLY schedule
+ * entries, polls hot reload, applies pending material selector changes,
+ * runs the moby class census, reloads mods with a pending config apply,
+ * and drains the toggle queue. An applied toggle flips owner-keyed
+ * disabled flags on the chain, draw, registry and keymap surfaces without
+ * tearing anything down, bumps openpete_mods_toggle_epoch, then calls the
+ * mod's toggle hook. A disable of a mod that owns the level the player is
+ * in stays queued until openpete_mods_registry_owner_busy returns 0; an
+ * enable of a mod whose entry never ran runs the entry first and leaves
+ * the mod disabled when it fails.
+ * @param cpu Live game CPU; the toggle hook runs in tick context, where
+ *        guest access is legal.
+ * @param canonical_tick The running canonical-tick counter. */
 void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick);
 /** @brief Return 1 while the player is inside, or entering, a level that @p mod_id owns.
  *
@@ -393,10 +448,14 @@ void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick);
  * @param mod_id Mod id; NULL returns 0.
  * @return 1 when busy, else 0. */
 int  openpete_mods_registry_owner_busy(const char* mod_id);
-/* Bumped once per APPLIED toggle (state actually changed). The run loop
- * polls it to invalidate timeline-derived state: rewind history recorded
- * under the old modset must not replay into the new one, and runahead
- * must re-run its capability gate against the new enabled set. */
+/** @brief Return the toggle epoch, bumped once per applied toggle that changed a mod's enabled state.
+ *
+ * The run loop polls it to invalidate timeline-derived state: rewind
+ * history recorded under the old modset must not replay into the new one,
+ * and runahead re-runs its capability gate against the new enabled set.
+ * The texture pack, music override and mod texture and material resolvers
+ * fold it into their cache keys.
+ * @return The epoch. */
 unsigned openpete_mods_toggle_epoch(void);
 void openpete_mods_registry_set_owner_enabled(const char* mod_id, int on);
 
@@ -446,10 +505,16 @@ void openpete_mods_time_report(unsigned ticks_elapsed);
  *         override is running on this thread. */
 const char* openpete_mods_crash_attribution(uint32_t* addr_out);
 
-/* Per-modset save safety: canonical tag of the loaded gameplay-relevant
- * modset ("id@ver+id@ver", ids sorted; mods that do not write guest
- * RAM excluded). "" = vanilla. Stable after openpete_mods_init(); consumed
- * by core/host/memcard.c to tag cards + warn on mismatch. */
+/** @brief Return the save modset tag, the canonical identity of the gameplay-relevant loaded modset.
+ *
+ * The form is "id@ver+id@ver" with ids sorted, over the mods whose entry
+ * has run and that mod_is_mutative classifies as changing gameplay state;
+ * the empty string is vanilla. Built on the first call and cached; the
+ * first enable of a deferred-entry mod drops the cache, so the tag grows
+ * with it and does not shrink on a disable. core/host/memcard.c tags cards
+ * and warns on a mismatch; core/record/savestate.c records and compares
+ * it.
+ * @return The tag, owned by the loader. */
 const char* openpete_mods_modset_tag(void);
 
 /* ── Draw service (core/mods/mod_draw.c) ───────────────────────────── */
@@ -677,10 +742,19 @@ int openpete_mods_registry_ensure_driver(const char* log_tag);
 typedef const char* (*openpete_mods_sfx_canon_fn)(const char* name);
 void openpete_mods_sfx_set_canon(openpete_mods_sfx_canon_fn fn);
 
-/* Mod identity (mod_loader.c): stable id string, NULL-safe. */
+/** @brief Return a mod's stable id string.
+ *
+ * @param self The mod handle; NULL returns NULL.
+ * @return The id, owned by the loader. */
 const char* openpete_mods_id_of(openpete_mod_t* self);
-/* Mod directory + the staged SDK directory (mod_loader.c), NULL-safe. */
+/** @brief Return a mod's directory.
+ *
+ * @param self The mod handle; NULL returns NULL.
+ * @return The directory, owned by the loader. */
 const char* openpete_mods_dir_of(openpete_mod_t* self);
+/** @brief Return the staged SDK directory, <exe>/sdk.
+ *
+ * @return The directory; empty until openpete_mods_init discovers a mod. */
 const char* openpete_mods_sdk_dir(void);
 
 /* ── Mod shaders (mod_shader.c) ───────────────────────────────────────
@@ -884,7 +958,12 @@ typedef struct {
 void openpete_mods_material_view_capture(openpete_mods_material_view_t* out);
 /* Present thread: resolve/bind through `v` until set back to NULL (live). */
 void openpete_mods_material_view_set(const openpete_mods_material_view_t* v);
-/* Enabled-list position of a mod (0-based load order; -1 unknown). */
+/** @brief Return a mod's 0-based position in the loaded mod table, which is its load order.
+ *
+ * The table holds boot-enabled and deferred-entry mods alike, in
+ * dependency order.
+ * @param self The mod handle; NULL returns -1.
+ * @return The load index, or -1 for NULL. */
 int  openpete_mods_load_index_of(openpete_mod_t* self);
 /** @brief Return the tick, alpha and canonical flag of the last present flush that reached the present hooks.
  *
@@ -999,15 +1078,35 @@ int         openpete_mods_register_asset_root(const char* dir,
 int         openpete_mods_asset_root_count(void);
 const char* openpete_mods_asset_root(int i, const char** owner);
 
-/* Compile-on-boot content key for mod `id` (65-byte hex), NULL if unknown. */
+/** @brief Return the compile-on-boot build key of a loaded mod.
+ *
+ * The key is the 64-character SHA-256 hex digest over the mod API
+ * version, the compiler identity, the SDK inputs and the mod's sorted
+ * sources. It is empty for a mod without a source build (assets-only, or a
+ * prebuilt object loaded without the SDK). core/mods/mod_services.c uses a
+ * non-NULL result to tell a loaded mod owner from a non-mod owner.
+ * @param id Mod id; NULL returns NULL.
+ * @return The key, or NULL when no loaded mod has that id. */
 const char* openpete_mods_build_key(const char* id);
-/* 1 iff every enabled code mod declares a manifest runahead posture
- * (runahead = "pure" | "host-fx" — the arming gate); else 0 with
- * *offender = first blocker's id. */
+/** @brief Test whether every enabled code mod declares a manifest runahead posture.
+ *
+ * The posture is runahead = "pure" or "host-fx" in the [mod] table. A code
+ * mod is one with a loaded object, so a binary-only mod is held to the
+ * same declaration as a source one; a mod without an object runs no code
+ * and passes. core/runtime/run.c does not arm runahead on 0.
+ * @param offender Receives the first undeclared mod's id on 0 and NULL on
+ *        1; may be NULL.
+ * @return 1 when every enabled code mod declares a posture, else 0. */
 int openpete_mods_runahead_capable(const char** offender);
-/* Rewind gate: every enabled code mod declares a manifest state
- * posture. 0 = refuse timeline jumps; *offender names the first
- * undeclared mod. */
+/** @brief Test whether every enabled code mod declares a manifest host-state posture.
+ *
+ * The posture is state = "none" or "rebuildable" in the [mod] table. It
+ * gates timeline jumps (rewind): an undeclared mod's host state can desync
+ * when the guest world moves under it. A mod without a loaded object
+ * holds no host state and passes.
+ * @param offender Receives the first undeclared mod's id on 0 and NULL on
+ *        1; may be NULL.
+ * @return 1 when every enabled code mod declares a posture, else 0. */
 int openpete_mods_state_safe(const char** offender);
 
 /** @brief Size of the arena state section: a header, the ledger rows, and the arena's used bytes.
