@@ -1,7 +1,6 @@
 /* openpete_terrain_cache.h — the terrain sector-mesh GPU cache (core side).
  *
- * Renderer-generic half of the retained-terrain path
- * (notes/plans/openpete-terrain-gpu-cache.md): per-class vertex ARENAS in
+ * Renderer-generic half of the retained-terrain path: per-class vertex ARENAS in
  * device-local memory, the terrain pipelines (terrain.vert/.frag), the
  * globals + sector-params UBO, chunk alloc/free with in-flight-safe deferred
  * reuse, and the per-present draw entry points native_render.c calls at the
@@ -9,7 +8,7 @@
  *
  * The game-specific half (decoding Spyro sector data into
  * rhi_terrain_vertex chunks, deciding per-sector claims and flags) lives in
- * games/spyro-1/renderer/terrain.c.
+ * games/common/renderer/terrain.c.
  *
  * Ownership contract: a sector is rendered by the GPU path IFF its slot was
  * openpete_tercache_sector_set() this present with OPTC_SF_DRAWN — the CPU
@@ -282,9 +281,24 @@ int  openpete_tercache_ready(void);
  *        re-extracted present's build), 0 to stage it (a canonical build). */
 void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
                                    uint32_t stamp, int immediate);
-/* grade6: the pack-aware LP colour grade for this sector (p.rgb then q.rgb,
- * lp_grade_apply's affine — own fit or the level mean), or NULL when no pack
- * is active. Pair a non-NULL grade with OPTC_SF_LPGRADE in sflags. */
+/** @brief Publish one sector's origin, flags and LP colour grade into the open build.
+ *
+ * Builder thread, between frame_begin (or frame_skip) and frame_commit; a
+ * call outside that window, an out-of-range slot and OPTC_SLOT_DEAD are
+ * ignored. A slot set with OPTC_SF_DRAWN is drawn by the retained path this
+ * build and skipped by the CPU walk. frame_begin clears every slot's flags,
+ * so a slot not set in a build stays undrawn; the grade words are written
+ * only when @p grade6 is non-NULL.
+ * @param slot Sector slot (the sector's index in the walk's sector table).
+ * @param ox Sector origin X.
+ * @param oy Sector origin Y.
+ * @param oz Sector origin Z.
+ * @param sflags OPTC_SF_* bits, with the slot's chunk generation in bits
+ *        12-14.
+ * @param grade6 The pack-aware LP colour grade (p.rgb then q.rgb,
+ *        lp_grade_apply's affine, from the sector's own fit or the level
+ *        mean), or NULL when no pack grade applies; a non-NULL grade is
+ *        paired with OPTC_SF_LPGRADE in @p sflags. */
 void openpete_tercache_sector_set(int slot, float ox, float oy, float oz,
                                   uint32_t sflags, const float *grade6);
 void openpete_tercache_frame_commit(void);
@@ -584,10 +598,18 @@ void openpete_tercache_set_level(int level_id);
  * transient.
  * @return The current epoch. */
 uint32_t openpete_tercache_alloc_epoch(void);
-/* Device-owning thread only, once per present windowed and once per VBL
- * headless: fulfil a pending request and destroy drained retire entries.
- * The only caller of rhi_destroy_buffer for arena buffers outside
- * shutdown. */
+/** @brief Run the device-owning thread's half of the arena buffer handshakes.
+ *
+ * Called once per present windowed (native_render.c's present entry) and
+ * once per VBL headless (openpete_native_tercache_service_headless); only
+ * one of the two sites is live in a mode. Each call counts one service
+ * call, then does one of: destroys the pairs a level-edge replacement
+ * retired once their drain floors have passed; nothing while a fulfilled
+ * replacement awaits adoption; allocates the replacement pairs for a
+ * pending level-edge request; or answers the pending overflow-buffer
+ * requests. A replacement request takes precedence over overflow requests.
+ * This is the only caller of rhi_destroy_buffer for arena buffers outside
+ * shutdown. No-op while the cache is not ready. */
 void openpete_tercache_present_service(void);
 
 /* Screen->clip mapping for one draw target: the RAW scene_to_clip inputs,

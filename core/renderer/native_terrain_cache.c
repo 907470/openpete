@@ -322,17 +322,27 @@ static openpete_tercache_stats_t s_tc_final;
 static int s_tc_final_valid;
 
 
-/* One buffer of an arena, for the builder and the chunk writes. The draw
- * path loads the pointer itself so one present's draw reads one pair. */
+/** @brief Load the current buffer pair of one arena buffer.
+ *
+ * Used by the chunk writes and the dead-stamp release. The draw path loads
+ * the pointer itself (tc_draw_buf) so one draw reads one pair.
+ * @param arena Arena index.
+ * @param buf Buffer index within the arena.
+ * @return The pair, or NULL when that buffer holds none. */
 static const tc_pair *tc_live_pair(int arena, int buf)
 {
     return atomic_load_explicit(&s_tc.arena[arena].buf[buf].pair, memory_order_acquire);
 }
 
-/* The measured vertex capacity of one arena for one level. The generated
- * table carries a row per measured level id and a union row over every level;
- * an id with no row — and the init before any level has loaded, which passes
- * -1 — takes the union row, and an empty table falls back to k_arena_cap. */
+/** @brief Return the measured capacity of one arena for one level.
+ *
+ * The generated table carries a row per measured level id and a union row
+ * over every level; an id with no row, including the -1 init passes before
+ * any level has loaded, takes the union row, and an arena with a zero union
+ * entry falls back to k_arena_cap.
+ * @param level_id Level id, or -1.
+ * @param arena Arena index.
+ * @return Capacity in vertices, or in records on a cell arena. */
 static uint32_t tc_level_cap(int level_id, int arena)
 {
     for (int i = 0; i < k_optc_caps_level_n; i++)
@@ -341,14 +351,19 @@ static uint32_t tc_level_cap(int level_id, int arena)
     return k_optc_caps_union[arena] ? k_optc_caps_union[arena] : k_arena_cap[arena];
 }
 
-/* The capacity an arena's PRIMARY buffer is allocated at.
- * OPENPETE_TC_INITIAL_CAP replaces it with one vertex count for every vertex
- * arena and a sixteenth of it for every cell-record arena (a record replaces
- * 48 or 96 baked vertices, so the sixteenth still binds after the vertex
- * arenas do), so a measuring run can size the primaries past any content and
- * read an uncensored high-water mark, or squeeze them so the overflow path
- * runs. It does not size the overflow buffer, which is what the arena grows
- * to. */
+/** @brief Return the capacity an arena's primary buffer is allocated at.
+ *
+ * Without OPENPETE_TC_INITIAL_CAP this is tc_level_cap. The variable, read
+ * once, replaces it with one vertex count for every vertex arena and a
+ * sixteenth of it (at least 1) for every cell-record arena; a record
+ * replaces 48 or 96 baked vertices, so the sixteenth still binds after the
+ * vertex arenas do. A measuring run uses it to size the primaries past any
+ * content and read an uncensored high-water mark, or to squeeze them so the
+ * overflow path runs. The overflow buffer is sized by tc_level_cap, not by
+ * this.
+ * @param level_id Level id, or -1 before any level has loaded.
+ * @param arena Arena index.
+ * @return Capacity in vertices, or in records on a cell arena. */
 static uint32_t tc_initial_cap(int level_id, int arena)
 {
     static long ov = -1;
@@ -362,8 +377,11 @@ static uint32_t tc_initial_cap(int level_id, int arena)
     return (uint32_t)ov;
 }
 
-/* Bytes of one element of an arena's main buffer: a terrain vertex, or a cell
- * record on the cell arenas. */
+/** @brief Return the byte size of one element of an arena's main buffer.
+ *
+ * @param arena Arena index.
+ * @return sizeof a cell record on the cell arenas (anim or near layout),
+ *         else sizeof(rhi_terrain_vertex). */
 static size_t tc_elem_size(int arena)
 {
     if (OPTC_ARENA_IS_CELL_ANIM(arena)) return sizeof(rhi_terrain_cell_anim);
@@ -371,8 +389,14 @@ static size_t tc_elem_size(int arena)
     return sizeof(rhi_terrain_vertex);
 }
 
-/* Device bytes one buffer of this arena holds: the element stride plus the
- * twin's, at the buffer's capacity. */
+/** @brief Return the device bytes one buffer pair of an arena holds at a capacity.
+ *
+ * The stride is the element size plus the twin's (the prev-tick record on
+ * the anim arenas, the near-context record on the near arenas). Feeds the
+ * cap_bytes census of openpete_tercache_get_stats.
+ * @param arena Arena index.
+ * @param cap Buffer capacity in elements.
+ * @return Bytes of the main buffer and its twin together. */
 static uint64_t tc_pair_bytes(int arena, uint32_t cap)
 {
     size_t stride = tc_elem_size(arena);
@@ -389,9 +413,16 @@ static void tc_pair_free(rhi_device *dev, tc_pair *pr)
     free(pr);
 }
 
-/* Device-owning thread only. The twin is the anim arenas' previous-tick
- * buffer or the near arenas' emitted-tri context buffer, at the same vertex
- * count and its own stride; a base arena and a cell arena have none. */
+/** @brief Allocate one arena buffer pair on the device.
+ *
+ * Device-owning thread only. The twin is the anim arenas' previous-tick
+ * buffer or the near arenas' emitted-tri context buffer, at the same element
+ * count and its own stride; a base arena and a cell arena have none. A pair
+ * missing any buffer it owes is freed.
+ * @param dev Device.
+ * @param arena Arena index.
+ * @param cap Capacity in elements.
+ * @return The pair, or NULL on an allocation failure. */
 static tc_pair *tc_pair_make(rhi_device *dev, int arena, uint32_t cap)
 {
     tc_pair *pr = (tc_pair *)calloc(1, sizeof(*pr));
@@ -407,12 +438,17 @@ static tc_pair *tc_pair_make(rhi_device *dev, int arena, uint32_t cap)
     return pr;
 }
 
-/* Every pair one arena owns, released: its live buffers, and the pairs its two
- * handshakes may still be holding — the replacement's fulfilled-but-unadopted
- * pair, its retire list, and an overflow buffer the builder never installed.
- * Teardown is the only caller: while the cache runs, each handshake frees its
- * own pairs at the point that proves no frame reads them (tc_retire_drain for
- * the replacement, tc_pair_free for an allocation that failed half-made). */
+/** @brief Free every buffer pair one arena owns and clear the pointers.
+ *
+ * The pairs are its live buffers and the ones its two handshakes may still
+ * hold: the replacement's fulfilled-but-unadopted pair, its retire list, and
+ * an overflow buffer the builder never installed. Teardown
+ * (openpete_tercache_shutdown) is the only caller; while the cache runs,
+ * each handshake frees its own pairs at the point that proves no frame reads
+ * them (tc_retire_drain for the replacement, tc_pair_make's own cleanup for
+ * an allocation that failed half-made).
+ * @param dev Device.
+ * @param arena Arena index. */
 static void tc_arena_free_all(rhi_device *dev, int arena)
 {
     for (int b = 0; b < TC_BUF_MAX; b++) {
@@ -492,8 +528,16 @@ int openpete_tercache_frame_content(void)
     return 0;
 }
 
-/* One cell-record pipeline set: `vert` is the near or anim cell stage, `anim`
- * selects the anim record layout. Returns 1 when every slot built. */
+/** @brief Build one cell-record pipeline set, one pipeline per TC_CP_* slot.
+ *
+ * The slots share terrain.frag and depth test and differ as the world
+ * pipelines do: stencil MARK, the three blend equations with depth writes
+ * off, the colour-off depth prepass, and the OT-key emit.
+ * @param dev Device.
+ * @param vert Vertex stage SPIR-V name (the near or anim cell stage).
+ * @param anim Nonzero for the anim record layout, 0 for the near layout.
+ * @param out Receives the pipelines; a failed slot is NULL.
+ * @return 1 when every slot built, else 0. */
 static int tc_make_cell_pipes(rhi_device *dev, const char *vert, int anim,
                               rhi_pipeline *out[TC_CP_N])
 {
@@ -680,6 +724,15 @@ void openpete_tercache_shutdown(rhi_device *dev)
 
 /* ---- allocator ---------------------------------------------------------- */
 
+/** @brief Return a vertex range to one buffer's free list.
+ *
+ * The list stays sorted by first index, and the range coalesces with an
+ * adjacent span on either side. A range that neither coalesces nor fits
+ * (the list holds TC_FREE_MAX spans) is dropped and stays unusable until
+ * the level-edge replacement resets the buffer.
+ * @param a Buffer.
+ * @param first First element of the range.
+ * @param count Element count of the range. */
 static void tc_free_insert(tc_buf *a, uint32_t first, uint32_t count)
 {
     /* insert sorted + coalesce neighbours */
@@ -708,8 +761,13 @@ static void tc_free_insert(tc_buf *a, uint32_t first, uint32_t count)
     a->free_n++;
 }
 
-/* First fit in one buffer's free list, else a grow of its high-water mark.
- * -1 = this buffer has no room for the chunk. */
+/** @brief Allocate a range in one buffer: first fit in its free list, else a grow of its high-water mark.
+ *
+ * Updates the buffer's live-element and chunk census on success.
+ * @param a Buffer.
+ * @param n Element count.
+ * @param out_first Receives the range's first element.
+ * @return 0 on success, -1 when this buffer has no room for the range. */
 static int tc_buf_alloc(tc_buf *a, uint32_t n, uint32_t *out_first)
 {
     for (int i = 0; i < a->free_n; i++) {           /* first fit */
@@ -732,11 +790,16 @@ static int tc_buf_alloc(tc_buf *a, uint32_t n, uint32_t *out_first)
     return 0;
 }
 
-/* Builder thread, from a refused chunk. Ask the device-owning thread for an
- * overflow buffer of the level's own generated capacity, or the refused chunk
- * where that is larger, so one grant covers the rest of the level rather than
- * one sector. Dropped while this arena already has a request outstanding, an
- * overflow installed, or a refusal on record. */
+/** @brief Ask the device-owning thread for an overflow buffer for one arena.
+ *
+ * Builder thread, from a chunk every buffer of the arena refused. The size
+ * asked for is the level's generated capacity, or the refused chunk where
+ * that is larger, so one grant covers the rest of the level rather than one
+ * sector. Dropped while this arena already has a request outstanding, an
+ * overflow installed, or a refusal on record. Records the service call and
+ * build counts the adoption log measures against.
+ * @param arena Arena index.
+ * @param verts Element count of the refused chunk. */
 static void tc_request_overflow(int arena, uint32_t verts)
 {
     tc_arena *a = &s_tc.arena[arena];
@@ -859,11 +922,14 @@ int openpete_tercache_resize_ready(void)
         atomic_load_explicit(&s_tc.rz_state, memory_order_acquire) == TC_RZ_READY;
 }
 
-/* Builder thread, at the replacement adoption. An overflow buffer the device
+/** @brief Move answered but uninstalled overflow buffers onto the replacement's retire list.
+ *
+ * Builder thread, from tc_adopt_pending. An overflow buffer the device
  * answered but no frame_begin installed has never been bound by a draw; it
  * still retires through the drain, the only path that destroys a pair. The
- * device stops answering overflow requests once a replacement is posted, so
- * every answer raised before this point is visible here. */
+ * device answers no overflow request while a replacement is requested or
+ * awaiting adoption, so every answer raised before this point is visible
+ * here. Outstanding unanswered requests are dropped. */
 static void tc_collect_overflow_pending(void)
 {
     const uint32_t mask = atomic_exchange_explicit(&s_tc.ovf_done, 0u,
@@ -876,10 +942,13 @@ static void tc_collect_overflow_pending(void)
     }
 }
 
-/* Builder thread, from frame_begin. Install every answered overflow buffer as
- * the arena's next buffer. A refused request leaves the arena at one buffer
- * and stops further requests until the next level edge, so the sectors it
- * could not hold stay on the CPU walk instead of re-asking every build. */
+/** @brief Install every answered overflow buffer as its arena's next buffer.
+ *
+ * Builder thread, from frame_begin and frame_skip. A refused request (a NULL
+ * answer) leaves the arena at one buffer and stops further requests until
+ * the next level edge, so the sectors it could not hold stay on the CPU walk
+ * instead of re-asking every build. Each adoption steps the allocation epoch
+ * and logs the request-to-adoption delay in service calls and builds. */
 static void tc_adopt_overflow(void)
 {
     const uint32_t mask = atomic_exchange_explicit(&s_tc.ovf_done, 0u,
@@ -911,9 +980,14 @@ static void tc_adopt_overflow(void)
     }
 }
 
-/* Builder thread, from frame_begin. Publishes the fresh pairs, resets the
- * allocator, collapses the arena back to one buffer, and hands the outgoing
- * pairs to the retire drain. */
+/** @brief Adopt a fulfilled level-edge replacement.
+ *
+ * Builder thread, from frame_begin and frame_skip; no-op unless the
+ * replacement is in the READY state. Publishes the fresh pairs, resets each
+ * arena's allocator, collapses each arena back to one buffer, drops the
+ * deferred-release list (its ranges address the outgoing pairs), steps the
+ * allocation epoch, records the drain floors, and hands the outgoing pairs
+ * to the retire drain. */
 static void tc_adopt_pending(void)
 {
     if (atomic_load_explicit(&s_tc.rz_state, memory_order_acquire) != TC_RZ_READY) return;
@@ -947,12 +1021,15 @@ static void tc_adopt_pending(void)
     atomic_store_explicit(&s_tc.rz_state, TC_RZ_RETIRE, memory_order_release);
 }
 
-/* Device-owning thread. Destroy the outgoing pairs once both floors counted
- * from the adoption have passed: TC_DEFER_PRESENTS builds (frame_begin's
- * counter — the window a freed range already waits out, which covers the
- * one-build presentation lag) and RHI_FRAMES_IN_FLIGHT presents (this
- * function's counter — the frames whose recorded command buffers may still
- * bind the outgoing buffers). */
+/** @brief Destroy the pairs a replacement retired once both drain floors have passed.
+ *
+ * Device-owning thread, from openpete_tercache_present_service. The floors
+ * count from the adoption: more than TC_DEFER_PRESENTS builds (frame_begin's
+ * counter, the window a freed range already waits out, which covers the
+ * one-build presentation lag) and more than RHI_FRAMES_IN_FLIGHT service
+ * calls (the frames whose recorded command buffers may still bind the
+ * outgoing buffers). On destruction the handshake returns to IDLE.
+ * @param svc Service call count including the current call. */
 static void tc_retire_drain(uint32_t svc)
 {
     const uint32_t builds = atomic_load_explicit(&s_tc.build_ctr, memory_order_acquire);
@@ -967,10 +1044,14 @@ static void tc_retire_drain(uint32_t svc)
     atomic_store_explicit(&s_tc.rz_state, TC_RZ_IDLE, memory_order_release);
 }
 
-/* Device-owning thread. Allocate one fresh pair per arena; on any failure
- * free what was made and leave the live pairs in place, so the cache keeps
- * drawing at the old (accumulating) high-water marks instead of losing the
- * retained path. */
+/** @brief Allocate one fresh pair per arena for the stored level and mark the replacement READY.
+ *
+ * Device-owning thread. Each pair is sized by tc_initial_cap for the level
+ * stored by openpete_tercache_set_level. On any failure what was made is
+ * freed, the live pairs stay in place and the state stays IDLE, so the cache
+ * keeps drawing at the old (accumulating) high-water marks instead of losing
+ * the retained path; the consumed request is not retried until the next
+ * level edge. The failure is logged once. */
 static void tc_resize_fulfil(void)
 {
     tc_pair *made[OPTC_ARENA_COUNT];
@@ -994,10 +1075,13 @@ static void tc_resize_fulfil(void)
     atomic_store_explicit(&s_tc.rz_state, TC_RZ_READY, memory_order_release);
 }
 
-/* Device-owning thread. Allocate one overflow buffer per requested arena and
- * publish the answer, NULL included: a refusal is what stops the builder from
- * asking again. Only reached with no replacement in flight, so an answer the
- * builder has not taken yet cannot outlive the arena it belongs to. */
+/** @brief Allocate one overflow buffer per requested arena and publish the answers.
+ *
+ * Device-owning thread. The answer is published NULL included: a refusal is
+ * what stops the builder from asking again. Only reached with no replacement
+ * requested or in flight, so an answer the builder has not taken yet cannot
+ * outlive the arena it belongs to. A failed allocation is logged once per
+ * arena. */
 static void tc_overflow_fulfil(void)
 {
     const uint32_t mask = atomic_exchange_explicit(&s_tc.ovf_req, 0u,
@@ -1036,17 +1120,28 @@ void openpete_tercache_present_service(void)
 
 /* ---- per-present protocol ---------------------------------------------- */
 
-/* Shared prologue for frame_begin/frame_skip: pick the build target and run
- * the promote rule. A hook (canonical) build stages; the PREVIOUS staged
- * state promotes to live (that is the extraction the next presents show).
- * An immediate (re-extract) build writes live directly. A repeated stamp
- * (the serial-retry path re-runs one build) restages in place. */
+/** @brief Return whether OPENPETE_TC_DBG enables the terrain-cache debug log.
+ *
+ * Read once; any non-empty value other than one starting with `0` enables
+ * it. */
 static int tc_dbg(void)
 {
     static int on = -1;
     if (on < 0) { const char *e = getenv("OPENPETE_TC_DBG"); on = (e && *e && *e != '0'); }
     return on;
 }
+/** @brief Pick a build's target state and run the promote rule.
+ *
+ * Shared prologue of frame_begin and frame_skip. An immediate build with a
+ * scene stamp (OPTC_STAMP_SCENE_BIT) takes its own ring entry, reusing one
+ * whose scene has retired. Any other immediate (re-extract) build writes
+ * live directly and leaves staged in place. A canonical build stages, and
+ * the previous staged state promotes to live (the extraction the next
+ * presents show); a repeated stamp (the serial-retry path re-runs one build)
+ * restages in place without a promote.
+ * @param stamp Stamp of the build.
+ * @param immediate Nonzero for an immediate build.
+ * @return The state the build writes, stamped and marked valid. */
 static tc_state *tc_begin_state(uint32_t stamp, int immediate)
 {
     if (immediate && (stamp & OPTC_STAMP_SCENE_BIT)) {
@@ -1080,17 +1175,21 @@ static tc_state *tc_begin_state(uint32_t stamp, int immediate)
     return &s_tc.staged;
 }
 
-/* Dead-stamp a released range BEFORE it becomes reusable. Every draw walks
- * the whole arena and selects per element by 3-bit generation, so a
- * released range that lingers unreused (release != reuse; the allocator can
+/** @brief Overwrite a released range's elements with the dead slot before the range becomes reusable.
+ *
+ * Every draw walks the whole arena and selects per element by 3-bit
+ * generation, so a released range that lingers unreused (the allocator can
  * go elsewhere for many builds) still rasterises whenever a later state's
- * generation aliases its own mod 8 — a sector that rebuilds every build
- * (animated vertex lighting) then z-fights its current chunk with a
- * pulse-phase-old twin. The defer window just guaranteed no in-flight frame
- * reads these bytes, so overwriting here is the one race-free moment
- * (stamping at free time races the frames still reading them). Slot DEAD is
- * never published, so SF_DRAWN kills the element forever. A vertex and a
- * cell record both carry face_flags, at their own offsets. */
+ * generation aliases its own mod 8; a sector that rebuilds every build
+ * (animated vertex lighting) then z-fights its current chunk with an older
+ * copy. frame_begin calls this after the defer window guarantees no
+ * in-flight frame reads these bytes, the one race-free moment (stamping at
+ * free time races the frames still reading them). Each element is zeroed
+ * with OPTC_SLOT_DEAD in face_flags; that slot is never published with
+ * OPTC_SF_DRAWN, so the element is never drawn again. A vertex and a cell
+ * record both carry face_flags, at their own offsets. Only the main buffer
+ * is written.
+ * @param d The deferred release. */
 static void tc_dead_stamp(const tc_defer *d)
 {
     enum { DEAD_N = 512 };
@@ -1305,12 +1404,12 @@ void openpete_tercache_frame_commit(void)
 
 /* ---- draw --------------------------------------------------------------- */
 
-/* OPENPETE_TERRAIN_DUP_DRAW=N (dev probe): issue every arena draw N times.
- * Pricing the material design — a partial material claim costs one extra
- * full-arena pass per material, and the question is whether the retained
- * vertex stage is cheap enough for that to be free. N=2 is the upper bound
- * (the duplicate also re-runs the FRAGMENT stage, which a real material
- * pass mostly would not). */
+/** @brief Return how many times each arena draw is issued (OPENPETE_TERRAIN_DUP_DRAW).
+ *
+ * Read once, clamped to 1..8, default 1. The measurement it serves: a
+ * partial material claim costs one extra full-arena pass per material, and
+ * N=2 prices that pass as an upper bound, since the duplicate also re-runs
+ * the fragment stage, which a material pass mostly does not. */
 static int tc_dup_draw(void)
 {
     static int n = -1;
@@ -1337,8 +1436,13 @@ static unsigned s_tc_mat_stock;
  * would make it the highest material index, however few are live. */
 static unsigned s_tc_mat_passes;
 
-/* Is this pair one the level-edge replacement has already retired? The
- * invariant is that no draw ever binds one. */
+/** @brief Return whether a pair is on the level-edge replacement's retire list.
+ *
+ * No draw may bind a retired pair; tc_draw_buf counts every draw that does
+ * in draws_retired, which stays 0 while the invariant holds.
+ * @param arena Arena index.
+ * @param pr Pair about to be drawn.
+ * @return 1 when a replacement is in the RETIRE state and lists @p pr, else 0. */
 static int tc_pair_retired(int arena, const tc_pair *pr)
 {
     if (atomic_load_explicit(&s_tc.rz_state, memory_order_acquire) != TC_RZ_RETIRE)
@@ -1348,11 +1452,17 @@ static int tc_pair_retired(int arena, const tc_pair *pr)
     return 0;
 }
 
-/* One buffer of an arena, whole. Each buffer numbers its vertices from 0 and
- * the vertex stage's only index use is gl_VertexIndex % 3, which restarts at
- * every draw, so the buffers need no index translation between them. A cell
- * arena's buffer is an instance-rate record array: one instance per record,
- * the record's cell vertices per instance. */
+/** @brief Draw one buffer of an arena, whole.
+ *
+ * Each buffer numbers its vertices from 0 and the vertex stage's only index
+ * use is gl_VertexIndex % 3, which restarts at every draw, so the buffers
+ * need no index translation between them. A cell arena's buffer is an
+ * instance-rate record array: one instance per record, the record's cell
+ * vertices per instance. Pushes @p pc, binds the pair (with its twin when it
+ * has one), issues the draw tc_dup_draw times, and counts it.
+ * @param arena Arena index.
+ * @param b Buffer.
+ * @param pc Push constants for the draw. */
 static void tc_draw_buf(int arena, const tc_buf *b, const tc_pc *pc)
 {
     /* One load of the pair for the whole draw, and the range clamped to its
@@ -1380,8 +1490,11 @@ static void tc_draw_buf(int arena, const tc_buf *b, const tc_pc *pc)
     s_tc.draws_last++;
 }
 
-/* The arena's high-water vertex count over its buffers: the census figure and
- * the "is there anything to draw" test. */
+/** @brief Return an arena's high-water element count summed over its buffers.
+ *
+ * tc_draw_anim's test for whether the arena has anything to draw.
+ * @param arena Arena index.
+ * @return The summed high-water count; 0 for an empty arena. */
 static uint32_t tc_arena_high(int arena)
 {
     const tc_arena *a = &s_tc.arena[arena];
@@ -1412,10 +1525,17 @@ static void tc_draw_arena(int arena, int pass_sel, const openpete_tercache_clip 
         tc_draw_buf(arena, &a->buf[b], &pc);
 }
 
-/* Draw a twin arena (poly-anim or near variant): rebind that variant of the
- * slot's pipeline (same state, a different vertex stage + binding-1 twin),
- * then restore nothing — the caller sequences all draws for one slot and
- * every arena draw re-pushes its own constants and buffers. */
+/** @brief Bind a variant pipeline and draw one arena with it.
+ *
+ * Serves the poly-anim, near-variant and cell-record arenas: the pipeline is
+ * that variant of the slot's pipeline (same state, a different vertex stage
+ * and binding-1 twin). Nothing is restored afterwards: the caller sequences
+ * all draws for one slot and every arena draw re-pushes its own constants
+ * and buffers. Skipped when @p p is NULL or the arena is empty.
+ * @param p Pipeline to bind.
+ * @param arena Arena index.
+ * @param pass_sel Pass selector pushed to the vertex stage.
+ * @param c Clip mapping for the draw target. */
 static void tc_draw_anim(rhi_pipeline *p, int arena, int pass_sel,
                          const openpete_tercache_clip *c)
 {
@@ -1436,16 +1556,25 @@ static void tc_draw_anim(rhi_pipeline *p, int arena, int pass_sel,
  * so a sector with a blended material face claims back to the CPU walk
  * instead, and the blend arenas draw unfiltered. */
 
-/* Build (lazily, once per material) the terrain pipeline for one bucket at
- * one arena vertex variant and colour slot, then bind it and the material
- * UBO pair at set 3.
+/** @brief Bind one bucket's terrain material pipeline for a vertex variant and colour slot, or the stock pipeline.
  *
- * `stock` is the pipeline this bucket's faces would have been drawn with
- * had they not been claimed, and it is bound instead whenever the material
- * cannot serve them — a refine callback that declined this present, a
- * pipeline that failed to build, a shader with no terrain profile. The pass
- * ALWAYS runs: the stock pass has already dropped these faces, so skipping
- * it would leave a hole in the world rather than an unreshaded patch. */
+ * The material pipeline is built lazily, once per material, variant and
+ * slot, and bound with the material UBO pair at set 3. @p stock is the
+ * pipeline this bucket's faces would have been drawn with had they not been
+ * claimed; it is bound instead whenever the material cannot serve them (a
+ * refine callback that declined this present, a pipeline that failed to
+ * build, a shader with no terrain profile, no material UBO yet), and each
+ * such fallback counts in s_tc_mat_stock. The pass always runs: the stock
+ * pass has already dropped these faces, so skipping it would leave a hole in
+ * the world rather than an unreshaded patch.
+ * @param bucket Terrain material bucket id.
+ * @param variant Vertex variant: 0 plain, 1 anim, 2 near, 3 anim cells,
+ *        4 near cells.
+ * @param slot Colour slot: 0 world, 1 world with stencil mark, 2 fill,
+ *        3 alpha, 4 add, 5 subtract.
+ * @param stock Stock pipeline for the fallback, or NULL when no arena of
+ *        this flavour draws in this slot.
+ * @return 1 when a pipeline is bound, 0 when nothing is to be drawn. */
 static int tc_bind_material(int bucket, int variant, int slot,
                             rhi_pipeline *stock)
 {
@@ -1507,9 +1636,16 @@ draw_stock:
     return 1;
 }
 
-/* The five arena flavours of one colour slot, for one bucket. Each carries
- * the stock pipeline it would have used, so a material that cannot serve
- * its faces this present degrades to stock shading rather than to a hole. */
+/** @brief Draw the opaque world arenas of all five vertex variants for one material bucket.
+ *
+ * Each variant carries the stock pipeline it would have used, so a material
+ * that cannot serve its faces this present degrades to stock shading rather
+ * than to a hole. The plain, anim and near variants draw their opaque and LP
+ * arenas; the cell variants draw their opaque arena.
+ * @param bucket Terrain material bucket id.
+ * @param slot Colour slot (0 world, 1 world with stencil mark).
+ * @param use_mark Nonzero to fall back to the stencil-mark pipelines.
+ * @param clip Clip mapping for the draw target. */
 static void tc_draw_material_world(int bucket, int slot, int use_mark,
                                    const openpete_tercache_clip *clip)
 {
@@ -1535,8 +1671,16 @@ static void tc_draw_material_world(int bucket, int slot, int use_mark,
         tc_draw_arena(OPTC_ARENA_CN_OPAQUE, 0, clip);
 }
 
-/* One blend class (cls = OPTC_ARENA_ALPHA/ADD/SUB), all five arena flavours,
- * for one bucket. */
+/** @brief Draw one blend class's arenas of all five vertex variants for one material bucket.
+ *
+ * @param bucket Terrain material bucket id.
+ * @param slot Colour slot (3 alpha, 4 add, 5 subtract).
+ * @param cls Blend arena class: OPTC_ARENA_ALPHA, OPTC_ARENA_ADD or
+ *        OPTC_ARENA_SUB.
+ * @param s_plain Stock pipeline of the plain arena.
+ * @param s_anim Stock pipeline of the anim arena.
+ * @param s_near Stock pipeline of the near arena.
+ * @param clip Clip mapping for the draw target. */
 static void tc_draw_material_blend(int bucket, int slot, int cls,
                                    rhi_pipeline *s_plain, rhi_pipeline *s_anim,
                                    rhi_pipeline *s_near,
@@ -1555,15 +1699,22 @@ static void tc_draw_material_blend(int bucket, int slot, int cls,
         tc_draw_arena(OPTC_ARENA_CELL_NEAR_BASE + cls, 0, clip);
 }
 
-/* The material passes of one colour slot, run after its stock passes.
+/** @brief Run the material passes of one colour slot, after its stock passes.
  *
- * One pass per live terrain bucket. Bucket ids are a material index + 1
- * and so are sparse: a material registered at index 200 leaves 199 ids
- * with no live material behind it. Iterating the live list rather than
- * 1..highest keeps the pass count proportional to the live terrain
- * materials at any table size, because an id with no live material still
- * binds a pipeline and redraws the whole arena, every face of which the
- * bucket filter then discards. */
+ * One pass per live terrain bucket, each setting s_tc_mat_pass to the
+ * bucket so the vertex stage keeps only that bucket's faces. Bucket ids are
+ * a material index + 1 and so are sparse: a material registered at index
+ * 200 leaves 199 ids with no live material behind it. Iterating the live
+ * list rather than 1..highest keeps the pass count proportional to the live
+ * terrain materials at any table size, because an id with no live material
+ * still binds a pipeline and redraws the whole arena, every face of which
+ * the bucket filter then discards. The prepass and key slots run no
+ * material pass.
+ * @param which OPTC_DRAW_* slot.
+ * @param buckets Live bucket ids.
+ * @param bn Number of live bucket ids.
+ * @param use_mark Nonzero when the world slot uses the stencil-mark pipelines.
+ * @param clip Clip mapping for the draw target. */
 static void tc_draw_material_passes(int which, const int *buckets, int bn,
                                     int use_mark,
                                     const openpete_tercache_clip *clip)

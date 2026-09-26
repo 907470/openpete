@@ -69,8 +69,7 @@ static uint64_t tp_fnv1a(const uint16_t* p, int w, int h, int stride) {
 
 /* ---- ops ----------------------------------------------------------------- */
 
-/* LoadImage: GR_CopyVRAM(src, 0,0, w,h, x,y) — src is TIGHTLY packed with the
- * ORIGINAL width as stride (the dst clamp does not re-stride the source). */
+/* LoadImage: src keeps the original width as stride through the clamp. */
 void openpete_vram_load(int x, int y, int w, int h, const uint16_t* src)
 {
     if (w <= 0 || h <= 0 || !src) return;
@@ -163,6 +162,13 @@ void openpete_vram_clear(int x, int y, int w, int h,
 
 /* ---- install ------------------------------------------------------------- */
 
+/** @brief PsyCross load callback: forwards to openpete_vram_load.
+ *
+ * @param x Destination X in texels.
+ * @param y Destination Y in texels.
+ * @param w Width in texels.
+ * @param h Height in rows.
+ * @param src Source texels, @p w per row. */
 static void nv_load(int x, int y, int w, int h, const unsigned short* src)
 { openpete_vram_load(x, y, w, h, (const uint16_t*)src); }
 static void nv_move(int sx, int sy, int w, int h, int dx, int dy)

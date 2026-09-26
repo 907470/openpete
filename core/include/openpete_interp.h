@@ -120,9 +120,22 @@ uint32_t openpete_interp_reset_generation(void);
 void openpete_interp_set_enabled(int on);
 int  openpete_interp_enabled(void);
 
-/* Capture the canonical state of every region into the ring's next slot.
- * Called from run.c after each successful sim tick (ticked_this_iter).
- * No-op when disabled or when the region table is empty. */
+/** @brief Snapshot every registered region into the ring, committing only a new state or a held one.
+ *
+ * Called from run.c once per VBL the guest advanced (ticked_this_iter),
+ * while the game fiber is yielded; reads PSX RAM only. The candidate is
+ * built in scratch (an unmapped region reads as zeros) and compared with
+ * the ring's head. A differing candidate rolls the ring and, when the head
+ * was itself a distinct state, updates the measured tick gap between
+ * distinct states (capped at 4). An identical candidate is skipped until
+ * the head has held for that gap (at least 2), then committed as a
+ * duplicate, so a held screen pairs a state with itself and the bracket
+ * stays installed. Under deterministic capture @p tick_ns is replaced by
+ * a grid point that advances on distinct states only; a duplicate takes
+ * the copied state's stamp plus one period. No-op when disabled or when
+ * the region table is empty.
+ * @param tick VBL counter of the capture (openpete_frame).
+ * @param tick_ns Present-clock stamp of the capture. */
 void openpete_interp_capture(uint32_t tick, op_time_t tick_ns);
 
 /* Virtual present clock: the run loop sets, before each present's re-extract,
@@ -158,9 +171,13 @@ op_time_t openpete_interp_det_period(void);
  * no valid slot yet. With deterministic capture on, this is a fixed grid point;
  * add period_ns/2 to target the sub-tick midpoint. */
 op_time_t openpete_interp_curr_tick_ns(void);
-/* The newest stored snapshot itself (NULL until the ring holds one). Read-only:
- * the per-hook record instrument compares the bytes it captured at the render
- * hook against the ring's tick-end bytes of the same region. */
+/** @brief Return the newest stored snapshot.
+ *
+ * Read-only. The player record pairing (games/common/renderer/player.c)
+ * compares the bytes it captured at the render hook against the ring's
+ * tick-end bytes of the same region.
+ * @return The head snapshot, or NULL before init or until the ring holds
+ *         one. */
 const openpete_interp_snapshot_t* openpete_interp_curr_snapshot(void);
 
 /* 1 iff the ring holds two valid most-recent slots — i.e. a sub-tick
@@ -171,13 +188,20 @@ const openpete_interp_snapshot_t* openpete_interp_curr_snapshot(void);
  * identity. */
 int       openpete_interp_paired(void);
 
-/* 1 when the newest stored snapshot is older than the tick the present belongs
- * to by more than the stored pair's own cadence -- the registered regions have
- * stopped changing, so the pair describes a motion that has ended and the head
- * is the state on screen. A consumer that phases a present onto the head's
- * stamp (rather than onto wall time, which clamps alpha to 1 by itself) must
- * take alpha = 1 here instead of the phase it computed, or it re-lerps the
- * middle of the last motion at every such present. */
+/** @brief Report whether the ring's head is older than the latest capture by more than the pair's cadence.
+ *
+ * A screen whose registered regions stop changing stops rolling the ring:
+ * the head stays at the tick the state last changed and the pair keeps
+ * describing the last motion, while the head is the state on screen. Under
+ * wall-clock stamps the growing present-minus-head distance clamps alpha to
+ * 1 by itself. A consumer that phases a present onto the head's stamp (the
+ * intermediate screenshot leg, the reextract and cut-guard alpha paths)
+ * takes alpha = 1 when this returns 1, or it re-lerps the middle of a
+ * motion that has ended. The tolerance is the stored pair's tick distance
+ * (1 when prev is invalid): the head is legitimately that far behind the
+ * latest capture while the logic advances at its own cadence.
+ * @return 1 when stale; 0 when disabled, before any capture, with no valid
+ *         head, or when the head is within the cadence. */
 int       openpete_interp_curr_is_stale(void);
 
 /* Returns the most recent two snapshots (prev = the earlier stored tick,

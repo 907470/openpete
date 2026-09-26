@@ -83,9 +83,12 @@ void openpete_interp_register_regions(const openpete_interp_region_t* regions,
     s_region_count = (regions ? count : 0);
 }
 
-/* Guest state was replaced (savestate load / rewind restore): every snapshot
- * in both interp stores describes the OLD timeline. Drop them so the next
- * present snaps to the restored state instead of lerping a full-scene smear
+/** @brief Drop the snapshot ring and the object table on a guest-state discontinuity.
+ *
+ * Registered by openpete_interp_init with the guest-discontinuity
+ * broadcast (savestate load, rewind restore). Every snapshot in both
+ * interp stores describes the old timeline; dropping them makes the next
+ * present snap to the restored state instead of lerping a full-scene smear
  * across the discontinuity (prev = pre-load, curr = post-load). */
 static void interp_on_guest_discontinuity(void) {
     openpete_interp_reset();
@@ -225,8 +228,8 @@ void openpete_interp_capture(uint32_t tick, op_time_t tick_ns) {
      * capture fires every tick. A naive 2-slot ring (advance + fill every time)
      * then holds two SAME-frame duplicates whenever the camera updated on the
      * other VBL, so every sub-tick query sees prev==curr and dedupes → the
-     * interpolation bracket NEVER engages (paired=0 forever; the flicker/judder
-     * the user reported). By skipping the advance when the candidate is
+     * interpolation bracket NEVER engages (paired=0 forever, which presents
+     * as flicker and judder). By skipping the advance when the candidate is
      * byte-identical to the current head, the ring always holds the two most-
      * recent DISTINCT states, and curr->tick_ns stays pinned to when that state
      * FIRST appeared — exactly the [prev,curr] bracket alpha spans. (A truly
@@ -340,21 +343,7 @@ void openpete_interp_recapture_committed(void) {
     }
 }
 
-/* How far the present has run past the state the ring's head describes.
- *
- * A screen whose registered regions stop changing stops rolling the ring: the
- * head stays pinned at the tick the state last changed, and the pair keeps
- * describing the LAST MOTION rather than the state on screen. Under wall-clock
- * stamps that is harmless, because the growing (now - curr) clamps alpha to 1
- * and the present shows the head. Under a forced present target -- the
- * intermediate screenshot leg phases onto curr->tick_ns + alpha*period -- the
- * staleness is discarded and the present re-lerps the middle of a motion that
- * ended, at any distance behind the frame it is labelled with.
- *
- * The pair's own cadence is the tolerance: the game's logic advances every
- * other tick while capture fires every tick, so the head is legitimately one
- * capture behind for as long as the gap between the two stored ticks. Past
- * that, the state is static and the head IS what the frame shows. */
+/* Staleness of the head against the latest capture; tolerance = the pair's gap. */
 int openpete_interp_curr_is_stale(void) {
     if (!s_initialized || !s_enabled || !s_last_tick_seen) return 0;
     const openpete_interp_snapshot_t* curr = &s_snap[s_head];

@@ -28,35 +28,57 @@ extern int openpete_no_lod;
  * off under extended LOD, 1.0 otherwise). 1.0 = the authentic PSX curve; N scales
  * every channel of the fog model together (DPCS vertex curve, CLUT-row
  * palette ladder, near-tile select, fog-saturation LP handoff — see
- * games/spyro-1/renderer/terrain.c). Always > 0 after boot. */
+ * games/common/renderer/terrain.c). Always > 0 after boot. */
 extern float openpete_fog_scale;
 
-/* Boot-time entry: resolve the fog scale and set openpete_no_lod for
- * native renderer modes (warn + ignore in PsyCross reference mode).
- * Returns 0 on success. Called from core/runtime/run.c. */
+/** @brief Resolve the boot fog scale and draw-distance policy from the options.
+ *
+ * Called once at boot from core/runtime/run.c. The fog scale is resolved
+ * before the renderer check: an explicit --fog-scale wins, else extended
+ * LOD takes 100.0 (effectively off) and original LOD 1.0; the explicit
+ * value is remembered for later live toggles. openpete_no_lod is set to 1
+ * only for extended LOD under a native renderer; the PsyCross reference
+ * renderer logs a warning and keeps canonical detail.
+ * @param opts Parsed options; NULL leaves the fog scale and clears the flag.
+ * @return 0 in every case. */
 int no_lod_apply_options(const openpete_options_t* opts);
 
-/* Live toggle (in-game settings menu): set the draw-distance display policy at
- * runtime. `on` != 0 = extended (full detail). `fog_scale` > 0 overrides the fog
- * multiplier; <= 0 uses the mode default (100.0 extended / 1.0 original, matching
- * no_lod_apply_options) — but only while fog is on autopilot: an explicit
- * --fog-scale or a prior openpete_fog_set keeps winning. The native feeders read
- * openpete_no_lod / openpete_fog_scale per frame, so it takes effect on the next
- * frame. Native-renderer display policy only (no gameplay effect). */
+/** @brief Set the draw-distance display policy at runtime.
+ *
+ * Called by the settings menu's LOD row, the knob registry and the run
+ * loop's LOD hotkey. A @p fog_scale above 0 sets the fog multiplier. A
+ * value of 0 or below applies the mode default only while fog is on
+ * autopilot: an explicit --fog-scale is restored when one was given, else
+ * 100.0 for extended and 1.0 for original; after openpete_fog_set or
+ * openpete_fog_scale_set the fog scale is left alone. The native feeders
+ * read openpete_no_lod and openpete_fog_scale on every walk, so the change
+ * applies from the next one. Display policy only, no gameplay effect.
+ * @param on Nonzero for extended (full detail), 0 for original.
+ * @param fog_scale Fog multiplier, or 0 or below for the mode default. */
 void openpete_no_lod_set(int on, float fog_scale);
 
-/* 1 while fog is effective (scale below the ~100x "effectively off"
- * sentinel). The menu's FOG row reads its display state from this. */
+/** @brief Report whether fog is in effect.
+ *
+ * The settings menu's FOG row and the knob registry read their state from
+ * it.
+ * @return 1 while the fog scale is below the 100.0 off sentinel, else 0. */
 int openpete_fog_enabled(void);
 
-/* Live fog toggle (in-game settings menu FOG row): on = the user's explicit
- * --fog-scale if one was given (and is itself below the off-sentinel), else
- * the authentic PSX curve (1.0); off = effectively no fog (100.0). Marks fog
- * as user-set, so later LOD toggles leave the fog scale alone. */
+/** @brief Turn fog on or off from the settings menu's FOG row or the knob registry.
+ *
+ * On restores the explicit --fog-scale when one was given below the 100.0
+ * off sentinel, else the authentic PSX curve (1.0); off sets 100.0
+ * (effectively no fog). Takes fog off autopilot, so later LOD toggles leave
+ * the fog scale alone.
+ * @param on Nonzero for fog on. */
 void openpete_fog_set(int on);
 
-/* Set the fog-distance multiplier directly (clamped to [0.25, off-sentinel]).
- * Marks fog as manually touched, so LOD switches stop moving it. */
+/** @brief Set the fog-distance multiplier directly.
+ *
+ * The knob registry's fog-scale row calls it. Takes fog off autopilot, so
+ * LOD switches stop moving it. Terrain re-resolves the scale every walk, so
+ * the value applies from the next one.
+ * @param scale Multiplier, clamped to [0.25, 100.0]. */
 void openpete_fog_scale_set(float scale);
 
 #ifdef __cplusplus
