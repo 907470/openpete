@@ -8,3 +8,6 @@
 icy-peak-reflective-mirror.bk2 | 1901-2019
 # Portal entry: walking, then the entry glide.
 sunrise-spring-sunny-villa-portal-entry.bk2 | 1541-1599
+# Held camera cuts after the portal entry: legs 1927 and 2493 hold the cut at
+# alpha 0 and end on the tick at alpha 1.
+sunrise-spring-sunny-villa-portal-entry.bk2 | 1919-1935,2485-2501
