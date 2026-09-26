@@ -40,32 +40,53 @@
 extern "C" {
 #endif
 
-/* Directory containing the running executable, no trailing separator.
- * Returns 0 on success, -1 if it cannot be determined. */
+/** @brief Directory containing the running executable, with no trailing separator.
+ *
+ * Read from GetModuleFileNameA on Windows and /proc/self/exe elsewhere.
+ * @param out Receives the path.
+ * @param cap Capacity of @p out.
+ * @return 0 on success, -1 when the path cannot be read or does not fit. */
 int openpete_exe_dir(char* out, size_t cap);
 
-/* <dir><sep><leaf>, using the platform separator and tolerating a `dir` that
- * already ends in one. Truncates rather than overruns. */
+/** @brief Write <dir><sep><leaf> with the platform separator.
+ *
+ * A dir that already ends in '/' or '\\' gets no second separator. The
+ * result truncates at @p cap rather than overruns.
+ * @param out Receives the path.
+ * @param cap Capacity of @p out.
+ * @param dir The directory.
+ * @param leaf The name appended to it. */
 void openpete_paths_join(char* out, size_t cap, const char* dir, const char* leaf);
 
-/* Select the layout: 1 portable, 0 user, -1 platform default. Called by
- * the config reader for a `portable` directive; invalidates the cached
- * resolution, so it may run after a probe. */
+/** @brief Select the layout: 1 portable, 0 user, -1 platform default.
+ *
+ * The config reader calls it for a `portable` directive, and with -1 to drop
+ * the previous read's directive. It invalidates the cached resolution, so it
+ * may run after openpete_paths_portable has been called.
+ * @param tri 1, 0, or any negative value for the platform default. */
 void openpete_paths_set_portable(int tri);
 
-/* The resolved layout — the preference above, degraded to 0 when the exe
- * directory is not writable. Warns once about the degrade. */
+/** @brief The resolved layout: 1 portable, 0 user.
+ *
+ * The openpete_paths_set_portable preference, else the platform default,
+ * degraded to 0 when the exe directory cannot be located or is not writable.
+ * The result is cached until the next openpete_paths_set_portable, so the
+ * degrade warning prints once per resolution.
+ * @return 1 for the portable layout, 0 for the user layout. */
 int openpete_paths_portable(void);
 
-/* The per-user config directory (%APPDATA%\openpete,
- * $XDG_CONFIG_HOME/openpete). `create` makes it; pass 0 to merely name it —
- * the layered config reads that file whether or not it is the write target,
- * and a portable install must not leave an empty directory in AppData just
- * for having looked. Returns 0 on success.
+/** @brief The per-user config directory: %APPDATA%\\openpete or $XDG_CONFIG_HOME/openpete.
  *
- * There is no matching "give me the write target" call: config.c already
- * holds both candidate paths as config layers, and picks between them with
- * openpete_paths_portable(). */
+ * Without the environment variable the base is %USERPROFILE%\\AppData\\Roaming
+ * or ~/.config. Pass @p create 0 to name the directory only: the layered
+ * config reads the file there whether or not it is the write target, and a
+ * portable install leaves no empty directory in AppData. There is no
+ * write-target call; config.c holds both candidate paths as config layers
+ * and picks between them with openpete_paths_portable.
+ * @param out Receives the path.
+ * @param cap Capacity of @p out.
+ * @param create Non-zero to create the base and openpete directories.
+ * @return 0 on success, -1 when no base resolves or the path does not fit. */
 int openpete_paths_user_config_dir(char* out, size_t cap, int create);
 
 /** @brief Resolve the directory holding one class of machine-local state.

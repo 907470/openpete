@@ -32,10 +32,14 @@ static int needs_value(const char* flag, int argc, char** argv, int i, const cha
     return 0;
 }
 
-/* --sfx / --music: the game's own volume-slider scale, 0 (OFF) .. 10 (max),
- * with on|off as the ends of it and -1 meaning "don't preset this slider".
- * Writes the level to *out and returns 0, or prints the vocabulary and
- * returns -1. */
+/** @brief Parse a --sfx, --music or --vibration value on the game's 0..10 slider scale.
+ *
+ * "off" is 0 and "on" is 10; -1 means the game's own setting stands. On
+ * success writes the level to *out and returns 0; otherwise prints the
+ * accepted vocabulary and returns -1.
+ * @param flag The flag or env var name, for the message.
+ * @param v The value text.
+ * @param out Receives the level. */
 static int parse_volume_arg(const char* flag, const char* v, int* out) {
     if (strcmp(v, "off") == 0)      { *out = 0;  return 0; }
     if (strcmp(v, "on")  == 0)      { *out = 10; return 0; }
@@ -54,9 +58,16 @@ static int parse_volume_arg(const char* flag, const char* v, int* out) {
     return 0;
 }
 
-/* Tokenize a sidecar args-file buffer in place. Whitespace separates
- * tokens; '#' to end-of-line is a comment. Modifies buf (NUL-inserts
- * after each token). Returns token count, or -1 on overflow. */
+/** @brief Tokenize an args-file buffer in place.
+ *
+ * Whitespace separates tokens and '#' starts a comment that runs to the end
+ * of the line. A double-quoted span may hold whitespace, and inside it a
+ * backslash escapes a double quote or a backslash. The buffer is rewritten: each token is unescaped and
+ * NUL-terminated where it lies. Returns the token count, or -1 when the
+ * tokens exceed max_tokens or a quote is unterminated.
+ * @param buf The NUL-terminated file contents.
+ * @param tokens Receives a pointer into buf per token.
+ * @param max_tokens Capacity of tokens. */
 static int tokenize_sidecar_args(char* buf, char** tokens, int max_tokens) {
     int n = 0;
     char* p = buf;
@@ -97,19 +108,22 @@ static int tokenize_sidecar_args(char* buf, char** tokens, int max_tokens) {
     return n;
 }
 
-/* Read an args file at `path` (≤4096 bytes), tokenize it (whitespace-
- * separated, '#'..EOL comments), and splice the tokens into argv right
- * after argv[0] so they parse BEFORE the trailing args — the trailing
- * args (further right) then win scalar conflicts (last-write). `label`
- * names the source in diagnostics.
+/** @brief Splice the tokens of an args file into argv right after argv[0].
  *
- * Returns:
- *    1  spliced; *out_argc / *out_argv hold the new argv (heap-owned,
- *       leaked for program lifetime — token strings point into a malloc
- *       buffer that has to outlive opts).
- *    0  file absent or empty/comments-only; caller keeps `argv`.
- *   -1  error (logged); caller should bail with SETUP_ERROR.
- */
+ * The file is at most 4096 bytes and 64 tokens, tokenized by
+ * tokenize_sidecar_args. The tokens parse before the existing arguments, so
+ * the existing arguments win scalar conflicts under last-write. Returns 1
+ * when spliced, with *out_argc and *out_argv holding the new argv (heap
+ * memory kept for the process lifetime, since the tokens point into a buffer
+ * that outlives opts); 0 when the file is absent or holds no tokens, and the
+ * caller keeps argv; -1 on an error, logged, for which the caller returns
+ * OPENPETE_EXIT_SETUP_ERROR.
+ * @param path The args file.
+ * @param label Names the source in messages.
+ * @param argc Argument count.
+ * @param argv Argument vector.
+ * @param out_argc Receives the new argument count.
+ * @param out_argv Receives the new argument vector. */
 static int splice_args_file(const char* path, const char* label,
                             int argc, char** argv,
                             int* out_argc, char*** out_argv) {
@@ -162,9 +176,16 @@ static int splice_args_file(const char* path, const char* label,
     return 1;
 }
 
-/* If argv contains "--bk2 PATH" and PATH.args exists on disk, splice its
- * tokens in after argv[0] (parsed before the user's flags — user CLI wins
- * scalar conflicts). See splice_args_file for the return contract. */
+/** @brief Splice PATH.args after argv[0] when argv holds "--bk2 PATH" and that file exists.
+ *
+ * The first --bk2 followed by a value names the movie. The sidecar tokens
+ * parse before the typed flags, so a typed flag wins a scalar conflict.
+ * Returns as splice_args_file does, or -1 on allocation failure, and 0 when
+ * argv has no --bk2.
+ * @param argc Argument count.
+ * @param argv Argument vector.
+ * @param out_argc Receives the new argument count.
+ * @param out_argv Receives the new argument vector. */
 static int expand_bk2_sidecar(int argc, char** argv, int* out_argc, char*** out_argv) {
     int bk2_idx = -1;
     for (int i = 1; i < argc - 1; i++) {
@@ -201,9 +222,12 @@ static int expand_bk2_sidecar(int argc, char** argv, int* out_argc, char*** out_
  * --bk2 replay flag would make a recording-while-replaying session try
  * to replay the *old* movie instead of the new one. */
 
-/* A token survives a bare whitespace split only if it is non-empty, holds
- * no whitespace, and does not open a comment. Everything else is quoted by
- * sidecar_emit_token and put back by tokenize_sidecar_args. */
+/** @brief 1 when a token must be written double-quoted in an args sidecar.
+ *
+ * A token survives a bare whitespace split only if it is non-empty, does not
+ * open a comment, and holds no whitespace, double quote or backslash.
+ * sidecar_emit_token quotes and escapes every other token, and
+ * tokenize_sidecar_args restores it. */
 static int sidecar_needs_quotes(const char* a) {
     if (!*a || *a == '#') return 1;
     for (const char* q = a; *q; q++)
@@ -240,9 +264,13 @@ static int is_bk2_flag(const char* a) {
     return strncmp(a, "--bk2", 5) == 0;
 }
 
-/* How many following tokens a --bk2* flag consumes as its value (0 or
- * 1), so the exclusion walk skips the value too. `next` is the token
- * after `a` (or NULL at end of argv). */
+/** @brief How many following tokens (0 or 1) a --bk2* flag consumes as its value.
+ *
+ * The sidecar exclusion walk skips the value with the flag. --bk2 and
+ * --bk2-frame-offset always take one; --bk2-record takes the next token only
+ * when it does not start with '-'.
+ * @param a The --bk2* flag.
+ * @param next The token after a, or NULL at the end of argv. */
 static int bk2_flag_value_tokens(const char* a, const char* next) {
     if (strcmp(a, "--bk2") == 0) return 1;                       /* replay PATH */
     if (strcmp(a, "--bk2-frame-offset") == 0) return 1;          /* always a value */
@@ -251,11 +279,15 @@ static int bk2_flag_value_tokens(const char* a, const char* next) {
     return 0;   /* --bk2-stop-on-end and any other flag-only --bk2* */
 }
 
-/* Build the sidecar content from `argv` (the original, pre-splice one),
- * dropping every --bk2* flag (and its value). Returns a heap buffer the
- * caller owns (leaked for program lifetime), or NULL on OOM. Tokens are
- * space-separated with a trailing newline, prefixed by a '#' header the
- * sidecar tokenizer treats as a comment. */
+/** @brief Build the <bk2>.args sidecar text from the typed argv, without the --bk2* flags.
+ *
+ * argv is the command line before the openpete.toml and sidecar splices.
+ * Every --bk2* flag and its value are dropped. The text is a '#' comment
+ * header, then the tokens space-separated (quoted where
+ * sidecar_needs_quotes says so), then a newline. Returns a heap buffer kept
+ * for the process lifetime, or NULL when allocation fails.
+ * @param argc Argument count.
+ * @param argv The typed argument vector. */
 static char* build_bk2_record_args(int argc, char** argv) {
     static const char header[] =
         "# openpete --bk2-record: launch args auto-captured for replay via --bk2\n"
@@ -289,10 +321,13 @@ static char* build_bk2_record_args(int argc, char** argv) {
     return buf;
 }
 
-/* Does this bare argument name a disc image on disk? Only then may a
- * positional be read as one — an existence check alone would swallow a
- * mistyped flag-less path, and an extension check alone would swallow a
- * typo'd flag value. */
+/** @brief 1 when a bare argument names an existing disc image file.
+ *
+ * The extension must be .cue, .bin, .img, .iso, .chd or .pbp, compared
+ * case-insensitively, and the file must open for reading. Both tests are
+ * required: an existence check alone would take a mistyped path, and an
+ * extension check alone would take a mistyped flag value.
+ * @param a The argument. */
 static int arg_is_disc_image(const char* a) {
     const char* dot = strrchr(a, '.');
     static const char* const kExt[] = { ".cue", ".bin", ".img", ".iso",
@@ -314,10 +349,13 @@ static int arg_is_disc_image(const char* a) {
     return 1;
 }
 
-/* Resolve the default --bk2-record path when the flag is passed with no
- * argument: "<bk2-dir>/<timestamp>.bk2", creating the bk2 dir. Falls back
- * to a relative "bk2/..." if no data directory can be resolved. Returns
- * a heap buffer (leaked for program lifetime), or NULL on OOM. */
+/** @brief The default --bk2-record path, "<bk2 dir>/<YYYYmmdd-HHMMSS>.bk2", creating the directory.
+ *
+ * The bk2 directory is the "bk2" data directory from openpete_paths_data_dir,
+ * or "bk2" relative to the working directory when none resolves. A failed
+ * directory creation is logged and the path is still returned. Returns a
+ * heap buffer kept for the process lifetime, or NULL when allocation
+ * fails. */
 static char* resolve_default_bk2_record_path(void) {
     char stamp[24];
     time_t now = time(NULL);
@@ -837,9 +875,15 @@ typedef struct {
     bool player_pose_flag;
 } parse_notes_t;
 
-/* The flag chain: one arm per flag, left to right over the spliced argv, the
- * last write winning. */
-// complexity-ratchet: one chain of sibling arms over argv, one per flag; a new flag adds an arm and no other structure
+/** @brief Walk the spliced argv left to right, one arm per flag, the last write winning.
+ *
+ * An argument no arm accepts fails the parse; the message names the openpete.toml table when the token came from
+ * the config splice. Facts that are not options go to notes.
+ * @param opts The options block.
+ * @param argc Argument count.
+ * @param argv The spliced argument vector.
+ * @param notes Receives the post-parse facts. */
+// complexity-ratchet: one chain of sibling arms over argv, one per flag, where a new flag adds an arm and no other structure
 static int parse_flag_chain(openpete_options_t* opts, int argc, char** argv,
                             parse_notes_t* notes) {
     for (int i = 1; i < argc; i++) {
@@ -1659,9 +1703,17 @@ static int parse_flag_chain(openpete_options_t* opts, int argc, char** argv,
     return OPENPETE_EXIT_OK;
 }
 
-/* --bk2-record post-processing (after validation, so we don't mkdir on
- * a bad invocation): fill in the default path when none was given, and
- * capture the launch args into the .args sidecar. */
+/** @brief Complete a --bk2-record request: default path, then the .args sidecar text.
+ *
+ * Runs after the flag chain has validated the command line, so a bad
+ * invocation creates no directory. A NULL sidecar (allocation failure) keeps
+ * the recording without a sidecar. OPENPETE_PLAYER_POSE set without a typed
+ * --player-pose fails the parse, since the sidecar carries argv only and the
+ * replay would start from the spawn.
+ * @param opts The options block.
+ * @param orig_argc The typed argument count.
+ * @param orig_argv The typed argument vector.
+ * @param notes The flag chain's post-parse facts. */
 static int finish_bk2_record(openpete_options_t* opts, int orig_argc,
                              char** orig_argv, const parse_notes_t* notes) {
     if (!notes->bk2_record_requested) return OPENPETE_EXIT_OK;
@@ -1688,10 +1740,14 @@ static int finish_bk2_record(openpete_options_t* opts, int orig_argc,
     return OPENPETE_EXIT_OK;
 }
 
-/* The env spelling of an on/off flag, applied only when the flag was not
- * given (*slot < 0): CLI beats env. A harness that launches the game from
- * several sites sets the variable once at the top of the script; an argument
- * missed at one site is a silent miss. */
+/** @brief Apply the env spelling of an on/off flag when the flag was not typed (*slot < 0).
+ *
+ * The CLI beats the env. The variable accepts 1, 0, on or off; an empty or
+ * unset variable leaves the slot alone and any other value fails the parse.
+ * A harness that launches the game from several sites sets the variable once
+ * at the top of the script instead of threading an argument into each site.
+ * @param name The env var.
+ * @param slot The tri-state option field. */
 static int env_onoff_fallback(const char* name, int* slot) {
     if (*slot >= 0) return OPENPETE_EXIT_OK;
     const char* v = getenv(name);
@@ -1706,8 +1762,12 @@ static int env_onoff_fallback(const char* name, int* slot) {
     return OPENPETE_EXIT_OK;
 }
 
-/* Env spellings of dual-spelling flags, after the chain so a typed flag has
- * already claimed its slot. */
+/** @brief Apply the env spellings of dual-spelling flags the command line left unset.
+ *
+ * Runs after the flag chain, so a typed flag has already claimed its slot.
+ * Covers OPENPETE_VIBRATION, OPENPETE_MOUSE, OPENPETE_INPUT_LOCK and
+ * OPENPETE_BACKGROUND, and refuses --input-lock with OPENPETE_INPUT_LEGACY.
+ * @param opts The options block. */
 static int apply_env_spellings(openpete_options_t* opts) {
     /* OPENPETE_VIBRATION: the env spelling of --vibration, applied only when
      * the flag was not given (CLI beats env, the project-wide rule).

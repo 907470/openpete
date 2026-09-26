@@ -892,20 +892,49 @@ typedef struct openpete_options {
     const char* cheats;
 } openpete_options_t;
 
-/* Defaults: 0 / unlimited / not-headless / log plain. */
+/** @brief Zero opts, then set every field whose default is not zero.
+ *
+ * Unset tri-state fields take -1 so a later consumer can tell a typed value
+ * from the default. The env spellings of a few flags (OPENPETE_WIREFRAME,
+ * OPENPETE_TERRAIN_CACHE, OPENPETE_DISC_CACHE, OPENPETE_LOAD_DELAY among
+ * them) are read here, and openpete_options_parse, run later, lets the typed
+ * flag overwrite them.
+ * @param opts The options block to initialize. */
 void openpete_options_init(openpete_options_t* opts);
 
-/* Set the game's starting renderer and the one help calls the default. Call
- * between openpete_options_init and openpete_options_parse. */
+/** @brief Set the game's starting renderer and the one the help text calls the default.
+ *
+ * Writes both renderer and default_renderer. Call between
+ * openpete_options_init and openpete_options_parse, so a typed --renderer
+ * still wins.
+ * @param opts The options block.
+ * @param r The game's default renderer. */
 void openpete_options_set_default_renderer(openpete_options_t* opts,
                                            openpete_renderer_t r);
 
-/* Parse argv into opts. Unknown flags return OPENPETE_EXIT_SETUP_ERROR;
- * caller should propagate the exit code. argv[0] is treated as program name. */
+/** @brief Parse the command line into opts.
+ *
+ * argv[0] is the program name. The parse splices, left to right, the
+ * openpete.toml flags, the <bk2>.args sidecar of a --bk2 movie, and the
+ * typed arguments, then walks them with the last write winning. After the
+ * walk it resolves the default --bk2-record path and its sidecar, then
+ * applies the env spellings of the flags that were not typed. The EXE-source
+ * check is left to openpete_options_require_exe_source.
+ * @param opts The options block, initialized by openpete_options_init.
+ * @param argc Argument count.
+ * @param argv Argument vector.
+ * @return OPENPETE_EXIT_OK, or OPENPETE_EXIT_SETUP_ERROR on an unknown flag,
+ *         a bad value, or an unreadable args file; the caller propagates it. */
 int  openpete_options_parse(openpete_options_t* opts, int argc, char** argv);
 
-/* Validate that an EXE source exists — call AFTER any library/ingest
- * resolution (see disc-library, distribution D2.5). */
+/** @brief Check that a disc or EXE path is set.
+ *
+ * Call after the disc library resolves, since --ingest or an installed
+ * library entry can supply the disc after parse. --test-segv needs no EXE
+ * and always passes.
+ * @param opts The parsed options.
+ * @return OPENPETE_EXIT_OK, or OPENPETE_EXIT_SETUP_ERROR after printing
+ *         the ways to name a game. */
 int openpete_options_require_exe_source(const openpete_options_t* opts);
 
 /* Run the main loop. Returns one of OPENPETE_EXIT_*. */

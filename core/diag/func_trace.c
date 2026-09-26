@@ -99,6 +99,15 @@ static NO_INSTR int resolve(const void *fn) {
 }
 
 /* ---- the instrumentation hooks --------------------------------------------- */
+/** @brief -finstrument-functions entry hook: push a shadow-stack frame for this_fn.
+ *
+ * The first call initializes the tracer on the calling thread; without a
+ * registered symtab the tracer stays inert. Calls from any other thread are
+ * ignored so the single shared stack stays consistent. Past FT_STACK_MAX
+ * frames the call is only counted, so the exit hook stays balanced. A
+ * function the symtab does not list gets index -1 and accrues no bin.
+ * @param this_fn Address of the entered function.
+ * @param call_site Unused. */
 NO_INSTR void __cyg_profile_func_enter(void *this_fn, void *call_site) {
     (void)call_site;
     if (s_active == 0) ft_init();

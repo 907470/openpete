@@ -196,21 +196,26 @@ void knob_registry_late_stamp(void);
  * KNOB_LIVE. Either pointer may be NULL to keep the row's own. Returns 0 if
  * the id was found (it won't be when the row is compiled out, e.g. Debug
  * rows under OPENPETE_HIDE_DEBUG_FLAGS — callers just ignore that). */
-/* Contribute a row the core table cannot name — a game module's own knobs
- * (per-game cheats, per-game toggles). The row is COPIED, so the caller's
- * knob_desc_t may be a stack temporary, but every string it points at must
- * outlive the process (literals or module statics). Rows land after the last
- * existing row of their `section` (so they join that collapsing header), or
- * start a new section at the end.
+/** @brief Append a row the core table cannot name, such as a game module's cheats or toggles.
  *
- * Call at feature apply-options time — before the overlay first draws and
- * before knob_registry_init stamps boot values. Returns 0 on success, -1 when
- * the extra-row capacity is exhausted. */
+ * The row is copied, so the caller's knob_desc_t may be a stack temporary,
+ * but every string it points at must outlive the process (literals or module
+ * statics). The row lands after the last existing row of its section, so it
+ * joins that collapsing header, or starts a new section at the end. Call at
+ * feature apply-options time, before the overlay first draws and before
+ * knob_registry_init stamps boot values.
+ * @param row The row to copy in.
+ * @return 0 on success, -1 when row is NULL or the extra-row capacity
+ *         (KNOB_EXTRA_MAX rows) is exhausted. */
 int openpete_knob_add(const knob_desc_t *row);
 
-/* The game's default window size, for the --window row's "(default)" text.
- * Called by the host loop once the game layout is known; the registry itself
- * links no game layout, so console tests that compile it need no game. */
+/** @brief Record the game's default window size for the --window row's "(default)" text.
+ *
+ * The host loop calls it once the game layout is known; the registry links
+ * no game layout, so console tests that compile it need no game. Until it is
+ * called, and while either size is 0, the row shows "(default)" with no size.
+ * @param w Default window width in pixels.
+ * @param h Default window height in pixels. */
 void openpete_knob_default_window_set(int w, int h);
 
 int openpete_knob_bind_str(const char *id,

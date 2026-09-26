@@ -213,6 +213,15 @@ uint16_t openpete_psx_root_counter2(void);
 
 /* --- Crash handler ------------------------------------------------------- */
 
+/** @brief Install the process crash handler that dumps host and guest state to stderr.
+ *
+ * On POSIX it takes SIGSEGV, SIGABRT, SIGFPE, SIGILL and SIGBUS through
+ * sigaction with SA_SIGINFO; the handler prints the dump, drains the log
+ * mirror and re-raises under the default disposition. On Windows it sets an
+ * unhandled-exception filter that prints the dump and continues the search,
+ * and records the calling thread as main for the dump's thread label. The
+ * guest registers come from the CPUState passed to
+ * openpete_psx_set_diag_cpu. */
 void openpete_psx_install_crash_handler(void);
 
 /* --- EXE loader (BIN/CUE → bytes) ---------------------------------------- */

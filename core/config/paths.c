@@ -76,9 +76,11 @@ static int dir_exists(const char* p) {
     return (st.st_mode & S_IFMT) == S_IFDIR;
 }
 
-/* Can we create files here? The only question that decides the layout, and
- * the only one a permission bit cannot answer portably (Windows ACLs, the
- * Program Files virtualization store, read-only mounts). So ask by doing. */
+/** @brief 1 when a file can be created in dir, tested by creating and removing a probe file.
+ *
+ * A permission bit cannot answer this portably (Windows ACLs, the Program
+ * Files virtualization store, read-only mounts), so the probe
+ * ".openpete-write-probe" is written and removed. */
 static int dir_writable(const char* dir) {
     char probe[OPP_PATH_MAX + 32];
     openpete_paths_join(probe, sizeof probe, dir, ".openpete-write-probe");
@@ -122,9 +124,15 @@ int openpete_paths_portable(void) {
     return 1;
 }
 
-/* Base of the per-user layout for one class of data. `win_var` /
- * `win_fallback` and `posix_var` / `posix_fallback` differ between config
- * (roaming / XDG_CONFIG_HOME) and state (local / XDG_STATE_HOME). */
+/** @brief Base directory of the per-user layout for one class of data.
+ *
+ * The platform's environment variable names the base; when it is unset or
+ * empty the fallback is taken under %USERPROFILE% or $HOME. The variable
+ * pairs differ per class: config (APPDATA, XDG_CONFIG_HOME), state
+ * (LOCALAPPDATA, XDG_STATE_HOME) and data (LOCALAPPDATA, XDG_DATA_HOME).
+ * With create the base is made, since a fallback spelling may not exist yet.
+ * Returns 0, or -1 with an error logged when neither variable is set or the
+ * path does not fit. */
 static int user_base(char* out, size_t cap, int create, const char* win_var,
                      const char* win_fallback, const char* posix_var,
                      const char* posix_fallback) {
@@ -203,10 +211,12 @@ int openpete_paths_user_config_dir(char* out, size_t cap, int create) {
                              "XDG_CONFIG_HOME", ".config");
 }
 
-/* When the portable layout is new to an install, the user's cards and
- * savestates may still be sitting in the per-user directory an earlier
- * layout wrote to. Nothing is moved: the point is only that the user is
- * told where to look rather than concluding a save was lost. */
+/** @brief Log where an earlier per-user layout left a state leaf that the portable layout now keeps elsewhere.
+ *
+ * Runs at most once per leaf (up to four leaves are remembered). The line
+ * prints only when the portable directory does not exist yet and the
+ * per-user state directory holds the same leaf. Nothing is moved; the log
+ * tells the user where the old cards or savestates are. */
 static void hint_legacy_state(const char* leaf, const char* portable_dir) {
     static const char* s_hinted[4];
     static int s_hinted_n;
@@ -251,11 +261,12 @@ int openpete_paths_state_dir(const char* leaf, char* out, size_t cap, int create
     return 0;
 }
 
-/* The library, mods, user assets and recordings were exe-relative on every
- * platform before the layout split, so an install that predates it holds
- * live content there. Keep using it rather than silently starting over in
- * the per-user directory — but only when the install directory is one we
- * can actually write, which a read-only mount is not. */
+/** @brief Adopt <exe dir>/<leaf> when it exists and is writable, writing it to out.
+ *
+ * The library, mods, user assets and recordings were exe-relative on every
+ * platform in earlier layouts, so an older install holds content there. A
+ * read-only install directory is not adopted. Returns 1 when adopted, 0
+ * otherwise (also when the path does not fit in cap). */
 static int adopt_install_dir(const char* leaf, char* out, size_t cap) {
     char base[OPP_PATH_MAX];
     if (openpete_exe_dir(base, sizeof base) != 0) return 0;

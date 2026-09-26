@@ -107,8 +107,10 @@ static int aspect_set(knob_desc_t *k, double v) {
 static const int         k_ssaa_vals[]  = { 1, 2, 3, 4 };
 static const char *const k_ssaa_names[] = { "off", "2x", "3x", "4x" };
 #define K_SSAA_N ((int)(sizeof(k_ssaa_vals)/sizeof(k_ssaa_vals[0])))
-/* Nearest rung to a factor (an --ssaa the ladder doesn't list still has to
- * land on a row). */
+/** @brief Index of the k_ssaa_vals rung nearest to a supersampling factor.
+ *
+ * An --ssaa factor the ladder does not list still lands on a row; a tie
+ * picks the lower rung. */
 static int ssaa_idx_of(int factor) {
     int best = 0, bd = 1 << 30;
     for (int i = 0; i < K_SSAA_N; i++) {
@@ -130,8 +132,12 @@ static int ssaa_set(knob_desc_t *k, double v) {
     return 0;
 }
 
-/* -1 = the device never got an explicit preference (the env/surface picked the
- * present mode), which is what the boot value already records. */
+/** @brief The renderer's vsync preference as 0 or 1.
+ *
+ * Returns the stored value until the native renderer is up, and also when
+ * the renderer reports -1: the device never got an explicit preference (the
+ * env or the surface picked the present mode), which the boot value already
+ * records. */
 static double vsync_get(const knob_desc_t *k) {
     KNOB_LIVE_OR_STORED(k);
     int pref = openpete_native_get_vsync();
@@ -186,8 +192,10 @@ static int osdpos_set(knob_desc_t *k, double v) {
     k->stored_num = (int)v;
     return 0;
 }
-/* Seconds at the surface, milliseconds underneath — the same unit boundary
- * --osd-timeout draws, and the only other place it is crossed. */
+/** @brief The default notification timeout in seconds.
+ *
+ * The OSD holds milliseconds; the row shows seconds, the unit --osd-timeout
+ * takes. Returns the stored value until the native renderer is up. */
 static double osdtimeout_get(const knob_desc_t *k) {
     KNOB_LIVE_OR_STORED(k);
     return (double)openpete_osd_default_timeout_ms() / 1000.0;
@@ -222,9 +230,12 @@ static int vprec_set(knob_desc_t *k, double v) {
     return 0;
 }
 
-/* Live getter (not stored_num): the setter only QUEUES the mode — the
- * renderer applies it (full pipeline re-bake) at the next present — and the
- * O-menu row moves it too, so the row must read the renderer's state. */
+/** @brief The renderer's applied texture mapping: 0 perspective, 1 affine.
+ *
+ * Returns the stored value until the native renderer is up, the renderer's
+ * state after that. The setter only queues the mode, which the renderer
+ * applies with a pipeline rebuild at the next present, and the O menu moves
+ * the same mode, so the row reads the renderer rather than stored_num. */
 static double texmap_get(const knob_desc_t *k) {
     KNOB_LIVE_OR_STORED(k);
     return openpete_native_get_texture_mapping();
@@ -265,7 +276,10 @@ static int rquant_set(knob_desc_t *k, double v) {
     return 0;
 }
 
-/* Live getter (queued like texmap): untextured lighting view. */
+/** @brief The renderer's applied untextured-lighting view flag.
+ *
+ * A change the setter queues reads as the old value until the next present
+ * applies it. */
 static double notex_get(const knob_desc_t *k) {
     (void)k;
     return openpete_native_get_notex();
@@ -276,7 +290,10 @@ static int notex_set(knob_desc_t *k, double v) {
     return 0;
 }
 
-/* Live getter (queued like notex): wireframe view. */
+/** @brief The renderer's applied wireframe view flag.
+ *
+ * A change the setter queues reads as the old value until the next present
+ * applies it. */
 static double wireframe_get(const knob_desc_t *k) {
     (void)k;
     return openpete_native_get_wireframe();
@@ -354,6 +371,7 @@ static void window_get_str(const knob_desc_t *k, char *buf, size_t cap) {
 
 /* ---- Pacing ---- */
 
+/** @brief The pacer's live render-fps target (0 is the match-sim pacer). */
 static double renderfps_get(const knob_desc_t *k) { (void)k; return openpete_get_render_fps(); }
 static int renderfps_set(knob_desc_t *k, double v) {
     (void)k;
@@ -394,12 +412,15 @@ static int rewind_set(knob_desc_t *k, double v) {
 
 /* ---- Audio ---- */
 
+/** @brief 1 when host audio is muted, else 0. */
 static double mute_get(const knob_desc_t *k) { (void)k; return openpete_get_mute() ? 1.0 : 0.0; }
 static int mute_set(knob_desc_t *k, double v) { (void)k; openpete_set_mute(v != 0.0); return 0; }
 
-/* The two in-game slider presets. Both setters only move a host-side request
- * — the guest write happens on the game's own tick hook — so they satisfy the
- * live-row contract despite the value ending up in gameplay-readable RAM. */
+/** @brief The requested in-game SFX slider preset.
+ *
+ * The SFX and music setters below move only a host-side request; the game's
+ * tick hook writes the guest slider, so the rows keep the live-row contract
+ * although the value ends up in gameplay-readable RAM. */
 static double sfxvol_get(const knob_desc_t *k) { (void)k; return (double)openpete_get_sfx_volume(); }
 static int sfxvol_set(knob_desc_t *k, double v) { (void)k; openpete_set_sfx_volume((int)v); return 0; }
 static double musicvol_get(const knob_desc_t *k) { (void)k; return (double)openpete_get_music_volume(); }
@@ -426,10 +447,12 @@ static int vibration_set(knob_desc_t *k, double v) { (void)k; openpete_set_vibra
 
 /* ---- Recording ---- */
 
-/* --record is latched at boot, so with no path this run will never encode a
- * frame and every row in the section is inert — as is all of it on a build
- * with no video encoder, where --record only warns. Hidden rather than
- * disabled: there is nothing the user could do about either from here. */
+/** @brief 1 when the Recording rows are shown: an encoder is built in and --record named a path.
+ *
+ * --record is latched at boot, so a run with no path never encodes and every
+ * row in the section is inert; on a build with no video encoder --record only
+ * warns. The rows are hidden rather than disabled because neither case can
+ * be changed from the overlay. */
 static int recording_visible(const knob_desc_t *k) {
     (void)k;
     if (!openpete_record_supported()) return 0;
@@ -444,6 +467,10 @@ static int recfps_set(knob_desc_t *k, double v) {
 
 /* ---- Paths (boot-resolved; display the same precedence the consumer used) */
 
+/** @brief Writes a path row's boot value: the CLI value, else the row's env var, else "(default)".
+ *
+ * The CLI value comes from the parsed options field named by the row id; an
+ * explicit empty CLI value (such as --mods "") displays as "(none)". */
 static void path_get_str(const knob_desc_t *k, char *buf, size_t cap) {
     const char *cli = NULL;
     if (g_opts) {
@@ -568,6 +595,7 @@ static int env_set_str(knob_desc_t *k, const char *v) {
 
 /* ---- Gameplay / debug ---- */
 
+/** @brief The parsed --skip-to-level value, 0 before options are bound. */
 static double skiplevel_get(const knob_desc_t *k) { (void)k; return g_opts ? (double)g_opts->skip_to_level : 0.0; }
 static double skipcutscene_get(const knob_desc_t *k) { (void)k; return g_opts ? (double)g_opts->skip_to_cutscene : 0.0; }
 

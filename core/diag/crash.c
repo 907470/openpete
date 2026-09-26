@@ -20,10 +20,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Name a guest address against the registered function table: the pc and the
- * return address are the two that say where the game was. A game that
- * registers no table, or an address the table does not cover, prints the raw
- * value. */
+/** @brief Print a guest address to stderr as symbol+offset from the registered function table.
+ *
+ * The crash dump prints the guest pc and ra through it. A game that
+ * registers no table, or an address the table does not cover, prints the
+ * raw value marked "(no symbol)". */
 static void crash_print_guest_addr(const char* label, uint32_t addr) {
     uint32_t off = 0u;
     const char* fn = openpete_mods_symbol_for_addr(addr, &off);
