@@ -1541,8 +1541,16 @@ void openpete_native_scene_commit_fade(void) {
     s_game_freeze_seen = 0;
 }
 
-/* Lerp two packed freeze words (bit31 active, [30:24] fade shift, [23:0]
- * tint). Only the fade shift moves; a tint change or an activation edge snaps. */
+/** @brief Interpolate two packed freeze words at a sub-tick fraction.
+ *
+ * A freeze word packs bit 31 active, bits 30..24 the fade shift and bits
+ * 23..0 the tint. Only the fade shift is interpolated, rounded to the
+ * nearest integer. An inactive @p b returns 0, an inactive @p a returns
+ * @p b, and a tint change returns @p b.
+ * @param a Freeze word of the previous tick.
+ * @param b Freeze word of the current tick.
+ * @param t Fraction from @p a (0) to @p b (1).
+ * @return The interpolated freeze word. */
 static uint32_t freeze_lerp(uint32_t a, uint32_t b, double t) {
     if (!(b & (1u << 31))) return 0;
     if (!(a & (1u << 31))) return b;
@@ -1552,7 +1560,17 @@ static uint32_t freeze_lerp(uint32_t a, uint32_t b, double t) {
     return (b & 0x80FFFFFFu) | ((uint32_t)f << 24);
 }
 
-/* Lerp two packed fade words (bit31 active, [25:24] ABR mode, [23:0] rgb). */
+/** @brief Interpolate two packed fade words at a sub-tick fraction.
+ *
+ * A fade word packs bit 31 active, bits 25..24 the ABR blend mode and bits
+ * 23..0 the RGB colour. Each colour channel is interpolated and rounded to
+ * the nearest integer; the top byte is taken from @p b. An inactive @p b
+ * returns 0, an inactive @p a returns @p b, and a blend-mode change returns
+ * @p b.
+ * @param a Fade word of the previous tick.
+ * @param b Fade word of the current tick.
+ * @param t Fraction from @p a (0) to @p b (1).
+ * @return The interpolated fade word. */
 static uint32_t fade_lerp(uint32_t a, uint32_t b, double t) {
     if (!(b & (1u << 31))) return 0;                         /* curr inactive → no fade */
     if (!(a & (1u << 31))) return b;                         /* prev inactive → snap on */
@@ -2877,9 +2895,16 @@ static bool scene_is_freeze_source(const scene_tri_t* scene, int n, uint32_t sfr
         && (openpete_tercache_frame_content() != 0 || scene_has_terrain(scene, n));
 }
 
-/* Single native renderer instance (one window per process). */
-/* Resolve the window size. Shared by bring-up and by the main-thread
- * precreate below so the two cannot disagree about how big the window is. */
+/** @brief Resolve the size of the game window.
+ *
+ * Shared by bring-up and by openpete_native_precreate_window so the two
+ * create the window at the same size. A nonpositive dimension falls back to
+ * NR_DEFAULT_W or NR_DEFAULT_H.
+ * @param opts Session options; unused.
+ * @param win_w Requested width in pixels.
+ * @param win_h Requested height in pixels.
+ * @param out_w Receives the width.
+ * @param out_h Receives the height. */
 static void nr_resolve_window_size(const openpete_options_t *opts,
                                    int win_w, int win_h,
                                    int *out_w, int *out_h)
@@ -2894,12 +2919,17 @@ static void nr_resolve_window_size(const openpete_options_t *opts,
  * decide whether the state lines below are printed. */
 static int s_background_requested;
 
-/* Creation flags of the game window. --background turns off activate-on-show
- * and activate-on-raise, so the window maps at its normal size without taking
- * focus. It stays focusable: a not-focusable window is WS_EX_NOACTIVATE on
- * Win32, which also removes its taskbar button, and below every other window
- * it could then be neither found nor closed. The hints are read by
- * SDL_CreateWindow, so they are set here rather than at option-parse time. */
+/** @brief Return the creation flags of the game window and set the --background activation hints.
+ *
+ * The flags are SDL_WINDOW_VULKAN and SDL_WINDOW_RESIZABLE. --background
+ * turns off activate-on-show and activate-on-raise, so the window maps at
+ * its normal size without taking focus. It stays focusable: a not-focusable
+ * window is WS_EX_NOACTIVATE on Win32, which also removes its taskbar
+ * button, and below every other window it could then be neither found nor
+ * closed. The hints are read by SDL_CreateWindow, so they are set here
+ * rather than at option-parse time.
+ * @param opts Session options; background above 0 sets the hints.
+ * @return The window flags. */
 static SDL_WindowFlags nr_window_flags(const openpete_options_t *opts)
 {
     SDL_WindowFlags f = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE;
@@ -2911,9 +2941,16 @@ static SDL_WindowFlags nr_window_flags(const openpete_options_t *opts)
 }
 
 
-/* Window state as the window manager reports it, for a harness to assert on.
- * Printed at bring-up and again at exit, since a window manager may focus or
- * restack a window on its own after it maps. */
+/** @brief Log the window state the window manager reports, for a harness to assert on.
+ *
+ * Called at bring-up and again at exit, since a window manager may focus or
+ * restack a window on its own after it maps. The line carries the
+ * --background request, input focus, focusability, hidden and minimized
+ * flags, the size in pixels and the video driver. It is printed only for a
+ * --background window or when OPENPETE_WINDOW_STATE is set to a value other
+ * than 0.
+ * @param win Window to report; NULL prints nothing.
+ * @param when Label naming the call point, printed in the line. */
 static void nr_log_window_state(SDL_Window *win, const char *when)
 {
     if (!win) return;
@@ -3293,9 +3330,21 @@ static void build_panel(rhi_vertex out[6], float cx, float cy, float hx, float h
     build_panel_tinted(out, cx, cy, hx, hy, u0, v0, u1, v1, 0xFFFFFFFFu);
 }
 
-/* Aspect-fit content (content_w x content_h px) inside a clip-space cell
- * centered at (cx,cy) with clip half-extents (chx,chy), returning the fitted
- * half-extents (letterbox/pillarbox; the clear fills the bars). */
+/** @brief Aspect-fit content inside a clip-space cell and return the fitted half-extents.
+ *
+ * The content is scaled uniformly by the smaller of the cell-to-content
+ * width and height ratios, measured in window pixels, so it is letterboxed
+ * or pillarboxed; the clear fills the bars.
+ * @param cx Cell centre x in clip space; unused.
+ * @param cy Cell centre y in clip space; unused.
+ * @param chx Cell half-extent x in clip space.
+ * @param chy Cell half-extent y in clip space.
+ * @param content_w Content width in pixels.
+ * @param content_h Content height in pixels.
+ * @param win_w Window width in pixels.
+ * @param win_h Window height in pixels.
+ * @param out_hx Receives the fitted half-extent x in clip space.
+ * @param out_hy Receives the fitted half-extent y in clip space. */
 static void fit_cell(float cx, float cy, float chx, float chy,
                      int content_w, int content_h, int win_w, int win_h,
                      float *out_hx, float *out_hy)
@@ -4426,10 +4475,7 @@ SDL_Window* openpete_native_render_window(void)
     return s_nr.enabled ? s_nr.window : NULL;
 }
 
-/* Live fullscreen state, read straight from the SDL window flags — the O-menu
- * DISPLAY row displays this each frame (no shadow index), so it can never
- * drift from the Alt+Enter / double-click toggles. 0 when there is no native
- * window (headless / PsyCross-only). */
+/* Reads SDL_WINDOW_FULLSCREEN from the native window's flags. */
 int openpete_native_fullscreen_active(void)
 {
     if (!s_nr.enabled || !s_nr.window) return 0;
@@ -4771,14 +4817,16 @@ static bool sync_reference_texture(void)
     return true;
 }
 
-/* (Re)create native_rtt (the canonical native frame each present) AND frozen_tex
- * (the freeze-backdrop snapshot) at the reference resolution. native_rtt is the
- * frame the diff pass compares and the live vk/ab panel blits from; frozen_tex
- * holds the last world frame for the pause/inventory/flight green overlay. No-op
- * until the reference size is known; recreates both on size change. Must run
- * OUTSIDE a frame (creates GPU resources / waits idle). `want` gates allocation:
- * always true once the native path is live (the canonical-frame model needs the
- * RTTs in every mode); the screenshot-all path also passes true. */
+/** @brief Create or resize native_rtt and frozen_tex at the reference resolution.
+ *
+ * native_rtt holds the canonical native image of each present: the diff
+ * pass compares it and the live vk and ab panels blit from it. frozen_tex
+ * holds the last world image for the pause, inventory and flight freeze
+ * backdrop; a resize clears frozen_valid. No-op until the reference size is
+ * known or while both already match it. Creates GPU resources and waits
+ * idle, so it runs outside a frame.
+ * @param want Allocation gate; every caller passes true, since the
+ *        canonical-image model needs both targets in every mode. */
 static void ensure_native_rtt(bool want)
 {
     if (!want || s_nr.ref_w <= 0 || s_nr.ref_h <= 0) return;
@@ -4795,11 +4843,17 @@ static void ensure_native_rtt(bool want)
         OPL_INFO_F("native", "native render target %dx%d (+ freeze snapshot)", s_nr.ref_w, s_nr.ref_h);
 }
 
-/* (Re)create the dedicated widescreen screenshot target at w×h. Grows only when
- * the requested size changes, so a fixed-cadence widescreen capture allocates
- * once and every subsequent dump reuses it (unlike native_rtt, whose ref_w
- * keying would fight a widened width). Must run OUTSIDE a frame. Returns the
- * target or NULL. */
+/** @brief Create or resize the widescreen screenshot target.
+ *
+ * The target is recreated only when the requested size changes, so a
+ * widescreen capture at a fixed cadence allocates once and every later dump
+ * reuses it. native_rtt cannot serve, since it is keyed to the reference
+ * width and a widened width would recreate it on every capture. Creates GPU
+ * resources and waits idle, so it runs outside a frame.
+ * @param w Width in pixels.
+ * @param h Height in pixels.
+ * @return The target, or NULL when a dimension is not positive or the
+ *         allocation failed. */
 static rhi_texture *ensure_shot_rtt(int w, int h)
 {
     if (w <= 0 || h <= 0) return NULL;
@@ -4813,15 +4867,17 @@ static rhi_texture *ensure_shot_rtt(int w, int h)
     return s_nr.shot_rtt;
 }
 
-/* (Re)create ss_rtt — the SSAA supersampled scene target — at the EFFECTIVE
- * factor × the window. The requested --ssaa factor is capped to
- * OPENPETE_SSAA_MAX and to the GPU's max 2D image dimension, then stepped down
- * on an allocation failure (to 1 = SSAA off). No-op when --ssaa is 1, the
- * window size is unknown, or it already matches. Runs OUTSIDE a frame (creates
- * GPU resources / waits idle).
+/** @brief Create, resize or release ss_rtt, the SSAA scene target, at the effective factor times the window.
  *
- * NB the scene target is only a fifth of what the factor costs: the key-contest
- * targets are allocated at this same extent (native_terrain_key_pass). */
+ * The requested --ssaa factor is capped to OPENPETE_SSAA_MAX and to the
+ * GPU's maximum 2D image dimension, then stepped down on each allocation
+ * failure; at 1 SSAA is off and ss_factor is 1. With --ssaa 1 or an unknown
+ * window size an existing target is released. No-op when the target already
+ * matches. Creates GPU resources and waits idle, so it runs outside a frame.
+ *
+ * The scene target is one fifth of what the factor costs: the four
+ * key-contest targets are allocated at this same extent
+ * (ensure_terrain_key_targets). */
 static void ensure_ss_rtt(void)
 {
     int req = (s_nr.ssaa > 1) ? s_nr.ssaa : 1;
@@ -5075,10 +5131,13 @@ static float shadow_decal_band(void)
     return b;
 }
 
-/* Draw moby drop-shadows through the DEPTH-AWARE textured decal (default ON)?
- * OPENPETE_MOBY_SHADOW_DECAL=0 reverts to the plain depth-tested subtract pipe +
- * hardware bias — the pre-fix behaviour — for A/B of the decal against the old
- * flat-fan-clips-slopes path. Display-only. */
+/** @brief Return whether moby drop shadows draw through the depth-aware textured decal.
+ *
+ * On by default. OPENPETE_MOBY_SHADOW_DECAL=0 selects the plain
+ * depth-tested subtract pipe with hardware depth bias, for an A/B of the
+ * decal against the flat shadow fan, which clips into slopes. The value is
+ * read once. Display-only.
+ * @return 1 when the decal path is enabled, else 0. */
 static int moby_shadow_decal_enabled(void)
 {
     static int v = -1;
@@ -5086,10 +5145,16 @@ static int moby_shadow_decal_enabled(void)
     return v;
 }
 
-/* Moby occlusion culling on? (OPENPETE_MOBY_OCCLUSION=0 disables; default ON.)
- * Display-only: culling only skips NATIVE re-extraction/drawing of mobys whose
- * screen rect is provably behind nearer WORLD-opaque depth — the canonical
- * cull pass (and every gameplay-readable byte it writes) is untouched. */
+/** @brief Return whether moby occlusion culling is enabled.
+ *
+ * On by default; OPENPETE_MOBY_OCCLUSION=0 disables it. The variable is
+ * re-read once per openpete_frame, since setenv from the developer overlay
+ * is the live channel and the function runs per moby per present.
+ * Display-only: culling skips only the native re-extraction and drawing of
+ * mobys whose screen rectangle lies behind nearer WORLD-opaque depth; the
+ * canonical cull pass and every gameplay-readable byte it writes are
+ * untouched.
+ * @return 1 when enabled, else 0. */
 static int occl_cull_enabled(void)
 {
     /* Re-resolved once per VBL: setenv is the live channel (dev overlay)
@@ -5104,7 +5169,10 @@ static int occl_cull_enabled(void)
     }
     return on;
 }
-/* Culling usable this run (enabled + the optional grid resources came up). */
+/** @brief Return whether moby occlusion culling can run this present.
+ *
+ * @return Nonzero when occl_pipe and occl_grid were created and
+ *         occl_cull_enabled is on. */
 static int occl_active(void)
 {
     return s_nr.occl_pipe && s_nr.occl_grid && occl_cull_enabled();
@@ -5161,12 +5229,17 @@ static int cz_instrument_run(mod_fvec *v, size_t elem, const char *name,
     return mod_fvec_reserve_noted(v, (size_t)(n > 0 ? n : 0)) == 0;
 }
 
-/* (Re)create opaque_depth sized to max(reference, window) — the presented pixel
- * grid bounds the useful discard-edge precision, so the SSAA extent is
- * intentionally NOT covered (consumers sample by uv; a coarser pre-pass texel
- * only quantizes the wall edge, bounded by one WINDOW pixel). Grows only.
- * Creates GPU resources / waits idle → runs OUTSIDE a frame, beside
- * ensure_ss_rtt. No-op until a scene actually carries a Spyro shadow. */
+/** @brief Create or grow opaque_depth, the world-opaque depth pre-pass target, to the larger of the reference and window sizes.
+ *
+ * The presented pixel grid bounds the useful discard-edge precision, so the
+ * SSAA extent is not covered: consumers sample by UV, and a coarser
+ * pre-pass texel quantizes the wall edge by at most one window pixel. The
+ * target only grows. No-op until the present scene carries a Spyro shadow
+ * or moby occlusion culling is active, the two consumers of the pre-pass.
+ * A device without a sampled depth target logs once and the function stays
+ * a no-op for the run, leaving the Spyro shadow on the depth-tested
+ * fallback. Creates GPU resources and waits idle, so it runs outside a
+ * frame beside ensure_ss_rtt. */
 static void ensure_opaque_depth(void)
 {
     static int s_failed = 0;
@@ -5487,17 +5560,17 @@ static void ensure_terrain_key_depth(int w, int h)
     }
 }
 
-/* Per-present resource pass: size the key-contest images for every scene
- * target this present can draw into, BEFORE the frame begins. The scene
- * pipelines (gouraud, textured, cutout and their blend variants) bind these
- * four images as descriptor sets 1-4 on every draw, chrome included — the
- * stats overlay's supersample pre-pass is a gouraud draw and, under eager
- * production, the first draw of the first present, ahead of any scene. A
- * draw whose pipeline statically reads a set that was never bound is
- * undefined behaviour: Mesa ANV faults inside vkCmdDraw on it. Sizing here
- * is the union of the extents the key pass is called with (native_rtt,
- * the SSAA target, the window), so the key pass never needs to allocate
- * mid-frame. */
+/** @brief Size the key-contest images for every scene target this present can draw into, before the frame begins.
+ *
+ * The scene pipelines (gouraud, textured, cutout and their blend variants)
+ * bind these four images as descriptor sets 1-4 on every draw, chrome
+ * included: the stats overlay's supersample pre-pass is a gouraud draw and,
+ * under eager production, the first draw of the first present, ahead of any
+ * scene. A draw whose pipeline statically reads a set that was never bound
+ * is undefined behaviour; Mesa ANV faults inside vkCmdDraw on it. The size
+ * is the union of the extents the key pass is called with (native_rtt, the
+ * SSAA target, the window), so the key pass never allocates mid-frame.
+ * No-op when openpete_native_key_resolve_on is off. */
 static void ensure_terrain_key_targets(void)
 {
     if (!openpete_native_key_resolve_on()) return;
@@ -5596,12 +5669,20 @@ static int box_hits_any(key_box_t b, const key_box_t* boxes, int n)
     return 0;
 }
 
-/* Which key image a scene face rasters into, and with it which value the
- * flat key carries: 0 = terrain keys, 1 = curated embedded props (true
- * per-vertex depth), 2 = the actor image — keyed ACTOR faces plus, inside
- * an aura box, the PLAYER's own ordering slot in the image's player band.
- * Opaque faces only; a face with neither a key nor a player slot rasters
- * nowhere. */
+/** @brief Return whether a scene face rasters into the key image of a class.
+ *
+ * Only opaque faces (blend 0) are admitted. Class 0, the terrain key
+ * image, takes keyed WORLD faces. Class 1, the prop image, takes keyed
+ * curated embedded props (scene_tri_t.prop), which raster true per-vertex
+ * depth. Class 2, the actor image, takes keyed ACTOR faces and PLAYER faces
+ * carrying an ordering slot (pkey) whose screen box overlaps an aura box,
+ * which raster into the image's player band. A face is keyed when koff
+ * exceeds 0.25.
+ * @param t Scene face.
+ * @param prop_class Key image class, 0, 1 or 2.
+ * @param aura Aura boxes of the scene (scene_aura_boxes).
+ * @param naura Aura box count.
+ * @return 1 when the face is admitted, else 0. */
 static int key_batch_admits(const scene_tri_t* t, int prop_class,
                             const key_box_t* aura, int naura)
 {
@@ -5807,8 +5888,14 @@ static struct {
     openpete_tercache_clip clip;    /* the pass's screen->clip mapping */
 } s_tk_last = { NULL, 0, -1, -1, -1, -1, NULL, NULL, NULL, 0, 0, { 0 } };
 
-/* The triangles of a packed key batch of m vertices that key per drain
- * sub-cell (a drain record, rv_drain). */
+/** @brief Count the triangles of a packed key batch that key per drain sub-cell.
+ *
+ * rv_drain marks such a triangle by storing minus one minus its drain
+ * record index in the first vertex's sy, so a triangle counts when that sy
+ * is below -0.5. Read by the OPENPETE_TERRAIN_KEY_DBG line.
+ * @param kbuf Packed key batch vertices.
+ * @param m Vertex count.
+ * @return The triangle count. */
 static int key_batch_drain_tris(const rhi_vertex* kbuf, int m)
 {
     int n = 0;
@@ -6299,9 +6386,11 @@ static void bind_material_keys(void)
  * Staleness discipline: the grid is a FEW PRESENTS OLD, so every consumer is
  * conservative — the query inflates the rect by one cell, demands the
  * occluder be nearer by a slack (OPENPETE_MOBY_OCCL_SLACK, default 1500 world
- * units — also absorbing the terrain feeder's measured off-anchor depth skew,
- * see W2.3), refuses rects touching the grid edge, and refuses grids older
- * than 8 presents (freeze/menu/minimized). The feeder additionally suspends
+ * units — also absorbing the terrain feeder's measured off-anchor depth skew),
+ * clamps the inflated rect to the grid, since its off-grid part is outside
+ * the visible extent, refuses a query whose camera moved or turned past the
+ * grid's camera, and refuses grids older than 8 presents
+ * (freeze/menu/minimized). The feeder additionally suspends
  * culling around camera cuts (openpete_native_occl_suspend) and widens its
  * rects with camera pan speed. The affine mapping PSX-screen→grid-uv is
  * FIFO'd alongside each queued copy so a retrieved grid decodes with the
@@ -6309,6 +6398,12 @@ static void bind_material_keys(void)
  *
  * Display-only by construction: consumers skip native drawing of provably
  * hidden geometry; nothing here reads back into gameplay state. */
+/** @brief Return the view-Z margin by which occluding terrain must be nearer than a queried moby.
+ *
+ * OPENPETE_MOBY_OCCL_SLACK sets it, default 1500 world units; the value is
+ * read once. openpete_native_occl_query subtracts it from the rect's
+ * nearest view-Z and refuses the query when the result is 1 or less.
+ * @return The slack in view-Z units. */
 static float occl_slack(void)
 {
     static float s = -1.0f;
@@ -6322,9 +6417,13 @@ static float occl_cam_move(void)
     if (m < 0.0f) { const char* e = getenv("OPENPETE_OCCL_CAM_MOVE"); m = (e && *e) ? (float)atof(e) : 24.0f; }
     return m;
 }
-/* The rotation bound as a matrix trace: for two rotations trace(Rq·Rg^T) =
- * 1 + 2cos(theta), so the test is one dot product over the nine elements
- * against this threshold, with no trigonometry per query. */
+/** @brief Return the camera rotation bound of an occlusion query as a matrix trace.
+ *
+ * For two rotations trace(Rq Rg^T) = 1 + 2 cos(theta), so occl_cam_in_bound
+ * tests one dot product over the nine matrix elements against this
+ * threshold, with no trigonometry per query. OPENPETE_OCCL_CAM_TURN sets
+ * the angle in degrees, default 0.35; the value is read once.
+ * @return 1 + 2 cos of the bound angle. */
 static float occl_cam_turn_trace(void)
 {
     static float t = -1e30f;
@@ -6427,10 +6526,14 @@ static void native_occl_downsample(void)
 static long s_occl_qstat[OPENPETE_OCCL_Q_COUNT];   /* query-outcome census */
 static float s_occl_last_scan_max;                 /* diagnostics (last CULLED scan) */
 
-/* Is the querying camera close enough to the grid's that the grid's cell
- * depths still describe what this camera sees? Translation bound first (the
- * parallax term), then the relative rotation. Either side lacking a camera is
- * a mismatch, so an unpublished camera keeps everything. */
+/** @brief Return whether a querying camera is close enough to the grid's camera for the grid's cell depths to describe its view.
+ *
+ * The translation bound (occl_cam_move, the parallax term) is tested first,
+ * then the relative rotation against occl_cam_turn_trace. Either side
+ * lacking a valid camera is a mismatch, so an unpublished camera culls
+ * nothing.
+ * @param q Querying camera; NULL is a mismatch.
+ * @return 1 when both bounds hold, else 0. */
 static int occl_cam_in_bound(const openpete_occl_camera *q)
 {
     const openpete_occl_camera *g = &s_occl_cam_grid;
@@ -6460,8 +6563,15 @@ static int occl_grid_refusal(void)
 
 typedef struct { float u0, u1, v0, v1; } occl_uv_rect;
 
-/* A PSX-screen-px rect mapped through the grid's affine into [0,1] extent
- * coordinates, ordered low to high. */
+/** @brief Map a PSX screen rectangle through the held grid's affine into extent coordinates.
+ *
+ * The visible extent spans [0,1] on each axis; each axis of the result is
+ * ordered low to high.
+ * @param sx0 First x edge in PSX screen pixels.
+ * @param sy0 First y edge in PSX screen pixels.
+ * @param sx1 Second x edge in PSX screen pixels.
+ * @param sy1 Second y edge in PSX screen pixels.
+ * @return The mapped rectangle. */
 static occl_uv_rect occl_rect_uv(float sx0, float sy0, float sx1, float sy1)
 {
     occl_uv_rect r = { s_occl_uax * sx0 + s_occl_ubx, s_occl_uax * sx1 + s_occl_ubx,
@@ -6471,12 +6581,18 @@ static occl_uv_rect occl_rect_uv(float sx0, float sy0, float sx1, float sy1)
     return r;
 }
 
-/* Native frustum cull: fully outside the visible extent (the same extent the
- * affine maps, Hor+ widened when active) contributes zero pixels regardless of
- * depth. The game's view cone is wider than the screen, so enclosed areas queue
- * plenty of these. vz guard: behind-camera / near-plane-straddling projections
- * are garbage coordinates, so their rect is never trusted. (vz_near already
- * carries the caller's staleness slack.) */
+/** @brief Return whether a mapped rectangle lies wholly outside the visible extent.
+ *
+ * Such a rectangle contributes zero pixels regardless of depth; the visible
+ * extent is the one the grid's affine maps, widened under Hor+. The game's
+ * view cone is wider than the screen, so enclosed areas queue many of
+ * these. A projection behind the camera or straddling the near plane has
+ * meaningless screen coordinates, so a rectangle whose nearest view-Z is
+ * 256 or less is never reported offscreen; @p vz_near already carries the
+ * caller's staleness slack.
+ * @param r Rectangle in extent coordinates (occl_rect_uv).
+ * @param vz_near Nearest view-Z of the geometry.
+ * @return 1 when offscreen, else 0. */
 static int occl_uv_offscreen(const occl_uv_rect *r, float vz_near)
 {
     return vz_near > 256.0f && (r->u1 < 0.0f || r->u0 > 1.0f || r->v1 < 0.0f || r->v0 > 1.0f);
@@ -6632,8 +6748,13 @@ static void cover_rect(int full_extent, float *l, float *r, float *t, float *b)
  * (all the 2D-UI content at z=0) keep submission order — a STABLE descending
  * sort built on qsort. */
 typedef struct { float z; int t; } hud_paint_t;
-/* A HUD tri's painter key: the centroid of its vertices' hyperbolic depths
- * vz / (vz + 4096), the curve that orders the layer back to front. */
+/** @brief Return a HUD triangle's painter key.
+ *
+ * The key is the mean of its vertices' hyperbolic depths
+ * vz / (vz + OPENPETE_DEPTH_VIEWZ_SCALE), the curve that orders the flat
+ * HUD layer back to front.
+ * @param T HUD triangle.
+ * @return The painter key. */
 static float hud_paint_depth(const scene_tri_t* T)
 {
     float d = 0.0f;
@@ -7738,10 +7859,18 @@ static void texsel_draw_forensics(const scene_tri_t* s0, int allow_override, int
     }
 }
 
-/* The mod material's pipeline for one (material, blend class) pair, built on
- * first use and cached in the material's slot. The MARK twin is opaque-only
- * (hole-fill coverage), so a blended run never wants it. NULL when the build
- * failed; the failure is cached and not retried. */
+/** @brief Return a mod material's pipeline for one blend class, building it on first use.
+ *
+ * The pipeline is cached in the material's slot for the blend class, or in
+ * its single MARK slot. The MARK variant writes the stencil hole-fill mark
+ * for opaque coverage; draw_tex_runs requests it only for opaque groups, so
+ * the MARK slot is not keyed by blend class. A blended class builds with
+ * depth writes off. A failed build is logged, cached as PFX_PIPE_FAILED and
+ * not retried.
+ * @param mg Resolved mod material.
+ * @param ov_mark Nonzero for the stencil-MARK variant.
+ * @param blend_class Blend class index into k_blend_class_rhi, 0 opaque.
+ * @return The pipeline, or NULL when its build failed. */
 static rhi_pipeline* material_run_pipe(const openpete_mod_material_gpu_t* mg,
                                        int ov_mark, int blend_class) {
     void** ov_slot = ov_mark ? mg->pipeline_mark_slot
@@ -9068,9 +9197,14 @@ static int tx_bucket_belongs(int b, const scene_tri_t* scene, int t, int gblend,
            !(gblend == 3 && cat != OPENPETE_SCENE_SHADOW);
 }
 
-/* Load-window census companion (OPENPETE_LOAD_CENSUS=1): per present, the
- * textured HUD3D triangles the scene fed, the number the HUD3D layer drew, and
- * the fed ones whose blend class is not opaque. */
+/** @brief Print the textured HUD3D census line of one present under OPENPETE_LOAD_CENSUS.
+ *
+ * The line carries the textured HUD3D triangles the scene fed, the number
+ * the HUD3D layer drew, and the fed ones whose blend is 1 to 4, not opaque.
+ * OPENPETE_LOAD_CENSUS is read once; unset or 0 prints nothing.
+ * @param scene Scene triangles.
+ * @param scene_n Scene triangle count.
+ * @param drawn Textured triangles draw_hud3d_layer drew. */
 static void hud3d_tex_census(const scene_tri_t* scene, int scene_n, int drawn) {
     static int s_on = -1;
     if (s_on < 0) { const char* e = getenv("OPENPETE_LOAD_CENSUS"); s_on = (e && *e && *e != '0'); }
@@ -10976,9 +11110,14 @@ static void draw_mod_overlay(void) {
     rhi_draw(s_nr.dev, (uint32_t)n, 0);
 }
 
-/* Whether chrome is allowed into a --record video: --record-fps-overlay, else
- * the OPENPETE_FPS_IN_RECORD env, else no. Resolved lazily and cached; the
- * setter clears the cache so a live toggle re-resolves. */
+/** @brief Return whether chrome is drawn into a --record video.
+ *
+ * The answer is --record-fps-overlay when set, else OPENPETE_FPS_IN_RECORD
+ * set to a value other than 0, else no. It is resolved on first use and
+ * cached; openpete_native_set_fps_in_record clears the cache so a live
+ * toggle re-resolves. The stats overlay, the version line and the OSD
+ * toasts read it.
+ * @return 1 when chrome is recorded, else 0. */
 static int fps_in_record_resolved(void) {
     if (s_fps_in_record < 0) {
         if (s_fps_in_record_pref >= 0) {
@@ -11179,16 +11318,20 @@ static void overlay_layout_update(void) {
     }
 }
 
-/* (Re)create ovl_ss at OVL_SS_FACTOR× the overlay region and rebuild the
- * composite quad on a window resize. Creates GPU resources / waits idle — call
- * OUTSIDE a frame (alongside ensure_ss_rtt). No-op if the SS pipeline/quad
- * failed at init (draw_perf_overlay then falls back to the 1× path). */
-/* (Re)create one text block's supersample target at OVL_SS_FACTOR× its
- * region, clamped to the device's largest image. Destroys and reallocates
- * only when the pixel size actually changes, and waits the device idle when
- * it does — so call this OUTSIDE a frame. A NULL target afterwards leaves the
- * caller on its 1× fallback. Shared by the stats block and the version
- * line, which differ only in their region and their name. */
+/** @brief Create or resize one text block's supersample target at OVL_SS_FACTOR times its region.
+ *
+ * The region is converted to pixels through the window height, and each
+ * dimension is clamped to the device's largest image. The target is
+ * destroyed and reallocated only when the pixel size changes, with a device
+ * wait-idle, so the function runs outside a frame. A NULL target afterwards
+ * leaves the caller on its 1x fallback. Shared by the stats block and the
+ * version line, which differ only in their region and their name.
+ * @param tex Target slot; replaced on a size change.
+ * @param cur_w Recorded target width, updated on a size change.
+ * @param cur_h Recorded target height, updated on a size change.
+ * @param region_w Region width in window-height units.
+ * @param region_h Region height in window-height units.
+ * @param what Block name for the allocation log line. */
 static void ensure_text_ss_target(rhi_texture **tex, int *cur_w, int *cur_h,
                                   float region_w, float region_h,
                                   const char *what) {
@@ -11209,6 +11352,10 @@ static void ensure_text_ss_target(rhi_texture **tex, int *cur_w, int *cur_h,
         OPL_INFO_F("native", "%s SS target %dx%d (%d×)", what, want_w, want_h, OVL_SS_FACTOR);
 }
 
+/* (Re)create ovl_ss at OVL_SS_FACTOR× the overlay region and rebuild the
+ * composite quad on a window resize. Creates GPU resources / waits idle — call
+ * OUTSIDE a frame (alongside ensure_ss_rtt). No-op if the SS pipeline/quad
+ * failed at init (draw_perf_overlay then falls back to the 1× path). */
 static void ensure_ovl_ss(void) {
     if (!s_nr.ovl_resolve_pipe || !s_nr.ovl_quad_vb || s_nr.win_w <= 0 || s_nr.win_h <= 0) return;
     ensure_text_ss_target(&s_nr.ovl_ss, &s_nr.ovl_ss_w, &s_nr.ovl_ss_h,
@@ -11372,9 +11519,22 @@ static void draw_version_overlay(void) {
  * upload to menu_vb, drawn as blend-mode spans (single upload → all spans read
  * consistent data from the per-frame ring slot). */
 
-/* Push an overlay-space rect (x in window-height units, y in [0,1], origin
- * top-left) as 2 tris mapped into the offscreen's NDC (same as the FPS overlay's
- * 1× path: ax=2·win_h/win_w, ay=2). Colour byte order is R,G,B,A. */
+/** @brief Append an overlay-space rectangle to a vertex buffer as two triangles in the offscreen's NDC.
+ *
+ * Overlay space has x in window-height units and y in [0,1], origin top
+ * left; it maps to NDC as (x * ax - 1, 1 - y * ay), the map of the FPS
+ * overlay's 1x path (ax = 2 * win_h / win_w, ay = 2). The vertices carry
+ * view-Z 1 (the near guard) and W 1. Colour byte order is R, G, B, A.
+ * @param buf Vertex buffer of MENU_MAX_VERTS entries.
+ * @param n Vertices already in @p buf.
+ * @param ax Overlay-to-NDC scale x.
+ * @param ay Overlay-to-NDC scale y.
+ * @param x0 Left edge.
+ * @param y0 Top edge.
+ * @param x1 Right edge.
+ * @param y1 Bottom edge.
+ * @param rgba Vertex colour.
+ * @return The new vertex count, @p n unchanged when six more do not fit. */
 static int menu_push_quad(rhi_vertex* buf, int n, float ax, float ay,
                           float x0, float y0, float x1, float y1, uint32_t rgba) {
     if (n + 6 > MENU_MAX_VERTS) return n;
@@ -11424,15 +11584,22 @@ static void draw_menu_glyphs_3d(float ax, float ay) {
     rhi_draw(s_nr.dev, (uint32_t)gn, 0);
 }
 
-/* True when the menu-glyph supersample path is usable (all resources up). */
+/** @brief Return whether the settings-menu glyph supersample path is usable.
+ *
+ * @return true when ovl_resolve_pipe, menu_quad_vb and menu_ss all exist. */
 static bool menu_ss_ready(void) {
     return s_nr.ovl_resolve_pipe && s_nr.menu_quad_vb && s_nr.menu_ss;
 }
 
-/* (Re)create menu_ss at MENU_SS_FACTOR× the PANEL rect + rebuild the composite
- * quad on resize. Lazy: only allocates once the menu is actually open (the target
- * is large), then keeps it. Creates GPU resources / waits idle — call OUTSIDE a
- * frame (alongside ensure_ovl_ss). No-op if the SS pipe/quad failed at init. */
+/** @brief Create or resize menu_ss at MENU_SS_FACTOR times the settings-menu panel and rebuild its composite quad on a resize.
+ *
+ * The target is allocated only while the menu is open, since it is large,
+ * and is kept after the menu closes. Each dimension is clamped to the
+ * device's largest image. The composite quad is the panel rectangle, flush
+ * top left, in offscreen NDC, with UV 0..1 over the whole target; it is
+ * rebuilt when the window size changes. Creates GPU resources and waits
+ * idle, so it runs outside a frame beside ensure_ovl_ss. No-op when the
+ * supersample pipe or quad failed at init or the window size is unknown. */
 static void ensure_menu_ss(void) {
     if (!s_nr.ovl_resolve_pipe || !s_nr.menu_quad_vb || s_nr.win_w <= 0 || s_nr.win_h <= 0) return;
     if (!openpete_menu_is_open()) return;   /* don't allocate the big target until needed */
@@ -11565,10 +11732,18 @@ static bool osd_should_draw(void) {
     return true;
 }
 
-/* (Re)create the slot grid on a window resize. Sized from the MAXIMUM toast
- * box, never from the live ones: sizing to content would rebuild the target —
- * and wait the device idle — on every arrival, expiry and coalescing repaint,
- * i.e. once per keypress while a value is held down. Call OUTSIDE a frame. */
+/** @brief Create or resize osd_ss, the OSD toast slot grid, on a window resize.
+ *
+ * The grid holds OPENPETE_OSD_MAX slots stacked vertically, each OSD_SLOT_W
+ * by OSD_SLOT_H window-height units at OSD_SS_FACTOR. It is sized from the
+ * maximum toast box, never from the live ones: sizing to content would
+ * rebuild the target, and wait the device idle, on every arrival, expiry
+ * and coalescing repaint, which is once per keypress while a value is held
+ * down. Each dimension is clamped to the device's largest image, shrinking
+ * the slot. The slot size in pixels is stored in osd_slot_px. The grid is
+ * first allocated when a toast is live and is kept afterwards. No-op when
+ * the OSD is disabled, the resolve pipe failed at init, or the window size
+ * is unknown. Runs outside a frame. */
 static void ensure_osd_ss(void) {
     if (!s_nr.ovl_resolve_pipe || s_nr.win_w <= 0 || s_nr.win_h <= 0) return;
     if (!openpete_osd_enabled()) return;
@@ -12341,10 +12516,19 @@ typedef struct {   /* C mirror of op_engine_ubo — std140, offsets load-bearing
     float    scene_rect[4], scene_grid[4];
 } pfx_engine_ubo_t;
 
-/* The engine block (op_engine, set 3 binding 0) — ONE fill for every
- * consumer (postfx chain, mod meshes, material UBO); a new field added
- * here reaches all of them. `w`,`h` = the pass/render resolution (0 =
- * window). */
+/** @brief Fill the engine uniform block (op_engine, set 3 binding 0) for one pass.
+ *
+ * One fill serves every consumer (the postfx chain, mod meshes, the
+ * material UBO), so a field added here reaches all of them. The block
+ * carries wall time, the present counter, the tick, sub-tick alpha and
+ * canonical flag of the present slot (or of the mod present context when no
+ * slot is active), the pass and window resolutions and aspect, and
+ * scene_rect and scene_grid: where the canonical PSX screen maps in the
+ * pass image, mirroring scene_to_clip, and its display width, display
+ * height, visible rows and widescreen factor.
+ * @param eng Block to fill; zeroed first.
+ * @param w Pass width in pixels; 0 uses the swapchain width.
+ * @param h Pass height in pixels; 0 uses the swapchain height. */
 static void fill_engine_block(pfx_engine_ubo_t* eng, int w, int h)
 {
     memset(eng, 0, sizeof *eng);
@@ -13589,12 +13773,25 @@ void openpete_native_render_snapshot_frozen(float cap_wf)
     s_render_freeze_wf = prev_wf;
 }
 
-/* Widescreen (Hor+) native-only -vk dump. Renders the scene at the widened
- * extent into the dedicated shot_rtt (W*cap_wf × H), matching the extraction-
- * time widen (openpete_native_widescreen_factor now honors --aspect headless),
- * and writes the single -vk PNG. Content-sized (no window letterbox); the ab/
- * diff variants are not produced (there is no PsyCross reference in native-only
- * mode). Returns 0 on success. base is the caller's screenshot path stem. */
+/** @brief Render the widescreen (Hor+) native-only screenshot into shot_rtt and write it as the -vk PNG or hand it back in memory.
+ *
+ * The scene is composed at the widened extent, ref_w * cap_wf by @p H,
+ * matching the extraction-time widen of openpete_native_widescreen_factor,
+ * which honours --aspect headless. s_render_freeze_wf is set to @p cap_wf
+ * around the compose so the depth pre-pass affine and the scene draw
+ * agree. The compose repeats, up to nine times, while HD texture uploads
+ * are pending. The image is content-sized with no window letterbox, alpha
+ * forced opaque; no ab or diff variant is written, since native-only mode
+ * has no PsyCross reference.
+ * @param base Screenshot path stem; the PNG path takes the -vk suffix.
+ * @param H Capture height in pixels.
+ * @param cap_wf Widescreen factor of the capture.
+ * @param cap_out When not NULL, receives the malloc'd RGBA buffer, owned by
+ *        the caller, and no PNG is written.
+ * @param cap_w Receives the width when @p cap_out is used; may be NULL.
+ * @param cap_h Receives the height when @p cap_out is used; may be NULL.
+ * @return 0 on success, 1 on a target, frame, allocation, readback or
+ *         write failure. */
 static int native_shot_widescreen(const char *base, int H, float cap_wf,
                                   unsigned char **cap_out, int *cap_w, int *cap_h)
 {
@@ -13725,9 +13922,18 @@ int openpete_native_render_capture_rgba(unsigned char **out, int *w, int *h)
     return r || !*out;
 }
 
-/* Map a PSX framebuffer screen point into a pixel of a full-extent capture
- * `capw` by `caph` wide, through the renderer's own screen mapping so the crop
- * cannot drift from where the scene itself lands. `wf` is the capture's widen. */
+/** @brief Map a PSX framebuffer screen point to a pixel position of a full-extent capture.
+ *
+ * The point goes through scene_to_clip under the full-extent mapping at
+ * the capture's widen, so the crop cannot drift from where the scene itself
+ * lands; the previous mapping state is restored.
+ * @param sx Screen x.
+ * @param sy Screen y.
+ * @param capw Capture width in pixels.
+ * @param caph Capture height in pixels.
+ * @param wf Widescreen factor the capture was composed at.
+ * @param px Receives the pixel x.
+ * @param py Receives the pixel y. */
 static void fbsnap_px(float sx, float sy, int capw, int caph, float wf,
                       float *px, float *py)
 {
@@ -13740,9 +13946,22 @@ static void fbsnap_px(float sx, float sy, int capw, int caph, float wf,
     *py = (1.0f - cy) * 0.5f * (float)caph;
 }
 
-/* Crop a full-extent capture `cap` (`cw` by `ch`, composed at widen `wf`) to a
- * framebuffer screen rect, through the renderer's own screen mapping. Returns a
- * fresh buffer and its size, or NULL when the rect maps to nothing. */
+/** @brief Crop a full-extent capture to a framebuffer screen rectangle.
+ *
+ * The rectangle's corners map through fbsnap_px, round to the nearest
+ * pixel and clamp to the capture.
+ * @param cap Capture, RGBA.
+ * @param cw Capture width in pixels.
+ * @param ch Capture height in pixels.
+ * @param wf Widescreen factor the capture was composed at.
+ * @param sx Rectangle left in screen coordinates.
+ * @param sy Rectangle top in screen coordinates.
+ * @param w Rectangle width.
+ * @param h Rectangle height.
+ * @param out_w Receives the crop width.
+ * @param out_h Receives the crop height.
+ * @return A malloc'd RGBA crop owned by the caller, or NULL when the
+ *         rectangle maps to no pixel or the allocation fails. */
 static unsigned char *fbsnap_crop(const unsigned char *cap, int cw, int ch, float wf,
                                   int sx, int sy, int w, int h, int *out_w, int *out_h)
 {
@@ -13766,10 +13985,22 @@ static unsigned char *fbsnap_crop(const unsigned char *cap, int cw, int ch, floa
     return px;
 }
 
-/* Compose `frame`'s scene in memory (the same compose the -vk dump and the live
- * present produce) and crop it to a framebuffer screen rect. Returns NULL when
- * the compose fails, which leaves the caller's slot unresolved so the quads keep
- * drawing the previous snapshot meanwhile. */
+/** @brief Compose a completed scene in memory and crop it to a framebuffer screen rectangle.
+ *
+ * s_fbsnap_want_frame selects the scene from the completed-scene ring for
+ * the compose, which is the one the -vk dump and the live present produce.
+ * The crop uses the widen the compose used, capture width over ref_w, not
+ * the one requested. A NULL result leaves the caller's slot unresolved, so
+ * its quads keep drawing the previous snapshot.
+ * @param frame openpete_frame stamp of the scene the copy was taken on.
+ * @param sx Rectangle left in screen coordinates.
+ * @param sy Rectangle top in screen coordinates.
+ * @param w Rectangle width.
+ * @param h Rectangle height.
+ * @param out_w Receives the crop width.
+ * @param out_h Receives the crop height.
+ * @return A malloc'd RGBA crop owned by the caller, or NULL when the
+ *         compose or the crop fails. */
 static unsigned char *fbsnap_capture_crop(unsigned frame, int sx, int sy, int w, int h,
                                           int *out_w, int *out_h)
 {

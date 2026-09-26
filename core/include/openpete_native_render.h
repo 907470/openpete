@@ -129,9 +129,14 @@ void openpete_native_toggle_fullscreen(void);
  * thread; call the toggle directly only from the window's own thread. */
 void openpete_native_request_fullscreen_toggle(void);
 
-/* Live fullscreen state (1 = borderless-desktop fullscreen, 0 = windowed or
- * no native window). The O-menu DISPLAY row reads this each frame instead of
- * keeping a shadow index, so it stays in sync with Alt+Enter / double-click. */
+/** @brief Return whether the native window is in borderless-desktop fullscreen.
+ *
+ * The state is read from the SDL window flags on each call. The O-menu
+ * DISPLAY row and the fullscreen knob row read it instead of keeping a
+ * shadow value, so they stay in sync with the Alt+Enter and double-click
+ * toggles.
+ * @return 1 when fullscreen, 0 when windowed or when there is no native
+ *         window (headless, native path disabled). */
 int openpete_native_fullscreen_active(void);
 
 /* The native SDL window, or NULL when there is none. */
@@ -157,11 +162,18 @@ void openpete_native_set_fps_overlay(int on);
  * the live window always follows set_fps_overlay above. */
 void openpete_native_set_fps_in_record(int pref);
 
-/* Is the overlay on at all (any level)? The game-side glyph emitter reads this
- * to skip building geometry when the overlay is off. */
+/** @brief Return whether the performance-stats overlay is on at any level.
+ *
+ * The O menu reads it to re-sync its SHOW FPS row when it opens.
+ * @return 1 when the level is not OPENPETE_PERF_OFF, else 0. */
 int  openpete_native_fps_overlay_enabled(void);
-/* The current rolling FPS value the overlay displays. The game-side emitter
- * reads it to know which digit glyphs (0-9) to build. */
+/** @brief Return the rolling present rate the performance-stats overlay displays.
+ *
+ * The value counts presents on whichever thread makes them (inline, or the
+ * present thread under eager production) and is recomputed at the first
+ * present at least 0.5 s of wall time after the previous window started,
+ * rounded to the nearest integer. The overlay's FPS line prints it.
+ * @return Presents per second; 0 before the first window completes. */
 int  openpete_native_fps_value(void);
 
 /* Live presentation setters (the in-game settings menu drives these). All
@@ -177,26 +189,37 @@ int  openpete_native_fps_value(void);
  * letterboxes/pillarboxes the fixed aspect (vk-only Hor+). Forces a layout
  * recompute so the fitted panel rect updates next present. */
 void openpete_native_set_aspect(float w_over_h);
-/* The aspect as last requested (0 = AUTO). The config-knob row reads it so an
- * O-menu pick registers as an edit — same reason as the SSAA/VSync getters. */
+/** @brief Return the display aspect as last requested.
+ *
+ * The config-knob row reads it so an O-menu pick registers as an edit of
+ * the knob, as with the SSAA and VSync getters.
+ * @return Width over height, or 0 for AUTO. */
 float openpete_native_get_aspect(void);
 
 /* SSAA supersampling factor (1 = off, 2/4/8/16). Clamped to [1,32]; ensure_ss_rtt
  * caps it to the GPU max image dimension and reallocs the supersampled scene
  * render target on the next present (a one-time wait-idle, like a window resize). */
 void openpete_native_set_ssaa(int factor);
-/* The requested factor (not the GPU-capped effective one), 1 when unset. Both
- * the O menu and the M overlay move this state, so the knob row must read it
- * back here rather than shadow it — otherwise a pick made in one surface is
- * invisible to the other (and to saving settings). */
+/** @brief Return the requested SSAA factor.
+ *
+ * This is the requested factor, not the effective one ensure_ss_rtt caps
+ * to the GPU. Both the O menu and the M overlay move this state, so the
+ * knob row reads it back here rather than keeping a shadow copy, which
+ * would hide a pick made in one surface from the other and from saving
+ * settings.
+ * @return The factor, 1 when unset. */
 int openpete_native_get_ssaa(void);
 
 /* VSync on/off (1 = FIFO / vsync ON, 0 = immediate|mailbox / vsync OFF). Forwards
  * to the RHI, which flags the swapchain for recreation and rebuilds it (with the
  * new present mode) on the next frame. No-op until the native device is up. */
 void openpete_native_set_vsync(int on);
-/* Current vsync preference: 1 = FIFO, 0 = vsync-OFF, -1 = unset (no device yet,
- * or launched without --vsync so the env/surface decides). */
+/** @brief Return the current vsync preference.
+ *
+ * The preference is read from the RHI device unresolved; the present mode
+ * the surface resolved is not reported.
+ * @return 1 for FIFO, 0 for vsync off, -1 when unset (no device yet, or
+ *         launched without --vsync so the environment or surface decides). */
 int openpete_native_get_vsync(void);
 
 /* Vertex screen-coordinate precision (0 = smooth sub-pixel, 1 = PSX integer-grid
@@ -233,7 +256,9 @@ int openpete_native_key_resolve_on(void);
  * at every setting and the snap's seams shrink to <=1-cell tints.
  * Display-only: touches only renderer state, never gameplay RAM. */
 void openpete_native_set_raster_quantize(int mult);
-/* Current multiplier as resolved/last set (0 = off). */
+/** @brief Return the raster-quantize multiplier as resolved at init or last set.
+ *
+ * @return The multiplier, 0 when off. */
 int  openpete_native_get_raster_quantize(void);
 
 /* PS1 15-bit colour (0 = off, 1 = RGB555 truncation + the GPU's 4x4 dither
@@ -249,8 +274,11 @@ int  openpete_native_get_dither(void);
  * and the renderer re-bakes all pipelines at the next present boundary (a
  * one-time device-idle hitch). Display-only: never touches gameplay RAM. */
 void openpete_native_set_texture_mapping(int affine);
-/* Live mode (the last APPLIED value; a queued change reads old until the
- * next present applies it). */
+/** @brief Return the applied texture-mapping mode.
+ *
+ * A change queued by openpete_native_set_texture_mapping reads as the old
+ * mode until the next present boundary applies it.
+ * @return 1 for PSX affine, 0 for perspective-correct. */
 int  openpete_native_get_texture_mapping(void);
 
 /* Untextured lighting view: textured scene fragments output the raw gouraud
@@ -1312,15 +1340,25 @@ double openpete_native_fov_h_scale(double H_canon, double y_row);
 /* Rows of the visible band the panel shows (224 on Spyro 1; 224 before the
  * first frame). */
 int    openpete_native_visible_rows(void);
-/* Horizontal FOV, degrees, the current window displays for the canonical
- * H_canon under the active Hor+ factor and FOV scale: 2·atan(256·F / H_eff). */
+/** @brief Return the horizontal FOV in degrees the current window displays for a canonical projection.
+ *
+ * The value is 2·atan(256·F / H_eff), where F is the Hor+ widescreen factor
+ * and H_eff = H_canon · openpete_native_fov_h_scale, which applies the FOV
+ * tangent latched at scene begin.
+ * @param H_canon The GTE's canonical H.
+ * @param y_row The camera matrix's Y-row scale.
+ * @return The horizontal FOV in degrees, or 0 when H_eff is not positive. */
 double openpete_native_fov_horizontal_deg(double H_canon, double y_row);
-/* Label inputs: the feeders note the projection they build views from
- * (H_canon and the camera's Y-row scale); the angles derive the vertical FOV
- * shown (the setting, or the game's own at the default) and the horizontal
- * FOV at the live Hor+ factor. Returns 0 while no view has been built (the
- * angles then assume H 341, Y row 0.625). */
+/** @brief Record the projection the feeders last built a view from, as the FOV label's inputs.
+ *
+ * openpete_native_fov_angles derives the label's angles from these values.
+ * @param H_canon The GTE's canonical H.
+ * @param y_row The camera matrix's Y-row scale. */
 void  openpete_native_fov_note_canon(double H_canon, double y_row);
+/* The FOV label's angles: the vertical FOV shown (the --fov setting, or the
+ * game's own at the default) and the horizontal FOV at the live Hor+ factor
+ * and the pending FOV tangent. Returns 0 while no view has been noted (the
+ * angles then assume H 341, Y row 0.625). */
 int   openpete_native_fov_angles(double* v_deg, double* h_deg);
 
 /* Present one native frame to the Vulkan window. Call after PsyX_EndScene so
