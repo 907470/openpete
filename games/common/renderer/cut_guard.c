@@ -165,9 +165,14 @@ static uint32_t cut_moby_array_head(void) {
     return arr >= 0x80000000u ? arr : 0;
 }
 
-/* The live records of the moby array, up to its state sentinel. Returns the
- * number of refusing records; the walk stops at the first unless the census
- * is on, which counts them all. */
+/** @brief Count the drawn live records of the moby array that cannot show tick N-1.
+ *
+ * Walks the array from its head up to the state sentinel (at most 4096
+ * records), skipping dormant records (state 0x80 and above) and records the
+ * cull did not draw; a record refuses when cut_rec_holdable rejects it. The
+ * walk stops at the first refusal unless the census is armed, which counts
+ * them all.
+ * @return The number of refusing records; 0 when the game names no array. */
 static int cut_array_refusals(void) {
     const uint32_t stride = game_layout.moby.array_stride;
     const uint32_t soff   = game_layout.moby.state_off;
@@ -183,9 +188,12 @@ static int cut_array_refusals(void) {
     return n;
 }
 
-/* The records the canonical render drew from outside that array (a relocated
- * actor): the replay draws them too, and the cull drew each by definition.
- * Counts refusals as cut_array_refusals does. */
+/** @brief Count the records the canonical render drew from outside the moby array (a relocated actor) that cannot show tick N-1.
+ *
+ * The replay draws these too, and the cull drew each by definition, so no
+ * drawn test applies; dormant records are skipped. Counts refusals as
+ * cut_array_refusals does.
+ * @return The number of refusing records. */
 static int cut_drawn_set_refusals(void) {
     const uint32_t soff = game_layout.moby.state_off;
     const uint32_t* drawn = NULL;

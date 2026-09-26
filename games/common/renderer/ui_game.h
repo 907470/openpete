@@ -129,9 +129,16 @@ void ui_sprite_ot_draw_begin(void);
  * final, so a nonzero count means the release point is too early. */
 void ui_sprite_ot_verify(void);
 
-/* One of the two most recent ordering-table bases handed to DrawOTag (0 =
- * newest). The 2D feeder walks these to rank its primitives by the traversal
- * the GPU will perform, rather than by the order it happened to be fed in. */
+/** @brief Return one of the most recent ordering-table bases handed to DrawOTag.
+ *
+ * The thunk layer keeps the last PSYQ_OT_BASE_RING (8) bases, newest first;
+ * a base equal to the newest is not recorded again, so alternating tables
+ * fill alternate slots. The 2D feeder walks
+ * them to rank its primitives by the traversal the GPU will perform, rather
+ * than by the order it happened to be fed in.
+ * @param i Age, 0 = newest.
+ * @return The base's guest address, or 0 for `i` outside 0..7 or a slot not
+ *         yet filled. */
 uint32_t psyq_ot_recent_base(int i);
 
 /* 2D primitives the chokepoint's decode chain claims no encoding for, since

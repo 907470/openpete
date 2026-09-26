@@ -59,25 +59,57 @@ extern "C" {
 #define PSYQ_THUNK_STATE_V3_BYTES 104u
 #define PSYQ_THUNK_STATE_V4_BYTES 120u
 
-/* The byte length of a pack whose first word is `ver`; 0 for a version this
- * layer does not know. */
+/** @brief Return the byte length of a pack whose first word is `ver`.
+ *
+ * @param ver A pack_ver, 1 through PSYQ_THUNK_STATE_PACK_VER.
+ * @return The pack's length in bytes, or 0 for a version this layer does
+ *         not know. */
 uint32_t psyq_thunk_state_bytes_for(uint32_t ver);
 
 uint32_t psyq_thunk_state_size(void);
 void     psyq_thunk_state_save(void* dst);   /* dst has PSYQ_THUNK_STATE_BYTES */
-/* 0 applied; -1 left the latches alone (short blob or unknown pack_ver). */
+/** @brief Restore the latches from a pack of any known pack_ver.
+ *
+ * A field the pack's version predates is set to its idle value: the
+ * streaming latch, the load-delay words, the pad countdowns, the deferred
+ * read's reference position and the card driver state become 0. A
+ * version-1 mode word holds an armed bit and is widened to the drive mode it
+ * stood for.
+ * @param src The pack.
+ * @param size Bytes available at `src`.
+ * @return 0 when applied; -1 when the latches were left alone (`size`
+ *         shorter than the pack's version needs, or pack_ver 0 or above
+ *         PSYQ_THUNK_STATE_PACK_VER). */
 int      psyq_thunk_state_load(const void* src, uint32_t size);
 
-/* The layout Spyro 1's extras carried before the pack: callback vaddrs and one
- * word holding the armed bit, the filter file at bits 8..15 and the filter
- * channel at 16..23. The tables it never saved stay as they are. */
+/** @brief Restore the latches from the layout Spyro 1's extras carried before the pack.
+ *
+ * The layout holds the two callback vaddrs and one word with the XA armed
+ * bit at bit 0, the filter file at bits 8..15 and the filter channel at
+ * 16..23; the armed bit widens to the drive mode it stood for. Every latch
+ * the layout never saved (the interrupt and DMA tables, the CdlSetloc
+ * sector, the streaming, load-delay, pad and card state) stays as it is.
+ * @param cd_cb Guest CdReadCallback handler vaddr.
+ * @param vs_cb Guest VSyncCallback handler vaddr.
+ * @param xa_word The armed bit and XA filter word. */
 void     psyq_thunk_state_load_v4(uint32_t cd_cb, uint32_t vs_cb,
                                   uint32_t xa_word);
 
-/* Round-trip check: save, overwrite every latch with a sentinel, load, save
- * again; the two images must match and the sentinel image must differ from
- * them. Returns 0 on pass. Run by OPENPETE_THUNK_STATE_SELFTEST=1 at boot. */
+/** @brief Overwrite every latch the pack covers with a value no guest registration produces.
+ *
+ * Callback slots get distinct odd vaddrs, the XA filter fields values
+ * outside 0..255, the mode byte its complement, and the counters and card
+ * driver words distinct sentinels, so a save after it differs from a save
+ * of guest-produced state in every word but pack_ver. */
 void     psyq_thunk_state_scramble(void);
+/** @brief Run the latch pack's round-trip check.
+ *
+ * Saves, scrambles, saves, loads the first image, and saves again. The
+ * check passes when the first and last images match and the scrambled image
+ * differs from the first in every word but pack_ver; the verdict is logged.
+ * psyq_ResetGraph runs it once when OPENPETE_THUNK_STATE_SELFTEST is set and
+ * not "0", then exits the process.
+ * @return 0 on pass, -1 on failure. */
 int      psyq_thunk_state_selftest(void);
 
 #ifdef __cplusplus

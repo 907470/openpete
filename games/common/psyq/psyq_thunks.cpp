@@ -319,9 +319,13 @@ static void invoke_psx_callback(CPUState* cpu, uint32_t cb_addr,
     cpu->ra = s_ra; cpu->v0 = s_v0; cpu->v1 = s_v1;
 }
 
-/* Run the controller/memory-card interrupt handler for one VBL. On hardware
- * the port raises this line once per transfer; the pad is polled every VBL,
- * so one call per VBL advances the driver at the rate the game expects. */
+/** @brief Run the guest's controller/memory-card interrupt handler once, for one VBL.
+ *
+ * Calls the handler registered in interrupt-callback slot
+ * PSYQ_INTR_PAD_CARD, if any. On hardware the port raises this line once
+ * per transfer and the pad is polled every VBL, so one call per VBL
+ * advances the driver at the rate the game expects.
+ * @param cpu Guest CPU state. */
 static void psyq_pump_pad_card_intr(CPUState* cpu) {
     uint32_t cb = g_intr_cb[PSYQ_INTR_PAD_CARD];
     if (cb) invoke_psx_callback(cpu, cb, 0, 0);
@@ -432,11 +436,17 @@ void psyq_VSync(CPUState* cpu) {
     if (openpete_sched_active()) cd_defer_after_call(cpu);
 }
 
-/* Under the schedule, every VBL openpete charges is one the reference
- * spent: one body per VBL so the VSync callback fires per VBL as the
- * interrupt did, and the position advances with it. openpete ahead of the
- * target is a schedule failure (an extra wait, or a read the reference
- * completed sooner). */
+/** @brief Run one VBL body per VBL from the schedule position up to `target`, advancing the position with each.
+ *
+ * Under the schedule every VBL openpete charges is one the reference spent;
+ * running one body per VBL fires the VSync callback per VBL as the
+ * interrupt did. A target behind the position charges nothing; once the
+ * first anchor hit is reached and outside a load window it records a
+ * schedule failure (an extra wait, or a read the reference completed
+ * sooner). Before that hit the boot runs under openpete's own count.
+ * @param cpu Guest CPU state.
+ * @param target The reference VBLANK to charge up to.
+ * @param what The charging site, for the failure message. */
 static void sched_charge_to(CPUState* cpu, uint32_t target, const char* what) {
     uint32_t pos = openpete_sched_pos();
     if (target < pos) {
@@ -455,10 +465,18 @@ static void sched_charge_to(CPUState* cpu, uint32_t target, const char* what) {
     }
 }
 
-/* At every anchor hit the reference's stamp for the record bounds the
- * position: openpete past it is a schedule failure; behind it is a long
- * frame, VBLs whose interrupts landed inside the reference's tick work
- * after the tick had read its counters. */
+/** @brief Check the schedule position against the reference at an anchor hit, and deliver disc events due there.
+ *
+ * Called by the dispatcher at every anchor hit from the hit target on. Inside
+ * the game's load window (psyq_game_load_window_word), leaving the window
+ * skips the record index to the reference's window end and charges the VBLs
+ * up to that record's stamp; nothing else runs at that hit. Otherwise
+ * openpete_sched_anchor_target checks the position against the record's
+ * stamp (ahead is a schedule failure, behind a long frame the next wait
+ * charges), and the deferred-read tick runs with zero VBLs at the anchor.
+ * @param cpu Guest CPU state.
+ * @param record The hit's index from the hit target; unused, the current
+ *        record comes from openpete_psxtrace_current_record(). */
 extern "C" void psyq_sched_anchor(CPUState* cpu, uint32_t record) {
     uint32_t target;
     (void)record;
@@ -488,10 +506,18 @@ extern "C" void psyq_sched_anchor(CPUState* cpu, uint32_t record) {
 }
 
 
-/* One waited VBL: the counter, the SPU envelope, the yield, the game's VSync
- * callback and the port pump, then the libpad mirror and any disc completion
- * that came due. The VSync callback is gameplay-visible (tick counters, the
- * pad read), so every VBL the guest waits runs exactly this. */
+/** @brief Run `wait` waited VBLs: the counter, the SPU envelope, the BIOS card step, the yield, the game's VSync callback and the port pump, then the pad and disc bookkeeping.
+ *
+ * After the callbacks it mirrors libpad's empty second slot, advances
+ * libpad's command sequence per VBL the schedule records a pad command at,
+ * restores the first pad buffer when none of the VBLs polled it, steps the
+ * CD-ROM MMIO model, and delivers a deferred disc completion that came due.
+ * Under fast boot it runs the callbacks without yielding; with no host
+ * fiber it waits through PsyCross's VSync. The VSync callback is
+ * gameplay-visible (tick counters, the pad read), so every VBL the guest
+ * waits runs this.
+ * @param cpu Guest CPU state.
+ * @param wait VBLs to run. */
 static void psyq_vbl_body(CPUState* cpu, int wait) {
     SDL_AddAtomicInt(&openpete_vbl, wait);
 
@@ -574,8 +600,11 @@ static void psyq_vbl_body(CPUState* cpu, int wait) {
     cd_defer_tick(cpu, (uint32_t)wait);
 }
 
-/* The VBLs the reference's tick spent before this registration, charged
- * before it so the callback does not run for them. */
+/** @brief Charge the VBLs the reference's tick spent before a callback registration at this call site, so the new callback does not run for them.
+ *
+ * Nothing is charged when the schedule has no registration row for the
+ * caller's return address.
+ * @param cpu Guest CPU state; `ra` names the registration site. */
 static void sched_charge_registration(CPUState* cpu) {
     uint32_t target;
     if (openpete_sched_registration(cpu->ra, &target)) sched_charge_to(cpu, target, "callback registration");
@@ -596,8 +625,13 @@ void psyq_StopCallback(CPUState* cpu) {
     cpu->v0 = (uint32_t)StopCallback();
 }
 
-/* Clears every registered callback and returns the previous VSync one. PSYQ
- * calls this from its own init path before installing handlers. */
+/** @brief Thunk for libetc ResetCallback: calls PsyCross's ResetCallback.
+ *
+ * PsyCross's ResetCallback clears only its own host VSync callback pointer
+ * and returns it truncated to 32 bits; the guest callbacks the thunks record
+ * (the VSync, interrupt and DMA tables) are left registered. v0 is 0 unless
+ * something set PsyCross's host pointer.
+ * @param cpu Guest CPU state. */
 void psyq_ResetCallback(CPUState* cpu) {
     cpu->v0 = (uint32_t)ResetCallback();
 }
@@ -625,7 +659,11 @@ void psyq_DMACallback(CPUState* cpu) {
     cpu->v0 = prev;   /* PSYQ returns the handler it replaced */
 }
 
-/* Fire a channel's completion handler, if the game registered one. */
+/** @brief Call the guest's DMA completion handler for channel `ch`, if the game registered one.
+ *
+ * The handler receives the channel in a0 and 0 in a1.
+ * @param cpu Guest CPU state.
+ * @param ch DMA channel, 0..6; out of range calls nothing. */
 static void psyq_dma_complete(CPUState* cpu, uint32_t ch) {
     if (ch < PSYQ_DMA_CHANNELS && g_dma_cb[ch]) {
         invoke_psx_callback(cpu, g_dma_cb[ch], ch, 0u);
@@ -819,9 +857,13 @@ static uint32_t cd_read_delay_for(CPUState* cpu, int sectors) {
     return d;
 }
 
-/* A guest spin polling a deferred read (no VSync between polls) spent the
- * read's VBLs on the reference, interrupts included: one passes per call
- * until the completion fires. */
+/** @brief Charge one VBL to a guest spin that polls a deferred disc read without calling VSync.
+ *
+ * The reference spent the read's VBLs, interrupts included, inside such a
+ * spin. The dispatcher calls this every 2048 dispatches without a VBL; it
+ * charges nothing unless the schedule is active and a read's completion is
+ * deferred.
+ * @param cpu Guest CPU state. */
 extern "C" void psyq_sched_spin_tick(CPUState* cpu) {
     if (!openpete_sched_active() || !s_cd_defer_pending) return;
     OPL_DEBUG_F("cd", "schedule: deferred read polled in a spin, 1 VBL passes (%u owed)", s_cd_defer_owed);
@@ -921,6 +963,11 @@ static void cd_defer_tick(CPUState* cpu, uint32_t vbls) {
 
 /* --- The latch pack (psyq_thunk_state.h) --------------------------------- */
 
+/** @brief Store `v` as word `i` of the pack at `p`, in host byte order.
+ *
+ * @param p The pack.
+ * @param i Word index.
+ * @param v The value. */
 static void put_word(uint8_t* p, uint32_t i, uint32_t v) {
     memcpy(p + 4u * i, &v, 4);
 }
@@ -1029,8 +1076,6 @@ extern "C" void psyq_thunk_state_load_v4(uint32_t cd_cb, uint32_t vs_cb,
     s_xa_filter_chan = (int)((xa_word >> 16) & 0xFF);
 }
 
-/* Every latch the pack covers, set to a value no guest registration produces
- * (a distinct odd vaddr per slot; the filter fields outside 0..255). */
 extern "C" void psyq_thunk_state_scramble(void) {
     g_cd_read_cb     = 0xA5A50001u;
     g_vsync_cb       = 0xA5A50003u;
@@ -1087,14 +1132,20 @@ extern "C" int psyq_thunk_state_selftest(void) {
     return ok ? 0 : -1;
 }
 
-/* The remaining libetc registrations return the previous handler and are
- * otherwise inert: PsyCross services those interrupt sources host-side and
- * dispatches no guest handler for them, so recording the address would promise
- * a call that never arrives. Returning 0 says "there was no previous handler",
- * which is what a first registration sees on hardware too. */
+/** @brief Thunk for libetc InterruptCallback: records nothing and returns 0.
+ *
+ * PsyCross services those interrupt sources host-side and dispatches no
+ * guest handler for them, so recording the address would promise a call that
+ * never arrives. The 0 in v0 says there was no previous handler, which a
+ * first registration also sees on hardware.
+ * @param cpu Guest CPU state. */
 void psyq_InterruptCallback(CPUState* cpu) { cpu->v0 = 0u; }
-/* Installs a guest handler in the interrupt-callback table: a0 selects the
- * interrupt line, a1 is the handler, and the previous handler is returned. */
+/** @brief Thunk for libetc VSyncCallbacks: installs a guest handler in the interrupt-callback table.
+ *
+ * a0 selects the slot, a1 is the handler, and v0 is the handler it replaced.
+ * The VBLs the reference spent before the registration are charged first. A
+ * slot at or above PSYQ_INTR_SLOTS (11) records nothing and returns 0.
+ * @param cpu Guest CPU state. */
 void psyq_VSyncCallbacks(CPUState* cpu) {
     sched_charge_registration(cpu);
     uint32_t slot = cpu->a0;
@@ -1123,20 +1174,18 @@ void psyq_VSyncCallbacks(CPUState* cpu) {
  * writes here. Disassembly references in comments map to the real PSYQ at
  * 0x8005EA94+ in spyro-1/build/psx.elf. */
 
-/* Mirror a function's MIPS stack-frame prologue (sp -= frame_size; sw ra at
- * sp+ra_off; optionally sw s-regs). PSYQ functions overwrite saved-register
- * slots that an empty C thunk leaves at zero — these eight bytes per call
- * accumulate fast and account for ~half the stack-region diff at MusicInit.
- *
- * `s_pushes` is a {offset, value} list of additional saved-reg writes
- * matching real PSYQ's prologue. Pass NULL/0 for ra-only. */
-/* Replay a real PSYQ function's prologue into the guest stack.
+/** @brief Replay a real PSYQ function's prologue stores into the guest stack.
  *
  * A PSYQ function pushes a frame and stores ra plus some saved registers; an
  * empty C thunk leaves those slots at whatever was there before, which reads
- * as a RAM difference at every call. The frame is per function and per PSYQ
- * revision, so the descriptor comes from the game; a game that declares none
- * mirrors nothing. */
+ * as a RAM difference at every call. With the frame below sp, ra is written
+ * at frame_size below sp plus ra_off and the first n_sregs of s0..s4 (at
+ * most 5) at +16, +20, and so on; sp is left unchanged. The frame is per
+ * function and per PSYQ revision, so the descriptor comes from the game
+ * (psyq_game_stack_frame); a site the game declares no frame for mirrors
+ * nothing.
+ * @param cpu Guest CPU state.
+ * @param site The PSYQ function whose prologue to replay. */
 static void psyq_mirror_stack_frame(CPUState* cpu, psyq_frame_site_t site) {
     psyq_game_frame_t f;
     if (!psyq_game_stack_frame(site, &f)) return;
@@ -1151,9 +1200,17 @@ static void psyq_mirror_stack_frame(CPUState* cpu, psyq_frame_site_t site) {
     cpu->sp = sp_b;
 }
 
-/* Real ResetGraph at 0x8005F2A4. For mode 0/3/5 (the init paths Spyro uses),
- * PSYQ writes a 128-byte env struct at 0x80074A64 + helper structs via
- * func_80061DEC. NTSC GPU yields gpu_type=0 (the default). */
+/** @brief Thunk for libgpu ResetGraph: PsyCross's ResetGraph, then the RAM writes of the real function.
+ *
+ * The game's psyq_game_mirror_resetgraph writes what libgpu's ResetGraph
+ * leaves in its data (Spyro 1: ResetGraph at 0x8005F2A4 zeroes the
+ * 128-byte environment block at 0x80074A64 and fills it for modes 0, 3 and
+ * 5, gpu_type 0 for NTSC), and the prologue's stack stores are replayed. At
+ * the first call, when OPENPETE_THUNK_STATE_SELFTEST is set and not "0", it
+ * runs the latch-pack selftest and exits the process with 0 on pass, 3 on
+ * failure.
+ * @param cpu Guest CPU state; a0 is the mode, v0 receives PsyCross's
+ *        result. */
 void psyq_ResetGraph(CPUState* cpu) {
     int mode = (int)cpu->a0;
     cpu->v0 = (uint32_t)ResetGraph(mode);
@@ -1196,13 +1253,20 @@ void psyq_DrawSync(CPUState* cpu) {
     psyq_mirror_stack_frame(cpu, PSYQ_FRAME_DRAWSYNC);
 }
 
-/* libgpu's ClearImage clamps the rectangle in place against the VRAM size in
- * its environment block, then builds its fill packet in the fill-packet block:
- * for a rectangle whose x and width are multiples of 64, a 5-word packet (E6,
- * E1, the 02 fill, position, size); otherwise 8 words that open the whole
- * draw area (E3, E4, E5, E6, E1), draw a 60 tile, and chain to 3 words that
- * restore the current draw area from the environment block's DRAWENV. The
- * restore words carry the same E3/E4/E5 payloads PutDrawEnv packs. */
+/** @brief Replay libgpu ClearImage's writes to guest RAM: the clamped rectangle and the fill packet.
+ *
+ * libgpu's ClearImage clamps the rectangle's width and height in place to
+ * 0..VRAM size - 1 from its environment block, then builds its fill packet
+ * in the fill-packet block: for a rectangle whose x and width are multiples
+ * of 64, a 5-word packet (E6, E1, the 02 fill, position, size); otherwise 8
+ * words that open the whole draw area (E3, E4, E5, E6, E1), draw a 60 tile,
+ * and chain to 3 words that restore the current draw area from the
+ * environment block's DRAWENV. The restore words carry the same E3/E4/E5
+ * payloads PutDrawEnv packs. The E1 payload is written as 0 (see the note in
+ * the body). Nothing is written when the game names no environment or fill
+ * block.
+ * @param rect The guest rectangle, clamped in place.
+ * @param color24 The fill colour, 0xBBGGRR. */
 static void psyq_mirror_clear_image(RECT16* rect, uint32_t color24) {
     const uint32_t env = psyq_game_libgpu_env_addr();
     const uint32_t blk = psyq_game_libgpu_clear_block_addr();
@@ -1290,13 +1354,16 @@ void psyq_PutDispEnv(CPUState* cpu) {
     psyq_mirror_stack_frame(cpu, PSYQ_FRAME_PUTDISPENV);
 }
 
-/* libgpu's PutDrawEnv packs the environment into env->dr_env before sending
+/** @brief Build the packet libgpu PutDrawEnv leaves in env->dr_env, in guest RAM.
+ *
+ * libgpu's PutDrawEnv packs the environment into env->dr_env before sending
  * it, and the packet stays in the caller's struct: a tag of 6 words, or 9
  * with the clear primitive when isbg is set, then E3 (draw area top-left),
  * E4 (bottom-right), E5 (offset), E1 (texture page, dither, draw-on-display),
  * E2 (texture window), E6 (mask), and the clear's colour, position and size.
  * PsyCross's PutDrawEnv copies the struct to a host variable and writes no
- * packet, so it is built here from the same fields, into guest RAM. */
+ * packet, so it is built here from the same fields.
+ * @param env The guest DRAWENV. */
 static void psyq_pack_draw_env(DRAWENV* env) {
     uint32_t code[9];
     int n = 0;
@@ -1361,6 +1428,11 @@ void psyq_PutDrawEnv(CPUState* cpu) {
  * g_psyx_render_aspect_factor so geometry projected to the wider
  * screen-X range is mapped across the full SDL window. */
 
+/** @brief Thunk for libgpu SetDefDispEnv: PsyCross's SetDefDispEnv on the guest DISPENV.
+ *
+ * a0 is the DISPENV, a1..a3 x, y and w, and the word at sp+0x10 h. No
+ * stack stores are replayed: the real SetDefDispEnv is a leaf.
+ * @param cpu Guest CPU state. */
 void psyq_SetDefDispEnv(CPUState* cpu) {
     SetDefDispEnv((DISPENV*)PTR(cpu->a0),
                   (int)cpu->a1, (int)cpu->a2, (int)cpu->a3,
@@ -1943,16 +2015,16 @@ void psyq_SetTransMatrix(CPUState* cpu) {
     gte_sync_psyx_to_cpu(cpu);
 }
 
-/* Replicate PSYQ MulMatrix's final `swc2 $11, 0x10(dst)`: IR3 is a
- * signed 16-bit GTE register but `swc2` stores 32 bits. Bytes 16-17 of
- * a MATRIX hold m[2][2]; bytes 18-19 are the two-byte alignment pad
- * before the long t[3] translation triple — sometimes consumed by a
- * caller's `Memcpy(SHORTMATRIX, MATRIX, 20)`. PSYQ deposits sign-
- * extension of IR3 into that pad slot (0xFFFF when m[2][2] negative,
- * 0x0000 otherwise). PsyCross's MulMatrix only writes m[2][2] as a
- * 16-bit short and leaves the pad untouched, which appears in the
- * oracle as a 4-byte g_Camera divergence on the very first
- * non-identity rotation. Mirror the side effect explicitly. */
+/** @brief Write the sign extension of m[2][2] into the MATRIX's alignment pad, as PSYQ MulMatrix's final `swc2 $11, 0x10(dst)` does.
+ *
+ * IR3 is a signed 16-bit GTE register but `swc2` stores 32 bits. Bytes
+ * 16-17 of a MATRIX hold m[2][2]; bytes 18-19 are the alignment pad before
+ * the long t[3] translation triple, which a caller's
+ * `Memcpy(SHORTMATRIX, MATRIX, 20)` copies. PSYQ deposits 0xFFFF there when
+ * m[2][2] is negative and 0x0000 otherwise; PsyCross's MulMatrix writes
+ * m[2][2] as a 16-bit short and leaves the pad untouched, which reaches
+ * gameplay state through g_Camera.
+ * @param m The result matrix; NULL writes nothing. */
 static inline void psyq_matrix_swc2_sign_extend_pad(MATRIX* m) {
     if (!m) return;
     int16_t* pad = ((int16_t*)m) + 9; /* word right after m[2][2] */
@@ -1979,6 +2051,13 @@ void psyq_MulMatrix(CPUState* cpu) {
 
 /* --- libpad -------------------------------------------------------------- */
 
+/** @brief Thunk for libpad PadInitDirect: PsyCross's PadInitDirect on the two guest pad buffers, plus the game's RAM mirror.
+ *
+ * a0 is the first port's buffer, a1 the second's. The first buffer's address
+ * is kept for psyq_vbl_body, which restores its bytes across a VBL that
+ * polls no pad data. psyq_game_mirror_pad_init writes the rest of what the
+ * real PadInitDirect leaves in PSX RAM.
+ * @param cpu Guest CPU state. */
 void psyq_PadInitDirect(CPUState* cpu) {
     uint32_t buf0 = cpu->a0;  /* &g_PadBuffer */
     uint32_t buf1 = cpu->a1;  /* &g_PadBufferSecondController */
@@ -1994,30 +2073,17 @@ void psyq_PadInitDirect(CPUState* cpu) {
     psyq_game_mirror_pad_init(cpu, buf0, buf1);
 }
 
-/* PSYQ libpad slot-2 canonical-state mirror.
+/** @brief Rewrite libpad's second-slot state to what PSYQ libpad holds with no controller there, through psyq_game_mirror_pad_slot2.
  *
- * PsyCross's PsyX_Pad_InitPad + PsyX_Pad_UpdateInput unconditionally
- * stamp all `g_controllers[i].padData` slots with "connected pad"
- * bytes (status=0, id=0x41/0x73, buttons, neutral analog) on every
- * poll. Real PSYQ libpad on PSX hardware, with no controller in
- * slot 2, returns the canonical empty-slot status:
- *
- *   slot-2 buffer (g_PadBufferSecondController @ 0x80078E50):
- *     FF 00 00 00 00 00 00 00      (status=0xFF "no controller", rest 0)
- *
- *   D_80078E9C @ 0x80078E9C:
- *     0x00000190                    (libpad-internal slot config word;
- *                                    constant from PadInitDirect onward —
- *                                    PsyCross leaves it 0)
- *
- * Captured both values from a real PCSX-Redux RAM dump at the first
- * GamestateDraw hit and confirmed constant across hits 1..50. Mirroring
- * per-vsync rather than one-shot at PadInitDirect because PsyCross
- * overwrites the slot-2 buffer on every input poll, so a one-shot
- * wouldn't persist past the first frame.
- *
- * Closes the last open region in the PCSX-Redux oracle gate
- * ('pad_input_buffers'); see games/<game>/manifest/gameplay_state_regions.toml. */
+ * PsyCross's pad poll stamps every `g_controllers[i].padData` slot with
+ * connected-pad bytes (status 0, id 0x41/0x73, buttons, neutral analog).
+ * Real libpad with slot 2 empty leaves status 0xFF and zeros in that slot's
+ * buffer; Spyro 1 also holds 0x00000190 in the libpad word at 0x80078E9C
+ * from PadInitDirect on (buffer at 0x80078E50,
+ * g_PadBufferSecondController). PsyCross overwrites the buffer at every
+ * poll, so psyq_vbl_body runs this every VBL rather than once at
+ * PadInitDirect. A game that provides no mirror writes nothing.
+ * @param cpu Guest CPU state. */
 static void psyq_libpad_mirror_canonical_slot2(CPUState* cpu) {
     psyq_game_mirror_pad_slot2(cpu);
 }
@@ -2070,6 +2136,9 @@ void psyq_PadSetAct(CPUState* cpu) {
 
 /* --- libcd --------------------------------------------------------------- */
 
+/** @brief Thunk for libcd CdInit: PsyCross's CdInit, and libcd's status byte set to motor on, idle (0x02).
+ *
+ * @param cpu Guest CPU state; v0 receives PsyCross's result. */
 void psyq_CdInit(CPUState* cpu) {
     int rc = CdInit();
     OPL_INFO_F("thunks", "CdInit -> %d", rc);
@@ -2077,10 +2146,16 @@ void psyq_CdInit(CPUState* cpu) {
     cpu->v0 = (uint32_t)rc;
 }
 
-/* Route a streaming read issued under an XA mode: the game fills the route
- * (its track index, a custom song's path), and exactly one of a custom song
- * by path, a WAV override by track, or the XA decoder owns playback;
- * starting one stops the others. */
+/** @brief Route a streaming read issued under an XA mode to one music source.
+ *
+ * Anchors the virtual streaming head (g_cdXaStartLBA, g_cdXaStartVBL) and
+ * lets the game fill the route (its track index, a custom song's path);
+ * both run during runahead speculation, since they are guest-deterministic
+ * or roll back with the tick. On a committed tick exactly one of a custom
+ * song by path, a WAV override by track, or the XA decoder at `sector` then
+ * owns playback, tried in that order; starting an override stops XA, and
+ * starting XA stops the override.
+ * @param sector The read's start LBA. */
 static void start_music_stream(int sector) {
     /* Anchor the VIRTUAL streaming head first — guest-deterministic and
      * snapshotted, so it runs during speculation too (the game's ReadS
@@ -2772,9 +2847,11 @@ void psyq_SpuSetCommonAttr(CPUState* cpu) {
     }
 }
 
-/* OPENPETE_SFX_END_LOG=1 (see psyq_SpuGetKeyStatus): the key-on side —
- * which sample (and slot name, when the level table knows it) each
- * voice was armed with. */
+/** @brief Whether OPENPETE_SFX_END_LOG is set to a nonempty value not starting with '0', read once.
+ *
+ * Gates the stderr lines of the SPU thunks: voice attributes, key on/off,
+ * key-status transitions, and SPU RAM reads and writes.
+ * @return 1 when the log is on, else 0. */
 static int sfx_key_log_on(void) {
     static int s_log = -1;
     if (s_log < 0) { const char* e = getenv("OPENPETE_SFX_END_LOG"); s_log = (e && *e && *e != '0'); }
@@ -2790,11 +2867,15 @@ static void sfx_key_log_attr(const SpuVoiceAttr* attr) {
                     openpete_frame, v, attr->addr, attr->pitch, n ? names[0] : "-");
 }
 
-/* Voice attributes pass through as written. Sound replacement (the sfx
- * pack, including the mod API's sfx_replace) happens below this mirror,
- * at the voice's PCM upload inside PsyCross, so the address and pitch
- * the one-shot duration is derived from — and with them the tick on
- * which the guest sees the voice end — are always the game's own. */
+/** @brief Thunk for libspu SpuSetVoiceAttr: passes the voice attributes to PsyCross as written.
+ *
+ * Sound replacement (the sfx pack, including the mod API's sfx_replace)
+ * happens below this mirror, at the voice's PCM upload inside PsyCross, so
+ * the address and pitch the one-shot duration is derived from, and with them
+ * the tick on which the guest sees the voice end, are the game's own. Under
+ * OPENPETE_SFX_END_LOG an attribute set that writes a start address is
+ * logged per voice with its sample's slot name.
+ * @param cpu Guest CPU state; a0 is the SpuVoiceAttr. */
 void psyq_SpuSetVoiceAttr(CPUState* cpu) {
     const SpuVoiceAttr* attr = (const SpuVoiceAttr*)PTR(cpu->a0);
     sfx_key_log_attr(attr);
@@ -2820,12 +2901,14 @@ void psyq_SpuSetKey(CPUState* cpu) {
                 cpu->a1, cpu->ra);
 }
 
-/* OPENPETE_SFX_END_LOG=1: one line per voice key-status transition the
- * guest observes (ON / RESET with the VBL it was read on). The RESET
- * read is the tick the game frees the sound slot and writes the
- * sound-ref byte, so two runs whose logs match played every voice to the
- * same guest-visible end — the A/B behind the sfx_replace rung of
- * check_mods.sh. */
+/** @brief Thunk for libspu SpuGetKeyStatus: PsyCross's key status for the voice mask in a0.
+ *
+ * Under OPENPETE_SFX_END_LOG a single-voice query whose result differs from
+ * that voice's previous result logs one line with openpete_frame when the
+ * new status is SPU_ON or SPU_RESET. The RESET read is the tick the game
+ * frees the sound slot and writes the sound-ref byte, so two runs whose
+ * logs match played every voice to the same guest-visible end.
+ * @param cpu Guest CPU state; v0 receives the status. */
 void psyq_SpuGetKeyStatus(CPUState* cpu) {
     unsigned int mask = (unsigned int)cpu->a0;
     cpu->v0 = (uint32_t)SpuGetKeyStatus(mask);
@@ -2937,6 +3020,11 @@ void psyq_SpuIsTransferCompleted(CPUState* cpu) {
  * which owns two real 128 KiB .mcr images persisted under the per-user
  * state dir. */
 
+/** @brief Thunk for libmcrd MemCardInit: initializes the host card module and replays the real function's RAM writes.
+ *
+ * psyq_game_mirror_memcard_init writes the libmcrd state the real function
+ * leaves in PSX RAM, and the prologue's stack stores are replayed.
+ * @param cpu Guest CPU state. */
 void psyq_MemCardInit(CPUState* cpu) {
     openpete_memcard_init();
 
@@ -2956,8 +3044,12 @@ void psyq_MemCardStop(CPUState* cpu) {
     openpete_memcard_stop();
 }
 
-/* Exist/Accept surface only v0 here; the libmcrd result code reaches the
- * game through the async latch that MemCardSync reads (the module sets it). */
+/** @brief Thunk for libmcrd MemCardExist: probes the card in the port a0 names.
+ *
+ * v0 is 1 when a card is present and 0 when the slot is empty; the libmcrd
+ * result code reaches the game through the latch MemCardSync reads, which
+ * openpete_memcard_exist sets.
+ * @param cpu Guest CPU state. */
 void psyq_MemCardExist(CPUState* cpu) {
     cpu->v0 = (uint32_t)openpete_memcard_exist((int)cpu->a0, nullptr, nullptr);
 }
@@ -2966,8 +3058,13 @@ void psyq_MemCardAccept(CPUState* cpu) {
     cpu->v0 = (uint32_t)openpete_memcard_accept((int)cpu->a0, nullptr, nullptr);
 }
 
-/* MemCardReadFile(chan, name, adrs, ofs, bytes): a0=chan, a1=name, a2=RAM
- * dest, a3=file offset, [sp+0x10]=bytes. */
+/** @brief Thunk for libmcrd MemCardReadFile(chan, name, adrs, ofs, bytes): copies part of a card file into guest RAM.
+ *
+ * a0 is the port, a1 the file name, a2 the RAM destination, a3 the file
+ * offset and the word at sp+0x10 the byte count; v0 is
+ * openpete_memcard_read's libmcrd result code, which it also latches for
+ * MemCardSync.
+ * @param cpu Guest CPU state. */
 void psyq_MemCardReadFile(CPUState* cpu) {
     cpu->v0 = (uint32_t)openpete_memcard_read((int)cpu->a0,
                                               (const char*)PTR(cpu->a1),
@@ -3011,11 +3108,13 @@ void psyq_MemCardSync(CPUState* cpu) {
 
 /* --- libapi -------------------------------------------------------------- */
 
+/** @brief Thunk for libapi LoadExec: logs a warning and returns; openpete cannot load a second EXE.
+ *
+ * In Spyro 1 the one caller is CrashDemoLaunch (title-screen L1+Triangle
+ * boots the demo CRASH.EXE in the disc's S0 directory), which
+ * features/crash_demo_woah.c swallows before its engine teardown.
+ * @param cpu Guest CPU state; unused. */
 void psyq_LoadExec(CPUState* cpu) {
-    /* One live caller: CrashDemoLaunch (title-screen L1+Triangle boots the
-     * disc's S0\CRASH.EXE demo). features/crash_demo_woah.c intercepts that
-     * path before its engine teardown, so this should never fire; keep a
-     * warning no-op rather than abort in case another route appears. */
     (void)cpu;
     OPL_WARN_F("thunks", "%s", "LoadExec called - ignoring");
 }
@@ -3029,6 +3128,11 @@ void psyq_LoadExec(CPUState* cpu) {
 /* These PSYQ-name thunks shadow nothing host-side because of the psyq_
  * prefix. They translate the PSYQ ABI into libc. */
 
+/** @brief Thunk for the C library's memcpy: copies a2 bytes from guest a1 to guest a0 with the host memcpy.
+ *
+ * Nothing is copied when either address has no host mapping; v0 is the
+ * destination, as PSYQ's memcpy returns.
+ * @param cpu Guest CPU state. */
 void psyq_memcpy(CPUState* cpu) {
     /* PSYQ memcpy returns dest. */
     void* dst = PTR(cpu->a0);
@@ -3139,7 +3243,13 @@ struct MipsArgs {
     }
 };
 
-/* Render an unsigned integer in the given base. */
+/** @brief Write the digits of `v` in `base` to `out`, most significant first, with no NUL.
+ *
+ * @param v The value.
+ * @param base 2..16.
+ * @param upper Use upper-case hex digits.
+ * @param out Receives the digits; 32 bytes hold any value.
+ * @return The number of digits written, 1 for 0. */
 size_t render_uint(uint32_t v, unsigned base, bool upper, char* out) {
     if (v == 0u) { out[0] = '0'; return 1u; }
     char tmp[32];

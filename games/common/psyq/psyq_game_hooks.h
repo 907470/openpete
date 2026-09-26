@@ -241,10 +241,12 @@ uint32_t psyq_game_cd_read_cb_addr(void);
 int  psyq_game_render_paths_active(void);
 int  psyq_game_render_path_addr_visible(uint32_t addr);
 
-/* Re-derive the resident overlay from the id word at psyq_game_overlay_vaddr()
- * and re-point the dispatcher if it names a different overlay. A game passes
- * this to spyro_overlay_set_resync() at boot when its overlays can be copied
- * into the overlay region rather than read straight into it. */
+/** @brief Re-derive the resident overlay from the id word at psyq_game_overlay_vaddr() and re-point the dispatcher if it names a different overlay.
+ *
+ * Does nothing when the game has no overlay vaddr or guest RAM is not
+ * mapped. A game passes this to spyro_overlay_set_resync() at boot when its
+ * overlays can be copied into the overlay region rather than read straight
+ * into it. */
 void psyq_overlay_resync_from_ram(void);
 
 /** @brief Register the game's sound-effect tables with the sfx pack and the mod layer.
