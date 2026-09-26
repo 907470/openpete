@@ -208,10 +208,15 @@ static int read_first_line(const char* path, char* out, unsigned n)
 }
 #endif
 
-/* Who owns the swapchain's release cadence. It is part of the machine, not
- * of the run: the same silicon under a different compositor presents on a
- * different schedule, and two logs that disagree only here would otherwise
- * compare as one environment. */
+/** @brief Write the compositor identity for the environment block into out.
+ *
+ * The compositor owns the swapchain's release cadence, so it is part of the
+ * machine: the same hardware under a different compositor presents on a
+ * different schedule, and two logs that differ only here would otherwise
+ * compare as one environment. The value is SDL's current video driver name,
+ * "none" when there is none; on Linux "/<XDG_CURRENT_DESKTOP>" is appended
+ * when that variable is set, since the driver says wayland or x11 but not
+ * whose. */
 static void compositor_id(char* out, unsigned n)
 {
     const char* drv = SDL_GetCurrentVideoDriver();
@@ -342,6 +347,12 @@ void openpete_pace_env_build(char* buf, unsigned buf_bytes,
 /* emit                                                               */
 /* ------------------------------------------------------------------ */
 
+/** @brief Write a CLOCKSAMPLE record pairing op_now() with the wall clock, at most once per 10 s.
+ *
+ * caller_ns only decides whether a sample is due; both clocks are read back
+ * to back inside the call, because pairing the caller's older timestamp with
+ * a fresh wall read would add a load-dependent offset indistinguishable
+ * from the drift the record exists to measure. No-op without an open log. */
 static void maybe_clocksample(int64_t caller_ns)
 {
     if (!s_fp || caller_ns < s_next_clocksample_ns) return;
@@ -575,12 +586,7 @@ double openpete_pace_last_alpha(void)
 }
 int openpete_pace_last_alpha_paired(void) { return s_next_alpha_paired; }
 
-/* One present just returned from the renderer on the CALLING thread: take
- * the RHI block times, convert any refusal the swapchain made since the last
- * call into shed records, else log the present. Shared by the inline present
- * path and the present thread so the refusal ledger has one owner; the two
- * never present concurrently. `alpha` is the animation moment this frame
- * showed (paired = 0 when there was no bracket). */
+/* Refusals since the last call become SHED records; see openpete_pace_log.h. */
 void openpete_pace_record_present(uint8_t kind, double alpha, int paired)
 {
     int64_t blk[RHI_BLOCK_PHASE_COUNT] = {0};
@@ -619,9 +625,7 @@ void openpete_pace_present(uint8_t kind, int64_t done_ns,
                                 s_next_alpha_micro, s_next_alpha_paired);
 }
 
-/* The alpha travels as an argument: the note_alpha global is written by the
- * thread that extracts and would be overwritten by a present recorded on
- * another thread, which logged one scene's alpha against another scene. */
+/* The alpha is an argument so a present on another thread logs its own scene's alpha. */
 void openpete_pace_present_alpha(uint8_t kind, int64_t done_ns,
                                  int64_t fence_block_ns, int64_t acquire_block_ns,
                                  int64_t queue_present_block_ns,

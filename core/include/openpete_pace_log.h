@@ -121,17 +121,32 @@ enum {
 
 /* ---- lifecycle ---------------------------------------------------------- */
 
-/* Open PATH and write the header. `env` is the pre-rendered "key=value\n"
- * environment block (see openpete_pace_env_build). Returns 0 on success; on
- * failure the log stays closed and every emit below is a no-op, so callers
- * need no second check. */
+/** @brief Open path, write the 64-byte header and the environment block, and start accepting records.
+ *
+ * The header carries the magic, version, header and record sizes, the
+ * environment block's length, the creation time in Unix nanoseconds, the
+ * op_now() epoch, the VBL rate as OP_VBL_HZ_NUM / OP_VBL_HZ_DEN, and
+ * OP_TICK_VBLS. On failure the log stays closed and every emit is a no-op,
+ * so callers need no second check. A second call while a log is open
+ * returns 0 without touching the file.
+ * @param path Output file path; NULL or empty fails.
+ * @param env The environment block from openpete_pace_env_build, or NULL.
+ * @return 0 when a log is open, -1 when path is empty, the file cannot be
+ *         opened, the header write fails, or the writer mutex cannot be
+ *         created. */
 int  openpete_pace_log_open(const char* path, const char* env);
 
-/* Flush + close. Safe on an unopened log. */
+/** @brief Flush buffered records, close the log file, and log the record count.
+ *
+ * Emitters return early from the moment the file pointer is cleared under
+ * the writer lock. No-op when no log is open. */
 void openpete_pace_log_close(void);
 
-/* Non-zero while a log file is open — for callers that would otherwise do
- * work (a timestamp read, a string format) purely to feed it. */
+/** @brief Return nonzero while a log file is open.
+ *
+ * For callers that would otherwise do work (a timestamp read, a string
+ * format) only to feed the log.
+ * @return 1 while a log file is open, else 0. */
 int  openpete_pace_log_active(void);
 
 /** @brief Render the pacing log's mandatory environment block into @p buf as "key=value" lines.
@@ -167,13 +182,34 @@ void openpete_pace_env_build(char* buf, unsigned buf_bytes,
 
 /* ---- emit --------------------------------------------------------------- */
 
-/* One VBL. `deadline_ns` is the grid point this iteration was paced to;
- * `latch_ns` is the PUBLISH instant of the pad snapshot this tick consumed,
- * captured at the latch — not the time of the latch call. Post-thread-split
- * the producer republishes on its own cadence, so reading it back later names
- * a sample the tick never saw; exec_start/end bracket the game fiber.
- * A zero timestamp means "not applicable this iteration" and the analyzer
- * treats it as missing rather than as the epoch. */
+/** @brief Classify one VBL into the census, close the pad-read bracket, and write its VBL record.
+ *
+ * Under the virtual clock OP_PACE_F_UNLOCK is forced on, since exec_start
+ * then equals the deadline by construction. A VBL is paced when it lacks
+ * OP_PACE_F_UNLOCK and has a nonzero deadline; its phase error is
+ * exec_start_ns - deadline_ns, signed. A paced VBL flagged paused, stepped,
+ * rewound, not live, or slipped is transient: counted and folded into the
+ * transient max only. A clean paced VBL feeds the phase max, min and
+ * histogram, and when it consumed a host sample (latch_ns nonzero,
+ * latched_seq at least 2) the latch-offset bound; latched_seq
+ * OP_PACE_LATCH_CLAIMED counts it as claimed instead. The bracket closes
+ * before the log-file check so the census classifies pad reads the same
+ * with or without a log. With a log open, the record carries deadline,
+ * latch, exec start and end, latched_seq and latched_bits, and a
+ * CLOCKSAMPLE record follows every 10 s. A zero timestamp means not
+ * applicable this iteration; the analyzer treats it as missing.
+ * @param vbl_index openpete_frame of the VBL.
+ * @param flags OP_PACE_F_* bits.
+ * @param pad_reads Guest pad reads in this VBL.
+ * @param deadline_ns Grid point this iteration was paced to.
+ * @param latch_ns Publish instant of the pad sample this tick consumed,
+ *        captured at the latch; under the thread split a later read-back
+ *        would name a sample the tick never saw.
+ * @param exec_start_ns Start of the game fiber run.
+ * @param exec_end_ns End of the game fiber run.
+ * @param latched_seq Publish sequence of the latched sample, or an
+ *        OP_PACE_LATCH_* value.
+ * @param latched_bits Pad bits of the latched sample. */
 void openpete_pace_vbl(uint32_t vbl_index, uint8_t flags, uint16_t pad_reads,
                        int64_t deadline_ns, int64_t latch_ns,
                        int64_t exec_start_ns, int64_t exec_end_ns,
@@ -197,51 +233,104 @@ void openpete_pace_vbl(uint32_t vbl_index, uint8_t flags, uint16_t pad_reads,
  * between two latches and the game never saw it at all. Without the bits,
  * every superseded sample looks like a dropped press. */
 
-/* One present ATTEMPT — recorded even when the swapchain refused an image, so
- * a run that stops displaying is visible rather than silently absent.
+/** @brief Publish the interpolation alpha the next present will show and whether a prev/curr pair existed.
  *
- * `done_ns` is when the present path RETURNED, not when it was submitted:
- * everything before it is accounted for by the block times, which are the
- * waits the present path imposed on whichever thread called it. Under the
- * thread split that thread also runs the sim, which is what makes a blocked
- * present a candidate cause for the next tick's lateness. `recreate_block_ns`
- * carries the swapchain rebuild — the single largest of these, and previously
- * attributed to nothing. */
-/* Publish the interpolation alpha the next present will show (and whether a
- * prev/curr pair existed at all). Called by the re-extract that resolves it;
- * the value rides on the next PRESENT record. */
+ * Called by each game's re-extract and by the cutscene guard once the alpha
+ * is resolved. The value is stored in micro-alpha (1e-6 of a tick), signed,
+ * since a canonical present may carry a slightly negative alpha. Two copies
+ * are written: one read by openpete_pace_extract_alpha, one read by
+ * openpete_pace_last_alpha and carried by openpete_pace_present.
+ * @param alpha Sub-tick alpha of the scene.
+ * @param paired Nonzero when a prev/curr pair existed. */
 void openpete_pace_note_alpha(double alpha, int paired);
 /** @brief Return the paired flag of the alpha last published by openpete_pace_note_alpha.
  *
  * @return 1 when the re-extract that published the alpha had a prev/curr
  *         pair to interpolate between, else 0. */
 int  openpete_pace_last_alpha_paired(void);
-/* The alpha the most recent EXTRACTION computed (extraction-thread owned). */
+/** @brief Return the alpha of the last openpete_pace_note_alpha call from the extraction side's copy.
+ *
+ * Eager production reads it to tag the scene it publishes; no present
+ * record writes this copy.
+ * @param paired Receives the paired flag when non-NULL.
+ * @return The alpha, at micro-alpha precision. */
 double openpete_pace_extract_alpha(int *paired);
-/* The alpha the most recent re-extract resolved; census/diagnostics only. */
+/** @brief Return the alpha of the last openpete_pace_note_alpha call.
+ *
+ * The inline present path passes it to openpete_pace_record_present, and
+ * the scene-signature diagnostic prints it.
+ * @return The alpha, at micro-alpha precision. */
 double openpete_pace_last_alpha(void);
 
-/* The nominal present slot (1 / --render-fps), against which a display hole is
- * judged "long". Set whenever the render period changes; 0 disables the
- * cadence counters rather than letting them count against a stale rate. */
+/** @brief Set the nominal present slot against which a display hole counts as long.
+ *
+ * An intermediate present that follows the previous present by more than
+ * two slots increments gaps_mid_long. Set at interpolation init and
+ * whenever the render period changes; 0 disables that counter rather than
+ * judging against a stale rate.
+ * @param slot_ns Present period in ns (1 / --render-fps); a negative value
+ *        is stored as 0. */
 void openpete_pace_set_slot_ns(int64_t slot_ns);
 
-/* A present reached the DISPLAY. `id` is the swapchain present id waited on,
- * `t_ns` the observed flip time. This is the only timestamp in the log that is
- * not a submit time, which is why it gets its own record rather than another
- * field on PRESENT: everything else says when we handed a frame over, and the
- * display decides for itself when to show it. */
+/** @brief Record that a present reached the display.
+ *
+ * This is the only timestamp in the log that is not a submit time: every
+ * other record says when an image was handed over, and the display decides
+ * when to show it. The record keeps the low 32 bits of id as its index and
+ * the full id in slot a. Writes no census counter; no-op without an open
+ * log.
+ * @param id Swapchain present id waited on.
+ * @param t_ns Instant the wait returned, taken as the flip time.
+ * @param waited_ns How long the wait blocked; a near-zero wait means the
+ *        flip had already happened and t_ns is only when it was asked. */
 void openpete_pace_flip(uint64_t id, int64_t t_ns, int64_t waited_ns);
 
-/* Record the present that just returned on this thread (block times, refusal
- * ledger, alpha). See pace_log.c. */
+/** @brief Record the present that just returned on the calling thread.
+ *
+ * Takes the RHI block times, then compares the native renderer's fence and
+ * acquire shed counters against their values at the previous call: any
+ * increase is written as that many SHED records (PACE_SHED_SLOT_BUSY for a
+ * fence refusal, PACE_SHED_NO_IMAGE for an acquire refusal) and no PRESENT
+ * record. Otherwise it records a PRESENT through
+ * openpete_pace_present_alpha, stamped with op_now(). The inline present
+ * path and the present thread share it so the refusal ledger has one
+ * owner; the two never present concurrently.
+ * @param kind OP_PACE_CANONICAL, OP_PACE_INTERMEDIATE or OP_PACE_REPEAT.
+ * @param alpha Sub-tick alpha the image showed.
+ * @param paired 0 when the image had no prev/curr pair. */
 void openpete_pace_record_present(uint8_t kind, double alpha, int paired);
 
+/** @brief Record one present attempt with its block times and alpha, and update the present census.
+ *
+ * The census counts the present by kind and updates the display-cadence
+ * statistics: an intermediate present more than two slots after the
+ * previous present counts in gaps_mid_long, a canonical present's gap feeds
+ * hold_ema_ns, and a repeat updates neither. The alpha travels as an
+ * argument because the note_alpha global belongs to the extracting thread
+ * and a present recorded on another thread would otherwise log another
+ * scene's alpha.
+ * @param kind OP_PACE_CANONICAL, OP_PACE_INTERMEDIATE or OP_PACE_REPEAT.
+ * @param done_ns When the present path returned, not when it submitted;
+ *        the time before it is accounted for by the block times, the waits
+ *        the present imposed on the calling thread.
+ * @param fence_block_ns Time blocked on the frame fence.
+ * @param acquire_block_ns Time blocked acquiring a swapchain image.
+ * @param queue_present_block_ns Time blocked in the queue present.
+ * @param recreate_block_ns Time spent rebuilding the swapchain.
+ * @param alpha_micro Alpha the image showed, in 1e-6 of a tick.
+ * @param paired 0 when the image had no prev/curr pair. */
 void openpete_pace_present_alpha(uint8_t kind, int64_t done_ns,
                                  int64_t fence_block_ns, int64_t acquire_block_ns,
                                  int64_t queue_present_block_ns,
                                  int64_t recreate_block_ns,
                                  int64_t alpha_micro, int paired);
+/** @brief Record one present attempt with the alpha last published by openpete_pace_note_alpha.
+ * @param kind OP_PACE_CANONICAL, OP_PACE_INTERMEDIATE or OP_PACE_REPEAT.
+ * @param done_ns When the present path returned.
+ * @param fence_block_ns Time blocked on the frame fence.
+ * @param acquire_block_ns Time blocked acquiring a swapchain image.
+ * @param queue_present_block_ns Time blocked in the queue present.
+ * @param recreate_block_ns Time spent rebuilding the swapchain. */
 void openpete_pace_present(uint8_t kind, int64_t done_ns,
                            int64_t fence_block_ns, int64_t acquire_block_ns,
                            int64_t queue_present_block_ns,
@@ -251,29 +340,47 @@ void openpete_pace_present(uint8_t kind, int64_t done_ns,
  *
  * The census counter increments whether or not a log file is open. The host
  * loop sheds an intermediate present with PACE_SHED_NO_BUDGET when its
- * predicted cost does not fit before the sim deadline.
- * @param kind OP_PACE_INTERMEDIATE or OP_PACE_CANONICAL.
+ * predicted cost does not fit before the sim deadline;
+ * openpete_pace_record_present records swapchain refusals as
+ * PACE_SHED_SLOT_BUSY (fence) and PACE_SHED_NO_IMAGE (acquire), with the
+ * matching block time as the cost.
+ * @param kind The present kind: OP_PACE_CANONICAL, OP_PACE_INTERMEDIATE or
+ *        OP_PACE_REPEAT.
  * @param reason A PACE_SHED_* code.
  * @param predicted_cost_ns Predicted cost of the skipped present.
  * @param deadline_margin_ns Time left before the sim deadline at the shed. */
 void openpete_pace_shed(uint8_t kind, uint16_t reason,
                         int64_t predicted_cost_ns, int64_t deadline_margin_ns);
 
-/* A deadline clamp: `periods` of wall time discarded because the host fell
- * `behind_ns` behind. Feeds both the record stream and the census. The
- * analyzer, not the runtime, attributes a cause. */
+/** @brief Record a deadline clamp that discarded wall time because the host fell behind.
+ *
+ * Counts the event and the discarded periods (a negative count adds 0) in
+ * the census per kind, whether or not a log is open, and writes a SLIP
+ * record when one is. The analyzer, not the runtime, attributes a cause.
+ * @param kind OP_PACE_SLIP_RENDER, or OP_PACE_SLIP_SIM (any other value
+ *        counts as sim).
+ * @param periods Pacing periods discarded.
+ * @param behind_ns How far behind the deadline the host was. */
 void openpete_pace_slip(uint8_t kind, int64_t periods, int64_t behind_ns);
-/* A guest disc read that blocked on the in-memory image's loader. */
+/** @brief Record a guest disc read that blocked on the in-memory image's background loader.
+ *
+ * The disc cache calls it after the wait. Writes a CD_MISS record only; no
+ * census counter; no-op without an open log.
+ * @param waited_ns Time the read waited for the range to become resident.
+ * @param end_offset End byte offset of the requested range. */
 void openpete_pace_cd_miss(int64_t waited_ns, uint64_t end_offset);
 
-/* A pad edge, from the always-on input producer.
+/** @brief Record a pad edge published by the always-on input producer.
  *
- * `seq` is the publish sequence of the sample carrying the edge, and it is
- * the field that makes the record attributable: a VBL records the sequence it
- * latched, so "which tick consumed this edge — and did any tick consume it at
- * all" is answered by identity rather than inferred from timestamp ordering.
- * Without it a dropped pulse is indistinguishable from a consumed one, and a
- * phase sweep reports a clean result over edges the guest never saw. */
+ * Counts the edge in the census whether or not a log is open. seq is the
+ * field that makes the record attributable: a VBL records the sequence it
+ * latched, so which tick consumed an edge, and whether any did, is answered
+ * by identity rather than by timestamp order.
+ * @param sample_ns Instant the sample was taken; the record's timestamp.
+ * @param seq Publish sequence of the sample carrying the edge.
+ * @param bits Pad bits after the edge.
+ * @param bits_delta Bits that changed against the previous edge's sample.
+ * @param analog_delta Nonzero when an analog axis changed; stored as flag 1. */
 void openpete_pace_input_edge(int64_t sample_ns, unsigned seq, uint16_t bits,
                               uint16_t bits_delta, int analog_delta);
 
@@ -310,31 +417,29 @@ void openpete_pace_wake(int64_t request_ns, int64_t target_ns, int64_t wake_ns);
 void openpete_pace_present_span(uint8_t kind, int64_t start_ns,
                                 int64_t end_ns, int64_t extract_ns);
 
-/* One iteration of the host pump loop — the thread that owns the window.
+/** @brief Account one iteration of the host pump loop, the thread that owns the window.
  *
- * Under the thread split nothing else in this log is stamped on that thread:
- * VBL and PRESENT_SPAN belong to the sim worker, FLIP to the present thread,
- * and main appears only as the timestamp on an INPUT_EDGE. Yet main is where
- * the split's own defects live — a Win32 modal resize or move runs the OS's
- * loop INSIDE the pump, a fullscreen toggle is a synchronous window op, and a
- * gamepad hotplug re-enumerates devices. Each stalls input publication and the
- * window ops the other two threads have queued, and until now every one of
- * them was invisible: the log had no event type for the pumping thread.
- *
- * The four instants split the iteration into the park (SDL_WaitEventTimeout,
- * which is the loop idling and is not a cost) and the three pieces of work
- * after it. `window_op` marks an iteration that performed one.
- *
- * Unlike the rest of this log, this is not one record per event. The pump runs
- * ~1000x/s against ~60 VBL and a few hundred presents, and a record apiece
- * would make the pump the bulk of every file. Two things are emitted instead,
- * which together lose nothing: every iteration whose ACTIVE time crosses a
- * fixed floor gets its own record, and a summary record every reporting window
- * carries count, sum, and max over ALL iterations in it — the long ones
- * included, with `e` naming how many of them were also recorded individually.
- * The selection is on duration, not on phase: every long iteration is kept, so
- * this is not the throttled trace the header warns about, and the summary
- * keeps the accounting complete for the short ones it drops. */
+ * Under the thread split no other record is stamped on that thread, yet a
+ * Win32 modal resize or move (the OS loop runs inside the wait), a
+ * fullscreen toggle, and a gamepad hotplug each stall input publication and
+ * the window ops the other threads queued there. The instants split the
+ * iteration into the park (start to wait_end, SDL_WaitEventTimeout, the
+ * loop idling) and three pieces of work: event pump, input, and the rest;
+ * active time is end_ns - wait_end_ns. The census takes every iteration.
+ * With a log open, an iteration whose active time reaches 1 ms or whose park
+ * reaches 4 ms gets its own HOST_PUMP record (OP_PACE_HP_PARKED set for the
+ * park case, OP_PACE_HP_WINDOW for a window op), and every 100 ms a record
+ * flagged OP_PACE_HP_SUMMARY carries the window's iteration count, active
+ * sum and max, event-pump max, park sum, and in `e` how many of its
+ * iterations were recorded individually. The selection is on duration, not
+ * phase, so every long iteration is kept. Called only from the main thread;
+ * the window accumulators take no lock.
+ * @param start_ns Iteration start, before the wait.
+ * @param wait_end_ns When the event wait returned.
+ * @param pump_end_ns When the event pump finished.
+ * @param input_end_ns When input publication finished.
+ * @param end_ns Iteration end.
+ * @param window_op Nonzero when the iteration performed a window op. */
 void openpete_pace_host_pump(int64_t start_ns, int64_t wait_end_ns,
                              int64_t pump_end_ns, int64_t input_end_ns,
                              int64_t end_ns, int window_op);
@@ -371,23 +476,36 @@ enum {
     OP_PACE_PR_UNATTRIBUTED = 1u << 0
 };
 
-/* The guest read its pad buffer. Emitted at the entry of the game function
- * that consumes the buffer PsyX_Pad_InternalPadUpdates wrote — the moment
- * that actually decides which host sample this tick plays, and which on real
- * hardware is a software-initiated SIO0 transaction with no tie to vblank.
+/** @brief Account one guest read of its pad buffer.
  *
- * Counted whether or not a log file is open: the count is the honest producer
- * for the VBL record's `pad_reads` field, which until now was hard-zero. */
+ * The dispatcher calls it at the entry of the game function that consumes
+ * the buffer PsyX_Pad_InternalPadUpdates wrote: the moment that decides
+ * which host sample the tick plays, which on hardware is a
+ * software-initiated SIO0 transaction with no tie to vblank. Counted whether
+ * or not a log file is open; the count feeds the VBL record's pad_reads
+ * field. A read outside an open, unsuspended VBL bracket counts as
+ * unattributed and is recorded with OP_PACE_PR_UNATTRIBUTED. Inside the
+ * bracket, the first read of the VBL sets the census bounds on its offset
+ * from exec start and on the latched sample's age; every read gets a
+ * PAD_READ record with its ordinal (saturated to u16), the exec start and
+ * the latch instant. Game-fiber thread only. */
 void openpete_pace_pad_read(void);
 
-/* Reads seen since the last openpete_pace_vbl_begin, saturated to u16.
- * Distinguishable from "no probe wired": see openpete_pace_pad_probe_armed. */
+/** @brief Return the pad reads attributed to the current VBL bracket, saturated to u16.
+ *
+ * Zero is ambiguous without openpete_pace_pad_probe_armed: an unarmed probe
+ * reports zero reads too.
+ * @return Reads since the last openpete_pace_vbl_begin. */
 uint16_t openpete_pace_pad_reads_this_vbl(void);
 
-/* Non-zero once a pad-read probe address has been armed. Without it every
- * tick reports zero reads, which is a MISSING measurement and must not be
- * read as "the game never looked at the pad". */
+/** @brief Return nonzero once a pad-read probe address has been armed.
+ *
+ * Without it every tick reports zero reads, which is a missing measurement,
+ * not evidence that the game never read the pad; the census line prints
+ * "no probe" then.
+ * @return 1 when armed, else 0. */
 int  openpete_pace_pad_probe_armed(void);
+/** @brief Mark the pad-read probe armed; run.c calls it once it has set the probe's guest address. */
 void openpete_pace_pad_probe_arm(void);
 
 /* ---- census (always compiled, no log file needed) ----------------------- */
@@ -480,14 +598,14 @@ void openpete_pace_census_format(char* buf, unsigned buf_bytes);
  * @return The µs blocked, 0 when nothing was injected. */
 int64_t openpete_pace_inject(int paced);
 
-/* OPENPETE_PACE_INJECT_PRESENT_US=N: add N µs of busy work to every
- * intermediate present, inflating its measured cost.
+/** @brief Busy-wait OPENPETE_PACE_INJECT_PRESENT_US=N µs in every intermediate present.
  *
- * This is the shed predicate's proof of engagement. A shed that has never
- * been observed to fire is an assertion, not a mechanism: the fault injector
- * makes presents too expensive to fit before the tick deadline, and the
- * contract — presents are shed, ticks hold phase — becomes a thing that can
- * be checked rather than believed. Returns the µs actually spent. */
+ * Inflating the measured cost of intermediate presents until they no longer
+ * fit before the tick deadline makes the shed predicate fire, so the
+ * contract that presents are shed while ticks hold phase can be measured.
+ * The variable is read once and a warning logged when it is positive;
+ * inactive under the virtual clock.
+ * @return The µs spent, 0 when nothing was injected. */
 int64_t openpete_pace_inject_present(void);
 
 /** @brief Busy-wait OPENPETE_PACE_INJECT_CANON_US=N µs in every canonical present.

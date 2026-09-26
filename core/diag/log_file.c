@@ -214,10 +214,15 @@ static int resolve_path(const char* spec, char* out, size_t cap) {
     return 0;
 }
 
-/* One writer per file. A second concurrent instance — a gate running
- * headless copies in parallel, or a user launching twice — would
- * interleave into the same file and race the rotation, so it runs
- * without a file sink instead. */
+/** @brief Take a non-blocking exclusive flock on "<path>.lock" so one process writes the log file.
+ *
+ * A second concurrent instance (parallel headless gate runs, a second
+ * launch) would interleave into the same file and race the rotation; it
+ * fails here and runs without a file sink. The lock descriptor is kept in
+ * s_lock_fd until drop_lock. On Windows no lock is taken and the call
+ * always succeeds.
+ * @return 0 when the lock is held (always on Windows), -1 when the lock
+ *         path is too long, cannot be opened, or another process holds it. */
 static int take_lock(const char* path) {
 #if defined(_WIN32)
     (void)path;
@@ -243,13 +248,17 @@ static void drop_lock(void) {
 #endif
 }
 
-/* A GUI-subsystem Windows exe launched by a double click has no standard
- * handles at all, and a process whose parent closed fd 2 has none either.
- * Every open() below would then land on the lowest free descriptor: the
- * log file (or the lock) becomes fd 2 and the pipe swap closes it. Park
- * the null device on each missing standard descriptor first, so fd 2 is
- * a real, writable, non-terminal stderr and the tee works unchanged;
- * the terminal leg then discards into the null device. */
+/** @brief Open the null device on each of fds 0 to 2 that is not open.
+ *
+ * A GUI-subsystem Windows exe launched by a double click has no standard
+ * handles, and a process whose parent closed fd 2 has none either. Every
+ * later open() in openpete_log_file_open would then land on the lowest free
+ * descriptor: the log file or the lock becomes fd 2 and the pipe swap
+ * closes it. With the null device parked there, fd 2 is a writable
+ * non-terminal stderr, the tee works unchanged, and the terminal leg
+ * discards into the null device. On Windows a stderr FILE left detached
+ * (_fileno() < 0) is also reopened on the null device and its descriptor
+ * stored in s_stderr_fd. Stops at the first failed open. */
 static void reserve_std_fds(void) {
     for (int fd = 0; fd <= 2; fd++) {
         if (op_fd_is_open(fd)) continue;

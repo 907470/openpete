@@ -36,9 +36,7 @@ static char g_spec[128];   /* last applied level spec, for display */
  * terminal (piped/redirected output — grep, files, the oracle — stays clean). */
 static int g_tty = -1;
 
-/* The stderr mirror (log_file.c) replaces fd 2 with a pipe, which would
- * make the test below answer "not a terminal" and silently drop colour
- * from every interactive run. It pins the real answer before the swap. */
+/* Pinned by the stderr mirror before it replaces fd 2 with a pipe. */
 void openpete_log_pin_stderr_tty(int is_tty) { g_tty = is_tty ? 1 : 0; }
 
 static int stderr_is_tty(void) {
@@ -164,9 +162,7 @@ void openpete_log_init(openpete_log_format_t fmt, const char* level_spec) {
     }
 }
 
-/* Live re-configuration (dev overlay). set_spec REPLACES every level rule
- * with the given spec (empty/NULL = back to plain *:info) — it does not
- * layer on top of the boot env/CLI rules the way init does. */
+/* Live re-configuration from the knob registry; see openpete_log.h. */
 void openpete_log_set_format(openpete_log_format_t fmt) { g_fmt = fmt; }
 openpete_log_format_t openpete_log_get_format(void) { return g_fmt; }
 
@@ -179,7 +175,12 @@ void openpete_log_set_spec(const char* spec) {
 
 const char* openpete_log_get_spec(void) { return g_spec; }
 
-/* Emit a JSON string literal, escaping control chars + " + \. */
+/** @brief Write s to f as a quoted JSON string literal.
+ *
+ * Escapes the double quote and the backslash, writes newline, carriage
+ * return and tab as their two-character escapes and any other byte below
+ * 0x20 as a six-character u00XX escape; every other byte, UTF-8 included,
+ * passes through unchanged. */
 static void emit_json_string(FILE* f, const char* s) {
     fputc('"', f);
     for (; *s; s++) {

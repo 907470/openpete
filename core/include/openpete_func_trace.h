@@ -36,26 +36,46 @@ typedef struct {
     const char *name;    /* manifest name (or "func_80XXXXXX" fallback)     */
 } op_func_sym_t;
 
-/* The generated symtab TU registers its table here via a startup constructor
- * (portable across ELF/PE — no weak symbols). Without a FUNC_TRACE build no one
- * calls this, so the tracer stays inert. */
+/** @brief Register the build-generated function symtab the tracer resolves hook addresses against.
+ *
+ * The generated symtab TU (tools/gen_func_trace_symtab.py) calls this from a
+ * startup constructor, which works on ELF and PE without weak symbols. Without
+ * a FUNC_TRACE build no one calls it and the tracer stays inert. The table is
+ * stored by pointer, not copied.
+ * @param tab The symtab array; must outlive the process.
+ * @param count Number of entries in tab. */
 void op_functrace_register_symtab(const op_func_sym_t *tab, int count);
 
-/* True once at least one instrumented function has been seen (i.e. this is a
- * FUNC_TRACE build actually running instrumented code). */
+/** @brief Return nonzero once the tracer is active.
+ *
+ * The tracer activates on the first entry hook when a symtab is registered
+ * and its per-function tables allocate; a build without instrumentation or
+ * without a symtab returns 0.
+ * @return 1 while tracing is active, else 0. */
 int  op_functrace_on(void);
 
-/* Pause/resume the func-trace clock around a game-fiber → host yield, so the
- * host's render + pacing-sleep time is NOT charged to the game functions left
- * on the shadow stack across the yield (otherwise the frame-loop functions that
- * wrap VSync absorb all wall-clock time). Called from openpete_yield_to_host;
- * inert unless tracing is active. Balanced pause/resume only. */
+/** @brief Stop the func-trace clock at a game-fiber to host yield.
+ *
+ * The host's render and pacing-sleep time is then not charged to the game
+ * functions left on the shadow stack across the yield; without it the
+ * functions that wrap VSync absorb all wall-clock time.
+ * openpete_yield_to_host and openpete_yield_to_host_no_tick call it before
+ * co_switch and op_functrace_resume after. Inert unless tracing is active and
+ * the caller is the thread that initialized the tracer. Calls must pair with
+ * op_functrace_resume. */
 void op_functrace_pause(void);
+/** @brief Restart the func-trace clock after a yield, adding the paused span to the excluded time.
+ *
+ * Inert unless tracing is active, a pause is pending, and the caller is the
+ * thread that initialized the tracer. */
 void op_functrace_resume(void);
 
-/* Emit the per-function aggregate (calls / self µs / total µs) into the active
- * perf trace and print the top entries to stderr. Call once at shutdown, while
- * the --profile-out stream is still open. No-op when no data was collected. */
+/** @brief Emit the per-function aggregate into the active perf trace and print the top 20 by self time to stderr.
+ *
+ * Each function with at least one call is emitted with its call count, self
+ * microseconds and total microseconds, in descending self-time order. Call
+ * once at shutdown while the --profile-out stream is still open. No-op when
+ * the tracer never activated or has no symtab. */
 void op_functrace_dump_aggregate(void);
 
 #ifdef __cplusplus

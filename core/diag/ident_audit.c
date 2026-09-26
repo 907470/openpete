@@ -37,8 +37,11 @@ int openpete_ident_audit_armed(void)
     return s_start >= 0;
 }
 
-/* "<stem><suffix><ext>" from a formatted screenshot path, so the audit's PNGs
- * land beside the corpus's own dumps. */
+/** @brief Write "<stem><suffix><ext>" for a formatted screenshot path into out.
+ *
+ * The audit's PNGs then land beside the corpus's own dumps. A path with no
+ * '.' gets the suffix appended. The last '.' anywhere in the path is taken as
+ * the extension separator, directory components included. */
 static void path_with_suffix(const char *base, const char *suffix, char *out, size_t cap)
 {
     const char *dot = strrchr(base, '.');
@@ -135,7 +138,7 @@ void openpete_ident_audit_present(void *cpu, unsigned vbl, unsigned tick,
     free(canon); free(ident);
 }
 
-/* Nearest-rank percentile over the px counts (rows already sorted ascending). */
+/** @brief Return the nearest-rank percentile p, in [0, 1], of the px counts in rows sorted ascending, 0 when n is 0. */
 static uint32_t pct(const audit_row_t *sorted, size_t n, double p)
 {
     if (!n) return 0;

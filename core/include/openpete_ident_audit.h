@@ -28,15 +28,31 @@
 extern "C" {
 #endif
 
-/* True once OPENPETE_IDENT_AUDIT names a start VBL. Cheap enough to call every
- * present; the environment is read once. */
+/** @brief Return nonzero when OPENPETE_IDENT_AUDIT names a start VBL of zero or more.
+ *
+ * The first call reads OPENPETE_IDENT_AUDIT and OPENPETE_IDENT_AUDIT_DUMP and
+ * caches both, so the call is cheap enough for every present. run.c gates the
+ * per-present audit on it, and the native renderer brings itself up under
+ * --headless when it is set.
+ * @return 1 when the audit is armed, else 0. */
 int openpete_ident_audit_armed(void);
 
-/* Run one audit on the canonical present that has just composed its scene.
- * `vbl` is openpete_frame, `tick` is openpete_canon_tick, `shot_output` is the
- * --screenshot-output template the PNG dump names its files after (may be NULL,
- * in which case no dump is written). No-op before the start VBL, when the
- * native path is off, or when no re-extract is registered. */
+/** @brief Run one identity audit on the canonical present that has just composed its scene.
+ *
+ * Composes the canonical scene, then the sub-tick re-extract phased onto the
+ * identity instant (alpha 1) with the scene saved and restored around it,
+ * prints one `[ident-audit f= tick= px= maxch=]` line with the count of
+ * differing pixels and the largest single-channel delta, and records the row
+ * for the exit summary (percentiles and the ten worst ticks, printed from an
+ * atexit handler). With OPENPETE_IDENT_AUDIT_DUMP=<px> set and the count at or
+ * above it, writes both composes as PNGs beside the screenshot path. No-op
+ * before the start VBL, when the native path is off, when no re-extract is
+ * registered, or when either capture fails or their sizes differ.
+ * @param cpu Guest CPU passed to the registered re-extract.
+ * @param vbl openpete_frame at this present.
+ * @param tick openpete_canon_tick at this present.
+ * @param shot_output The --screenshot-output template the PNG dump names its
+ *        files after; NULL writes no dump. */
 void openpete_ident_audit_present(void *cpu, unsigned vbl, unsigned tick,
                                   const char *shot_output);
 

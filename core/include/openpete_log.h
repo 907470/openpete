@@ -44,12 +44,24 @@ typedef enum {
  * @param level_spec Level rules from the command line or config, or NULL. */
 void openpete_log_init(openpete_log_format_t fmt, const char* level_spec);
 
-/* Live re-configuration. set_spec replaces ALL level rules with the given
- * spec (NULL/empty = plain *:info); get_spec returns the last applied spec
- * ("" when none). Format switches take effect on the next line. */
+/** @brief Switch the log output format; the next line is written in it.
+ *
+ * The knob registry's live log-format row calls it.
+ * @param fmt OPENPETE_LOG_PLAIN or OPENPETE_LOG_JSON. */
 void openpete_log_set_format(openpete_log_format_t fmt);
+/** @brief Return the current log output format.
+ * @return The format last set by openpete_log_init or openpete_log_set_format. */
 openpete_log_format_t openpete_log_get_format(void);
+/** @brief Replace every level rule with the rules of spec.
+ *
+ * Unlike openpete_log_init it does not layer on OPENPETE_LOG: the rules are
+ * cleared, the default level reset to OPL_INFO, and only spec parsed, so a
+ * NULL or empty spec leaves plain `*:info`. The knob registry's live
+ * log-level row calls it.
+ * @param spec Level rules in the openpete_log_init syntax, or NULL. */
 void openpete_log_set_spec(const char* spec);
+/** @brief Return the last applied level spec.
+ * @return The spec string, "" when none was applied; truncated to 127 bytes. */
 const char* openpete_log_get_spec(void);
 
 /** @brief Mirror everything written to stderr into a log file through a pipe and a pump thread.
@@ -74,8 +86,13 @@ int openpete_log_file_open(const char* spec);
 void openpete_log_file_close(void);
 const char* openpete_log_file_path(void);  /* "" when inactive */
 
-/* Pin the answer to "is stderr a terminal?" before the mirror swaps fd 2
- * for a pipe. Colour selection would otherwise see the pipe. */
+/** @brief Pin whether stderr is a terminal before the log-file mirror swaps fd 2 for a pipe.
+ *
+ * The plain-text format colours each line by level only when stderr is a
+ * terminal; without the pin the test after the swap sees the pipe and drops
+ * colour. openpete_log_file_open calls it with isatty of the duplicated
+ * original stderr.
+ * @param is_tty Nonzero when the original stderr is a terminal. */
 void openpete_log_pin_stderr_tty(int is_tty);
 
 /** @brief Flush stderr and wait 50 ms for the pump thread to copy it into the log file.
@@ -88,8 +105,20 @@ void openpete_log_pin_stderr_tty(int is_tty);
  * async-signal-safe. */
 void openpete_log_file_sync(void);
 
-/* Log a message. `extra` is an optional NUL-terminated key=value sequence,
- * one pair per line, used for structured fields. May be NULL. */
+/** @brief Format and write one log line to stderr when level passes the subsystem's filter.
+ *
+ * The level is compared against the rule whose subsystem matches exactly,
+ * else the default level. The message is formatted with vsnprintf into a
+ * 1024-byte buffer (longer messages are truncated) and written as
+ * `<seconds> [<level>] <subsystem>: <message>` in the plain format, coloured
+ * by level when stderr is a terminal, or as one JSON object
+ * `{"t","level","subsystem","msg"}` in the JSON format. The timestamp is
+ * monotonic seconds since the first openpete_log_init. stderr is flushed
+ * after every line.
+ * @param level Severity of the message.
+ * @param subsystem Subsystem name the filter and the line carry; NULL uses
+ *        the default level and prints "-" (plain) or "" (JSON).
+ * @param fmt printf-style format of the message. */
 void openpete_logf(openpete_log_level_t level, const char* subsystem,
                    const char* fmt, ...);
 
