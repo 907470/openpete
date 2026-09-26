@@ -2,7 +2,7 @@
 # library: libclang 14
 # requirement: brief on every function; @param per named parameter and @return on non-void for external linkage
 # written-by: hook
-# head: 4f8ca41500be9eda830e34789108a074dfebfe93
+# head: b0c28d676b6748d92ae1323c42ccc4e066bfb4c0
 file	function	form	accepted
 core/config/build_id.c	openpete_build_shared_recomp	plain	
 core/config/build_id.c	openpete_build_tagged	plain	
@@ -3076,7 +3076,6 @@ games/common/renderer/moby.c	moby_faces_for_record	none
 games/common/renderer/moby.c	moby_fade_none	plain	
 games/common/renderer/moby.c	moby_fade_rgb	plain	
 games/common/renderer/moby.c	moby_fields_hold_prev	plain	
-games/common/renderer/moby.c	moby_fields_pose_from_snapshot	none	
 games/common/renderer/moby.c	moby_fields_set_pose	plain	
 games/common/renderer/moby.c	moby_fog_band_ir0	plain	
 games/common/renderer/moby.c	moby_fog_farbase	plain	
@@ -3100,7 +3099,6 @@ games/common/renderer/moby.c	moby_native_capture_spec_scratch	none
 games/common/renderer/moby.c	moby_native_pass	plain	
 games/common/renderer/moby.c	moby_native_set_actor_front	plain	
 games/common/renderer/moby.c	moby_native_set_occl_pan	plain	
-games/common/renderer/moby.c	moby_native_set_rot_interp	plain	
 games/common/renderer/moby.c	moby_native_set_tick_camera	plain	
 games/common/renderer/moby.c	moby_native_set_verdict_alpha	plain	
 games/common/renderer/moby.c	moby_native_simple_fresh	plain	
@@ -4362,7 +4360,6 @@ games/spyro-1/renderer/reextract.c	hermite_enabled	plain
 games/spyro-1/renderer/reextract.c	hround16	none	
 games/spyro-1/renderer/reextract.c	hround32	none	
 games/spyro-1/renderer/reextract.c	interp_period_ns	plain	
-games/spyro-1/renderer/reextract.c	moby_cut_hold	plain	
 games/spyro-1/renderer/reextract.c	openpete_native_interp_pos	plain	
 games/spyro-1/renderer/reextract.c	ra_rebase_on	plain	
 games/spyro-1/renderer/reextract.c	region_of	plain	

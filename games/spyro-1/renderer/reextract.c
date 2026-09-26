@@ -736,10 +736,28 @@ static int      s_prod_cam_active = 0;
  * (no hold), so every channel shows tick N. */
 static int s_cut_cam_snap;
 
-/* Hold this moby's previous tick for the rest of the interval: stage the whole
+/* The mobys moby_cut_hold staged at their previous tick on this present,
+ * reset where the re-extract's moby walk starts. */
+#define CUT_HELD_MAX 256
+static uint32_t s_cut_held[CUT_HELD_MAX];
+static int      s_cut_held_n;
+
+/** Whether the sub-tick view holds `moby` at its previous tick on the current
+ * present (moby_cut_hold staged its whole previous record), so every byte of
+ * it the feeders read is tick N-1's.
+ * @param moby the moby's guest address
+ * @return 1 when held, 0 otherwise */
+int spyro_moby_cut_held(uint32_t moby) {
+    for (int i = 0; i < s_cut_held_n; i++)
+        if (s_cut_held[i] == moby) return 1;
+    return 0;
+}
+
+/** Hold this moby's previous tick for the rest of the interval: stage the whole
  * previous record, so position, class, model and animation state all read N-1
- * through the view, and pin the fractional position table to it. Returns 1 when
- * the hold is in force; 0 leaves the canonical tick-N record (the snap). Guest
+ * through the view, pin the fractional position table to it, and record the
+ * moby in the present's held set (spyro_moby_cut_held). Returns 1 when the
+ * hold is in force; 0 leaves the canonical tick-N record (the snap). Guest
  * memory is never written — a present the staging arena refuses snaps. */
 static int moby_cut_hold(uint32_t m, const uint8_t* mh,
                          const openpete_interp_obj_t* o, op_time_t now, int kind) {
@@ -758,6 +776,7 @@ static int moby_cut_hold(uint32_t m, const uint8_t* mh,
     uint32_t len = o->blob_len < MOBY_STRIDE ? o->blob_len : MOBY_STRIDE;
     memcpy(st, o->prev, len);
     fpos_set(m, pp, pp, 0.0);
+    if (s_cut_held_n < CUT_HELD_MAX) s_cut_held[s_cut_held_n++] = m;
     cut_census_note(kind, m, 1, "hold", pp, pp);
     return 1;
 }
@@ -1924,6 +1943,7 @@ static void game_reextract_body(void* cpu_v) {
      * every tick (both stamped from op_now() one VBL apart, so spatial coherence
      * with a moving camera is preserved), and keeps animating when the camera is
      * static. Same per-object-cadence pattern as the HUD icons below. */
+    s_cut_held_n = 0;
     {
         op_time_t now = openpete_interp_present_now();
         uint8_t* base_p = (uint8_t*)openpete_psx_to_host_ptr(G_LEVELMOBYS);

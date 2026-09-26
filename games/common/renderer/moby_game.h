@@ -327,6 +327,10 @@ typedef struct moby_game {
     /* A moby whose position the cutscene path drives, so a clip switch on it
      * must snap rather than crossfade. */
     int  (*cutpath_actor)(uint32_t moby);
+    /* A moby the sub-tick view holds at its previous tick on this present:
+     * every byte of its record the feeders read is tick N-1's, so no channel
+     * of its record may take tick N's value. */
+    int  (*moby_held)(uint32_t moby);
     /* An instance whose first update does a one-shot job and retires it: the
      * walk emits nothing for it and the reveal never admits it. */
     int  (*run_once_hidden)(CPUState* cpu, uint32_t moby, unsigned cls);

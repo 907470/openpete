@@ -5983,7 +5983,11 @@ static void shaded_dump(CPUState* cpu, uint32_t start, uint32_t end) {
  * prev/curr roll timestamps). 0 = inactive → byte-exact path (canonical render,
  * or --render-fps off where the snapshot table is empty anyway). */
 static op_time_t s_rot_now = 0;
-void moby_native_set_rot_interp(int on) { s_rot_now = on ? openpete_interp_present_now() : 0; }
+static void moby_pose_snap_census(void);
+void moby_native_set_rot_interp(int on) {
+    if (!on && s_rot_now) moby_pose_snap_census();
+    s_rot_now = on ? openpete_interp_present_now() : 0;
+}
 
 /* The camera the replayed cull records were composed against (the interp
  * ring's curr snapshot), installed per present by the orchestrator and cleared
@@ -8267,8 +8271,37 @@ static uint32_t moby_fields_hold_prev(CPUState* cpu, uint32_t moby, moby_fields*
     return cpu->read_word(game_layout.moby.model_table + cls * 4u);
 }
 
+/* Per present, the host-built records moby_fields_pose_from_snapshot
+ * rewrote (applied), those whose pose the rewrite changed (differ), and those
+ * it left because the sub-tick view holds the moby at its previous tick
+ * (held_skip). */
+static struct { long applied, differ, held_skip; } s_pose_snap;
+
+/** OPENPETE_MOBY_CENSUS: one `pose_snap` line per sub-tick present with the
+ * counts moby_fields_pose_from_snapshot accumulated, then reset them. */
+static void moby_pose_snap_census(void) {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("OPENPETE_MOBY_CENSUS"); s = (e && *e && *e != '0'); }
+    if (s)
+        fprintf(stderr, "[moby-census vbl=%u] pose_snap applied=%ld differ=%ld held_skip=%ld\n",
+                openpete_frame, s_pose_snap.applied, s_pose_snap.differ, s_pose_snap.held_skip);
+    memset(&s_pose_snap, 0, sizeof s_pose_snap);
+}
+
+/** On a sub-tick present, replace a host-built record's pose with the one
+ * derived from the interp-objs snapshot's curr anim-state bytes: the tick the
+ * canonical present showed, which under --runahead is the led tick while
+ * guest RAM holds the committed one. Without runahead the snapshot's curr is
+ * the committed tick and the pose is unchanged. A moby the view holds at its
+ * previous tick keeps the pose read through the view, as every other channel
+ * of its record does; a class change between the view and the snapshot keeps
+ * it as well.
+ * @param cpu  guest state, the sub-tick view staged
+ * @param moby the moby's guest address
+ * @param f    the record fields built through the view, rewritten in place */
 static void moby_fields_pose_from_snapshot(CPUState* cpu, uint32_t moby, moby_fields* f) {
     if (!s_rot_now) return;
+    if (moby_game.moby_held && moby_game.moby_held(moby)) { s_pose_snap.held_skip++; return; }
     const openpete_interp_obj_t* oc = openpete_interp_objs_find(moby_interp_key(moby));
     if (!oc) return;
     uint16_t ccls = 0;
@@ -8278,9 +8311,14 @@ static void moby_fields_pose_from_snapshot(CPUState* cpu, uint32_t moby, moby_fi
     moby_pose_t pose;
     if (model < 0x80000000u ||
         !moby_pose_derive(cpu, model, oc->curr + game_layout.moby.anim_state_off, &pose)) return;
+    const moby_fields before = *f;
     /* keep the snapshot's m_DepthOffset in bits 16-23 (OT pull) */
     f->w0 = (uint32_t)oc->curr[game_layout.moby.angle_off + 3u] << 16;
     moby_fields_set_pose(f, &pose);
+    s_pose_snap.applied++;
+    if (f->header != before.header || f->header_b != before.header_b ||
+        f->frameA != before.frameA || f->frameB != before.frameB || f->w0 != before.w0)
+        s_pose_snap.differ++;
 }
 
 /* A game with no host record builder replays the record the cull wrote,

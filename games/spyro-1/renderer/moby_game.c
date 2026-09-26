@@ -242,6 +242,7 @@ static int s1_record_row_scale(CPUState* cpu, uint32_t rec, double scale[3]) {
 
 extern int spyro_cutpath_is_actor(uint32_t m);
 static int s1_cutpath_actor(uint32_t m) { return spyro_cutpath_is_actor(m); }
+extern int spyro_moby_cut_held(uint32_t moby);
 
 /* Flat HUD and text draw OVER the player by default; UNDER it only during the
  * "THE ADVENTURE BEGINS" reveal where Spyro flies in front of the text being
@@ -376,6 +377,7 @@ const moby_game_t moby_game = {
     .cutscene_actor     = s1_cutscene_actor,
     .cutscene_owns_draw = s1_cutscene_owns_draw,
     .cutpath_actor      = s1_cutpath_actor,
+    .moby_held          = spyro_moby_cut_held,
     .run_once_hidden    = s1_run_once_hidden,
     .hud_under_player   = s1_hud_under_player,
     .record_row_scale   = s1_record_row_scale,
