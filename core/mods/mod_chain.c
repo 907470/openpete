@@ -162,14 +162,21 @@ static mod_chain_t* chain_find(uint32_t addr) {
     return NULL;
 }
 
-/* Run link `idx` of `chain`, or the recompiled original when the chain
- * is exhausted. base() is "run_link(current+1)".
+/** @brief Run the first enabled link of a chain at or after idx, or the recompiled original when none is left.
  *
- * Per-mod time instrument: every invocation measures its span; a LINK's
- * SELF time (span minus its base() descent) is charged to its owner,
- * and the full span is credited to the parent frame's child_ns — so a
- * post-hook that wraps an expensive original is billed only for its own
- * code, never for the game's. */
+ * base() is run_link(current + 1). A link runs inside a pushed frame with
+ * the ImGui guard's hook owner set to the link's owner. Its self time
+ * (span minus the time credited to its frame's child_ns by its base()
+ * descent and nested overrides) is charged to the owner through
+ * openpete_mods_time_add, and its full span is credited to the parent
+ * frame's child_ns, so an override that wraps an expensive original is
+ * billed only for its own code. With no link left, or when the frame stack
+ * holds MOD_FRAME_STACK_MAX frames (logged), it arms the one-shot bypass
+ * for the chain's addr and calls the function through call_by_address, so
+ * the prologue's dispatch returns 0 and the recompiled body runs.
+ * @param cpu the guest CPU.
+ * @param chain the chain.
+ * @param idx the first link index to consider. */
 static void run_link(CPUState* cpu, mod_chain_t* chain, int idx) {
     /* Live toggle: disabled links are transparent — base() descends
      * straight past them. */
@@ -221,8 +228,7 @@ static void run_link(CPUState* cpu, mod_chain_t* chain, int idx) {
         s_frames[s_frame_depth - 1].child_ns += op_now() - t0;
 }
 
-/* Hot reload: REMOVE every link owned by owner_id (compacting — the
- * mod re-registers fresh at re-entry). Tick-boundary only. */
+/* Removes and compacts; documented in openpete_mods.h. */
 void openpete_mods_chain_remove_owner(const char* owner_id) {
     if (!owner_id) return;
     for (int i = 0; i < chain_count(); i++) {
@@ -360,12 +366,7 @@ void openpete_mods_base(CPUState* cpu) {
     run_link(cpu, f.chain, f.link + 1);
 }
 
-/* Crash attribution (rung 6): called from the crash handler on the
- * faulting thread. Non-NULL = the sim was inside an override chain —
- * the innermost mod override on the stack (the crash may be in the mod
- * itself or in code it called; either way that mod's override is the
- * place to look). TLS reads are safe here: the handler runs on the
- * thread that faulted. */
+/* Reads this thread's frame stack; documented in openpete_mods.h. */
 const char* openpete_mods_crash_attribution(uint32_t* addr_out) {
     if (s_frame_depth <= 0) return NULL;
     const mod_frame_t* f = &s_frames[s_frame_depth - 1];
@@ -376,11 +377,20 @@ const char* openpete_mods_crash_attribution(uint32_t* addr_out) {
     return "?";
 }
 
-/* Register with priority: the loader loads mods in enabled-list order
- * and each new link goes to the FRONT of its chain, so the last-enabled
- * (highest-priority) mod runs first and base() walks toward
- * earlier-enabled mods, then the original (S3AIR semantics: order IS
- * priority). */
+/** @brief Register an override link at the front of the chain for a guest function.
+ *
+ * The loader loads mods in enabled-list order and each new link goes to
+ * the front, so the last-enabled mod runs first and base() walks toward
+ * earlier-enabled mods, then the original: list order is priority. A mod
+ * entered late (deferred entry) therefore runs first until a restart. The
+ * link's disabled flag is taken from its owner's live-toggle state. Live
+ * frames on the chain have their link index advanced past the insert, so
+ * registration from inside a running chain keeps base() pointing at the
+ * next link. Sets openpete_mods_active.
+ * @param addr the guest function's vaddr; 0 fails.
+ * @param fn the override; NULL fails.
+ * @param owner_id the registering mod's id, or NULL.
+ * @return 0, or -1 for a 0 addr, a NULL fn, or an allocation failure. */
 int openpete_mods_chain_add(uint32_t addr, openpete_mod_override_fn fn,
                             const char* owner_id) {
     if (addr == 0 || !fn) return -1;

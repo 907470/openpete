@@ -118,7 +118,9 @@ static arena_row_t* row_at(uint32_t i) {
     return (arena_row_t*)mod_fvec_at(&s_rows, (size_t)i);
 }
 
-/* Append a ledger row, or NULL when the allocation fails. */
+/** @brief Append a zeroed ledger row, initializing the ledger on first use.
+ *
+ * @return the new row, or NULL when the allocation fails. */
 static arena_row_t* row_push(void) {
     if (!s_rows.elem_size)
         mod_fvec_init(&s_rows, sizeof(arena_row_t), ARENA_ROWS_INIT,
@@ -136,7 +138,14 @@ typedef struct {
 } arena_owner_t;
 static mod_fvec s_owners;   /* arena_owner_t, one per owner seen */
 
-/* The returned pointer is call-local: the next create invalidates it. */
+/** @brief Find an owner's call cursor, or create one starting at call 0.
+ *
+ * The returned pointer is call-local: the next create can move the table
+ * and invalidates it.
+ * @param owner the mod id.
+ * @param create nonzero to create a missing cursor.
+ * @return the cursor, or NULL when it is missing and create is 0 or the
+ *         allocation fails. */
 static arena_owner_t* owner_slot(const char* owner, int create) {
     for (size_t i = 0; i < mod_fvec_count(&s_owners); i++) {
         arena_owner_t* o = (arena_owner_t*)mod_fvec_at(&s_owners, i);

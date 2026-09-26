@@ -10,13 +10,22 @@ extern "C" {
 struct CPUState;
 typedef struct CPUState CPUState;
 
-/* Called once from run setup: resume_path = opts->resume_handoff (may
- * be NULL); argc/argv = the ORIGINAL process arguments (kept alive —
- * exec rebuilds from them). Also arms OPENPETE_HANDOFF_AT=<frame>. */
+/** @brief Record the resume file and the process arguments, and arm the OPENPETE_HANDOFF_AT trigger.
+ *
+ * Called once from run setup. A non-empty OPENPETE_HANDOFF_AT (parsed with
+ * base 0) arms the checkpoint leg at that openpete_frame value.
+ * @param resume_path the --resume-handoff file to restore at the first
+ *        openpete_handoff_poll, or NULL.
+ * @param argc the original process argument count.
+ * @param argv the original process arguments; kept by pointer, since the
+ *        exec rebuilds its argv from them. */
 void openpete_handoff_init(const char* resume_path, int argc, char** argv);
 
-/* Queue a handoff; it executes at the next quiescent point. (The mod
- * menu's "brief restart" tier.) */
+/** @brief Request a checkpoint-and-exec handoff at the next openpete_handoff_poll.
+ *
+ * Has no effect in a process that already ran a handoff leg: one resumed
+ * with --resume-handoff, or one whose checkpoint leg already ran. No
+ * caller in the tree. */
 void openpete_handoff_request(void);
 
 /** @brief Run the pending handoff leg at a run-loop quiescent point.

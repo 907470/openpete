@@ -428,9 +428,12 @@ int   openpete_keymap_action_axis_raw_via(openpete_action_t a, int default_slot,
  * @return the source count; 0 for an unbound or out-of-range action. */
 int   openpete_keymap_action_bound(openpete_action_t a);
 
-/* Install the SDL-backed lookups and reads (keymap_sdl.c). Call before
- * openpete_keymap_init, which parses every registry default and needs
- * the name lookup to be live. */
+/** @brief Install the SDL-backed name lookups and input reads (keymap_sdl.c) into the keymap.
+ *
+ * Passes the name-to-code, code-to-name and key-label functions to
+ * openpete_keymap_set_lookup and the key, pad, mouse and mouse-owner reads
+ * to openpete_keymap_set_input. Call before openpete_keymap_init, which
+ * parses every registry default through the name lookup. */
 void openpete_keymap_install_sdl(void);
 
 /* ---- boot ------------------------------------------------------------ */
@@ -444,46 +447,106 @@ void openpete_keymap_install_sdl(void);
  * openpete_keymap_set_lookup, or every default fails to parse. */
 void openpete_keymap_init(void);
 
-/* Record one layer's binding for `domain`.`action`. `tokens`/`n` is the
- * value as written: a single string, or an array's elements. n == 0 means
- * an empty array, which unbinds exactly like the token "none".
+/** @brief Record one config layer's binding for domain.action.
  *
- * `rank` is the caller's packed (tier, file) precedence — higher wins,
- * ties go to the later call. `origin` is the display label ("game.spyro-1").
- * Returns 0, or -1 after reporting an unknown action / unparseable token. */
+ * The call replaces the action's source list rather than appending to it,
+ * so a higher scope can unbind what a lower one bound. A call whose rank is
+ * below the stored rank is ignored; an equal rank replaces, so ties go to
+ * the later call. The replaced origin is kept as the shadowed label that
+ * openpete_keymap_report prints. An unknown domain is logged; an unknown
+ * action is logged with the nearest action name of that domain within edit
+ * distance 3. A token that fails to parse leaves the stored binding as it
+ * was.
+ * @param domain "host" or "pad".."pad4" (any case).
+ * @param action the action id within the domain.
+ * @param tokens the value as written: a single string, or an array's
+ *        elements.
+ * @param n number of tokens; 0 (an empty array) unbinds like the token
+ *        "none".
+ * @param rank the caller's packed (tier, file, spelling) precedence;
+ *        higher wins.
+ * @param origin the display label ("game.spyro-1"); NULL stores "config".
+ * @param where the config file named in error messages; NULL reads
+ *        "config".
+ * @return 0, including for an ignored lower-rank call, or -1 for a NULL
+ *         domain or action, an unknown domain or action, or a token that
+ *         fails to parse. */
 int openpete_keymap_set(const char* domain, const char* action,
                         const char* const* tokens, int n,
                         int rank, const char* origin, const char* where);
 
-/* [keys.mod.<id>] — a mod's declared [[binding]] name, rebound from the
- * config. Stored apart from the action registry because mods are
- * discovered after the config is read, so the name cannot be validated
- * against a table here. */
+/** @brief Store a [keys.mod.<id>] override for a mod's declared [[binding]] name.
+ *
+ * Stored apart from the action registry because mods are discovered after
+ * the config is read, so the name is not validated here. A stored entry of
+ * higher rank is kept; an equal or higher rank replaces the entry. Config
+ * ranks are above 0, so the override always replaces the mod's own
+ * mod.toml key, which registers at rank 0. A token that fails to parse
+ * stores nothing.
+ * @param mod_id the mod's id; NULL fails.
+ * @param name the binding name; NULL fails.
+ * @param tokens the value as written.
+ * @param n number of tokens; 0 unbinds.
+ * @param rank the config scope's packed precedence.
+ * @param where the config file named in error messages.
+ * @return 0, or -1 on a parse failure, a NULL id or name, or allocation
+ *         failure. */
 int openpete_keymap_set_mod(const char* mod_id, const char* name,
                             const char* const* tokens, int n,
                             int rank, const char* where);
 
-/* A mod's own mod.toml `key` for `name`, registered at rank 0 under the
- * mod.<id> domain, so `key = "pad:north"` and `key = "mouse:right"` work
- * with no config override. A [keys.mod.<id>] row at any rank replaces it.
- * A key that fails to parse registers UNBOUND and returns -1: the mod's
- * binding_down then reads 0, as for an unbound override. `where` names
- * the manifest for the error. */
+/** @brief Register a mod's own mod.toml `key` for a binding name at rank 0.
+ *
+ * Registered under the mod.<id> domain, so `key = "pad:north"` and
+ * `key = "mouse:right"` work with no config override. A stored
+ * [keys.mod.<id>] row, which ranks above 0, is kept. A key that fails to
+ * parse registers unbound, so the mod's binding_down reads 0 as for an
+ * unbound override.
+ * @param mod_id the mod's id; NULL fails.
+ * @param name the declared binding name; NULL fails.
+ * @param key the key text from mod.toml.
+ * @param where the manifest named in error messages.
+ * @return 0, or -1 when the key fails to parse (the name is still
+ *         registered, unbound), for a NULL id or name, or on allocation
+ *         failure. */
 int openpete_keymap_set_mod_default(const char* mod_id, const char* name,
                                     const char* key, const char* where);
 
-/* Follow a mod's live enabled state: a disabled mod's bindings leave the
- * mouse:left scan behind the double-click gate. */
+/** @brief Record a mod's live enabled state on every binding it registered.
+ *
+ * A disabled mod's bindings leave the mouse:left scan behind the
+ * double-click fullscreen gate; the scan is recomputed on every call. The
+ * bindings stay stored and readable through openpete_keymap_mod_binding.
+ * @param mod_id the mod's id; NULL does nothing.
+ * @param on nonzero for enabled. */
 void openpete_keymap_set_mod_enabled(const char* mod_id, int on);
 
-/* Pick winners and run the conflict + KM_REQUIRED scans. Returns the
- * number of warnings emitted (0 = clean); never fails a boot. */
+/** @brief Run the conflict and reachability scans over the stored bindings.
+ *
+ * Collects every pair of actions whose contexts overlap and that share a
+ * source (the same half of a pad axis, any other identical source); a
+ * deliberate pair is collected with its reason and not warned about, any
+ * other pair is warned about. Warns for a KM_REQUIRED, non-KM_DEV action
+ * with no source, for a mouse source on a MENU-context action other than
+ * menu_close (the settings menu owns the mouse while open), and for a
+ * menu or menu_close binding on a settings-menu gesture (left or right
+ * click; the wheel for menu). Recomputes the mouse:left scan. The
+ * collected pairs, up to 32, are what openpete_keymap_report prints.
+ * @return the number of warnings emitted; 0 is a clean map. The caller
+ *         never fails a boot on it. */
 int openpete_keymap_resolve(void);
 
 /* ---- queries --------------------------------------------------------- */
 
-/* Advance the edge latches. Call exactly once per host-loop iteration,
- * after SDL events are pumped and before any openpete_key_pressed. */
+/** @brief Sample every binding and advance the edge latches, wheel pulses and mouse deltas.
+ *
+ * Releases consumed keys that are no longer held, copies the held set to
+ * the previous set, and resamples every action. The wheel and motion
+ * markers advance every poll whether or not anything is bound; an action
+ * whose mouse sources read neutral under the current mouse owner gets no
+ * pulses and no delta, so input made under an overlay is dropped rather
+ * than delivered late. Call exactly once per host-loop iteration, after
+ * SDL events are pumped and before any openpete_key_pressed. */
 void openpete_keymap_poll(void);
 
 int   openpete_key_down(openpete_action_t a);     /* level: held now */
@@ -527,32 +590,57 @@ long long openpete_key_delta(openpete_action_t a);
  * @return 1 when mouse:left is bound, 0 otherwise. */
 int openpete_keymap_mouse_left_bound(void);
 
-/* The poll's mouse markers (the totals it last consumed): wheel in 1/256
- * notch, motion in counts. Diagnostics: the probe logs them across an
- * ownership change to show the snap. */
+/** @brief Return the mouse totals the last openpete_keymap_poll consumed.
+ *
+ * Diagnostics: the host-mouse probe logs them across an ownership change,
+ * where they sit at the totals because the poll drops input made under an
+ * overlay.
+ * @param wheel receives the wheel total in 1/OPENPETE_MOUSE_WHEEL_UNIT
+ *        notch, or NULL.
+ * @param mx receives the x motion total in counts, or NULL.
+ * @param my receives the y motion total in counts, or NULL. */
 void openpete_keymap_mouse_markers(long long* wheel, long long* mx, long long* my);
 
-/* While an overlay owns the keyboard, KEYBOARD sources go inert but pad
- * sources keep working — mouse-only devui interaction is meant to leave
- * the game playable. Suspending by source kind rather than wholesale is
- * what preserves that. `exempt` names one action whose keyboard sources are
- * read anyway, so the key that opened an overlay can close it; pass
- * OPK_ACTION_COUNT to suspend every action. */
+/** @brief Suspend or resume every keyboard source while an overlay owns the keyboard.
+ *
+ * Only keyboard sources go inert; pad and mouse sources keep working, so
+ * the game stays playable under a mouse-driven dev overlay.
+ * openpete_keymap_scancode_down also reads 0 while suspended. The run loop
+ * calls this every iteration with the dev overlay's keyboard want.
+ * @param on nonzero to suspend.
+ * @param exempt one action whose keyboard sources are read anyway, so the
+ *        key that opened an overlay can close it; OPK_ACTION_COUNT or any
+ *        out-of-range value exempts none. */
 void openpete_keymap_suspend_keyboard(int on, openpete_action_t exempt);
 
 /* ---- diagnostics / consumers ---------------------------------------- */
 
-/* The resolved sources for an action, for consumers that need the raw
- * binding rather than a live read — the PsyCross pad stamp needs the
- * scancode and gamepad code themselves. Returns the count. */
+/** @brief Copy an action's stored sources, for consumers that need the binding rather than a live read.
+ *
+ * The PsyCross pad stamp needs the scancode and gamepad code themselves.
+ * @param a the action; out of range returns 0.
+ * @param out receives up to cap sources; NULL returns 0.
+ * @param cap capacity of out.
+ * @return the number of sources copied. */
 int openpete_keymap_sources(openpete_action_t a, km_source_t* out, int cap);
 
-/* Winning layer label for an action ("default", "game.spyro-1"). */
+/** @brief Return the origin label of the layer that set an action's binding.
+ *
+ * @param a the action; out of range returns "default".
+ * @return the label ("default", "game.spyro-1"). */
 const char* openpete_keymap_origin(openpete_action_t a);
 
-/* Full table: every action, its binding, the scope that won, and any
- * conflicts. Unbound rows print "-" with a reason, so this doubles as
- * the ship-time audit of what a stock install responds to. */
+/** @brief Print the binding table for --keys-report.
+ *
+ * One row per action with its binding, the scope that set it and its
+ * purpose, grouped by domain; a keyboard source prints the layout's key
+ * label beside the scancode name when they differ, and a replaced scope
+ * prints as "shadowed". An unbound row prints "-" with the reason (a
+ * KM_DEV row withheld by the registry, or the scope that unbound it).
+ * Then every stored mod binding, the shared-input pairs that
+ * openpete_keymap_resolve collected with the reason or an "unintended"
+ * mark, and a rebinding example.
+ * @param out the stream; NULL prints nothing. */
 void openpete_keymap_report(FILE* out);
 
 /** @brief Return 1 when openpete_keymap_request_report was called, else 0.
@@ -578,12 +666,24 @@ void openpete_keymap_request_report(void);
 int openpete_keymap_mod_binding(const char* mod_id, const char* name,
                                 km_source_t* out, int cap, int* out_n);
 
-/* True when any keyboard source for this scancode is held — the raw
- * escape hatch mod bindings and the fallback path use. */
+/** @brief Return whether a keyboard scancode is held, read directly rather than through a binding.
+ *
+ * Reads 0 while the keyboard is suspended, with no exemption; ignores the
+ * consumed-key list. The run loop reads Enter through it for the
+ * hardcoded Alt+Enter fullscreen toggle.
+ * @param scancode the SDL scancode.
+ * @return 1 when held, 0 otherwise or when no key read is installed. */
 int openpete_keymap_scancode_down(int scancode);
 
-/* Live read of one resolved source, for consumers holding a km_source_t
- * rather than an action (mod bindings). Honours the keyboard suspend. */
+/** @brief Return whether one source is held, for consumers holding a km_source_t rather than an action.
+ *
+ * Mod bindings read through it. Resolved as for a host action with no
+ * exemptions: a keyboard source reads 0 while the keyboard is suspended
+ * and for a consumed key; a mouse button reads 0 while the dev overlay or
+ * the settings menu owns the mouse; a mouse axis and a wheel pulse have no
+ * level and read 0.
+ * @param s the source; NULL reads 0.
+ * @return 1 when held, 0 otherwise. */
 int openpete_keymap_source_down(const km_source_t* s);
 
 /** @brief Return whether a keyboard scancode is one of an action's sources.

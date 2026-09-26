@@ -20,30 +20,21 @@
 
 #include <string.h>
 
-/* Every keyboard-sourced binding reads through here. A pass-through: the
- * real keyboard always drives bindings, including while a gamepad is
- * connected.
+/** @brief Keyboard read for the keymap: whether a scancode is held in the host's published input snapshot.
  *
- * We previously zeroed the keyboard (allowlisting only the fast-forward
- * key) whenever a gamepad was present, so a Steam-Input desktop config
- * couldn't fire a hotkey via a phantom keystroke (SDL surfaces those with
- * which==0, so the *polled* SDL_GetKeyboardState array can't tell them
- * from a real press). But that penalised every controller user — testers
- * reported keyboard hotkeys dead whenever any pad was plugged in — to
- * defend an esoteric, Steam-only misconfiguration. Re-accepted trade-off:
- * a Steam Input config that maps a button to a keyboard key can trip a
- * binding; the cure is Steam-side (remap the button / disable Steam
- * Input), as run.c's earlier revert (036381d) noted.
- *
- * This is the seam for the correct fix if it ever bites a real user:
- * build keyboard state from the SDL_EVENT_KEY_* stream and drop events
- * whose `which` is not a physical keyboard, instead of polling the merged
- * array. One function now, rather than every hotkey call site. */
-/* These read the host's published SDL-state snapshot rather than SDL itself:
- * the arrays SDL maintains are refreshed by the event pump, and the pump does
- * not necessarily run on the thread evaluating bindings. The snapshot is
- * published once per pump, so a whole binding evaluation sees one consistent
- * sample instead of state that can change under it mid-poll. */
+ * Every keyboard-sourced binding reads through here, whether or not a
+ * gamepad is connected. This read and the pad reads below use the snapshot
+ * rather than SDL's arrays: the event pump refreshes those arrays and need
+ * not run on the thread evaluating bindings, while the snapshot is
+ * published once per pump, so one binding evaluation sees one consistent
+ * sample. The key state merges synthesized keystrokes (SDL reports them
+ * with which == 0, as from a Steam Input config that maps a pad button to
+ * a key) with physical ones, so such a keystroke can trip a binding.
+ * Excluding them would build the key state from the SDL_EVENT_KEY_* stream
+ * and drop events whose which is not a physical keyboard; this function is
+ * the one site that change touches.
+ * @param scancode the SDL scancode.
+ * @return nonzero when held. */
 static int km_sdl_key_down(int scancode) {
     return openpete_host_input_key_down(scancode);
 }
@@ -64,8 +55,12 @@ static int km_sdl_pad_axis_slot(int slot, int axis) {
     return openpete_host_input_pad_axis_slot(slot, axis);
 }
 
-/* Mouse buttons read the published snapshot like the keys above; the
- * totals are the channel's own atomics, readable from any thread. */
+/** @brief Mouse-button read for the keymap: whether a button is held in the host's published input snapshot.
+ *
+ * The motion and wheel totals below read the mouse channel's atomics, which
+ * any thread may read.
+ * @param code the button index; out of range reads 0.
+ * @return 1 when held, 0 otherwise. */
 static int km_sdl_mouse_button(int code) {
     return openpete_host_input_mouse_button(code);
 }
@@ -159,9 +154,13 @@ static const char* km_sdl_code_to_name(int kind, int code) {
     }
 }
 
-/* The label the current layout prints for a positional scancode — "Q" for
- * the scancode SDL names "A" on AZERTY. Report-only: bindings stay
- * positional, this just tells the reader which physical key that is. */
+/** @brief Return the label the current keyboard layout gives a positional scancode.
+ *
+ * "Q" for the scancode SDL names "A" on AZERTY. Used only by the
+ * --keys-report table; bindings stay positional.
+ * @param scancode the SDL scancode.
+ * @return SDL's key name for the layout's keycode, or NULL for a scancode
+ *         outside 1..SDL_SCANCODE_COUNT-1 or with no keycode. */
 static const char* km_sdl_key_label(int scancode) {
     if (scancode <= 0 || scancode >= SDL_SCANCODE_COUNT) return NULL;
     SDL_Keycode kc = SDL_GetKeyFromScancode((SDL_Scancode)scancode,

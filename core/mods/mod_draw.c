@@ -88,13 +88,14 @@ static int buf_count(const cmd_buf_t* b) {
  * @param b Buffer to clear. */
 static void buf_clear(cmd_buf_t* b) { mod_fvec_clear(&b->texts); }
 
-/* The draw service has one owner thread. The tick buffers are exchanged
- * by pointer and a mod pushes into staging from a hook, so a submission
- * on a second thread could be in flight across the swap. Registration,
- * removal, submission and the flush all run on the worker thread that
- * owns the game fiber; this latches the first thread to reach the swap
- * and reports any later one, which is the only way the argument can
- * break without a visible symptom. */
+/** @brief Latch the first thread to swap the tick buffers and log an error once if a later swap runs on another thread.
+ *
+ * The draw service has one owner thread: registration, removal,
+ * submission and the flush run on the worker thread that owns the game
+ * fiber. The tick buffers are exchanged by pointer and a mod pushes into
+ * staging from a hook, so a submission on a second thread could be in
+ * flight across the swap; this check is the only signal of that. Called
+ * at each canonical commit. */
 static void assert_one_owner(void) {
     static SDL_ThreadID s_owner_tid = 0;
     static int s_reported = 0;
@@ -171,18 +172,20 @@ void openpete_mods_draw_set_owner_enabled(const char* owner_id, int on) {
     }
 }
 
-/* A hook registered by a mod the loader already publishes comes up in
- * that mod's current live-toggle state. Hot reload sweeps a mod's
- * registrations and re-runs its entry without consulting the toggle
- * state, so a re-registration by a currently-disabled mod would
- * otherwise silently resume presenting.
+/** @brief Return whether a present hook registered now by an owner starts disabled.
  *
- * An owner the loader does not list yet is a mod inside its own entry:
- * boot load (the row is published only after entry returns) and a
- * deferred-entry mod's first enable (the row still reads disabled until
- * the apply completes). Both register enabled — the apply's
- * set_owner_enabled(id, 1) immediately follows the deferred entry, and
- * boot entry means the mod is in the enabled set by construction. */
+ * An owner the loader lists starts in its current live-toggle state. Hot
+ * reload sweeps a mod's registrations and re-runs its entry without
+ * consulting the toggle state, so without this a disabled mod's
+ * re-registered hook would present again. At boot the loader pushes a
+ * mod's row, with its boot enabled state, before running its entry, so
+ * boot registrations read their final state. A deferred-entry mod's first
+ * enable runs its entry while its row still reads disabled: the hook
+ * starts disabled and the apply's openpete_mods_draw_set_owner_enabled(id,
+ * 1) after the entry enables it. A NULL owner or one the loader does not
+ * list starts enabled.
+ * @param owner_id the registering mod's id, or NULL.
+ * @return 1 when the hook starts disabled, 0 otherwise. */
 static int owner_starts_disabled(const char* owner_id) {
     if (!owner_id) return 0;
     const int n = openpete_mods_count();
@@ -216,6 +219,10 @@ int openpete_mods_register_present_hook(openpete_mod_present_fn fn,
 
 /* ---- command submission (mod-facing, via the api struct) ------------ */
 
+/** @brief Return the buffer a text submitted now goes to.
+ *
+ * @return this present's buffer while a present hook runs on this thread,
+ *         else the tick staging buffer. */
 static cmd_buf_t* target_buf(void) {
     return openpete_mods_in_present ? &s_present : s_tick_staging;
 }

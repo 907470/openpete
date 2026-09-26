@@ -75,8 +75,18 @@ static cfg_slot_t* slot_of(const openpete_mod_t* mod, int create) {
     return s;
 }
 
-/* Flatten one table into slot entries, prefixing nested tables with
- * "name." — arrays are logged and skipped. */
+/** @brief Flatten one TOML table into slot entries, recursing into nested tables under a dotted key prefix.
+ *
+ * A bool is stored as type 'b' with i and d set to 0 or 1, an integer as
+ * 'i' with d set too, a float as 'd' with i set to its truncation, and a
+ * string as 's' truncated to 127 characters. Keys are truncated to 95
+ * characters. Arrays and other value types are logged and skipped; an
+ * allocation failure is logged and drops the key and the rest of this
+ * table.
+ * @param s the slot receiving entries.
+ * @param tab the table.
+ * @param prefix the dotted path of tab; "" for the root.
+ * @param log_tag the mod's log tag. */
 static void flatten(cfg_slot_t* s, const toml_table_t* tab,
                     const char* prefix, const char* log_tag) {
     for (int i = 0;; i++) {
@@ -252,8 +262,25 @@ static void cfgw_format_value(char* out, size_t cap,
     }
 }
 
-/* Line starts of `text` are walked repeatedly; all spans are byte
- * offsets into the buffer. Returns 0 on success. */
+/** @brief Apply one edit to the config.toml text in place.
+ *
+ * The key splits at its last dot into a section name and a leaf; a key
+ * with no dot is a root key, whose section is the text before the first
+ * header. Only single-bracket headers delimit sections. Inside the
+ * section, the first line whose text after indentation is the leaf
+ * followed by optional blanks and '=' has its value span replaced: a
+ * quoted string through its closing quote, or a bare token up to a '#'
+ * with trailing blanks trimmed. A missing key is inserted as
+ * `leaf = value` after the section's last non-blank line; a missing
+ * section is appended at the end of the text with the key under it,
+ * preceded by a blank line when the text is not empty. All spans are
+ * byte offsets into text.
+ * @param text the NUL-terminated file text.
+ * @param len in: the text length; out: the new length.
+ * @param cap the buffer capacity.
+ * @param e the edit.
+ * @return 0, or -1 when the section name is 96 characters or longer or
+ *         the result would not fit in cap. */
 static int cfgw_apply_one(char* text, size_t* len, size_t cap,
                           const openpete_mods_cfg_edit_t* e) {
     char section[96] = "", leaf[96];

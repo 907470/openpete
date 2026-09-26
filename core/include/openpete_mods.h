@@ -138,10 +138,18 @@ int openpete_mods_prepare(const openpete_options_t* opts,
  * (games/spyro-1/CMakeLists.txt). */
 int openpete_mods_compile_all(const openpete_options_t* opts);
 
-/* Per-function-entry chain dispatch. Returns 1 = an override chain ran
- * (skip the recompiled body), 0 = no chain for addr (run the body).
- * Called from psx_override_dispatch_game behind the
- * openpete_mods_active fast gate. */
+/** @brief Run the override chain registered for a guest function at its entry.
+ *
+ * Called from Spyro 1's psx_override_dispatch_game behind the
+ * openpete_mods_active gate. Returns 0 without running anything when a
+ * base() fallthrough armed a bypass for addr (the bypass is consumed and
+ * the recompiled body runs), when no link on any chain is enabled, when
+ * addr has no chain, or when every link on its chain is disabled.
+ * Otherwise runs the first enabled link.
+ * @param cpu the guest CPU.
+ * @param addr the entered function's guest vaddr.
+ * @return 1 when a chain ran (skip the recompiled body), 0 to run the
+ *         body. */
 int openpete_mods_dispatch(CPUState* cpu, uint32_t addr);
 
 /* 1 while at least one override chain is registered. Hot-path gate. */
@@ -172,9 +180,14 @@ uint32_t openpete_mods_guest_alloc(uint32_t size, uint32_t align,
                                    uint32_t flags, void** host_view,
                                    const char* owner);
 
-/* Reset `owner`'s allocation call cursor: the loader calls this
- * immediately before running (or re-running) openpete_mod_entry, so the
- * mod's allocation sequence replays from its first ledger row. */
+/** @brief Reset an owner's ledger call cursor so its next calls replay from its first ledger row.
+ *
+ * The cursor is shared by openpete_mods_guest_alloc and
+ * openpete_mods_vstream_handle calls. The loader calls this immediately
+ * before running openpete_mod_entry at load and on hot reload, so a
+ * matching call sequence gets back the same vaddrs and handles.
+ * @param owner the mod id; NULL, empty, or an owner with no ledger calls
+ *        does nothing. */
 void openpete_mods_arena_entry_begin(const char* owner);
 
 /* Snapshot support: the arena's used prefix is timeline state. save
@@ -183,17 +196,32 @@ void openpete_mods_arena_entry_begin(const char* owner);
  * immutable_check verifies every IMMUTABLE row's checksum (captured on
  * first check) and warns once per broken promise; call it once per
  * keyframe / file save, never per speculative tick. */
+/** @brief Return the arena watermark: the end offset of the last allocation, alignment padding included.
+ *
+ * Snapshots copy the arena bytes [0, used); the runahead hash covers the
+ * same span. A restore raises the watermark, never lowers it.
+ * @return the used prefix in bytes. */
 uint32_t       openpete_mods_arena_used(void);
 const uint8_t* openpete_mods_arena_bytes(void);
 void           openpete_mods_arena_mem_restore(const void* bytes,
                                                uint32_t used);
 void           openpete_mods_arena_immutable_check(const char* when);
 
-/* Stream handle (mod_arena.c): the index a mod writes into a frame
- * word's 21-bit field in place of a stream vaddr that will not fit. Same
- * vaddr -> same handle; every call is a ledger row (replayed on re-entry,
- * verified on load). 0 = refused (vaddr 0, kernel area, table or ledger
- * full). */
+/** @brief Return the stream handle for a stream vaddr, the index a mod writes into a frame word's 21-bit field in place of the vaddr.
+ *
+ * The same vaddr, from any owner, gets the same handle; handle 0 is never
+ * issued. Every call is a ledger row keyed by (owner, call index), sharing
+ * the call cursor with openpete_mods_guest_alloc: on re-entry a call whose
+ * row holds the same vaddr gets that row's handle back and rebinds it in
+ * the vstream table; a different vaddr or an allocation row at that index
+ * marks the row superseded and takes a fresh handle, and a savestate
+ * written against a superseded row is refused on load.
+ * @param vaddr the stream's guest vaddr.
+ * @param owner the calling mod's id.
+ * @return the handle, or 0 when refused: vaddr 0, a vaddr in the kernel
+ *         area (physical address below 0x10000), a NULL or empty owner,
+ *         the handle table full (VSTREAM_HANDLE_MAX), or a ledger or
+ *         owner-table allocation failure. */
 uint32_t openpete_mods_vstream_handle(uint32_t vaddr, const char* owner);
 
 /** @brief Play the PCM WAV at path once as a host-side OpenAL sound.
@@ -377,6 +405,13 @@ void openpete_mods_registry_set_owner_enabled(const char* mod_id, int on);
  * sibling: mod_loader.c calls all of them, and without a prototype in
  * scope C assumes int(), which silently defeats argument checking on
  * calls that pass a pointer. */
+/** @brief Remove every override link an owner registered, compacting each chain.
+ *
+ * The loader calls it when it strips a mod's registrations (hot reload,
+ * whose re-entry registers the links again, and a failed load). The
+ * owner's enabled state is kept, so re-registered links come back in it.
+ * Call only at a tick boundary.
+ * @param owner_id the mod id; NULL does nothing. */
 void openpete_mods_chain_remove_owner(const char* owner_id);
 void openpete_mods_chain_set_owner_enabled(const char* owner_id, int on);
 void openpete_mods_draw_remove_owner(const char* owner_id);
@@ -386,8 +421,9 @@ void openpete_mods_registry_remove_owner(const char* mod_id);
 /** @brief Add @p ns of self time to @p owner's tick or present accumulator.
  *
  * The override chain runner feeds tick hooks (the override's span minus
- * nested overrides) and mod_draw.c feeds present hooks. An owner gets a
- * slot on first use.
+ * its base() descent and the overrides nested inside it) and mod_draw.c
+ * feeds present hooks (each hook's span). An owner gets a slot on first
+ * use.
  * @param owner Mod id; NULL is ignored.
  * @param ns Nanoseconds; a negative value is ignored.
  * @param is_present Non-zero for a present hook, zero for a tick hook. */
@@ -420,12 +456,24 @@ const char* openpete_mods_modset_tag(void);
 
 #include "openpete_mod_api.h" /* openpete_mod_present_fn / ctx */
 
-/* Per-present flush, called from run.c's two present legs (canonical +
- * sub-tick) just before openpete_native_render_frame(). canonical=1
- * commits the tick-scoped command buffer (the sim tick that just ran);
- * both legs run present hooks (cpu = the game CPU, for the tick
- * boundary) and push the composed overlay vertices to the native
- * renderer. Near-zero cost when no mod ever drew. */
+/** @brief Commit the tick's mod draw commands, run present hooks, and pass the overlay vertices to the native renderer.
+ *
+ * Called once per present: by the eager producer for each scene it
+ * produces, and otherwise from run.c's canonical and sub-tick present
+ * legs. A canonical call with a mod loaded first runs
+ * openpete_mods_tick_boundary (the live-toggle apply point) and, every 512
+ * canonical calls, openpete_mods_time_report. The rest runs only once a
+ * mod has drawn or registered a present hook: a canonical call swaps the
+ * staging and committed tick buffers and clears the new staging, with or
+ * without a native renderer. With the native renderer enabled it records
+ * the present context (tick openpete_frame; alpha 0 on a canonical call,
+ * else the interpolation phase at the present instant), runs every enabled
+ * present hook with openpete_mods_in_present set, lays out the committed
+ * tick texts and this present's texts through the game's text emitter,
+ * and passes the vertices to openpete_native_set_mod_overlay.
+ * @param cpu the game CPU, passed to the tick boundary.
+ * @param canonical 1 for a tick's canonical present, 0 for a sub-tick
+ *        present. */
 void openpete_mods_present_flush(CPUState* cpu, int canonical);
 
 /* Game-registered text rasterizer: lays out `str` at (x, y) with glyph
@@ -438,6 +486,20 @@ typedef int (*openpete_mods_text_emit_fn)(const char* str, float x, float y,
 void openpete_mods_draw_set_text_fn(openpete_mods_text_emit_fn fn);
 
 /* Loader-facing submission entry points (wired into the mod api). */
+/** @brief Queue one text for the mod overlay.
+ *
+ * Inside a present hook the text goes to this present's buffer and draws
+ * on this present only. Elsewhere (a tick hook) it goes to the tick
+ * staging buffer, which the next canonical present commits for display on
+ * every present of that tick, so a mod redraws every tick to keep text on
+ * screen. The running hook's owner is recorded for overflow attribution.
+ * @param x left edge in overlay space (window-height fractions, origin
+ *        top-left, x in [0, aspect]).
+ * @param y top edge in overlay space, +y down.
+ * @param cap_h glyph cap height in overlay space.
+ * @param rgb tint.
+ * @param str the text, truncated to 95 characters; NULL or empty is
+ *        ignored. */
 void openpete_mods_draw_text(float x, float y, float cap_h, uint32_t rgb,
                              const char* str);
 int  openpete_mods_register_present_hook(openpete_mod_present_fn fn,
@@ -824,8 +886,14 @@ void openpete_mods_material_view_capture(openpete_mods_material_view_t* out);
 void openpete_mods_material_view_set(const openpete_mods_material_view_t* v);
 /* Enabled-list position of a mod (0-based load order; -1 unknown). */
 int  openpete_mods_load_index_of(openpete_mod_t* self);
-/* Last present-flush ctx (mod_draw.c) — the postfx engine UBO's
- * tick/alpha/canonical source, identical to the present-hook ctx. */
+/** @brief Return the tick, alpha and canonical flag of the last present flush that reached the present hooks.
+ *
+ * The postfx engine UBO and the native renderer read it, so shaders see the
+ * values the present hooks received. Before the first such flush it reads
+ * tick 0, alpha 0, canonical 1.
+ * @param tick receives the tick, or NULL.
+ * @param alpha receives the sub-tick phase, or NULL.
+ * @param canonical receives 1 for a canonical present, or NULL. */
 void openpete_mods_present_ctx(uint32_t* tick, float* alpha, int* canonical);
 int openpete_mods_material_register(openpete_mod_t* self,
                                     const openpete_mod_material_selector_t* sel,
@@ -846,12 +914,21 @@ int openpete_mods_sfx_replace(openpete_mod_t* self, const char* name,
                               const void* body, uint32_t len,
                               uint16_t pitch);
 
-/* Per-mod user configuration (mod_config.c): mods/<id>/config.toml,
- * parsed by the loader right before the mod's entry runs (boot and hot
- * reload). Keys are dotted paths ("chests.collision"); getters return
- * `def` for an absent file/key/type-mismatch. The loader watches the
- * file's content hash in dev hot-reload mode, so a config edit re-enters
- * the mod with fresh values. */
+/* Per-mod user configuration (mod_config.c): mods/<id>/config.toml.
+ * Keys are dotted paths ("chests.collision"); getters return `def` for an
+ * absent file/key/type-mismatch. */
+/** @brief Load a mod's config.toml into its key table, replacing what the previous load stored.
+ *
+ * The loader calls it right before the mod's entry runs, at load and on hot
+ * reload, and after a config write; in dev hot-reload mode it watches the
+ * file's content hash, so an edit re-enters the mod with fresh values.
+ * Nested tables flatten to dotted keys; bool, integer, float and string
+ * values are stored, and arrays and other types are logged and skipped. A
+ * missing file leaves the table empty; a parse error is logged and leaves
+ * it empty, so every getter returns its default and the mod stays enabled.
+ * @param mod the mod whose table is filled.
+ * @param mod_dir the mod's directory.
+ * @param log_tag the mod's log tag. */
 void openpete_mods_config_load(openpete_mod_t* mod, const char* mod_dir,
                                const char* log_tag);
 int     openpete_mods_config_bool(openpete_mod_t* self, const char* key,
@@ -863,10 +940,19 @@ double  openpete_mods_config_float(openpete_mod_t* self, const char* key,
 int     openpete_mods_config_str(openpete_mod_t* self, const char* key,
                                  const char* def, char* buf, int cap);
 
-/* Comment-preserving config.toml writer (the Mods panel's Apply): each
- * edit rewrites the value of `leaf = ...` inside its dotted-path
- * section, keeping every comment; missing keys/sections are appended.
- * Returns 0 when the file was rewritten. */
+/** @brief Apply edits to a mod's config.toml as text, keeping every comment (the Mods panel's Apply).
+ *
+ * Each edit rewrites the value of `leaf = ...` inside the section its
+ * dotted key names, keeping indentation and a trailing comment; a missing
+ * key is added to its section and a missing section is appended at the end
+ * of the file, which is created when absent. All edits are applied in
+ * memory, then written to config.toml.tmp and renamed over the file, so
+ * any failure leaves the file unchanged.
+ * @param mod_dir the mod's directory.
+ * @param log_tag the mod's log tag.
+ * @param n number of edits.
+ * @param e the edits.
+ * @return 0 when the file was rewritten, -1 otherwise. */
 int openpete_mods_config_write(const char* mod_dir, const char* log_tag,
                                int n, const openpete_mods_cfg_edit_t* e);
 
