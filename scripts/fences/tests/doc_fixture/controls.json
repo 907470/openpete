@@ -337,5 +337,42 @@
   "present": [
    "externc.cpp:externc_fn"
   ]
+ },
+ {
+  "name": "12a brief of two sentences, two lines, no terminator",
+  "tus": [
+   "longbrief.c"
+  ],
+  "acted": [
+   "longbrief.c:two_sentences",
+   "longbrief.c:two_lines",
+   "longbrief.c:unterminated"
+  ],
+  "expect": {
+   "longbrief.c:two_sentences": "clause1",
+   "longbrief.c:two_lines": "clause1",
+   "longbrief.c:unterminated": "clause1"
+  },
+  "verdict": "REFUSED",
+  "forms": {
+   "longbrief.c:two_sentences": "longbrief",
+   "longbrief.c:two_lines": "longbrief",
+   "longbrief.c:unterminated": "longbrief"
+  }
+ },
+ {
+  "name": "12b one-line brief, blank line, detail",
+  "tus": [
+   "longbrief.c"
+  ],
+  "acted": [
+   "longbrief.c:brief_then_detail",
+   "longbrief.c:longbrief_use"
+  ],
+  "expect": {
+   "longbrief.c:brief_then_detail": "pass",
+   "longbrief.c:longbrief_use": "pass"
+  },
+  "verdict": "PASS"
  }
 ]

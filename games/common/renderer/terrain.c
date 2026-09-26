@@ -3462,14 +3462,15 @@ typedef struct {
     uint32_t prv;     /* previous accumulator */
 } tscroll_sweep_t;
 
-/** @brief Fill *S with the accumulator offset from the committed `cur` of scroller
- * descriptor `desc` (tile `ct`) to the one a sub-tick present shows: the
- * snapshot pair's lerp(prev, curr, alpha). The snapshot's curr is the tick
- * the canonical present composed: the committed tick, equal to `cur`, or
- * under --runahead the led tick captured at the speculation head while the
- * guest RAM holding `cur` and the tiledef V bytes is the committed tick; the
- * V offset is linear in the accumulator, so the lead shifts the committed
- * decode onto the led one exactly.
+/** @brief Fill *S with the accumulator offset from the committed `cur` to the one a sub-tick present shows.
+ *
+ * The descriptor is scroller `desc` (tile `ct`); the shown accumulator is the
+ * snapshot pair's lerp(prev, curr, alpha). The snapshot's curr is the tick the
+ * canonical present composed: the committed tick, equal to `cur`, or under
+ * --runahead the led tick captured at the speculation head while the guest RAM
+ * holding `cur` and the tiledef V bytes is the committed tick; the V offset is
+ * linear in the accumulator, so the lead shifts the committed decode onto the
+ * led one exactly.
  * @param desc the descriptor's guest address (the objs key)
  * @param ct   the descriptor's tile
  * @param cur  the committed 7-bit accumulator in guest RAM
@@ -9465,16 +9466,18 @@ void terrain_native_flush_deferred(void) {
     terrain_native_build_feed(s_env_defer.cpu, s_env_defer.occ);
 }
 
-/** @brief Flush a deferred feed still pending when the next world draw begins
- * (never expected; counted as late in the census). */
+/** @brief Flush a deferred feed still pending when the next world draw begins.
+ *
+ * A pending feed there is never expected; it is counted as late in the census. */
 static void terrain_defer_flush_late(void) {
     if (!s_env_defer.pending) return;
     s_env_defer_late++;
     terrain_native_flush_deferred();
 }
 
-/** @brief Run the canonical native build and feed now, or hold them for the tick's
- * portal capture when the game draws the portals after this world draw. */
+/** @brief Run the canonical native build and feed now, or hold them for the tick's portal capture.
+ *
+ * They are held when the game draws the portals after this world draw. */
 static void terrain_native_build_feed_or_defer(CPUState* cpu, int32_t occGroup) {
     if (!terrain_game.env_feed_waits_for_portals ||
         !terrain_game.env_feed_waits_for_portals(cpu)) {
@@ -9491,8 +9494,10 @@ static void terrain_native_build_feed_or_defer(CPUState* cpu, int32_t occGroup) 
     s_env_defer_n++;
 }
 
-/** @brief World-draw hook: runs the game's world draw once, records RP_TERRAIN and
- * feeds the native terrain, or holds the feed for the tick's portal capture. */
+/** @brief World-draw hook.
+ *
+ * Runs the game's world draw once, records RP_TERRAIN and feeds the native
+ * terrain, or holds the feed for the tick's portal capture. */
 static int on_world_draw_terrain(CPUState* cpu, uint32_t addr) {
     (void)addr;
     int verify = terrain_verify_enabled();

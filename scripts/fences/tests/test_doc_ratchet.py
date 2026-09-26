@@ -215,11 +215,24 @@ class MergeTest(unittest.TestCase):
         self.assertEqual(c.facts["x.h:h"]["form"], "none")
 
 
+class BriefFaultTest(unittest.TestCase):
+    def test_one_sentence_passes(self):
+        for text in ("Adds one.", "Adds one to `a.b`.", "Adds one, e.g. a count.",
+                     "Is it one?", "Adds one (the value 1.5).", "Lists a, b, etc."):
+            self.assertIsNone(dr.brief_fault(text, False), text)
+
+    def test_faults(self):
+        self.assertIn("more than one line", dr.brief_fault("Adds one.", True))
+        self.assertIn("2 sentences", dr.brief_fault("Adds one. Wraps.", False))
+        self.assertIn("no terminator", dr.brief_fault("Adds one", False))
+        self.assertIn("empty", dr.brief_fault("", False))
+
+
 class ControlsTest(unittest.TestCase):
     def test_controls_pass(self):
         sc = dr.Scorer({"fixture": dr.fixture_ctx()})
         try:
-            self.assertEqual(dr.run_controls(sc), 20)
+            self.assertEqual(dr.run_controls(sc), 22)
         finally:
             sc.close()
 
@@ -511,6 +524,38 @@ class EndToEndTest(unittest.TestCase):
         p = self.commit("paragraph only", ok=False)
         self.assertIn("REFUSED  core/new.c:fresh  (new)", p.stderr)
         self.assertIn("the comment has no @brief.", p.stderr)
+
+    def test_multisentence_brief_refused(self):
+        self.write("core/new.c", "/** @brief Returns one. The value is fixed.\n"
+                   " * Callers read it once. */\nstatic int fresh(void) "
+                   "{ return 1; }\nint fresh_use(void);\n/** @brief Reads "
+                   "fresh.\n * @return One. */\nint fresh_use(void) "
+                   "{ return fresh(); }\n")
+        self.wire("api.c", "ec.cpp", "new.c")
+        self.git("add", "core/new.c")
+        p = self.commit("long brief", ok=False)
+        self.assertIn("REFUSED  core/new.c:fresh  (new)", p.stderr)
+        self.assertIn("the @brief paragraph spans more than one line", p.stderr)
+        self.assertIn("/** @brief <one sentence>.", p.stderr)
+        self.assertNotIn("core/new.c:fresh_use", p.stderr)
+        self.sub("core/new.c", "Returns one. The value is fixed.\n * Callers",
+                 "Returns one. The value is fixed. Callers")
+        self.git("add", "core/new.c")
+        p = self.commit("one line, three sentences", ok=False)
+        self.assertIn("the @brief paragraph holds 3 sentences", p.stderr)
+
+    def test_brief_then_detail_passes(self):
+        self.write("core/new.c", "/** @brief Returns one, e.g. for `x.y` tests.\n"
+                   " *\n * The value is fixed. Callers read it once. */\n"
+                   "static int fresh(void) { return 1; }\n"
+                   "int fresh_use(void);\n/// @brief Reads fresh.\n///\n"
+                   "/// Once per call.\n/// @return One.\n"
+                   "int fresh_use(void) { return fresh(); }\n")
+        self.wire("api.c", "ec.cpp", "new.c")
+        self.git("add", "core/new.c")
+        self.commit("brief then detail")
+        self.assertNotIn("core/new.c:fresh", self.rows())
+        self.assertNotIn("core/new.c:fresh_use", self.rows())
 
     def test_header_parameter_names_differ_from_the_definition(self):
         # api_anchor: the header names `anchor`, the definition `a`; the

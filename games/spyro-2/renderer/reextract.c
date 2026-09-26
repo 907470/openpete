@@ -237,13 +237,14 @@ void spyro_native_canon_capture_camera(void* cpu, int producer) { (void)cpu; (vo
 int  spyro_native_prod_camera_enter(int producer) { (void)producer; return 0; }
 void spyro_native_prod_camera_leave(void) {}
 
-/** @brief The player's ground shadow, at its own place in the record order: the shadow
- * feeder reads one state block, the record store holds the block each call
- * drew with, so the loop stages that block over the ambient bytes and runs the
- * fan once per record. The anchor is bracketed against the previous tick's,
- * teleport-guarded like the camera, so the shadow slides with the avatar
- * between ticks instead of stepping with it. The staged block is the record's
- * shown state (`src`, the led tick's under --runahead).
+/** @brief The player's ground shadow, at its own place in the record order.
+ *
+ * The shadow feeder reads one state block and the record store holds the block
+ * each call drew with, so the loop stages that block over the ambient bytes and
+ * runs the fan once per record. The anchor is bracketed against the previous
+ * tick's, teleport-guarded like the camera, so the shadow slides with the
+ * avatar between ticks instead of stepping with it. The staged block is the
+ * record's shown state (`src`, the led tick's under --runahead).
  *
  * Host-only: the staged span is a view copy and no guest word is written. */
 static void player_record_shadow(CPUState* cpu, int k, uint8_t* shb, double rec_alpha) {

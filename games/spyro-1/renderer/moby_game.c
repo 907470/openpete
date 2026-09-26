@@ -194,14 +194,15 @@ static int s1_cutscene_owns_draw(CPUState* cpu) {
     return cpu->read_word(G_GAMESTATE) == 8u && st >= 1u && st <= 6u;
 }
 
-/** @brief The rescue cutscene's departure factors for record 0, as func_8001CFDC
- * applies them in m_State 5 (draw.c state 5): row 0 by
- * D_8006F3C0[m_CutsceneTicks], row 1 by Cos((m_CutsceneTicks - 8) * 42)
- * once the ticks pass 8, row 2 unscaled; every other state scales nothing.
- * `cs` is g_DragonCutscene from m_State (+0x28), so m_CutsceneTicks is at
- * +0x14. Cos is the game's 4096-per-turn angle over the 256-entry table with
- * its 16-step linear interpolation, taken in double; the factors are Q12
- * values over 4096 with no FIXED_MUL truncation. Returns 1 in state 5. */
+/** @brief The rescue cutscene's departure factors for record 0, as func_8001CFDC applies them in m_State 5.
+ *
+ * In m_State 5 (draw.c state 5) row 0 is scaled by D_8006F3C0[m_CutsceneTicks],
+ * row 1 by Cos((m_CutsceneTicks - 8) * 42) once the ticks pass 8, and row 2 not
+ * at all; every other state scales nothing. `cs` is g_DragonCutscene from
+ * m_State (+0x28), so m_CutsceneTicks is at +0x14. Cos is the game's
+ * 4096-per-turn angle over the 256-entry table with its 16-step linear
+ * interpolation, taken in double; the factors are Q12 values over 4096 with no
+ * FIXED_MUL truncation. Returns 1 in state 5. */
 static int s1_departure_factors(CPUState* cpu, const uint8_t* cs, double f[3]) {
     uint32_t st, ticks;
     memcpy(&st, cs, 4);
@@ -217,12 +218,12 @@ static int s1_departure_factors(CPUState* cpu, const uint8_t* cs, double f[3]) {
     return 1;
 }
 
-/** @brief Record 0's draw-time row scale in the rescue cutscene's departure
- * (g_Gamestate 8, m_State 5): func_8001CFDC scales rows 0 and 1 of the first
- * cull record (the queue holds m_CutsceneSpyro alone) after
- * func_8001F158 builds it. A canonical present takes the live
- * g_DragonCutscene; a sub-tick present lerps each factor between the
- * captured tick pair at the pair's alpha, a factor of the previous tick
+/** @brief Record 0's draw-time row scale in the rescue cutscene's departure (g_Gamestate 8, m_State 5).
+ *
+ * func_8001CFDC scales rows 0 and 1 of the first cull record (the queue holds
+ * m_CutsceneSpyro alone) after func_8001F158 builds it. A canonical present
+ * takes the live g_DragonCutscene; a sub-tick present lerps each factor between
+ * the captured tick pair at the pair's alpha, a factor of the previous tick
  * outside state 5 being 1. */
 static int s1_record_row_scale(CPUState* cpu, uint32_t rec, double scale[3]) {
     if (rec != game_layout.moby.rec_base || cpu->read_word(G_GAMESTATE) != 8u) return 0;

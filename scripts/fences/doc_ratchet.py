@@ -10,7 +10,13 @@ declaration in a tracked project header when one is visible, else the
 definition; a header `static inline` is its own site); the parsed comment
 carries a `@brief` block command (either prefix, or its alias `@short`; a
 leading paragraph is not a brief) and is not a group header (`@name`,
-`@defgroup`, `@addtogroup`, `@ingroup`, `@{`); no -Wdocumentation
+`@defgroup`, `@addtogroup`, `@ingroup`, `@{`); the first `@brief`
+paragraph, which the Doxyfile (AUTOBRIEF off) takes whole as the brief, is
+one sentence on one source line: no line break inside it and exactly one
+sentence terminator (`.`, `!`, `?` before whitespace or the end, outside a
+backtick code span and an abbreviation such as `e.g.`), at its end, so a
+detailed description starts after a blank comment line (else `longbrief`);
+no -Wdocumentation
 diagnostic lies in it; and, for external linkage, a valid `@param` names
 every named parameter of the canonical declaration and a non-void function
 carries `@return`.
@@ -73,9 +79,10 @@ FENCE = lib.Fence("doc-ratchet", "doc_ratchet.py", TSV, SCOPE_ROOTS,
                   "OPENPETE_DOCS_DB")
 ACCEPT_VAR = "OPENPETE_DOCS_ACCEPT"
 DOC_FLAGS = ["-Wdocumentation", "-Wdocumentation-unknown-command"]
-FORMS = ("none", "plain", "misplaced", "malformed", "untagged")
-REQUIREMENT_LINE = ("@brief on every function; @param per named parameter "
-                    "and @return on non-void for external linkage")
+FORMS = ("none", "plain", "misplaced", "malformed", "longbrief", "untagged")
+REQUIREMENT_LINE = ("@brief of one sentence on one line on every function; "
+                    "@param per named parameter and @return on non-void for "
+                    "external linkage")
 FIXTURE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "tests", "doc_fixture")
 
@@ -96,9 +103,17 @@ GROUP_CMDS = ("name", "defgroup", "addtogroup", "ingroup")
 RETURN_CMDS = ("return", "returns", "result")
 BRIEF_CMDS = ("brief", "short")
 # Comment kinds (CXCommentKind).
+K_TEXT, K_INLINE = 1, 2
 K_PARAGRAPH, K_BLOCK, K_PARAM, K_VERBATIM_LINE, K_FULL = 5, 6, 7, 11, 12
 FORM_RANK = {"meets": 0, "plain": 1, "none": 2, "untagged": 3,
-             "malformed": 4, "misplaced": 5, "duplicate": 6}
+             "longbrief": 4, "malformed": 4, "misplaced": 5, "duplicate": 6}
+# A sentence terminator: `.`, `!` or `?` (a run counts once), optionally
+# followed by closing punctuation, then whitespace or the end of the text.
+TERMINATOR = re.compile(r"[.!?]+[)\]\"']*(?=\s|$)")
+CODE_SPAN = re.compile(r"`[^`]*`")
+# Abbreviations whose period is not a sentence terminator.
+ABBREVIATIONS = re.compile(r"\b(?:e\.g|i\.e|etc|vs|cf|approx|resp)\.",
+                           re.IGNORECASE)
 
 
 # --------------------------------------------------------------------------
@@ -107,7 +122,8 @@ FORM_RANK = {"meets": 0, "plain": 1, "none": 2, "untagged": 3,
 #   before_rows    {key: (form, accepted_reason)}      the baseline source
 #   after_facts    {key: facts}                        the parsed working tree
 #                  facts: form (meets | none | plain | misplaced | malformed
-#                  | untagged | duplicate), macro, two_headers [files],
+#                  | longbrief | untagged | duplicate), macro,
+#                  two_headers [files],
 #                  extents [(file, first, last)] (the definition, and the
 #                  canonical header declaration), canonical (file, line)
 #   acted_on       set of keys; None = every key
@@ -404,14 +420,64 @@ def blocking_token(src, start, attached_starts, limit=400):
     return None
 
 
+def brief_paragraph(ci, block):
+    """-> (text, broken) of a @brief block command's paragraph: the inline
+    content joined (an inline command contributes its arguments), and whether
+    a line break lies inside it (an inline child with a trailing newline
+    followed by a non-whitespace child)."""
+    L = ci.conf.lib
+    para = L.clang_BlockCommandComment_getParagraph(block)
+    parts, broken, pending_nl = [], False, False
+    for i in range(L.clang_Comment_getNumChildren(para)):
+        ch = L.clang_Comment_getChild(para, i)
+        kind = L.clang_Comment_getKind(ch)
+        if kind == K_TEXT:
+            t = lib.cxstring(ci, L.clang_TextComment_getText(ch))
+        elif kind == K_INLINE:
+            t = " ".join(
+                lib.cxstring(ci, L.clang_InlineCommandComment_getArgText(ch, j))
+                for j in range(L.clang_InlineCommandComment_getNumArgs(ch)))
+        else:
+            t = ""
+        if t.strip():
+            if pending_nl:
+                broken = True
+            parts.append(" " + t if pending_nl else t)
+        if L.clang_InlineContentComment_hasTrailingNewline(ch):
+            pending_nl = True
+    return " ".join("".join(parts).split()), broken
+
+
+def brief_fault(text, broken):
+    """Why a brief paragraph is not one sentence on one line, or None. The
+    brief is the whole paragraph after @brief (the Doxyfile has AUTOBRIEF
+    off); a detailed description starts after a blank comment line."""
+    if broken:
+        return "the @brief paragraph spans more than one line"
+    if not text:
+        return "the @brief paragraph is empty"
+    code_free = CODE_SPAN.sub("", text).rstrip()
+    bare = ABBREVIATIONS.sub(lambda m: m.group(0).replace(".", ""), code_free)
+    if ABBREVIATIONS.search(code_free[-8:]) and code_free.endswith("."):
+        bare += "."
+    terms = TERMINATOR.findall(bare)
+    if not re.search(r"[.!?]+[)\]\"']*$", bare):
+        return "the @brief sentence has no terminator (`.`, `!`, `?`) at its end"
+    if len(terms) > 1:
+        return "the @brief paragraph holds %d sentences" % len(terms)
+    return None
+
+
 def parsed_comment_facts(ci, cursor):
-    """-> (brief, group, params [(name, index valid)], has_return) of the
-    parsed comment attached to the cursor."""
+    """-> (brief, group, params [(name, index valid)], has_return, fault) of
+    the parsed comment attached to the cursor; fault is brief_fault() of the
+    first @brief paragraph."""
     L = ci.conf.lib
     fc = L.clang_Cursor_getParsedComment(cursor)
     if L.clang_Comment_getKind(fc) != K_FULL:
-        return False, False, [], False
+        return False, False, [], False, None
     brief = group = has_return = False
+    fault = None
     params = []
     for i in range(L.clang_Comment_getNumChildren(fc)):
         ch = L.clang_Comment_getChild(fc, i)
@@ -420,15 +486,16 @@ def parsed_comment_facts(ci, cursor):
             name = lib.cxstring(ci, L.clang_BlockCommandComment_getCommandName(ch))
             if kind == K_VERBATIM_LINE or name in GROUP_CMDS:
                 group = group or name in GROUP_CMDS
-            if name in BRIEF_CMDS:
+            if name in BRIEF_CMDS and not brief:
                 brief = True
+                fault = brief_fault(*brief_paragraph(ci, ch))
             if name in RETURN_CMDS:
                 has_return = True
         elif kind == K_PARAM:
             params.append((
                 lib.cxstring(ci, L.clang_ParamCommandComment_getParamName(ch)),
                 bool(L.clang_ParamCommandComment_isParamIndexValid(ch))))
-    return brief, group, params, has_return
+    return brief, group, params, has_return, fault
 
 
 def score_entry(task):
@@ -591,7 +658,7 @@ def classify(ci, ctx, c, f, group, source, attached_starts, wdoc_by_file):
         facts["comment"] = rng
         return facts
     facts["comment"] = rng
-    brief, grp, pcmds, has_ret = parsed_comment_facts(ci, canon["cursor"])
+    brief, grp, pcmds, has_ret, fault = parsed_comment_facts(ci, canon["cursor"])
     raw = source(rng[0]).text(rng[1], rng[2])
     grp = grp or bool(re.search(r"[@\\]\{", raw))
     facts["brief"], facts["group"] = brief, grp
@@ -599,6 +666,10 @@ def classify(ci, ctx, c, f, group, source, attached_starts, wdoc_by_file):
                      if rng[1] <= ln <= rng[2]]
     if not brief or grp:
         facts["form"] = "malformed"
+        return facts
+    facts["brief_fault"] = fault
+    if fault:
+        facts["form"] = "longbrief"
         return facts
     if facts["linkage"] == "EXTERNAL":
         named = facts["params"]
@@ -794,15 +865,15 @@ def fmt_ranges(ranges):
 
 def skeleton(fx, root):
     ext = fx["linkage"] == "EXTERNAL"
-    lines = ["@brief <what it does>"]
+    lines = []
     if ext:
         lines += ["@param %s <meaning>" % p for p in fx["params"]]
         if not fx["void"]:
             lines.append("@return <meaning>")
-    if len(lines) == 1:
-        text = ["/** %s */" % lines[0]]
-    else:
-        text = ["/**"] + [" * " + l for l in lines] + [" */"]
+    text = ["/** @brief <what it does, one sentence>.", " *",
+            " * <detail, when there is more to say>"]
+    text += [" * " + l for l in lines]
+    text[-1] += " */"
     src = Source(os.path.join(root, fx["canonical"][0]))
     sig = src.line(fx["canonical"][1]).rstrip()
     return text + [sig]
@@ -882,6 +953,14 @@ def explain(key, code, fx, root, rows, changed):
                        "comment with a @brief.")
         else:
             out.append("  the comment has no @brief.")
+        return out
+    if form == "longbrief":
+        out.append("  %s. With AUTOBRIEF off the whole paragraph after @brief "
+                   "is the brief: write one sentence on the @brief line, a "
+                   "blank comment line, then the detail." % fx["brief_fault"])
+        out += ["    " + l for l in (
+            "/** @brief <one sentence>.", " *", " * <detail>",
+            " * @param ... */")]
         return out
     if form == "untagged":
         lacks = ["@param %s" % p for p in fx["missing"]]

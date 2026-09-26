@@ -545,6 +545,12 @@ def libclang():
     bind("clang_ParamCommandComment_getParamName", [CXComment], ci._CXString)
     bind("clang_ParamCommandComment_isParamIndexValid", [CXComment], ctypes.c_uint)
     bind("clang_BlockCommandComment_getCommandName", [CXComment], ci._CXString)
+    bind("clang_BlockCommandComment_getParagraph", [CXComment], CXComment)
+    bind("clang_InlineContentComment_hasTrailingNewline", [CXComment],
+         ctypes.c_uint)
+    bind("clang_InlineCommandComment_getNumArgs", [CXComment], ctypes.c_uint)
+    bind("clang_InlineCommandComment_getArgText", [CXComment, ctypes.c_uint],
+         ci._CXString)
     bind("clang_Cursor_getCommentRange", [ci.Cursor], ci.SourceRange)
     bind("clang_getClangVersion", [], ci._CXString)
     ci.CXComment = CXComment

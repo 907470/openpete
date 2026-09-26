@@ -32,9 +32,11 @@ int terrain_native_sweep_pose(struct CPUState* cpu, int corner, int32_t v[5]);
  * this draw, in which case the verdict is in RAM at game_layout.visibility. */
 void terrain_visibility_capture_arm(void);
 
-/** @brief Run the canonical native terrain build and feed the world draw deferred
- * under terrain_game.env_feed_waits_for_portals; no-op when none is pending.
- * The portal draw calls it once its capture for the tick is complete. */
+/** @brief Run the canonical native terrain build and feed the world draw deferred for the portal capture.
+ *
+ * The deferral is terrain_game.env_feed_waits_for_portals; a call with none
+ * pending is a no-op. The portal draw calls it once its capture for the tick is
+ * complete. */
 void terrain_native_flush_deferred(void);
 int  terrain_visibility_capture(const uint8_t** out);
 

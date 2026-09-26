@@ -128,8 +128,9 @@ size_t mod_cvec_count(const mod_cvec* v);
 
 /**
  * @brief Remove element @p i, shifting the elements above it down one.
- *        The order of the remaining elements is preserved and every
- *        element above @p i changes index. Out-of-range is a no-op.
+ *
+ * The order of the remaining elements is preserved and every element above @p i
+ * changes index. Out-of-range is a no-op.
  */
 void mod_cvec_remove_at(mod_cvec* v, size_t i);
 
@@ -168,26 +169,24 @@ void* mod_fvec_at(const mod_fvec* v, size_t i);
 size_t mod_fvec_count(const mod_fvec* v);
 
 /**
- * @brief Base address of the contiguous run, for qsort, memcpy and hash
- *        consumers.
+ * @brief Base address of the contiguous run, for qsort, memcpy and hash consumers.
  * @return NULL while nothing is allocated.
  */
 void* mod_fvec_data(const mod_fvec* v);
 
 /**
- * @brief Grow the capacity to at least @p n elements without changing
- *        the count.
+ * @brief Grow the capacity to at least @p n elements without changing the count.
  * @return 0 on success, -1 on allocation failure.
  */
 int mod_fvec_reserve(mod_fvec* v, size_t n);
 
 /**
- * @brief mod_fvec_reserve for a run whose caller keeps its own element
- *        count (a buffer refilled per use and indexed through
- *        mod_fvec_data). @p n raises the peak. A growth to a capacity above
- *        the table's former fixed capacity (`was`), and each allocation
- *        failure at a request size larger than any refused before, is
- *        logged under the census name.
+ * @brief mod_fvec_reserve for a run whose caller keeps its own element count.
+ *
+ * The run is a buffer refilled per use and indexed through mod_fvec_data. @p n
+ * raises the peak. A growth to a capacity above the table's former fixed
+ * capacity (`was`), and each allocation failure at a request size larger than
+ * any refused before, is logged under the census name.
  * @return 0 on success, -1 on allocation failure; the run and its
  *         capacity are then unchanged, and the caller fills what fits.
  */
@@ -195,23 +194,25 @@ int mod_fvec_reserve_noted(mod_fvec* v, size_t n);
 
 /**
  * @brief Remove element @p i, shifting the elements above it down one.
- *        The order of the remaining elements is preserved and every
- *        element above @p i changes index. Out-of-range is a no-op.
+ *
+ * The order of the remaining elements is preserved and every element above @p i
+ * changes index. Out-of-range is a no-op.
  */
 void mod_fvec_remove_at(mod_fvec* v, size_t i);
 
 /**
  * @brief Set the count to @p n, zeroing any elements this adds.
- *        For a slot table whose size is a function of another table.
+ *
+ * For a slot table whose size is a function of another table.
  * @return 0 on success, -1 on allocation failure (the count is unchanged).
  */
 int mod_fvec_resize(mod_fvec* v, size_t n);
 
 /**
  * @brief Drop every element above index @p n, keeping the capacity.
- *        For the compact-in-place idiom: the caller copies the survivors
- *        down to [0, n) and calls this to drop the tail. A count at or
- *        below @p n is left alone.
+ *
+ * For the compact-in-place idiom: the caller copies the survivors down to
+ * [0, n) and calls this to drop the tail. A count at or below @p n is left alone.
  */
 void mod_fvec_truncate(mod_fvec* v, size_t n);
 
@@ -270,10 +271,11 @@ void mod_fixed_note(mod_fixed* t, size_t count, size_t storage);
 void mod_vec_census_arm(void);
 
 /**
- * @brief Print the census: one summary line naming the number of tables,
- *        then one line per named table,
- *        "mod-table: {name} count={n} peak={p} was={former capacity}
- *        storage={blocks for a cvec, capacity for an fvec} grew={k}".
+ * @brief Print the census: one summary line, then one line per named table.
+ *
+ * The summary line names the number of tables; each table line is "mod-table:
+ * {name} count={n} peak={p} was={former capacity} storage={blocks for a cvec,
+ * capacity for an fvec} grew={k}".
  *
  * peak against was is what shows a table having carried more than its
  * former fixed capacity: count is the live size, which a table drained

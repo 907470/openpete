@@ -274,11 +274,13 @@ static uint32_t rd32(uint32_t addr) {
     return v;
 }
 
-/** @brief The captured state outside g_LevelMobys: the HUD-icon and particle pools,
- * the sparkle, glow and dragon-star records, the rescue cutscene's state and
- * tick counter, and the two render lists whose
- * entries the array walk cannot reach. Runs after the shared moby-array walk
- * (game_interp_capture_moby_array), inside the same begin/end tick pair.
+/** @brief The captured state outside g_LevelMobys.
+ *
+ * It covers the HUD-icon and particle pools, the sparkle, glow and dragon-star
+ * records, the rescue cutscene's state and tick counter, and the two render
+ * lists whose entries the array walk cannot reach. Runs after the shared
+ * moby-array walk (game_interp_capture_moby_array), inside the same begin/end
+ * tick pair.
  *
  * The credits generation pass comes first because every game_interp_moby_key
  * call below depends on it; the array walk keys by address and does not. */

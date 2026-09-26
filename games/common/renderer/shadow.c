@@ -930,8 +930,10 @@ static const hook_bracket_desc k_shadow_bracket = {
     .st = &s_shadow_hb,
 };
 
-/** @brief Moby drop-shadow draw hook: runs the game's draw once, records its
- * polybuf interval under RP_MOBY_SHADOW and feeds the native shadows. */
+/** @brief Moby drop-shadow draw hook.
+ *
+ * Runs the game's draw once, records its polybuf interval under RP_MOBY_SHADOW
+ * and feeds the native shadows. */
 static int on_moby_shadows(CPUState* cpu, uint32_t addr) {
     uint32_t startp, endp; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_shadow_bracket, &startp, &endp, &feed, &verify))

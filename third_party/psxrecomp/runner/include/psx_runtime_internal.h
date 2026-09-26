@@ -30,19 +30,25 @@
 extern "C" {
 #endif
 
-/** @brief Initialise a CPUState and install the memory callbacks. Call before running any recompiled function. */
+/** @brief Initialise a CPUState and install the memory callbacks.
+ *
+ * Call before running any recompiled function. */
 void psx_runtime_init(CPUState* cpu);
 
 /** @brief Copy bytes into PSX RAM at a virtual address. */
 void psx_runtime_load(uint32_t addr, const uint8_t* data, uint32_t size);
 
-/** @brief Log every hardware register access to mmio_trace.log. Call with @p enable = 1 after psx_runtime_init(). */
+/** @brief Log every hardware register access to mmio_trace.log.
+ *
+ * Call with @p enable = 1 after psx_runtime_init(). */
 void psx_mmio_trace_enable(int enable);
 
 /** @brief Install SIGSEGV/SIGABRT handlers that dump the CPU state. */
 void psx_install_crash_handler(void);
 
-/** @brief Dispatch a call by address: BIOS calls and jump-register targets. An unknown address is logged, never fatal. */
+/** @brief Dispatch a call by address: BIOS calls and jump-register targets.
+ *
+ * An unknown address is logged, never fatal. */
 void call_by_address(CPUState* cpu, uint32_t addr);
 
 /**

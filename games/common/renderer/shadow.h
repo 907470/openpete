@@ -118,9 +118,10 @@ float  shadow_bias_moby(void);
 int      shadow_verify_enabled(void);
 unsigned shadow_verify_frame(void);
 
-/** @brief Sub-tick re-extract: rebuild the moby drop-shadows from the current
- * gamestate, extract-only, when the last canonical tick rendered them
- * (RP_MOBY_SHADOW canon-drawn).
+/** @brief Sub-tick re-extract: rebuild the moby drop-shadows from the current gamestate, extract-only.
+ *
+ * Runs only when the last canonical tick rendered them (RP_MOBY_SHADOW
+ * canon-drawn).
  * @param cpu guest state, the sub-tick view staged */
 void   shadow_reextract(CPUState* cpu);
 

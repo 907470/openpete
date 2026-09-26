@@ -1599,10 +1599,11 @@ static void special_census_face(const moby_wface_t* F, uint32_t mscol, uint32_t 
     if (openpete_frame >= s_cen_at + 200u) { s_cen_at = openpete_frame; special_census_report(); }
 }
 
-/** @brief Appends one line to the file OPENPETE_ROWSCALE_CENSUS names: which
- * row-scale source fired on which record, moby and row, and the factor. A
- * harness sets it to count the firings over a corpus; unset, nothing is
- * written. */
+/** @brief Appends one line to the file OPENPETE_ROWSCALE_CENSUS names.
+ *
+ * The line names which row-scale source fired on which record, moby and row,
+ * and the factor. A harness sets it to count the firings over a corpus; unset,
+ * nothing is written. */
 static void rowscale_census(const char* src, uint32_t rec, uint32_t moby, int row, double sc) {
     static const char* s_path = NULL;
     static int s_init = 0;
@@ -1615,11 +1616,13 @@ static void rowscale_census(const char* src, uint32_t rec, uint32_t moby, int ro
     fclose(fp);
 }
 
-/** @brief Applies the factors the game's draw multiplies into the record at `rec`
- * after its cull (moby_game.record_row_scale) to a matrix built for that
- * record, each row scaled in double and rounded once. The specular queue
- * shares the record addresses and is never scaled, so a specular pass
- * ("SP"/"SPEC") applies nothing. Returns 1 when the game scales the record. */
+/** @brief Applies the game's draw-time row scale of the record at `rec` to a matrix built for that record.
+ *
+ * The factors are the ones the game's draw multiplies into the record after its
+ * cull (moby_game.record_row_scale); each row is scaled in double and rounded
+ * once. The specular queue shares the record addresses and is never scaled, so
+ * a specular pass ("SP"/"SPEC") applies nothing. Returns 1 when the game scales
+ * the record. */
 static int moby_draw_row_scale(CPUState* cpu, uint32_t rec, const char* mat, int M[3][3]) {
     if (!moby_game.record_row_scale || (mat && mat[0] == 'S' && mat[1] == 'P')) return 0;
     double sc[3];
@@ -1631,13 +1634,14 @@ static int moby_draw_row_scale(CPUState* cpu, uint32_t rec, const char* mat, int
     return 1;
 }
 
-/** @brief The canonical record of a draw-time row scale, rebuilt as the sub-tick
- * rebuild derives it: the camera·euler compose of the record's moby
- * (shaded_compose_euler, the builder's compose) with the game's factors
- * applied by moby_draw_row_scale. The record's own matrix carries the draw's
- * FIXED_MUL truncation of the same product; replacing it makes the canonical
- * present and the alpha-1 sub-tick present one computation. Records the draw
- * does not scale keep the cull's matrix. */
+/** @brief The canonical record of a draw-time row scale, rebuilt as the sub-tick rebuild derives it.
+ *
+ * The matrix is the camera·euler compose of the record's moby
+ * (shaded_compose_euler, the builder's compose) with the game's factors applied
+ * by moby_draw_row_scale. The record's own matrix carries the draw's FIXED_MUL
+ * truncation of the same product; replacing it makes the canonical present and
+ * the alpha-1 sub-tick present one computation. Records the draw does not scale
+ * keep the cull's matrix. */
 static void moby_canon_row_scale(CPUState* cpu, uint32_t rec, moby_record_t* R) {
     double sc[3];
     if (!moby_game.host_reveal || !moby_game.record_row_scale ||
@@ -1649,12 +1653,13 @@ static void moby_canon_row_scale(CPUState* cpu, uint32_t rec, moby_record_t* R) 
     moby_draw_row_scale(cpu, rec, s_cur_mat, R->M);
 }
 
-/** @brief Re-applies a render-time per-row scale the game baked into the record's
- * matrix that no moby_game.record_row_scale source names and that the
- * euler rebuild in M cannot see. The rebuild is a camera·euler rotation, so
- * |rebuild row| equals |unscaled record row| and the ratio |record row| /
- * |rebuild row| is that scale; a ratio inside 0.99-1.01 is Q12 truncation
- * noise and is left alone. */
+/** @brief Re-applies a render-time per-row scale the game baked into the record's matrix.
+ *
+ * No moby_game.record_row_scale source names the scale, and the euler rebuild
+ * in M cannot see it. The rebuild is a camera·euler rotation, so |rebuild row|
+ * equals |unscaled record row| and the ratio |record row| / |rebuild row| is
+ * that scale; a ratio inside 0.99-1.01 is Q12 truncation noise and is left
+ * alone. */
 static void moby_ratio_row_scale(CPUState* cpu, uint32_t rec, uint32_t moby, int M[3][3]) {
     int rM[3][3]; moby_rec_matrix(cpu, rec + game_layout.moby.rec_matrix_off, rM);
     for (int row = 0; row < 3; row++) {
@@ -1670,8 +1675,9 @@ static void moby_ratio_row_scale(CPUState* cpu, uint32_t rec, uint32_t moby, int
 
 static void moby_animsw_census(CPUState* cpu, uint32_t moby);
 
-/** @brief Projects every live cull record's vertices into s_proj (native float
- * decode, RTPS and TR) for the canonical pass and fills s_recs, the record
+/** @brief Projects every live cull record's vertices into s_proj for the canonical pass and fills s_recs.
+ *
+ * The projection is the native float decode, RTPS and TR; s_recs is the record
  * metadata the walk and the sub-tick replays read. A record the game's draw
  * row-scales takes the rebuilt matrix (moby_canon_row_scale). Returns the
  * record count. */
@@ -2026,11 +2032,12 @@ static int append_revealed_regular(CPUState* cpu) {
     s_us_reveal += (long)(openpete_phase_now_us() - t0);
     return n;
 }
-/** @brief The reveal walk: host-built records for the live mobys the canonical cull
- * did not queue (widescreen edges, --no-lod range), decoded and appended to
- * the scene. On a sub-tick present each record takes the pose of the tick the
- * canonical present showed. Returns the records admitted, occlusion-culled
- * ones included. */
+/** @brief The reveal walk: host-built records for the live mobys the canonical cull did not queue.
+ *
+ * Those are the mobys at the widescreen edges and in the --no-lod range; each
+ * record is decoded and appended to the scene. On a sub-tick present each
+ * record takes the pose of the tick the canonical present showed. Returns the
+ * records admitted, occlusion-culled ones included. */
 static int append_revealed_regular_inner(CPUState* cpu) {
     /* The reveal rebuilds cull records in the game's own encoding, so it runs
      * only where the game's provider supplies that builder. Without it the walk
@@ -8277,8 +8284,9 @@ static uint32_t moby_fields_hold_prev(CPUState* cpu, uint32_t moby, moby_fields*
  * (held_skip). */
 static struct { long applied, differ, held_skip; } s_pose_snap;
 
-/** @brief OPENPETE_MOBY_CENSUS: one `pose_snap` line per sub-tick present with the
- * counts moby_fields_pose_from_snapshot accumulated, then reset them. */
+/** @brief OPENPETE_MOBY_CENSUS: emit one `pose_snap` line per sub-tick present, then reset its counts.
+ *
+ * The line carries the counts moby_fields_pose_from_snapshot accumulated. */
 static void moby_pose_snap_census(void) {
     static int s = -1;
     if (s < 0) { const char* e = getenv("OPENPETE_MOBY_CENSUS"); s = (e && *e && *e != '0'); }
@@ -8288,14 +8296,15 @@ static void moby_pose_snap_census(void) {
     memset(&s_pose_snap, 0, sizeof s_pose_snap);
 }
 
-/** @brief On a sub-tick present, replace a host-built record's pose with the one
- * derived from the interp-objs snapshot's curr anim-state bytes: the tick the
- * canonical present showed, which under --runahead is the led tick while
- * guest RAM holds the committed one. Without runahead the snapshot's curr is
- * the committed tick and the pose is unchanged. A moby the view holds at its
- * previous tick keeps the pose read through the view, as every other channel
- * of its record does; a class change between the view and the snapshot keeps
- * it as well.
+/** @brief On a sub-tick present, derive a host-built record's pose from the interp-objs snapshot.
+ *
+ * The pose is the one derived from the snapshot's curr anim-state bytes: the
+ * tick the canonical present showed, which under --runahead is the led tick
+ * while guest RAM holds the committed one. Without runahead the snapshot's curr
+ * is the committed tick and the pose is unchanged. A moby the view holds at its
+ * previous tick keeps the pose read through the view, as every other channel of
+ * its record does; a class change between the view and the snapshot keeps it as
+ * well.
  * @param cpu  guest state, the sub-tick view staged
  * @param moby the moby's guest address
  * @param f    the record fields built through the view, rewritten in place */
@@ -8355,8 +8364,9 @@ static int record_replay_fields(CPUState* cpu, uint32_t rec, uint32_t moby, moby
     return 1;
 }
 
-/** @brief One sub-tick record pass over the cull queue for material `mat` ("REG" or
- * "SP"): rebuilds each record's fields from gamestate under the present's
+/** @brief One sub-tick record pass over the cull queue for material `mat` ("REG" or "SP").
+ *
+ * The pass rebuilds each record's fields from gamestate under the present's
  * camera (or replays the captured record on a game without host reveal),
  * applies the game's draw-time row scale, lerps the shape between the tick
  * pair, and walks the result into the scene. Returns the records queued. */

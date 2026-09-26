@@ -20,15 +20,16 @@ extern "C" {
 
 struct CPUState;
 
-/** @brief Sub-tick moby rotation interpolation toggle. When on, the moby euler
- * composer renders each moby's rotation at FLOAT precision — shortest-arc
- * interpolating the byte euler (256/circle) between the moby's prev/curr
- * interp-objs snapshots at its per-object alpha, with the sin/cos sampled by
- * linear interpolation of the in-RAM table — instead of the byte-quantized
- * angle. Removes the 1.4°/step stair-stepping on slowly-rotating mobys (gems,
- * idle dragons, HUD icons). Set by the orchestrator around the feeder
- * re-extract; reset (off) so the canonical inline render stays byte-exact.
- * Turning it off after a sub-tick present emits that present's
+/** @brief Sub-tick moby rotation interpolation toggle.
+ *
+ * When on, the moby euler composer renders each moby's rotation at FLOAT
+ * precision — shortest-arc interpolating the byte euler (256/circle) between
+ * the moby's prev/curr interp-objs snapshots at its per-object alpha, with the
+ * sin/cos sampled by linear interpolation of the in-RAM table — instead of the
+ * byte-quantized angle. Removes the 1.4°/step stair-stepping on slowly-rotating
+ * mobys (gems, idle dragons, HUD icons). Set by the orchestrator around the
+ * feeder re-extract; reset (off) so the canonical inline render stays
+ * byte-exact. Turning it off after a sub-tick present emits that present's
  * OPENPETE_MOBY_CENSUS `pose_snap` line.
  * @param on 1 to open a sub-tick present's feeder pass, 0 to close it */
 void moby_native_set_rot_interp(int on);
