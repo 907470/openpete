@@ -125,13 +125,18 @@ check_psyq_headers() {
 }
 
 # The tracked pre-commit hook (the cognitive-complexity ratchet) runs only
-# when this clone's core.hooksPath names githooks/; the setting is local
-# config and a fresh clone carries none. The build refuses an unarmed clone.
+# when this clone's core.hooksPath names githooks/, and the ratchet baselines
+# merge by row key only when the `ratchet-tsv` merge driver .gitattributes
+# names is defined; both settings are local config and a fresh clone carries
+# neither. The build refuses an unarmed clone.
 echo
 echo "==> git hooks"
 if git -C "$OPENPETE_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
     git -C "$OPENPETE_ROOT" config core.hooksPath githooks
     green "  ok: core.hooksPath = githooks"
+    git -C "$OPENPETE_ROOT" config merge.ratchet-tsv.driver \
+        'python3 scripts/fences/ratchet_tsv_merge.py %O %A %B %P'
+    green "  ok: merge.ratchet-tsv.driver = scripts/fences/ratchet_tsv_merge.py"
 else
     yellow "  not a git checkout; hooks not armed"
 fi

@@ -17,7 +17,9 @@ Modes:
                     HEAD, against HEAD's baseline. Exit 1 on a rise or an
                     UNWIRED row; 64 = SKIP (no compile database) under --ctest.
   check --armed     exit 1 unless the resolved pre-commit hook is the tracked
-                    githooks/pre-commit, executable, calling this fence.
+                    githooks/pre-commit, executable, calling this fence, and
+                    the baselines' merge driver (ratchet_tsv_merge.py) is
+                    configured.
   tighten [--accept <key> <reason>]...
                     full-corpus rewrite at arc end: tightenings, retirements,
                     admissions; a rise is refused unless named by --accept.
@@ -43,6 +45,8 @@ import shlex
 import shutil
 import subprocess
 import sys
+
+import ratchet_tsv_merge as tsv_merge
 
 CAP = 25
 TOOL_MAJOR = 14
@@ -1130,12 +1134,23 @@ def mode_armed(root):
     elif "complexity_ratchet.py\" hook" not in open(want).read() \
             and "complexity_ratchet.py hook" not in open(want).read():
         why = "%s does not call complexity_ratchet.py hook" % HOOK_REL
+    arm = ARM
+    if not why:
+        p = git(root, "config", "--get", "merge.%s.driver" % tsv_merge.DRIVER_NAME,
+                check=False)
+        if p.stdout.strip() != tsv_merge.DRIVER_CONFIG:
+            why = ("merge.%s.driver is %s; the baselines would merge as text "
+                   "and conflict on their `# head:` line"
+                   % (tsv_merge.DRIVER_NAME, repr(p.stdout.strip()) if
+                      p.stdout.strip() else "unset"))
+            arm = tsv_merge.ARM_MERGE
     if why:
         say("complexity-ratchet: DISARMED: %s.\n  Arm this clone once:  %s\n"
             "  A machine that builds and never commits sets "
-            "OPENPETE_NO_COMMITS=1 in its build script." % (why, ARM))
+            "OPENPETE_NO_COMMITS=1 in its build script." % (why, arm))
         return 1
-    say("complexity-ratchet: ARMED (%s)" % HOOK_REL)
+    say("complexity-ratchet: ARMED (%s, merge driver %s)"
+        % (HOOK_REL, tsv_merge.DRIVER_NAME))
     return 0
 
 

@@ -1,0 +1,4 @@
+# Ratchet baselines merge three ways by row key (scripts/fences/ratchet_tsv_merge.py);
+# the driver is local config, set by scripts/setup.sh and verified by `complexity_ratchet.py check --armed`.
+baselines/complexity/*.tsv merge=ratchet-tsv
+baselines/docs/*.tsv merge=ratchet-tsv

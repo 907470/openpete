@@ -319,6 +319,11 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     add_test(NAME complexity_ratchet_selftest
              COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_complexity_ratchet.py)
     set_tests_properties(complexity_ratchet_selftest PROPERTIES LABELS "fence")
+    # The baselines' merge driver: the three-way merge by row key, and a
+    # cherry-pick across a landing in a scratch repository.
+    add_test(NAME ratchet_tsv_merge_selftest
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_ratchet_tsv_merge.py)
+    set_tests_properties(ratchet_tsv_merge_selftest PROPERTIES LABELS "fence")
 
     # Native renderer visual-regression gate (W1.2). Renders the native `-vk`
     # frame HEADLESS through a software rasterizer (surfaceless Vulkan, plan
