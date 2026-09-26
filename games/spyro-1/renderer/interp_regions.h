@@ -5,10 +5,6 @@
 extern "C" {
 #endif
 
-/* Register Spyro's render-side interpolation region table with the
- * openpete_interp ring. Call once from main() before openpete_run(). */
-void game_interp_register(void);
-
 /* Stable interp-objs key for a moby address. The per-tick HUD moby pool
  * (g_HudMobys, bump-down allocated) is DOUBLE-BUFFERED with the polybuf
  * halves — the same logical moby alternates between two addresses every

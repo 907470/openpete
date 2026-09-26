@@ -21,6 +21,7 @@
  * warn-and-return; a missing file or dead AL context can never brick a
  * mod, let alone the launch. */
 
+#include "openpete_mods.h"
 #include "wav_loader.h"
 #include "openpete_log.h"
 #include "mod_vec.h"

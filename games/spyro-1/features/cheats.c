@@ -40,6 +40,7 @@
 #include "features/cheats.h"
 
 #include "feature_registry.h"
+#include "game_extras.h"
 #include "openpete_fiber.h" /* openpete_speculative */
 #include "openpete_knobs.h" /* dev-overlay rows (M key) */
 #include "openpete_log.h"

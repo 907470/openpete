@@ -51,6 +51,7 @@
 // the shared bracket and keeps its own verdicts, including the phase byte it
 // decrements in each record; this feeder only reads them afterwards.
 
+#include "glow.h"
 #include "feature_registry.h"
 #include "renderer/native_gte.h"
 #include "renderer/render_paths.h"

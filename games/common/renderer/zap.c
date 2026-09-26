@@ -81,6 +81,7 @@
 // and the alternating jitter shift it stores into each record; this feeder only
 // reads them afterwards.
 
+#include "zap.h"
 #include "feature_registry.h"
 #include "renderer/native_gte.h"
 #include "renderer/render_paths.h"

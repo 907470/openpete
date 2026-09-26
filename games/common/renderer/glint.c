@@ -78,6 +78,7 @@
 // the shared bracket and keeps its own verdicts, including the lifetime byte it
 // decrements in each record; this feeder only reads them afterwards.
 
+#include "glint.h"
 #include "feature_registry.h"
 #include "renderer/native_gte.h"
 #include "renderer/render_paths.h"

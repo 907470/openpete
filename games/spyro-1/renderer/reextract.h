@@ -94,14 +94,6 @@ void tracer_reextract(struct CPUState* cpu);
  * present) so the gradient holds across sub-tick presents instead of strobing. */
 void transition_reextract(struct CPUState* cpu);
 
-/* Spyro's projected SXY in the PSX scratchpad (the NCLIP verdict), captured
- * from the canonical player render hook. */
-void spyro_native_canon_capture_sxy(void* cpu);
-
-/* Register the orchestrator with the core sub-tick spine. Call once at boot,
- * after the feeders are registered. */
-void game_reextract_init(void);
-
 #ifdef __cplusplus
 }
 #endif
