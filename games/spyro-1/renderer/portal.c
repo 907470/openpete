@@ -411,6 +411,9 @@ typedef struct {
     double   fog_t;         /* blended-medium fog lerp coeff (0 if none)          */
     int      clip[4];       /* captured D_CLIPRECT y0,y1,x0,x1 (>>16) base rect   */
     int      rect_rule;     /* how the replay rebuilds clip[] (PORTAL_RECT_*)     */
+    int      derived_dome;  /* the dome drew with derive_dome_matrix (the --no-lod
+                             * forced dome, a revealed portal's dome), not the
+                             * matrix a dome leaf left in the GTE                 */
 } portal_cap_t;
 /* The rule a replay rebuilds a capture's base clip rect by, under the camera
  * of the present being built. */
@@ -443,6 +446,11 @@ static unsigned     s_pcap_frame = 0; /* openpete_frame of the populating Render
  * also drew a dome (consecutive), else the reextract snaps to curr. */
 static int          s_dome_prev[3][3], s_dome_curr[3][3];
 static int          s_dome_prev_valid = 0, s_dome_curr_valid = 0;
+/* The portal spin angles (D_PORTAL_YAW, D_PORTAL_PITCH) after each canonical
+ * RenderPortals, prev and curr: the inputs a derived dome matrix
+ * (derive_dome_matrix) takes besides the camera. */
+static double       s_spin_prev[2], s_spin_curr[2];
+static int          s_spin_prev_valid = 0, s_spin_curr_valid = 0;
 
 /* Float-project a world point exactly as func_80017B48 (the routine that
  * projects the portal outline → clip rect). It uses the g_Camera+0x00 rotation
@@ -2062,7 +2070,8 @@ static void dump_leaf(CPUState* cpu, const char* which, uint32_t a0, uint32_t a1
     (void)a1; (void)a2;
 }
 
-/* Native derivation of the shared portal-dome rotation matrix (RenderPortals
+static void derive_dome_matrix_at(CPUState* cpu, double yaw, double pitch, int M[3][3]);
+/** Native derivation of the shared portal-dome rotation matrix (RenderPortals
  * func_80050BD0 prologue, computed once per frame on its STACK — unreadable at
  * leaf-hook time, so mirror it): M = RotX(cam.pitch(+0x4E) − D_PORTAL_PITCH)
  * × RotY(cam.head(+0x50) + D_PORTAL_YAW) × RotZ(cam.roll(+0x4C)), game angle
@@ -2070,6 +2079,14 @@ static void dump_leaf(CPUState* cpu, const char* which, uint32_t a0, uint32_t a1
  * validation probe (OPENPETE_PORTAL_MAT_DBG) measures it against the matrix
  * the .s leaves in the GTE on dome frames. */
 static void derive_dome_matrix(CPUState* cpu, int M[3][3]) {
+    derive_dome_matrix_at(cpu, (double)(int32_t)cpu->read_word(D_PORTAL_YAW),
+                          (double)(int32_t)cpu->read_word(D_PORTAL_PITCH), M);
+}
+
+/** derive_dome_matrix with the portal spin angles `yaw` (D_PORTAL_YAW) and
+ * `pitch` (D_PORTAL_PITCH) given instead of read, so a sub-tick present can
+ * pass angles between two ticks' values. */
+static void derive_dome_matrix_at(CPUState* cpu, double yaw, double pitch, int M[3][3]) {
     double TAU = 6.283185307179586;
     /* Game angle units: 4096/circle (the game's Cos/Sin table domain). The
      * pitch matrix carries the camera convention's Y-ASPECT bake: its middle
@@ -2077,9 +2094,9 @@ static void derive_dome_matrix(CPUState* cpu, int M[3][3]) {
      * g_Camera's matrix). Solved
      * against live GTE matrices at mc f2601/f2945 (element-exact). */
     double a1 = ((double)(int16_t)(cpu->read_word(G_CAMERA + 0x4Cu) >> 16)
-               - (double)(int32_t)cpu->read_word(D_PORTAL_PITCH)) * TAU / 4096.0;   /* +0x4E − pitch */
+               - pitch) * TAU / 4096.0;                                             /* +0x4E − pitch */
     double a2 = ((double)(int16_t)(cpu->read_word(G_CAMERA + 0x50u) & 0xFFFFu)
-               + (double)(int32_t)cpu->read_word(D_PORTAL_YAW)) * TAU / 4096.0;     /* +0x50 + yaw   */
+               + yaw) * TAU / 4096.0;                                               /* +0x50 + yaw   */
     double a0 = ((double)(int16_t)(cpu->read_word(G_CAMERA + 0x4Cu) & 0xFFFFu)) * TAU / 4096.0; /* +0x4C roll */
     double c1 = cos(a1), s1 = sin(a1), c2 = cos(a2), s2 = sin(a2), c0 = cos(a0), s0 = sin(a0);
     double A = 2560.0 / 4096.0;   /* the Y-row aspect bake */
@@ -2333,8 +2350,8 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
                 c->rect_rule     = portal_rect_rule_for(cpu, owner, kind, c->clip);
                 /* Snapshot the shared dome matrix (same for every dome leaf this
                  * frame); the prev copy was rolled in on_80050BE0. */
-                if (forced_dome) { memcpy(s_dome_curr, forced_M, sizeof s_dome_curr); s_dome_curr_valid = 1; }
-                else if (c->is_dome) { read_gte_rotmatrix(cpu, s_dome_curr); s_dome_curr_valid = 1; }
+                c->derived_dome  = forced_dome;
+                if (c->is_dome && !forced_dome) { read_gte_rotmatrix(cpu, s_dome_curr); s_dome_curr_valid = 1; }
             }
         }
     }
@@ -2484,16 +2501,13 @@ static void feed_revealed_portals(CPUState* cpu) {
             c->is_dome       = rev_dome;
             c->kind          = s_portal_kind;
             c->rect_rule     = PORTAL_RECT_OUTLINE;
+            c->derived_dome  = rev_dome;
             c->skybox        = rev_dome ? skybox : 0;
             c->ot_b          = 0;      /* revealed off-4:3: no live leaf -> outline mirror */
             c->fog_rgb       = rev_fog;
             c->fog_t         = rev_fog_t;
             c->clip[0] = (int)floorf(oylo); c->clip[1] = (int)ceilf(oyhi);
             c->clip[2] = (int)floorf(oxlo); c->clip[3] = (int)ceilf(oxhi);
-            if (rev_dome && !s_dome_curr_valid) {
-                memcpy(s_dome_curr, rev_M, sizeof s_dome_curr);
-                s_dome_curr_valid = 1;
-            }
         }
     }
     static int s_logged = 0;
@@ -2553,6 +2567,11 @@ static int on_80050BE0(CPUState* cpu, uint32_t a) {
     if (feed) { s_pcap_valid = 1; s_pcap_frame = openpete_frame;
                 render_path_mark_drawn(RP_PORTAL); }
     s_rp_frame = openpete_frame;
+    memcpy(s_spin_prev, s_spin_curr, sizeof s_spin_prev);
+    s_spin_prev_valid = s_spin_curr_valid;
+    s_spin_curr[0] = (double)(int32_t)cpu->read_word(D_PORTAL_YAW);
+    s_spin_curr[1] = (double)(int32_t)cpu->read_word(D_PORTAL_PITCH);
+    s_spin_curr_valid = 1;
     terrain_native_flush_deferred();          /* a world draw that ran first this tick */
     s_rp_in = 0;
     return 1;
@@ -2560,6 +2579,31 @@ static int on_80050BE0(CPUState* cpu, uint32_t a) {
 
 static void portal_native_apply_options(const openpete_options_t* opts) {
     (void)opts;
+}
+
+/** Load `M` into the GTE rotation registers. */
+static void portal_gte_load_rot(CPUState* cpu, const int M[3][3]) {
+    cpu->gte_ctrl[0] = (uint32_t)(uint16_t)M[0][0] | ((uint32_t)(uint16_t)M[0][1] << 16);
+    cpu->gte_ctrl[1] = (uint32_t)(uint16_t)M[0][2] | ((uint32_t)(uint16_t)M[1][0] << 16);
+    cpu->gte_ctrl[2] = (uint32_t)(uint16_t)M[1][1] | ((uint32_t)(uint16_t)M[1][2] << 16);
+    cpu->gte_ctrl[3] = (uint32_t)(uint16_t)M[2][0] | ((uint32_t)(uint16_t)M[2][1] << 16);
+    cpu->gte_ctrl[4] = (uint32_t)(uint16_t)M[2][2];
+}
+
+/** The derived dome matrix of a sub-tick present: derive_dome_matrix under
+ * the staged camera, with the spin angles lerped between the last two
+ * canonical ticks (the yaw along the shorter arc of its 4096-unit circle);
+ * the current tick's angles when `interp_on` is 0 or no pair exists. At
+ * alpha 1 it is the matrix the canonical feed derived. */
+static void portal_replay_derived_matrix(CPUState* cpu, double alpha, int interp_on, int M[3][3]) {
+    double yaw = s_spin_curr[0], pitch = s_spin_curr[1];
+    if (interp_on && s_spin_prev_valid) {
+        double dy = s_spin_curr[0] - s_spin_prev[0];
+        if (dy > 2048.0) dy -= 4096.0; else if (dy < -2048.0) dy += 4096.0;
+        yaw   = s_spin_curr[0] - dy * (1.0 - alpha);
+        pitch = s_spin_prev[1] + (s_spin_curr[1] - s_spin_prev[1]) * alpha;
+    }
+    derive_dome_matrix_at(cpu, yaw, pitch, M);
 }
 
 /** A capture's base clip rect under the present's view (s_view), by the
@@ -2700,13 +2744,15 @@ void portal_reextract(CPUState* cpu, double alpha, int interp_on) {
                      cpu->write_word(D_CLIPRECT + j * 4u, cap_clip[j]);
         }
 
-        if (c->is_dome && dome_ready) {
-            /* Write the sub-tick-lerped shared dome matrix (computed once above). */
-            cpu->gte_ctrl[0] = (uint32_t)(uint16_t)dome_M[0][0] | ((uint32_t)(uint16_t)dome_M[0][1] << 16);
-            cpu->gte_ctrl[1] = (uint32_t)(uint16_t)dome_M[0][2] | ((uint32_t)(uint16_t)dome_M[1][0] << 16);
-            cpu->gte_ctrl[2] = (uint32_t)(uint16_t)dome_M[1][1] | ((uint32_t)(uint16_t)dome_M[1][2] << 16);
-            cpu->gte_ctrl[3] = (uint32_t)(uint16_t)dome_M[2][0] | ((uint32_t)(uint16_t)dome_M[2][1] << 16);
-            cpu->gte_ctrl[4] = (uint32_t)(uint16_t)dome_M[2][2];
+        if (c->is_dome && c->derived_dome) {
+            /* A dome the canonical feed drew with the derived matrix replays
+             * the same derivation: the shared snapshot holds the matrix a dome
+             * leaf left in the GTE, which rounds differently. */
+            int dM[3][3];
+            portal_replay_derived_matrix(cpu, alpha, interp_on, dM);
+            portal_gte_load_rot(cpu, dM);
+        } else if (c->is_dome && dome_ready) {
+            portal_gte_load_rot(cpu, dome_M);   /* the sub-tick-lerped shared dome matrix */
         }
 
         /* Self-check (OPENPETE_PORTAL_REEXTRACT_DBG): per-cap replay trace. For a

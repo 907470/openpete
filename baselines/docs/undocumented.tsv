@@ -2,7 +2,7 @@
 # library: libclang 14
 # requirement: brief on every function; @param per named parameter and @return on non-void for external linkage
 # written-by: hook
-# head: dca02f57bb8fbe7fbf8f2c55db9aae05086e2cc7
+# head: 1b3f5f6b6ecffe338329459f084db065709ae3d3
 file	function	form	accepted
 core/config/build_id.c	openpete_build_shared_recomp	plain	
 core/config/build_id.c	openpete_build_tagged	plain	
@@ -4288,7 +4288,6 @@ games/spyro-1/renderer/portal.c	band_dbg	none
 games/spyro-1/renderer/portal.c	blend_to_fog	plain	
 games/spyro-1/renderer/portal.c	clip_dir	plain	
 games/spyro-1/renderer/portal.c	clip_half	plain	
-games/spyro-1/renderer/portal.c	derive_dome_matrix	plain	
 games/spyro-1/renderer/portal.c	dump_leaf	plain	
 games/spyro-1/renderer/portal.c	dump_portal_table	none	
 games/spyro-1/renderer/portal.c	emit_aperture_ring	plain	
