@@ -104,10 +104,12 @@ static SDL_AtomicInt s_reg_nonzero;
 static SDL_AtomicInt s_commands;
 static SDL_AtomicInt s_last_pair;
 
-/* OPENPETE_RUMBLE_LOG=1 traces the seam: every PadSetAct, and every change in
- * the sampled actuator bytes. This is what proves the diagnosis — under the
- * old semantics the log shows a single register call carrying {0,0} against a
- * buffer that keeps changing with nobody reading it. */
+/** @brief Return whether OPENPETE_RUMBLE_LOG is set to a value other than empty or 0.
+ *
+ * The log traces every PadSetAct registration, every change in the sampled
+ * actuator bytes, and every mod slot publish. The variable is read once and
+ * cached for the life of the process.
+ * @return 1 when logging is on, 0 otherwise. */
 static int rumble_log_on(void)
 {
     static int v = -1;
@@ -230,9 +232,14 @@ static int driving_test_device(SDL_Gamepad* gp)
     return 0;
 }
 
-/* The refusals shared by every slot: headless and focus protect a human's
- * controller and are lifted for a harness device, pause silences everything.
- * Returns 1 when this pad must stay silent this iteration. */
+/** @brief Return whether a pad must stay silent this pump iteration.
+ *
+ * The refusals shared by every slot: headless and missing keyboard focus
+ * protect a human's controller and are lifted for a registered test device;
+ * pause silences every pad. Focus is polled with SDL_GetKeyboardFocus rather
+ * than tracked through focus events.
+ * @param gp the gamepad about to be driven, or NULL (never a test device).
+ * @return 1 when the pad must stay silent, 0 otherwise. */
 static int rumble_gates_block(SDL_Gamepad* gp)
 {
     if (!driving_test_device(gp)) {
@@ -244,11 +251,15 @@ static int rumble_gates_block(SDL_Gamepad* gp)
     return SDL_GetAtomicInt(&s_paused) ? 1 : 0;
 }
 
-/* Drive one mod-published slot against the device currently holding it.
+/** @brief Drive one mod-published slot's pair against the device currently holding the slot.
  *
- * The id is resolved here, at drive time, rather than held: a device pruned
- * between the sampling thread's publish and this call reads as a NULL, not as
- * a use-after-close. */
+ * An unarmed slot, or a slot with no device, is left alone. The device is
+ * resolved from its instance id at drive time rather than held, so a device
+ * pruned by the sampling thread reads as NULL instead of a closed handle.
+ * When rumble_gates_block refuses, a zero pair with duration 0 is sent so a
+ * pair already live in the driver stops; otherwise the pair is driven with
+ * the RUMBLE_DURATION_MS expiry and the slot's command count is incremented.
+ * @param slot 1 .. OPENPETE_PAD_SLOTS - 1. */
 static void rumble_apply_mod_slot(int slot)
 {
     if (!SDL_GetAtomicInt(&s_mod_armed[slot])) return;

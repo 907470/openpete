@@ -24,9 +24,16 @@ unsigned long long openpete_input_lock_dropped(void)
     return atomic_load_explicit(&s_dropped, memory_order_relaxed);
 }
 
-/* 1 when the event reports input from a physical device. Device arrival and
- * removal events are not input: they pass, so PsyCross's hotplug bookkeeping
- * stays consistent and a pad opened under the lock is simply never read. */
+/** @brief Return whether an event reports input from a physical host device.
+ *
+ * Keyboard and mouse events are physical unless their `which` is
+ * OPENPETE_INJECT_DEVICE_ID; joystick and gamepad input events are physical
+ * unless the joystick is an SDL virtual one; text, touch, pen and drop
+ * events are always physical. Every other type, including device arrival
+ * and removal, is not input, so PsyCross's hotplug bookkeeping stays
+ * consistent and a pad opened under the lock is never read.
+ * @param ev the event.
+ * @return 1 for physical-device input, 0 otherwise. */
 static int from_physical_device(const SDL_Event* ev)
 {
     switch (ev->type) {

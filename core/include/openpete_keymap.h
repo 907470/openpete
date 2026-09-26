@@ -383,25 +383,49 @@ typedef struct {
     void* ctx;
 } openpete_keymap_reader_t;
 
-/* Level state / analog value of `a`, resolved against `rd` (NULL = the
- * installed live reads). `default_slot` serves sources with no explicit
- * "padN:" qualifier, so a [keys.pad2] row written "pad:south" reads player
- * 2's device. Unlike openpete_key_down these do not consult the edge latch:
- * they resolve the bindings directly, so a caller running outside the
- * host-loop poll order gets this instant's answer rather than the last
- * poll's. */
+/** @brief Return whether any source bound to an action is held, resolved against a caller's reader.
+ *
+ * Unlike openpete_key_down this resolves the bindings directly instead of
+ * reading the poll's latch, so a caller outside the host-loop poll order
+ * gets this instant's answer. With a reader, keys and pad sources read
+ * through it and mouse sources read released; consumed keys and the
+ * keyboard suspension apply either way.
+ * @param a the action; out of range reads 0.
+ * @param default_slot pad slot for sources with no "padN:" qualifier, so a
+ *        [keys.pad2] row written "pad:south" reads player 2's device.
+ * @param rd the reader, or NULL for the installed live reads.
+ * @return 1 when held, 0 otherwise. */
 int   openpete_keymap_action_down_via(openpete_action_t a, int default_slot,
                                       const openpete_keymap_reader_t* rd);
+/** @brief Return an action's analog value in [-1, 1], resolved against a caller's reader.
+ *
+ * The first source outside the deadzone wins; a held digital source reads
+ * 1. Resolution follows openpete_keymap_action_down_via.
+ * @param a the action; out of range reads 0.
+ * @param default_slot pad slot for sources with no "padN:" qualifier.
+ * @param rd the reader, or NULL for the installed live reads.
+ * @return the value, 0 when every source is neutral. */
 float openpete_keymap_action_axis_via(openpete_action_t a, int default_slot,
                                       const openpete_keymap_reader_t* rd);
 
-/* As above, returning the raw [-32768, 32767] value of the winning source
- * instead of a deadzoned float, for callers reproducing a fixed-point axis
- * conversion. A digital source that is held reads as full throw. */
+/** @brief Return the raw value of an action's first non-neutral source, resolved against a caller's reader.
+ *
+ * The same first-non-neutral rule as openpete_keymap_action_axis_via
+ * without the float conversion, for callers reproducing the game's
+ * fixed-point axis conversion. A pad axis inside the deadzone is skipped;
+ * a held digital source reads 32767.
+ * @param a the action; out of range reads 0.
+ * @param default_slot pad slot for sources with no "padN:" qualifier.
+ * @param rd the reader, or NULL for the installed live reads.
+ * @return the raw value, sign-corrected for an inverted source, or 0 when
+ *         every source is neutral. */
 int   openpete_keymap_action_axis_raw_via(openpete_action_t a, int default_slot,
                                           const openpete_keymap_reader_t* rd);
 
-/* Number of sources bound to `a`; 0 means the action is unbound. */
+/** @brief Return the number of sources bound to an action.
+ *
+ * @param a the action.
+ * @return the source count; 0 for an unbound or out-of-range action. */
 int   openpete_keymap_action_bound(openpete_action_t a);
 
 /* Install the SDL-backed lookups and reads (keymap_sdl.c). Call before
@@ -411,9 +435,13 @@ void openpete_keymap_install_sdl(void);
 
 /* ---- boot ------------------------------------------------------------ */
 
-/* Seed every action from its registry default. Safe to call twice; the
- * second call resets the store. Must run after openpete_keymap_set_lookup
- * or every default fails to parse. */
+/** @brief Seed every action from its registry default.
+ *
+ * Clears the action store, the consumed-key list and the per-poll wheel
+ * and motion counts, then parses each row's default. A KM_DEV row stays
+ * unbound unless km_devbuild_bound allows it; an unparseable default is
+ * logged and left unbound. Mod bindings are not cleared. Must run after
+ * openpete_keymap_set_lookup, or every default fails to parse. */
 void openpete_keymap_init(void);
 
 /* Record one layer's binding for `domain`.`action`. `tokens`/`n` is the
@@ -459,23 +487,44 @@ int openpete_keymap_resolve(void);
 void openpete_keymap_poll(void);
 
 int   openpete_key_down(openpete_action_t a);     /* level: held now */
-/* Pressed this poll: the held && !prev edge, OR at least one wheel pulse. One
- * press per poll whatever the source mix. */
+/** @brief Return whether an action was pressed this poll.
+ *
+ * Pressed is the held-and-not-previously-held edge or at least one wheel
+ * pulse: one press per poll whatever the source mix.
+ * @param a the action; out of range reads 0.
+ * @return 1 when pressed, 0 otherwise. */
 int   openpete_key_pressed(openpete_action_t a);
-/* The pure held && !prev edge, and the wheel notches counted into `a` this
- * poll. A consumer that must step once per notch uses edge + pulses. */
+/** @brief Return whether an action went from released to held at this poll, ignoring wheel pulses.
+ *
+ * A consumer that steps once per wheel notch combines this with
+ * openpete_key_pulses.
+ * @param a the action; out of range reads 0.
+ * @return 1 on the edge, 0 otherwise. */
 int   openpete_key_edge(openpete_action_t a);
+/** @brief Return the wheel notches counted into an action this poll.
+ *
+ * @param a the action; out of range reads 0.
+ * @return the notch count. */
 int   openpete_key_pulses(openpete_action_t a);
 float openpete_key_axis(openpete_action_t a);     /* [-1, 1], deadzoned */
-/* Signed mouse counts since the previous poll summed over the KM_DELTA
- * action's mouse:x / mouse:y sources, invert applied, no deadzone, no
- * clamp; 0 while an overlay owns the mouse (the markers still advance, so
- * motion made under an overlay is never delivered late). */
+/** @brief Return an action's mouse motion since the previous poll.
+ *
+ * Signed counts summed over the action's mouse:x and mouse:y sources,
+ * invert applied, no deadzone and no clamp. Reads 0 while the dev overlay
+ * owns the mouse, and while the settings menu owns it for every action but
+ * menu and menu_close; the markers still advance, so motion made under an
+ * overlay is dropped rather than delivered late.
+ * @param a the action; out of range reads 0.
+ * @return the motion in mouse counts. */
 long long openpete_key_delta(openpete_action_t a);
 
-/* 1 when any host action or [keys.mod.*] binding carries a mouse:left
- * source. Recomputed at resolve and at every mod-binding registration; read
- * on the pump thread by the double-click fullscreen gate. */
+/** @brief Return whether any action or enabled mod binding carries a mouse:left source.
+ *
+ * Recomputed by openpete_keymap_resolve, by every mod-binding store, and by
+ * openpete_keymap_set_mod_enabled; read on the pump thread by the
+ * double-click fullscreen gate, so presses of a mouse:left-bound action do
+ * not also toggle fullscreen.
+ * @return 1 when mouse:left is bound, 0 otherwise. */
 int openpete_keymap_mouse_left_bound(void);
 
 /* The poll's mouse markers (the totals it last consumed): wheel in 1/256
@@ -516,10 +565,16 @@ int openpete_keymap_report_requested(void);
 /// @brief Record that --keys-report was passed; read back by openpete_keymap_report_requested.
 void openpete_keymap_request_report(void);
 
-/* Resolve a mod's declared binding name to an action-less source list: the
- * [keys.mod.<id>] override when there is one, else the mod's registered
- * mod.toml `key`. Returns 1 and fills `out` (n may be 0: unbound), 0 when
- * the name was never registered. */
+/** @brief Return the stored source list of a mod's declared binding name.
+ *
+ * The stored entry is the highest-ranked of the mod's mod.toml `key` and
+ * any [keys.mod.<id>] override.
+ * @param mod_id the mod's id; NULL returns 0.
+ * @param name the declared binding name; NULL returns 0.
+ * @param out receives up to cap sources, or NULL.
+ * @param cap capacity of out.
+ * @param out_n receives the copied count (0 when unbound), or NULL.
+ * @return 1 when the name is registered, 0 otherwise. */
 int openpete_keymap_mod_binding(const char* mod_id, const char* name,
                                 km_source_t* out, int cap, int* out_n);
 
@@ -531,33 +586,39 @@ int openpete_keymap_scancode_down(int scancode);
  * rather than an action (mod bindings). Honours the keyboard suspend. */
 int openpete_keymap_source_down(const km_source_t* s);
 
-/* Does `scancode` drive `a`? A pure binding query, not a live read — for
- * the SDL event filter, which sees one key event at a time and cannot use
- * the polled edge latch. Unaffected by the keyboard suspend. */
+/** @brief Return whether a keyboard scancode is one of an action's sources.
+ *
+ * A binding query, not a live read, for the pump's event handler, which
+ * sees one key event at a time and cannot use the polled latch. Unaffected
+ * by the keyboard suspension and the consumed-key list.
+ * @param a the action; out of range reads 0.
+ * @param scancode the SDL scancode.
+ * @return 1 when the scancode is bound to the action, 0 otherwise. */
 int openpete_keymap_key_binds(openpete_action_t a, int scancode);
 
-/* "This key press has already been acted on; do not let the polled
- * bindings act on it as well."
+/** @brief Mark a key press as already acted on by the event handler, so polled bindings ignore it until release.
  *
- * openpete has two input paths that can both see one physical press: the
- * SDL event filter (which gets first look, one event at a time) and the
- * polled keymap. They read different things — an event versus
- * SDL_GetKeyboardState — so swallowing the event does NOT stop the poll
- * seeing the key held, and both fire. With `menu` bound to the same key
- * the filter dismisses on, that meant the menu closed and instantly
- * reopened.
- *
- * The filter calls this for any press it consumes. The key then reads as
- * not-held to every polled binding until it is physically released, so
- * one press produces one action. Releasing and pressing again works
- * normally — which is what makes a dismiss key double as a toggle. */
+ * The pump's event handler sees each key event and the polled keymap reads
+ * the held keyboard state, so declining to forward an event does not stop
+ * the poll seeing the key held. The handler calls this for a press it
+ * consumes (Escape dismissing the dev overlay or the settings menu); the
+ * key then reads released to every polled binding until
+ * openpete_keymap_poll sees it physically released, so one press produces
+ * one action and the next press is live. The list holds 8 keys; a
+ * duplicate is ignored and a key past the eighth is not recorded.
+ * @param scancode the SDL scancode. */
 void openpete_keymap_consume_key(int scancode);
 
-/* Display spelling of a mod binding's EFFECTIVE first source — the
- * [keys.mod.<id>] override when there is one, else `fallback` (the mod's
- * own declared key) unchanged. Lets the cross-mod conflict scan compare
- * what is actually bound, so a user who rebinds to resolve a clash stops
- * being warned about it. Returns a pointer into a static buffer. */
+/** @brief Return the display spelling of a mod binding's stored first source.
+ *
+ * The cross-mod conflict scan compares these, so a clash resolved by a
+ * [keys.mod.<id>] override stops warning. The spelling is "mouse:<name>",
+ * a key name, or "pad[N]:<name>" with '-' on an inverted axis.
+ * @param mod_id the mod's id; must not be NULL.
+ * @param name the declared binding name; must not be NULL.
+ * @param fallback returned unchanged when the name is not registered.
+ * @return a pointer into a static buffer overwritten by the next call,
+ *         "(unbound)" for a registered name with no source, or fallback. */
 const char* openpete_keymap_mod_effective_key(const char* mod_id,
                                               const char* name,
                                               const char* fallback);

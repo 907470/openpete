@@ -34,17 +34,30 @@ union SDL_Event;
  * so this value belongs to no device. */
 #define OPENPETE_INJECT_DEVICE_ID 0xFFFF0001u
 
-/* Set from the options at host init. Read on the pump thread and, through
- * the accessor, by any consumer. */
+/** @brief Switch the input lock on or off.
+ *
+ * Set once from the options at host init; the knob is restart-only. Read on
+ * the pump thread and, through openpete_input_lock_active, by any consumer.
+ * @param on nonzero to lock. */
 void openpete_input_lock_set(int on);
 int  openpete_input_lock_active(void);
 
-/* Pump thread, first call on every dequeued event. Returns 1 when the lock is
- * on and the event came from a physical input device: the caller discards it
- * without forwarding it anywhere. Counts what it discards. */
+/** @brief Return whether the lock discards an event; pump thread, first call on every dequeued event.
+ *
+ * An event is discarded when the lock is on and the event is input from a
+ * physical device: a keyboard or mouse event whose `which` is not
+ * OPENPETE_INJECT_DEVICE_ID, a joystick or gamepad input event from a
+ * non-virtual joystick, and every text, touch, pen and drop event. Device
+ * arrival and removal, quit and window events pass. Each discard increments
+ * the openpete_input_lock_dropped count.
+ * @param ev the dequeued event; NULL is never discarded.
+ * @return 1 when the caller must discard the event without forwarding it,
+ *         0 otherwise. */
 int  openpete_input_lock_drops_event(const union SDL_Event* ev);
 
-/* Number of events discarded since boot. */
+/** @brief Return the number of events openpete_input_lock_drops_event discarded since boot.
+ *
+ * @return the discard count. */
 unsigned long long openpete_input_lock_dropped(void);
 
 #ifdef __cplusplus

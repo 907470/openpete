@@ -105,8 +105,13 @@ void openpete_rumble_sample(void);
  * would not fire again on focus regain. */
 void openpete_rumble_apply(void);
 
-/* Immediate silence, from the pump thread. Used on focus loss, pause, exit and
- * controller removal. */
+/** @brief Silence player one's pad immediately; pump thread.
+ *
+ * Issues a zero pair with duration 0 to the gamepad holding slot 0, which
+ * clears the expiry, and zeroes the last-driven pair. Does nothing while no
+ * pad holds slot 0. openpete_rumble_apply calls it every pump iteration
+ * while a gate (headless, focus loss, pause) blocks slot 0; SDL skips the
+ * driver when the pad is already silent. */
 void openpete_rumble_stop(void);
 
 /* ---- host-side gates ---------------------------------------------------- */
@@ -118,17 +123,16 @@ void openpete_rumble_stop(void);
  * @param headless nonzero for a headless run. */
 void openpete_rumble_set_headless(int headless);
 
-/* Name one of the harness's virtual pads (OPENPETE_INPUT_VGAMEPAD), by SDL
- * instance id. Call once per pad: the devices form a SET, because the harness
- * attaches one per slot and every one of them has to be drivable headlessly
- * for a per-slot claim to be observable at all.
+/** @brief Add one of the harness's virtual pads (OPENPETE_INPUT_VGAMEPAD) to the test-device set.
  *
- * The headless and focus refusals protect a human's controller; a virtual
- * device a harness attached is not one. Lifting them for those devices — and
- * only those, re-checked against the handle actually driven — is what lets the
- * vibration oracle observe the real apply path headlessly, instead of testing
- * a mock of it. A real pad that has taken a slot is not in the set, so a
- * diagnostic run still cannot buzz a controller on the desk. */
+ * The headless and focus refusals protect a human's controller and are
+ * lifted for a device in the set, checked against the instance id of the
+ * handle being driven, so the vibration harness observes the real apply
+ * path headlessly. The set holds OPENPETE_PAD_SLOTS ids, one per slot the
+ * harness attaches; a duplicate id is ignored and an id arriving when the
+ * set is full is dropped. A real pad is never in the set, so the refusals
+ * still apply to it.
+ * @param instance_id the virtual pad's SDL instance id. */
 void openpete_rumble_set_test_device(unsigned instance_id);
 
 /* ---- mod-driven slots --------------------------------------------------- */
@@ -163,7 +167,12 @@ void openpete_rumble_mod_clear(int slot);
 unsigned openpete_rumble_mod_commands(int slot);
 void     openpete_rumble_mod_pair(int slot, uint16_t* low, uint16_t* high);
 
-/* 0..10 host strength, -1 = unset (parity). Mirrors --vibration. */
+/** @brief Set the host vibration strength that scales every motor pair (--vibration).
+ *
+ * 10 applies the measured response unscaled, 0 silences, and -1 is
+ * unset and reads as 10. The value is clamped to -1..10. Before the first call
+ * openpete_rumble_get_strength returns -1.
+ * @param strength 0..10, or -1 for unset. */
 void openpete_rumble_set_strength(int strength);
 int  openpete_rumble_get_strength(void);
 

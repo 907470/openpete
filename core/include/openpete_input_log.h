@@ -51,8 +51,11 @@ typedef struct {
     openpete_input_port_t port[OPENPETE_PAD_SLOTS];
 } openpete_input_rec_t;
 
-/* Canonical empty slot: every button released, both sticks centred, absent.
- * The same bytes real libpad reports for a port with no controller in it. */
+/** @brief Reset a port to the canonical empty slot.
+ *
+ * Every button released (bits 0xFFFF), all four axes centred (128), and
+ * present 0.
+ * @param p the port to clear; must not be NULL. */
 void input_port_clear(openpete_input_port_t* p);
 
 /* --- Staging -------------------------------------------------------------
@@ -70,48 +73,81 @@ void input_port_clear(openpete_input_port_t* p);
  * already stamped by then. The value the log stores for slot 0 is still the
  * post-yield guest readback, unchanged: staging only publishes it early. */
 
-/* Reset the staged record to four empty ports and stamp the VBL the tick
- * about to run carries. Once per host iteration, before any port is staged;
- * the rewind burst calls it again per replayed tick with that tick's VBL. */
+/** @brief Reset the staged record to empty ports and stamp the VBL of the tick about to run.
+ *
+ * Called once per host iteration before any port is staged; the rewind
+ * burst calls it again per replayed tick with that tick's VBL before
+ * re-staging the logged record.
+ * @param vbl the VBL counter value the tick about to run carries. */
 void input_log_stage_reset(unsigned vbl);
 
-/* Fill one staged port and mark it present. No-op for an out-of-range slot. */
+/** @brief Fill one staged port and mark it present.
+ *
+ * Does nothing for a slot outside 0 .. OPENPETE_PAD_SLOTS - 1.
+ * @param slot pad slot.
+ * @param bits PSX pad bitfield, 1 = released.
+ * @param axes LX, LY, RX, RY in bk2 order, or NULL for centred sticks. */
 void input_log_stage_port(int slot, uint16_t bits, const uint8_t axes[4]);
 
-/* Overwrite slot 0's bytes without disturbing the other ports — the
- * post-yield readback correcting what was staged pre-yield. */
+/** @brief Overwrite staged slot 0 with the post-yield guest readback and mark it present.
+ *
+ * The other ports are left as staged. The readback is the value the log
+ * stores for slot 0; the pre-yield staging only published it early.
+ * @param bits PSX pad bitfield read back from the guest, 1 = released.
+ * @param axes LX, LY, RX, RY in bk2 order, or NULL for centred sticks. */
 void input_log_stage_p1_readback(uint16_t bits, const uint8_t axes[4]);
 
-/* The staged record. Never NULL. */
+/** @brief Return the staged record.
+ *
+ * @return the staged record; never NULL. */
 const openpete_input_rec_t* input_log_staged(void);
 
-/* The VBL the staged record was stamped with. A tick re-executed under
- * runahead speculation reads the record staged for the last committed tick,
- * so this is that tick's VBL, not the speculative one. */
+/** @brief Return the VBL the staged record was stamped with by input_log_stage_reset.
+ *
+ * A tick re-executed under runahead speculation reads the record staged for
+ * the last committed tick, so this is that tick's VBL, not the speculative
+ * one.
+ * @return the stamped VBL. */
 unsigned input_log_staged_vbl(void);
 
-/* Append the staged record as one VBL. Returns the entry's index, or -1 on
- * allocation failure (logged; the log stops growing but never crashes the
- * run). */
+/** @brief Append the staged record as one VBL entry.
+ *
+ * Capacity starts at 16384 entries and doubles. A failed reallocation is
+ * logged and freezes the log: this and every later append return -1 until
+ * input_log_reset.
+ * @return the entry's index, or -1 when the log is frozen. */
 int input_log_append_staged(void);
 
-/* Read the pad bytes of the tick currently executing. Returns 1 and fills
- * `out` when `slot` is in range, 0 otherwise (leaving `out` cleared). */
+/** @brief Read one slot of the staged record, the pad bytes of the tick currently executing.
+ *
+ * @param slot pad slot.
+ * @param out receives the port; cleared with input_port_clear when the slot
+ *        is out of range.
+ * @return 1 when the slot is in range and out is filled, 0 for an
+ *         out-of-range slot or a NULL out. */
 int input_log_read_slot(int slot, openpete_input_port_t* out);
 
-/* Number of entries logged so far. */
+/** @brief Return the number of entries in the log.
+ *
+ * @return the entry count, lowered by input_log_truncate. */
 int input_log_count(void);
 
-/* Entry by index, or NULL if out of range. Pointer valid until the next
- * append/truncate/reset. */
+/** @brief Return a log entry by index.
+ *
+ * @param idx 0 .. input_log_count() - 1.
+ * @return the entry, or NULL when idx is out of range. The pointer is valid
+ *         until the next append, which may reallocate, or reset. */
 const openpete_input_rec_t* input_log_get(int idx);
 
-/* Keep the first `count` entries, drop the rest (rewind restore: the
- * future beyond the restored frame is invalidated). No-op if count >=
- * current count. */
+/** @brief Keep the first count entries and drop the rest.
+ *
+ * Called after a rewind restore, whose later entries belong to a timeline
+ * that no longer runs. A negative count is treated as 0; a count at or
+ * above the current count changes nothing.
+ * @param count the number of entries to keep. */
 void input_log_truncate(int count);
 
-/* Drop everything (process-lifetime reset; tests). */
+/** @brief Free the log, clear the frozen state, and reset the staged record with VBL 0. */
 void input_log_reset(void);
 
 #ifdef __cplusplus

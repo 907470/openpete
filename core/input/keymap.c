@@ -114,10 +114,12 @@ static int km_key_consumed(int scancode) {
     return 0;
 }
 
-/* Drop consumed keys that are no longer physically held, so the NEXT
- * press of the same key is live again. Reads the raw input seam rather
- * than km_src_down, which would consult the consumed list and never let
- * anything clear. */
+/** @brief Drop consumed keys that are no longer physically held, so the next press of the key is live again.
+ *
+ * Reads the raw input seam (s_in.key_down) rather than km_src_down, which
+ * consults the consumed list and would never let an entry clear. With no
+ * key_down seam installed every entry clears. Called at the start of every
+ * openpete_keymap_poll. */
 static void km_release_consumed(void) {
     for (int i = 0; i < g_consumed_n; ) {
         int down = s_in.key_down ? s_in.key_down(g_consumed[i]) : 0;
@@ -176,8 +178,24 @@ static void km_trim(char* s) {
     while (n && (s[n - 1] == ' ' || s[n - 1] == '\t')) s[--n] = '\0';
 }
 
-/* Parse ONE token. Returns 1 on success (src filled), 0 for "none",
- * -1 for a name that resolves to nothing. */
+/** @brief Parse one binding token into a source.
+ *
+ * The token is trimmed and truncated to 63 characters. An empty token or
+ * "none" (any case) binds nothing. "pad:" is player 1 unqualified (device
+ * 0); "pad1:".."pad4:" set device to the player number. A pad name is tried
+ * as a button, then as an axis; a leading '-' inverts an axis and is an
+ * error on a button. "mouse:" sources are refused in the pad domains; a
+ * mouse axis binds only an action flagged KM_DELTA and never a mod
+ * binding; a wheel pulse binds neither a mod binding nor an axis or
+ * KM_LEVEL action. Any other name is a keyboard scancode. Every refusal is
+ * logged under "keys" with where, domain and action.
+ * @param tok the token text.
+ * @param src receives the source on success.
+ * @param where the config file or manifest named in error messages.
+ * @param domain the binding domain ("host", "pad".."pad4", "mod.<id>").
+ * @param action the action or mod binding name.
+ * @return 1 when src is filled, 0 for an empty or "none" token, -1 for a
+ *         token that names no source or is refused. */
 static int km_parse_token(const char* tok, km_source_t* src, const char* where,
                           const char* domain, const char* action) {
     char buf[64];
@@ -333,10 +351,22 @@ static int km_parse_token(const char* tok, km_source_t* src, const char* where,
     return -1;
 }
 
-/* Split a value on commas and parse each piece. A scalar "C,pad:south"
- * and an array ["C", "pad:south"] are the same binding — the registry's
- * own defaults are written in the scalar form, so this keeps one code
- * path for defaults and config alike. */
+/** @brief Split binding values on commas and parse each piece with km_parse_token.
+ *
+ * A scalar "C,pad:south" and an array ["C", "pad:south"] give the same
+ * binding; the registry's defaults use the scalar form, so defaults and
+ * config share this path. NULL tokens are skipped, each piece is truncated
+ * to 63 characters, and sources past KM_MAX_SOURCES are dropped with a
+ * warning.
+ * @param tokens the values as written.
+ * @param n number of tokens.
+ * @param out receives up to KM_MAX_SOURCES sources.
+ * @param out_n receives the number of sources parsed, including those
+ *        parsed before a failure.
+ * @param where the config file or manifest named in error messages.
+ * @param domain the binding domain.
+ * @param action the action or mod binding name.
+ * @return 0, or -1 at the first piece km_parse_token rejects. */
 static int km_parse_list(const char* const* tokens, int n,
                          km_source_t* out, int* out_n,
                          const char* where, const char* domain,
@@ -376,14 +406,23 @@ static int km_parse_list(const char* const* tokens, int n,
 /* init                                                               */
 /* ------------------------------------------------------------------ */
 
+/** @brief Return the config spelling of a binding domain.
+ *
+ * @param d a KM_DOM_* value.
+ * @return "pad", "pad2", "pad3" or "pad4" for the pad domains, "host" for
+ *         any other value. */
 static const char* km_domain_name(int d) {
     return d == KM_DOM_PAD  ? "pad"  : d == KM_DOM_PAD2 ? "pad2"
          : d == KM_DOM_PAD3 ? "pad3" : d == KM_DOM_PAD4 ? "pad4" : "host";
 }
 
-/* Whether a KM_DEV row's built-in default binds. Only a KM_DEVBUILD row
- * does, and only where the debug flags are compiled in; the distribution
- * presets define OPENPETE_HIDE_DEBUG_FLAGS and bind no dev row at all. */
+/** @brief Return whether a KM_DEV row's built-in default binds.
+ *
+ * Only a KM_DEVBUILD row binds, and only where the debug flags are compiled
+ * in; the distribution presets define OPENPETE_HIDE_DEBUG_FLAGS and bind no
+ * KM_DEV row.
+ * @param flags the row's KM_* flags.
+ * @return 1 when the default binds, 0 otherwise. */
 static int km_devbuild_bound(unsigned flags) {
 #ifdef OPENPETE_HIDE_DEBUG_FLAGS
     (void)flags;
@@ -432,6 +471,14 @@ void openpete_keymap_init(void) {
 /* layering                                                           */
 /* ------------------------------------------------------------------ */
 
+/** @brief Return the registry index of a domain's action.
+ *
+ * The domain is matched case-insensitively against "host" and "pad".."pad4";
+ * the action id is matched exactly.
+ * @param domain the binding domain; "mod.<id>" and unknown domains match
+ *        nothing.
+ * @param action the action id.
+ * @return the index into g_actions, or -1. */
 static int km_find(const char* domain, const char* action) {
     int dom = -1;
     if (km_streq_ci(domain, "host")) dom = KM_DOM_HOST;
@@ -447,9 +494,14 @@ static int km_find(const char* domain, const char* action) {
     return -1;
 }
 
-/* Levenshtein-lite: the same "did you mean" affordance config.c gives
- * bare keys, so a typo'd action id is a named mistake rather than a
- * silently ignored line. */
+/** @brief Return the Levenshtein distance between two strings, for km_did_you_mean.
+ *
+ * Gives a mistyped action id the same "did you mean" hint config.c gives
+ * bare keys.
+ * @param a first string.
+ * @param b second string.
+ * @return the edit distance, or 99 when either string is longer than 32
+ *         characters. */
 static int km_edit_distance(const char* a, const char* b) {
     size_t la = strlen(a), lb = strlen(b);
     if (la > 32 || lb > 32) return 99;
@@ -536,12 +588,18 @@ int openpete_keymap_set(const char* domain, const char* action,
 /* resolve: conflict + reachability scans                             */
 /* ------------------------------------------------------------------ */
 
-/* Which contexts can be live at the same instant. MENU is disjoint from
- * GAMEPLAY and FREECAM because opening the settings menu holds the game
- * pad neutral and zeroes the freecam axes; GAMEPLAY and FREECAM are
- * disjoint because the free camera freezes Spyro, so a key that drives
- * both reaches only one of them at a time. FILLPICK overlaps both,
- * because the inspector runs with the game live underneath it. */
+/** @brief Return whether two input contexts can be live at the same instant.
+ *
+ * ALWAYS overlaps every context and each context overlaps itself. MENU is
+ * disjoint from GAMEPLAY and FREECAM because opening the settings menu
+ * holds the game pad neutral and zeroes the freecam axes; GAMEPLAY and
+ * FREECAM are disjoint because the free camera freezes Spyro. FILLPICK
+ * overlaps GAMEPLAY and FREECAM because the inspector runs with the game
+ * live underneath it. openpete_keymap_resolve reports a shared source only
+ * between actions whose contexts overlap.
+ * @param a first KM_CTX_* value.
+ * @param b second KM_CTX_* value.
+ * @return 1 when the contexts overlap, 0 otherwise. */
 static int km_ctx_overlap(int a, int b) {
     if (a == KM_CTX_ALWAYS || b == KM_CTX_ALWAYS) return 1;
     if (a == b) return 1;
@@ -794,8 +852,13 @@ static int km_mouse_owned(void) {
     return s_in.mouse_owned ? s_in.mouse_owned() : OPENPETE_MOUSE_OWNED_NONE;
 }
 
-/* The arbitrated view: a mouse source reads neutral while an overlay owns
- * the mouse. */
+/** @brief Return whether mouse sources read neutral under the current mouse owner.
+ *
+ * The dev overlay's ownership neutralises every action; the settings
+ * menu's neutralises every action except a menu-exempt one.
+ * @param owned an OPENPETE_MOUSE_OWNED_* value.
+ * @param menu_exempt nonzero for OPK_MENU and OPK_MENU_CLOSE.
+ * @return 1 when mouse sources read neutral, 0 otherwise. */
 static int km_mouse_neutral(int owned, int menu_exempt) {
     if (owned == OPENPETE_MOUSE_OWNED_DEVUI) return 1;
     if (owned == OPENPETE_MOUSE_OWNED_MENU && !menu_exempt) return 1;
@@ -832,10 +895,17 @@ static int km_read_btn(const km_resolve_t* c, const km_source_t* s) {
     return s_in.pad_button ? s_in.pad_button(s->code) : 0;
 }
 
-/* Raw axis value for a source, sign-corrected for "pad:-leftx" and routed to
- * the source's pad slot. One reader for both the digital-press test and the
- * analog read, so a slot can never be honoured by one and ignored by the
- * other. */
+/** @brief Return a pad axis source's raw value, sign-corrected and read from the source's pad slot.
+ *
+ * The slot is the source's device minus one, or the resolution's default
+ * slot for an unqualified source. The caller's reader serves every slot
+ * when set; otherwise slot 0 reads s_in.pad_axis and other slots
+ * s_in.pad_axis_slot. The digital-press test and the analog reads share
+ * this reader, so both honour the slot.
+ * @param c the resolution context.
+ * @param s a KM_SRC_PADAXIS source; invert < 0 negates the value.
+ * @return the read value (nominally [-32768, 32767]), negated for an
+ *         inverted source, or 0 when the needed read is not installed. */
 static int km_src_axis_raw(const km_resolve_t* c, const km_source_t* s) {
     const int slot = km_src_slot(c, s);
     int v;
@@ -1181,6 +1251,22 @@ void openpete_keymap_report(FILE* out) {
 /* mod bindings                                                       */
 /* ------------------------------------------------------------------ */
 
+/** @brief Store one mod binding at a rank, as a mod.toml default or a [keys.mod.<id>] override.
+ *
+ * The entry for (mod_id, name) is created on first use. A stored entry of
+ * higher rank is kept; an equal rank is replaced by the later call. A
+ * default whose key fails to parse is stored unbound, so the mod's
+ * binding_down reads 0; an override that fails to parse stores nothing.
+ * Every store recomputes the mouse:left scan.
+ * @param mod_id the mod's id; NULL fails.
+ * @param name the mod's declared binding name; NULL fails.
+ * @param tokens the binding values as written.
+ * @param n number of tokens.
+ * @param rank the scope's precedence; 0 for a mod default.
+ * @param is_default nonzero for the mod's own key.
+ * @param where the config file or manifest named in error messages.
+ * @return 0, or -1 on a parse failure, a NULL id or name, or allocation
+ *         failure. */
 static int km_set_mod(const char* mod_id, const char* name,
                       const char* const* tokens, int n, int rank,
                       int is_default, const char* where) {
