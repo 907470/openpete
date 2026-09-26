@@ -5983,9 +5983,9 @@ static void shaded_dump(CPUState* cpu, uint32_t start, uint32_t end) {
  * (sin may be negative). VERIFIED bit-exact vs the live RT registers: base·Ry =
  * gte_ctrl[0..4] for a billboard moby (cliff_town cls 0x3A). Euler indices:
  * Y=(rot>>15)&0x1FE, X=(rot&0xFF00)>>7, Z=(rot&0xFF)<<1 (rot=m_Rotation@+0x44). */
-/* Sub-tick moby ROTATION interpolation state (set by moby_native_set_rot_interp,
- * declared in reextract.h). s_rot_now is the present's op_now()
- * timestamp, captured once when enabled so every moby composed this present uses
+/* Sub-tick moby rotation interpolation state (set by moby_native_set_rot_interp,
+ * declared in moby.h). s_rot_now is the present's
+ * openpete_interp_present_now() timestamp, captured once when enabled so every moby composed this present uses
  * one consistent clock (each still gets its OWN per-object alpha from its distinct
  * prev/curr roll timestamps). 0 = inactive → byte-exact path (canonical render,
  * or --render-fps off where the snapshot table is empty anyway). */

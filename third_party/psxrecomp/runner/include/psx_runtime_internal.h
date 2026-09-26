@@ -43,7 +43,11 @@ void psx_runtime_load(uint32_t addr, const uint8_t* data, uint32_t size);
  * Call with @p enable = 1 after psx_runtime_init(). */
 void psx_mmio_trace_enable(int enable);
 
-/** @brief Install SIGSEGV/SIGABRT handlers that dump the CPU state. */
+/** @brief Install the fatal-fault handlers that dump the guest CPU state.
+ *
+ * openpete forwards to openpete_psx_install_crash_handler: on POSIX a
+ * sigaction handler for SIGSEGV, SIGABRT, SIGFPE, SIGILL and SIGBUS, on
+ * Windows an SEH unhandled-exception filter. */
 void psx_install_crash_handler(void);
 
 /** @brief Dispatch a call by address: BIOS calls and jump-register targets.
@@ -214,13 +218,30 @@ void openpete_diag_cone_dump(void* cpu,
                              int32_t mac3,
                              uint8_t native_pass);
 
-/**
- * @brief Terrain-reproject probe at 0x80025A34.
+/** @brief Log one terrain vertex's camera-free world position and the camera to a binary file.
  *
- * Receives the camera-free packed world vertex (`w0 = X<<16|Y`,
- * `w1 = Z<<16|flags`), the vertex pointer and the scaled camera position.
- * Read-only; active under `OPENPETE_ENVVERT_LOG`.
- */
+ * The recompiler appends the call after `lw $a0, 4($s1)` at 0x80025A34 in
+ * func_800258F0 (r_environment.s), the per-vertex transform of the terrain
+ * renderer. Each call writes a 48-byte record: the host yield counter
+ * `openpete_frame`, the vertex pointer, the packed world words, the scaled
+ * camera position, and the 9 shorts of g_Camera.m_ViewMatrix read from
+ * 0x80076DD0 + 0x14. An offline tool recomputes M * (world - campos) from
+ * the records to check a reprojection of terrain against the game's output.
+ *
+ * The first call latches the environment: OPENPETE_ENVVERT_LOG names the
+ * output file (unset: every call returns at once), OPENPETE_ENVVERT_LOG_SKIP
+ * the counter value before which calls are ignored, and
+ * OPENPETE_ENVVERT_LOG_FRAMES the number of distinct counter values logged
+ * (default 80) before the file is closed. The file opens with an 8-word
+ * header ("EVRT", version 1, record size 48). The probe reads PSX RAM and
+ * writes none.
+ * @param cpu CPUState of the running guest.
+ * @param w0 First packed world word (guest $v0): high half paired with s7, low half with t8.
+ * @param w1 Second packed world word (guest $a0): high half paired with t9.
+ * @param s1 Guest vertex pointer.
+ * @param s7 Camera position word at +0x28 of the camera block, shifted right by 4.
+ * @param t8 Camera position word at +0x2C, shifted right by 4.
+ * @param t9 Camera position word at +0x30, shifted right by 4. */
 void openpete_envvert_probe(void* cpu, uint32_t w0, uint32_t w1,
                             uint32_t s1, uint32_t s7, uint32_t t8,
                             uint32_t t9);
@@ -244,8 +265,9 @@ void openpete_envvert_probe(void* cpu, uint32_t w0, uint32_t w1,
  *                     (`& 0x1FFFFFFF`) is >= 0x200000.
  * @param size         Region length in bytes.
  * @param host_buffer  Stays owned by the caller.
- * @return 0 on success, non-zero on overlap with canonical RAM, the
- *         scratchpad or another region, or when the table is full.
+ * @return 0 on success, non-zero on a zero size or NULL buffer, on overlap
+ *         with canonical RAM, the scratchpad or another region, or when
+ *         the 16-entry table is full.
  */
 int      psx_runtime_register_region(uint32_t psx_base,
                                      uint32_t size,

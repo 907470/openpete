@@ -22,7 +22,7 @@ struct CPUState;
 
 /** @brief Sub-tick moby rotation interpolation toggle.
  *
- * When on, the moby euler composer renders each moby's rotation at FLOAT
+ * When on, the moby euler composer renders each moby's rotation at float
  * precision — shortest-arc interpolating the byte euler (256/circle) between
  * the moby's prev/curr interp-objs snapshots at its per-object alpha, with the
  * sin/cos sampled by linear interpolation of the in-RAM table — instead of the

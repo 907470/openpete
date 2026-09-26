@@ -355,19 +355,23 @@ static char* resolve_default_bk2_record_path(void) {
     return path;
 }
 
-/* Print --help. The RELEASE block (user-facing flags) always prints. The DEBUG
- * block (dev/diagnostic flags) is compiled OUT of --help under
- * OPENPETE_HIDE_DEBUG_FLAGS — set by the *-shared distribution presets so the
- * distributed build shows a clean, user-facing flag list; a one-line note
- * replaces it. This is display-only: every flag still PARSES and works in every
- * build regardless of whether it appears here. */
 void openpete_options_set_default_renderer(openpete_options_t* opts,
                                            openpete_renderer_t r) {
     opts->renderer         = r;
     opts->default_renderer = r;
 }
 
-/** @brief Print the command-line help for `display_name`'s build to stderr. */
+/** @brief Print the command-line help for `display_name`'s build to stderr.
+ *
+ * The release block of user-facing flags always prints and marks
+ * `default_renderer` as the default renderer. The --record family prints
+ * only under OPENPETE_HAS_LIBAV. The debug block of dev and diagnostic
+ * flags is compiled out under OPENPETE_HIDE_DEBUG_FLAGS, set by the
+ * *-shared distribution presets, and a one-line note replaces it. The
+ * omission is display-only: every flag parses in every build.
+ * @param display_name Game title printed in the heading.
+ * @param argv0 Program path printed in the usage line.
+ * @param default_renderer Renderer the game starts with when --renderer is absent. */
 static void print_help(const char* display_name, const char* argv0,
                        openpete_renderer_t default_renderer) {
     fprintf(stderr,

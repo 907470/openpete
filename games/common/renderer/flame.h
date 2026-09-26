@@ -35,9 +35,14 @@ int flame_bracket(uint8_t* fl, const uint8_t* pfl, const uint8_t* cfl,
 
 /** @brief Run every flame record of this present at the producer's place in the scene order.
  *
- * The loop runs after the particles; each record is staged from its shown state
- * (the led tick's bytes under --runahead) and bracketed against the paired
- * record.
+ * The loop runs after the particles. Each drawn flame record copies its own
+ * flame-state bytes (the led tick's bytes under --runahead) over the staged
+ * span, brackets origin, attach matrix and strand counters against the
+ * previous list's flame record of the paired model when that model lerps,
+ * and runs flame_reextract under the record's model slot with the record's
+ * sub-keyframe slide. The walk reads no avatar field, so the model bytes
+ * are not restaged. The staged span is a host view copy: the ambient bytes
+ * are restored and the slide reset to 0 at the end.
  * @param cpu     guest state
  * @param paired  1 when the interp ring paired this present
  * @param cam_cut 1 when the camera cut between the paired ticks

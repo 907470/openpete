@@ -2,7 +2,7 @@
 # library: libclang 14
 # requirement: @brief of one sentence on one line on every function; @param per named parameter and @return on non-void for external linkage
 # written-by: hook
-# head: 5564dcd1e0096afacac64696cf1cd7cba8afbb6e
+# head: f706bc70f44da54ead83849e15638dd7325975db
 file	function	form	accepted
 core/config/build_id.c	openpete_build_shared_recomp	plain	
 core/config/build_id.c	openpete_build_tagged	plain	
@@ -229,7 +229,6 @@ core/diag/log.c	lookup_level	none
 core/diag/log.c	monotonic_seconds	none	
 core/diag/log.c	openpete_log_get_format	none	
 core/diag/log.c	openpete_log_get_spec	none	
-core/diag/log.c	openpete_log_init	none	
 core/diag/log.c	openpete_log_pin_stderr_tty	plain	
 core/diag/log.c	openpete_log_set_format	plain	
 core/diag/log.c	openpete_log_set_spec	none	
@@ -4005,8 +4004,6 @@ games/spyro-1/features/vibration.c	want_enabled	plain
 games/spyro-1/game_extras_impl.c	game_apply_runtime_quirks	plain	
 games/spyro-1/game_extras_impl.c	game_get_disc_layout	none	
 games/spyro-1/game_extras_impl.c	game_get_load_delay_default	plain	
-games/spyro-1/game_extras_impl.c	game_get_pad_read_pc	plain	
-games/spyro-1/game_extras_impl.c	game_is_gameplay_live	plain	
 games/spyro-1/game_extras_impl.c	game_on_boot	plain	
 games/spyro-1/game_extras_impl.c	game_on_frame	none	
 games/spyro-1/game_extras_impl.c	game_on_frame_pre	plain	
@@ -4023,7 +4020,6 @@ games/spyro-1/game_extras_impl.c	game_set_skip_to_level	plain
 games/spyro-1/game_extras_impl.c	game_state_extra_load	none	
 games/spyro-1/game_extras_impl.c	game_state_extra_save	none	
 games/spyro-1/game_extras_impl.c	game_state_extra_size	plain	
-games/spyro-1/game_extras_impl.c	openpete_envvert_probe	untagged	
 games/spyro-1/game_extras_impl.c	psx_override_dispatch_game	none	
 games/spyro-1/game_extras_impl.c	skip_release_on_tick	plain	
 games/spyro-1/game_extras_impl.c	srend_noop_hit	plain	
@@ -4386,8 +4382,6 @@ games/spyro-2/features/levelwarp.c	warp_start	plain
 games/spyro-2/game_extras_impl.c	game_apply_runtime_quirks	plain	
 games/spyro-2/game_extras_impl.c	game_get_disc_layout	none	
 games/spyro-2/game_extras_impl.c	game_get_load_delay_default	plain	
-games/spyro-2/game_extras_impl.c	game_get_pad_read_pc	plain	
-games/spyro-2/game_extras_impl.c	game_is_gameplay_live	plain	
 games/spyro-2/game_extras_impl.c	game_on_frame	none	
 games/spyro-2/game_extras_impl.c	game_on_frame_pre	plain	
 games/spyro-2/game_extras_impl.c	game_on_hash_emit	plain	
@@ -4483,12 +4477,9 @@ games/spyro-3/features/transition_call.c	on_draw	none
 games/spyro-3/features/transition_call.c	s3_transition_enqueue	plain	
 games/spyro-3/features/transition_call.c	s3_transition_pending	plain	
 games/spyro-3/features/transition_call.c	store	none	
-games/spyro-3/game_extras_impl.c	checksum_verdict	plain	
 games/spyro-3/game_extras_impl.c	game_apply_runtime_quirks	plain	
 games/spyro-3/game_extras_impl.c	game_get_disc_layout	none	
 games/spyro-3/game_extras_impl.c	game_get_load_delay_default	plain	
-games/spyro-3/game_extras_impl.c	game_get_pad_read_pc	plain	
-games/spyro-3/game_extras_impl.c	game_is_gameplay_live	plain	
 games/spyro-3/game_extras_impl.c	game_on_frame	none	
 games/spyro-3/game_extras_impl.c	game_on_frame_pre	plain	
 games/spyro-3/game_extras_impl.c	game_on_hash_emit	plain	

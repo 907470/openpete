@@ -28,6 +28,20 @@ typedef enum {
     OPL_ERROR = 4,
 } openpete_log_level_t;
 
+/** @brief Set the log format and rebuild the per-subsystem level rules from OPENPETE_LOG and a spec string.
+ *
+ * Clears every rule and resets the default level to OPL_INFO, then parses
+ * OPENPETE_LOG and after it level_spec, so a rule in level_spec overrides
+ * the environment's. A spec is a comma-separated list of
+ * `<subsystem>:<level>` pairs (trace, debug, info, warn, error); the
+ * subsystem `*` sets the default, any other name matches a subsystem by
+ * exact string. A pair with an unknown level is ignored. The timestamp
+ * origin is taken on the first call only, so the second call from
+ * openpete_run() after the one in main() keeps the log's timeline. The
+ * spec string read back by openpete_log_get_spec is level_spec when
+ * non-NULL, else the environment value.
+ * @param fmt Output format for subsequent log lines.
+ * @param level_spec Level rules from the command line or config, or NULL. */
 void openpete_log_init(openpete_log_format_t fmt, const char* level_spec);
 
 /* Live re-configuration. set_spec replaces ALL level rules with the given

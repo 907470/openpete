@@ -743,17 +743,7 @@ int flame_bracket(uint8_t* fl, const uint8_t* pfl, const uint8_t* cfl,
     return 1;
 }
 
-/* Flame records: at the flame feeder's place in the scene order (after the
- * particles), every flame record restages its own flame-state bytes over the
- * ambient flame bracket — origin, attach matrix and strand counters bracketed
- * against the previous list's flame of the paired model, with its own
- * sub-keyframe slide — and runs the flame feeder under its model record's
- * slot. The walk reads no avatar field, so the model bytes need no restaging
- * here.
- *
- * `fl` is the caller's ambient staged copy of the flame state, or NULL when
- * the caller keeps none and this loop stages the span itself. Host-only: the
- * staged span is a view copy, restored to the ambient bytes at the end. */
+/* Per-record flame pass of a present; documented in flame.h. */
 void flame_records_present(CPUState* cpu, int paired, int cam_cut, double alpha, uint8_t* fl) {
     const uint32_t len = game_layout.player.flame_len;
     if (!FL_STATE || !len || len > PLAYER_REC_AUX_MAX) return;

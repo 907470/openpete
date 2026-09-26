@@ -85,12 +85,7 @@ void game_apply_runtime_quirks(CPUState* cpu) {
     /* TODO Phase 1c — preamble fixes, known-bad-instruction workarounds. */
 }
 
-/* §7.5 terrain-reproject validation probe (read-only). Per terrain
- * vertex: camera-free packed world (w0=X<<16|Y, w1=Z<<16|flags), vert
- * ptr, scaled campos (s7,t8,t9), + g_Camera.m_ViewMatrix (9 shorts
- * @0x80076DD0+0x14). Offline we compute M·(world-campos) per
- * r_environment.s and check parity vs Spyro's actual terrain output.
- * Env: OPENPETE_ENVVERT_LOG / _SKIP / _FRAMES. */
+/* Terrain-reproject probe; documented at its declaration in psx_runtime_internal.h. */
 void openpete_envvert_probe(void* cpu_v, uint32_t w0, uint32_t w1,
                             uint32_t s1, uint32_t s7, uint32_t t8,
                             uint32_t t9) {

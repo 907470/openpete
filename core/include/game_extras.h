@@ -28,10 +28,13 @@ const char* game_get_exe_filename(void);      /* e.g. "SCUS_942.28" */
 const char* game_get_display_name(void);      /* "Spyro the Dragon" */
 const char* game_get_id(void);                /* "spyro-1" — the [game.<id>] config scope */
 
-/* Guest address of the function through which this game reads its pad
- * buffer — the moment that decides which host input sample a tick plays.
- * Return 0 if unknown: the pacing census then reports the pad-read phase as
- * unmeasured rather than as zero reads. */
+/** @brief Guest address of the function through which this game reads its pad buffer.
+ *
+ * The read decides which host input sample a tick plays. openpete_run arms
+ * the pacing pad-read probe at this address unless OPENPETE_PAD_READ_PC
+ * overrides it. A return of 0 arms no probe, and the pacing census reports
+ * the pad-read phase as unmeasured rather than as zero reads.
+ * @return Guest function address, or 0 when the read site is unknown. */
 uint32_t    game_get_pad_read_pc(void);
 
 /* VBLs of guest time every level load waits when --load-delay is unset: the
@@ -96,10 +99,14 @@ uint32_t game_state_extra_size(void);
 void     game_state_extra_save(void* dst);            /* dst has extra_size bytes */
 void     game_state_extra_load(const void* src, uint32_t size);
 
-/* 1 iff gameplay is live and steady-state (in-level, not booting/loading/
- * title): the gate for the in-memory snapshot users (rewind keyframes,
- * runahead, the --state-stress harnesses) — the mem snapshot excludes
- * sections that only mutate outside this state (VRAM, SPU sample RAM). */
+/** @brief Whether gameplay is live and steady-state: in a level, not booting, loading or on the title.
+ *
+ * Gates the in-memory snapshot users (rewind keyframes, runahead, the
+ * --state-stress rollback cycle), because the memory snapshot excludes the
+ * sections that mutate only outside this state (VRAM, SPU sample RAM). The
+ * debug free camera uses it as its default level-live test.
+ * @param cpu Guest CPU state.
+ * @return 1 when gameplay is live, else 0. */
 int game_is_gameplay_live(CPUState* cpu);
 
 /* --- Position probe (for the BK2 determinism harness) ---

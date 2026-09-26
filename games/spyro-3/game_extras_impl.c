@@ -199,15 +199,20 @@ uint32_t psyq_game_rand_seed_addr(void) { return 0x80073F3Cu; }
  * starts from. */
 uint16_t psyq_game_root_counter2(void) { return 0x58C7u; }
 
-/* The checksum walk's verdict. Loading state 8 in func_8002CA50 (0x8002CD24)
- * takes it once per level load: when the cursor 0x8006C6B8 has not reached
+/** @brief Log whether the level-load checksum walk passed, once per load, at entry to func_8002CA50.
+ *
+ * Loading state 8 in func_8002CA50 (0x8002CD24) takes the walk's result
+ * once per level load: when the cursor 0x8006C6B8 has not reached
  * 0x8007B6E4 or the CRC 0x8006C6B4 is not 0, a rand()-picked word of the
  * table at 0x8002AB38 is zeroed and the game misbehaves later with no
- * message; otherwise both words are cleared. Both conditions are readable at
- * the walk's entry on the state-8 frame, so the verdict is logged there,
- * once per load, before the game acts on it. A mismatch on the retail disc
- * means the walk ran over the wrong bytes or too few frames (a load path the
- * classifier above does not cover, or a load delay below the floor). */
+ * message; otherwise both words are cleared. Both conditions are readable
+ * at the function's entry on the first call with the loading state word
+ * 0x8006C518 at 8, so the result is logged there before the game acts on
+ * it: a warning on failure, an info line on pass. A failure on the retail
+ * disc means the walk ran over the wrong bytes or too few main-loop passes
+ * (a load path the classifier above does not cover, or a load delay below
+ * the floor).
+ * @param cpu Guest CPU state. */
 static void checksum_verdict(CPUState* cpu) {
     static uint32_t s_last_state = 0;
     uint32_t state = cpu->read_word(0x8006C518u);

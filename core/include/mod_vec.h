@@ -144,8 +144,7 @@ void mod_cvec_free(mod_cvec* v);
  * @brief Initialize a flat table.
  * @param v          Table, zeroed or previously freed.
  * @param elem_size  Element size in bytes, nonzero.
- * @param init_cap   Capacity the first push allocates; sized to the
- *                   table's former fixed capacity.
+ * @param init_cap   Capacity the first push allocates; 0 selects 8.
  * @param name       Census name, or NULL to stay out of the census.
  * @param was        Former fixed capacity, printed on the census line.
  */
