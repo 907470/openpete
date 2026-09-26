@@ -149,7 +149,7 @@ if [[ $BLESS -eq 1 ]]; then
 fi
 
 # First run of a generated golden: the golden holds no tile, so this run
-# compares nothing and seeds it (not a PASS). The identity leg is a
+# compares nothing and seeds it, so the verdict is BLESSED, not PASS. The identity leg is a
 # relation inside this capture, so it still runs against a committed baseline.
 if [[ $FIRST_RUN -eq 1 && $goldrows -eq 0 ]]; then
   mkdir -p "$PG_GOLDEN"
