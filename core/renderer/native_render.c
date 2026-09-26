@@ -613,7 +613,7 @@ static void scene_box_summary(void) {
 
 /* Mod custom-pipeline drain (S7) — defined with the postfx executor
  * below; called from compose_variant (mod 3D under mod HUD). */
-/* Postfx executor + SCENE-point split (S3/S5) — defined below the
+/* Postfx executor + SCENE-point split — defined below the
  * postfx typedef; compose_variant (above them) calls via these decls. */
 static int native_postfx_run(int point, rhi_texture* target, int w, int h);
 static int native_postfx_point_active(int point);
@@ -2643,11 +2643,14 @@ static bool scene_is_2d_only(const scene_tri_t* scene, int n) {
     return true;
 }
 
-/* The freeze-backdrop source verdict, shared by the live compose and the
- * capture-time snapshot so both hold one definition of a frame worth freezing.
+/** @brief Return whether a composed scene qualifies as the freeze-backdrop source.
  *
- * A source frame carries the game's own geometry and is not itself a freeze
- * frame. Past that the 3D content sorts it, in three classes:
+ * Shared by the live compose and the capture-time snapshot so both use one
+ * definition of a scene worth freezing.
+ *
+ * A source scene carries the game's own geometry and is not itself a freeze
+ * scene (bit 31 of the freeze word clear). Past that the 3D content sorts it,
+ * in three classes:
  *
  * - No 3D at all: the game composed a screen out of 2D prims alone (the atlas
  *   and options screens, whose level picture and title text are 2D quads).
@@ -2669,7 +2672,11 @@ static bool scene_is_2d_only(const scene_tri_t* scene, int n) {
  *   frame stands.
  *
  * frame_content() reads the state selected for this present, so the caller
- * selects by stamp first. */
+ * selects by stamp first.
+ * @param scene   The present's scene triangle buffer.
+ * @param n       Triangle count of @p scene.
+ * @param sfreeze The present's freeze word; bit 31 set marks a freeze scene.
+ * @return true when the scene is a freeze-backdrop source. */
 static bool scene_is_freeze_source(const scene_tri_t* scene, int n, uint32_t sfreeze) {
     if (!scene_has_game_tris(scene, n) || (sfreeze & (1u << 31))) return false;
     if (scene_is_2d_only(scene, n)) return true;
@@ -3463,7 +3470,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .color_write_off = true,
         .uses_vram = false, .push_const_size = 0,
     };
-    /* Terrain HP KEY pass (P6b): rasterise opaque HP terrain with depth = the
+    /* Terrain HP KEY pass: rasterise opaque HP terrain with depth = the
      * og OT key (true view-Z + authored slot offset) into a private depth
      * image; the scene's LP fragments key-contest it (quad_key.frag /
      * psx_scene_key.frag). Rendered per scene TARGET at that target's size so
@@ -3827,7 +3834,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     }
     rhi_texture  *occl_grid = rhi_create_render_target(dev, OCCL_GW, OCCL_GH);
     rhi_buffer   *prepass_vb = rhi_create_vertex_buffer_dynamic_gens(dev, sizeof(rhi_vertex) * SCENE_VB_WAS, 1u);
-    /* Optional P6b key-pass resources (graceful fallback: NULL → the feeder
+    /* Optional key-pass resources (graceful fallback: NULL → the feeder
      * emits koff=0, LP fragments never sample, terrain contests at raw true
      * depth — the OT_BIAS=0 look). The key IMAGE allocates lazily per target
      * size (ensure_terrain_key_depth). */
@@ -4048,19 +4055,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     return 0;
 }
 
-/* Can the terrain feeder route unclaimed sectors through the GPU cache this
- * run/present? ANDs the renderer-side conditions the feeder can't see: cache
- * up, no reference-compare scene delay (the cache draws the LIVE walk, not
- * the history ring), no dev tag instruments (their semantics live in the
- * CPU batcher), and a hardware GPU (the verdict-heavy vertex shader crawls
- * on llvmpipe). The PSX vertex wobble is not an exclusion: terrain.vert
- * applies the same floor to its emitted screen point, and the subdivide's
- * boundary-midpoint overrides with it, so a cached sector wobbles exactly as
- * the walk's would.
- * HD texture packs and mod material selectors are NOT whole-run exclusions:
- * the terrain feeder claims affected sectors back per sector (tier 1 of the
- * exclusion→claim→fold ladder), so a UI-/moby-only pack keeps the full
- * cache. */
+/* Retained terrain path availability; documented at the declaration. */
 int openpete_native_tercache_usable(void)
 {
     /* OPENPETE_TERRAIN_CACHE_FORCE=1: waive the software-GPU exclusion (dev —
@@ -5179,7 +5174,7 @@ static void native_depth_prepass(void)
     s_od_ready = 1;
 }
 
-/* ---- P6b: terrain HP KEY pass ----------------------------------------------
+/* ---- Terrain HP KEY pass ---------------------------------------------------
  *
  * og's terrain rule is a per-pixel KEY contest: a face's OT key is its view-Z
  * plus the authored slot offset (LP +0x40+8*bias, HP +4*bias, 128 world/slot),
@@ -5193,6 +5188,7 @@ static void native_depth_prepass(void)
  * Called at each scene-target call site BEFORE the target's render pass
  * begins (a pass can't nest); `full_extent` mirrors the draw_native_scene
  * argument so scene_to_clip packs identical positions. */
+/* Key-pass availability; documented at the declaration. */
 int openpete_native_key_resolve_on(void)
 {
     return s_nr.enabled && s_nr.terrain_key_pipe && s_nr.terrain_key_vb;
@@ -6181,8 +6177,13 @@ static int occl_cam_in_bound(const openpete_occl_camera *q)
     return tr >= occl_cam_turn_trace();
 }
 
-/* The query-outcome index that refuses every verdict on the held grid, or -1
- * when the grid and its screen affine are usable. */
+/** @brief Return the query-outcome index that refuses every occlusion query on the held grid.
+ *
+ * OPENPETE_OCCL_Q_NOGRID when no grid is held, OPENPETE_OCCL_Q_SUSPENDED
+ * while grid use is suspended, OPENPETE_OCCL_Q_STALE when the grid is more
+ * than 8 presents old.
+ * @return The refusing outcome index, or -1 when the grid and its screen
+ *         affine are usable. */
 static int occl_grid_refusal(void)
 {
     if (!s_occl_have) return OPENPETE_OCCL_Q_NOGRID;
@@ -10342,16 +10343,7 @@ static int s_version_osd = 1;
 void openpete_native_set_version_osd(int on) { s_version_osd = on ? 1 : 0; }
 int  openpete_native_version_osd(void) { return s_version_osd; }
 
-/* Whether this build shows a version line at all.
- *
- * A build whose recomp module is not linked the way the distribution presets
- * link it never leaves this machine, so nobody has to identify it from a
- * screenshot and it shows nothing.
- *
- * A shared build that is not exactly a release shows its describe string for
- * the whole session, and no knob suppresses it: the line is the only thing
- * that names the build in an image of it. The knob governs the release
- * build's two-second line alone. */
+/* Version-line gate; documented at the declaration. */
 int openpete_native_version_line_enabled(void) {
     if (!openpete_build_shared_recomp()) return 0;
     if (!openpete_build_tagged()) return 1;
@@ -10844,12 +10836,16 @@ static void draw_perf_overlay(void) {
     }
 }
 
-/* The version line's GPU resources, created on the first present that will
- * use them: the glyph buffer, the supersample target, and the composite quad.
- * A session that never shows the line never pays for them, and the renderer's
- * bring-up does not have to unwind three more resources. Creates resources
- * and can wait the device idle — call from the per-present resource pass,
- * outside a render pass. */
+/** @brief Create the version line's GPU resources on the first present that draws the line.
+ *
+ * Creates the glyph buffer and the composite quad, then sizes the
+ * supersample target to the published region when the overlay resolve
+ * pipeline exists (without it the line draws at 1x and needs no target).
+ * Returns early while the line's alpha is zero or no region has been
+ * published, so a run that never shows the line allocates none of them and
+ * bring-up has no extra resources to unwind. It creates resources and can
+ * wait the device idle, so it runs in the per-present resource pass, outside
+ * a render pass. */
 static void ensure_version_ss(void) {
     if (!s_nr.dev || s_ver_alpha8 <= 0 || s_nr.win_w <= 0 || s_nr.win_h <= 0) return;
     if (!s_nr.version_vb)
@@ -11764,9 +11760,13 @@ static int      s_pt_cnt_cur[OPPC_COUNT];
 static int      s_pt_n = 0;
 static uint64_t s_pt_last_report = 0;
 
-/* Env-gated stderr report (the legacy [phase ...] once-per-sec line). Separate
- * from openpete_phase_timers_on() so a --profile-out-only run measures the
- * phases (and forwards them to the trace) without spamming stderr. */
+/** @brief Return 1 when OPENPETE_PHASE_TIMERS requests the once-per-second `[phase ...]` stderr line.
+ *
+ * Separate from openpete_phase_timers_on() so a --profile-out run measures
+ * the phases and forwards them to the trace without printing the line. The
+ * variable is re-read when the knob registry's env epoch changes (a live
+ * edit from the dev overlay), never per call, since every phase-scope site on
+ * the extracting and presenting threads calls this. */
 static int pt_report_on(void) {
     /* Re-resolved on a live edit (the dev overlay's setenv bumps the
      * registry epoch), never per VBL: this runs at every phase-scope site
@@ -11823,7 +11823,12 @@ static int pt_cmp_u32(const void* a, const void* b) {
     return (x > y) - (x < y);
 }
 
-/* Roll the current present's phase totals into the ring; report ~1/sec. */
+/** @brief Roll the current present's phase totals and counts into the ring and print the phase line about once per second.
+ *
+ * No-op unless openpete_phase_timers_on(). The ring flushes when it holds
+ * PT_WINDOW presents or one second has passed since the last flush; the
+ * flush prints p50/p99/max microseconds per phase and avg/max per count only
+ * when pt_report_on(), and resets the ring either way. */
 static void phase_present_done(void)
 {
     if (!openpete_phase_timers_on()) return;
@@ -11863,15 +11868,14 @@ static void phase_present_done(void)
     s_pt_n = 0; s_pt_last_report = now;
 }
 
-/* ── Mod postfx executor (S3, plans/openpete-mod-shaders.md) ─────────
+/* ── Mod postfx executor ─────────────────────────────────────────────
  * Runs the enabled COMPOSITE-point chain over the composed frame:
  * input → ping/pong RTs → 1:1 blit back into the compose target, so
  * every consumer (present blit, --record, live screenshot, AND the
  * screenshot-all/headless native_rtt dump) sees the post-processed
  * frame — the native_rtt compose bypasses off_image, so the chain is
- * wired into both paths explicitly (the vacuous-gate trap from the
- * plan review). Engine UBO rides block 0, pass i's mod block 1+i.
- * S4 completes the engine-block fields (tick/alpha/canonical). */
+ * wired into both paths explicitly. Engine UBO rides block 0, pass i's
+ * mod block 1+i. */
 #define PFX_MAX_PASSES 15
 typedef struct {   /* C mirror of op_engine_ubo — std140, offsets load-bearing */
     float    time, alpha;
@@ -12105,6 +12109,28 @@ static int native_postfx_point_active(int point)
     return openpete_mods_postfx_collect(point, pass, PFX_MAX_PASSES) > 0;
 }
 
+/** @brief Run the postfx chain of one point over a composed image and write the result back.
+ *
+ * The chain is the raster-quantize pass and the PSX dither pass when they
+ * apply to @p point, followed by every enabled mod pass collected for it.
+ * Pass pipelines are built on first use; a pass whose build failed is
+ * skipped. Passes ping-pong between two render targets sized @p w x @p h;
+ * each pass samples the previous pass (set 0), the opaque pre-pass depth or
+ * the input as a fallback (set 1), and the previous present's composite on
+ * the live path or the input on a dump (set 2). The engine block goes to UBO
+ * block 0 and pass i's uniforms to block 1+i.
+ *
+ * Live path (@p target NULL): the input is the offscreen image, each pass is
+ * a GPU timer zone named by its owner, the result is blitted back into the
+ * offscreen image, and the post-chain composite is kept as the next
+ * present's set-2 input. Dump path: the input and destination are
+ * @p target, and the engine block carries alpha 0 and canonical 1.
+ * @param point  0 for the COMPOSITE point, 1 for the SCENE point.
+ * @param target Render target to process in place, or NULL for the live
+ *               offscreen image.
+ * @param w      Width of the processed image in pixels.
+ * @param h      Height of the processed image in pixels.
+ * @return Number of passes that ran; 0 leaves the image unchanged. */
 static int native_postfx_run(int point, rhi_texture* target, int w, int h)
 {
     openpete_postfx_pass_t pass[PFX_MAX_PASSES];
@@ -13367,6 +13393,22 @@ static int shot_write_offscreen(const char *path, const char *what)
     return shot_write_offscreen_ext(path, what, NULL, NULL);
 }
 
+/** @brief Write the native `-vk` capture for one screenshot base path, or hand the composed image to the caller.
+ *
+ * In a windowed run that is not an intermediate capture, `-vk` is first
+ * written as a readback of the image the live present just showed. The
+ * native scene is then recomposed into the reference-sized render target
+ * (or the widened target for a Hor+ native-only capture) and read back with
+ * alpha forced opaque. With @p cap_out the buffer goes to the caller and no
+ * PNG is written; otherwise the recompose is written as `-vk` when the live
+ * readback was not taken, and an empty native scene is replaced by the
+ * PsyCross reference readback when one exists.
+ * @param base    Screenshot path without its suffix.
+ * @param cap_out NULL to write PNGs, else receives a malloc'd top-down RGBA
+ *                buffer the caller frees.
+ * @param cap_w   Receives the captured width when @p cap_out is set.
+ * @param cap_h   Receives the captured height when @p cap_out is set.
+ * @return 0 on success, 1 on failure. */
 static int native_render_screenshot_all_impl(const char *base, unsigned char **cap_out,
                                              int *cap_w, int *cap_h)
 {
@@ -13489,10 +13531,10 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
          * both active). */
         draw_mod_overlay();
         rhi_end_render_target(s_nr.dev, s_nr.native_rtt);
-        /* Postfx over the dump compose too — this path bypasses off_image, so
-         * without these calls a headless/screenshot-all gate would pass
-         * vacuously (plan-review trap). SCENE point first (--raster-quantize,
-         * mod scene shaders — previously dump-bypassed), then COMPOSITE. */
+        /* Postfx over the dump compose too: this path bypasses off_image, so
+         * without these calls a headless or screenshot-all capture would
+         * carry no postfx. SCENE point first (--raster-quantize, dither, mod
+         * scene shaders), then COMPOSITE. */
         native_postfx_run(1 /* SCENE */, s_nr.native_rtt, W, H);
         native_postfx_run(0 /* COMPOSITE */, s_nr.native_rtt, W, H);
         rhi_begin_offscreen(s_nr.dev, br, bgc, bb, 1.0f);

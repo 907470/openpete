@@ -249,9 +249,12 @@ static void devui_publish_io_wants(void)
     SDL_SetAtomicInt(&s_wants_mouse, (mouse_frame && io.WantCaptureMouse) ? 1 : 0);
 }
 
-/* A frame that returns before publishing leaves nothing stale standing: a
- * closed overlay must read as not wanting the mouse, or the mouse channel
- * would report the overlay as its owner until the next frame that draws. */
+/** @brief Publish all three imgui capture wants (keyboard, text input, mouse) as 0.
+ *
+ * Called on each early return of openpete_devui_render that skips
+ * devui_publish_io_wants, so no want from an earlier drawn present stays
+ * set: a stale mouse want would keep the overlay as the mouse's owner until
+ * the next present that draws it. */
 static void devui_publish_none(void)
 {
     SDL_SetAtomicInt(&s_wants_kb, 0);

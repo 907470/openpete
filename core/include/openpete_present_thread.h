@@ -13,8 +13,12 @@ extern "C" {
 /* OPENPETE_EAGER=1 enables eager production and the present thread.
  * Off by default until the A/B has priced it. */
 int  openpete_present_thread_enabled(void);
-/* OPENPETE_EAGER_LATTICE=1: targets and composes on the display's fitted
- * vblank lattice (implies present timing). Off by default. */
+/** @brief Return 1 when OPENPETE_EAGER_LATTICE=1 makes the present thread target and compose on the display's fitted vblank lattice.
+ *
+ * The lattice implies present timing. Off by default: the thread then
+ * composes each scene at its own target and observes flips only under
+ * OPENPETE_PACE_FLIP_LOG. The variable is read once per run.
+ * @return 1 when the lattice is enabled, else 0. */
 int  openpete_present_thread_lattice_enabled(void);
 int  openpete_present_thread_start(void);
 void openpete_present_thread_stop(void);

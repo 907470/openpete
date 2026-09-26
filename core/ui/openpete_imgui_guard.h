@@ -34,10 +34,15 @@ void openpete_imgui_guard_refused(const char* fn);
 /* One call that reached ImGui, for the engagement counter. */
 void openpete_imgui_count_call(void);
 
-/* Raised around a body by the loader's section dispatch. @p mod_index
- * attributes refusals and is reported by openpete_imgui_guard_mod_id().
- * Nested entries are counted, so a body that re-enters keeps the depth
- * balanced. */
+/** @brief Enter a mod UI section body on this thread.
+ *
+ * The loader's section dispatch brackets each body with this and
+ * openpete_imgui_body_leave(). Raises the thread-local depth. The outermost
+ * entry records @p mod_index and zeroes the call counter; nested entries
+ * only raise the depth, so a body that re-enters keeps the depth balanced.
+ * Equivalent to openpete_imgui_body_enter_always() with no_input 0.
+ * @param mod_index Index of the mod whose body runs; refusal messages name
+ *        it through openpete_imgui_guard_mod_id(). */
 void openpete_imgui_body_enter(int mod_index);
 void openpete_imgui_body_leave(void);
 
@@ -52,8 +57,12 @@ void openpete_imgui_body_enter_always(int mod_index, int no_input);
  * mod draws during play never eats the mouse the game is reading. */
 int openpete_imgui_always_closed(void);
 
-/* Reads and zeroes this thread's call counter. Called after a body so the
- * count reported is the count for that body. */
+/** @brief Return and zero this thread's count of ImGui calls that reached ImGui.
+ *
+ * The mod loader calls it after a section body and stores the result as
+ * that mod's imgui_calls engagement count; the outermost body entry also
+ * zeroes the counter.
+ * @return Calls counted since the counter was last zeroed. */
 uint64_t openpete_imgui_calls_take(void);
 
 /* Resolve a mod's ImGui descriptor (the openpete_imgui_desc symbol, see

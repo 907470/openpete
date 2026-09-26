@@ -2,7 +2,7 @@
 # library: libclang 14
 # requirement: @brief of one sentence on one line on every function; @param per named parameter and @return on non-void for external linkage
 # written-by: hook
-# head: 55e56fe97452b5653fda62f65a58b8ac7de08a74
+# head: 5564dcd1e0096afacac64696cf1cd7cba8afbb6e
 file	function	form	accepted
 core/config/build_id.c	openpete_build_shared_recomp	plain	
 core/config/build_id.c	openpete_build_tagged	plain	
@@ -268,7 +268,6 @@ core/diag/pace_log.c	openpete_pace_host_pump	plain
 core/diag/pace_log.c	openpete_pace_inject_present	plain	
 core/diag/pace_log.c	openpete_pace_input_edge	plain	
 core/diag/pace_log.c	openpete_pace_last_alpha	plain	
-core/diag/pace_log.c	openpete_pace_last_alpha_paired	none	
 core/diag/pace_log.c	openpete_pace_log_active	plain	
 core/diag/pace_log.c	openpete_pace_log_close	plain	
 core/diag/pace_log.c	openpete_pace_log_open	plain	
@@ -283,7 +282,6 @@ core/diag/pace_log.c	openpete_pace_record_present	plain
 core/diag/pace_log.c	openpete_pace_set_slot_ns	plain	
 core/diag/pace_log.c	openpete_pace_slip	plain	
 core/diag/pace_log.c	openpete_pace_vbl	plain	
-core/diag/pace_log.c	openpete_pace_vbl_begin	plain	
 core/diag/pace_log.c	openpete_pace_wake	plain	
 core/diag/pace_log.c	openpete_pace_window	plain	
 core/diag/pace_log.c	pace_emit	none	
@@ -354,7 +352,6 @@ core/diag/psxtrace_schedule.c	sched_cur_rec	none
 core/diag/psxtrace_schedule.c	vbl_set_add	none	
 core/diag/psxtrace_schedule.c	vbl_set_has	plain	
 core/diag/psxtrace_verify.c	openpete_psxtrace_close	none	
-core/diag/psxtrace_verify.c	openpete_psxtrace_finalize	plain	
 core/diag/psxtrace_verify.c	openpete_psxtrace_open	none	
 core/diag/psxtrace_verify.c	openpete_psxtrace_skip_to	plain	
 core/diag/psxtrace_verify.c	read_u32_le	none	
@@ -1495,7 +1492,6 @@ core/renderer/native_render.c	ensure_ss_rtt	plain
 core/renderer/native_render.c	ensure_terrain_key_depth	none	
 core/renderer/native_render.c	ensure_terrain_key_targets	plain	
 core/renderer/native_render.c	ensure_text_ss_target	plain	
-core/renderer/native_render.c	ensure_version_ss	plain	
 core/renderer/native_render.c	fade_lerp	plain	
 core/renderer/native_render.c	fbsnap_capture_crop	plain	
 core/renderer/native_render.c	fbsnap_crop	plain	
@@ -1530,8 +1526,6 @@ core/renderer/native_render.c	moby_shadow_decal_enabled	plain
 core/renderer/native_render.c	native_depth_prepass	none	
 core/renderer/native_render.c	native_occl_downsample	none	
 core/renderer/native_render.c	native_postfx_point_active	none	
-core/renderer/native_render.c	native_postfx_run	none	
-core/renderer/native_render.c	native_render_screenshot_all_impl	none	
 core/renderer/native_render.c	native_shot_widescreen	plain	
 core/renderer/native_render.c	native_terrain_key_pass	none	
 core/renderer/native_render.c	notex_apply_pending	none	
@@ -1545,7 +1539,6 @@ core/renderer/native_render.c	occl_cam_move	none
 core/renderer/native_render.c	occl_cam_turn_trace	plain	
 core/renderer/native_render.c	occl_camdbg	none	
 core/renderer/native_render.c	occl_cull_enabled	plain	
-core/renderer/native_render.c	occl_grid_refusal	plain	
 core/renderer/native_render.c	occl_rect_uv	plain	
 core/renderer/native_render.c	occl_slack	plain	
 core/renderer/native_render.c	occl_uv_offscreen	plain	
@@ -1575,7 +1568,6 @@ core/renderer/native_render.c	openpete_native_get_wireframe	none
 core/renderer/native_render.c	openpete_native_hdfold_atlas	plain	
 core/renderer/native_render.c	openpete_native_hdfold_epoch	plain	
 core/renderer/native_render.c	openpete_native_hdfold_flush	plain	
-core/renderer/native_render.c	openpete_native_hdfold_on	plain	
 core/renderer/native_render.c	openpete_native_hdfold_pending	plain	
 core/renderer/native_render.c	openpete_native_hdfold_prime	plain	
 core/renderer/native_render.c	openpete_native_hdfold_reset	plain	
@@ -1605,7 +1597,6 @@ core/renderer/native_render.c	openpete_native_render_enabled	plain
 core/renderer/native_render.c	openpete_native_render_fence_sheds	plain	
 core/renderer/native_render.c	openpete_native_render_frame	plain	
 core/renderer/native_render.c	openpete_native_render_gpu_name	none	
-core/renderer/native_render.c	openpete_native_render_init	none	
 core/renderer/native_render.c	openpete_native_render_present_mode	none	
 core/renderer/native_render.c	openpete_native_render_present_outstanding	plain	
 core/renderer/native_render.c	openpete_native_render_present_wait	none	
@@ -1698,10 +1689,8 @@ core/renderer/native_render.c	openpete_native_set_wireframe	plain
 core/renderer/native_render.c	openpete_native_stage_count	none	
 core/renderer/native_render.c	openpete_native_stage_gen	none	
 core/renderer/native_render.c	openpete_native_tercache_service_headless	plain	
-core/renderer/native_render.c	openpete_native_tercache_usable	plain	
 core/renderer/native_render.c	openpete_native_toggle_fullscreen	plain	
 core/renderer/native_render.c	openpete_native_version_drawn	plain	
-core/renderer/native_render.c	openpete_native_version_line_enabled	plain	
 core/renderer/native_render.c	openpete_native_version_osd	untagged	
 core/renderer/native_render.c	openpete_native_version_reason	plain	
 core/renderer/native_render.c	openpete_native_vertex_snap_active	plain	
@@ -1732,7 +1721,6 @@ core/renderer/native_render.c	pc_trace_on	none
 core/renderer/native_render.c	perf_overlay_should_draw	plain	
 core/renderer/native_render.c	pfx_drain_retired	plain	
 core/renderer/native_render.c	pfx_pings	none	
-core/renderer/native_render.c	phase_present_done	plain	
 core/renderer/native_render.c	portal_cover_check	none	
 core/renderer/native_render.c	portal_mask_bias	plain	
 core/renderer/native_render.c	prepare_menu_ss	plain	
@@ -1748,7 +1736,6 @@ core/renderer/native_render.c	ps_shadow_foot	none
 core/renderer/native_render.c	psx_dither_append	none	
 core/renderer/native_render.c	pt_cmp_u32	none	
 core/renderer/native_render.c	pt_dump_maybe	plain	
-core/renderer/native_render.c	pt_report_on	plain	
 core/renderer/native_render.c	raster_quantize_prepend	none	
 core/renderer/native_render.c	recbuf_ensure	none	
 core/renderer/native_render.c	record_cycle	plain	
@@ -1774,7 +1761,6 @@ core/renderer/native_render.c	scene_has_terrain	plain
 core/renderer/native_render.c	scene_has_world	plain	
 core/renderer/native_render.c	scene_hist_depth_max	none	
 core/renderer/native_render.c	scene_is_2d_only	plain	
-core/renderer/native_render.c	scene_is_freeze_source	plain	
 core/renderer/native_render.c	scene_pos_sig_on	plain	
 core/renderer/native_render.c	scene_pos_sig_report	none	
 core/renderer/native_render.c	scene_postfx_split	plain	
@@ -2000,7 +1986,6 @@ core/renderer/subtick_view.c	sv_staged_store	plain
 core/renderer/subtick_view.c	sv_swl	none	
 core/renderer/subtick_view.c	sv_swr	none	
 core/renderer/subtick_view.c	sv_write_byte	none	
-core/renderer/subtick_view.c	sv_write_half	plain	
 core/renderer/subtick_view.c	sv_write_word	none	
 core/renderer/subtick_view.c	sv_wset_note	none	
 core/rhi/rhi_gpu_audit.c	on_guest_thread	none	
@@ -2009,13 +1994,10 @@ core/rhi/rhi_gpu_audit.c	op_gpu_audit_hit	plain
 core/rhi/rhi_gpu_audit.c	op_gpu_audit_map_bytes	none	
 core/rhi/rhi_gpu_audit.c	op_gpu_audit_map_write	plain	
 core/rhi/rhi_gpu_audit.c	op_gpu_audit_map_writes	none	
-core/rhi/rhi_gpu_audit.c	op_gpu_audit_names	none	
-core/rhi/rhi_gpu_audit.c	op_gpu_audit_total	plain	
 core/rhi/rhi_memtype.c	rhi_memtype_candidates	plain	
 core/rhi/rhi_vulkan.c	acquire_image	plain	
 core/rhi/rhi_vulkan.c	balloon_heap_memtype	plain	
 core/rhi/rhi_vulkan.c	balloon_hold	plain	
-core/rhi/rhi_vulkan.c	balloon_spec	plain	
 core/rhi/rhi_vulkan.c	begin_frame_impl	none	
 core/rhi/rhi_vulkan.c	bind_view_pair	plain	
 core/rhi/rhi_vulkan.c	choose_extent	none	
@@ -2129,7 +2111,6 @@ core/rhi/rhi_vulkan.c	rhi_fence_sheds	plain
 core/rhi/rhi_vulkan.c	rhi_frame_active	plain	
 core/rhi/rhi_vulkan.c	rhi_frame_serial	plain	
 core/rhi/rhi_vulkan.c	rhi_get_imgui_info	plain	
-core/rhi/rhi_vulkan.c	rhi_get_vsync	plain	
 core/rhi/rhi_vulkan.c	rhi_gpu_frame_token	none	
 core/rhi/rhi_vulkan.c	rhi_gpu_results_token	none	
 core/rhi/rhi_vulkan.c	rhi_gpu_timers_on	none	
@@ -2250,7 +2231,6 @@ core/runtime/present_thread.c	openpete_present_thread_cost_ns	none
 core/runtime/present_thread.c	openpete_present_thread_enabled	plain	
 core/runtime/present_thread.c	openpete_present_thread_kick	plain	
 core/runtime/present_thread.c	openpete_present_thread_lattice	plain	
-core/runtime/present_thread.c	openpete_present_thread_lattice_enabled	plain	
 core/runtime/present_thread.c	openpete_present_thread_presents	none	
 core/runtime/present_thread.c	openpete_present_thread_report	none	
 core/runtime/present_thread.c	openpete_present_thread_set_active	plain	
@@ -2267,16 +2247,12 @@ core/runtime/run.c	clamp_volume	none
 core/runtime/run.c	devui_suspend_exempt	plain	
 core/runtime/run.c	eager_init	none	
 core/runtime/run.c	eager_lattice_ceil	plain	
-core/runtime/run.c	eager_on_discontinuity	plain	
 core/runtime/run.c	eager_plan	none	
 core/runtime/run.c	eager_present_cb	none	
 core/runtime/run.c	eager_produce	plain	
 core/runtime/run.c	eager_produce_one	plain	
-core/runtime/run.c	eager_report	none	
-core/runtime/run.c	eager_tail_cost	none	
 core/runtime/run.c	ftl_record_present	plain	
 core/runtime/run.c	game_fiber_entry	none	
-core/runtime/run.c	gameplay_hash_compute_ex	none	
 core/runtime/run.c	gameplay_hash_log_emit	none	
 core/runtime/run.c	gameplay_hash_log_emit_header	none	
 core/runtime/run.c	gpu_audit_selftest_arm	plain	
@@ -2312,7 +2288,6 @@ core/runtime/run.c	openpete_split_applies	plain
 core/runtime/run.c	openpete_state_regions_register	plain	
 core/runtime/run.c	openpete_thread_split_enabled	plain	
 core/runtime/run.c	pace_flip_log_on	plain	
-core/runtime/run.c	pace_force_pacing	plain	
 core/runtime/run.c	pace_late_budget_ns	plain	
 core/runtime/run.c	pace_record_present	none	
 core/runtime/run.c	pace_shed_margin_k	none	
@@ -2322,7 +2297,6 @@ core/runtime/run.c	ra_pc_hash	none
 core/runtime/run.c	ra_pc_invalidate_all	none	
 core/runtime/run.c	ra_pc_on	plain	
 core/runtime/run.c	rumble_census_report	none	
-core/runtime/run.c	run_host_init	none	
 core/runtime/run.c	run_host_loop	none	
 core/runtime/run.c	run_recomp_fiber	plain	
 core/runtime/run.c	run_recomp_smoke_test	plain	
@@ -2361,7 +2335,6 @@ core/ui/devui.cpp	cfg_edit_slot	none
 core/ui/devui.cpp	cfg_seed	none	
 core/ui/devui.cpp	devui_drain_events	plain	
 core/ui/devui.cpp	devui_publish_io_wants	none	
-core/ui/devui.cpp	devui_publish_none	plain	
 core/ui/devui.cpp	draw_always_sections	plain	
 core/ui/devui.cpp	draw_custom_level_rows	none	
 core/ui/devui.cpp	draw_fillpick_crosshair	plain	
@@ -2435,10 +2408,8 @@ core/ui/freecam.c	openpete_freecam_toggle	plain
 core/ui/imgui_guard.c	openpete_imgui_always_closed	plain	
 core/ui/imgui_guard.c	openpete_imgui_bind	plain	
 core/ui/imgui_guard.c	openpete_imgui_body_active	plain	
-core/ui/imgui_guard.c	openpete_imgui_body_enter	plain	
 core/ui/imgui_guard.c	openpete_imgui_body_enter_always	plain	
 core/ui/imgui_guard.c	openpete_imgui_body_leave	none	
-core/ui/imgui_guard.c	openpete_imgui_calls_take	plain	
 core/ui/imgui_guard.c	openpete_imgui_count_call	plain	
 core/ui/imgui_guard.c	openpete_imgui_guard_hook_owner	none	
 core/ui/imgui_guard.c	openpete_imgui_guard_mod_id	plain	

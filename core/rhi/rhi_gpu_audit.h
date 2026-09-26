@@ -45,9 +45,17 @@ void op_gpu_audit_map_write(size_t bytes);
 unsigned op_gpu_audit_map_writes(void);
 unsigned long long op_gpu_audit_map_bytes(void);
 
-/* Total calls seen during guest execution, and the distinct-name report.
- * Returns the number of names written to `out`. */
+/** @brief Return the number of Vulkan calls recorded on the guest thread during guest execution.
+ *
+ * @return The running total since process start. */
 unsigned op_gpu_audit_total(void);
+/** @brief Copy the distinct Vulkan function names recorded during guest execution.
+ *
+ * The set holds at most 32 names; names past that are counted in the total
+ * but not recorded.
+ * @param out Array receiving the name pointers.
+ * @param max Capacity of @p out.
+ * @return Number of names written to @p out. */
 int      op_gpu_audit_names(const char **out, int max);
 
 #ifdef __cplusplus

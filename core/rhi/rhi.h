@@ -51,9 +51,13 @@ rhi_device *rhi_create(struct SDL_Window *window, const char *app_name, int vsyn
  * preference is unchanged. Display-only. */
 void rhi_set_vsync(rhi_device *dev, int vsync);
 
-/* The device's current vsync preference (the value rhi_create/rhi_set_vsync
- * last received): 1 = FIFO, 0 = a vsync-OFF mode, -1 = unset (env, else FIFO —
- * the surface decides, so there is no resolved 0/1 to report yet). */
+/** @brief Return the device's vsync preference as rhi_create or rhi_set_vsync last received it.
+ *
+ * The preference is returned unresolved: -1 means the environment decides
+ * and FIFO is the fallback, and the resolved present mode is not read here.
+ * @param dev Device, or NULL.
+ * @return 1 for FIFO, 0 for a vsync-off mode, -1 when unset or @p dev is
+ *         NULL. */
 int rhi_get_vsync(const rhi_device *dev);
 
 /* Create a SURFACELESS device: no window, no swapchain, no present. Renders into

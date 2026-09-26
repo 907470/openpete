@@ -555,19 +555,21 @@ void openpete_state_regions_register(const OpenpeteStateRegion* regions,
     openpete_state_regions_table_hash = table_hash;
 }
 
-/* FNV1a-64 hash over every gameplay-readable region the per-game TU
- * registered. The harness consumes this log as the primary
- * determinism gate — anything that perturbs gameplay state shows up
- * as a hash divergence at the first frame the perturbation reaches
- * one of the registered regions. See
- * notes/plans/openpete-determinism-enforcement.md Phase 1. */
-/* Compute the rolling total hash across all regions and, optionally,
- * a parallel per-region hash array. Per-region hashes let the harness
- * report which named region first diverged (Phase 5) without RAM
- * dumps. `out_per_region` (if non-NULL) must hold at least
- * `openpete_state_region_count` slots; sentinel 0 means the region
- * was skipped (NULL indirect pointer / out-of-RAM). */
 uint64_t gameplay_hash_compute_ex(uint64_t* out_per_region);
+/** @brief Compute the FNV-1a-64 hash over every registered gameplay-state region, and optionally one hash per region.
+ *
+ * Covers every region the per-game TU registered in openpete_state_regions.
+ * Any change to gameplay state appears as a hash divergence at the first
+ * tick the change reaches a registered region; the per-region hashes name
+ * that region without a RAM dump. Indirect regions read their base pointer
+ * from RAM and are skipped when it is NULL or its slot lies outside RAM;
+ * END_PTR, COUNT and SENTINEL kinds clamp the hashed length to the live
+ * part of the pool. Bytes at a region's mask offsets are excluded from both
+ * the per-region and the total hash.
+ * @param out_per_region NULL, or an array of at least
+ *        openpete_state_region_count slots receiving each region's hash;
+ *        0 marks a skipped region.
+ * @return The total hash over all regions in registration order. */
 uint64_t gameplay_hash_compute_ex(uint64_t* out_per_region) {
     uint64_t total = openpete_fnv1a64_init();
     const uint8_t* ram = openpete_psx_get_ram();
@@ -1324,6 +1326,14 @@ static op_time_t eager_lattice_ceil(op_time_t t, int64_t base, double period)
     return base + (op_time_t)(n * period + 0.5);
 }
 
+/** @brief Return the tail bound of one eager scene's production cost.
+ *
+ * The mean plus three deviations of the per-scene production time that
+ * eager_produce_one measures. eager_produce stops before a scene whose tail
+ * cost would pass its deadline, and eager_plan floors the render-grid
+ * period at it when presenting is uncapped.
+ * @return The bound in nanoseconds, or 0 before EAGER_COST_WARMUP scenes
+ *         have been measured. */
 static op_time_t eager_tail_cost(void)
 {
     return s_eager.cost_n >= EAGER_COST_WARMUP
@@ -1573,6 +1583,14 @@ static int eager_produce(op_time_t deadline, op_time_t period)
     return made;
 }
 
+/** @brief Log the eager-production totals at shutdown.
+ *
+ * One `eager` info line: spans, scenes produced, skipped because their
+ * instant passed, refused because the ring was full, and cut short; the
+ * divisor level and its moves (shown as n/a under the greedy policy, where
+ * the level does not decide the plan); scene cost mean and deviation; the
+ * lag and the tick execution-time mean and deviation; the policy. Silent
+ * when no span ran. */
 static void eager_report(void)
 {
     if (!s_eager.spans) return;
@@ -1588,8 +1606,11 @@ static void eager_report(void)
                s_eager.policy ? "greedy" : "divisor");
 }
 
-/* Drop the plan on a guest discontinuity (savestate / rewind / level load);
- * the ring flushes its own pending scenes. */
+/** @brief Drop the eager scene plan on a guest discontinuity (savestate load, rewind, level load).
+ *
+ * Clears the planned targets and the last target, and resets the decaying
+ * tick-time peak to the tick mean. The scene ring flushes its own pending
+ * scenes. Registered with openpete_on_guest_discontinuity. */
 static void eager_on_discontinuity(void) { s_eager.n = s_eager.i = 0; s_eager.last_target = 0; s_eager.tick_peak = s_eager.tick_ema; }
 
 /* Frame-time-log hook for presents made on the present thread. */
@@ -1654,10 +1675,13 @@ static int         s_render_fps       = 0;
 static op_period_t s_render_period    = { 0, 0, 1 };
 static int         s_render_fps_dirty = 0;
 
-/* OPENPETE_FORCE_PACING: run the pacer even headless, which is otherwise
- * fast-forwarded. Resolved once, and readable before the loop starts —
- * the loop's unlock verdict has to exist before the FIRST iteration, or the
- * boot VBL is recorded as paced against a grid nothing slept to. */
+/** @brief Return 1 when OPENPETE_FORCE_PACING makes a headless run pace like a windowed one.
+ *
+ * A headless run otherwise runs unlocked (fast-forward). The variable is
+ * read once and logged; the result is readable before the main loop starts,
+ * because the loop seeds its previous-iteration unlock state from it before
+ * the first iteration, else the boot VBL would be recorded as paced against
+ * a grid nothing slept to. */
 static int pace_force_pacing(void)
 {
     static int s_init = 0, s_on = 0;
@@ -1939,6 +1963,21 @@ int openpete_get_render_fps(void) {
     return s_render_fps;
 }
 
+/** @brief Bring up the host side of a run: guest CPU and PSX runtime, knobs, mods, PsyCross, audio, input, windows and the native renderer.
+ *
+ * Runs before the host loop, on the thread that will pump SDL events (main
+ * under the thread split, else the single thread). In order it initialises
+ * the guest CPU and PSX runtime, seeds the CLI knobs (volumes, vibration,
+ * mouse, input lock), boots the EXE and applies --seed-cpu / --seed-ram,
+ * applies feature-module knobs and loads mods, resolves the window size
+ * from --aspect, sets up PsyCross (null-GPU when nothing would rasterize),
+ * input maps and icons, arms --record, brings up the native Vulkan renderer
+ * for --renderer vk, arms the pad-read probe, halt-at-pc and the psxtrace
+ * verifier, configures the memory card, and starts the VBL ticker unless
+ * headless without OPENPETE_FORCE_PACING.
+ * @param opts Resolved launch options.
+ * @return 0 on success, else an OPENPETE_EXIT_* code for the caller to
+ *         return. */
 static int run_host_init(const openpete_options_t* opts) {
     /* True when main owns the window, the pump and the SDL-state publish, and
      * this function is running on the worker. Resolved once: it decides which
@@ -2062,10 +2101,9 @@ static int run_host_init(const openpete_options_t* opts) {
      * An explicit --window always wins. */
     if (opts->aspect_w_over_h > 0.0f &&
         opts->renderer == OPENPETE_RENDERER_PSYCROSS) {
-        /* The PsyCross-mode Hor+ substitution stack was retired 2026-07-06
-         * (Phase 6, openpete-native-renderer.md): the reference renderer
-         * draws canonical 4:3 only, so a widened window would just
-         * stretch it. Native modes keep --aspect (window-driven Hor+). */
+        /* The PsyCross reference renderer has no Hor+ path and draws
+         * canonical 4:3 only, so a widened window would stretch it. Native
+         * modes keep --aspect (window-driven Hor+). */
         OPL_WARN_F("aspect", "--aspect is native-renderer-only (the PsyCross "
                    "Hor+ substitution stack was retired); the PsyCross "
                    "reference renders canonical 4:3 — flag ignored");

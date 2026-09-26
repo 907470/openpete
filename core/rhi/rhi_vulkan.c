@@ -1961,10 +1961,17 @@ static VkResult balloon_hold(rhi_device *dev, uint32_t type, int want_blocks,
     return r;
 }
 
-/* One balloon spec: `<heap>:<MiB>` holds that many MiB, `<heap>:fill` holds
- * until the driver refuses, `<heap>:fill-<MiB>` fills and then releases at
- * least <MiB>, leaving a margin of free space in the heap. A heap that does
- * not exist, or that backs no memory type, is reported and skipped. */
+/** @brief Parse one OPENPETE_RHI_BALLOON spec and hold device memory in the named heap.
+ *
+ * `<heap>:<MiB>` holds that many MiB, rounded up to whole blocks;
+ * `<heap>:fill` allocates until the driver refuses; `<heap>:fill-<MiB>`
+ * fills and then releases at least <MiB>, leaving that margin free in the
+ * heap. A malformed spec, a heap that does not exist, and a heap that backs
+ * no memory type are logged and skipped. The held amount and the driver's
+ * refusal code are logged.
+ * @param dev  Device that holds the blocks.
+ * @param mp   The physical device's memory properties.
+ * @param spec One comma-free spec string. */
 static void balloon_spec(rhi_device *dev,
                          const VkPhysicalDeviceMemoryProperties *mp,
                          const char *spec)

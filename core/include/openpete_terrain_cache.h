@@ -290,11 +290,24 @@ void openpete_tercache_frame_stats(int *drawn, int *hp, int *lp, int *nearvar, i
 void openpete_tercache_frame_globals(char *out, int cap);
 void openpete_tercache_frame_slots(char *out, int cap);
 
-/* Provided by native_render.c: the renderer-side conditions ANDed (cache up,
- * no reference-compare delay, no dev tag instruments / PSX wobble, hardware
- * GPU). HD packs and material selectors are per-sector CLAIMS in the feeder,
- * not exclusions here. The feeder ANDs its own (flag, debug envs, portal
- * recency). */
+/** @brief Return 1 when the terrain feeder may route unclaimed sectors through the GPU cache.
+ *
+ * Defined in native_render.c. ANDs the renderer-side conditions the feeder
+ * cannot see: the native renderer is enabled, the cache is ready, no
+ * reference-compare scene delay is selected (the cache draws the live walk,
+ * not the scene history ring), neither the tag-split nor the tag-tint
+ * instrument nor the OPENPETE_SCENE_BOXDBG box instrument is armed (their
+ * semantics live in the CPU batcher), the device has fp64 (terrain.vert
+ * needs it to match the CPU walk's double math bit for bit), and the device
+ * is a hardware GPU (terrain.vert runs slowly on llvmpipe) unless
+ * OPENPETE_TERRAIN_CACHE_FORCE=1 waives that.
+ *
+ * The PSX vertex wobble is not an exclusion: terrain.vert applies the same
+ * floor to its emitted screen point. HD texture packs and mod material
+ * selectors are not exclusions either: the feeder claims affected sectors
+ * back per sector. The feeder ANDs its own conditions (flag, debug envs,
+ * portal recency).
+ * @return 1 when the retained path is usable for this present, else 0. */
 int  openpete_native_tercache_usable(void);
 /* Host loop, once per VBL: run the terrain cache's device service on the
  * headless path. Self-no-ops with a window, where the present entry runs it
@@ -309,8 +322,14 @@ void openpete_native_tercache_service_headless(void);
  * halves of the mat_far1/mat_near1 clut words). */
 #define OPENPETE_HDFOLD_MAX 416   /* entry-table cap (globals-UBO budget) */
 
-/* Master gate: OPENPETE_TERRAIN_HDFOLD=1, a pack active, and the pack-fog
- * models at their shipped defaults (the fold bakes those). Per-run latch. */
+/** @brief Return 1 when the HD texture-replacement fold is active.
+ *
+ * Default on; OPENPETE_TERRAIN_HDFOLD=0 disables it, and so does
+ * OPENPETE_TEXPACK_FOG_CONT=0 or OPENPETE_TEXPACK_FOG_FIT=0, since the fold
+ * bakes the default pack-fog models. The environment is read once per run;
+ * the result also requires a texture pack with active replacements, which is
+ * tested on every call.
+ * @return 1 when the fold is on, else 0. */
 int  openpete_native_hdfold_on(void);
 
 /** @brief Intern the pack replacement for one emitted tri and return its fold entry id.

@@ -265,12 +265,15 @@ static uint8_t sv_read_byte(uint32_t addr)
     return s_orig_read_byte(addr);
 }
 
-/* Writes are counted, then performed. See the header: the count is the
- * measure of un-migrated producers, and refusing the write would damage the
- * present rather than protect anything. */
-/* Every write path is counted, not just word-sized. A byte-writing producer
- * would otherwise be invisible to the census and the remaining work would be
- * reported as smaller than it is. */
+/** @brief Guest halfword store during a present: absorbed by a covering staged span, else counted and performed.
+ *
+ * Every store width (word, half, byte, swl, swr) is counted, so a producer
+ * writing guest memory in any width appears in the write census; the count
+ * measures producers that still write guest memory during a present. A store
+ * outside the staged spans is performed rather than refused, since refusing
+ * it would change the present without protecting gameplay state.
+ * @param addr Guest address.
+ * @param v    Halfword to store. */
 static void sv_write_half(uint32_t addr, uint16_t v)
 { if (sv_staged_store(addr, 2, &v)) return;
   s_stat_writes++; sv_wset_note(addr); s_orig_write_half(addr, v); }

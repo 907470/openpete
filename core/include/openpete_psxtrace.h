@@ -160,9 +160,18 @@ int openpete_psxtrace_open(openpete_psxtrace_t* t, const char* path);
  *         error. */
 int openpete_psxtrace_advance(openpete_psxtrace_t* t);
 
-/* Call once after the last advance() (EOF). Any cd_load_transient region
- * still mid-burst (never re-converged before the trace ended) is promoted
- * to a hard failure. Also logs a one-line tally of absorbed transients. */
+/** @brief Settle the trace compare after the last openpete_psxtrace_advance() and log its PASS/FAIL line.
+ *
+ * When every record was consumed: a region whose divergence count exceeds
+ * its manifest row's diverge_baseline sets @c hard_failed (reason
+ * "ratchet"), and a CD-load transient still open sets it (reason
+ * "unhealed-eof"). When the run ended before the trace did, an open
+ * transient is logged as unverified and not promoted. An open burst in a
+ * gameplay_neutral or host_precision region is logged and never promoted.
+ * Then logs the scheduler and CD-ROM MMIO summaries, the first hard
+ * failure, and the `verdict:` line with the absorbed-transient and
+ * neutral-burst counts.
+ * @param t Trace opened by openpete_psxtrace_open(). */
 void openpete_psxtrace_finalize(openpete_psxtrace_t* t);
 
 void openpete_psxtrace_close(openpete_psxtrace_t* t);

@@ -251,10 +251,7 @@ int openpete_present_thread_enabled(void)
     return s_enabled;
 }
 
-/* OPENPETE_EAGER_LATTICE=1: plan and compose on the display's vblank
- * lattice (below), which implies present timing. Off, the thread composes
- * each scene at its target and observes flips only under
- * OPENPETE_PACE_FLIP_LOG -- the form the eager default was measured in. */
+/* OPENPETE_EAGER_LATTICE gate; documented at the declaration. */
 int openpete_present_thread_lattice_enabled(void)
 {
     static int on = -1;

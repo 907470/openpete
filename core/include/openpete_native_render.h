@@ -50,6 +50,22 @@ void openpete_native_set_icon(const void* rgba32, int w, int h);
 void openpete_native_precreate_window(const openpete_options_t *opts,
                                       int win_w, int win_h);
 
+/** @brief Bring up the native Vulkan renderer: its window or a surfaceless device, pipelines, buffers and the terrain cache.
+ *
+ * Not brought up, returning 0, when @p opts is NULL, under --headless with
+ * the PsyCross renderer, and under --headless with the vk renderer unless
+ * screenshots or the identity audit need a surfaceless device. Otherwise it
+ * applies the texture-mapping, notex, wireframe and aspect settings, creates
+ * the device (adopting a precreated window when one was handed over), the
+ * scene pipelines and buffers, subscribes to PsyCross VRAM writes, starts
+ * the terrain sector cache when --terrain-cache is on and the device is a
+ * hardware GPU (or OPENPETE_TERRAIN_CACHE_FORCE is set), and primes the HD
+ * fold atlas when the fold is on.
+ * @param opts  Resolved launch options.
+ * @param win_w Requested window width, or <= 0 for the default.
+ * @param win_h Requested window height, or <= 0 for the default.
+ * @return 0 when the renderer is up or deliberately not brought up, 1 when
+ *         bring-up failed. */
 int openpete_native_render_init(const openpete_options_t *opts, int win_w, int win_h);
 
 /* True once native bring-up succeeded: a Vulkan device exists and this process
@@ -319,9 +335,15 @@ void openpete_native_set_version_osd(int on);
 /// @brief The --version-osd value in force (default 1).
 int  openpete_native_version_osd(void);
 
-/* The three facts above resolved into one answer: whether a version line will
- * be drawn in this build. The game-side builder asks before spending glyph
- * geometry on it. */
+/** @brief Return 1 when this build draws a version line.
+ *
+ * 0 for a build whose recomp module is not linked shared, as the
+ * distribution presets link it: such a build is never distributed. 1 for a
+ * shared-recomp build that is not a tagged release, whatever the knob: the
+ * line is what names the build in a screenshot of it. For a tagged release,
+ * the --version-osd value. The game-side builder asks before building glyph
+ * geometry.
+ * @return 1 when a version line is drawn, else 0. */
 int openpete_native_version_line_enabled(void);
 
 /* One phrase naming why, for the shutdown census. Never NULL. */

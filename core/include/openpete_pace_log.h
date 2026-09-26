@@ -211,6 +211,10 @@ void openpete_pace_vbl(uint32_t vbl_index, uint8_t flags, uint16_t pad_reads,
  * prev/curr pair existed at all). Called by the re-extract that resolves it;
  * the value rides on the next PRESENT record. */
 void openpete_pace_note_alpha(double alpha, int paired);
+/** @brief Return the paired flag of the alpha last published by openpete_pace_note_alpha.
+ *
+ * @return 1 when the re-extract that published the alpha had a prev/curr
+ *         pair to interpolate between, else 0. */
 int  openpete_pace_last_alpha_paired(void);
 /* The alpha the most recent EXTRACTION computed (extraction-thread owned). */
 double openpete_pace_extract_alpha(int *paired);
@@ -335,13 +339,16 @@ void openpete_pace_host_pump(int64_t start_ns, int64_t wait_end_ns,
                              int64_t pump_end_ns, int64_t input_end_ns,
                              int64_t end_ns, int window_op);
 
-/* Bracket the VBL the guest is about to run.
+/** @brief Open the pad-read bracket for the VBL the guest is about to run.
  *
- * The pad-read probe below fires from deep inside the dispatcher, which knows
- * nothing about the grid. Handing it the two instants the VBL was stamped
- * with lets each PAD_READ record carry its own offsets, so "where in the VBL
- * period did the game read the pad" is answerable from the record alone
- * rather than by joining against a VBL record not yet written. */
+ * Stores the VBL index and its two instants, zeroes the VBL's pad-read
+ * count, opens the bracket and clears a suspension. The pad-read probe fires
+ * from inside the dispatcher, which does not know the pacing grid; the
+ * stored instants let each PAD_READ record carry its own offsets into the
+ * VBL period without a join against a VBL record not yet written.
+ * @param vbl_index     Index of the VBL about to run.
+ * @param exec_start_ns Instant the VBL's guest execution starts.
+ * @param latch_ns      Input latch instant stamped for the VBL, 0 when none. */
 void openpete_pace_vbl_begin(uint32_t vbl_index, int64_t exec_start_ns,
                               int64_t latch_ns);
 
