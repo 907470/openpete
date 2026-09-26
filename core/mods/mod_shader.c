@@ -112,6 +112,10 @@ static mod_shader_t* shader_at(int i) {
 /* ------------------------------------------------------------------ */
 /* small file helpers                                                  */
 
+/** @brief Write a buffer to a file, replacing any previous content.
+ *
+ * @return 0 when every byte was written, -1 when the file cannot be opened
+ *         or a write falls short. */
 static int write_whole_file(const char* path, const void* data, size_t len) {
     FILE* f = fopen(path, "wb");
     if (!f) return -1;
@@ -340,6 +344,7 @@ static size_t compile_profile(const char* src, int stage,
 /* ------------------------------------------------------------------ */
 /* the service                                                         */
 
+/** @brief Body of openpete_mods_shader_register, run under the registry write lock. */
 static int openpete_mods_shader_register_locked(openpete_mod_t* self, const char* path) {
     const char* id = openpete_mods_id_of(self);
     const char* mod_dir = openpete_mods_dir_of(self);
@@ -484,9 +489,7 @@ const uint32_t* openpete_mods_shader_spv(int handle, size_t* words,
     return sh->spv;
 }
 
-/* The retained-terrain profile of a material fragment. NULL when the shader
- * has none (not a material, or its terrain compile failed) — the caller then
- * draws terrain stock rather than dropping the frame. */
+/* The retained-terrain profile of a material fragment; NULL when it has none. */
 const uint32_t* openpete_mods_shader_spv_terrain(int handle, size_t* words) {
     const mod_shader_t* sh;
     if (handle < 0 || handle >= shader_count()) return NULL;
@@ -513,11 +516,7 @@ static void openpete_mods_shader_remove_owner_locked(const char* mod_id) {
 void openpete_mods_shader_remove_owner(const char* mod_id) { REG_WR(); openpete_mods_shader_remove_owner_locked(mod_id); REG_WR_END(); }
 
 
-/* Hot-reload watch companion (mod_loader.c hot_reload_poll): content
- * hash of every shader source under <mod>/shaders/. "-" when the dir
- * is absent. Sources elsewhere in the mod dir are keyed per-register
- * (shader_compute_key) but not watched — document shaders/ as THE
- * shader home. */
+/* Watch key of <mod>/shaders/ for the loader's hot-reload poll. */
 int openpete_mods_shader_watch_key(const char* mod_dir, char key_out[65]) {
     char dir[MOD_SHADER_PATH_MAX * 2];
     snprintf(dir, sizeof dir, "%s/shaders", mod_dir);
@@ -581,9 +580,13 @@ typedef struct {
 static mod_cvec s_fx;               /* mod_postfx_t */
 static mod_fvec s_retired_pipelines; /* void*, drained by the renderer */
 
-/* Hand a cached pipeline to the renderer's drain list. The list grows,
- * so a sweep that retires a whole material's variants at once cannot
- * drop one on the floor (a dropped pipeline is leaked GPU memory). */
+/** @brief Append a cached pipeline to the retirement list the renderer drains.
+ *
+ * NULL and OPENPETE_POSTFX_PIPE_FAILED are ignored. The list grows, so a
+ * sweep that retires every variant of a material at once keeps them all;
+ * an allocation failure logs an error and leaks that pipeline. The
+ * renderer takes the list with openpete_mods_postfx_take_retired() and
+ * destroys each pipeline. */
 static void retire_pipeline(void* pipe) {
     void** slot;
     if (!pipe || pipe == OPENPETE_POSTFX_PIPE_FAILED) return;
@@ -752,9 +755,10 @@ int openpete_mods_postfx_take_retired(void** out, int cap) {
     return n;
 }
 
-/* Shutdown sweep: every cached pipeline (enabled or not) to the
- * retirement list; registrations stay live (process is exiting or the
- * renderer is about to drain). */
+/** @brief Move the cached pipeline of every live postfx pass, enabled or not, to the retirement list.
+ *
+ * Used at shutdown, under the registry write lock; the registrations stay
+ * live and rebuild their pipelines on next use. */
 static void openpete_mods_postfx_retire_all_locked(void) {
     for (int i = 0; i < fx_count(); i++) {
         mod_postfx_t* f = fx_at(i);
@@ -907,11 +911,14 @@ typedef char nr_assert_mat_slots_fit_narrowest_tag_field[
  * changes terrain_winner() could actually see. */
 static unsigned s_mat_ter_epoch;
 
-/* Could this material ever bucket a terrain face — ignoring whether it is
- * enabled right now? Deliberately NOT terrain_sel_usable(): the enable state
- * is what we are deciding whether to react to, and the level is not known at
- * every bump site. Wider than the truth is safe here (a spurious re-bake);
- * narrower would leave faces stamped for a selector that no longer wins. */
+/** @brief Test whether a material could bucket a terrain face in some enable state and level.
+ *
+ * True for a live material on channel -1 or OP_CHAN_TERRAIN. The mutators
+ * use it to decide whether a change bumps s_mat_ter_epoch, so it ignores
+ * the enable state, which is the change being reacted to, and the level,
+ * which is not known at every bump site. A wider answer costs a spurious
+ * re-bake; a narrower one would leave faces stamped for a selector that no
+ * longer wins. */
 static int terrain_sel_relevant(const mod_material_t* m) {
     return m->live && (m->sel.channel == -1 || m->sel.channel == OP_CHAN_TERRAIN);
 }
@@ -936,9 +943,13 @@ unsigned openpete_mods_material_terrain_epoch(void) {
 
 static int openpete_mods_current_level(void);   /* defined with s_cur_level */
 
-/* Is this material live, enabled, on the terrain channel, and in scope for
- * the level being rendered? The level test mirrors the resolve's: without
- * it a level-scoped row would bucket faces in EVERY level. */
+/** @brief Test whether a material can bucket terrain faces in a level.
+ *
+ * True when the material is live, user-enabled and owned by an enabled
+ * mod, is on channel -1 or OP_CHAN_TERRAIN, and has no level key or one
+ * equal to @p level; a negative @p level matches every level key. The
+ * level test mirrors the draw-time resolve's, so a level-scoped selector
+ * buckets faces only in its level. */
 static int terrain_sel_usable(const mod_material_t* m, int level) {
     if (!m->live || !m->user_enabled || !openpete_mods_is_enabled(m->owner))
         return 0;
@@ -947,11 +958,19 @@ static int terrain_sel_usable(const mod_material_t* m, int level) {
     return 1;
 }
 
-/* The winning terrain selector for a face key (-1 = none), by the same
- * predicates and the same precedence as the draw-time resolve: a
- * PER-INSTANCE selector wins outright (the walked path's tag carries its
- * slot, which short-circuits the declarative scan), and among selectors of
- * one kind the later-loaded one wins. */
+/** @brief Return the index of the winning terrain material for a face key, or -1.
+ *
+ * Applies the draw-time resolve's predicates and precedence over the
+ * materials terrain_sel_usable() accepts for the current level. A
+ * per-instance material whose texture key matches (for the untextured
+ * band, one with OP_SEL_UNTEXTURED and no texture key) outranks every
+ * declarative one, as the walked path's tag carries its slot and skips the
+ * declarative scan; within each kind the highest load_index wins.
+ * Declarative materials test the texture key and the OP_SEL_ENV_ANIM,
+ * tier and textured/untextured flags against the face.
+ * @param texid Tiledef id, or -1 for an untextured face.
+ * @param env Nonzero for a face in the env-rewrite set.
+ * @param lp Nonzero for an LP-tier face. */
 static int terrain_winner(int texid, int env, int lp) {
     if (s_mat_count == 0) return -1;
     const int untex = texid < 0;
@@ -1296,8 +1315,7 @@ static void openpete_mods_set_level_locked(int level_id) {
         s_cur_level = level_id; s_mat_ter_epoch++;
     }
 }
-/* One int, written between scenes and read at draw: no lock, and never a
- * wait behind a compose blocked on the display. */
+/* No lock: a compose blocked on the display never delays the push. */
 void openpete_mods_set_level(int level_id) { openpete_mods_set_level_locked(level_id); }
 
 static int openpete_mods_current_level(void) { return s_cur_level; }
@@ -1429,23 +1447,20 @@ static int material_terrain_tex_winner(int texid) {
     return best;
 }
 
-/* The refine outcome for one per-instance TERRAIN material, as an interned
- * uniform slot, computed ONCE per present.
+/** @brief Return the refine outcome of one per-instance terrain material as an interned uniform slot, computed once per present.
  *
- * A terrain refine selector carries exactly one key — a Tiledef id, or the
- * untextured band — so "the material's outcome" and "this key's outcome" are
- * the same thing, and one memo per material covers every face it reaches.
- * That is what lets a RETAINED face have a refine material at all: the
- * outcome is not derivable from a baked face, but it does not have to be,
- * because it does not vary across the faces of one material.
- *
- * Computing it in one place is also what keeps the two residencies on one
- * answer. It used to be driven from the walk's emit loop, which a retained
- * face never enters; both paths now read this, in the same per-present
- * context, from the same key.
- *
- * Returns 0 (no winner / not per-instance) or an interned slot, or
- * OPENPETE_MATERIAL_TERRAIN_STOCK when the callback declined. */
+ * A terrain refine selector carries one key, a Tiledef id or the
+ * untextured band, so the material's outcome is the outcome of every face
+ * it reaches and one memo per material serves the walked and the retained
+ * terrain alike. The memo is keyed on the present counter
+ * openpete_mods_material_frame_reset() advances. The callback receives a
+ * terrain key with the selector's texture (-1 for the untextured band);
+ * its block, capped at OPENPETE_MATERIAL_UNIFORMS_MAX, reuses an interned
+ * slot of the same material with identical bytes, else takes a new slot.
+ * @param w Material index, or -1 for none.
+ * @return 0 for no material or a declarative one, an interned slot, or
+ *         OPENPETE_MATERIAL_TERRAIN_STOCK when the callback declined or
+ *         the slot table is full. */
 static int terrain_refine_slot(int w) {
     if (w < 0 || w >= s_mat_count) return 0;
     mod_material_t* m = &s_mats[w];
@@ -1479,21 +1494,14 @@ static int terrain_refine_slot(int w) {
     return (m->refine_slot = s);
 }
 
-/* Resolve the texture-keyed material for one textured terrain face id. The
- * callback receives the Tiledef id in the key. Returns the interned slot for
- * OPENPETE_TAG_TERRAIN_TEX (0 = no per-instance winner -> declarative
- * resolve; OPENPETE_MATERIAL_TERRAIN_STOCK = the callback declined). */
+/* Per-instance material slot for one textured terrain Tiledef id. */
 int openpete_mods_material_terrain_tex_slot(CPUState* cpu, int texid) {
     if (!s_mat_has_instance) return 0;
     (void)cpu;
     return terrain_refine_slot(material_terrain_tex_winner(texid));
 }
 
-/* Resolve the untextured-terrain material once per extraction (terrain has
- * no instances — the whole band shares one outcome). The callback receives
- * moby_vaddr 0. Returns the interned slot for OPENPETE_TAG_TERRAIN_UNTEX
- * (0 = no per-instance winner -> declarative resolve;
- * OPENPETE_MATERIAL_TERRAIN_STOCK = the callback declined). */
+/* Per-instance material slot for the untextured terrain band. */
 int openpete_mods_material_terrain_untex_slot(CPUState* cpu) {
     if (!s_mat_has_instance) return 0;
     (void)cpu;

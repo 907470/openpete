@@ -47,12 +47,7 @@ void* openpete_psx_to_host_ptr(uint32_t addr) {
     return NULL;
 }
 
-/* Inverse of openpete_psx_to_host_ptr: maps a host pointer that lives
- * inside g_ram (or scratch) back to its PSX KSEG0 vaddr. NULL → 0;
- * any host pointer outside the recognized regions also → 0 (callers
- * treat that as PSX NULL, which matches PSX-side semantics for "not a
- * valid game-RAM address"). Used by the source rewriter when native
- * code assigns a host pointer to a PSX-aliased storage slot. */
+/* Inverse of openpete_psx_to_host_ptr for RAM and scratchpad pointers. */
 uint32_t openpete_host_to_psx(const void* host_ptr) {
     if (host_ptr == NULL) return 0u;
     const uint8_t* p = (const uint8_t*)host_ptr;
@@ -80,7 +75,12 @@ uint32_t openpete_host_to_psx(const void* host_ptr) {
     return 0u;
 }
 
-/* Map a PSX virtual address to a host pointer; NULL if unmapped. */
+/** @brief Map a PSX address to a host pointer for the bus callbacks; NULL when unmapped.
+ *
+ * Main RAM and the scratchpad resolve under any segment (the top three
+ * address bits are dropped); any other address resolves through the
+ * registered presentation region table (psx_region.c). Unlike
+ * openpete_psx_to_host_ptr(), address 0 maps to RAM offset 0. */
 static uint8_t* mem_ptr(uint32_t addr) {
     /* Strip KSEG0/KSEG1/KUSEG segment bits. PSX uses unmapped segments
      * 0x80xxxxxx (cached) and 0xA0xxxxxx (uncached) over the same RAM. */
@@ -146,9 +146,13 @@ static void write_half(uint32_t addr, uint16_t value) {
     if (!p) return;
     memcpy(p, &value, 2);
 }
-/* Byte accesses to the CD-ROM controller's registers (0x1F801800..03) go
- * to the host's controller model; every other unmapped address reads 0
- * and drops writes. */
+/** @brief Read one byte from the PSX bus.
+ *
+ * Main RAM, the scratchpad and the region table resolve through mem_ptr().
+ * An unmapped read of the CD-ROM controller's registers (0x1F801800 to
+ * 0x1F801803) goes to the controller model (cdrom_mmio.c), one in the BIOS
+ * ROM window to the ROM identification model; every other address reads
+ * 0. */
 static uint8_t read_byte(uint32_t addr) {
     uint8_t* p = mem_ptr(addr);
     if (p) return *p;
@@ -168,17 +172,15 @@ static void write_byte(uint32_t addr, uint8_t value) {
  *   LWL/LWR pair builds a misaligned 32-bit word from two aligned reads.
  * We implement on top of read_word so segment/MMIO routing stays unified. */
 
-/* MIPS R3000 little-endian LWL/LWR/SWL/SWR semantics (psx-spx, "CPU
- * Load/Store Opcodes"): LWL and SWL shift by (3 - (addr & 3)) * 8, LWR and
- * SWR by (addr & 3) * 8.
- * The previous formulas had the (addr&3) and (3 - addr&3) shift expressions
- * swapped between L and R within each pair. The canonical 4-byte unaligned-
- * load idiom `lwr 0(s); lwl 3(s)` only worked at certain alignments,
- * leaving 1-2 bytes of stale data from prior `rt` mixed into the result.
- * Bit `func_80022A2C`'s shaded-moby vertex loop (3-byte vertex stride):
- * once per loop, s2 hit 4-aligned and lwl over-wrote rt with the next
- * word's bytes — producing 0x7F-padding-sourced spike apex vertices in
- * HUD digits, gems, and the loading-text fly-in. */
+/** @brief Execute LWL: merge the high-order bytes of an unaligned word into @p rt.
+ *
+ * Little-endian R3000 semantics (psx-spx, "CPU Load/Store Opcodes"): LWL
+ * and SWL shift by (3 - (addr & 3)) * 8, LWR and SWR by (addr & 3) * 8.
+ * The byte at @p addr and those below it down to the aligned word's start
+ * replace the top bytes of @p rt, so the unaligned-load idiom `lwr 0(s); lwl 3(s)`
+ * assembles the word at every alignment, including func_80022A2C's
+ * shaded-moby vertex loop over a 3-byte stride.
+ * @return The merged register value. */
 static uint32_t do_lwl(uint32_t addr, uint32_t rt) {
     uint32_t aligned = addr & ~3u;
     uint32_t word    = read_word(aligned);

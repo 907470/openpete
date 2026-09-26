@@ -53,7 +53,9 @@ static void census_unlink(mod_vec_node_t* n) {
     n->next = NULL;
 }
 
-/* Smallest power of two at least `n`, with a floor of 1. */
+/** @brief Return the exponent of the smallest power of two at least @p n.
+ *
+ * 0 for @p n <= 1; capped at one less than the bit width of size_t. */
 static unsigned shift_for(size_t n) {
     unsigned s = 0;
     while (((size_t)1 << s) < n && s < (sizeof(size_t) * 8 - 1)) s++;
@@ -68,9 +70,13 @@ void mod_cvec_init(mod_cvec* v, size_t elem_size, size_t block_elems,
     census_link(&v->census, v, name, was, 1);
 }
 
-/* Publish a block index with room for one more block. The old array is
- * retained rather than freed: a reader on another thread may be inside
- * it. Returns 0 on success. */
+/** @brief Replace the block index with one of twice the slots, 4 for the first.
+ *
+ * The old index is copied into the new one and kept on the retired list
+ * rather than freed, since a reader on another thread may be inside it;
+ * the list is freed with the table.
+ * @return 0, or -1 on an allocation failure, which leaves the table
+ *         unchanged. */
 static int cvec_grow_index(mod_cvec* v) {
     size_t slots = v->block_slots ? v->block_slots * 2 : 4;
     unsigned char** ix = (unsigned char**)calloc(slots, sizeof *ix);
@@ -89,7 +95,10 @@ static int cvec_grow_index(mod_cvec* v) {
     return 0;
 }
 
-/* Append one block. Returns 0 on success. */
+/** @brief Append one zeroed block of 2^block_shift elements, growing the index when full.
+ *
+ * Counts the growth in the table's `grew` census field.
+ * @return 0, or -1 on an allocation failure. */
 static int cvec_add_block(mod_cvec* v) {
     size_t block_elems = (size_t)1 << v->block_shift;
     unsigned char* blk;

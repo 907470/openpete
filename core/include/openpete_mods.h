@@ -809,21 +809,54 @@ const char* openpete_mods_dir_of(openpete_mod_t* self);
 const char* openpete_mods_sdk_dir(void);
 
 /* ── Mod shaders (mod_shader.c) ───────────────────────────────────────
- * GLSL compile service (tier S1 of plans/openpete-mod-shaders.md) +
- * refusing stubs for the later tiers (slots exist from api v2). */
+ * GLSL compile service, postfx passes and material selectors. */
+/** @brief Register a mod's GLSL shader, compiling it or loading its cached or prebuilt SPIR-V, and return its handle.
+ *
+ * The stage comes from the extension (`.vert` or `.frag`). A path holding
+ * `..`, of MOD_SHADER_PATH_MAX bytes or more, or registered inside a
+ * present hook is refused. With the source present, the SPIR-V is cached
+ * under `<mod>/.build/shaders/` keyed on a SHA-256 build key, and a
+ * material fragment is compiled a second time for the retained-terrain
+ * profile; a failed terrain compile logs and leaves that profile absent.
+ * Without the source, `<path>.spv` loads only when `<path>.spv.ihash`
+ * holds the current interface hash and the file is a nonempty whole number
+ * of 32-bit words. Takes the registry write lock.
+ * @param self Registering mod.
+ * @param path Shader source path relative to the mod directory.
+ * @return The handle, an index that stays valid until the owner is swept,
+ *         or -1 on failure. */
 int openpete_mods_shader_register(openpete_mod_t* self, const char* path);
-/* SPIR-V words for a live handle (NULL = bad/swept handle). stage is a
- * glslang_stage_t value (vertex/fragment). */
+/** @brief Return the SPIR-V words of a live shader handle.
+ *
+ * @param handle Shader handle.
+ * @param words Receives the word count; may be NULL.
+ * @param stage Receives the glslang_stage_t value (vertex or fragment);
+ *        may be NULL.
+ * @return The words, or NULL for an out-of-range or swept handle. */
 const uint32_t* openpete_mods_shader_spv(int handle, size_t* words,
                                          int* stage);
-/* The same material fragment compiled for the RETAINED TERRAIN pipelines,
- * whose engine half of the contract reads flat per-face varyings instead of
- * a per-draw push block (OP_PROFILE_TERRAIN in openpete_psx_material.glsl).
- * NULL when the shader has no terrain profile — not a material fragment, or
- * its terrain compile failed; terrain then draws stock. */
+/** @brief Return the retained-terrain profile of a material fragment shader.
+ *
+ * The same source compiled with OP_PROFILE_TERRAIN
+ * (openpete_psx_material.glsl), whose engine half reads flat per-face
+ * varyings instead of a per-draw push block. NULL when the handle is out
+ * of range or swept, or the shader has no terrain profile (not a material
+ * fragment, or its terrain compile failed); terrain then draws stock.
+ * @param handle Shader handle.
+ * @param words Receives the word count; may be NULL.
+ * @return The words, or NULL. */
 const uint32_t* openpete_mods_shader_spv_terrain(int handle, size_t* words);
 void openpete_mods_shader_remove_owner(const char* mod_id);
-/* Hot-reload watch: content hash of <mod>/shaders/ ("-" if absent). */
+/** @brief Compute the hot-reload watch key of a mod's shaders/ directory.
+ *
+ * SHA-256 over the name and content of every `.vert`, `.frag`, `.glsl`,
+ * `.spv` and `.ihash` file in `<mod_dir>/shaders/`, in strcmp order, at
+ * most 64 files. Shader sources elsewhere in the mod directory are keyed
+ * per registration but not watched.
+ * @param mod_dir The mod's directory.
+ * @param key_out Receives the 64-character hex digest, or "-" when the
+ *        directory holds no such file.
+ * @return 0. */
 int openpete_mods_shader_watch_key(const char* mod_dir, char key_out[65]);
 int openpete_mods_postfx_register(openpete_mod_t* self, int frag_shader,
                                   int point, int order);
@@ -863,10 +896,14 @@ int  openpete_mods_postfx_take_retired(void** out, int cap);
 void openpete_mods_postfx_remove_owner(const char* mod_id);
 void openpete_mods_postfx_retire_all(void);   /* shutdown: cache every pipeline */
 
-/* Registry read side for a compose: held for the whole compose so the
- * shader/postfx/material tables cannot change under it (their mutators
- * take the write side). */
+/** @brief Take the registry read lock for a compose.
+ *
+ * Held for the whole compose, so the shader, postfx and material tables
+ * cannot change under it; their mutators take the write side. Records the
+ * calling thread, so a mutator called from inside the compose on that
+ * thread proceeds without the write lock instead of deadlocking. */
 void openpete_mods_registry_read_lock(void);
+/** @brief Release the registry read lock and clear the recorded reader thread. */
 void openpete_mods_registry_read_unlock(void);
 
 /* Draw-state variants a material can be built for. Index 5 is the DECAL
@@ -918,19 +955,41 @@ int  openpete_mods_material_has_instance(void);
 #define OPENPETE_MATERIAL_TERRAIN_STOCK 0x1FF
 int  openpete_mods_material_moby_slot(CPUState* cpu, int moby_class,
                                       uint32_t moby_vaddr);
-/* Untextured-terrain twin (S8c): resolve the beyond-LOD gouraud band's
- * per-instance material once per extraction (callback gets moby_vaddr 0).
- * Returns the slot for OPENPETE_TAG_TERRAIN_UNTEX (0 = declarative,
- * OPENPETE_MATERIAL_TERRAIN_STOCK = declined). */
+/** @brief Resolve the per-instance material of the untextured terrain band to a uniform slot.
+ *
+ * The untextured band is the beyond-LOD gouraud terrain; the whole band
+ * shares one outcome, and the terrain feed resolves it once per feed. The
+ * winner is the highest-load_index live, user-enabled per-instance
+ * material of an enabled mod on channel -1 or OP_CHAN_TERRAIN with
+ * OP_SEL_UNTEXTURED and no texture key. Its refine callback runs at most
+ * once per present and receives a terrain key with texture -1.
+ * @param cpu Unused.
+ * @return The slot for OPENPETE_TAG_TERRAIN_UNTEX: 0 when no per-instance
+ *         material wins (the draw-time declarative resolve applies), an
+ *         interned slot, or OPENPETE_MATERIAL_TERRAIN_STOCK when the
+ *         callback declined or the slot table is full. */
 int  openpete_mods_material_terrain_untex_slot(CPUState* cpu);
-/* Texture-keyed twin (S9): resolve the per-instance material for one textured
- * terrain face's Tiledef id. Same slot semantics as the untex resolve; the
- * feeder memoizes per (present, texid). */
+/** @brief Resolve the per-instance material of one textured terrain face's Tiledef id to a uniform slot.
+ *
+ * The winner is the highest-load_index live, user-enabled per-instance
+ * material of an enabled mod on channel -1 or OP_CHAN_TERRAIN without
+ * OP_SEL_UNTEXTURED whose texture key equals @p texid. Its refine callback
+ * runs at most once per present and receives the Tiledef id in the key.
+ * The terrain feed memoizes the result per feed and Tiledef id.
+ * @param cpu Unused.
+ * @param texid Tiledef id.
+ * @return The slot for OPENPETE_TAG_TERRAIN_TEX, with the same values as
+ *         openpete_mods_material_terrain_untex_slot(). */
 int  openpete_mods_material_terrain_tex_slot(CPUState* cpu, int texid);
-/* Monotonic epoch over everything a terrain selector scan reads: selector
- * registration/removal and the mod enabled set. The retained cache latches
- * its BAKE against it — a baked face carries its material's bucket, so a
- * selector set that moved makes the bake stale. */
+/** @brief Return the epoch the retained terrain cache latches its bake against.
+ *
+ * A baked face carries its material's bucket, so any change that can move
+ * a terrain bucket makes the bake stale. The value is 1 + a counter bumped
+ * on a change to a material that could bucket terrain (register, remove,
+ * selector retune, enable toggle) and on a level change + the mod toggle
+ * epoch; it strictly increases on each such change and is never 0, which
+ * the latch keeps as its unset value.
+ * @return The epoch. */
 unsigned openpete_mods_material_terrain_epoch(void);
 
 /* ── Retained-terrain material buckets ───────────────────────────────
@@ -967,15 +1026,21 @@ unsigned openpete_mods_material_terrain_epoch(void);
  * @param lp Nonzero for an LP-tier face.
  * @return The bucket id, 0 for none. */
 int  openpete_mods_material_terrain_bucket(int texid, int env, int lp);
-/* The live bucket ids, ascending, written into `out` (capacity `cap`;
- * OPENPETE_MATERIAL_TER_BUCKET_MAX always suffices). Returns the count.
+/** @brief Write the live retained-terrain bucket ids in ascending order.
  *
- * A bucket id is a material index + 1, so the ids are sparse: registering
- * one terrain material at index 200 leaves 199 ids below it with no live
- * material. Iterating 1..bucket_max would bind the stock pipeline and draw
- * the whole arena once per dead id. Iterating this list instead keeps the
- * pass count proportional to the live terrain materials, whatever the
- * table's size. */
+ * A bucket id is a material index + 1, listed when the material is live,
+ * user-enabled, owned by an enabled mod, on channel -1 or OP_CHAN_TERRAIN,
+ * and in scope for the current level. The ids are sparse: one terrain
+ * material at index 200 leaves 199 ids below it with no live material.
+ * The terrain cache draws one pass per listed id, which keeps the pass
+ * count proportional to the live terrain materials; iterating every id up
+ * to the highest would bind the stock pipeline and draw the whole arena
+ * once per dead id. With a material view installed the list is the one
+ * the view captured.
+ * @param out Receives the ids.
+ * @param cap Capacity of @p out; OPENPETE_MATERIAL_TER_BUCKET_MAX always
+ *        suffices.
+ * @return The count written; 0 for a NULL @p out or @p cap <= 0. */
 int  openpete_mods_material_terrain_bucket_list(int* out, int cap);
 
 typedef struct {
@@ -985,9 +1050,20 @@ typedef struct {
     const char*     owner;
     int             uniform_slot;  /* material-UBO block (0 = no params)    */
 } openpete_mod_material_terrain_t;
-/* Fill `out` for one bucket and one pipeline variant index (0 ..
- * OPENPETE_MATERIAL_TER_PIPES-1). Returns 0 on success, -1 when the bucket
- * is dead, disabled, or has no terrain profile — draw those faces stock. */
+/** @brief Fill the GPU binding of one retained-terrain material bucket for one pipeline variant.
+ *
+ * The bucket's material must be live, user-enabled, owned by an enabled
+ * mod, and carry a fragment shader with a terrain profile. A per-instance
+ * material binds the uniform slot its refine callback produced this
+ * present; a declined outcome returns -1. A declarative material binds its
+ * static slot, read through the installed material view when one is set.
+ * On -1 the caller draws the bucket's faces with the stock pipeline, since
+ * the stock pass has already dropped them.
+ * @param bucket Bucket id, a material index + 1.
+ * @param pipe_idx Pipeline variant index, 0 to OPENPETE_MATERIAL_TER_PIPES - 1.
+ * @param out Receives the terrain module, the cached pipeline slot, the
+ *        owner and the uniform slot.
+ * @return 0 on success, -1 otherwise. */
 int  openpete_mods_material_terrain_bucket_gpu(
         int bucket, int pipe_idx, openpete_mod_material_terrain_t* out);
 /** @brief Reset the per-present interned material slot table.
@@ -1001,9 +1077,15 @@ int  openpete_mods_material_terrain_bucket_gpu(
  * material has a slot for the whole present; once the table is full the
  * remaining materials get static slot 0 (no params). */
 void openpete_mods_material_frame_reset(void);
-/* Game -> mods: the level currently being rendered, for level-scoped
- * selector keys (sector and texture ids are per-level). Push it while
- * rendering; -1 until something does, which keeps level keys inert. */
+/** @brief Set the level being rendered, for level-scoped material selector keys.
+ *
+ * Sector and texture ids are per-level, and the mods layer cannot read the
+ * game's level symbol, so the terrain feed pushes the id while it renders.
+ * Until a push the level is -1, which makes level keys inert. A change of
+ * level bumps the terrain material epoch, since the retained terrain
+ * latches level-dependent verdicts against it. One int written between
+ * scenes and read at draw; no lock is taken.
+ * @param level_id The game's level id. */
 void openpete_mods_set_level(int level_id);
 int  openpete_mods_material_slot_count(void);   /* 1 + interned slots */
 const void* openpete_mods_material_slot_uniforms(int slot, uint32_t* len);
@@ -1028,7 +1110,11 @@ typedef struct {
     int ter_bucket[OPENPETE_MODS_MATERIAL_VIEW_MATS];
 } openpete_mods_material_view_t;
 void openpete_mods_material_view_capture(openpete_mods_material_view_t* out);
-/* Present thread: resolve/bind through `v` until set back to NULL (live). */
+/** @brief Install the material view the present thread resolves and binds through.
+ *
+ * native_render sets a published scene's view before composing it and
+ * NULL after; NULL makes the resolve read the live tables.
+ * @param v The view, or NULL. */
 void openpete_mods_material_view_set(const openpete_mods_material_view_t* v);
 /** @brief Return a mod's 0-based position in the loaded mod table, which is its load order.
  *
@@ -1123,11 +1209,22 @@ int     openpete_mods_config_str(openpete_mod_t* self, const char* key,
 int openpete_mods_config_write(const char* mod_dir, const char* log_tag,
                                int n, const openpete_mods_cfg_edit_t* e);
 
-/* Mod-owned RGBA8 textures (mod_texture.c): registered under a
- * mod-chosen 16-bit id; model faces select them with the PSX-reserved
- * Tiledef tpage MODE 3 encoding + the id in the CLUT u16; the native
- * renderer resolves via _get and binds through the HD pipe. Host-side
- * only (guest RAM / VRAM / oracle untouched). */
+/** @brief Register or replace a mod-owned RGBA8 texture under a 16-bit id.
+ *
+ * Model faces select the texture with the PSX-reserved Tiledef tpage mode
+ * 3 and the id in the CLUT halfword; the native renderer fetches it with
+ * openpete_mods_texture_get() and binds it through the HD pipeline. The
+ * texture is host-side only: guest RAM and VRAM are untouched. The pixels
+ * are copied. Re-registering an id replaces its image; the old buffer is
+ * freed when it was never drawn, else retired and never freed, so its
+ * address cannot key a new GPU texture while the old one stays cached.
+ * @param self Registering mod; its id becomes the owner.
+ * @param id Texture id.
+ * @param rgba @p w * @p h RGBA8 pixels.
+ * @param w Width, 1 to 1024.
+ * @param h Height, 1 to 1024.
+ * @return 0, or -1 for a NULL @p rgba, an out-of-range size, or an
+ *         allocation failure. */
 int openpete_mods_texture_register(openpete_mod_t* self, uint16_t id,
                                    const void* rgba, int w, int h);
 const unsigned char* openpete_mods_texture_get(uint16_t id, int* w, int* h);

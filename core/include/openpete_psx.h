@@ -19,9 +19,20 @@ extern "C" {
 
 /* --- Boot ---------------------------------------------------------------- */
 
-/* Parse PSX-EXE header in `bytes`, copy .text/.data into g_ram, zero
- * memfill (BSS), and seed cpu->sp/gp/pc per the header.
- * Returns 0 on success, non-zero with a logged error on failure. */
+/** @brief Load a PSX-EXE into guest RAM and seed the CPU registers from its header.
+ *
+ * Checks the `PS-X EXE` magic and that the 2048-byte header and its
+ * file_size fit in @p len. Seeds the BIOS kernel's fixed words in low RAM,
+ * copies the body to load_address, and zeroes the memfill (BSS) range when
+ * it fits in the 2 MiB of RAM, else logs a warning and skips it. sp is
+ * initial_sp_base + initial_sp_offset, with a base of 0 read as
+ * 0x801FFFF0; fp equals sp, gp and pc come from the header, and ra is
+ * 0xBFC03D60, the return address the SCPH-1001 BIOS Exec passes.
+ * @param cpu CPU state to seed.
+ * @param bytes The EXE file.
+ * @param len Size of @p bytes.
+ * @return 0 on success, 1 with a logged error on a NULL argument, a short
+ *         or truncated file, or a bad magic. */
 int openpete_psx_boot(CPUState* cpu, const uint8_t* bytes, size_t len);
 
 /* --- PSX bus constants --------------------------------------------------- *
@@ -39,11 +50,20 @@ int openpete_psx_boot(CPUState* cpu, const uint8_t* bytes, size_t len);
 
 /* --- Memory map ---------------------------------------------------------- */
 
-/* Install read_word/write_word/lwl/... callbacks on cpu, zero g_ram + scratch. */
+/** @brief Zero the CPU state, main RAM and scratchpad, and install the memory callbacks.
+ *
+ * Installs the word, halfword and byte read and write callbacks and the
+ * unaligned LWL, LWR, SWL and SWR helpers of core/psx/cpu.c.
+ * @param cpu CPU state to reset. */
 void openpete_psx_runtime_init(CPUState* cpu);
 
-/* 2MB main RAM + 1KB scratchpad accessors. */
+/** @brief Return the 2 MiB main RAM array, indexed by physical address.
+ *
+ * @return The array. */
 uint8_t* openpete_psx_get_ram(void);
+/** @brief Return the 1 KiB scratchpad array.
+ *
+ * @return The array. */
 uint8_t* openpete_psx_get_scratch(void);
 
 /* Gameplay-state regions for the determinism harness. The runtime's
@@ -167,19 +187,37 @@ extern uint64_t                   openpete_state_regions_table_hash;
 void openpete_state_regions_register(const OpenpeteStateRegion* regions,
                                      size_t count, uint64_t table_hash);
 
-/* Map a PSX virtual address to a host pointer. Returns NULL if `addr` is
- * unmapped, OR if `addr == 0` (treated as PSX NULL). PSYQ thunks use this
- * to translate pointer arguments (held in cpu->aN as PSX vaddrs) to host
- * pointers PsyCross can dereference. */
+/** @brief Map a PSX virtual address to a host pointer.
+ *
+ * Main RAM and the scratchpad resolve under any segment (the top three
+ * address bits are dropped); any other address resolves through the
+ * registered presentation region table. PSYQ thunks use it to translate
+ * pointer arguments, held in cpu->aN as PSX addresses, to host pointers
+ * PsyCross can dereference.
+ * @param addr PSX virtual address; 0 is PSX NULL.
+ * @return The host pointer, or NULL for 0 or an unmapped address. */
 void* openpete_psx_to_host_ptr(uint32_t addr);
 
-/* Inverse: maps a host pointer back to its PSX KSEG0 vaddr. Returns 0
- * for NULL or any pointer outside g_ram/scratch (treated as PSX NULL).
- * Used by the source rewriter when native code stores a host pointer
- * into a PSX-aliased slot. */
+/** @brief Map a host pointer back to its PSX address.
+ *
+ * A pointer into main RAM maps to its KSEG0 address and one into the
+ * scratchpad to 0x9F800000 + offset. Any other pointer whose low 32 bits
+ * already form a KSEG0, KSEG1 or KUSEG RAM address returns those bits;
+ * decompiled source that computes a pointer by arithmetic on an address
+ * literal produces such values. The source rewriter calls it when native
+ * code stores a host pointer into a PSX-aliased slot.
+ * @param host_ptr Host pointer.
+ * @return The PSX address, or 0 (PSX NULL) for NULL or any other pointer. */
 uint32_t openpete_host_to_psx(const void* host_ptr);
 
-/* Copy `size` bytes into g_ram at virtual address `addr`. */
+/** @brief Copy bytes into main RAM at a PSX virtual address.
+ *
+ * The copy is clamped, with a warning, to the bytes between the target and
+ * the end of main RAM, so a target outside main RAM copies nothing; an
+ * unmapped target logs an error.
+ * @param addr Destination PSX address.
+ * @param data Source bytes.
+ * @param size Byte count. */
 void openpete_psx_load(uint32_t addr, const uint8_t* data, uint32_t size);
 
 /* --- Dispatch ------------------------------------------------------------ */
@@ -204,11 +242,17 @@ uint32_t openpete_psx_call_fnptr(uint32_t vaddr,
 
 /* --- Root counter 2 ------------------------------------------------------ */
 
-/* The value a read of root counter 2's current-count register (0x1F801120)
- * returns. openpete runs no timers; a game that seeds its RNG from the
- * counter at boot gets this constant, the value the hardware reference
- * produced on the captured boot, so every boot seeds as that one did. */
+/** @brief Set the value a word or halfword read of root counter 2's current-count register (0x1F801120) returns.
+ *
+ * openpete runs no timers. A game that seeds its RNG from the counter at
+ * boot gets this constant, the value the hardware reference produced on
+ * the captured boot, so every boot seeds as that one did; game_main sets
+ * it from psyq_game_root_counter2() before the run.
+ * @param value Counter value. */
 void     openpete_psx_set_root_counter2(uint16_t value);
+/** @brief Return the value set by openpete_psx_set_root_counter2(), 0 until set.
+ *
+ * @return The counter value. */
 uint16_t openpete_psx_root_counter2(void);
 
 /* --- Crash handler ------------------------------------------------------- */

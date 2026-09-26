@@ -122,8 +122,10 @@ static void raise_irq(const cd_pending_t* p) {
     resp_set(p->resp, p->n);
 }
 
-/* The head of the queue is raised when it is due and no interrupt is
- * unacknowledged. */
+/** @brief Raise the queue's head interrupt when it is due and no interrupt is unacknowledged.
+ *
+ * Raising sets the flag register and loads the response FIFO; the head
+ * then leaves the queue. */
 static void queue_service(void) {
     if (s_irq_flag != 0 || s_queue_n == 0) return;
     if ((int32_t)(s_queue[0].due - s_vbl) > 0) return;
@@ -221,8 +223,17 @@ void openpete_cdrom_mmio_vbl(uint32_t vbls) {
     queue_service();
 }
 
-/* The reference's next read of this register in the current record; rows
- * of earlier records are reads openpete never made. */
+/** @brief Answer a register read with the reference's next read of that register in the current record.
+ *
+ * Rows of earlier records are reads openpete never made and are skipped.
+ * The matched row is consumed in place; rows before it for other
+ * registers stay. The model follows the answer: a flag-register value
+ * with an interrupt raises the queue's head when none is unacknowledged,
+ * and a response-FIFO read advances the FIFO.
+ * @param off Register offset, 0 to 3.
+ * @param out Receives the byte.
+ * @return 1 when a row answered; 0 when replay is not active or no row of
+ *         the current record matches. */
 static int read_replay(uint32_t off, uint8_t* out) {
     if (!s_replay || !s_rr_n || !openpete_sched_active()) return 0;
     const uint32_t cur_rec = openpete_sched_current_record();
