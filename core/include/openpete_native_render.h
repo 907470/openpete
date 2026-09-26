@@ -30,16 +30,15 @@
 extern "C" {
 #endif
 
-/* Bring up the native Vulkan window + RHI device. Call AFTER PsyX_Initialise
- * (SDL_INIT_VIDEO must already be up). `win_w`/`win_h` are the resolved
- * window size (the same the caller hands PsyCross), so the native window
- * matches the game's window rather than a fixed default. Returns 0 on success
- * OR when the native path is simply not requested; returns non-zero only on a
- * real bring-up failure (the caller logs and continues without the native
- * path — it is never fatal to the game). */
-/* Hand the window icon over before bring-up. RGBA32, w*4 stride. Applied to the
- * native window when it is created — in the default path PsyCross never makes a
- * window, so this is the only window an icon can land on. */
+/** @brief Hand the window icon to the renderer before bring-up.
+ *
+ * Stores the pointer and size; bring-up applies the image to the native
+ * window when it creates it. In the default path PsyCross never creates a
+ * window, so the native window is the only one the icon can land on. The
+ * pixels must stay valid until bring-up.
+ * @param rgba32 RGBA32 pixels, stride w * 4.
+ * @param w Width in pixels.
+ * @param h Height in pixels. */
 void openpete_native_set_icon(const void* rgba32, int w, int h);
 
 /** @brief Create the game window on the caller's thread for bring-up to adopt.
@@ -172,24 +171,33 @@ int openpete_native_fullscreen_active(void);
  *         or under headless. */
 struct SDL_Window* openpete_native_render_window(void);
 
-/* Performance-stats overlay (vk live window). Drawn only on the live vk
- * present (never screenshots). The level is one of the
- * OPENPETE_PERF_* values in openpete_perf_stats.h, which also owns the
- * numbers; the renderer holds the level because it gates the draw and sizes
- * the supersample region. Driven by --perf-stats, the Performance stats row
- * in the M overlay, and the O menu's SHOW FPS row. Display-only. */
+/** @brief Set the performance-stats overlay level.
+ *
+ * The level is one of the OPENPETE_PERF_* values in openpete_perf_stats.h,
+ * which owns the numbers; the renderer holds the level because it gates the
+ * draw and sizes the supersample region. Out-of-range values are clamped. A
+ * non-off level is remembered for openpete_native_set_fps_overlay. Drawn only
+ * on the live vk present, never in screenshots. Driven by --perf-stats and
+ * the overlay and menu rows. Renderer state only.
+ * @param level An OPENPETE_PERF_* value. */
 void openpete_native_set_perf_stats(int level);
 int  openpete_native_perf_stats_level(void);
 
-/* Two-state view of the same setting, for the O menu row and the legacy
- * --show-fps flag: OFF is level 0, ON restores the last non-zero level, so a
- * toggle never quietly demotes a detailed readout to the bare counter. */
+/** @brief Turn the performance-stats overlay off, or on at the last non-off level.
+ *
+ * The two-state view of openpete_native_set_perf_stats used by the O menu
+ * row: on restores the last non-off level, so a toggle never demotes a
+ * detailed readout to the bare counter.
+ * @param on Non-zero for on. */
 void openpete_native_set_fps_overlay(int on);
 
-/* --record-fps-overlay: whether the FPS overlay is drawn INTO --record video.
- * -1 = unset (defer to the OPENPETE_FPS_IN_RECORD env, else off), 0/1 explicit.
- * Set once at init from opts. Only affects presents while a recording is active;
- * the live window always follows set_fps_overlay above. */
+/** @brief Set whether the FPS overlay is drawn into --record video.
+ *
+ * -1 defers to the OPENPETE_FPS_IN_RECORD env var, else off; 0 and 1 are
+ * explicit. The resolved value is dropped and re-resolved on the next
+ * recorded frame, so the setting is live. Affects only presents while a
+ * recording is active; the live window follows the perf-stats level.
+ * @param pref -1 unset, 0 off, 1 on. */
 void openpete_native_set_fps_in_record(int pref);
 
 /** @brief Return whether the performance-stats overlay is on at any level.
@@ -212,12 +220,14 @@ int  openpete_native_fps_value(void);
  * the native renderer isn't the active present path. See
  * notes/plans/openpete-ingame-settings-menu.md. */
 
-/* Target display aspect (W/H, e.g. 16.0f/9.0f). <= 0 → AUTO (the default):
- * follow the window/fullscreen shape live, filling it with no bars. >0 →
- * FIXED: when windowed, resizes the window width to match (like --aspect at
- * launch); when fullscreen — or after the user resizes away — the window
- * letterboxes/pillarboxes the fixed aspect (vk-only Hor+). Forces a layout
- * recompute so the fitted panel rect updates next present. */
+/** @brief Set the target display aspect (width over height); 0 or less selects AUTO.
+ *
+ * AUTO (the default) follows the window shape with no bars. A fixed aspect
+ * resizes a windowed window's width to match, as --aspect does at launch;
+ * fullscreen, or a window the user resized away, letterboxes or pillarboxes
+ * the fixed aspect (Hor+). Forces the fitted panel rect to recompute on the
+ * next present.
+ * @param w_over_h Width over height, e.g. 16.0f / 9.0f; <= 0 for AUTO. */
 void openpete_native_set_aspect(float w_over_h);
 /** @brief Return the display aspect as last requested.
  *
@@ -226,9 +236,13 @@ void openpete_native_set_aspect(float w_over_h);
  * @return Width over height, or 0 for AUTO. */
 float openpete_native_get_aspect(void);
 
-/* SSAA supersampling factor (1 = off, 2/4/8/16). Clamped to [1,32]; ensure_ss_rtt
- * caps it to the GPU max image dimension and reallocs the supersampled scene
- * render target on the next present (a one-time wait-idle, like a window resize). */
+/** @brief Set the SSAA supersampling factor.
+ *
+ * Clamped to [1, OPENPETE_SSAA_MAX]; 1 is off. ensure_ss_rtt caps the
+ * effective factor to the GPU's maximum image dimension and reallocates the
+ * supersampled scene render target on the next present, a one-time wait-idle
+ * like a window resize.
+ * @param factor The requested factor. */
 void openpete_native_set_ssaa(int factor);
 /** @brief Return the requested SSAA factor.
  *
@@ -264,11 +278,14 @@ void openpete_native_set_vertex_precision(int integer_snap);
  * keeping their T-vertices watertight against snapped neighbour edges. */
 int openpete_native_vertex_snap_active(void);
 
-/* Sticky feed state: tris added while set are ALREADY snap-consistent — the
- * renderer's integer-snap chokepoint leaves their coordinates untouched. Set
- * by feeders that must control vertex placement beyond per-vertex snapping
- * (terrain: subdivide midpoints live at exact off-integer positions ON
- * snapped parent edges). Clear after the feed, like set_tag. */
+/** @brief Mark the triangles added next as already snap-consistent.
+ *
+ * Sticky feed state: while set, the renderer's integer-snap chokepoint leaves
+ * the triangles' coordinates untouched. Set by a feeder that controls vertex
+ * placement beyond per-vertex snapping (terrain subdivision midpoints sit at
+ * exact off-integer positions on snapped parent edges). Cleared by the feeder
+ * after the feed, like the tag.
+ * @param on Non-zero to set. */
 void openpete_native_scene_set_presnap(int on);
 
 /** @brief Return 1 when the terrain key image can be rendered this run.
@@ -280,29 +297,38 @@ void openpete_native_scene_set_presnap(int on);
  * @return 1 when the key pass is available, else 0. */
 int openpete_native_key_resolve_on(void);
 
-/* Raster output quantize: box-resample the composed 3D scene (pre-HUD) onto
- * the 512Nx240N virtual PSX raster (N=1 = authentic 240p; 0 = off). An integer
- * multiplier of the vertex-snap grid, so snapped edges land on cell boundaries
- * at every setting and the snap's seams shrink to <=1-cell tints.
- * Display-only: touches only renderer state, never gameplay RAM. */
+/** @brief Set the raster-output quantize multiplier; 0 is off.
+ *
+ * Box-resamples the composed 3D scene (before the HUD) onto the 512N x 240N
+ * virtual PSX raster; N = 1 is the 240p raster. The multiplier is an integer
+ * multiple of the vertex-snap grid, so snapped edges land on cell boundaries
+ * at every setting. Negative values select off. Consumed at the next scene
+ * postfx split. Renderer state only.
+ * @param mult The multiplier N, or 0 for off. */
 void openpete_native_set_raster_quantize(int mult);
 /** @brief Return the raster-quantize multiplier as resolved at init or last set.
  *
  * @return The multiplier, 0 when off. */
 int  openpete_native_get_raster_quantize(void);
 
-/* PS1 15-bit colour (0 = off, 1 = RGB555 truncation + the GPU's 4x4 dither
- * matrix on the PSX framebuffer lattice), an engine postfx below the mod
- * chain. Live: the enable is checked per present, no pipeline rebuild.
- * Display-only: touches only renderer state, never gameplay RAM. */
+/** @brief Turn the PS1 15-bit colour pass on or off.
+ *
+ * On applies RGB555 truncation and the GPU's 4x4 dither matrix on the PSX
+ * framebuffer lattice, as an engine postfx below the mod chain. The enable
+ * is checked per present, so no pipeline rebuild is involved. Renderer state
+ * only.
+ * @param on Non-zero for on. */
 void openpete_native_set_dither(int on);
 int  openpete_native_get_dither(void);
 
-/* Texture/colour interpolation mode (0 = perspective-correct, 1 = PSX affine
- * = the original screen-linear texture swim). The mode is a vertex spec
- * constant baked into every scene pipeline, so the setter QUEUES the change
- * and the renderer re-bakes all pipelines at the next present boundary (a
- * one-time device-idle hitch). Display-only: never touches gameplay RAM. */
+/** @brief Queue the texture and colour interpolation mode: perspective-correct or PSX affine.
+ *
+ * The mode is a vertex specialization constant baked into every scene
+ * pipeline, so the setter only queues it; at the next present boundary the
+ * renderer re-bakes every live pipeline in place (mod material and mesh
+ * caches included) under a one-time device idle. A failed rebuild keeps the
+ * previous mode. Renderer state only.
+ * @param affine Non-zero for affine (screen-linear), zero for perspective. */
 void openpete_native_set_texture_mapping(int affine);
 /** @brief Return the applied texture-mapping mode.
  *
@@ -311,10 +337,13 @@ void openpete_native_set_texture_mapping(int affine);
  * @return 1 for PSX affine, 0 for perspective-correct. */
 int  openpete_native_get_texture_mapping(void);
 
-/* Untextured lighting view: textured scene fragments output the raw gouraud
- * vertex colour (texel replaced with modulation-neutral grey; transparency
- * cutouts keep real silhouettes). Same queued-rebuild contract as
- * openpete_native_set_texture_mapping. Debug view; display-only. */
+/** @brief Queue the untextured lighting view on or off.
+ *
+ * Textured scene fragments output the raw gouraud vertex colour (the texel
+ * replaced with modulation-neutral grey; transparency cutouts keep their
+ * silhouettes). Same queued pipeline rebuild as
+ * openpete_native_set_texture_mapping. Debug view, renderer state only.
+ * @param on Non-zero for on. */
 void openpete_native_set_notex(int on);
 int  openpete_native_get_notex(void);
 
@@ -347,22 +376,29 @@ int  openpete_native_get_terrain_visibility(void);
  * (smaller = nearer). rgba is byte order R,G,B,A. */
 typedef struct { float x, y, z; uint32_t rgba; } openpete_hud_vert;
 
-/* Hand the native renderer overlay geometry built from the game's own 3D
- * glyph models (game_layout.font). `verts` is a triangle list (3 verts per
- * tri), built each tick by the game-side emitter (text_moby_native). The
- * renderer copies them and draws them (depth-tested, on top) on the live vk
- * present. nverts==0 draws no readout: there is no other font (e.g. before
- * the glyph models have loaded). The performance readout's channel.
- * Display-only; never touches gameplay state. */
+/** @brief Hand the renderer the performance readout's glyph triangles.
+ *
+ * The glyphs are built each tick by the game-side emitter (text_moby_native)
+ * from the game's own 3D glyph models (game_layout.font). The renderer copies
+ * up to OVL_MAX_VERTS vertices and draw_perf_overlay draws them on the live
+ * vk present. 0 vertices draws no readout; there is no other font, so the
+ * list is empty only before the glyph models have loaded. Renderer state
+ * only.
+ * @param verts Triangle list, 3 vertices per triangle.
+ * @param nverts Vertex count; 0 clears. */
 void openpete_native_set_overlay_glyphs(const openpete_hud_vert *verts, int nverts);
 
-/* The overlay block's REGION rect in overlay space (window-height units), set
- * by the game-side builder — it is the side that can measure a string, so it
- * owns the number and the renderer reads it back rather than re-deriving it.
- * The supersample target, the composite quad and the glyph projection all use
- * this one rect; a disagreement lands the text in a shape other than the one
- * it was rasterized into. Glyphs are emitted REGION-LOCAL (origin at the
- * rect's top-left); the anchor decides where the rect goes on screen. */
+/** @brief Set the overlay block's region rect in overlay space (window-height units).
+ *
+ * The game-side builder owns the number because it can measure a string;
+ * the renderer reads it back and never re-derives it. The supersample
+ * target, the composite quad and the glyph projection all use this one rect.
+ * Both floats are published as one 64-bit word, so the present thread never
+ * reads a width and height from different pushes. Glyphs are emitted
+ * region-local (origin at the rect's top-left); the anchor places the rect.
+ * A non-positive width or height is ignored.
+ * @param w Region width.
+ * @param h Region height. */
 void openpete_native_set_overlay_extent(float w, float h);
 void openpete_native_get_overlay_extent(float *w, float *h);
 
@@ -411,18 +447,25 @@ const char *openpete_native_version_reason(void);
  * harness reads to tell a drawn line from a suppressed one. */
 unsigned openpete_native_version_drawn(void);
 
-/* Which corner/edge the performance-stats block anchors to
- * (openpete_overlay_anchor.h's openpete_anchor_t). Live-settable. The builder
- * reads it back to align each line inside the region — right-anchored text
- * right-aligns, centred text centres — so the block's slack sits on the side
- * away from the screen edge it hugs. */
+/** @brief Set the corner or edge the performance-stats block anchors to.
+ *
+ * Live-settable. The builder reads it back to align each line inside the
+ * region (right-anchored text right-aligns, centred text centres), so the
+ * block's slack sits on the side away from the screen edge it hugs. Values
+ * outside the anchor range are ignored.
+ * @param anchor An openpete_anchor_t value (openpete_overlay_anchor.h). */
 void openpete_native_set_perf_anchor(int anchor);
 int  openpete_native_perf_anchor(void);
 
-/* Mod draw-service overlay (core/mods/mod_draw.c): rects + text glyphs in the
- * same overlay space, pushed once per present. Drawn on the vk variant in the
- * live present AND screenshot/record composes (mod HUD is content, not
- * chrome). nverts==0 clears it. Display-only. */
+/** @brief Hand the renderer the mod draw service's overlay geometry.
+ *
+ * Rects and text glyphs from core/mods/mod_draw.c in the same overlay space
+ * as the perf readout, pushed once per present. The renderer copies up to
+ * MOD_OVL_MAX_VERTS vertices; each published scene slot carries its own copy.
+ * Drawn on the vk variant in the live present and in screenshot and record
+ * composes, since a mod's drawing is content. Renderer state only.
+ * @param verts Triangle list, 3 vertices per triangle.
+ * @param nverts Vertex count; 0 clears. */
 void openpete_native_set_mod_overlay(const openpete_hud_vert *verts, int nverts);
 
 /** @brief Return the window aspect (width over height) for overlay-space layout.
@@ -446,11 +489,15 @@ float openpete_native_overlay_px_per_unit(void);
  * and the renderer size their buffers from this one value. */
 #define OPENPETE_MENU_GLYPH_MAX 65536
 
-/* Hand the native renderer the in-game settings menu's glyph geometry (the row
- * labels/values/title, built game-side by text_moby_native from the same 3D gold
- * glyph mobys, with the selected row's per-glyph yaw baked in). Same overlay
- * space as set_overlay_glyphs; drawn by draw_menu_overlay on the live vk present
- * over the menu panel. nverts==0 clears it. Display-only. */
+/** @brief Hand the renderer the in-game settings menu's glyph triangles.
+ *
+ * Row labels, values and title, built game-side by text_moby_native from the
+ * same 3D glyph models, with the selected row's per-glyph yaw baked in. Same
+ * overlay space as openpete_native_set_overlay_glyphs. The renderer copies up
+ * to MENU_GLYPH_MAX vertices; draw_menu_overlay draws them over the menu
+ * panel. Renderer state only.
+ * @param verts Triangle list, 3 vertices per triangle.
+ * @param nverts Vertex count; 0 clears. */
 void openpete_native_set_menu_glyphs(const openpete_hud_vert *verts, int nverts);
 
 /* ---- OSD toast geometry ------------------------------------------------
@@ -499,20 +546,30 @@ void openpete_native_osd_slot_extent(float *w, float *h);
  * @return The cumulative toast count. */
 unsigned openpete_native_osd_composited(void);
 
-/* Path-isolation mode (--render-paths). When on, a frame with no native scene
- * geometry presents the scene background instead of re-displaying the PSX VRAM
- * framebuffer — the VRAM is the UNFILTERED frame, so falling back to it would
- * show every path and defeat the isolation. The game enables this when a
- * --render-paths selection is in effect. Generic core toggle; no-op until set. */
+/** @brief Turn path-isolation mode (--render-paths) on or off.
+ *
+ * While on, a present whose scene has no game geometry still renders the
+ * scene when its background colour is non-zero, instead of falling back to
+ * the PSX VRAM framebuffer: the VRAM holds the unfiltered image, and showing
+ * it would defeat the isolation. The game enables it when a --render-paths
+ * selection is in effect.
+ * @param on True for on. */
 void openpete_native_set_isolation(bool on);
 
-/* Record the active PSX display framebuffer (DISPENV `disp` rect, VRAM px —
- * the scanned-out double-buffer page) and the drawn region (DRAWENV `clip`
- * rect). The native renderer crops the disp vertically to the clip so it
- * drops the overscan letterbox and matches the bars-free reference. Called
- * from the PutDispEnv / PutDrawEnv thunks each frame; cheap stashes that are
- * inert when the native path is disabled. */
+/** @brief Record the active PSX display rect (DISPENV disp, VRAM pixels).
+ *
+ * The scanned-out double-buffer page. The renderer crops it vertically to
+ * the DRAWENV clip rect (openpete_native_set_draw_clip), dropping the
+ * overscan letterbox. Called from the PutDispEnv thunk each frame; a size
+ * change is logged when the native path is enabled. Each published scene
+ * slot carries the rect.
+ * @param x VRAM x.
+ * @param y VRAM y.
+ * @param w Width in VRAM pixels.
+ * @param h Height in VRAM pixels. */
 void openpete_native_set_display_rect(int x, int y, int w, int h);
+/* Record the DRAWENV clip rect, the drawn region the display rect is cropped
+ * to. Called from the PutDrawEnv thunk. */
 void openpete_native_set_draw_clip(int x, int y, int w, int h);
 
 /* ---- native 3D scene (Phase 2: cyclorama/sky from gamestate) --------
@@ -999,12 +1056,13 @@ void openpete_native_set_shadow_footprint(const openpete_shadow_footprint *f);
  * later re-extract of the same tick keeps that record. The game render's
  * own accumulation begins with openpete_native_scene_begin_frame. */
 void openpete_native_scene_begin(void);
-/* Mark the scene now accumulating as a sub-tick / lag re-extract's rebuild
- * rather than the game render's own. The blended-world block of a replay is
- * reordered into the emission order the game render last recorded, because
- * the blend equations do not commute once a channel clamps and the replay
- * emits one producer at a time. Called by the re-extract wrapper after the
- * game's body has fed. */
+/** @brief Mark the scene now accumulating as a sub-tick or lag re-extract's rebuild.
+ *
+ * Called by the re-extract wrapper after the game's body has fed, so the
+ * flag holds whatever the feeders' own begin_frame calls did while the body
+ * ran. The blended-world block of a replay is reordered into the emission
+ * order the game render last recorded, because the blend equations do not
+ * commute once a channel clamps and the replay emits one producer at a time. */
 void openpete_native_scene_mark_replay(void);
 /** @brief Begin the game render's scene accumulation for a VBL, once per VBL.
  *
@@ -1027,24 +1085,34 @@ void openpete_native_scene_begin_frame(unsigned frame);
  * @return The stamp, or 0xFFFFFFFF before the first begin_frame. */
 unsigned openpete_native_scene_frame(void);
 
-/* Register the frame-close notification: it fires immediately before a frame's
- * accumulation is snapshotted and the next frame started, which is the last
- * moment an append still reaches that scene. A feeder whose data is not final
- * when its primitives are produced releases whatever it still holds for
- * `frame` here. Runs on the thread doing the rotation. */
+/** @brief Register the callback that fires immediately before a frame's accumulation is snapshotted.
+ *
+ * The callback runs just before the scene is snapshotted and the next frame
+ * started, the last moment an append still reaches that scene. It serves a
+ * feeder whose data is not final when its primitives are produced: the 2D UI
+ * layer, whose primitive words are final only when the ordering table
+ * holding them is handed to the GPU, a tick after the frame that built it.
+ * The batch belongs to the scene its build frame opened, beside the 3D of
+ * the same ordering table, so the feeder releases what it holds for `frame`
+ * here; the ordering table's own walk releases the rest. Runs on the thread
+ * doing the rotation, which owns the accumulating scene. One callback; a
+ * later call replaces it.
+ * @param fn Callback taking the closing frame's VBL stamp, or NULL. */
 void openpete_native_scene_register_frame_close(void (*fn)(unsigned frame));
 
-/* The ordering-table traversal rank of the tris added next. The 2D layer is
- * screen-space with the depth test off, so compose order is painter order, and
- * its two emitters reach the scene at different points of the frame, one at a
- * primitive's link, one when a glyph chain is built, one of them from a
- * deferred release. Both stamp the number the game emitted at, and the compose
- * orders by it. Sticky, cleared at each frame boundary; a feeder that never
- * sets it leaves 0. */
+/** @brief Set the ordering-table traversal rank stamped on the triangles added next.
+ *
+ * Sticky, cleared at each frame boundary; a feeder that never sets it leaves
+ * 0. No feeder calls it: openpete_native_scene_rank_2d overwrites the rank of
+ * every triangle that carries a primitive address.
+ * @param seq The rank. */
 void openpete_native_scene_set_seq(uint32_t seq);
 
-/* PSX address of the primitive the tris added next were decoded from. Sticky,
- * cleared at each frame boundary. */
+/** @brief Set the PSX address of the primitive the triangles added next were decoded from.
+ *
+ * Sticky, cleared at each frame boundary. openpete_native_scene_rank_2d
+ * ranks triangles by it.
+ * @param prim PSX address, or 0 for none. */
 void openpete_native_scene_set_prim(uint32_t prim);
 
 /* Texel STP selection of a textured scene triangle: which texels of its
@@ -1061,15 +1129,26 @@ enum {
     OPENPETE_STP_SELS
 };
 
-/* Sticky, like set_prim: every tri added after the call carries `sel` until
- * the next call. A feeder that sets it resets it to OPENPETE_STP_ALL after its
- * triangles. */
+/** @brief Set the STP texel selection stamped on the triangles added next.
+ *
+ * Sticky, like openpete_native_scene_set_prim: every triangle added after the
+ * call carries `sel` until the next call. A value outside the selection range
+ * selects OPENPETE_STP_ALL. A feeder that sets it resets it to
+ * OPENPETE_STP_ALL after its triangles.
+ * @param sel An OPENPETE_STP_* value. */
 void openpete_native_scene_set_stp_select(int sel);
 
-/* Stamp every 2D tri of this frame (live scene and carry accumulation) with its
- * ordering-table traversal rank, looked up by the primitive address each was
- * decoded from. Lets every 2D emitter keep feeding where it does and still be
- * composed in the order the GPU draws. */
+/** @brief Stamp every 2D triangle of this frame with its ordering-table traversal rank.
+ *
+ * The rank is looked up by the primitive address each triangle was decoded
+ * from. Covers the live scene and the feed-time carry accumulation, which
+ * the next capture commits, so a triangle fed at emission and one fed from a
+ * deferred batch are ranked by the same walk and every 2D emitter keeps
+ * feeding where it does. A triangle without a primitive address keeps its
+ * rank. The caller's lookup returns 0 for an address the walk never reached,
+ * which keeps that triangle's feed position under the stable sort. No-op
+ * when @p rank_of is NULL.
+ * @param rank_of Maps a primitive address to its traversal rank. */
 void openpete_native_scene_rank_2d(uint32_t (*rank_of)(uint32_t prim));
 
 /** @brief Collect the guest primitive addresses the current scene's 2D was decoded from.
@@ -1091,21 +1170,25 @@ int openpete_native_scene_collect_2d_prims(uint32_t* out, int max);
  * title logo / "PRESS START" / HUD glyph FT4 sprites + UI separator lines the
  * re-extract can't re-derive) so the overlay-carry snapshot preserves them
  * across the sub-tick rebuild instead of strobing at 30 Hz; 0 otherwise. */
-/* Sticky CLUT-ladder row for subsequent add_tri calls (0 = unfogged base row;
- * out-of-range values are clamped to 0). Spyro's terrain fogs by SELECTING a
- * pre-baked, progressively-greyer palette row — clut_y + delta — rather than
- * blending at raster time, so identical texels reach the screen through up to
- * 16 different palettes depending on distance.
+/** @brief Set the CLUT-ladder fog row stamped on the triangles added next.
  *
- * Declaring the row lets a consumer recover the BASE palette, which is the
- * texture's stable identity: the replacement registry resolves against that
- * base so one pack file covers a texture at every fog distance, and re-applies
- * the ladder's colour transform at draw time. Purely descriptive — it does not
- * affect the material batch key (clut_y already carries the distinction) and
- * does not change how unreplaced terrain rasterizes.
+ * Spyro's terrain fogs by selecting a pre-baked, progressively greyer palette
+ * row (clut_y + delta) rather than blending at raster time, so identical
+ * texels reach the screen through up to 16 palettes depending on distance.
+ * Declaring the row lets a consumer recover the base palette, the texture's
+ * stable identity: the replacement registry resolves against that base so
+ * one pack file covers a texture at every fog distance, and re-applies the
+ * ladder's colour transform at draw time. It does not affect the material
+ * batch key (clut_y carries the distinction) or how unreplaced terrain
+ * rasterizes. The row is bits 7:0; the TP_FOG_DELTA_CONT and
+ * TP_FOG_DELTA_FOGBIAS flags above it are kept. A row above 15 zeroes the
+ * whole value, flags included.
  *
- * Sticky like set_tag: set it per emit, and reset to 0 when leaving a laddered
- * emit loop so the value cannot leak into another feeder's tris. */
+ * Ambient state rather than a field of the feeder-facing triangle, because a
+ * dozen feeders fill that triangle field by field without clearing it. Set it
+ * per emit and reset it to 0 when leaving a laddered emit loop, so the value
+ * cannot leak into another feeder's triangles.
+ * @param delta Ladder row with optional flags; 0 is the unfogged base row. */
 void openpete_native_scene_set_fog_delta(int delta);
 
 /* ── Portal cover invariant (plane-cover rule) ────────────────────────
@@ -1119,8 +1202,13 @@ typedef struct {
     float  px[16], py[16];     /* projected opening polygon (walk coords) */
     int    pn;
 } openpete_native_cover_plane;
-/* Replaces the previous set (call once per feed; n=0 clears). margin_world
- * is the plane-cover near margin M in world units. */
+/** @brief Replace the portal opening planes the OPENPETE_PORTAL_COVER_CHECK sweep verifies.
+ *
+ * Called once per terrain feed. At most 8 planes are kept; the sweep is the
+ * only reader.
+ * @param planes The opening planes; read only when @p n > 0.
+ * @param n Plane count; 0 clears.
+ * @param margin_world The plane-cover near margin M in world units. */
 void openpete_native_set_cover_planes(const openpete_native_cover_plane *planes,
                                       int n, float margin_world);
 
@@ -1139,32 +1227,41 @@ void openpete_native_scene_add_tri(const openpete_scene_tri *tri, int category, 
  * @param group Portal grouping id. */
 void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int category,
                                            int carry, int group);
-/* Scene vertices that reached add_tri without a true view-Z (pvz <= 0) since
- * boot; each took its ordering view-Z. 0 when every feeder states pvz. */
+/** @brief Return the number of scene vertices that reached add_tri without a true view-Z since boot.
+ *
+ * Each such vertex (pvz <= 0) took its ordering view-Z instead.
+ * @return The count; 0 when every feeder states pvz. */
 unsigned openpete_native_scene_pvz_missing(void);
 
-/* Sticky per-tri origin stamped by add_tri until changed (same ambient-state
- * pattern as set_tag; set 0 when leaving the emit loop). 1 marks a triangle the
- * host added beyond what the game's own render produced — the extended-LOD moby
- * reveal. The verdicts "this frame has content" and "this frame is a gameplay
- * world frame" are read off the game's geometry alone, so host-added geometry
- * never turns a frame the game drew nothing on into a rendered scene. */
+/** @brief Mark the triangles added next as host-added geometry.
+ *
+ * Sticky per-triangle origin, the same ambient-state pattern as the tag; the
+ * feeder sets it back to 0 when leaving its emit loop. 1 marks a triangle the
+ * host added beyond what the game's own render produced (the extended-LOD
+ * moby reveal). The verdicts that a frame has content and that it is a
+ * gameplay world frame read the game's geometry alone, so host-added geometry
+ * never turns a frame the game drew nothing on into a rendered scene.
+ * @param on Non-zero to mark. */
 void openpete_native_scene_set_host_added(int on);
 
-/* Sticky per-tri stamp, the set_host_added pattern: the drain sub-cell keys
- * of a WORLD triangle whose face the game's near drain inserts into the
- * ordering table as finer sub-cells than the triangle. fl holds each
- * vertex's face-local coordinate (x0, y0, x1, y1, x2, y2), kc the face's
- * key table (psx_key_contest.glsl op_drain_delta); the triangle's koff is
- * the least sub-cell key, and each fragment keys and contests at its own
- * sub-cell's. NULL clears the stamp. */
+/** @brief Set the drain sub-cell keys stamped on the world triangles added next.
+ *
+ * Sticky, the set_host_added pattern. Used for a triangle whose face the
+ * game's near drain inserts into the ordering table as sub-cells finer than
+ * the triangle. The triangle's koff is the least sub-cell key, and each
+ * fragment keys and contests at its own sub-cell's key
+ * (psx_key_contest.glsl op_drain_delta). NULL in either argument clears the
+ * stamp.
+ * @param fl Each vertex's face-local coordinate (x0, y0, x1, y1, x2, y2).
+ * @param kc The face's key table. */
 void openpete_native_scene_set_key_cells(const float fl[6], const uint32_t kc[8]);
 
-/* Marks the start of the terrain feed in the scene being accumulated: every
- * triangle added after the call, until the scene resets, is stamped as emitted
- * at or after the feed. The retained terrain cache draws geometry the feed does
- * not emit; the mark places the feed in the scene's emission order when the
- * feed emits no triangle of its own. */
+/** @brief Mark the start of the terrain feed in the scene being accumulated.
+ *
+ * Every triangle added after the call, until the scene resets, is stamped as
+ * emitted at or after the feed. The retained terrain cache draws geometry
+ * the feed does not emit; the mark places the feed in the scene's emission
+ * order when the feed emits no triangle of its own. */
 void openpete_native_scene_mark_terrain_feed(void);
 
 /* ── Provenance tag (mod-shaders S6) ─────────────────────────────────
@@ -1283,85 +1380,108 @@ void openpete_native_scene_mark_terrain_feed(void);
 #define OPENPETE_TAG_PORTAL(kind, slot)   OPENPETE_TAG_PATH(9u, (kind), (slot))
 
 void openpete_native_scene_set_tag(uint32_t tag);
-/* Accepted-tri count per tag family (bits 31:28, index 0 = untagged) of the
- * scene being accumulated; reset with the scene. */
-void openpete_native_scene_tag_family_counts(uint32_t out[16]);
-/* Arm/disarm the tag as a batch-split key (material-selector registry). */
-void openpete_native_set_tag_split(int on);
-/* Set the panel-0 background fill colour (rgba, byte order R,G,B,A) — drawn
- * before the scene so uncovered areas show it instead of black, mirroring the
- * PSX cyclorama's frame clear to m_BackgroundColor. 0 = no fill (black).
- * Reset to 0 by openpete_native_scene_begin. */
-void openpete_native_scene_set_bg(uint32_t rgba);
-/* Capture the gamestate draw-env clear colour (the framebuffer background the
- * canonical render auto-clears to) from the PutDrawEnv path. `isbg` is the PSX
- * DRAWENV auto-clear flag (0 = no clear → defer to the scene-fed bg); r/g/b are
- * the clear colour 0..255. This is the PRIMARY background source in the native
- * renderer (preferred over openpete_native_scene_set_bg / g_Cyclorama, which is
- * stale in cyclorama-less states like the black level-name flyby). Persists
- * across sub-tick presents (PutDrawEnv only fires on canonical frames). */
-void openpete_native_set_clear_color(int isbg, int r, int g, int b);
-/* Full-screen fade overlay (the game's func_800190D4): every transition the game
- * darkens/brightens the WHOLE frame with one semi-transparent full-screen POLY_F4
- * whose ABR mode is the fade direction — mode 2 (B-F, subtractive) fades to BLACK,
- * mode 1 (B+F, additive) fades to WHITE. The native renderer reproduces it as a
- * full-panel quad drawn DEAD LAST — over the world, actors, HUD and 2D UI — in the
- * matching blend mode with the depth test passing everywhere (z=near), so it tints
- * the whole composited frame exactly as the PSX F4 does. `mode` is the PSX ABR mode
- * (0 = (B+F)/2 alpha, 1 = add, 2 = subtract; 3 is unused by the game). r/g/b are
- * the fade colour 0..255. Call it every frame the fade is active; the overlay
- * auto-clears each frame (reset by openpete_native_scene_begin / begin_frame), so a
- * frame with no set_fade call shows no fade. Pass mode<0 to clear it explicitly.
- * Determinism-safe (display-only). */
-void openpete_native_scene_set_fade(int mode, int r, int g, int b);
-/* Freeze-frame green overlay (the pause / inventory / flight-results backdrop).
- * The game freezes the rendered frame, desaturates it to grayscale and re-displays
- * it green-tinted (setRGB0(0x4C,0x80,0x40)) via a full-screen POLY_FT4 that samples
- * a VRAM scratch copy. The native renderer instead snapshots its OWN last world
- * frame (frozen_tex) and draws it desaturated + tinted — so the green overlay shows
- * the native HQ render and survives the end-state where PsyCross's VRAM is gone.
- * The feeder detects the backdrop FT4 (its unique green tint + grayscale-CLUT
- * signature), calls this with the FT4's r/g/b tint, and SKIPS feeding the FT4. Call
- * every frame the backdrop is active; it auto-clears each frame (reset by
- * scene_begin / begin_frame). Pass r<0 to clear explicitly. Determinism-safe
- * (display-only).
+/** @brief Copy the accepted-triangle count per tag family of the scene being accumulated.
  *
- * `fade` is the fade-to-black shift in 0..127 (subtractive luma shift x127, the
- * GS_ExitLevel case-0 fade where the game shrinks the grayscale CLUT each tick).
- * Pass 0 for the static pause / inventory / flight-results backdrop. */
+ * The family is tag bits 31:28; index 0 is untagged. The counts reset with
+ * the scene.
+ * @param out Receives 16 counts. */
+void openpete_native_scene_tag_family_counts(uint32_t out[16]);
+/** @brief Arm or disarm the provenance tag as a batch-split key.
+ *
+ * The mod material-selector registry arms it when a selector registers;
+ * OPENPETE_TAG_SPLIT arms the split independently.
+ * @param on Non-zero to arm. */
+void openpete_native_set_tag_split(int on);
+/** @brief Set the panel-0 background fill colour of the scene being accumulated.
+ *
+ * Drawn before the scene so uncovered areas show it instead of black,
+ * mirroring the PSX cyclorama's frame clear to m_BackgroundColor. The
+ * draw-env clear colour (openpete_native_set_clear_color) takes precedence
+ * when set. Reset to 0 at each scene begin.
+ * @param rgba Colour, byte order R, G, B, A; 0 for no fill. */
+void openpete_native_scene_set_bg(uint32_t rgba);
+/** @brief Record the game's draw-env clear colour, the background the canonical render auto-clears to.
+ *
+ * Two producers: the PutDrawEnv thunk, and the game module's per-canonical
+ * present sync from the DRAWENV struct in RAM (the cyclorama feeder). It is
+ * the primary background source, preferred over
+ * openpete_native_scene_set_bg, which is stale in states without a
+ * cyclorama. Persists across sub-tick presents, since both producers run on
+ * canonical frames only. OPENPETE_LOAD_CENSUS logs each change.
+ * @param isbg The PSX DRAWENV auto-clear flag; 0 unsets the colour and
+ *             defers to the scene-fed background.
+ * @param r Red, 0..255.
+ * @param g Green, 0..255.
+ * @param b Blue, 0..255. */
+void openpete_native_set_clear_color(int isbg, int r, int g, int b);
+/** @brief Set this frame's full-screen fade overlay (the game's func_800190D4).
+ *
+ * Each transition darkens or brightens the whole frame with one
+ * semi-transparent full-screen POLY_F4 whose ABR mode is the direction: 2
+ * (B-F) fades to black, 1 (B+F) to white. The native renderer draws a
+ * full-panel quad last, over world, actors, HUD and 2D UI, in the matching
+ * blend mode with the depth test passing everywhere. The fade clears at each
+ * scene begin, so the game's per-tick call is what keeps it on; the
+ * re-extract treats it as active only on a tick the game set it. Colour
+ * components are clamped to 0..255. Renderer state only.
+ * @param mode PSX ABR mode (0 = (B+F)/2, 1 = add, 2 = subtract), or < 0 to clear.
+ * @param r Red, 0..255.
+ * @param g Green, 0..255.
+ * @param b Blue, 0..255. */
+void openpete_native_scene_set_fade(int mode, int r, int g, int b);
+/** @brief Set this frame's freeze backdrop (the pause, inventory and flight-results overlay).
+ *
+ * The game freezes the rendered frame, desaturates it to grayscale and
+ * re-displays it green-tinted (setRGB0(0x4C,0x80,0x40)) through a
+ * full-screen POLY_FT4 that samples a VRAM scratch copy. The native renderer
+ * instead draws its own last world frame desaturated and tinted, so the
+ * backdrop shows the native render and needs no PsyCross VRAM. The feeder
+ * detects the backdrop FT4, calls this with its tint, and does not feed the
+ * FT4. The backdrop clears at each scene begin, so the game's per-tick call
+ * keeps it on. Components and @p fade are clamped. Renderer state only.
+ * @param r Tint red, 0..255, or < 0 to clear.
+ * @param g Tint green, 0..255.
+ * @param b Tint blue, 0..255.
+ * @param fade Fade-to-black shift 0..127 (the GS_ExitLevel case-0 fade,
+ *             where the game shrinks the grayscale CLUT each tick); 0 for the
+ *             static backdrop. */
 void openpete_native_scene_set_freeze_backdrop(int r, int g, int b, int fade);
 
-/* Freeze-backdrop production mode, set once from the game descriptor.
+/** @brief Set the freeze-backdrop production mode, once, from the game descriptor.
  *
  * 0 (default): the game emits a full-screen quad that re-displays the frozen
- * frame through a grayscale CLUT with a flat tint, and the backdrop reproduces
- * that desaturation and tint. Two such emitters can hand over with a one-tick
- * gap between them, which the per-tick freeze carry bridges.
+ * frame through a grayscale CLUT with a flat tint, and the backdrop
+ * reproduces that desaturation and tint. Two such emitters can hand over
+ * with a one-tick gap, which the per-tick freeze carry bridges.
  *
- * 1: the game produces the frozen frame by writing DRAWENV.isbg = 0 and drawing
- * no world, so the framebuffer simply keeps the last rendered frame. The
- * backdrop then draws the snapshot unaltered — no desaturation, no tint — and
- * the carry bridges no gap, because the arming signal is a latched draw-
- * environment word that the game clears in one write rather than a primitive it
- * stops emitting. */
+ * 1: the game produces the frozen frame by writing DRAWENV.isbg = 0 and
+ * drawing no world, so the framebuffer keeps the last rendered frame. The
+ * backdrop then draws the snapshot unaltered, and the carry bridges no gap,
+ * because the arming signal is a latched draw-environment word the game
+ * clears in one write rather than a primitive it stops emitting.
+ * @param retained Non-zero selects mode 1. */
 void openpete_native_scene_set_freeze_retained(int retained);
 
-/* Flat 2D HUD/text draw order vs the player for this frame. Default (0) draws the
- * flat HUD/text OVER the player (Spyro behind the HUD/text) — the normal case. Pass
- * 1 ONLY during the GS_LevelTransition flyby ("THE ADVENTURE BEGINS"/"ENTERING
- * <level>"), where Spyro flies in front of the text being revealed, so the flat HUD
- * draws UNDER the player. The 3D HUD icons (HUD3D) and the letterbox/fade always draw
- * on top regardless. Auto-clears each frame (reset by begin_frame); the feeder sets
- * it from g_Gamestate every frame. Determinism-safe (display-only). */
+/** @brief Set whether the flat 2D HUD and text draw under the player this frame.
+ *
+ * 0 (default) draws them over the player. 1 is for game states where the
+ * player flies in front of revealed text (the GS_LevelTransition flyby); the
+ * game module's hud_under_player hook names them. The 3D HUD icons and the
+ * letterbox and fade draw on top regardless. Clears at each scene begin; the
+ * moby feeder sets it every 3D frame. Renderer state only.
+ * @param under Non-zero draws the flat HUD under the player. */
 void openpete_native_scene_set_hud_under_player(int under);
-/* Actors-in-front draw order for this frame (dragon-rescue cutscene). Pass 1 to
- * draw the ACTOR group depth-ISOLATED after the world+player (mid-pass depth
- * clear, the HUD3D trick): actors still Z-sort among their own faces but are
- * never occluded by terrain. The PSX's coarse OT bucketing painted the rescue
- * actors over walls they interpenetrate (the rescued dragon's spread wing inside
- * a wall) — true per-pixel Z would amputate them. Default (0) = normal depth
- * order. Auto-clears each frame; the feeder sets it from the game's own
- * dragon-cutscene state. Determinism-safe (display-only). */
+/** @brief Set whether the actor group draws depth-isolated in front of the world this frame.
+ *
+ * When set, the actor group draws after the world and player with a depth
+ * clear limited to the actors' screen bounds: actors still depth-sort among
+ * their own faces but terrain never occludes them. The PSX's coarse
+ * ordering-table buckets painted cutscene actors over walls they
+ * interpenetrate (the rescued dragon's wing inside a wall), which per-pixel
+ * depth would cut away. The moby feeder sets it when a cutscene owns the
+ * draw, unless OPENPETE_ACTOR_FRONT=0. Clears at each scene begin. Renderer
+ * state only.
+ * @param front Non-zero draws the actors in front. */
 void openpete_native_scene_set_actor_front(int front);
 /* True when the native display is live (so the game only does the extra
  * extraction work when it will actually be shown). */
@@ -1473,9 +1593,21 @@ int openpete_native_render_repeat_last(void);
  * openpete_native_scene_publish clears it. */
 void     openpete_native_scene_eager_begin(void);
 uint32_t openpete_native_scene_build_stamp(void);
-/* Copy the accumulator + every per-present companion into the next free
- * slot. kind = OP_PACE_CANONICAL / OP_PACE_INTERMEDIATE. Returns the slot,
- * or -1 (ring full / allocation failed) — a refused publish, never a cut. */
+/** @brief Copy the accumulating scene and its per-present companions into a free ring slot.
+ *
+ * Any free slot serves, not only the one after the last publish: slot
+ * position carries no meaning, since the pick orders by scene id and retire
+ * and flush scan the whole ring, while a presented slot can stay unretired
+ * as long as the swapchain refuses images (a live resize), because
+ * retirement runs only after a successful begin_frame. Requiring one exact
+ * slot would let such a straggler refuse every publish and freeze the
+ * display. Clears the eager build stamp.
+ * @param target_ns Display instant the scene is for.
+ * @param kind OP_PACE_CANONICAL or OP_PACE_INTERMEDIATE.
+ * @param alpha Sub-tick alpha of the scene.
+ * @param paired Non-zero when the re-extract had a prev/curr pair.
+ * @return The slot index, or -1 when no slot is free or the slot could not
+ *         be sized: a refused publish, never a truncated scene. */
 int      openpete_native_scene_publish(int64_t target_ns, int kind, double alpha, int paired);
 int64_t  openpete_native_scene_next_target(void);      /* earliest pending, 0 = none */
 int      openpete_native_scene_pick(int64_t at);       /* nearest pending -> PRESENTING */
@@ -1691,10 +1823,13 @@ void     openpete_phase_set_count(int which, int n);
  * 2D is then sorted into emission order. */
 void openpete_native_scene_capture_overlay(void);
 void openpete_native_scene_apply_overlay(double alpha);
-/* Pre-capture hook: called at the top of capture_overlay so the 2D-UI feeder
- * can flush a deferred ("feed-previous") prim into this tick's accumulation
- * before the carry commits — by the canonical present every post-link prim
- * mutation is done, so the flush is exact. */
+/** @brief Register the callback run at the top of the canonical overlay capture.
+ *
+ * Lets the 2D-UI feeder flush a deferred primitive into this tick's
+ * accumulation before the carry commits; by the canonical present every
+ * post-link primitive mutation is done, so the flush is exact. One callback;
+ * a later call replaces it.
+ * @param fn Callback, or NULL. */
 void openpete_native_scene_register_overlay_precapture(void (*fn)(void));
 /** @brief Roll the fade and freeze-backdrop carries to the tick just rendered.
  *
@@ -1772,13 +1907,16 @@ int openpete_native_render_screenshot_all(const char *base);
  * @return 0 on success, nonzero on failure or when @p out is NULL. */
 int openpete_native_render_capture_rgba(unsigned char **out, int *w, int *h);
 
-/* Save / restore the accumulating scene (s_scene and its per-frame scalars).
- * A caller that drives a re-extract only to inspect its output brackets it with
- * these: the re-extract rebuilds s_scene in place, and the next frame's
- * begin_frame would otherwise snapshot that rebuilt scene into the frame-history
- * ring in place of the canonical one. save returns 0 on success; restore is a
- * no-op when nothing is saved. */
+/** @brief Save the accumulating scene and its per-frame scalars.
+ *
+ * A caller that drives a re-extract only to inspect its output brackets it
+ * with this and openpete_native_scene_restore: the re-extract rebuilds the
+ * scene in place, and the next begin_frame would otherwise snapshot the
+ * rebuilt scene into the frame-history ring in place of the canonical one.
+ * @return 0 on success, 1 when the save buffer could not be sized. */
 int  openpete_native_scene_save(void);
+/* Restore the scene saved by openpete_native_scene_save; no-op when nothing
+ * is saved. */
 void openpete_native_scene_restore(void);
 
 /** @brief Make the screenshot compose read the current scene instead of the lagged history slot.

@@ -539,11 +539,6 @@ void openpete_native_scene_mark_terrain_feed(void) { s_cur_ter_after = 1; }
 void openpete_native_scene_tag_family_counts(uint32_t out[16]) {
     memcpy(out, s_scene_fam_n, sizeof s_scene_fam_n);
 }
-/* Sticky CLUT-ladder row (see openpete_native_scene_set_fog_delta). Ambient
- * state rather than a scene-tri field on purpose: the feeder-facing tri is
- * filled field-by-field by a dozen feeders that never memset it, so a new
- * struct member would read as garbage everywhere except the one feeder that
- * sets it — the layout assert catches a missing MIRROR, not a missing init. */
 void openpete_native_scene_set_fog_delta(int delta) {
     /* Row in bits 7:0 as documented; feeders may add the TP_FOG_DELTA_CONT /
      * _FOGBIAS flags above the row byte (continuous pack-fog model). An
@@ -554,7 +549,7 @@ void openpete_native_scene_set_fog_delta(int delta) {
                                   TP_FOG_DELTA_FOGBIAS))
                       : 0;
 }
-/* S8 arms this when material selectors register (0 selectors ⇒ inert key). */
+/* Armed by the mod material-selector registry; see tag_split_on. */
 void openpete_native_set_tag_split(int on) { s_tag_split_ext = on ? 1 : 0; }
 
 static int tag_split_on(void) {
@@ -1036,9 +1031,6 @@ void openpete_native_scene_begin_frame(unsigned frame) {
         openpete_mods_material_frame_reset();
     }
 }
-/* The re-extract wrapper calls this once its body has finished feeding: the
- * scene now in s_scene is a replay's, whatever the feeders' own
- * begin_frame calls did to the flag while the body ran. */
 void openpete_native_scene_mark_replay(void) { s_scene_replay = 1; }
 
 /* Accumulating-scene save/restore. A re-extract rebuilds s_scene in place, so a
@@ -1086,20 +1078,7 @@ void openpete_native_scene_restore(void) {
 
 unsigned openpete_native_scene_frame(void) { return s_scene_frame; }
 
-/* ---- frame-close notification -------------------------------------------
- * A feeder whose data is not final when its primitives are produced defers
- * them and releases the batch later. The 2D UI layer is the one such feeder: a
- * primitive's words are not final until the ordering table holding it is handed
- * to the GPU, a tick after the frame that built it. The batch belongs to the
- * scene its build frame opened, beside the 3D of the same ordering table, so it
- * has to be released while that scene is still the accumulating one.
- *
- * This fires immediately before a frame's accumulation is snapshotted and the
- * next frame started, which is the last moment an append still reaches it. A
- * deferred feeder releases whatever it holds for `frame` here; the ordering
- * table's own walk releases the rest. Runs on the thread doing the rotation,
- * the thread that owns the accumulating scene, so it adds no synchronisation
- * point. */
+/* ---- frame-close notification ------------------------------------------- */
 void openpete_native_scene_register_frame_close(void (*fn)(unsigned frame)) {
     s_scene_frame_close_cb = fn;
 }
@@ -1416,12 +1395,6 @@ int openpete_native_scene_collect_2d_prims(uint32_t* out, int max) {
     return n;
 }
 
-/* Stamp every 2D tri of this frame with its ordering-table traversal rank,
- * looked up from the primitive address each was decoded from. Covers the live
- * scene and the feed-time carry accumulation, which is what the next capture
- * commits, so a tri fed at emission and one fed from a deferred batch are
- * ranked by the same walk. A tri the walk never reached keeps rank 0 and, under
- * the stable sort, its feed position. */
 void openpete_native_scene_rank_2d(uint32_t (*rank_of)(uint32_t prim)) {
     if (!rank_of) return;
     for (int t = 0; t < s_scene_n; t++)
@@ -10669,9 +10642,7 @@ void openpete_native_set_raster_quantize(int mult) {
 
 int openpete_native_get_raster_quantize(void) { return s_raster_mult; }
 
-/* --dither live toggle: the pass enable is checked per present at the SCENE
- * postfx split, so no pipeline rebuild is involved — the flag alone is the
- * whole switch. */
+/* Checked per present at the scene postfx split; no pipeline rebuild. */
 void openpete_native_set_dither(int on) {
     s_dither = on ? 1 : 0;
     OPL_INFO_F("native", "dither -> %s",
@@ -10680,8 +10651,7 @@ void openpete_native_set_dither(int on) {
 
 int openpete_native_get_dither(void) { return s_dither; }
 
-/* --terrain-visibility live toggle: the terrain feeder reads the mode at the
- * top of every sector walk, so the flag alone is the whole switch. */
+/* Read by the terrain feeder at the top of every sector walk. */
 void openpete_native_set_terrain_visibility(int mode) {
     s_terrain_vis = (mode == OPENPETE_TERRAIN_VIS_GAME) ? OPENPETE_TERRAIN_VIS_GAME
                                                         : OPENPETE_TERRAIN_VIS_FRUSTUM;
@@ -10693,11 +10663,7 @@ void openpete_native_set_terrain_visibility(int mode) {
 
 int openpete_native_get_terrain_visibility(void) { return s_terrain_vis; }
 
-/* --texture-mapping live toggle: the mode is a vertex spec constant baked
- * into every scene pipeline, so the setter only QUEUES the change; it takes
- * effect at the next present boundary via texmap_apply_pending(), which
- * re-bakes all live pipelines in place (mod material/mesh caches included —
- * every rhi_pipeline* keeps its identity) under a one-time device idle. */
+/* Queued; texmap_apply_pending re-bakes the pipelines at the next present. */
 void openpete_native_set_texture_mapping(int affine) {
     s_texmap_pending = affine ? 1 : 0;
 }
@@ -13007,20 +12973,7 @@ static int slot_grow(scene_slot_t *sl, int n) {
     sl->tri = (scene_tri_t*)sl->tri_v.data;
     return held >= n;
 }
-/* Copy the accumulator and its companions into the next ring slot. Returns
- * the slot index, or -1 when the ring has no free slot (the producer is
- * ahead of the consumer by a whole ring) or the copy could not be sized —
- * a refused publish, never a truncated scene.
- *
- * Any FREE slot will do, not only the one after the last publish. Slot
- * position carries no meaning — pick orders by scene_id and retire/flush
- * scan the whole ring — while a PRESENTED slot can sit unretired for as
- * long as the swapchain refuses frames (a live resize): retirement runs
- * only after a successful begin_frame. If publishing required that exact
- * slot, one such straggler would refuse every publish once the ring
- * wrapped onto it, the consumer would drain pending and go idle, and with
- * no render there is no begin_frame to ever retire it: the display stays
- * frozen for good while the sim runs on. */
+/* Publish into any free ring slot; see the header. */
 int openpete_native_scene_publish(int64_t target_ns, int kind, double alpha, int paired) {
     SDL_LockMutex(ring_mx());
     int idx = -1;
