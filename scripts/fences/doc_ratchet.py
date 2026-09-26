@@ -903,8 +903,9 @@ Ways to land this commit:
                 its history.
   2. move       a comment at the wrong declaration, or above a blocking
                 token, moves to the site named above.
-  3. accept     %s="<reason>" git commit ...   (a mechanical pass: a
-                reformat, a move between TUs)
+  3. accept     %s="<reason>" git commit ...
+                for a mechanical pass (a reformat, a move between TUs)
+                where documenting every touched function is out of scope.
   4. fence      a mis-read is a defect in the fence: fix or retire it this
                 session.
 """ % ACCEPT_VAR
@@ -959,6 +960,8 @@ def no_header_include(corpus):
 def check_carveouts(root, corpus):
     """The Windows-only list against the tree: each file holds the name and
     the linux-release parse does not see a definition of it."""
+    if os.path.realpath(root) != os.path.realpath(lib.OWN_ROOT):
+        return
     for key in WINDOWS_ONLY:
         f, name = key.rsplit(":", 1)
         try:
@@ -1124,7 +1127,7 @@ def mode_hook(root):
         lib.wired(entries, present), present, accept,
         staged_files=staged_paths, wdoc=wdoc)
     bins.update(dbins)
-    say("doc-ratchet: %d TUs parsed (%s), %d definitions, %d acted on, %d "
+    say("doc-ratchet: %d entries parsed (%s), %d definitions, %d acted on, %d "
         "controls; baseline source: %s; %d accepted rows; %.1f s" % (
             corpus.scored, "full corpus" if full else "staged TUs",
             corpus.definitions, len(acted), controls, source_name,

@@ -349,6 +349,13 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     set_tests_properties(doc_ratchet PROPERTIES
         LABELS "fence"
         SKIP_RETURN_CODE 64)
+    # The documentation fence's own tests: the decision function per rule,
+    # the touched rule, the per-entry merge, the fixture controls (and a
+    # tampered copy that must fail), and the hook end to end in a scratch
+    # repository, including a cherry-pick across a landing.
+    add_test(NAME doc_ratchet_selftest
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_doc_ratchet.py)
+    set_tests_properties(doc_ratchet_selftest PROPERTIES LABELS "fence")
     # The baselines' merge driver: the three-way merge by row key, and a
     # cherry-pick across a landing in a scratch repository.
     add_test(NAME ratchet_tsv_merge_selftest
