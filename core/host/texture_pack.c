@@ -394,8 +394,8 @@ static int tp_add_root_source(int r)
 #define TP_PREFETCH_BUDGET ((size_t)256 * 1024 * 1024)
 
 /* Prefetch ring depth, one slot of which stays empty. A push into a full
- * ring is dropped; the dropped entry keeps TP_PX_QUEUED, which
- * tp_decode_request never re-queues, so it is not decoded. */
+ * ring is refused and tp_decode_request returns the entry to TP_PX_NONE, so
+ * the next draw that wants it requests it again. */
 #define TP_Q_CAP 8193
 
 static struct {
@@ -416,13 +416,14 @@ static struct {
 
 static int tp_q_empty(void) { return s_dec.head == s_dec.tail; }
 
-/** @brief Push pack entry ei onto the decode ring, at the head when front is set; drop it when the ring is full.
+/** @brief Push pack entry ei onto the decode ring, at the head when front is set; refuse it when the ring is full.
  *
  * The caller holds s_dec.mu and has already set the entry to
- * TP_PX_QUEUED. */
-static void tp_q_push(int ei, int front) {
+ * TP_PX_QUEUED; on a refusal it owns returning the entry to TP_PX_NONE.
+ * @return 1 when the entry is on the ring, 0 when the ring was full. */
+static int tp_q_push(int ei, int front) {
     int nxt = (s_dec.tail + 1) % TP_Q_CAP;
-    if (nxt == s_dec.head) return;            /* full — the entry stays QUEUED */
+    if (nxt == s_dec.head) return 0;          /* full */
     if (front) {
         s_dec.head = (s_dec.head + TP_Q_CAP - 1) % TP_Q_CAP;
         s_dec.q[s_dec.head] = ei;
@@ -430,6 +431,7 @@ static void tp_q_push(int ei, int front) {
         s_dec.q[s_dec.tail] = ei;
         s_dec.tail = nxt;
     }
+    return 1;
 }
 
 static void tp_decode_one(int ei) {
@@ -561,7 +563,9 @@ static void tp_decode_request(int ei, int urgent) {
     if (!SDL_CompareAndSwapAtomicInt(&e->px_state, TP_PX_NONE, TP_PX_QUEUED))
         return;                                /* another thread queued it */
     SDL_LockMutex(s_dec.mu);
-    tp_q_push(ei, urgent);
+    /* A full ring leaves the entry at NONE, the state the worker's budget
+     * skip also returns to, so a later draw re-requests it. */
+    if (!tp_q_push(ei, urgent)) SDL_SetAtomicInt(&e->px_state, TP_PX_NONE);
     SDL_SignalCondition(s_dec.cv);
     SDL_UnlockMutex(s_dec.mu);
 }
