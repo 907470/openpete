@@ -2922,13 +2922,17 @@ static int mod_key_cached(const char* mod_dir, const char* id,
     return strcmp(stamped, key) == 0;
 }
 
-/* Write the compiler response file: one path per line, quoted, with
- * forward slashes.
+/** @brief Write the compiler response file listing a mod's sources.
  *
- * Both tokenizers accept `/`, and neither accepts `\\` the same way:
- * mingw-gcc reads an @file GNU-style, where a backslash escapes the
- * next character, while the bundled llvm-mingw clang reads it
- * Windows-style. Writing `/` is what both agree on. */
+ * Writes each of the `n_srcs` source paths, then
+ * `<sdk_dir>/openpete_mod_abi.c`, one per line, double-quoted, with every
+ * backslash converted to a forward slash. Both tokenizers accept `/`,
+ * and neither accepts `\\` the same way: mingw-gcc reads an @file
+ * GNU-style, where a backslash escapes the next character, while the
+ * bundled llvm-mingw clang reads it Windows-style.
+ *
+ * @return 0 on success, -1 when the file cannot be opened or a write or
+ *         the close fails. */
 static int write_sources_rsp(const char* rsp_path, const mod_fvec* srcs,
                              int n_srcs, const char* sdk_dir) {
     FILE* f = fopen(rsp_path, "wb");

@@ -120,8 +120,17 @@ static int write_whole_file(const char* path, const void* data, size_t len) {
     return put == len ? 0 : -1;
 }
 
-/* Sorted names of files in `dir` whose suffix appears in the ;-list
- * `exts`. Local, deterministic (strcmp order) — feeds hashes. */
+/** @brief List the files in a directory whose extension is in a `;`-separated list, sorted by strcmp.
+ *
+ * The extension is the name from its last `.`; a name with no `.` or of
+ * 128 bytes or more is skipped, and the scan stops at `cap` entries. The
+ * strcmp order makes the build and watch hashes that consume the list
+ * independent of readdir order.
+ * @param dir Directory to scan; a missing one lists nothing.
+ * @param exts Extensions with their dots, such as `.vert;.frag`.
+ * @param names Receives the names.
+ * @param cap Capacity of @p names.
+ * @return The number of names written. */
 static int list_dir_sorted(const char* dir, const char* exts,
                            char names[][128], int cap) {
     DIR* d = opendir(dir);
@@ -151,7 +160,10 @@ static int list_dir_sorted(const char* dir, const char* exts,
     return n;
 }
 
-/* "shaders/crt.frag" -> "shaders_crt.frag" (flat cache filename) */
+/** @brief Flatten a mod-relative shader path into a cache file name.
+ *
+ * Replaces each `/` and `\\` with `_`, so `shaders/crt.frag` becomes
+ * `shaders_crt.frag`, and truncates to `cap - 1` bytes. */
 static void flatten_path(const char* path, char* out, size_t cap) {
     size_t i = 0;
     for (; path[i] && i + 1 < cap; i++)
@@ -163,13 +175,9 @@ static void flatten_path(const char* path, char* out, size_t cap) {
 #define MOD_SHADER_STAGE_FRAG OPENPETE_MOD_GLSL_STAGE_FRAG
 
 /* ------------------------------------------------------------------ */
-/* build key: api version + glslang version + interface header bytes +
- * every shader-source file in the shader's own directory (sorted walk
- * not needed — hash the registered file THEN its siblings by name
- * via the directory key helper below). Sibling hashing makes an edit
- * to a mod-local include invalidate its includers (over-invalidation
- * across the dir is accepted: GLSL compiles are milliseconds). */
+/* build key                                                           */
 
+/** @brief Feed a NUL-terminated string, without its terminator, to a SHA-256 context. */
 static void key_update_str(openpete_sha256_ctx* hc, const char* s) {
     openpete_sha256_update(hc, s, strlen(s));
 }
@@ -205,9 +213,12 @@ static void key_update_interface(openpete_sha256_ctx* hc) {
     }
 }
 
-/* Interface hash (also the prebuilt-sidecar contract): api version +
- * interface header bytes. Deliberately EXCLUDES the glslang version —
- * a prebuilt .spv doesn't depend on the engine's compiler. */
+/** @brief Hash the shader interface: the mod API version and the staged interface files.
+ *
+ * A prebuilt `.spv` loads only when its `.spv.ihash` sidecar holds this
+ * hash. The glslang version is excluded, since a prebuilt module does not
+ * depend on the engine's compiler.
+ * @param out_hex Receives the 64-character hex digest and a NUL. */
 static void interface_hash(char out_hex[65]) {
     openpete_sha256_ctx hc;
     openpete_sha256_init(&hc);
@@ -219,6 +230,14 @@ static void interface_hash(char out_hex[65]) {
     openpete_sha256_hex(digest, out_hex);
 }
 
+/** @brief Compute a shader source's build key.
+ *
+ * SHA-256 over the mod API version, the glslang version, the staged
+ * interface files, the source, and then every `.vert`, `.frag` and `.glsl`
+ * file in the source's directory in strcmp order. The sibling files make
+ * an edit to a mod-local include invalidate its includers; every other
+ * shader in that directory recompiles with them.
+ * @return 0, or -1 when the source cannot be read. */
 static int shader_compute_key(const char* mod_dir, const char* rel_path,
                               char key_out[65]) {
     char src_path[MOD_SHADER_PATH_MAX * 2];
@@ -264,12 +283,19 @@ static int shader_compute_key(const char* mod_dir, const char* rel_path,
 /* compile                                                             */
 
 
-/* One profile of one shader source: reuse the cached SPIR-V when the build
- * key still matches, else compile and cache it. `suffix` names the variant's
- * cache files ("" for the stock profile, ".terrain" for the retained terrain
- * engine half) and `preamble` is what glslang injects after #version.
- * Returns word count, 0 on failure — and on failure removes only the STAMP,
- * so a previously good .spv survives to be re-validated next boot. */
+/** @brief Produce one profile of one shader source, from the cache when its build key matches, else by compiling it.
+ *
+ * The cache files are `<build_dir>/<flat><suffix>.spv` and its `.hash`
+ * stamp. A stamp equal to `key` loads the cached SPIR-V, provided it is a
+ * nonempty whole number of words; otherwise the source compiles, and
+ * success writes the `.spv` and then the stamp. A failed compile removes
+ * only the stamp and leaves any older `.spv` file in place, unused until a
+ * compile rewrites both.
+ * @param suffix Variant name in the cache files: "" for the stock profile,
+ *        `.terrain` for the retained-terrain engine half.
+ * @param preamble Text glslang injects after `#version`, or NULL.
+ * @param out_words Receives the malloc'd SPIR-V words.
+ * @return The word count, 0 on failure. */
 static size_t compile_profile(const char* src, int stage,
                               const openpete_mod_glsl_include_t* ctx, const char* key,
                               const char* build_dir, const char* flat,
@@ -763,7 +789,8 @@ void openpete_mods_postfx_remove_owner(const char* mod_id) { REG_WR(); openpete_
  * stamped into the tag's spare bits, so the batcher splits draws by
  * outcome (two instances of one class with different callback results
  * land in different batches); the slot's uniform block binds at the
- * override draw. Conflicts: enabled-list priority, FIRST match wins.
+ * override draw. Conflicts: enabled-list priority, the later-loaded mod
+ * wins.
  *
  * Per-present, not identity-replayed: reextract_record_pass re-walks
  * every present, and the callback reads TICK-STABLE guest RAM (the
@@ -1008,12 +1035,17 @@ int openpete_mods_material_terrain_bucket_gpu(
     return 0;
 }
 
-/* Refuse a selector this engine cannot fully honour, rather than matching
- * wider than its author asked for. Size alone is not enough: a new flag bit
- * never changes sizeof, so the flags are checked against the known mask too.
+/** @brief Check that this engine can honour a material selector exactly as written.
  *
- * Shared by register and set_selector so a retune can never install a key the
- * register path would have refused. */
+ * Refuses, with an error log, a struct_size other than this SDK's, flag
+ * bits outside OP_SEL_FLAGS_KNOWN, a channel other than -1 outside
+ * OP_CHAN_MOBY..OP_CHAN_PORTAL, and a texture key other than a Tiledef id
+ * 0..127 on channel -1 or OP_CHAN_TERRAIN without OP_SEL_UNTEXTURED. The flag check exists because a new flag bit never
+ * changes sizeof. Register and set_selector share it, so a retune cannot
+ * install a key the register path would refuse.
+ * @param id Mod id for log lines.
+ * @param sel The selector.
+ * @return 1 when valid, 0 when refused. */
 static int material_sel_valid(const char* id,
                               const openpete_mod_material_selector_t* sel) {
     if (sel->struct_size != (uint32_t)sizeof *sel) {
@@ -1110,7 +1142,12 @@ int openpete_mods_material_register(openpete_mod_t* self,
                                     openpete_mod_material_fn per_instance) { REG_WR(); int r_ = openpete_mods_material_register_locked(self, sel, vert_shader, frag_shader, per_instance); REG_WR_END(); return r_; }
 
 
-/* Turn one registered material on or off. */
+/** @brief Turn one registered material on or off, under the registry write lock.
+ *
+ * Sets user_enabled, bumps the terrain epoch when the material could
+ * bucket a terrain face, and re-arms the batcher tag split. `self` is not
+ * checked against the owner.
+ * @return 0, or -1 for an unknown or swept material. */
 static int openpete_mods_material_enable_locked(openpete_mod_t* self, int material, int on) {
     (void)self;
     if (material < 0 || material >= s_mat_count || !s_mats[material].live)
@@ -1123,7 +1160,14 @@ static int openpete_mods_material_enable_locked(openpete_mod_t* self, int materi
 int openpete_mods_material_enable(openpete_mod_t* self, int material, int on) { REG_WR(); int r_ = openpete_mods_material_enable_locked(self, material, on); REG_WR_END(); return r_; }
 
 
-/* Set the uniform block a material's shader reads. */
+/** @brief Set a material's static uniform block, under the registry write lock.
+ *
+ * The block is copied; openpete_mods_material_frame_reset interns it into
+ * a slot at each present for materials whose owner is enabled. `self` is
+ * not checked against the owner.
+ * @return 0, or -1 for an unknown or swept material, @p len above
+ *         OPENPETE_MATERIAL_UNIFORMS_MAX, or a NULL block with nonzero
+ *         @p len. */
 static int openpete_mods_material_set_params_locked(openpete_mod_t* self, int material,
                                       const void* block, uint32_t len) {
     (void)self;
@@ -1139,10 +1183,18 @@ int openpete_mods_material_set_params(openpete_mod_t* self, int material,
                                       const void* block, uint32_t len) { REG_WR(); int r_ = openpete_mods_material_set_params_locked(self, material, block, len); REG_WR_END(); return r_; }
 
 
-/* Retune a live material's selector, keeping its handle, shader, callback and
- * enabled state. Re-registering instead would burn a table slot per change
- * and leave the old selector matching forever, and is refused outright inside
- * a present — which is exactly where a mod reacting to its own UI runs. */
+/** @brief Replace a live material's selector, keeping its handle, shaders, callback and enabled state.
+ *
+ * Runs under the registry write lock. Only the owning mod may retune, and
+ * the selector must pass material_sel_valid. Inside a present the new
+ * selector is parked for openpete_mods_material_apply_pending, since
+ * selection must stay constant across a present and the terrain epoch may
+ * move only between ticks; outside one it applies at once, bumping the
+ * terrain epoch when the old or new selector could bucket terrain.
+ * Re-registering instead would use a table slot per change, leave the old
+ * selector matching, and is refused inside a present.
+ * @return 0, or -1 for a NULL argument, an unknown or swept material, a
+ *         material another mod owns, or an invalid selector. */
 static int openpete_mods_material_set_selector_locked(
         openpete_mod_t* self, int material,
         const openpete_mod_material_selector_t* sel) {
@@ -1179,7 +1231,11 @@ int openpete_mods_material_set_selector(
         const openpete_mod_material_selector_t* sel) { REG_WR(); int r_ = openpete_mods_material_set_selector_locked(self, material, sel); REG_WR_END(); return r_; }
 
 
-/* Install selectors parked by a present-context retune. */
+/** @brief Install the selectors parked by retunes made inside a present.
+ *
+ * Runs under the registry write lock. Bumps the terrain epoch for each
+ * material whose old or new selector could bucket terrain, and re-arms the
+ * batcher tag split when any selector moved. */
 static void openpete_mods_material_apply_pending_locked(void) {
     if (!s_mat_sel_dirty) return;
     s_mat_sel_dirty = 0;
@@ -1200,9 +1256,13 @@ void openpete_mods_material_apply_pending(void) {
 }
 
 
-/* The winning selector index for a moby of class `cls` (enabled-list
- * priority, first match wins), or -1. Mobys have no env/tier, so those
- * flags exclude a moby match. */
+/** @brief Return the winning material for a moby class, or -1.
+ *
+ * Considers live, user-enabled materials of enabled mods on channel -1 or
+ * OP_CHAN_MOBY whose class key is -1 or `cls`. A texture key
+ * or an env, HP-tier, LP-tier or untextured flag excludes the material,
+ * since those refine terrain only. The level key is not tested. Among
+ * matches the highest load_index, the later-loaded mod, wins. */
 static int material_moby_winner(int cls) {
     int best = -1;
     for (int i = 0; i < s_mat_count; i++) {
@@ -1325,8 +1385,12 @@ int openpete_mods_material_moby_slot(CPUState* cpu, int moby_class,
     return s;
 }
 
-/* Winner among per-instance TERRAIN selectors carrying OP_SEL_UNTEXTURED —
- * the untextured (beyond-LOD gouraud) band resolve. */
+/** @brief Return the winning per-instance terrain material for the untextured band, or -1.
+ *
+ * The untextured band is the beyond-LOD gouraud terrain. Considers live,
+ * user-enabled per-instance materials of enabled mods on channel -1 or
+ * OP_CHAN_TERRAIN with OP_SEL_UNTEXTURED set and no texture key;
+ * the highest load_index wins. */
 static int material_terrain_untex_winner(void) {
     int best = -1;
     for (int i = 0; i < s_mat_count; i++) {
@@ -1342,8 +1406,11 @@ static int material_terrain_untex_winner(void) {
     return best;
 }
 
-/* Winner among per-instance TERRAIN selectors keyed on a textured face's
- * Tiledef id (S9). */
+/** @brief Return the winning per-instance terrain material for a textured face's Tiledef id, or -1.
+ *
+ * Considers live, user-enabled per-instance materials of enabled mods on
+ * channel -1 or OP_CHAN_TERRAIN without OP_SEL_UNTEXTURED whose
+ * texture key equals `texid`; the highest load_index wins. */
 static int material_terrain_tex_winner(int texid) {
     int best = -1;
     for (int i = 0; i < s_mat_count; i++) {
@@ -1433,20 +1500,29 @@ int openpete_mods_material_terrain_untex_slot(CPUState* cpu) {
     return terrain_refine_slot(material_terrain_untex_winner());
 }
 
-/* An interned slot can outlive its winner's usability: extraction interns
- * the slot, the tick boundary (live-toggle apply AND hot-reload sweep)
- * runs next, and only then does this present draw. A disabled owner must
- * stop THIS present, not the next one; a swept selector is worse — its
- * SPIR-V is freed and its retired pipeline slot is one no later sweep
- * revisits, so a rebuild through it would cache a pipeline nothing can
- * ever destroy. Both cases fall back to the stock draw. */
+/** @brief Test whether an interned slot's material is still live and its owner enabled.
+ *
+ * An interned slot can outlive its material's usability: extraction
+ * interns the slot, the tick boundary (live-toggle apply and hot-reload
+ * sweep) runs next, and only then does the present draw. A disabled owner
+ * must stop that present. A swept material has freed SPIR-V and a
+ * retired pipeline slot no later sweep revisits, so a rebuild through it
+ * would cache a pipeline nothing destroys. Both cases draw stock.
+ * @param slot Slot index in the current view.
+ * @return Nonzero when usable. */
 static int material_slot_usable(int slot) {
     int m = view_slot_mat(slot);
     return m >= 0 && m < s_mat_count && s_mats[m].live &&
            openpete_mods_is_enabled(s_mats[m].owner);
 }
 
-/* Fill `out` from selector index `best` + per-instance uniform slot. */
+/** @brief Fill a draw's GPU material description from a material index and a uniform slot.
+ *
+ * Copies the vertex and fragment SPIR-V (NULL with 0 words for a stock
+ * stage), the pipeline variant slots, the stencil-mark pipeline slot and
+ * the owner. The uniform slot is `uniform_slot` when positive, else the
+ * material's static slot in the current view (0 = no params).
+ * @return `best`. */
 static int material_fill_gpu(int best, int uniform_slot,
                              openpete_mod_material_gpu_t* out) {
     mod_material_t* m = &s_mats[best];
@@ -1469,7 +1545,8 @@ static int material_fill_gpu(int best, int uniform_slot,
 /* Draw-time resolve (native_render draw_tex_runs): the run's S6 tag →
  * the winning override, or -1. Tag layout: [31:28] path+1; moby class
  * [15:0] + per-instance slot [27:16] (S8b); terrain env bit 27 / LP
- * bit 26 + sector [8:0]. Enabled-list priority, FIRST match wins. */
+ * bit 26 + sector [8:0]. Enabled-list priority: the later-loaded mod
+ * wins. */
 /* The selector keys a tag carries, decoded once. `path` is 0 moby,
  * 1 terrain; the other members are -1 when the tag's path does not carry
  * that key. */
@@ -1498,10 +1575,19 @@ static void material_key_from_tag(uint32_t tag, material_key_t* k) {
     k->level = openpete_mods_current_level();
 }
 
-/* The slot a tag names directly: moby per-instance (S8b) or terrain
- * per-present (S8c untex / S9 texture). Returns 1 with the slot in
- * *slot, 0 when the tag falls through to the declarative resolve, and
- * -1 when the slot declines the draw or no longer resolves. */
+/** @brief Read the interned material slot a tag names directly.
+ *
+ * A moby tag carries a per-instance slot in bits [27:16]
+ * (OPENPETE_MATERIAL_SLOT_STOCK = declined); a terrain tag carries a
+ * per-present slot in bits [24:16] (OPENPETE_MATERIAL_TERRAIN_STOCK =
+ * declined). Slot 0 defers to the declarative resolve. A slot at or past
+ * the view's slot count is stale, and one whose material is swept or whose
+ * owner is disabled no longer resolves.
+ * @param tag Provenance tag.
+ * @param path 0 moby, 1 terrain; other paths carry no slot.
+ * @param slot Receives the slot on a hit.
+ * @return 1 with the slot, 0 to fall through to the declarative resolve,
+ *         -1 when the slot declines the draw or no longer resolves. */
 static int material_slot_from_tag(uint32_t tag, int path, int* slot) {
     int s;
     if (path == 0) {
@@ -1520,7 +1606,14 @@ static int material_slot_from_tag(uint32_t tag, int path, int* slot) {
     return 1;
 }
 
-/* Does this material's selector accept the key? */
+/** @brief Test whether a material's selector accepts a decoded tag key.
+ *
+ * Each selector field narrows only when set: channel, level (inert while
+ * no level has been pushed), identity (not on terrain, whose [15:0] holds
+ * sector and texture id), moby class (moby path only), texture (textured
+ * terrain only), and the env, HP-tier, LP-tier, textured and untextured
+ * flags. Setting neither textured nor untextured selects both.
+ * @return 1 when accepted, else 0. */
 static int material_selector_matches(const mod_material_t* m,
                                      const material_key_t* k) {
     if (m->sel.channel != -1 && m->sel.channel != k->chan) return 0;
@@ -1548,7 +1641,12 @@ static int material_selector_matches(const mod_material_t* m,
     return 1;
 }
 
-/* The matching material with the highest enabled-list priority, or -1. */
+/** @brief Return the declarative material that wins a decoded tag key, or -1.
+ *
+ * Considers live, user-enabled materials of enabled mods without a
+ * per-instance callback, which resolve through slots only; among those
+ * material_selector_matches accepts, the highest load_index, the
+ * later-loaded mod, wins. */
 static int material_winner(const material_key_t* k) {
     int best = -1;
     for (int i = 0; i < s_mat_count; i++) {

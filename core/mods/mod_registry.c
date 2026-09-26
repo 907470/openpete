@@ -122,10 +122,17 @@ static int ensure_hooked(const char* log_tag) {
     return 0;
 }
 
-/* Per-tick registry driver: runs as the DEEPEST link on the game's
- * master-update chain (registered at mod-entry time, so every mod hook
- * wraps it). The original update runs first (via base()), so registry
- * work always sees post-update vanilla state. */
+/** @brief Per-tick registry driver, a link on the game's master-update chain.
+ *
+ * ensure_hooked adds it at the moby ops' update_hook_addr on the first
+ * registration in any namespace; links added after it wrap it. It calls
+ * openpete_mods_base first, so its work sees the state after the original
+ * update and every deeper link. It then claims pending level slots,
+ * reconciles custom-level declarations and warps, and reconciles target
+ * totals. A live level (level_id > 0) clears s_slot_entering and moves
+ * s_resident_level, and each enabled level-ready hook whose fired_level
+ * differs from it fires once with that level id.
+ * @param cpu Live game CPU. */
 static void registry_tick(CPUState* cpu) {
     openpete_mods_base(cpu);
     if (!s_ops) return;
@@ -184,7 +191,12 @@ void openpete_mods_set_level_ops(const openpete_level_ops_t* ops) {
     s_level_ops = ops;
 }
 
-/* Lazy claims ride the same per-tick driver as moby types (below). */
+/** @brief Claim a level slot for each enabled level-slot row that has none.
+ *
+ * Calls the level ops' claim_slot with the row's donor level every tick
+ * until it returns a nonzero slot id, then logs the slot live. Does
+ * nothing while no level ops are registered.
+ * @param cpu Live game CPU. */
 static void level_slots_tick(CPUState* cpu) {
     if (!s_level_ops) return;
     for (int i = 0; i < level_slot_count(); i++) {
@@ -339,19 +351,6 @@ int openpete_mods_level_enter(CPUState* cpu, int level_id) {
     return rc;
 }
 
-/* Engine-facing toggle guard: 1 while disabling mod_id would strand the
- * session. The one such state is a registered LEVEL SLOT the player is
- * currently inside, or loading into. The engine's donor alias keeps the
- * slot id serviceable whatever the owner's state, but everything that
- * makes the slot ITS level — the owner's chain links on the load path,
- * its level-ready hook, its registered content — stops dead at the flip,
- * leaving the player inside a level the live mod set no longer defines.
- * No on_toggle hook can undo it: a mod cannot un-enter a level from
- * inside it. Callers must refuse or defer the toggle-off until the
- * player has left the slot.
- *
- * Host-side statics only (the level id is the one the per-tick driver
- * last observed), so the menu thread may call it without guest access. */
 
 /* ── Declarative custom levels ([[level]] manifest blocks) ───────────
  * Hand-authored level mods with no C: the loader registers each block
@@ -412,13 +411,7 @@ static int s_custom_active = -1;       /* row owning the shared slot */
 static int s_custom_slot_id = 0;       /* claimed slot id (65), 0 = none */
 static int s_custom_warp = -1;         /* queued warp (real row index) */
 
-/* ── Custom-level asset files ────────────────────────────────────────
- * A declarative level ships two files under <dir>/levels/: <stem>.WAD
- * (the level's WAD data segment) and, optionally, <stem>.OVL (the
- * donor's code overlay). Those are the extensions the level editors
- * emit; the case they emit them in varies (and case matters on Linux
- * but not on Windows), so the lookup matches the name case-insensitively
- * by scanning the directory when the literal lowercase path misses. */
+/* Literal lowercase path first, then a case-insensitive directory scan. */
 int openpete_mods_custom_asset_path(const char* dir, const char* stem,
                                     int is_ovl, char* out, size_t cap) {
     const char* ext = is_ovl ? "ovl" : "wad";
@@ -447,11 +440,19 @@ int openpete_mods_custom_asset_path(const char* dir, const char* stem,
     return -1;
 }
 
-/* An egg total needs a row in the 18-entry table. A replace row takes
- * the donor's index; a slot row lands on the shared free slot, which is
- * past the table entirely. Drop the declaration rather than carry a
- * value nothing can display — the row still registers, and its gem and
- * dragon totals still apply. */
+/** @brief Copy a custom-level row's declared target totals, dropping an egg total with no egg-table row.
+ *
+ * Every total starts at -1 (undeclared); a NULL `counts` leaves them so.
+ * An egg total needs a row in the 18-entry egg table: a replace row takes
+ * its donor's level index, (donor_id / 10 - 1) * 6 + donor_id % 10, and a
+ * slot row lands on the shared free slot, past the table. An egg total
+ * with no row is reset to -1 with a warning; the row still registers, and
+ * its gem and dragon totals still apply.
+ * @param r The row being registered.
+ * @param replace 1 for a replace-mode row.
+ * @param counts Declared totals, or NULL.
+ * @param name Row name for log lines.
+ * @param log_tag Log tag. */
 static void custom_apply_counts(custom_level_t* r, int replace,
                                 const openpete_level_counts_t* counts,
                                 const char* name, const char* log_tag) {
@@ -472,8 +473,18 @@ static void custom_apply_counts(custom_level_t* r, int replace,
     r->counts.eggs = -1;
 }
 
-/* Fill the row's derived-asset members: level data size, display title,
- * and the music track, each dropped with a warning when absent. */
+/** @brief Fill a custom-level row's level data size, display title and music track.
+ *
+ * data_size is the size of `<dir>/levels/<stem>.WAD` found by
+ * openpete_mods_custom_asset_path, 0 with a warning when it is missing.
+ * title is copied from `title`, empty when NULL or empty. A non-empty
+ * `music` names `<dir>/music/<music>`; its duration comes from
+ * op_wav_probe_seconds, and a file that probes to 0 seconds or less
+ * clears the track with a warning, which leaves the donor's track playing.
+ * @param r The row being registered; dir, stem and name are already set.
+ * @param music WAV file name under the mod's music/, or NULL.
+ * @param title In-game title override, or NULL.
+ * @param log_tag Log tag. */
 static void custom_probe_assets(custom_level_t* r, const char* music,
                                 const char* title, const char* log_tag) {
     char p[1088];
@@ -499,8 +510,13 @@ static void custom_probe_assets(custom_level_t* r, const char* music,
     r->music[0] = '\0';
 }
 
-/* Place `row` in the alphabetical order the menu's Custom World buckets
- * read. The order vec already holds `row + 1` entries. */
+/** @brief Insert a row index into s_custom_order at its case-insensitive alphabetical place by name.
+ *
+ * The menu's Custom World buckets read the rows in this order. The order
+ * vec already holds `row + 1` entries; the new row goes before the first
+ * existing row whose name compares greater, else last.
+ * @param row Index of the new row in s_customs.
+ * @param name The new row's name. */
 static void custom_order_insert(int row, const char* name) {
     int at = row;
     for (int i = 0; i < row; i++)
@@ -633,8 +649,13 @@ const char* openpete_mods_custom_music_for(int level_id,
     return r->music;
 }
 
-/* Test/dev driver: OPENPETE_CUSTOM_WARP="tick:Level Name" queues a warp
- * into the named row at the Nth registry tick. */
+/** @brief Queue the custom-level warp that OPENPETE_CUSTOM_WARP schedules.
+ *
+ * The variable reads `<tick>:<Level Name>` and is parsed once, on the
+ * first call; a value without a colon schedules nothing. When `tick_no`
+ * equals the parsed tick, every row whose name matches exactly is queued
+ * in turn, so the last match holds the warp.
+ * @param tick_no 1-based count of custom_tick calls. */
 static void custom_env_schedule(unsigned tick_no) {
     static int s_parsed = 0;
     static unsigned s_at = 0;
@@ -658,9 +679,11 @@ static void custom_env_schedule(unsigned tick_no) {
         }
 }
 
-/* A row is live when its data file was found and its mod is enabled.
- * Mode-independent, unlike custom_tick's `want`, which also asks whether
- * the row is currently a replace row. */
+/** @brief Test whether a custom-level row's data file was found and its mod is enabled.
+ *
+ * Mode-independent, unlike custom_tick's `want`, which also requires a
+ * replace row.
+ * @return Nonzero when live. */
 static int custom_row_live(const custom_level_t* r) {
     return r->data_size && openpete_mods_is_enabled(r->mod_id);
 }
@@ -669,9 +692,10 @@ static int custom_row_live(const custom_level_t* r) {
  * counter a gate needs to tell a passing run from one that never ran. */
 static unsigned long s_counts_writes = 0;
 
-/* Which registered row, if any, owns a level's target totals this tick.
+/** @brief Return the custom-level row that owns a level's target totals this tick, or -1.
  *
- * Every slot-mode row resolves to the SAME shared-slot index, so the
+ * For the shared slot id the owner is the active row, when it is a live
+ * slot-mode row. Every slot-mode row resolves to the SAME shared-slot index, so the
  * owner there is the row that actually holds the slot, not every row
  * that could hold it; without that distinction two enabled slot rows
  * would both claim the index and loop order would decide what the
@@ -705,16 +729,11 @@ static int counts_declarer_for(int level_id) {
     return found;
 }
 
-/* Reconcile the target totals of every level index a registered row
- * could own. Idempotent: the op writes only bytes that differ, so this
- * costs three guest reads per index once the tables agree.
+/** @brief Collect the level ids whose target totals counts_tick reconciles.
  *
- * Reconciling beats writing on the edges where rows go live and stop
- * being live. The shared slot has no undeclare edge at all, a mode flip
- * from the Mods panel is unguarded, and a savestate load replaces the
- * tables with no edge firing in either direction; a rule evaluated every
- * tick has none of those holes, and needs no hook on the state path. */
-/* The level ids to reconcile: the shared slot plus every distinct donor. */
+ * Clears `ids`, then pushes the claimed shared slot id (when one is
+ * claimed) and each distinct donor level id of the registered rows.
+ * @param ids Vector of int, reused across ticks. */
 static void counts_collect_ids(mod_fvec* ids) {
     mod_fvec_clear(ids);
     if (s_custom_slot_id) {
@@ -732,7 +751,15 @@ static void counts_collect_ids(mod_fvec* ids) {
     }
 }
 
-/* Write one level's target totals from whichever row declares them. */
+/** @brief Reconcile one level's target totals with the row that declares them.
+ *
+ * counts_declarer_for picks the row. Its declared totals go to the level
+ * ops' set_level_counts; with no declarer, or for a total the row left
+ * undeclared, -1 is passed, which restores the table's boot value. Written
+ * bytes are added to s_counts_writes and logged; the op writes nothing
+ * once the tables agree, so a line appears only when ownership changes.
+ * @param cpu Live game CPU.
+ * @param id Level id. */
 static void counts_apply_one(CPUState* cpu, int id) {
     int d = counts_declarer_for(id);
     const openpete_level_counts_t* c = d >= 0 ? &custom_at(d)->counts : NULL;
@@ -750,6 +777,16 @@ static void counts_apply_one(CPUState* cpu, int id) {
                wrote, s_counts_writes);
 }
 
+/** @brief Reconcile the target totals of every level id a registered row could own.
+ *
+ * Idempotent: set_level_counts writes only bytes that differ, so this
+ * costs three guest reads per level once the tables agree. Reconciling
+ * every tick, rather than writing on the edges where rows go live and
+ * stop being live, covers the cases with no such edge: the shared slot
+ * has no undeclare edge, a mode flip from the Mods panel is unguarded,
+ * and a savestate load replaces the tables with no edge firing. Does
+ * nothing without the level ops' set_level_counts.
+ * @param cpu Live game CPU. */
 static void counts_tick(CPUState* cpu) {
     if (!s_level_ops || !s_level_ops->set_level_counts) return;
 
@@ -768,8 +805,21 @@ unsigned long openpete_mods_registry_counts_writes(void) {
     return s_counts_writes;
 }
 
-/* Per-tick driver: keep replace declarations in sync with each row's
- * mode + owner toggle, then consume a queued warp. */
+/** @brief Keep each custom-level row's replace declaration in sync, then run a queued warp.
+ *
+ * A row wants its replace declared when its data file exists, it is in
+ * replace mode and its mod is enabled. Declaring writes the data length
+ * over the donor's entry and sets the donor's title to the row's title or
+ * name; undeclaring writes length 0 and restores the stock name. Each
+ * replace row also drives the donor portal's sky preview every tick. A
+ * queued warp into a row whose files are missing or whose mod is disabled
+ * is dropped. A replace-mode warp enters the donor and retries each tick
+ * until enter_level succeeds. A slot-mode warp claims the shared slot
+ * (retrying each tick until the claim succeeds), or retargets it to the
+ * row's donor when another row holds it (dropping the warp on failure),
+ * declares the row's data length and title on the slot, and enters it,
+ * retrying the entry each tick.
+ * @param cpu Live game CPU. */
 static void custom_tick(CPUState* cpu) {
     static unsigned s_tickno = 0;
     custom_env_schedule(++s_tickno);
@@ -850,6 +900,7 @@ static void custom_tick(CPUState* cpu) {
     }
 }
 
+/* Reads host-side statics only: the last level the per-tick driver saw. */
 int openpete_mods_registry_owner_busy(const char* mod_id);
 int openpete_mods_registry_owner_busy(const char* mod_id) {
     if (!mod_id) return 0;

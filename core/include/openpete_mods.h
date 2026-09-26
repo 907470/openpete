@@ -445,6 +445,10 @@ void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick);
  * refuses entry but stays claimed, so the mod cannot be turned off from
  * under the running level: the live-toggle apply loop keeps such a disable
  * queued until this returns 0, and the M overlay greys the mod's switch.
+ * The resident level is the last live level the per-tick registry driver
+ * observed, so a pause or a level teardown does not end residency. Reads
+ * host-side statics only, so the menu thread may call it without guest
+ * access.
  * @param mod_id Mod id; NULL returns 0.
  * @return 1 when busy, else 0. */
 int  openpete_mods_registry_owner_busy(const char* mod_id);
@@ -697,24 +701,60 @@ typedef struct {
 } openpete_mods_custom_info_t;
 int  openpete_mods_custom_count(void);
 int  openpete_mods_custom_info(int i, openpete_mods_custom_info_t* out);
-/* Queue a warp into row i (applies in the registry's tick driver). */
+/** @brief Queue a warp into the custom level at alphabetical position @p i.
+ *
+ * The registry's per-tick driver consumes the warp; one queued warp is
+ * held, and a later call replaces it.
+ * @param i Position in the name order openpete_mods_custom_info uses.
+ * @return 0, or -1 when @p i is out of range. */
 int  openpete_mods_custom_warp(int i);
-/* Flip a row between slot (0) and replace (1) serving. */
+/** @brief Set the custom level at alphabetical position @p i to slot or replace serving.
+ *
+ * The per-tick driver declares or withdraws the replace over the donor's
+ * entry on its next tick. An out-of-range @p i is ignored.
+ * @param i Position in the name order openpete_mods_custom_info uses.
+ * @param replace 0 serves the level from the shared slot, nonzero over its
+ *        donor's own entry. */
 void openpete_mods_custom_set_mode(int i, int replace);
-/* Overlay hook: the files serving logical level `level_id` right now —
- * the active slot row, or an enabled declared replace row. 1 = found. */
+/** @brief Name the custom-level files that serve a logical level id right now.
+ *
+ * The WAD overlay calls it. The active slot row serves the claimed slot
+ * id, and a replace row whose replace is declared serves its donor's id;
+ * either only while its mod is enabled.
+ * @param level_id Logical level id.
+ * @param dir_out Receives the owning mod's assets directory on a hit.
+ * @param stem_out Receives the file stem on a hit.
+ * @return 1 when a row serves the level, else 0. */
 int  openpete_mods_custom_files_for(int level_id, const char** dir_out,
                                     const char** stem_out);
-/* Path of a custom level's data (<stem>.WAD) or code-overlay (<stem>.OVL)
- * file under <dir>/levels/. The extension is matched case-insensitively.
- * 0 = found; -1 = absent, with the canonical path still written to `out`
- * so callers can name the missing file. */
+/** @brief Build the path of a custom level's data or code-overlay file under `<dir>/levels/`.
+ *
+ * The data file is `<stem>.WAD` (the level's WAD data segment) and the
+ * code overlay `<stem>.OVL` (the donor's overlay); level editors emit
+ * those extensions in either case, and case matters on Linux, so a miss on
+ * the literal lowercase path scans the directory for a case-insensitive
+ * match of the whole file name.
+ * @param dir The mod's assets directory.
+ * @param stem File stem.
+ * @param is_ovl Nonzero for the code overlay, 0 for the data file.
+ * @param out Receives the path; on a miss, the lowercase path, so callers
+ *        can name the missing file.
+ * @param cap Capacity of @p out.
+ * @return 0 when the file exists, -1 when it is absent or an argument is
+ *         NULL or @p cap is 0. */
 int  openpete_mods_custom_asset_path(const char* dir, const char* stem,
                                      int is_ovl, char* out, size_t cap);
-/* Music hook: the custom song for logical level `level_id` right now
- * (same row selection as files_for). Returns the WAV path (and its
- * duration via dur_sec_out, may be NULL) or NULL when the level has no
- * custom song / the file was missing at registration. */
+/** @brief Return the custom song for a logical level id right now.
+ *
+ * Row selection matches openpete_mods_custom_files_for: the active slot
+ * row for the claimed slot id, else the first replace row whose replace is
+ * declared for that donor. The song plays only while the row's mod is
+ * enabled.
+ * @param level_id Logical level id.
+ * @param dur_sec_out Receives the song's duration in seconds; may be NULL.
+ * @return The WAV path, or NULL when no row serves the level, the row has
+ *         no song, the file was missing at registration, or the mod is
+ *         disabled. */
 const char* openpete_mods_custom_music_for(int level_id,
                                            double* dur_sec_out);
 
@@ -724,9 +764,20 @@ int openpete_mods_level_slot_id(const char* mod_id, const char* name);
 int openpete_mods_level_enter(CPUState* cpu, int level_id);
 int openpete_mods_read_level_data(int level_id, void* buf, uint32_t cap);
 
-/* Level-ready event (mod_registry.c): hooks fire once per level on the
- * first master-update tick with gameplay live. Loader-facing
- * registration. */
+/** @brief Register a mod's level-ready hook.
+ *
+ * The hook fires once per level id, on the first master-update tick with
+ * gameplay live (level_id > 0), in tick context, where guest reads, writes
+ * and call_addr are legal. A new hook fires on the next live tick,
+ * including for a level already in progress. Registration arms the
+ * per-tick registry driver. openpete_mods_registry_set_owner_enabled
+ * gates the hook and re-arms it on enable;
+ * openpete_mods_registry_remove_owner drops it.
+ * @param mod_id Owning mod id; NULL returns -1.
+ * @param fn The hook; NULL returns -1.
+ * @param log_tag Log tag for the registration lines.
+ * @return 0, or -1 on a NULL argument, when the driver cannot be armed, or
+ *         when the hook table allocation fails. */
 int openpete_mods_on_level(const char* mod_id, openpete_mod_level_fn fn,
                            const char* log_tag);
 int openpete_mods_registry_ensure_driver(const char* log_tag);
@@ -849,8 +900,12 @@ int  openpete_mods_material_resolve(uint32_t tag,
 void openpete_mods_material_remove_owner(const char* mod_id);
 void openpete_mods_material_retire_all(void);
 
-/* True when any registered selector carries a per-instance callback —
- * the moby walk skips the resolve entirely otherwise (single bool). */
+/** @brief Return 1 when any live material selector carries a per-instance callback.
+ *
+ * A cached flag, recomputed whenever a selector registers, toggles, is
+ * retuned or is swept. The moby walk skips the per-instance resolve while
+ * it is 0.
+ * @return 1 or 0. */
 int  openpete_mods_material_has_instance(void);
 /* Resolve ONE moby instance at extraction (moby walk, cpu available):
  * returns the batch-split slot stamped into the provenance tag — 0 =
@@ -897,9 +952,20 @@ unsigned openpete_mods_material_terrain_epoch(void);
 /* Bucket ids are stamped into 8 spare bits of the baked face material. */
 #define OPENPETE_MATERIAL_TER_BUCKET_MAX 255
 
-/* The winning bucket for a face key, or 0 for none. Same predicate and the
- * same priority as the draw-time resolve — a face must shade identically
- * whether it is walked or retained. */
+/** @brief Return the retained-terrain material bucket for a face key, or 0 for none.
+ *
+ * Applies the draw-time resolve's predicates and priority, so a face
+ * shades identically walked or retained: a per-instance selector whose
+ * texture key matches (or, for the untextured band, one with
+ * OP_SEL_UNTEXTURED) outranks every declarative one, and within each kind
+ * the later-loaded mod wins. Only live, user-enabled selectors of enabled
+ * mods on the terrain channel in scope for the current level count. The
+ * bucket is the winning material index + 1; a winner whose bucket would
+ * exceed OPENPETE_MATERIAL_TER_BUCKET_MAX returns 0.
+ * @param texid Tiledef id, or -1 for an untextured face.
+ * @param env Nonzero for a face in the env-rewrite set.
+ * @param lp Nonzero for an LP-tier face.
+ * @return The bucket id, 0 for none. */
 int  openpete_mods_material_terrain_bucket(int texid, int env, int lp);
 /* The live bucket ids, ascending, written into `out` (capacity `cap`;
  * OPENPETE_MATERIAL_TER_BUCKET_MAX always suffices). Returns the count.
@@ -924,10 +990,16 @@ typedef struct {
  * is dead, disabled, or has no terrain profile — draw those faces stock. */
 int  openpete_mods_material_terrain_bucket_gpu(
         int bucket, int pipe_idx, openpete_mod_material_terrain_t* out);
-/* Per-present interned-slot table lifecycle + readout for the material
- * UBO (native_render): reset at scene-begin, then the extractor interns
- * during the walk, then native_render writes each slot's bytes into the
- * UBO before the scene draw. */
+/** @brief Reset the per-present interned material slot table.
+ *
+ * native_render calls it at scene begin and at the canonical present's
+ * feed reset; the extractor then interns per-instance slots during the
+ * walk, and native_render writes each slot's bytes into the material UBO
+ * before the scene draw. It advances the present counter that the terrain
+ * refine memo keys on, and re-interns the static uniform block of every
+ * live material with params whose owner is enabled, so a declarative
+ * material has a slot for the whole present; once the table is full the
+ * remaining materials get static slot 0 (no params). */
 void openpete_mods_material_frame_reset(void);
 /* Game -> mods: the level currently being rendered, for level-scoped
  * selector keys (sector and texture ids are per-level). Push it while
@@ -984,11 +1056,27 @@ int openpete_mods_material_set_params(openpete_mod_t* self, int material,
 int openpete_mods_material_set_selector(
         openpete_mod_t* self, int material,
         const openpete_mod_material_selector_t* sel);
-/* Installs selectors retuned from inside a present. Called at the tick
- * boundary, where a key change cannot split a frame in half. */
+/** @brief Install material selectors retuned from inside a present.
+ *
+ * openpete_mods_tick_boundary calls it, where a selector change cannot
+ * split one present between two keys. Returns without taking the registry
+ * lock when nothing is parked. */
 void openpete_mods_material_apply_pending(void);
 
-/* Loader-facing (wired into the mod api). */
+/** @brief Mod API sfx_replace: register an in-memory SPU-ADPCM body as a symbolic sfx-pack replacement.
+ *
+ * The name passes through the game's alias canonicaliser, when one is set,
+ * then sfx_pack_register_symbolic_adpcm registers the entry under the
+ * calling mod's id; the substitution is audible only, and every byte the
+ * guest observes stays stock. Logs the outcome.
+ * @param self The calling mod.
+ * @param name SoundTable slot name or a game alias of one.
+ * @param body SPU-ADPCM body.
+ * @param len Body length in bytes.
+ * @param pitch SPU pitch that pins the playback rate, or 0 to follow the
+ *        game's pitch writes.
+ * @return 0, or -1 when an argument is NULL or zero or the pack refuses
+ *         the entry. */
 int openpete_mods_sfx_replace(openpete_mod_t* self, const char* name,
                               const void* body, uint32_t len,
                               uint16_t pitch);
@@ -1061,18 +1149,49 @@ int openpete_mods_texture_scan_root(const char* dir, const char* owner);
 
 /* ── Engine services (core/mods/mod_services.c) ────────────────────── */
 
-/* Queue a mod-requested savestate op (1=save, 2=load) for execution at
- * the host loop's quiescent point. One pending op at a time. */
+/** @brief Queue a mod-requested savestate save or load for the host loop's quiescent point.
+ *
+ * One op is pending at a time; a request while one is pending is dropped
+ * with a warning. core/runtime/run.c consumes it through
+ * openpete_mods_pending_state_op.
+ * @param op 1 = save, 2 = load.
+ * @param slot Savestate slot, below OPENPETE_STATE_NUM_SLOTS.
+ * @param owner Requesting mod id, kept by pointer until the op is
+ *        consumed; NULL logs as "?".
+ * @return 0 when queued, -1 for a bad op or slot or when an op is already
+ *         pending. */
 int openpete_mods_savestate_request(int op, unsigned slot,
                                     const char* owner);
 
-/* run.c: consume the pending op (0 = none; clears). Execute it exactly
- * like the user hotkeys (game fiber yielded, before pad refresh). */
+/** @brief Take the pending mod savestate op, clearing it.
+ *
+ * core/runtime/run.c calls it once per host iteration and executes the op
+ * at the same point as the savestate hotkeys: the game fiber is yielded
+ * and the pad state is not yet refreshed. An op whose owner is a loaded
+ * mod (openpete_mods_build_key returns non-NULL) that is no longer enabled
+ * is dropped with a log line, since the tick boundary may disable the mod
+ * between the request and this call; an owner that is not a loaded mod is
+ * never filtered.
+ * @param out_slot Receives the op's slot when an op is returned; may be
+ *        NULL.
+ * @return 1 = save, 2 = load, 0 when none is pending or the op was
+ *         dropped. */
 int openpete_mods_pending_state_op(unsigned* out_slot);
 
-/* Asset-overlay roots: one per enabled mod with an assets/ dir, in
- * enabled order (= priority; later wins). Consumers (texture pack,
- * music override) layer these over their base dirs. */
+/** @brief Append a mod's assets directory to the asset-overlay root table.
+ *
+ * The loader registers one root per entered mod with an assets/ dir, in
+ * enabled order, which is priority order: a later root wins. Consumers
+ * (texture pack, music override) layer the roots over their base
+ * directories. The table is append-only and never filtered by live-toggle
+ * state, so indices stay stable; each consumer skips a root while
+ * openpete_mods_is_enabled(owner) is false. Registration also scans the
+ * root's textures/own/ with openpete_mods_texture_scan_root.
+ * @param dir Root directory, copied.
+ * @param owner Owning mod id, stored by pointer; it must live for the
+ *        process (the loader's id).
+ * @return 0, or -1 when @p dir is NULL or empty or the table allocation
+ *         fails. */
 int         openpete_mods_register_asset_root(const char* dir,
                                               const char* owner);
 int         openpete_mods_asset_root_count(void);

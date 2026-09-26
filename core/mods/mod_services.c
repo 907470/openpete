@@ -57,14 +57,7 @@ int openpete_mods_savestate_request(int op, unsigned slot,
     return 0;
 }
 
-/* run.c consumes exactly one pending op per host iteration.
- *
- * A queue-then-toggle race is possible: the request is made from a tick
- * hook, the tick boundary can disable the requesting mod, and only then
- * does the host loop reach this consume point. Executing it anyway would
- * let a mod that is already off rewind or overwrite the timeline, so the
- * op is dropped when its owner is a loaded mod that is no longer
- * enabled. Non-mod owners (no loader entry) are never filtered. */
+/* Drops an op whose owner mod was disabled after the request. */
 int openpete_mods_pending_state_op(unsigned* out_slot) {
     int         op    = s_pending_op;
     const char* owner = s_pending_owner;
