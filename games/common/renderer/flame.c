@@ -68,7 +68,12 @@ void flame_native_set_subframe(double frac) {
 #define FL_CNT        0x20u         /* per-strand vertex count [i] (lb)        */
 #define FL_LEN        0x28u         /* per-strand length [i] (lb)              */
 
-/* The wider second form: 0 on a game whose descriptor names no super word. */
+/** @brief Whether the flame is in its wider second form.
+ *
+ * Reads the word at game_layout.flame.super_off in the flame state block.
+ * @param cpu The guest CPU state, read only.
+ * @return 1 when the word is nonzero, 0 otherwise or when the game's
+ *         descriptor names no such word. */
 static int flame_super(CPUState* cpu) {
     if (!FL.super_off) return 0;
     return (int)cpu->read_word(FL_STATE + FL.super_off) != 0;
@@ -92,7 +97,11 @@ typedef struct {
 static prim_t s_gte[MAX_PRIMS]; static int s_gte_n;
 static uint32_t s_code_hist[256];
 
-/* Store one walked primitive into the capture buffer. */
+/** @brief Store one walked primitive into the capture buffer s_gte.
+ *
+ * @param ctx Unused.
+ * @param s The decoded primitive.
+ * @return 1 when stored, 0 when the buffer is full. */
 static int flame_prim_sink(void* ctx, const ngte_prim* s) {
     (void)ctx;
     if (s_gte_n >= MAX_PRIMS) return 0;
@@ -111,7 +120,14 @@ static int flame_prim_sink(void* ctx, const ngte_prim* s) {
     return 1;
 }
 
-/* Walk the polybuf [start, end) into s_gte. */
+/** @brief Walk the prims the emitter wrote to the polybuf in [start, end) into s_gte.
+ *
+ * A tag longer than 24 words ends the walk; at most MAX_PRIMS prims are
+ * stored, 20 raw words each. Stored prims are counted by code byte into
+ * s_code_hist, which accumulates across calls.
+ * @param cpu The guest CPU state, read only.
+ * @param start First polybuf address of the emitter's output.
+ * @param end One past the last. */
 static void capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
     OP_PROF_ACCUM_SCOPE("flame.capture");
     s_gte_n = 0;
@@ -124,6 +140,17 @@ static void capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
 }
 
 /* ---- one-shot input + prim dump ------------------------------------------ */
+/** @brief Print the emitter's inputs and the first captured prims to stderr.
+ *
+ * Prints the flame origin, the active and super words, the per-strand
+ * counters and lengths, the attach matrix, the camera projection matrix and
+ * position, the first geometry records, the cap colours, the connection
+ * table, the strip colour/UV words, the first 16 spine records of each live
+ * strand, the prim code histogram, and the first 6 captured prims raw and
+ * decoded. Reads s_gte, so capture_prims runs first.
+ * @param cpu The guest CPU state, read only.
+ * @param start First polybuf address of the emitter's output.
+ * @param end One past the last. */
 static void flame_dump(CPUState* cpu, uint32_t start, uint32_t end) {
     uint32_t fb = FL_STATE;
     fprintf(stderr, "\n=== [flame-dump f=%u] polybuf [%08X,%08X) %u bytes ===\n",
@@ -201,7 +228,12 @@ static void flame_dump(CPUState* cpu, uint32_t start, uint32_t end) {
     fprintf(stderr, "=== end flame-dump ===\n\n");
 }
 
-/* compact per-frame line for the first N active-flame frames */
+/** @brief Print one stderr line summarizing the captured prims.
+ *
+ * The line holds the prim count split into quads, triangles and textured
+ * prims, the super flag, and the flame origin. The hook calls it for at most
+ * 200 verify reports.
+ * @param cpu The guest CPU state, read only. */
 static void flame_report(CPUState* cpu) {
     uint32_t fb = FL_STATE;
     int textured = 0, quad = 0, tri = 0;
@@ -221,6 +253,10 @@ static void flame_report(CPUState* cpu) {
  * IR1=cam.y-flame.y, IR2=cam.z-flame.z, IR3=flame.x-cam.x (each truncated to
  * int16 by mtc2). TR[i] = (R · IR) >> 12. The result becomes the GTE TR for
  * every flame vertex (R is then replaced by the attach matrix). */
+/** @brief Truncate an int to its low 16 bits, sign-extended, as mtc2 does on a GTE IR load.
+ *
+ * @param v The value.
+ * @return The sign-extended low halfword. */
 static int s16(int v) { return (int)(int16_t)(uint32_t)v; }
 
 static void flame_origin_tr(CPUState* cpu, const ngte_view* v, double tr[3]) {
@@ -249,17 +285,39 @@ static void flame_origin_tr(CPUState* cpu, const ngte_view* v, double tr[3]) {
  * interpolation. The ribbon is the STRIP (GT4 textured additive) plus the
  * first-cell caps (G3). The VERIFY path compares the SXY shape against the
  * captured prims (the .s int16 output as the oracle). */
+/** @brief Read the signed halfword at a halfword-aligned guest address through a word read.
+ *
+ * @param cpu The guest CPU state, read only.
+ * @param addr The address; bit 1 selects the high half of the aligned word.
+ * @return The sign-extended halfword. */
 static int rd_s16(CPUState* cpu, uint32_t addr) {
     uint32_t w = cpu->read_word(addr & ~3u);
     return (int)(int16_t)((addr & 2u) ? (w >> 16) : (w & 0xFFFF));
 }
 
-/* load a PSYQ SHORTMATRIX (5 words -> 9 int16, 1.0=4096) at `base` into R[3][3] */
+/** @brief Load a PsyQ rotation matrix (5 words holding 9 int16, 1.0 = 4096) into R.
+ *
+ * @param cpu The guest CPU state, read only.
+ * @param base Guest address of the matrix.
+ * @param R Receives the matrix. */
 static void flame_load_matrix(CPUState* cpu, uint32_t base, int R[3][3]) {
     ngte_read_matrix(cpu, base, R);
 }
 
-/* RTPS one local vertex through R + TR (shift 12) -> screen (float) + view-Z */
+/** @brief Project one local vertex through R and TR by the GTE RTPS math, in float.
+ *
+ * Uses ngte_project_gte with the +-1024 SXY bound on.
+ * @param R The Q12 rotation (the flame attach matrix).
+ * @param TR The camera-space translation of the flame origin.
+ * @param ofx Screen X offset.
+ * @param ofy Screen Y offset.
+ * @param v The projection view.
+ * @param vx Local X.
+ * @param vy Local Y.
+ * @param vz Local Z.
+ * @param sx Receives screen X.
+ * @param sy Receives screen Y.
+ * @param sz Receives view-space Z (MAC3). */
 static void flame_project(const int R[3][3], const double TR[3], double ofx, double ofy, const ngte_view* v,
                           double vx, double vy, double vz, float* sx, float* sy, float* sz) {
     ngte_proj o;   /* shared GTE-faithful pipeline, ±1024 SXY bound ON */
@@ -267,13 +325,23 @@ static void flame_project(const int R[3][3], const double TR[3], double ofx, dou
     *sx = (float)o.sx; *sy = (float)o.sy; *sz = (float)o.m3;
 }
 
-/* Read one spine cross-section record (Xraw/Z/idx/sIdx), sub-keyframe-lerping
- * toward the NEXT record (p+8, the tip direction) by s_flame_subframe so the
- * ribbon slides smoothly between the static keyframes. The counter advance moves
- * the window by one 8-byte record per step, so record[p+8] is exactly where the
- * next integer counter would read this cross-section → frac=1 converges on it.
- * Guarded: skip the lerp at a Z discontinuity (Z went backward / jumped — the
- * read crossed into the next strand's spine at max extension). */
+/** @brief Read one spine cross-section record, lerped toward the next record by the sub-keyframe slide.
+ *
+ * A record is 8 bytes: X in the high and Z in the low half of word 0, the
+ * vertical offset in the low half of word 1, and the sine-table index (even,
+ * 0..0x1FE) in bits 16-23 of word 1 shifted left by 1. The counter advance
+ * moves the window by one record per step, so record p+8 is where the next
+ * integer counter reads this cross-section, and a slide of 1 converges on it.
+ * X, Z and the offset lerp rounded to nearest; the sine index lerps along the
+ * shorter way round its 512-entry wrap. The lerp is skipped when Z goes
+ * backward or jumps by 200 or more, where the read has crossed into the next
+ * strand's spine at maximum extension.
+ * @param cpu The guest CPU state, read only.
+ * @param p Guest address of the record.
+ * @param Xraw Receives X.
+ * @param Z Receives Z.
+ * @param idx Receives the vertical offset.
+ * @param sIdx Receives the sine-table byte index. */
 static void flame_read_cross(CPUState* cpu, uint32_t p,
                              int* Xraw, int* Z, int* idx, int* sIdx) {
     uint32_t w0 = cpu->read_word(p), w1 = cpu->read_word(p + 4);
@@ -333,9 +401,15 @@ static fcap s_fcap[MAX_FCAP]; static int s_fcap_n;
  * count, separating "no flame this present" from "a flame that emitted none". */
 static int s_strands_live;
 
-/* signed 2*area (== GTE NCLIP MAC0 sign); the .s emits a cap iff MAC0 > 0.
- * The GTE NCLIPs the *int16* SXY, so round to int before the sign test — else
- * near-degenerate caps cull differently from the .s (off-by-one cap count). */
+/** @brief Signed twice-area of a cap triangle, with the sign of the GTE NCLIP MAC0.
+ *
+ * The emitter emits a cap only when MAC0 > 0. The GTE runs NCLIP on the int16
+ * SXY, so the corners are rounded to the integer grid before the product;
+ * otherwise near-degenerate caps cull differently from the emitter.
+ * @param a First corner.
+ * @param b Second corner.
+ * @param c Third corner.
+ * @return The signed twice-area on the integer grid. */
 static double cap_nclip(const fpt* a, const fpt* b, const fpt* c) {
     return ngte_nclip(a->sx, a->sy, b->sx, b->sy, c->sx, c->sy, NGTE_NCLIP_SXY_GRID);
 }
@@ -349,11 +423,24 @@ static void emit_cap(const fpt* a, const fpt* b, const fpt* c,
     t->sx[2]=c->sx; t->sy[2]=c->sy; t->sz[2]=c->sz; t->rgb[2]=cc & 0xFFFFFFu;
 }
 
-/* first cell (.s block_80058F2C..8005920C): the flame-base caps. RTPS the spine
- * centre at s7 (no flicker) -> t5; RTPT 3 flicker verts from the vert at s7-16
- * -> e0/e1/e2; 4 NCLIP-gated G3 emits combine them with the cap colours.
- * Returns 1 if the strand is near-culled (SZ3>>7 - 2 < 0 -> .s skips the whole
- * strand: no caps AND no strip). */
+/** @brief Emit the flame-base caps of one strand's first cell (r_flame.s block_80058F2C..8005920C).
+ *
+ * Projects the spine centre at s7 without flicker (t5), then three flicker
+ * vertices from the record at s7-16 (e0, e1, e2) with the cap amplitude
+ * (the super amplitude in the super form, where e0's offsets are also
+ * halved), and emits four NCLIP-gated G3 caps
+ * combining them with the four cap colours.
+ * @param cpu The guest CPU state, read only.
+ * @param s7 Guest address of the strand's first spine record.
+ * @param super Nonzero in the wider second form.
+ * @param R The attach matrix.
+ * @param TR The camera-space flame origin.
+ * @param ofx Screen X offset.
+ * @param ofy Screen Y offset.
+ * @param v The projection view.
+ * @return 1 when the centre is near-culled ((SZ >> 7) - 2 < 0, clamped to
+ *         0..0xFFFF), in which case the emitter skips the whole strand, caps
+ *         and strip; else 0. */
 static int flame_first_cell(CPUState* cpu, uint32_t s7, int super,
                             const int R[3][3], const double TR[3],
                             double ofx, double ofy, const ngte_view* v) {
@@ -521,10 +608,16 @@ static void flame_build_strip(CPUState* cpu) {
     if (do_dbg) { fprintf(stderr, "    [flame-dbg] total native quads=%d (frame %u)\n", s_fquad_n, openpete_frame); dbg_n++; }
 }
 
-/* ordered A/B: native ribbon quads vs captured GT4 prims (the .s int16 SXY as
- * the shape oracle). The walk visits strands+steps in .s order and the GT4
- * vertex order matches, so compare element-wise; report max |dSXY| per vertex
- * (sub-pixel = HD-faithful; the .s is integer-quantized so ~1px is expected). */
+/** @brief Compare the native ribbon quads and caps against the captured GT4 and G3 prims and print the result.
+ *
+ * Rebuilds the native ribbon, then pairs native quads with captured textured
+ * quads element-wise (the walk visits strands and steps in the emitter's
+ * order, and the GT4 vertex order matches), and native caps with captured
+ * untextured triangles likewise. Per pair the vertex distance is |dx| + |dy|;
+ * each line prints both counts, the mean distance, the worst pair's maximum,
+ * and the number of pairs whose maximum exceeds 4 pixels. The emitter's
+ * output is integer-quantized, so about 1 pixel is expected.
+ * @param cpu The guest CPU state, read only. */
 static void flame_strip_compare(CPUState* cpu) {
     flame_build_strip(cpu);
     int gt4 = 0; for (int p = 0; p < s_gte_n; p++) if (s_gte[p].textured && s_gte[p].nv == 4) gt4++;
@@ -571,11 +664,14 @@ static void flame_strip_compare(CPUState* cpu) {
             openpete_frame, s_fcap_n, g3, cn, cnv ? csum/cnv : 0, cworst, cover4, cn);
 }
 
-/* OPENPETE_FLAME_CENSUS=LO-HI (or a single frame): one line per feed in that
- * frame range holding the walk's engagement counts — strands whose counter was
- * live, ribbon quads, caps that survived NCLIP, and the triangles handed to the
- * scene. A present with no flame reads as a line of zeros, which is what
- * separates a producer that did not run from one that emitted nothing. */
+/** @brief Whether the current VBL lies in the OPENPETE_FLAME_CENSUS range.
+ *
+ * The variable is LO-HI or a single VBL. While active, each feed prints the
+ * walk's engagement counts: strands whose counter was live, ribbon quads,
+ * caps that survived NCLIP, and the triangles handed to the scene. A feed
+ * with no flame prints zeros, which separates a producer that did not run
+ * from one that emitted nothing.
+ * @return 1 inside the range, else 0. */
 static int flame_census_on(void) {
     static env_frame_range_t s_range = ENV_FRAME_RANGE_INIT;
     return env_frame_range_active(&s_range, "OPENPETE_FLAME_CENSUS", openpete_frame);
@@ -585,11 +681,17 @@ static void flame_census_line(const char* src, int slot, int tris) {
             openpete_frame, src, slot, s_strands_live, s_fquad_n, s_fcap_n, tris);
 }
 
-/* ---- native walk feed (float geometry from gamestate) ---------------------
- * Feed the native ribbon (strip quads, textured additive) + base caps (G3
- * untextured opaque) re-derived from gamestate — no .s prim dependency, so it
- * runs at the sub-tick gamestate the host re-renders. Per-vertex view-Z gives
- * the ribbon correct depth along its length. */
+/* ---- native walk feed (float geometry from gamestate) --------------------- */
+/** @brief Re-derive the ribbon from gamestate and push it to the native scene.
+ *
+ * Reads no captured prim, so it runs at the sub-tick gamestate the host
+ * re-renders. Each strip quad splits into two textured additive triangles
+ * (blend 2) and each cap is an untextured opaque triangle, all in the WORLD
+ * group with per-vertex view Z, tagged as the ribbon and caps of `slot`.
+ * Nothing is pushed when the walk produced no geometry.
+ * @param cpu The guest CPU state, read only.
+ * @param slot The model record the ribbon renders under; negative is 0.
+ * @param src The caller's label in the census line. */
 static void flame_feed_native(CPUState* cpu, int slot, const char* src) {
     flame_build_strip(cpu);                  /* fills s_fquad (strip) + s_fcap (caps) */
     const int cen = flame_census_on();
@@ -640,6 +742,10 @@ static void flame_feed_native(CPUState* cpu, int slot, const char* src) {
 }
 
 /* ---- gating --------------------------------------------------------------- */
+/** @brief Whether OPENPETE_FLAME_VERIFY is set, non-empty and not starting with '0'; read once and cached.
+ *
+ * @return 1 when the dump and the native-versus-captured comparison are
+ *         armed, else 0. */
 static int flame_verify_enabled(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_FLAME_VERIFY"); v = (e && *e && *e != '0'); }
@@ -681,13 +787,7 @@ static int on_flame_draw(CPUState* cpu, uint32_t addr) {
     return hook_bracket_end(&k_flame_bracket);
 }
 
-/* Sub-tick re-extract (high-FPS spine): rebuild one flame record's ribbon
- * from gamestate — extract-only; the record loop below calls this once per
- * flame record with its flame-state bytes staged. Self-gated on
- * m_IsFlameActive (the .s renderer is only called while breathing fire, so
- * feeding unconditionally would draw a stale ribbon). The ribbon attaches to
- * the staged pose and projects through the interpolated camera, so it stays
- * coherent with the scene. */
+/* Sub-tick ribbon re-extract; documented at the declaration in flame.h. */
 void flame_reextract(CPUState* cpu, int slot) {
     if (!FL_STATE) return;
     if (!openpete_native_scene_enabled()) return;
@@ -700,13 +800,7 @@ void flame_reextract(CPUState* cpu, int slot) {
     flame_feed_native(cpu, slot, "rx");
 }
 
-/* ---- the sub-tick bracket over one prev/curr pair of flame-state bytes ----
- * Into `fl` (already holding curr): origin + attach matrix lerped, the
- * per-strand keyframe counters advanced fractionally with the shared
- * sub-keyframe slide returned in *subframe. Teleport-guarded on the origin
- * (the flame's first active tick: prev pose stale from before activation).
- * Returns 1 when it bracketed, 0 when it snapped (fl untouched). Used by the
- * ambient bracket and by every flame record. */
+/* ---- the sub-tick bracket over one prev/curr pair; documented in flame.h ---- */
 int flame_bracket(uint8_t* fl, const uint8_t* pfl, const uint8_t* cfl,
                   double alpha, double* subframe) {
     const int32_t* pp = (const int32_t*)(pfl + FL_POS);

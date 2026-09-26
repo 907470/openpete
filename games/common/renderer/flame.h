@@ -15,21 +15,44 @@ extern "C" {
 
 struct CPUState;
 
-/* The fractional part of the keyframe-counter advance the next walk slides
- * each cross-section by, 0..1. 0 restores exact keyframes, which is what the
- * canonical inline render uses. */
+/** @brief Set the sub-keyframe slide the next ribbon walks apply to each cross-section.
+ *
+ * The slide is the fractional part of the per-strand keyframe-counter
+ * advance: each cross-section is lerped from its spine record toward the next
+ * one by this fraction, so the ribbon animates between the static keyframes.
+ * 0 restores exact keyframes, which is what the canonical inline render uses.
+ * @param frac The fraction; clamped to [0, 1]. */
 void flame_native_set_subframe(double frac);
 
-/* Re-derive one flame record's ribbon into the native scene under `slot`, the
- * model record it renders with. Self-gated on the staged active flag and on
- * the canonical tick having drawn the path. */
+/** @brief Re-derive one flame record's ribbon into the native scene for a sub-tick present.
+ *
+ * Extract-only: the game's emitter does not run. Returns without effect when
+ * the game names no flame state, the native scene is off, the flame render
+ * path is excluded or was not drawn by the canonical tick, or the staged
+ * m_IsFlameActive word is 0 (the emitter runs only while the player breathes
+ * fire, so an unconditional feed would draw a stale ribbon). The ribbon
+ * attaches to the staged pose and projects through the interpolated camera.
+ * @param cpu The guest CPU state, read only.
+ * @param slot The model record the ribbon renders under. */
 void flame_reextract(struct CPUState* cpu, int slot);
 
-/* Bracket one prev/curr pair of flame-state bytes into `fl` (already holding
- * curr): origin and attach matrix lerped at `alpha`, per-strand keyframe
- * counters advanced fractionally with the shared sub-keyframe slide returned
- * in *subframe. Returns 0 when the origin jumped and the bracket snapped, and
- * `fl` is then untouched. */
+/** @brief Interpolate one prev/curr pair of flame-state bytes into a staged copy.
+ *
+ * The origin and the attach matrix are lerped at `alpha`. Each of the 8
+ * per-strand keyframe counters whose tick delta is within (-8, 8) is written
+ * as the floor of the interpolated counter (at least 0); a larger delta is
+ * the counter's wrap on reseed and keeps curr. The fractional part of the
+ * first advancing strand is written to *subframe while *subframe is 0; every
+ * strand advances by the same delta, so the slide is shared. When the origin
+ * moved more than 5000 units (the first active tick, whose prev pose predates
+ * activation) nothing is written.
+ * @param fl The staged flame-state bytes, holding curr on entry.
+ * @param pfl The previous tick's flame-state bytes.
+ * @param cfl The current tick's flame-state bytes.
+ * @param alpha The sub-tick fraction.
+ * @param subframe Receives the sub-keyframe slide; the caller initializes it
+ *        to 0.
+ * @return 1 when it interpolated, 0 when it snapped. */
 int flame_bracket(uint8_t* fl, const uint8_t* pfl, const uint8_t* cfl,
                   double alpha, double* subframe);
 

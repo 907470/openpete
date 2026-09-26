@@ -168,8 +168,15 @@ static int glint_prim_sink(void* ctx, const ngte_prim* s) {
     return 1;
 }
 
-/* Walk the interval the call allocated: 3-word draw-mode packets (tag length 2),
- * 9-word quads (tag length 8) and 4-word lines (tag length 3). */
+/** @brief Walk the polybuf interval the glint routine allocated into s_item.
+ *
+ * The interval holds 3-word draw-mode packets (tag length 2), 9-word quads
+ * (tag length 8) and 4-word lines (tag length 3); a longer tag ends the walk.
+ * At most GLINT_MAX_PRIMS prims are kept, each unpaired at the near-guard
+ * depth. The code and tag histograms accumulate across calls.
+ * @param cpu The guest CPU state, read only.
+ * @param start First polybuf address of the routine's output.
+ * @param end One past the last. */
 static void glint_capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
     s_item_n = 0;
     const ngte_walk_policy pol = {
@@ -199,9 +206,22 @@ static void glint_project(const ngte_view* v, const double vo[3], ngte_proj* o) 
     ngte_project_offset(v, vo, o);
 }
 
-/* Mirror the routine's rejects for one pool record and, on acceptance, fill in
- * what the pairing and the sub-tick rebase read from it. Returns 0 for a
- * record the routine would not have drawn. */
+/** @brief Mirror the glint routine's rejects for one pool record and, on acceptance, fill in what the pairing and the sub-tick rebase read from it.
+ *
+ * Rejects a record whose lifetime byte is 0 (:2236-2240), whose halved
+ * camera-relative offset leaves the +/-GT.box box (:2266-2276), whose
+ * half-world view Z is below GT.near_z or at least GT.far_z (:2294-2296), or
+ * that leaves the view pyramid 4|X| - 3Z < GT.pyr_x, 3|Y| - Z < GT.pyr_y
+ * (:2310, :2320). An accepted record takes the near branch when its view Z is
+ * below GT.near_vz, and its scene depth is that view Z scaled back to world
+ * units.
+ * @param cpu The guest CPU state, read only.
+ * @param v The projection view.
+ * @param rec Guest address of the record.
+ * @param out Receives the accepted record's branch, depth, address, position
+ *        words, lifetime and spin bytes, projected point and view Z; untouched
+ *        on rejection.
+ * @return 1 when the routine would draw the record, else 0. */
 static int glint_accept(CPUState* cpu, const ngte_view* v, uint32_t rec,
                         glint_rec* out) {
     const uint32_t packed = cpu->read_word(rec + GT.packed_off);
@@ -250,8 +270,12 @@ static int glint_predict(CPUState* cpu, const ngte_view* v, glint_rec* out, int 
     return n;
 }
 
-/* The primitives the call appended, by class: one draw-mode packet opens a
- * near star and each consecutive pair of lines is one far cross. */
+/** @brief Count the captured draw-mode packets and lines.
+ *
+ * One draw-mode packet opens a near star; each consecutive pair of lines is
+ * one far cross.
+ * @param stars Receives the number of draw-mode packets.
+ * @param lines Receives the number of lines. */
 static void glint_count_prims(int* stars, int* lines) {
     *stars = 0; *lines = 0;
     for (int i = 0; i < s_item_n; i++) {
@@ -279,7 +303,13 @@ static int glint_next_rec(const glint_rec* pred, int predicted, int r, int near_
     return r;
 }
 
-/* Attach one primitive to the record the cursor stands on. */
+/** @brief Attach one captured primitive to the record that emitted it.
+ *
+ * Copies the record into the item, takes the record's depth, sets the blend
+ * and marks the item paired.
+ * @param it The captured primitive.
+ * @param r The record the pairing cursor stands on.
+ * @param blend The native blend mode for the primitive. */
 static void glint_bind(glint_item* it, const glint_rec* r, int blend) {
     it->blend = blend;
     it->depth = r->depth;
@@ -703,9 +733,16 @@ typedef struct {
     double vz;         /* the tick's half-world view-Z of the record point */
 } glint_ext_acc;
 
-/* The mean distance of one primitive's outline corners from its record's
- * projected point, both carried through the primitive's rebase, added to
- * `acc`. */
+/** @brief Add one primitive's outline corners to its record's trace accumulator.
+ *
+ * The record's projected point and the corners are both carried through the
+ * primitive's rebase. Adds each corner's distance from that point, the corner
+ * coordinates, and the fourth power of each corner offset as a complex
+ * number; overwrites the point, the shown spin phase, the lifetime byte, the
+ * branch and the view Z with this primitive's.
+ * @param it The paired primitive.
+ * @param rb Its rebase; inactive leaves the tick's positions and phase.
+ * @param acc The record's accumulator. */
 static void glint_ext_add(const glint_item* it, const glint_rebase* rb, glint_ext_acc* acc) {
     float cx[3], cy[3];
     const int nc = glint_outline(it, cx, cy);
@@ -730,11 +767,14 @@ static void glint_ext_add(const glint_item* it, const glint_rebase* rb, glint_ex
     }
 }
 
-/* The drawn orientation of one record's outline, in sine-table entries (256 to
- * the turn) modulo 64: the star's four spikes and the cross's four arms repeat
- * every quarter turn, so the argument of the summed fourth power of the corner
- * offsets, over four, is the outline's angle and weights the spike tips, the
- * outermost corners, above the shoulder points between them. */
+/** @brief The drawn orientation of one record's outline, in sine-table entries (256 to the turn) modulo 64.
+ *
+ * The star's four spikes and the cross's four arms repeat every quarter
+ * turn, so the argument of the summed fourth power of the corner offsets,
+ * over four, is the outline's angle; the fourth power weights the spike tips,
+ * the outermost corners, above the shoulder points between them.
+ * @param a The record's accumulator.
+ * @return The angle in [0, 64), or 0 when the moment is zero. */
 static double glint_drawn_orientation(const glint_ext_acc* a) {
     if (a->mre == 0.0 && a->mim == 0.0) return 0.0;
     const double t = atan2(a->mim, a->mre) * (32.0 / 3.14159265358979323846);

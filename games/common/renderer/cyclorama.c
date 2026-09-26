@@ -63,11 +63,23 @@ static cyc_tri s_gte[MAX_TRIS];    static int s_gte_n;
 
 /* ---- helpers -------------------------------------------------------- */
 
-/* Continuous float projection mirroring the GTE RTPS: ngte_project_raw
- * (shared). The sat flag bins the two GTE fixed-point clamps the
- * unclamped float path diverges from on purpose (IR16 saturation + the
- * H >= 2*SZ3 divide cap). Returns view-space Z (MAC3); caller treats
- * <=0 as behind-camera. */
+/** @brief Float-project one vertex by the GTE RTPS math, with no translation.
+ *
+ * Wraps ngte_project_raw with a NULL translation. The sat flag bins the two
+ * GTE fixed-point clamps the unclamped float path departs from (IR16
+ * saturation and the H >= 2*SZ3 divide cap).
+ * @param M The Q12 rotation matrix.
+ * @param vx Vertex X.
+ * @param vy Vertex Y.
+ * @param vz Vertex Z.
+ * @param ofx_px Screen X offset in pixels.
+ * @param ofy_px Screen Y offset in pixels.
+ * @param v The projection view (H and bounds).
+ * @param out_sx Receives screen X.
+ * @param out_sy Receives screen Y.
+ * @param out_sat Receives the clamp flag; may be NULL.
+ * @return View-space Z (MAC3); the caller treats a value <= 0 as behind the
+ *         camera. */
 static double project(const int M[3][3], int vx, int vy, int vz,
                       double ofx_px, double ofy_px, const ngte_view* v,
                       double* out_sx, double* out_sy, int* out_sat) {
@@ -86,8 +98,18 @@ static double project(const int M[3][3], int vx, int vy, int vz,
  * u/v/oflag zero and it passes CYC_NEARZ as the plane. */
 #define CYC_NEARZ 1.0
 
-/* Project an in-front corner to screen and push to s_native, applying the
- * widescreen-aware horizontal trivial reject (vertical stays 4:3). */
+/** @brief Project a triangle's three in-front camera-space corners and append it to s_native.
+ *
+ * Each corner projects as ofx + m1*H/m3, ofy + m2*H/m3 (m3 of 0 divides by
+ * 1). The triangle is dropped when all three corners lie left of the view's
+ * xlo, right of its xhi (the widescreen-aware horizontal bounds), above 0 or
+ * below 240 (vertical stays 4:3), or when s_native is full. Colours are
+ * copied; the sat flags are cleared.
+ * @param a First corner.
+ * @param b Second corner.
+ * @param c Third corner.
+ * @param gouraud Nonzero for a gouraud triangle, 0 for flat.
+ * @param vw The projection view. */
 static void cyc_push_tri(ngte_cvert a, ngte_cvert b, ngte_cvert c, int gouraud,
                          const ngte_view* vw) {
     const float xlo = vw->xlo, xhi = vw->xhi;
@@ -108,9 +130,17 @@ static void cyc_push_tri(ngte_cvert a, ngte_cvert b, ngte_cvert c, int gouraud,
     }
 }
 
-/* Sutherland-Hodgman clip a gouraud tri to m3 >= CYC_NEARZ, then push the
- * resulting polygon (fan). 0 clipped -> 1 tri; 1 -> quad (2 tris); 2 -> 1 tri;
- * fully behind -> dropped. */
+/** @brief Clip a camera-space triangle to m3 >= CYC_NEARZ and push the result as a fan.
+ *
+ * Sutherland-Hodgman against the one plane: no corner behind yields the
+ * triangle, one behind yields a quad pushed as two triangles, two behind
+ * yield one triangle, all three behind yield nothing. Crossings come from
+ * ngte_clip_lerp, which interpolates the colour.
+ * @param a First corner.
+ * @param b Second corner.
+ * @param c Third corner.
+ * @param gouraud Nonzero for a gouraud triangle, 0 for flat.
+ * @param vw The projection view. */
 static void cyc_clip_emit(ngte_cvert a, ngte_cvert b, ngte_cvert c, int gouraud,
                           const ngte_view* vw) {
     ngte_cvert in[3] = { a, b, c }, out[4]; int nout = 0;
@@ -336,6 +366,11 @@ static void cyc_extract_m(CPUState* cpu, uint32_t a0,
  * {next,rgb,xy0,xy1,xy2}; POLY_G3 = 0x1C bytes
  * {next,rgb0,xy0,rgb1,xy1,rgb2,xy2}. word0 high byte distinguishes them
  * (confirmed by the hex dump below). */
+/** @brief Split a packed prim vertex word into signed 16-bit screen X (low half) and Y (high half).
+ *
+ * @param xy The packed word.
+ * @param x Receives X.
+ * @param y Receives Y. */
 static void unpack_xy(uint32_t xy, float* x, float* y) {
     *x = (float)(int16_t)(xy & 0xFFFF);
     *y = (float)(int16_t)(xy >> 16);
@@ -376,14 +411,24 @@ static void capture_gte(CPUState* cpu, uint32_t start, uint32_t end) {
 }
 
 /* ---- comparison ----------------------------------------------------- */
+/** @brief A triangle's screen-space centroid.
+ *
+ * No caller in this file uses it; compare_and_report pairs triangles by
+ * per-vertex distance.
+ * @param t The triangle.
+ * @param cx Receives the mean X.
+ * @param cy Receives the mean Y. */
 static void centroid(const cyc_tri* t, float* cx, float* cy) {
     *cx = (t->v[0].sx + t->v[1].sx + t->v[2].sx) / 3.0f;
     *cy = (t->v[0].sy + t->v[1].sy + t->v[2].sy) / 3.0f;
 }
-/* On-screen iff the GTE (int16, post-clip) position is inside the frame.
- * Off-screen verts are where the GTE saturates IR1/IR2 to +-32767 while the
- * float projection does not — the sanctioned, expected float/GTE divergence
- * (the float is the more-correct projection). Binned separately. */
+/** @brief Whether a captured GTE vertex lies inside the 512x240 display area with a 1-pixel margin.
+ *
+ * compare_and_report bins off-screen vertices separately: there the GTE's
+ * fixed-point clamps bite and the unclamped float projection departs from
+ * them by design.
+ * @param v The vertex, in the GTE's integer screen coordinates.
+ * @return 1 when -1 <= sx <= 513 and -1 <= sy <= 241, else 0. */
 static int onscreen(const cyc_vert* v) {
     return v->sx >= -1.f && v->sx <= 513.f && v->sy >= -1.f && v->sy <= 241.f;
 }
@@ -448,7 +493,18 @@ static void compare_and_report(void) {
         fg_disagree, wnx,wny,wgx,wgy);
 }
 
-/* ---- one-shot format dump (falsify-before-ship) --------------------- */
+/* ---- one-shot format dump ------------------------------------------- */
+/** @brief Print the sky draw's arguments, the GTE offsets and H, the cyclorama header, the first sector's layout and the first prim words to stderr.
+ *
+ * The sector fields are decoded with the Spyro 1 layout (vertex count in the
+ * low half of +0x0C, colour-table byte length in +0x10 >> 14, face count in
+ * its low 13 bits). At most 32 words of the prim interval are printed.
+ * @param cpu The guest CPU state, read only.
+ * @param a0 The draw's a0 (occlusion group index).
+ * @param a1 The cull matrix address.
+ * @param a2 The draw matrix address.
+ * @param start Start of the prim interval the draw wrote.
+ * @param end End of the prim interval. */
 static void hex_dump(CPUState* cpu, uint32_t a0, uint32_t a1, uint32_t a2,
                      uint32_t start, uint32_t end) {
     fprintf(stderr, "[cyc-dump f=%u] a0=%d a1=%08X a2=%08X OFX=%d OFY=%d H=%u\n",
@@ -482,6 +538,9 @@ static void hex_dump(CPUState* cpu, uint32_t a0, uint32_t a1, uint32_t a2,
 }
 
 /* ---- dispatch hook -------------------------------------------------- */
+/** @brief Whether OPENPETE_CYC_VERIFY is set, non-empty and not starting with '0'; read once and cached.
+ *
+ * @return 1 when the float-versus-GTE sky comparison is armed, else 0. */
 static int cyc_verify_enabled(void) {
     static int s = -1;
     if (s < 0) { const char* v = getenv("OPENPETE_CYC_VERIFY"); s = (v && v[0] && v[0] != '0') ? 1 : 0; }
@@ -493,9 +552,17 @@ static unsigned cyc_verify_frame(void) {
     return f;
 }
 
-/* Push the extracted native triangles into the core scene buffer (panel 0).
- * PSX prim colour low-24 is byte0=R,byte1=G,byte2=B — already the RHI rgba
- * byte order; add opaque alpha. */
+/** @brief Begin the native scene for this VBL, set its background colour, and push the extracted dome triangles.
+ *
+ * The PSX cyclorama clears to g_Cyclorama.m_BackgroundColor before drawing
+ * the dome, so uncovered areas show that colour. The background is a scene
+ * property and is set even when --render-paths excludes the dome, so an
+ * isolated path renders over the real background as PsyCross does; only the
+ * triangles are gated on RP_CYCLORAMA. PSX colour low-24 is byte0=R,
+ * byte1=G, byte2=B, the RHI rgba byte order; alpha is set opaque. Triangles
+ * go to the SKY group at the far view Z, untextured and opaque, tagged
+ * OPENPETE_TAG_SKY(0). The first non-empty push logs once.
+ * @param cpu The guest CPU state, read only. */
 static void push_scene(CPUState* cpu) {
     static int s_logged = 0;
     if (!s_logged && s_native_n > 0) {
@@ -566,8 +633,15 @@ static int      s_cyc_prev_valid = 0, s_cyc_curr_valid = 0;
 static int      s_cyc_prev_cam = 0,   s_cyc_curr_cam = 0;   /* source = g_Camera fields */
 static unsigned s_cyc_curr_frame = 0xFFFFFFFFu;             /* VBL of the curr capture */
 
-/* Snapshot the draw's matrix arguments and roll the prev/curr matrix pair,
- * both before the draw clobbers the argument registers. */
+/** @brief Capture the sky draw's argument registers and roll the prev/curr matrix pair before the draw clobbers them.
+ *
+ * Runs as the hook bracket's pre step. On a VBL other than the last capture's,
+ * curr rolls to prev, and prev is valid only when the last capture was at
+ * most 3 VBLs earlier. The two matrices at a1/a2 are then read into curr,
+ * which records whether they are the camera's own view and projection fields.
+ * @param cpu The guest CPU state, read only.
+ * @param feed Unused.
+ * @param verify Unused. */
 static void cyc_pre(CPUState* cpu, int feed, int verify) {
     (void)feed; (void)verify;
     uint32_t a0 = cpu->a0, a1 = cpu->a1, a2 = cpu->a2;
@@ -632,17 +706,7 @@ static int on_sky_draw_cyc(CPUState* cpu, uint32_t addr) {
     return hook_bracket_end(&k_cyc_bracket);  /* took over (body already ran) */
 }
 
-/* Sub-tick re-extract (high-FPS spine): rebuild the sky dome + background —
- * extract-only (no func_8004EBA8 call, no verdict writes). When the canonical
- * call took g_Camera's own matrices (a1 = +0x14 m_ViewMatrix, a2 = +0x00
- * m_ProjectionMatrix) read them LIVE: those are the regions the spine's camera
- * bracket interpolates each present, so the sky rotates smoothly sub-tick.
- * Otherwise (stack-built matrices — the level-transition fly-in) lerp the
- * snapshot pair prev→curr by the spine's alpha; snap to curr when the camera
- * isn't bracketed, prev is missing or came from a different kind of source
- * (the first and last tick of the transition), or the two endpoints diverge
- * implausibly (a cut — keep the lerp from turning the long way round).
- * push_scene also re-sets the scene background. */
+/* Sub-tick sky re-extract; documented at the declaration in cyclorama.h. */
 void cyclorama_reextract(CPUState* cpu, double alpha, int interp_on) {
     if (!openpete_native_scene_enabled()) return;
     /* Only replay the sky dome if the canonical frame drew it. In cyclorama-less
@@ -687,18 +751,7 @@ void cyclorama_reextract(CPUState* cpu, double alpha, int interp_on) {
     push_scene(cpu);
 }
 
-/* ---- the cross-fade dome (func_8004F000) ----------------------------------
- * The level-exit / balloonist cross-fade renderer draws the SAME g_Cyclorama
- * dome as func_8004EBA8, with two differences: every sector colour is first
- * run through a GTE DPCS fade toward the fog far colour by the fog factor, and the
- * cull/draw matrices are g_Camera's own (view @+0x14, projection @+0x00)
- * rather than caller-supplied. Its visibility test is a per-vertex outcode
- * against the 4:3 box [0,512]x[0,256], AND-ed over each face, so the prims it
- * emits stop dead at the 4:3 edges — replaying them leaves the widened sides
- * of a Hor+ frame on the background clear. Re-derive the dome here instead,
- * through the same widescreen-aware sector iteration, near-plane clip and
- * trivial reject the main sky uses. Fills up to `max` triangles and returns
- * the count. */
+/* ---- the cross-fade dome (func_8004F000); documented in cyclorama.h ---- */
 int cyclorama_native_extract_faded(CPUState* cpu, cyclorama_native_tri* out, int max) {
     cyc_extract(cpu, 0xFFFFFFFFu, game_layout.cam.view_matrix, game_layout.cam.proj_matrix,
                 cpu->read_word(game_layout.fog.far_colour) & 0xFFFFFFu,
@@ -713,26 +766,7 @@ int cyclorama_native_extract_faded(CPUState* cpu, cyclorama_native_tri* out, int
     return n;
 }
 
-/* ---- present-time draw-env clear sync (portal-entry flash fix) ---------
- * The native background fill (s_drawenv_clear) used to come only from the
- * PutDrawEnv THUNK latch — but the game calls PutDrawEnv one VSync AFTER it
- * builds (and we feed) each OT: GamestateDraw flips g_CurDB at the top of the
- * pass, the gamestate writes g_CurDB->m_DrawEnv.r0g0b0 (e.g. GS_LevelTransition
- * = g_Cyclorama.m_BackgroundColor, fresh destination sky), builds the OT
- * (feeders fire), then VSync-WAITS — yielding to the host, which PRESENTS the
- * just-fed scene — and only then PutDrawEnv+DrawOTag. So at the transition
- * boundary the live present paired the NEW scene with the OLD latched clear:
- * a 1-present flash of the homeworld background under the destination sky.
- * PsyCross never flashes because it composes the OT only at DrawOTag, after
- * the env applies.
- *
- * Fix: at every canonical host present (render_paths_commit), re-read the
- * clear from the DRAWENV STRUCT the game keeps in RAM — g_CurDB->m_DrawEnv —
- * which by the flip-at-pass-top invariant is exactly the env DrawOTag will
- * use for the scene being presented. State-universal: every gamestate writes
- * its clear into the struct before building the OT (GS_ExitLevel even writes
- * its ColorLerp fade step there). The thunk latch stays as the fallback for
- * the brief boot window where g_CurDB doesn't point at g_DB[] yet. */
+/* ---- present-time draw-env clear sync; documented in orchestrator.h ---- */
 void cyclorama_native_env_clear_commit(void) {
     if (!game_layout.db.cur_ptr) return;   /* no draw-buffer pair located */
     const uint32_t curdb = *(const uint32_t*)openpete_subtick_host_ptr(game_layout.db.cur_ptr);

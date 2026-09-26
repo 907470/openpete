@@ -27,10 +27,19 @@ int openpete_native_interp_pos(unsigned int key, double out[3]);
  * stored stamp against the latched epoch. */
 void spyro_native_canon_epoch_commit(void);
 
-/* Present-time draw-env clear sync, called from the same anchor: re-read the
- * clear colour the environment's DrawOTag will use for the scene being
- * presented from PSX RAM, instead of a PutDrawEnv latch that trails the OT
- * build by one VSync. Defined by the shared cyclorama feeder
+/** @brief Set the native clear colour from the DRAWENV the game will apply to the scene being presented.
+ *
+ * Called once per canonical present by render_paths_commit. The game flips
+ * g_CurDB at the top of its draw pass, writes the clear into
+ * g_CurDB->m_DrawEnv, builds the OT, then waits a VSync (during which the host
+ * presents the fed scene) before PutDrawEnv and DrawOTag; a PutDrawEnv latch
+ * therefore trails the presented scene by one VSync. Every gamestate writes
+ * its clear into that struct before building the OT. This reads g_CurDB
+ * (game_layout.db.cur_ptr) through the sub-tick view, returns without effect
+ * when the layout names no g_CurDB or unless g_CurDB points at one of the two draw buffers, and passes the DRAWENV's
+ * isbg (+0x18) and r0/g0/b0 (+0x19..+0x1B) to
+ * openpete_native_set_clear_color. The PutDrawEnv latch stays in effect while
+ * g_CurDB is not yet valid. Defined by the shared cyclorama feeder
  * (games/common/renderer/cyclorama.c) for every game. */
 void cyclorama_native_env_clear_commit(void);
 

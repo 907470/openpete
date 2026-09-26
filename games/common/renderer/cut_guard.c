@@ -107,16 +107,28 @@ int cut_pair_is_tick(const openpete_interp_obj_t* o) {
            (double)(o->curr_ns - prev_at) <= 1.5 * (double)g_openpete_tick_period_ns;
 }
 
-/* Whether the canonical tick drew this record: the cull writes its verdict back
- * into the record, and a record the pass never draws constrains nothing. */
+/** @brief Whether the canonical tick drew this moby record.
+ *
+ * The cull writes its verdict into the record at game_layout.moby.drawn_off;
+ * a game that names no such field counts every record as drawn.
+ * @param mh Host pointer to the moby record.
+ * @return Nonzero when the record was drawn. */
 static int cut_rec_drawn(const uint8_t* mh) {
     const uint32_t off = game_layout.moby.drawn_off;
     return off ? (mh[off] != 0) : 1;
 }
 
-/* One record's own verdict for cut_scene_holdable. The census names every
- * record that refuses, since "the scene cannot hold" is not diagnosable
- * without them. */
+/** @brief Whether one moby record can show tick N-1, for cut_scene_holdable.
+ *
+ * The record is looked up in the interp table by moby_game.interp_key (the
+ * guest address when the game names none). It refuses when it has no entry or
+ * no previous state, or when its pair is not one tick (cut_pair_is_tick); a
+ * record whose class field differs between prev and curr passes. With the
+ * census armed, every refusal prints the record, and an accepted pair whose
+ * roll stamps are more than 1.5 ticks apart prints as a seen pair.
+ * @param m Guest address of the record.
+ * @param mh Host pointer to the record.
+ * @return 1 when the record can hold, 0 when it refuses. */
 static int cut_rec_holdable(uint32_t m, const uint8_t* mh) {
     const uint32_t key = moby_game.interp_key ? moby_game.interp_key(m) : m;
     const openpete_interp_obj_t* o = openpete_interp_objs_find(key);
@@ -154,7 +166,12 @@ static int cut_rec_holdable(uint32_t m, const uint8_t* mh) {
     return 0;
 }
 
-/* The moby array's first element, or 0 when the game names none. */
+/** @brief The guest address of the moby array's first element.
+ *
+ * game_layout.moby.array_head is the array itself when array_direct is set,
+ * else the address of the pointer variable that holds it, which is read.
+ * @return The address, or 0 when it is not a KSEG0 pointer (the game names no
+ *         array, or the pointer is unset). */
 static uint32_t cut_moby_array_head(void) {
     uint32_t arr = game_layout.moby.array_head;
     if (!game_layout.moby.array_direct) {
@@ -226,15 +243,26 @@ int cut_camera_hold(double period_ns, op_time_t curr_tick_ns, int gs_edge) {
     return hold;
 }
 
-/* The two snapshots' region pointers, or NULL when the game registered no such
- * row. */
+/** @brief A snapshot's pointer to one registered region's bytes.
+ *
+ * @param s The snapshot; NULL yields NULL.
+ * @param region The region index; negative (the game registered no such row)
+ *        yields NULL.
+ * @return Pointer into s->data at the region's offset, or NULL. */
 static const uint8_t* snap_region(const openpete_interp_snapshot_t* s, int region) {
     return (s && region >= 0) ? s->data + s->region_offsets[region] : NULL;
 }
 
-/* The pair's own cadence, capped at one nominal tick: the measured gap balloons
- * to K ticks when the camera sits byte-static for K ticks and then resumes,
- * which would make the resume crawl at 1/K speed for one interval. */
+/** @brief The interval length a camera pair interpolates over.
+ *
+ * The measured gap between the two snapshots' tick stamps, replaced by one
+ * nominal tick period when it exceeds CUT_PAIR_STALE_TICKS periods: the gap
+ * balloons to K ticks when the camera sits byte-static for K ticks and then
+ * resumes, which would make the resume crawl at 1/K speed for one interval.
+ * A missing snapshot or a non-increasing stamp also yields the nominal period.
+ * @param prev The earlier snapshot.
+ * @param curr The later snapshot.
+ * @return The period in nanoseconds. */
 static double cut_period_ns(const openpete_interp_snapshot_t* prev,
                             const openpete_interp_snapshot_t* curr) {
     const double nominal = (double)g_openpete_tick_period_ns;

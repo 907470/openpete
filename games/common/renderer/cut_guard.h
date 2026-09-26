@@ -102,21 +102,32 @@ const char* cut_camera_reason(const uint8_t* pcam, const uint8_t* ccam,
                               const void* pgs, const void* cgs,
                               cut_cam_metrics_t* out);
 
-/* Whether an object's prev/curr pair IS two consecutive ticks: prev was last
- * observed by a capture within 1.5 ticks of curr's roll. A record that held
- * prev unchanged on every capture up to curr qualifies however long it held
- * it. An object whose prev was last observed earlier than that has no tick N-1
- * to show: a level load leaves pre-load records in the table, and a slot the
- * capture did not observe in between names a state the interval does not
- * span. */
+/** @brief Whether an object's prev/curr pair is two consecutive ticks.
+ *
+ * prev's observation stamp is the later of prev_ns (its first capture) and
+ * prev_seen_ns (the last capture that still observed it); the pair qualifies
+ * when curr_ns is after that stamp by at most 1.5 tick periods. A record that
+ * held prev unchanged on every capture up to curr qualifies however long it
+ * held it. An object whose prev was last observed earlier than that has no
+ * tick N-1 to show: a level load leaves pre-load records in the table, and a
+ * slot the capture did not observe in between names a state the interval does
+ * not span.
+ * @param o The interp object; NULL, a zero prev_ns, or curr_ns not after
+ *        prev_ns yields 0.
+ * @return 1 when the pair spans one tick, else 0. */
 int cut_pair_is_tick(const openpete_interp_obj_t* o);
 
-/* Whether this present can show tick N-1 whole. A held cut shows the previous
- * tick on every channel, so every record the moby pass will draw needs a
- * previous tick of its own: a record that has none is drawn at tick N whatever
- * the camera does, and against a camera held one whole cut away it leaves the
- * frame. A record whose class changed is excluded — it names a reloaded model
- * table and carries no drawable previous state either way. */
+/** @brief Whether this present can show tick N-1 whole.
+ *
+ * A held cut shows the previous tick on every channel, so every record the
+ * moby pass will draw needs a previous tick of its own: a record that has none
+ * is drawn at tick N whatever the camera does, and against a camera held one
+ * whole cut away it leaves the view. The records checked are the drawn live
+ * records of the moby array and the records the canonical render drew from
+ * outside it. A record whose class changed does not refuse: it names a
+ * reloaded model table and carries no drawable previous state either way.
+ * With OPENPETE_CUT_CENSUS set, every refusal is counted and printed.
+ * @return 1 when no drawn record refuses, else 0. */
 int cut_scene_holdable(void);
 
 /** @brief Whether the interval a camera cut ends still has a tick N-1 to show.
