@@ -488,7 +488,15 @@ static bool ring_gen_dbg(void)
     if (v < 0) { const char *e = getenv("OPENPETE_RING_GEN_DBG"); v = (e && *e && *e != '0'); }
     return v;
 }
-/* Slot index for the next write of a ring buffer inside the active frame. */
+/** @brief Return the slot index for the next write of a ring buffer inside the active frame.
+ *
+ * A single-generation buffer writes the frame's slot. A generation buffer
+ * starts each frame at generation 0; a write after a bind in the same frame
+ * moves to the next generation (counted in s_ring_gen_bumps), and with none
+ * left overwrites the current one (counted in s_ring_gen_overflows, logged
+ * once).
+ * @param buf Ring buffer; its device must have a frame recording.
+ * @return frame x gens + current generation. */
 static uint32_t ring_write_slot(rhi_buffer *buf)
 {
     rhi_device *dev = buf->dev;
@@ -508,7 +516,13 @@ static uint32_t ring_write_slot(rhi_buffer *buf)
     }
     return (uint32_t)dev->frame * buf->gens + buf->gen_cur;
 }
-/* Slot index a bind inside the active frame references. */
+/** @brief Return the slot index a bind inside the active frame references, and mark the generation bound.
+ *
+ * The first touch in a new frame resets the generation to 0. Marking it
+ * bound makes the next same-frame write move to a fresh generation.
+ * @param buf Ring buffer; its device must have a frame recording.
+ * @return frame x gens + current generation; the frame's slot for a
+ *         single-generation buffer. */
 static uint32_t ring_bind_slot(rhi_buffer *buf)
 {
     rhi_device *dev = buf->dev;
@@ -637,11 +651,14 @@ static bool layer_available(const char *name)
     return found;
 }
 
-/* The Khronos validation layer and its debug-utils messenger are opt-in:
- * OPENPETE_VK_VALIDATION=1 requests them, and only when the loader offers
- * the layer (it ships with the Vulkan SDK, not with drivers). Unset or 0
- * requests neither, so a machine with the SDK installed runs the same
- * instance as one without it. Read once, at instance creation. */
+/** @brief Return whether to enable the Khronos validation layer and its debug-utils messenger.
+ *
+ * Opt-in: OPENPETE_VK_VALIDATION set to a value not starting with '0'
+ * requests them, and only when the loader offers the layer (it ships with
+ * the Vulkan SDK, not with drivers); a requested but missing layer logs.
+ * Unset or 0 requests neither, so a machine with the SDK installed runs the
+ * same instance as one without it. Read once, at instance creation.
+ * @return true when the layer is requested and available. */
 static bool want_validation_layer(void)
 {
     const char *e = getenv("OPENPETE_VK_VALIDATION");
@@ -997,8 +1014,13 @@ static VkExtent2D choose_extent(rhi_device *dev, const VkSurfaceCapabilitiesKHR 
     return e;
 }
 
-/* True if the surface advertises `want`. FIFO is always supported (spec) so
- * callers only need to query the vsync-OFF modes. */
+/** @brief Return whether the surface advertises present mode `want`.
+ *
+ * FIFO is always supported (spec), so callers query only the vsync-off
+ * modes.
+ * @param dev Device whose physical device and surface are queried.
+ * @param want Present mode to look for.
+ * @return true when the surface lists @p want. */
 static bool surface_has_present_mode(rhi_device *dev, VkPresentModeKHR want)
 {
     uint32_t n = 0;
@@ -3355,10 +3377,13 @@ rhi_buffer *rhi_create_vertex_buffer(rhi_device *dev, size_t bytes)
                               /*prefer_cached=*/false);
 }
 
-/* Memory-type indices OPENPETE_RHI_FAIL_MEMTYPE=<index>[,<index>...] names,
- * as a bit per index, read once. A device offers at most VK_MAX_MEMORY_TYPES
- * (32) types, so one word holds the whole table. An index outside the table
- * and a malformed element are ignored; an unset variable refuses nothing. */
+/** @brief Return the memory-type indices OPENPETE_RHI_FAIL_MEMTYPE names, as a bit per index.
+ *
+ * The variable is <index>[,<index>...], parsed on first call. A device
+ * offers at most VK_MAX_MEMORY_TYPES (32) types, so one word holds the
+ * whole table. An index outside the table is ignored and parsing stops at
+ * a malformed element; an unset variable refuses nothing.
+ * @return The mask. */
 static uint32_t tc_fail_mask(void)
 {
     static uint32_t mask;
@@ -3378,14 +3403,19 @@ static uint32_t tc_fail_mask(void)
     return mask;
 }
 
-/* One allocation attempt for a device vertex buffer, and the only
- * vkAllocateMemory call site of that path.
+/** @brief Make one allocation attempt for a device vertex buffer, the only vkAllocateMemory call site of that path.
  *
  * Every attempt on a memory-type index OPENPETE_RHI_FAIL_MEMTYPE names
  * reports VK_ERROR_OUT_OF_DEVICE_MEMORY without reaching the driver, so the
  * fallback order can be exercised on a device whose heaps do not run out, and
  * a device with more host-visible candidates than a heap balloon can fill can
- * have the remaining candidates refused here. */
+ * have the remaining candidates refused here.
+ * @param dev Device to allocate on.
+ * @param mai Allocation info; its memoryTypeIndex is checked against
+ *            tc_fail_mask.
+ * @param out Receives the memory on success.
+ * @return The vkAllocateMemory result, or VK_ERROR_OUT_OF_DEVICE_MEMORY for
+ *         a refused index. */
 static VkResult tc_alloc_try(rhi_device *dev, const VkMemoryAllocateInfo *mai,
                              VkDeviceMemory *out)
 {
@@ -3694,8 +3724,13 @@ rhi_texture *rhi_create_rgba8(rhi_device *dev, uint32_t width, uint32_t height)
     return create_sampled_image(dev, width, height, VK_FORMAT_R8G8B8A8_UNORM, 4);
 }
 
-/* A render target's depth image usage: the attachment, sampled for a
- * depth-sampled target, a transfer source for a readable one. */
+/** @brief Return a render target's depth image usage flags.
+ *
+ * Always the depth-stencil attachment; sampled for a depth-sampled target,
+ * a transfer source for a readable one.
+ * @param depth_sampleable Whether the depth image is sampled.
+ * @param depth_readable Whether the depth image is read back.
+ * @return The usage flags. */
 static VkImageUsageFlags rt_depth_usage(bool depth_sampleable, bool depth_readable)
 {
     VkImageUsageFlags u = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
@@ -4017,11 +4052,21 @@ struct rhi_stage_chunk {
     struct rhi_stage_chunk *next;
 };
 
-/* A `need`-byte range of host-visible staging for an in-frame upload to
- * `tex`, disjoint from every range handed out for this texture in the
- * current frame. Offsets are 16-byte aligned (VkBufferImageCopy.bufferOffset
- * is a multiple of the texel size: 2, 4 or 16 bytes). Returns false only when
- * a chunk could not be allocated. */
+/** @brief Hand out a `need`-byte range of host-visible staging for an in-frame upload to `tex`.
+ *
+ * The range is disjoint from every range handed out for this texture in the
+ * current frame. The texture keeps a chunk list per frame slot, reset on the
+ * slot's first use in a new frame (the slot's fence has retired it); a
+ * request no chunk fits appends a chunk of max(image size, need) bytes.
+ * Offsets are 16-byte aligned (VkBufferImageCopy.bufferOffset is a multiple
+ * of the texel size: 2, 4 or 16 bytes).
+ * @param dev Device with a frame recording.
+ * @param tex Texture the upload targets.
+ * @param need Bytes required.
+ * @param out_buf Receives the staging VkBuffer.
+ * @param out_map Receives the mapped pointer to the range.
+ * @param out_off Receives the range's offset within @p out_buf.
+ * @return false only when a chunk could not be allocated. */
 static bool stage_acquire(rhi_device *dev, rhi_texture *tex, size_t need,
                           VkBuffer *out_buf, uint8_t **out_map, size_t *out_off)
 {
@@ -4108,14 +4153,25 @@ void rhi_update_vram(rhi_device *dev, rhi_texture *tex, const uint16_t *pixels)
     update_image(dev, tex, pixels);
 }
 
-/* W2.4 dirty-rect sub-upload: N pre-clamped rects from the full-stride CPU
- * mirror, packed sequentially into the staging slot, one barrier pair around
- * one N-region vkCmdCopyBufferToImage. Falls back to a full upload when the
- * packed payload wouldn't fit the (full-image-sized) staging slot. */
+/* Most rects one dirty-rect upload records as regions of one
+ * vkCmdCopyBufferToImage. */
 #define RHI_VRAM_MAX_RECTS 96
-/* Shared body: `pack` fills the staging buffer with the rects' texels in
- * upload order (each rect's rows contiguous, rects at 4-byte-aligned
- * offsets); the regions describe that layout. */
+/** @brief Upload pre-clamped rects to a texture in one barrier pair around one N-region copy.
+ *
+ * The rects' texels are packed into staging in upload order (each rect's
+ * rows contiguous, rects at 4-byte-aligned offsets), copied row by row from
+ * the full-stride `mirror` or in one block from `packed`, which already has
+ * that layout; the regions describe it. Rects with a non-positive size are
+ * skipped. Past RHI_VRAM_MAX_RECTS rects, or when the packed payload exceeds
+ * the image-sized staging, a mirror source falls back to a whole-image
+ * upload and a packed source uploads nothing. In-frame and one-shot paths
+ * as in update_image; the texture ends in SHADER_READ_ONLY.
+ * @param dev Device.
+ * @param tex Texture; NULL or one without staging is ignored.
+ * @param mirror Full-stride source, or NULL when @p packed is given.
+ * @param packed Packed source, or NULL when @p mirror is given.
+ * @param rects Rects, pre-clamped to the texture extent.
+ * @param nrects Rect count; 0 or less does nothing. */
 static void update_vram_rects_impl(rhi_device *dev, rhi_texture *tex,
                                    const uint16_t *mirror, const uint8_t *packed,
                                    const rhi_rect *rects, int nrects)
@@ -4965,9 +5021,16 @@ static const VkVertexInputBindingDescription k_terrain_cell_anim_bind = {
     .binding = 0, .stride = sizeof(rhi_terrain_cell_anim), .inputRate = VK_VERTEX_INPUT_RATE_INSTANCE,
 };
 
-/* The terrain pipelines' vertex input: the plain sector mesh, its anim or
- * near twin pair, or a cell-record flavour. `vi` arrives holding the
- * one-binding default, whose binding stride the plain mesh overrides. */
+/** @brief Fill the vertex input state of a terrain pipeline.
+ *
+ * The layout is the plain sector mesh (one per-vertex binding, 9
+ * attributes), a cell-record flavour (one per-instance binding, 13
+ * attributes, 16 with anim), or the anim or near twin pair (two bindings,
+ * 14 or 13 attributes), selected by terrain_cells, then terrain_anim, then
+ * terrain_near. `vi` arrives holding the one-binding default, whose binding
+ * the plain mesh replaces.
+ * @param desc Terrain pipeline description.
+ * @param vi Vertex input state to overwrite. */
 static void terrain_vertex_input(const rhi_pipeline_desc *desc,
                                  VkPipelineVertexInputStateCreateInfo *vi)
 {
@@ -5517,7 +5580,9 @@ rhi_ubo *rhi_create_ubo(rhi_device *dev, uint32_t block_size, uint32_t blocks)
     return u;
 }
 
-/* Reset the per-block generation state on the first touch of a new frame. */
+/** @brief Reset a uniform block set's per-block generation and bound state on its first touch in a new frame.
+ *
+ * @param ubo Uniform block set. */
 static void ubo_frame_sync(rhi_ubo *ubo)
 {
     if (ubo->gen_serial == s_frame_serial) return;
