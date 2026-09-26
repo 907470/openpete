@@ -1,0 +1,341 @@
+[
+ {
+  "name": "1 new undocumented",
+  "tus": [
+   "new.c"
+  ],
+  "acted": [
+   "new.c:undocumented_new"
+  ],
+  "expect": {
+   "new.c:undocumented_new": "clause1"
+  },
+  "verdict": "REFUSED",
+  "changed": {
+   "new.c": [
+    [
+     1,
+     1
+    ]
+   ]
+  },
+  "forms": {
+   "new.c:undocumented_new": "none"
+  }
+ },
+ {
+  "name": "2a touched undocumented",
+  "tus": [
+   "touched.c"
+  ],
+  "acted": [
+   "touched.c:touched_undoc"
+  ],
+  "expect": {
+   "touched.c:touched_undoc": "clause2"
+  },
+  "verdict": "REFUSED",
+  "rows": {
+   "touched.c:touched_undoc": "none"
+  },
+  "changed": {
+   "touched.c": [
+    [
+     2,
+     1
+    ]
+   ]
+  }
+ },
+ {
+  "name": "2b touched and documented",
+  "tus": [
+   "touched.c"
+  ],
+  "acted": [
+   "touched.c:touched_doc"
+  ],
+  "expect": {
+   "touched.c:touched_doc": "retired"
+  },
+  "verdict": "PASS",
+  "rows": {
+   "touched.c:touched_doc": "none"
+  },
+  "changed": {
+   "touched.c": [
+    [
+     5,
+     2
+    ],
+    [
+     7,
+     1
+    ]
+   ]
+  }
+ },
+ {
+  "name": "3a untouched undocumented",
+  "tus": [
+   "untouched.c"
+  ],
+  "acted": [
+   "untouched.c:untouched_undoc"
+  ],
+  "expect": {
+   "untouched.c:untouched_undoc": "kept"
+  },
+  "verdict": "PASS",
+  "rows": {
+   "untouched.c:untouched_undoc": "none"
+  }
+ },
+ {
+  "name": "3b comment-only change",
+  "tus": [
+   "untouched.c"
+  ],
+  "acted": [
+   "untouched.c:untouched_doc"
+  ],
+  "expect": {
+   "untouched.c:untouched_doc": "retired"
+  },
+  "verdict": "PASS",
+  "rows": {
+   "untouched.c:untouched_doc": "none"
+  },
+  "changed": {
+   "untouched.c": [
+    [
+     5,
+     1
+    ]
+   ]
+  }
+ },
+ {
+  "name": "4a external brief only",
+  "tus": [
+   "tags.c"
+  ],
+  "acted": [
+   "tags.c:ext_notag"
+  ],
+  "expect": {
+   "tags.c:ext_notag": "clause1"
+  },
+  "verdict": "REFUSED",
+  "forms": {
+   "tags.c:ext_notag": "untagged"
+  }
+ },
+ {
+  "name": "4b internal brief only",
+  "tus": [
+   "tags.c"
+  ],
+  "acted": [
+   "tags.c:static_brief",
+   "tags.c:ext_tagged"
+  ],
+  "expect": {
+   "tags.c:static_brief": "pass",
+   "tags.c:ext_tagged": "pass"
+  },
+  "verdict": "PASS"
+ },
+ {
+  "name": "5a doxygen at the definition, header declares",
+  "tus": [
+   "place.c"
+  ],
+  "acted": [
+   "place.c:placed_misplaced"
+  ],
+  "expect": {
+   "place.c:placed_misplaced": "misplaced"
+  },
+  "verdict": "REFUSED"
+ },
+ {
+  "name": "5b doxygen at both",
+  "tus": [
+   "place.c"
+  ],
+  "acted": [
+   "place.c:placed_dup"
+  ],
+  "expect": {
+   "place.c:placed_dup": "duplicate"
+  },
+  "verdict": "REFUSED"
+ },
+ {
+  "name": "5c plain at both, doxygen at the header",
+  "tus": [
+   "place.c"
+  ],
+  "acted": [
+   "place.c:placed_ok"
+  ],
+  "expect": {
+   "place.c:placed_ok": "pass"
+  },
+  "verdict": "PASS"
+ },
+ {
+  "name": "5d two adjacent blocks are one comment",
+  "tus": [
+   "place.c"
+  ],
+  "acted": [
+   "place.c:placed_adjacent"
+  ],
+  "expect": {
+   "place.c:placed_adjacent": "pass"
+  },
+  "verdict": "PASS"
+ },
+ {
+  "name": "6a @param naming no parameter",
+  "tus": [
+   "wdoc_bad.c"
+  ],
+  "acted": [
+   "wdoc_bad.c:wdoc_bad"
+  ],
+  "expect": {
+   "wdoc_bad.c:wdoc_bad": "clause1",
+   "wdoc_bad.c:1": "wdoc"
+  },
+  "verdict": "REFUSED",
+  "staged": [
+   "wdoc_bad.c"
+  ]
+ },
+ {
+  "name": "6b diagnostic in an unstaged non-canonical candidate; non-candidate dropped",
+  "tus": [
+   "wdoc_bin.c"
+  ],
+  "acted": [
+   "wdoc_bin.c:wdoc_clean",
+   "wdoc_bin.c:wdoc_bin_use"
+  ],
+  "expect": {
+   "wdoc_bin.c:wdoc_clean": "pass",
+   "wdoc_bin.c:wdoc_bin_use": "pass",
+   "WDOC": "bin"
+  },
+  "verdict": "PASS",
+  "staged": [
+   "wdoc_bin.c"
+  ],
+  "wdoc_count": 1
+ },
+ {
+  "name": "7a @name group comment",
+  "tus": [
+   "group.c"
+  ],
+  "acted": [
+   "group.c:grouped"
+  ],
+  "expect": {
+   "group.c:grouped": "clause1"
+  },
+  "verdict": "REFUSED",
+  "forms": {
+   "group.c:grouped": "malformed"
+  }
+ },
+ {
+  "name": "7b @brief comment",
+  "tus": [
+   "group.c"
+  ],
+  "acted": [
+   "group.c:briefed"
+  ],
+  "expect": {
+   "group.c:briefed": "pass"
+  },
+  "verdict": "PASS"
+ },
+ {
+  "name": "8 comment above a #define",
+  "tus": [
+   "define.c"
+  ],
+  "acted": [
+   "define.c:blocked"
+  ],
+  "expect": {
+   "define.c:blocked": "clause1"
+  },
+  "verdict": "REFUSED",
+  "block": {
+   "define.c:blocked": "#define BLOCK_VALUE"
+  }
+ },
+ {
+  "name": "9 macro-generated definition",
+  "tus": [
+   "macro.c"
+  ],
+  "acted": [
+   "macro.c:generated"
+  ],
+  "expect": {
+   "macro.c:generated": "MACRO"
+  },
+  "verdict": "PASS"
+ },
+ {
+  "name": "10a header and definition name a parameter differently",
+  "tus": [
+   "rename.c"
+  ],
+  "acted": [
+   "rename.c:renamed_param"
+  ],
+  "expect": {
+   "rename.c:renamed_param": "pass"
+  },
+  "verdict": "PASS"
+ },
+ {
+  "name": "10b header brief only",
+  "tus": [
+   "rename.c"
+  ],
+  "acted": [
+   "rename.c:untagged_header"
+  ],
+  "expect": {
+   "rename.c:untagged_header": "clause1"
+  },
+  "verdict": "REFUSED",
+  "forms": {
+   "rename.c:untagged_header": "untagged"
+  }
+ },
+ {
+  "name": "11 extern C definition in a C++ TU",
+  "tus": [
+   "externc.cpp"
+  ],
+  "acted": [
+   "externc.cpp:externc_fn"
+  ],
+  "expect": {
+   "externc.cpp:externc_fn": "pass"
+  },
+  "verdict": "PASS",
+  "present": [
+   "externc.cpp:externc_fn"
+  ]
+ }
+]
