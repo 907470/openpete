@@ -105,11 +105,16 @@ void openpete_osd_reset(void) {
 }
 
 /* ---- rate limit --------------------------------------------------------- */
-/* Charged only for a NEW ring entry — never for a repaint. Debiting repaints
- * would break coalescing's own purpose: key repeat delivers tens of adjust
- * events a second, a burst-4 bucket drains in well under a second, and the
- * toast would then sit showing a STALE value while the menu shows the live
- * one. Showing the wrong number is worse than showing too many toasts. */
+/** @brief Find a source's rate-limit bucket, creating it full when absent.
+ *
+ * A new bucket takes a free entry, else replaces the entry with the lowest
+ * last_seq. The caller debits a bucket only for a new ring entry, never for
+ * a repaint: key repeat delivers tens of adjust events a second, a burst-4
+ * bucket drains in under a second, and a debited repaint would leave the
+ * toast showing a stale value while the menu shows the live one. Called with
+ * the lock held.
+ * @param src The source name, truncated to OPENPETE_OSD_SRC_MAX - 1 bytes.
+ * @return The bucket; never NULL. */
 static bucket_t *bucket_for(const char *src) {
     int free_i = -1, lru_i = 0;
     for (int i = 0; i < OSD_BUCKETS; i++) {
@@ -125,6 +130,10 @@ static bucket_t *bucket_for(const char *src) {
 }
 
 /* ---- ring helpers (all called with the lock held) ----------------------- */
+/** @brief Find the live toast, not yet fading out, that carries a coalescing key.
+ *
+ * @param key The key; NULL or empty never matches.
+ * @return The toast, or NULL. */
 static toast_t *find_key(const char *key) {
     if (!key || !*key) return NULL;
     for (int i = 0; i < OPENPETE_OSD_MAX; i++)
@@ -134,11 +143,12 @@ static toast_t *find_key(const char *key) {
     return NULL;
 }
 
-/* A victim in every state: a free slot, else the oldest toast that has at
- * least begun to hold, else — when every entry is still rising — the oldest
- * outright. Without that last fallback a burst of nine notifications inside
- * one present would find no evictable slot and silently drop the NEWEST, which
- * is the one the user just caused. */
+/** @brief Pick the slot a new toast takes.
+ *
+ * A free slot, else the oldest toast past its rise, else, when every toast
+ * is still rising, the oldest outright. The last fallback keeps a burst of
+ * nine posts inside one present from dropping the newest.
+ * @return The slot; never NULL. */
 static toast_t *evict_victim(void) {
     toast_t *best = NULL, *oldest = NULL;
     for (int i = 0; i < OPENPETE_OSD_MAX; i++) {
@@ -205,9 +215,13 @@ void openpete_osd_notify(const char *source, const char *key,
 }
 
 /* ---- both readers share one order --------------------------------------- */
-/* Oldest first: the post order IS the stack order, and the two readers must
- * agree on it or the id they correlate on lands in a different slot. n <= 8,
- * so an insertion sort beats reaching for qsort. */
+/** @brief Gather the occupied slots, sorted oldest first by post order.
+ *
+ * The post order is the stack order; both readers use this function so the
+ * ids they correlate on stand in the same order. An insertion sort over at
+ * most OPENPETE_OSD_MAX entries. Called with the lock held.
+ * @param out Receives the toasts; holds OPENPETE_OSD_MAX entries.
+ * @return The count written. */
 static int collect(toast_t **out) {
     int n = 0;
     for (int i = 0; i < OPENPETE_OSD_MAX; i++)
@@ -245,6 +259,10 @@ int openpete_osd_any_live(void) {
 }
 
 /* ---- the present-thread reader ------------------------------------------ */
+/** @brief Ease x with the cubic 3x^2 - 2x^3, clamped to [0, 1].
+ *
+ * @param x The linear progress.
+ * @return 0 for x <= 0, 1 for x >= 1, else the eased value. */
 static float smoothstep(float x) {
     if (x <= 0.0f) return 0.0f;
     if (x >= 1.0f) return 1.0f;

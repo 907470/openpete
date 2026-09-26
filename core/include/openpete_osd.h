@@ -46,6 +46,12 @@ extern "C" {
 #define OPENPETE_OSD_TIMEOUT_MAX_MS 30000u
 
 /* ---- configuration (CLI / openpete.toml / the M overlay) ---------------- */
+/** @brief Switch notifications on or off.
+ *
+ * Switching off calls openpete_osd_reset, so the queued toasts are dropped
+ * rather than left without geometry and untimed, to reappear when switched
+ * back on. While off, openpete_osd_notify posts nothing.
+ * @param on Non-zero enables. */
 void     openpete_osd_set_enabled(int on);
 int      openpete_osd_enabled(void);
 void     openpete_osd_set_anchor(int anchor);       /* openpete_anchor_t */
@@ -55,26 +61,24 @@ uint32_t openpete_osd_default_timeout_ms(void);
 
 /* ---- posting ------------------------------------------------------------ */
 
-/* Post a notification.
+/** @brief Post a toast, or repaint the live toast that carries the same key.
  *
- * `source` names the rate-limit bucket — "host" for everything the engine
- * itself raises, the mod id for a mod. NULL reads as "host".
- *
- * `key` (may be NULL) coalesces: a live, not-yet-fading toast with the same
- * key is REPAINTED — new text, timer restarted, same slot and same id — rather
- * than stacking a second one. Holding a key through the FPS ladder repaints one
- * toast instead of flooding the stack. A NULL key always stacks.
- *
- * `timeout_ms` is milliseconds; 0 takes the configured default and anything
- * over OPENPETE_OSD_TIMEOUT_MAX_MS is clamped. A repaint takes the RETARGETING
- * call's timeout, not the one the toast was created with — the repaint is the
- * more recent intent, so a recurring notification can escalate its own dwell
- * time without giving up its key (and so its slot).
- *
- * Safe from any thread. A no-op while the OSD is off, and while the tick being
- * executed is speculative (runahead) or replayed (rewind) — those ticks are
- * rolled back or re-executed, and a notification from one would announce an
- * event that never committed, or announce it again. */
+ * A live toast not yet fading out with the same non-empty key is repainted:
+ * new text and the new timeout, its hold restarted at the next present, same
+ * slot and same id. Otherwise a new toast takes a free slot, else the oldest
+ * toast past its rise, else the oldest outright; a new toast debits one token
+ * from its source's rate-limit bucket (burst 4, refill 2 per second) and is
+ * dropped when the bucket is empty. A repaint is never charged. Safe from any
+ * thread. A no-op while the OSD is off, when @p fmt is NULL, and while the
+ * executing tick is speculative (runahead) or replayed (rewind), since those
+ * ticks are rolled back or re-executed.
+ * @param source The rate-limit bucket: "host" for the engine, the mod id for
+ *        a mod; NULL or empty reads as "host".
+ * @param key The coalescing key; NULL or empty always stacks a new toast.
+ * @param timeout_ms The hold in milliseconds; 0 takes the configured
+ *        default, and a value over OPENPETE_OSD_TIMEOUT_MAX_MS is clamped.
+ * @param fmt printf format of the text, truncated to
+ *        OPENPETE_OSD_TEXT_MAX - 1 bytes. */
 void openpete_osd_notify(const char *source, const char *key,
                          uint32_t timeout_ms, const char *fmt, ...);
 
@@ -84,12 +88,18 @@ typedef struct {
     char     text[OPENPETE_OSD_TEXT_MAX];
 } openpete_osd_item_t;
 
-/* Copy the live toasts, oldest first, for the glyph builder. Returns the count
- * written. Text only — no animation state: the builder bakes the shimmer, not
- * the fade, and the fade is a present-rate quantity. */
+/** @brief Copy the live toasts' ids and text, oldest first, for the glyph builder.
+ *
+ * Text only, no animation state: the builder bakes the shimmer, and the fade
+ * is a present-rate quantity. Toasts still fading out are included.
+ * @param out Receives up to @p cap items.
+ * @param cap Capacity of @p out.
+ * @return The count written; 0 when @p out is NULL or @p cap is 0 or less. */
 int openpete_osd_tick_items(openpete_osd_item_t *out, int cap);
 
-/* 1 if any toast is live — the builder's cheap early-out. */
+/** @brief Report whether any toast occupies the ring, for the compositor's early-out.
+ *
+ * @return 1 when a slot holds a toast in any state, else 0. */
 int openpete_osd_any_live(void);
 
 /* ---- the present-thread reader: where and how solid ---------------------- */
@@ -122,14 +132,12 @@ int openpete_osd_present_update(op_time_t now,
                                 const openpete_osd_ready_t *ready, int n_ready,
                                 openpete_osd_view_t *out, int cap);
 
-/* Drop every toast and reset the ring. Used when notifications are switched
- * off (leaving them queued would strand them: nothing publishes geometry for
- * them, so nothing starts their timers, and the whole pile would reappear the
- * moment they were switched back on) and for a test's fresh start.
+/** @brief Drop every toast and reset the rate-limit buckets, the id and age counters, and the stored clock.
  *
- * NOT called on a savestate load. A toast announces something the PLAYER did
- * — a setting they changed, a key they pressed — and that is still true after
- * a load; clearing it would read as the load having eaten their input. */
+ * Called when notifications are switched off, where queued toasts would get
+ * no geometry and no timer and would reappear when switched back on, and for
+ * a test's fresh start. Not called on a savestate load: a toast announces a
+ * setting changed or a key pressed, which is still true after the load. */
 void openpete_osd_reset(void);
 
 #ifdef __cplusplus

@@ -58,6 +58,10 @@
  * A 16-bit game keeps int16 angles; a 12-bit game keeps 0..0xFFF and masks
  * at every consumer. Both are held here as signed int32 wrapped to the
  * game's width so arithmetic and logging read the same either way. */
+/** @brief Wrap an angle to the game's stored width as a signed value.
+ *
+ * @param v The angle in stored units, any range.
+ * @return v wrapped to [-0x800, 0x7FF] for a 12-bit game, else to int16. */
 static int32_t angle_wrap(int32_t v) {
     if (D->angle_bits == 12) return ((v + 0x800) & 0xFFF) - 0x800;
     return (int32_t)(int16_t)(uint16_t)(uint32_t)v;
@@ -107,10 +111,15 @@ static int level_live(CPUState* cpu) {
     return D->level_live ? D->level_live(cpu) : game_is_gameplay_live(cpu);
 }
 
-/* Pull up to `max` signed integers out of arbitrary text, skipping any
- * non-numeric runs. Lenient on purpose so a whole freecam log line can be
- * pasted verbatim — "pos=(84992, 45582, 9948) yaw=1024 pitch=160" yields all
- * five. Returns the count parsed. */
+/** @brief Extract up to max signed decimal integers from text, skipping every non-numeric run.
+ *
+ * A sign counts only directly before a digit. The leniency lets a freecam log
+ * line be pasted verbatim: "pos=(84992, 45582, 9948) yaw=1024 pitch=160"
+ * yields all five.
+ * @param s The text.
+ * @param out Receives the integers.
+ * @param max Capacity of @p out.
+ * @return The count parsed. */
 static int freecam_parse_ints(const char* s, int32_t* out, int max) {
     int n = 0;
     while (*s && n < max) {
@@ -125,8 +134,14 @@ static int freecam_parse_ints(const char* s, int32_t* out, int max) {
     return n;
 }
 
-/* Resolve a named pose through the game's resolver. A game without one
- * rejects every name. */
+/** @brief Resolve a named pose through the game's resolver.
+ *
+ * A game without a resolver rejects every name with a WARN.
+ * @param cpu The guest CPU state.
+ * @param name The pose name ("topdown", "sweepN").
+ * @param v Receives {x, y, z, yaw, pitch} in stored units.
+ * @return Non-zero on success; 0 for an unknown name, no live level, or no
+ *         resolver. */
 static int resolve_named(CPUState* cpu, const char* name, int32_t v[5]) {
     if (!D->resolve_named_pose) {
         OPL_WARN_F("freecam", "named pose '%s': this game has no named poses", name);
@@ -165,9 +180,17 @@ static struct {
     int     active;
 } s_path;
 
-/* Parse the spec into s_path. Returns 1 if a usable path (>= 2 waypoints)
- * was found. Waypoint text is bounded-copied so a malformed spec cannot run
- * off the end of the segment. */
+/** @brief Parse a flight-path spec into s_path and arm it.
+ *
+ * Segments split on ';'. A segment containing "ticks=" sets the ticks per
+ * segment when positive; one with three or more integers is a numeric
+ * waypoint, missing yaw and pitch reading 0; any other non-blank segment is
+ * a named waypoint, resolved later. Each segment is copied into a 128-byte
+ * buffer, truncating longer ones, and at most FREECAM_PATH_MAX waypoints are
+ * kept. A named waypoint on a game without named poses refuses the spec.
+ * @param spec The spec text.
+ * @return 1 when two or more waypoints were parsed and the path is active,
+ *         else 0. */
 static int freecam_path_parse(const char* spec) {
     memset(&s_path, 0, sizeof s_path);
     s_path.ticks = FREECAM_PATH_DEFAULT_TICKS;
@@ -224,7 +247,11 @@ static int freecam_path_parse(const char* spec) {
     return 1;
 }
 
-/* Fill in any named waypoints once the level is live. */
+/** @brief Fill in the path's named waypoints from the live level, once.
+ *
+ * Logs every waypoint after the first success.
+ * @param cpu The guest CPU state.
+ * @return 1 once resolved; 0 while a name cannot resolve yet. */
 static int freecam_path_resolve(CPUState* cpu) {
     if (s_path.resolved) return 1;
     for (int i = 0; i < s_path.n; i++) {
@@ -241,15 +268,28 @@ static int freecam_path_resolve(CPUState* cpu) {
     return 1;
 }
 
-/* Shortest-arc interpolation for the game's Euler angles: going from
- * 32000 to -32000 is 1536 units forward, not 64000 units back. */
+/** @brief Interpolate between two stored angles along the shorter arc.
+ *
+ * For a 16-bit game, 32000 to -32000 is 1536 units forward, not 64000 back.
+ * The fraction num / den truncates toward zero.
+ * @param a The start angle.
+ * @param b The end angle.
+ * @param num Numerator of the fraction.
+ * @param den Denominator of the fraction; non-zero.
+ * @return The wrapped angle. */
 static int32_t freecam_lerp_angle(int32_t a, int32_t b, int num, int den) {
     int32_t d = angle_wrap(b - a);
     return angle_wrap(a + (d * num) / den);
 }
 
-/* Advance one tick along the path into the host pose. The counter advances
- * on committed ticks only. */
+/** @brief Write the path's pose for the current tick into the host pose, then advance the counter.
+ *
+ * Interpolates linearly between the current segment's two waypoints, angles
+ * along the shorter arc; the last segment loops to the first waypoint. Does
+ * nothing while a named waypoint cannot resolve.
+ * @param cpu The guest CPU state.
+ * @param committed Non-zero on a committed tick, the only kind that advances
+ *        the counter. */
 static void freecam_path_step(CPUState* cpu, int committed) {
     if (!freecam_path_resolve(cpu)) return;
 
@@ -269,9 +309,14 @@ static void freecam_path_step(CPUState* cpu, int committed) {
     }
 }
 
-/* Apply an OPENPETE_FREECAM_POSE string ("x,y,z[,yaw,pitch]", any text with
- * >= 3 integers in it, or a name the game's resolver knows) to the host
- * pose. Position is required; yaw/pitch optional. */
+/** @brief Set the host pose from an OPENPETE_FREECAM_POSE string.
+ *
+ * Text with three or more integers sets x, y, z and, when present, yaw and
+ * pitch, keeping the current angles otherwise. Other text is trimmed and
+ * resolved as a named pose, which sets all five. An unresolvable string is
+ * logged and changes nothing.
+ * @param cpu The guest CPU state.
+ * @param s The pose text. */
 static void freecam_apply_pose(CPUState* cpu, const char* s) {
     int32_t v[5] = {0, 0, 0, 0, 0};
     int n = freecam_parse_ints(s, v, 5);
@@ -309,10 +354,19 @@ static void freecam_apply_pose(CPUState* cpu, const char* s) {
  * from freecam_drive, so position and matrices settle within one frame. */
 static const char* s_pending_pose = NULL;
 
-/* Drive the host pose from input and stamp it. Runs IN PLACE OF the game's
- * camera follow (see freecam_should_freeze), i.e. at the exact tick point the
- * follow logic normally runs, so the camera we write is what the downstream
- * matrix setup and world renderer consume that same tick. */
+/** @brief Move the host pose for one tick and stamp it into the camera bytes.
+ *
+ * Runs in place of the game's camera follow, at its tick point, so the same
+ * tick's matrix setup and renderer consume the stamped camera. Seeds the pose
+ * from RAM after an engage, applies a queued scripted pose, and, when a path
+ * is active, takes the path's pose instead of input. Otherwise applies the
+ * look axes, the mouse look, OPENPETE_FREECAM_SPIN and the pitch clamp, then
+ * the move axes and OPENPETE_FREECAM_DRIFT. Input, mouse, spin and drift
+ * apply on committed ticks only; the mouse look applies the difference
+ * between the scaled count total since its last rebase and the angle already
+ * applied, rebasing on engage, on a sensitivity change, and for pitch on a
+ * clamp. A changed pose is logged. Calls the game's draw_all hook when set.
+ * @param cpu The guest CPU state. */
 static void freecam_drive(CPUState* cpu) {
     const int committed = !openpete_speculative && !openpete_replaying;
 
@@ -476,26 +530,25 @@ static void freecam_drive(CPUState* cpu) {
     if (D->draw_all) D->draw_all(cpu);
 }
 
-/* Place the player at a world position, optionally facing `yaw` (4096 per
- * turn), optionally re-seating the follow camera behind him.
+/** @brief Place the player at a world position, optionally setting the facing and re-seating the follow camera.
  *
- * The previous position is written to match: the physics derives this tick's
- * movement from it, so leaving it at the old spot would present the whole
- * jump as one tick of travel — a sweep across the level that collides with
- * whatever lies between the two points.
- *
- * The facing is written as the pair the game keeps: the 12-bit physics angle
- * and the 8-bit copy the player update re-derives from it every tick. The
- * byte alone lasts one tick; the angle alone leaves one tick rendering the
- * old facing.
- *
- * Momentum is cancelled through the game's own routine (reset_momentum)
- * rather than by zeroing fields here: whatever the player carried belongs to
- * the place he left, not the one he lands in. Everything else — state,
- * animation, health — is deliberately untouched: the player carries on
- * falling / gliding / standing as he was, from the new spot, and the next
- * player update re-derives the floor and wall queries from the new
- * position. */
+ * The previous position is written to match: the physics derives the tick's
+ * movement from it, and an old previous position would present the jump as
+ * one tick of travel that collides with everything between the two points.
+ * The facing is written as the pair the game keeps, the 12-bit physics angle
+ * and the 8-bit copy (angle >> 4) the player update re-derives from it each
+ * tick; the byte alone lasts one tick, the angle alone leaves one tick drawn
+ * at the old facing. Momentum is cancelled through the game's reset_momentum
+ * routine. State, animation and health are untouched, and the next player
+ * update re-derives the floor and wall queries from the new position. A
+ * missing descriptor hook or address skips its step with a log line.
+ * @param cpu The guest CPU state.
+ * @param x World x.
+ * @param y World y.
+ * @param z World z.
+ * @param yaw Facing, 4096 per turn, masked to 12 bits.
+ * @param have_yaw Non-zero writes the facing.
+ * @param seat_camera Non-zero calls the game's place_camera routine. */
 static void freecam_teleport_player(CPUState* cpu, int32_t x, int32_t y, int32_t z,
                                     int32_t yaw, int have_yaw, int seat_camera) {
     cpu->write_word(D->player_pos + 0, (uint32_t)x);
@@ -527,10 +580,12 @@ static void freecam_teleport_player(CPUState* cpu, int32_t x, int32_t y, int32_t
     }
 }
 
-/* Move the player to wherever the free camera is floating. Camera and player
- * share one world space, so the position copies straight across. The facing
- * is kept, and the camera is handed back where it floats: the follow
- * converges from the view the user was inspecting. */
+/** @brief Move the player to the free camera's position.
+ *
+ * Camera and player share one world space, so the position copies across.
+ * The facing is kept and the follow camera is not re-seated, so the follow
+ * converges from the view that was being inspected.
+ * @param cpu The guest CPU state. */
 static void freecam_teleport_player_to_camera(CPUState* cpu) {
     pose_seed_if_needed(cpu);
     freecam_teleport_player(cpu, s_pose.x, s_pose.y, s_pose.z, 0, 0, 0);
@@ -583,18 +638,24 @@ int game_get_player_pose(CPUState* cpu, int32_t* out_x, int32_t* out_y, int32_t*
     return 0;
 }
 
-/* OPENPETE_FREECAM_AT_VBL=N: the VBL the scripted engage waits for, or -1
- * to engage as soon as the level is live. A timed engage goes through a bk2
- * replay, which otherwise refuses it; the movie desyncs from N on (the
- * camera follow is frozen), so it serves captures of a state the movie
- * reaches, taken at or just after N. */
+/** @brief Read OPENPETE_FREECAM_AT_VBL, the VBL the scripted engage waits for.
+ *
+ * A timed engage passes a replaying bk2's refusal; the movie desyncs from
+ * that VBL on, since the camera follow is frozen, so it serves captures of a
+ * state the movie reaches, taken at or just after the VBL.
+ * @return The VBL, or -1 when unset, to engage as soon as the level is
+ *         live. */
 static int freecam_engage_vbl(void) {
     const char* at = getenv("OPENPETE_FREECAM_AT_VBL");
     return (at && *at) ? atoi(at) : -1;
 }
 
-/* Engage the free camera for a scripted pose or path; `through_bk2` lets
- * the engage past a replaying movie's refusal. */
+/** @brief Engage the free camera for a scripted pose or path.
+ *
+ * With @p through_bk2 and a bk2 active, the bk2 flag is cleared around the
+ * toggle so the movie's refusal does not apply, then restored.
+ * @param through_bk2 True bypasses the bk2 refusal.
+ * @return False when the engage was refused, else true. */
 static bool freecam_engage_scripted(bool through_bk2) {
     const bool bk2 = through_bk2 && openpete_bk2_active();
     if (bk2) openpete_bk2_set_active(false);
@@ -603,13 +664,7 @@ static bool freecam_engage_scripted(bool through_bk2) {
     return engaged;
 }
 
-/* Optional scripted / headless engage. Set OPENPETE_FREECAM=1 to engage the
- * free camera, or OPENPETE_FREECAM_POSE="x,y,z,yaw,pitch" to engage AND jump to
- * a specific pose (for reproducing a test view — the coords come straight from
- * the per-tick freecam log). Fires once the level is live — deliberately NOT
- * from boot: engaging during a level load / demo transition would freeze the
- * player update while the level is still setting up and leave it un-rendered.
- * Interactive use (F / stick-click) is independent of this. */
+/* Scripted engage from the environment; see freecam_game.h. */
 void freecam_maybe_autoengage(CPUState* cpu) {
     static int s_done = 0;
     if (s_done) return;

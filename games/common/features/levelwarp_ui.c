@@ -40,6 +40,10 @@ static int level_index_for_id(int id) {
 
 /* ---- dev-overlay rows ------------------------------------------------- */
 
+/** @brief Read the dropdown row's selected index.
+ *
+ * @param k The row; unused.
+ * @return The index into the descriptor's level table. */
 static double sel_get(const knob_desc_t* k) { (void)k; return (double)s_sel; }
 
 static int sel_set(knob_desc_t* k, double v) {
@@ -51,11 +55,13 @@ static int sel_set(knob_desc_t* k, double v) {
     return 0;
 }
 
-/* Button gate: a route has to apply, and no warp may already be queued or in
- * flight. "Busy" is checked HERE rather than folded into s_route, because
- * s_route is also what the tick consults when it drains the queue — a route
- * that read none just because a click is pending would make every click
- * discard itself. */
+/** @brief Report whether a warp is queued or in flight, the Jump button's second gate.
+ *
+ * Kept apart from s_route because the tick also consults s_route when it
+ * drains the queue: a route that read none while a click is pending would
+ * make every click discard itself.
+ * @return Non-zero while a click is queued or the descriptor reports a warp
+ *         in flight. */
 static int warp_busy(void) {
     return s_pending || (s_desc->in_flight && s_desc->in_flight());
 }

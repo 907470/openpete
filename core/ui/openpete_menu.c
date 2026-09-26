@@ -149,6 +149,11 @@ static int s_freecam_idx = 0;  /* OFF — re-synced from the live state on open 
 static unsigned s_tick  = 0;   /* wobble/shimmer phase (draw step) */
 
 /* --- helpers ------------------------------------------------------------- */
+/** @brief Reduce an index into [0, n), wrapping negatives from the top.
+ *
+ * @param i The index, any sign.
+ * @param n The range length.
+ * @return i modulo n in [0, n); 0 when n is 0 or less. */
 static int wrap_idx(int i, int n) {
     if (n <= 0) return 0;
     i %= n;
@@ -178,13 +183,19 @@ static int nearest_idx(const int* vals, int n, int want) {
     return best;
 }
 
-/* Each row re-seeds from its OWN live setting. A quantize multiplier off the
- * ladder (a CLI/M-overlay 3x) shows its nearest rung and is only rewritten
- * when the user cycles the row. */
+/** @brief Read the WOBBLE row's index from the live vertex-snap state.
+ *
+ * Each row re-seeds from its own live setting when the menu opens.
+ * @return 1 while vertex snap is active, else 0. */
 static int wobble_idx_from_live(void) {
     return openpete_native_vertex_snap_active() ? 1 : 0;
 }
 
+/** @brief Read the PIXELATION row's index from the live raster quantize multiplier.
+ *
+ * A multiplier off the ladder (a CLI or dev-overlay 3x) shows its nearest
+ * entry and is rewritten only when the row is stepped.
+ * @return The index of the nearest ladder entry. */
 static int pixel_idx_from_live(void) {
     return nearest_idx(s_pix_vals, N_PIX, openpete_native_get_raster_quantize());
 }
@@ -210,7 +221,16 @@ static void build_fps_list(int refresh) {
  * loader enumeration — zero mods shows NONE and the rows no-op. */
 static int s_modsel_idx = 0;
 
-/* Current value string for a row (for the log + later the draw). */
+/** @brief Spell a row's current value for the glyph builder, the OSD, and the log.
+ *
+ * DISPLAY and MOD ENABLED read live state; SETTINGS shows the last save
+ * result (SAVED n, CLEARED, FAILED) until the row is stepped, else the picked
+ * action; FOV shows DEFAULT or both angles for the live aspect; EXIT is
+ * empty. An unknown row reads "?".
+ * @param row The row index.
+ * @param buf Scratch space for formatted values.
+ * @param buflen Size of @p buf in bytes.
+ * @return A static string or @p buf. */
 static const char* value_str(int row, char* buf, int buflen) {
     switch (row) {
     /* DISPLAY reads the LIVE window state each frame (no shadow index) — like
@@ -452,8 +472,12 @@ static int64_t wheel_notches(int64_t total) {
     return total >= 0 ? total / u : -((-total + u - 1) / u);
 }
 
-/* Rows whose apply performs an action rather than setting a value: they
- * take a deliberate left click only. */
+/** @brief Report whether a row performs an action rather than setting a value.
+ *
+ * The mouse poll gives these rows a left click only; a right click or a
+ * wheel notch on them is ignored.
+ * @param row The row index.
+ * @return Non-zero for DISPLAY, SETTINGS and EXIT. */
 static int row_action_only(int row) {
     return row == ROW_DISPLAY || row == ROW_SAVE || row == ROW_QUIT;
 }

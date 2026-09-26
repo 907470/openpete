@@ -34,7 +34,13 @@ extern "C" {
  * @param refresh_hz Monitor refresh in Hz; below 60 is treated as 60. */
 void openpete_menu_init(const openpete_options_t* opts, int refresh_hz);
 
-/* Toggle open/closed; returns the new open state (1 = open). */
+/** @brief Open the menu when closed, close it when open.
+ *
+ * Opening re-syncs the rows a hotkey or the dev overlay can change while the
+ * menu is closed (SHOW FPS, LOD, FOG, FREECAM, WOBBLE, PIXELATION, TEXTURES,
+ * DITHER) from their live state, disarms EXIT, and snaps the mouse markers
+ * so a press made before the open is never a click. Both edges are logged.
+ * @return The new state: 1 open, 0 closed. */
 int  openpete_menu_toggle(void);
 
 /** @brief Report whether the menu is open.
@@ -103,16 +109,22 @@ void openpete_menu_note_row_cap(float cap_h);
 int openpete_menu_close_hovered(void);
 
 /* Text + wobble phase for the game-side glyph builder (text_moby_native). */
+/** @brief Name the menu's title text.
+ *
+ * @return The constant string "SETTINGS". */
 const char* openpete_menu_title(void);
 const char* openpete_menu_row_label(int row);
 const char* openpete_menu_row_value(int row, char* buf, int buflen);
 unsigned    openpete_menu_wobble_phase(void);
 
-/* 1 for an action row drawn CENTERED in the panel with no value column (EXIT
- * GAME): the glyph builder centres its label instead of splitting it across the
- * label/value columns. Its label carries the row's state — EXIT arms on the
- * first press and reads "REALLY EXIT?" until it is pressed again or the cursor
- * moves off it. */
+/** @brief Report whether a row is the centred action row with no value column.
+ *
+ * Only EXIT GAME is centred. The glyph builder centres its label instead of
+ * splitting it across the label and value columns; the label carries the
+ * row's state, reading REALLY EXIT? once armed. openpete_menu_activate acts
+ * only on this row.
+ * @param row The row index.
+ * @return 1 for the EXIT row, else 0. */
 int         openpete_menu_row_centered(int row);
 
 /** @brief Move the row cursor one row, wrapping at either end.
@@ -121,8 +133,12 @@ int         openpete_menu_row_centered(int row);
  * @param dy Positive moves down; zero or negative moves up. */
 void openpete_menu_nav(int dy);
 
-/* Put the cursor on `row` (the pointer's hit row). Disarms EXIT like nav, so
- * callers invoke it only when the row differs from the cursor. */
+/** @brief Put the cursor on a row, the pointer's hit row.
+ *
+ * Disarms EXIT and logs the new cursor, as openpete_menu_nav does. No-op
+ * unless open, for a row outside [0, row_count), and for the row the cursor
+ * already holds, so an unchanged hit keeps EXIT armed.
+ * @param row The row index. */
 void openpete_menu_set_cursor(int row);
 
 /** @brief Apply the mouse's presses, wheel notches, and movement since the last poll to the menu.
@@ -160,8 +176,11 @@ void openpete_menu_adjust(int dx);
  * cursor row is the centred action row. */
 void openpete_menu_activate(void);
 
-/* Advance the selected-item wobble / border-shimmer phase. Call once per
- * presented frame from the draw step. */
+/** @brief Advance the phase openpete_menu_wobble_phase returns by one.
+ *
+ * The glyph builder calls it on every second menu build, matching the game's
+ * pause menu, which advances its rotation counter (D_800758B8) once per drawn
+ * image. */
 void openpete_menu_tick(void);
 
 /** @brief Do nothing; an empty entry point with no caller.

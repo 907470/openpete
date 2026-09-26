@@ -37,8 +37,12 @@ typedef enum {
  * These are the CLI / openpete.toml / knob-registry vocabulary. */
 extern const char *const openpete_anchor_names[OPENPETE_ANCHOR_COUNT];
 
-/* Parse a spelling; -1 if unknown. Case-insensitive, and '_' reads as '-' so
- * a toml-flavoured `top_right` is accepted alongside `top-right`. */
+/** @brief Parse an anchor spelling to its openpete_anchor_t value.
+ *
+ * Matches openpete_anchor_names case-insensitively, with '_' read as '-', so
+ * `top_right` and `TOP-RIGHT` are accepted alongside `top-right`.
+ * @param s The spelling; NULL or empty is unknown.
+ * @return The anchor index, or -1 when unknown. */
 int openpete_anchor_parse(const char *s);
 
 /* Edge predicates of the placement rules, exposed for callers that mirror
@@ -66,13 +70,22 @@ typedef struct {
     float used[OPENPETE_ANCHOR_COUNT];     /* consumed depth from the edge */
 } openpete_anchor_ledger_t;
 
-/* The usable x range for this present: [x_min, x_max]. x_max is the overlay
- * aspect; x_min is the settings menu's right panel edge while it is open, else
- * 0. Every anchor resolves inside that range — the menu sidebar is FULL height,
- * so CENTER anchors need this as much as LEFT ones do. */
+/** @brief Compute the usable x range [x_min, x_max] for this present.
+ *
+ * x_max is the overlay aspect; x_min is the settings menu's panel right edge
+ * while the menu is open, else 0. The menu sidebar is full height, so every
+ * anchor, CENTER included, resolves inside this range. An aspect below x_min
+ * is raised to it, giving an empty range rather than an inverted one.
+ * @param aspect The overlay width in window-height units.
+ * @param x_min Receives the left bound; may be NULL.
+ * @param x_max Receives the right bound; may be NULL. */
 void openpete_anchor_usable_x(float aspect, float *x_min, float *x_max);
 
-/* Begin a present's placement pass: clear the cursors and latch the range. */
+/** @brief Begin a present's placement pass: clear the six cursors and latch the usable x range.
+ *
+ * @param L The ledger; NULL is ignored.
+ * @param x_min Left bound of the usable range.
+ * @param x_max Right bound of the usable range. */
 void openpete_anchor_reset(openpete_anchor_ledger_t *L,
                            float x_min, float x_max);
 

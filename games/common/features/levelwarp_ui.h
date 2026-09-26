@@ -62,12 +62,26 @@ typedef struct {
     int  (*in_flight_status)(char* buf, size_t cap);
 } levelwarp_ui_desc_t;
 
-/* Register the two overlay rows and arm the scripted driver. Call once from
- * the feature module's apply_options; `desc` must outlive the process. */
+/** @brief Register the two dev-overlay rows and arm the scripted driver.
+ *
+ * Resets the dropdown selection, the queued click and the cached route, adds
+ * the "Warp: level" dropdown and the "Warp: jump to level" action row, and
+ * reads OPENPETE_LEVELWARP_TEST through the descriptor's resolver. Called once
+ * from the feature module's apply_options.
+ * @param desc The game's descriptor; it must outlive the process. */
 void levelwarp_ui_register(const levelwarp_ui_desc_t* desc);
 
-/* Per-tick front half: refresh the route, follow the dropdown, and drain a
- * queued request into the title route or the descriptor's in-level route.
- * Returns 1 when the caller must not advance its own state machine this
- * tick — a speculative tick, or a tick that consumed a click. */
+/** @brief Run the per-tick front half: refresh the route, follow the dropdown, and drain a queued request.
+ *
+ * Queues a due scripted request first, so it lands where a click lands. The
+ * route is the descriptor's, with LEVELWARP_ROUTE_LEVEL vetoed while the free
+ * camera is engaged. Until the user picks a level and while no warp is in
+ * flight, the dropdown follows the current level. A queued request drains
+ * once no warp is in flight: the title route through game_set_skip_to_level,
+ * the in-level route through the descriptor's start_level_route, and with no
+ * route it is logged and dropped.
+ * @param cpu The guest CPU state.
+ * @return 1 when the caller must not advance its own state machine this
+ *         tick: a speculative tick, a tick holding a request behind an
+ *         in-flight warp, or a tick that drained a request; else 0. */
 int levelwarp_ui_tick(CPUState* cpu);

@@ -76,20 +76,42 @@ typedef struct freecam_game_desc {
 
 extern const freecam_game_desc freecam_desc;
 
-/* Per function-entry hook. Returns 1 (the recompiled body short-circuits)
- * when the free camera is engaged and `addr` is a frozen entry. For
- * `cam_follow` it first drives the camera in place of the follow logic. Call
- * from psx_override_dispatch_game. */
+/** @brief Decide at a guest function entry whether the free camera short-circuits it.
+ *
+ * Called from psx_override_dispatch_game. While disengaged nothing is frozen.
+ * player_update and the extra_freeze entries are frozen, only while
+ * level_live when freeze_only_when_live is set. At cam_follow outside a live
+ * level under freeze_only_when_live, the follow runs and the host pose is
+ * re-seeded at the next frozen entry. At cam_follow with a pending teleport
+ * request, the player moves to the camera, the free camera disengages, and
+ * the follow runs on the same tick. Otherwise cam_follow is replaced by the
+ * free-camera drive at the same tick point.
+ * @param cpu The guest CPU state.
+ * @param addr The entry address being dispatched.
+ * @return 1 when the recompiled body must return at once, else 0. */
 int freecam_should_freeze(CPUState* cpu, uint32_t addr);
 
-/* Scripted engage (OPENPETE_FREECAM / OPENPETE_FREECAM_POSE /
- * OPENPETE_FREECAM_PATH) once the level is live. Call once per tick from
- * game_on_frame_pre. */
+/** @brief Engage the free camera once from OPENPETE_FREECAM, OPENPETE_FREECAM_POSE or OPENPETE_FREECAM_PATH.
+ *
+ * Called once per tick from game_on_frame_pre; acts at most once per
+ * process. Waits while a scripted player placement is pending, then for the
+ * VBL OPENPETE_FREECAM_AT_VBL names when set, then for a live level; engaging
+ * during a load would freeze the player update while the level sets up. A
+ * timed engage passes a replaying bk2's refusal. A path, when given, is parsed
+ * and supersedes the pose; a pose is queued for the drive to stamp at the
+ * follow's tick point. Nothing happens when no variable is set or the free
+ * camera is already engaged. Interactive toggling is independent of this.
+ * @param cpu The guest CPU state. */
 void freecam_maybe_autoengage(CPUState* cpu);
 
-/* Scripted player placement (OPENPETE_PLAYER_POSE / --player-pose,
- * "x,y,z[,yaw]"): fires once, on the first tick `player_placeable` holds.
- * Call once per tick from game_on_frame_pre, before
- * freecam_maybe_autoengage so a freecam view of the placed player needs no
- * second run. */
+/** @brief Place the player once from OPENPETE_PLAYER_POSE ("x,y,z[,yaw]", set by --player-pose).
+ *
+ * Fires on the first tick player_placeable holds, then never again. A spec
+ * with other than three or four integers is logged and not applied. The
+ * placement writes the position and previous position, the facing when a yaw
+ * is given, cancels momentum, and re-seats the follow camera. Called once
+ * per tick from game_on_frame_pre before freecam_maybe_autoengage, which
+ * waits for it, so a free-camera view of the placed player needs no second
+ * run.
+ * @param cpu The guest CPU state. */
 void freecam_player_pose_maybe_apply(CPUState* cpu);

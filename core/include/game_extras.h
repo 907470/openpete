@@ -109,21 +109,36 @@ void     game_state_extra_load(const void* src, uint32_t size);
  * @return 1 when gameplay is live, else 0. */
 int game_is_gameplay_live(CPUState* cpu);
 
-/* --- Position probe (for the BK2 determinism harness) ---
- * Returns 0 and writes the player's world position into [out_x, out_y,
- * out_z] (engine units, signed) when game state is meaningful. Returns
- * non-zero to signal "not yet ready" (e.g. before BSS init runs over the
- * struct's RAM). The host loop calls this each yield post-fast-boot
- * when --position-log is on. */
+/* --- Position probe (for the BK2 determinism harness) --- */
+/** @brief Read the player's world position for the --position-log probe.
+ *
+ * The position is the first three int32 of the player state block, at
+ * game_layout.player.base + pos_off. The host loop calls it after each
+ * ticked iteration once fast boot has ended, since the block holds garbage
+ * before the EXE's BSS init.
+ * @param out_x Receives x in world units.
+ * @param out_y Receives y in world units.
+ * @param out_z Receives z in world units.
+ * @return 0 on success; non-zero, writing nothing, when guest RAM is absent
+ *         or the game has not located the player block. */
 int game_get_player_position(int32_t* out_x, int32_t* out_y, int32_t* out_z);
 
-/* --- Player pose (the exit pose line, --player-pose's paste-back) ---
- * Returns 0 and writes the position, the facing (4096 per turn; -1 when the
- * game has none located) and the level id (-1 when none located) while the
- * player is placeable: gameplay live, under pad control, camera in its
- * ordinary follow. -1: no level live. -2: live but not placeable (attract
- * demo, fly-in or exit sequence). Shared body in games/common/freecam_game.c
- * over the game's freecam descriptor. */
+/* --- Player pose (the exit pose line, --player-pose's paste-back) --- */
+/** @brief Read the player's position, facing and level id while the player is placeable.
+ *
+ * Placeable means gameplay live, the player under pad control, and the
+ * camera in its ordinary follow. The shared body in
+ * games/common/freecam_game.c reads the addresses of the game's freecam
+ * descriptor. Nothing is written on a non-zero return.
+ * @param cpu The guest CPU state.
+ * @param out_x Receives x in world units.
+ * @param out_y Receives y in world units.
+ * @param out_z Receives z in world units.
+ * @param out_yaw Receives the 12-bit facing (4096 per turn), or -1 when the
+ *        game has none located.
+ * @param out_level Receives the level id, or -1 when none located.
+ * @return 0 on success; -1 when no level is live; -2 when live but not
+ *         placeable (attract demo, fly-in or exit sequence). */
 int game_get_player_pose(CPUState* cpu, int32_t* out_x, int32_t* out_y, int32_t* out_z,
                          int32_t* out_yaw, int32_t* out_level);
 
