@@ -62,7 +62,7 @@ static int snd_init(void) {
     return s_inited;
 }
 
-/* Cached AL buffer for `key`, or 0 if this key has not been uploaded. */
+/** @brief Return the cached AL buffer for key, or 0 when key has not been uploaded. */
 static ALuint snd_cache_find(const char* key) {
     for (size_t i = 0; i < mod_fvec_count(&s_cache); i++) {
         const snd_cache_t* c = (const snd_cache_t*)mod_fvec_at(&s_cache, i);
@@ -71,8 +71,11 @@ static ALuint snd_cache_find(const char* key) {
     return 0;
 }
 
-/* Upload interleaved s16 PCM under `key`. Returns the AL buffer, 0 on
- * failure (logged). AL copies the samples, so the caller may free them. */
+/** @brief Upload interleaved s16 PCM to a new AL buffer cached under key, and return the buffer or 0 on failure (logged).
+ *
+ * A channels value other than 2 uploads as mono. AL copies the samples, so
+ * the caller may free them. The cache is created on first use; a failed
+ * cache push deletes the buffer. */
 static ALuint snd_cache_upload(const char* key, const int16_t* pcm,
                                uint32_t frame_count, int channels,
                                uint32_t sample_rate) {
@@ -115,8 +118,11 @@ static ALuint snd_buffer_for(const char* path) {
     return buf;
 }
 
-/* Play `buf` on the first free source; all busy = steal the oldest slot
- * (round-robin) — one-shots are short, the clank beats silence. */
+/** @brief Play buf once at gain on the first source not playing, and return 0.
+ *
+ * When every source is playing, a source is taken round-robin and
+ * restarted with buf. The gain is clamped to [0, 4]. While muted nothing
+ * plays and 0 is returned. */
 static int snd_play_buffer(ALuint buf, float gain) {
     if (s_muted) return 0; /* muted is a silence, not a failure */
     if (gain < 0.0f) gain = 0.0f;

@@ -63,7 +63,7 @@ static sp_entry* entry_at(int i) {
 static int src_count(void)   { return (int)mod_fvec_count(&s_srcs); }
 static int entry_count(void) { return (int)mod_fvec_count(&s_entries); }
 
-/* Append a source, or NULL when the allocation fails. */
+/** @brief Append a zeroed source slot, creating the table on first use; return it, or NULL when the allocation fails (logged). */
 static sp_source* src_push(void) {
     if (!s_srcs.elem_size)
         mod_fvec_init(&s_srcs, sizeof(sp_source), SP_SRC_INIT, "sfx_src",
@@ -73,7 +73,7 @@ static sp_source* src_push(void) {
     return s;
 }
 
-/* Append an entry, or NULL when the allocation fails. */
+/** @brief Append a zeroed entry slot, creating the table on first use; return it, or NULL when the allocation fails (logged). */
 static sp_entry* entry_push(void) {
     if (!s_entries.elem_size)
         mod_fvec_init(&s_entries, sizeof(sp_entry), SP_ENTRY_INIT,
@@ -170,9 +170,11 @@ static void entry_release(sp_entry* e)
 
 /* ── sources + scan ──────────────────────────────────────────────── */
 
-/* Insert or refresh the entry for `path` in source `si`. An unchanged
- * file keeps its decoded PCM; a changed one is released and re-read.
- * Returns the entry, or NULL when the table could not grow. */
+/** @brief Insert or refresh the entry for path in source si, and return it or NULL when the table cannot grow.
+ *
+ * An entry whose size and mtime match keeps its decoded PCM; a changed
+ * file's PCM is released and decoded again on its next match. The parsed
+ * identity, size and mtime are rewritten either way. */
 static sp_entry* entry_upsert(int si, const char* path, op_sfx_name id,
                               const struct stat* st)
 {
@@ -196,8 +198,12 @@ static sp_entry* entry_upsert(int si, const char* path, op_sfx_name id,
     return e;
 }
 
-/* Announce the earlier source `e` overrides, if any. Duplicate identity
- * across sources: later wins, both stay so a live disable falls back. */
+/** @brief Log the first entry of an earlier source that entry e of source si overrides, if any.
+ *
+ * Entries match on kind and on hash and pitch for the hash form, or on
+ * name for the symbolic form. Both entries stay in the table: the later
+ * source wins the match, and disabling its mod falls back to the earlier
+ * one. */
 static void note_override(int si, const sp_entry* e, const char* fname)
 {
     for (int i = 0; i < entry_count(); i++) {
@@ -304,6 +310,12 @@ static void rescan(void)
 
 /* ── identity cache ──────────────────────────────────────────────── */
 
+/** @brief Return the identity of the sample at SPU address addr, hashing it from SPU RAM on a cache miss, or NULL.
+ *
+ * The sample runs from addr through its first END-flagged 16-byte block,
+ * as measured by PsyX_SPUAL_SampleByteLength. NULL when addr is outside
+ * SPU RAM or no END flag is found. A miss takes the first invalid cache
+ * slot, else evicts slot addr % SP_CACHE_MAX. */
 static const sp_ident* ident_lookup(uint32_t addr)
 {
     for (int i = 0; i < SP_CACHE_MAX; i++)
@@ -326,18 +338,23 @@ static const sp_ident* ident_lookup(uint32_t addr)
 
 /* ── match ───────────────────────────────────────────────────────── */
 
+/** @brief Return 1 when entry e may serve: its owner (the registering mod, or its source's mod) is empty or enabled. */
 static int entry_enabled(const sp_entry* e)
 {
     const char* owner = e->src < 0 ? e->owner : src_at(e->src)->owner;
     return !owner[0] || openpete_mods_is_enabled(owner);
 }
 
-/* Tiers: a tagged file for exactly this def's base pitch (4) > the
- * untagged raw form (3) > a tagged file for another def sharing the
- * sample (2; it still plays correctly — see the rate folding in the
- * callback — the author just did not tune it for this role) > symbolic
- * slot name (1). Within the symbolic tier a code registration outranks
- * a file: the call is the more deliberate claim. */
+/** @brief Return the enabled entry that best matches the sample identity id keyed at addr, or NULL.
+ *
+ * Tiers, highest first: a tagged hash file for exactly this def's base
+ * pitch (4); the untagged hash form (3); a tagged hash file for another
+ * def sharing the sample (2), which still plays at the right pitch through
+ * the callback's rate folding; a symbolic entry whose name is one of the
+ * SoundTable slot names the name resolver returns for addr (1). Among
+ * equal tiers the later entry wins, except that a code registration is
+ * not displaced by a file. id may be NULL, which leaves only the symbolic
+ * tier. */
 static sp_entry* match(const sp_ident* id, uint32_t addr, int base_pitch)
 {
     sp_entry* best = NULL;

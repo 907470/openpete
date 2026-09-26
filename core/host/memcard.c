@@ -94,10 +94,12 @@ static int     s_mc_status = MC_SYNC_NOTHING;
 
 /* --- directory / image helpers -------------------------------------------- */
 
-/* Resolve the cards directory, creating it as needed. `cards` is a sibling
- * of savestate.c's `states` under whichever layout openpete_paths.h
- * resolved — the game folder for a portable install, the per-user state
- * directory otherwise. Returns 0 ok. */
+/** @brief Write the directory holding the card images into out, creating it as needed.
+ *
+ * Precedence: the --card-dir override, then the OPENPETE_CARD_DIR
+ * environment variable, then the `cards` leaf of openpete_paths_state_dir,
+ * a sibling of the save-states' `states` directory. The directory is made
+ * with its creation result ignored for the first two sources. */
 static int mc_resolve_card_dir(char* out, size_t out_size)
 {
     if (s_dir_override[0]) {
@@ -114,7 +116,10 @@ static int mc_resolve_card_dir(char* out, size_t out_size)
     return openpete_paths_state_dir("cards", out, out_size, 1);
 }
 
-/* Fill s_path[slot] with the image path for this slot. */
+/** @brief Write the slot's image path into s_path[slot] and return 0, or -1 when no card directory resolves.
+ *
+ * An explicit --card1/--card2 path is used as given; otherwise the path is
+ * card<slot+1>.mcr in the directory mc_resolve_card_dir returns. */
 static int mc_resolve_path(int slot)
 {
     if (s_path_override[slot][0]) {
@@ -165,6 +170,7 @@ static int mc_is_formatted(int slot)
 
 /* --- per-modset save safety ------------------------------------------ */
 
+/// @brief Write the slot's modset sidecar path, the image path with ".modset" appended, into out.
 static void mc_modset_sidecar_path(int slot, char* out, size_t cap) {
     snprintf(out, cap, "%s.modset", s_path[slot]);
 }
@@ -233,10 +239,13 @@ static void mc_modset_check_open(int slot) {
                    slot, tag, cur);
 }
 
-/* At each persisted write: birth-tag an untagged card under the active
- * modset (recorded truth, with a log); never silently CHANGE an
- * existing tag — a mismatched write warns once and leaves the tag, so
- * the mismatch keeps surfacing until explicitly adopted. */
+/** @brief Apply the modset tag rule to a write of the slot's card.
+ *
+ * A tag equal to the running modset tag is left alone. An untagged card
+ * written while mods are active is tagged with the running modset and
+ * logged. Any other mismatch, including a tagged card written with no mods
+ * active, leaves the tag unchanged and warns once per slot, so the
+ * mismatch keeps being reported until --adopt-saves retags the card. */
 static void mc_modset_on_write(int slot) {
     const char* cur = openpete_mods_modset_tag();
     const char* tag = s_ms_tag[slot];
@@ -482,7 +491,11 @@ int openpete_memcard_accept(int chan, int* out_cmds, int* out_rslt)
     return mc_probe(chan, MC_FUNC_ACCEPT, out_cmds, out_rslt);
 }
 
-/* Bounds-check a (block, ofs, bytes) range against the card image. */
+/** @brief Return 1 when bytes bytes at offset ofs of block block lie inside the card image, else 0.
+ *
+ * Negative ofs or bytes fail. The range is checked against the whole
+ * 128 KiB image, not the file's own blocks, so a range may run past the
+ * file's first block into the blocks that follow it in the image. */
 static int mc_range_ok(int block, int ofs, int bytes)
 {
     if (ofs < 0 || bytes < 0) return 0;

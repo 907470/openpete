@@ -29,36 +29,59 @@ extern "C" {
 void sfx_pack_init(void);
 void sfx_pack_set_dir_override(const char* dir); /* before init */
 
-/* One-shot substitution: the NEXT voice key-on plays `pcm` (mono s16 at
- * `rate`, pitch-pinned) instead of whatever sample it keyed, and the arm
- * is spent. Lets a feature make the game's own sound path emit a
- * different sample for one specific play, without stopping the voice,
- * the music or the SPU underneath it — the substitution is audible only,
- * exactly like a pack file. `pcm` must outlive the arm; the caller
- * disarms if the play it was aiming at never happens. An armed one-shot
- * takes precedence over any pack file for that key-on. */
+/** @brief Make the next voice key-on play pcm instead of the sample it keyed.
+ *
+ * The substitution is served by the sample-override callback at the
+ * voice's PCM upload, ahead of any pack file and whether or not a pack is
+ * installed; it plays at rate with the game's pitch writes ignored. As
+ * with a pack file only the audible buffer changes: the voice, the music
+ * and the SPU state run as stock. The arm is spent by the first
+ * non-speculative key-on; a speculative (runahead) key-on is served
+ * without spending it. pcm must outlive the arm, and the caller disarms
+ * with sfx_pack_disarm_oneshot when the targeted play does not happen. A
+ * call with NULL pcm, count <= 0 or rate 0 is ignored.
+ * @param pcm Mono s16 samples.
+ * @param count Sample count.
+ * @param rate Playback rate in Hz. */
 void sfx_pack_arm_oneshot(const int16_t* pcm, int count, unsigned int rate);
 void sfx_pack_disarm_oneshot(void);
 int  sfx_pack_oneshot_armed(void);
-/* Code-registered symbolic entry (the mod API's sfx_replace): what a
- * symbolic <name>.wav in the owner's assets/sfx would provide from disk,
- * supplied as an SPU-ADPCM body from memory and decoded here. Same
- * substitution point and the same audible-only contract as a file — the
- * SPU RAM image, the voice mirror and the one-shot end tick the guest
- * observes stay stock; a longer body rings out on an orphan source.
- * pitch (SPU units, 0x1000 = 44.1 kHz) pins the playback rate; 0 plays
- * the raw sample under the game's own pitch writes. Owner gating follows
- * the mod's enabled state at each key-on; re-registering (owner, name)
- * replaces. Sim thread. 0 ok, -1 refused (bad body, table full). */
+/** @brief Register a symbolic replacement from an in-memory SPU-ADPCM body (the mod API's sfx_replace).
+ *
+ * The entry provides what a symbolic <name>.wav in the owner's
+ * assets/sfx would provide from disk; the body is decoded here, up to its
+ * END flag. The substitution point and the audible-only contract are a
+ * file's: the SPU RAM image, the voice mirror and the one-shot end tick
+ * the guest observes stay stock, and a longer body rings out on an orphan
+ * source. Within the symbolic match tier a registration outranks a file.
+ * The entry serves only while its owner is enabled, checked at each
+ * key-on; an empty owner always serves. Registering the same (owner,
+ * name) again replaces the entry. Sim thread only.
+ * @param owner Registering mod id; NULL is the engine ("").
+ * @param name SoundTable slot name, under 64 bytes.
+ * @param adpcm SPU-ADPCM body.
+ * @param len Body bytes, 16 to 1 MiB.
+ * @param pitch SPU pitch (0x1000 = 44.1 kHz) that pins the playback rate
+ *        and ignores the game's pitch writes; 0 or less plays the sample at
+ *        44.1 kHz under the game's pitch writes.
+ * @return 0 on success; -1 for a bad name or length, a body that decodes
+ *         to no samples, or an allocation failure. */
 int  sfx_pack_register_symbolic_adpcm(const char* owner, const char* name,
                                       const void* adpcm, uint32_t len,
                                       int pitch);
 
-/* The level bank was (re)blasted: new generation — rescan sources so an
- * edited WAV lands on the next level entry, drop every cached identity
- * and the decoded PCM of files that changed. */
+/** @brief Start a new identity generation after the level bank blast.
+ *
+ * Drops every cached sample identity and rescans the sources, so an
+ * edited WAV takes effect at the next level entry: entries whose file
+ * vanished are dropped, entries whose file changed size or mtime release
+ * their decoded PCM, and unchanged entries keep it. */
 void sfx_pack_generation_bump(void);
-/* Any other SPU RAM write: forget identities inside [addr, addr+len). */
+/** @brief Forget every cached sample identity whose ADPCM bytes overlap [addr, addr + len).
+ *
+ * Called for any SPU RAM write other than the level bank blast.
+ * @param addr SPU RAM byte address of the write.
+ * @param len Bytes written. */
 void sfx_pack_invalidate_range(uint32_t addr, uint32_t len);
 
 /* Game hook: the base pitch the game will keep refreshing voice `voice`

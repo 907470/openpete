@@ -55,8 +55,11 @@ static void apply_gain(void)
               s.forced_gain >= 0.0f ? s.forced_gain : s.gain);
 }
 
-/* One manifest line: "<index> <relative path>", # comments. Shared by
- * the base-root parse (cached per track) and the per-mod-root probe. */
+/** @brief Parse one manifest line "<index> <relative path>" and return 1 when both fields parse.
+ *
+ * A line starting with '#' is a comment and returns 0. The path is one
+ * whitespace-free token of at most 1023 bytes; cap below 1024 returns 0.
+ * Shared by the base-root parse and the per-mod-root lookup. */
 static int manifest_line(const char* line, int* idx, char* rel, size_t cap)
 {
     if (line[0] == '#') return 0;

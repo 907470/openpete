@@ -44,8 +44,9 @@ int op_sfx_name_parse(const char* basename, op_sfx_name* out)
     }
 
     /* Hash form: find a 16-hex run that is either the whole stem, or
-     * follows a '-' and is followed by end / "-p<4 hex>". Scan from the
-     * end so a label containing hex-looking words cannot mislead. */
+     * follows a '-' and is followed by end / "-p<4 hex>". The scan runs
+     * from the start; a 16-hex word inside a label is skipped because the
+     * end-or-pitch test fails after it. */
     for (size_t i = 0; i + 16 <= stem_len; i++) {
         if (i > 0 && basename[i - 1] != '-') continue;
         if (!hex_run(basename + i, 16)) continue;
