@@ -381,11 +381,42 @@ def generated_tree_digest(game):
     return hsh.hexdigest()
 
 
+def resolve_disc_bin(cue_rel):
+    """The .bin the engine loads for a cue, repo-relative, or None: the
+    first FILE "..." line's path (relative to the cue's directory), then the
+    cue's own basename with .bin, then the lone .bin beside the cue (none
+    when there are several), the order openpete_psx_resolve_disc_bin in
+    core/psx/exe_loader.cpp tries."""
+    root = repo_root()
+    cue_dir = os.path.dirname(cue_rel)
+    order = []
+    with open(os.path.join(root, cue_rel), errors="replace") as fh:
+        for line in fh:
+            m = re.search(r'FILE[^"]*"([^"]+)"', line)
+            if m:
+                order.append(m.group(1) if os.path.isabs(m.group(1))
+                             else os.path.join(cue_dir, m.group(1)))
+                break
+    order.append(os.path.splitext(cue_rel)[0] + ".bin")
+    try:
+        bins = [f for f in os.listdir(os.path.join(root, cue_dir or "."))
+                if f.lower().endswith(".bin")]
+    except OSError:
+        bins = []
+    if len(bins) == 1:
+        order.append(os.path.join(cue_dir, bins[0]))
+    for c in order:
+        if os.path.isfile(os.path.join(root, c)):
+            return os.path.normpath(c)
+    return None
+
+
 def disc_hashes(game, preset):
-    """Content hashes of the disc .cue and the .bin it names, memoized
-    in build/<preset>/golden-disc-hash.tsv by path, size and mtime (the
-    memo decides only whether to re-hash). Returns {"disc-bin": ...,
-    "disc-cue": ...}, each `<sha256> <basename>` or `absent <path>`."""
+    """Content hashes of the disc .cue and the .bin the engine loads for
+    it (resolve_disc_bin), memoized in build/<preset>/golden-disc-hash.tsv
+    by path, size and mtime (the memo decides only whether to re-hash).
+    Returns {"disc-bin": ..., "disc-cue": ...}, each `<sha256> <repo-relative
+    path>` or `absent <path>`."""
     root = repo_root()
     cue = source_conf("games/%s/oracle.conf" % game, ("DISC",))["DISC"]
     out = {"disc-bin": "absent", "disc-cue": "absent"}
@@ -395,11 +426,7 @@ def disc_hashes(game, preset):
     if not os.path.isfile(cue_ap):
         out["disc-cue"] = "absent " + cue
         return out
-    bin_ap = None
-    with open(cue_ap, errors="replace") as fh:
-        m = re.search(r'FILE\s+"([^"]+)"', fh.read())
-    if m:
-        bin_ap = os.path.join(os.path.dirname(cue_ap), m.group(1))
+    bin_rel = resolve_disc_bin(cue)
     memo_path = os.path.join(root, "build", preset, "golden-disc-hash.tsv")
     memo = {}
     if os.path.isfile(memo_path):
@@ -419,11 +446,12 @@ def disc_hashes(game, preset):
             dirty = True
         return memo[key]
 
-    out["disc-cue"] = "%s %s" % (hashed(cue_ap), os.path.basename(cue_ap))
-    if bin_ap and os.path.isfile(bin_ap):
-        out["disc-bin"] = "%s %s" % (hashed(bin_ap), os.path.basename(bin_ap))
-    elif bin_ap:
-        out["disc-bin"] = "absent " + os.path.basename(bin_ap)
+    out["disc-cue"] = "%s %s" % (hashed(cue_ap), os.path.normpath(cue))
+    if bin_rel:
+        out["disc-bin"] = "%s %s" % (hashed(os.path.join(root, bin_rel)),
+                                     bin_rel)
+    else:
+        out["disc-bin"] = "absent (no .bin resolves for %s)" % cue
     if dirty and os.path.isdir(os.path.dirname(memo_path)):
         with open(memo_path, "w") as fh:
             for k, v in sorted(memo.items()):

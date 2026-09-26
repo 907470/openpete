@@ -70,7 +70,7 @@ ALL_ARG=()
 [[ $all -eq 1 ]] && ALL_ARG=(--all)
 before="$(git hash-object "$PG_BLESSED" 2>/dev/null)"
 python3 scripts/presentation-blessed.py promote "$GAME" --tier "$PG_TIER" \
-  "$CAND" "${ALL_ARG[@]}" "${opts[@]}" -- "${filters[@]}" || exit 1
+  "${opts[@]}" "${ALL_ARG[@]}" "$CAND" "${filters[@]}" || exit 1
 if [[ "$(git hash-object "$PG_BLESSED")" == "$before" ]]; then exit 0; fi
 
 git add -- "$PG_BLESSED"
