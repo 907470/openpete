@@ -16,16 +16,33 @@ baseline from the candidate (review the diff before committing it: a raised
 count is a spine regression, not a re-bless). The rewrite merges: the
 candidate's pairs replace their rows, rows the candidate does not hold stay.
 
+The baseline's counts come from the same capture as the verdict digests, so
+it carries the same `# key: value` environment header as blessed.tsv and a
+bless is refused under the same rule (scripts/presentation-blessed.py,
+Environment): a capture whose comparison surface differs from the header's,
+or a bless run outside the capture image, is refused unless
+--environment-accept "<reason>" admits it and the header records the reason.
+
 Exit: 0 = every pair within baseline, 1 = a pair exceeds it / an ident tile has
 no canon twin / no pair at all (a capture that produced no identity pair is
 vacuous, not clean), 64 = SKIP (PIL missing / candidate dir absent).
 """
-import argparse, os, sys
+import argparse, importlib.util, os, sys
 try:
     from PIL import Image, ImageChops
 except ImportError:
     print("[presentation-ident] SKIP: python3-PIL missing", file=sys.stderr)
     sys.exit(64)
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+_spec = importlib.util.spec_from_file_location(
+    "presentation_blessed",
+    os.path.join(HERE, "..", "..", "scripts", "presentation-blessed.py"))
+pb = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = pb
+_spec.loader.exec_module(pb)
+
+COLUMN_LINE = "# tile\tdiffering pixels vs the canon tile of the same frame (target 0)"
 
 GAMES = ("spyro-1", "spyro-2", "spyro-3")
 
@@ -56,6 +73,34 @@ def read_baseline(path):
     return base
 
 
+def read_header(path):
+    """The baseline's `# key: value` header lines as a dict, in order;
+    {} when the file is absent or carries none."""
+    header = {}
+    if os.path.isfile(path):
+        with open(path) as f:
+            for line in f:
+                if not line.startswith("#"):
+                    break
+                key, sep, val = line[1:].strip().partition(":")
+                if sep and "\t" not in key and key.replace("-", "").isalnum():
+                    header[key] = val.strip()
+    return header
+
+
+def write_baseline(path, header, rows):
+    """Write the header lines, the column line and one row per tile."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path + ".tmp", "w") as f:
+        f.write("# presentation identity-leg baseline\n")
+        for k, v in header.items():
+            f.write(f"# {k}: {v}\n")
+        f.write(COLUMN_LINE + "\n")
+        for name in sorted(rows):
+            f.write(f"{name}\t{rows[name]}\n")
+    os.replace(path + ".tmp", path)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("candidate", help="directory holding both the canon and ident -vk PNGs")
@@ -64,6 +109,8 @@ def main():
     ap.add_argument("--baseline", default=None,
                     help="baseline file (default: tests/golden/<game>/presentation/ident-baseline.tsv)")
     ap.add_argument("--bless", action="store_true", help="rewrite the baseline from this candidate")
+    ap.add_argument("--environment-accept", metavar="REASON",
+                    help="admit a bless outside the pinned capture environment; recorded in the header")
     args = ap.parse_args()
     if args.baseline is None:
         args.baseline = baseline_path(args.game)
@@ -99,17 +146,23 @@ def main():
           f"{len(counts) - exact} within baseline or exceeding, {fails} failing, "
           f"{total_px} differing pixels in total")
     if args.bless:
+        header = read_header(args.baseline)
+        env = pb.capture_environment(args.candidate)
+        if pb.environment_refused("presentation-ident",
+                                  pb.environment_problems(header, env),
+                                  args.environment_accept):
+            return 1
+        rec = pb.read_record(args.candidate)
+        header = pb.apply_environment(
+            {"game": args.game, "tier": rec.get("tier", "presentation")},
+            env, args.environment_accept or header.get("environment-accept"))
         # Merge: the candidate's pairs replace their rows and every other row
         # stays. A candidate captured with a row filter holds a few pairs, and
         # a whole-file rewrite from it would drop the rest of the corpus's
         # baseline.
         merged = dict(base)
         merged.update(counts)
-        os.makedirs(os.path.dirname(args.baseline), exist_ok=True)
-        with open(args.baseline, "w") as f:
-            f.write("# tile\tdiffering pixels vs the canon tile of the same frame (target 0)\n")
-            for name in sorted(merged):
-                f.write(f"{name}\t{merged[name]}\n")
+        write_baseline(args.baseline, header, merged)
         print(f"[presentation-ident] baseline written: {args.baseline} "
               f"({len(counts)} rows from this candidate, {len(merged) - len(counts)} kept)")
         return 0

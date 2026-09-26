@@ -369,25 +369,36 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
              COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_golden_png_guard.py)
     set_tests_properties(golden_png_guard_selftest PROPERTIES LABELS "fence")
 
+    # The image-side gates below (native_visual_regression, the presentation
+    # golden rows and the dragon tier) are defined over the pinned capture
+    # image (docs/linux-capture.Dockerfile). Run from a host build tree, each
+    # re-enters itself through scripts/golden-capture-container.sh, which
+    # rebuilds this source tree with the image's toolchain into
+    # build/linux-release-container, overriding the --build-dir passed here,
+    # and captures with that binary; a machine without podman/docker or the
+    # image reports SKIP (64). The rows share that one build directory, so they
+    # carry RUN_SERIAL (the wrapper's lock on it also covers a manual run
+    # beside ctest), and each timeout includes the in-image build (~4 min
+    # from fresh at nproc 16; priced at 10 min).
+
     # Native renderer visual-regression gate (W1.2). Renders the native `-vk`
-    # frame HEADLESS through a software rasterizer (surfaceless Vulkan, plan
-    # W1.1 — no GPU / no display) at a curated set of attract-demo scenes and
-    # compares each against a stored golden with a tolerance metric. The
-    # automated safety net for the derive-from-gamestate renderer: catches
-    # native regressions and the next undiscovered transient-state seam. Skips
-    # cleanly (exit 64) if the binary / disc / goldens / Vulkan loader / python
-    # +PIL are absent. See notes/plans/openpete-native-renderer.md (Wave 1)
-    # and tests/golden/spyro-1/native-vk/README.md.
+    # frame headless through the software rasterizer (surfaceless Vulkan, no
+    # GPU, no display) at seven attract-demo draw-ticks and compares each
+    # tile's verdict digest against its row of
+    # games/spyro-1/native-tick-corpus.manifest; the capture is
+    # byte-deterministic, so the compare is exact. See
+    # tests/golden/spyro-1/native-vk/README.md.
     add_test(NAME native_visual_regression
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_native_visual.sh
                      --build-dir=${CMAKE_BINARY_DIR})
     set_tests_properties(native_visual_regression PROPERTIES
         LABELS "slow;visual"
         RESOURCE_LOCK openpete_game
+        RUN_SERIAL TRUE
         # Headroom over the game's own --max-runtime-seconds 600 so the
         # in-loop self-limit always fires first (equal timeouts raced, and a
-        # hung game loop can't fire its own limit — the 2026-07-01 flake).
-        TIMEOUT 900
+        # hung game loop can't fire its own limit), plus the in-image build.
+        TIMEOUT 1500
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -395,41 +406,46 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # oracle). Captures the native -vk corpus (canonical tick-keyed +
     # deterministic alpha=0.5 intermediate) headless under llvmpipe and compares
     # each tile's verdict digest against its row of the committed manifest
-    # tests/golden/spyro-1/presentation/blessed.tsv; no reference image is read
+    # tests/golden/<game>/presentation/blessed.tsv; no reference image is read
     # on a pass. A clean tree is pixel-identical, so any divergence is a
-    # presentation regression the gameplay oracle can't see. Covers the fanned-out corpus: the 53 skip-to-level
-    # bk2s (capped to a few evenly-spaced samples each, 16:9, both LOD modes) plus
-    # the debug-freecam poses. Re-bless an intended change with
-    # tests/harness/check_presentation_golden.sh --bless; scope a fast subset with
-    # --filter=<bk2-substr>. Skips (exit 64) if the binary / disc / Vulkan loader /
-    # PIL are absent. Also runs the credits-roll interpolation leg
-    # (tests/harness/check_credits_interp.sh) so it cannot be skipped separately.
-    # The gate takes --game SLUG and derives binary, disc, bk2 dir, manifests and
-    # golden from it; a game is registered once it has a corpus and a golden
-    # (a run without them refuses as VACUOUS at zero captured rows).
-    # See notes/plans/openpete-presentation-golden.md.
+    # presentation regression the gameplay oracle can't see. Covers the
+    # fanned-out corpus: the skip-to-level bk2s (capped to a few evenly-spaced
+    # samples each, 16:9, both LOD modes) plus the debug-freecam poses. Re-bless
+    # an intended change with tests/harness/check_presentation_golden.sh --bless
+    # or a selective promote; scope a fast subset with --filter=<bk2-substr>.
+    # Skips (exit 64) if the capture image, binary, disc, Vulkan loader or PIL
+    # are absent. The spyro-1 row also runs the credits-roll interpolation leg
+    # (tests/harness/check_credits_interp.sh) so it cannot be skipped
+    # separately. The gate takes --game SLUG and derives binary, disc, bk2 dir,
+    # manifests and golden from it.
     add_test(NAME presentation_golden
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_presentation_golden.sh
                      --build-dir=${CMAKE_BINARY_DIR})
     set_tests_properties(presentation_golden PROPERTIES
         LABELS "slow;presentation"
         RESOURCE_LOCK openpete_game
-        # The whole corpus replays ~53 bk2 movies + the freecam poses (~35 min);
-        # generous headroom so a loaded host doesn't spuriously time out.
-        TIMEOUT 3600
+        RUN_SERIAL TRUE
+        # The whole corpus replays ~53 bk2 movies + the freecam poses (~35 min),
+        # plus the in-image build; headroom so a loaded host doesn't spuriously
+        # time out.
+        TIMEOUT 4200
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-    # Spyro 3: one bk2 row (games/spyro-3/corpus/presentation-corpus.manifest), the
-    # native terrain feeder's rows; the same gate, scoped by --game.
-    add_test(NAME presentation_golden_spyro3
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_presentation_golden.sh
-                     --game spyro-3 --build-dir=${CMAKE_BINARY_DIR})
-    set_tests_properties(presentation_golden_spyro3 PROPERTIES
-        LABELS "slow;presentation"
-        RESOURCE_LOCK openpete_game
-        TIMEOUT 1800
-        SKIP_RETURN_CODE 64
-        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    # Spyro 2 and Spyro 3: the same gate, scoped by --game, over each game's
+    # games/<game>/corpus manifests (~10 min each plus the in-image build).
+    foreach(_pg_game spyro2 spyro3)
+        string(REPLACE "spyro" "spyro-" _pg_slug ${_pg_game})
+        add_test(NAME presentation_golden_${_pg_game}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_presentation_golden.sh
+                         --game ${_pg_slug} --build-dir=${CMAKE_BINARY_DIR})
+        set_tests_properties(presentation_golden_${_pg_game} PROPERTIES
+            LABELS "slow;presentation"
+            RESOURCE_LOCK openpete_game
+            RUN_SERIAL TRUE
+            TIMEOUT 2400
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
     # Spyro 1 dragon-rescue tier (tests/harness/check_dragon_golden.sh): one
     # pose row per dragon rescue, sampled every 60 VBLs through the cutscene,
     # stock LOD, golden tests/golden/spyro-1/dragons. Labelled `dragons`, not
@@ -441,7 +457,8 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     set_tests_properties(dragon_golden_spyro-1 PROPERTIES
         LABELS "slow;dragons"
         RESOURCE_LOCK openpete_game
-        TIMEOUT 3600
+        RUN_SERIAL TRUE
+        TIMEOUT 4200
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 

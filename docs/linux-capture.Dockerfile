@@ -27,7 +27,7 @@
 # one resolved to is recorded by `dpkg-query -W` in the wrapper's
 # `identity` subcommand.
 #
-#   podman build -f docs/linux-capture.Dockerfile -t openpete-linux-capture .
+#   scripts/golden-capture-container.sh image     # this image, labelled with the recipe hash
 #   scripts/golden-capture-container.sh build     # engine, preset linux-release-container
 #   scripts/golden-capture-container.sh run -- tests/harness/check_presentation_golden.sh \
 #       --build-dir=build/linux-release-container --game spyro-1
@@ -65,5 +65,11 @@ ENV SDL_VIDEO_DRIVER=offscreen
 
 # The tree is bind-mounted and owned by the host uid.
 RUN git config --system --add safe.directory '*'
+
+# The image carries the recipe it was built from. A process that finds it is
+# inside the capture image, and its SHA-256 is the recipe hash a manifest
+# header records (scripts/presentation-blessed.py, Environment). The build
+# context is a directory holding this file alone, named Dockerfile.
+COPY Dockerfile /etc/openpete/capture.Dockerfile
 
 WORKDIR /src

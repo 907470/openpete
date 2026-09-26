@@ -933,7 +933,6 @@ core/rhi/rhi_vulkan.c	rhi_clear_depth	plain
 core/rhi/rhi_vulkan.c	rhi_clear_stencil	plain	
 core/rhi/rhi_vulkan.c	rhi_create	plain	
 core/rhi/rhi_vulkan.c	rhi_create_headless	plain	
-core/rhi/rhi_vulkan.c	rhi_create_impl	none	
 core/rhi/rhi_vulkan.c	rhi_create_pipeline	none	
 core/rhi/rhi_vulkan.c	rhi_create_pipeline_spv	plain	
 core/rhi/rhi_vulkan.c	rhi_create_render_target	plain	

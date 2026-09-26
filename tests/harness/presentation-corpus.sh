@@ -29,7 +29,10 @@
 #   PRESENTATION_LEG_TIMEOUT  seconds one capture process may run (default
 #                             300); the binary's own --max-runtime-seconds is
 #                             20 less. A tier whose rows run past the default
-#                             (a row reached through the ending chain) raises it.
+#                             (a row reached through the ending chain) raises it;
+#                             a single row raises its own bound with the launch
+#                             token PRESENTATION_LEG_TIMEOUT=N, which the harness
+#                             consumes and does not pass to the binary.
 #
 # Exit: 0 = all captures produced, 1 = a capture is missing (hard failure) or
 #           the corpus manifest is missing (the message names the path),
@@ -133,6 +136,15 @@ run_one() {  # name frame_limit leg flag targets lodmode freeze launch
   local name="$1" flim="$2" leg="$3" flag="$4" targets="$5" lod="$6" freeze="$7" launch="${8:-}"
   local bk2name; bk2name="$(row_bk2 "$name")"
   local -a ROW_ENV=() ROW_ARGS=(); pg_split_launch "$launch"
+  # A launch token PRESENTATION_LEG_TIMEOUT=N is the harness's, not the run's:
+  # it raises this row's leg bound to N seconds (never lowers it) and is not
+  # passed to the binary.
+  local leg_timeout="$LEG_TIMEOUT" e; local -a run_env=()
+  for e in "${ROW_ENV[@]}"; do
+    if [[ "$e" =~ ^PRESENTATION_LEG_TIMEOUT=([0-9]+)$ ]]; then
+      (( BASH_REMATCH[1] > leg_timeout )) && leg_timeout="${BASH_REMATCH[1]}"
+    else run_env+=("$e"); fi
+  done
   local tag; tag="$(lod_tag "$lod")"
   local out="$OUTDIR/${name}__${tag}${leg}__{n}.png"
   local log; log="$(mktemp)"
@@ -158,12 +170,13 @@ run_one() {  # name frame_limit leg flag targets lodmode freeze launch
   # to be independent of any openpete.toml on the machine capturing them.
   # The row's own launch env and arguments go last, on every leg of the row, so
   # a variant row differs from its plain twin by exactly that field.
-  env "${leg_env[@]}" "${ROW_ENV[@]}" timeout "$LEG_TIMEOUT" "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 --renderer vk \
+  env "${leg_env[@]}" "${run_env[@]}" timeout "$leg_timeout" "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 --renderer vk \
     --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" "${freeze_arg[@]}" "${PG_RUN_ARGS[@]}" \
     "${bk2_arg[@]}" --screenshot-native-only \
     "$flag" "$targets" --screenshot-output "$out" \
-    --frame-limit "$flim" --max-runtime-seconds "$((LEG_TIMEOUT - 20))" "${ROW_ARGS[@]}" >"$log" 2>&1
+    --frame-limit "$flim" --max-runtime-seconds "$((leg_timeout - 20))" "${ROW_ARGS[@]}" >"$log" 2>&1
   local rc=$?
+  pg_note_device "$log" "$OUTDIR"
   # Assert every requested target produced a -vk PNG (fail loudly, never silently
   # capture a partial corpus that would read as "all clean" downstream).
   local miss=0 t

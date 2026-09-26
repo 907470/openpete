@@ -127,6 +127,7 @@ run_leg() {  # slug frame_limit leg flag target lodmode level pose launch
     --screenshot-native-only "$flag" "$target" --screenshot-output "$out" \
     --frame-limit "$flim" --max-runtime-seconds 280 "${ROW_ARGS[@]}" >"$log" 2>&1
   local rc=$?
+  pg_note_device "$log" "$OUTDIR"
   if [[ ! -f "$OUTDIR/${slug}__${tag}${leg}__${target}-vk.png" ]]; then
     echo "  MISSING ${slug}__${tag}${leg}__${target}-vk.png (rc=$rc)"
     pg_keep_crash_log "$log" "$OUTDIR" "${slug}__${tag}${leg}" "$rc"

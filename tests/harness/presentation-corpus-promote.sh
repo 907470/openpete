@@ -22,7 +22,18 @@
 #             substring filter; only matching candidate tiles are promoted
 #     --all   promote every -vk tile in candidate_dir (full re-bless)
 #     --game  game slug (default spyro-1); selects the manifest
+#     --exclude=SUBSTR
+#             leave out tiles whose basename contains SUBSTR (repeatable), e.g.
+#             rows held unblessed under --all
+#     --environment-accept=REASON
+#             admit a capture environment that departs from the manifest
+#             header; the header records REASON
 #   PRESENTATION_TIER=dragons selects the dragon-rescue tier's manifest.
+#
+# The promote runs inside the capture image, on a candidate captured there:
+# the manifest header records the capture environment, and a promote whose
+# capture departs from it, or which runs outside the image, is refused
+# (scripts/presentation-blessed.py, Environment).
 #
 # After running, review `git -C <openpete> diff --cached` and commit deliberately.
 #
@@ -41,10 +52,12 @@ if [[ -z "$CAND" || ! -d "$CAND" ]]; then
   echo "usage: $0 <candidate_dir> [tile ...|--all]" >&2; exit 2; fi
 
 # --game and its value are consumed above; everything else is a tile filter.
-all=0; filters=(); skip=0
+all=0; filters=(); skip=0; opts=()
 for a in "$@"; do
   if   (( skip ));                then skip=0
   elif [[ "$a" == "--all" ]];     then all=1
+  elif [[ "$a" == --exclude=* ]]; then opts+=(--exclude "${a#--exclude=}")
+  elif [[ "$a" == --environment-accept=* ]]; then opts+=(--environment-accept "${a#--environment-accept=}")
   elif [[ "$a" == "--game" ]];    then skip=1
   elif [[ "$a" == --game=* ]];    then :
   else                                 filters+=("$a")
@@ -57,7 +70,7 @@ ALL_ARG=()
 [[ $all -eq 1 ]] && ALL_ARG=(--all)
 before="$(git hash-object "$PG_BLESSED" 2>/dev/null)"
 python3 scripts/presentation-blessed.py promote "$GAME" --tier "$PG_TIER" \
-  "$CAND" "${ALL_ARG[@]}" -- "${filters[@]}" || exit 1
+  "$CAND" "${ALL_ARG[@]}" "${opts[@]}" -- "${filters[@]}" || exit 1
 if [[ "$(git hash-object "$PG_BLESSED")" == "$before" ]]; then exit 0; fi
 
 git add -- "$PG_BLESSED"

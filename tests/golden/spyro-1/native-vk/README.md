@@ -1,64 +1,53 @@
-# Native `-vk` render golden archive (W1.2)
+# Native `-vk` draw-tick golden (W1.2)
 
-Frozen output of the **native Vulkan renderer** over a curated set of scenes,
-captured **headless** through a software rasterizer (surfaceless Vulkan / lavapipe
-— plan W1.1, no GPU and no display). These are the goldens for the
-`native_visual_regression` ctest (`tests/harness/check_native_visual.sh`).
+The golden of the `native_visual_regression` ctest
+(`tests/harness/check_native_visual.sh`): the native Vulkan renderer's output
+at seven attract-demo draw-ticks, captured headless through the software
+rasterizer (surfaceless Vulkan on lavapipe; no GPU, no display) inside the
+pinned capture image (`docs/linux-capture.Dockerfile`).
 
-## What these are (and aren't)
-
-- `demo-tick-<tick>-vk.png` is the native renderer's `native_rtt` readback
-  (`openpete_native_render_screenshot_all`, the `-vk` variant) at reference
-  resolution.
-- The gate is **native-vs-native**: the candidate is the same native pipeline on
-  the same software rasterizer as the golden, so a matching build reproduces them
-  ~exactly. The tolerance (`center_crop_diff.py` threshold + count) only absorbs
-  minor run-to-run FP/order noise — it is **not** a fidelity budget against
-  PsyCross. For native-vs-PsyCross *fidelity* comparison, use the
-  `../psycross-ref` archive; the live side-by-side and colour-diff renderer
-  modes that once served this were retired 2026-09-10.
-- Determinism note: these are captured under lavapipe with a fixed ICD. A large
-  GPU/driver change could perturb pixels; the gate forces the software
-  rasterizer (`VK_ICD_FILENAMES`/`MESA_LOADER_DRIVER_OVERRIDE=llvmpipe`) so it
-  stays deterministic in CI regardless of host GPU.
+The verdict is the digest manifest `games/spyro-1/native-tick-corpus.manifest`,
+in the `blessed.tsv` form of the presentation golden (tile, verdict digest,
+blessed revision, recomp input digest, generated-tree digest, origin; the
+header records the capture environment). No image is tracked here: the tiles
+live in the per-user reference store (`scripts/presentation-blessed.py`). The
+capture is byte-deterministic on the pinned rasterizer, so the compare is exact
+and carries no tolerance.
 
 ## Corpus
 
-Deterministic attract demo, the SAME sim moments as
-`../psycross-ref` so the two archives line up scene-for-scene — but keyed on
-**canonical draw-ticks** (`--screenshot-on-tick`), not VBL frames. Frame-keyed
-captures forked run-to-run because the VBL↔tick mapping drifts with host timing
-(CD-load VSync spins, audio backend — the 2026-07-01 gate flake); the Nth
-canonical present is the same sim moment in every run. The "frame" column is
-the psycross-ref frame number each tick corresponded to at the 2026-07-02
-capture (nominal — the mapping is host-timing-dependent, which is the point).
+Deterministic attract demo, keyed on canonical draw-ticks
+(`--screenshot-on-tick`), not VBLs: the VBL-to-tick mapping drifts with host
+timing (CD-load VSync spins, the audio backend), while the Nth canonical
+present is the same sim moment in every run.
 
-| File | Tick | ~Frame | Scene |
-|------|------|--------|-------|
-| `demo-tick-1001-vk.png`  | 1001  | 2000  | attract title screen |
-| `demo-tick-2194-vk.png`  | 2194  | 4000  | Artisans-style grass level |
-| `demo-tick-2694-vk.png`  | 2694  | 5000  | grass level, second view |
-| `demo-tick-4888-vk.png`  | 4888  | 9000  | orange/canyon level |
-| `demo-tick-7581-vk.png`  | 7581  | 14000 | blue/dusk level |
-| `demo-tick-9775-vk.png`  | 9775  | 18000 | dark-green level |
-| `demo-tick-10275-vk.png` | 10275 | 19000 | teal/water scene |
+| Row | Tick | Scene |
+|-----|------|-------|
+| `demo-tick-1001-vk.png`  | 1001  | attract title screen |
+| `demo-tick-2194-vk.png`  | 2194  | Artisans-style grass level |
+| `demo-tick-2694-vk.png`  | 2694  | grass level, second view |
+| `demo-tick-4888-vk.png`  | 4888  | orange/canyon level |
+| `demo-tick-7581-vk.png`  | 7581  | blue/dusk level |
+| `demo-tick-9775-vk.png`  | 9775  | dark-green level |
+| `demo-tick-10275-vk.png` | 10275 | teal/water scene |
 
-**`freeze-1185` is intentionally absent.** The pause-freeze backdrop is drawn
-from `frozen_tex`, which is captured only in the live-present path
-(`compose_variant`) — a no-op under `--headless` — so it cannot be reproduced by
-the headless screenshot path. Covering it needs a live window (WSLg / real GPU),
-out of scope for this CI gate.
+The pause-freeze backdrop is not a row. It is drawn from `frozen_tex`, which is
+captured only in the live-present path (`compose_variant`), a no-op under
+`--headless`, so the headless screenshot path cannot reproduce it.
 
-## Regenerate (re-bless)
-
-Re-bless only when a native-render change is intentional; review the diffs first.
+## Check and re-bless
 
 ```sh
-tests/harness/check_native_visual.sh --build-dir=build/linux-release --bless
+tests/harness/check_native_visual.sh        # enters the capture image itself
 ```
 
-Verify with a plain (compare) run before committing:
+Re-bless only an intended native-render change, after adjudicating the heat
+diffs the check writes. Promote the kept candidate inside the image; the
+promote rewrites the changed rows, files the tiles into the store and records
+the capture environment in the manifest header:
 
 ```sh
-tests/harness/check_native_visual.sh --build-dir=build/linux-release
+scripts/golden-capture-container.sh run -- \
+  python3 scripts/presentation-blessed.py promote spyro-1 --tier native-vk \
+  build/native-visual-candidate --all
 ```

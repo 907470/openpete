@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""Fence: no image is committed under tests/golden outside the tracked
-exception set.
+"""Fence: no image is committed under tests/golden.
 
-The presentation golden's verdict is a digest manifest (blessed.tsv); its
-tiles are generated and live in a per-user store, never in the repository,
-because committed PNGs do not delta and grow the history by every promoted
-tile. The files committed under tests/golden are `.tsv`, `.md` and the PNGs
-of the tracked exception set: golden directories no recipe reproduces, whose
-PNGs stay tracked as named exceptions.
+A golden's verdict is a digest manifest (blessed.tsv, or the native-tick
+manifest games/spyro-1/native-tick-corpus.manifest); its tiles are generated
+and live in a per-user store, never in the repository, because committed PNGs
+do not delta and grow the history by every promoted tile. The files committed
+under tests/golden are `.tsv` and `.md`. EXCEPTIONS names golden directories
+whose PNGs stay tracked because no recipe reproduces them; it is empty.
 
 Subject: the paths this commit stages as added, copied, modified or renamed
 (`git diff --cached --name-only --diff-filter=ACMR`), never the tree and
@@ -41,9 +40,9 @@ import subprocess
 import sys
 
 GOLDEN_ROOTS = ("tests/golden/",)
-# Directories whose PNGs stay tracked: the native renderer's tolerance golden
-# (tests/harness/check_native_visual.sh), which no recipe reproduces.
-EXCEPTIONS = ("tests/golden/spyro-1/native-vk/",)
+# Directories whose PNGs stay tracked because no recipe reproduces them. None:
+# every golden is a digest manifest whose tiles a capture regenerates.
+EXCEPTIONS = ()
 ALLOWED_SUFFIXES = (".tsv", ".md")
 ENV = "OPENPETE_GOLDEN_PNG_ACCEPT"
 MARKER = "golden-png-guard: intentional"
@@ -65,13 +64,13 @@ def normalize(path):
 
 def refused(path):
     """True when a path under a golden root is neither a .tsv, a .md, nor a
-    PNG of the tracked exception set."""
+    PNG of a tracked exception directory."""
     p = normalize(path)
     if not p.startswith(GOLDEN_ROOTS):
         return False
     if p.endswith(ALLOWED_SUFFIXES):
         return False
-    return not (p.endswith(".png") and p.startswith(EXCEPTIONS))
+    return not (p.endswith(".png") and EXCEPTIONS and p.startswith(EXCEPTIONS))
 
 
 def staged_paths():
@@ -139,8 +138,8 @@ def hook():
         return 1
     sys.stderr.write(
         "golden-png-guard: REFUSED  this commit stages %d file(s) under "
-        "tests/golden that are not .tsv, .md or a PNG of the tracked exception "
-        "set (%s):\n" % (len(bad), ", ".join(EXCEPTIONS)))
+        "tests/golden that are not .tsv or .md (tracked exception "
+        "directories: %s):\n" % (len(bad), ", ".join(EXCEPTIONS) or "none"))
     for p in bad[:20]:
         sys.stderr.write("    %s\n" % p)
     if len(bad) > 20:

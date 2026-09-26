@@ -42,6 +42,9 @@
 #             It holds a mode the plain row cannot reach — a renderer option, or
 #             an env knob a capture needs — so the row measures that mode's own
 #             pixels. Rows without the field launch byte-identically to before.
+#             PRESENTATION_LEG_TIMEOUT=N is the harness's token: it raises the
+#             row's per-leg bound to N seconds for a row that outruns the
+#             default under a full corpus's load, and is not passed to the run.
 #
 # The frame-limit and both sample grids are DERIVED from the bk2's own length (the
 # input-frame count in its Input Log.txt). The base grid steps by `interval` from
@@ -96,7 +99,7 @@ moving-terrain                           | 1700  | 100  |        | 2263,2438
 nestor                                   | 1700  | 100  |        | 1710,1875
 particle-circling-stars                  | 1700
 pause-menu-text-moby-swim                | 1700  | 100 | freeze
-pause-menu-text-moby-swim@vpint          | 1750  | 100  | freeze | 1750 | --vertex-precision integer OPENPETE_TERRAIN_CACHE_FORCE=1
+pause-menu-text-moby-swim@vpint          | 1750  | 100  | freeze | 1750 | --vertex-precision integer OPENPETE_TERRAIN_CACHE_FORCE=1 PRESENTATION_LEG_TIMEOUT=900
 peace-keepers-terrain-culling            | 1700  | 100  |        | 3230,3238
 portal-cyclorama-cull                    | 1700  | 100  |        | 2000,2156
 portal-ground-disocclusion               | 1700  | 100  |        | 2440,2444

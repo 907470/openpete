@@ -144,8 +144,11 @@ def main():
         print(f"[presentation-diff] FAIL: {err}")
         return 1
     rows = {r["tile"]: r for r in m.rows}
-    tdir = os.path.dirname(os.path.relpath(os.path.abspath(args.manifest),
-                                           pb.repo_root()))
+    rel = os.path.relpath(os.path.abspath(args.manifest), pb.repo_root())
+    # The directory the manifest's tiles were tracked in before the store held
+    # them; the native-tick manifest sits apart from its tiles.
+    tdir = (pb.tier_dir(args.game, "native-vk")
+            if rel == pb.NATIVE_TICK_MANIFEST else os.path.dirname(rel))
     size_set = {s for s in m.header.get("size", "").split(",") if "x" in s}
 
     cand = pb.list_tiles(args.candidate)

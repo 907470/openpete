@@ -55,6 +55,7 @@ class RuleTest(unittest.TestCase):
                   "tests/golden/spyro-1/native-vk-old/x.png",
                   "tests/golden/spyro-1/psycross-ref/a.png",
                   "tests/golden/spyro-1/native-vk/x.bmp",
+                  "tests/golden/spyro-1/native-vk/demo-100-vk.png",
                   "tests/golden/spyro-1/psxtrace-demo-20k.bin",
                   "./tests/golden/spyro-2/presentation/x.png",
                   "/abs/openpete/tests/golden/spyro-3/presentation/x.png"):
@@ -64,7 +65,6 @@ class RuleTest(unittest.TestCase):
         for p in ("tests/golden/spyro-1/presentation/blessed.tsv",
                   "tests/golden/spyro-1/presentation/ident-baseline.tsv",
                   "tests/golden/spyro-1/native-vk/README.md",
-                  "tests/golden/spyro-1/native-vk/demo-100-vk.png",
                   "tests/golden/spyro-1/dragons/blessed.tsv",
                   "docs/phase1/x.png", "games/spyro-1/a.png"):
             self.assertFalse(gpg.refused(p), p)
@@ -74,12 +74,12 @@ class GitGuardTest(unittest.TestCase):
     def test_add_refused(self):
         for cmd in ("git add tests/golden/spyro-1/presentation/a-vk.png",
                     "cd openpete && git add -f tests/golden/spyro-1/x.bmp",
-                    "git add scripts/a.py tests/golden/spyro-2/presentation/s/x.png"):
+                    "git add scripts/a.py tests/golden/spyro-2/presentation/s/x.png",
+                    "git add tests/golden/spyro-1/native-vk/demo-1-vk.png"):
             self.assertIsNotNone(gg.check(cmd), cmd)
 
     def test_add_passes(self):
         for cmd in ("git add tests/golden/spyro-1/presentation/blessed.tsv",
-                    "git add tests/golden/spyro-1/native-vk/demo-1-vk.png",
                     "git add scripts/presentation-blessed.py",
                     "git commit -m 'git add tests/golden/x.png'"):
             self.assertIsNone(gg.check(cmd), cmd)
@@ -206,13 +206,19 @@ class HookTest(unittest.TestCase):
         p = self.commit("mv", ok=False)
         self.assertIn("presentation-old/t0-vk.png", p.stderr)
 
-    def test_manifests_and_exception_set_pass(self):
+    def test_manifests_and_readme_pass(self):
         self.write("tests/golden/spyro-1/presentation/blessed.tsv", "x\n")
         self.write("tests/golden/spyro-1/presentation/ident-baseline.tsv", "y\n")
         self.write("tests/golden/spyro-1/native-vk/README.md", "z\n")
-        self.write("tests/golden/spyro-1/native-vk/demo-2-vk.png", TINY_PNG)
         self.git("add", "tests")
         self.commit("allowed", ok=True)
+
+    def test_no_exception_set(self):
+        rel = "tests/golden/spyro-1/native-vk/demo-2-vk.png"
+        self.write(rel, TINY_PNG)
+        self.git("add", "-f", rel)
+        p = self.commit("native-vk tile", ok=False)
+        self.assertIn(rel, p.stderr)
 
     def test_commit_without_images_passes_with_tiles_in_index(self):
         n = len(self.git("ls-files", "tests/golden/spyro-1/presentation")

@@ -29,6 +29,21 @@
 #                       re-baseline the identity leg, instead of gating
 #     --game            game slug (default spyro-1); binary, disc, bk2 dir,
 #                       manifests and golden all derive from it
+#     --environment-accept=REASON
+#                       with --bless: admit a capture environment that departs
+#                       from the manifest header (scripts/presentation-blessed.py,
+#                       Environment); the header records REASON
+#
+# The verdict is defined over the pinned capture image
+# (docs/linux-capture.Dockerfile). Run outside it, the script re-runs itself
+# inside the image through scripts/golden-capture-container.sh, which builds
+# the engine into build/linux-release-container with the image's toolchain
+# (any --build-dir= is replaced by that directory) and holds a lock on it; this
+# process stays the host-side parent for the whole run. Without a container
+# engine or a current image the run reports SKIP (64) and prints the manifest
+# header's environment beside this machine's. Inside the image every run prints
+# the same comparison for its capture; a bless or promote whose environment
+# departs from the header is refused.
 #
 # The candidate images are KEPT (build/presentation-candidate by default, or
 # PRESENTATION_GOLDEN_OUT) so a selective promote costs nothing: adjudicate the
@@ -78,16 +93,27 @@ FILTER=""           # bk2-name substring; default = the whole fanned-out corpus
 FREECAM_FILTER=""   # level substring for the freecam corpus; default = all poses
 BLESS=0
 BUILD_ARG=""
+ENV_ACCEPT=""
 for a in "$@"; do case "$a" in
   --bless) BLESS=1;;
   --filter=*) FILTER="${a#--filter=}";;
   --freecam-filter=*) FREECAM_FILTER="${a#--freecam-filter=}";;
   --build-dir=*) BUILD_ARG="$a";;
+  --environment-accept=*) ENV_ACCEPT="${a#--environment-accept=}";;
 esac; done
 GAME="$(pg_parse_game "$@")" || exit 64
 BUILD_DIR="build/linux-release"
 [[ -n "$BUILD_ARG" ]] && BUILD_DIR="${BUILD_ARG#--build-dir=}"
 PG_BUILD_DIR="$BUILD_DIR" pg_resolve "$GAME" || exit 64
+if ! pg_in_capture_image; then
+  pg_enter_capture_image tests/harness/check_presentation_golden.sh "$@"
+  rc=$?
+  if [[ $rc -eq 64 ]]; then
+    echo "[presentation-golden] SKIP: no verdict outside the capture image; environment for information:"
+    python3 scripts/presentation-blessed.py environment "$GAME" --tier "$PG_TIER" --build-dir "$BUILD_DIR"
+  fi
+  exit $rc
+fi
 GAME_ARG="--game=$GAME"
 TIER_LABEL="" TIER_ENV=""
 [[ "$PG_TIER" != "presentation" ]] && TIER_LABEL=" $PG_TIER" TIER_ENV="PRESENTATION_TIER=$PG_TIER "
@@ -107,7 +133,7 @@ pg_manifest_dry_run_exit
 OUT="${PRESENTATION_GOLDEN_OUT:-$PG_CAND_DIR}"
 rm -rf "$OUT"; mkdir -p "$OUT"
 if [[ "${PRESENTATION_GOLDEN_KEEP:-1}" == "0" ]]; then trap 'rm -rf "$OUT"' EXIT; fi
-python3 scripts/presentation-blessed.py capture-record "$GAME" --tier "$PG_TIER" "$OUT" \
+python3 scripts/presentation-blessed.py capture-record "$GAME" --tier "$PG_TIER" "$OUT" --build-dir "$BUILD_DIR" \
   || { echo "[presentation-golden] FAIL: capture record not written"; exit 1; }
 
 # Capture at the compiled DEFAULT depth encoding (now screen-affine), so the
@@ -154,10 +180,13 @@ fi
 # A refused promote stops the bless before the identity baseline is rewritten,
 # so the baseline is never re-blessed against a manifest the promote did not
 # write.
+ACCEPT_ARG=()
+[[ -n "$ENV_ACCEPT" ]] && ACCEPT_ARG=("--environment-accept=$ENV_ACCEPT")
+python3 scripts/presentation-blessed.py environment "$GAME" --tier "$PG_TIER" --candidate "$OUT"
 if [[ $BLESS -eq 1 ]]; then
-  PRESENTATION_TIER="$PG_TIER" tests/harness/presentation-corpus-promote.sh "$OUT" --all "$GAME_ARG" \
+  PRESENTATION_TIER="$PG_TIER" tests/harness/presentation-corpus-promote.sh "$OUT" --all "$GAME_ARG" "${ACCEPT_ARG[@]}" \
     || { echo "[presentation-golden] FAIL: promote refused; identity baseline left as is"; exit 1; }
-  python3 tests/harness/presentation-ident-check.py "$OUT" --bless --game "$GAME" --baseline "$PG_IDENT_BASELINE" || exit 1
+  python3 tests/harness/presentation-ident-check.py "$OUT" --bless --game "$GAME" --baseline "$PG_IDENT_BASELINE" "${ACCEPT_ARG[@]}" || exit 1
   git add -- "$PG_IDENT_BASELINE"
   echo "[presentation-golden] blessed — review 'git diff --cached --stat' and commit"
   exit 0

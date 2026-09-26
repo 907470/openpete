@@ -111,6 +111,43 @@ pg_resolve() {
   return 0
 }
 
+# ---- capture image ---------------------------------------------------------
+#
+# A presentation verdict is defined over the pinned capture image
+# (docs/linux-capture.Dockerfile), which carries its recipe at
+# PG_IMAGE_RECIPE; pg_in_capture_image is true inside it.
+#
+# pg_enter_capture_image SCRIPT ARGS... runs SCRIPT with ARGS inside the image
+# through `scripts/golden-capture-container.sh gate`, which builds the engine
+# into PG_CONTAINER_BUILD_DIR with the image's toolchain under an exclusive
+# lock, then runs SCRIPT there; a --build-dir= argument is replaced by
+# PG_CONTAINER_BUILD_DIR, since the host's build tree holds host-compiled
+# objects. The caller stays the host-side parent for the whole run, so
+# the build lock sees its gate in flight. Returns the inner
+# run's status; 64 (SKIP) when no container engine or no current image exists.
+PG_IMAGE_RECIPE=/etc/openpete/capture.Dockerfile
+PG_CONTAINER_BUILD_DIR=build/linux-release-container
+
+pg_in_capture_image() { [[ -f "$PG_IMAGE_RECIPE" ]]; }
+
+pg_enter_capture_image() {  # script args...
+  local script="$1" a; shift
+  local -a args=()
+  for a in "$@"; do [[ "$a" == --build-dir=* ]] || args+=("$a"); done
+  scripts/golden-capture-container.sh gate -- "$script" \
+    "--build-dir=$PG_CONTAINER_BUILD_DIR" "${args[@]}"
+}
+
+# Append the engine's Vulkan device line (`[rhi/vk] device='<name>' ...
+# driver-info='<info>'`) from a capture log to OUTDIR/capture-device.txt, from
+# which scripts/presentation-blessed.py reads the Mesa and device strings a
+# manifest header records. args: log outdir
+pg_note_device() {
+  grep -a -o "\[rhi/vk\] device='[^']*'.* driver-info='[^']*'" "$1" 2>/dev/null \
+    | head -1 >>"$2/capture-device.txt"
+  return 0
+}
+
 # ---- corpus manifests ------------------------------------------------------
 #
 # A corpus manifest lists the rows a harness runs. Each game's corpus

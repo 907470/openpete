@@ -53,19 +53,35 @@ Subcommands:
   golden-at <rev> [<game>] [<tile-filter>] [--out DIR] [--materialize]
                                   resolve a revision's rows: store, then the
                                   archive, then the materialize price
-  capture-record <game> [--tier T] <candidate>
+  capture-record <game> [--tier T] <candidate> [--build-dir DIR]
                                   write capture-record.txt into a candidate
                                   directory: the working copy's tree over the
-                                  build's source roots and the recomp identity
+                                  build's source roots, the recomp identity and
+                                  the capture environment
+  environment <game> [--tier T] [--candidate DIR] [--strict]
+                                  print the header's comparison surface beside
+                                  a candidate's (or this process's) environment
   census <game> [--tier T] [--candidate DIR]
                                   print `rows=N matched=M`: manifest rows, and
                                   candidate tiles naming a row
   promote <game> [--tier T] <candidate> [--all | <tile-filter>...]
+          [--exclude SUBSTR]... [--create] [--environment-accept REASON]
                                   rewrite the rows of changed candidate tiles
                                   and file them into the store; the blessed
                                   revision is HEAD when HEAD's tree equals the
                                   record's source tree, else a refusal naming
-                                  the first differing path
+                                  the first differing path; refused outside
+                                  the pinned capture environment (Environment)
+
+Environment: each header records the capture environment. The comparison
+surface (SURFACE_KEYS) is the hash of the image recipe the capture ran in, the
+Mesa driver version and the device name from the engine's Vulkan device line,
+the compiler version the build prints, the preset, and the disc .bin and .cue
+hashes; the image digest and the Vulkan loader version are recorded and not
+compared. A promote is refused when the candidate's surface differs from the
+header's, when a surface field was not measured, or when the promote itself
+runs outside the capture image; --environment-accept "<reason>" admits the
+departure and writes the reason into the header.
 
 Exit: 0 success; 1 mismatch, refusal or missing input; 2 usage.
 """
@@ -88,7 +104,10 @@ except ModuleNotFoundError:
     sys.exit(1)
 
 GAMES = ("spyro-1", "spyro-2", "spyro-3")
-TIERS = {"presentation": GAMES, "dragons": ("spyro-1",)}
+TIERS = {"presentation": GAMES, "dragons": ("spyro-1",),
+         "native-vk": ("spyro-1",)}
+# The native-tick tier's manifest sits beside its corpus, outside tests/golden.
+NATIVE_TICK_MANIFEST = "games/spyro-1/native-tick-corpus.manifest"
 COLUMNS = ("tile", "digest", "revision", "recomp_input", "generated_tree",
            "origin")
 ORIGINS = ("mapped", "archive-only")
@@ -97,10 +116,27 @@ BLOB_RE = re.compile(r"^([0-9a-f]{64})\.png$")
 HEADER_TITLE = "presentation golden reference manifest"
 DIGEST_RULE = ('sha256(b"RGB\\n" + width + b"\\n" + height + b"\\n" + '
                'RGB bytes in scanline order), PIL convert("RGB")')
-# Environment fields of the capture surface; values not yet measurable in this
-# environment are written `unrecorded` and set with --env key=value.
+# Environment fields of a manifest header; a value not measured is written
+# `unrecorded`. SURFACE_KEYS are the comparison surface: a bless or promote
+# whose capture differs from the header in one of them is refused unless
+# --environment-accept records the reason. image-digest and libvulkan are
+# recorded and never compared: two builds of one recipe produce different
+# image digests, and the loader version is fixed by the recipe hash.
 ENV_KEYS = ("recipe-hash", "mesa", "device", "compiler", "preset",
-            "image-digest")
+            "image-digest", "libvulkan")
+SURFACE_KEYS = ("recipe-hash", "mesa", "device", "compiler", "preset",
+                "disc-bin", "disc-cue")
+# The capture image carries the recipe it was built from at IMAGE_RECIPE
+# (docs/linux-capture.Dockerfile copies itself there), so a process can tell
+# whether it runs inside the image and which recipe built it.
+RECIPE = "docs/linux-capture.Dockerfile"
+IMAGE_RECIPE = "/etc/openpete/capture.Dockerfile"
+OUTSIDE_IMAGE = "none (outside the capture image)"
+# The capture legs append the engine's Vulkan device line
+# (`[rhi/vk] device='<name>' ... driver-info='<info>'`) to this file in the
+# candidate; for lavapipe the driver info is the Mesa version string.
+DEVICE_NAME = "capture-device.txt"
+DEVICE_RE = re.compile(r"device='([^']*)'.*?\bdriver-info='([^']*)'")
 # Materialize price components (the materialize rebuilds the blessed revision
 # and re-captures each corpus row a divergent tile belongs to): worktree,
 # decomp re-make, PSXRecomp and regens ~1 min; the in-image configure and
@@ -191,7 +227,10 @@ def tier_dir(game, tier):
 
 
 def manifest_path(game, tier):
-    """Repo-relative blessed.tsv of a game's tier."""
+    """Repo-relative blessed.tsv of a game's tier; the native-tick tier's
+    manifest is NATIVE_TICK_MANIFEST."""
+    if tier == "native-vk":
+        return NATIVE_TICK_MANIFEST
     return tier_dir(game, tier) + "/blessed.tsv"
 
 
@@ -207,7 +246,7 @@ def reference_manifests(game):
         out.append((manifest_path(game, "dragons"), "dragons",
                     tier_dir(game, "dragons")))
     if game == "spyro-1":
-        out.append(("games/spyro-1/native-tick-corpus.manifest", "native-vk",
+        out.append((NATIVE_TICK_MANIFEST, "native-vk",
                     tier_dir(game, "native-vk")))
     return out
 
@@ -424,6 +463,137 @@ def build_header(game, tier, sizes, preset, env_over, accept):
     hdr.update(disc_hashes(game, preset))
     hdr["environment-accept"] = accept or "none"
     return hdr
+
+
+# ---- capture environment -----------------------------------------------------
+
+def recipe_hash_here():
+    """SHA-256 of the recipe the running capture image was built from, or
+    OUTSIDE_IMAGE when this process does not run inside the image."""
+    if not os.path.isfile(IMAGE_RECIPE):
+        return OUTSIDE_IMAGE
+    return sha256_file(IMAGE_RECIPE)
+
+
+def package_version(pkg):
+    """The installed version of a Debian package; `unrecorded` when
+    dpkg-query cannot name it."""
+    try:
+        p = subprocess.run(["dpkg-query", "-W", "-f", "${Version}", pkg],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return "unrecorded"
+    v = p.stdout.strip()
+    return v if p.returncode == 0 and v else "unrecorded"
+
+
+def preset_of(build_dir):
+    """The preset a build directory belongs to: its basename
+    (build/<preset>)."""
+    return os.path.basename(os.path.normpath(build_dir))
+
+
+def environment_here(game, preset):
+    """The capture environment measurable without running the engine: the
+    image's recipe hash and digest, the Vulkan loader version, the compiler
+    of the preset's build directory, the preset and the disc hashes. The
+    Mesa and device strings come from the engine's log (device_record)."""
+    env = {"recipe-hash": recipe_hash_here(),
+           "image-digest": os.environ.get("OPENPETE_CAPTURE_IMAGE_DIGEST")
+           or "unrecorded",
+           "libvulkan": package_version("libvulkan1"),
+           "compiler": compiler_version(preset), "preset": preset}
+    env.update(disc_hashes(game, preset))
+    return env
+
+
+def device_record(cand):
+    """(mesa, device) from a candidate's DEVICE_NAME file: the driver
+    info and the device name of the engine's Vulkan device line, each
+    `unrecorded` when no leg reported one and every distinct value joined
+    with ` | ` when the legs disagree."""
+    names, drivers = set(), set()
+    try:
+        with open(os.path.join(cand, DEVICE_NAME), errors="replace") as fh:
+            for line in fh:
+                m = DEVICE_RE.search(line)
+                if m:
+                    names.add(m.group(1))
+                    drivers.add(m.group(2))
+    except OSError:
+        pass
+    return (" | ".join(sorted(drivers)) or "unrecorded",
+            " | ".join(sorted(names)) or "unrecorded")
+
+
+def capture_environment(cand):
+    """The environment a candidate was captured in: the record's fields
+    (written by capture-record inside the capture run) and the device
+    line the capture legs logged."""
+    rec = read_record(cand)
+    env = {k: rec.get(k, "unrecorded")
+           for k in ENV_KEYS + ("disc-bin", "disc-cue")}
+    env["mesa"], env["device"] = device_record(cand)
+    return env
+
+
+def environment_problems(header, env):
+    """Why a bless of a capture taken in `env` against a manifest carrying
+    `header` departs from the pinned environment, as (field, header value,
+    capture value) triples: a surface field that differs, a surface field
+    the capture did not measure, and a blessing process running outside
+    the capture image. Empty when the bless may proceed."""
+    out = []
+    for k in SURFACE_KEYS:
+        h, c = header.get(k, "unrecorded"), env.get(k, "unrecorded")
+        if c == "unrecorded" or h != c:
+            out.append((k, h, c))
+    here = recipe_hash_here()
+    if here == OUTSIDE_IMAGE:
+        out.append(("blessing-process", "inside the capture image", here))
+    return out
+
+
+def environment_refused(who, problems, accept):
+    """Print the environment refusal for `problems` and return True, or
+    return False when there are none or --environment-accept admits
+    them (the admission is printed)."""
+    if not problems:
+        return False
+    if accept:
+        print("[%s] environment departs from the manifest header; admitted by "
+              "--environment-accept %r:" % (who, accept))
+        for k, h, c in problems:
+            print("    %s: header=%s capture=%s" % (k, h, c))
+        return False
+    print("[%s] REFUSED: the capture environment is not the pinned one "
+          "recorded in the manifest header:" % who, file=sys.stderr)
+    for k, h, c in problems:
+        print("    %s: header=%s capture=%s" % (k, h, c), file=sys.stderr)
+    print("  Capture and bless inside the capture image "
+          "(scripts/golden-capture-container.sh); a deliberate migration passes "
+          "--environment-accept \"<reason>\", which writes the reason into the "
+          "header.", file=sys.stderr)
+    return True
+
+
+def apply_environment(header, env, accept):
+    """A copy of `header` carrying `env`'s environment fields and disc
+    hashes; environment-accept becomes `accept` when given and keeps its
+    value otherwise."""
+    tail = ENV_KEYS + ("disc-bin", "disc-cue", "environment-accept")
+    out = {k: v for k, v in header.items() if k not in tail}
+    for k in ENV_KEYS + ("disc-bin", "disc-cue"):
+        out[k] = env.get(k, "unrecorded")
+    out["environment-accept"] = (" ".join(accept.split()) if accept
+                                 else header.get("environment-accept", "none"))
+    return out
+
+
+def env_header_changed(header, env):
+    """True when `header`'s environment fields differ from `env`'s."""
+    return any(header.get(k, "unrecorded") != env.get(k, "unrecorded")
+               for k in ENV_KEYS + ("disc-bin", "disc-cue"))
 
 
 # ---- store -----------------------------------------------------------------
@@ -1086,6 +1256,7 @@ def cmd_capture_record(a):
            "source-tree": source_tree(),
            "recomp-input": recomp_input_digest(a.game),
            "generated-tree": generated_tree_digest(a.game)}
+    rec.update(environment_here(a.game, preset_of(a.build_dir)))
     os.makedirs(a.candidate, exist_ok=True)
     path = os.path.join(a.candidate, RECORD_NAME)
     with open(path + ".tmp", "w") as fh:
@@ -1095,6 +1266,38 @@ def cmd_capture_record(a):
     print("[presentation-blessed] capture record %s: source-tree %s"
           % (path, rec["source-tree"][:12]))
     return 0
+
+
+def cmd_environment(a):
+    """Print the manifest header's comparison surface beside the capture
+    environment: a candidate's record when one is named, else what this
+    process measures (no Mesa or device string without a capture). Exit 1
+    on a difference under --strict, else 0."""
+    try:
+        header = load_manifest(a.game, a.tier).header
+    except (OSError, ValueError) as e:
+        print("[presentation-env] %s" % e, file=sys.stderr)
+        header = {}
+    if a.candidate:
+        env, what = capture_environment(a.candidate), "capture"
+    else:
+        env = environment_here(a.game, preset_of(a.build_dir))
+        env["mesa"] = env["device"] = "unmeasured (no capture)"
+        what = "here"
+    diff = [k for k in SURFACE_KEYS
+            if header.get(k, "unrecorded") != env.get(k, "unrecorded")]
+    for k in SURFACE_KEYS:
+        print("  %s %s: header=%s %s=%s" % ("ENV-MISMATCH" if k in diff
+                                            else "env-match   ", k,
+                                            header.get(k, "unrecorded"), what,
+                                            env.get(k, "unrecorded")))
+    for k in ("image-digest", "libvulkan"):
+        print("  env-recorded %s: header=%s %s=%s" % (
+            k, header.get(k, "unrecorded"), what, env.get(k, "unrecorded")))
+    print("[presentation-env] %s %s: %s" % (
+        a.game, a.tier, "environment equals the manifest header" if not diff
+        else "%d surface field(s) differ from the manifest header" % len(diff)))
+    return 1 if diff and a.strict else 0
 
 
 def cmd_census(a):
@@ -1141,34 +1344,58 @@ def blessed_revision(rec):
     return git("rev-parse", "HEAD").strip(), None
 
 
-def promote_select(cand, all_tiles, filters):
+def promote_select(cand, all_tiles, filters, excludes=()):
     """Candidate tiles a promote considers: every golden tile under
-    --all, else those whose basename contains a filter."""
+    --all, else those whose basename contains a filter; a tile whose
+    basename contains an --exclude substring is left out either way."""
     tiles = list_tiles(cand)
-    if all_tiles:
-        return tiles
-    return [t for t in tiles if any(f and f in t for f in filters)]
+    if not all_tiles:
+        tiles = [t for t in tiles if any(f and f in t for f in filters)]
+    return [t for t in tiles if not any(x and x in t for x in excludes)]
+
+
+def promote_manifest(a, rec):
+    """The manifest a promote rewrites: the tier's, or under --create an
+    empty one with a fresh header when the file is absent. None on a
+    refusal (printed)."""
+    if a.game != rec.get("game", a.game) or a.tier != rec.get("tier", a.tier):
+        print("[presentation-promote] the candidate was captured for %s/%s, "
+              "not %s/%s" % (rec.get("game"), rec.get("tier"), a.game, a.tier),
+              file=sys.stderr)
+        return None
+    path = os.path.join(repo_root(), manifest_path(a.game, a.tier))
+    if a.create and not os.path.isfile(path):
+        return Manifest(build_header(a.game, a.tier, set(),
+                                     rec.get("preset", "unrecorded"), {},
+                                     None), [])
+    try:
+        return load_manifest(a.game, a.tier)
+    except (OSError, ValueError) as e:
+        print("[presentation-promote] %s" % e, file=sys.stderr)
+        return None
 
 
 def cmd_promote(a):
     """Rewrite the manifest rows of promoted candidate tiles (digest,
     blessed revision, recomp identity, origin) and file the tiles into the
     store. A tile whose digest equals its row's is unchanged and keeps its
-    row. The header is kept, its size list extended by any new size."""
+    row. The header keeps its fields, its size list extended by any new
+    size and its environment fields set from the capture's. A capture
+    whose comparison surface departs from the header's, or a promote run
+    outside the capture image, is refused unless --environment-accept
+    names the reason, which the header records."""
     root = repo_root()
     rec = read_record(a.candidate)
-    if rec.get("game", a.game) != a.game or rec.get("tier", a.tier) != a.tier:
-        print("[presentation-promote] the candidate was captured for %s/%s, "
-              "not %s/%s" % (rec.get("game"), rec.get("tier"), a.game, a.tier),
-              file=sys.stderr)
+    m = promote_manifest(a, rec)
+    if m is None:
         return 1
-    try:
-        m = load_manifest(a.game, a.tier)
-    except (OSError, ValueError) as e:
-        print("[presentation-promote] %s" % e, file=sys.stderr)
+    env = capture_environment(a.candidate)
+    if environment_refused("presentation-promote",
+                           environment_problems(m.header, env),
+                           a.environment_accept):
         return 1
     rows = {r["tile"]: r for r in m.rows}
-    sel = promote_select(a.candidate, a.all, a.filters)
+    sel = promote_select(a.candidate, a.all, a.filters, a.exclude or ())
     paths = [os.path.join(a.candidate, t) for t in sel]
     digs = digest_files(paths)
     bad = [p for p in paths if digs[p] is None]
@@ -1178,16 +1405,22 @@ def cmd_promote(a):
         return 1
     changed = [(t, p) for t, p in zip(sel, paths)
                if t not in rows or rows[t]["digest"] != digs[p][0]]
-    if not changed:
+    header_moves = (env_header_changed(m.header, env) or
+                    (a.environment_accept and
+                     m.header.get("environment-accept") != " ".join(
+                         a.environment_accept.split())))
+    if not changed and not header_moves:
         print("[presentation-promote] nothing to promote (no matching / "
               "changed tiles)")
         return 0
-    rev, why = blessed_revision(rec)
-    if rev is None:
-        print("[presentation-promote] REFUSED: %s; commit the capture's "
-              "sources, rebuild and recapture, then promote" % why,
-              file=sys.stderr)
-        return 1
+    rev = None
+    if changed:
+        rev, why = blessed_revision(rec)
+        if rev is None:
+            print("[presentation-promote] REFUSED: %s; commit the capture's "
+                  "sources, rebuild and recapture, then promote" % why,
+                  file=sys.stderr)
+            return 1
     sizes = {s for s in m.header.get("size", "").split(",")
              if re.match(r"^\d+x\d+$", s)}
     for t, p in changed:
@@ -1200,14 +1433,17 @@ def cmd_promote(a):
         store_put(p, digs[p][0])
     m.header["size"] = ",".join(sorted(sizes, key=lambda s: tuple(
         int(x) for x in s.split("x")))) or "none"
+    m.header = apply_environment(m.header, env, a.environment_accept)
     m.rows = list(rows.values())
     out = os.path.join(root, manifest_path(a.game, a.tier))
     with open(out + ".tmp", "w") as fh:
         fh.write(format_manifest(m))
     os.replace(out + ".tmp", out)
-    print("[presentation-promote] %s: %d row(s) rewritten, blessed revision "
-          "%s, tiles filed into %s" % (manifest_path(a.game, a.tier),
-                                       len(changed), rev[:12], store_dir()))
+    print("[presentation-promote] %s: %d row(s) rewritten%s, header "
+          "environment %s; tiles filed into %s"
+          % (manifest_path(a.game, a.tier), len(changed),
+             ", blessed revision %s" % rev[:12] if rev else "",
+             "rewritten" if header_moves else "unchanged", store_dir()))
     return 0
 
 
@@ -1255,6 +1491,15 @@ def main(argv=None):
     p = sub.add_parser("capture-record")
     game_tier(p)
     p.add_argument("candidate")
+    p.add_argument("--build-dir", default="build/linux-release",
+                   help="the capture binary's build directory; its basename "
+                   "is the preset recorded")
+    p = sub.add_parser("environment")
+    game_tier(p)
+    p.add_argument("--candidate", help="a captured candidate directory")
+    p.add_argument("--build-dir", default="build/linux-release")
+    p.add_argument("--strict", action="store_true",
+                   help="exit 1 when a surface field differs")
     p = sub.add_parser("census")
     game_tier(p)
     p.add_argument("--candidate")
@@ -1263,6 +1508,11 @@ def main(argv=None):
     p.add_argument("candidate")
     p.add_argument("filters", nargs="*", help="tile basename substrings")
     p.add_argument("--all", action="store_true")
+    p.add_argument("--exclude", action="append", metavar="SUBSTR",
+                   help="leave out tiles whose basename contains SUBSTR")
+    p.add_argument("--create", action="store_true",
+                   help="write the manifest when it does not exist")
+    p.add_argument("--environment-accept", metavar="REASON")
     p = sub.add_parser("golden-at")
     p.add_argument("rev")
     p.add_argument("game", nargs="?", choices=GAMES)
@@ -1271,13 +1521,14 @@ def main(argv=None):
     p.add_argument("--materialize", action="store_true")
     a = ap.parse_args(argv)
     if a.cmd in ("read", "write", "verify", "capture-record", "census",
-                 "promote") and a.game not in TIERS[a.tier]:
+                 "promote", "environment") and a.game not in TIERS[a.tier]:
         ap.error("tier %s has no game %s" % (a.tier, a.game))
     return {"digest": cmd_digest, "read": cmd_read, "write": cmd_write,
             "verify": cmd_verify, "store-file": cmd_store_file,
             "store-read": cmd_store_read, "gc": cmd_gc,
             "golden-at": cmd_golden_at, "capture-record": cmd_capture_record,
-            "census": cmd_census, "promote": cmd_promote}[a.cmd](a)
+            "census": cmd_census, "promote": cmd_promote,
+            "environment": cmd_environment}[a.cmd](a)
 
 
 if __name__ == "__main__":

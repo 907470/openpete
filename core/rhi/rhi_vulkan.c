@@ -2038,6 +2038,16 @@ static void rhi_balloon_free(rhi_device *dev)
     dev->balloon_count = 0;
 }
 
+/**
+ * @brief Creates the Vulkan instance, device, queues and presentation target.
+ *
+ * With @p window the target is the window's swapchain; with @p headless it is
+ * a surfaceless @p hl_w x @p hl_h image set. Logs the chosen device's name,
+ * decoded driver version and driver info string on one `[rhi/vk] device=`
+ * line, which the golden capture harnesses read as the capture environment's
+ * device and Mesa strings.
+ * Returns NULL, with the device torn down, on any failure.
+ */
 static rhi_device *rhi_create_impl(struct SDL_Window *window, const char *app_name,
                                    bool headless, uint32_t hl_w, uint32_t hl_h,
                                    int vsync)
@@ -2094,8 +2104,17 @@ static rhi_device *rhi_create_impl(struct SDL_Window *window, const char *app_na
      * filled heap refuses only what the renderer allocates from here on. */
     rhi_balloon_init(dev);
 
-    RHI_LOG("device='%s'%s format=%d %ux%u images=%u\n",
-            dev->device_name, headless ? " (headless)" : "", (int)dev->sc_format,
+    /* The driver's own name and version string (Vulkan 1.2 core): lavapipe
+     * reports a placeholder driverVersion, and its driverInfo carries the
+     * Mesa version. */
+    VkPhysicalDeviceDriverProperties drv = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES };
+    VkPhysicalDeviceProperties2 props2 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &drv };
+    vkGetPhysicalDeviceProperties2(dev->phys, &props2);
+    RHI_LOG("device='%s'%s driver=%s driver-info='%s' format=%d %ux%u images=%u\n",
+            dev->device_name, headless ? " (headless)" : "",
+            rhi_driver_version(dev), drv.driverInfo, (int)dev->sc_format,
             dev->sc_extent.width, dev->sc_extent.height, dev->sc_count);
     return dev;
 
