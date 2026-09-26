@@ -399,9 +399,22 @@ static int moby_is_cutscene_actor(CPUState* cpu, uint32_t mob);
 static int moby_cutscene_owns_draw(CPUState* cpu);
 
 /* ---- ground-truth capture: decode prims F798 emitted ---------------- */
-/* Walk by OT tag length (stride=((w0>>24)+1)*4) — robust regardless of the
- * exact per-code layout. Decode XY/RGB/UV by code byte (prim[0x7]); the
- * offsets are confirmed by the hex dump. */
+/** @brief Decode the primitives a moby render pass emitted in a polybuf interval into s_gte.
+ *
+ * s_gte is the ground truth the verify A/Bs compare the native decode
+ * against. The walk steps by tag length (stride ((w0 >> 24) + 1) * 4 bytes),
+ * independent of the per-code layout, and stops at a tag length of 0 or above
+ * 24 or at MAX_PRIMS prims. Each prim keeps up to 20 raw words and, for a
+ * polygon code ((code & 0xE0) == 0x20), its vertices decoded by command bit
+ * (bit 4 gouraud, bit 3 quad, bit 2 textured): per vertex an RGB word when
+ * gouraud past the first, the XY word, and a UV word when textured, with the
+ * CLUT in vertex 0's UV high half and the tpage in vertex 1's. Every code
+ * counts into s_code_hist; a code decoded to no vertices counts into
+ * s_uncoded_hist and warns once per code, since its polygons are missing from
+ * the native feed.
+ * @param cpu The guest CPU state, read only.
+ * @param start First polybuf address of the pass's output.
+ * @param end One past the last. */
 static void capture_gte(CPUState* cpu, uint32_t start, uint32_t end) {
     s_gte_n = 0;
     uint32_t p = start;
@@ -1298,7 +1311,15 @@ static fade_ent* fade_snap_find(fade_ent* t, int n, uint32_t moby) {
     for (int i = 0; i < n; i++) if (t[i].moby == moby) return &t[i];
     return NULL;
 }
-/* The entry's full-precision centre Z, or dist 0 (see the table's comment). */
+/** @brief Fill an entry's full-precision centre view Z, or mark it unavailable with dist 0.
+ *
+ * dist stays 0 on a game whose record stores the rescaled translation
+ * (rec_tr_final), on one with no host record builder (host_reveal 0) or no
+ * renderer byte, and where |ZSF4 + tz - ((m_Renderer & mask) << 8)| >= 4,
+ * the verdict then not being the formula of tz (see fade_ent). Otherwise
+ * dist is 1 and tz is build_moby_record_tr's Z.
+ * @param cpu The guest CPU state, read only.
+ * @param e The entry, its moby and zsf4 already set. */
 static void fade_snap_dist(CPUState* cpu, fade_ent* e) {
     e->dist = 0; e->tz = 0.0;
     if (game_layout.moby.rec_tr_final || !moby_game.host_reveal || !moby_game.renderer_off) return;
@@ -1308,8 +1329,14 @@ static void fade_snap_dist(CPUState* cpu, fade_ent* e) {
     if (fabs((double)e->zsf4 + tr[2] - (double)(md << 8)) >= 4.0) return;
     e->dist = 1; e->tz = tr[2];
 }
-/* The drawn header and its signature, and the last different header before
- * it, carried from the previous pass's entry. */
+/** @brief Record in an entry the drawn AnimationHeader, its signature, and the last different header before it.
+ *
+ * The previous pass's entry for the moby supplies the earlier header: when
+ * it drew the same header its carried pair is kept, otherwise its own header
+ * and signature become the pair. With no previous entry hdr_p is 0.
+ * @param cpu The guest CPU state, read only.
+ * @param e The entry, its moby already set.
+ * @param header The header the pass drew the moby with. */
 static void fade_snap_header(CPUState* cpu, fade_ent* e, uint32_t header) {
     const fade_ent* p = fade_snap_find(s_fade_prev, s_fade_prev_n, e->moby);
     e->hdr = header;
@@ -1318,8 +1345,17 @@ static void fade_snap_header(CPUState* cpu, fade_ent* e, uint32_t header) {
     else if (p->hdr == header) { e->hdr_p = p->hdr_p; e->sig_p = p->sig_p; }
     else                       { e->hdr_p = p->hdr;   e->sig_p = p->sig; }
 }
-/* Canonical pass only: a sub-tick present re-derives what it draws from the
- * tick's entries and never replaces them. */
+/** @brief Record a moby's ZSF4, centre view Z and drawn header in this tick's fade table.
+ *
+ * Canonical pass only: a call during a sub-tick re-extract returns, since a
+ * sub-tick present re-derives what it draws from the tick's entries and never
+ * replaces them. An address below KSEG0 is ignored and a new moby past
+ * MAX_RECORDS entries is dropped. A header below KSEG0 clears both header
+ * fields.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The moby's PSX address.
+ * @param zsf4 The record's ZSF4.
+ * @param header The AnimationHeader the pass drew the moby with. */
 static void fade_snap_put(CPUState* cpu, uint32_t moby, int zsf4, uint32_t header) {
     if (moby < 0x80000000u || s_walk_in_rex) return;
     fade_ent* e = fade_snap_find(s_fade_snap, s_fade_snap_n, moby);
@@ -1333,9 +1369,17 @@ static void fade_snap_put(CPUState* cpu, uint32_t moby, int zsf4, uint32_t heade
     if (header >= 0x80000000u) fade_snap_header(cpu, e, header);
     else                       e->hdr = e->hdr_p = 0u;
 }
-/* Whether `header`, one of the last two headers a canonical pass's table `t`
- * records for this moby, still holds the content it held when drawn: 1 it
- * does, 0 its signature changed, -1 no entry names it. */
+/** @brief Whether a header a canonical pass's table records for a moby still holds the content it held when drawn.
+ *
+ * `header` is matched against the entry's drawn header and the last
+ * different one before it, and its current signature against the one
+ * recorded with it.
+ * @param cpu The guest CPU state, read only.
+ * @param t The pass's table.
+ * @param n Entries in `t`.
+ * @param moby The moby's PSX address.
+ * @param header The header to check.
+ * @return 1 it does, 0 its signature changed, -1 no entry names it. */
 static int fade_header_intact(CPUState* cpu, fade_ent* t, int n, uint32_t moby,
                               uint32_t header) {
     const fade_ent* e = fade_snap_find(t, n, moby);
@@ -1350,15 +1394,23 @@ static int fade_snap_get(uint32_t moby, int dflt) {
     const fade_ent* e = fade_snap_find(s_fade_snap, s_fade_snap_n, moby);
     return e ? e->zsf4 : dflt;   /* snapshot miss: caller picks the safe tier */
 }
-/* The ZSF4 a sub-tick present at `alpha` (prev tick 0 -> this tick 1) draws the
- * moby's colour fade at, in full precision: the authored term lerped between
- * the two ticks, less the present's own centre Z (tz_present, the
- * build_moby_record_tr value this present projects through):
+/** @brief The full-precision ZSF4 a sub-tick present draws a moby's colour fade at.
+ *
+ * The authored term lerped between the two ticks, less the present's own
+ * centre Z (tz_present, the build_moby_record_tr value this present projects
+ * through):
  *   z = ZSF4 + (1 - alpha)(A_prev - A_curr) + (tz_curr - tz_present).
  * A moby absent from the previous tick holds A_curr. Both correction terms are
  * exactly 0 at alpha 1 (tz_present is the tick's own centre there), and the
  * result is then not marked fractional, so that present runs the integer GTE
- * mirror. Returns 1 and writes *zf when the present's value is fractional. */
+ * mirror. A missing entry, one without dist, or one whose ZSF4 differs from
+ * `zsf4` also yields `zsf4`.
+ * @param moby The moby's PSX address.
+ * @param zsf4 The record's integer ZSF4.
+ * @param tz_present The present's centre view Z.
+ * @param alpha The present's phase, 0 at the previous tick and 1 at this one.
+ * @param zf Receives the value; `zsf4` when not fractional.
+ * @return 1 when the present's value is fractional, else 0. */
 static int fade_snap_present_z(uint32_t moby, int zsf4, double tz_present, double alpha,
                                double* zf) {
     *zf = (double)zsf4;
@@ -1777,9 +1829,21 @@ static int project_all_records_inner(CPUState* cpu) {
  * Only after that A/B passes is the builder trusted on the revealed (off-4:3) set. */
 typedef struct { uint32_t header, header_b, frameA, frameB, w0, mscol; int metal; int TR_raw[3]; double TR_frac[3]; int M[3][3]; } moby_fields;
 
-/* Build the REGULAR (animated) render-record fields for one moby from gamestate.
- * Returns 1 on success, 0 if the moby has no animated model (SimpleModel =>
- * shaded material, handled by the shaded path) or an invalid model/header. */
+/** @brief Build the regular (animated) render-record fields for one moby from game state.
+ *
+ * Header, second header, keyframes and blend come from moby_pose_derive over
+ * the five anim state bytes; w0 carries the blend from bit 8 and
+ * m_DepthOffset (the top byte of the angle word) in bits 16-23, like the .s
+ * cull at 8001F464..F46C. M is the camera projection matrix times the moby's
+ * euler rotation (shaded_compose_euler). TR_raw is the cull's centre MVMVA of
+ * the camera-to-moby offset >> 2, accumulated in 64 bits and clamped to
+ * int32, without m_Scale, which moby_decode_project applies; TR_frac is the
+ * same centre at full precision from build_moby_record_tr.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The moby's PSX address.
+ * @param f Receives the fields.
+ * @return 1 on success, 0 when the class has no model, the model is not
+ *         animated (the shaded path draws it) or the pose does not derive. */
 static int build_moby_record_fields(CPUState* cpu, uint32_t moby, moby_fields* f) {
     uint32_t cls   = cpu->read_half(moby + game_layout.moby.class_off);            /* m_Class */
     uint32_t model = cpu->read_word(game_layout.moby.model_table + cls * 4u);    /* g_Models[cls] */
@@ -2902,13 +2966,19 @@ static void specular_env_uv(float ex, float ey, float ez, int* pu, int* pv);
 static int  s_env_tpx, s_env_tpy, s_env_clx, s_env_cly, s_env_bpp;
 static float s_specL[3], s_specLlen;   /* D_800770C8+0xC specular light dir (highlight) */
 
-/* GTE DPCS (depth-cue) on one 8-bit colour channel toward a 12-bit far colour by
- * IR0/4096. Bit-exact mirror of the runner's color_depth_cue_finish (gte.cpp):
+/** @brief GTE DPCS depth cue of one 8-bit colour channel toward a 12-bit far colour by IR0/4096.
+ *
+ * Delegates to ngte_dpcs_ch, the bit-exact mirror of the runner's
+ * color_depth_cue_finish (gte.cpp):
  *   mac    = c<<16
  *   ir_d   = sat16(((fc<<12) - mac) >> 12)
  *   total  = mac + IR0*ir_d
  *   out    = sat8((total>>12) >> 4)
- * Verified vs the live GTE: dpcs_ch(255, 2032, 1312) == 214. */
+ * dpcs_ch(255, 2032, 1312) is 214, as on the live GTE.
+ * @param c8 The channel.
+ * @param fc12 The far colour's channel, 12-bit.
+ * @param ir0 The GTE IR0.
+ * @return The faded channel, 0..255. */
 static int dpcs_ch(int c8, int fc12, int ir0) {
     return ngte_dpcs_ch(c8, fc12, ir0);   /* shared bit-exact GTE mirror */
 }
@@ -2951,14 +3021,19 @@ static int moby_color_fade_ir0(CPUState* cpu, int zsf4, uint32_t header, uint32_
  * scene vertex's alpha byte (moby_texel_fog_mix); 0 = the one row alone. */
 typedef struct { int ir0; double ir0f; int frac; int row; uint8_t tmix; } moby_fade_t;
 
-/* DPCS of one 8-bit channel toward a 12-bit far colour at a fractional IR0:
- * floor((c<<16 + IR0 * (fc - (c<<4))) / 65536), the GTE's own truncation
+/** @brief DPCS of one 8-bit channel toward a 12-bit far colour at a fractional IR0.
+ *
+ * floor((c<<16 + IR0 * (fc - (c<<4))) / 65536), clamped to 0..255, the GTE's own truncation
  * (ngte_dpcs_ch) extended to real IR0. At an integer IR0 the numerator is an
  * exact integer in double and the division by 2^16 is exact, so the result
  * equals the integer mirror; between integers it is continuous from the left
  * and moves by at most one level per IR0 step the mirror takes. The fade then
  * meets the canonical present at both ends of a tick interval, where
- * round-to-nearest would stand up to one level off the GTE's value. */
+ * round-to-nearest would stand up to one level off the GTE's value.
+ * @param c8 The channel.
+ * @param fc12 The far colour's channel, 12-bit.
+ * @param ir0 IR0 at full precision.
+ * @return The faded channel, 0..255. */
 static int dpcs_ch_f(int c8, int fc12, double ir0) {
     double v = ((double)c8 * 65536.0 + ir0 * (double)(fc12 - (c8 << 4))) / 65536.0;
     int o = (int)floor(v);
@@ -2996,13 +3071,18 @@ static uint32_t moby_color_at(CPUState* cpu, uint32_t cbase, uint32_t farbase,
                          (int)((fw >> 12) & 0xFF0u), fd);
 }
 
-/* Host-pointer variant: identical maths, but the colour bases are resolved to
- * host memory ONCE per record instead of a cpu->read_word memory-map dispatch
- * per vertex (3-4 colour lookups per face — the walk's hottest remaining reads
- * after the Tier-1 face cache). PSX RAM and the host are both little-endian;
- * memcpy keeps the loads alignment-safe. Callers fall back to moby_color_at
- * when a base doesn't resolve. */
+/** @brief Load a little-endian 32-bit word from host memory.
+ *
+ * PSX RAM and the host are both little-endian; memcpy keeps the load
+ * alignment-safe.
+ * @param p The word's host address.
+ * @return The word. */
 static inline uint32_t le32_at(const uint8_t* p) { uint32_t v; memcpy(&v, p, 4); return v; }
+/* Host-pointer variant of moby_color_at: identical maths, but the colour
+ * bases are resolved to host memory once per record instead of a
+ * cpu->read_word memory-map dispatch per vertex (3-4 colour lookups per face,
+ * the walk's hottest reads after the Tier-1 face cache). Callers fall back to
+ * moby_color_at when a base does not resolve. */
 static uint32_t moby_color_at_host(const uint8_t* cb, const uint8_t* fbp,
                                    const int* fcc, const moby_fade_t* fd, uint32_t ci) {
     uint32_t col = le32_at(cb + ci) & 0xFFFFFFu;
@@ -3153,21 +3233,31 @@ static int      s_fc_ovf_n;                  /* overflow entries taken this pass
 static uint32_t s_fc_gen = 1;                /* current resolve generation */
 static long     s_fc_ovf_used, s_fc_ovf_full;  /* engagement census */
 
-/* Opening a pass retires the previous one: every entry still carries the older
- * generation, so none of them is held any more. */
+/** @brief Open a resolve pass, which retires the previous one.
+ *
+ * Advances the generation, so every entry still carries an older one and none
+ * of them is held any more, and frees every overflow entry. */
 static void fcache_pass_begin(void) { s_fc_gen++; s_fc_ovf_n = 0; }
 static int  fcache_pinned(const fcache_t* C) { return C->gen == s_fc_gen; }
-/* The next free overflow entry, or NULL when the pass has exhausted them. */
+/** @brief Take the next free overflow entry of this resolve pass.
+ *
+ * Counts each take into s_fc_ovf_used and each refusal into s_fc_ovf_full.
+ * @return The entry, or NULL when the pass has taken all FC_OVF_SLOTS. */
 static fcache_t* fcache_ovf_take(void) {
     if (s_fc_ovf_n >= FC_OVF_SLOTS) { s_fc_ovf_full++; return NULL; }
     s_fc_ovf_used++;
     return &s_fc_ovf[s_fc_ovf_n++];
 }
 
-/* Where a missing faceblock may be decoded, given the two ways of its hash
- * pair: an empty way, then a way no open resolve pass holds, then a private
- * overflow entry. NULL = nothing free (overflow exhausted): the caller drops
- * the decode rather than rewriting an entry a record already points at. */
+/** @brief Where a missing faceblock may be decoded, given the two ways of its hash pair.
+ *
+ * In order: an empty way, then a way the open resolve pass does not hold,
+ * then a private overflow entry.
+ * @param C The pair's first way.
+ * @param C2 The pair's second way.
+ * @return The entry to decode into, or NULL when nothing is free (overflow
+ *         exhausted): the caller drops the decode rather than rewriting an
+ *         entry a record already points at. */
 static fcache_t* fcache_victim(fcache_t* C, fcache_t* C2) {
     if (!C->f)  return C;
     if (!C2->f) return C2;
@@ -3199,10 +3289,22 @@ static const fcache_t* fcache_get(CPUState* cpu, uint32_t fb) {
     return V;
 }
 
-/* Decode one faceblock into C (malloc'd face array; C's previous array freed).
- * The stream parse itself is the game's (moby_game.decode_faces); this is the
- * cache shell around it, factored out of fcache_get so the render-time PATCHED
- * decode (fpcache_get) reuses the exact same parse. Returns 0 on failure. */
+/** @brief Decode one faceblock into cache entry C through the game's face decoder.
+ *
+ * The stream parse is moby_game.decode_faces into the s_fc_tmp scratch (at
+ * most 8192 faces); this shell copies the faces into a malloc'd array, frees
+ * C's previous array, and stamps C with the key (address, byte count, three
+ * signature words), the walk bookkeeping and the current resolve generation.
+ * fcache_get and the render-time patched decode (fpcache_get) share it. On
+ * failure C is unchanged.
+ * @param cpu The guest CPU state, read only.
+ * @param fb The faceblock's PSX address.
+ * @param bytecount The faceblock's byte count word.
+ * @param s1 First signature word (fb + 4).
+ * @param s2 Second signature word (fb + 8).
+ * @param s3 Third signature word (fb + 12).
+ * @param C The entry to fill.
+ * @return 1 on success, 0 when the decoder or the allocation fails. */
 static int fcache_decode_into(CPUState* cpu, uint32_t fb, uint32_t bytecount,
                               uint32_t s1, uint32_t s2, uint32_t s3, fcache_t* C) {
     moby_face_stats_t st = { 0, 0, 0, 2 };
@@ -4581,15 +4683,18 @@ static void specular_env_refl(float ex, float ey, float ez, float r[3]) {
  * final mapping is wired in. Mirrors recolor's NN walk->prim match. */
 #define PI_F 3.14159265358979f
 static float wrap128(float x) { x = fmodf(x, 128.0f); return x < 0 ? x + 128.0f : x; }
-/* Native env-UV, fitted byte-exact (<=1 texel) to the prim-UV dump:
- *   refl = metalMatrix . (viewPos-TR)              [camera-relative pitch/roll]
- *   u = (52.5 - (128/2pi)*atan2(rx,ry) - camHead/16) mod 128
+/** @brief The constant texel term of the environment-reflection U coordinate, latched on first use.
+ *
+ * specular_env_uv computes, from r = specular_env_refl(ex, ey, ez),
+ *   u = (env_c2 - (128/2pi)*(atan2(rx,ry) + env_azsign*az_TR) + camHead/32) mod 128
  *   v = 64 + (128/pi)*asin(rz/|r|)
- * The metalMatrix (MetalBuildMatrix, z-negated camera rot) is NOT rebuilt every
- * frame, so the .s tracks fine camera YAW with a per-frame camHead term
- * (g_Camera+0x50, an 11-bit 2048/circle heading; 2048 -> the 128-texel azimuth
- * wrap == camHead/16). This keeps the reflection WORLD-anchored: turning the
- * camera slides the reflected environment across the metal. */
+ * where az_TR is the record's view-space azimuth. The metal matrix
+ * (MetalBuildMatrix, z-negated camera rotation) is not rebuilt every tick, so
+ * the .s tracks fine camera yaw with the camHead term (g_Camera+0x50, an
+ * 11-bit heading, 2048 per turn). This keeps the reflection world-anchored:
+ * turning the camera slides the reflected environment across the metal.
+ * OPENPETE_ENV_C2 overrides the default 14.5.
+ * @return The term in texels. */
 static float env_c2(void) {   /* calibration constant (temp env override) */
     static float c = -1e9f;
     if (c < -1e8f) { const char* e = getenv("OPENPETE_ENV_C2"); c = (e && *e) ? (float)atof(e) : 14.5f; }
@@ -4733,9 +4838,12 @@ static int     s_nrank[MAX_NTRI];   /* position in the record's paint order, 0 =
 #define ISECT_PAIRS_MAX 65536
 static int s_ip_a[ISECT_PAIRS_MAX], s_ip_b[ISECT_PAIRS_MAX], s_ip_n;
 
-/* OPENPETE_MOBY_ISECT_LOG=1 (instrument): per-VBL per-moby intersection
- * counts, the select census and the sub-tick carry's engagement. With the rank
- * off it runs the intersection census alone. */
+/** @brief Whether OPENPETE_MOBY_ISECT_LOG enables the intersection log, latched on first use.
+ *
+ * The log prints per-VBL per-moby intersection counts, the select census and
+ * the sub-tick carry's engagement. With the rank off it runs the intersection
+ * census alone. On for a nonempty value not starting with '0'.
+ * @return 1 when on, else 0. */
 static int isect_log_on(void) {
     static int s = -1;
     if (s < 0) { const char* l = getenv("OPENPETE_MOBY_ISECT_LOG");
@@ -4767,9 +4875,17 @@ static int isect_side_of(double g, double nlen) {
     if (fabs(d) < ISECT_EPS) return 0;
     return d > 0 ? 1 : d < 0 ? -1 : ISECT_NAN;
 }
-/* The side classes s and distance numerators g of T's vertices against the
- * plane (n, d0 = n.q). Returns -1 when T lies strictly on one side, -2 when it
- * lies in the plane, else 0. */
+/** @brief The side classes and distance numerators of a face's vertices against a plane.
+ *
+ * Each vertex k takes g[k] = n.(p_k - q) and its class from isect_side_of.
+ * @param T The face.
+ * @param n The plane normal.
+ * @param nlen |n|.
+ * @param q A point on the plane.
+ * @param g Receives the three distance numerators.
+ * @param s Receives the three side classes.
+ * @return -1 when T lies strictly on one side, -2 when it lies in the plane,
+ *         else 0. */
 static int isect_side(const isect_tri* T, const double n[3], double nlen, const double q[3],
                       double g[3], int s[3]) {
     for (int k = 0; k < 3; k++) {
@@ -4782,9 +4898,16 @@ static int isect_side(const isect_tri* T, const double n[3], double nlen, const 
     if (s[0] == 0 && s[1] == 0 && s[2] == 0) return -2;
     return 0;
 }
-/* The points of T on the plane (edge crossings and on-plane vertices) in pts;
- * returns their count (0..3). Both ends of a crossing edge lie beyond the snap
- * bound, so their distances are g/nlen unsnapped. */
+/** @brief The points of a face on a plane: its edge crossings and on-plane vertices.
+ *
+ * Both ends of a crossing edge lie beyond the snap bound, so their distances
+ * are g/nlen unsnapped.
+ * @param T The face.
+ * @param g The vertices' distance numerators from isect_side.
+ * @param s The vertices' side classes from isect_side.
+ * @param nlen The plane normal's length.
+ * @param pts Receives the points.
+ * @return Their count, 0..3. */
 static int isect_clip(const isect_tri* T, const double g[3], const int s[3], double nlen,
                       double pts[4][3]) {
     int m = 0;
@@ -4800,18 +4923,26 @@ static int isect_clip(const isect_tri* T, const double g[3], const int s[3], dou
     }
     return m;
 }
-/* The number of points isect_clip returns for the side classes s. */
+/** @brief The number of points isect_clip returns for the side classes s.
+ *
+ * @param s The three side classes.
+ * @return The count, 0..3. */
 static int isect_npts(const int s[3]) {
     int m = 0;
     for (int k = 0; k < 3; k++) m += (s[k] == 0) + (s[k] * s[(k + 1) % 3] == -1);
     return m;
 }
-/* A's side of B's plane alone rules the pair out: a degenerate face, A
- * strictly on one side, or A (finite values) meeting the plane in at most one
- * point, an overlap of zero length. isect_pair then returns 0 or 2. The
- * classes are counted without branching on each vertex; a vertex inside the
- * margin of isect_side_of takes the exact classification. In a triangle every
- * vertex pair is an edge, so pos * neg edges cross the plane. */
+/** @brief Whether A's side of B's plane alone rules the pair out.
+ *
+ * It does for a degenerate face, A strictly on one side, or A (finite
+ * values) meeting the plane in at most one point, an overlap of zero length;
+ * isect_pair then returns 0 or 2. The classes are counted without branching
+ * on each vertex; a vertex inside the margin of isect_side_of takes the exact
+ * classification. In a triangle every vertex pair is an edge, so pos * neg
+ * edges cross the plane.
+ * @param A The face tested against the plane.
+ * @param B The face whose plane is used.
+ * @return 1 when ruled out, else 0. */
 static int isect_misses(const isect_tri* A, const isect_tri* B) {
     if (A->nlen < 1e-9 || B->nlen < 1e-9) return 1;
     const double e = ISECT_EPS * B->nlen, ehi = e * (1.0 + 1e-6), elo = e * (1.0 - 1e-6);
@@ -4831,8 +4962,15 @@ static int isect_misses(const isect_tri* A, const isect_tri* B) {
     if (pos == 3 || neg == 3) return 1;
     return A->fin && B->fin && zer + pos * neg <= 1;
 }
-/* The positions t of the points pts[0..m) along the line direction D (|D| =
- * lD) and the indices of the first and last of them. */
+/** @brief The positions of points along a line direction and the indices of the first and last of them.
+ *
+ * @param pts The points.
+ * @param m Their count.
+ * @param D The line direction.
+ * @param lD |D|.
+ * @param t Receives each point's position D.p / lD.
+ * @param first Receives the index of the smallest position.
+ * @param last Receives the index of the largest. */
 static void isect_extent(const double pts[4][3], int m, const double D[3], double lD,
                          double t[4], int* first, int* last) {
     int i0 = 0, i1 = 0;
@@ -4843,7 +4981,16 @@ static void isect_extent(const double pts[4][3], int m, const double D[3], doubl
     }
     *first = i0; *last = i1;
 }
-/* 1 = intersect (overlap screen length > tol), 0 = no, 2 = coplanar. */
+/** @brief Classify a face pair in intersection space.
+ *
+ * Each face is clipped against the other's plane and the two segments are
+ * projected on the planes' intersection line; the pair intersects when their
+ * overlap's screen length exceeds ISECT_TOL_PX. A degenerate face, a face
+ * strictly on one side, a single-point meet between finite faces, and an
+ * empty overlap yield 0.
+ * @param A The first face.
+ * @param B The second face.
+ * @return 1 intersect, 0 no, 2 coplanar or parallel planes. */
 static int isect_pair(const isect_tri* A, const isect_tri* B) {
     if (A->nlen < 1e-9 || B->nlen < 1e-9) return 0;
     double ga[3], gb[3];
@@ -4883,8 +5030,12 @@ static int isect_shared(const ntri_t* a, const ntri_t* b) {
             a->v[i].tvz == b->v[j].tvz) { n++; break; }
     return n;
 }
-/* The faces the rank select can order: opaque regular/front-pass moby faces
- * with a true screen footprint. */
+/** @brief Whether the rank select can order a walk triangle.
+ *
+ * It can when the triangle is opaque (blend 0), belongs to a moby, is not a
+ * UI face and is not mangled (s_wtri_mangle).
+ * @param i The walk triangle index.
+ * @return Nonzero when eligible. */
 static int isect_eligible(int i) {
     return s_wtri[i].blend == 0 && s_wtri_moby[i] && s_wtri_ui[i] == 0 && !s_wtri_mangle[i];
 }
@@ -4906,15 +5057,25 @@ static void isect_tri_of(int i, isect_tri* t) {
     t->nlen = sqrt(isect_dot(t->n, t->n));
     t->fin = fin && isfinite(t->nlen);
 }
-/* The census feeds an instrument (the per-moby log, the select census or the
- * calibration), which reads every intersecting pair and every face's rank. */
+/** @brief Whether the census feeds an instrument, which reads every intersecting pair and every face's rank.
+ *
+ * The instruments are the per-moby log and select census
+ * (OPENPETE_MOBY_ISECT_LOG) and the rank calibration.
+ * @return Nonzero when one is on. */
 static int isect_instrumented(void) { return isect_log_on() || moby_rank_cal_on(); }
 typedef struct { long faces, contested, pairs, coplanar, shared; } isect_count;
 typedef struct { const isect_tri* T; const int* idx; isect_count* c; int all; } isect_ctx;
-/* One pair whose bounding boxes overlap, a before b in the moby's face list.
+/** @brief Test one pair of a moby's faces whose bounding boxes overlap and flag it when they intersect.
+ *
  * Without an instrument, which counts every verdict, a pair is dropped before
  * the adjacency test when its result cannot set a contest flag: both faces
- * contest already, or either face's side of the other's plane rules it out. */
+ * contest already, or either face's side of the other's plane rules it out.
+ * A pair sharing two or more vertex positions is counted adjacent and
+ * skipped. An intersecting pair sets both contest flags and is recorded in
+ * the pair list while it has room.
+ * @param x The moby's faces, their walk indices and the counts.
+ * @param a The first face's position in the moby's face list.
+ * @param b The second face's position, after `a`. */
 static void isect_test(const isect_ctx* x, int a, int b) {
     const int ia = x->idx[a], ib = x->idx[b];
     const isect_tri *A = &x->T[a], *B = &x->T[b];
@@ -4940,8 +5101,13 @@ static void isect_box_of(const isect_tri* t, int k, isect_box* o) {
     }
     o->k = k;
 }
-/* The boxes of T[0..n) in ascending order of x minimum (insertion sort on a
- * compact key: a moby's face count is small and the sort runs per tick). */
+/** @brief The bounding boxes of a moby's faces in ascending order of x minimum.
+ *
+ * An insertion sort on a compact key: a moby's face count is small and the
+ * sort runs per tick. A NaN x minimum sorts as minus infinity.
+ * @param T The faces.
+ * @param n Their count.
+ * @param K Receives the n boxes in sweep order. */
 static void isect_boxes_sorted(const isect_tri* T, int n, isect_box* K) {
     static struct { double x; int k; } X[MAX_NTRI];
     for (int a = 0; a < n; a++) {
@@ -4952,14 +5118,19 @@ static void isect_boxes_sorted(const isect_tri* T, int n, isect_box* K) {
     }
     for (int s = 0; s < n; s++) isect_box_of(&T[X[s].k], X[s].k, &K[s]);
 }
-/* Tests the pairs of the eligible faces idx[0..n) of one moby whose bounding
- * boxes overlap; sets their contest flags and records the intersecting pairs.
- * Sort and sweep on x: the boxes sorted by x minimum, each against the
+/** @brief Test the pairs of one moby's eligible faces whose bounding boxes overlap.
+ *
+ * Sets the intersecting faces' contest flags and records the pairs. Sort and
+ * sweep on x: the boxes sorted by x minimum, each against the
  * following boxes whose minimum does not pass its maximum, which enumerates
  * exactly the pairs overlapping in x; the pairs that also overlap in y and
  * depth are collected without a branch per pair, then tested. The pair test
  * takes the lower face-list position first, so its floating-point result does
- * not depend on the enumeration order. */
+ * not depend on the enumeration order.
+ * @param T The faces in intersection space.
+ * @param idx Each face's walk triangle index.
+ * @param n The face count.
+ * @param c Accumulates the moby's counts. */
 static void isect_moby(const isect_tri* T, const int* idx, int n, isect_count* c) {
     static isect_box K[MAX_NTRI];
     static int hit[MAX_NTRI];
@@ -4988,7 +5159,11 @@ static void isect_log_moby(uint32_t mob, int i0, const isect_count* c) {
             openpete_frame, s_cur_mat, mob, s_wtri_cls[i0], s_wtri_front[i0], c->faces,
             c->contested, c->pairs, c->coplanar, c->shared);
 }
-/* Fills s_wtri_contest[] and the pair list for the whole walk. */
+/** @brief Fill s_wtri_contest[] and the intersecting-pair list for the whole walk.
+ *
+ * Groups the walk's contiguous triangles by moby and runs isect_moby over each
+ * moby's eligible faces. With the intersection log on and the VBL nonzero it
+ * prints one line per moby with faces and a summary line. */
 static void isect_census(void) {
     static isect_tri T[MAX_NTRI];
     static int idx[MAX_NTRI];
@@ -5470,11 +5645,21 @@ static void push_scene_moby(void) {
     openpete_native_scene_set_host_added(0);
 }
 
-/* ---- projection A/B: native decode+project vs the emitted prim verts --
- * Nearest-neighbour match each captured GTE prim vertex against the native
- * s_proj set (the cyclorama instrument). The prims carry the authoritative final
- * SXY; a close match proves the decode + RTPS+TR projection reproduce the GTE.
- * Requires project_all_records() already called (s_proj filled). */
+/* ---- projection A/B: native decode+project vs the emitted prim verts -- */
+/** @brief Print the projection A/B of the native decode and projection against the captured primitive vertices.
+ *
+ * The prims carry the authoritative final SXY, so a close match proves the
+ * decode and the RTPS+TR projection reproduce the GTE. Each s_gte vertex is
+ * matched to its nearest s_proj vertex, saturated ones included; a match to a
+ * saturated vertex counts as divergent (near-Z or IR clamp) and leaves the
+ * clean denominator. A clean match within 4 px counts, split textured and
+ * flat, with the floor match, the nearest-neighbour ambiguity (second-nearest
+ * within 1 px) and the worst distance. The reverse check counts on-screen
+ * unsaturated s_proj vertices with no prim vertex within 2 px, which
+ * separates wrong decoded vertices from slot or topology misses. With `nrec`
+ * <= 8 it also prints per record the native vertex count and the matches it
+ * received. Reads s_proj, so project_all_records must have run.
+ * @param nrec The pass's record count. */
 static void compare_and_report(int nrec) {
     if (!s_proj_n) { fprintf(stderr, "[moby-verify vbl=%u] no records\n", openpete_frame); return; }
 
@@ -6021,7 +6206,11 @@ double moby_native_view_widen(void) {
     return (double)s_view.F / s_view.s;
 }
 
-/* Inverse of a 3x3 by cofactors, in double. Returns 0 on a singular matrix. */
+/** @brief Inverse of an integer 3x3 matrix by cofactors, in double.
+ *
+ * @param M The matrix.
+ * @param out Receives the inverse; unwritten on a singular matrix.
+ * @return 1, or 0 when |det| <= 1e-9. */
 static int mat3_inverse(const int M[3][3], double out[3][3]) {
     double a = M[0][0], b = M[0][1], c = M[0][2];
     double d = M[1][0], e = M[1][1], f = M[1][2];
@@ -6141,7 +6330,14 @@ static int moby_mirror_hold(CPUState* cpu, uint32_t moby) {
     return hold;
 }
 
-/* Shortest-arc interpolated byte angle (256/circle) between two byte endpoints. */
+/** @brief Shortest-arc interpolation between two byte angles (256 per turn).
+ *
+ * The difference is wrapped to -128..128 before scaling; the result is not
+ * wrapped, so it may leave 0..256.
+ * @param prev_b The angle at t = 0.
+ * @param curr_b The angle at t = 1.
+ * @param t The phase.
+ * @return The angle in byte units. */
 static double lerp_byte_angle(int prev_b, int curr_b, double t) {
     int d = curr_b - prev_b;
     if (d > 128) d -= 256; else if (d < -128) d += 256;
@@ -6249,12 +6445,18 @@ static int moby_idle_on(void) {
     return s;
 }
 
-/* Update-list membership mirror (func_80051FEC, moby_lists.s:35-96): drawn-
- * grace auto-include, m_UpdateDistance sentinels (0 = never, sign bit after
- * <<10 = always), else a strict 3-axis bbox |d| < ud*1024 around g_Spyro plus
- * a horizontal squared-distance test on (dx>>3, dy>>3). A moby outside the
- * list gets NO update at all — its whole state machine (including the gem
- * settle + wobble) is frozen in RAM. */
+/** @brief Whether a moby is on the game's update list, mirroring func_80051FEC (moby_lists.s:35-96).
+ *
+ * A moby with m_WasDrawn set is included. Otherwise the signed
+ * m_UpdateDistance byte ud decides: 0 never updates; a value whose << 10 is
+ * negative always does; else the moby must lie strictly inside the 3-axis box
+ * |d| < ud * 1024 around g_Spyro and pass the horizontal squared-distance test
+ * on (dx >> 3, dy >> 3) against (ud * 1024) >> 3. A moby outside the list gets
+ * no update, so its whole state machine, the gem settle and wobble included,
+ * is frozen in RAM.
+ * @param cpu The guest CPU state, read only.
+ * @param m The moby's PSX address.
+ * @return 1 on the list, else 0. */
 static int gem_in_update_list(CPUState* cpu, uint32_t m) {
     if (cpu->read_byte(m + game_layout.moby.drawn_off) != 0) return 1;      /* m_WasDrawn grace auto-include */
     int32_t ud = (int8_t)cpu->read_byte(m + moby_game.update_dist_off);    /* SIGNED (0xFF = -1 = always) */
@@ -6271,15 +6473,20 @@ static int gem_in_update_list(CPUState* cpu, uint32_t m) {
     return (ht * ht - hx * hx - hy * hy) > 0;
 }
 
-/* Freeze-verdict mirror — a pure function of gamestate the .s itself reads,
- * never of host render state (the reveal-hysteresis strobe lesson). The
- * canonical wobble advances only when the gem is ON the update list AND the
- * collectable case's inner skip gate doesn't fire (level_10 .s 8007F9B8:
- * skip iff !drawn && OctDistance>=0x2001 && resting && settled — OctDistance
- * (math.s) is XY-only octagonal: max + min*3/8). Beast-makers: far gems
- * can rest UNSETTLED (m_Substate 0 — never updated
- * since level load), so "outside the update list" alone must count as frozen
- * — the old substate==1-only mirror left those as statues. */
+/** @brief Whether the game's collectable wobble is frozen for a moby this tick.
+ *
+ * A pure function of the game state the .s itself reads, never of host
+ * render state. A moby in m_Substate 3 or above is not frozen. A moby off the
+ * update list (gem_in_update_list) is frozen, which covers far gems resting
+ * unsettled in m_Substate 0 since level load (Beast Makers). On the list, the
+ * collectable case skips its state machine (level_10 .s 8007F9B8) only when
+ * m_WasDrawn is 0, the OctDistance to g_Spyro (math.s, XY only:
+ * max + min * 3/8) is at least 0x2001, m_Substate is 1 and the props spawn
+ * state byte (+0x0E) is 0.
+ * @param cpu The guest CPU state, read only.
+ * @param m The moby's PSX address.
+ * @param props The moby's props record.
+ * @return 1 when frozen, else 0. */
 static int gem_idle_frozen(CPUState* cpu, uint32_t m, uint32_t props) {
     if (cpu->read_byte(m + moby_game.substate_off) >= 3) return 0;      /* non-resting states: leave canonical */
     if (!gem_in_update_list(cpu, m)) return 1;        /* no update at all -> frozen */
@@ -7896,8 +8103,16 @@ static hold_t* hold_find(uint32_t moby, int spec) {
         if (s_hold[i].moby == moby && s_hold[i].spec == spec) return &s_hold[i];
     return NULL;
 }
-/* Screen projection of a record ORIGIN (v=0): sx = OFX + TRx·H/TRz. The
- * m_Scale shift cancels in the x/z ratio, so raw TR is exact here. */
+/** @brief Project a record's origin (v = 0) to the screen: sx = OFX + TRx·H/TRz.
+ *
+ * H is the view's effective projection distance (s_view.H_eff). The m_Scale
+ * shift cancels in the x/z ratio, so the raw translation is exact here.
+ * @param cpu Unused.
+ * @param tr The record's view-space translation.
+ * @param sx Receives the screen X.
+ * @param sy Receives the screen Y.
+ * @return 1, or 0 with *sx and *sy unwritten when TRz is below 64 (too near
+ *         or behind). */
 static int hold_project_origin(CPUState* cpu, const double tr[3], double* sx, double* sy) {
     if (tr[2] < 64.0) return 0;                    /* too near / behind: no hold */
     (void)cpu;
@@ -8155,10 +8370,14 @@ static void record_rebase_to_present(CPUState* cpu, moby_fields* f, uint32_t mob
     }
 }
 
-/* The euler composition in unit doubles: Ry·Rx·Rz from table sin/cos pairs,
- * the order and axis signs of ngte_compose_euler. inv builds the inverse,
- * Rz⁻¹·Rx⁻¹·Ry⁻¹, each axis inverted exactly over its own c² + s² since the
- * table's pairs are not unit length. */
+/** @brief The euler composition Ry·Rx·Rz in unit doubles from table sin/cos pairs.
+ *
+ * The order and axis signs are those of ngte_compose_euler. `inv` builds the
+ * inverse, Rz⁻¹·Rx⁻¹·Ry⁻¹, each axis inverted exactly over its own c² + s²,
+ * since the table's pairs are not unit length.
+ * @param e The three axes' sin/cos pairs, 4096 = 1.
+ * @param inv Nonzero for the inverse.
+ * @param out Receives the matrix. */
 static void euler_mat_d(const ngte_euler_sc* e, int inv, double out[3][3]) {
     const double ny = (double)e->cy * e->cy + (double)e->sy * e->sy;
     const double nx = (double)e->cx * e->cx + (double)e->sx * e->sx;

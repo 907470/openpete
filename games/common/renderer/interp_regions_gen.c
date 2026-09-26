@@ -144,9 +144,12 @@ static uint32_t rd32(uint32_t addr) {
     return v;
 }
 
-/* The moby record bytes the per-object capture takes: one record and no
- * bytes of the next, since the store's blob may be sized for a longer record
- * than a moby's (see game_interp_register_common). */
+/** @brief The moby record bytes the per-object capture takes: one record and no bytes of the next.
+ *
+ * The lesser of the store's blob size and game_layout.moby.array_stride,
+ * since game_interp_register_common may size the blob for the tracer ribbon
+ * record, which is longer than a moby's.
+ * @return The byte count. */
 static uint32_t moby_blob_bytes(void) {
     const uint32_t stride = game_layout.moby.array_stride;
     return openpete_interp_objs_blob_bytes() < stride
@@ -225,9 +228,13 @@ static int stash_cmp(const void* a, const void* b) {
     return sa < sb ? -1 : (sa > sb ? 1 : 0);
 }
 
-/* Orders the stash by moby address, keeping the last stash of each moby, so
- * the ascending array walk consumes it with one cursor. Returns the count the
- * capture may use: 0 while the stash is blocked or its epoch retired. */
+/** @brief Order the stash by moby address, keeping the last stash of each moby, and return the count the capture may use.
+ *
+ * Sorting on (address, stash order) and keeping the last entry per address
+ * lets the ascending array walk consume the stash with one cursor. The sort
+ * runs once per batch of puts.
+ * @return The entry count, or 0 while the stash is blocked or its epoch is
+ *         neither the current canonical-render epoch nor fresh. */
 static unsigned stash_prepare(void) {
     if (s_stash_blocked) return 0;
     if (s_stash_epoch != spyro_native_canon_epoch_stamp() &&
@@ -264,8 +271,17 @@ static void stash_census_differ(uint32_t m, const uint8_t* drawn, const uint8_t*
             openpete_frame, m, c2, o, drawn[o], end[o]);
 }
 
-/* The record the capture takes for moby `m`: the stashed one when the stash
- * holds `m`, else the live one. `m` ascends across calls. */
+/** @brief The record the capture takes for moby `m`: the stashed one when the stash holds `m`, else the live one.
+ *
+ * Advances the walk's cursor past smaller addresses, so `m` ascends across
+ * calls. A stash whose record length differs from `blob` serves nothing.
+ * Counts each served moby; with the census on, also counts and prints each
+ * one whose stashed record differs from the live one.
+ * @param w The walk's cursor and census counts.
+ * @param m The moby's PSX address.
+ * @param host The live record.
+ * @param blob Record bytes the capture takes.
+ * @return The record to capture. */
 static const void* stash_source(stash_walk_t* w, uint32_t m, const void* host, uint32_t blob) {
     while (w->cur < w->n && s_stash_ent[w->cur].key < m) ++w->cur;
     if (w->cur >= w->n || s_stash_ent[w->cur].key != m || s_stash_len != blob) return host;
@@ -387,13 +403,7 @@ void game_interp_capture_glow_pool(void) {
     }
 }
 
-/* Zoe's zap pool (game_layout.zap): 8 records of `stride` bytes, the head
- * world XYZ at `head_off`, the tail twelve bytes on, and a packed word at
- * `packed_off` whose byte 0 is the segment count and 0 on a free slot. The
- * routine projects the chain between those two points under the tick's camera
- * and emits the screen triangles itself, so a sub-tick present that replays
- * them needs the record's previous head and tail to rebase the ribbon's two
- * ends onto the pose it shows. Read-only against guest RAM. */
+/* Zap pool walk; see interp_regions_gen.h. */
 void game_interp_capture_zap_pool(void) {
     if (!game_layout.zap.pool || !game_layout.zap.stride) return;
     const uint32_t stride = game_layout.zap.stride;

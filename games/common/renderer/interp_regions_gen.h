@@ -31,17 +31,30 @@ typedef struct game_interp_row {
                              * runahead (openpete_interp_region_t.ra_commit) */
 } game_interp_row_t;
 
-/* Append rows in table order. Returns the index of the first row added, or -1
- * when nothing was added (every row skipped, or the ring's region cap reached). */
+/** @brief Append descriptor rows to the region table in table order.
+ *
+ * Each row goes through game_interp_rows_add_one, so a row with a null name,
+ * a zero address or a zero length is skipped, and a row past the ring's
+ * region cap (OPENPETE_INTERP_MAX_REGIONS) is dropped.
+ * @param rows The descriptor rows; NULL adds nothing.
+ * @param count Number of rows.
+ * @return The index of the first row added, or -1 when nothing was added. */
 int game_interp_rows_add(const game_interp_row_t* rows, unsigned count);
 int game_interp_rows_add_one(const char* name, uint32_t addr, uint32_t length,
                              int ra_commit);
 
-/* Hand the accumulated table to the ring. Call once, after every add. */
+/** @brief Hand the accumulated region table to the ring.
+ *
+ * Passes the table to openpete_interp_register_regions. With
+ * OPENPETE_INTERP_REGION_CENSUS set, the first call also registers the census
+ * table print at exit. Call once, after every add. */
 void game_interp_rows_commit(void);
 
-/* The ring region index of a registered row, or -1 when the game did not
- * register it. */
+/** @brief The ring region index of a registered row, looked up by name.
+ *
+ * A linear string compare over the table in registration order.
+ * @param name The row's name; NULL resolves to -1.
+ * @return The region index, or -1 when the game did not register the row. */
 int game_interp_row_index(const char* name);
 
 /* The camera's ring row. Every game registers its draw-time camera transform
@@ -69,15 +82,24 @@ int game_interp_row_index(const char* name);
  * openpete_interp_objs_end_tick(); game_interp_register_common() does. */
 void game_interp_capture_moby_array(void);
 
-/* Draw-time records for game_interp_capture_moby_array(). A draw hook calls
- * _begin(), then _put() per moby the draw read, while the records hold the
- * state the draw left and no later routine of the tick has written them;
- * while the draw's canonical-render epoch is in flight or last committed, the
- * capture takes the stashed record for those mobys instead of the live one. A
- * _begin() in a later epoch replaces the stash; one on a speculative pass
- * blocks it until the next committed _begin(), and _put() is then ignored.
+/** @brief Open the draw-time moby stash for the current canonical-render epoch.
+ *
+ * A game's draw hook calls this, then game_interp_moby_stash_put per moby the
+ * draw read, while the records hold the state the draw left and no later
+ * routine of the tick has written them. While the stash's epoch is in flight
+ * or the last committed one, game_interp_capture_moby_array takes the stashed
+ * record for those mobys instead of the live one. A call in a later epoch than
+ * the stash's, or the first call after a block, empties the stash; calls in
+ * one epoch add to it. A call on a speculative pass blocks the stash: puts are
+ * ignored and the capture reads live RAM until the next non-speculative call.
  * Host memory only. */
 void game_interp_moby_stash_begin(void);
+/** @brief Copy one moby's record, as the draw left it, into the draw-time stash.
+ *
+ * Ignored while the stash is blocked or holds 1024 records, and for an
+ * address that does not resolve. The copy is one moby record long; a change
+ * of that length empties the stash, and a later put of the same moby wins.
+ * @param moby The moby's PSX address. */
 void game_interp_moby_stash_put(uint32_t moby);
 
 /** @brief Snapshot one record per active slot of the game's particle pool, keyed by the record's PSX address.
@@ -106,9 +128,17 @@ void game_interp_capture_particle_pool(void);
 void game_interp_capture_glint_pool(void);
 void game_interp_capture_glow_pool(void);
 
-/* Snapshot one whole record per live slot of Zoe's zap pool (game_layout.zap:
- * pool, slots, stride, packed_off), keyed by the record's PSX address, so the
- * sub-tick replay of its ribbon has a previous head and tail to rebase onto. */
+/** @brief Snapshot one record per live slot of Zoe's zap pool, keyed by the record's PSX address.
+ *
+ * The pool (game_layout.zap) is `slots` records of `stride` bytes: the head
+ * world XYZ at `head_off`, the tail twelve bytes on, and a packed word at
+ * `packed_off` whose byte 0 is the segment count and 0 on a free slot, which
+ * is skipped. Each record is captured whole, up to the store's blob size. The
+ * routine projects the chain between head and tail under the tick's camera
+ * and emits the screen triangles itself, so the sub-tick replay needs each
+ * record's previous head and tail to rebase the ribbon's two ends onto.
+ * Reached through game_interp_capture_feeder_pools. Read-only against guest
+ * RAM. */
 void game_interp_capture_zap_pool(void);
 
 /** @brief Snapshot every live tracer ribbon record and every vertex of the tracer mesh lists the most recent mesh draw read.
@@ -130,18 +160,33 @@ void game_interp_capture_tracer_pool(void);
  * not locate is skipped by its own walk. */
 void game_interp_capture_feeder_pools(void);
 
-/* Register a game's interp table and per-object capture in the shared shape:
- * the camera row (GAME_INTERP_CAM_ROW, `cam_length` bytes from
- * game_layout.cam.base, presented from the committed timeline under runahead)
- * first so it is region 0, then `rows`, then commit. The installed per-tick
- * capture runs the moby-array walk, then `extra_pools` (a game's pools outside
- * that array; NULL when it has none), then the env-anim scroll descriptors. */
+/** @brief Register a game's interp region table and per-object capture in the shared shape.
+ *
+ * Adds the camera row (GAME_INTERP_CAM_ROW, `cam_length` bytes from
+ * game_layout.cam.base, presented from the committed timeline under
+ * runahead) first so it is region 0, then `rows`, then commits. The
+ * per-object capture it installs runs, between
+ * openpete_interp_objs_begin_tick and openpete_interp_objs_end_tick, the
+ * moby-array walk, then `extra_pools`, then the env-anim scroll descriptors.
+ * The store's blob is the longer of the moby and tracer-ribbon strides, over
+ * OPENPETE_INTERP_OBJ_SLOTS slots.
+ * @param rows The game's plain-global rows.
+ * @param count Number of rows.
+ * @param cam_length Bytes of the camera row.
+ * @param extra_pools The game's walk of pools outside the moby array, or NULL
+ *        when it has none. */
 void game_interp_register_common(const game_interp_row_t* rows, unsigned count,
                                  uint32_t cam_length, void (*extra_pools)(void));
 
-/* Register the game's per-object capture callback. Routed through this layer
- * so the region census (OPENPETE_INTERP_REGION_CENSUS) gets the per-tick hook
- * it samples on: the ring's own capture runs immediately before this callback. */
+/** @brief Register the game's per-object capture callback with the ring.
+ *
+ * Routed through this layer so the region census
+ * (OPENPETE_INTERP_REGION_CENSUS) gets a per-tick hook: with the census on,
+ * the ring calls a wrapper that samples every region and then runs `fn`. The
+ * ring's own region capture runs immediately before the callback.
+ * @param fn The game's per-object capture.
+ * @param blob_bytes Bytes stored per object.
+ * @param slots Object slots in the store. */
 void game_interp_rows_obj_capture(openpete_interp_obj_capture_fn fn,
                                   uint32_t blob_bytes, uint32_t slots);
 
