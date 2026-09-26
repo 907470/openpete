@@ -76,6 +76,16 @@
       }
     },
     {
+      "name": "linux-release-container",
+      "displayName": "linux-release inside the capture image (docs/linux-capture.Dockerfile)",
+      "inherits": "linux-release",
+      "binaryDir": "${sourceDir}/build/linux-release-container",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "/usr/bin/gcc-11",
+        "CMAKE_CXX_COMPILER": "/usr/bin/g++-11"
+      }
+    },
+    {
       "name": "windows-mingw-shared",
       "displayName": "windows-mingw + shared recomp module (distribution D1)",
       "inherits": "windows-mingw",
@@ -113,6 +123,10 @@
     {
       "name": "linux-release-shared",
       "configurePreset": "linux-release-shared"
+    },
+    {
+      "name": "linux-release-container",
+      "configurePreset": "linux-release-container"
     },
     {
       "name": "windows-mingw-shared",

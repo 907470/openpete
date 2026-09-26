@@ -165,7 +165,7 @@ irc=$?
 # skipped below.
 crc=64
 if [[ "$PG_TIER" == "presentation" ]]; then
-  tests/harness/check_credits_interp.sh "$GAME_ARG"
+  PG_BUILD_DIR="$BUILD_DIR" tests/harness/check_credits_interp.sh "$GAME_ARG"
   crc=$?
 fi
 
