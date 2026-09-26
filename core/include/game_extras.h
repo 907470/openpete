@@ -55,13 +55,17 @@ void game_on_overlay_init(CPUState* cpu);     /* one-time, post-WadInit */
  * preamble fixes, known-bad-instruction workarounds, etc. */
 void game_apply_runtime_quirks(CPUState* cpu);
 
-/* --- Post-boot, pre-execution ---
- * Fires once after the EXE image is resident in guest RAM and after any
- * host-side seeding, but before the game fiber is created, so no guest
- * instruction has run. Use it to snapshot EXE .data the engine intends
- * to overwrite later: a snapshot taken any later can capture a value the
- * engine itself wrote, and a savestate load can replace the RAM it would
- * have read. */
+/* --- Post-boot, pre-execution --- */
+/** @brief Run the game's one-time boot setup once the EXE image is in guest RAM, before any guest instruction runs.
+ *
+ * The host loop calls it after the EXE image and the host-side seed blocks
+ * are in guest RAM and before the game fiber is created, so no guest
+ * instruction has run and no --state-load-on-frame restore has happened.
+ * A game uses it to snapshot EXE .data the engine overwrites later (a
+ * snapshot taken later can capture a value the engine itself wrote, and a
+ * savestate load can replace the RAM it would have read), to register the
+ * overlay-resync callback, and to install the write census.
+ * @param cpu Guest CPU state. */
 void game_on_boot(CPUState* cpu);
 
 /* --- Per-frame callbacks (rare; e.g., DMA timing hacks).
@@ -79,22 +83,31 @@ void game_on_frame(CPUState* cpu, uint32_t frame_counter);
  * need to be aligned with the hash log's exact timing. */
 void game_on_hash_emit(uint32_t frame);
 
-/* --- Save-state resync hook ---
- * Called from core's save-state loader AFTER cpu/RAM/scratch have been
- * restored, BEFORE the game fiber resumes. Per-game impl resyncs any
- * host-side state that mirrors RAM-resident game state — for Spyro that
- * means re-pointing the active-overlay dispatcher at whichever overlay
- * id is currently in RAM at the well-known marker word. Without this
- * the dispatcher keeps routing into the previous level's overlay and
- * the game hangs on the next overlay-resident call. */
+/* --- Save-state resync hook --- */
+/** @brief Resync host-side state that mirrors guest RAM after a savestate restore.
+ *
+ * Both savestate loaders call it after CPU, RAM and scratch are restored
+ * and before the game fiber resumes: the file loader before
+ * game_state_extra_load, the in-memory loader after it, and the in-memory
+ * loader skips it on a quiet restore (runahead's per-tick rollback). The
+ * Spyro implementations re-point the active-overlay dispatcher at the
+ * overlay whose id word is resident in the restored RAM; without that the
+ * dispatcher routes overlay-window calls into the previous overlay's
+ * translated code.
+ * @param cpu Guest CPU state. */
 void game_on_state_loaded(CPUState* cpu);
 
-/* --- Game-side extra savestate payload ---
- * Small per-game host state that must travel with the state blob but is
- * not guest RAM (e.g. Spyro's WAD-overlay append cursor — a host-side
- * disc cursor the guest's next mod-asset read depends on). Fixed size per
- * game build; core writes/reads it as an opaque section. `size` may be 0
- * (no extra state). Load is called AFTER game_on_state_loaded. */
+/* --- Game-side extra savestate payload --- */
+/** @brief Return the byte size of the game's host-side savestate payload.
+ *
+ * The payload is per-game host state that travels with every snapshot but
+ * is not guest RAM: the shared thunk layer's latch pack, and on Spyro 1
+ * also the WAD-overlay disc cursor the guest's next mod-asset read depends
+ * on. The size is fixed per game build and may be 0; core writes and reads
+ * the payload as an opaque section through game_state_extra_save and
+ * game_state_extra_load. The file loader calls game_state_extra_load after
+ * game_on_state_loaded, the in-memory loader before it.
+ * @return Payload size in bytes. */
 uint32_t game_state_extra_size(void);
 void     game_state_extra_save(void* dst);            /* dst has extra_size bytes */
 void     game_state_extra_load(const void* src, uint32_t size);

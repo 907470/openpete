@@ -12,11 +12,13 @@
 #include "psyq/psyq_game_hooks.h"
 #include "write_census.h"
 
-/* The resident-overlay id, re-derived from the id word at the head of the
- * overlay region at the moment it is asked for. A feature hook on an address
- * inside the overlay window is qualified by this value, and a tracker updated
- * on a load event instead would be stale here: an overlay staged into a
- * scratch buffer and copied into place arrives with no disc read naming it. */
+/** @brief Return the resident overlay's id, re-derived from the id word at the head of the overlay region.
+ *
+ * It is the feature registry's overlay probe: a feature hook on an address
+ * inside the overlay window is qualified by this value. A tracker updated
+ * only on a load event would be stale here, since an overlay staged into a
+ * scratch buffer and copied into place arrives with no disc read naming it.
+ * @return The overlay id, or 0 while no registered overlay id has been read. */
 static uint32_t resident_overlay_id(void) {
     psyq_overlay_resync_from_ram();
     return spyro_get_active_overlay_magic();
@@ -34,9 +36,7 @@ void game_on_boot(CPUState* cpu) {
     write_census_install(cpu);
 }
 
-/* Re-point the dispatcher after a restore: the overlay resident in the
- * restored RAM decides which dispatcher is valid, and the id is the first word
- * of the overlay region. */
+/* The id of the resident overlay is the first word of the overlay region. */
 void game_on_state_loaded(CPUState* cpu) {
     psyq_overlay_resync_from_ram();
     (void)cpu;

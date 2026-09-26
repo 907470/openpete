@@ -60,12 +60,27 @@ typedef struct {
     uint8_t  n_sregs;
 } psyq_game_frame_t;
 
-/* Fill `out` and return 1 if this game mirrors that site; 0 to mirror nothing. */
+/** @brief Describe the stack frame a real PSYQ function leaves at a site, for the thunk to replay.
+ *
+ * psyq_mirror_stack_frame writes ra at ra_off and the first n_sregs saved
+ * registers from s0 at offset 16 upward into a frame of frame_size bytes
+ * below the current sp, then leaves sp unchanged, so the empty C thunk
+ * leaves the RAM bytes the PSYQ prologue would.
+ * @param site The PSYQ function whose prologue is replayed.
+ * @param out Receives the frame descriptor when the return is 1.
+ * @return 1 when this game mirrors that site, 0 to mirror nothing. */
 int psyq_game_stack_frame(psyq_frame_site_t site, psyq_game_frame_t* out);
 
 /* --- PSYQ-internal RAM mirrors ----------------------------------------- */
 
-/* Each writes one PSYQ library's own structures at this game's addresses. */
+/* Each mirror writes one PSYQ library's own structures at this game's
+ * addresses. */
+/** @brief Write the RAM effects of PSYQ's __main other than its stack frame.
+ *
+ * psyq___main calls it before replaying __main's frame. Spyro 1 sets the
+ * library's initialized flag at 0x800730BC to 1 when it reads 0; the
+ * default writes nothing.
+ * @param cpu Guest CPU state. */
 void psyq_game_mirror_main(CPUState* cpu);
 void psyq_game_mirror_resetgraph(CPUState* cpu, int mode);
 void psyq_game_mirror_vsync_callback(CPUState* cpu, uint32_t cb);
@@ -78,9 +93,12 @@ void psyq_game_mirror_memcard_init(CPUState* cpu);
  * correct as a generator, just not observable in guest RAM. */
 uint32_t psyq_game_rand_seed_addr(void);
 
-/* Root counter 2's count as the game reads it at boot (0x1F801120, an
- * `lhu`) to seed rand: the value the hardware reference produced on the
- * captured boot, 0 for a game that never reads it. */
+/** @brief Return root counter 2's count as the game's boot reads it (0x1F801120, an `lhu`) to seed rand.
+ *
+ * The value is the one the hardware reference produced on the captured
+ * boot; game_main passes it to openpete_psx_set_root_counter2 before the
+ * run.
+ * @return The count, or 0 for a game that never reads it. */
 uint16_t psyq_game_root_counter2(void);
 
 /* --- Game feature couplings -------------------------------------------- */
@@ -91,15 +109,21 @@ uint16_t psyq_game_root_counter2(void);
  * translated code. */
 uint32_t psyq_game_overlay_vaddr(void);
 
-/* libgpu's own environment block: 128 bytes holding the GPU type, the VRAM
- * size, a copy of the current DRAWENV at +0x10 (0x5C bytes) and of the current
- * DISPENV at +0x6C (0x14 bytes), which PutDrawEnv and PutDispEnv refresh. 0
- * when the game's block is not located. */
+/** @brief Return the address of libgpu's 128-byte environment block.
+ *
+ * The block holds the GPU type, the VRAM size, a copy of the current
+ * DRAWENV at +0x10 (0x5C bytes) and of the current DISPENV at +0x6C (0x14
+ * bytes). The PutDrawEnv and PutDispEnv thunks refresh the copies, and the
+ * ClearImage mirror reads the VRAM size from it.
+ * @return The block's address, or 0 when the game's block is not located. */
 uint32_t psyq_game_libgpu_env_addr(void);
 
-/* libgpu's fill-packet block, the 13 words its ClearImage builds and sends
- * (tag, draw-area and fill primitives, restore of the current draw area). 0
- * when not located. */
+/** @brief Return the address of libgpu's fill-packet block, the 13 words its ClearImage builds and sends.
+ *
+ * The words are the tag, the draw-area and fill primitives, and the restore
+ * of the current draw area. The ClearImage mirror writes nothing unless both
+ * this block and psyq_game_libgpu_env_addr() are located.
+ * @return The block's address, or 0 when not located. */
 uint32_t psyq_game_libgpu_clear_block_addr(void);
 
 /* libcd's state block (game_identity.c, from recomp.conf LIBCD_BLOCK_ADDR):
@@ -108,55 +132,84 @@ uint32_t psyq_game_libgpu_clear_block_addr(void);
  * CdStatus, CdLastPos, CdMode and CdLastCom read. */
 uint32_t psyq_game_libcd_block_addr(void);
 
-/* Asset overlay: a game may redirect a disc read at its own granularity.
- * setloc takes the CdlLOC the game passed to CdControl; apply is handed the
- * landed sector buffer so the game can substitute its own bytes. */
+/* Asset overlay: a game may redirect a disc read at its own granularity. */
+/** @brief Receive the position of every CdlSetloc, so the game's asset overlay knows where the next read starts.
+ *
+ * cd_command_host calls it from every CdControl entry for a CdlSetloc with
+ * a parameter, since CdRead carries no location. Spyro 1 converts it to a
+ * sector and passes it to mod_wad_setloc.
+ * @param cdl_loc The CdlLOC the game passed to CdControl, as a host pointer. */
 void psyq_game_cd_setloc(const void* cdl_loc);
+/** @brief Let the game substitute its own bytes in a data read's landed sector buffer.
+ *
+ * psyq_CdRead calls it after the read has drained and before the game's
+ * loader sees the bytes. Spyro 1 passes it to mod_wad_apply.
+ * @param buf The landed sectors, as a host pointer.
+ * @param sectors Sector count of the read. */
 void psyq_game_cd_apply_buf(unsigned char* buf, int sectors);
 
-/* Called after a disc read's completion callback has run, so a game can check
- * its own read-in-flight bookkeeping actually cleared. */
+/** @brief Let the game check its read-in-flight bookkeeping after a data read's completion callback has run.
+ *
+ * Spyro 1 logs a warning when g_CdState.m_IsReading is still set.
+ * @param cpu Guest CPU state.
+ * @param read_cb The guest completion callback registered through the
+ *        thunk, 0 when none. */
 void psyq_game_cd_read_done(CPUState* cpu, uint32_t read_cb);
 
 /* Level-load delay (openpete_cd_load_delay): every level load costs a fixed
  * number of VBLs of guest time, spent by deferring the completion of the
  * load's reads. The thunk layer opens a budget at the first read of a load
  * and defers each read of that load by up to the cap until the budget is
- * spent.
+ * spent. */
+/** @brief Classify the data read being issued as part of a level load the delay budget applies to.
  *
- * cd_read_in_load: 1 when the read being issued belongs to a level load the
- * game waits on from its main loop, returning to VSync between polls; the
- * deferred completion fires from the VBL, so a read the game spins on in
- * guest code without a VBL never completes under a delay and must answer 0.
- * A load begins at a read answering 1 after one answering 0.
- *
- * cd_read_delay_cap: the most VBLs one read may stay in flight, below the
- * game's own retry timeout (the count after which its loader re-issues the
- * read); 0 = no per-read cap. */
+ * A read belongs to a load when the game waits on it from its main loop,
+ * returning to VSync between polls. The deferred completion fires from the
+ * VBL, so a read the game spins on in guest code without a VBL never
+ * completes under a delay and must answer 0. A load begins at a read
+ * answering 1 after one answering 0.
+ * @param cpu Guest CPU state.
+ * @return 1 when the read is part of a level load, else 0. */
 int      psyq_game_cd_read_in_load(CPUState* cpu);
+/** @brief Return the most VBLs one read of a level load may stay in flight.
+ *
+ * The cap stays below the game's own retry timeout, the count after which
+ * its loader re-issues the read.
+ * @return The cap in VBLs, or 0 for no per-read cap. */
 uint32_t psyq_game_cd_read_delay_cap(void);
 
-/* The load window as the oracle sees it. load_window_word: the guest word
- * whose value says whether the game's loader is running (0 = the game has
- * no such word); load_window_active(value): 1 while that value means a
- * load. The reference records every store to the word (the golden's
- * .watch sibling) and openpete samples it at every anchor hit; a loader
- * whose ticks are CPU time (a checksum walk sliced per frame) takes a
- * different number of ticks on each side, so the verifier compares no
- * record inside the window and re-aligns the record index at its end. */
+/* The load window as the oracle sees it. The reference records every store
+ * to the game's loader-state word (the golden's .watch sibling) and
+ * openpete samples it at every anchor hit; a loader whose ticks are CPU time
+ * (a checksum walk sliced per tick) takes a different number of ticks on
+ * each side, so the verifier compares no record inside the window and
+ * re-aligns the record index at its end. */
+/** @brief Return the address of the guest word whose value says whether the game's loader is running.
+ *
+ * psyq_sched_anchor reads it at every anchor hit and passes the value to
+ * openpete_sched_anchor_window.
+ * @return The word's address, or 0 when the game has no such word. */
 uint32_t psyq_game_load_window_word(void);
+/** @brief Whether a value of the loader-state word means a load is running.
+ *
+ * @param value A value of the word psyq_game_load_window_word() names.
+ * @return 1 while the value means a load, else 0. */
 int      psyq_game_load_window_active(uint32_t value);
 
-/* The lowest address of code that drives the CD-ROM controller's registers
- * itself (an overlay's disc check); commands issued from below it are
- * libcd's. 0xFFFFFFFF: the game has no such code. */
+/** @brief Return the lowest address of code that drives the CD-ROM controller's registers itself (an overlay's disc check).
+ *
+ * The CD-ROM MMIO model treats a command issued from below it as libcd's.
+ * The VBL body passes it to openpete_cdrom_mmio_set_raw_pc_min once.
+ * @return The address, or 0xFFFFFFFF when the game has no such code. */
 uint32_t psyq_game_cd_raw_pc_min(void);
 
-/* The call site of a CdSync poll the game makes only after it has seen a
- * data read's completion callback (the not-in-flight branch of its
- * loader's poll). A row of the reference's at this site in the record a
- * completion is deferred to places the callback before the game's flag
- * read of that tick. 0: no such site. */
+/** @brief Return the return address of a CdSync poll the game makes only after it has seen a data read's completion callback.
+ *
+ * The poll is the not-in-flight branch of the game's loader poll. A row of
+ * the reference's at this site, in the record a completion is deferred to,
+ * places the callback before the game's flag read of that tick, and the
+ * deferred completion is delivered after the call that row answers.
+ * @return The return address, or 0 when the game has no such site. */
 uint32_t psyq_game_cd_done_witness_ra(void);
 
 /* Music route for a streaming read issued under an XA mode. The shared body
@@ -194,15 +247,27 @@ int  psyq_game_render_path_addr_visible(uint32_t addr);
  * into the overlay region rather than read straight into it. */
 void psyq_overlay_resync_from_ram(void);
 
-/* Sound-effect name tables, registered with the sfx pack when a game has them.
- * slot_names resolves an SPU sample address back to the game's own slot names
- * and returns how many it wrote; 0 when the game names no sounds. */
+/** @brief Register the game's sound-effect tables with the sfx pack and the mod layer.
+ *
+ * The SpuInit and SpuWrite thunks call it on every entry, so it must be
+ * idempotent. Spyro 1 installs its pitch reader and slot-name resolver in
+ * the sfx pack once and sets its canonical sound table in the mod layer on
+ * every call; the default does nothing. */
 void psyq_game_sfx_arm(void);
 
-/* The transfer length that means "a whole new level sound bank", as opposed to
- * a smaller write landing over part of it. A game that has not measured it
- * returns 0, and every transfer is then treated as a partial write. */
+/** @brief Return the SPU transfer length that means a whole new level sound bank, as opposed to a smaller write landing over part of it.
+ *
+ * A SpuWrite of this length bumps the sfx pack's generation and stops
+ * orphaned voices; any other length invalidates only the range it covers.
+ * @return The length in bytes, or 0 when the game has not measured it, in
+ *         which case every transfer is a partial write. */
 unsigned psyq_game_spu_bank_blast_len(void);
+/** @brief Resolve an SPU sample address to the game's own sound-effect slot names.
+ *
+ * @param spu_addr SPU RAM address of the sample.
+ * @param out Receives up to `max` name pointers.
+ * @param max Capacity of `out`.
+ * @return How many names were written; 0 when the game names no sounds. */
 int  psyq_game_sfx_slot_names(unsigned spu_addr, const char** out, int max);
 
 #ifdef __cplusplus

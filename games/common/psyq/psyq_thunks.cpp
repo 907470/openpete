@@ -137,9 +137,13 @@ typedef struct {
 static saved_ot_t  s_ot_buf[1];
 static saved_ot_t* g_ot_cur  = &s_ot_buf[0];  /* built this DrawOTag */
 
-/* Display walk: parse the just-captured OT through PsyCross
- * (bit-original PSX presentation; the lagged/matcher path is gone).
- * Caller owns PsyX BeginScene/EndScene framing. */
+/** @brief Draw the OT the last DrawOTag captured, through PsyCross's primitive parser.
+ *
+ * Clears PsyCross's draw splits, parses the captured chain from its first
+ * slot, and draws the splits; nothing is drawn when the capture holds no
+ * slot. The caller owns the PsyX BeginScene/EndScene framing, and the
+ * DrawOTag thunk calls it only while PsyCross renders
+ * (openpete_psycross_renders). */
 extern "C" void openpete_render_walk_ot(void) {
     extern void ClearSplits(void);
     extern void ParsePrimitivesLinkedList(u_long* p, int singlePrimitive);
@@ -196,12 +200,16 @@ static uint32_t s_cnt_mode_rt_cleared = 0;
 static uint32_t s_cnt_reads_rt_clear  = 0;
 static uint32_t s_cnt_stream_starts   = 0;
 
-/* libcd keeps the drive's last status byte, the last CdlSetloc position, the
- * mode byte and the last command in a block of its own data that CdStatus,
- * CdLastPos, CdMode and CdLastCom read; a game that translates those getters
- * reads the block directly. The thunks write it where the library would.
- * Status carries the drive's motor-on bit always, its reading bit while a
- * streaming read runs, and never the shell-open, seek, or error bits. */
+/** @brief Write one byte of libcd's state block in guest RAM.
+ *
+ * libcd keeps the drive's last status byte (+0x0C), the last CdlSetloc
+ * position (+0x18, 4 bytes), the mode byte (+0x1C) and the last command
+ * (+0x1D) in a block of its own data that CdStatus, CdLastPos, CdMode and
+ * CdLastCom read; a game that translates those getters reads the block
+ * directly, so the thunks write it where the library would. Nothing is
+ * written when psyq_game_libcd_block_addr() is 0.
+ * @param off Byte offset in the block.
+ * @param v The byte. */
 static void cd_mirror_byte(uint32_t off, uint8_t v) {
     uint32_t base = psyq_game_libcd_block_addr();
     if (base == 0u) return;
@@ -218,12 +226,16 @@ static void cd_mirror_com(uint8_t com)    { cd_mirror_byte(0x1Du, com); }
 static void cd_mirror_pos(const u_char* loc) {
     for (uint32_t i = 0; i < 4u; i++) cd_mirror_byte(0x18u + i, loc[i]);
 }
-/* The status byte libcd stores from a command's first response, which
- * carries the drive's status at the acknowledgement for every command except
- * the two location queries, whose responses are the position. A CdlReadS is
- * acknowledged before its reading starts, so the reading bit appears only
- * through a later command; a stream never polled with a status command
- * keeps the idle value. */
+/** @brief Return the model's drive status for a command's first response: motor-on (0x02), plus reading (0x20) while a streaming read runs.
+ *
+ * libcd stores the status from a command's first response for every command
+ * except the two location queries, whose responses are the position. The
+ * model never sets the shell-open, seek or error bits; cd_command_host uses
+ * this value only when the golden's controller sidecar holds no reference
+ * response. A CdlReadS is acknowledged before its reading starts, so the
+ * reading bit appears only through a later command; a stream never polled
+ * with a status command keeps the idle value.
+ * @return The status byte. */
 static uint8_t cd_live_status(void) {
     return (uint8_t)(0x02u | (s_cd_reading ? 0x20u : 0u));
 }
@@ -662,15 +674,26 @@ static uint32_t s_cd_load_prev     = 0;  /* in_load of the previous read (edge) 
 #define PAD_MAINMODE_VBLS 7u
 static uint32_t s_pad_busy_vbls = 0;     /* vsyncs left in the current command sequence */
 static uint32_t s_pad_seq_vbls  = 0;     /* the sequence's length */
-/* A request is refused while a sequence is pending or running. */
+/** @brief Whether a pad command sequence is pending or running, during which a new request is refused.
+ *
+ * @return 1 while vsyncs of the sequence remain, else 0. */
 static int pad_busy(void) { return s_pad_busy_vbls != 0u; }
-/* PadGetState reports the sequence only once the handler has sent its
- * first command: until that vsync a pending request leaves the pad
- * stable. */
+/** @brief Whether PadGetState reports a running command sequence (PadStateExecCmd).
+ *
+ * The handler sends a sequence's first command at the first vsync after the
+ * request; until then a pending request leaves the pad stable.
+ * @return 1 once the first command is sent and vsyncs remain, else 0. */
 static int pad_exec(void) { return s_pad_busy_vbls != 0u && s_pad_busy_vbls != s_pad_seq_vbls; }
 static void pad_busy_tick(uint32_t vbls) { s_pad_busy_vbls = (s_pad_busy_vbls > vbls) ? s_pad_busy_vbls - vbls : 0u; }
 static void pad_seq_start(uint32_t vbls) { s_pad_busy_vbls = s_pad_seq_vbls = vbls; }
-/* How many of the next `vbls` handler vsyncs write the pad buffer. */
+/** @brief Count how many of the next `vbls` handler vsyncs write the pad buffer.
+ *
+ * With no sequence running every vsync writes it. Inside a sequence a vsync
+ * writes it when the remaining count at it is the sequence length or one
+ * less, or 2 or fewer; the other vsyncs follow commands sent in
+ * configuration mode, which carry no pad data.
+ * @param vbls Handler vsyncs to count over.
+ * @return The number that write the buffer. */
 static int pad_polls(uint32_t vbls) {
     int n = 0;
     for (uint32_t i = 0; i < vbls; i++) {
@@ -687,17 +710,24 @@ extern "C" uint32_t openpete_psxtrace_anchor_hits;
  * CdControl, or the CdSync(0) after a CdControlF, spins in libcd until the
  * drive's second response arrives; the VBLs of that spin pass there. */
 static uint32_t s_cd_pending_done = 0, s_cd_pending_rec = 0;
-/* Whether an event the reference recorded in record `rec` at VBLANK `vbl`
- * has happened at openpete's position `vbls` VBLANKs ahead of the current
- * one: everything of an earlier record has (its hash saw it), and within
- * the event's own record it has once the position reaches its VBLANK. At
- * the anchor the current record has already advanced to the one starting
- * there, whose events all follow the hash. */
+/** @brief Whether an event the reference recorded in record `rec` at VBLANK `vbl` has happened at openpete's position `vbls` VBLANKs ahead of the current one.
+ *
+ * Every event of an earlier record has happened (its hash saw it); within
+ * the event's own record it has once the position reaches its VBLANK. At the
+ * anchor the current record has already advanced to the one starting there,
+ * whose events all follow the hash, so no event of it has happened.
+ * @param rec The event's record.
+ * @param vbl The event's VBLANK on the reference.
+ * @param vbls VBLANKs ahead of the current position.
+ * @return 1 when the event has happened, else 0. */
 static int cd_ref_seen(uint32_t rec, uint32_t vbl, uint32_t vbls) {
     uint32_t cur = openpete_sched_current_record();
     return cur > rec || (!s_cd_at_anchor && cur == rec && openpete_sched_pos() + vbls >= vbl);
 }
-/* The completion reached: libcd's status byte is the second response's. */
+/** @brief Complete the pending libcd command: its status byte becomes the second response's.
+ *
+ * The status is the reference's second response to the last libcd command,
+ * from the golden's controller sidecar. */
 static void cd_pending_complete(void) {
     s_cd_pending_done = 0;
     cd_mirror_status(openpete_cdrom_mmio_libcd_last_done_status());
@@ -709,7 +739,18 @@ static void cd_charge_pending(CPUState* cpu, const char* what) {
     cd_pending_complete();
 }
 
-/* The tail of a data read: the completion the game waits on. */
+/** @brief Deliver a data read's completion, the tail the game waits on.
+ *
+ * Fires the read callback: a host callback a native registrar set, else the
+ * guest handler registered through the thunk or, when libcd is translated in
+ * the image, the one in the slot at psyq_game_cd_read_cb_addr(). Then lets
+ * the game check its bookkeeping (psyq_game_cd_read_done), records libcd's
+ * closing CdlPause as the last command with the reference's response status
+ * and completion VBLANK or else the idle status, clears the streaming latch,
+ * and fires the channel-3 DMA handler. An undeferred read completes at
+ * issue; a deferred one completes when its owed VBLs or the reference's
+ * completion VBLANK are reached.
+ * @param cpu Guest CPU state. */
 static void cd_read_complete(CPUState* cpu) {
     OPL_INFO_F("cd", "read complete (hit=%u vbl=%d)", openpete_psxtrace_anchor_hits,
                SDL_GetAtomicInt(&openpete_vbl));
@@ -750,7 +791,16 @@ static void cd_read_complete(CPUState* cpu) {
     psyq_dma_complete(cpu, 3u);
 }
 
-/* The VBLs this read stays in flight: the load budget, capped per read. */
+/** @brief Return the VBLs a data read stays in flight: the level-load budget, capped per read.
+ *
+ * A read the game classifies in-load (psyq_game_cd_read_in_load) after one
+ * it did not opens the budget at openpete_cd_load_delay VBLs. Each in-load
+ * read takes up to psyq_game_cd_read_delay_cap() VBLs from it, or all of it
+ * when the cap is 0; a read not in load clears the budget and is not
+ * deferred.
+ * @param cpu Guest CPU state.
+ * @param sectors Sector count of the read, for the log line.
+ * @return VBLs to defer the read's completion. */
 static uint32_t cd_read_delay_for(CPUState* cpu, int sectors) {
     const uint32_t in_load = psyq_game_cd_read_in_load(cpu) ? 1u : 0u;
     if (in_load && !s_cd_load_prev) {
@@ -808,10 +858,12 @@ static void cd_land_tick(uint32_t vbls) {
         cd_land_sector(s_cd_land_next++);
 }
 
-/* The drive interrupts of the reference that openpete's position has
- * reached: sectors landed, the first data response's status byte, a
- * pending command's completion. Run at every waited VBLANK and at the
- * anchor, before the record's hash. */
+/** @brief Apply the reference's drive interrupts that openpete's position has reached.
+ *
+ * Lands the deferred read's sectors, mirrors the first data response's
+ * status byte, and completes a pending command. cd_defer_tick runs it at
+ * every waited VBLANK and at the anchor, before the record's hash.
+ * @param vbls VBLANKs ahead of the current position the check applies to. */
 static void cd_events_tick(uint32_t vbls) {
     cd_land_tick(vbls);
     if (s_cd_data_vbl && cd_ref_seen(s_cd_data_rec, s_cd_data_vbl, vbls)) {
@@ -918,9 +970,13 @@ extern "C" uint32_t psyq_thunk_state_bytes_for(uint32_t ver) {
     return 0u;
 }
 
-/* A pack written before the mode byte was mirrored holds an armed bit in the
- * mode field. Spyro 1 sets exactly two modes: SF|RT|Speed to stream and Speed
- * for data, so the bit widens to those. */
+/** @brief Widen the XA armed bit of a state written before the mode byte was mirrored to the drive mode it stood for.
+ *
+ * A version-1 latch pack, and Spyro 1's pre-pack savestate words, hold an
+ * armed bit in the mode field. Spyro 1 sets exactly two modes, SF|RT|Speed
+ * to stream and Speed for data, so the bit widens to those.
+ * @param armed Nonzero when the stream was armed.
+ * @return The drive mode byte. */
 static uint8_t cd_mode_from_armed_bit(uint32_t armed) {
     return armed ? (uint8_t)(CdlModeRT | CdlModeSF | CdlModeSpeed)
                  : (uint8_t)CdlModeSpeed;
@@ -1830,20 +1886,25 @@ void psyq_DrawOTag(CPUState* cpu) {
 
 /* --- libgte -------------------------------------------------------------- */
 
-/* GTE state lives in two parallel stores: psxrecomp's `cpu->gte_data[]` /
- * `cpu->gte_ctrl[]` (used by `gte_execute()` for COP2 instructions in the
- * recompiled MIPS) and PsyCross's `gteRegs.CP2D` / `gteRegs.CP2C` (used
- * by libgte funcs like SetTransMatrix). They are NOT synchronized.
+/** @brief Copy the recompiler's GTE registers into PsyCross's before a libgte call.
  *
- * Without bridging, this manifests as TR=(0,0,0) on every RTPS — Spyro
- * calls `SetTransMatrix` (writes PsyCross gteRegs), then RTPS via the
- * recompiler (reads cpu->gte_ctrl, sees zeros). Sync at the boundary. */
+ * GTE state lives in two stores that are not synchronized: psxrecomp's
+ * `cpu->gte_data[]` and `cpu->gte_ctrl[]`, which `gte_execute()` uses for
+ * COP2 instructions in the recompiled code, and PsyCross's `gteRegs.CP2D`
+ * and `gteRegs.CP2C`, which libgte functions such as SetTransMatrix use.
+ * Each libgte thunk copies all 32 data and 32 control registers in before
+ * the call and back out after it (gte_sync_psyx_to_cpu); without the bridge
+ * an RTPS after SetTransMatrix reads a zero translation.
+ * @param cpu Guest CPU state. */
 static void gte_sync_cpu_to_psyx(CPUState* cpu) {
     for (int i = 0; i < 32; i++) {
         gteRegs.CP2D.p[i].d = cpu->gte_data[i];
         gteRegs.CP2C.p[i].d = cpu->gte_ctrl[i];
     }
 }
+/** @brief Copy PsyCross's GTE registers back into the recompiler's after a libgte call.
+ *
+ * @param cpu Guest CPU state. */
 static void gte_sync_psyx_to_cpu(CPUState* cpu) {
     for (int i = 0; i < 32; i++) {
         cpu->gte_data[i] = gteRegs.CP2D.p[i].d;
@@ -2067,8 +2128,13 @@ static void cd_exit_summary(void) {
                PsyX_SPUAL_HeadBoundBreaks());
 }
 
-/* The drive's mode byte, written by CdlSetmode on any entry and by the mode
- * argument libcd's CdRead sets before its own read. */
+/** @brief Set the drive's mode byte and mirror it into libcd's state block.
+ *
+ * CdlSetmode writes it on every CdControl entry, and psyq_CdRead writes the
+ * mode libcd's CdRead sets before its own read. A write that clears
+ * CdlModeRT while it was set is counted, and the first call registers the
+ * exit summary of the music counters.
+ * @param mode The mode byte. */
 static void cd_set_mode(uint8_t mode) {
     static bool s_summary_armed = false;
     if (!s_summary_armed) {
@@ -2081,12 +2147,16 @@ static void cd_set_mode(uint8_t mode) {
     cd_mirror_mode(mode);
 }
 
-/* One host body for CdControl, CdControlB and CdControlF: mirror the drive
- * state the command writes, and own a streaming CdlReadS. `param` is a host
- * pointer or NULL. Returns 1 when the command was consumed here and must not
- * reach PsyCross (a CdlReadS that started the music stream: PsyCross's body
- * would seek the image file the XA pump owns, or on the F path start a
- * spooler thread over it), 0 when PsyCross still runs it. */
+/** @brief Run the host body shared by CdControl, CdControlB and CdControlF: mirror the drive state the command writes, and own a streaming CdlReadS.
+ *
+ * A command consumed here must not reach PsyCross: a CdlReadS that started
+ * the music stream (PsyCross's body would seek the image file the XA pump
+ * owns, or on the F path start a spooler thread over it), CdlSetmode and
+ * CdlNop.
+ * @param com The command byte.
+ * @param param The command's parameter bytes as a host pointer, or NULL.
+ * @return 1 when the command was consumed here, 0 when PsyCross still runs
+ *         it. */
 static int cd_command_host(u_char com, u_char* param) {
     g_CD_com = com;   /* CdLastCom() reports the command as issued */
     cd_mirror_com(com);
@@ -2166,10 +2236,17 @@ static int cd_command_host(u_char com, u_char* param) {
     }
 }
 
-/* Used by both psyq_CdControl (recomp path, args from cpu->aN as PSX vaddrs)
- * and openpete_CdControl (native path, args are already host pointers). The
- * native path avoids the host_to_psx round-trip that breaks when a caller
- * passes a stack-local u_char/CdlLOC buffer. */
+/** @brief Run a CdControl command: the shared host body, then PsyCross's CdControl when the host body did not consume it.
+ *
+ * psyq_CdControl (recompiled callers, arguments translated from guest
+ * addresses) and openpete_CdControl (native callers, arguments already host
+ * pointers) share it; the native path avoids the host_to_psx round trip,
+ * which fails when a caller passes a stack-local u_char or CdlLOC buffer.
+ * @param com The command byte.
+ * @param param The parameter bytes, or NULL.
+ * @param result The response buffer, or NULL.
+ * @return 1 when the host body consumed the command, else CdControl's
+ *         return. */
 static int cdcontrol_host(u_char com, u_char* param, u_char* result) {
     if (cd_command_host(com, param)) return 1;
     return CdControl(com, param, result);
@@ -2185,9 +2262,16 @@ void psyq_CdControl(CPUState* cpu) {
     cd_charge_pending(cpu, "CdControl");
 }
 
-/* Hand-written native-side thunk (matches outbound_psyq_hand entry).
- * Bypasses the cpu->aN packing so callers can pass stack-local buffers
- * that wouldn't survive host_to_psx → 0 → NULL deref. */
+/** @brief CdControl for native callers, taking host pointers.
+ *
+ * It bypasses the cpu->aN packing, so a caller can pass a stack-local
+ * buffer, which has no guest address and would translate to NULL. It logs
+ * the command and runs cdcontrol_host.
+ * @param com The command byte.
+ * @param param The parameter bytes, or NULL.
+ * @param result The response buffer, or NULL.
+ * @return 1 when the host body consumed the command, else PsyCross's
+ *         CdControl return. */
 extern "C" int openpete_CdControl(u_char com, u_char* param, u_char* result) {
     OPL_INFO_F("thunks", "CdControl com=0x%02X param=%p result=%p (native)",
                (unsigned)com, (void*)param, (void*)result);
@@ -2206,10 +2290,21 @@ void psyq_CdControlB(CPUState* cpu) {
     cd_charge_pending(cpu, "CdControlB");
 }
 
-/* `g_CD_com` is the "last command" int CdLastCom() returns. `readMode`
- * is the enum CdReadSync switches on (0=RM_DATA, 1=RM_XA_AUDIO). Both
- * are file-scope non-static globals in PsyCross/src/psx/LIBCD.C; we
- * link to them by name. (Forward declared at the top of this file.) */
+/** @brief Thunk for libcd's CdControlF, which issues a drive command without waiting for its acknowledgement.
+ *
+ * CdlGetlocP is answered here and never reaches PsyCross, whose CdControlF
+ * treats it as the start of CDDA/XA streaming and sets `readMode`
+ * (PsyCross's LIBCD.C) to RM_XA_AUDIO; Spyro's music loop issues
+ * CdControlF(CdlGetlocP, NULL) only to poll the playback position, and that
+ * mode makes the next data CdRead copy 2304-byte audio sectors over the
+ * game's 2048-byte buffer. For CdlGetlocP the thunk records the command in
+ * `g_CD_com` (what CdLastCom returns) and libcd's block and, under the
+ * golden's controller sidecar, latches the reference's 8-byte response for
+ * the CdSync that follows. Other commands run cd_command_host, then
+ * PsyCross's CdControlF when not consumed.
+ * @param cpu Guest CPU state: a0 the command, a1 the parameter address or
+ *        0; v0 receives 0 for CdlGetlocP, 1 when consumed, else PsyCross's
+ *        return. */
 
 void psyq_CdControlF(CPUState* cpu) {
     u_char com = (u_char)cpu->a0;
@@ -2416,6 +2511,10 @@ void psyq_overlay_resync_from_ram(void) {
  * The names come from the SDK's own export tables, recovered by signature
  * match; a decomp that splats the PSYQ text without symbols has none of them.
  */
+/** @brief Thunk for libcd's internal CD_sync: PsyCross's CdSync, with a scratch buffer standing in for a NULL result pointer.
+ *
+ * @param cpu Guest CPU state: a0 the mode, a1 the result address or 0; v0
+ *        receives CdSync's return. */
 void psyq_CD_sync(CPUState* cpu) {
     u_char scratch[8];
     u_char* result = (cpu->a1 != 0u) ? (u_char*)PTR(cpu->a1) : scratch;
@@ -2436,9 +2535,13 @@ void psyq_CD_init(CPUState* cpu) {
     cpu->v0 = (uint32_t)CdInit();
 }
 
-/* No drive-side queue to drain or volume register to program: PsyCross owns
- * the device and applies both host-side. */
+/** @brief Thunk for libcd's internal CD_flush, which returns 0: PsyCross owns the device and keeps no drive-side queue to drain.
+ *
+ * @param cpu Guest CPU state; v0 receives 0. */
 void psyq_CD_flush(CPUState* cpu)   { cpu->v0 = 0u; }
+/** @brief Thunk for libcd's internal CD_initvol, which returns 0: PsyCross applies the CD volume host-side and has no register to program.
+ *
+ * @param cpu Guest CPU state; v0 receives 0. */
 void psyq_CD_initvol(CPUState* cpu) { cpu->v0 = 0u; }
 
 void psyq_CdSync(CPUState* cpu) {
@@ -2578,10 +2681,13 @@ void psyq_CdMix(CPUState* cpu) {
     cpu->v0 = 1u;
 }
 
-/* Native-side bridge: post-rewriter cd.c calls CdReadCallback() expecting
- * to register a host C function. We store it for psyq_CdRead to fire
- * (instead of dispatching into recomp territory). Renamed from
- * CdReadCallback in psyq_compat.h. */
+/** @brief Register a host read-completion callback for native code; psyq_compat.h maps CdReadCallback to it.
+ *
+ * The rewritten decomp's cd.c registers a host C function through
+ * CdReadCallback. It is stored for cd_read_complete to call directly, in
+ * place of a guest handler dispatched through the recompiler.
+ * @param cb Host callback, called with the interrupt code CdlComplete and a
+ *        NULL result pointer. */
 extern "C" void openpete_CdReadCallback(native_cd_read_cb_t cb) {
     OPL_INFO_F("thunks", "openpete_CdReadCallback registered host cb=%p",
                (void*)cb);
@@ -3044,8 +3150,17 @@ size_t render_uint(uint32_t v, unsigned base, bool upper, char* out) {
     return n;
 }
 
-/* Core: format `fmt` into `dst` (capacity `cap`), pulling args from `args`.
- * Returns total length that would have been written (snprintf semantics). */
+/** @brief Format `fmt` into `dst` from MIPS o32 variadic slots, with snprintf's truncation and return semantics.
+ *
+ * Conversions `d`, `i`, `u`, `x`, `X`, `o`, `s`, `c`, `p` and `%` are
+ * rendered; an unknown conversion is emitted verbatim after a `%`. `dst` is
+ * NUL-terminated whenever `cap` is nonzero.
+ * @param dst The output buffer.
+ * @param cap Capacity of `dst` in bytes, the NUL included.
+ * @param fmt The format string, as a host pointer.
+ * @param args The slot cursor, advanced once per argument consumed.
+ * @return The length the whole output would have had, or 0 when `cap` is
+ *         0. */
 size_t format_from_mips(char* dst, size_t cap, const char* fmt, MipsArgs& args) {
     size_t pos = 0;
     if (cap == 0) return 0;

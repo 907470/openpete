@@ -37,22 +37,34 @@ extern const size_t                spyro_overlay_table_count;
 extern const uint32_t              spyro_overlay_window_lo;
 extern const uint32_t              spyro_overlay_window_hi;
 
-/* Look up an overlay by its id-magic; NULL if unknown. */
+/** @brief Look up a registry entry by overlay id.
+ *
+ * @param magic Overlay id, the first word of the overlay region.
+ * @return The entry, or NULL when no registered overlay has that id. */
 const spyro_overlay_entry_t* spyro_overlay_find(uint32_t magic);
 
-/* Set the active overlay by id-magic. No-op if magic is unknown. */
+/** @brief Make the overlay with the given id the one whose dispatcher decides overlay-window calls.
+ *
+ * An unknown id leaves the current overlay active, and the already-active
+ * id changes nothing. A change is logged at info level under `dispatch`.
+ * @param magic Overlay id. */
 void spyro_set_active_overlay_by_magic(uint32_t magic);
 
-/* Id-magic of the overlay currently resident, or 0 before any has loaded. */
+/** @brief Return the id of the overlay the dispatcher treats as resident.
+ *
+ * @return The overlay id, or 0 before any registered overlay has been set. */
 uint32_t spyro_get_active_overlay_magic(void);
 
-/* Register a callback that re-derives the resident overlay from guest RAM.
- * It is invoked before the active overlay's table is consulted, so a game
- * whose overlays can be staged elsewhere and copied into the overlay region
- * -- arriving without the disc read that would have announced them -- never
- * dispatches against the outgoing overlay's table.
- * psyq_overlay_resync_from_ram (games/common/psyq/psyq_game_hooks.h) is the
- * implementation every such game passes. */
+/** @brief Register the callback that re-derives the resident overlay from guest RAM.
+ *
+ * psx_dispatch_compiled invokes it before the active overlay's table decides
+ * a dispatch into the overlay window, so a game whose overlays can be staged
+ * elsewhere and copied into the overlay region, arriving without the disc
+ * read that would announce them, never dispatches against the outgoing
+ * overlay's table. psyq_overlay_resync_from_ram
+ * (games/common/psyq/psyq_game_hooks.h) is the implementation every such
+ * game passes; NULL disables the check.
+ * @param fn The resync callback, or NULL. */
 void spyro_overlay_set_resync(void (*fn)(void));
 
 #ifdef __cplusplus

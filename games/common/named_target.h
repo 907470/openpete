@@ -43,13 +43,27 @@ typedef struct {
  * possessive still matches a table key spelled without one. */
 #define NAMED_TARGET_DROP_APOSTROPHE 0x2u
 
-/* Print "valid <kind> names:" and one line per entry, to stderr. */
+/** @brief Print the heading "valid KIND names:" and each entry's name and id, one line each, to stderr.
+ *
+ * @param kind Noun printed in the heading ("level", "cutscene").
+ * @param tbl Table whose entries are listed. */
 void named_target_print(const char* kind, const named_target_table_t* tbl);
 
-/* Resolve `arg` against `tbl`, then `aliases` (may be NULL). Returns the
- * matched id, or -1 after printing the valid names of `tbl`. An empty or NULL
- * `arg` prints the names and returns -1, which is what `--skip-to-level` with
- * no value does. Normalisation lowercases and maps '-' to '_'. */
+/** @brief Resolve a command-line name or all-digit id against a named-target table.
+ *
+ * An all-digit `arg` is parsed as an id and returned when `tbl` holds it or
+ * NAMED_TARGET_NUMERIC_ANY is set. Any other `arg` is normalised
+ * (lowercased, '-' mapped to '_', apostrophes dropped under
+ * NAMED_TARGET_DROP_APOSTROPHE, cut at 31 bytes) and looked up in `tbl`,
+ * then in `aliases`. An empty or NULL `arg` prints the names and returns
+ * -1, which is what `--skip-to-level` with no value does; every other
+ * failure also prints the valid names of `tbl`.
+ * @param arg The command-line value, or NULL.
+ * @param kind Noun used in the printed list.
+ * @param tbl Table searched first.
+ * @param aliases Table searched after `tbl`, or NULL.
+ * @param flags NAMED_TARGET_* bits.
+ * @return The matched id, or -1. */
 int named_target_resolve(const char* arg, const char* kind,
                          const named_target_table_t* tbl,
                          const named_target_table_t* aliases,
