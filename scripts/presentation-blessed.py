@@ -479,6 +479,24 @@ def store_get(digest):
     return None
 
 
+def store_verified(digests):
+    """Subset of digests whose store blob verifies, decoded in parallel. A
+    blob whose decoded pixels do not hash to its name is deleted."""
+    want = {d for d in digests if os.path.isfile(blob_path(d))}
+    got = digest_files(blob_path(d) for d in sorted(want))
+    ok = set()
+    for d in want:
+        r = got[blob_path(d)]
+        if r and r[0] == d:
+            ok.add(d)
+        else:
+            try:
+                os.unlink(blob_path(d))
+            except OSError:
+                pass
+    return ok
+
+
 # ---- subcommands: digest, read, write, verify, store ------------------------
 
 def cmd_digest(a):
@@ -570,14 +588,9 @@ def cmd_verify(a):
         got = digs[os.path.join(src, t)]
         if got is None or got[0] != rows[t]["digest"]:
             tile_mis.append(t)
-    store_miss = []
-    checked = {}
-    for t, r in sorted(rows.items()):
-        d = r["digest"]
-        if d not in checked:
-            checked[d] = store_get(d) is not None
-        if not checked[d]:
-            store_miss.append(t)
+    in_store = store_verified({r["digest"] for r in rows.values()})
+    store_miss = [t for t, r in sorted(rows.items())
+                  if r["digest"] not in in_store]
     for t in missing:
         print("MISSING-TILE\t%s" % t)
     for t in extra:
@@ -833,11 +846,12 @@ def golden_at_rows(a, arch, src_repo, src_sha, local_cf):
                 continue
             found = True
             m = parse_manifest(data.decode(errors="replace"), mpath)
-            for r in m.rows:
-                if a.filter and a.filter not in r["tile"]:
-                    continue
+            rows = [r for r in m.rows
+                    if not a.filter or a.filter in r["tile"]]
+            in_store = store_verified({r["digest"] for r in rows})
+            for r in rows:
                 key = (game, tier, r["tile"])
-                if store_get(r["digest"]):
+                if r["digest"] in in_store:
                     lines.append((mpath, r["tile"], "store"))
                     hits.append((key, "store", r["digest"]))
                     continue
