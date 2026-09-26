@@ -11,20 +11,20 @@ config section set it.
 
 | PlayStation | Keyboard | Gamepad |
 | --- | --- | --- |
-| Cross | ++c++ <!-- id: key:pad.cross --> | South face button (Xbox A) |
-| Circle | ++v++ <!-- id: key:pad.circle --> | East face button (Xbox B) |
-| Square | ++x++ <!-- id: key:pad.square --> | West face button (Xbox X) |
-| Triangle | ++z++ <!-- id: key:pad.triangle --> | North face button (Xbox Y) |
-| D-pad | ++up++ ++down++ ++left++ ++right++ <!-- id: key:pad.dpad_up --> | D-pad |
-| Left stick | ++w++ ++a++ ++s++ ++d++ <!-- id: key:pad.stick_up --> | Left stick |
-| Start | ++enter++ <!-- id: key:pad.start --> | Start |
-| Select | ++space++ <!-- id: key:pad.select --> | Back |
-| L1 | ++shift++ (left) <!-- id: key:pad.l1 --> | Left shoulder |
-| L2 | ++ctrl++ (left) <!-- id: key:pad.l2 --> | Left trigger |
-| L3 | ++bracket-left++ <!-- id: key:pad.l3 --> | Left stick click |
-| R1 | ++shift++ (right) <!-- id: key:pad.r1 --> | Right shoulder |
-| R2 | ++ctrl++ (right) <!-- id: key:pad.r2 --> | Right trigger |
-| R3 | ++bracket-right++ <!-- id: key:pad.r3 --> | Right stick click |
+| Cross | ++c++ <!-- id: key:pad.cross home --> | South face button (Xbox A) |
+| Circle | ++v++ <!-- id: key:pad.circle home --> | East face button (Xbox B) |
+| Square | ++x++ <!-- id: key:pad.square home --> | West face button (Xbox X) |
+| Triangle | ++z++ <!-- id: key:pad.triangle home --> | North face button (Xbox Y) |
+| D-pad | ++up++ ++down++ ++left++ ++right++ <!-- id: key:pad.dpad_up home --> | D-pad |
+| Left stick | ++w++ ++a++ ++s++ ++d++ <!-- id: key:pad.stick_up home --> | Left stick |
+| Start | ++enter++ <!-- id: key:pad.start home --> | Start |
+| Select | ++space++ <!-- id: key:pad.select home --> | Back |
+| L1 | ++shift++ (left) <!-- id: key:pad.l1 home --> | Left shoulder |
+| L2 | ++ctrl++ (left) <!-- id: key:pad.l2 home --> | Left trigger |
+| L3 | ++bracket-left++ <!-- id: key:pad.l3 home --> | Left stick click |
+| R1 | ++shift++ (right) <!-- id: key:pad.r1 home --> | Right shoulder |
+| R2 | ++ctrl++ (right) <!-- id: key:pad.r2 home --> | Right trigger |
+| R3 | ++bracket-right++ <!-- id: key:pad.r3 home --> | Right stick click |
 
 Keyboard keys are positional: on a non-US layout the binding is the key in
 the position the US layout names.
@@ -40,9 +40,9 @@ gets the built-in column.
 
 | Action | Spyro 1 package | Built-in | Page |
 | --- | --- | --- | --- |
-| Open or close the settings menu | ++esc++ | ++o++ <!-- id: key:host.menu --> | [Settings menu](settings-menu.md) |
-| Quit | none | ++esc++ <!-- id: key:host.quit --> | |
-| Open or close the dev overlay | ++m++ | none (++m++ when bound) <!-- id: key:host.devui --> | [Dev overlay](dev-overlay.md) |
+| Open or close the settings menu | ++esc++ <!-- id: key:host.menu @spyro-1 --> | ++o++ <!-- id: key:host.menu --> | [Settings menu](settings-menu.md) |
+| Quit | none <!-- id: key:host.quit @spyro-1 --> | ++esc++ <!-- id: key:host.quit home --> | |
+| Open or close the dev overlay | ++m++ <!-- id: key:host.devui @spyro-1 --> | none (++m++ when bound) <!-- id: key:host.devui --> | [Dev overlay](dev-overlay.md) |
 | Toggle fullscreen | ++alt+enter++ | ++alt+enter++ | [Display](../graphics/display.md#fullscreen) |
 | Screenshot | ++f12++ | ++f12++ <!-- id: key:host.screenshot --> | [Recording](recording.md#screenshots) |
 | Savestate: save to the active slot | ++1++ | ++1++ <!-- id: key:host.savestate_save --> | [Saves](saves.md#savestates) |
@@ -54,12 +54,12 @@ gets the built-in column.
 | Fast-forward (hold) | ++tab++ | ++tab++ <!-- id: key:host.turbo --> | [Practice tools](practice-tools.md#fast-forward) |
 | Free camera on / off | ++f++, left stick click | ++f++, left stick click <!-- id: key:host.freecam --> | [Practice tools](practice-tools.md#free-camera) |
 | Drop Spyro at the free camera | ++t++ | ++t++ <!-- id: key:host.teleport --> | [Practice tools](practice-tools.md#teleport) |
-| Toggle interpolation | ++i++ | none (++i++ when bound) <!-- id: key:host.interp_toggle --> | [Smoothness](../graphics/smoothness.md#interpolation) |
-| Toggle LOD original / extended | ++l++ | none (++l++ when bound) <!-- id: key:host.lod_toggle --> | [Quality](../graphics/quality.md#level-of-detail) |
+| Toggle interpolation | ++i++ <!-- id: key:host.interp_toggle @spyro-1 --> | none (++i++ when bound) <!-- id: key:host.interp_toggle --> | [Smoothness](../graphics/smoothness.md#interpolation) |
+| Toggle LOD original / extended | ++l++ <!-- id: key:host.lod_toggle @spyro-1 --> | none (++l++ when bound) <!-- id: key:host.lod_toggle --> | [Quality](../graphics/quality.md#level-of-detail) |
 
 ++alt+enter++ is fixed. The rebindable `fullscreen` action is a second,
 single-key route to the same toggle and is unbound by default
-<!-- id: key:host.fullscreen -->.
+<!-- id: key:host.fullscreen home -->.
 
 ++esc++ closes an open settings menu or dev overlay whatever it is bound to.
 The window's close button always quits.
@@ -73,12 +73,12 @@ together.
 
 | Action | Keyboard | Gamepad |
 | --- | --- | --- |
-| Forward / back | ++w++ ++s++ <!-- id: key:host.fly_forward --> | Left stick |
+| Forward / back | ++w++ ++s++ <!-- id: key:host.fly_forward home --> | Left stick |
 | Strafe left / right | ++a++ ++d++ <!-- id: key:host.fly_left --> | Left stick |
-| Rise | ++space++ <!-- id: key:host.fly_up --> | Right shoulder |
+| Rise | ++space++ <!-- id: key:host.fly_up home --> | Right shoulder |
 | Descend | ++shift++ (left) <!-- id: key:host.fly_down --> | Left shoulder |
-| Look | ++up++ ++down++ ++left++ ++right++ <!-- id: key:host.look_up -->, mouse | Right stick |
-| Faster / slower | ++bracket-right++ ++bracket-left++ <!-- id: key:host.speed_up --> | Right trigger / left trigger |
+| Look | ++up++ ++down++ ++left++ ++right++ <!-- id: key:host.look_up home -->, mouse | Right stick |
+| Faster / slower | ++bracket-right++ ++bracket-left++ <!-- id: key:host.speed_up home --> | Right trigger / left trigger |
 
 Mouse look is scaled by `--mouse-sensitivity` <!-- id: knob:mouse_sensitivity -->
 (default 1.0 <!-- id: knob:mouse_sensitivity -->, one full turn per 8192

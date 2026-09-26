@@ -13,7 +13,7 @@ and shimmering.
 | --- | --- |
 | Settings menu | **SSAA**: **OFF**, **2X**, **3X**, **4X** |
 | Dev overlay | **Supersampling** |
-| Flag | `--ssaa N` <!-- id: knob:ssaa -->, 1 to 4 <!-- id: knob:ssaa --> |
+| Flag | `--ssaa N` <!-- id: knob:ssaa home -->, 1 to 4 <!-- id: knob:ssaa --> |
 | Default | 1 (off) <!-- id: knob:ssaa --> |
 
 The cost grows with N squared: 3X renders 9 pixels per shown pixel, 4X
@@ -30,12 +30,12 @@ everything at full detail.
 
 | Value | Effect |
 | --- | --- |
-| `original` (default <!-- id: knob:lod -->) | The game's own detail bands |
+| `original` (default <!-- id: knob:lod home -->) | The game's own detail bands |
 | `extended` | Full detail at every distance, out to the edge of the view and beyond |
 
 Settings menu **LOD** (**ORIGINAL** / **EXTENDED**), dev overlay **LOD**,
 `--lod original|extended` <!-- id: knob:lod -->. In the Spyro 1 package ++l++
-<!-- id: key:host.lod_toggle --> switches between the two. `extended` draws
+<!-- id: key:host.lod_toggle @spyro-1 home --> switches between the two. `extended` draws
 many more triangles in wide views; see [Performance](performance.md).
 
 Switching LOD also switches the fog, as below, until the fog is set by hand.

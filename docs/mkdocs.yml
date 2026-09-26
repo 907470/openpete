@@ -10,6 +10,9 @@ site_description: Documentation for openpete, the PC port of Spyro the Dragon.
 docs_dir: src
 site_dir: ../build/docs-site
 use_directory_urls: false
+# The docs map is an input of the docs tooling, not a page.
+exclude_docs: |
+  user/pages.toml
 
 theme:
   name: material
@@ -72,6 +75,41 @@ nav:
   - Home: index.md
   - User:
       - user/index.md
+      - Getting started:
+          - user/getting-started/requirements.md
+          - user/getting-started/install.md
+          - user/getting-started/first-run.md
+          - user/getting-started/dumping-your-disc.md
+      - Playing:
+          - user/playing/controls.md
+          - user/playing/settings-menu.md
+          - user/playing/saves.md
+          - user/playing/practice-tools.md
+          - user/playing/dev-overlay.md
+          - user/playing/recording.md
+      - Graphics:
+          - user/graphics/display.md
+          - user/graphics/smoothness.md
+          - user/graphics/quality.md
+          - user/graphics/retro-look.md
+          - user/graphics/performance.md
+      - Customizing:
+          - user/customizing/config-file.md
+          - user/customizing/key-bindings.md
+          - user/customizing/controllers.md
+          - user/customizing/audio.md
+          - user/customizing/texture-packs.md
+          - user/customizing/music-and-sound-packs.md
+          - user/customizing/mods.md
+      - Games:
+          - user/games/spyro-1.md
+          - user/games/spyro-2.md
+          - user/games/spyro-3.md
+      - Help:
+          - user/help/troubleshooting.md
+          - user/help/reporting-a-bug.md
+          - user/help/file-locations.md
+          - user/help/glossary.md
   - Modding: https://openpete.com/docs/modding/
   - Developer:
       - developer/README.md

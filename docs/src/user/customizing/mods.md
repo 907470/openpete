@@ -51,7 +51,7 @@ hd-textures
 my-music
 ```
 
-`--mods ID,ID`<!-- id: flag:--mods --> (config key `mods`, variable
+`--mods ID,ID`<!-- id: flag:--mods home --> (config key `mods`, variable
 `OPENPETE_MODS`) loads exactly the listed mods in that order and ignores
 `enabled.txt`. `--mods ""` loads none.
 

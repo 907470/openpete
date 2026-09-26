@@ -1,8 +1,8 @@
 # The settings menu
 
 The settings menu is a panel drawn over the game in the game's own lettering.
-It opens and closes with ++esc++ in the Spyro 1 package, or ++o++
-<!-- id: key:host.menu --> with the built-in bindings; see
+It opens and closes with ++esc++ <!-- id: key:host.menu @spyro-1 home --> in the Spyro 1 package, or ++o++
+<!-- id: key:host.menu home --> with the built-in bindings; see
 [Controls](controls.md#openpete-keys).
 
 !!! note
@@ -15,10 +15,10 @@ It opens and closes with ++esc++ in the Spyro 1 package, or ++o++
 
 | | Keyboard | Gamepad | Mouse |
 | --- | --- | --- | --- |
-| Previous / next row | ++up++ / ++down++ <!-- id: key:host.menu_up --> | D-pad, left stick | Point at the row |
+| Previous / next row | ++up++ / ++down++ <!-- id: key:host.menu_up home --> | D-pad, left stick | Point at the row |
 | Change the value | ++left++ / ++right++ <!-- id: key:host.menu_right --> | D-pad, left stick; Cross also steps forward | Left click steps forward, right click back, wheel either way |
-| Activate **EXIT GAME** | ++enter++ <!-- id: key:host.menu_select --> | Cross | Left click |
-| Close | the menu key, ++esc++ | Start or Circle, on release <!-- id: key:host.menu_close --> | The close mark in the corner |
+| Activate **EXIT GAME** | ++enter++ <!-- id: key:host.menu_select home --> | Cross | Left click |
+| Close | the menu key, ++esc++ | Start or Circle, on release <!-- id: key:host.menu_close home --> | The close mark in the corner |
 
 Values wrap around at either end. Each change raises an on-screen
 notification naming the row and its new value; see

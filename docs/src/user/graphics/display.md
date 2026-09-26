@@ -18,8 +18,8 @@ Fullscreen is borderless, at the desktop's resolution.
 | | |
 | --- | --- |
 | Toggle | ++alt+enter++, a double-click in the window, the settings menu's **DISPLAY** row, the dev overlay's **Fullscreen** row |
-| Start fullscreen | `--fullscreen 1` <!-- id: knob:fullscreen --> |
-| Default | windowed <!-- id: knob:fullscreen -->; the Spyro 1 package's `openpete.toml` sets `fullscreen = true` |
+| Start fullscreen | `--fullscreen 1` <!-- id: knob:fullscreen home --> |
+| Default | windowed <!-- id: knob:fullscreen -->; the Spyro 1 package's `openpete.toml` sets `fullscreen = true` <!-- id: knob:fullscreen @spyro-1 home --> |
 
 ## Aspect ratio
 
@@ -28,7 +28,7 @@ view and shows more at the sides.
 
 | Value | Effect |
 | --- | --- |
-| `auto` (default <!-- id: knob:aspect -->) | Follows the window's shape, and the screen's in fullscreen, as it is resized |
+| `auto` (default <!-- id: knob:aspect home -->) | Follows the window's shape, and the screen's in fullscreen, as it is resized |
 | `W:H`, for example `16:9`, `21:9` | Renders at that fixed shape. Choosing one in a window resizes the window to match; a window of another shape shows bars. |
 
 Settings menu **ASPECT** and the dev overlay's **Aspect ratio** offer
@@ -37,7 +37,7 @@ Settings menu **ASPECT** and the dev overlay's **Aspect ratio** offer
 
 ## Field of view
 
-`--fov DEG` <!-- id: knob:fov --> sets the vertical field of view, from 30 to
+`--fov DEG` <!-- id: knob:fov home --> sets the vertical field of view, from 30 to
 120 degrees <!-- id: knob:fov -->. The default is the game's own projection,
 55 degrees vertical <!-- id: knob:fov -->, which is 74 degrees horizontal at
 4:3 and 90 degrees at 16:9. The horizontal angle always follows the aspect
@@ -52,7 +52,7 @@ The field of view applies to the native renderer only.
 
 ## VSync
 
-VSync on <!-- id: knob:vsync --> waits for the display's refresh before
+VSync on <!-- id: knob:vsync home --> waits for the display's refresh before
 showing each picture; the [frame rate](../help/glossary.md#frame-rate) then
 cannot exceed the refresh rate. VSync off shows pictures as soon as they are
 ready: lower input latency and uncapped frame rate, with possible tearing.

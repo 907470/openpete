@@ -27,7 +27,7 @@ rewind         = "none"         # unbind
 screenshot = "F11"              # Spyro 1 only
 ```
 
-`openpete-spyro1 --keys-report`<!-- id: flag:--keys-report --> prints every
+`openpete-spyro1 --keys-report`<!-- id: flag:--keys-report home --> prints every
 action, its binding, the section that set it and the action's purpose, then
 exits.
 
@@ -80,8 +80,8 @@ controller; `pad2:` … `pad4:` name the others. Inside `[keys.pad2]`, a bare
 ## Default bindings
 
 The built-in defaults. The [shipped `openpete.toml`](config-file.md#the-shipped-file)
-changes some of them for Spyro 1: ++escape++ opens the [settings menu](../help/glossary.md#settings-menu) and does
-not quit, and ++m++, ++i++ and ++l++ are bound.
+changes some of them for Spyro 1: ++escape++ <!-- id: key:host.menu @spyro-1 --> opens the [settings menu](../help/glossary.md#settings-menu) and does
+not quit, and ++m++ <!-- id: key:host.devui @spyro-1 -->, ++i++ <!-- id: key:host.interp_toggle @spyro-1 --> and ++l++ <!-- id: key:host.lod_toggle @spyro-1 --> are bound.
 
 ### Controller (`[keys.pad]`)
 

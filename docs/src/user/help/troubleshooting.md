@@ -46,7 +46,7 @@ cause ([Config file](../customizing/config-file.md)).
 
 These are the built-in bindings: ++o++<!-- id: key:host.menu --> opens the
 [settings menu](glossary.md#settings-menu) and ++escape++<!-- id: key:host.quit --> quits. The shipped
-`openpete.toml` changes them to ++escape++ for the menu and no quit key. The
+`openpete.toml` changes them to ++escape++ <!-- id: key:host.menu @spyro-1 --> for the menu and no quit key. The
 built-in bindings are in force when that file is missing, when the launch
 uses `--no-config` or `--config`, or when your own file rebinds `menu` or
 `quit`. `--keys-report`<!-- id: flag:--keys-report --> shows where each

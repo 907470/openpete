@@ -5,14 +5,14 @@ game's state, which stays the same [tick](../help/glossary.md#tick) for tick wha
 
 ## The performance readout
 
-`--perf-stats` <!-- id: knob:perf_stats --> shows a readout in a corner of
+`--perf-stats` <!-- id: knob:perf_stats home --> shows a readout in a corner of
 the window.
 
 | Value | Shows |
 | --- | --- |
 | `off` | Nothing |
 | `fps` (default <!-- id: knob:perf_stats -->) | The [frame rate](../help/glossary.md#frame-rate) |
-| `detailed` | The frame rate plus a [frame pacing](../help/glossary.md#frame-pacing) readout: the [VBL](../help/glossary.md#vbl) rate, deadline slips, late ticks per 1000, and the share of [presents](../help/glossary.md#present) that were shed or interpolated |
+| `detailed` | The frame rate plus a [frame pacing](../help/glossary.md#frame-pacing) readout: the [VBL](../help/glossary.md#vbl) rate, deadline slips, late ticks per 1000, and the share of presents that were shed or interpolated |
 
 The settings menu's **SHOW FPS** row switches it off and on; the dev
 overlay's **Performance stats** row sets all three levels.

@@ -22,7 +22,7 @@ every location below as this install resolves it, then exits.
 
 There are two layouts. Portable keeps everything in the program's folder.
 Per-user uses the platform's per-user folders. `portable = true` or
-`portable = false` at the top of `openpete.toml` chooses; when the
+`portable = false`<!-- id: directive:portable --> at the top of `openpete.toml` chooses; when the
 program's folder is not writable, per-user is used and the log says so.
 
 === "Windows"

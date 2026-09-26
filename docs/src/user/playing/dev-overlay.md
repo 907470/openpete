@@ -5,8 +5,8 @@ OpenPete has, grouped by section, with each row's current value and where it
 came from. It changes live settings without a restart, saves them to the
 config file, and carries the cheat buttons and the level warp.
 
-In the Spyro 1 package ++m++ opens and closes it; the built-in bindings leave
-it unbound <!-- id: key:host.devui -->. ++esc++ also closes it. It is drawn
+In the Spyro 1 package ++m++ <!-- id: key:host.devui @spyro-1 home --> opens and closes it; the built-in bindings leave
+it unbound <!-- id: key:host.devui home -->. ++esc++ also closes it. It is drawn
 by the native renderer in the game window.
 
 The game keeps running behind the panel. Mouse use leaves the game playable;
@@ -99,8 +99,8 @@ both unbound.
 
 | Key | Action | Notification |
 | --- | --- | --- |
-| ++i++ <!-- id: key:host.interp_toggle --> | Toggle [interpolation](../graphics/smoothness.md#interpolation) on and off | **INTERPOLATION: ON** / **OFF** |
-| ++l++ <!-- id: key:host.lod_toggle --> | Toggle [LOD](../graphics/quality.md#level-of-detail) between original and extended | **LOD: ORIGINAL** / **EXTENDED** |
+| ++i++ <!-- id: key:host.interp_toggle @spyro-1 --> | Toggle [interpolation](../graphics/smoothness.md#interpolation) on and off | **INTERPOLATION: ON** / **OFF** |
+| ++l++ <!-- id: key:host.lod_toggle @spyro-1 --> | Toggle [LOD](../graphics/quality.md#level-of-detail) between original and extended | **LOD: ORIGINAL** / **EXTENDED** |
 
 Interpolation off presents each tick's picture unchanged between ticks,
 which shows what interpolation adds.

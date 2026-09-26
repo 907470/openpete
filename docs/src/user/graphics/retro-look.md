@@ -7,10 +7,10 @@ HUD stays smooth.
 
 | Look | Settings menu | Dev overlay | Flag | Default |
 | --- | --- | --- | --- | --- |
-| [Wobble](#wobble) | **WOBBLE** | **Vertex precision** | `--vertex-precision subpixel\|integer` <!-- id: knob:vertex_precision --> | `subpixel` (off) <!-- id: knob:vertex_precision --> |
+| [Wobble](#wobble) | **WOBBLE** | **Vertex precision** | `--vertex-precision subpixel\|integer` <!-- id: knob:vertex_precision home --> | `subpixel` (off) <!-- id: knob:vertex_precision --> |
 | [Pixelation](#pixelation) | **PIXELATION** | **Raster quantize** | `--raster-quantize N` <!-- id: knob:raster_quantize --> | off, or 1 with wobble on <!-- id: knob:raster_quantize --> |
-| [Texture warp](#texture-warp) | **TEXTURES** | **Texture mapping** | `--texture-mapping perspective\|affine` <!-- id: knob:texture_mapping --> | `perspective` (**CORRECT**) <!-- id: knob:texture_mapping --> |
-| [Dither](#dither) | **DITHER** | **Dither (15-bit)** | `--dither 0\|1` <!-- id: knob:dither --> | 0 (off) <!-- id: knob:dither --> |
+| [Texture warp](#texture-warp) | **TEXTURES** | **Texture mapping** | `--texture-mapping perspective\|affine` <!-- id: knob:texture_mapping home --> | `perspective` (**CORRECT**) <!-- id: knob:texture_mapping --> |
+| [Dither](#dither) | **DITHER** | **Dither (15-bit)** | `--dither 0\|1` <!-- id: knob:dither home --> | 0 (off) <!-- id: knob:dither --> |
 
 ## Wobble
 
@@ -24,7 +24,7 @@ coordinates are not snapped.
 `--raster-quantize N` resamples the 3D scene to N times the PlayStation's
 512x240 grid, one sample per cell as the hardware drew it. 1 is the original
 resolution: 224 visible lines across the screen, as on a TV. 0 turns it off;
-the dev overlay row takes 0 to 16 <!-- id: knob:raster_quantize -->, the
+the dev overlay row takes 0 to 16 <!-- id: knob:raster_quantize home -->, the
 settings menu offers **OFF**, **1X**, **2X**, **4X**, **8X** and **16X**.
 The grid stays aligned with the wobble grid at every N.
 

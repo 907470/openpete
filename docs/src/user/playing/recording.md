@@ -13,7 +13,7 @@ reproducible record of a run.
 openpete-spyro1 --bk2-record
 ```
 
-`--bk2-record [PATH]` <!-- id: flag:--bk2-record --> writes the live pad
+`--bk2-record [PATH]` <!-- id: flag:--bk2-record home --> writes the live pad
 input to PATH. With no PATH it writes `<timestamp>.bk2` (for example
 `20260925-143000.bk2`) in the bk2 folder
 ([File locations](../help/file-locations.md)). Recording stops when the
@@ -51,7 +51,7 @@ different delay refuses to start and names the `--load-delay`
 
 ## Screenshots
 
-++f12++ <!-- id: key:host.screenshot --> saves a PNG of the picture on screen
+++f12++ <!-- id: key:host.screenshot home --> saves a PNG of the picture on screen
 as `openpete-<timestamp>.png` (for example `openpete-20260925-143000.png`,
 with `-2`, `-3` and so on appended for more shots in the same second) in the
 screenshots folder ([File locations](../help/file-locations.md)).

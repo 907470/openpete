@@ -68,10 +68,10 @@ Turning vibration off in the game's own options menu takes effect as usual.
 
 The mouse moves the [free camera](../help/glossary.md#free-camera)'s view and drives the [settings menu](../help/glossary.md#settings-menu) and the
 [dev overlay](../help/glossary.md#dev-overlay). `--mouse-sensitivity S`<!-- id: flag:--mouse-sensitivity -->
-scales mouse look: `1.0`<!-- id: knob:mouse_sensitivity --> (the default) is
+scales mouse look: `1.0`<!-- id: knob:mouse_sensitivity home --> (the default) is
 one full turn per 8192 counts; the range is
 `0`<!-- id: knob:mouse_sensitivity --> to
-`100`<!-- id: knob:mouse_sensitivity -->. `--mouse 0`<!-- id: flag:--mouse -->
+`100`<!-- id: knob:mouse_sensitivity -->. `--mouse 0`<!-- id: flag:--mouse home -->
 ignores the mouse and leaves the pointer free over the window. To invert
 the vertical look, bind `look_axis_y = "pad:-righty,mouse:y"` under
 `[keys.host]`.

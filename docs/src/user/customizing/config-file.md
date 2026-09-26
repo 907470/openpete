@@ -47,10 +47,10 @@ write into one file, the save target:
 
 | Layout | Default on | Save target |
 | --- | --- | --- |
-| portable | Windows | the shipped file, next to the program |
+| portable | Windows <!-- id: directive:portable --> | the shipped file, next to the program |
 | per-user | Linux | the per-user file |
 
-`portable = true` or `portable = false` at the top of either file selects
+`portable = true` or `portable = false`<!-- id: directive:portable home --> at the top of either file selects
 the layout on any platform. A per-user file's directive beats the shipped
 file's. When the program's folder is not writable (under `Program Files`,
 or the read-only AppImage), the per-user layout is used and the log says
@@ -87,14 +87,14 @@ look_axis_y = "pad:-righty,mouse:-y"
 
 It changes these built-in defaults for Spyro 1:
 
-- `fullscreen = true`<!-- id: knob:fullscreen --> (built-in: `0`<!-- id: knob:fullscreen -->,
+- `fullscreen = true`<!-- id: knob:fullscreen @spyro-1 --> (built-in: `0`<!-- id: knob:fullscreen -->,
   windowed);
-- ++escape++<!-- id: key:host.menu --> opens the settings menu (built-in:
+- ++escape++<!-- id: key:host.menu @spyro-1 --> opens the settings menu (built-in:
   ++o++<!-- id: key:host.menu -->);
 - ++escape++ no longer quits (built-in `quit` binding: ++escape++<!-- id: key:host.quit -->);
-- ++m++<!-- id: key:host.devui --> opens the dev overlay,
-  ++i++<!-- id: key:host.interp_toggle --> toggles [frame interpolation](../help/glossary.md#frame-interpolation) and
-  ++l++<!-- id: key:host.lod_toggle --> toggles [extended detail](../help/glossary.md#extended-detail) (built-in:
+- ++m++<!-- id: key:host.devui @spyro-1 --> opens the dev overlay,
+  ++i++<!-- id: key:host.interp_toggle @spyro-1 --> toggles [frame interpolation](../help/glossary.md#frame-interpolation) and
+  ++l++<!-- id: key:host.lod_toggle @spyro-1 --> toggles [extended detail](../help/glossary.md#extended-detail) (built-in:
   unbound).
 
 `freecam`, `mouse_sensitivity` and the two look axes restate the built-in
@@ -104,7 +104,7 @@ values so they can be edited in place.
 
 A setting's key is its flag name without the leading dashes, with `-`
 written as `_`: `--fog-scale` is `fog_scale`. The
-[config key reference](../reference/config-keys.md) lists every key.
+[config key reference](https://openpete.com/docs/user/reference/config-keys.html) lists every key.
 
 ```toml
 aspect = "21:9"
@@ -186,9 +186,9 @@ variable overrides as **pinned**.
 
 | Command | Effect |
 | --- | --- |
-| `--config-report`<!-- id: flag:--config-report --> | print every setting, the layer that won it and what it beat, the files read, the save target and every data directory; then exit |
+| `--config-report`<!-- id: flag:--config-report home --> | print every setting, the layer that won it and what it beat, the files read, the save target and every data directory; then exit |
 | `--config PATH`<!-- id: flag:--config --> | read only this file (it is also the save target) |
-| `--no-config`<!-- id: flag:--no-config --> | read no config file |
+| `--no-config`<!-- id: flag:--no-config home --> | read no config file |
 | `--keys-report`<!-- id: flag:--keys-report --> | print every key binding and the section that set it; then exit |
 
 The environment variable `OPENPETE_CONFIG` names a file the same way as
