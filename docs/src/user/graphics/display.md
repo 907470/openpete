@@ -1,0 +1,95 @@
+# Display
+
+Settings for the window, its shape and the camera's view. Each section names
+the settings menu row, the dev overlay row and the flag; the config key is
+the flag without the leading dashes, with `-` as `_`.
+
+## Window
+
+The window opens at the game's drawn picture at twice its size: 640x448
+<!-- id: knob:window --> for Spyro 1. `--window WxH`
+<!-- id: knob:window --> sets another starting size, for example
+`--window 1920x1080`. Drag the window's edges to resize it at any time.
+
+## Fullscreen
+
+Fullscreen is borderless, at the desktop's resolution.
+
+| | |
+| --- | --- |
+| Toggle | ++alt+enter++, a double-click in the window, the settings menu's **DISPLAY** row, the dev overlay's **Fullscreen** row |
+| Start fullscreen | `--fullscreen 1` <!-- id: knob:fullscreen --> |
+| Default | windowed <!-- id: knob:fullscreen -->; the Spyro 1 package's `openpete.toml` sets `fullscreen = true` |
+
+## Aspect ratio
+
+OpenPete renders widescreen as Hor+: the picture keeps the game's vertical
+view and shows more at the sides.
+
+| Value | Effect |
+| --- | --- |
+| `auto` (default <!-- id: knob:aspect -->) | Follows the window's shape, and the screen's in fullscreen, as it is resized |
+| `W:H`, for example `16:9`, `21:9` | Renders at that fixed shape. Choosing one in a window resizes the window to match; a window of another shape shows bars. |
+
+Settings menu **ASPECT** and the dev overlay's **Aspect ratio** offer
+**AUTO**, **4:3**, **16:10**, **16:9**, **21:9** and **32:9**; the flag
+`--aspect` <!-- id: knob:aspect --> takes any `W:H`.
+
+## Field of view
+
+`--fov DEG` <!-- id: knob:fov --> sets the vertical field of view, from 30 to
+120 degrees <!-- id: knob:fov -->. The default is the game's own projection,
+55 degrees vertical <!-- id: knob:fov -->, which is 74 degrees horizontal at
+4:3 and 90 degrees at 16:9. The horizontal angle always follows the aspect
+ratio.
+
+The settings menu's **FOV** row steps from **DEFAULT** through 30 to 120 in
+5-degree steps and shows the vertical and horizontal angles, for example
+**55V 90H**. The dev overlay's **Field of view** row takes any value in the
+range; its **Original** checkbox returns to the game's projection.
+
+The field of view applies to the native renderer only.
+
+## VSync
+
+VSync on <!-- id: knob:vsync --> waits for the display's refresh before
+showing each picture; the [frame rate](../help/glossary.md#frame-rate) then
+cannot exceed the refresh rate. VSync off shows pictures as soon as they are
+ready: lower input latency and uncapped frame rate, with possible tearing.
+
+Settings menu **VSYNC**, dev overlay **VSync**, `--vsync 0|1`
+<!-- id: knob:vsync -->. A change rebuilds the display chain at the next
+picture.
+
+## On-screen notifications
+
+Changing a setting raises a notification in the game's gold border and
+lettering. Mods raise them too. Several stack.
+
+| Setting | Default | Flag |
+| --- | --- | --- |
+| Notifications on or off | on <!-- id: knob:osd --> | `--osd on\|off` <!-- id: knob:osd --> |
+| Position | top-left <!-- id: knob:osd_position --> | `--osd-position` <!-- id: knob:osd_position -->: `top-left`, `top-center`, `top-right`, `bottom-left`, `bottom-center`, `bottom-right` |
+| Seconds on screen | 3.0 <!-- id: knob:osd_timeout -->, at most 30 <!-- id: knob:osd_timeout --> | `--osd-timeout` <!-- id: knob:osd_timeout --> |
+
+The notifications and the performance readout
+([Performance](performance.md#the-performance-readout)) can share a corner:
+the readout keeps its place and the notifications stack clear of it. Both
+move aside while the settings menu is open.
+
+## Version line
+
+A release build shows its version at the bottom left for two seconds after
+start. `--version-osd off` <!-- id: knob:version_osd --> hides it; default on
+<!-- id: knob:version_osd -->. A distributed build that is not a tagged
+release shows its version for the whole session, and this setting does not
+hide it.
+
+## Renderer
+
+`--renderer vk` <!-- id: knob:renderer --> (the default
+<!-- id: knob:renderer -->) draws with OpenPete's native Vulkan renderer.
+`--renderer psycross` draws with the PsyCross OpenGL reference renderer,
+shown in the same window. The field of view, supersampling, level of detail,
+terrain visibility, vertex precision and texture mapping settings apply to
+the native renderer only. The renderer is chosen at start.
