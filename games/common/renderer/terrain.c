@@ -9416,12 +9416,72 @@ static unsigned terrain_verify_frame(void) {
  * re-extract (which has no a0). -1 = walk-all (valid index or -1, as the .s). */
 static int32_t s_terrain_saved_occGroup = -1;
 
+/* A canonical native build + feed held until the tick's portal capture
+ * exists (terrain_game.env_feed_waits_for_portals). The world draw's RAM
+ * verdicts persist until the portal draw that flushes it, which runs next
+ * in the same draw. Census (OPENPETE_TERRAIN_DEFER_CENSUS=1, at exit):
+ * deferred feeds, feeds flushed by the portal draw, and feeds still pending
+ * when the next world draw began (an invariant breach, flushed there). */
+static struct { CPUState* cpu; int32_t occ; int pending; } s_env_defer;
+static unsigned s_env_defer_n, s_env_defer_flushed, s_env_defer_late;
+
+/** Print the deferred-feed census at exit. */
+static void terrain_defer_census(void) {
+    fprintf(stderr, "terrain: deferred env feed: deferred=%u flushed=%u late=%u\n",
+            s_env_defer_n, s_env_defer_flushed, s_env_defer_late);
+}
+
+/** The canonical native terrain build and scene feed of one world draw. */
+static void terrain_native_build_feed(CPUState* cpu, int32_t occGroup) {
+    { OP_PROF_ACCUM_SCOPE("terrain.build");
+      terrain_build(cpu, occGroup); }            /* native walk + tris */
+    openpete_native_scene_begin_frame(openpete_frame);  /* frame-keyed (composes) */
+    { OP_PROF_ACCUM_SCOPE("terrain.feed");
+      terrain_feed_native(cpu); }                /* push tris to the scene */
+}
+
+void terrain_native_flush_deferred(void) {
+    if (!s_env_defer.pending) return;
+    s_env_defer.pending = 0;
+    s_env_defer_flushed++;
+    terrain_native_build_feed(s_env_defer.cpu, s_env_defer.occ);
+}
+
+/** Flush a deferred feed still pending when the next world draw begins
+ * (never expected; counted as late in the census). */
+static void terrain_defer_flush_late(void) {
+    if (!s_env_defer.pending) return;
+    s_env_defer_late++;
+    terrain_native_flush_deferred();
+}
+
+/** Run the canonical native build and feed now, or hold them for the tick's
+ * portal capture when the game draws the portals after this world draw. */
+static void terrain_native_build_feed_or_defer(CPUState* cpu, int32_t occGroup) {
+    if (!terrain_game.env_feed_waits_for_portals ||
+        !terrain_game.env_feed_waits_for_portals(cpu)) {
+        terrain_native_build_feed(cpu, occGroup);
+        return;
+    }
+    static int s_census = -1;
+    if (s_census < 0) {
+        const char* e = getenv("OPENPETE_TERRAIN_DEFER_CENSUS");
+        s_census = (e && *e && *e != '0');
+        if (s_census) atexit(terrain_defer_census);
+    }
+    s_env_defer.cpu = cpu; s_env_defer.occ = occGroup; s_env_defer.pending = 1;
+    s_env_defer_n++;
+}
+
+/** World-draw hook: runs the game's world draw once, records RP_TERRAIN and
+ * feeds the native terrain, or holds the feed for the tick's portal capture. */
 static int on_world_draw_terrain(CPUState* cpu, uint32_t addr) {
     (void)addr;
     int verify = terrain_verify_enabled();
     int feed   = openpete_native_scene_enabled();
     if (!verify && !feed && !render_paths_active()) return 0;  /* inert: normal dispatch */
     static int s_in = 0; if (s_in) return 0; s_in = 1;
+    terrain_defer_flush_late();
 
     /* Capture the occlusion-group arg BEFORE the real call clobbers a0. This is
      * the exact input the .s uses to build D_800771C8 — the ground truth for the
@@ -9484,11 +9544,11 @@ static int on_world_draw_terrain(CPUState* cpu, uint32_t addr) {
          * the intermediates. Mark it explicitly: the frame DID paint terrain,
          * natively. */
         if (endp <= startp) render_path_mark_drawn(RP_TERRAIN);
-        { OP_PROF_ACCUM_SCOPE("terrain.build");
-          terrain_build(cpu, occGroup); }            /* native walk + tris */
-        openpete_native_scene_begin_frame(openpete_frame);  /* frame-keyed (composes) */
-        { OP_PROF_ACCUM_SCOPE("terrain.feed");
-          terrain_feed_native(cpu); }                /* push tris to the scene */
+        /* The feed's portal-plane provider reads the portal capture, which a
+         * draw that runs the portals after the environment has not produced
+         * yet this tick; the sub-tick re-extract reads that tick's capture.
+         * Hold the build and feed until the portal draw completes it. */
+        terrain_native_build_feed_or_defer(cpu, occGroup);
     }
 
     if (verify && openpete_frame >= terrain_verify_frame()) {

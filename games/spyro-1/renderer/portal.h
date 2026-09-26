@@ -16,6 +16,13 @@
  * fed sky within the last couple of presents. */
 int openpete_portal_sky_recent(void);
 
+/** 1 when the world draw now running is func_8002B9CC's and this tick's
+ * RenderPortals has not run yet: the draw runs RenderPortals next, and the
+ * terrain feed waits for its capture (terrain_game.env_feed_waits_for_portals).
+ * @param cpu guest state at the world-draw hook
+ * @return 1 when the terrain feed must wait for this tick's portal capture */
+int openpete_portal_capture_follows(CPUState* cpu);
+
 /* openpete_portal_skyplane is declared in renderer/terrain_game.h (the shared
  * terrain feeder consumes it through terrain_game.portal_sky_planes). */
 

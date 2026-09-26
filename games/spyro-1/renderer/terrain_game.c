@@ -72,4 +72,5 @@ const terrain_game_t terrain_game = {
     .fill_tag            = s1_fill_tag,
     .level_name          = s1_level_name,
     .lp_artfix           = s1_lp_artfix,
+    .env_feed_waits_for_portals = openpete_portal_capture_follows,
 };

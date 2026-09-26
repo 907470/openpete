@@ -76,6 +76,12 @@ typedef struct terrain_game {
     /* Authored-data colour corrections keyed on (level id, sector, LP face):
      * 1 and *rgb (0x00BBGGRR) when the face is corrected. */
     int   (*lp_artfix)(int level, int sec, int face, uint32_t* rgb);
+    /* 1 when the world draw now running is followed, in the same draw, by
+     * the portal draw whose capture portal_sky_planes reads, and that draw
+     * has not run yet this tick: the terrain's native build and feed then
+     * wait for terrain_native_flush_deferred, so both read the capture this
+     * tick's draw produces. NULL = never. */
+    int   (*env_feed_waits_for_portals)(CPUState* cpu);
 } terrain_game_t;
 
 extern const terrain_game_t terrain_game;

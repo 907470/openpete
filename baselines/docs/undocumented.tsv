@@ -2,7 +2,7 @@
 # library: libclang 14
 # requirement: brief on every function; @param per named parameter and @return on non-void for external linkage
 # written-by: hook
-# head: bb059f70cffb996c95ae2b7a5394328f482af2c9
+# head: d54ac0baaa0df43699fc71b602258b5713618fae
 file	function	form	accepted
 core/config/build_id.c	openpete_build_shared_recomp	plain	
 core/config/build_id.c	openpete_build_tagged	plain	
@@ -3632,7 +3632,6 @@ games/common/renderer/terrain.c	nt_emit	plain
 games/common/renderer/terrain.c	nt_sub_nodes	plain	
 games/common/renderer/terrain.c	nt_sub_of	none	
 games/common/renderer/terrain.c	on_visibility_terrain	plain	
-games/common/renderer/terrain.c	on_world_draw_terrain	none	
 games/common/renderer/terrain.c	portal_rim_classify	none	
 games/common/renderer/terrain.c	portal_rim_cos	plain	
 games/common/renderer/terrain.c	portal_rim_eps	plain	
@@ -4310,7 +4309,6 @@ games/spyro-1/renderer/portal.c	nolod_portal_dome_on	plain
 games/spyro-1/renderer/portal.c	on_8004F4BC	none	
 games/spyro-1/renderer/portal.c	on_8004FEA0	none	
 games/spyro-1/renderer/portal.c	on_80050240	none	
-games/spyro-1/renderer/portal.c	on_80050BE0	none	
 games/spyro-1/renderer/portal.c	openpete_portal_sky_planes	plain	
 games/spyro-1/renderer/portal.c	openpete_portal_sky_recent	plain	
 games/spyro-1/renderer/portal.c	ot_depth	none	

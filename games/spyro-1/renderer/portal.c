@@ -57,6 +57,7 @@
 #include "renderer/portal.h"         /* cross-feeder exports (terrain OT-conformance clamp) */
 #include "renderer/portal_plane.h"   /* openpete_portal_plane_margin (shared) */
 #include "renderer/native_gte.h"    /* shared GTE float-mirror math */
+#include "renderer/terrain.h"       /* terrain_native_flush_deferred */
 
 #include <math.h>
 #include <stdint.h>
@@ -2366,6 +2367,23 @@ static void feed_revealed_portals(CPUState* cpu) {
 }
 
 static int s_rp_in = 0;
+static unsigned s_rp_frame = 0xFFFFFFFFu;   /* openpete_frame of the last RenderPortals */
+
+/* Return address of func_8002B9CC's call to the world draw func_800258F0
+ * (jal at 0x8002BA50). Every caller of func_8002B9CC runs RenderPortals
+ * directly before or directly after it in the same draw (draw.c:
+ * func_8001A40C, func_8001CA38 before; func_8001CFDC, func_8001D718,
+ * GamestateDraw after); the direct func_800258F0 callers (title screen,
+ * credits, func_8001E9C8) draw no portals. */
+#define ENV_DRAW_RA 0x8002BA58u
+
+int openpete_portal_capture_follows(CPUState* cpu) {
+    return cpu->ra == ENV_DRAW_RA && s_rp_frame != openpete_frame;
+}
+
+/** RenderPortals hook: runs the game's draw (the leaves feed and capture the
+ * on-4:3 portals), reveals the off-4:3 ones, marks RP_PORTAL drawn and
+ * releases a terrain feed that waited for this capture. */
 static int on_80050BE0(CPUState* cpu, uint32_t a) {
     (void)a;
     int feed = openpete_native_scene_enabled();
@@ -2396,6 +2414,8 @@ static int on_80050BE0(CPUState* cpu, uint32_t a) {
      * canonical present by the shared render_paths commit. */
     if (feed) { s_pcap_valid = 1; s_pcap_frame = openpete_frame;
                 render_path_mark_drawn(RP_PORTAL); }
+    s_rp_frame = openpete_frame;
+    terrain_native_flush_deferred();          /* a world draw that ran first this tick */
     s_rp_in = 0;
     return 1;
 }
