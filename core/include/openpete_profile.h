@@ -31,33 +31,84 @@ extern "C" {
 /* frame_kind of a present */
 enum { OP_PROF_CANONICAL = 0, OP_PROF_INTERMEDIATE = 1 };
 
-/* Open/close the trace stream. path==NULL or "" ⇒ profiler stays off (op_prof_on
- * returns 0 and every other entry point is a no-op). Returns 0 on success. */
+/** @brief Open the trace stream at path, write the 32-byte header, and turn the profiler on.
+ *
+ * The header carries the magic "OPPR", the format version, a clock rate of
+ * 1000000 (timestamps are microseconds) and a zero creation time. The name
+ * table is cleared and every registered thread block is reset in place, so
+ * a producer's cached block pointer stays valid across a reopen. The writer
+ * mutex is created on first use and never destroyed.
+ * @param path Output file path; NULL or empty leaves the profiler off,
+ *        op_prof_on returns 0, and every other entry point is a no-op.
+ * @return 0 when a trace is open or path is empty, -1 when the mutex or the
+ *         file cannot be created. */
 int  op_prof_open(const char* path);
+/** @brief Flush every thread's pending buckets and chunk, close the stream, and free the name table.
+ *
+ * The profiler is turned off first, so producers entered afterwards return
+ * before touching any state. Every registered thread is flushed, not only
+ * the caller, since a render thread under eager production never reaches a
+ * present boundary. The mutex is kept because op_prof_intern and the
+ * emitters may still be entered from another thread. No-op when no trace is
+ * open. */
 void op_prof_close(void);
 
-/* Fast gate: nonzero when a trace is open. Cache-friendly (a single load). */
+/** @brief Return nonzero while a trace is open.
+ *
+ * A plain load of one flag, the fast gate every emitter and the scope macros
+ * test first.
+ * @return 1 between op_prof_open and op_prof_close, else 0. */
 int  op_prof_on(void);
 
-/* Microsecond clock shared with the OPPT timers (SDL perf counter). */
+/** @brief Return the SDL performance counter converted to microseconds.
+ *
+ * The clock shared with the OPPT phase timers. The conversion factor is
+ * cached by op_prof_open; before that it is computed on each call.
+ * @return Microseconds since the performance counter's origin. */
 uint64_t op_prof_now_us(void);
 
-/* Intern a scope/zone/counter name → small integer id (stable for the run).
- * Repeated calls with the same string return the same id. Thread-safe; the
- * lookup is a strcmp walk under the writer mutex, so callers on a hot path
- * cache the id at the call site. */
+/** @brief Intern a scope, zone or counter name and return its id, stable for the run.
+ *
+ * Repeated calls with the same string return the same id. A new name gets
+ * the next id and a NAME record (type, u16 id, u16 length, bytes, length
+ * capped at 65535) written straight to the stream rather than into a chunk,
+ * so it precedes every record citing the id. Thread-safe; the lookup is a
+ * strcmp walk under the writer mutex, so hot-path callers cache the id. At
+ * most 8192 names.
+ * @param name Name to intern.
+ * @return The id, or -1 when the profiler is off, name is NULL, or the
+ *         table is full. */
 int  op_prof_intern(const char* name);
 
-/* CPU scope stack. begin pushes, end pops and emits a completed SPAN with the
- * measured duration and its nesting depth. Unbalanced end ⇒ ignored + warned. */
+/** @brief Push a scope with the current time onto the calling thread's span stack.
+ *
+ * The stack holds 32 scopes; a push past that is dropped with one warning
+ * per thread, and the matching op_prof_end then closes the enclosing scope.
+ * No-op while the profiler is off.
+ * @param name_id Id from op_prof_intern. */
 void op_prof_begin(int name_id);
+/** @brief Pop the calling thread's innermost scope and emit its SPAN record.
+ *
+ * The record carries the scope's name, start time, duration and nesting
+ * depth. An end with an empty stack is ignored with one warning per
+ * thread. */
 void op_prof_end(void);
 
-/* Emit an already-measured completed span (used by the OPPT phase-add shim:
- * t0 is inferred as now-us). depth is recorded as 0 (sibling phase). */
+/** @brief Emit an already-measured span ending now on the calling thread.
+ *
+ * Used by the OPPT phase-add shim. The start is inferred as now - dur_us
+ * (now when dur_us exceeds the clock), and the depth is the thread's current
+ * span-stack depth, so a span forwarded inside an open scope nests under it.
+ * @param name_id Id from op_prof_intern; negative is ignored.
+ * @param dur_us Measured duration in microseconds. */
 void op_prof_add_span(int name_id, uint64_t dur_us);
 
-/* Census value for the current/next present (e.g. mobys/tris/draws/culled). */
+/** @brief Emit a COUNT record carrying a census value, such as a moby, triangle or draw count.
+ *
+ * The record carries the current present index for information only; the
+ * reader bins counts by thread and marker interval.
+ * @param name_id Id from op_prof_intern; negative is ignored.
+ * @param value The census value. */
 void op_prof_count(int name_id, uint64_t value);
 
 /* ---- accumulating scopes ---------------------------------------------------
@@ -76,30 +127,58 @@ void op_prof_count(int name_id, uint64_t value);
  * Buckets are FLAT, not nested: a bucket that measures a region inside another
  * bucket's region (e.g. "terrain.srend", the guest renderer call inside
  * "hook.terrain_native") is a subset, and the consumer subtracts. */
+/** @brief Add us to the calling thread's bucket for name_id and count one call.
+ *
+ * A bucket created by this call is anchored at now - us, the first entry of
+ * the flush interval. Buckets are emitted as depth-0 spans by
+ * op_prof_present, op_prof_thread_flush and op_prof_close. A thread holds at
+ * most 64 buckets; a new name past that is dropped with one warning per
+ * thread.
+ * @param name_id Id from op_prof_intern; negative is ignored.
+ * @param us Time measured for this entry, in microseconds. */
 void op_prof_accum(int name_id, uint64_t us);
 
-/* Close the current present. Spans raised on the closing thread since its
- * previous marker bind to this present by stream order; spans from other
- * threads bind by interval containment in the consumer. canon_tick is
- * openpete_canon_tick; kind is OP_PROF_CANONICAL or OP_PROF_INTERMEDIATE.
- * Returns this present's index. */
+/** @brief Close the current present: flush the calling thread's buckets, emit a PRESENT record, and flush its chunk.
+ *
+ * Spans raised on the closing thread since its previous marker bind to this
+ * present by stream order; spans from other threads bind by interval
+ * containment in the consumer. The record carries the kind, the present
+ * index, canon_tick, the thread's span count since its last marker, and the
+ * time. The present index then advances.
+ * @param canon_tick openpete_canon_tick.
+ * @param kind OP_PROF_CANONICAL or OP_PROF_INTERMEDIATE.
+ * @return This present's index; while the profiler is off, the current
+ *         index, which does not advance. */
 uint32_t op_prof_present(uint32_t canon_tick, int kind);
 
-/* GPU zone result harvested for one rendered frame (from rhi_gpu_zone_*),
- * keyed by the RHI frame serial that submitted it. t0_rel_us is relative to
- * that frame's first GPU timestamp. Consumers group zones by frame_serial. */
+/** @brief Emit a GPUZ record for one GPU zone result harvested from a rendered frame.
+ *
+ * The native renderer harvests the results from rhi_gpu_zone_*. Consumers
+ * group zones by the RHI frame serial that submitted them.
+ * @param name_id Id from op_prof_intern; negative is ignored.
+ * @param depth Zone nesting depth.
+ * @param frame_serial RHI frame serial that submitted the zone.
+ * @param t0_rel_us Start relative to that frame's first GPU timestamp.
+ * @param dur_us Duration in microseconds. */
 void op_prof_gpu_zone(int name_id, int depth, uint64_t frame_serial,
                       uint32_t t0_rel_us, uint32_t dur_us);
 
-/* Marker for a producer that never closes a present: emits this thread's
- * pending accumulator buckets and writes its chunk to the stream. Called at
- * the end of each rendered frame, so the render thread's accum scopes land one
- * span per frame instead of one span per run. */
+/** @brief Emit the calling thread's pending buckets and write its chunk to the stream.
+ *
+ * The marker for a producer that never closes a present. The native
+ * renderer calls it at the end of each rendered frame, so the render
+ * thread's accumulating scopes land one span per frame instead of one per
+ * run. No-op while the profiler is off. */
 void op_prof_thread_flush(void);
 
-/* Per-function aggregate record (Tier B, from func_trace.c). Emitted once per
- * traced function at shutdown: total calls, self µs (excl. children), total µs
- * (incl. children) across the run. */
+/** @brief Emit a FUNC record carrying one traced function's aggregate for the run.
+ *
+ * func_trace.c emits one per traced function at shutdown.
+ * @param name_id Id from op_prof_intern; negative is ignored.
+ * @param addr Function address.
+ * @param calls Total calls, saturated to 32 bits in the record.
+ * @param self_us Time excluding callees, in microseconds.
+ * @param total_us Time including callees, in microseconds. */
 void op_prof_func(int name_id, uint32_t addr, uint64_t calls,
                   uint64_t self_us, uint64_t total_us);
 

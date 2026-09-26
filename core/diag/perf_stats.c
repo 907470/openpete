@@ -27,9 +27,11 @@ static char s_lines[OPENPETE_PERF_MAX_LINES][OPENPETE_PERF_LINE_MAX];
 static int  s_line_n;
 static int  s_level_cached = -1;
 
-/* Percent of `part` in `whole`, or a negative sentinel when the population is
- * empty. A share of a nothing is not zero — printing 0% for "no presents were
- * attempted this window" states a result where there is no measurement. */
+/** @brief Return part as a percent of whole, or -1.0 when whole is zero.
+ *
+ * An empty population has no share: printing 0% for a window with no
+ * presents would state a result where there is no measurement, so put_pct
+ * prints N/A for the negative sentinel. */
 static double share_pct(uint64_t part, uint64_t whole)
 {
     return whole ? 100.0 * (double)part / (double)whole : -1.0;

@@ -88,6 +88,7 @@ static int s_thread_count = 0;
 static int s_warned_threads_full = 0;
 
 /* ---- little-endian packers ------------------------------------------------- */
+/// @brief Store v at p as two little-endian bytes.
 static inline void le_u16(uint8_t* p, uint16_t v) { p[0]=(uint8_t)v; p[1]=(uint8_t)(v>>8); }
 static inline void le_u32(uint8_t* p, uint32_t v) {
     p[0]=(uint8_t)v; p[1]=(uint8_t)(v>>8); p[2]=(uint8_t)(v>>16); p[3]=(uint8_t)(v>>24);
@@ -108,9 +109,14 @@ uint64_t op_prof_now_us(void) {
 int op_prof_on(void) { return s_on; }
 
 /* ---- per-thread state ------------------------------------------------------ */
-/* Blocks are registered for the process lifetime and never freed: a producer
- * thread may still hold its pointer when the trace closes, and the cost is
- * bounded by OPP_MAX_THREADS chunks. */
+/** @brief Return the calling thread's producer block, registering one on first use.
+ *
+ * Registration takes the writer mutex and assigns the next thread index.
+ * Blocks live for the process and are never freed: a producer thread may
+ * still hold its pointer when the trace closes, and the cost is bounded by
+ * OPP_MAX_THREADS chunks. Returns NULL before the first op_prof_open, when
+ * OPP_MAX_THREADS threads are registered (warned once), or when allocation
+ * fails. */
 static struct opp_tls* tls_get(void) {
     struct opp_tls* t = s_tls;
     if (t) return t;
@@ -134,8 +140,11 @@ static struct opp_tls* tls_get(void) {
     return t;
 }
 
-/* Write this thread's chunk to the stream and reset it. The mutex covers the
- * stream write; the append path above it never takes a lock. */
+/** @brief Write the thread's chunk to the stream under the writer mutex and empty it.
+ *
+ * The append path never takes a lock; this write is the only
+ * synchronisation per chunk. The bytes are dropped when no stream is
+ * open. */
 static void chunk_flush(struct opp_tls* t) {
     if (!t->len) return;
     SDL_LockMutex(s_mu);
@@ -319,8 +328,12 @@ void op_prof_accum(int name_id, uint64_t us) {
     a->calls++;
 }
 
-/* Emit one span per non-empty bucket and reset. Called at this thread's marker
- * (present boundary on the worker, end of a rendered frame on the renderer). */
+/** @brief Emit one depth-0 span per bucket with a nonzero sum and empty the bucket table.
+ *
+ * Each span starts at the bucket's first entry, lasts the summed time, and
+ * carries the call count in aux. Called at the thread's marker (a present
+ * on the sim worker, the end of a rendered frame on the renderer) and at
+ * close. */
 static void accum_flush(struct opp_tls* t) {
     for (int i = 0; i < t->accum_count; i++) {
         struct opp_accum* a = &t->accum[i];

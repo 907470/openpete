@@ -230,8 +230,11 @@ static void vbl_set_add(vbl_set_t* v, uint32_t vbl) {
     v->bits[vbl / 8u] |= (uint8_t)(1u << (vbl % 8u));
     if (!v->first || vbl < v->first) v->first = vbl;
 }
-/* 1 when the set holds `vbl`; `known` 0 (and 1 answered) outside the
- * range the sidecar covers. */
+/** @brief Return 1 when the set holds vbl, counting the answer as served or skipped.
+ *
+ * Outside the covered range, or with the schedule inactive or the set
+ * empty, known is set to 0 and the answer is 1 without counting. known may
+ * be NULL. */
 static int vbl_set_has(vbl_set_t* v, uint32_t vbl, int* known) {
     if (!s_active || !v->bits || vbl < v->first || vbl >= v->n) { if (known) *known = 0; return 1; }
     if (known) *known = 1;
@@ -326,8 +329,7 @@ int openpete_sched_cdsync(int mode, uint32_t ra, int32_t* ret_out, uint32_t* tar
     return 1;
 }
 
-/* The next unanswered CdSync row of the current record (its call site and
- * clock value); 0 when the record has none left. */
+/* Scans from the row cursor without moving it. */
 int openpete_sched_cdsync_peek(uint32_t* ra_out, uint64_t* tick_out) {
     if (!s_active || !s_cs || s_failed) return 0;
     const uint32_t cur_rec = sched_cur_rec();
@@ -373,15 +375,16 @@ int openpete_sched_open(const char* trace_path) {
     return 1;
 }
 
-/* The reference's position when openpete first meets the schedule: the
- * entry of its first waited VSync (no VBL passes on openpete before it). */
+/** @brief Set the position to vbl when it is not yet known.
+ *
+ * The first consumed waited VSync supplies its entry VBLANK and the first
+ * consumed read its issue VBLANK; no VBL passes on openpete before the
+ * schedule is first met. */
 static void pos_init_from(uint32_t vbl) {
     if (!s_pos_set) { s_pos = vbl; s_pos_set = 1; }
 }
 
-/* After a schedule failure every consumer answers as it would past the
- * trace: waits and reads run under openpete's own count, so a run kept
- * going after the failure ends instead of spinning. */
+/* After a schedule failure this returns 0 and the wait runs under openpete's own count. */
 int openpete_sched_next_vsync(int mode, uint32_t* target_out) {
     if (!s_active || !s_vs || s_failed) return 0;
     s_last_tick = 0;
@@ -476,11 +479,7 @@ static uint32_t sched_cur_rec(void) {
     return r < 0 ? 0u : (uint32_t)r;
 }
 
-/* At an anchor hit: openpete's watched value decides whether it is inside
- * a load window. Leaving one re-aligns the record index with the
- * reference's window end; the caller charges the position to that
- * record's stamp and tells the verifier to skip to it. Returns 1 with
- * *skip_to_rec set when a re-alignment is due. */
+/* Leaving a window re-aligns the record index with the reference's window end. */
 int openpete_sched_anchor_window(uint32_t record, uint32_t value, uint32_t* skip_to_rec) {
     if (!s_active || s_failed) return 0;
     int a = (s_win && psyq_game_load_window_active) ? psyq_game_load_window_active(value) : 0;

@@ -135,7 +135,11 @@ static uint8_t mc_frame_checksum(const uint8_t* frame)
     return x;
 }
 
-/* Write a freshly-formatted card image into `card`. */
+/** @brief Write a freshly formatted card image into card.
+ *
+ * Zeroes the MC_CARD_SIZE bytes, writes the "MC" header frame, and marks
+ * the 15 directory frames free (state 0xA0, next-block link 0xFFFF), each
+ * frame with its XOR checksum in its last byte. */
 static void mc_format_image(uint8_t* card)
 {
     memset(card, 0, MC_CARD_SIZE);
@@ -252,7 +256,12 @@ static void mc_modset_on_write(int slot) {
     }
 }
 
-/* Persist a card image to disk (write-through after every mutation). */
+/** @brief Write the slot's card image to its file and apply the modset tag rule for a write.
+ *
+ * Called after every mutation, so the file is written through. No-op when
+ * the slot is not loaded, and suppressed with a warning during a
+ * speculative (runahead) tick. An open failure is logged and skips the
+ * modset rule; a short write is logged. */
 static void mc_flush(int slot)
 {
     if (!s_loaded[slot]) return;
@@ -281,7 +290,13 @@ static void mc_flush(int slot)
     mc_modset_on_write(slot);
 }
 
-/* Load a card image on first access, or provision one if absent. */
+/** @brief Load the slot's card image on first access, or provision one when the file is absent or short.
+ *
+ * A loaded image runs the modset tag check. A provisioned image is
+ * formatted, or zeroed under --card-unformatted, and written to the file at
+ * once, which tags it under the active modset. When no image path
+ * resolves, the slot gets a formatted in-memory card that is never
+ * written. */
 static void mc_ensure_loaded(int slot)
 {
     if (s_loaded[slot]) return;
@@ -328,7 +343,10 @@ static uint32_t mc_frame_state(const uint8_t* de)
            ((uint32_t)de[2] << 16) | ((uint32_t)de[3] << 24);
 }
 
-/* Return the first (in-use) directory block holding file `name`, or -1. */
+/** @brief Return the directory block (1 to 15) whose first-block frame names file name, or -1.
+ *
+ * Only frames in state 0x51, the first block of a file, are considered; the
+ * name is compared over the MC_NAME_MAX bytes at offset 0x0A. */
 static int mc_find_file(int slot, const char* name)
 {
     for (int blk = 1; blk <= 15; blk++) {
@@ -434,8 +452,11 @@ void openpete_memcard_stop(void)
     s_mc_status = MC_SYNC_NOTHING;
 }
 
-/* Both channel encodings reach the same slot: libmcrd passes the raw PSX port
- * (port A = 0x00, port B = 0x10) and the BIOS card API passes a plain 0 or 1. */
+/** @brief Map a channel in either encoding to its slot, 0 or 1.
+ *
+ * libmcrd passes the raw PSX port (port A = 0x00, port B = 0x10) and the
+ * BIOS card API passes a plain 0 or 1; both reach the same slot. A value
+ * with low-nibble bits takes bit 0, else bit 4. */
 static int mc_chan_slot(int chan)
 {
     return (chan & 0x0F) ? (chan & 1) : ((chan >> 4) & 1);

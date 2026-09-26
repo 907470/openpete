@@ -193,8 +193,11 @@ void openpete_pace_log_close(void)
 /* ------------------------------------------------------------------ */
 
 #if defined(__linux__)
-/* Read the first line of a sysfs/proc file into `out`. Returns 0 on success.
- * Absent files are the normal case off Linux and are not an error. */
+/** @brief Read the first line of a sysfs or proc file into out, without its newline.
+ *
+ * An absent file is a normal case and leaves out unchanged; the caller keeps
+ * its default. A file with no readable line returns -1 with out
+ * unspecified. */
 static int read_first_line(const char* path, char* out, unsigned n)
 {
     FILE* f = fopen(path, "rb");

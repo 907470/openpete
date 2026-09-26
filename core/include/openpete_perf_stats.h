@@ -44,13 +44,23 @@ enum {
 #define OPENPETE_PERF_LINE_MAX  40
 #define OPENPETE_PERF_MAX_LINES 4
 
-/* Fill `lines` with the text for `level` and return how many were written.
- * Rows past the returned count are cleared, so the whole array is defined and
- * a caller can memcmp it against what it last drew.
+/** @brief Fill lines with the overlay text for level and return how many rows were written.
  *
- * Recomputes at most once per sampling window (the same 0.5 s window the FPS
- * value already uses) and returns the same text in between — which is what
- * lets the caller skip rebuilding geometry that has not changed. */
+ * OPENPETE_PERF_FPS writes the FPS line; OPENPETE_PERF_DETAIL adds the VBL
+ * rate and slip line, the late-tick and interpolation-share line, and the
+ * gap and hold line. Rows past the returned count are zeroed, so the whole
+ * array is defined and a caller can memcmp it against what it last drew.
+ * The text is recomputed from pacing-census deltas when the 0.5 s sampling
+ * window (the FPS value's window) closes or the level changes, and the same
+ * text is returned in between, which lets the caller skip rebuilding
+ * unchanged geometry. A level change rebuilds without rolling the window.
+ * The first call seeds the window from the census.
+ * @param level OPENPETE_PERF_* level; OPENPETE_PERF_OFF or below returns 0
+ *        and makes the next enabled call rebuild.
+ * @param lines Output rows of OPENPETE_PERF_LINE_MAX bytes each.
+ * @param max_lines Rows available in lines.
+ * @return Rows written, at most max_lines; 0 when off, lines is NULL, or
+ *         max_lines is not positive. */
 int openpete_perf_stats_lines(int level,
                               char lines[][OPENPETE_PERF_LINE_MAX],
                               int max_lines);

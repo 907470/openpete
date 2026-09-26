@@ -15,13 +15,31 @@
 extern "C" {
 #endif
 
-/* Run `cmd` through the platform shell and wait. Returns the child's
- * exit code, or -1 on spawn failure. No console window on Windows. */
+/** @brief Run cmd through the platform shell and wait for it, with no console window on Windows.
+ *
+ * On Windows the command runs as `cmd.exe /C "<cmd>"` under
+ * CREATE_NO_WINDOW; the extra quote pair keeps cmd.exe from stripping the
+ * outer quotes of a command with several quoted tokens, and grandchildren
+ * inherit the hidden console. On POSIX it is system(). The mod
+ * compile-on-boot step runs the compiler through it.
+ * @param cmd Shell command line.
+ * @return On Windows the child's exit code; on POSIX the system() wait
+ *         status, which is 0 exactly when the child exited 0; -1 when the
+ *         child could not be started. */
 int openpete_host_spawn(const char* cmd);
 
-/* Same, but collect the child's stdout+stderr into `out` (always
- * NUL-terminated, truncated at cap-1). Returns the exit code, or -1 on
- * spawn failure (out is set to ""). */
+/** @brief Run cmd like openpete_host_spawn and collect its output into out.
+ *
+ * On Windows the child's stdout and stderr both go to a pipe; on POSIX
+ * popen() collects stdout only, so a caller that wants stderr redirects it
+ * in cmd (`2>&1`). Output past cap - 1 bytes is read and discarded, so the
+ * child never blocks on a full pipe.
+ * @param cmd Shell command line.
+ * @param out Output buffer, always NUL-terminated; set to "" before the
+ *        spawn. Must be non-NULL with cap at least 1 on POSIX.
+ * @param cap Size of out in bytes.
+ * @return On Windows the child's exit code; on POSIX the pclose() wait
+ *         status; -1 when the child could not be started. */
 int openpete_host_spawn_capture(const char* cmd, char* out, size_t cap);
 
 #ifdef __cplusplus

@@ -384,20 +384,28 @@ void openpete_pace_cd_miss(int64_t waited_ns, uint64_t end_offset);
 void openpete_pace_input_edge(int64_t sample_ns, unsigned seq, uint16_t bits,
                               uint16_t bits_delta, int analog_delta);
 
-/* Begin/end of a span during which the pacing grid does not apply. */
+/** @brief Write a WINDOW record marking the begin or end of a span during which the pacing grid does not apply.
+ *
+ * The record carries the id in `aux`, flag 1 on begin, 0 on end, and
+ * op_now() as its timestamp. No-op without an open log; the census is not
+ * touched.
+ * @param id OP_PACE_W_* span kind.
+ * @param begin Nonzero at the span's begin, zero at its end. */
 void openpete_pace_window(uint16_t id, int begin);
 
-/* The pacer's sleep: when it was requested, where it aimed, when it returned.
+/** @brief Account one pacer sleep in the census and write a WAKE record.
  *
- * All THREE instants are required, and the third is the one that makes the
- * record honest. `wake - target` conflates two opposite situations: the OS
- * oversleeping past a future deadline, and a deadline that had ALREADY PASSED
- * when the sleep was requested — the second is the loop running behind, and
- * blaming it on the scheduler points every investigation at the wrong system.
- * Measured: 26 ms of apparent "overshoot" that was entirely the former.
- *
- * So the log records the OS's share as `wake - max(target, request)` and how
- * far behind the loop already was as `max(0, request - target)`. */
+ * wake - target conflates two opposite cases: the OS oversleeping past a
+ * future deadline, and a deadline that had already passed when the sleep
+ * was requested, which is the loop running behind rather than the
+ * scheduler. The OS's share is therefore measured as
+ * wake - max(target, request) and the lag as max(0, request - target). The
+ * census keeps the maximum of each and counts every wake whether or not a
+ * log is open. The record carries wake_ns as its timestamp, the target in
+ * `a`, the OS share in `b` and the lag in `c`.
+ * @param request_ns Instant the sleep was requested.
+ * @param target_ns Deadline the sleep aimed at.
+ * @param wake_ns Instant the sleep returned. */
 void openpete_pace_wake(int64_t request_ns, int64_t target_ns, int64_t wake_ns);
 
 /** @brief Record how long a present occupied the calling thread, start to finish.
