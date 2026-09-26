@@ -23,7 +23,10 @@ void openpete_sha256_init(openpete_sha256_ctx* c);
 void openpete_sha256_update(openpete_sha256_ctx* c, const void* data, size_t len);
 void openpete_sha256_final(openpete_sha256_ctx* c, uint8_t out[32]);
 
-/* Hex-encode a finished digest (lowercase, NUL-terminated, 65 bytes). */
+/** @brief Write a 32-byte digest as 64 lowercase hex digits and a NUL into out.
+ *
+ * @param digest Finished digest from openpete_sha256_final.
+ * @param out Destination of 65 bytes. */
 void openpete_sha256_hex(const uint8_t digest[32], char out[65]);
 
 #ifdef __cplusplus

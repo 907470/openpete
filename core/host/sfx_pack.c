@@ -94,7 +94,14 @@ static sfx_pack_census_t s_census;
 
 /* ── WAV in: whatever SDL reads, to S16 mono at the file's rate ───── */
 
-/* `smpl` chunk: first loop's start/end in sample frames. */
+/** @brief Read the first loop of a WAV file's `smpl` chunk into start and len; return 1 when one is found.
+ *
+ * Walks the RIFF/WAVE chunks, each size padded to even, to the first
+ * `smpl` chunk of at least 60 bytes. The loop count sits at offset 28 and
+ * the first loop's start and end sample at offsets 44 and 48; the end is
+ * inclusive, so len = end - start + 1. A missing file, a non-RIFF/WAVE
+ * header, no `smpl` chunk, a zero loop count or an end before the start
+ * returns 0 and leaves start and len unwritten. */
 static int wav_read_smpl(const char* path, int* start, int* len)
 {
     FILE* f = fopen(path, "rb");

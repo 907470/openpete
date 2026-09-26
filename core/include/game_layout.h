@@ -889,20 +889,23 @@ typedef struct game_layout {
 
 extern const game_layout_t game_layout;
 
-/* The default window size, in window pixels, for this game's display
- * environment. Height: two window rows per drawn VRAM row, so the visible
- * clip maps 1:1 at integer scale with no bars. Width: the DISPENV line is
- * 512 VRAM pixels but not square — the PSX presents its `disp_h` rows at
- * 4:3 — so the width is the 4:3 width of the doubled DISPENV height, and is
- * independent of the clip height and of disp_w. Spyro 1 (clip 224 of 240
- * rows) gets 640x448; Spyro 2 and Spyro 3 (clip 216 of 240) get 640x432.
- * The aspect correction between the full display and the drawn clip is
- * game_display_crop_factor(). */
+/** @brief Return the default window width in window pixels: the 4:3 width of twice the DISPENV height.
+ *
+ * The DISPENV line is 512 VRAM pixels but not square, since the PSX
+ * presents its `disp_h` rows at 4:3, so the width is disp_h * 2 * 4 / 3
+ * and is independent of the clip height and of disp_w: 640 for every game
+ * with disp_h 240. With game_default_window_h, Spyro 1 (clip 224 of 240
+ * rows) gets 640x448 and Spyro 2 and Spyro 3 (clip 216 of 240) get
+ * 640x432. The aspect correction between the full display and the drawn
+ * clip is game_display_crop_factor(). */
 static inline int game_default_window_w(void)
 {
     return (game_layout.display.disp_h * 2 * 4) / 3;
 }
 
+/** @brief Return the default window height in window pixels: two window rows per drawn VRAM row (2 * clip_h).
+ *
+ * The visible clip then maps 1:1 at integer scale with no bars. */
 static inline int game_default_window_h(void)
 {
     return game_layout.display.clip_h * 2;
