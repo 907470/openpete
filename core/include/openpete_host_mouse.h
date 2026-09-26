@@ -93,50 +93,101 @@ typedef struct {
 
 /* ---- producer (pump thread) ------------------------------------------ */
 
-/* Parses OPENPETE_MOUSE_INJECT / OPENPETE_MOUSE_INJECT_RAW /
- * OPENPETE_MOUSE_PROBE and marks the channel initialised. `fallback_window` is the window capture applies to when the
- * native renderer has none (headless keeps a hidden SDL window). */
+/** @brief Initialise the mouse channel once: read the probe and injection variables and seed the window size.
+ *
+ * Reads OPENPETE_MOUSE_PROBE, OPENPETE_MOUSE_INJECT_RAW and
+ * OPENPETE_MOUSE_INJECT (loading that script), takes the window size in
+ * points from the mouse window, and starts the millisecond clock the
+ * script's "<n>ms" times count from. A second call does nothing. Until
+ * this runs, the event handler, pump iteration and capture apply do
+ * nothing.
+ * @param fallback_window the window capture and injected events address
+ *        when the native renderer has none (headless keeps a hidden SDL
+ *        window). */
 void openpete_host_mouse_init(struct SDL_Window* fallback_window);
 int  openpete_host_mouse_initialised(void);
-/* 1 when an inject script is loaded: imgui then follows the channel's
- * event-derived position instead of SDL's own (which a pushed event never
- * moves), so the script's hover reaches imgui widgets too. */
+/** @brief Return 1 when an OPENPETE_MOUSE_INJECT script loaded at least one line.
+ *
+ * The dev overlay then follows the channel's event-derived position
+ * instead of SDL's own, which a pushed event never moves, so the script's
+ * hover reaches imgui widgets. The exit summary prints the host-input end
+ * state when it is set.
+ * @return 1 when a script is loaded, else 0. */
 int  openpete_host_mouse_inject_active(void);
 
-/* Every dequeued SDL event passes through here before any other handler. */
+/** @brief Fold one dequeued SDL event into the channel's state and totals, before any other handler sees it.
+ *
+ * While real mouse input is not accepted (the switch off or the input lock
+ * on), motion, button and wheel events not carrying the injection device
+ * id are dropped; window events stay, so the window size is always
+ * current. Motion sets the position and adds to the motion totals, with
+ * the fractional remainder carried; a button event for buttons 1-5 sets
+ * the position and mask, and a press adds to that button's press total;
+ * the wheel adds in 1/256 notch, flipped direction negated. Enter and
+ * leave set the in-window flag; resize refreshes the window size. Does
+ * nothing before openpete_host_mouse_init.
+ * @param ev the event; NULL is ignored. */
 void openpete_host_mouse_handle_event(const union SDL_Event* ev);
 
-/* The mouse switch. Off drops real mouse motion, button and wheel events and
- * refuses capture; the injected stream is unaffected. Set from the options at
- * host init and from the knob registry afterwards; read on the pump thread. */
+/** @brief Set the mouse switch.
+ *
+ * Off drops real mouse motion, button and wheel events and refuses
+ * capture; the injected stream is unaffected. Set from the options at
+ * host init and from the knob registry afterwards; read on the pump
+ * thread.
+ * @param on nonzero turns real mouse input on. */
 void openpete_host_mouse_set_enabled(int on);
 int  openpete_host_mouse_enabled(void);
-/* Whether real mouse input is taken at all: the switch is on and the input
- * lock (openpete_input_lock.h) is off. Every site that gates on the switch
- * reads this, so the lock implies the switch's off behaviour without
- * changing the value the switch reports. */
+/** @brief Return whether real mouse input is taken: the switch is on and the input lock is off.
+ *
+ * Every site that gates on the switch reads this, so the input lock
+ * (openpete_input_lock.h) implies the switch's off behaviour without
+ * changing the value openpete_host_mouse_enabled reports.
+ * @return 1 when accepting, else 0. */
 int  openpete_host_mouse_accepting(void);
 
-/* Once per pump iteration, before the events are polled: advances the
- * iteration counter and pushes this iteration's injected events. */
+/** @brief Advance the pump iteration counter and push this iteration's injected events; call once per pump iteration, before polling.
+ *
+ * Under OPENPETE_MOUSE_PROBE, first logs one line describing the channel
+ * when the state or any total changed during the previous iteration. Does
+ * nothing before openpete_host_mouse_init. */
 void openpete_host_mouse_pump_iteration(void);
 unsigned openpete_host_mouse_pump_iterations(void);
 
-/* Copy of the producer's event-derived state, for the snapshot publish. */
+/** @brief Copy the producer's event-derived mouse state, for the host input snapshot publish.
+ *
+ * Pump thread only.
+ * @param out receives the state; NULL is ignored. */
 void openpete_host_mouse_producer_read(openpete_mouse_state_t* out);
 
-/* Applies the capture decision (SDL relative mode) edge-triggered. Runs on
- * the window-owning thread, next to the cursor idle-hide. */
+/** @brief Apply the capture decision (SDL relative mode) to the mouse window, edge-triggered.
+ *
+ * Capture is wanted when real input is accepted, some owner requested it,
+ * the O menu is closed, the dev overlay does not own the mouse, and the
+ * fill-tag inspector is inactive. SDL is called only when the decision
+ * changes from the last applied one. Runs on the window-owning thread,
+ * next to the cursor idle-hide. Does nothing before
+ * openpete_host_mouse_init or while there is no window. */
 void openpete_host_mouse_apply_capture(void);
 
 /* ---- totals (any thread) --------------------------------------------- */
 
+/** @brief Return the running count of presses of one mouse button since boot.
+ *
+ * @param button_index OPENPETE_MOUSE_BTN_*.
+ * @return the count, or 0 for an out-of-range index. */
 uint64_t openpete_host_mouse_press_total(int button_index);
 int64_t  openpete_host_mouse_motion_total(int axis);   /* 0 = x, 1 = y; counts */
 int64_t  openpete_host_mouse_wheel_total(void);        /* 1/256 notch, up positive */
 
 /* ---- ownership and capture --------------------------------------------*/
 
+/** @brief Return which consumer owns the mouse.
+ *
+ * The dev overlay owns it while open or while imgui wants the mouse, and
+ * takes precedence over the O menu, which owns it while open.
+ * @return OPENPETE_MOUSE_OWNED_DEVUI, OPENPETE_MOUSE_OWNED_MENU, or
+ *         OPENPETE_MOUSE_OWNED_NONE. */
 int  openpete_host_mouse_owned(void);
 void openpete_host_mouse_request_capture(int owner, int on);
 int  openpete_host_mouse_capture_requested(void);   /* any owner bit set */
@@ -144,31 +195,44 @@ int  openpete_host_mouse_captured(void);            /* applied state */
 
 /* ---- the menu request flag ------------------------------------------- */
 
-/* A target open state for the O menu, raised on any thread (the pump's
- * Escape dismiss, the `menu` inject verb) and consumed by the host loop at
- * its poll point, so the toggle lands between two reads of the pad-override
- * clear latch. Repeated requests before consumption are idempotent. */
+/** @brief Request a target open state for the O menu, consumed by openpete_host_mouse_take_menu_request.
+ *
+ * Raised on any thread (the pump's Escape dismiss, the `menu` inject verb)
+ * and consumed by the host loop at its poll point, so the change lands
+ * between two reads of the pad-override clear latch. A later request
+ * before consumption replaces an earlier one.
+ * @param open nonzero requests open, zero requests closed. */
 void openpete_host_mouse_request_menu(int open);
 int  openpete_host_mouse_take_menu_request(int* open);
 
-/* The `shot` inject verb asks for a player screenshot (the F12 path, a
- * live capture of the presented window), so a scripted run can show what
- * the pointer did. Consumed by the host loop. */
+/** @brief Take and clear the screenshot request the `shot` inject verb raises.
+ *
+ * The host loop consumes it as a player screenshot (the F12 path, a live
+ * capture of the presented window), so a scripted run can show what the
+ * pointer did.
+ * @return 1 when a request was pending, else 0. */
 int  openpete_host_mouse_take_screenshot_request(void);
 
 /* ---- double-click fullscreen gate ------------------------------------ */
 
-/* 1 when a left double-click may toggle fullscreen: the menu is closed, no
- * owner has requested capture, and no host or mod action binds mouse:left.
- * Pump thread. */
+/** @brief Return 1 when a left double-click may toggle fullscreen.
+ *
+ * Allowed when the O menu is closed, no owner has requested capture, and
+ * no host or mod action binds mouse:left. The caller separately excludes a
+ * click the dev overlay wants. Pump thread.
+ * @return 1 when allowed, else 0. */
 int      openpete_host_mouse_double_click_allowed(void);
 void     openpete_host_mouse_double_click_engaged(void);
 unsigned openpete_host_mouse_double_click_count(void);
 
 /* ---- probe ----------------------------------------------------------- */
 
-/* OPENPETE_MOUSE_PROBE=1: the channel is logged on change and every
- * consumer gesture is logged with its outcome through this. */
+/** @brief Return whether OPENPETE_MOUSE_PROBE is on.
+ *
+ * With it on, the channel is logged on change and every consumer gesture
+ * is logged with its outcome through openpete_host_mouse_probe_log. The
+ * variable is read at openpete_host_mouse_init; before that this returns 0.
+ * @return 1 when the probe is on, else 0. */
 int  openpete_host_mouse_probe(void);
 void openpete_host_mouse_probe_log(const char* consumer, const char* fmt, ...);
 

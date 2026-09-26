@@ -57,17 +57,31 @@ void openpete_host_input_load_mappings(const char* cli_path);
  * @param joystick_id SDL joystick instance id. */
 void openpete_host_input_pad_arrived(unsigned int joystick_id);
 
-/* Producer. Decodes live SDL input (as of the last event pump) and publishes
- * it. `alt_held` suppresses the sample the way PsyX_UpdateInput's own Alt gate
- * does, so Alt+Enter cannot register as Start; a suppressed sample republishes
- * the neutral pad rather than going stale. */
+/** @brief Producer: decode live SDL input as of the last event pump and publish it as one pad sample.
+ *
+ * Slot 0 comes from OPENPETE_INPUT_SYNTH's synthetic pattern when that is
+ * on, else under the input lock from the player-1 gamepad only when it is
+ * an SDL virtual gamepad, else from PsyX_Pad_DecodeP1. The timed pulse
+ * source (OPENPETE_INPUT_PULSE) is applied over slot 0 last. Slots 1-3 are
+ * decoded from their own gamepads, overlaid with their [keys.padN]
+ * bindings when any are bound; a slot with no device publishes invalid.
+ * Each slot's device instance id is stored for the rumble pump. A pad-bit
+ * or axis change against the previous sample is logged to the pace log
+ * with the publish instant and sequence number. Also advances the
+ * OPENPETE_INPUT_VGAMEPAD virtual pads.
+ * @param alt_held true suppresses the PsyX_Pad_DecodeP1 decode of slot 0
+ *        the way PsyX_UpdateInput's Alt gate does, so the Enter of
+ *        Alt+Enter cannot register as Start; slot 0 then publishes neutral
+ *        rather than going stale. Slots 1-3, the synthetic source and the
+ *        input-lock path ignore it. */
 void openpete_host_input_sample(bool alt_held);
 
-/* Publish a neutral snapshot so the consumer has something valid to stamp
- * before the producer's first real sample. Required before starting a
- * consumer on another thread: without it the first latch leaves the override
- * inactive and the injection path falls back to reading SDL directly, on the
- * wrong thread. */
+/** @brief Publish a neutral pad sample so the consumer has a valid slot 0 to stamp before the producer's first real sample.
+ *
+ * Required before starting a consumer on another thread: without it the
+ * first latch leaves the override inactive and PsyX_Pad_InternalPadUpdates
+ * falls through to its live path, which pumps SDL events from a thread
+ * that does not own video. Slots 1-3 publish invalid. */
 void openpete_host_input_seed_neutral(void);
 
 /** @brief Consumer: stamp the published slot-0 snapshot into the PsyCross override channel and record the latched sample.
@@ -157,10 +171,14 @@ void openpete_host_input_last(openpete_pad_snapshot_t* out);
  * @return 1 when a device drove the slot, else 0 (also for NULL out). */
 int openpete_host_input_latched_slot(int slot, openpete_pad_snapshot_t* out);
 
-/* VBLs `slot` decoded through its [keys.padN] bindings rather than the shared
- * controller merge. Zero on a slot the user re-mapped means the re-map never
- * took, which no comparison of the resulting bytes can distinguish from a
- * re-map that happens to agree with the default. */
+/** @brief Return how many producer samples decoded a slot through its [keys.padN] bindings rather than the shared controller merge alone.
+ *
+ * Zero on a re-mapped slot means the re-map never took, which no
+ * comparison of the resulting bytes can distinguish from a re-map that
+ * agrees with the default. Slot 0 is decoded by the merge only and always
+ * reads 0.
+ * @param slot pad slot, 0 .. OPENPETE_PAD_SLOTS - 1.
+ * @return the count, or 0 for an out-of-range slot. */
 unsigned long long openpete_host_input_slot_keymap_decodes(int slot);
 
 /** @brief Return op_now() at the publish of the last pad snapshot.
@@ -199,11 +217,14 @@ unsigned openpete_host_input_latched_seq(void);
  *         sample is invalid. */
 unsigned short openpete_host_input_latched_bits(void);
 
-/* Times the consumer's seqlock retry bound was exhausted — the producer was
- * unavailable for the whole retry window, not merely mid-publish. Expected to
- * stay 0. A non-zero count means some tick reused the previous sample instead
- * of a fresh one, which is not necessarily a bug (a long preemption of the
- * pump thread produces it) but is never nothing, so it is surfaced. */
+/** @brief Return how many times a pad-sample read exhausted the seqlock retry bound.
+ *
+ * Exhaustion means the producer was unavailable for the whole retry
+ * window, not merely mid-publish. Expected to stay 0. A non-zero count
+ * means some read kept the previous sample instead of a fresh one; a long
+ * preemption of the pump thread produces it without a defect. The pace
+ * log summary prints the count when non-zero.
+ * @return the failure count since start. */
 unsigned openpete_host_input_seqlock_failures(void);
 
 /** @brief Return the timed pulse source's schedule size, OPENPETE_INPUT_PULSE, or 0 when the source is off.
@@ -222,14 +243,20 @@ int openpete_host_input_pulse_count(void);
  * @return The number of pulses whose press instant has passed. */
 int openpete_host_input_pulses_fired(void);
 
-/* Which pad bit the pulse source drives, so the analyzer can separate injected
- * presses from whatever else happened to be pressed. 0 when the source is off. */
+/** @brief Return the pad bit the timed pulse source presses, OPENPETE_INPUT_PULSE_BIT (default 0x0100, L2).
+ *
+ * The pace log header records it so the analyzer can separate injected
+ * presses from other presses.
+ * @return the bit mask, or 0 when the source is off. */
 unsigned short openpete_host_input_pulse_bit(void);
 
-/* How long each pulse is held. The analyzer needs it to tell a plumbing defect
- * from a truth: a press lost while the latch interval was SHORTER than the
- * hold was available and skipped, which is a bug; one lost across an interval
- * longer than the hold is input sampling working as specified. */
+/** @brief Return how long each timed pulse is held, OPENPETE_INPUT_PULSE_HOLD_US (default 20000).
+ *
+ * The pace log header records it. A press lost while the latch interval
+ * was shorter than the hold was available and skipped, which is a defect;
+ * one lost across an interval longer than the hold is sampling working as
+ * specified.
+ * @return the hold in microseconds, or 0 when the source is off. */
 int openpete_host_input_pulse_hold_us(void);
 
 /* ---- rumble recorder (vibration oracle) --------------------------------
@@ -251,20 +278,30 @@ int openpete_host_input_pulse_hold_us(void);
  * once more than one slot can be driven: one pad's commands would be
  * indistinguishable from another's. Each pad carries its own callback,
  * counters and self-probe. */
+/** @brief Return how many Rumble callbacks one virtual pad received after its self-probe.
+ *
+ * The counter is zeroed after the attach-time self-probe, so it counts
+ * only commands the actuator path delivered.
+ * @param pad virtual pad index, 0 .. OPENPETE_PAD_SLOTS - 1.
+ * @return the callback count, or 0 for an out-of-range index. */
 int  openpete_host_input_vpad_rumble_calls(int pad);
 int  openpete_host_input_vpad_rumble_nonzero(int pad);
 int  openpete_host_input_vpad_rumble_live(int pad);
 void openpete_host_input_vpad_rumble_last(int pad, unsigned* low, unsigned* high);
-/* How many virtual pads are attached; 0 when the harness is off. */
+/** @brief Return how many OPENPETE_INPUT_VGAMEPAD virtual pads are open.
+ *
+ * @return the count, 0 when the variable is unset or attach failed. */
 int  openpete_host_input_vpad_count(void);
 
-/* The SDL joystick instance id driving pad slot `slot` (1..OPENPETE_PAD_SLOTS-1),
- * or 0 for an empty slot.
+/** @brief Return the SDL joystick instance id driving a pad slot, as stored by the last producer sample.
  *
- * An id, not a handle: these gamepads are opened and pruned on the sampling
- * thread while the rumble pump runs on another, so the pump resolves the id
- * with SDL_GetGamepadFromID at drive time and a prune in between reads as a
- * NULL rather than as a use-after-close. */
+ * An id, not a handle: these gamepads are opened and pruned on the
+ * sampling thread while the rumble pump runs on another, so the pump
+ * resolves the id with SDL_GetGamepadFromID at drive time and a prune in
+ * between reads as NULL rather than as a use-after-close.
+ * @param slot pad slot, 1 .. OPENPETE_PAD_SLOTS - 1.
+ * @return the instance id, or 0 for an empty or out-of-range slot (slot 0
+ *         included). */
 unsigned openpete_host_input_slot_device_id(int slot);
 
 /** @brief Arm the input parity instrument regardless of OPENPETE_INPUT_PARITY.

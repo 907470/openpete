@@ -97,9 +97,16 @@ static int synth_on(void)
     return s_synth;
 }
 
-/* A deterministic function of the VBL counter: a rotating single button held
- * for 8 frames at a time, with the left stick sweeping, separated by neutral
- * gaps so both engaged and idle frames occur. */
+/** @brief Write the synthetic pad value for one VBL count.
+ *
+ * A rotating single button (Cross, Circle, Square, Triangle, Up, Down,
+ * Start) is held for 8 VBLs at a time, followed by one 8-VBL neutral gap
+ * per cycle, so both engaged and idle samples occur. While a button is held
+ * the left stick sweeps (LX = 78 + count % 100, LY = 178 - count % 100);
+ * otherwise every axis is 128.
+ * @param frame the VBL counter (openpete_frame).
+ * @param bits receives the active-low pad bits.
+ * @param axes receives the RX, RY, LX, LY bytes. */
 static void synth_pad(unsigned frame, unsigned short* bits, unsigned char axes[4])
 {
     static const unsigned short kButtons[] = {
@@ -217,9 +224,15 @@ int openpete_host_input_pulses_fired(void)
     return s_pulse_fired;
 }
 
-/* Apply the schedule to `bits`. Pulse k presses at t0 + k*gap + jitter(k),
- * where the jitter walks the press across the grid period so the phases are
- * spread rather than aliased onto one point. */
+/** @brief Clear the pulse bit in bits while a scheduled pulse is held.
+ *
+ * t0 is the op_now() of the first call. Pulse k presses at
+ * t0 + k * gap + jitter(k) and releases hold later; jitter(k) is a
+ * multiplicative hash of k modulo 16715111 ns, about one VBL period, so the
+ * press phases spread across the period instead of aliasing onto one
+ * point. Also advances s_pulse_fired to the number of pulses whose press
+ * instant has passed. Pulses past the configured count press nothing.
+ * @param bits the active-low pad bits, updated in place. */
 static void pulse_apply(unsigned short* bits)
 {
     const int64_t now = (int64_t)op_now();
@@ -477,9 +490,16 @@ static void vpad_selfprobe(int v, SDL_JoystickID id)
                    v);
 }
 
-/* Drive the virtual pad from the same frame-indexed pattern the synthetic
- * source uses, but through real SDL button/axis state so the decode under test
- * is the genuine gamepad path. */
+/** @brief Set every attached virtual pad's buttons and left stick from the VBL-indexed synthetic pattern.
+ *
+ * The pattern matches synth_pad's (one of seven buttons per 8-VBL phase,
+ * then a neutral phase) but is applied through SDL virtual-joystick state,
+ * so the decode under test is the real gamepad path. The left stick sweeps
+ * continuously, held or not. Pad v is shifted by 3 * v VBLs so no two
+ * virtual pads hold the same button on the same VBL, which exposes a
+ * routing defect that swaps two slots. Does nothing when no virtual pad is
+ * attached.
+ * @param frame the VBL counter (openpete_frame). */
 static void vgamepad_drive(unsigned frame)
 {
     if (!s_vpad) return;
@@ -1047,7 +1067,17 @@ int openpete_host_input_mouse_button(int button_index)
     return (host_sdl_read()->mouse.buttons >> button_index) & 1u;
 }
 
-/* Publish one whole sample. Returns its sequence number (even, stable). */
+/** @brief Publish one whole pad sample under the seqlock.
+ *
+ * The sequence is made odd before the bytes are written and even after,
+ * with release barriers between, so a reader never accepts a partial
+ * sample. Slot 0 is always valid.
+ * @param bits slot 0's active-low pad bits.
+ * @param axes slot 0's RX, RY, LX, LY bytes.
+ * @param extra slots 1 .. OPENPETE_PAD_SLOTS - 1, or NULL to publish them
+ *        invalid.
+ * @param now_ns the op_now() publish instant.
+ * @return the sample's sequence number (even). */
 static unsigned pad_publish(unsigned short bits, const unsigned char axes[4],
                             const openpete_pad_snapshot_t* extra,
                             int64_t now_ns)
@@ -1068,8 +1098,16 @@ static unsigned pad_publish(unsigned short bits, const unsigned char axes[4],
     return seq + 2u;
 }
 
-/* Copy the current sample whole. Returns its sequence number, or 0 if no
- * sample has ever been published or the retry bound was exhausted. */
+/** @brief Copy the current pad sample whole under the seqlock.
+ *
+ * Retries while a publish is in flight or the sequence changed across the
+ * copy, up to PAD_SEQLOCK_TRIES times, yielding 1 us per try after the
+ * first PAD_SEQLOCK_SPIN. Exhausting the bound increments the counter
+ * openpete_host_input_seqlock_failures reads; out then holds an unverified
+ * copy the callers discard.
+ * @param out receives the sample.
+ * @return the sequence number, or 0 when no sample has been published or
+ *         the retry bound was exhausted. */
 static unsigned pad_read_stable(host_pad_sample_t* out)
 {
     for (int i = 0; i < PAD_SEQLOCK_TRIES; i++) {
@@ -1432,7 +1470,13 @@ void openpete_host_input_parity_enable(void)
     OPL_INFO_F("input", "parity instrument armed (pad buffer vs live decode)");
 }
 
-/* Resolved once — getenv per frame is a measurable cost on Windows. */
+/** @brief Return whether the input parity instrument is armed.
+ *
+ * OPENPETE_INPUT_PARITY is read on the first call and cached, since a
+ * getenv per iteration is a measurable cost on Windows; a non-empty value
+ * not starting with '0' arms it. openpete_host_input_parity_enable arms it
+ * regardless.
+ * @return 1 when armed, else 0. */
 static int parity_on(void)
 {
     if (s_parity_on < 0) {

@@ -184,11 +184,16 @@ static void inj_load(const char* path)
 
 static SDL_Window* mouse_window(void);
 
-/* A key line does two things, matching the two ways a real key reaches the
- * process: it pushes the key event (the Escape and quit-key handling and the
- * dev overlay read events) and it sets the key's held state in the polled
- * snapshot (every binding reads that). A pushed event never updates SDL's own
- * keyboard array, so the held state is carried by the host input module. */
+/** @brief Inject one scripted key press or release through both paths a real key reaches the process by.
+ *
+ * Pushes the SDL key event (the Escape and quit-key handling and the dev
+ * overlay read events) and sets the key's held state in the polled
+ * snapshot (every binding reads that). A pushed event never updates SDL's
+ * own keyboard array, so the held state is carried by the host input
+ * module. Under OPENPETE_MOUSE_INJECT_RAW the key is filed as physical
+ * keyboard input and the event carries device id 0.
+ * @param scancode SDL scancode.
+ * @param down nonzero for a press, zero for a release. */
 static void inj_push_key(int scancode, int down)
 {
     openpete_host_input_inject_key(scancode, down, s_inj_raw);
@@ -255,10 +260,14 @@ static void inj_push_wheel(float notches)
 
 static Uint64 s_init_ticks_ms;
 
-/* Fire every scripted line whose time has arrived. Lines are taken in file
- * order, so a line scripted for an earlier time than its predecessor fires
- * late rather than never. */
 
+/** @brief Fire every scripted injection line whose time has arrived.
+ *
+ * A line's time is a pump iteration or, for "<n>ms", milliseconds of wall
+ * time since openpete_host_mouse_init. Lines are taken in file order, so a
+ * line scripted for an earlier time than its predecessor fires late rather
+ * than never. Under OPENPETE_MOUSE_PROBE each fired line is logged.
+ * @param iter the current pump iteration, counted from 1. */
 static void inj_step(unsigned iter)
 {
     const unsigned ms = (unsigned)(SDL_GetTicks() - s_init_ticks_ms); /* clock-guard: wall */ /* the harness clock */
@@ -342,6 +351,11 @@ int openpete_host_mouse_inject_active(void) { return s_inj_n > 0; }
 
 /* ---- events ------------------------------------------------------------ */
 
+/** @brief Refresh the state's window size in points from an event's window.
+ *
+ * A zero window id falls back to the mouse window. A missing window or a
+ * non-positive size leaves the stored size unchanged.
+ * @param window_id SDL window id carried by the event, or 0. */
 static void refresh_window_size(Uint32 window_id)
 {
     SDL_Window* w = window_id ? SDL_GetWindowFromID(window_id) : mouse_window();
@@ -510,6 +524,9 @@ int64_t openpete_host_mouse_wheel_total(void)
 
 /* ---- ownership --------------------------------------------------------- */
 
+/** @brief Return whether the dev overlay owns the mouse: it is open, or imgui wants the mouse.
+ *
+ * @return nonzero when the overlay owns the mouse. */
 static int devui_owner(void)
 {
     return openpete_devui_is_open() || openpete_devui_wants_mouse();

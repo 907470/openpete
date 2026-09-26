@@ -214,7 +214,11 @@ static void rumble_drive(uint16_t low, uint16_t high)
     SDL_SetAtomicInt(&s_last_pair, (int)(((uint32_t)high << 16) | (uint32_t)low));
 }
 
-/* True when the pad we would drive is one of the harness's virtual devices. */
+/** @brief Return whether a gamepad's instance id is in the registered test-device set.
+ *
+ * The set holds the harness's virtual pads (openpete_rumble_set_test_device).
+ * @param gp the gamepad about to be driven, or NULL.
+ * @return 1 when gp is a test device, 0 otherwise or for NULL. */
 static int driving_test_device(SDL_Gamepad* gp)
 {
     if (!gp) return 0;

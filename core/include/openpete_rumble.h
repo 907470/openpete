@@ -66,28 +66,43 @@ uint16_t openpete_rumble_motor_u16(int raw_byte, int is_small, int strength);
 
 /* ---- registration and the per-tick / per-pump halves -------------------- */
 
-/* Called from libpad's PadSetAct. `table` is a host pointer into PSX RAM and
- * stays valid for the life of the process; `len` is 0..2 in practice. A NULL
- * table or len <= 0 unregisters the slot. */
+/** @brief Register a slot's actuator buffer; installed as PsyCross's PadSetAct hook.
+ *
+ * Every call is counted, and a call whose bytes include a non-zero one is
+ * counted separately. Only the first two bytes ({small, large}) are
+ * sampled. Under OPENPETE_RUMBLE_LOG the registration is logged.
+ * @param slot pad slot; only 0 and 1 are stored, others are ignored
+ *        uncounted.
+ * @param table host pointer into PSX RAM, valid for the life of the
+ *        process; NULL unregisters the slot.
+ * @param len buffer length, 0..2 in practice; len <= 0 unregisters the
+ *        slot. */
 void openpete_rumble_register(int slot, unsigned char* table, int len);
 
-/* Sim thread, once per committed tick: read the registered buffer and publish
- * the motor pair. Inert while speculating (runahead must not buzz the pad). */
+/** @brief Read slot 0's registered actuator buffer and publish the motor pair; sim thread, once per committed tick.
+ *
+ * The bytes are converted with openpete_rumble_motor_u16 at the current
+ * strength and published as one 32-bit word (large motor low, small motor
+ * high). An unregistered slot publishes {0,0}. Does nothing while
+ * speculating, so a runahead tick never reaches a motor. Under
+ * OPENPETE_RUMBLE_LOG each change in the bytes is logged. */
 void openpete_rumble_sample(void);
 
-/* Main pump thread, once per pump iteration: drive SDL from the published
- * pair. Silent when headless, when the window has no input focus, or when the
- * strength is 0.
+/** @brief Drive the pads from the published motor pairs; main pump thread, once per pump iteration.
  *
- * Deliberately unconditional rather than change-gated. SDL_RumbleJoystick
- * already skips the driver when the pair is unchanged and merely refreshes the
- * expiry, resends the current pair every SDL_RUMBLE_RESEND_MS so a dropped
- * wireless packet heals itself, and auto-stops at expiry — so a custom rate
- * limiter would duplicate three things SDL ships. Worse, a change-gated
- * re-issue gets permanently stuck off: a host-side stop (focus loss, pause)
- * does not change the PUBLISHED pair, so the detector would never re-fire on
- * focus regain and the pad would stay dead until the game happened to change
- * value. Unconditional re-issue has no such state to get stuck in. */
+ * Mod-driven slots 1..OPENPETE_PAD_SLOTS-1 are driven first, then player
+ * one's pad from the game's pair with a 1000 ms expiry. A pad stays silent
+ * (stopped, not skipped) while paused, and while headless or without
+ * keyboard focus unless it is a registered test device. Strength 0
+ * publishes a zero pair, which silences the motors.
+ *
+ * The drive is unconditional rather than change-gated. SDL_RumbleJoystick
+ * already skips the driver when the pair is unchanged and only refreshes
+ * the expiry, resends the current pair every SDL_RUMBLE_RESEND_MS so a
+ * dropped wireless packet recovers, and stops at expiry. A change-gated
+ * re-issue would stay off after a host-side stop (focus loss, pause),
+ * since the stop does not change the published pair and the detector
+ * would not fire again on focus regain. */
 void openpete_rumble_apply(void);
 
 /* Immediate silence, from the pump thread. Used on focus loss, pause, exit and
@@ -96,7 +111,11 @@ void openpete_rumble_stop(void);
 
 /* ---- host-side gates ---------------------------------------------------- */
 
-/* Headless is a refusal, not a default: no window means no player. */
+/** @brief Set whether the run is headless, which silences every pad except registered test devices.
+ *
+ * Headless is a refusal, not a default: no window means no player. Set
+ * once from the options at host init.
+ * @param headless nonzero for a headless run. */
 void openpete_rumble_set_headless(int headless);
 
 /* Name one of the harness's virtual pads (OPENPETE_INPUT_VGAMEPAD), by SDL
@@ -114,25 +133,33 @@ void openpete_rumble_set_test_device(unsigned instance_id);
 
 /* ---- mod-driven slots --------------------------------------------------- */
 
-/* Publish slot `slot`'s motor pair from a mod, in libpad's actuator encoding:
- * `small_byte` is the small motor's on/off byte and `large_byte` the large
- * motor's 0..255 byte — the two bytes the game itself writes to its actuator
- * buffer. Converting here means the ONE byte-to-motor conversion, with the
- * user's strength setting, serves every slot: a mod cannot carry a second
- * mapping and cannot bypass the setting.
+/** @brief Publish a mod-driven slot's motor pair from libpad's actuator encoding.
  *
- * Slots 1..OPENPETE_PAD_SLOTS-1 only. Slot 0 is the game's own actuator table
- * and a second writer would fight it.
- *
- * Level-triggered: the pair persists, re-driven every pump iteration with the
- * dead-man refresh above, until the next call for that slot or until the slot
- * is cleared. Publish {0,0} to stop. */
+ * The bytes are the two the game itself writes to its actuator buffer.
+ * They go through openpete_rumble_motor_u16 with the current strength, so
+ * one byte-to-motor conversion and the user's strength setting serve every
+ * slot. The first call arms the slot; openpete_rumble_apply leaves an
+ * unarmed slot alone. The pair is level-triggered: it is re-driven every
+ * pump iteration with the 1000 ms expiry until the next call for that
+ * slot or openpete_rumble_mod_clear. Publish {0,0} to stop.
+ * @param slot 1 .. OPENPETE_PAD_SLOTS - 1; slot 0 is the game's own
+ *        actuator table and is ignored, as is any out-of-range slot.
+ * @param small_byte the small motor's on/off byte (bit 0).
+ * @param large_byte the large motor's 0..255 byte. */
 void openpete_rumble_mod_set(int slot, int small_byte, int large_byte);
 
-/* Silence one mod-driven slot (mod disabled, unloaded, or reloaded). */
+/** @brief Silence one mod-driven slot by publishing a zero pair (mod disabled, unloaded, or reloaded).
+ *
+ * The slot stays armed, so the stop reaches the device on the next pump
+ * iteration.
+ * @param slot 1 .. OPENPETE_PAD_SLOTS - 1; any other value is ignored. */
 void openpete_rumble_mod_clear(int slot);
 
-/* SDL rumble calls issued for a mod-driven slot, and its published pair. */
+/** @brief Return how many SDL rumble calls drove a mod-driven slot's published pair.
+ *
+ * The zero-pair stops a refusal issues are not counted.
+ * @param slot 1 .. OPENPETE_PAD_SLOTS - 1.
+ * @return the count, or 0 for any other slot. */
 unsigned openpete_rumble_mod_commands(int slot);
 void     openpete_rumble_mod_pair(int slot, uint16_t* low, uint16_t* high);
 
@@ -140,20 +167,30 @@ void     openpete_rumble_mod_pair(int slot, uint16_t* low, uint16_t* high);
 void openpete_rumble_set_strength(int strength);
 int  openpete_rumble_get_strength(void);
 
-/* Pause (F7 and friends): motors silent while held, restored on release
- * without needing the game to change value. */
+/** @brief Set the host pause gate: motors are silent while it is set and resume on release without the game changing value.
+ *
+ * Set by the host loop's pause toggle.
+ * @param paused nonzero while the host has paused the game. */
 void openpete_rumble_set_paused(int paused);
 
 /* ---- diagnostics -------------------------------------------------------- */
 
-/* PadSetAct calls seen, and whether any carried a non-zero actuator byte.
- * The second is the falsifiable half of the diagnosis: under the old one-shot
- * semantics every call carries {0,0}, because the game registers once at boot
- * and only writes bytes afterwards. */
+/* PadSetAct calls seen, and how many carried a non-zero actuator byte. The
+ * game registers once at boot, while its buffer is still {0,0}, and only
+ * writes bytes afterwards, so a one-shot implementation sees only zero
+ * bytes. */
+/** @brief Return how many openpete_rumble_register calls for slot 0 or 1 have been seen.
+ *
+ * @return the call count since start. */
 unsigned openpete_rumble_register_calls(void);
 unsigned openpete_rumble_register_nonzero(void);
 
-/* SDL rumble calls actually issued, and the last pair driven. */
+/* SDL rumble calls issued for player one's pad, and the last pair driven. */
+/** @brief Return how many SDL rumble calls openpete_rumble_apply issued for player one's pad.
+ *
+ * Stops are not counted; nothing is issued or counted while no pad holds
+ * slot 0.
+ * @return the command count since start. */
 unsigned openpete_rumble_commands(void);
 void     openpete_rumble_last_pair(uint16_t* low, uint16_t* high);
 
