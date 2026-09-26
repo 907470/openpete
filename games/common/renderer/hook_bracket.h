@@ -86,22 +86,43 @@ typedef struct {
     unsigned flags;            /* HB_* above */
 } hook_bracket_desc;
 
-/* Gate, latch, and run the guest draw once. Returns 0 when the hook declines
- * (inert, or re-entered) and the caller must return 0 so the ordinary
- * dispatch runs the draw; returns 1 having run it, with the polybuf interval
- * in *start and *end and the gate's verdicts in *feed and *verify. */
+/** @brief Gate, latch, and run the guest draw once, recording the polybuf interval it allocated.
+ *
+ * The gate passes when the descriptor's verify latch, the live native scene,
+ * --render-paths (unless HB_NO_RENDER_PATHS) or the extra gate asks for the
+ * bracket. Past the gate and the re-entrancy latch, `pre` runs, the polybuf
+ * cursor is read, the guest draw runs under the descriptor's profile bucket,
+ * the cursor is read again, and the interval is recorded under the
+ * descriptor's render path. The latch stays set until hook_bracket_end.
+ * @param cpu The guest CPU state.
+ * @param addr The hooked entry address, passed to the guest draw.
+ * @param d The feeder's descriptor.
+ * @param start Receives the polybuf cursor before the draw.
+ * @param end Receives the polybuf cursor after the draw.
+ * @param feed Receives whether the native scene is live.
+ * @param verify Receives the verify latch's verdict.
+ * @return 0 when the hook declines (inert, or re-entered) and the caller must
+ *         return 0 so the ordinary dispatch runs the draw; 1 having run it,
+ *         with every out-parameter written. */
 int hook_bracket_run(CPUState* cpu, uint32_t addr, const hook_bracket_desc* d,
                      uint32_t* start, uint32_t* end, int* feed, int* verify);
 
-/* Release the latch. Returns 1, the "took over, body already ran" verdict a
- * feature dispatch hook returns. */
+/** @brief Release the re-entrancy latch hook_bracket_run set.
+ *
+ * @param d The descriptor passed to hook_bracket_run.
+ * @return 1, the "took over, body already ran" verdict a feature dispatch
+ *         hook returns. */
 int hook_bracket_end(const hook_bracket_desc* d);
 
-/* The gate a sub-tick re-extract shares: feed the native scene only while the
- * scene is live, this path is selected, and the most recent canonical tick
- * actually drew it. Without the last term a paused canonical renderer (a sim
- * stall, a level transition) leaves the intermediates replaying the last
- * geometry as a ghost over a scene that has stopped. */
+/** @brief The gate every sub-tick re-extract shares.
+ *
+ * Feeds the native scene only while the scene is live, this path is
+ * selected, and the most recent canonical tick drew it. Without the last term
+ * a paused canonical renderer (a sim stall, a level transition) leaves the
+ * intermediates replaying the last geometry as a ghost over a scene that has
+ * stopped.
+ * @param path The feeder's render path.
+ * @return 1 when the re-extract may feed, else 0. */
 int hook_reextract_ready(render_path_t path);
 
 #ifdef __cplusplus

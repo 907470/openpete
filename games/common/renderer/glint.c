@@ -187,21 +187,32 @@ static void glint_capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
     ngte_walk_prims(cpu, start, end, &pol, glint_prim_sink, NULL);
 }
 
-/* The record's camera-relative offset, halved with an arithmetic shift, which
- * floors rather than truncating toward zero (:2252-2258). Every view-space
- * quantity the routine computes from it is therefore in half-world units. */
+/** @brief Compute a record's camera-relative offset, halved the way the glint routine halves it.
+ *
+ * The routine halves with an arithmetic shift, which floors rather than
+ * truncating toward zero (:2252-2258); every view-space quantity it computes
+ * from the offset is therefore in half-world units. The components are ordered
+ * (X - camX, camY - Y, camZ - Z), the order ngte_project_offset takes.
+ * @param v The projection view; its camera position is read.
+ * @param p The record's world position.
+ * @param vo Receives the halved offset. */
 static void glint_view_offset(const ngte_view* v, const double p[3], double vo[3]) {
     vo[0] = floor((p[0] - v->cam[0]) / 2.0);      /* the routine's IR3 */
     vo[1] = floor((v->cam[1] - p[1]) / 2.0);      /* IR1 */
     vo[2] = floor((v->cam[2] - p[2]) / 2.0);      /* IR2 */
 }
 
-/* Rotate that offset by the camera matrix with a zero translation and divide,
- * which is the RTPS the routine runs on the star's own origin: its outline
- * points are transformed about this point, so it is where the star's shared
- * centre corner and the cross's midpoint land. The SXY bound is dropped for
- * the reason the particle feeder drops it — widescreen reveal needs the true
- * X. */
+/** @brief Project a halved record offset the way the glint routine projects the star's origin.
+ *
+ * Rotates the offset by the camera matrix with a zero translation and
+ * divides, which is the RTPS the routine runs on the star's own origin: its
+ * outline points are transformed about this point, so it is where the star's
+ * shared centre corner and the cross's midpoint land. The SXY bound is
+ * dropped, as the particle feeder drops it, because widescreen reveal needs
+ * the true X.
+ * @param v The projection view.
+ * @param vo The halved offset from glint_view_offset.
+ * @param o Receives the screen point and the half-world view-space MACs. */
 static void glint_project(const ngte_view* v, const double vo[3], ngte_proj* o) {
     ngte_project_offset(v, vo, o);
 }
@@ -257,8 +268,15 @@ static int glint_accept(CPUState* cpu, const ngte_view* v, uint32_t rec,
     return 1;
 }
 
-/* Re-walk the pool and mirror the routine's rejects, appending one entry per
- * record it would have drawn. Returns the count. */
+/** @brief Re-walk the glint pool in slot order and collect every record the routine would have drawn.
+ *
+ * Each of the GT.slots records is tested with glint_accept. Entries past `cap`
+ * are counted but not stored.
+ * @param cpu The guest CPU state, read only.
+ * @param v The projection view.
+ * @param out Receives up to `cap` accepted records in pool order.
+ * @param cap Capacity of `out`.
+ * @return The number of accepted records, which may exceed `cap`. */
 static int glint_predict(CPUState* cpu, const ngte_view* v, glint_rec* out, int cap) {
     int n = 0;
     for (uint32_t s = 0; s < GT.slots; s++) {
@@ -284,9 +302,12 @@ static void glint_count_prims(int* stars, int* lines) {
     }
 }
 
-/* Leave every primitive unpaired and at the nearest depth rather than dropping
- * it: an unpaired star still draws, holds its tick pose across the sub-tick
- * presents for want of a record to re-project, and the census names the call. */
+/** @brief Leave every captured primitive unowned at the near-guard depth rather than dropping it.
+ *
+ * Sets each primitive's blend from its semi-transparency bit (1 when set, else
+ * opaque) and clears its record address. An unowned primitive still draws,
+ * holds its tick pose across the sub-tick presents for want of a record to
+ * re-project, and counts as unpaired in the census. */
 static void glint_unpair_all(void) {
     for (int i = 0; i < s_item_n; i++) {
         s_item[i].blend = s_item[i].p.stp ? 1 : 0;
@@ -294,10 +315,17 @@ static void glint_unpair_all(void) {
     }
 }
 
-/* Advance the prediction cursor to the next record of one branch. The pool
- * order the routine drew in is the order the predictions came out in, and the
- * two branches interleave in that order, so one cursor over the predictions
- * serves both. Returns `predicted` when that branch has no record left. */
+/** @brief Advance the prediction cursor to the next record of one branch.
+ *
+ * The pool order the routine drew in is the order the predictions came out
+ * in, and the two branches interleave in that order, so one cursor over the
+ * predictions serves both.
+ * @param pred The predicted records in pool order.
+ * @param predicted Their count.
+ * @param r The current cursor, -1 before the first record.
+ * @param near_mode 1 to find the next near record, 0 the next far one.
+ * @return The index of that record, or `predicted` when the branch has none
+ *         left. */
 static int glint_next_rec(const glint_rec* pred, int predicted, int r, int near_mode) {
     while (++r < predicted && pred[r].near_mode != near_mode) { }
     return r;
@@ -317,10 +345,16 @@ static void glint_bind(glint_item* it, const glint_rec* r, int blend) {
     it->paired = 1;
 }
 
-/* Walk the captured primitives and the predictions together: a draw-mode
- * packet opens a near star and its ABR bits give the star's blend, the eight
- * quads until the next packet belong to it, and each consecutive pair of lines
- * is one far cross. */
+/** @brief Walk the captured primitives and the predicted records together and bind each primitive to its record.
+ *
+ * A draw-mode packet advances to the next near record and its ABR bits give
+ * the star's blend; the quads until the next packet belong to that record.
+ * The first line of each consecutive pair advances to the next far record,
+ * opaque. A quad before any draw-mode packet stays unpaired, and the walk
+ * stops when a branch runs out of records. The draw-mode packets themselves
+ * are not bound.
+ * @param pred The predicted records in pool order.
+ * @param predicted Their count. */
 static void glint_pair_walk(const glint_rec* pred, int predicted) {
     const glint_rec* cur = NULL;
     int r = -1, blend = 0, line_in_cross = 0;
@@ -350,9 +384,15 @@ static void glint_pair_walk(const glint_rec* pred, int predicted) {
     }
 }
 
-/* Pair the call's primitives with the records that emitted them. The pairing
- * is used only when the predicted near and far counts both agree with the
- * captured ones. */
+/** @brief Pair the call's captured primitives with the pool records that emitted them.
+ *
+ * Counts the captured stars and crosses into s_stars and s_crosses, predicts
+ * the accepted records into s_pred_near and s_pred_far, and runs
+ * glint_pair_walk only when the predicted near and far counts both equal the
+ * captured ones, the line count is even and the prediction fits the table;
+ * otherwise every primitive is left unowned by glint_unpair_all.
+ * @param cpu The guest CPU state, read only.
+ * @param v The tick's projection view. */
 static void glint_pair_depths(CPUState* cpu, const ngte_view* v) {
     static glint_rec pred[GLINT_MAX_PRIMS];
     int lines = 0;
@@ -372,16 +412,20 @@ static void glint_pair_depths(CPUState* cpu, const ngte_view* v) {
     glint_pair_walk(pred, predicted);
 }
 
-/* OPENPETE_GLINT selects what this feeder emits: 0 nothing, 1 the near stars
- * alone, 2 the near stars and the far crosses (the default). The guest draw
- * runs at every setting, so the A/B prices the painted pixels from one binary.
+/** @brief Read OPENPETE_GLINT, which selects what this feeder emits, latched on first use.
+ *
+ * 0 feeds nothing, 1 the near stars alone, 2 or more the near stars and the
+ * far crosses (the default when unset or empty); a negative value reads as 0.
+ * The guest draw runs at every setting, so the A/B prices the painted pixels
+ * from one binary.
  *
  * The far cross is fed at its own projected depth, with no ordering-table pull
  * applied: the routine keys it on the same view-Z the depth comes from, so the
  * depth test reproduces the ordering the routine asked for. Where world
  * geometry stands between the camera and the gem, the cross is covered — in
  * the ordering table and under the depth test alike — and where nothing does,
- * it draws. */
+ * it draws.
+ * @return The mode, at least 0. */
 static int glint_feed_mode(void) {
     static int v = -1;
     if (v < 0) {
@@ -422,12 +466,16 @@ static int glint_feed_mode(void) {
  * rest, at a distance no gem covers in a tick. */
 #define GLINT_REUSE_CEILING 4096.0
 
-/* The spin phase in sine-table entries, 256 to the turn, of a record with
- * phase byte `spin` at remaining lifetime `life`: the phase byte less four
- * entries per lifetime step (:2270-2277 masks the difference to a byte and
- * doubles it for the halfword index), so a record turns four entries per
- * lifetime step as its lifetime counts down. A fractional lifetime gives the
- * phase between two steps; an integral one gives the routine's own byte. */
+/** @brief The spin phase in sine-table entries, 256 to the turn, of a record at a given remaining lifetime.
+ *
+ * The phase is the phase byte less four entries per lifetime step (:2270-2277
+ * masks the difference to a byte and doubles it for the halfword index), so a
+ * record turns four entries per lifetime step as its lifetime counts down. A
+ * fractional lifetime gives the phase between two steps; an integral one
+ * gives the routine's own byte.
+ * @param spin The record's spin-phase byte.
+ * @param life The remaining lifetime, fractional on a sub-tick present.
+ * @return The phase in [0, 256). */
 static double glint_phase_at(uint8_t spin, double life) {
     const double a = fmod((double)spin - 4.0 * life, 256.0);
     return a < 0.0 ? a + 256.0 : a;
@@ -437,17 +485,25 @@ static double glint_angle(const glint_rec* r) {
     return glint_phase_at(r->spin, (double)r->life);
 }
 
-/* The record's displacement between the pose the tick drew and the pose this
- * present shows, in world units, with the phase the present shows. Returns 1
- * only when the previous blob is the same gem. A record that spawned this
- * tick, one whose two states are further apart than a tick's capture interval,
- * and one whose slot was reused return 0, and the primitive then holds the
- * tick's world position and phase with only the camera's motion rebasing it.
+/** @brief Compute a record's displacement, phase and lifetime between the pose the tick drew and the pose this present shows.
+ *
+ * Reads the record's previous snapshot from the interp object table and
+ * blends toward it by 1 - alpha. Returns 0, leaving the tick's position,
+ * phase and lifetime, for a record with no previous snapshot, a snapshot
+ * blob too short for the position and packed words, snapshots more than one
+ * and a half tick periods apart, a reused slot, or a displacement beyond
+ * GLINT_REUSE_CEILING; the primitive then moves only with the camera.
  *
  * Every byte of the packed word but the lifetime is written once by the
  * spawner and never again, so an unequal upper three bytes is a slot that took
  * a new record; the lifetime itself only ever falls while a record lives, so a
- * risen lifetime is a reuse that happened to keep them. */
+ * risen lifetime is a reuse that happened to keep them.
+ * @param r The paired record as the tick read it.
+ * @param alpha The present's position in the tick interval, 1 at its end.
+ * @param off Receives the world-unit offset from the tick's position.
+ * @param show_ang Receives the spin phase the present shows.
+ * @param show_life Receives the lifetime the present shows.
+ * @return 1 when the previous snapshot is the same gem, else 0. */
 static int glint_record_pair(const glint_rec* r, double alpha, double off[3],
                              double* show_ang, double* show_life) {
     off[0] = off[1] = off[2] = 0.0;
@@ -483,14 +539,17 @@ static int glint_record_pair(const glint_rec* r, double alpha, double off[3],
     return 1;
 }
 
-/* The lifetime factor of the star's size: a triangular ramp on the remaining
- * lifetime L, L below 0x20 and 2 * (0x30 - L) from there, plus eight
+/** @brief The lifetime factor of the star's size, a triangular ramp on the remaining lifetime.
+ *
+ * L below 0x20 and 2 * (0x30 - L) from there, plus eight
  * (mobyfunc.s:2278-2285, Spyro 2 8004ADC4-8004ADDC; Spyro 3 8002F1E4-8002F1FC).
  * The routine multiplies it by the size byte (:2286, 8004ADE0 / 8002F200) and
  * scales the sine pair of the rotation basis by that product (:2324 and :2333,
  * 8004AE70 and 8004AE94 / 8002F290 and 8002F2B4), so the star's outline and
  * the cross's arms are proportional to it. Evaluated at a fractional lifetime
- * it is the same two line segments, continuous at 0x20. */
+ * it is the same two line segments, continuous at 0x20.
+ * @param life The remaining lifetime L.
+ * @return The ramp value. */
 static double glint_size_ramp(double life) {
     return (life < 32.0 ? life : 2.0 * (48.0 - life)) + 8.0;
 }
@@ -520,16 +579,24 @@ static double glint_size_ramp(double life) {
 #define GLINT_SCALE_MIN 0.25
 #define GLINT_SCALE_MAX 4.0
 
-/* OPENPETE_GLINT_EXTENT=0 holds the tick's extent on the replay, the
- * engagement leg of the sub-tick extent harness. */
+/** @brief Whether the sub-tick replay scales a primitive's extent, latched on first use.
+ *
+ * OPENPETE_GLINT_EXTENT=0 holds the tick's extent on the replay, the
+ * engagement leg of the sub-tick extent harness; any other value or none
+ * enables the scale.
+ * @return 1 when enabled, else 0. */
 static int glint_extent_enabled(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_GLINT_EXTENT"); v = !(e && *e == '0'); }
     return v;
 }
 
-/* OPENPETE_GLINT_SPIN=0 holds the tick's spin phase on the replay, the
- * engagement leg of the sub-tick phase harness. */
+/** @brief Whether the sub-tick replay rotates a primitive to the shown spin phase, latched on first use.
+ *
+ * OPENPETE_GLINT_SPIN=0 holds the tick's spin phase on the replay, the
+ * engagement leg of the sub-tick phase harness; any other value or none
+ * enables the rotation.
+ * @return 1 when enabled, else 0. */
 static int glint_spin_enabled(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_GLINT_SPIN"); v = !(e && *e == '0'); }
@@ -592,9 +659,14 @@ static void glint_rebase_item(CPUState* cpu, const ngte_view* v, double alpha, i
     r->scl = glint_extent_scale(&it->src, &o, show_life, alpha);
 }
 
-/* Rebase the captured set onto the pose this present shows. The staged camera
- * resolves through the sub-tick view, so building a view here reads the
- * interpolated transform the rest of the pass draws under. */
+/** @brief Rebase every captured primitive onto the pose this present shows.
+ *
+ * The staged camera resolves through the sub-tick view, so building a view
+ * here reads the interpolated transform the rest of the pass draws under.
+ * OPENPETE_GLINT_REBASE_DBG, latched on first call, registers
+ * glint_rebase_report at exit.
+ * @param cpu The guest CPU state, read only.
+ * @param alpha The present's position in the tick interval, 1 at its end. */
 static void glint_rebase_all(CPUState* cpu, double alpha) {
     if (s_item_n <= 0) return;
     static int dbg = -1;
@@ -608,16 +680,22 @@ static void glint_rebase_all(CPUState* cpu, double alpha) {
     for (int i = 0; i < s_item_n; i++) glint_rebase_item(cpu, &v, alpha, i);
 }
 
-/* Carry one corner through its primitive's rebase: the corner keeps its offset
- * from the record's projected point through the rotation and the extent scale,
- * then the primitive translates by that point's displacement.
+/** @brief Carry one corner through its primitive's rebase.
+ *
+ * The corner keeps its offset from the record's projected point through the
+ * rotation and the extent scale, then the primitive translates by that
+ * point's displacement; an inactive rebase leaves the corner unchanged.
  *
  * The routine's basis maps an outline point (x, y) to (c*x - s*y, s*x + c*y)
  * in screen space, c and s the size-scaled table entries at the phase and a
  * quarter circle on: GTE rotation row one is (c, -s, 0), row two (s, c, 0)
  * (Spyro 2 8004AEC4-8004AEE0 near, 8004B030-8004B04C far; Spyro 3
  * 8002F2E4-8002F300, 8002F450-8002F46C). The change from the tick's phase to
- * the shown phase is therefore the same-sense rotation by (rc, rs). */
+ * the shown phase is therefore the same-sense rotation by (rc, rs).
+ * @param it The paired primitive; its record's projected point is the pivot.
+ * @param r The primitive's rebase.
+ * @param x The corner's screen X, rebased in place.
+ * @param y The corner's screen Y, rebased in place. */
 static void glint_rebase_xy(const glint_item* it, const glint_rebase* r,
                             float* x, float* y) {
     if (!r->active) return;
@@ -654,9 +732,16 @@ static void glint_add_quad(const float x[4], const float y[4],
     }
 }
 
-/* A line primitive has no area, so it feeds as a one-pixel-wide quad across its
- * own perpendicular, the width the GPU rasterizes it at. Both endpoints carry
- * the record's rebase, so the perpendicular follows the rebased line. */
+/** @brief Feed one captured LINE_F2 as a one-pixel-wide quad.
+ *
+ * A line has no area, so it feeds as a quad extending half a pixel either
+ * side along its own perpendicular, the width the GPU rasterizes it at; a
+ * degenerate line takes a horizontal offset. Both endpoints carry the
+ * record's rebase, so the perpendicular follows the rebased line.
+ * @param it The captured line.
+ * @param rb Its rebase.
+ * @param depth The scene depth both triangles take.
+ * @param blend The native blend mode. */
 static void glint_feed_line(const glint_item* it, const glint_rebase* rb,
                             float depth, int blend) {
     const ngte_prim* p = &it->p;
@@ -704,9 +789,14 @@ static void glint_feed_native(void) {
     openpete_native_scene_set_tag(0);
 }
 
-/* A paired primitive's outline corners as the routine placed them: a star
- * quad's three rim corners (its fourth is the shared centre) or a cross line's
- * two endpoints. Returns the count, 0 for any other primitive. */
+/** @brief Read a primitive's outline corners as the routine placed them.
+ *
+ * A star quad yields its three rim corners (corners 0, 1 and 3; corner 2 is
+ * the shared centre); a cross line yields its two endpoints.
+ * @param it The captured primitive.
+ * @param cx Receives the corner X coordinates.
+ * @param cy Receives the corner Y coordinates.
+ * @return The number of corners, 0 for any other primitive. */
 static int glint_outline(const glint_item* it, float cx[3], float cy[3]) {
     static const int rim[3] = { 0, 1, 3 };
     if (it->p.code == GLINT_QUAD && it->p.nv == 4) {
@@ -781,7 +871,10 @@ static double glint_drawn_orientation(const glint_ext_acc* a) {
     return fmod(t + 64.0, 64.0);
 }
 
-/* OPENPETE_GLINT_TRACE=1: two lines per paired record per present that fed
+/** @brief Print the extent and orientation trace of every paired record this present fed.
+ *
+ * OPENPETE_GLINT_TRACE, latched on first call, enables it when set, non-empty
+ * and not starting with '0': two lines per paired record per present that fed
  * this producer. `[glint-ext]` carries the record's address and the extent the
  * feed drew it at: the mean distance of its outline corners (a star quad's
  * three rim corners, a cross line's two endpoints) from its projected point,
@@ -790,7 +883,9 @@ static double glint_drawn_orientation(const glint_ext_acc* a) {
  * the routine's phase on a canonical present and the rebase's shown phase on a
  * sub-tick one. On a canonical present the corners are the routine's own
  * outline; on a sub-tick present they are the outline the rebase carried
- * there. */
+ * there.
+ * @param leg The present kind printed on each line, "canon" or "inter".
+ * @param alpha The present's position in the tick interval, printed. */
 static void glint_trace(const char* leg, double alpha) {
     static int on = -1;
     if (on < 0) { const char* e = getenv("OPENPETE_GLINT_TRACE"); on = (e && *e && *e != '0'); }
@@ -823,19 +918,18 @@ static void glint_trace(const char* leg, double alpha) {
     }
 }
 
-/* OPENPETE_GLINT_CENSUS=LO-HI (or a single frame): per call in that frame range,
- * the primitives the routine appended by GPU code, the stars its draw-mode
- * packets delimit and the crosses its line pairs delimit, the near and far
- * records the pool walk predicted, the native triangles this feeder emitted from
- * each class, how many primitives were left unpaired, and the pairing's pivot
- * residual. A capture whose fed count is zero measured nothing. */
-/* Structural check of one star's captured geometry: its eight quads must share
- * a single centre corner, and their remaining corners must reduce to at most the
- * sixteen rim points of the outline the routine transformed. A decode that
- * mis-slices the quad words, or a walk that straddles a primitive boundary,
- * breaks the shared centre. Returns the number of distinct rim points, or -1
- * when the centre is not shared; a small star on screen quantizes neighbouring
- * rim points onto the same pixel, so fewer than sixteen is normal. */
+/** @brief Check one star's captured geometry for a shared centre corner and count its distinct rim points.
+ *
+ * The star must be eight four-vertex quads sharing one centre corner (corner
+ * 2); their other corners are the rim points of the outline the routine
+ * transformed, sixteen at most. A decode that mis-slices the quad words, or a
+ * walk that straddles a primitive boundary, breaks the shared centre. A small
+ * star on screen quantizes neighbouring rim points onto the same pixel, so
+ * fewer than sixteen is normal.
+ * @param first Index in s_item of the star's first quad.
+ * @param count The number of quads the star holds.
+ * @return The number of distinct rim points, or -1 when the quad count is not
+ *         eight, a quad is not four-vertex, or the centre is not shared. */
 static int glint_star_topology_ok(int first, int count) {
     if (count != GLINT_QUADS_PER_STAR) return -1;
     float rx[GLINT_QUADS_PER_STAR * 3], ry[GLINT_QUADS_PER_STAR * 3];
@@ -855,8 +949,12 @@ static int glint_star_topology_ok(int first, int count) {
     return rim;
 }
 
-/* Stars whose eight quads share one centre corner, and the largest distinct rim
- * count any star of the call reached. */
+/** @brief Count the call's stars that pass glint_star_topology_ok and the largest rim count any reached.
+ *
+ * A star is the run of quads after one draw-mode packet, up to the next
+ * packet or the end of the capture.
+ * @param ok Receives the number of passing stars.
+ * @param rim_max Receives the largest distinct rim count of a passing star. */
 static void glint_stars_ok(int* ok, int* rim_max) {
     int first = -1, n = 0;
     *ok = 0; *rim_max = 0;
@@ -874,12 +972,17 @@ static void glint_stars_ok(int* ok, int* rim_max) {
     }
 }
 
-/* The pairing's own residual: how far each paired primitive's record point
- * lands from the point the routine drew it about — a star's shared centre
- * corner, a cross's line midpoint. The sub-tick rotation pivots on the
- * projected point, so this bounds the error that pivot introduces; a residual
- * that is not a fraction of a pixel means the walk is projecting a different
- * record than the one that emitted the primitive. */
+/** @brief Measure how far each paired primitive's record point lands from the point the routine drew it about.
+ *
+ * The reference point is a star's shared centre corner, taken once per run of
+ * quads, or a cross line's midpoint, taken per line; the distance is the
+ * Manhattan distance in pixels. The sub-tick rotation pivots on the projected
+ * point, so this bounds the error that pivot introduces; a residual that is
+ * not a fraction of a pixel means the walk is projecting a different record
+ * than the one that emitted the primitive.
+ * @param mean Receives the mean distance, 0 when nothing was measured.
+ * @param worst Receives the largest distance.
+ * @param n Receives the number of points measured. */
 static void glint_pivot_residual(double* mean, double* worst, int* n) {
     double sum = 0.0;
     *worst = 0.0; *n = 0;
@@ -905,6 +1008,20 @@ static void glint_pivot_residual(double* mean, double* worst, int* n) {
     *mean = *n ? sum / (double)*n : 0.0;
 }
 
+/** @brief Print the per-call glint census when the VBL lies in the OPENPETE_GLINT_CENSUS range.
+ *
+ * OPENPETE_GLINT_CENSUS=LO-HI (or a single VBL): per call in that range, the
+ * primitives the routine appended by GPU code, the stars its draw-mode packets
+ * delimit and the crosses its line pairs delimit, the stars passing the
+ * topology check, the near and far records the pool walk predicted, the
+ * native triangles this feeder emitted from each class, how many primitives
+ * were left unpaired, and the pairing's pivot residual; then one line per star
+ * centre and per cross first endpoint with its paired depth. A capture whose
+ * fed count is zero measured nothing.
+ * @param start First polybuf address of the routine's output.
+ * @param end One past the last.
+ * @param star_before The fed star triangle total before this call.
+ * @param cross_before The fed cross triangle total before this call. */
 static void glint_census(uint32_t start, uint32_t end,
                          uint32_t star_before, uint32_t cross_before) {
     static env_frame_range_t s_range = ENV_FRAME_RANGE_INIT;
@@ -954,8 +1071,18 @@ static const hook_bracket_desc k_bracket = {
     .path = RP_SPARKLE, .prof_tag = "glint.srend", .st = &s_hb,
 };
 
-/* The world draw's call is the only one in either image, so the hook takes
- * every entry (Spyro 2 draw/func_800155A0.s:32, Spyro 3 draw/func_8001E460.s:30). */
+/** @brief Dispatch hook on the glint routine: run it once through the shared bracket, then capture, pair and feed its primitives.
+ *
+ * The world draw's call is the only one in either image, so the hook takes
+ * every entry (Spyro 2 draw/func_800155A0.s:32, Spyro 3 draw/func_8001E460.s:30).
+ * When the routine appended anything, its primitives are captured and paired
+ * under the tick's view, and fed natively with the canonical trace when the
+ * scene is live and RP_SPARKLE is selected. The census runs on every taken
+ * call.
+ * @param cpu The guest CPU state.
+ * @param addr The hooked entry address.
+ * @return 0 when the bracket declines and the ordinary dispatch must run the
+ *         routine, else 1. */
 static int on_glint_draw(CPUState* cpu, uint32_t addr) {
     uint32_t startp, endp; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_bracket, &startp, &endp, &feed, &verify))

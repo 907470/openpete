@@ -123,8 +123,15 @@ static int glow_prim_sink(void* ctx, const ngte_prim* s) {
     return 1;
 }
 
-/* Walk the interval the call allocated: 3-word draw-mode packets (tag length 2)
- * and 7-word triangles (tag length 6). */
+/** @brief Walk the polybuf interval the glow routine allocated into s_item.
+ *
+ * The interval holds 3-word draw-mode packets (tag length 2) and 7-word
+ * triangles (tag length 6); a longer tag ends the walk. At most GLOW_MAX_PRIMS
+ * prims are kept, each unpaired at the near-guard depth with no displacement.
+ * The code and tag histograms accumulate across calls.
+ * @param cpu The guest CPU state, read only.
+ * @param start First polybuf address of the routine's output.
+ * @param end One past the last. */
 static void glow_capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
     s_item_n = 0;
     const ngte_walk_policy pol = {
@@ -135,8 +142,9 @@ static void glow_capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
     ngte_walk_prims(cpu, start, end, &pol, glow_prim_sink, NULL);
 }
 
-/* The fan's native depth from the ordering-table key the routine links it at,
- * (MAC3 >> 7) - bias (Spyro 2 mobyfunc.s:2048-2049, Spyro 3 :2052-2053). A
+/** @brief The fan's native depth from the ordering-table key the routine links it at.
+ *
+ * The key is (MAC3 >> 7) - bias (Spyro 2 mobyfunc.s:2048-2049, Spyro 3 :2052-2053). A
  * negative key links at bucket 0 (Spyro 2 :2050-2052); on a game with the
  * front-entry branch, a record whose bias byte is front_bias links one entry
  * before bucket 0 instead (Spyro 3 :2054-2059), which is drawn after the whole
@@ -149,7 +157,10 @@ static void glow_capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
  * pull (terrain), the table puts the fan bias slots nearer than this depth
  * does. The fan is additive on a pipeline that writes no depth
  * (native_render.c gouraud_add_desc), so this depth decides only which opaque
- * pixels it adds onto; it occludes nothing. */
+ * pixels it adds onto; it occludes nothing.
+ * @param m3 The record's view-space MAC3.
+ * @param bias The record's signed ordering-table bias byte.
+ * @return The scene depth the fan's triangles take. */
 static float glow_record_depth(double m3, int bias) {
     int key = (int)((uint32_t)(int32_t)m3 >> 7) - bias;
     if (key < 0) {
@@ -160,8 +171,19 @@ static float glow_record_depth(double m3, int bias) {
     return openpete_native_scene_viewz(openpete_worldvz_owner_slot(key + GW.owner_offset));
 }
 
-/* Re-walk the pool and mirror the routine's rejects, appending one depth per
- * record it would have drawn. Returns the count. */
+/** @brief Re-walk the glow pool in slot order and collect every record the routine would have drawn.
+ *
+ * Mirrors the routine's rejects: a zero shape byte (:1932), a camera-relative
+ * offset outside the +/-GW.box box (:1970-1988), and a view Z below GW.near_z
+ * or at least GW.far_z or a point outside the view pyramid (:1994-2000). Each
+ * accepted record stores its depth from glow_record_depth, its address, its
+ * position words and its screen point under the tick's camera. Entries past
+ * `cap` are counted but not stored.
+ * @param cpu The guest CPU state, read only.
+ * @param v The tick's projection view.
+ * @param out Receives up to `cap` accepted records in pool order.
+ * @param cap Capacity of `out`.
+ * @return The number of accepted records, which may exceed `cap`. */
 static int glow_predict(CPUState* cpu, const ngte_view* v, glow_rec* out, int cap) {
     int n = 0;
     const double cx = v->cam[0], cy = v->cam[1], cz = v->cam[2];
@@ -207,9 +229,16 @@ static int glow_predict(CPUState* cpu, const ngte_view* v, glow_rec* out, int ca
     return n;
 }
 
-/* Attach each captured primitive to its fan: a draw-mode packet opens one, its
- * ABR bits give the fan's blend, and the triangles until the next draw-mode
- * packet belong to it. */
+/** @brief Attach each captured primitive to its fan and, when the counts agree, to the record that emitted it.
+ *
+ * A draw-mode packet opens a fan and its ABR bits give the fan's blend; the
+ * triangles until the next draw-mode packet belong to it. Counts the packets
+ * into s_groups and the predicted records into s_accepted; only when the two
+ * are equal does each triangle take its record's depth and copy, otherwise
+ * every triangle keeps the blend at the near-guard depth, unpaired. A
+ * triangle before any draw-mode packet is left as captured.
+ * @param cpu The guest CPU state, read only.
+ * @param v The tick's projection view. */
 static void glow_pair_depths(CPUState* cpu, const ngte_view* v) {
     static glow_rec pred[GLOW_MAX_PRIMS];
     s_groups = 0;
@@ -237,8 +266,12 @@ static void glow_pair_depths(CPUState* cpu, const ngte_view* v) {
     }
 }
 
-/* OPENPETE_GLOW=0 suppresses this feed alone. The guest draw still runs, so the
- * A/B prices the rings' painted pixels from one binary. */
+/** @brief Whether this feeder emits the glow fans, latched on first use.
+ *
+ * OPENPETE_GLOW with a value starting with '0' suppresses this feed alone.
+ * The guest draw still runs, so the A/B prices the rings' painted pixels from
+ * one binary.
+ * @return 1 when enabled, else 0. */
 static int glow_feed_enabled(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_GLOW"); v = !(e && *e && *e == '0'); }
@@ -272,11 +305,16 @@ static void glow_feed_native(void) {
     openpete_native_scene_set_tag(0);
 }
 
-/* OPENPETE_GLOW_CENSUS=LO-HI (or a single frame): per call in that frame range,
- * the primitives the routine appended by GPU code, the native triangles this
- * feeder emitted from them, the fans the draw-mode packets delimit, the records
- * the pool walk predicted, and how many primitives were left unpaired. A
- * capture whose fed count is zero measured nothing. */
+/** @brief Print the per-call glow census when the VBL lies in the OPENPETE_GLOW_CENSUS range.
+ *
+ * OPENPETE_GLOW_CENSUS=LO-HI (or a single VBL): per call in that range, the
+ * primitives the routine appended by GPU code, the triangles among them, the
+ * fans the draw-mode packets delimit, the records the pool walk predicted,
+ * the native triangles this feeder emitted, and how many triangles were left
+ * unpaired. A capture whose fed count is zero measured nothing.
+ * @param start First polybuf address of the routine's output.
+ * @param end One past the last.
+ * @param fed_before The fed triangle total before this call. */
 static void glow_census(uint32_t start, uint32_t end, uint32_t fed_before) {
     static env_frame_range_t s_range = ENV_FRAME_RANGE_INIT;
     if (!env_frame_range_active(&s_range, "OPENPETE_GLOW_CENSUS", openpete_frame)) return;
@@ -361,12 +399,19 @@ static unsigned long s_reb_stat[2];   /* 0 lerped, 1 snapped */
 static double        s_reb_worldmax;  /* the largest per-tick world step paired */
 static double        s_reb_screenmax; /* the largest screen displacement applied */
 
-/* The record's displacement between the pose the tick drew and the pose this
- * present shows, in world units. Returns 1 only when the previous blob is the
- * same record. A record that spawned this tick, one whose two states are
- * further apart than a tick's capture interval, and one whose slot was reused
- * return 0, and the fan then holds the tick's world position with only the
- * camera's motion rebasing it. */
+/** @brief Compute a record's world displacement between the pose the tick drew and the pose this present shows.
+ *
+ * Reads the record's previous snapshot from the interp object table and
+ * blends toward it by 1 - alpha, recording the largest paired step in
+ * s_reb_worldmax. Returns 0 with a zero offset for a record with no previous
+ * snapshot, a snapshot blob too short for the position and packed words,
+ * snapshots more than one and a half tick periods apart, packed words whose
+ * GLOW_PACKED_STABLE bytes differ, or a displacement beyond
+ * GLOW_REUSE_CEILING; the fan then moves only with the camera.
+ * @param r The paired record as the tick read it.
+ * @param alpha The present's position in the tick interval, 1 at its end.
+ * @param off Receives the world-unit offset from the tick's position.
+ * @return 1 when the previous snapshot is the same record, else 0. */
 static int glow_record_offset(const glow_rec* r, double alpha, double off[3]) {
     off[0] = off[1] = off[2] = 0.0;
     const openpete_interp_obj_t* o = openpete_interp_objs_find(r->addr);
@@ -393,17 +438,25 @@ static int glow_record_offset(const glow_rec* r, double alpha, double off[3]) {
     return 1;
 }
 
-/* OPENPETE_GLOW_REBASE_DBG=1: the rebase's verdicts per run. A run whose lerped
- * count is zero rebased nothing against a previous record and measured
- * nothing. */
+/** @brief Print the rebase's verdict counts and largest steps for the run, registered at exit.
+ *
+ * Registered by glow_rebase_all when OPENPETE_GLOW_REBASE_DBG is set,
+ * non-empty and not starting with '0'. A run whose lerped count is zero
+ * rebased nothing against a previous record and measured nothing. */
 static void glow_rebase_report(void) {
     fprintf(stderr, "[glow-rebase] lerped=%lu snapped=%lu worldmax=%.3f screenmax=%.3f\n",
             s_reb_stat[0], s_reb_stat[1], s_reb_worldmax, s_reb_screenmax);
 }
 
-/* Rebase the captured set onto the pose this present shows. The staged camera
- * resolves through the sub-tick view, so building a view here reads the
- * interpolated transform the rest of the pass draws under. */
+/** @brief Rebase every captured fan onto the screen position this present shows.
+ *
+ * The staged camera resolves through the sub-tick view, so building a view
+ * here reads the interpolated transform the rest of the pass draws under.
+ * Each paired primitive takes the displacement of its record's projected
+ * point; an unpaired one, or one whose shown position falls below the
+ * routine's near plane, keeps a zero displacement.
+ * @param cpu The guest CPU state, read only.
+ * @param alpha The present's position in the tick interval, 1 at its end. */
 static void glow_rebase_all(CPUState* cpu, double alpha) {
     if (s_item_n <= 0) return;
     static int dbg = -1;
@@ -438,11 +491,7 @@ static void glow_rebase_all(CPUState* cpu, double alpha) {
     }
 }
 
-/* Sub-tick re-extract. The primitives are the guest's own output and are gone
- * once the polybuf is reused, so the replay re-feeds the set the canonical tick
- * captured, at the depths paired then, rebased onto the pose this present
- * shows. At alpha 1 the rebase is zero and it reproduces the canonical present
- * exactly, which is what the spine's identity leg measures. */
+/* Sub-tick re-extract; see glow.h. */
 void glow_reextract(CPUState* cpu, int bracketed, double alpha) {
     if (!hook_reextract_ready(RP_GLOW)) return;
     if (bracketed) glow_rebase_all(cpu, alpha);

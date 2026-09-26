@@ -79,7 +79,11 @@ int game_interp_row_index(const char* name) {
     return -1;
 }
 
-/* One raw write to the stderr descriptor: the process mirrors stderr to a log
+/** @brief Print the region census table, one row per registered region, at exit.
+ *
+ * Each row carries the region's name, address, length, timeline flag, the
+ * ticks sampled and the ticks whose bytes changed. The table goes out in one
+ * raw write to the stderr descriptor: the process mirrors stderr to a log
  * file and tears that stream down in its own exit hook, which can run before
  * this one and swallow anything written through the FILE*. */
 static void census_report(void) {
@@ -114,7 +118,9 @@ static void census_sample(void) {
     }
 }
 
-/* The ring's own capture (openpete_interp_capture) runs immediately before the
+/** @brief The per-object capture installed while the region census is on: sample every region, then run the game's own capture.
+ *
+ * The ring's own capture (openpete_interp_capture) runs immediately before the
  * per-object capture, so sampling here reads the same tick-end RAM the ring
  * just captured. */
 static void census_obj_capture(void) {
@@ -317,18 +323,7 @@ void game_interp_capture_moby_array(void) {
                 openpete_frame, sw.n, sw.served, sw.differ);
 }
 
-/* The particle pool of a game whose particle renderer links its own primitives
- * (game_layout.particles). The renderer projects each record under the tick's
- * camera, so a sub-tick present that replays those primitives needs the
- * record's previous state to rebase them onto the pose it shows; the pool sits
- * outside the moby array, so the shared walk above never reaches it.
- *
- * The walk is the routine's own: from the pool base, one record per
- * `rec_stride`, reading the selector halfword whose sign marks an inactive
- * slot and whose arithmetic shift by 8 is -1 at the end-of-pool sentinel. The
- * key is the record's address, which is its slot; a slot a new record reuses
- * is the consumer's pairing verdict, not this walk's. Read-only against guest
- * RAM. */
+/* Particle pool walk; see interp_regions_gen.h. */
 void game_interp_capture_particle_pool(void) {
     if (!game_layout.particles.array_ptr || !game_layout.particles.rec_stride) return;
     const uint32_t base = rd32(game_layout.particles.array_ptr);
@@ -351,15 +346,7 @@ void game_interp_capture_particle_pool(void) {
     }
 }
 
-/* The gem-glint pool (game_layout.glint): 16 records of `stride` bytes, world
- * XYZ at `pos_off` and a packed word at `packed_off` whose byte 0 is the
- * remaining lifetime and 0 on a free slot. The glint routine projects each
- * record under the tick's camera and emits the star's screen corners itself,
- * so a sub-tick present that replays those corners needs the record's previous
- * state to rebase them onto the pose it shows: the position to lerp and the
- * spin phase, which advances four table entries per lifetime step. The pool is
- * a fixed array outside the moby array, so the shared walk never reaches it and
- * the record's address is its slot. Read-only against guest RAM. */
+/* Gem-glint pool walk; see interp_regions_gen.h. */
 void game_interp_capture_glint_pool(void) {
     if (!game_layout.glint.pool || !game_layout.glint.stride) return;
     const uint32_t stride = game_layout.glint.stride;
@@ -423,16 +410,7 @@ void game_interp_capture_zap_pool(void) {
     }
 }
 
-/* The tracer producers (game_layout.tracers). The ribbon array is `slots`
- * records of `stride` bytes whose word at +0x00 is the owner pointer and 0 on a
- * free slot; the record holds the whole point ring, so one blob per record
- * gives the replay the previous tick's ring in one consistent image. The mesh
- * vertices are world XYZ int32 triples in lists the draw's descriptors name,
- * which the feeder notes per draw; each vertex is keyed by its own address.
- * The routines project both under the tick's camera and emit the screen
- * corners themselves, so a sub-tick present that replays those corners needs
- * each point's previous position to rebase them onto the pose it shows.
- * Read-only against guest RAM. */
+/* Tracer ribbon and mesh vertex walk; see interp_regions_gen.h. */
 void game_interp_capture_tracer_pool(void) {
     const uint32_t stride = game_layout.tracers.stride;
     if (game_layout.tracers.ring && stride) {
@@ -459,9 +437,7 @@ void game_interp_capture_tracer_pool(void) {
     }
 }
 
-/* The pools a game's own primitive-linking feeders replay from, in one call so
- * a game registers one extra-pool walk rather than a list that has to be kept
- * in step with the feeders. A game with no located pool skips its own walk. */
+/* Every feeder pool walk; see interp_regions_gen.h. */
 void game_interp_capture_feeder_pools(void) {
     game_interp_capture_particle_pool();
     game_interp_capture_glint_pool();
@@ -470,8 +446,13 @@ void game_interp_capture_feeder_pools(void) {
     game_interp_capture_tracer_pool();
 }
 
-/* Scrolling-texture env-anim descriptors (flowing water and waterfalls). The
- * update keeps each scroller's whole animation state in a 7-bit accumulator at
+/** @brief Capture the (tile, accumulator) pair of every scrolling-texture env-anim descriptor.
+ *
+ * The descriptors animate flowing water and waterfalls. The table at
+ * env_anim.scroll holds a count and a pointer to the descriptor pointer list;
+ * a zero pointer, a zero count or a count above 1024 captures nothing, and a
+ * null descriptor is skipped. Each descriptor's 4 bytes at desc+4 are keyed by
+ * the descriptor's address. The update keeps each scroller's whole animation state in a 7-bit accumulator at
  * desc+6 and commits it to the tiledef V bytes as whole texels on a keyframe
  * advance, so a scrolled texture steps at the sim rate while the world around
  * it interpolates. Capture just the (tile, accumulator) pair at desc+4, not the

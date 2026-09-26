@@ -53,12 +53,19 @@ int game_interp_row_index(const char* name);
  * read as "this game marks no regime edge". */
 #define GAME_INTERP_GS_ROW "g_GameState"
 
-/* Snapshot one whole record per live moby of the game's moby array
- * (game_layout.moby: array_head/array_direct, array_stride, state_off,
- * state_term) into the keyed prev/curr table, keyed by the record's PSX
- * address — the array is fixed and terminated by a sentinel element, so a
- * moby's address is its slot and stays its identity across ticks. Read-only
- * against guest RAM. Call between openpete_interp_objs_begin_tick() and
+/** @brief Snapshot one record per live moby of the game's moby array into the keyed prev/curr table.
+ *
+ * The array (game_layout.moby: array_head/array_direct, array_stride,
+ * state_off, state_term) is fixed and ends at a sentinel element whose state
+ * byte is state_term, so a moby's PSX address is its slot and its key across
+ * ticks. A moby whose state byte is 0x80 or above is dormant and skipped. Each
+ * record captured is one moby record and no bytes of the next, taken from the
+ * draw-time stash when it holds the moby and live RAM otherwise. The walk
+ * stops 512 slots short of the table capacity so the pools captured after it
+ * always fit. OPENPETE_CAPTRACE_CLS=<class|0xFFFF> prints the tick position of
+ * every captured moby of that class; OPENPETE_MOBY_STASH_CENSUS prints the
+ * stash's served and differing counts per call. Read-only against guest RAM.
+ * Call between openpete_interp_objs_begin_tick() and
  * openpete_interp_objs_end_tick(); game_interp_register_common() does. */
 void game_interp_capture_moby_array(void);
 
@@ -73,19 +80,29 @@ void game_interp_capture_moby_array(void);
 void game_interp_moby_stash_begin(void);
 void game_interp_moby_stash_put(uint32_t moby);
 
-/* Snapshot one whole record per active slot of the game's particle pool
- * (game_layout.particles: array_ptr, rec_stride, sel_off), keyed by the
- * record's PSX address. A game whose particle renderer links its own
- * primitives passes this as `extra_pools` below, so the sub-tick replay of
- * those primitives has a previous state to rebase each record onto. */
+/** @brief Snapshot one record per active slot of the game's particle pool, keyed by the record's PSX address.
+ *
+ * The walk is the particle routine's own (game_layout.particles: array_ptr,
+ * rec_stride, sel_off): from the pool base, one record per `rec_stride`, at
+ * most 512, reading the selector halfword whose sign marks an inactive slot
+ * and whose arithmetic shift by 8 is -1 at the end-of-pool sentinel. A slot a
+ * new record reuses is the consumer's pairing verdict, not this walk's. The
+ * renderer projects each record under the tick's camera and links its own
+ * primitives, so the sub-tick replay of those primitives needs each record's
+ * previous state to rebase onto; the pool sits outside the moby array, so the
+ * moby walk never reaches it. Reached through
+ * game_interp_capture_feeder_pools. Read-only against guest RAM. */
 void game_interp_capture_particle_pool(void);
 
-/* Snapshot one whole record per live slot of the game's gem-glint pool
- * (game_layout.glint: pool, slots, stride, packed_off), keyed by the record's
- * PSX address. A game whose glint routine links its own primitives passes
- * game_interp_capture_feeder_pools below, so the sub-tick replay of those
- * primitives has a previous position and spin phase to rebase each record
- * onto. */
+/** @brief Snapshot one record per live slot of the game's gem-glint pool, keyed by the record's PSX address.
+ *
+ * The pool (game_layout.glint: pool, slots, stride, packed_off) is a fixed
+ * array outside the moby array, so the record's address is its slot; a slot
+ * whose packed word has lifetime byte 0 is free and skipped. The glint
+ * routine projects each record under the tick's camera and emits the star's
+ * screen corners itself, so the sub-tick replay needs each record's previous
+ * position and spin phase to rebase them onto. Reached through
+ * game_interp_capture_feeder_pools. Read-only against guest RAM. */
 void game_interp_capture_glint_pool(void);
 void game_interp_capture_glow_pool(void);
 
@@ -94,16 +111,23 @@ void game_interp_capture_glow_pool(void);
  * sub-tick replay of its ribbon has a previous head and tail to rebase onto. */
 void game_interp_capture_zap_pool(void);
 
-/* Snapshot one whole record per live slot of the tracer ribbon array
- * (game_layout.tracers: ring, slots, stride), keyed by the record's PSX
- * address, and every vertex of the mesh vertex lists the most recent tracer
- * mesh draw read, keyed by the vertex's address, so the sub-tick replay of both
- * producers has each point's previous position to rebase onto. */
+/** @brief Snapshot every live tracer ribbon record and every vertex of the tracer mesh lists the most recent mesh draw read.
+ *
+ * A ribbon record (game_layout.tracers: ring, slots, stride) whose owner word
+ * at +0x00 is 0 is free and skipped; a live one is captured whole, point ring
+ * included, keyed by its PSX address. Each mesh vertex is a 12-byte world XYZ
+ * int32 triple keyed by its own address, from up to eight lists
+ * tracers_mesh_lists reports. Both producers project their points under the
+ * tick's camera, so the sub-tick replay needs each point's previous position
+ * to rebase onto. Read-only against guest RAM. */
 void game_interp_capture_tracer_pool(void);
 
-/* Every pool above in one call: the extra-pool walk a game passes to
- * game_interp_register_common when its particle and glint renderers link their
- * own primitives. */
+/** @brief Walk the particle, gem-glint, glow, zap and tracer pools in one call.
+ *
+ * The extra-pool walk a game passes to game_interp_register_common when its
+ * feeders link their own primitives, so the game registers one walk rather
+ * than a list kept in step with the feeders. A pool the game's layout does
+ * not locate is skipped by its own walk. */
 void game_interp_capture_feeder_pools(void);
 
 /* Register a game's interp table and per-object capture in the shared shape:

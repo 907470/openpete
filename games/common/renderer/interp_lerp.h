@@ -19,9 +19,17 @@ static inline int32_t lerp32(int32_t a, int32_t b, double t) {
     return (int32_t)(v >= 0.0 ? v + 0.5 : v - 0.5);
 }
 
-/* A 3x3 int16 rotation matrix (9 contiguous shorts; the 10th short is pad and
- * is left as curr). Endpoint matrices one tick apart differ by a tiny rotation,
- * so a componentwise lerp with no renormalise is sub-pixel. */
+/** @brief Interpolate a 3x3 int16 rotation matrix componentwise into the staged copy.
+ *
+ * The matrix is 9 contiguous shorts; a 10th pad short is not written, so the
+ * staged copy keeps its own. Endpoint matrices one tick apart differ by a
+ * small rotation, so a componentwise lerp with no renormalisation is
+ * sub-pixel.
+ * @param live The staged copy written at `off`.
+ * @param prev The previous snapshot.
+ * @param curr The current snapshot.
+ * @param off Byte offset of the matrix in all three buffers.
+ * @param t The blend factor, 0 at prev and 1 at curr. */
 static inline void lerp_matrix(uint8_t* live, const uint8_t* prev,
                                const uint8_t* curr, uint32_t off, double t) {
     const int16_t* pp = (const int16_t*)(prev + off);
@@ -29,7 +37,13 @@ static inline void lerp_matrix(uint8_t* live, const uint8_t* prev,
     int16_t*       pl = (int16_t*)(live + off);
     for (int i = 0; i < 9; ++i) pl[i] = lerp16(pp[i], pc[i], t);
 }
-/* An int32 x/y/z world position (3 contiguous words). */
+/** @brief Interpolate an int32 x/y/z world position (3 contiguous words) into the staged copy.
+ *
+ * @param live The staged copy written at `off`.
+ * @param prev The previous snapshot.
+ * @param curr The current snapshot.
+ * @param off Byte offset of the position in all three buffers.
+ * @param t The blend factor, 0 at prev and 1 at curr. */
 static inline void lerp_vec3(uint8_t* live, const uint8_t* prev,
                              const uint8_t* curr, uint32_t off, double t) {
     const int32_t* pp = (const int32_t*)(prev + off);
