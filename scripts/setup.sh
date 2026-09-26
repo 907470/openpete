@@ -124,7 +124,7 @@ check_psyq_headers() {
     fi
 }
 
-# The tracked pre-commit hook (the cognitive-complexity ratchet) runs only
+# The tracked pre-commit hook (the complexity and documentation ratchets) runs only
 # when this clone's core.hooksPath names githooks/, and the ratchet baselines
 # merge by row key only when the `ratchet-tsv` merge driver .gitattributes
 # names is defined; both settings are local config and a fresh clone carries

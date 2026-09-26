@@ -1324,7 +1324,7 @@ def mode_baseline(root):
     meets = sum(1 for fx in corpus.facts.values() if fx["form"] == "meets")
     macro = sum(1 for fx in corpus.facts.values() if fx["form"] == "MACRO")
     dox = sum(1 for fx in corpus.facts.values() if fx["ranges"])
-    say("doc-ratchet: baseline: %d TUs, %d definitions, %d doxygen-form, %d "
+    say("doc-ratchet: baseline: %d entries, %d definitions, %d doxygen-form, %d "
         "meet, MACRO %d, %s -> %s" % (corpus.scored, corpus.definitions, dox,
                                       meets, macro, row_counts(rows), TSV))
     two = [k for k, fx in corpus.facts.items() if fx.get("two_headers")]

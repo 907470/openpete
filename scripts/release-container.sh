@@ -64,8 +64,8 @@ elif [[ " ${pkg_args[*]} " != *" --with-mod-sdk "* ]]; then
     pkg_args+=(--with-mod-sdk)
 fi
 
-# The container builds and never commits: the complexity fence's hook-arming
-# check (scripts/fences/complexity_ratchet.py check --armed) does not apply.
+# The container builds and never commits: the ratchet fences' hook-arming
+# checks (scripts/fences/{complexity,doc}_ratchet.py check --armed) do not apply.
 # OPENPETE_DIST_VERSION names the artifact and sets the exe's version line
 # (CMake configure and package-dist.sh both read it); the container sees
 # only the variables passed with -e.

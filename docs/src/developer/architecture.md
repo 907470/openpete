@@ -138,6 +138,28 @@ matching decomp's loader and cross-checked against SpyroEdit:
   the `SetOverlayPointers` callback slots, and how openpete recompiles
   same-address overlays into co-resident C.
 
+## Function comments
+
+Every function in `core/` and `games/` carries a doxygen comment (`/** */`,
+`/*! */`, `///` or `//!`; a plain `/*` or `//` block does not attach) at one
+site: the declaration in the project header the defining file includes, or
+the definition when no such header declares it; a `static inline` function in
+a header is documented at its definition, and a comment at both sites is a
+duplicate. The comment opens with a sentence stating what the function does
+(or `@brief`); a function with external linkage also carries `@param <name>`
+for every named parameter of the documented declaration and `@return` when it
+returns a value, while a static function needs only the brief and any tag it
+carries must be correct. A comment attaches only across blank lines, other
+comments and attributes: a `#` directive, or a line ending in `;`, `{` or
+`}`, between the comment and the declaration leaves it attached to nothing,
+so the comment goes below the directive. A group header (`@name`, `@{`) is
+not a function's comment. The text states what the code does, the invariant
+it keeps and the problem it solves, never its history.
+`scripts/fences/doc_ratchet.py` checks form, placement and tags with
+libclang in the pre-commit hook for every function a commit adds or edits;
+the functions not yet documented are the rows of
+`baselines/docs/undocumented.tsv`.
+
 ## Where the design lives
 
 The port's origin plan, `notes/plans/openpete-pc-port.md`, is superseded

@@ -710,4 +710,20 @@ if(NOT CMAKE_HOST_WIN32)
         ${_openpete_complexity_check}
         COMMENT "complexity fence: the pre-commit hook is armed, and no function's excess rose"
         VERBATIM)
+
+    # Function-documentation ratchet, the same shape: the hook shared with
+    # the complexity fence must call it (`check --armed`), and `check`
+    # re-parses the corpus with libclang against HEAD's baseline (about 4 s)
+    # under linux-release only, the database the baseline was captured from.
+    set(_openpete_doc_check "")
+    if(_openpete_bindir_name STREQUAL "linux-release")
+        set(_openpete_doc_check
+            COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/doc_ratchet.py check)
+    endif()
+    add_custom_target(openpete_doc_ratchet ALL
+        COMMAND ${CMAKE_COMMAND} -E echo "Checking the documentation ratchet..."
+        COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/doc_ratchet.py check --armed
+        ${_openpete_doc_check}
+        COMMENT "documentation fence: the pre-commit hook calls it, and every function is documented or has a row"
+        VERBATIM)
 endif()
