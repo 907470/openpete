@@ -141,11 +141,16 @@ void knob_value_str(const knob_desc_t *k, char *buf, size_t cap);
  * value; action rows and placeholder strings like "(default)" cannot). */
 int knob_config_value_str(const knob_desc_t *k, char *buf, size_t cap);
 
-/* Persist every row the user changed this session into openpete.toml's
- * managed [saved] zone, and write the file. Returns the number of settings
- * saved, or -1 if the write failed. Rows currently overridden by a launch
- * tier are still saved — with the UI telling the user so, since the override
- * will keep winning while it is present. */
+/** @brief Write every row whose live value differs from its boot value into openpete.toml's [saved] zone.
+ *
+ * Action rows, string rows without a getter, and rows knob_config_value_str
+ * cannot persist are skipped. Each changed row goes through
+ * openpete_config_save_knob, then openpete_config_save_flush writes the file
+ * once. A row pinned by a launch tier (a typed flag or an exported variable)
+ * is saved like any other; that tier keeps winning while it is present, and
+ * the M overlay marks such rows "pinned by ...". Called by the O menu's save
+ * row and the M overlay's Save settings button.
+ * @return The number of rows saved, or -1 when the flush failed. */
 int knob_registry_save_edited(void);
 
 /* Re-stamp boot values that only settle after init (the render-fps pacer

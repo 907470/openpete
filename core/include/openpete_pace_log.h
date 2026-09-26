@@ -134,12 +134,28 @@ void openpete_pace_log_close(void);
  * work (a timestamp read, a string format) purely to feed it. */
 int  openpete_pace_log_active(void);
 
-/* Render the mandatory environment block into `buf`. Fills in what it can
- * discover itself (build hash, OS, CPU count, governor); the caller supplies
- * the display/present facts it alone knows. `refresh_mhz` is the exact
- * measured refresh in millihertz (59940 and 60000 are different machines for
- * this plan's purposes), `present_mode` the mode actually GRANTED, not the one
- * requested. */
+/** @brief Render the pacing log's mandatory environment block into @p buf as "key=value" lines.
+ *
+ * Fills in what it can discover itself (build id, platform, CPU model and
+ * count, the Linux cpufreq governor, the compositor, the pacer slack, the
+ * virtual clock, the input-pulse and eager-production settings); the caller
+ * supplies the display and present facts only it knows.
+ * @param buf Destination.
+ * @param buf_bytes Capacity of @p buf.
+ * @param gpu GPU name, or NULL for "unknown".
+ * @param driver Driver name or version, or NULL for "unknown".
+ * @param refresh_mhz Exact measured refresh in millihertz; 59940 and 60000
+ *                    key different baselines.
+ * @param present_mode The present mode actually granted, not the one
+ *                     requested; NULL for "unknown".
+ * @param fullscreen Non-zero when fullscreen.
+ * @param render_fps The render-fps target.
+ * @param interp_on Non-zero when interpolation is on.
+ * @param runahead_n Runahead depth in ticks.
+ * @param tick_scale The tick-rate scale.
+ * @param thread_split Non-zero when the host thread split is active.
+ * @param input_legacy Non-zero on the legacy input path.
+ * @param headless Non-zero for a headless run. */
 void openpete_pace_env_build(char* buf, unsigned buf_bytes,
                              const char* gpu, const char* driver,
                              int refresh_mhz, const char* present_mode,
@@ -227,9 +243,15 @@ void openpete_pace_present(uint8_t kind, int64_t done_ns,
                            int64_t queue_present_block_ns,
                            int64_t recreate_block_ns);
 
-/* A present deliberately not made. No shedder exists yet (pacing plan Phase
- * 2/3); the counter reads zero until one does, which is a true statement
- * rather than a missing one. */
+/** @brief Record a present deliberately not made, and count it in the census.
+ *
+ * The census counter increments whether or not a log file is open. The host
+ * loop sheds an intermediate present with PACE_SHED_NO_BUDGET when its
+ * predicted cost does not fit before the sim deadline.
+ * @param kind OP_PACE_INTERMEDIATE or OP_PACE_CANONICAL.
+ * @param reason A PACE_SHED_* code.
+ * @param predicted_cost_ns Predicted cost of the skipped present.
+ * @param deadline_margin_ns Time left before the sim deadline at the shed. */
 void openpete_pace_shed(uint8_t kind, uint16_t reason,
                         int64_t predicted_cost_ns, int64_t deadline_margin_ns);
 
@@ -267,18 +289,20 @@ void openpete_pace_window(uint16_t id, int begin);
  * far behind the loop already was as `max(0, request - target)`. */
 void openpete_pace_wake(int64_t request_ns, int64_t target_ns, int64_t wake_ns);
 
-/* How long a present occupied the calling thread, start to finish.
+/** @brief Record how long a present occupied the calling thread, start to finish.
  *
- * The PRESENT record's block times only cover the calls that BLOCK. The rest
- * of the present path — rebuilding the interpolated scene, recording the
- * command buffer, submitting — is ordinary CPU work on the same thread, and
- * under the host split that thread owns the sim clock. With the blocking
- * removed it becomes the dominant remaining cause of a late tick, and it was
- * invisible: attribution reported it as unattributed, which is the log
- * saying it lacks an event type. This is that event type.
- *
- * `extract_ns` splits out the scene rebuild, the largest single part and the
- * one a shed predicate can actually avoid. */
+ * The PRESENT record's block times cover only the calls that block. The rest
+ * of the present path (rebuilding the interpolated scene, recording the
+ * command buffer, submitting) is CPU work on the same thread, and under the
+ * host split that thread owns the sim clock, so this time can make a tick
+ * late; the PRESENT_SPAN record attributes it. Emitted by the host loop for
+ * canonical and intermediate presents and by eager production for each
+ * scene it builds. No-op without an open log.
+ * @param kind OP_PACE_CANONICAL or OP_PACE_INTERMEDIATE.
+ * @param start_ns Start instant.
+ * @param end_ns End instant.
+ * @param extract_ns Time spent rebuilding the scene, the largest part and
+ *                   the one a shed avoids. */
 void openpete_pace_present_span(uint8_t kind, int64_t start_ns,
                                 int64_t end_ns, int64_t extract_ns);
 
@@ -321,14 +345,15 @@ void openpete_pace_host_pump(int64_t start_ns, int64_t wait_end_ns,
 void openpete_pace_vbl_begin(uint32_t vbl_index, int64_t exec_start_ns,
                               int64_t latch_ns);
 
-/* Suspend/resume the VBL bracket for fiber runs that are NOT this VBL.
+/** @brief Suspend or resume the VBL bracket for fiber runs that are not the bracketed VBL.
  *
- * Runahead speculates several more fiber runs inside one bracket, and rewind
- * replays past ticks before the next bracket opens. Both fire the guest's pad
- * read, and a record stamped against the committed VBL's exec_start would
- * report an offset milliseconds into a period that read moment never belonged
- * to — a real number about the wrong tick. Reads while suspended are recorded
- * with OP_PACE_PR_UNATTRIBUTED and kept out of the phase statistics. */
+ * Runahead speculates further fiber runs inside one bracket, and rewind
+ * replays past ticks before the next bracket opens. Both fire the guest's
+ * pad read, and a record stamped against the committed VBL's exec_start
+ * would carry an offset into a period that read never belonged to. Reads
+ * while suspended are recorded with OP_PACE_PR_UNATTRIBUTED and kept out of
+ * the phase statistics.
+ * @param on Non-zero to suspend, zero to resume. */
 void openpete_pace_vbl_suspend(int on);
 
 /* PAD_READ flags. */
@@ -436,12 +461,16 @@ void openpete_pace_census_format(char* buf, unsigned buf_bytes);
 
 /* ---- instrument self-verification --------------------------------------- */
 
-/* OPENPETE_PACE_INJECT_US=N[,EVERY]: busy-block N µs immediately before the
- * game fiber runs, on every EVERY-th paced VBL (default 30). The log must then
- * report a phase error of ~N µs on those VBLs and nowhere else — a known input
- * with a known answer, so the instrument is calibrated against truth instead of
- * trusted because it compiled. Returns the µs actually blocked (0 when off).
- * Call once per iteration, immediately before the yield. */
+/** @brief Busy-wait a configured stall before the game fiber runs, to calibrate the phase-error measurement.
+ *
+ * OPENPETE_PACE_INJECT_US=N[,EVERY] blocks N µs on the first paced VBL and
+ * on every EVERY-th paced VBL after it (EVERY defaults to 30). The log must
+ * then show a phase error of about N µs on those VBLs and nowhere else: a
+ * known input with a known answer. The variable is read once. Inactive on
+ * unpaced iterations and under the virtual clock. Call once per iteration,
+ * immediately before the yield.
+ * @param paced Non-zero when this iteration runs against a live deadline.
+ * @return The µs blocked, 0 when nothing was injected. */
 int64_t openpete_pace_inject(int paced);
 
 /* OPENPETE_PACE_INJECT_PRESENT_US=N: add N µs of busy work to every
@@ -454,21 +483,16 @@ int64_t openpete_pace_inject(int paced);
  * be checked rather than believed. Returns the µs actually spent. */
 int64_t openpete_pace_inject_present(void);
 
-/* OPENPETE_PACE_INJECT_CANON_US=N: the same, on the CANONICAL present.
+/** @brief Busy-wait OPENPETE_PACE_INJECT_CANON_US=N µs in every canonical present.
  *
- * A separate knob rather than a wider blast radius for the one above, because
- * the two ask different questions and the shed contract's leg is calibrated
- * against the intermediate one — widening it would silently move that leg's
- * baseline.
- *
- * This is the fault the plan could not previously make. A canonical present
- * cannot be shed: it is the frame the tick just produced. So "the sim grid
- * holds while an expensive present runs" is only demonstrated for the
- * intermediates, and the case Phase 3 exists for — a machine where the
- * unavoidable present does not fit — had no way to be reached on hardware
- * fast enough to never suffer it. Injecting it reaches that case on any
- * machine, which is the point of a fault injector: make the fault, rather
- * than hunt for a machine that has it. Returns the µs actually spent. */
+ * A canonical present cannot be shed, since it shows the image the tick just
+ * produced. Injecting cost into it reproduces, on any machine, the case where
+ * the unavoidable present does not fit before the tick deadline, so whether
+ * the sim grid holds there can be measured. It is a separate variable from
+ * OPENPETE_PACE_INJECT_PRESENT_US so the shed check calibrated against
+ * intermediate presents keeps its baseline. The variable is read once;
+ * inactive under the virtual clock.
+ * @return The µs spent, 0 when nothing was injected. */
 int64_t openpete_pace_inject_canonical(void);
 
 #ifdef __cplusplus

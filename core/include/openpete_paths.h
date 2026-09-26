@@ -68,10 +68,20 @@ int openpete_paths_portable(void);
  * openpete_paths_portable(). */
 int openpete_paths_user_config_dir(char* out, size_t cap, int create);
 
-/* Directory holding a class of state — `leaf` is "cards" or "states".
- * `create` makes it; pass 0 to merely name it, so a query (--config-report)
- * does not leave directories behind for a session that never ran.
- * Returns 0 on success. */
+/** @brief Resolve the directory holding one class of machine-local state.
+ *
+ * Portable layout: <exe dir>/<leaf>. Otherwise <leaf> under the openpete
+ * directory in the per-user state base (%LOCALAPPDATA% on Windows,
+ * $XDG_STATE_HOME or ~/.local/state elsewhere). With @p create the directory is
+ * made, and in the portable layout a one-time log line names a per-user
+ * copy of the same leaf left by an earlier layout. Pass 0 to name the
+ * directory only, so a query such as --config-report leaves no directories
+ * behind.
+ * @param leaf "cards", "states", "logs" or "cache".
+ * @param out Receives the path.
+ * @param cap Capacity of @p out.
+ * @param create Non-zero to create the directory.
+ * @return 0 on success, -1 when no base resolves or the path does not fit. */
 int openpete_paths_state_dir(const char* leaf, char* out, size_t cap, int create);
 
 /* Directory holding a class of bulk user data — `leaf` is "library",

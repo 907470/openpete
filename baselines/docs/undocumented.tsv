@@ -2,7 +2,7 @@
 # library: libclang 14
 # requirement: @brief of one sentence on one line on every function; @param per named parameter and @return on non-void for external linkage
 # written-by: hook
-# head: d75aca9a6e49c2d591065fd5ac3f814d50a2d839
+# head: 3cd8c799552ed73d98a286372efbb57531307148
 file	function	form	accepted
 core/config/build_id.c	openpete_build_shared_recomp	plain	
 core/config/build_id.c	openpete_build_tagged	plain	
@@ -91,7 +91,6 @@ core/config/knob_registry.c	knob_registry	plain
 core/config/knob_registry.c	knob_registry_env_epoch	plain	
 core/config/knob_registry.c	knob_registry_init	plain	
 core/config/knob_registry.c	knob_registry_late_stamp	plain	
-core/config/knob_registry.c	knob_registry_save_edited	plain	
 core/config/knob_registry.c	knob_src_from_config	plain	
 core/config/knob_registry.c	knob_value_str	plain	
 core/config/knob_registry.c	loaddelay_get	none	
@@ -196,7 +195,6 @@ core/config/paths.c	openpete_paths_data_dir	plain
 core/config/paths.c	openpete_paths_join	plain	
 core/config/paths.c	openpete_paths_portable	plain	
 core/config/paths.c	openpete_paths_set_portable	plain	
-core/config/paths.c	openpete_paths_state_dir	plain	
 core/config/paths.c	openpete_paths_user_config_dir	plain	
 core/config/paths.c	user_base	plain	
 core/config/paths.c	user_data_dir	none	
@@ -242,7 +240,6 @@ core/diag/log.c	parse_spec	none
 core/diag/log.c	stderr_is_tty	none	
 core/diag/log_file.c	drop_lock	none	
 core/diag/log_file.c	openpete_log_file_close	none	
-core/diag/log_file.c	openpete_log_file_open	plain	
 core/diag/log_file.c	openpete_log_file_path	none	
 core/diag/log_file.c	pump_entry	none	
 core/diag/log_file.c	pump_join	none	
@@ -266,12 +263,9 @@ core/diag/pace_log.c	hist_bucket	none
 core/diag/pace_log.c	maybe_clocksample	plain	
 core/diag/pace_log.c	openpete_pace_cd_miss	plain	
 core/diag/pace_log.c	openpete_pace_census_get	none	
-core/diag/pace_log.c	openpete_pace_env_build	plain	
 core/diag/pace_log.c	openpete_pace_extract_alpha	plain	
 core/diag/pace_log.c	openpete_pace_flip	plain	
 core/diag/pace_log.c	openpete_pace_host_pump	plain	
-core/diag/pace_log.c	openpete_pace_inject	plain	
-core/diag/pace_log.c	openpete_pace_inject_canonical	plain	
 core/diag/pace_log.c	openpete_pace_inject_present	plain	
 core/diag/pace_log.c	openpete_pace_input_edge	plain	
 core/diag/pace_log.c	openpete_pace_last_alpha	plain	
@@ -286,14 +280,11 @@ core/diag/pace_log.c	openpete_pace_pad_read	plain
 core/diag/pace_log.c	openpete_pace_pad_reads_this_vbl	plain	
 core/diag/pace_log.c	openpete_pace_present	none	
 core/diag/pace_log.c	openpete_pace_present_alpha	none	
-core/diag/pace_log.c	openpete_pace_present_span	plain	
 core/diag/pace_log.c	openpete_pace_record_present	plain	
 core/diag/pace_log.c	openpete_pace_set_slot_ns	plain	
-core/diag/pace_log.c	openpete_pace_shed	plain	
 core/diag/pace_log.c	openpete_pace_slip	plain	
 core/diag/pace_log.c	openpete_pace_vbl	plain	
 core/diag/pace_log.c	openpete_pace_vbl_begin	plain	
-core/diag/pace_log.c	openpete_pace_vbl_suspend	plain	
 core/diag/pace_log.c	openpete_pace_wake	plain	
 core/diag/pace_log.c	openpete_pace_window	plain	
 core/diag/pace_log.c	pace_emit	none	
@@ -814,10 +805,7 @@ core/mods/mod_arena.c	openpete_mods_arena_bytes	none
 core/mods/mod_arena.c	openpete_mods_arena_entry_begin	plain	
 core/mods/mod_arena.c	openpete_mods_arena_immutable_check	none	
 core/mods/mod_arena.c	openpete_mods_arena_mem_restore	none	
-core/mods/mod_arena.c	openpete_mods_arena_state_apply	none	
-core/mods/mod_arena.c	openpete_mods_arena_state_save	none	
-core/mods/mod_arena.c	openpete_mods_arena_state_size	plain	
-core/mods/mod_arena.c	openpete_mods_arena_state_verdict	none	
+core/mods/mod_arena.c	openpete_mods_arena_state_save	untagged	
 core/mods/mod_arena.c	openpete_mods_arena_used	plain	
 core/mods/mod_arena.c	openpete_mods_guest_alloc	none	
 core/mods/mod_arena.c	openpete_mods_vstream_handle	plain	
@@ -836,10 +824,7 @@ core/mods/mod_chain.c	openpete_mods_base	none
 core/mods/mod_chain.c	openpete_mods_chain_add	plain	
 core/mods/mod_chain.c	openpete_mods_chain_remove_owner	plain	
 core/mods/mod_chain.c	openpete_mods_chain_set_owner_enabled	none	
-core/mods/mod_chain.c	openpete_mods_crash_attribution	plain	
 core/mods/mod_chain.c	openpete_mods_dispatch	plain	
-core/mods/mod_chain.c	openpete_mods_time_add	plain	
-core/mods/mod_chain.c	openpete_mods_time_report	none	
 core/mods/mod_chain.c	owner_disabled	none	
 core/mods/mod_chain.c	owner_state_find	none	
 core/mods/mod_chain.c	owner_state_set	none	
@@ -992,8 +977,6 @@ core/mods/mod_loader.c	openpete_mods_is_enabled	none
 core/mods/mod_loader.c	openpete_mods_load_index_of	plain	
 core/mods/mod_loader.c	openpete_mods_menu_info	none	
 core/mods/mod_loader.c	openpete_mods_modset_tag	plain	
-core/mods/mod_loader.c	openpete_mods_prepare	none	
-core/mods/mod_loader.c	openpete_mods_register_key_defaults	plain	
 core/mods/mod_loader.c	openpete_mods_runahead_capable	plain	
 core/mods/mod_loader.c	openpete_mods_sdk_dir	none	
 core/mods/mod_loader.c	openpete_mods_set_mod_enabled	none	
@@ -1005,7 +988,6 @@ core/mods/mod_loader.c	openpete_mods_toggle_epoch	plain
 core/mods/mod_loader.c	openpete_mods_ui_always_count	plain	
 core/mods/mod_loader.c	openpete_mods_ui_draw	none	
 core/mods/mod_loader.c	openpete_mods_ui_draw_always	plain	
-core/mods/mod_loader.c	openpete_mods_ui_refuse_section	plain	
 core/mods/mod_loader.c	order_from_enabled_txt	plain	
 core/mods/mod_loader.c	order_from_mods_flag	plain	
 core/mods/mod_loader.c	order_from_scan	plain	
@@ -1074,7 +1056,6 @@ core/mods/mod_registry.c	openpete_mods_on_level	plain
 core/mods/mod_registry.c	openpete_mods_read_level_data	none	
 core/mods/mod_registry.c	openpete_mods_registry_counts_writes	none	
 core/mods/mod_registry.c	openpete_mods_registry_ensure_driver	none	
-core/mods/mod_registry.c	openpete_mods_registry_owner_busy	plain	
 core/mods/mod_registry.c	openpete_mods_registry_remove_owner	none	
 core/mods/mod_registry.c	openpete_mods_registry_set_owner_enabled	none	
 core/mods/mod_registry.c	openpete_mods_set_level_ops	none	
@@ -1598,14 +1579,14 @@ core/renderer/native_render.c	openpete_native_fps_overlay_enabled	plain
 core/renderer/native_render.c	openpete_native_fps_value	plain	
 core/renderer/native_render.c	openpete_native_fullscreen_active	plain	
 core/renderer/native_render.c	openpete_native_get_aspect	plain	
-core/renderer/native_render.c	openpete_native_get_commit	none	
+core/renderer/native_render.c	openpete_native_get_commit	untagged	
 core/renderer/native_render.c	openpete_native_get_dither	none	
 core/renderer/native_render.c	openpete_native_get_notex	none	
 core/renderer/native_render.c	openpete_native_get_overlay_extent	none	
 core/renderer/native_render.c	openpete_native_get_raster_quantize	plain	
-core/renderer/native_render.c	openpete_native_get_reextract	none	
+core/renderer/native_render.c	openpete_native_get_reextract	untagged	
 core/renderer/native_render.c	openpete_native_get_ssaa	plain	
-core/renderer/native_render.c	openpete_native_get_terrain_visibility	none	
+core/renderer/native_render.c	openpete_native_get_terrain_visibility	untagged	
 core/renderer/native_render.c	openpete_native_get_texture_mapping	plain	
 core/renderer/native_render.c	openpete_native_get_vsync	plain	
 core/renderer/native_render.c	openpete_native_get_wireframe	none	
@@ -1618,11 +1599,8 @@ core/renderer/native_render.c	openpete_native_hdfold_pending	plain
 core/renderer/native_render.c	openpete_native_hdfold_prime	plain	
 core/renderer/native_render.c	openpete_native_hdfold_reset	plain	
 core/renderer/native_render.c	openpete_native_hdfold_table	plain	
-core/renderer/native_render.c	openpete_native_key_resolve_on	plain	
 core/renderer/native_render.c	openpete_native_material_ubo	plain	
 core/renderer/native_render.c	openpete_native_occl_grid_age	plain	
-core/renderer/native_render.c	openpete_native_occl_last_scan_max	plain	
-core/renderer/native_render.c	openpete_native_occl_offscreen	plain	
 core/renderer/native_render.c	openpete_native_occl_qstats	none	
 core/renderer/native_render.c	openpete_native_occl_query	none	
 core/renderer/native_render.c	openpete_native_occl_set_camera	none	
@@ -1638,8 +1616,6 @@ core/renderer/native_render.c	openpete_native_present_census_report	plain
 core/renderer/native_render.c	openpete_native_present_stage	none	
 core/renderer/native_render.c	openpete_native_present_stage_acquire	none	
 core/renderer/native_render.c	openpete_native_present_stage_release	none	
-core/renderer/native_render.c	openpete_native_register_commit	none	
-core/renderer/native_render.c	openpete_native_register_reextract	none	
 core/renderer/native_render.c	openpete_native_render_acquire_sheds	plain	
 core/renderer/native_render.c	openpete_native_render_acquire_timeouts	none	
 core/renderer/native_render.c	openpete_native_render_capture_rgba	plain	
@@ -1708,7 +1684,6 @@ core/renderer/native_render.c	openpete_native_scene_set_prim	plain
 core/renderer/native_render.c	openpete_native_scene_set_seq	plain	
 core/renderer/native_render.c	openpete_native_scene_set_stp_select	plain	
 core/renderer/native_render.c	openpete_native_scene_set_tag	none	
-core/renderer/native_render.c	openpete_native_scene_sig_report	plain	
 core/renderer/native_render.c	openpete_native_scene_slot_info	none	
 core/renderer/native_render.c	openpete_native_scene_stamp_live	none	
 core/renderer/native_render.c	openpete_native_scene_tag_family_counts	plain	
@@ -1718,7 +1693,6 @@ core/renderer/native_render.c	openpete_native_set_cover_planes	plain
 core/renderer/native_render.c	openpete_native_set_display_rect	plain	
 core/renderer/native_render.c	openpete_native_set_dither	plain	
 core/renderer/native_render.c	openpete_native_set_draw_clip	none	
-core/renderer/native_render.c	openpete_native_set_fov	plain	
 core/renderer/native_render.c	openpete_native_set_fps_in_record	plain	
 core/renderer/native_render.c	openpete_native_set_fps_overlay	plain	
 core/renderer/native_render.c	openpete_native_set_icon	plain	
@@ -1736,10 +1710,7 @@ core/renderer/native_render.c	openpete_native_set_shadow_decal_params	none
 core/renderer/native_render.c	openpete_native_set_shadow_footprint	none	
 core/renderer/native_render.c	openpete_native_set_ssaa	plain	
 core/renderer/native_render.c	openpete_native_set_tag_split	plain	
-core/renderer/native_render.c	openpete_native_set_terrain_visibility	plain	
 core/renderer/native_render.c	openpete_native_set_texture_mapping	plain	
-core/renderer/native_render.c	openpete_native_set_version_glyphs	plain	
-core/renderer/native_render.c	openpete_native_set_version_osd	plain	
 core/renderer/native_render.c	openpete_native_set_vertex_precision	plain	
 core/renderer/native_render.c	openpete_native_set_vsync	plain	
 core/renderer/native_render.c	openpete_native_set_wireframe	plain	
@@ -1750,12 +1721,11 @@ core/renderer/native_render.c	openpete_native_tercache_usable	plain
 core/renderer/native_render.c	openpete_native_toggle_fullscreen	plain	
 core/renderer/native_render.c	openpete_native_version_drawn	plain	
 core/renderer/native_render.c	openpete_native_version_line_enabled	plain	
-core/renderer/native_render.c	openpete_native_version_osd	none	
+core/renderer/native_render.c	openpete_native_version_osd	untagged	
 core/renderer/native_render.c	openpete_native_version_reason	plain	
 core/renderer/native_render.c	openpete_native_vertex_snap_active	plain	
 core/renderer/native_render.c	openpete_native_visible_rows	plain	
 core/renderer/native_render.c	openpete_native_vram_sync	plain	
-core/renderer/native_render.c	openpete_native_widescreen_factor	plain	
 core/renderer/native_render.c	openpete_native_widescreen_x_bounds	plain	
 core/renderer/native_render.c	openpete_phase_add	none	
 core/renderer/native_render.c	openpete_phase_now_us	none	
@@ -2556,7 +2526,6 @@ core/ui/openpete_osd.c	ready_height	none
 core/ui/openpete_osd.c	smoothstep	plain	
 core/ui/overlay_anchor.c	lower_dash	none	
 core/ui/overlay_anchor.c	openpete_anchor_parse	plain	
-core/ui/overlay_anchor.c	openpete_anchor_place	plain	
 core/ui/overlay_anchor.c	openpete_anchor_reset	plain	
 core/ui/overlay_anchor.c	openpete_anchor_usable_x	plain	
 games/common/features/levelwarp_ui.c	go_fire	none	

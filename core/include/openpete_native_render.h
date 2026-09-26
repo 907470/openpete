@@ -75,9 +75,15 @@ bool openpete_native_scene_enabled(void);
  * rhi_fence_sheds. Monotonic. */
 uint64_t openpete_native_render_fence_sheds(void);
 
-/* Census (OPENPETE_SCENE_SIG=1): hash the composed scene's DISCRETE fields and
- * report them with the present's alpha. Answers whether re-extracting per
- * present ever decides differently within one tick's alpha span. */
+/** @brief Print the scene signature census lines for the composed scene to stderr.
+ *
+ * With OPENPETE_SCENE_SIG=1, one "[scene-sig]" line hashes the scene's
+ * discrete fields and counts triangles per category, with the present's
+ * alpha; it shows whether re-extracting per present ever decides
+ * differently within one tick's alpha span. With OPENPETE_SCENE_POS_SIG=1,
+ * one "[scene-pos]" line hashes every vertex's screen position per draw
+ * category. With neither set it prints nothing.
+ * @param canonical Non-zero on the canonical present, zero on an intermediate. */
 void openpete_native_scene_sig_report(int canonical);
 
 /* Wait (up to timeout_ns) for the last queued present to be DISPLAYED.
@@ -196,9 +202,13 @@ int openpete_native_vertex_snap_active(void);
  * snapped parent edges). Clear after the feed, like set_tag. */
 void openpete_native_scene_set_presnap(int on);
 
-/* P6b: true when the terrain LP key-resolve contest is live (key pass +
- * key-capable pipelines came up). The terrain feeder emits scene-tri koff
- * only when this holds, so LP fragments can never contest a missing image. */
+/** @brief Return 1 when the terrain key image can be rendered this run.
+ *
+ * True when the native renderer is enabled and the terrain key pipeline and
+ * its vertex buffer were created. The terrain and moby feeders write a scene
+ * triangle's OT key offset (koff) only when this holds, so no LP terrain
+ * fragment tests a key image that does not exist.
+ * @return 1 when the key pass is available, else 0. */
 int openpete_native_key_resolve_on(void);
 
 /* Raster output quantize: box-resample the composed 3D scene (pre-HUD) onto
@@ -242,13 +252,18 @@ int  openpete_native_get_notex(void);
 void openpete_native_set_wireframe(int on);
 int  openpete_native_get_wireframe(void);
 
-/* Terrain candidate-set policy (openpete_terrain_visibility_t): GAME = the
- * game's own visibility verdict, FRUSTUM = every sector whose bounding sphere
- * is inside the displayed frame. Seeded from --terrain-visibility at init; the
- * terrain feeder reads it per walk, so the setter takes effect on the next
- * present. Display-only: the feeder reads the game's visibility flags and
- * never writes them. */
+/** @brief Select the terrain candidate set: the game's sector visibility flags, or a frustum test.
+ *
+ * OPENPETE_TERRAIN_VIS_GAME admits the sectors the game marked visible; any
+ * other value selects OPENPETE_TERRAIN_VIS_FRUSTUM, which admits every
+ * sector whose bounding sphere is inside the displayed frame and does not
+ * read the game's flags. Seeded from --terrain-visibility at init; the
+ * terrain feeder reads the mode at the top of every sector walk, so a change
+ * applies on the next present. Renderer state only; the game's flags are
+ * never written.
+ * @param mode An openpete_terrain_visibility_t value. */
 void openpete_native_set_terrain_visibility(int mode);
+/// @brief The terrain candidate-set mode in force (an openpete_terrain_visibility_t value).
 int  openpete_native_get_terrain_visibility(void);
 
 /* One vertex of game-supplied FPS-overlay geometry, in a resolution-independent
@@ -277,20 +292,31 @@ void openpete_native_set_overlay_glyphs(const openpete_hud_vert *verts, int nver
 void openpete_native_set_overlay_extent(float w, float h);
 void openpete_native_get_overlay_extent(float *w, float *h);
 
-/* The build-version line: the same 3D glyph vertices, plus the region rect
- * they were emitted region-local to, in ONE call — the two are read together
- * on the present thread and must describe the same push. The renderer pins it
- * to the bottom-left anchor, holds it briefly on a tagged build and fades it,
- * and keeps it up for the whole session on a build that is not exactly a
- * release. nverts==0 clears it. Display-only. */
+/** @brief Publish the build-version line's glyph vertices and the region rect they were emitted in.
+ *
+ * Both arrive in one call because the present thread reads them together
+ * and they must describe the same push. The vertices are copied, clamped to
+ * the renderer's buffer; the rect is stored as one packed word and keeps its
+ * previous value when either dimension is not positive. The renderer pins
+ * the line to the bottom-left anchor. A tagged release build holds it for
+ * 2 s and fades it over 300 ms, a shared-recomp build that is not a tagged
+ * release keeps it for the whole run, and a build that is not shared-recomp
+ * draws none (openpete_native_version_line_enabled). Display-only.
+ * @param verts Triangle-list vertices, region-local, in overlay space.
+ * @param nverts Vertex count; 0 clears the line.
+ * @param region_w Region width in window-height units.
+ * @param region_h Region height in window-height units. */
 void openpete_native_set_version_glyphs(const openpete_hud_vert *verts, int nverts,
                                         float region_w, float region_h);
 
-/* --version-osd's own value. Live-settable. It governs the RELEASE build's
- * two-second line alone: an untagged shared build keeps its line for the
- * whole session and no knob suppresses it, and a build that is not
- * shared-recomp shows none either way. */
+/** @brief Set the --version-osd value, which governs only the tagged release build's two-second version line.
+ *
+ * An untagged shared-recomp build keeps its line for the whole run and no
+ * knob suppresses it; a build that is not shared-recomp shows none either
+ * way. Live-settable.
+ * @param on Non-zero to show the release build's line. */
 void openpete_native_set_version_osd(int on);
+/// @brief The --version-osd value in force (default 1).
 int  openpete_native_version_osd(void);
 
 /* The three facts above resolved into one answer: whether a version line will
@@ -1193,22 +1219,21 @@ void openpete_native_scene_set_actor_front(int front);
  * extraction work when it will actually be shown). */
 /* (openpete_native_render_enabled, above, serves this gate.) */
 
-/* ---- widescreen (Hor+) display policy --------------------------------
+/* ---- widescreen (Hor+) display policy -------------------------------- */
+/** @brief The Hor+ widen factor: how much wider than 4:3 the native render rect is.
  *
- * In vk-only mode (--renderer vk), when the window is WIDER than the 4:3 PSX
- * display, the native renderer fills the window and reveals more world at the
- * left/right while keeping the vertical FOV unchanged (Hor+). It is purely a
- * display policy: the .s verdict producers still run canonical 4:3 (gameplay is
- * untouched), and the native renderer just un-scissors the side strips and maps
- * the same projected geometry into the wider window — the centre 4:3 region is
- * pixel-identical to the 4:3 render. The A/B and diff compare modes stay 4:3 so
- * they line up 1:1 with the PsyCross reference; widescreen is inactive there.
- *
- * The widen FACTOR is window_aspect / display_aspect (1.0 = no widen, ~1.33 for
- * 16:9). Feeders that pre-cull geometry to the 4:3 screen-X rect must widen
- * those horizontal bounds by this factor so the revealed side geometry isn't
- * dropped before it reaches the (now full-width) scissor. Vertical bounds stay
- * unchanged. Determinism-safe (display-only); returns 1.0 when inactive. */
+ * When the render rect is wider than the 4:3 PSX display, the native
+ * renderer keeps the vertical FOV and shows more world at the left and
+ * right; the centre 4:3 region matches the 4:3 render. The game's own render
+ * functions still run at canonical 4:3, so gameplay-readable state does not
+ * depend on the factor. The layout derives it from a fixed --aspect
+ * (aspect / (4/3)) or, under AUTO, from the panel cell's shape against the
+ * crop-corrected 4:3 display, clamped to at least 1 (about 1.33 at 16:9).
+ * Headless runs have no window, so a fixed --aspect is applied here
+ * directly. Feeders that pre-cull to the 4:3 screen-X rect widen their
+ * horizontal bounds by this factor (openpete_native_widescreen_x_bounds);
+ * vertical bounds do not change.
+ * @return The widen factor, 1.0 when the rect is not wider than 4:3. */
 float openpete_native_widescreen_factor(void);
 /* The visible PSX screen-X range under the active widescreen factor: [0,512] at
  * 4:3, widened symmetrically about the screen centre (256) — e.g. ~[-85,597] at
@@ -1216,17 +1241,21 @@ float openpete_native_widescreen_factor(void);
  * reject (replacing the hard 0 / 512 edges). */
 void  openpete_native_widescreen_x_bounds(float *xlo, float *xhi);
 
-/* ---- field of view display policy ------------------------------------
+/* ---- field of view display policy ------------------------------------ */
+/** @brief Set --fov, the vertical FOV in degrees of the visible band; 0 or less keeps the game's projection.
  *
- * --fov DEG is the vertical FOV of the visible band (clip_h rows), the one
- * FOV number Hor+ keeps aspect-invariant. The feeders project with
+ * The visible band is clip_h rows, and its vertical FOV is the one FOV
+ * number Hor+ keeps aspect-invariant. The feeders project with
  * H_eff = H_canon · s, s = tan(vref/2) / tan(fov/2), vref = 2·atan((clip_h/2)
  * / (y_row · H_canon)), where H_canon is the GTE's H and y_row the game's
- * camera-matrix Y scale (the feeder passes both). deg <= 0 is the default:
- * the scale is the literal 1.0 and H_eff == H_canon bit-for-bit. The
- * tangent is latched once per present (scene begin), so a live change
- * cannot split one present across two H values. Renderer state only; the
- * game's verdict producers keep the canonical H. */
+ * camera-matrix Y scale (the feeder passes both). At deg <= 0 the scale is
+ * the literal 1.0 and H_eff == H_canon bit-for-bit. A positive value is
+ * clamped to [1, 179]. The tangent is latched once per present (scene
+ * begin), so a live change cannot split one present across two H values.
+ * A change suspends the occlusion grid for two presents, since its cached
+ * rects were built at the old H. Renderer state only; the game's own
+ * projection keeps the canonical H.
+ * @param deg Vertical FOV in degrees; <= 0 for the default. */
 void   openpete_native_set_fov(float deg);
 float  openpete_native_fov_deg(void);             /* 0 = default */
 double openpete_native_fov_h_scale(double H_canon, double y_row);
@@ -1307,36 +1336,41 @@ int      openpete_native_scene_ring_free(void);
  * it itself. */
 void     openpete_native_vram_sync(void);
 
-/* --- sub-tick re-feed spine (high-FPS, native-renderer plan §Movement) ----
- *
- * For smooth presentation above the 29.913 Hz sim, the host loop presents
- * intermediate (sub-tick) frames. Each one rebuilds the native scene against
- * an INTERPOLATED view of gamestate (camera re-run / object lerp / animation
- * clock-advance), keyed off the openpete_interp snapshot ring. The rebuild is
- * game-specific (it knows g_Camera / the feeders), so the game registers a
- * "re-extract" callback; core invokes it on each intermediate present (then
- * presents the rebuilt scene via openpete_native_render_frame).
- *
- * The callback receives the host CPUState (opaque here — the game casts it).
- * It must: query openpete_interp for prev/curr+alpha, compute the interpolated
- * camera/objects, bracket any PSX-RAM writes (save → write-interpolated →
- * re-extract → restore) entirely on the host fiber so the next sim tick reads
- * canonical RAM, and rebuild s_scene. Read-only against gameplay state by the
- * restore discipline; proven by the oracle gate. NULL disables intermediates. */
+/* --- sub-tick re-feed spine ------------------------------------------------ */
+/// @brief Game callback that rebuilds the native scene for one present against interpolated gamestate.
 typedef void (*openpete_native_reextract_fn)(void* cpu);
+/** @brief Register the game's re-extract callback, which rebuilds the native scene for presents between ticks.
+ *
+ * Above the 29.913 Hz sim the host presents intermediate (sub-tick) images;
+ * each rebuilds the native scene against an interpolated view of gamestate
+ * (camera, object poses, animation clock) keyed off the openpete_interp
+ * snapshot ring. The rebuild is game-specific, so the game registers it.
+ * Core calls it on each intermediate present, on the canonical present at
+ * the same one-tick-lagged alpha while the spine is active, and once per
+ * scene under eager production. The callback receives the host CPUState
+ * (opaque here) and must not write guest RAM: the shared installer
+ * game_reextract_view_install wraps the game's body in
+ * openpete_subtick_view_begin/end, so feeders read interpolated values from
+ * staged spans instead of guest memory. NULL disables intermediates.
+ * @param fn The callback, or NULL. */
 void openpete_native_register_reextract(openpete_native_reextract_fn fn);
+/// @brief The registered re-extract callback, or NULL.
 openpete_native_reextract_fn openpete_native_get_reextract(void);
 
-/* Optional per-canonical-present commit callback. The host present loop invokes
- * it ONCE per canonical present (after the game render, before the sub-tick
- * re-extract), for per-frame render bookkeeping the GAME owns but that must be
- * driven from the renderer-agnostic host boundary rather than a game-internal
- * one. Spyro uses it to latch which render paths the canonical frame drew (the
- * mask the spine gates each feeder on) and clear its per-frame interval table —
- * deliberately NOT done inside psyq_DrawOTag so it survives the planned removal
- * of the PsyCross OT submission. NULL = no commit step. */
+/// @brief Game callback run once per canonical present for render bookkeeping the game owns.
 typedef void (*openpete_native_commit_fn)(void);
+/** @brief Register the game's per-canonical-present commit callback.
+ *
+ * The host present loop calls it once per canonical present, after the game
+ * render and before the sub-tick re-extract, whether or not the spine is
+ * active. The shared game renderer's callback (render_paths_commit) latches
+ * the mask of render paths the canonical render drew, which the spine gates
+ * each feeder on, and clears the per-render interval table. It runs from
+ * the host loop rather than inside psyq_DrawOTag, so it does not depend on
+ * the PsyCross OT submission. NULL = no commit step.
+ * @param fn The callback, or NULL. */
 void openpete_native_register_commit(openpete_native_commit_fn fn);
+/// @brief The registered commit callback, or NULL.
 openpete_native_commit_fn openpete_native_get_commit(void);
 
 /* ---- moby occlusion culling (native-side, display-only) ---------------------
@@ -1380,12 +1414,21 @@ typedef struct openpete_occl_camera {
 void openpete_native_occl_set_camera(const openpete_occl_camera *c);
 int  openpete_native_occl_query(float sx0, float sy0, float sx1, float sy1, float vz_near,
                                 const openpete_occl_camera *cam);
-/* The frustum half of openpete_native_occl_query alone: 1 when the rect lies
- * wholly outside the visible extent, a test on the rect's own geometry that
- * reads no depth and no camera. It returns 0 whenever the query would refuse
- * the grid (absent, suspended, stale), since the extent affine arrives with
- * the grid. A caller that reuses a depth verdict across cameras applies this
- * to its current rect instead of reusing a stored frustum verdict. */
+/** @brief Return 1 when a screen rect lies wholly outside the occlusion grid's visible extent.
+ *
+ * The frustum half of openpete_native_occl_query alone: a test on the rect's
+ * own geometry that reads no depth and no camera. It returns 0 whenever the
+ * query would refuse the grid (absent, suspended, stale), since the extent
+ * mapping arrives with the grid, and when @p vz_near is 256 or less, where a
+ * projected rect is not trusted. A hit counts as OPENPETE_OCCL_Q_OFFSCREEN.
+ * A caller that reuses a depth result across cameras applies this to its
+ * current rect instead of reusing a stored off-screen result.
+ * @param sx0 Rect left, screen X.
+ * @param sy0 Rect top, screen Y.
+ * @param sx1 Rect right, screen X.
+ * @param sy1 Rect bottom, screen Y.
+ * @param vz_near Nearest view-Z of the object, including the caller's slack.
+ * @return 1 when the rect is off-screen, else 0. */
 int  openpete_native_occl_offscreen(float sx0, float sy0, float sx1, float sy1, float vz_near);
 void openpete_native_occl_suspend(int presents);
 /* Query-outcome census (cumulative counters; diagnostics). OFFSCREEN = culled
@@ -1399,8 +1442,12 @@ enum { OPENPETE_OCCL_Q_NOGRID = 0, OPENPETE_OCCL_Q_SUSPENDED, OPENPETE_OCCL_Q_ST
        OPENPETE_OCCL_Q_CULLED, OPENPETE_OCCL_Q_OFFSCREEN, OPENPETE_OCCL_Q_MOVED,
        OPENPETE_OCCL_Q_COUNT };
 void openpete_native_occl_qstats(long out[OPENPETE_OCCL_Q_COUNT]);
-/* Diagnostics: the farthest grid view-Z seen in the last CULLED rect scan
- * (how decisively the depth verdict held). Valid right after a query→1. */
+/** @brief The farthest grid view-Z in the rect of the last query the depth test culled.
+ *
+ * Diagnostics: how decisively the depth test held. Updated only when
+ * openpete_native_occl_query returns 1 through the depth test; an
+ * off-screen return leaves it unchanged.
+ * @return View-Z of the farthest grid cell scanned in that rect. */
 float openpete_native_occl_last_scan_max(void);
 /* Diagnostics: presents elapsed since the live grid was captured, or -1 when
  * no grid is held. The query refuses a grid older than 8 presents. */

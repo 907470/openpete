@@ -87,32 +87,42 @@ const char* openpete_mods_symbol_for_addr(uint32_t addr, uint32_t* off_out);
  * continues; mods never brick a launch). */
 int openpete_mods_init(const openpete_options_t* opts);
 
-/* Parse every discovered manifest and register its [[binding]] keys with
- * the keymap (mod.<id> domain, rank 0) without loading anything. For the
- * --keys-report path, which prints before openpete_mods_init runs; init
- * registers the same rows itself. */
+/** @brief Register every discovered mod's [[binding]] defaults with the keymap without loading any mod.
+ *
+ * Discovers mods the way openpete_mods_init does, parses each mod.toml,
+ * registers each binding through openpete_keymap_set_mod_default (rank 0
+ * under the mod.<id> domain) and records the mod's boot enabled state with
+ * openpete_keymap_set_mod_enabled. A manifest that fails to parse is
+ * skipped. The Spyro 1 main calls it for --keys-report, which prints the
+ * keymap and exits before openpete_mods_init runs; init registers the same
+ * rows itself.
+ * @param opts Parsed options; opts->mods_dir overrides the mods root. */
 void openpete_mods_register_key_defaults(const openpete_options_t* opts);
 
-/* Compile-on-boot UX pass (plan openpete-mod-compile-on-boot): compile
- * any enabled source mod whose content-hash build key is stale, BEFORE
- * openpete_mods_init() — the game calls this while its splash is still
- * alive so the compiles render as a progress stage instead of a silent
- * stall. Pass 1 hashes every enabled src mod (milliseconds); if nothing
- * is stale it returns 0 without invoking either callback (no window
- * flash on warm boots). Otherwise the stale set compiles inside ONE
- * `run_task` callback (NULL = inline), reporting
- * progress("COMPILING MODS", done, total) from the worker.
- *
- * Purely an acceleration/UX layer: init behaves identically whether or
- * not prepare ran (it re-checks the cache and compiles anything still
- * stale, inline and silent). Compile failures are logged and left for
- * init to disable — never fatal. Returns the number of mods that were
- * stale. */
+/* Callbacks openpete_mods_prepare takes: a progress sink, the compile task,
+ * and a runner that executes the task (on a worker or inline). */
 typedef void (*openpete_mods_progress_fn)(const char* stage, int done,
                                           int total);
 typedef int (*openpete_mods_task_fn)(void* userdata);
 typedef int (*openpete_mods_run_task_fn)(openpete_mods_task_fn fn,
                                          void* userdata);
+/** @brief Compile every discovered source mod whose build key is stale, before openpete_mods_init.
+ *
+ * The game calls it while its splash is up, so the compiles show as a
+ * progress stage. Returns 0 at once when no compiler resolves, no mod is
+ * discovered, or the SDK is missing (a notice is logged when a source mod
+ * exists). Pass 1 hashes each discovered mod's sources, skipping
+ * assets-only and binary-only mods and mods whose cached build matches the
+ * key; when nothing is stale neither callback runs. Otherwise the stale
+ * set compiles inside one @p run_task call, reporting
+ * progress("COMPILING MODS", done, total). A compile failure is logged and
+ * left for openpete_mods_init to disable the mod. Init re-checks the cache
+ * and compiles anything still stale inline, so whether prepare ran changes
+ * only when the compile time is spent.
+ * @param opts Parsed options; opts->mods_dir overrides the mods root.
+ * @param progress Progress sink called from the task, or NULL.
+ * @param run_task Runs the compile task, or NULL to run it inline.
+ * @return The number of stale mods found. */
 int openpete_mods_prepare(const openpete_options_t* opts,
                           openpete_mods_progress_fn progress,
                           openpete_mods_run_task_fn run_task);
@@ -311,20 +321,29 @@ void openpete_mods_ui_draw_always(int i, const struct openpete_mod_ui* ui,
  * would. */
 int openpete_mods_ui_always_count(void);
 
-/* Drop a mod's UI section for the rest of the session, with one log line
- * naming @p why. The mod keeps running; only its section stops drawing.
- * The overlay calls this when a body misbehaves often enough that leaving
- * it in the panel costs more than losing it. */
+/** @brief Stop drawing a mod's UI section for the rest of the run.
+ *
+ * Clears the mod's ui_body and its per-present ImGui call count and logs
+ * one error line naming @p why; the mod keeps running. The overlay calls it
+ * after a mod's body raises an ImGui error on three consecutive presents.
+ * @param i Index into the loaded mod table.
+ * @param why Reason text for the log line, or NULL.
+ * @return 0, or -1 for an index out of range. */
 int openpete_mods_ui_refuse_section(int i, const char* why);
 
 int  openpete_mods_set_mod_enabled(const char* id, int on);
 /* cpu: live game CPU — applied toggles notify the mod's toggle hook in
  * tick context (guest access legal). */
 void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick);
-/* 1 while disabling this owner would corrupt the session: it holds a
- * claimed level slot and the player is inside (or entering) that level.
- * The apply loop DEFERS such a disable until the player leaves; the
- * menu greys the switch. */
+/** @brief Return 1 while the player is inside, or entering, a level that @p mod_id owns.
+ *
+ * True when one of the mod's claimed level slots, or its active custom
+ * level, is the resident level or the level being entered. A disabled slot
+ * refuses entry but stays claimed, so the mod cannot be turned off from
+ * under the running level: the live-toggle apply loop keeps such a disable
+ * queued until this returns 0, and the M overlay greys the mod's switch.
+ * @param mod_id Mod id; NULL returns 0.
+ * @return 1 when busy, else 0. */
 int  openpete_mods_registry_owner_busy(const char* mod_id);
 /* Bumped once per APPLIED toggle (state actually changed). The run loop
  * polls it to invalidate timeline-derived state: rewind history recorded
@@ -344,17 +363,31 @@ void openpete_mods_draw_remove_owner(const char* owner_id);
 void openpete_mods_draw_set_owner_enabled(const char* owner_id, int on);
 void openpete_mods_registry_remove_owner(const char* mod_id);
 
-/* Per-mod time instrument (mod_chain.c): SELF-time accumulation per
- * owner (tick hooks fed by the chain runner, present hooks by
- * mod_draw.c) + the periodic report that names any mod exceeding the
- * sim-tick budget. ticks_elapsed = sim ticks in the window. */
+/** @brief Add @p ns of self time to @p owner's tick or present accumulator.
+ *
+ * The override chain runner feeds tick hooks (the override's span minus
+ * nested overrides) and mod_draw.c feeds present hooks. An owner gets a
+ * slot on first use.
+ * @param owner Mod id; NULL is ignored.
+ * @param ns Nanoseconds; a negative value is ignored.
+ * @param is_present Non-zero for a present hook, zero for a tick hook. */
 void openpete_mods_time_add(const char* owner, int64_t ns, int is_present);
+/** @brief Log and reset every owner's accumulated time for the window that just ended.
+ *
+ * Warns for each mod whose tick-hook time averages more than 4 ms per sim
+ * tick; with OPENPETE_MOD_TIMERS set non-zero it logs every other owner's
+ * figures too, including owners with no calls.
+ * @param ticks_elapsed Sim ticks in the window; 0 counts as 1. */
 void openpete_mods_time_report(unsigned ticks_elapsed);
 
-/* Crash attribution: non-NULL = an override chain frame is live on this
- * thread; returns the innermost mod id (addr_out = the overridden
- * vaddr). Consumed by core/diag/crash.c so a crash report names the
- * offending mod (PoC rung 6). */
+/** @brief The mod whose override is innermost on the calling thread's override stack, for the crash handler.
+ *
+ * The frame stack is thread-local, so the crash handler calls it on the
+ * faulting thread; core/diag/crash.c prints the result as a MOD ATTRIBUTION
+ * line. The crash is in that mod's override or in code it called.
+ * @param addr_out Receives the overridden guest vaddr; may be NULL.
+ * @return The owner mod id, "?" when the link has no owner, or NULL when no
+ *         override is running on this thread. */
 const char* openpete_mods_crash_attribution(uint32_t* addr_out);
 
 /* Per-modset save safety: canonical tag of the loaded gameplay-relevant
@@ -850,15 +883,30 @@ int openpete_mods_runahead_capable(const char** offender);
  * undeclared mod. */
 int openpete_mods_state_safe(const char** offender);
 
-/* Arena state section (the ledger + the arena's used bytes),
- * serialized with the engine state. verdict() prefix-matches the live
- * ledgers against the saved ones pre-commit, superseded marks included
- * (-1 = refuse); apply() adopts saved rows the live session has not
- * made, restores the arena bytes and re-anchors the cursors to
- * max(live, saved) post-commit. */
+/** @brief Size of the arena state section: a header, the ledger rows, and the arena's used bytes.
+ *
+ * core/record/savestate.c serializes the section with the engine state.
+ * @return Section size in bytes. */
 uint32_t openpete_mods_arena_state_size(void);
+/// @brief Write the arena state section, openpete_mods_arena_state_size() bytes, to @p dst.
 void     openpete_mods_arena_state_save(void* dst);
+/** @brief Check a saved arena section against the live ledger before a state load commits.
+ *
+ * The saved rows must equal the live rows over their common prefix,
+ * superseded marks included, or the restored bytes would sit under a
+ * different layout; a mismatch is logged naming the mod and entry.
+ * @param src Saved section bytes.
+ * @param size Section size in bytes.
+ * @return 0 when the load may proceed (also when there is no section), -1
+ *         to refuse it. */
 int      openpete_mods_arena_state_verdict(const void* src, uint32_t size);
+/** @brief Adopt a saved arena section after a state load commits.
+ *
+ * Saved rows beyond the live ledger are appended, so a mod's later call at
+ * that index replays the saved row; the saved bytes are copied over the
+ * arena and the cursor moves to max(live, saved).
+ * @param src Saved section bytes.
+ * @param size Section size in bytes. */
 void     openpete_mods_arena_state_apply(const void* src, uint32_t size);
 
 #ifdef __cplusplus

@@ -38,13 +38,24 @@ openpete_log_format_t openpete_log_get_format(void);
 void openpete_log_set_spec(const char* spec);
 const char* openpete_log_get_spec(void);
 
-/* Mirror everything written to stderr into a log file, so a launch with
- * no terminal (a double-clicked AppImage, a .desktop entry) still leaves
- * something to attach to a bug report. `spec` is the resolved --log-file
- * value: NULL falls back to $OPENPETE_LOG_FILE and then to
- * <state>/logs/openpete.log; "off", "0" or "" disable the sink. Returns 0
- * when a file sink is active. One previous run is kept as ".1"; a second
- * concurrent instance runs without a sink rather than interleave. */
+/** @brief Mirror everything written to stderr into a log file through a pipe and a pump thread.
+ *
+ * A launch with no terminal (a double-clicked AppImage, a .desktop entry)
+ * then still leaves its output on disk. fd 2 is replaced by a pipe; the
+ * pump thread copies each read to the original stderr and, with ANSI
+ * escape sequences stripped, to the log file until LOG_CAP_BYTES. Missing
+ * standard descriptors are first bound to the null device, so the log file
+ * cannot land on fd 2. The previous run's file is renamed to ".1" only once
+ * the pipe and the duplicated stderr are up, so an early failure leaves it
+ * intact. On POSIX a non-blocking flock on "<path>.lock" keeps a second
+ * concurrent instance off the file; that instance runs without a sink. On
+ * Windows the Win32 standard error handle is pointed at the pipe as well.
+ * openpete_log_file_close is registered with atexit.
+ * @param spec The resolved --log-file value: NULL falls back to
+ *             $OPENPETE_LOG_FILE and then to <state>/logs/openpete.log;
+ *             "off", "0" or "" disable the sink.
+ * @return 0 when a file sink is active (also when one already was), -1
+ *         when the sink is disabled or setup failed. */
 int openpete_log_file_open(const char* spec);
 void openpete_log_file_close(void);
 const char* openpete_log_file_path(void);  /* "" when inactive */
