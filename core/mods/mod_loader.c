@@ -152,9 +152,13 @@ typedef struct {
 #define MOD_MATERIAL_ROWS_INIT 16
 #define MOD_MATERIAL_PARAMS_MAX 64   /* floats; capped again by the ABI's
                                       * OPENPETE_MATERIAL_UNIFORMS_MAX */
-/* Manifest channel spelling -> OP_CHAN_*. "any" (or an absent key) is -1;
- * an unrecognised name returns -2 so the caller refuses the row instead
- * of silently widening it to every channel. */
+/** @brief Map a manifest channel spelling to its OP_CHAN_* value.
+ *
+ * "any" maps to -1, and the caller leaves an absent key at -1. An
+ * unrecognised name returns -2 so the caller refuses the row instead of
+ * widening it to every channel. The match is exact and case-sensitive.
+ * @param s the channel spelling.
+ * @return OP_CHAN_*, -1 for "any", or -2 for an unknown name. */
 static int mod_channel_from_name(const char* s) {
     static const struct { const char* name; int chan; } k[] = {
         { "any",      -1 },              { "moby",     OP_CHAN_MOBY },
@@ -296,9 +300,11 @@ struct openpete_mod {
     void* dl;
 };
 
-/* Row accessors. Each per-mod table is a mod_fvec owned by the struct;
- * the rows are reached by index, never by a held address (the getter
- * that hands a row out copies what the caller needs). */
+/** @brief Count a mod's dependency rows.
+ *
+ * This and the accessors below reach each per-mod table, a mod_fvec owned
+ * by the struct, by index, never by a held address (the getter that hands
+ * a row out copies what the caller needs). */
 static int   mod_dep_count(const struct openpete_mod* m) {
     return (int)mod_fvec_count(&m->deps);
 }
@@ -338,9 +344,13 @@ static const char* mod_cfg_item_at(const mod_cfg_row_t* r, int i) {
     return it ? it->s : "";
 }
 
-/* Release every heap row a mod owns. There is no unload path, so this
- * runs only on the parse-scratch and pending slots (a failed or
- * superseded parse) and on the post-phase-C sweep. */
+/** @brief Release every heap row a mod owns: config rows and their items, deps, bindings, material rows and level rows.
+ *
+ * There is no unload path, so this runs only on a slot that is being
+ * dropped or reused: the key-defaults scratch slot, a pending slot after a
+ * failed parse or a failed dependency, a live row whose load_mod failed,
+ * and the sweep over the pending rows after the transfer. A disowned
+ * slot's empty vec headers make it a no-op. */
 static void mod_rows_free(struct openpete_mod* m) {
     for (int i = 0; i < mod_cfg_count(m); i++)
         mod_fvec_free(&mod_cfg_at(m, i)->items);
@@ -351,9 +361,10 @@ static void mod_rows_free(struct openpete_mod* m) {
     mod_fvec_free(&m->levels);
 }
 
-/* Give up ownership without freeing: the rows moved to another struct,
- * which now frees them. Leaves the vec headers empty so a later sweep
- * over this slot is a no-op rather than a double free. */
+/** @brief Give up a mod's row ownership without freeing, after the rows moved to another struct.
+ *
+ * Zeroes the vec headers so a later mod_rows_free over this slot is a
+ * no-op rather than a double free. */
 static void mod_rows_disown(struct openpete_mod* m) {
     memset(&m->deps, 0, sizeof m->deps);
     memset(&m->bindings, 0, sizeof m->bindings);
@@ -362,7 +373,11 @@ static void mod_rows_disown(struct openpete_mod* m) {
     memset(&m->levels, 0, sizeof m->levels);
 }
 
-/* Drop every row, keeping the storage, for a re-parse in place. */
+/** @brief Drop every row of a mod, keeping the table storage, for a re-parse in place.
+ *
+ * Config rows' item lists are freed; the tables themselves are cleared.
+ * mod_hot_reload calls this before parse_manifest so the re-parse does
+ * not append duplicates. */
 static void mod_rows_clear(struct openpete_mod* m) {
     for (int i = 0; i < mod_cfg_count(m); i++)
         mod_fvec_free(&mod_cfg_at(m, i)->items);
@@ -456,10 +471,15 @@ static int mod_check_abi(void* dl, const char* id, const char* path) {
     return 0;
 }
 
-/* Sweep every registration surface a mod owns. Runs before a reload
- * re-enters the mod, and after a FAILED entry: an entry that registered
- * chains, draws or materials and then returned nonzero must not leave
- * them live under an id the loader has just declared disabled. */
+/** @brief Remove every registration a mod owns and reset its host-side input state.
+ *
+ * Releases its mouse capture request, clears its mouse markers and pad log
+ * latches, stops the rumble slots it drove, removes its chain links,
+ * present hooks, registry rows, postfx passes, materials and shaders (postfx
+ * before shaders, which retires the pipelines), and clears its UI body and
+ * toggle hook. Runs before a reload re-enters the mod, and after a failed
+ * entry: an entry that registered and then returned nonzero must not leave
+ * its registrations live under an id the loader has declared disabled. */
 static void mod_strip_registrations(struct openpete_mod* mod) {
     openpete_host_mouse_request_capture(
         OPENPETE_MOUSE_CAP_MOD0 + mod->load_index, 0);
@@ -484,11 +504,14 @@ static void mod_strip_registrations(struct openpete_mod* mod) {
     mod->toggle_fn = NULL;
 }
 
-/* Resolve the UI section's registration descriptor (see
- * openpete_mod_ui.h). The abi check runs at LOAD so the prebuilt-DLL
- * fallback path (which compile-on-load cannot rebuild) fails loudly
- * instead of calling through a stale vtable shape: on mismatch the
- * section is refused with a log line and the mod itself keeps running. */
+/** @brief Resolve a mod object's UI section descriptor into its ui_body and ui_always fields.
+ *
+ * See openpete_mod_ui.h. Clears both fields first; an object without the
+ * descriptor leaves them clear. The magic and abi check runs at load so a
+ * prebuilt object, which compile-on-load cannot rebuild, fails loudly
+ * instead of calling through a stale vtable shape: on a mismatch or a NULL
+ * body the section is refused with an error line and the mod itself keeps
+ * running. */
 static void mod_resolve_ui_section(struct openpete_mod* mod, void* dl) {
     mod->ui_body = NULL;
     mod->ui_always = 0;
@@ -509,13 +532,15 @@ static void mod_resolve_ui_section(struct openpete_mod* mod, void* dl) {
     mod->ui_always = (d->flags & OPENPETE_MOD_UI_ALWAYS) ? 1 : 0;
 }
 
-/* Bind the mod's ImGui table (openpete_imgui.h) before any of its code
- * runs. No descriptor: the mod did not opt in and nothing is bound. A
- * descriptor that disagrees with the engine's table disables the mod the
- * way a failed abi check does — a section-only refusal would leave a live
- * mod holding a null table, and its first ImGui_* call from any hook would
- * dereference it. Each hot-reload object binds its own copy, since the
- * pointer lives in the object. */
+/** @brief Bind a mod object's ImGui table (openpete_imgui.h) before any of its code runs.
+ *
+ * No descriptor: the mod did not opt in and nothing is bound. A descriptor
+ * that openpete_imgui_bind rejects disables the mod the way a failed abi
+ * check does; a section-only refusal would leave a live mod holding a null
+ * table, and its first ImGui_* call from any hook would dereference it.
+ * Each hot-reload object binds its own copy, since the pointer lives in
+ * the object.
+ * @return 0 when bound or not opted in, -1 when the descriptor is refused. */
 static int mod_resolve_imgui(struct openpete_mod* mod, void* dl,
                                    const char* path) {
     const void* d = mod_dlsym(dl, "openpete_imgui_desc");
@@ -696,16 +721,20 @@ static void api_log(openpete_mod_t* self, int level, const char* fmt, ...) {
  * call_by_address is — this file does not pull the runner header in). */
 int psx_runtime_region_host_to_vaddr(const void* host, uint32_t* out_vaddr);
 
-/* Guest vaddr -> host pointer. Delegates to the engine's own resolver so
- * the two never disagree: it strips the segment bits with the full
- * 0x1FFFFFFF mask (no 16 MB ceiling from a 24-bit offset), covers the
- * scratchpad, and consults the region table for anything above canonical
- * RAM — the arena included, at any size it grows to.
+/** @brief Translate a guest vaddr to a host pointer for a mod.
  *
- * Guest address 0 is PSX NULL and resolves to NULL here, NOT to the base
- * of RAM: a mod that missed a failed allocation and writes through the
- * returned pointer must fault in its own frame rather than silently
- * poisoning the kernel area (which is also where the low park lives). */
+ * Delegates to openpete_psx_to_host_ptr so the two never disagree: it
+ * strips the segment bits with the full 0x1FFFFFFF mask (no 16 MB ceiling
+ * from a 24-bit offset), covers the scratchpad, and consults the region
+ * table for anything above canonical RAM, the arena included at any size.
+ *
+ * Returns NULL inside a present hook, for a segment other than kuseg,
+ * kseg0 (0x8, 0x9) or kseg1 (0xA, 0xB), and for a nonzero address in the
+ * kernel area (physical below 0x10000, warned once). Guest address 0 is
+ * PSX NULL and resolves to NULL, not to the base of RAM: a mod that missed
+ * a failed allocation and writes through the returned pointer faults in
+ * its own code rather than overwriting the kernel area (which is also
+ * where the low park lives). */
 static void* api_guest(uint32_t vaddr) {
     if (purity_violation("guest")) return NULL;
     uint32_t seg = vaddr >> 28;
@@ -736,10 +765,13 @@ static void* api_guest(uint32_t vaddr) {
 #define OP_KSEG0_BASE 0x80000000u
 #define OP_KSEG0_SCRATCH 0x9F800000u /* scratchpad's KSEG0 spelling */
 
-/* Host pointer -> guest vaddr, the exact inverse of api_guest for every
- * address that call can hand out: canonical RAM, the scratchpad, and any
- * registered region (guest_alloc's arena included — a mod that walks a
- * host_view and needs the vaddr of an interior byte relies on this). */
+/** @brief Translate a host pointer back to a guest vaddr, the inverse of api_guest.
+ *
+ * Covers every address api_guest can hand out: canonical RAM (returned in
+ * kseg0), the scratchpad (0x9F800000 base) and any registered region,
+ * guest_alloc's arena included; a mod that walks a host_view and needs the
+ * vaddr of an interior byte relies on the last case.
+ * @return the vaddr, or 0 for NULL or a pointer outside all three. */
 static uint32_t api_guest_addr(const void* host) {
     if (!host) return 0;
     const uint8_t* p = (const uint8_t*)host;
@@ -800,10 +832,14 @@ static void api_ui_status(openpete_mod_t* self, const char* fmt, ...) {
     m->status_n++;
 }
 
-/* Toasts are attributed to the mod on BOTH axes: the coalescing key is
- * namespaced with its id so two mods cannot repaint each other's toast, and
- * the rate-limit bucket is per mod so one mod in a tick loop cannot starve
- * another's notifications — or the engine's own. */
+/** @brief Post an OSD toast attributed to the calling mod.
+ *
+ * The toast is attributed to the mod on two axes: a non-empty key is
+ * namespaced as `<id>/<key>` so two mods cannot repaint each other's toast,
+ * and the mod id is the openpete_osd_notify source, whose rate-limit bucket
+ * is per source, so one mod in a tick loop cannot starve another's
+ * notifications or the engine's. A NULL or empty key posts an uncoalesced
+ * toast. The text is formatted into OPENPETE_OSD_TEXT_MAX bytes. */
 static void api_notify(openpete_mod_t* self, const char* key,
                        uint32_t timeout_ms, const char* fmt, ...) {
     if (!self || !fmt) return;
@@ -827,11 +863,16 @@ static int api_register_toggle_hook(openpete_mod_t* self,
     return 0;
 }
 
-/* ---- engine services (P2 contract) ----------------------------------- */
+/* ---- engine services ------------------------------------------------- */
 
 
 
 
+/** @brief Return the mod's persistent data directory, `<mod dir>/data`.
+ *
+ * The path is built and the directory created on the first call, then
+ * cached in the mod's data_dir field.
+ * @return the cached path, or NULL for a NULL self. */
 static const char* api_data_dir(openpete_mod_t* self) {
     if (!self) return NULL;
     if (!self->data_dir[0]) {
@@ -849,8 +890,12 @@ static char s_disc_path[MOD_PATH_MAX];
 static char s_disc_bin[MOD_PATH_MAX];
 static int  s_disc_bin_state; /* 0 unresolved, 1 resolved, -1 unresolvable */
 
-/* Called once mods load: the library, the splash drop and --ingest have all
- * written opts->disc_path by then, so the boot path is final. */
+/** @brief Record the boot disc path for api_disc_path and mark its sector image unresolved.
+ *
+ * openpete_mods_init calls it; the library, the splash drop and --ingest
+ * have all written opts->disc_path by then, so the boot path is final. A
+ * NULL opts or disc path records an empty path, which api_disc_path
+ * reports as NULL. */
 static void mods_capture_disc_path(const openpete_options_t* opts) {
     const char* p = (opts && opts->disc_path) ? opts->disc_path : "";
     snprintf(s_disc_path, sizeof s_disc_path, "%s", p);
@@ -898,15 +943,23 @@ static int mod_compile(const char* mod_dir, const char* id,
 typedef int (*mod_entry_fn)(const openpete_mod_api_t*, openpete_mod_t*);
 static const openpete_mod_api_t s_api;
 
-/* Reload one mod in place at a tick boundary: sweep every registration
- * it owns, re-parse, dlopen a FRESH object (unique .hotN name — the old
- * object stays resident by design), re-run entry. The mod's own host
- * state does NOT cross the reload: entry re-runs and re-derives it.
+/** @brief Reload one mod in place at a tick boundary under a fresh object.
  *
- * Only a changed source key compiles. A reload for a config.toml or
- * shader edit copies the object already loaded to the fresh name, so
- * it needs neither the SDK nor a compiler: a build whose exe cannot
- * spawn a toolchain still re-enters entry with the fresh values. */
+ * First produces a loadable object under a unique `.build/<id>.hotN` name
+ * and dlopens it, checking the abi, the ImGui descriptor and the entry
+ * symbol; any failure up to there logs and keeps the running object and
+ * its registrations. Only a changed source key compiles (on Windows
+ * straight to the .hotN name, since the boot DLL is file-locked); a
+ * reload for a config.toml or shader edit copies the object already
+ * loaded to the fresh name, so it needs neither the SDK nor a compiler.
+ * Then strips every registration, clears and re-parses the manifest,
+ * re-registers key defaults, reloads config, recomputes the config and
+ * shader keys, and re-runs entry; a failure from there leaves the mod
+ * inert. The old object stays resident. The mod's own host state does not
+ * cross the reload: entry re-derives it. On success the registration
+ * surfaces take the mod's enabled state again and the toggle epoch is
+ * bumped, since the reload changes what the active registration set
+ * means to rewind and runahead. */
 static void mod_hot_reload(struct openpete_mod* mod) {
     char key[65];
     int need_compile = mod->build_key[0] != '\0' &&
@@ -1033,9 +1086,13 @@ static void mod_hot_reload(struct openpete_mod* mod) {
                mod->enabled ? "" : " (still disabled)");
 }
 
-/* Watch: every 64 canonical ticks, recompute each loaded mod's content
- * build key; a change (source OR SDK) reloads it. OPENPETE_MOD_HOT_RELOAD=1
- * only — this is dev-mode machinery. */
+/** @brief Poll the entered source mods for edits every 64th tick boundary and hot-reload the changed ones.
+ *
+ * Active only when OPENPETE_MOD_HOT_RELOAD is set and not "0", read once
+ * on the first call. Each poll rechecks the SDK prefix, then recomputes,
+ * for every entered mod with an object, a src/ directory and a build key,
+ * the source build key (sources and SDK), the config.toml key and the
+ * shader key; any change calls mod_hot_reload. */
 static void hot_reload_poll(void) {
     static int s_hot = -1;
     if (s_hot < 0) {
@@ -1202,10 +1259,16 @@ int openpete_mods_cfg_apply(int mod_index, int n,
     return 0;
 }
 
-/* Overlay-side invocation of a mod's UI section. The render-purity
- * guard makes guest access / game calls / registration refuse inside
- * the callback, exactly as in present hooks: widgets mutate host-side
- * mod state, tick hooks consume it. */
+/** @brief Run a mod's UI section body from the overlay under the render-purity guard.
+ *
+ * Sets openpete_mods_in_present around the call, so guest access, game
+ * calls and registration refuse inside it as in present hooks: widgets
+ * mutate host-side mod state, tick hooks consume it. The ImGui body depth
+ * is entered for mod index i, which makes the mod's ImGui calls legal.
+ * Afterwards the call count is stored in imgui_calls and the first
+ * non-zero count is logged once.
+ * @param no_input nonzero marks a body the always pass runs with the dev
+ *        overlay closed. */
 static void mod_ui_run_body(struct openpete_mod* m, int i,
                             openpete_mod_ui_body_fn body,
                             const struct openpete_mod_ui* ui,
@@ -1287,9 +1350,13 @@ int openpete_mods_set_mod_enabled(const char* id, int on) {
     return 0;
 }
 
-/* A mutable copy of an environment variable, or NULL when it is unset,
- * empty, or the copy fails. strtok_r writes into its subject, and a
- * fixed stack buffer would silently drop the tail of a long schedule. */
+/** @brief Return a malloc'd mutable copy of an environment variable.
+ *
+ * The callers tokenize it with strtok_r, which writes into its subject; a
+ * fixed stack buffer would drop the tail of a long schedule. The caller
+ * frees the copy.
+ * @return the copy, or NULL when the variable is unset, empty, or the
+ *         allocation fails. */
 static char* env_dup(const char* name) {
     const char* e = getenv(name);
     if (!e || !*e) return NULL;
@@ -1524,12 +1591,15 @@ int openpete_mods_state_safe(const char** offender) {
     return 1;
 }
 
-/* Does this mod write guest RAM? An explicit sim_mutative wins. With
- * none, the engine proves the answer where it can: a mod that loads no
- * code object has no path to guest RAM at all, and a mod that claims a
- * level slot changes what the player is progressing through. Everything
- * else is assumed to mutate, so a forgotten declaration produces a
- * spurious save warning rather than a silently mistagged card. */
+/** @brief Decide whether a mod changes gameplay state.
+ *
+ * An explicit sim_mutative (0 or 1) wins. With none, a mod that claims a
+ * level slot is mutative, since it changes what the player progresses
+ * through; a mod that loads no code object and claims no level has no
+ * path to guest RAM and is not; every other mod with an object is assumed
+ * to mutate, so a forgotten declaration produces a spurious save warning
+ * rather than a mistagged card.
+ * @return 1 when mutative, 0 otherwise. */
 static int mod_is_mutative(const struct openpete_mod* m) {
     if (m->sim_mutative >= 0) return m->sim_mutative;
     return (m->dl != NULL) || (mod_level_count(m) > 0);
@@ -1588,14 +1658,15 @@ const char* openpete_mods_modset_tag(void) {
 
 
 
-/* Declared-binding resolve: name → [keys.mod.<id>] if the config rebound
- * it, else this mod's own [[binding]] key → host_key_down. Same
- * tick-context caveats as host_key_down itself.
+/** @brief Report whether any source of a mod's declared binding is down.
  *
- * The config override is what lets a user resolve a clash between two
- * mods (or between a mod and a host hotkey) without editing either mod —
- * the registry is the thing you rebind, not the mod. It also reaches
- * gamepad sources, which the mod.toml `key` spelling cannot. */
+ * The sources come from openpete_keymap_mod_binding: the mod's own
+ * [[binding]] key at rank 0 and a [keys.mod.<id>] config row above it.
+ * The config override lets a user resolve a clash between two mods, or
+ * between a mod and a host hotkey, without editing either mod, and it
+ * reaches gamepad sources, which the mod.toml `key` spelling cannot.
+ * An undeclared name logs an error and reads 0.
+ * @return 1 when a source is down, 0 otherwise. */
 static int api_binding_down(openpete_mod_t* self, const char* name) {
     if (!self || !name) return 0;
 
@@ -1617,9 +1688,16 @@ static int api_binding_down(openpete_mod_t* self, const char* name) {
     return 0;
 }
 
-/* The host mouse for a mod (api 12). Markers are per hook kind: tick
- * hooks run on the sim worker and present hooks on the present thread, so
- * one marker would split the deltas between the two. */
+/** @brief Fill a mod's mouse snapshot: position, buttons and the motion and wheel since its last read.
+ *
+ * Deltas are measured against a marker per hook kind: tick hooks run on
+ * the sim worker and present hooks on the present thread, so one marker
+ * would split the deltas between the two. The first read of a kind
+ * reports zero deltas. A tick hook under speculation or rewind replay
+ * reads without advancing its marker, so the committed tick that follows
+ * sees the whole motion. While the overlay owns the mouse, deltas, wheel
+ * and buttons read zero and owned_by_overlay is set.
+ * @return 0, or -1 for a struct_size mismatch (logged) or no host mouse. */
 static int api_mouse_read(openpete_mod_t* self, openpete_mod_mouse_t* out) {
     if (!self || !out) return -1;
     if (out->struct_size != (uint32_t)sizeof(openpete_mod_mouse_t)) {
@@ -1685,9 +1763,15 @@ static int api_mouse_capture(openpete_mod_t* self, int on) {
     return 0;
 }
 
-/* One pad slot for a mod (api 12), served from the input-log record staged
- * for the running tick: the bytes the log stores for that tick, so the read
- * reproduces wherever the record does. Slots 1-3 never reach guest RAM. */
+/** @brief Fill a mod's pad snapshot for one slot from the input-log record staged for the running tick.
+ *
+ * The bytes are the ones the log stores for that tick, so the read
+ * reproduces wherever the record does. Slots 1-3 never reach guest RAM.
+ * libpad holds the PADRAW form: status 0x00, type 0x73, the button word
+ * low byte first, then the right and left stick axes; an absent port reads
+ * status 0xFF and logs once per slot.
+ * @return 0, or -1 for a struct_size mismatch or an out-of-range slot
+ *         (logged), or a call from a present hook (logged once). */
 static int api_pad_read(openpete_mod_t* self, uint32_t slot,
                         openpete_mod_pad_t* out) {
     if (!self || !out) return -1;
@@ -1792,7 +1876,12 @@ static void mod_register_key_defaults(const struct openpete_mod* mod, int enable
     openpete_keymap_set_mod_enabled(mod->id, enabled);
 }
 
-/* Guest scratch arena: sim-visible state — tick context only. */
+/** @brief Allocate from the guest scratch arena for a mod; tick context only.
+ *
+ * The arena is sim-visible state, so a present-hook call is refused.
+ * Flags other than OP_GALLOC_IMMUTABLE are refused with an error.
+ * @return the guest vaddr from openpete_mods_guest_alloc, or 0 on refusal;
+ *         *host_view is NULL on refusal. */
 static uint32_t api_guest_alloc(openpete_mod_t* self, uint32_t size,
                                 uint32_t align, uint32_t flags,
                                 void** host_view) {
@@ -1808,7 +1897,10 @@ static uint32_t api_guest_alloc(openpete_mod_t* self, uint32_t size,
                                      self->id);
 }
 
-/* Stream handle: sim-visible numbering — tick context only. */
+/** @brief Return the stream handle for a guest stream address; tick context only.
+ *
+ * Handle numbering is sim-visible, so a present-hook call is refused.
+ * @return the handle from openpete_mods_vstream_handle, or 0 on refusal. */
 static uint32_t api_vstream_handle(openpete_mod_t* self,
                                    uint32_t stream_vaddr) {
     if (!self) return 0;
@@ -1817,8 +1909,11 @@ static uint32_t api_vstream_handle(openpete_mod_t* self,
 }
 
 
-/* One-shot sound: host-side additive — no purity gate (sim-neutral by
- * construction; presentation, not render output). */
+/** @brief Play `<mod dir>/assets/sfx/own/<name>.wav` once through openpete_mod_sound_play.
+ *
+ * Host-side and additive, so it carries no purity gate and is legal from
+ * present hooks. A name containing ".." is refused.
+ * @return 0 when played or muted, -1 on refusal or failure. */
 static int api_sfx_play(openpete_mod_t* self, const char* name,
                           float gain) {
     if (!self || !name || strstr(name, "..")) return -1;
@@ -1846,6 +1941,10 @@ const char* openpete_mods_sdk_dir(void) {
 
 /* ---- pillar 9: game data + texture packs (api 2) ----------------------- */
 
+/** @brief Copy a level's data blob through openpete_mods_read_level_data.
+ *
+ * @return the game layer's result, or -1 when no game layer provides level
+ *         data or level_id is not positive. */
 static int api_read_level_data(openpete_mod_t* self, int level_id,
                                void* buf, uint32_t cap) {
     (void)self;
@@ -1859,9 +1958,13 @@ static int api_texpack_fog_shift(openpete_mod_t* self, const float scale_rgb[3],
     return 0;
 }
 
-/* pillar 10: materials. The mod-facing form takes a frag shader only —
- * vertex-stage overrides stay engine-internal, so a material can never
- * move geometry, only reshade it. */
+/** @brief Register a fragment-only material for a mod.
+ *
+ * The mod-facing form takes a frag shader only; vertex-stage overrides
+ * stay engine-internal, so a material can reshade geometry but never move
+ * it.
+ * @return the material handle, or -1 for a NULL selector or a failed
+ *         registration. */
 static int api_material_register(openpete_mod_t* self,
                                  const openpete_mod_material_selector_t* sel,
                                  int shader) {
@@ -1940,16 +2043,22 @@ static const openpete_mod_api_t s_api = {
 
 /* ---- discovery / manifest / build / load --------------------------- */
 
+/** @brief Return a path's modification time, the loader's existence probe.
+ *
+ * @return st_mtime, or (time_t)-1 when stat fails. */
 static time_t file_mtime(const char* path) {
     struct stat st;
     if (stat(path, &st) != 0) return (time_t)-1;
     return st.st_mtime;
 }
 
-/* Read an optional non-negative [[level]] count key. Absent leaves -1,
- * which keeps that table on its stock row. A value outside the table's
- * own type is refused by name rather than truncated: a wrapped write
- * would show a number the author never typed. */
+/** @brief Read an optional [[level]] count key in 0..max.
+ *
+ * Absent returns -1, which keeps that table on its stock row. A value
+ * outside 0..max is refused with an error naming the key and returns -1
+ * rather than truncating: a wrapped write would show a number the author
+ * never typed.
+ * @return the value, or -1 when absent or out of range. */
 static int level_count_key(toml_table_t* lt, const char* key, int max,
                            const char* path, const char* name) {
     toml_datum_t d = toml_int_in(lt, key);
@@ -2459,7 +2568,9 @@ out:
     return rc;
 }
 
-/* Hash a file's contents into `c`; returns 0 ok, -1 missing. */
+/** @brief Feed a file's contents into a SHA-256 context.
+ *
+ * @return 0, or -1 when the file does not open. */
 static int hash_file(openpete_sha256_ctx* c, const char* path) {
     FILE* f = fopen(path, "rb");
     if (!f) return -1;
@@ -2471,8 +2582,10 @@ static int hash_file(openpete_sha256_ctx* c, const char* path) {
     return 0;
 }
 
-/* insertion-sort src paths so the build key is order-independent
- * (readdir order is filesystem-dependent). */
+/** @brief qsort comparator ordering mod_src_t rows by path with strcmp.
+ *
+ * Sorting the sources makes the build key independent of readdir order,
+ * which is filesystem-dependent. */
 static int cmp_src(const void* a, const void* b) {
     return strcmp(((const mod_src_t*)a)->path, ((const mod_src_t*)b)->path);
 }
@@ -2676,10 +2789,12 @@ static int mod_compute_key(const char* mod_dir, const char* sdk_dir,
     return 0;
 }
 
-/* Content hash of config.toml (hot-reload watch companion to
- * mod_compute_key — config is not a compile input, so its key is
- * tracked separately and a config-only change reloads the mod against
- * the CACHED object). Absent file hashes to a stable sentinel. */
+/** @brief Hash a mod's config.toml into a hex key for the hot-reload watch.
+ *
+ * Config is not a compile input, so its key is tracked apart from
+ * mod_compute_key and a config-only change reloads the mod against the
+ * cached object. An absent file yields the key "-".
+ * @return 0 always. */
 static int config_compute_key(const char* mod_dir, char key_out[65]) {
     char p[MOD_PATH_MAX + 16];
     snprintf(p, sizeof p, "%s/config.toml", mod_dir);
@@ -2713,8 +2828,10 @@ static void mod_read_stamp(const char* mod_dir, const char* id,
     fclose(f);
 }
 
-/* 1 = .build/<id>.{so,dll} exists and its stamp matches `key` — the
- * cached object is current, nothing to compile. */
+/** @brief Test whether a mod's cached object is current for a build key.
+ *
+ * @return 1 when `.build/<id>` plus the platform object extension exists
+ *         and `.build/<id>.hash` holds `key`, 0 otherwise. */
 static int mod_key_cached(const char* mod_dir, const char* id,
                           const char* key) {
     char so_path[MOD_PATH_MAX];
@@ -2845,9 +2962,14 @@ static int mod_compile(const char* mod_dir, const char* id,
     return 0;
 }
 
-/* Build src/*.c → .build/<id>.{so,dll} when the build key differs from
- * the stamped one. Returns 0 with so_path filled (cache hit, fresh
- * compile, or — Windows without a compiler — a prebuilt DLL). */
+/** @brief Build a mod's src/ C files into `.build/<id>` plus the object extension when the build key differs from the stamped one.
+ *
+ * Stores the computed key in mod->build_key and fills so_path with the
+ * object path. With no compiler resolved, an existing prebuilt object is
+ * used, with a warning when its stamp exists and mismatches.
+ * @return 0 on a cache hit, a fresh compile or a prebuilt fallback; -1
+ *         when src/ has no .c files, no compiler and no prebuilt object
+ *         exist, or the compile fails. */
 static int build_mod(struct openpete_mod* mod, const char* sdk_dir,
                      char* so_path, size_t so_path_len) {
     char key[65];
@@ -2897,10 +3019,15 @@ static int build_mod(struct openpete_mod* mod, const char* sdk_dir,
 
 typedef int (*mod_entry_fn)(const openpete_mod_api_t*, openpete_mod_t*);
 
-/* Run openpete_mod_entry + resolve the state-ABI descriptor. Shared by
- * the boot load and the deferred first-enable path. */
 static void mod_register_materials(struct openpete_mod* mod);
 
+/** @brief Arm a mod's [[material]] rows, run openpete_mod_entry and resolve its UI section.
+ *
+ * Shared by the boot load and the deferred first-enable path. The arena's
+ * per-mod call cursor is reset before entry. A missing entry symbol or a
+ * nonzero entry result disables the mod; the latter strips what the entry
+ * registered. Sets entered on success.
+ * @return 0, or -1 on failure. */
 static int mod_run_entry(struct openpete_mod* mod) {
     mod_register_materials(mod);   /* manifest first; entry's C wins over it */
     mod_entry_fn entry =
@@ -2923,14 +3050,15 @@ static int mod_run_entry(struct openpete_mod* mod) {
     return 0;
 }
 
-/* Arm the mod's [[material]] rows — the zero-C material tier. Runs
- * BEFORE openpete_mod_entry so a mixed mod's C registrations land later
- * and therefore win the pixels (last match takes them): the manifest is
- * the declared default, C is the refinement.
+/** @brief Register a mod's [[material]] rows, the zero-C material tier.
  *
- * A row that cannot be honoured is dropped with an error and the rest
- * still arm — one bad row must not cost a mod its whole manifest — but
- * it is never silently downgraded to a wider selector. */
+ * Runs before openpete_mod_entry so a mixed mod's C registrations land
+ * later and win the pixels (the last match takes them): the manifest is
+ * the declared default, C is the refinement. Each row registers its frag
+ * and optional vert shader, then the material, then applies its params and
+ * its disabled state. A row whose shader fails to build or whose
+ * registration fails is dropped with an error and the rest still arm; a
+ * row is never downgraded to a wider selector. */
 static void mod_register_materials(struct openpete_mod* mod) {
     for (int i = 0; i < mod_mat_count(mod); i++) {
         const mod_material_row_t* r = mod_mat_at(mod, i);
@@ -2968,8 +3096,10 @@ static void mod_register_materials(struct openpete_mod* mod) {
     }
 }
 
-/* Register the mod's assets/ overlay root (in enabled/entry order —
- * texture/music namespaces consume it). */
+/** @brief Register a mod's assets/ directory as an overlay root when it has one.
+ *
+ * Called after entry, so roots register in entry order; the texture and
+ * music namespaces consume them. */
 static void mod_register_assets(struct openpete_mod* mod) {
     if (!mod->has_assets) return;
     char assets[MOD_PATH_MAX + 8];
@@ -2977,10 +3107,18 @@ static void mod_register_assets(struct openpete_mod* mod) {
     (void)openpete_mods_register_asset_root(assets, mod->id);
 }
 
-/* run_entry=0 = deferred-entry load (the load-all path): compile,
- * dlopen and parse everything, but run NO mod code and register no
- * asset root — a boot-disabled mod is inert by construction until its
- * first enable runs mod_enter_deferred. */
+/** @brief Load one parsed mod: register its custom levels, obtain and dlopen its object, and optionally enter it.
+ *
+ * The object comes from build_mod when the mod has src/ and the SDK is
+ * present, else from a prebuilt `.build/<id>` object loaded as-is. A mod
+ * with neither src/ nor an object is declarative: its manifest rows and
+ * files are the whole mod. After dlopen the abi and ImGui descriptors are
+ * checked and config.toml is loaded.
+ *
+ * run_entry 0 is the deferred-entry load (the load-all path): no mod code
+ * runs and no material or asset root registers, so a boot-disabled mod is
+ * inert until its first enable runs mod_enter_deferred.
+ * @return 0, or -1 when the mod is disabled. */
 static int load_mod(struct openpete_mod* mod, const char* sdk_dir,
                     int run_entry) {
     char so_path[MOD_PATH_MAX];
@@ -3081,13 +3219,18 @@ static int load_mod(struct openpete_mod* mod, const char* sdk_dir,
     return 0;
 }
 
-/* First enable of a deferred-entry mod (tick boundary): enter deps
- * first (a library's entry must have run before its dependent's does;
- * deps stay disabled), then run entry and register the assets/ root.
- * Boot-scanned asset consumers (texture pack) only see the root after
- * a restart; per-play consumers (music) apply immediately. Late entry
- * registers at the chain tail = highest priority — restart to slot the
- * mod into enabled.txt order. */
+/** @brief Enter a deferred-entry mod on its first enable, at a tick boundary.
+ *
+ * Enters its dependencies first, recursively (a library's entry must have
+ * run before its dependent's; a dependency's enabled state is not
+ * changed), then runs entry, or for an object-less mod marks it entered
+ * and arms its [[material]] rows, then registers the assets/ root and
+ * invalidates the modset tag. Boot-scanned asset consumers (texture pack)
+ * see the root only after a restart; per-play consumers (music) apply
+ * immediately. Late entry registers at the chain tail, the highest
+ * priority; a restart slots the mod into enabled.txt order. A no-op for a
+ * mod already entered.
+ * @return 0, or -1 when a dependency is not loaded or an entry fails. */
 static int mod_enter_deferred(struct openpete_mod* mod) {
     if (mod->entered) return 0;
     for (int d = 0; d < mod_dep_count(mod); d++) {
@@ -3189,13 +3332,18 @@ static int topo_visit(topo_ctx_t* c, int i) { /* 0 = ok, -1 = failed */
     return 0;
 }
 
-/* Unpack <mods_dir>/<id>.zip to <mods_dir>/.unpacked/<id>/ ("folder or
- * zip, identical" — P1 build+load). The zip's content hash is stamped
- * next to the unpack dir, so an unchanged zip is never re-extracted;
- * mod.toml sits at the zip root, or inside a single top-level directory
- * that wraps every entry (the layout "zip the folder" produces); that
- * wrapper is stripped on extraction. Entry paths are sanitized (no
- * absolute paths, no ".."). Returns 0 = unpacked/current. */
+/** @brief Unpack `<mods_dir>/<id>.zip` to `<mods_dir>/.unpacked/<id>/` so a zipped mod loads like a folder.
+ *
+ * The zip's SHA-256 is stamped at `.unpacked/<id>.hash`, so an unchanged
+ * zip whose mod.toml is present is not re-extracted. mod.toml sits at the
+ * zip root, or inside a single top-level directory that wraps every
+ * entry (the layout zipping the folder produces); that wrapper is
+ * stripped on extraction. An entry path that is absolute or contains ".."
+ * aborts the whole archive. Extraction overwrites in place and does not
+ * delete files a previous unpack left.
+ * @return 0 when unpacked or already current; -1 when the zip is missing
+ *         or unreadable, an entry is unsafe or fails to extract, or no
+ *         mod.toml results. */
 static int mod_unpack_zip(const char* mods_dir, const char* id) {
     char zip_path[MOD_PATH_MAX];
     snprintf(zip_path, sizeof zip_path, "%s/%s.zip", mods_dir, id);
@@ -3350,8 +3498,10 @@ static int mods_root(const openpete_options_t* opts, char* mods_dir,
     return openpete_paths_data_dir("mods", mods_dir, mods_dir_cap, 0);
 }
 
-/* Resolve a candidate id to its mod dir: the folder, or the zip's
- * .unpacked/<id>/ when no folder carries a mod.toml. */
+/** @brief Fill a mod ref with a candidate id and its mod dir.
+ *
+ * The dir is `<mods_dir>/<id>` when that folder holds a mod.toml, else the
+ * zip's `<mods_dir>/.unpacked/<id>`. */
 static void mod_ref_resolve(const char* mods_dir, const char* id,
                             mod_ref_t* r) {
     snprintf(r->id, sizeof r->id, "%s", id);
@@ -3375,16 +3525,20 @@ static size_t want_append(char* want, size_t cap, size_t used,
     return used >= cap ? cap - 1 : used;
 }
 
-/* Does this manifest's [mod] game name this game? Read here rather than
- * in parse_manifest because discovery feeds the pre-boot compile pass as
- * well as the loader: a mod for another title has to leave the candidate
- * set before its C is handed to this game's SDK. The value is one id or
- * an array of them, matched exactly against this game's id; an absent
- * key targets every game. A value naming no game the exe knows matches
- * nothing, so a misspelling narrows a mod's reach instead of widening
- * it. `want` receives the declared ids on a mismatch, so the log can
- * name them. A manifest that will not open or parse stays a candidate —
- * parse_manifest reports that case with the message it deserves. */
+/** @brief Test whether a mod's manifest [mod] game key names this game.
+ *
+ * Read here rather than in parse_manifest because discovery feeds the
+ * pre-boot compile pass as well as the loader: a mod for another title
+ * has to leave the candidate set before its C is handed to this game's
+ * SDK. The value is one id or an array of them, matched exactly against
+ * game_get_id(); an absent key targets every game. A value naming no game
+ * the exe knows matches nothing, so a misspelling narrows a mod's reach
+ * instead of widening it; an empty array, or one with no strings, also
+ * matches nothing. On a mismatch `want` receives the declared ids,
+ * comma-separated, so the log can name them; the caller clears it first.
+ * A manifest that will not open or parse stays a candidate; parse_manifest
+ * reports that case.
+ * @return 1 when the mod targets this game, 0 otherwise. */
 static int mod_targets_this_game(const char* mod_dir, char* want,
                                  size_t want_cap) {
     char path[MOD_PATH_MAX + 12];
