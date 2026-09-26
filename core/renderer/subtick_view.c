@@ -62,20 +62,19 @@ static uint32_t sv_hash(uint32_t block)
     return (block * 2654435761u) & SV_IDX_MASK;
 }
 
-/* One block can belong to SEVERAL spans, so entries are never merged by block.
+/** @brief Insert a (block, span) entry into the open-addressed block index for the current generation.
  *
- * Two ways that happens, and the second is not a corner case: adjacent records
- * in a pool share a boundary block whenever the record stride is not a whole
- * number of blocks or the pool base is unaligned -- the particle stride is
- * exactly one block, so a dense pool collides on essentially every record. The
- * other is the transient-scratch rows, which overlap in PSX space by design.
- *
- * Merging by block silently loses the shadowed span: its lookups fail the
- * coverage test, fall through to real memory, and read CANONICAL bytes. Since
- * staging means real memory is deliberately no longer written, the effect is
- * that the interpolation vanishes -- which is exactly how this was found, as
- * 388 divergent golden tiles of particles that had stopped moving between
- * ticks. */
+ * Linear probing from sv_hash(block) takes the first slot whose generation is
+ * not s_gen. Entries are never merged by block, because one block can belong
+ * to several spans: adjacent pool records share a boundary block whenever the
+ * record stride is not a whole number of blocks or the pool base is
+ * unaligned, and the transient-scratch rows overlap in PSX space. A merged
+ * entry would hide the shadowed span, whose lookups would then read the
+ * canonical bytes in guest memory instead of the staged copy. When every slot
+ * is taken the entry is dropped: the span stays staged, and reads of that
+ * block fall through to guest memory.
+ * @param block Block number, addr >> SV_BLOCK_SHIFT.
+ * @param span Index into s_span. */
 static void sv_idx_insert(uint32_t block, uint32_t span)
 {
     uint32_t i = sv_hash(block);
@@ -212,10 +211,17 @@ static int sv_find(uint32_t addr);
 static void sv_guard_begin(void);
 static void sv_guard_end(void);
 
-/* Read `n` bytes at `addr` from staging if covered, else from the displaced
- * callback. A read straddling the end of a span falls through to real memory
- * whole rather than splicing: staged spans are whole records, so a straddling
- * read means the span was sized wrong, and a spliced value would hide that. */
+/** @brief Copy `n` bytes at `addr` from the staged span that covers them, when the view is active.
+ *
+ * Returns 0 when the view is inactive, no span covers `addr`, or the read
+ * straddles the span's end; the caller then reads through the displaced
+ * callback. A straddling read is not spliced: staged spans are whole records,
+ * so a straddling read means the span was sized wrong, and a spliced value
+ * would hide that. A served read increments s_stat_served.
+ * @param addr Guest address of the first byte.
+ * @param n Byte count.
+ * @param out Destination for the bytes.
+ * @return 1 when served from staging, else 0. */
 static int sv_staged_bytes(uint32_t addr, uint32_t n, void* out)
 {
     if (!s_active) return 0;
@@ -228,10 +234,16 @@ static int sv_staged_bytes(uint32_t addr, uint32_t n, void* out)
     return 1;
 }
 
-/* Store `n` bytes at `addr` into staging when a span covers the whole range.
- * Returns 1 when the store was absorbed, 0 when the caller must fall through
- * to guest memory. A store straddling a span's end is refused whole, for the
- * reason sv_staged_bytes refuses a straddling read. */
+/** @brief Store `n` bytes at `addr` into the staged span that covers the whole range, when the view is active.
+ *
+ * A store straddling a span's end is refused whole, for the reason
+ * sv_staged_bytes refuses a straddling read. An absorbed store increments
+ * s_stat_writes_staged.
+ * @param addr Guest address of the first byte.
+ * @param n Byte count.
+ * @param src Source bytes.
+ * @return 1 when the store was absorbed, 0 when the caller must write guest
+ *         memory. */
 static int sv_staged_store(uint32_t addr, uint32_t n, const void* src)
 {
     if (!s_active) return 0;

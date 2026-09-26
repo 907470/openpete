@@ -588,6 +588,13 @@ struct rhi_texture {
 
 /* ------------------------------------------------------------------ */
 
+/** @brief Debug-utils messenger callback that logs warning and error messages from the validation layer.
+ *
+ * @param sev Message severity; only WARNING and ERROR are logged.
+ * @param type Message type (unused).
+ * @param data Callback data carrying the message text.
+ * @param ud User data (unused).
+ * @return VK_FALSE, so the call that triggered the message is not aborted. */
 static VKAPI_ATTR VkBool32 VKAPI_CALL
 debug_cb(VkDebugUtilsMessageSeverityFlagBitsEXT sev,
          VkDebugUtilsMessageTypeFlagsEXT type,
@@ -647,6 +654,19 @@ static bool want_validation_layer(void)
 
 /* ------------------------------------------------------------------ */
 
+/** @brief Create the Vulkan 1.2 instance with the surface extensions SDL requires, plus validation when requested.
+ *
+ * Windowed runs enable the extensions SDL_Vulkan_GetInstanceExtensions
+ * reports; headless runs enable none. When want_validation_layer() returns
+ * true, the instance also enables VK_LAYER_KHRONOS_validation and
+ * VK_EXT_debug_utils, and a messenger routing warnings and errors to
+ * debug_cb is created on dev->debug.
+ * @param dev Device whose headless flag is read and whose instance and
+ *            debug messenger are written.
+ * @param app_name Application name for VkApplicationInfo; NULL selects
+ *                 "openpete".
+ * @return true on success; false when SDL cannot report its extensions or
+ *         vkCreateInstance fails. */
 static bool create_instance(rhi_device *dev, const char *app_name)
 {
     /* Windowed: SDL supplies the platform surface extensions. Headless: none —
@@ -718,10 +738,15 @@ static bool create_instance(rhi_device *dev, const char *app_name)
     return true;
 }
 
-/* Stencil-capable depth format (W2.6): prefer D32_SFLOAT_S8 (keeps the float
- * depth curve the depth-model audit analysed), fall back to D24_UNORM_S8. The
- * spec guarantees at least one of the two supports DEPTH_STENCIL_ATTACHMENT
- * with optimal tiling. */
+/** @brief Pick the stencil-capable depth format: D32_SFLOAT_S8_UINT when supported, else D24_UNORM_S8_UINT.
+ *
+ * The float format is preferred because the reversed scene depth convention
+ * (depth_convention_init) needs a float mantissa. The Vulkan spec guarantees
+ * at least one of the two supports DEPTH_STENCIL_ATTACHMENT with optimal
+ * tiling. OPENPETE_RHI_DEPTH_D24=1 skips the float candidate so the D24 path
+ * runs on a device that supports both.
+ * @param phys Physical device whose format properties are queried.
+ * @return The chosen format. */
 static VkFormat pick_depth_format(VkPhysicalDevice phys)
 {
     const VkFormat cand[2] = { VK_FORMAT_D32_SFLOAT_S8_UINT,
@@ -744,14 +769,18 @@ static const char *depth_format_name(VkFormat f)
          : f == VK_FORMAT_D24_UNORM_S8_UINT  ? "D24_UNORM_S8_UINT" : "other";
 }
 
-/* The depth convention per class for the chosen format. FORWARD images
- * store nearer as smaller: LESS_OR_EQUAL, clear 1. The SCENE convention on
- * the float format is reversed (the scene stages write z_ndc = 1/vz,
- * psx_viewz.glsl op_scene_clip): GREATER_OR_EQUAL, clear 0, so the float's
- * exponent tracks 1/vz and every distance keeps about 2^-24 relative
- * precision. D24_UNORM has one absolute step everywhere, where 1/vz would
- * spend it near the camera, so the fallback keeps the forward convention and
- * z_ndc = 1 - 1/vz. */
+/** @brief Set the depth compare op, clear value and reversed flag of every depth class for dev->depth_format.
+ *
+ * FORWARD images store nearer as smaller: LESS_OR_EQUAL, clear 1. The SCENE
+ * convention on the float format is reversed (the scene stages write
+ * z_ndc = 1/vz, psx_viewz.glsl op_scene_clip): GREATER_OR_EQUAL, clear 0, so
+ * the float's exponent tracks 1/vz and every distance keeps about 2^-24
+ * relative precision. D24_UNORM has one absolute step everywhere, where 1/vz
+ * would spend it near the camera, so the fallback keeps the forward
+ * convention and z_ndc = 1 - 1/vz. dev->cur_depth_clear starts at the SCENE
+ * clear value.
+ * @param dev Device whose depth_format is read and whose depth_cmp,
+ *            depth_clear, depth_rev and cur_depth_clear are written. */
 static void depth_convention_init(rhi_device *dev)
 {
     const bool rev = dev->depth_format == VK_FORMAT_D32_SFLOAT_S8_UINT;
@@ -982,15 +1011,19 @@ static bool surface_has_present_mode(rhi_device *dev, VkPresentModeKHR want)
     return ok;
 }
 
-/* Swapchain present mode. Precedence: the explicit --vsync flag (dev->vsync_pref
- * 0|1) beats the OPENPETE_PRESENT_MODE env, which beats the default FIFO (vsync
- * ON — always supported, locks present to the monitor refresh).
+/** @brief Choose the swapchain present mode from --vsync, then OPENPETE_PRESENT_MODE, then FIFO.
+ *
+ * Precedence: the explicit --vsync flag (dev->vsync_pref 0|1) beats the
+ * OPENPETE_PRESENT_MODE env, which beats the default FIFO (vsync ON, always
+ * supported, locks present to the monitor refresh).
  *   --vsync 1        -> FIFO (vsync ON).
  *   --vsync 0        -> a vsync-OFF mode (immediate, else mailbox) for low latency
  *                       or uncapped-throughput benchmarking (FIFO otherwise hides
  *                       the real frame rate behind the refresh ceiling).
  *   --vsync unset    -> OPENPETE_PRESENT_MODE=immediate|mailbox if set, else FIFO.
- * A vsync-OFF request the surface lacks falls back to FIFO (with a log). */
+ * A vsync-OFF request the surface lacks falls back to FIFO (with a log).
+ * @param dev Device whose vsync_pref and surface are read.
+ * @return The present mode to create the swapchain with. */
 static VkPresentModeKHR choose_present_mode(rhi_device *dev)
 {
     if (dev->vsync_pref == 1)
@@ -1221,10 +1254,16 @@ static bool create_render_pass(rhi_device *dev)
     return true;
 }
 
-/* Render pass for render-to-texture targets. Identical attachment FORMATS to
- * off_rp (so pipelines built against off_rp are compatible and can be used
- * here), but the color attachment ends in SHADER_READ_ONLY_OPTIMAL — i.e. the
- * rendered image is immediately sampleable by a later pass in the same frame. */
+/** @brief Create dev->rt_rp, the render pass for render-to-texture targets.
+ *
+ * The attachment formats match off_rp (sc_format color, depth_format
+ * depth-stencil), so pipelines built against off_rp are compatible with it.
+ * The color attachment ends in SHADER_READ_ONLY_OPTIMAL, and the outgoing
+ * dependency makes its writes visible to fragment-shader reads, so a later
+ * pass in the same frame can sample the image. Depth and stencil clear on
+ * load and are not stored.
+ * @param dev Device whose formats are read and whose rt_rp is written.
+ * @return true on success, false when vkCreateRenderPass fails. */
 static bool create_rt_render_pass(rhi_device *dev)
 {
     VkAttachmentDescription color = {
@@ -1282,13 +1321,17 @@ static bool create_rt_render_pass(rhi_device *dev)
     return true;
 }
 
-/* Render pass for DEPTH-SAMPLED render targets (the shadow-decal depth
- * pre-pass): identical attachment formats to rt_rp (pipeline-compatible), but
- * the depth attachment is STORED and finishes in SHADER_READ_ONLY_OPTIMAL so a
- * later pass in the same frame can sample the per-pixel depth. Dependencies
- * add: (a) acquire waits on the PREVIOUS frame's fragment-shader reads of the
- * depth (WAR — the image is re-rendered every present); (b) release makes the
- * depth writes visible to fragment sampling. */
+/** @brief Create dev->rt_ds_rp, the render pass for depth-sampled render targets.
+ *
+ * Used by the shadow-decal depth pre-pass. The attachment formats match rt_rp
+ * (pipeline-compatible), but the depth attachment is stored and finishes in
+ * SHADER_READ_ONLY_OPTIMAL so a later pass in the same frame can sample the
+ * per-pixel depth. The incoming dependency also waits on fragment-shader
+ * reads of the previous use (write-after-read, since the image is re-rendered
+ * every present); the outgoing one makes color and depth writes visible to
+ * fragment-shader reads.
+ * @param dev Device whose formats are read and whose rt_ds_rp is written.
+ * @return true on success, false when vkCreateRenderPass fails. */
 static bool create_rt_ds_render_pass(rhi_device *dev)
 {
     VkAttachmentDescription color = {
@@ -1528,9 +1571,16 @@ static bool create_sync_and_commands(rhi_device *dev)
     return true;
 }
 
-/* GPU per-pass timestamp zones — created only when OPENPETE_GPU_TIMERS=1 AND
- * the graphics queue supports timestamps; otherwise the zone calls compile to
- * a flag check. Unsupported hardware disables with one log line. */
+/** @brief Create the per-slot timestamp query pools for GPU pass zones when OPENPETE_GPU_TIMERS is set and supported.
+ *
+ * With OPENPETE_GPU_TIMERS unset or 0, or with a graphics queue reporting no
+ * timestamp valid bits or a zero timestamp period, dev->gpu_timers stays false
+ * and every zone call returns at its flag check; the unsupported case logs
+ * one line. Otherwise one pool of RHI_GPU_ZONES_MAX * 2 queries is created per
+ * frame in flight and dev->gpu_ts_period is recorded.
+ * @param dev Device whose gpu_qp, gpu_ts_period and gpu_timers are written.
+ * @return true in every case; a failed query-pool creation is only logged by
+ *         VK_CHECK. */
 static bool create_gpu_timers(rhi_device *dev)
 {
     const char *e = getenv("OPENPETE_GPU_TIMERS");
@@ -1565,8 +1615,14 @@ static bool create_gpu_timers(rhi_device *dev)
     return true;
 }
 
-/* Pull the finished timestamps for the slot rhi_begin_frame just fenced.
- * Never blocks: the in_flight fence proves the slot's queries completed. */
+/** @brief Read the finished timestamp pairs of the current slot into dev->gpu_results.
+ *
+ * Called by begin_frame_impl after the slot's in_flight fence has signalled,
+ * so the queries are complete and the read does not block. Each zone's
+ * duration and its start relative to the slot's earliest begin timestamp are
+ * converted to microseconds with dev->gpu_ts_period. The slot's zone count
+ * is reset; a failed query read leaves gpu_results_n at 0.
+ * @param dev Device whose current slot is harvested. */
 static void gpu_timers_harvest(rhi_device *dev)
 {
     int slot = (int)dev->frame;
@@ -1646,10 +1702,22 @@ uint64_t rhi_gpu_results_token(const rhi_device *dev)
     return dev ? dev->gpu_results_token : 0;
 }
 
-/* The VRAM sampler is NEAREST + integer format (R16_UINT): the PSX sampler
- * does its own texelFetch indexing, so no GPU filtering. The set layout is a
- * single combined-image-sampler at set 0 binding 0, shared by every
- * VRAM-sampling pipeline; each texture gets its own set from the pool. */
+/** @brief Create the samplers, descriptor set layouts and descriptor pool every texture and UBO binding draws from.
+ *
+ * The VRAM sampler is NEAREST with clamp-to-edge addressing: the PSX sampler
+ * shader does its own texelFetch indexing of the R16_UINT VRAM image, so no
+ * GPU filtering applies. linear_sampler is the same with LINEAR filtering,
+ * for high-res replacement art. Layouts: vram_set_layout (one
+ * combined-image-sampler at binding 0, shared by every VRAM-sampling
+ * pipeline), pair_set_layout (two at bindings 0 and 1), ubo_set_layout (two
+ * dynamic UBOs, vertex and fragment visible) and ubo1_set_layout (one
+ * dynamic UBO). Records ubo_align (minUniformBufferOffsetAlignment, 256 when
+ * the device reports 0) and max_desc_sets. The pool holds 4096
+ * combined-image-samplers and 64 dynamic UBOs in at most 4160 sets, with
+ * FREE_DESCRIPTOR_SET, because every rhi_texture, including each texture-pack
+ * replacement, holds one set for its lifetime.
+ * @param dev Device whose samplers, layouts, limits and desc_pool are written.
+ * @return true on success, false on the first failed creation. */
 static bool create_descriptor_infra(rhi_device *dev)
 {
     VkSamplerCreateInfo si = {
@@ -1752,9 +1820,14 @@ static bool create_descriptor_infra(rhi_device *dev)
     return true;
 }
 
-/* A transient command buffer for one-off transfers (VRAM uploads, initial
- * image transitions). Submits and blocks; updates are occasional so the
- * stall is acceptable — the per-frame path never touches this. */
+/** @brief Allocate and begin a one-time-submit command buffer for a one-off transfer.
+ *
+ * Used for VRAM uploads, readbacks and initial image transitions. The paired
+ * one_shot_end() submits it, waits for the queue to go idle and frees it; the
+ * stall is accepted because these operations are occasional.
+ * @param dev Device whose command pool supplies the buffer.
+ * @return The recording command buffer, or VK_NULL_HANDLE when allocation
+ *         fails. */
 static VkCommandBuffer one_shot_begin(rhi_device *dev)
 {
     VkCommandBufferAllocateInfo ai = {
@@ -1918,7 +1991,12 @@ static void rhi_log_memory_types(rhi_device *dev)
                 mp.memoryTypes[i].heapIndex);
 }
 
-/* First memory type drawing from `heap`, or -1 when the heap backs none. */
+/** @brief Return the first memory type drawing from `heap`.
+ *
+ * @param mp The physical device's memory properties.
+ * @param heap Heap index.
+ * @return The lowest memory-type index whose heapIndex is @p heap, or -1 when
+ *         the heap backs no type. */
 static int balloon_heap_memtype(const VkPhysicalDeviceMemoryProperties *mp,
                                 uint32_t heap)
 {
@@ -1927,12 +2005,21 @@ static int balloon_heap_memtype(const VkPhysicalDeviceMemoryProperties *mp,
     return -1;
 }
 
-/* Allocates RHI_BALLOON_BLOCK_MIB blocks on `type` until `want_blocks` are
- * held, or, when `want_blocks` is 0, until the driver refuses or this spec's
- * own block cap is reached; then releases
- * whole blocks totalling at least `release_mib`. Blocks are neither mapped
- * nor bound to a buffer. Returns the driver's refusal code, VK_SUCCESS when
- * none occurred, and writes the block count this call still holds. */
+/** @brief Allocate RHI_BALLOON_BLOCK_MIB blocks of memory type `type`, then release a margin of them.
+ *
+ * Allocation stops when `want_blocks` new blocks are held, when the driver
+ * refuses, or when this call's cap is reached (RHI_BALLOON_SPEC_CAP blocks,
+ * bounded by RHI_BALLOON_MAX_BLOCKS in total); `want_blocks` 0 allocates
+ * until refusal or the cap. Blocks from this call are then freed, newest
+ * first, until at least `release_mib` MiB are released or none of this
+ * call's blocks remain. Blocks are neither mapped nor bound to a buffer.
+ * @param dev Device whose balloon_blocks and balloon_count are extended.
+ * @param type Memory-type index to allocate from.
+ * @param want_blocks Number of blocks to hold, or 0 to fill.
+ * @param release_mib MiB to release after allocating.
+ * @param out_blocks Receives the number of blocks this call still holds.
+ * @return The driver's refusal code, or VK_SUCCESS when no allocation was
+ *         refused. */
 static VkResult balloon_hold(rhi_device *dev, uint32_t type, int want_blocks,
                              unsigned release_mib, int *out_blocks)
 {
@@ -2006,12 +2093,16 @@ static void balloon_spec(rhi_device *dev,
             (unsigned)blocks * RHI_BALLOON_BLOCK_MIB, blocks, (int)r);
 }
 
-/* OPENPETE_RHI_BALLOON=<spec>[,<spec>...] holds device memory so that every
- * allocation made after device creation in the named heaps is refused by the
- * driver, which is the condition rhi_create_vertex_buffer_device's memory-type
- * retry exists for. A heap filled here is a fixed condition for the life of
- * the process; the `fill-<MiB>` margin form covers a heap whose free space
- * varies, where an allocation that fits early fails later. */
+/** @brief Apply every comma-separated spec in OPENPETE_RHI_BALLOON through balloon_spec().
+ *
+ * The balloon holds device memory in the named heaps after device creation,
+ * so later allocations there are refused by the driver: the condition
+ * rhi_create_vertex_buffer_device's memory-type retry handles. A `fill` spec
+ * makes that a fixed condition for the life of the process; the
+ * `fill-<MiB>` margin form reproduces a heap with some free space left, where
+ * an allocation that fits early fails later. Specs longer than 63 characters
+ * are truncated. Does nothing when the variable is unset or empty.
+ * @param dev Device that holds the blocks. */
 static void rhi_balloon_init(rhi_device *dev)
 {
     const char *env = getenv("OPENPETE_RHI_BALLOON");
@@ -2030,7 +2121,11 @@ static void rhi_balloon_init(rhi_device *dev)
     }
 }
 
-/* Releases every block the balloon holds. Called while the device is alive. */
+/** @brief Free every block the balloon holds and reset balloon_count.
+ *
+ * Must run while dev->device is alive; device teardown calls it after
+ * vkDeviceWaitIdle.
+ * @param dev Device whose balloon blocks are freed. */
 static void rhi_balloon_free(rhi_device *dev)
 {
     for (int i = 0; i < dev->balloon_count; i++)
@@ -2291,9 +2386,20 @@ bool rhi_needs_recreate(const rhi_device *dev)
     return dev && dev->needs_recreate;
 }
 
-/* Acquire a swapchain image on `sem`, then wait out the frame that last
- * used it. 1 = acquired (dev->image_index); 0 = refused (timeout, rebuild
- * pending, device lost), nothing consumed unless noted in the counters. */
+/** @brief Acquire a swapchain image signalling `sem`, then wait for the submission that last used that image.
+ *
+ * The acquire waits up to dev->acquire_budget_ns (RHI_ACQUIRE_TIMEOUT_NS when
+ * 0). A timeout counts in acquire_timeouts and acquire_sheds and, unless
+ * present_blocking is set, opens the acquire back-off window. OUT_OF_DATE
+ * sets needs_recreate; DEVICE_LOST signals device loss. After a successful
+ * acquire, the fence of the submission still using the image is waited with
+ * a bound (unbounded headless); a timed-out wait sets needs_recreate, since
+ * the acquire semaphore is already consumed and only a rebuild resets it. On
+ * success the image's owner becomes `*owner_fence`.
+ * @param dev Device whose swapchain is acquired from; image_index is written.
+ * @param sem Semaphore the acquire signals.
+ * @param owner_fence Fence of the submission that will use the image.
+ * @return 1 when an image was acquired, 0 when the present must be skipped. */
 static int acquire_image(rhi_device *dev, VkSemaphore sem, VkFence *owner_fence)
 {
     {
@@ -2358,8 +2464,17 @@ static int acquire_image(rhi_device *dev, VkSemaphore sem, VkFence *owner_fence)
     return 1;
 }
 
-/* The swapchain, rebuilt if it must be (rate-limited, and never mid-drag).
- * False = no usable swapchain this time; the caller skips its present. */
+/** @brief Rebuild the swapchain when needs_recreate is set, unless the window is mid-resize or inside the rebuild back-off.
+ *
+ * Windowed only; headless always returns true. While the window's pixel size
+ * changed since the last call, or has been stable for less than
+ * RHI_RESIZE_SETTLE_NS, no rebuild runs (a discrete resize skips this wait).
+ * A rebuild is also withheld until recreate_backoff_until_ns, which each
+ * attempt sets RHI_ACQUIRE_BACKOFF_NS ahead, so an OUT_OF_DATE reported on
+ * every present does not rebuild on every present.
+ * @param dev Device whose swapchain is checked.
+ * @return true when a usable swapchain exists, false when the caller must
+ *         skip its present. */
 static bool ensure_swapchain(rhi_device *dev)
 {
     if (dev->needs_recreate && !dev->headless) {
@@ -2406,11 +2521,14 @@ static bool ensure_swapchain(rhi_device *dev)
     return true;
 }
 
-/* Free the replaced buffer allocations no frame can still read. A frame
- * RHI_FRAMES_IN_FLIGHT serials back has had its fence waited by the time the
- * current serial began, so an allocation replaced at serial R is free once the
- * serial reaches R + RHI_FRAMES_IN_FLIGHT. `all` frees every entry; the caller
- * has waited the device idle. */
+/** @brief Free the replaced buffer allocations no submitted frame can still read.
+ *
+ * A frame RHI_FRAMES_IN_FLIGHT serials back has had its fence waited by the
+ * time the current serial began, so an allocation replaced at serial R is
+ * freed once s_frame_serial reaches R + RHI_FRAMES_IN_FLIGHT. Each freed
+ * entry is unmapped, its memory freed and its buffer destroyed.
+ * @param dev Device whose retired list is walked.
+ * @param all true frees every entry; the caller has waited the device idle. */
 static void retired_reclaim(rhi_device *dev, bool all)
 {
     struct rhi_retired_buf **pp = &dev->retired;
@@ -2582,11 +2700,7 @@ void rhi_begin_offscreen(rhi_device *dev, float r, float g, float b, float a)
     vkCmdSetDepthBias(dev->cmd[dev->frame], 0.0f, 0.0f, 0.0f);
 }
 
-/* Re-begin the offscreen pass LOADing off_image's existing contents
- * (SCENE postfx point, S5): after a SCENE-point chain post-processed the
- * scene and left off_image in TRANSFER_SRC, transition it back to a
- * color attachment and resume drawing (the HUD) over it. Depth CLEARs
- * (the HUD clears depth itself). Pairs with rhi_end_offscreen. */
+/* Loads off_image from TRANSFER_SRC and resumes the offscreen pass (see rhi.h). */
 void rhi_begin_offscreen_load(rhi_device *dev)
 {
     if (!dev->frame_active) return;
@@ -2780,10 +2894,7 @@ bool rhi_begin_frame(rhi_device *dev) { return begin_frame_impl(dev, true); }
 
 /* ---- staged presents ------------------------------------------------ */
 
-/* A frame that will end in a stage image acquires no swapchain image: an
- * acquire whose semaphore is never waited on would leave it signalled for
- * the next acquire, and the images would run out (measured: every render
- * refused after the third). */
+/* No acquire: the frame ends in a stage image (see rhi.h). */
 bool rhi_begin_frame_staged(rhi_device *dev)
 {
     if (dev->headless) return false;
@@ -3175,15 +3286,21 @@ bool rhi_device_has_fill_non_solid(const rhi_device *dev)
 /* Buffers                                                            */
 /* ------------------------------------------------------------------ */
 
-/* Host-visible, coherent, persistently-mapped buffer with the given usage.
- * prefer_cached: also request HOST_CACHED (falling back to plain coherent if no
- * such type exists). Set it for GPU->CPU READBACK buffers — the CPU reads them
- * back, and on discrete GPUs the default host-visible|coherent type is
- * write-combined, where CPU READS are glacially slow (tens of ms for a frame's
- * worth of pixels — that, not the device-wait, is what capped --record). Leave
- * it false for CPU->GPU upload buffers (vertex/staging), which the CPU only
- * writes (write-combined is ideal there). Coherent in both cases ⇒ no manual
- * flush/invalidate around the mapping. */
+/** @brief Create a host-visible, coherent buffer with the given usage, mapped for its lifetime.
+ *
+ * With prefer_cached the memory type must also be HOST_CACHED, falling back
+ * to plain host-visible coherent when no such type exists; the choice is
+ * logged. It is set for GPU-to-CPU readback buffers: on discrete GPUs the
+ * plain host-visible coherent type is write-combined, where CPU reads of a
+ * full image take tens of milliseconds. Upload buffers (vertex, staging),
+ * which the CPU only writes, leave it false. Coherent memory in both cases
+ * needs no flush or invalidate around the mapping.
+ * @param dev Device the buffer is created on.
+ * @param bytes Buffer size in bytes.
+ * @param usage Vulkan buffer usage flags.
+ * @param prefer_cached true to request a HOST_CACHED memory type.
+ * @return The mapped buffer, or NULL when buffer creation, memory-type
+ *         selection or allocation fails. */
 static rhi_buffer *create_host_buffer(rhi_device *dev, size_t bytes,
                                       VkBufferUsageFlags usage, bool prefer_cached)
 {
@@ -3457,11 +3574,22 @@ void rhi_destroy_buffer(rhi_device *dev, rhi_buffer *buf)
 /* Sampled textures: the R16_UINT VRAM model + RGBA8 (frame readback)  */
 /* ------------------------------------------------------------------ */
 
-/* Create a sampled 2D image of `fmt` (bpp bytes/pixel) plus a host-visible
- * staging buffer and a descriptor set bound to (view, shared NEAREST
- * sampler). The descriptor layout is format-agnostic — one combined image
- * sampler at set 0, binding 0 — so it serves both the VRAM (usampler2D) and
- * the RGBA8 (sampler2D) shaders. */
+/** @brief Create a device-local sampled 2D image of `fmt` with a staging buffer and a descriptor set.
+ *
+ * The staging buffer is host-visible and holds one full image (width *
+ * height * bpp bytes) for uploads. The descriptor set binds the image view
+ * with the shared NEAREST sampler; its layout (one combined image sampler at
+ * binding 0) is format-agnostic, so it serves the VRAM (usampler2D) and the
+ * RGBA8 (sampler2D) shaders alike. The image is transitioned to
+ * SHADER_READ_ONLY_OPTIMAL before return, so it is sampleable before its
+ * first upload.
+ * @param dev Device the image is created on.
+ * @param width Width in pixels.
+ * @param height Height in pixels.
+ * @param fmt Image format.
+ * @param bpp Bytes per pixel of @p fmt.
+ * @return The texture, or NULL when any creation step fails (partial
+ *         resources are destroyed). */
 static rhi_texture *create_sampled_image(rhi_device *dev, uint32_t width,
                                          uint32_t height, VkFormat fmt,
                                          uint32_t bpp)
@@ -4196,9 +4324,17 @@ void rhi_update_rgba8_rects(rhi_device *dev, rhi_texture *tex,
     tex->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }
 
-/* Copy a host-visible readback staging buffer (raw swapchain-format pixels) into
- * the caller's RGBA8 out buffer: swizzle B8G8R8A8 -> R,G,B,A and force opaque
- * alpha. Shared by the blocking screenshot path and the async --record ring. */
+/** @brief Copy raw swapchain-format pixels from a readback staging buffer into an RGBA8 buffer with opaque alpha.
+ *
+ * Red and blue are swapped when dev->sc_format is B8G8R8A8_UNORM or
+ * B8G8R8A8_SRGB, and copied as is otherwise; alpha is forced to 0xFF. Used by
+ * the blocking screenshot path, the async --record ring and the render-target
+ * readback ring.
+ * @param dev Device whose swapchain format decides the swizzle.
+ * @param src_ Source pixels, 4 bytes each.
+ * @param dst_ Destination RGBA8 pixels.
+ * @param w Width in pixels.
+ * @param h Height in pixels. */
 static void readback_swizzle(const rhi_device *dev, const void *src_, void *dst_,
                              int w, int h)
 {
@@ -4563,10 +4699,19 @@ void rhi_destroy_texture(rhi_device *dev, rhi_texture *tex)
 /* Pipelines                                                          */
 /* ------------------------------------------------------------------ */
 
-/* Build a shader module from an in-memory SPIR-V blob. vkCreateShaderModule
- * requires pCode 4-byte aligned, which an embedded `unsigned char[]` is not
- * guaranteed to be, so we always feed a fresh malloc copy (malloc is suitably
- * aligned). The blobs are tiny and this runs once at startup. */
+/** @brief Build a shader module from an in-memory SPIR-V blob.
+ *
+ * vkCreateShaderModule requires pCode to be 4-byte aligned, which an embedded
+ * `unsigned char[]` is not guaranteed to be, so the blob is always copied into
+ * a fresh malloc block (suitably aligned) that is freed after creation. Called
+ * for embedded shaders, loose .spv files under OPENPETE_SHADER_DIR, and mod
+ * shader words at pipeline compile.
+ * @param dev Device the module is created on.
+ * @param spv SPIR-V bytes.
+ * @param n Size of @p spv in bytes; must be a non-zero multiple of 4.
+ * @param name Name used in failure logs.
+ * @return The module, or VK_NULL_HANDLE on a bad size, allocation failure or
+ *         creation failure. */
 static VkShaderModule create_shader_module(rhi_device *dev, const void *spv,
                                            size_t n, const char *name)
 {
@@ -4589,8 +4734,13 @@ static VkShaderModule create_shader_module(rhi_device *dev, const void *spv,
     return m;
 }
 
-/* Look up an embedded SPIR-V blob by its .spv filename (the same string the
- * pipeline descs use). Returns NULL if not found. */
+/** @brief Look up an embedded SPIR-V blob by its .spv filename.
+ *
+ * The filename is the same string the pipeline descs use; the search is
+ * linear over g_rhi_embedded_shaders.
+ * @param filename .spv filename to match exactly.
+ * @param out_size Receives the blob's size in bytes when found.
+ * @return The blob's data, or NULL when no embedded shader has that name. */
 static const void *find_embedded_shader(const char *filename, size_t *out_size)
 {
     for (unsigned i = 0; i < g_rhi_embedded_shader_count; ++i) {
@@ -4711,10 +4861,14 @@ void rhi_set_notex(int on) { s_fs_notex = on ? VK_TRUE : VK_FALSE; }
 static bool s_wireframe = false;
 void rhi_set_wireframe(int on) { s_wireframe = on != 0; }
 
-/* A scene draw under the wireframe view: depth-tested, or marked
- * wire_scene; a colour-write-off pass that keeps the stored depth (the
- * pre-pass into the sampled opaque depth, the portal aperture mask) stays
- * filled so its coverage stays whole-face. */
+/** @brief Return whether a pipeline rasterizes as lines under the wireframe view.
+ *
+ * True only while the wireframe view is on, for a non-postfx pipeline that
+ * is marked wire_scene or tests depth. A depth-tested colour-write-off
+ * pipeline without depth_overwrite (the opaque-depth pre-pass, the portal
+ * aperture mask) stays filled so its coverage stays whole-face.
+ * @param desc Pipeline description.
+ * @return true when the pipeline is drawn as lines. */
 static bool pipeline_wire(const rhi_pipeline_desc *desc)
 {
     if (!s_wireframe || desc->postfx) return false;
@@ -4729,8 +4883,12 @@ static VkPolygonMode pipeline_polygon_mode(const rhi_device *dev,
                ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
 }
 
-/* Spec constant 2 per pipeline: the global NOTEX view, or the wireframe
- * view's lighting colour on a wired pipeline. */
+/** @brief Return fragment specialization constant 2 (`NOTEX`) for a pipeline.
+ *
+ * On under the global NOTEX view, and on every pipeline the wireframe view
+ * draws as lines, so its edges carry the gouraud vertex colour.
+ * @param desc Pipeline description.
+ * @return VK_TRUE when NOTEX applies. */
 static VkBool32 pipeline_notex(const rhi_pipeline_desc *desc)
 {
     return (s_fs_notex || pipeline_wire(desc)) ? VK_TRUE : VK_FALSE;
@@ -4910,10 +5068,19 @@ static uint32_t pipeline_set_layouts(const rhi_device *dev, const rhi_pipeline_d
     return rhi_max_u32(n, lo);
 }
 
-/* Compile a pipeline's Vulkan objects from its stored sources (desc + shader
- * names/words) without touching the rhi_pipeline's live handles: the create
- * path assigns the result to a fresh pipeline, the rebuild path swaps it into
- * a live one only on success. Returns 0 on success. */
+/** @brief Compile a pipeline's Vulkan pipeline and layout from its stored desc and shader sources.
+ *
+ * The shaders come from the stored mod SPIR-V words when present, else from
+ * the desc's .spv names. The rhi_pipeline's live handles are not touched: the
+ * create path assigns the result to a fresh pipeline, and the rebuild path
+ * swaps it into a live one only on success. The specialization constants
+ * (depth convention, affine UV, NOTEX, moby true-scope, slot contest, texel
+ * STP select) are read at this call.
+ * @param dev Device the objects are created on.
+ * @param p Pipeline whose desc and shader sources are compiled.
+ * @param out_pipe Receives the pipeline on success.
+ * @param out_layout Receives the pipeline layout on success.
+ * @return 0 on success, -1 on failure. */
 static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
                             VkPipeline *out_pipe, VkPipelineLayout *out_layout)
 {
@@ -5178,9 +5345,20 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
     return 0;
 }
 
-/* Common constructor: store owned copies of the shader sources on the
- * pipeline (rebuild inputs), compile, and link into the device's rebuild
- * registry. Word buffers (mod SPIR-V) take precedence over filenames. */
+/** @brief Create a pipeline: copy its shader sources, compile it, and link it into the device's rebuild registry.
+ *
+ * The pipeline keeps owned copies of its desc and shader sources, which
+ * rhi_rebuild_pipelines recompiles from. Word buffers (mod SPIR-V) take
+ * precedence over the desc's filenames; a stage given words has its
+ * filename cleared. The new pipeline is pushed at the head of
+ * dev->pipes_head.
+ * @param dev Device the pipeline is created on.
+ * @param desc Pipeline description, copied.
+ * @param vert_words Vertex SPIR-V words, or NULL to use desc->vert_spv.
+ * @param vert_n Word count of @p vert_words.
+ * @param frag_words Fragment SPIR-V words, or NULL to use desc->frag_spv.
+ * @param frag_n Word count of @p frag_words.
+ * @return The pipeline, or NULL on allocation or compile failure. */
 static rhi_pipeline *create_pipeline_common(rhi_device *dev,
                                             const rhi_pipeline_desc *desc,
                                             const uint32_t *vert_words, size_t vert_n,
@@ -5668,9 +5846,18 @@ void rhi_bind_vram2(rhi_device *dev, rhi_texture *tex)
                             dev->cur_layout, 1, 1, &tex->set, 0, NULL);
 }
 
-/* Bind the two-sampler pair set holding views v0 (binding 0) and v1
- * (binding 1) at `set`: the frame slot's set already written with the same
- * pair, else the next one of the slot's list, grown on demand. */
+/** @brief Bind a two-sampler pair set holding views v0 (binding 0) and v1 (binding 1) at `set`.
+ *
+ * The frame slot reuses its set already written with the same pair of views,
+ * else writes the next set of the slot's list, allocating one from desc_pool
+ * when the list is exhausted. The list holds at most RHI_PAIR_SETS_MAX sets per
+ * slot; a bind past that is dropped with a one-time log, and a bind whose
+ * allocation fails is dropped with a log. Both views are
+ * sampled through vram_sampler in SHADER_READ_ONLY_OPTIMAL layout.
+ * @param dev Device whose current frame records the bind.
+ * @param v0 View for binding 0.
+ * @param v1 View for binding 1.
+ * @param set Descriptor set index in the bound pipeline's layout. */
 static void bind_view_pair(rhi_device *dev, VkImageView v0, VkImageView v1, uint32_t set)
 {
     uint32_t f = dev->frame;

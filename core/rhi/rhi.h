@@ -89,11 +89,17 @@ void rhi_wait_idle(rhi_device *dev);
  * resource (re)creation belongs before the frame begins. */
 bool rhi_frame_active(const rhi_device *dev);
 
-/* Begin a frame: waits on the previous use of this frame slot, acquires a
- * swapchain image, and opens the command buffer. Returns false if the
- * swapchain could not be used this frame (e.g. it needed recreation, or
- * the window is minimized) — the caller should skip rendering this
- * iteration; the device handles recreation internally. */
+/** @brief Begin a frame: retire the frame slot's previous submission, acquire a swapchain image, and open the command buffer.
+ *
+ * Headless waits on the slot's fence and acquires no image. Windowed polls
+ * the fence (bounded wait under a blocking presenter) and returns false
+ * instead of blocking when it has not retired; it also returns false inside
+ * the acquire back-off window, when the swapchain cannot be rebuilt yet (a
+ * pending recreation, a live resize, a minimized window) and when the acquire
+ * is refused. The caller skips rendering on false; recreation is handled
+ * inside the device.
+ * @param dev Device to begin the frame on.
+ * @return true when a command buffer is recording. */
 bool rhi_begin_frame(rhi_device *dev);
 /* True when the swapchain must be rebuilt before the next present. The rebuild
  * touches the window and calls SDL, so a thread that is not the window's owner
@@ -122,23 +128,32 @@ bool  rhi_present_is_vsync(const rhi_device *dev);
 #define RHI_FRAMES_IN_FLIGHT 2
 #endif
 
-/* Offscreen color pass. For 1a, begin+end with nothing drawn between
- * clears the offscreen target to the given (linear, 0..1) color. From 1b
- * on, draw calls are recorded between begin and end.
+/** @brief Begin the offscreen pass, clearing color to (r, g, b, a) and depth to the scene far value.
  *
- * off_image is a SINGLE instance shared by all frames in flight — an
- * explicit serialization point (W2.2 decision, not an oversight): frame
- * N+1's clear-on-load waits frame N's reads via the render pass's
- * EXTERNAL src dependency, so back-to-back frames serialize on it. Ring
- * it per frame-in-flight if that dependency ever shows up as the
- * bottleneck (it also backs rhi_read_offscreen and the swapchain blit,
- * so a ring must thread the current slot through both). */
+ * Draw calls are recorded between this and rhi_end_offscreen. The pass sets a
+ * full-extent Y-flipped viewport and scissor and a zero depth bias. It does
+ * nothing outside an active frame.
+ *
+ * off_image is one instance shared by all frames in flight: frame N+1's
+ * clear-on-load waits for frame N's reads through the render pass's EXTERNAL
+ * source dependency, so back-to-back frames serialize on it. A per-slot ring
+ * would have to thread the current slot through rhi_read_offscreen and the
+ * swapchain blit, which also read it.
+ * @param dev Device whose current frame records the pass.
+ * @param r Clear red, linear 0..1.
+ * @param g Clear green, linear 0..1.
+ * @param b Clear blue, linear 0..1.
+ * @param a Clear alpha, 0..1. */
 void rhi_begin_offscreen(rhi_device *dev, float r, float g, float b, float a);
 void rhi_end_offscreen(rhi_device *dev);
-/* Re-begin the offscreen pass LOADing off_image's existing contents (the
- * SCENE postfx point, S5): after a SCENE-point chain post-processed the
- * scene into off_image (leaving it TRANSFER_SRC), resume drawing (HUD)
- * over it. Depth clears. Pairs with rhi_end_offscreen. */
+/** @brief Re-begin the offscreen pass loading off_image's existing contents instead of clearing them.
+ *
+ * Used at the SCENE postfx point: after a SCENE-point chain has
+ * post-processed the scene into off_image (leaving it TRANSFER_SRC), the
+ * image is transitioned back to a color attachment and drawing (the HUD)
+ * resumes over it. Depth clears to the scene far value. Pairs with
+ * rhi_end_offscreen; does nothing outside an active frame.
+ * @param dev Device whose current frame records the pass. */
 void rhi_begin_offscreen_load(rhi_device *dev);
 
 /* Blit the offscreen color target onto the acquired swapchain image
@@ -160,6 +175,13 @@ void rhi_end_frame(rhi_device *dev);
  * presented costs nothing: no semaphore crosses the two steps, only queue
  * submission order and image barriers. For the dedicated presenter; the
  * fence and acquire waits here block. Headless: not available. */
+/** @brief Begin a frame that will end in a stage image: rhi_begin_frame without the swapchain acquire.
+ *
+ * No swapchain image is acquired because the frame ends in
+ * rhi_end_frame_to_stage: an acquire whose semaphore no submission waits on
+ * stays signalled, and the swapchain runs out of acquirable images.
+ * @param dev Device to begin the frame on.
+ * @return true when a command buffer is recording; always false headless. */
 bool     rhi_begin_frame_staged(rhi_device *dev);   /* rhi_begin_frame without the acquire */
 int      rhi_stage_count(void);
 uint32_t rhi_stage_gen(const rhi_device *dev);
@@ -240,15 +262,20 @@ void rhi_take_block_times(int64_t *out, int n);
  * frame is dropped. Monotonic; the caller diffs it. */
 uint64_t rhi_fence_sheds(const rhi_device *dev);
 
-/* Presents the ACQUIRE path refused, and how many of those were an expiry of
- * the acquire budget rather than a skip inside the back-off it opened. Both
- * are monotonic.
+/** @brief Return the number of presents the acquire path refused.
  *
- * Without these two, an acquire that waited and got an image is
- * indistinguishable from one that waited, gave up, and suppressed the next
- * several presents — and only the second means frames stopped reaching the
- * screen. The pacing log recorded both as presents. */
+ * Counts both an acquire that expired its budget and a present skipped
+ * inside the back-off window such an expiry opens; rhi_acquire_timeouts()
+ * counts the expiries alone. Together they separate an acquire that waited
+ * and got an image from one that waited, gave up, and suppressed the
+ * following presents. Monotonic; the caller diffs it.
+ * @param dev Device to query; NULL returns 0.
+ * @return The running count. */
 uint64_t rhi_acquire_sheds(const rhi_device *dev);
+/** @brief Return the number of swapchain acquires that expired their time budget.
+ *
+ * @param dev Device to query; NULL returns 0.
+ * @return The running count; monotonic. */
 uint64_t rhi_acquire_timeouts(const rhi_device *dev);
 
 /* Images the swapchain actually granted (we ask for minImageCount + 1; the
@@ -839,8 +866,14 @@ void rhi_offscreen_to_sampled(rhi_device *dev);
 void rhi_bind_offscreen_tex(rhi_device *dev, uint32_t set);
 void rhi_offscreen_resume_attachment(rhi_device *dev);
 void rhi_offscreen_resume_blit_src(rhi_device *dev);
-/* Bind any texture/RT's sampler set at an arbitrary set index (postfx
- * inputs live at sets 0..2; rhi_bind_vram/vram2 remain the 0/1 pair). */
+/** @brief Bind a texture's or render target's sampler set at descriptor set index `set`.
+ *
+ * rhi_bind_vram and rhi_bind_vram2 are the fixed set-0 and set-1 forms of
+ * this bind. Does nothing when either pointer is NULL, outside an active
+ * frame, or before a pipeline has been bound.
+ * @param dev Device whose current frame records the bind.
+ * @param tex Texture whose descriptor set is bound.
+ * @param set Descriptor set index in the bound pipeline's layout. */
 void rhi_bind_texture_set(rhi_device *dev, rhi_texture *tex, uint32_t set);
 /* Postfx write-back blits: final ping RT → off_image (leaves it
  * TRANSFER_SRC for the present blit) / → another RT (leaves it
@@ -918,11 +951,22 @@ void rhi_texture_set_filter_linear(rhi_device *dev, rhi_texture *tex);
  * recreate (destroy + create) on size change. */
 rhi_texture *rhi_create_render_target(rhi_device *dev, uint32_t width, uint32_t height);
 
-/* Render INTO a render target. begin clears color to (r,g,b,a) + depth to far,
- * sets a full-target Y-flipped viewport/scissor; record draws; end closes the
- * pass and leaves the color image in SHADER_READ_ONLY (ready to sample). Must
- * be called inside a frame (after rhi_begin_frame) but OUTSIDE the offscreen
- * pass (it is its own render pass). */
+/** @brief Begin a render pass into render target `rt`, clearing color to (r, g, b, a) and depth to far.
+ *
+ * Far is the clear value of the target's depth class. The pass uses the
+ * target's own render pass (rt_rp when none is set), and sets a full-target
+ * Y-flipped viewport and scissor and a zero depth bias. Draws are recorded
+ * until rhi_end_render_target, which closes the pass and leaves the color
+ * image in SHADER_READ_ONLY, ready to sample. Must be called inside a frame
+ * (after rhi_begin_frame) but outside the offscreen pass, since it is a
+ * render pass of its own; does nothing outside a frame or for a texture that
+ * is not a render target.
+ * @param dev Device whose current frame records the pass.
+ * @param rt Render target to draw into.
+ * @param r Clear red.
+ * @param g Clear green.
+ * @param b Clear blue.
+ * @param a Clear alpha. */
 void rhi_begin_render_target(rhi_device *dev, rhi_texture *rt,
                              float r, float g, float b, float a);
 void rhi_end_render_target(rhi_device *dev, rhi_texture *rt);
@@ -937,11 +981,16 @@ void rhi_end_render_target(rhi_device *dev, rhi_texture *rt);
  * depth+stencil formats; universal in practice — callers keep a fallback). */
 rhi_texture *rhi_create_render_target_depth_sampled(rhi_device *dev,
                                                     uint32_t width, uint32_t height);
-/* Bind a depth-sampled RT's DEPTH aspect as a combined image sampler at
- * descriptor `set` (the consumer frag samples it as sampler2D; texel .r =
- * depth). Only valid after rhi_end_render_target on that RT this frame (the
- * pass's finalLayout + external dependency make the depth sample-visible).
- * Call after rhi_bind_pipeline. */
+/** @brief Bind a depth-sampled render target's depth aspect as a combined image sampler at descriptor `set`.
+ *
+ * The consumer fragment shader samples it as sampler2D with texel .r =
+ * depth. Only valid after rhi_end_render_target on that target this frame
+ * (the pass's finalLayout and external dependency make the depth
+ * sample-visible). Call after rhi_bind_pipeline, which sets the layout the
+ * bind uses. Does nothing outside a frame or for a target without a depth set.
+ * @param dev Device whose current frame records the bind.
+ * @param rt Depth-sampled render target.
+ * @param set Descriptor set index in the bound pipeline's layout. */
 void rhi_bind_depth_sampler(rhi_device *dev, rhi_texture *rt, uint32_t set);
 /* Async readback of a SMALL render target's color image (the occlusion grid),
  * ring-buffered exactly like rhi_cycle_readback: call once per frame AFTER the
@@ -1020,7 +1069,14 @@ void rhi_destroy_texture(rhi_device *dev, rhi_texture *tex);
  * been created smaller than requested if clamped to device limits). */
 void rhi_texture_extent(const rhi_texture *tex, int *w, int *h);
 
-/* Recorded between rhi_begin_offscreen and rhi_end_offscreen. */
+/** @brief Bind a graphics pipeline in the current frame's command buffer.
+ *
+ * Recorded inside a frame, before the draws of the offscreen pass or a
+ * render-target pass. Stores the pipeline's layout and push-constant stages,
+ * which the later descriptor-set and push-constant binds use. Does nothing
+ * outside an active frame.
+ * @param dev Device whose current frame records the bind.
+ * @param pipe Pipeline to bind. */
 void rhi_bind_pipeline(rhi_device *dev, rhi_pipeline *pipe);
 void rhi_bind_vertex_buffer(rhi_device *dev, rhi_buffer *buf);
 /* Bind binding 0 + binding 1 (terrain_anim pipelines: cur verts + prev twin). */
@@ -1033,14 +1089,27 @@ void rhi_bind_vram(rhi_device *dev, rhi_texture *tex);
 /* Bind a second texture to set 1 (for a uses_vram2 pipeline — e.g. the diff
  * pass's reference sampler). Call after rhi_bind_pipeline + rhi_bind_vram. */
 void rhi_bind_vram2(rhi_device *dev, rhi_texture *tex);
-/* Bind `tex` (binding 0) and the sampled depth of the depth-sampled render
- * target `depth_rt` (binding 1) at `set` of the current set1_vram_depth
- * pipeline. Both images must be in shader-read layout for the draw. */
-/* The pair layout with the sampled depth image at binding 0 and a colour
- * texture at binding 1: the terrain key image's set of the key-resolve and
- * material layouts (key image, drain sub-cell key records). */
+/** @brief Bind the sampled depth of `depth_rt` (binding 0) and `tex` (binding 1) as a two-sampler pair set at `set`.
+ *
+ * This is the pair layout of the terrain key image's set in the key-resolve
+ * and material layouts (key image, drain sub-cell key records). The frame
+ * slot reuses a pair set already written with the same two views, else
+ * writes the next set of the slot's list. Both images must be in shader-read
+ * layout for the draw. Does nothing outside a frame, when either texture is
+ * NULL, or when `depth_rt` has no depth sample view.
+ * @param dev Device whose current frame records the bind.
+ * @param depth_rt Depth-sampled render target supplying binding 0.
+ * @param tex Texture supplying binding 1.
+ * @param set Descriptor set index in the bound pipeline's layout. */
 void rhi_bind_depth_tex_pair(rhi_device *dev, rhi_texture *depth_rt, rhi_texture *tex,
                              uint32_t set);
+/** @brief Bind `tex` (binding 0) and the sampled depth of `depth_rt` (binding 1) as a pair set at `set` of a set1_vram_depth pipeline.
+ *
+ * Both images must be in shader-read layout for the draw.
+ * @param dev Device whose current frame records the bind.
+ * @param tex Texture supplying binding 0.
+ * @param depth_rt Depth-sampled render target supplying binding 1.
+ * @param set Descriptor set index in the bound pipeline's layout. */
 void rhi_bind_vram_depth_pair(rhi_device *dev, rhi_texture *tex, rhi_texture *depth_rt,
                               uint32_t set);
 /* Restrict rasterization to a framebuffer-pixel rect (top-left origin, y

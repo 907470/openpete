@@ -31,16 +31,24 @@ extern "C" {
 /* Non-zero while the guest fiber is executing a tick on this thread. */
 extern int g_openpete_guest_running;
 
-/* Records one Vulkan call made during guest execution. Cheap and lock-free;
- * keeps a total plus the distinct function names seen. */
+/** @brief Record one Vulkan call made during guest execution on the guest thread.
+ *
+ * A call from any thread other than the one bound by
+ * op_gpu_audit_bind_thread() is ignored; before a thread is bound every call
+ * counts. Increments the total and adds `fn` to the distinct-name set (at most
+ * 32 names). Takes no lock.
+ * @param fn Name of the Vulkan entry point, from the OP_GPU_AUDIT stringization. */
 void op_gpu_audit_hit(const char *fn);
 void op_gpu_audit_bind_thread(void);   /* call once from the thread that runs the guest */
 
-/* Second channel: a host write into persistently-mapped device memory made
- * during guest execution. These issue no Vulkan call, so the channel above is
- * blind to them -- but they are exactly the bytes a concurrent present thread
- * would be reading, so they are the hazard that survives a clean call audit.
- * Counted separately so one number can never be mistaken for the other. */
+/** @brief Record one host write into persistently-mapped device memory made during guest execution.
+ *
+ * These writes issue no Vulkan call, so op_gpu_audit_hit() does not see them,
+ * and they are bytes a concurrent present thread may read. Calls from a
+ * thread other than the bound guest thread are ignored. The write count and
+ * byte total are kept apart from the call total and read back through
+ * op_gpu_audit_map_writes() and op_gpu_audit_map_bytes().
+ * @param bytes Number of bytes written. */
 void op_gpu_audit_map_write(size_t bytes);
 unsigned op_gpu_audit_map_writes(void);
 unsigned long long op_gpu_audit_map_bytes(void);

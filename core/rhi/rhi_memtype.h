@@ -12,8 +12,7 @@
 extern "C" {
 #endif
 
-/* Write every memory-type index usable for a host-mapped, GPU-read buffer
- * into `out` (at most `max` entries) and return the count.
+/** @brief Write every memory-type index usable for a host-mapped, GPU-read buffer into `out`, device-local types first.
  *
  * A candidate is set in `type_bits` (the buffer's memoryTypeBits) and carries
  * both HOST_VISIBLE and HOST_COHERENT: the buffer is mapped for the lifetime
@@ -23,7 +22,13 @@ extern "C" {
  * bus, and a heap that cannot satisfy the allocation falls through to system
  * memory, which costs bandwidth and not correctness. HOST_CACHED does not
  * order the list: the CPU only writes these buffers and never reads them
- * back, so a cached type is neither better nor worse for this use. */
+ * back, so a cached type is neither better nor worse for this use.
+ * @param mp The device's memory properties.
+ * @param type_bits The buffer's memoryTypeBits.
+ * @param out Destination for the candidate indices.
+ * @param max Capacity of @p out.
+ * @return Number of indices written; 0 when @p mp or @p out is NULL or
+ *         @p max <= 0. */
 int rhi_memtype_candidates(const VkPhysicalDeviceMemoryProperties *mp,
                            uint32_t type_bits, uint32_t out[], int max);
 
