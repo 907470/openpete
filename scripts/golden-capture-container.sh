@@ -35,9 +35,11 @@
 # identically on both sides. When the tree is a git worktree, the main
 # checkout (which holds the common git directory, the generated recomp
 # sources and the disc images the worktree links to) is mounted read-only
-# underneath it, its .git directory read-write. When OPENPETE_GOLDEN_REF_DIR is set, its parent directory
-# (the store and the state file beside it) is mounted read-write and the
-# variable is passed through.
+# underneath it, its .git directory read-write. The reference store's parent
+# directory (the store, $OPENPETE_GOLDEN_REF_DIR or the default under
+# ${XDG_DATA_HOME:-~/.local/share}/openpete, and the state file beside it) is
+# mounted read-write and the store's path is passed in, so an in-container
+# promote files its blobs on the host.
 #
 # OPENPETE_CAPTURE_TREE names another source tree to mount and run in (a
 # materialize worktree at a past revision, which carries no copy of this
@@ -107,11 +109,16 @@ image_digest="$("$ENGINE" image inspect --format '{{.Digest}}' "$IMAGE" 2>/dev/n
     image_digest="$("$ENGINE" image inspect --format '{{.Id}}' "$IMAGE")"
 env_args=(-e OPENPETE_NO_COMMITS=1 -e OPENPETE_VIBRATION=0
           -e "OPENPETE_CAPTURE_IMAGE_DIGEST=$image_digest")
-if [[ -n "${OPENPETE_GOLDEN_REF_DIR:-}" ]]; then
-    store_parent="$(cd "$(dirname "$OPENPETE_GOLDEN_REF_DIR")" && pwd)"
-    mounts+=(-v "$store_parent:$store_parent")
-    env_args+=(-e "OPENPETE_GOLDEN_REF_DIR=$OPENPETE_GOLDEN_REF_DIR")
-fi
+# The reference store resolves as scripts/presentation-blessed.py resolves it,
+# and the container gets it by an explicit path: the container's home is not
+# the host's, so the default would otherwise name a directory inside the
+# container that vanishes with it.
+store="${OPENPETE_GOLDEN_REF_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/openpete/golden-ref}"
+mkdir -p "$store"
+store="$(cd "$store" && pwd -P)"
+store_parent="$(dirname "$store")"
+mounts+=(-v "$store_parent:$store_parent")
+env_args+=(-e "OPENPETE_GOLDEN_REF_DIR=$store")
 # The harness knobs a capture run reads; the container sees only what -e passes.
 for v in CORPUS_JOBS PRESENTATION_TIER PRESENTATION_GOLDEN_OUT PRESENTATION_GOLDEN_KEEP \
          PRESENTATION_LEG_TIMEOUT OPENPETE_CAP_LODS OPENPETE_FRAME_LIMIT; do

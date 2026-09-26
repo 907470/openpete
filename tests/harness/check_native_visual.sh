@@ -96,7 +96,6 @@ if ! ldconfig -p 2>/dev/null | grep -q 'libvulkan\.so'; then
     [[ -e /usr/lib/x86_64-linux-gnu/libvulkan.so.1 ]] || {
         echo "SKIP: no Vulkan loader (libvulkan.so.1)" >&2; exit 64; }
 fi
-[[ -f "$MANIFEST" ]] || { echo "FAIL: native-tick manifest missing: $MANIFEST" >&2; exit 1; }
 
 # Force the software rasterizer: deterministic, no GPU, no display. Prefer an
 # explicit lavapipe ICD if present (bypasses any real ICDs that WSL/CI may also
@@ -149,7 +148,9 @@ done
 rm -f "$OUT_DIR"/*-og.png
 (( missing )) && exit 1
 
-python3 scripts/presentation-blessed.py environment spyro-1 --tier native-vk --candidate "$OUT_DIR"
+# An absent manifest is refused by the diff after the capture, so the kept
+# candidate can seed it (promote --create).
+[[ -f "$MANIFEST" ]] && python3 scripts/presentation-blessed.py environment spyro-1 --tier native-vk --candidate "$OUT_DIR"
 SUBSET_ARG=()
 [[ "$TICKS" != "$ALL_TICKS" ]] && SUBSET_ARG=(--expect-subset)
 python3 tests/harness/presentation-corpus-diff.py "$OUT_DIR" --game spyro-1 \
