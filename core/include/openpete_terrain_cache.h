@@ -237,8 +237,17 @@ typedef struct {
     float   cov_pxy[6][16][2];        /* outline polygon, screen px/py      */
 } openpete_tercache_globals;
 
-/* Init/teardown (native_render.c owns the device lifetime). init returns 0
- * and leaves the cache disabled on any pipeline/arena failure. */
+/** @brief Create the terrain cache's pipelines, arena buffers and uniform buffer on a device.
+ *
+ * native_render.c owns the device lifetime and calls this at bring-up. The
+ * world, anim, near and cell-record pipeline families are built in each
+ * draw variant, every arena gets a primary buffer sized from the union
+ * capacity row (no level has loaded yet), and the 1x1 stand-in for the
+ * HD-fold atlas and the globals and sectors UBO are made here on the
+ * device-owning thread. Any failure leaves the cache disabled and terrain
+ * on the CPU walk.
+ * @param dev Device; NULL leaves the cache disabled.
+ * @return 1 when the cache is ready, 0 otherwise. */
 int  openpete_tercache_init(struct rhi_device *dev);
 void openpete_tercache_shutdown(struct rhi_device *dev);
 int  openpete_tercache_ready(void);
@@ -254,6 +263,23 @@ int  openpete_tercache_ready(void);
  * closes the build. frame_skip stages an all-claimed (empty) state for a
  * pure-CPU fallback build, so the present that renders that build's scene
  * draws no retained content. */
+/** @brief Open a terrain build: fill the target state's globals and clear its sector flags.
+ *
+ * Builder thread, once per terrain feed. The call first adopts any
+ * fulfilled level-edge replacement and overflow buffers, then releases the
+ * deferred chunk ranges that are older than the in-flight window and that
+ * no live eager ring state can still read, stamping them dead before they
+ * become reusable. The target state (tc_begin_state) is a ring entry for an
+ * immediate build of a scene stamp (OPTC_STAMP_SCENE_BIT), the live state
+ * for any other immediate build, or the staged state, whose previous build
+ * is promoted to live. Its globals are copied from @p g together with the
+ * HD-fold entry table and continuous-fog ramp; the UBO itself is written at
+ * the present's first draw. No-op while the cache is not ready or @p g is
+ * NULL.
+ * @param g Build globals.
+ * @param stamp Stamp of the build (openpete_native_scene_build_stamp).
+ * @param immediate 1 to write the live state or a ring entry directly (a
+ *        re-extracted present's build), 0 to stage it (a canonical build). */
 void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
                                    uint32_t stamp, int immediate);
 /* grade6: the pack-aware LP colour grade for this sector (p.rgb then q.rgb,
@@ -281,9 +307,14 @@ void openpete_tercache_frame_select(uint32_t present_stamp);
  *
  * @return 1 when a state is selected, 0 when the retained draws are closed. */
 int  openpete_tercache_frame_open(void);
-/* Whether the selected state would paint anything: 1 = live sectors, 0 =
- * open but empty (the feeder skipped this scene's build), -1 = cache not
- * in use. The freeze-backdrop snapshot's "is this a world frame" test. */
+/** @brief Report whether the state selected for this present would paint any terrain.
+ *
+ * The freeze-backdrop source test (scene_is_freeze_source) and the native
+ * compose's empty-scene test read it: a scene whose only terrain is on the
+ * cache has no CPU triangles.
+ * @return 1 when the selected state holds a live sector; 0 when the draws
+ *         are closed or the state is empty (a frame_skip state, the feeder
+ *         having cut out for that scene); -1 when the cache is not ready. */
 int  openpete_tercache_frame_content(void);
 int  openpete_tercache_frame_source(void);   /* 0 closed, 1 scene ring, 2 live, 3 staged, 4 live-by-age */
 void openpete_tercache_frame_stats(int *drawn, int *hp, int *lp, int *nearvar, int gens[8]);
@@ -427,33 +458,67 @@ void openpete_native_hdfold_prime(struct rhi_device *dev);
  * entries, so the caller rebakes those sectors; the epoch is not bumped. */
 void openpete_native_hdfold_reset(void);
 
-/* Chunk management (builder side). alloc returns 0 on success, the first
- * vertex index in *out_first and the arena buffer that index addresses in
- * *out_buf; every later call for that chunk repeats the buffer index, since
- * each buffer has its own vertex numbering from 0. write uploads packed
- * vertices; free defers the range's reuse by the frames-in-flight window and
- * stamps its face_flags to the dead slot so in-flight frames drop it.
+/* ---- chunk management (builder side) ------------------------------------ */
+/** @brief Allocate a chunk of vertices, or of records on a cell arena, in one of an arena's buffers.
  *
- * alloc returns -1 when every buffer of the arena is full. It then posts an
- * overflow request for that arena (see below), so the caller's claim-back to
- * the CPU walk lasts the presents the device thread needs to allocate. */
+ * Each buffer of the arena is tried in order, first fit in its free list,
+ * else growth of its high-water mark. Every later call for the chunk
+ * (write, free) repeats the returned buffer index, since each buffer has
+ * its own vertex numbering from 0. When every buffer is full the call
+ * counts the failure and posts an overflow request for the arena (see the
+ * overflow buffers below), so the caller's claim-back to the CPU walk lasts
+ * only the presents the device thread needs to allocate.
+ * @param arena Arena index.
+ * @param vert_count Vertices, or records on a cell arena, to allocate.
+ * @param out_first Receives the first index of the chunk.
+ * @param out_buf Receives the buffer the index addresses.
+ * @return 0 on success; -1 when the arena is full, the cache is not ready,
+ *         or an argument is out of range. */
 int  openpete_tercache_chunk_alloc(int arena, int vert_count, uint32_t *out_first,
                                    int *out_buf);
+/* Upload packed vertices at [first, first+count) of an arena buffer. */
 void openpete_tercache_chunk_write(int arena, int buf, uint32_t first,
                                    const struct rhi_terrain_vertex *v, int count);
-/* Anim arenas only: upload the parallel previous-tick records for a chunk
- * written at the same [first, first+count) range. */
+/** @brief Upload a chunk's previous-tick records on an anim arena.
+ *
+ * The records are parallel to the chunk's vertices at the same
+ * [first, first+count) range, in the buffer's prev twin. No-op on a
+ * non-anim arena or while the cache is not ready.
+ * @param arena Arena index.
+ * @param buf Buffer index from openpete_tercache_chunk_alloc().
+ * @param first First vertex index of the chunk.
+ * @param p Previous-tick records.
+ * @param count Record count. */
 void openpete_tercache_chunk_write_prev(int arena, int buf, uint32_t first,
                                         const struct rhi_terrain_prev *p, int count);
-/* Near arenas only: upload the parallel emitted-tri member context for a chunk
- * written at the same [first, first+count) range. */
+/** @brief Upload a chunk's emitted-triangle member context on a near arena.
+ *
+ * The records are parallel to the chunk's vertices at the same
+ * [first, first+count) range, in the buffer's context twin. No-op on a
+ * non-near arena or while the cache is not ready.
+ * @param arena Arena index.
+ * @param buf Buffer index from openpete_tercache_chunk_alloc().
+ * @param first First vertex index of the chunk.
+ * @param c Member-context records.
+ * @param count Record count. */
 void openpete_tercache_chunk_write_ctx(int arena, int buf, uint32_t first,
                                        const struct rhi_terrain_nearctx *c, int count);
-/* Cell arenas only: upload `count` cell records (rhi_terrain_cell, or
- * rhi_terrain_cell_anim on the CA family) at record index `first`. alloc and
- * free count records on these arenas. */
+/** @brief Upload cell records to a cell arena.
+ *
+ * The records are rhi_terrain_cell, or rhi_terrain_cell_anim on the CA
+ * family, written at record index @p first. Alloc and free count records
+ * on these arenas. No-op on a non-cell arena or while the cache is not
+ * ready.
+ * @param arena Arena index.
+ * @param buf Buffer index from openpete_tercache_chunk_alloc().
+ * @param first First record index.
+ * @param recs Records.
+ * @param count Record count. */
 void openpete_tercache_chunk_write_cells(int arena, int buf, uint32_t first,
                                          const void *recs, int count);
+/* Release a chunk. Its bytes stay untouched while in-flight frames may read
+ * them (the per-slot generation hides a replaced chunk); the range becomes
+ * reusable after the defer window, when it is stamped dead. */
 void openpete_tercache_chunk_free(int arena, int buf, uint32_t first, int count);
 
 /* ---- overflow buffers ---------------------------------------------------
@@ -511,9 +576,13 @@ int  openpete_tercache_resize_ready(void);
  * @param level_id Level id; an id with no measured row takes the union
  *                 capacities. */
 void openpete_tercache_set_level(int level_id);
-/* Steps whenever an arena gains buffer room: a level-edge replacement or an
- * overflow buffer. A sector claimed back because an arena was full is baked
- * again when this moves, which is what keeps that claim a transient. */
+/** @brief Return the allocation epoch, which steps whenever an arena gains buffer room.
+ *
+ * The epoch steps when a level-edge replacement or an overflow buffer is
+ * adopted. A sector claimed back because an arena was full records the
+ * epoch and is baked again when it moves, which keeps that claim a
+ * transient.
+ * @return The current epoch. */
 uint32_t openpete_tercache_alloc_epoch(void);
 /* Device-owning thread only, once per present windowed and once per VBL
  * headless: fulfil a pending request and destroy drained retire entries.
@@ -532,11 +601,22 @@ typedef struct {
     int   full_extent;      /* cx = (-1 + nx*2)/freeze_wf, cy = 1 - ny*2    */
 } openpete_tercache_clip;
 
-/* Draw entry (native_render.c). clip = the target's screen->clip mapping;
- * use_mark selects the stencil-MARK world variant (hole-fill enabled).
- * key_hp / key_prop: the terrain og-key depth image and the prop TRUE-depth
- * image for the fragment key contest (NULL = contest off — key pass down);
- * pass both for the scene slots (WORLD/blends), NULL for PREPASS/KEY. */
+/** @brief Draw one pass of the selected retained terrain state.
+ *
+ * Called from native_render.c. @p which picks the pass (OPTC_DRAW_WORLD,
+ * ALPHA, ADD, SUB, FILL, PREPASS or KEY); each draws the plain, anim, near
+ * and cell arenas that pass covers. The first draw of each rhi frame writes
+ * the selected state into that frame's UBO slot and latches the
+ * vertex-snap mode. The colour passes draw the stock pass and then one pass
+ * per live mod material bucket; PREPASS and KEY draw every face. No-op
+ * while the cache is not ready or no state is selected.
+ * @param which Pass, an OPTC_DRAW_* value.
+ * @param clip The target's screen-to-clip mapping (tercache_clip_params).
+ * @param vram VRAM texture, or NULL to leave the binding.
+ * @param use_mark Nonzero for the stencil-MARK world variant (hole-fill on).
+ * @param key_hp Terrain key depth image for the fragment key contest, or
+ *        NULL; passed for the WORLD and blend passes.
+ * @param key_prop Moby key depth image for the key contest, or NULL. */
 void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
                             struct rhi_texture *vram, int use_mark,
                             struct rhi_texture *key_hp, struct rhi_texture *key_prop);

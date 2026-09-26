@@ -482,9 +482,7 @@ void openpete_tercache_frame_stats(int *drawn, int *hp, int *lp, int *nearvar, i
     }
 }
 
-/* 1 = the state selected for this present holds at least one live sector, 0
- * = the draws are open but would paint nothing (a frame_skip state: the
- * feeder cut out for that scene), -1 = the retained path is not in use. */
+/* Scans the selected state's sector flags, skipping the dead slot. */
 int openpete_tercache_frame_content(void)
 {
     if (!s_tc.ready) return -1;

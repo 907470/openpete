@@ -583,11 +583,15 @@ static int tag_tint_on(void) {
     return s_tag_tint > 0;
 }
 
-/* The DEV tag instruments only (OPENPETE_TAG_SPLIT forces the batch key
- * join, OPENPETE_TAG_TINT recolours by tag): their semantics live in the
- * CPU batcher, so they disqualify the retained-terrain cache for the whole
- * run. A selector-armed split does NOT — sectors a selector could override
- * are claimed back per sector by the terrain feeder. */
+/** @brief Return whether a dev tag instrument, OPENPETE_TAG_SPLIT or OPENPETE_TAG_TINT, is armed.
+ *
+ * OPENPETE_TAG_SPLIT forces the batch key join and OPENPETE_TAG_TINT
+ * recolours by tag. Their semantics live in the CPU batcher, so either one
+ * disqualifies the retained terrain cache for the whole run
+ * (openpete_native_tercache_usable). A split armed by a registered mod
+ * material selector does not count: the terrain feeder claims the sectors a
+ * selector could override back to the CPU walk one sector at a time.
+ * @return 1 when either env instrument is armed, else 0. */
 static int tag_split_dev(void) {
     (void)tag_split_on();          /* lazy env init lives there */
     return s_tag_split_env > 0 || s_tag_tint > 0;
@@ -1575,17 +1579,30 @@ static uint32_t fade_lerp(uint32_t a, uint32_t b, double t) {
     return (b & 0xFF000000u) | ((uint32_t)r<<16) | ((uint32_t)g<<8) | (uint32_t)bl;
 }
 
-/* OPENPETE_SEQ_SORT=0 disables the emission ordering at runtime, so the A/B
- * that attributes a divergence to it comes from ONE binary. */
+/** @brief Return whether 2D emission-sequence ordering is on.
+ *
+ * OPENPETE_SEQ_SORT=0 turns it off at runtime, so an A/B that attributes a
+ * divergence to the ordering runs on one binary. Read once and cached.
+ * @return 1 when on (the default), 0 when off. */
 static int seq_sort_on(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_SEQ_SORT"); v = !(e && *e && *e == '0'); }
     return v;
 }
 
-/* Order a 2D set by the game's emission sequence (scene_tri_t::seq), stable so
- * equal numbers keep feed order. Insertion sort: the sets are one screen of 2D
- * (tens of tris) and already nearly sorted, so this is linear in practice. */
+/** @brief Sort each run of numbered triangles in the 2D carry by emission sequence, moving the epochs with them.
+ *
+ * A run is a contiguous stretch of triangles with a nonzero
+ * scene_tri_t::seq; triangles with seq 0 stay in place and bound the runs.
+ * Each run is sorted within itself by a stable insertion sort, which is
+ * linear in practice because the sets are one screen of 2D (tens of
+ * triangles) and nearly sorted. apply_overlay re-applies the carry block in
+ * feed order, so a run keeps the same neighbours on the sub-tick leg as on
+ * the canonical one and a blended sprite composes against the same
+ * background in both. No-op when OPENPETE_SEQ_SORT=0.
+ * @param tri Carry triangles.
+ * @param epoch Per-triangle epochs, permuted in step with @p tri.
+ * @param n Triangle count. */
 static void seq_sort_carry(scene_tri_t* tri, uint32_t* epoch, int n) {
     if (!seq_sort_on()) return;
     /* Order each contiguous run of numbered tris within itself, exactly as the
@@ -1610,10 +1627,18 @@ static void seq_sort_carry(scene_tri_t* tri, uint32_t* epoch, int n) {
     }
 }
 
-/* Reorder the scene's 2D tris among themselves by emission sequence, leaving
- * every other tri where it is: the 2D layer draws in array order, so this puts
- * the two 2D emitters back into the order the game emitted them even when one
- * of them was fed from a deferred release. */
+/** @brief Sort each run of numbered triangles in the scene by emission sequence, leaving every other triangle in place.
+ *
+ * The 2D layer draws in array order, so this restores the order in which
+ * the game emitted the two 2D producers, including when one of them was fed
+ * from a deferred release. A run is a contiguous stretch of triangles with a
+ * nonzero scene_tri_t::seq, produced consecutively by one feed; sorting
+ * within it (stable insertion sort) gives the painter order the ordering
+ * table asks for, and no triangle crosses the unnumbered geometry between
+ * two runs, which would change the background a blended sprite composes
+ * against. No-op when OPENPETE_SEQ_SORT=0.
+ * @param sc Scene triangles.
+ * @param n Triangle count. */
 static void seq_sort_scene_2d(scene_tri_t* sc, int n) {
     if (!seq_sort_on()) return;
     /* Order each contiguous run of numbered tris within itself. Gathering every
@@ -1948,7 +1973,12 @@ static void carry_map_build(carry_key_map_t* m, const scene_tri_t* prev, int pre
     }
 }
 
-/* Largest per-vertex distance between two tris' screen positions. */
+/** @brief Return the largest distance between corresponding vertices of two triangles in screen space.
+ *
+ * Vertex k of @p a is compared with vertex k of @p b.
+ * @param a First triangle.
+ * @param b Second triangle.
+ * @return The largest per-vertex distance in PSX screen pixels. */
 static float tri_pos_dist(const scene_tri_t* a, const scene_tri_t* b) {
     float w = 0.0f;
     for (int k = 0; k < 3; k++) {
@@ -3413,8 +3443,12 @@ static void blend_family_create(rhi_device* dev, const rhi_pipeline_desc* base,
     if (!ok) blend_family_destroy(dev, fam, nsel);
 }
 
-/* Log the wireframe view's raster mode: line pipelines, or the filled
- * NOTEX fallback on a device without fillModeNonSolid. */
+/** @brief Log the wireframe view's raster mode when the view is on.
+ *
+ * With fillModeNonSolid the scene pipelines draw triangle edges in line
+ * mode; without it the view falls back to the filled NOTEX view, logged as
+ * a warning. No-op when the wireframe view is off.
+ * @param dev Device whose features decide the mode. */
 static void wireframe_report(const rhi_device *dev)
 {
     if (!s_wireframe) return;
@@ -4579,7 +4613,11 @@ static void vram_journal_pop(void)
     free(e->pix); e->pix = NULL; e->pix_bytes = 0;
     s_vj_head = (s_vj_head + 1) % VRAM_JOURNAL; s_vj_n--;
 }
-/* Apply one entry into the current frame (mutex held). */
+/** @brief Record one VRAM journal entry's upload into the current frame's command buffer.
+ *
+ * A full entry uploads the whole mirror; any other entry uploads its packed
+ * rect texels. The caller holds the VRAM mutex.
+ * @param e Journal entry. */
 static void vram_journal_apply(const vram_jentry_t *e)
 {
     if (e->full) rhi_update_vram(s_nr.dev, s_nr.vram_tex, s_nr.vram_mirror);
@@ -4741,10 +4779,16 @@ static void sync_vram_texture_locked(void)
     s_vj_n++;
 }
 
-/* Record the pending VRAM/reference uploads into the CURRENT frame's command
- * buffer. Call right after a successful rhi_begin_frame, BEFORE the frame's
- * first render pass (the rhi appends transfer commands + barriers to the
- * frame cb — see rhi_update_vram's contract in rhi.h). */
+/** @brief Record the pending VRAM journal entries and the pending reference image into the current frame's command buffer.
+ *
+ * Journal entries are applied in order up to and including the scene being
+ * composed (s_ps_slot's scene id); an inline present, which has no ring
+ * scene, applies all of them. A held-back head is logged (at most 20
+ * lines). The reference image is uploaded when sync_reference_texture left
+ * it pending. Runs under the VRAM mutex. Call right after a successful
+ * rhi_begin_frame and before the frame's first render pass, since the rhi
+ * appends transfer commands and barriers to the frame's command buffer
+ * (rhi_update_vram's contract in rhi.h). */
 static void upload_synced_textures(void)
 {
     /* Up to and including the scene being composed; everything for an inline
@@ -4772,8 +4816,15 @@ static void upload_synced_textures(void)
     SDL_UnlockMutex(s_vram_mx);
 }
 
-/* Pull PsyCross's finished frame from its present FBO into s_nr.ref_tex.
- * Returns true if a reference frame is ready to draw this present. */
+/** @brief Read PsyCross's finished image from its present FBO into the host readback buffer and mark it for upload.
+ *
+ * On a size change the reference texture ref_tex and the readback buffer
+ * are recreated at the new size, after a wait for idle. The upload into
+ * ref_tex is deferred to upload_synced_textures, which records it inside a
+ * frame.
+ * @return true when a reference image is ready to draw this present; false
+ *         when PsyCross has produced no scene yet, an allocation failed, or
+ *         the read failed. */
 static bool sync_reference_texture(void)
 {
     int pw = 0, ph = 0;
@@ -4904,9 +4955,21 @@ static void ensure_ss_rtt(void)
     }
 }
 
-/* Rebuild the panel row (VRAM | reference), each aspect-fit into its cell, so
- * resizing never stretches. Only runs when the window or reference size
- * changes (the VRAM panel is a fixed 1024x512). */
+/** @brief Rebuild the panel vertex buffer and the scene mapping when the window, reference or display size changes.
+ *
+ * The layout is one full-window cell. Panel 0 is the native scene's rect:
+ * the Hor+ widen factor ws_factor comes from a fixed --aspect, or under AUTO
+ * from the cell shape so the render rect fills the window, clamped to at
+ * least 1. The 4:3 content sub-rect (p0_cx, p0_hx, p0_hy), which
+ * scene_to_clip maps the 512-wide screen onto, is 1/ws_factor of the render
+ * rect's width and centred; the panel 0 quad samples the VRAM texture in
+ * texel units over disp_w by clip_h (the whole VRAM before the display
+ * environment is set) as the loading-screen fallback. Panel 1, built only
+ * when no native scene is live (--renderer psycross), is PsyCross's
+ * readback aspect-fit into the window, with normalised, bottom-up UVs.
+ * The vertex buffer is rewritten after a wait for idle, so the call runs
+ * outside a frame. No-op until the window and reference sizes are known or
+ * while the cached sizes match. */
 static void update_layout(void)
 {
     if (s_nr.win_w <= 0 || s_nr.win_h <= 0 || s_nr.ref_w <= 0 || s_nr.ref_h <= 0)
@@ -5008,9 +5071,19 @@ static void update_layout(void)
                 s_nr.aspect_wh > 0.0f ? "fixed --aspect" : "AUTO");
 }
 
-/* Map a PSX screen-space point (x in [0,disp_w], y in [0,disp_h]) into panel
- * 0's fitted clip-space rect, cropping the symmetric overscan band so the
- * native scene lines up with the overscan-cropped reference. */
+/** @brief Map a PSX screen point to clip space for the current render target.
+ *
+ * The symmetric overscan band is cropped: y is normalised over the clip_h
+ * visible lines, so the native scene lines up with the overscan-cropped
+ * reference. Under s_render_full_extent the target is the whole image and
+ * x maps to [-1, 1] divided by s_render_freeze_wf, which keeps the 4:3
+ * content centred in a widened freeze capture; otherwise the point maps
+ * into panel 0's 4:3 sub-rect (p0_cx, p0_hx, p0_hy). Unset display sizes
+ * default to 512 by 240 with 224 visible lines.
+ * @param sx Screen x, 0 to disp_w.
+ * @param sy Screen y, 0 to disp_h.
+ * @param cx Receives clip x.
+ * @param cy Receives clip y, positive up. */
 static void scene_to_clip(float sx, float sy, float *cx, float *cy)
 {
     float disp_w = s_nr.disp_w > 0 ? (float)s_nr.disp_w : 512.0f;
@@ -5062,11 +5135,15 @@ static void scene_fragcoord_affine(scene_fc_affine *o)
     o->fay = -2.0f / (h * ay); o->fby = ( 1.0f - cy0) / ay;
 }
 
-/* The CURRENT scene_to_clip mapping's RAW inputs for the terrain-cache
- * vertex stage, which replicates the CPU expression term for term (a
- * probed/fitted affine loses ~5 subpixel LSBs of precision at the screen
- * edges — real rasterized-edge flips vs the CPU-fed draws). Reads the same
- * state scene_to_clip does, so full-extent / freeze_wf can never drift. */
+/** @brief Fill the terrain cache's screen-to-clip parameters with the raw inputs of the current scene_to_clip mapping.
+ *
+ * terrain.vert replicates the CPU expression term for term from these
+ * inputs; a probed or fitted affine loses about 5 subpixel LSBs at the
+ * screen edges, enough to flip rasterized edge pixels against the CPU-fed
+ * draws. The function reads the state scene_to_clip reads (display sizes,
+ * panel 0 rect, s_render_full_extent, s_render_freeze_wf), so the two
+ * mappings cannot drift apart.
+ * @param out Receives the parameters. */
 static void tercache_clip_params(openpete_tercache_clip *out)
 {
     out->disp_w = s_nr.disp_w > 0 ? (float)s_nr.disp_w : 512.0f;
@@ -5113,8 +5190,12 @@ static float s_od_vw = 0.0f, s_od_vh = 0.0f;
 static float s_od_uax = 0.0f, s_od_ubx = 0.0f, s_od_vay = 0.0f, s_od_vby = 0.0f;
 static openpete_tercache_clip s_od_taff;   /* terrain-cache prepass clip params */
 
-/* Fallback view-Z band for shadow_decal.frag's mode-0 path (params invalid);
- * the height test does not use it. Env-tunable for calibration. */
+/** @brief Return the fallback view-Z band for the shadow decal's mode-0 path.
+ *
+ * shadow_decal.frag uses the band only when the camera reconstruction
+ * params are invalid; the height test does not read it.
+ * OPENPETE_SHADOW_BAND overrides the default of 256; read once and cached.
+ * @return The band in view-Z units. */
 static float shadow_decal_band(void)
 {
     static float b = -1.0f;
@@ -5488,8 +5569,12 @@ int openpete_native_key_resolve_on(void)
     return s_nr.enabled && s_nr.terrain_key_pipe && s_nr.terrain_key_vb;
 }
 
-/* OPENPETE_TERRAIN_KEY_READBACK=1: the terrain key image is created readable
- * and every native screenshot writes it beside the PNG (terrain_key_dump). */
+/** @brief Return whether OPENPETE_TERRAIN_KEY_READBACK is set.
+ *
+ * When set, the terrain key image is created readable and every native
+ * screenshot writes it beside the PNG (terrain_key_dump). Read once and
+ * cached.
+ * @return 1 when set, else 0. */
 static int terrain_key_readback_on(void)
 {
     static int v = -1;
@@ -6005,7 +6090,14 @@ static void draw_rank_batch(int base, int m, int untex,
     }
 }
 
-/* The pass's viewport and screen->clip mapping, for terrain_key_dump. */
+/** @brief Record a key pass's viewport and screen-to-clip mapping for terrain_key_dump.
+ *
+ * The mapping is taken with s_render_full_extent set to @p full_extent, so
+ * it matches the positions the pass packs, and the global is then
+ * restored.
+ * @param full_extent Nonzero when the pass maps to the full target.
+ * @param vw Viewport width.
+ * @param vh Viewport height. */
 static void terrain_key_pass_record(int full_extent, int vw, int vh)
 {
     int prev_fe = s_render_full_extent;
@@ -6264,11 +6356,13 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
     s_tk_base += m + mm + am + rr;
 }
 
-/* Bind set 1 of the bound shadow-decal pipeline: the VRAM image at binding 0
- * and the terrain key image at binding 1. Returns the push-constant flag: 1
- * when the key image holds this target's keys (the key pass ran for it), 0
- * when the decal must not read it; binding 1 then holds the opaque pre-pass
- * depth, so the set stays complete. */
+/** @brief Bind set 1 of the bound shadow-decal pipeline and return whether binding 1 holds the terrain keys.
+ *
+ * Binding 0 is the VRAM image. Binding 1 is the terrain key depth image
+ * when the key pass is available (openpete_native_key_resolve_on) and the
+ * image exists, else the opaque pre-pass depth, so the set stays complete.
+ * @return 1.0 when binding 1 holds the terrain keys, else 0.0; the caller
+ *         stores it in the decal's key_contest push constant. */
 static float shadow_decal_bind_keys(void)
 {
     const bool keys = openpete_native_key_resolve_on() && s_nr.terrain_key_depth;
@@ -7079,24 +7173,24 @@ static void hd_cache_shutdown(void)
  * passed here), so the dynamic-bias-invalidation-on-restore gap is
  * unreachable today — a depth_bias caller would have to re-apply its
  * bias after this function returns. */
-/* Per-axis texel replication that writes a dumped texture at square pixels.
+/** @brief Return the per-axis texel replication that writes a dumped texture at square pixels.
  *
- * Screen-space 2D draws (the HUD categories) map 1 texel to 1 framebuffer
- * pixel. Spyro's framebuffer is 512 wide with clip_h visible lines, shown at
- * 4:3, so a texel is 4*clip_h : 3*disp_w as wide as it is tall — 7:12 at
- * 512x224, i.e. ~1.71x taller than wide. Their VRAM data is horizontally
- * pre-squashed to land on that grid, which is why a raw dump reads stretched
- * in an image viewer.
+ * Screen-space 2D draws (the HUD and OVERLAY categories) map 1 texel to 1
+ * framebuffer pixel. Spyro's framebuffer is 512 wide with clip_h visible
+ * lines, shown at 4:3, so a texel is 4*clip_h : 3*disp_w as wide as it is
+ * tall, 7:12 at 512x224. Their VRAM data is horizontally pre-squashed to
+ * land on that grid, which is why a raw dump reads stretched in an image
+ * viewer.
  *
- * The ratio is reduced to lowest terms and applied as INTEGER factors rather
- * than a rounded stretch: only then do the replicated blocks stay aligned to
- * texel boundaries, which is what lets a dump be fed straight back in as a
- * replacement and render bit-identically (measured: 7x/12x exact, a 1.71x
- * float stretch 3.6% off). A ratio that will not reduce to small factors is
- * dropped rather than emitting an enormous image.
- *
- * World geometry is projected through a matrix that already carries the same
- * aspect, so its textures are authored square and must be dumped untouched. */
+ * The ratio is reduced to lowest terms and applied as integer factors
+ * rather than a rounded stretch, so the replicated blocks stay aligned to
+ * texel boundaries and a dump fed back in as a replacement renders
+ * bit-identically. A ratio whose reduced terms exceed 64 yields 1:1. World
+ * geometry is projected through a matrix that already carries the aspect,
+ * so its textures are authored square and dump at 1:1.
+ * @param category Draw category of the triangle.
+ * @param sx Receives the horizontal factor.
+ * @param sy Receives the vertical factor. */
 static void tp_dump_scale(int category, int *sx, int *sy)
 {
     *sx = *sy = 1;
@@ -7187,9 +7281,14 @@ static struct { int gi; uint32_t tag; int first, count; } s_utmat[UT_MAT_SPANS];
 static int s_utmat_n;
 #define s_utdef_idx ((int *)s_cz_utdef.data)
 
-/* Resolve-relevant tag bits: terrain resolve ignores the sector id, so mask
- * it out — one span (and one memo entry) per material outcome, not per
- * sector. Moby tags resolve on all bits. */
+/** @brief Mask a scene tag down to the bits the material resolve reads.
+ *
+ * Terrain resolve ignores the sector id, so a terrain tag (path 2) keeps
+ * bits 31 to 16 only and one span and one memo entry stand for each
+ * material outcome rather than each sector. Moby and other tags resolve on
+ * all bits.
+ * @param tag Scene tag.
+ * @return The masked tag. */
 static uint32_t ut_mask_tag(uint32_t tag) {
     return (tag >> 28) == 2u ? (tag & 0xFFFF0000u) : tag;
 }
@@ -7215,26 +7314,25 @@ static int ut_tag_resolves(uint32_t tag) {
     return hit;
 }
 
-/* Emit `dn` deferred tris (scene indices in s_utdef_idx) as contiguous
- * tag-grouped spans for bucket `gi`, starting at vertex `n`. Returns the new
- * vertex count.
+/** @brief Emit a bucket's deferred untextured triangles as contiguous tag-grouped material spans.
  *
- * ONE implementation, because there are two buckets that defer (the numbered
- * groups and SKY) and a third divergence between them is how this file grows
- * holes: a deferred tri is already out of the plain span, so anything that
- * fails to record it deletes it.
- *
- * That is also why the span table reserves a slot. The old "overflow → stock"
- * degradation zeroed the last span's TAG without extending its COUNT, so an
- * overflowing span's tris were written to the buffer and referenced by
- * nothing. Here the open span simply stops splitting once the table is nearly
- * full and absorbs the rest of the bucket at tag 0 — the whole tail draws
- * stock, which is what the degradation always meant to say.
- *
- * The reservation only makes ONE bucket fit, so the callers must also refuse
- * to DEFER once the table is full (see defer_ok) — otherwise the next bucket
- * hands tris here that no span can record. Measured: with the table shrunk to
- * 2 slots, that gap deleted 34370 px. Both halves are needed. */
+ * The deferred triangles (scene indices in s_utdef_idx) are sorted by
+ * masked tag, stable within a tag, written from vertex @p n, and each tag
+ * group is recorded as one s_utmat span for bucket @p gi. Both deferring
+ * buckets, the numbered groups and SKY, go through this one function: a
+ * deferred triangle is already out of the plain span, so a path that failed
+ * to record it would delete it. The span table keeps one slot in reserve:
+ * once only that slot is left, the open span stops splitting and absorbs
+ * the rest of the bucket at tag 0, so the tail draws with the stock pipe.
+ * The reserve covers one bucket only, so the callers also refuse to defer
+ * once the table is full (defer_ok). Emission stops when the vertex buffer
+ * is full.
+ * @param gi Bucket index the spans are recorded under.
+ * @param scene Scene triangles.
+ * @param buf Scene vertex buffer.
+ * @param n First free vertex in @p buf.
+ * @param dn Number of deferred triangles.
+ * @return The new vertex count. */
 static int ut_emit_deferred(int gi, const scene_tri_t* scene, rhi_vertex* buf,
                             int n, int dn)
 {
@@ -7274,31 +7372,24 @@ static int ut_emit_deferred(int gi, const scene_tri_t* scene, rhi_vertex* buf,
     return n;
 }
 
-/* Does this untextured bucket DRAW its deferred material spans?
+/** @brief Return whether an untextured bucket draws its deferred material spans.
  *
- * Deferring a tri REMOVES it from the plain span, so a bucket that defers
- * and then does not draw the spans deletes the geometry outright — the
- * Spyro shadow vanished this way, because gi==1's untextured draw is the
- * depth-aware silhouette decal, which takes no material and skipped them.
- * One predicate answers both the deferral and the draw so the two cannot
- * disagree again.
- *
- * gi==1 (untextured SUBTRACT) is Spyro's shadow decal: its fragment stage
- * owns per-pixel occlusion, which a plain material would delete, and its
- * vertex interface is its own — so a material there needs a profile it does
- * not have yet, not a wider override path. Everything else takes spans:
- * the opaque WORLD/ACTOR/PLAYER buckets, every BLENDED bucket (flame,
- * particles, tracers — a channel that only ever emits blended geometry
- * would otherwise be unreachable by any material), and SKY, whose dome-wide
- * selector is one of the plainest things a mod can ask for. Blended spans
- * reshade only: draw_ut_mat_spans inherits the group's blend and
- * depth-write policy, so painter order is untouched.
- *
- * SKY's stock span and its material spans are drawn together under one
- * `sky_ok`, so they are already suppressed as a pair — but that was
- * ADJACENCY, not structure, and adjacency is what this predicate exists to
- * replace. Keep them paired: anything that draws ut_count[gi] owes
- * draw_ut_mat_spans(gi) under the same condition. */
+ * Deferring a triangle removes it from the plain span, so one predicate
+ * decides both the deferral and the draw, and a bucket that defers always
+ * draws the spans. Group 1, the untextured SUBTRACT group, is Spyro's
+ * depth-aware silhouette decal: its fragment stage owns per-pixel
+ * occlusion, which a plain material would delete, and its vertex interface
+ * is its own, so it takes no spans. Blend class 4 (quarter-additive) has no
+ * material slot. SKY takes spans. Every other group takes spans when it is
+ * blended or its category is WORLD, ACTOR or PLAYER; blended spans reshade
+ * only, since draw_ut_mat_spans inherits the group's blend and depth-write
+ * policy. SKY's stock span and its material spans draw under the same
+ * condition; any path that draws ut_count[gi] also draws
+ * draw_ut_mat_spans(gi) under that condition.
+ * @param gi Group index, or UT_BUCKET_SKY.
+ * @param gb The group's blend class.
+ * @param gc The group's category.
+ * @return 1 when the bucket defers and draws material spans, else 0. */
 static int ut_mat_spans_ok(int gi, int gb, int gc) {
     if (gi == 1 || gb == 4) return 0;
     if (gi == UT_BUCKET_SKY) return 1;
@@ -7443,14 +7534,25 @@ static void tp_flags_init(void)
     s_tp_census_on   = getenv("OPENPETE_TEXPACK_CATCENSUS") ? 1 : 0;
 }
 
-/* Per-tri texture-pack disposition: the tri's texel box -> registry identity
- * (with the census / dump / resolve-log instrument side-effects) -> pack-file
- * match. Returns 1 when a replacement file matched (id/repl filled). cly_out
- * gets the BASE ladder row — the forward fog shift decodes as
- * (base + delta) & 0x1FF, so the inverse masks identically (an unmasked
- * subtract goes negative on a wrapped row and indexes VRAM out of bounds).
- * u0/v0_out anchor the tri's page-relative box origin (the file-rect
- * conversion below needs it). */
+/** @brief Resolve a triangle's texture-pack identity and match a replacement file.
+ *
+ * The triangle's texel box and its base CLUT row resolve to a registry
+ * identity, with the category census, the dump (OPENPETE_TEXPACK_DUMP_DIR)
+ * and the resolve log (OPENPETE_TEXPACK_RESOLVE_LOG, 256 lines) as side
+ * effects, and the identity is then matched against the pack's files. The
+ * base row inverts the forward fog shift, (base + delta) & 0x1FF, with the
+ * same mask, so a wrapped row does not go negative and index VRAM out of
+ * bounds.
+ * @param st Triangle.
+ * @param m The run's material.
+ * @param want_replace Nonzero when a replacement may be matched.
+ * @param id Receives the identity on a resolve hit.
+ * @param repl Receives the replacement on a match.
+ * @param cly_out Receives the base CLUT row.
+ * @param u0_out Receives the box's page-relative u origin.
+ * @param v0_out Receives the box's page-relative v origin.
+ * @return 1 when @p want_replace is set and a replacement file matched,
+ *         else 0. */
 static int tp_tri_match(const scene_tri_t* st, const psx_material* m,
                         int want_replace, texture_pack_id* id,
                         texture_pack_repl* repl, int* cly_out,
@@ -7484,16 +7586,28 @@ static int tp_tri_match(const scene_tri_t* st, const psx_material* m,
     return hit && want_replace && texture_pack_match(id, repl);
 }
 
-/* ---- per-texture pack retarget (stock -> pack affine fit) ------------------
- * The ladder affine maps STOCK base texels to STOCK fogged texels; applying
- * it to pack art fogs toward the STOCK ambience. The global fog shift (one
- * affine for the whole pack) retargets that only on average — a pack whose
- * grade varies by region lands visibly wrong per texture. The exact per-
- * texture correction follows from modelling the pack as an affine of stock,
- * p ~= g(x) = P*x + Q (texture_pack_grade_fit): the pack-side rung transform
- * is g(a*g^-1(p) + b) = a*p + (P*b + (1-a)*Q) — same slope, offset
- * re-derived from the texture's own art. Falls back to the global shift
- * when the fit has no signal (too few opaque pairs). */
+/* ---- per-texture pack retarget (stock -> pack affine fit) ------------------ */
+/** @brief Fit a replaced texture's pack art as an affine of its stock art, for the per-texture fog retarget.
+ *
+ * The ladder affine maps stock base texels to stock fogged texels, so
+ * applied to pack art it fogs toward the stock ambience. The global fog
+ * shift, one affine for the whole pack, corrects that only on average. The
+ * per-texture correction models the pack as an affine of stock,
+ * p ~= g(x) = P*x + Q (texture_pack_grade_fit); the pack-side rung
+ * transform is then g(a*g^-1(p) + b) = a*p + (P*b + (1-a)*Q), the same
+ * slope with the offset re-derived from the texture's own art.
+ * OPENPETE_TEXPACK_FOG_FIT=0 disables the fit, read once.
+ * @param m Material.
+ * @param cly Base CLUT row.
+ * @param id Pack identity.
+ * @param repl Replacement file.
+ * @param pu0 File box u origin in page texel coordinates.
+ * @param pv0 File box v origin in page texel coordinates.
+ * @param p Receives the per-channel slope P.
+ * @param q Receives the per-channel offset Q.
+ * @return Nonzero when @p p and @p q hold a fit; 0 when the fit has no
+ *         signal (too few opaque pairs) or is disabled, and the caller
+ *         falls back to the global fog shift. */
 static int tp_pack_fit(const psx_material* m, int cly,
                        const texture_pack_id* id, const texture_pack_repl* repl,
                        float pu0, float pv0, float p[3], float q[3])
@@ -7507,13 +7621,24 @@ static int tp_pack_fit(const psx_material* m, int cly,
                                   (int)pu0, (int)pv0, p, q);
 }
 
-/* Fog transforms for a replaced draw. Flat model (pc->a/b): the affine of
- * the face's own ladder rung. Continuous model (pc->aN/bN/lad, HD pipes
- * only): the deepest-row affine plus the per-fragment ramp, enabled when the
- * feeder marked the face ladder-eligible (TP_FOG_DELTA_CONT) and published
- * the frame's ramp. Both offsets are retargeted per texture via tp_pack_fit
- * (global fog shift as fallback). pu0/pv0 anchor the FILE box in page texel
- * coords — the same values the shader rect uses. */
+/** @brief Fill a replaced draw's fog transforms in its push constants.
+ *
+ * Flat model (pc->a, pc->b): the affine of the face's own ladder rung.
+ * Continuous model (pc->aN, pc->bN, pc->lad; HD pipes only): the
+ * deepest-row affine plus the per-fragment ramp, filled when the feeder
+ * marked the face ladder-eligible (TP_FOG_DELTA_CONT), the ramp is
+ * published, and OPENPETE_TEXPACK_FOG_CONT is not 0; a face carrying
+ * TP_FOG_DELTA_FOGBIAS shifts the ramp by 8192/3840. Both offsets are
+ * retargeted per texture through tp_pack_fit, with the global fog shift as
+ * the fallback. Rung 0 leaves the identity transform.
+ * @param m Material.
+ * @param cly Base CLUT row.
+ * @param fog_delta The face's fog delta word (rung and TP_FOG_DELTA flags).
+ * @param id Pack identity.
+ * @param repl Replacement file.
+ * @param pu0 File box u origin in page texel coordinates, as the shader rect uses.
+ * @param pv0 File box v origin in page texel coordinates.
+ * @param pc Receives the transforms. */
 static void tp_pack_fog(const psx_material* m, int cly, int fog_delta,
                         const texture_pack_id* id, const texture_pack_repl* repl,
                         float pu0, float pv0, hd_pc* pc)
@@ -7804,12 +7929,19 @@ static const scene_tri_t* tex_run_tri(const tex_run* r, int t) {
     return &r->scene[s_txscene[r->tri0 + t]];
 }
 
-/* Does `s1` continue the run `s0` heads? The same material; the same
- * provenance tag while the tag split key is armed (lockstep with
- * tex_mat_cmp's tag term, or coalescing would undo the split the sort made);
- * the same blend class and texel STP selection when the bucket draws each
- * through its own pipe (`split_blend`), so a run never straddles two blend
- * equations or two texel selections. */
+/** @brief Return whether triangle s1 continues the textured draw run that s0 heads.
+ *
+ * It does when it has the same material (texture page, CLUT and bit
+ * depth); the same provenance tag while the tag split is armed, in
+ * lockstep with tex_mat_cmp's tag term, since coalescing across tags would
+ * undo the split the sort made; and, with @p split_blend, the same blend
+ * class and texel STP selection, so a run never straddles two blend
+ * equations or two texel selections.
+ * @param s0 Run head.
+ * @param s1 Candidate triangle.
+ * @param split_blend Nonzero when the bucket draws each blend class and
+ *        STP selection through its own pipe.
+ * @return 1 when @p s1 joins the run, else 0. */
 static int tex_run_continues(const scene_tri_t* s0, const scene_tri_t* s1, int split_blend) {
     if (s1->tpage_x != s0->tpage_x || s1->tpage_y != s0->tpage_y ||
         s1->clut_x != s0->clut_x || s1->clut_y != s0->clut_y || s1->bpp != s0->bpp) return 0;
@@ -7817,24 +7949,38 @@ static int tex_run_continues(const scene_tri_t* s0, const scene_tri_t* s1, int s
     return !split_blend || (s1->blend == s0->blend && s1->stp_sel == s0->stp_sel);
 }
 
-/* The pipe a run headed by `s` draws through: entry stp_sel * NR_BLEND_CLASSES
- * + blend of a per-selection, per-class table (the textured HUD family); entry
- * 0 for a one-entry table (a bucket whose triangles share one class), for a
- * class outside the table, and for a member the table does not build. */
+/** @brief Return the pipeline a textured run headed by s draws through.
+ *
+ * The table is indexed stp_sel * NR_BLEND_CLASSES + blend, the textured HUD
+ * family's per-selection, per-class layout. Entry 0 serves an opaque
+ * selection-0 head, a one-entry table (a bucket whose triangles share one
+ * class), a class outside the table, and a member the table did not build.
+ * @param pipes Pipeline table.
+ * @param npipes Table length.
+ * @param s Run head.
+ * @return The pipeline. */
 static rhi_pipeline* tex_run_pipe(rhi_pipeline* const* pipes, int npipes, const scene_tri_t* s) {
     const int k = s->stp_sel * NR_BLEND_CLASSES + s->blend;
     return (s->blend > 0 || s->stp_sel > 0) && s->blend < NR_BLEND_CLASSES &&
            k < npipes && pipes[k] ? pipes[k] : pipes[0];
 }
 
-/* Length of the texture-pack sub-run that starts at triangle `t` of the run,
- * whose head `st` resolved to `matched` / `repl`: the consecutive triangles
- * with the same disposition (all unreplaced, or all the same pack file). A
- * replaced sub-run carries ONE fog transform in its push constants, and the
- * canonical CLUT maps triangles at different fog distances to the SAME pack
- * file, so those never coalesce or the whole sub-run would draw at the head's
- * fog depth. Every triangle examined runs tp_tri_match (and its census, dump
- * and resolve-log side effects), the break triangle included. */
+/** @brief Return the length of the texture-pack sub-run that starts at triangle t of a run.
+ *
+ * The sub-run is the consecutive triangles with the head's disposition:
+ * all unreplaced, or all the same pack file at the same fog delta. A
+ * replaced sub-run carries one fog transform in its push constants, and the
+ * canonical CLUT maps triangles at different fog distances to the same pack
+ * file, so those do not coalesce. Every triangle examined runs
+ * tp_tri_match with its census, dump and resolve-log side effects, the
+ * triangle that ends the sub-run included.
+ * @param r The run.
+ * @param t Index in the run of the sub-run's head.
+ * @param want_replace Nonzero when replacements may be matched.
+ * @param matched The head's tp_tri_match result.
+ * @param repl The head's replacement.
+ * @param st The head triangle.
+ * @return The sub-run length, at least 1. */
 static int tp_subrun_len(const tex_run* r, int t, int want_replace, int matched,
                          const texture_pack_repl* repl, const scene_tri_t* st) {
     int g = 1;
@@ -7852,8 +7998,17 @@ static int tp_subrun_len(const tex_run* r, int t, int want_replace, int matched,
     return g;
 }
 
-/* OPENPETE_TEXSEL_DBG2=<tid>: draw-side resolve forensics for one terrain
- * texture id. */
+/** @brief Log the draw-side material resolve of a terrain run whose texture record is OPENPETE_TEXSEL_DBG2.
+ *
+ * Logs a run whose head has a terrain tag (path 2) with bit 25 clear and
+ * texture record (bits 15 to 9) equal to the variable's value, once
+ * openpete_frame passes 2000: the tag, @p allow_override, the tag-split
+ * state, openpete_mods_material_resolve's result and @p run, at most 24
+ * lines. Inert when the variable is unset.
+ * @param s0 Run head.
+ * @param allow_override Nonzero when the caller permits a material override
+ *        for the run.
+ * @param run Run length in triangles. */
 static void texsel_draw_forensics(const scene_tri_t* s0, int allow_override, int run) {
     static int s_ts2 = -2;
     if (s_ts2 == -2) { const char* e2 = getenv("OPENPETE_TEXSEL_DBG2");
@@ -8366,20 +8521,24 @@ static void alpha_census(const scene_tri_t* scene, int scene_n)
             s_scene_frame, m, ntex, (double)zmin, (double)zmax, overlaps, inversions);
 }
 
-/* W2.5 — hardware depth-bias factors for the shadow decal group (the
- * SUBTRACT pipes, the fallback when the depth-aware decal pipes are
- * unavailable). vkCmdSetDepthBias order semantics: bias = constant×r +
- * slope×m, floored at clamp, all given in the forward sign (negative = toward
- * the camera; rhi_set_depth_bias flips them under reversed depth). m = max
- * per-pixel depth slope; slope -2 grows the pull at grazing angles and clamp
- * -0.002 bounds it, both with the same view-Z meaning in either encoding.
- * r is the stored value's resolvable step, so the constant is per encoding:
- * forward (D24 fallback) r = 2^-24 near z = 1 and -64 pulls 64×2^-24×vz²
- * view-Z (15 at vz 2000); reversed r is 2^-24..2^-23 of z = 1/vz, so the
- * constant pulls a fraction of the distance, and -131072 (0.8%..1.6% of vz)
- * keeps the moby shadow fans that ride a few units under the ground drawn
- * where 64 ulps lost them.
- * Tunable: OPENPETE_SHADOW_HW_BIAS="constant,slope,clamp". */
+/** @brief Return the hardware depth-bias factors for the shadow subtract pipes.
+ *
+ * The subtract pipes are the fallback when the depth-aware decal pipes are
+ * unavailable. vkCmdSetDepthBias semantics: bias = constant*r + slope*m,
+ * floored at clamp, all given in the forward sign (negative is toward the
+ * camera; rhi_set_depth_bias flips them under reversed depth). m is the
+ * largest per-pixel depth slope; slope -2 grows the pull at grazing angles
+ * and clamp -0.002 bounds it, with the same view-Z meaning in either
+ * encoding. r is the stored value's resolvable step, so the constant is per
+ * encoding: forward (the D24 fallback) r = 2^-24 near z = 1 and -64 pulls
+ * 64*2^-24*vz^2 in view-Z (15 at vz 2000); reversed r is 2^-24 to 2^-23 of
+ * z = 1/vz, so the constant pulls a fraction of the distance, and -131072
+ * (0.8% to 1.6% of vz) keeps drawn the moby shadow fans that ride a few
+ * units under the ground. OPENPETE_SHADOW_HW_BIAS="constant,slope,clamp"
+ * overrides all three; read once.
+ * @param c Receives the constant factor.
+ * @param s Receives the slope factor.
+ * @param cl Receives the clamp. */
 static void shadow_hw_bias(float* c, float* s, float* cl)
 {
     static const float k_constant[2] = { -64.0f, -131072.0f };  /* forward, reversed */
@@ -8647,9 +8806,14 @@ static int box_outside_edge(const openpete_scene_vert *a, const openpete_scene_v
     return 1;
 }
 
-/* Separating-axis overlap of a screen triangle and the box: the box axes
- * (bounding-box test) then the three edge normals. A zero-area triangle
- * falls back to its bounding box. */
+/** @brief Return whether a screen triangle overlaps the box instrument's box.
+ *
+ * Separating-axis test: the box axes (a bounding-box test), then the
+ * triangle's three edge normals. A zero-area triangle falls back to its
+ * bounding box.
+ * @param T Triangle in PSX screen coordinates.
+ * @param B The box.
+ * @return 1 when they overlap, else 0. */
 static int tri_overlaps_box(const scene_tri_t *T, const scene_box_cfg_t *B) {
     const openpete_scene_vert *v = T->v;
     const float xmin = fminf(v[0].sx, fminf(v[1].sx, v[2].sx));
@@ -9047,18 +9211,23 @@ static void bw_rank_sort(const scene_tri_t* scene, int* idx, int n) {
     memcpy(idx, s_bw_sort_tmp, (size_t)n * sizeof *idx);
 }
 
-/* Put one packed textured bucket into the order it draws in — the whole
- * per-bucket ordering policy, in one place.
+/** @brief Put one packed textured bucket into its draw order.
  *
- * The opaque buckets sort by material: depth resolves visibility whatever the
- * order, so the sort costs nothing in correctness and coalesces pipeline
- * binds. The blended-world block (bucket 11) draws in emission order, because
- * the guest links its classes into the ordering table interleaved and the
- * blend equations do not commute once a channel clamps; a re-extract emits one
- * producer at a time, so its block is put back into the order the game render
- * emitted those producers in. Every other bucket keeps submission order
- * (ABR0 alpha is rare and single-layer, the flat-HUD backdrops want painter's
- * order). */
+ * This is the whole per-bucket ordering policy. The opaque buckets (0, 2,
+ * 3, 9 and 12) sort by material: depth resolves visibility whatever the
+ * order, so the sort costs no correctness and coalesces pipeline binds.
+ * The blended-world block (bucket 11) keeps emission order, because the
+ * guest links its classes into the ordering table interleaved and the
+ * blend equations do not commute once a channel clamps; a re-extract emits
+ * one producer at a time, so for a re-extracted scene (scene_present_replay)
+ * bw_rank_sort restores the order the game render emitted the producers
+ * in, and the block is then passed to bw_draw_order_dump. Every other
+ * bucket keeps submission order (ABR0 alpha is rare and single-layer, and
+ * the flat-HUD backdrops need painter's order).
+ * @param b Bucket index.
+ * @param scene Scene triangles.
+ * @param idx The bucket's scene indices, reordered in place.
+ * @param n Number of indices. */
 static void tx_bucket_order(int b, const scene_tri_t* scene, int* idx, int n) {
     if (b == 0 || b == 2 || b == 3 || b == 9 || b == 12) {
         NR_PROF_BEGIN("cmp.sort");
@@ -9193,13 +9362,25 @@ static void depth_transport_census_shot(const char* path)
                 path, s_dtc_tris, s_dtc_tex, s_pvz_missing);
 }
 
-/* Textured bucket membership of scene triangle t. Bucket 11 is the
- * emission-ordered blended-world block and is the one bucket that carries
- * untextured triangles too, so its runs keep the order the guest linked the
- * two texturing modes in. Buckets 4, 5, 8 and 10, the former fixed per-class
- * blended buckets, are empty; their content is in bucket 11. Buckets 0-3 are
- * the layered groups, selected by the group's blend class and category
- * (gblend, gcat). */
+/** @brief Return whether scene triangle t belongs to textured bucket b.
+ *
+ * Bucket 11 is the emission-ordered blended-world block and the one bucket
+ * that also carries untextured triangles, so its runs keep the order the
+ * guest linked the two texturing modes in; an untextured triangle deferred
+ * to material spans (s_bw_deferred) is left out. Buckets 4, 5, 8 and 10 are
+ * empty; their content is in bucket 11. Bucket 6 is HUD, 7 PORTAL_GUARD, 9
+ * the opaque ACTOR_FRONT faces of the rescue actors, and 12 the opaque
+ * textured faces of the 3D HUD icon models. The layered groups (0 to 3)
+ * take textured triangles outside those categories whose blend class
+ * equals @p gblend; an opaque group with @p gcat set takes only that
+ * category, and blend class 3 takes only SHADOW. A blend class outside 0
+ * to 4 counts as 0.
+ * @param b Bucket index.
+ * @param scene Scene triangles.
+ * @param t Triangle index.
+ * @param gblend The layered group's blend class.
+ * @param gcat The layered group's category, or negative for any.
+ * @return 1 when the triangle belongs, else 0. */
 static int tx_bucket_belongs(int b, const scene_tri_t* scene, int t, int gblend, int gcat) {
     const scene_tri_t* st = &scene[t];
     if (b == 11) return blended_world_tri(st) && !(!st->textured && s_bw_deferred[t]);
@@ -10896,7 +11077,13 @@ void openpete_native_set_version_glyphs(const openpete_hud_vert *verts, int nver
     }
 }
 
-/* The published region, or a degenerate one when nothing has been pushed. */
+/** @brief Return the version line's published region size.
+ *
+ * Both halves come from one read of the packed extent, so they belong to
+ * the same openpete_native_set_version_glyphs call. A size never published,
+ * or not positive, reads as 0.
+ * @param w Receives the width; may be NULL.
+ * @param h Receives the height; may be NULL. */
 static void version_region(float *w, float *h) {
     const uint64_t v = s_ver_extent;   /* one read: both halves from one publish */
     uint32_t bw = (uint32_t)v, bh = (uint32_t)(v >> 32);
@@ -11242,7 +11429,14 @@ static float s_perf_ox, s_perf_oy;   /* the perf block's placed top-left */
  * is the policy: the persistent perf block first, then the OSD's toasts, so a
  * shared corner pushes the transient thing out of the way of the permanent
  * one rather than the reverse. */
-/* Round an overlay-space length/offset to a whole output pixel. */
+/** @brief Round an overlay-space length or offset to a whole output pixel.
+ *
+ * Overlay-space values are in units of the window height, so the value is
+ * scaled by @p win_h, rounded half away from zero, and scaled back.
+ * @param v Value in overlay space.
+ * @param win_h Window height in pixels; a value not above 0 returns @p v
+ *        unchanged.
+ * @return The snapped value. */
 static float snap_px(float v, float win_h) {
     if (win_h <= 0.0f) return v;
     return (float)(int)(v * win_h + (v >= 0.0f ? 0.5f : -0.5f)) / win_h;
@@ -13697,11 +13891,18 @@ static void path_with_suffix(const char *base, const char *suffix,
     else     snprintf(out, cap, "%s%s", base, suffix);
 }
 
-/* Under OPENPETE_TERRAIN_KEY_READBACK: the terrain key image the capture's
- * key pass left, as <shot>-key.f32 (the depth value per texel, rows top-down,
- * key view-Z = 4096 z / (1 - z), 1.0 = no terrain key) and <shot>-key.txt
- * (image and viewport extents and the pass's screen->clip mapping, so a PSX
- * screen point maps to its texel). */
+/** @brief Write the terrain key image the capture's key pass left beside a screenshot, under OPENPETE_TERRAIN_KEY_READBACK.
+ *
+ * Two files are written next to @p base with -key inserted before the
+ * extension, which is replaced. The .f32 file holds the depth value per
+ * texel, rows top-down; a key's view-Z is 4096 z / (1 - z) and 1.0 means no
+ * terrain key. The .txt file holds the image and viewport extents, the
+ * pass's screen-to-clip mapping recorded by terrain_key_pass_record, and
+ * openpete_frame, so a PSX screen point maps to its texel. No-op for an
+ * in-memory capture, with the readback off, without the image, or before
+ * any key pass ran.
+ * @param base Screenshot path the file names derive from.
+ * @param in_memory Nonzero for an in-memory capture. */
 static void terrain_key_dump(const char *base, int in_memory)
 {
     extern unsigned openpete_frame;
@@ -14091,8 +14292,19 @@ void openpete_native_render_snapshot_fb_window(void)
       } }
 }
 
-/* Blocking off_image readback → PNG. Shared by the A/B present capture and the
- * live -vk screenshot; `what` labels the log line. Returns 0 on success. */
+/** @brief Read the offscreen colour target back and write it as a PNG.
+ *
+ * The readback blocks on the GPU and returns the image the last rendered
+ * frame left in off_image, into a buffer sized for the window. Blend ops
+ * write real alpha into that image (opaque on llvmpipe, fractional on
+ * discrete GPUs); alpha is forced to 255 so the file shows what the window
+ * showed. Callers are the windowed live-present `-vk` capture and
+ * openpete_native_render_screenshot_ext.
+ * @param path Output PNG path.
+ * @param what Label for the log line.
+ * @param out_w Receives the width on success, else 0; may be NULL.
+ * @param out_h Receives the height on success, else 0; may be NULL.
+ * @return 0 on success, nonzero on failure. */
 static int shot_write_offscreen_ext(const char *path, const char *what,
                                     int *out_w, int *out_h)
 {
