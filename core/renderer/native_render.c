@@ -641,9 +641,7 @@ static rhi_ubo* s_pfx_ubo;
  * override binds it. */
 static rhi_ubo* s_mat_ubo;
 static void fill_material_ubo(void);
-/* Shared with the retained terrain cache: a terrain material pass binds the
- * same set-3 pair a walked material draw binds, so both residencies read one
- * uniform source. */
+/* Shared with the retained terrain cache's material pass. */
 struct rhi_ubo *openpete_native_material_ubo(void) { return s_mat_ubo; }
 static uint32_t           s_scene_bg;  /* panel-0 background fill (rgba); 0 = none */
 
@@ -964,12 +962,8 @@ void openpete_native_scene_begin(void) {
     if (!s_scene_replay) bw_key_order_record(s_scene, s_scene_n);
     s_scene_replay = 1; fov_latch(); s_scene_epoch++; s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; openpete_mods_material_frame_reset(); /* S8b: per-present interned slots */ }
 
-/* Frame-keyed reset: the first feeder of each game frame clears; later feeders
- * (in any order) append, so the cyclorama + world + mobys compose into one
- * scene instead of clobbering each other. See the header for the rationale.
- * On a frame change, the just-completed scene (still in s_scene) is snapshotted
- * to s_scene_disp before the clear, so the present can draw the 1-frame-delayed
- * copy that matches the reference panel. */
+/* VBL stamp of the scene accumulating in s_scene; 0xFFFFFFFF before the
+ * first openpete_native_scene_begin_frame. */
 static unsigned s_scene_frame = 0xFFFFFFFFu;
 static void (*s_scene_frame_close_cb)(unsigned frame);  /* see the frame-close section */
 static void alpha_census(const scene_tri_t* scene, int scene_n);  /* blend census, defined below */
@@ -1090,10 +1084,6 @@ void openpete_native_scene_restore(void) {
     s_scene_saved_n = -1;
 }
 
-/* The frame stamp of the scene currently accumulating in s_scene
- * (0xFFFFFFFF = none yet). Late feeders use it to append ONLY to a live
- * scene: calling begin_frame with a newer frame would snapshot-and-wipe a
- * held scene during load stalls. */
 unsigned openpete_native_scene_frame(void) { return s_scene_frame; }
 
 /* ---- frame-close notification -------------------------------------------
@@ -1416,15 +1406,6 @@ void openpete_native_scene_set_stp_select(int sel) {
     s_cur_stp_sel = (sel > 0 && sel < OPENPETE_STP_SELS) ? sel : OPENPETE_STP_ALL;
 }
 
-/* Stamp every 2D tri of this frame with its ordering-table traversal rank,
- * looked up from the primitive address each was decoded from. Covers the live
- * scene and the feed-time carry accumulation, which is what the next capture
- * commits, so a tri fed at emission and one fed from a deferred batch are
- * ranked by the same walk. A tri the walk never reached keeps rank 0 and, under
- * the stable sort, its feed position. */
-/* The primitive addresses this frame's 2D was decoded from, so the feeder can
- * tell which of the frame's several ordering-table walks is the 2D one. Writes
- * at most `max`, returns how many. */
 int openpete_native_scene_collect_2d_prims(uint32_t* out, int max) {
     int n = 0;
     if (!out || max <= 0) return 0;
@@ -1435,6 +1416,12 @@ int openpete_native_scene_collect_2d_prims(uint32_t* out, int max) {
     return n;
 }
 
+/* Stamp every 2D tri of this frame with its ordering-table traversal rank,
+ * looked up from the primitive address each was decoded from. Covers the live
+ * scene and the feed-time carry accumulation, which is what the next capture
+ * commits, so a tri fed at emission and one fed from a deferred batch are
+ * ranked by the same walk. A tri the walk never reached keeps rank 0 and, under
+ * the stable sort, its feed position. */
 void openpete_native_scene_rank_2d(uint32_t (*rank_of)(uint32_t prim)) {
     if (!rank_of) return;
     for (int t = 0; t < s_scene_n; t++)
@@ -4368,9 +4355,7 @@ uint32_t openpete_native_render_swapchain_images(void)
     return s_nr.dev ? rhi_swapchain_image_count(s_nr.dev) : 0;
 }
 
-/* Bounded wait for the last queued present to reach the display. Forwarded
- * rather than exposing the device, and callable only from the presenting
- * thread — see rhi_present_wait. */
+/* Forwarded rather than exposing the device; presenting thread only. */
 int openpete_native_render_present_outstanding(void) {
     return s_nr.dev ? rhi_present_outstanding(s_nr.dev) : 0;
 }
@@ -4411,18 +4396,7 @@ bool openpete_native_scene_enabled(void)
     return s_nr.enabled && s_nr.scene_live;
 }
 
-/* Re-present the last composed frame without recomposing it.
- *
- * The offscreen image is persistent and still holds the pixels the previous
- * present blitted, so acquiring a swapchain image and blitting it again puts
- * the same frame back on the display. No scene walk, no extraction, no read
- * of guest RAM or GTE state -- which is the whole point: this is the only
- * present that is safe to issue from a thread other than the one executing
- * the guest.
- *
- * Returns 1 if a present was issued. A false begin_frame (swapchain
- * recreating, no image within the acquire budget, minimised window) is a
- * normal outcome, not an error. */
+/* A false begin_frame is a normal outcome, not an error. */
 int openpete_native_render_repeat_last(void)
 {
     /* The present thread owns the device while eager production is active;
@@ -4468,8 +4442,6 @@ void openpete_native_toggle_fullscreen(void)
                         "DISPLAY: %s", !fs ? "FULLSCREEN" : "WINDOWED");
 }
 
-/* The native window, or NULL before it exists or when the renderer is off
- * (headless, PsyCross-only). The mouse channel applies relative mode to it. */
 SDL_Window* openpete_native_render_window(void)
 {
     return s_nr.enabled ? s_nr.window : NULL;
@@ -7721,10 +7693,7 @@ uint32_t openpete_native_hdfold_epoch(void)
     return s_hdf_epoch;
 }
 
-/* Create the atlas and force its first transition/residency now, so neither
- * lands on a frame the sim pacer is timing. Safe to call before any
- * replacement exists: the atlas contents are irrelevant until something
- * folds into it. */
+/* Safe before any replacement exists: the content is unread until an entry folds in. */
 void openpete_native_hdfold_prime(rhi_device *dev)
 {
     if (s_hdf_atlas || !dev) return;
@@ -10914,8 +10883,6 @@ const char *openpete_native_version_reason(void) {
 static unsigned s_ver_drawn = 0;
 unsigned openpete_native_version_drawn(void) { return s_ver_drawn; }
 
-/* Window aspect (w/h) for mod HUD layout in overlay space: x spans
- * [0, aspect], y spans [0, 1]. Falls back to 4:3 pre-init. */
 float openpete_native_overlay_aspect(void) {
     if (s_nr.win_w > 0 && s_nr.win_h > 0)
         return (float)s_nr.win_w / (float)s_nr.win_h;
@@ -10981,11 +10948,8 @@ static void osd_slot_px(int *w, int *h) {
 }
 
 void openpete_native_osd_slot_extent(float *w, float *h) {
-    /* The grid's slot extent in overlay units, quantized to the 1x pixel
-     * counts the target was actually built from. The builder lays out against
-     * these, so its slot origins line up exactly with the texel blocks the
-     * resolve shader averages — a slot origin off the OSD_SS_FACTOR grid would
-     * make edge blocks average in the neighbouring slot's texels. */
+    /* A slot origin off the OSD_SS_FACTOR grid would make edge blocks
+     * average in the neighbouring slot's texels. */
     const float ph = (s_nr.win_h > 0) ? (float)s_nr.win_h : 1.0f;
     int pw, phh;
     osd_slot_px(&pw, &phh);
@@ -11710,9 +11674,7 @@ static void draw_menu_overlay(void) {
  * shader already had the input declared and unused, and the quads are rebuilt
  * every present anyway, so per-toast fade costs literally nothing extra. */
 
-/* Toasts actually COMPOSITED, cumulative. A capture-based gate that greened
- * with zero here proved nothing about the OSD; reported at shutdown so that
- * cannot pass unnoticed. */
+/* Toasts composited, cumulative; logged at shutdown. */
 static unsigned s_osd_composited = 0;
 unsigned openpete_native_osd_composited(void) { return s_osd_composited; }
 
@@ -13688,13 +13650,6 @@ static void terrain_key_dump(const char *base, int in_memory)
 static int native_render_screenshot_all_impl(const char *base, unsigned char **cap_out,
                                              int *cap_w, int *cap_h);
 
-/* Capture-time freeze-backdrop maintenance. Render the CURRENT world frame into
- * shot_frozen so a later freeze-frame dump has the frozen-world backdrop to tint
- * green (the live path's frozen_tex snapshot is window-only). Called each present
- * during a headless capture run; a no-op on freeze frames (nothing to snapshot —
- * the world groups are empty) and on empty scenes, so once the game pauses,
- * shot_frozen holds the last world frame. cap_wf matches the capture's widen so
- * the backdrop lines up 1:1 with the widescreen dump. */
 /* 2D tris in a scene buffer: the categories the 2D layer feeds into. Used by
  * the freeze-leg probe to compare what a composite holds against the canonical
  * scene it should match. */
@@ -13865,10 +13820,8 @@ static int native_shot_widescreen(const char *base, int H, float cap_wf,
     return rc;
 }
 
-/* Wrapper: the screenshot compose uses the reference-aligned scene depth (see
- * s_scene_shot_compose) so -vk shows the SAME game frame as the -og
- * PsyCross capture beside it. Flag set/cleared here so the impl's early
- * returns can't leak it into the live present path. */
+/* The compose flags are set and cleared here so the impl's early returns
+ * cannot leak them into the live present path. */
 int openpete_native_render_screenshot_all(const char *base)
 {
     /* Headless never runs openpete_native_render_frame, so the truescope
@@ -13904,9 +13857,6 @@ int openpete_native_render_screenshot_all(const char *base)
     return r;
 }
 
-/* In-memory twin of openpete_native_render_screenshot_all: same compose, same
- * bracket, same capture target and widen — the frame lands in a malloc'd RGBA
- * buffer instead of a PNG. The caller owns *out. Returns 0 on success. */
 int openpete_native_render_capture_rgba(unsigned char **out, int *w, int *h)
 {
     if (!out) return 1;
@@ -14016,8 +13966,6 @@ static unsigned char *fbsnap_capture_crop(unsigned frame, int sx, int sy, int w,
     return px;
 }
 
-/* Give every pending framebuffer window and draw area the native frame's own
- * pixels, each composed from the scene of the frame its copy was taken on. */
 void openpete_native_render_snapshot_fb_window(void)
 {
     if (!s_nr.enabled) return;
@@ -14303,10 +14251,6 @@ int openpete_native_render_screenshot(const char *path, const char *what)
     return openpete_native_render_screenshot_ext(path, what, NULL, NULL);
 }
 
-/* --record shutdown drain: the async ring still holds the last few presents
- * (queued but not yet cycled out). Flush them to the encoder, in PTS order,
- * before openpete_record_shutdown() finalizes the file — otherwise the tail of
- * the recording is lost. Blocks once (the device is torn down right after). */
 void openpete_native_render_record_flush(void)
 {
     if (!s_nr.enabled || !openpete_record_active())

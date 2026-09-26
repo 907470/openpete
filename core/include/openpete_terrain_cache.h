@@ -354,37 +354,72 @@ int  openpete_native_hdfold_on(void);
 int  openpete_native_hdfold_intern(int tpx, int tpy, int clx, int cly, int bpp,
                                    const float us[3], const float vs[3]);
 
-/* Entry-table snapshot for the globals fill: payload of
- * OPENPETE_HDFOLD_MAX x 4 vec4 (rect / atlas rect / fogA / fogB), the live
- * count, and the continuous-fog ramp (lad[0..1]; lad valid = ret). */
+/** @brief Return the fold entry table for the retained terrain globals fill.
+ *
+ * The table holds OPENPETE_HDFOLD_MAX entries of 4 vec4 each: the
+ * page-anchored texel rect, the atlas rect, fog affine A with the filter
+ * class in w (0 nearest, 1 linear), and fog affine B. The first count
+ * entries are live.
+ * @param count Receives the live entry count; may be NULL.
+ * @param lad Receives the continuous-fog ramp, or zeros when the pack has
+ *        none; may be NULL.
+ * @return The table base; never NULL. */
 const void *openpete_native_hdfold_table(int *count, float lad[2]);
 
-/* The fold atlas (NULL until the first intern) — the set-4 sampler. */
+/** @brief Return the fold atlas texture that retained terrain samples at set 4.
+ *
+ * Created by openpete_native_hdfold_prime at bring-up, or by the first
+ * openpete_native_hdfold_flush with queued uploads.
+ * @return The atlas, or NULL before either creates it. */
 struct rhi_texture *openpete_native_hdfold_atlas(void);
 
-/* The material UBO (native_render), whose block 0 is the engine block and
- * whose blocks 1+ are the interned per-material uniform blocks. A retained
- * material pass binds it at set 3, the same pair a walked material draw
- * binds — one shading contract, one uniform source, either residency.
- * NULL until the first override arms the batcher split. */
+/** @brief Return the material UBO that walked and retained material draws bind at set 3.
+ *
+ * Block 0 is the engine block; block 1 + slot is the uniform block of an
+ * interned material slot. A retained terrain material pass binds the same
+ * set-3 pair a walked material draw binds, so both residencies read one
+ * uniform source. The UBO is created and filled once per present while the
+ * material tag split is armed.
+ * @return The UBO, or NULL before the first present with the split armed. */
 struct rhi_ubo *openpete_native_material_ubo(void);
 
-/* Atlas uploads still queued (drained ~96 per rendered frame). */
+/** @brief Return the number of fold atlas uploads still queued.
+ *
+ * Each openpete_native_hdfold_flush drains at most 96. The screenshot
+ * compose repeats, up to 8 retries, until this reaches 0, so a capture
+ * does not sample a partly filled atlas.
+ * @return The queued upload count. */
 int openpete_native_hdfold_pending(void);
 
-/* Bumped on every intern and on a flush that drains the upload queue —
- * fold-overflow-claimed sectors re-bake when it moves. */
+/** @brief Return the fold epoch.
+ *
+ * Bumped on every new entry and on a flush that drains the upload queue. A
+ * sector claimed back to the CPU walk for fold overflow rebakes when it
+ * moves, since a new entry or a drained queue can clear the overflow.
+ * @return The epoch. */
 uint32_t openpete_native_hdfold_epoch(void);
 
-/* Flush pending atlas uploads into the current rhi frame (after begin_frame,
- * before the first render pass — the hd_flush_pending site). */
+/** @brief Upload queued fold atlas rects into the current rhi frame.
+ *
+ * Called after begin_frame and before the first render pass. Uploads at
+ * most 96 rects per call and keeps the rest queued; draining the queue bumps
+ * the epoch. Creates the atlas when it does not exist; a failed creation
+ * drops the queue. No-op when nothing is queued or native render is off.
+ * Serialized with openpete_native_hdfold_intern by the fold mutex. */
 void openpete_native_hdfold_flush(void);
-/* Create + make resident the replacement atlas ahead of first use, so the
- * driver's allocation work does not land on a pacer-timed frame. */
+/** @brief Create the fold atlas and make it resident ahead of first use.
+ *
+ * A 1x1 upload transitions the image, so the driver's allocation and
+ * residency work lands at bring-up and not on a present the sim pacer is
+ * timing. No-op when the atlas exists or @p dev is NULL.
+ * @param dev Device that owns the atlas. */
 void openpete_native_hdfold_prime(struct rhi_device *dev);
 
-/* Drop table + atlas content (pack registry reset / level change); baked
- * entry ids die with it, so callers must also rebake hd-baked sectors. */
+/** @brief Drop every fold entry and queued upload and rewind the atlas packer.
+ *
+ * Called on a level change. The atlas texture is kept and later entries
+ * overwrite its content. Entry ids baked into sectors no longer name
+ * entries, so the caller rebakes those sectors; the epoch is not bumped. */
 void openpete_native_hdfold_reset(void);
 
 /* Chunk management (builder side). alloc returns 0 on success, the first

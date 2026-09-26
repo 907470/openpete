@@ -42,11 +42,18 @@ extern "C" {
  * window, so this is the only window an icon can land on. */
 void openpete_native_set_icon(const void* rgba32, int w, int h);
 
-/* Create the visible window up front, on the caller's thread, for bring-up to
- * adopt — the same hand-over the first-run splash uses. Win32 delivers a
- * window's messages only to the thread that created it, so the window must
- * belong to whichever thread runs the event pump. No-op unless this is the
- * single-window vk path, or a window was already handed over. */
+/** @brief Create the game window on the caller's thread for bring-up to adopt.
+ *
+ * The same hand-over the first-run splash uses. Win32 delivers a window's
+ * messages only to the thread that created it, so the window must belong to
+ * the thread that runs the event pump. The size comes from the same
+ * resolution bring-up uses, and the creation flags carry the --background
+ * activation hints. No-op under --headless, when a window was already
+ * precreated, or when @p opts carries an adopted window. A failed creation
+ * is logged and bring-up creates its own window.
+ * @param opts Session options; must not be NULL.
+ * @param win_w Requested width in pixels, or <= 0 for the default.
+ * @param win_h Requested height in pixels, or <= 0 for the default. */
 void openpete_native_precreate_window(const openpete_options_t *opts,
                                       int win_w, int win_h);
 
@@ -68,27 +75,31 @@ void openpete_native_precreate_window(const openpete_options_t *opts,
  *         bring-up failed. */
 int openpete_native_render_init(const openpete_options_t *opts, int win_w, int win_h);
 
-/* True once native bring-up succeeded: a Vulkan device exists and this process
- * composes through it. Says nothing about where the picture comes from — it is
- * true in PsyCross display mode, where the window shows PsyCross's read-back
- * frame. Nor does it promise a window: headless bring-up is surfaceless and
- * still sets this, so a consumer that needs an actual display must check
- * headless separately. */
+/** @brief Return whether native bring-up succeeded and this process composes through a Vulkan device.
+ *
+ * Says nothing about where the picture comes from: it is true in PsyCross
+ * display mode, where the window shows PsyCross's read-back image. Nor does
+ * it promise a window: headless bring-up is surfaceless and still sets it,
+ * so a consumer that needs a display checks headless separately.
+ * @return True once bring-up succeeded. */
 bool openpete_native_render_enabled(void);
 
-/* True when a native SCENE is being extracted, interpolated and drawn: the
- * feature modules feed the ring, the sub-tick spine re-extracts, and compose
- * walks the tri list. Implies openpete_native_render_enabled(); the converse
- * does not hold. Every consumer that walks, extracts from, or composes the
- * native scene asks this one, not the display predicate above. */
+/** @brief Return whether a native scene is being extracted, interpolated and drawn.
+ *
+ * While true the feature modules feed the scene ring, the sub-tick spine
+ * re-extracts, and compose walks the tri list. False in PsyCross display
+ * mode. Implies openpete_native_render_enabled; the converse does not hold.
+ * Every consumer that walks, extracts from, or composes the native scene
+ * asks this predicate, not the display predicate above.
+ * @return True while the native scene is live. */
 bool openpete_native_scene_enabled(void);
 
-/* Device identity for the pacing log's environment block. Both return a
- * static string valid for the process ("unknown" / "none" before the device
- * exists, and in PsyCross-only runs). The present mode is the one actually
- * granted, which is the only one a baseline may be keyed on. */
-/* Presents dropped because the swapchain slot had not retired — see
- * rhi_fence_sheds. Monotonic. */
+/** @brief Return the number of presents dropped because the swapchain slot's previous submission had not retired.
+ *
+ * Forwards rhi_fence_sheds. Windowed only: the present is dropped rather
+ * than blocking the presenting thread on the display's cadence. Monotonic;
+ * the pacing log diffs it.
+ * @return The cumulative count, or 0 before the device exists. */
 uint64_t openpete_native_render_fence_sheds(void);
 
 /** @brief Print the scene signature census lines for the composed scene to stderr.
@@ -102,19 +113,34 @@ uint64_t openpete_native_render_fence_sheds(void);
  * @param canonical Non-zero on the canonical present, zero on an intermediate. */
 void openpete_native_scene_sig_report(int canonical);
 
-/* Wait (up to timeout_ns) for the last queued present to be DISPLAYED.
- * 1 = displayed, 0 = timed out, -1 = unsupported / nothing outstanding.
- * Presenting-thread only. */
+/** @brief Return the number of presents queued but not yet confirmed displayed.
+ *
+ * Forwards rhi_present_outstanding. Call only from the presenting thread,
+ * since the swapchain is externally synchronized.
+ * @return The count, or 0 without present timing, without a swapchain, or
+ *         before the device exists. */
 int openpete_native_render_present_outstanding(void);
+/* Wait up to timeout_ns for the last queued present to be displayed:
+ * 1 = displayed, 0 = timed out, -1 = unsupported or nothing outstanding.
+ * Presenting thread only. */
 int openpete_native_render_present_wait(uint64_t timeout_ns, uint64_t *out_id,
                                         uint64_t *out_waited_ns);
 
-/* The acquire path's refusals, and the granted swapchain depth. See
- * rhi_acquire_sheds / rhi_swapchain_image_count. */
+/** @brief Return the number of presents the swapchain acquire path refused.
+ *
+ * Forwards rhi_acquire_sheds. Monotonic; openpete_native_render_acquire_timeouts
+ * counts the subset that expired the acquire budget.
+ * @return The cumulative count, or 0 before the device exists. */
 uint64_t openpete_native_render_acquire_sheds(void);
+/* Acquire-budget expiries and the granted swapchain depth. See
+ * rhi_acquire_timeouts and rhi_swapchain_image_count. */
 uint64_t openpete_native_render_acquire_timeouts(void);
 uint32_t openpete_native_render_swapchain_images(void);
 
+/* Device identity for the pacing log's environment block. Each returns a
+ * static string valid for the process ("unknown", or "none" for the present
+ * mode, before the device exists and in PsyCross-only runs). The present
+ * mode is the one granted, the only one a baseline may be keyed on. */
 const char* openpete_native_render_gpu_name(void);
 const char* openpete_native_render_driver_version(void);
 const char* openpete_native_render_present_mode(void);
@@ -139,7 +165,11 @@ void openpete_native_request_fullscreen_toggle(void);
  *         window (headless, native path disabled). */
 int openpete_native_fullscreen_active(void);
 
-/* The native SDL window, or NULL when there is none. */
+/** @brief Return the native SDL window.
+ *
+ * The mouse channel applies relative mode to it.
+ * @return The window, or NULL before it exists, when native render is off,
+ *         or under headless. */
 struct SDL_Window* openpete_native_render_window(void);
 
 /* Performance-stats overlay (vk live window). Drawn only on the live vk
@@ -395,17 +425,20 @@ int  openpete_native_perf_anchor(void);
  * chrome). nverts==0 clears it. Display-only. */
 void openpete_native_set_mod_overlay(const openpete_hud_vert *verts, int nverts);
 
-/* Window aspect (w/h) for overlay-space layout: x spans [0, aspect], y spans
- * [0, 1]. Falls back to 4:3 before the window exists. */
+/** @brief Return the window aspect (width over height) for overlay-space layout.
+ *
+ * Overlay x spans [0, aspect] and y spans [0, 1].
+ * @return The aspect, or 4/3 before the window size is known. */
 float openpete_native_overlay_aspect(void);
 
-/* Output pixels per overlay unit — i.e. the window height. A game-side text
- * builder needs it to SNAP a computed origin to a whole pixel: text that is
- * right-aligned or centred derives its origin from the measured string, so
- * the origin moves by a fraction of a pixel whenever the text changes, and
- * the glyphs land at a different sub-pixel phase each time. Left-aligned text
- * never had the problem because its origin is a constant. 0 before the window
- * exists. */
+/** @brief Return the output pixels per overlay unit, which is the window height.
+ *
+ * A game-side text builder snaps a computed origin to a whole pixel with it:
+ * right-aligned or centred text derives its origin from the measured string,
+ * so without the snap the origin moves by a fraction of a pixel whenever the
+ * text changes and the glyphs land at a different sub-pixel phase each time.
+ * Left-aligned text has a constant origin and needs no snap.
+ * @return The window height in pixels, or 0 before the window size is known. */
 float openpete_native_overlay_px_per_unit(void);
 
 /* Capacity of the settings menu's 3D glyph layer, in vertices: the rows'
@@ -447,13 +480,23 @@ typedef struct {
 void openpete_native_set_osd_glyphs(const openpete_hud_vert *verts, int nverts,
                                     const openpete_osd_slot_t *slots, int nslots);
 
-/* The slot grid's geometry, so the builder lays out against the same numbers
- * the compositor samples with. Extents are overlay units (window-height
- * fractions); the count is OPENPETE_OSD_MAX. */
+/** @brief Return the extent of one OSD slot in overlay units.
+ *
+ * The builder lays out against the same numbers the compositor samples
+ * with. The extent is the slot's 1x pixel size, as published with the
+ * supersample target, divided by the window height, so slot origins land on
+ * the texel blocks the resolve shader averages. Before a target is built
+ * the maxima OSD_SLOT_W and OSD_SLOT_H are returned. The grid holds
+ * OPENPETE_OSD_MAX slots.
+ * @param w Receives the slot width; may be NULL.
+ * @param h Receives the slot height; may be NULL. */
 void openpete_native_osd_slot_extent(float *w, float *h);
 
-/* Toasts composited so far this run. An engagement counter: a capture-based
- * gate reading zero here never drew a toast, whatever its pixels say. */
+/** @brief Return the number of OSD toasts composited so far this run.
+ *
+ * An engagement counter: a capture-based gate reading zero here never drew a
+ * toast, whatever its pixels show. Logged at shutdown when the OSD is on.
+ * @return The cumulative toast count. */
 unsigned openpete_native_osd_composited(void);
 
 /* Path-isolation mode (--render-paths). When on, a frame with no native scene
@@ -946,8 +989,15 @@ typedef struct {
 } openpete_shadow_footprint;
 void openpete_native_set_shadow_footprint(const openpete_shadow_footprint *f);
 
-/* Begin a fresh native-scene frame (clears the triangle list). Called by
- * the game at the start of its scene extraction. */
+/** @brief Begin a sub-tick or lag re-extract's rebuild of the native scene.
+ *
+ * Called by each game's re-extract before its body feeds. Clears the
+ * triangle list and the per-scene background, fade, freeze and flags,
+ * latches the FOV tangent, bumps the scene epoch and resets the per-present
+ * material slots. The first re-extract of a tick first records the game
+ * render's blended-world key order from the scene it is about to clear; a
+ * later re-extract of the same tick keeps that record. The game render's
+ * own accumulation begins with openpete_native_scene_begin_frame. */
 void openpete_native_scene_begin(void);
 /* Mark the scene now accumulating as a sub-tick / lag re-extract's rebuild
  * rather than the game render's own. The blended-world block of a replay is
@@ -956,18 +1006,25 @@ void openpete_native_scene_begin(void);
  * emits one producer at a time. Called by the re-extract wrapper after the
  * game's body has fed. */
 void openpete_native_scene_mark_replay(void);
-/* Frame-keyed begin: clears the scene only when `frame` differs from the last
- * begin_frame call, otherwise a no-op. This lets MULTIPLE independent feeders
- * (cyclorama, then the world, then mobys — whatever order they hook in within
- * one game frame) compose into a single scene without any one of them wiping
- * the others: the first feeder of each frame clears, the rest append. Pass
- * `openpete_frame` (the per-yield frame counter). Order-independent and robust
- * to a feeder being absent on a given level. */
+/** @brief Begin the game render's scene accumulation for a VBL, once per VBL.
+ *
+ * Clears the scene only when @p frame differs from the last call's, else is
+ * a no-op, so independent feeders (cyclorama, world, mobys, in any order)
+ * compose into one scene: the first feeder of a VBL clears and the rest
+ * append, and a feeder absent on a level breaks nothing. On a change it
+ * first fires the frame-close callback for the completed scene, then pushes
+ * that scene with its background, fade, freeze and flags into the
+ * frame-history ring after the blend census, warns once when the scene store refused tris, latches the FOV
+ * tangent, bumps the scene epoch, clears the replay flag and resets the
+ * per-instance material slots.
+ * @param frame The VBL counter openpete_frame, or the stamp of the live
+ *        scene for a late feeder. */
 void openpete_native_scene_begin_frame(unsigned frame);
-/* Frame stamp of the currently accumulating scene (0xFFFFFFFF = none).
- * Late feeders must check this and append only when the scene is live —
- * begin_frame with a NEWER frame wipes a held scene (load stalls hold the
- * last composed frame on purpose). */
+/** @brief Return the VBL stamp of the scene currently accumulating.
+ *
+ * A late feeder appends only to a live scene: begin_frame with a newer
+ * stamp would push and wipe a scene that a load stall holds on purpose.
+ * @return The stamp, or 0xFFFFFFFF before the first begin_frame. */
 unsigned openpete_native_scene_frame(void);
 
 /* Register the frame-close notification: it fires immediately before a frame's
@@ -1015,8 +1072,14 @@ void openpete_native_scene_set_stp_select(int sel);
  * composed in the order the GPU draws. */
 void openpete_native_scene_rank_2d(uint32_t (*rank_of)(uint32_t prim));
 
-/* The primitive addresses this frame's 2D was decoded from, so a feeder can
- * tell which of the frame's ordering-table walks is the 2D one. */
+/** @brief Collect the guest primitive addresses the current scene's 2D was decoded from.
+ *
+ * A feeder uses them to tell which of the VBL's ordering-table walks is the
+ * 2D one. Collects every nonzero prim of the live scene, then of the carry
+ * accumulation, in that order.
+ * @param out Receives the addresses.
+ * @param max Capacity of @p out.
+ * @return The number written; 0 when @p out is NULL or @p max is not positive. */
 int openpete_native_scene_collect_2d_prims(uint32_t* out, int max);
 /* Append one screen-space triangle to the current native scene. `category`
  * (OPENPETE_SCENE_WORLD/_ACTOR/_HUD/…) and `carry` are passed EXPLICITLY per
@@ -1062,11 +1125,18 @@ void openpete_native_set_cover_planes(const openpete_native_cover_plane *planes,
                                       int n, float margin_world);
 
 void openpete_native_scene_add_tri(const openpete_scene_tri *tri, int category, int carry);
-/* add_tri with an explicit grouping id (stored on the renderer's internal
- * tri — plain add_tri stores 0). Used by the portal feeder to associate each
- * portal's PORTAL_MASK footprint with its PORTAL_CYCLORAMA colours so core
- * can stencil-isolate portals per group. No ambient state (same principle as
- * the explicit category/carry args). */
+/** @brief Append one screen-space triangle to the current scene with a grouping id.
+ *
+ * openpete_native_scene_add_tri stores group 0. The portal feeder passes a
+ * group to tie each portal's PORTAL_MASK footprint to its PORTAL_CYCLORAMA
+ * colours, so the renderer stencil-isolates portals per group. The group is
+ * an argument, not ambient state, like the category and carry. The stored
+ * tri also takes the sticky tag, fog delta, seq, prim and STP selection.
+ * @param tri Triangle to copy; NULL is ignored.
+ * @param category Scene layer (OPENPETE_SCENE_*); ignored for blended tris.
+ * @param carry 1 marks 2D UI the sub-tick re-extract cannot re-derive, so
+ *        the overlay carry preserves it; else 0.
+ * @param group Portal grouping id. */
 void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int category,
                                            int carry, int group);
 /* Scene vertices that reached add_tri without a true view-Z (pvz <= 0) since
@@ -1361,22 +1431,33 @@ void  openpete_native_fov_note_canon(double H_canon, double y_row);
  * angles then assume H 341, Y row 0.625). */
 int   openpete_native_fov_angles(double* v_deg, double* h_deg);
 
-/* Present one native frame to the Vulkan window. Call after PsyX_EndScene so
- * PsyCross's present FBO is freshly rendered (the future "reference"). Does
- * NOT pump SDL events — the host loop owns the event queue, which PsyCross's
- * input path depends on; window-size changes are detected by polling. No-op
- * if the native path is disabled.
+/** @brief Compose and present one native image to the Vulkan window on the inline path.
  *
- * `record_pts_us` is the wall-clock capture instant (microseconds) tagged onto
- * this present for --record: the frame is queued into the async readback ring
- * here (between the blit and present) and retrieved a couple presents later, so
- * a vk recording captures the on-screen SSAA/widescreen/sub-tick frame at real
- * speed. Unused when recording is inactive. */
+ * Call after PsyX_EndScene, so PsyCross's present target holds a fresh
+ * reference. Applies queued texture-mapping, notex, wireframe and truescope
+ * changes outside the frame, syncs the VRAM mirror and the reference
+ * texture, then composes and presents. Does not pump SDL events: the host
+ * loop owns the event queue, which PsyCross's input path depends on, and
+ * window-size changes are detected by polling. No-op when native render is
+ * disabled or headless; a headless capture composes on demand in
+ * openpete_native_render_screenshot_all.
+ * @param record_pts_us Capture instant in op_now microseconds tagged onto
+ *        this present for --record. The image is queued into the async
+ *        readback ring between the blit and the present and retrieved a few
+ *        presents later, so a recording holds the on-screen image at real
+ *        speed. Unused when recording is inactive. */
 void openpete_native_render_frame(uint64_t record_pts_us);
 
-/* Re-present the last composed frame (offscreen -> swapchain, no recompose).
- * Issues no scene work and reads no guest state, so it is the one present a
- * thread other than the guest's may make. Returns 1 if a present went out. */
+/** @brief Re-present the last composed image without recomposing it.
+ *
+ * The offscreen image persists, so acquiring a swapchain image and blitting
+ * it again shows the same image. Issues no scene work and reads no guest
+ * state, so it is the one present a thread other than the guest's may make.
+ * Refused while the present thread owns the display, while a swapchain
+ * rebuild is pending (that belongs to the window's thread), and when
+ * begin_frame declines (swapchain recreating, acquire budget spent,
+ * minimized window).
+ * @return 1 when a present went out, else 0. */
 int openpete_native_render_repeat_last(void);
 
 /* ---- eager scene ring ----------------------------------------------------
@@ -1384,8 +1465,12 @@ int openpete_native_render_repeat_last(void);
  * and publishes each into a ring; a present thread composes ring slots on
  * the display grid. See native_render.c "eager scene ring" for the slot
  * lifecycle and the ownership rule. Times are op_now() nanoseconds. */
-/* Call before the re-extract of an eager scene: the terrain builder stamps
- * its build with a scene id (top bit set) instead of the VBL counter. */
+/** @brief Stamp the next terrain build with the eager scene id instead of the VBL counter.
+ *
+ * Call before the re-extract of an eager scene. The stamp is the next scene
+ * id with OPTC_STAMP_SCENE_BIT set, so it cannot collide with a VBL number;
+ * openpete_native_scene_build_stamp returns it until
+ * openpete_native_scene_publish clears it. */
 void     openpete_native_scene_eager_begin(void);
 uint32_t openpete_native_scene_build_stamp(void);
 /* Copy the accumulator + every per-present companion into the next free
@@ -1395,9 +1480,17 @@ int      openpete_native_scene_publish(int64_t target_ns, int kind, double alpha
 int64_t  openpete_native_scene_next_target(void);      /* earliest pending, 0 = none */
 int      openpete_native_scene_pick(int64_t at);       /* nearest pending -> PRESENTING */
 int      openpete_native_render_scene(int slot, uint64_t record_pts_us);
-/* Staged form: render the scene into stage image `stage` now, present it
- * later with openpete_native_present_stage (see rhi_present_stage). The
- * slot's lifecycle is the same as a direct present's. */
+/** @brief Compose a ring slot into a stage image for a later present.
+ *
+ * The staged form of openpete_native_render_scene: the render ends in stage
+ * image @p stage, and openpete_native_present_stage presents it later. The
+ * slot's lifecycle is the same as a direct present's: PRESENTED under the
+ * render serial when the render went out, FREE when the swapchain declined.
+ * @param slot Ring slot to compose.
+ * @param stage Stage image index.
+ * @param record_pts_us Capture instant in op_now microseconds for --record.
+ * @return 1 when the render went out, 0 when it was declined, native render
+ *         is off or headless, or @p slot is out of range. */
 int      openpete_native_render_scene_to_stage(int slot, int stage, uint64_t record_pts_us);
 int      openpete_native_present_stage_acquire(void);      /* hold a swapchain image for the next present */
 int      openpete_native_present_stage(int stage);         /* 1 = presented (acquires if not held) */
@@ -1412,9 +1505,13 @@ int      openpete_native_scene_ring_pending(void);
 int      openpete_native_scene_ring_busy(void);
 void     openpete_native_scene_slot_info(int slot, int64_t *target_ns, double *alpha, int *paired, int *kind);
 void     openpete_native_scene_ring_report(void);
-/* Per-present accounting: what each composed frame showed (native scene,
- * VRAM framebuffer fallback, PsyCross reference, bare clear) and which
- * scene kind it came from. Printed at exit. */
+/** @brief Log the window state and the per-present census at exit.
+ *
+ * The census counts what each composed image showed (native scene, VRAM
+ * framebuffer fallback, PsyCross reference, bare clear) per scene kind,
+ * with extents, triangle and retained-sector ranges, and the number of
+ * presents whose outcome or kind changed from their predecessor. The census
+ * lines are omitted when no present was composed or refused at begin. */
 void     openpete_native_present_census_report(void);
 float    openpete_native_display_refresh_hz(void);   /* current swapchain's display, 0 = unknown */
 int      openpete_native_display_vsync(void);        /* FIFO present mode in effect */
@@ -1537,8 +1634,10 @@ void openpete_native_occl_qstats(long out[OPENPETE_OCCL_Q_COUNT]);
  * off-screen return leaves it unchanged.
  * @return View-Z of the farthest grid cell scanned in that rect. */
 float openpete_native_occl_last_scan_max(void);
-/* Diagnostics: presents elapsed since the live grid was captured, or -1 when
- * no grid is held. The query refuses a grid older than 8 presents. */
+/** @brief Return the number of presents elapsed since the occlusion grid was captured.
+ *
+ * Diagnostics. The query refuses a grid older than 8 presents.
+ * @return The age in presents, or -1 when no grid is held. */
 int  openpete_native_occl_grid_age(void);
 
 /* ---- per-present phase timers (OPENPETE_PHASE_TIMERS=1) ---------------------
@@ -1579,6 +1678,17 @@ void     openpete_phase_set_count(int which, int n);
  * accumulated set as the carry (call on the CANONICAL present, before the
  * re-extract); apply_overlay() re-applies it after the 3D feeders (call at the
  * end of every re-extract). See native_render.c. */
+/** @brief Commit the 2D tris accumulated at feed time as this tick's overlay carry.
+ *
+ * Call on the canonical present, before the re-extract. Runs the
+ * pre-capture hook first, rolls the previous carry and its tick stamp to
+ * prev so apply_overlay can interpolate animated 2D positions, stamps the
+ * capture with openpete_interp_tick_stamp, moves the accumulation into the
+ * carry and sorts it into emission order. When a carry entry was fed into a
+ * scene that has since been replaced and the scene holds no re-applied
+ * carry, the scene's carry-eligible tris are replaced by the carry set, so
+ * the canonical and sub-tick presents show the same 2D layer. The scene's
+ * 2D is then sorted into emission order. */
 void openpete_native_scene_capture_overlay(void);
 void openpete_native_scene_apply_overlay(double alpha);
 /* Pre-capture hook: called at the top of capture_overlay so the 2D-UI feeder
@@ -1586,46 +1696,80 @@ void openpete_native_scene_apply_overlay(double alpha);
  * before the carry commits — by the canonical present every post-link prim
  * mutation is done, so the flush is exact. */
 void openpete_native_scene_register_overlay_precapture(void (*fn)(void));
-/* Roll the fade ramp's prev/curr — call on each CANONICAL present (before the
- * re-extract) so apply_overlay can interpolate the fade sub-tick. */
+/** @brief Roll the fade and freeze-backdrop carries to the tick just rendered.
+ *
+ * Call on each canonical present, before the re-extract, so apply_overlay
+ * interpolates the fade across sub-ticks. The previous current fade becomes
+ * prev; the new fade is the game's set_fade value when it was called since
+ * the last commit, else 0. The freeze backdrop rolls the same way. In the
+ * emitted-quad freeze mode a freeze that drops on a scene with no world
+ * geometry (the pause-to-exit handoff tick) is held, and that scene's
+ * geometry is dropped so only the held freeze shows. Clears both one-tick
+ * seen flags. */
 void openpete_native_scene_commit_fade(void);
 
-/* Capture the offscreen target — whatever the last present blitted, which is
- * the native frame in vk mode and PsyCross's read-back frame in psycross
- * mode, chrome and postfx included — to a PNG at `path`. Call after openpete_native_render_frame so the offscreen holds
- * the latest frame. `what` labels the log line (NULL reads as "offscreen").
- * Returns 0 on success, nonzero if disabled or on failure. */
+/** @brief Write the offscreen target to a PNG.
+ *
+ * The offscreen holds whatever the last present blitted: the native image
+ * in vk mode and PsyCross's read-back image in psycross mode, chrome and
+ * postfx included. Call after openpete_native_render_frame so it holds the
+ * latest image. Alpha is forced opaque.
+ * @param path Output PNG path.
+ * @param what Label for the log line; NULL reads as offscreen.
+ * @return 0 on success, nonzero when native render is disabled, @p path is
+ *         NULL, or the readback or write fails. */
 int openpete_native_render_screenshot(const char *path, const char *what);
 
-/* As above, additionally reporting the written image's extent in `out_w`/
- * `out_h` (both set to 0 when nothing was written). Either pointer may be
- * NULL. Lets a caller that captures a sequence of presents state each
- * present's extent and detect a sequence whose images are not comparable. */
+/** @brief Write the offscreen target to a PNG and report the written extent.
+ *
+ * As openpete_native_render_screenshot. The extent lets a caller that
+ * captures a sequence of presents state each present's extent and detect a
+ * sequence whose images are not comparable.
+ * @param path Output PNG path.
+ * @param what Label for the log line; NULL reads as offscreen.
+ * @param out_w Receives the image width, or 0 when nothing was written; may be NULL.
+ * @param out_h Receives the image height, or 0 when nothing was written; may be NULL.
+ * @return 0 on success, nonzero when native render is disabled, @p path is
+ *         NULL, or the readback or write fails. */
 int openpete_native_render_screenshot_ext(const char *path, const char *what,
                                           int *out_w, int *out_h);
 
-/* --record shutdown drain: flush the async readback ring's still-queued tail
- * frames to the encoder (in PTS order) before openpete_record_shutdown()
- * finalizes the file. Call once, after the run loop, while the native device is
- * still alive. No-op unless the native renderer is the display AND recording is
- * active. Blocks (the device is torn down right after). */
+/** @brief Drain the --record readback ring's queued tail images to the encoder.
+ *
+ * The ring still holds the last few presents when the run loop ends; they
+ * are submitted in PTS order so openpete_record_shutdown finalizes a file
+ * with its tail. Call once, after the run loop, while the native device is
+ * alive. Blocks on the readbacks. No-op unless native render is enabled and
+ * recording is active. */
 void openpete_native_render_record_flush(void);
 
-/* Dump the native view of one --screenshot-on-frame target, writing it to
- * `base` with "-vk" inserted before the extension. In a windowed run the -vk
- * image is a READBACK of the just-presented off_image — ground truth for what
- * the window showed (sub-tick interp scene, mods, postfx, overlays). Headless
- * recomposes the canonical lagged scene instead, the only option without a
- * live present; psycross mode, which has no native scene to recompose, writes
- * the readback and stops. The reference ("-og") is captured separately by the
- * caller. Restores the live layout afterwards. Returns 0 if all variants were written,
- * nonzero otherwise (including when the native path is disabled). */
+/** @brief Write the native view of one --screenshot-on-frame target as the -vk image.
+ *
+ * The path is @p base with -vk inserted before the extension. In a windowed
+ * run the -vk image is a readback of the just-presented offscreen image,
+ * which shows what the window showed (sub-tick scene, mods, postfx,
+ * overlays). Headless, and an intermediate capture armed by
+ * openpete_native_render_set_capture_nodelay, recompose the scene instead:
+ * headless composes the lagged canonical scene so -vk shows the same game
+ * tick as the -og capture. Psycross mode, which has no native scene, writes
+ * the readback and stops. The reference (-og) is captured by the caller.
+ * Applies a pending truescope change first, since headless never runs
+ * openpete_native_render_frame. Restores the live layout afterwards.
+ * @param base Output path before the -vk suffix.
+ * @return 0 when every image was written, nonzero otherwise, including when
+ *         native render is disabled. */
 int openpete_native_render_screenshot_all(const char *base);
 
-/* In-memory twin of the above: the same compose (same capture target, same
- * widescreen widen, same scene selection) read back into a malloc'd top-down
- * RGBA buffer instead of written as a PNG. *out is the caller's to free; *w and
- * *h receive the capture extent. Returns 0 on success. */
+/** @brief Compose the screenshot scene into a malloc'd RGBA buffer instead of a PNG.
+ *
+ * The in-memory form of openpete_native_render_screenshot_all: the same
+ * capture target, widescreen widen and scene selection, always recomposed
+ * (no live readback), top-down, alpha forced opaque. Fails in psycross mode,
+ * which has no native scene.
+ * @param out Receives the buffer, which the caller frees; NULL on failure.
+ * @param w Receives the capture width; may be NULL.
+ * @param h Receives the capture height; may be NULL.
+ * @return 0 on success, nonzero on failure or when @p out is NULL. */
 int openpete_native_render_capture_rgba(unsigned char **out, int *w, int *h);
 
 /* Save / restore the accumulating scene (s_scene and its per-frame scalars).
@@ -1637,31 +1781,46 @@ int openpete_native_render_capture_rgba(unsigned char **out, int *w, int *h);
 int  openpete_native_scene_save(void);
 void openpete_native_scene_restore(void);
 
-/* Intermediate (sub-tick alpha=0.5) capture: make the next
- * openpete_native_render_screenshot_all compose the CURRENT scene (depth 0)
- * instead of the lagged frame-history slot. The re-extract builds the
- * interpolated scene into the current scene and never pushes it to history, so
- * the normal shot-compose delay would read an empty history frame. Set on before
- * the dump, off after. No effect on the canonical dump (leave it 0). */
+/** @brief Make the screenshot compose read the current scene instead of the lagged history slot.
+ *
+ * For an intermediate (sub-tick) capture: the re-extract builds the
+ * interpolated scene into the current scene and never pushes it to the
+ * history ring, so the normal shot-compose delay would read an empty history
+ * slot. While on, the compose also skips the live readback and recomposes.
+ * Set on before the dump and off after; the canonical dump leaves it off.
+ * @param on Nonzero to compose the current scene. */
 void openpete_native_render_set_capture_nodelay(int on);
 
-/* Capture-time freeze backdrop: render the current world frame into the capture
- * freeze texture so a later headless dump of a freeze frame (pause / flight-
- * results / level-exit) shows the green frozen-world backdrop. frozen_tex is
- * snapshotted only with a live window, so a headless capture must maintain this
- * itself. No-op on freeze / empty frames, so once the game pauses it holds the
- * last world frame. Call each present during a freeze-backdrop capture run;
- * cap_wf is the capture's widescreen factor (openpete_native_widescreen_factor). */
+/** @brief Render the current world scene into the capture freeze backdrop.
+ *
+ * A later headless dump of a freeze tick (pause, flight results, level exit)
+ * then shows the green frozen-world backdrop; frozen_tex is snapshotted only
+ * with a live window, so a headless capture maintains its own. Only a
+ * freeze-source scene is rendered: a freeze, menu or terrain-less scene
+ * leaves the backdrop unchanged, so once the game pauses it holds the last
+ * world scene. The reference shape is derived from game state when no
+ * reference exists. Call each present during a freeze-backdrop capture run.
+ * @param cap_wf The capture's widescreen factor
+ *        (openpete_native_widescreen_factor); values below 1 read as 1. */
 void openpete_native_render_snapshot_frozen(float cap_wf);
 
-/* Compose this present's frame in memory and give every pending framebuffer
- * window (see openpete_fb_snapshot.h) the crop of it that the game's MoveImage
- * copied, so the quad re-displaying that copy draws the native frame instead of
- * an emulated framebuffer the native render never writes. Runs on the host loop
- * with the display in hand, after the present. */
+/** @brief Give every pending framebuffer window and draw area a crop of the native image.
+ *
+ * Each pending window (see openpete_fb_snapshot.h) is composed in memory
+ * from the scene of the tick its copy was taken on and cropped to the rect
+ * the game's MoveImage copied, so the quad re-displaying that copy draws the
+ * native image instead of an emulated framebuffer the native render never
+ * writes. Runs on the host loop with the display in hand, after the
+ * present. No-op when native render is off or nothing is pending. */
 void openpete_native_render_snapshot_fb_window(void);
 
-/* Tear down the device + window. Safe to call unconditionally. */
+/** @brief Log the run's engagement summaries and tear down the device and window.
+ *
+ * Always logs the scene box summary, the pipeline depth report and the
+ * sub-tick view engagement. When native render is enabled it then waits the
+ * device idle and destroys the imgui backend, the terrain cache, the mod
+ * postfx and material objects, every target, buffer and pipeline, the
+ * device and the window. Safe to call unconditionally. */
 void openpete_native_render_shutdown(void);
 
 #ifdef __cplusplus
