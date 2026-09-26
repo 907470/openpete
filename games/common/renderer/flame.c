@@ -771,7 +771,7 @@ void flame_records_present(CPUState* cpu, int paired, int cam_cut, double alpha,
         if (!d) break;
         if (!d->drawn) continue;
         const player_flame_rec_t* pd = player_records_flame_prev(j);
-        memcpy(flb, d->fl, len);
+        memcpy(flb, d->src, len);
         double sub = 0.0;
         if (player_records_lerps(d->model) && pd) flame_bracket(flb, pd->src, d->src, rec_alpha, &sub);
         flame_native_set_subframe(sub);

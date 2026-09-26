@@ -49,6 +49,7 @@
 #include "renderer/terrain.h"        /* this feeder's exports */
 #include "openpete_interp.h"         /* openpete_interp_present_now (scroll-anim alpha) */
 #include "openpete_interp_objs.h"    /* per-descriptor scroll snapshots */
+#include "openpete.h"                /* openpete_runahead_get */
 #include "renderer/native_gte.h"    /* shared GTE float-mirror math */
 #include "no_lod.h"  /* openpete_no_lod + openpete_fog_scale (--fog-scale) */
 #include "openpete_fillpick.h"       /* LP fill-tag inspector (P): session verdicts + pick */
@@ -3461,13 +3462,37 @@ typedef struct {
     uint32_t prv;     /* previous accumulator */
 } tscroll_sweep_t;
 
-/* Fill *S from the snapshot pair of scroller descriptor `desc`, whose tile is
- * `ct` and whose committed accumulator is `cur`. Returns 1 when this present
- * is bracketed by two distinct accumulator states of that one tile; returns 0
- * otherwise, leaving the caller on the committed position. */
+/** Fill *S with the accumulator offset from the committed `cur` of scroller
+ * descriptor `desc` (tile `ct`) to the one a sub-tick present shows: the
+ * snapshot pair's lerp(prev, curr, alpha). The snapshot's curr is the tick
+ * the canonical present composed: the committed tick, equal to `cur`, or
+ * under --runahead the led tick captured at the speculation head while the
+ * guest RAM holding `cur` and the tiledef V bytes is the committed tick; the
+ * V offset is linear in the accumulator, so the lead shifts the committed
+ * decode onto the led one exactly.
+ * @param desc the descriptor's guest address (the objs key)
+ * @param ct   the descriptor's tile
+ * @param cur  the committed 7-bit accumulator in guest RAM
+ * @param now  the present clock
+ * @param S    receives the offset and the sweep terms
+ * @return 1 when the offset is nonzero or a sweep bracketed this present, 0
+ *         leaving the caller on the committed position */
 static int tsc_scroll_sweep(uint32_t desc, uint32_t ct, uint32_t cur,
                             op_time_t now, tscroll_sweep_t* S) {
     const openpete_interp_obj_t* o = openpete_interp_objs_find(desc);
+    if (!o) return 0;
+    /* blob = the descriptor's u16 tile at +4 then u16 accumulator at +6 */
+    uint16_t ctile, ptile, ocur, prv;
+    memcpy(&ctile, o->curr + 0, 2); memcpy(&ocur, o->curr + 2, 2);
+    memcpy(&ptile, o->prev + 0, 2); memcpy(&prv, o->prev + 2, 2);
+    if (ctile != ct) return 0;
+    ocur &= 0x7Fu;
+    /* Lead of the snapshot's near end over the committed accumulator, the
+     * shortest way around the 7-bit ring. Nonzero only under --runahead. */
+    int lead = ((((int)ocur - (int)cur) + 64) & 127) - 64;
+    if (lead != 0 && (openpete_runahead_get() <= 0 ||
+                      lead > TSCROLL_JUMP || lead < -TSCROLL_JUMP)) return 0;
+    S->off = (double)lead;
     /* curr_ns == prev_ns means the snapshot clock stood still between the
      * two distinct accumulator states — there is no interval to sweep. It
      * happens under deterministic capture with a frozen camera (the headless
@@ -3475,25 +3500,18 @@ static int tsc_scroll_sweep(uint32_t desc, uint32_t ct, uint32_t cur,
      * tick_ns, and a static camera dedupes that ring so it never advances.
      * Windowed the stamp is the PLL virtual clock, which advances per tick
      * regardless of camera motion, so a still camera still scrolls. */
-    if (!o || !o->have_prev || o->curr_ns <= o->prev_ns) return 0;
-    /* blob = the descriptor's u16 tile at +4 then u16 accumulator at +6 */
-    uint16_t ctile, ptile, ocur, prv;
-    memcpy(&ctile, o->curr + 0, 2); memcpy(&ocur, o->curr + 2, 2);
-    memcpy(&ptile, o->prev + 0, 2); memcpy(&prv, o->prev + 2, 2);
-    /* Identity: one tile at both ends, and the snapshot's near end is the
-     * accumulator the tiledef V bytes in RAM were written from. */
-    if (ptile != ctile || ctile != ct || (uint32_t)(ocur & 0x7Fu) != cur) return 0;
+    if (!o->have_prev || o->curr_ns <= o->prev_ns || ptile != ctile) return lead != 0;
     prv &= 0x7Fu;
     /* Shortest path around the 7-bit ring: the accumulator wraps 127→0 mid
      * animation, and a raw difference there would read as a full-window jump. */
-    int d = ((((int)cur - (int)prv) + 64) & 127) - 64;
-    if (d == 0 || d > TSCROLL_JUMP || d < -TSCROLL_JUMP) return 0;
+    int d = ((((int)ocur - (int)prv) + 64) & 127) - 64;
+    if (d == 0 || d > TSCROLL_JUMP || d < -TSCROLL_JUMP) return lead != 0;
     op_time_t per = o->curr_ns - o->prev_ns;
     if (per > TSCROLL_PERIOD_MAX) per = TSCROLL_PERIOD_MAX;
     double a = (double)(now - o->curr_ns) / (double)per;
     if (a < TSCROLL_ALPHA_MIN) a = TSCROLL_ALPHA_MIN; else if (a > 1.0) a = 1.0;
-    /* Rendered accumulator = lerp(prev,cur,a) = cur + (a-1)*d. */
-    S->off = (a - 1.0) * (double)d;
+    /* Rendered accumulator = lerp(prev,ocur,a) = cur + lead + (a-1)*d. */
+    S->off = (double)lead + (a - 1.0) * (double)d;
     S->a = a; S->d = d; S->per_ms = (double)per / 1e6; S->prv = prv;
     return 1;
 }

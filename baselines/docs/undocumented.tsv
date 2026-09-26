@@ -2,7 +2,7 @@
 # library: libclang 14
 # requirement: brief on every function; @param per named parameter and @return on non-void for external linkage
 # written-by: hook
-# head: 1b3f5f6b6ecffe338329459f084db065709ae3d3
+# head: 4f8ca41500be9eda830e34789108a074dfebfe93
 file	function	form	accepted
 core/config/build_id.c	openpete_build_shared_recomp	plain	
 core/config/build_id.c	openpete_build_tagged	plain	
@@ -2877,7 +2877,6 @@ games/common/renderer/flame.c	flame_origin_tr	none
 games/common/renderer/flame.c	flame_prim_sink	plain	
 games/common/renderer/flame.c	flame_project	plain	
 games/common/renderer/flame.c	flame_read_cross	plain	
-games/common/renderer/flame.c	flame_records_present	plain	
 games/common/renderer/flame.c	flame_reextract	plain	
 games/common/renderer/flame.c	flame_report	plain	
 games/common/renderer/flame.c	flame_strip_compare	plain	
@@ -2976,7 +2975,6 @@ games/common/renderer/interp_regions_gen.c	stash_prepare	plain
 games/common/renderer/interp_regions_gen.c	stash_source	plain	
 games/common/renderer/moby.c	anim_header_sig	none	
 games/common/renderer/moby.c	append_revealed_regular	none	
-games/common/renderer/moby.c	append_revealed_regular_inner	none	
 games/common/renderer/moby.c	box_pass_latched	none	
 games/common/renderer/moby.c	build_moby_record_fields	plain	
 games/common/renderer/moby.c	build_moby_record_tr	none	
@@ -3417,7 +3415,6 @@ games/common/renderer/player.c	player_rec_word	plain
 games/common/renderer/player.c	player_records_curr	none	
 games/common/renderer/player.c	player_records_curr_ns	plain	
 games/common/renderer/player.c	player_records_dbg	plain	
-games/common/renderer/player.c	player_records_epoch_commit	plain	
 games/common/renderer/player.c	player_records_flame_append	none	
 games/common/renderer/player.c	player_records_flame_count	none	
 games/common/renderer/player.c	player_records_flame_curr	none	
@@ -3803,7 +3800,6 @@ games/common/renderer/terrain.c	tsc_refresh_anim	plain
 games/common/renderer/terrain.c	tsc_retag_fill	plain	
 games/common/renderer/terrain.c	tsc_scroll_desc	plain	
 games/common/renderer/terrain.c	tsc_scroll_refresh	none	
-games/common/renderer/terrain.c	tsc_scroll_sweep	plain	
 games/common/renderer/terrain.c	tsc_sector_polyanim	none	
 games/common/renderer/terrain.c	tsc_tag_gapfill	none	
 games/common/renderer/terrain.c	tsc_tile_gens	none	
@@ -4296,15 +4292,12 @@ games/spyro-1/renderer/portal.c	emit_portal_aperture	none
 games/spyro-1/renderer/portal.c	emit_split_by_outline	plain	
 games/spyro-1/renderer/portal.c	fan_emit_poly	plain	
 games/spyro-1/renderer/portal.c	feed_portal_dome	none	
-games/spyro-1/renderer/portal.c	feed_portal_quad	none	
 games/spyro-1/renderer/portal.c	fit_invz	plain	
 games/spyro-1/renderer/portal.c	margin_px_per_vertex	plain	
 games/spyro-1/renderer/portal.c	nolod_portal_dome_on	plain	
 games/spyro-1/renderer/portal.c	on_8004F4BC	none	
 games/spyro-1/renderer/portal.c	on_8004FEA0	none	
 games/spyro-1/renderer/portal.c	on_80050240	none	
-games/spyro-1/renderer/portal.c	openpete_portal_sky_planes	plain	
-games/spyro-1/renderer/portal.c	openpete_portal_sky_recent	plain	
 games/spyro-1/renderer/portal.c	ot_depth	none	
 games/spyro-1/renderer/portal.c	outline_offset	plain	
 games/spyro-1/renderer/portal.c	owning_portal_ptr	plain	
@@ -4335,7 +4328,6 @@ games/spyro-1/renderer/portal.c	portal_sky_eps_vz	none
 games/spyro-1/renderer/portal.c	portal_viewz	plain	
 games/spyro-1/renderer/portal.c	project_world	plain	
 games/spyro-1/renderer/portal.c	read_gte_rotmatrix	plain	
-games/spyro-1/renderer/portal.c	register_skyout	plain	
 games/spyro-1/renderer/portal.c	ring_depth	none	
 games/spyro-1/renderer/portal.c	s_want_dump_this_frame	plain	
 games/spyro-1/renderer/portal.c	set_ot_sky_vz	plain	
@@ -4372,8 +4364,6 @@ games/spyro-1/renderer/reextract.c	hround32	none
 games/spyro-1/renderer/reextract.c	interp_period_ns	plain	
 games/spyro-1/renderer/reextract.c	moby_cut_hold	plain	
 games/spyro-1/renderer/reextract.c	openpete_native_interp_pos	plain	
-games/spyro-1/renderer/reextract.c	player_records_loop	none	
-games/spyro-1/renderer/reextract.c	player_records_shadows	none	
 games/spyro-1/renderer/reextract.c	ra_rebase_on	plain	
 games/spyro-1/renderer/reextract.c	region_of	plain	
 games/spyro-1/renderer/reextract.c	scratch_bracket_enter	none	
@@ -4533,8 +4523,6 @@ games/spyro-2/renderer/reextract.c	game_reextract_body	none
 games/spyro-2/renderer/reextract.c	game_reextract_body_v	none	
 games/spyro-2/renderer/reextract.c	game_reextract_init	none	
 games/spyro-2/renderer/reextract.c	openpete_native_interp_pos	plain	
-games/spyro-2/renderer/reextract.c	player_record_shadow	plain	
-games/spyro-2/renderer/reextract.c	player_records_replay	none	
 games/spyro-2/renderer/reextract.c	rx_census_on	plain	
 games/spyro-2/renderer/reextract.c	rx_scene_tris	none	
 games/spyro-2/renderer/reextract.c	spyro_native_canon_capture_camera	none	
@@ -4643,8 +4631,6 @@ games/spyro-3/renderer/reextract.c	game_reextract_body	none
 games/spyro-3/renderer/reextract.c	game_reextract_body_v	none	
 games/spyro-3/renderer/reextract.c	game_reextract_init	none	
 games/spyro-3/renderer/reextract.c	openpete_native_interp_pos	plain	
-games/spyro-3/renderer/reextract.c	player_record_shadow	plain	
-games/spyro-3/renderer/reextract.c	player_records_replay	none	
 games/spyro-3/renderer/reextract.c	rx_census_on	plain	
 games/spyro-3/renderer/reextract.c	rx_scene_tris	none	
 games/spyro-3/renderer/reextract.c	spyro_native_canon_capture_camera	none	

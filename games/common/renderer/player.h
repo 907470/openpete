@@ -46,10 +46,11 @@ enum { PLAYER_REC_MODEL = 0, PLAYER_REC_SHADOW = 1, PLAYER_REC_FLAME = 2,
 #define PLAYER_REC_AUX_MAX    0xD0u   /* the largest auxiliary feeder's state */
 
 typedef struct {
-    uint8_t  spyro[PLAYER_REC_STATE_MAX];  /* the hook's state block: the staged base */
-    uint8_t  src[PLAYER_REC_STATE_MAX];    /* the lerp source (position, rotation, clocks): the same
-                                            * bytes, except under --runahead where the led list's
-                                            * record goes here */
+    uint8_t  spyro[PLAYER_REC_STATE_MAX];  /* the hook's state block: the pairing key across lists */
+    uint8_t  src[PLAYER_REC_STATE_MAX];    /* the shown state, staged and lerped by the re-extract:
+                                            * the same bytes, except under --runahead where the led
+                                            * list's record (the tick the canonical present shows)
+                                            * goes here; seg, fk and sxy follow it */
     uint8_t  seg[PLAYER_REC_PART_MAX];
     uint8_t  fk[PLAYER_REC_COL_MAX];
     uint8_t  sxy[PLAYER_REC_SXY_MAX];
@@ -62,14 +63,14 @@ typedef struct {
 
 typedef struct {
     uint8_t  sh[PLAYER_REC_AUX_MAX];   /* the shadow state at the hook */
-    uint8_t  src[PLAYER_REC_AUX_MAX];  /* the anchor lerp source */
+    uint8_t  src[PLAYER_REC_AUX_MAX];  /* the shown state, staged and lerped (led under --runahead) */
     int8_t   model;                    /* index of the model record it renders under */
     uint8_t  drawn;                    /* 1 = a hook call; 0 = pairing-only */
 } player_shadow_rec_t;
 
 typedef struct {
     uint8_t  fl[PLAYER_REC_AUX_MAX];   /* the flame state at the hook */
-    uint8_t  src[PLAYER_REC_AUX_MAX];
+    uint8_t  src[PLAYER_REC_AUX_MAX];  /* the shown state, staged and lerped (led under --runahead) */
     int8_t   model;
     uint8_t  drawn;
 } player_flame_rec_t;
@@ -126,7 +127,10 @@ void player_reextract_record(struct CPUState* cpu, int mirror);
 int  player_records_model_append(struct CPUState* cpu, uint32_t rp_start, uint32_t rp_end);
 int  player_records_shadow_append(struct CPUState* cpu);
 int  player_records_flame_append(struct CPUState* cpu);
-/* Once per canonical present, after the interp ring captured the tick. */
+/** Close the hooks' record epoch, once per canonical present, after the
+ * interp ring captured the tick: publish the committed list as the store's
+ * newest, with each record's shown state (src, seg, fk, sxy) taken from the
+ * led list under --runahead. */
 void player_records_epoch_commit(void);
 
 /* ---- record store, present side (host loop) --------------------------- */

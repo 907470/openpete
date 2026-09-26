@@ -237,29 +237,13 @@ void spyro_native_canon_capture_camera(void* cpu, int producer) { (void)cpu; (vo
 int  spyro_native_prod_camera_enter(int producer) { (void)producer; return 0; }
 void spyro_native_prod_camera_leave(void) {}
 
-/* Replay every player call the canonical tick recorded, not just the avatar.
- *
- * The pass driver draws the avatar twice on a tick over a reflective surface:
- * a mirrored copy first, with the height above the surface in the state word,
- * the world Z moved to twice that height below it and its own ordering bias
- * in the sort byte, then the avatar with those three fields restored
- * (asm/nonmatchings/drawutil/func_8001EC5C.s:39-90). Live gamestate at present
- * time therefore describes neither call: the driver put it back. The record
- * store holds each call's own state block, so the loop stages that block into
- * the sub-tick view and runs the walk once per record, with the mirrored
- * verdict taken from the record rather than re-read. Reproducing the copy from
- * the capture is what makes it draw on an intermediate present; without it the
- * reflection appears only on canonical ticks and vanishes at any present rate
- * above the tick rate.
- *
- * Host-only: the staged span is a view copy, restored to the ambient bytes at
- * the end, and no guest word is written. */
-/* The player's ground shadow, at its own place in the record order: the shadow
+/** The player's ground shadow, at its own place in the record order: the shadow
  * feeder reads one state block, the record store holds the block each call
  * drew with, so the loop stages that block over the ambient bytes and runs the
  * fan once per record. The anchor is bracketed against the previous tick's,
  * teleport-guarded like the camera, so the shadow slides with the avatar
- * between ticks instead of stepping with it.
+ * between ticks instead of stepping with it. The staged block is the record's
+ * shown state (`src`, the led tick's under --runahead).
  *
  * Host-only: the staged span is a view copy and no guest word is written. */
 static void player_record_shadow(CPUState* cpu, int k, uint8_t* shb, double rec_alpha) {
@@ -270,7 +254,7 @@ static void player_record_shadow(CPUState* cpu, int k, uint8_t* shb, double rec_
         const player_shadow_rec_t* d = player_records_shadow_curr(j);
         if (!d || d->model != k || !d->drawn) continue;
         const player_shadow_rec_t* pd = player_records_shadow_prev(j);
-        memcpy(shb, d->sh, len);
+        memcpy(shb, d->src, len);
         if (player_records_lerps(k) && pd) {
             const int32_t* pp = (const int32_t*)(pd->src + SHADOW_POS_OFF);
             const int32_t* cp = (const int32_t*)(d->src + SHADOW_POS_OFF);
@@ -283,6 +267,24 @@ static void player_record_shadow(CPUState* cpu, int k, uint8_t* shb, double rec_
     }
 }
 
+/** Replay every player call the canonical tick recorded, not just the avatar.
+ *
+ * The pass driver draws the avatar twice on a tick over a reflective surface:
+ * a mirrored copy first, with the height above the surface in the state word,
+ * the world Z moved to twice that height below it and its own ordering bias
+ * in the sort byte, then the avatar with those three fields restored
+ * (asm/nonmatchings/drawutil/func_8001EC5C.s:39-90). Live gamestate at present
+ * time therefore describes neither call: the driver put it back. The record
+ * store holds each call's own state block (its shown state: the led tick's
+ * under --runahead), so the loop stages that block into
+ * the sub-tick view and runs the walk once per record, with the mirrored
+ * verdict taken from the record rather than re-read. Reproducing the copy from
+ * the capture is what makes it draw on an intermediate present; without it the
+ * reflection appears only on canonical ticks and vanishes at any present rate
+ * above the tick rate.
+ *
+ * Host-only: the staged span is a view copy, restored to the ambient bytes at
+ * the end, and no guest word is written. */
 static void player_records_replay(CPUState* cpu, int paired, double alpha) {
     const uint32_t len = game_layout.player.rec_len;
     double rec_alpha = 0.0;
@@ -310,8 +312,8 @@ static void player_records_replay(CPUState* cpu, int paired, double alpha) {
     for (int k = 0; k < n; k++) {
         const player_model_rec_t* rec = player_records_curr(k);
         if (!rec) break;
-        if (!rec->drawn) { player_records_present_note(k, (const int32_t*)rec->spyro); continue; }
-        memcpy(sb, rec->spyro, len);
+        if (!rec->drawn) { player_records_present_note(k, (const int32_t*)rec->src); continue; }
+        memcpy(sb, rec->src, len);
 
         /* Position and rotation between the two ticks this record pairs.
          * Without it the avatar holds its tick pose while the camera glides,

@@ -1467,12 +1467,13 @@ void player_records_epoch_commit(void) {
         int seen = 0;
         for (int k = 0; k < epoch.n; k++)
             if (memcmp(epoch.r[k].spyro + PL.pos_off, ring + PL.pos_off, 12) == 0) { seen = 1; break; }
-        /* --runahead: the hooks fire on the committed tick, the ring holds the
-         * led one. Every record takes its lerp SOURCE from the led list — the
-         * speculative fires of the ring's capture tick, index for index — the
-         * committed bytes staying the staged base. A led list from another
-         * frame or of another shape leaves the records committed and is
-         * counted. */
+        /* --runahead: the hooks fire on the committed tick and on the
+         * speculative ticks; the ring and the canonical present hold the led
+         * one. Every record takes its shown state (src, seg, fk, sxy) from the
+         * led list, the speculative fires of the ring's capture tick, index for
+         * index; the committed bytes stay the pairing key. A led list from
+         * another frame or of another shape leaves the records committed and
+         * is counted. */
         if (openpete_runahead_get() > 0 && epoch.n > 0 && s_led_fires_epoch > 0) {
             int led_ok = (s_led.frame > epoch.frame &&
                           s_led.frame <= curr->tick && s_led.n == epoch.n);
@@ -1481,7 +1482,11 @@ void player_records_epoch_commit(void) {
             if (led_ok) {
                 for (int k = 0; k < epoch.n; k++) {
                     memcpy(epoch.r[k].src, s_led.r[k].spyro, PL.rec_len);
-                    if (epoch.r[k].drawn) memcpy(epoch.r[k].seg, s_led.r[k].seg, PL.part_block_len);
+                    if (epoch.r[k].drawn) {
+                        memcpy(epoch.r[k].seg, s_led.r[k].seg, PL.part_block_len);
+                        memcpy(epoch.r[k].fk,  s_led.r[k].fk,  PL.colour_scratch_len);
+                        memcpy(epoch.r[k].sxy, s_led.r[k].sxy, PL.sxy_len);
+                    }
                 }
                 if (s_led.nsh == epoch.nsh)
                     for (int j = 0; j < epoch.nsh; j++) memcpy(epoch.sh[j].src, s_led.sh[j].sh, PL.shadow_len);

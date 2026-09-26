@@ -58,6 +58,7 @@
 #include "renderer/portal_plane.h"   /* openpete_portal_plane_margin (shared) */
 #include "renderer/native_gte.h"    /* shared GTE float-mirror math */
 #include "renderer/terrain.h"       /* terrain_native_flush_deferred */
+#include "renderer/orchestrator.h"  /* canonical-render epoch */
 
 #include <math.h>
 #include <stdint.h>
@@ -426,6 +427,7 @@ static portal_cap_t s_pcap[PORTAL_CAP_MAX];
 static int          s_pcap_n = 0;     /* entries captured this canonical frame    */
 static int          s_pcap_valid = 0; /* a canonical RenderPortals has populated it*/
 static unsigned     s_pcap_frame = 0; /* openpete_frame of the populating RenderPortals */
+static uint32_t     s_pcap_epoch = 0; /* canonical-render epoch of the populating RenderPortals */
 /* Staleness gate (liveness unification): on_80050BE0 calls
  * render_path_mark_drawn(RP_PORTAL) while the canonical frame renders; the
  * shared render_paths commit latches it into the canon-drawn mask once per
@@ -1003,9 +1005,19 @@ static void emit_aperture_ring(const ppt* poly, int pn, const double* dpx,
                                uint32_t rgba, int channel);
 /* Portal-guard gate for the terrain feeder (see OPENPETE_SCENE_PORTAL_GUARD):
  * true while a portal fed sky within the last couple of presents. */
-static unsigned s_sky_fed_frame = 0;
+static int      s_sky_fed = 0;
+static uint32_t s_sky_fed_epoch = 0;
+
+/** Whether `stamp` names the canonical render in flight or the last one
+ * presented. A capture made during a runahead speculation carries the epoch
+ * of the canonical present that shows it, where its openpete_frame leads the
+ * committed frame the sub-tick re-extract runs at. */
+static int canon_epoch_recent(uint32_t stamp) {
+    return stamp == spyro_native_canon_epoch_stamp() || spyro_native_canon_epoch_fresh(stamp);
+}
+
 int openpete_portal_sky_recent(void) {
-    return s_sky_fed_frame != 0u && (openpete_frame - s_sky_fed_frame) <= 2u;
+    return s_sky_fed && canon_epoch_recent(s_sky_fed_epoch);
 }
 /* Plane provider for the terrain OT-conformance clamp (portal.h). One
  * entry per portal captured by the canonical leaf hooks this/last frame
@@ -1025,7 +1037,7 @@ int openpete_portal_sky_planes(CPUState* cpu, const ngte_view* v, openpete_porta
         if (dbg) fprintf(stderr, "[pplanes f=%u] BAIL no-cap valid=%d n=%d\n", openpete_frame, s_pcap_valid, s_pcap_n);
         return 0;
     }
-    if (openpete_frame - s_pcap_frame > 2u) {
+    if (!canon_epoch_recent(s_pcap_epoch)) {
         if (dbg) fprintf(stderr, "[pplanes f=%u] BAIL stale capframe=%u\n", openpete_frame, s_pcap_frame);
         return 0;
     }
@@ -1163,6 +1175,10 @@ static int portal_repr_skip(int is_dome) {
     return (m >= 0) && ((m == 1) != (is_dome != 0));
 }
 
+/** Feed one portal leaf quad (flat fill or skybox dome) to the native scene:
+ * resolve its portal, project the opening outline, mark the stencil aperture
+ * and emit the sky fan, stamping the portal-guard recency with the
+ * canonical-render epoch. Returns 1 when the quad was fed. */
 static int feed_portal_quad(CPUState* cpu, uint32_t a0, int a0_is_skybox,
                             uint32_t portal_hint,
                             uint32_t rgb_override, uint32_t ot_b_hint,
@@ -1257,7 +1273,7 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, int a0_is_skybox,
          * terrain OT-conformance sink. */
         s_ring_vz = 0.0;
         for (int i = 0; i < pn; i++) if (poly[i].vz > s_ring_vz) s_ring_vz = poly[i].vz;
-        s_sky_fed_frame = openpete_frame;
+        s_sky_fed = 1; s_sky_fed_epoch = spyro_native_canon_epoch_stamp();
         float cz = 0.0f;
         const int cmode = sky_const_depth(&cz);
         emit_portal_aperture(cpu, p, poly, pn, 0, 0.0, 0.0, 0.0);
@@ -1397,9 +1413,9 @@ static int clip_half(const pgv* in, int n, pgv* out, int axis, float val, int ke
 static pgv   s_skyout[16];        /* outline polygon (screen space), CCW-oriented */
 static int   s_skyout_n = 0;      /* 0 = unavailable -> single-depth fallback */
 
-/* Register the projected outline for the two-region split (both the dome and
+/** Register the projected outline for the two-region split (both the dome and
  * the flat-fill paths): orient CCW by the centroid side. Also refreshes
- * s_ring_vz / the portal-guard recency. */
+ * s_ring_vz and the portal-guard recency (canonical-render epoch). */
 static void register_skyout(const ppt* poly, int pn) {
     double maxvz = 0.0, mx = 0.0, my = 0.0;
     for (int i = 0; i < pn; i++) {
@@ -1418,7 +1434,7 @@ static void register_skyout(const ppt* poly, int pn) {
     }
     s_skyout_n = pn;
     s_ring_vz = maxvz;
-    s_sky_fed_frame = openpete_frame;
+    s_sky_fed = 1; s_sky_fed_epoch = spyro_native_canon_epoch_stamp();
 }
 
 /* ---- stencil aperture from the opening polygon ----------------------------
@@ -2565,6 +2581,7 @@ static int on_80050BE0(CPUState* cpu, uint32_t a) {
      * signal, not "emitted prims". Latched into the canon-drawn mask once per
      * canonical present by the shared render_paths commit. */
     if (feed) { s_pcap_valid = 1; s_pcap_frame = openpete_frame;
+                s_pcap_epoch = spyro_native_canon_epoch_stamp();
                 render_path_mark_drawn(RP_PORTAL); }
     s_rp_frame = openpete_frame;
     memcpy(s_spin_prev, s_spin_curr, sizeof s_spin_prev);

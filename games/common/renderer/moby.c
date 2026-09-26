@@ -2018,6 +2018,7 @@ static int moby_is_shiny(CPUState* cpu, uint32_t moby) {
     return 1;
 }
 static int append_revealed_regular_inner(CPUState* cpu);
+static void moby_fields_pose_from_snapshot(CPUState* cpu, uint32_t moby, moby_fields* f);
 static int append_revealed_regular(CPUState* cpu) {
     if (!tier_dbg_on()) return append_revealed_regular_inner(cpu);
     uint64_t t0 = openpete_phase_now_us();
@@ -2025,6 +2026,11 @@ static int append_revealed_regular(CPUState* cpu) {
     s_us_reveal += (long)(openpete_phase_now_us() - t0);
     return n;
 }
+/** The reveal walk: host-built records for the live mobys the canonical cull
+ * did not queue (widescreen edges, --no-lod range), decoded and appended to
+ * the scene. On a sub-tick present each record takes the pose of the tick the
+ * canonical present showed. Returns the records admitted, occlusion-culled
+ * ones included. */
 static int append_revealed_regular_inner(CPUState* cpu) {
     /* The reveal rebuilds cull records in the game's own encoding, so it runs
      * only where the game's provider supplies that builder. Without it the walk
@@ -2126,6 +2132,10 @@ static int append_revealed_regular_inner(CPUState* cpu) {
                         (unsigned)cpu->read_byte(m + moby_game.render_radius_off), bok ? f.TR_raw[2] : -1, dsx, bok);
         }
         if (!bok) { TRC("skip=no-anim-model"); m += game_layout.moby.array_stride; continue; }  /* shaded/invalid */
+        /* The pose the canonical present showed: on a sub-tick present the
+         * moby's anim-state bytes are the committed tick's under --runahead,
+         * the snapshot's curr the led one (no-op on a canonical render). */
+        moby_fields_pose_from_snapshot(cpu, m, &f);
         double rx = (double)f.TR_raw[0], rz = (double)f.TR_raw[2];           /* origin in view space (world/4) */
         /* per-moby radius = AnimationHeader byte[7]<<4 (view units) — the .s
          * cone's X-bias + its behind-camera reject both use it (@8001F2A0) */

@@ -10,6 +10,7 @@
 #include "openpete_pace_log.h"        /* snapshot ring query + op_now/OP_NS_PER_SEC */
 #include "openpete_interp_objs.h"   /* per-object (moby) prev/curr table */
 #include "openpete_native_render.h" /* register callback + scene API */
+#include "openpete.h"                 /* openpete_runahead_get */
 #include "openpete_psx.h"
 #include "openpete_subtick_view.h"           /* openpete_psx_to_host_ptr */
 #include "psx_runtime_internal.h"            /* CPUState (read_word) */
@@ -115,6 +116,71 @@ typedef struct { uint32_t addr; uint8_t staged; uint8_t bytes[MOBY_STRIDE]; } mo
  * restore is owed. w1/w2 are captured either way so the integrity check can
  * prove guest RAM was left alone. */
 typedef struct { uint32_t addr, w1, w2; uint8_t staged; } part_save_t;  /* +0x04, +0x08 */
+
+#define PART_SEL_HIDDEN 0xFEu        /* inactive, not the end of the pool */
+
+/** The g_Particles slot at `pa` as the canonical present showed it, under
+ * --runahead: the led tick's bytes the objs table captured at the speculation
+ * head, staged over the committed guest bytes when they differ. Guest memory
+ * is never written: when the view refuses staging the slot keeps its
+ * committed bytes.
+ * @param pa the slot's guest address
+ * @param gh the slot's guest host pointer
+ * @param o  the slot's interp-objs entry
+ * @return the host pointer to read the shown slot from */
+static uint8_t* particle_stage_shown(uint32_t pa, uint8_t* gh, const openpete_interp_obj_t* o) {
+    uint32_t n = o->blob_len < PART_STRIDE ? o->blob_len : PART_STRIDE;
+    if (memcmp(gh, o->curr, n) == 0) return gh;
+    uint8_t* st = (uint8_t*)openpete_subtick_view_stage(pa, PART_STRIDE);
+    if (!st) return gh;
+    memcpy(st, o->curr, n);
+    return st;
+}
+
+/** Stage the selector byte of the g_Particles slot at `pa` (PART_SEL_HIDDEN
+ * skips the slot, 0xFF ends the pool walk), leaving guest memory unwritten;
+ * a refused stage keeps the committed byte. */
+static void particle_stage_sel(uint32_t pa, uint8_t sel) {
+    uint8_t* st = (uint8_t*)openpete_subtick_view_stage(pa, PART_STRIDE);
+    if (st) st[PART_HDR_SEL / 8u] = sel;
+}
+
+/** One past the highest g_Particles slot the objs table captured: the led
+ * pool's extent under --runahead. The capture walk records only active slots,
+ * and the led pool can reach past the committed pool's end sentinel. */
+static uint32_t particle_led_extent(uint32_t ppool) {
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < 320u; i++)
+        if (openpete_interp_objs_find(ppool + i * PART_STRIDE)) n = i + 1u;
+    return n;
+}
+
+/** Stage every slot of a fixed record pool (`n` slots of `stride` bytes at
+ * `base`) as the led capture holds it, under --runahead: a captured slot
+ * shows its captured bytes, and a slot live only in the committed guest RAM
+ * has the liveness bits `hide_mask` of its word at `hide_off` cleared so its
+ * feeder skips it. Guest memory is never written; a refused stage keeps the
+ * committed bytes. */
+static void stage_led_fixed_pool(uint32_t base, uint32_t n, uint32_t stride,
+                                 uint32_t hide_off, uint32_t hide_mask) {
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t a = base + i * stride;
+        const uint8_t* gh = (const uint8_t*)openpete_psx_to_host_ptr(a);
+        if (!gh) break;
+        const openpete_interp_obj_t* o = openpete_interp_objs_find(a);
+        if (o) {
+            uint32_t len = o->blob_len < stride ? o->blob_len : stride;
+            if (memcmp(gh, o->curr, len) == 0) continue;
+            uint8_t* st = (uint8_t*)openpete_subtick_view_stage(a, stride);
+            if (st) memcpy(st, o->curr, len);
+            continue;
+        }
+        uint32_t w; memcpy(&w, gh + hide_off, 4);
+        if (!(w & hide_mask)) continue;
+        uint8_t* st = (uint8_t*)openpete_subtick_view_stage(a, stride);
+        if (st) { w &= ~hide_mask; memcpy(st + hide_off, &w, 4); }
+    }
+}
 
 /* g_Camera field offsets (verified in camera.h / the feeders):
  *   +0x00 m_ProjectionMatrix (SHORTMATRIX: short[3][3]+pad)
@@ -970,13 +1036,17 @@ static void spyro_record_overlay(uint32_t addr, const uint8_t* bytes, uint32_t l
     if (h) memcpy(h, bytes, len);
 }
 
+/** Run the Spyro shadow feeder once per drawn shadow record bound to model
+ * record `k`, each staged from its shown state (`src`, the led tick under
+ * --runahead) with the ground anchor lerped against the paired record,
+ * teleport-guarded; `shb` is the staged shadow span. */
 static void player_records_shadows(CPUState* cpu, int k, uint8_t* shb) {
     int nsh = player_records_shadow_count();
     for (int j = 0; j < nsh; j++) {
         const player_shadow_rec_t* d = player_records_shadow_curr(j);
         if (!d || d->model != k || !d->drawn) continue;
         const player_shadow_rec_t* pd = player_records_shadow_prev(j);
-        memcpy(shb, d->sh, PLAYER_L.shadow_len);
+        memcpy(shb, d->src, PLAYER_L.shadow_len);
         if (player_records_lerps(k) && pd) {
             /* The ground anchor (m_Position @ +0x10), teleport-guarded like
              * the singleton bracket (a warp, a lift-off → re-ground). */
@@ -991,6 +1061,11 @@ static void player_records_shadows(CPUState* cpu, int k, uint8_t* shb) {
     }
 }
 
+/** One Spyro feeder pass per model record of the committed epoch, each staged
+ * from its shown state (`src`, the led tick under --runahead) with position,
+ * anim clock and rotation bracketed against the record it paired from, then
+ * its shadow records; restores the ambient g_Spyro and shadow bytes after the
+ * last record. */
 static void player_records_loop(CPUState* cpu, int paired, int cam_cut, int cam_bracketed,
                                double alpha, int use_herm,
                                uint8_t* sp, int sp_staged, const uint8_t* psp_ring,
@@ -1023,12 +1098,12 @@ static void player_records_loop(CPUState* cpu, int paired, int cam_cut, int cam_
         if (!rec) break;
         int has_shadow = 0;
         for (int j = 0; j < nsh; j++) { const player_shadow_rec_t* d = player_records_shadow_curr(j); if (d && d->model == k && d->drawn) { has_shadow = 1; break; } }
-        if (!rec->drawn && !has_shadow) { player_records_present_note(k, (const int32_t*)rec->spyro); continue; }
+        if (!rec->drawn && !has_shadow) { player_records_present_note(k, (const int32_t*)rec->src); continue; }
         const player_model_rec_t* prv = player_records_prev(k);
         const player_model_rec_t* pv2 = player_records_prev2(k);
         const int lerp = player_records_lerps(k) && prv != NULL;
 
-        memcpy(sb, rec->spyro, PLAYER_L.rec_len);
+        memcpy(sb, rec->src, PLAYER_L.rec_len);
         fpos_drop(G_SPYRO);
         /* player_native_set_rot_interp reads PLAYER_PARTS_MAX gates and
          * angle triples regardless of how many the loop below fills, so both
@@ -1206,6 +1281,202 @@ static void dragonstar_bracket(void) {
     double ang[3];
     for (int k = 0; k < 3; k++) ang[k] = (double)o->prev[0x28 + k] + dang[k] * a2;
     dragonstar_native_set_rot_interp(ang);
+}
+
+/** Slot `i` of the g_Particles pool (guest address `pa`, selector `sel`) as
+ * the led pool holds it, under --runahead: stages a captured slot's bytes,
+ * hides a slot the led capture lacks, and ends the walk at the led extent
+ * once the committed end sentinel has passed (`*past_end`).
+ * @return 1 with *o and *ph set when the slot shows, 0 to skip it, -1 to end
+ *         the walk */
+static int particle_led_slot(uint32_t i, uint32_t pa, uint8_t* gh, uint8_t sel,
+                             uint32_t led_extent, int* past_end,
+                             const openpete_interp_obj_t** o, uint8_t** ph) {
+    if (sel == 0xFFu) *past_end = 1;
+    if (i >= led_extent) {
+        if (*past_end) {                     /* the led pool ends here */
+            if (sel != 0xFFu) particle_stage_sel(pa, 0xFFu);
+            return -1;
+        }
+        if (!(sel & 0x80u)) particle_stage_sel(pa, PART_SEL_HIDDEN);
+        return 0;
+    }
+    *o = openpete_interp_objs_find(pa);
+    if (!*o) {                               /* inactive in the led pool */
+        if (*past_end || !(sel & 0x80u)) particle_stage_sel(pa, PART_SEL_HIDDEN);
+        return 0;
+    }
+    *ph = particle_stage_shown(pa, gh, *o);
+    return 1;
+}
+
+/** Bracket one shown g_Particles slot's position between its snapshot pair
+ * at its own alpha, behind the identity (class/sel, life) and teleport
+ * guards; a guarded slot snaps to its shown bytes. Stages the whole slot and
+ * records the guest position words in *e for the restore and the integrity
+ * check; `pi` takes the verdict census.
+ * @return 1 when *e was written, 0 when the slot snapped */
+static int particle_slot_lerp(uint32_t pa, const uint8_t* gh, uint8_t* ph,
+                              const openpete_interp_obj_t* o, op_time_t now,
+                              long pi[8], part_save_t* e) {
+    if (!o || !o->have_prev) { pi[1]++; return 0; }  /* spawn → snap (curr) */
+    op_time_t period = o->curr_ns - o->prev_ns;
+    if (o->prev_ns == 0 || period <= 0) return 0;
+    double pa_alpha = (double)(now - o->curr_ns) / interp_period_ns(o->prev_ns, o->curr_ns);
+    if (pa_alpha < 0.0) pa_alpha = 0.0; else if (pa_alpha > 1.0) pa_alpha = 1.0;
+    uint32_t pw1, pw2, cw1, cw2;
+    memcpy(&pw1, o->prev + PART_POS_OFF, 4); memcpy(&pw2, o->prev + 0x08u, 4);
+    memcpy(&cw1, o->curr + PART_POS_OFF, 4); memcpy(&cw2, o->curr + 0x08u, 4);
+    int pX = (int16_t)(pw1 & 0xFFFF), pY = (int16_t)(pw1 >> 16), pZ = (int16_t)(pw2 & 0xFFFF);
+    int cX = (int16_t)(cw1 & 0xFFFF), cY = (int16_t)(cw1 >> 16), cZ = (int16_t)(cw2 & 0xFFFF);
+    /* Positions are world/4 (int16) — the identity + teleport guards
+     * below are in world/4 too. History of the ceiling: 8000 (32000
+     * full-world, streaked visibly) → 1250 (matched the moby guards,
+     * still far above screen scale) → 300 (particle-physics scale;
+     * see the ceiling comment below). */
+    double dX = cX - pX, dY = cY - pY, dZ = cZ - pZ;
+    /* IDENTITY guard (slot reuse). The interp-objs table is keyed by slot
+     * ADDRESS, so a slot a NEW particle respawns into within one tick — a
+     * shatter/burst churning the pool faster than slots free — still reads
+     * have_prev=1 and gets lerped between TWO DIFFERENT particles: a long
+     * line streaks from the old position to the new one. The distance guard
+     * below only catches FAR reuses; a burst clustered near its emitter
+     * reuses well within it. Detect identity from the particle header word:
+     * m_Class (byte0) + sel/type (byte1) is the stable type, and m_Life
+     * (byte2) is an age counter that INCREMENTS every tick for a CONTINUING
+     * particle (measured across the run: outside spawn bursts 100% of
+     * have_prev particles have life strictly increasing; reuse — type change,
+     * life reset, or life held — appears only inside bursts). So lerp only a
+     * genuinely continuing particle; otherwise snap (present curr, no streak). */
+    {
+        int moving = (dX*dX + dY*dY + dZ*dZ > 4.0);
+        uint32_t ph2, ch2; memcpy(&ph2, o->prev, 4); memcpy(&ch2, o->curr, 4);
+        if ((ph2 & 0xFFFFu) != (ch2 & 0xFFFFu)) { pi[2]++; if (moving) pi[6]++; return 0; } /* m_Class/sel changed → reuse */
+        uint8_t plife = (uint8_t)(ph2 >> 16), clife = (uint8_t)(ch2 >> 16);
+        /* Life DECREASED → reset → slot reuse: snap. Life EQUAL is
+         * ambiguous: burst reuse (rare same-life coincidence) vs a
+         * PERSISTENT particle whose life byte stalls — the circling
+         * damage stars: 245-300 moving particles/s snapped here
+         * during the effect, stepping the orbit at the tick rate.
+         * Lerp stalled-life particles only within a
+         * TIGHT radius (300 world/4 per tick — orbiting stars move
+         * ~50-100; burst reuses jump farther or reset life). */
+        if (clife < plife) { pi[3]++; if (moving) pi[7]++; return 0; }
+        pi[0]++; if (moving) pi[5]++;
+    }
+    /* Teleport/reuse ceiling at particle-physics scale (was 1250
+     * == 5000 full-world, stalled-life class already at 300):
+     * under runahead the pair can span two prediction BRANCHES,
+     * whose pool churn differs — slot reuse across branches can
+     * pass the class + life-increase tests (no same-timeline
+     * ordering to reset the life byte) and lerp as a screen-
+     * crossing streak. 300 world/4 per tick == 1200 full-world
+     * == ~20x Spyro's run speed: a real particle faster than
+     * that crosses the screen in a couple of ticks, so snapping
+     * it loses nothing visible. */
+    if (dX*dX + dY*dY + dZ*dZ > 300.0 * 300.0) { pi[4]++; return 0; }
+    uint32_t live1, live2;
+    memcpy(&live1, gh + PART_POS_OFF, 4); memcpy(&live2, gh + 0x08u, 4);
+    e->addr = pa;
+    e->w1 = live1;
+    e->w2 = live2;
+    {   /* Stage the WHOLE record, not just the two written words: a
+         * reader resolving any field of this particle must land in
+         * the staged copy, or it would mix staged position with
+         * canonical everything-else. */
+        uint8_t* st = (uint8_t*)openpete_subtick_view_stage(pa, PART_STRIDE);
+        e->staged = (st != NULL);
+        if (st) ph = st;
+    }
+    int16_t lX = lerp16((int16_t)pX, (int16_t)cX, pa_alpha);
+    int16_t lY = lerp16((int16_t)pY, (int16_t)cY, pa_alpha);
+    int16_t lZ = lerp16((int16_t)pZ, (int16_t)cZ, pa_alpha);
+    uint32_t nw1 = (uint32_t)(uint16_t)lX | ((uint32_t)(uint16_t)lY << 16);
+    uint32_t shown2; memcpy(&shown2, ph + 0x08u, 4);
+    uint32_t nw2 = (shown2 & 0xFFFF0000u) | (uint32_t)(uint16_t)lZ;
+    memcpy(ph + PART_POS_OFF, &nw1, 4);
+    memcpy(ph + 0x08u, &nw2, 4);
+    return 1;
+}
+
+/** Per-particle interpolation (g_Particles pool): lerp each active particle's
+ * position by its OWN distinct-roll alpha so smoke / triangles / line
+ * particles move at the present rate instead of stepping at 30 Hz. Keyed by
+ * slot address in the interp-objs table (same store as the mobys); particles
+ * spawn into inactive slots → have_prev=0 → snap (no streak from a stale slot),
+ * despawns are evicted. Pure LERP of two observed states → never calls the
+ * particle update's rand() (which would break gameplay 1:1), so it's safe for
+ * the rand-spawned cinders too. NOT the g_Sparkles pool (rand m_Life — no RAM
+ * writeback; its twinkle PHASE interps render-side in sparkle_build instead)
+ * or glows (they ride their owner moby). Teleport-guard a slot reused by a
+ * new particle mid-flight.
+ * Under --runahead the particle, sparkle and glow pools are staged as the
+ * led capture holds them first. Records every slot whose position was
+ * bracketed in `save` (at most PART_SAVE_MAX) for the restore and the
+ * integrity check.
+ * @param save receives the bracketed slots
+ * @return the number of entries written to `save` */
+static int particle_pools_bracket(part_save_t* save) {
+    int n = 0;
+    /* g_Sparkles (live while m_Life, the low byte of +0x0C, is nonzero) and the
+     * glow pool (live while the ring count at +0x00 is positive) as the led
+     * capture holds them; their feeders lerp phase channels from the snapshot
+     * pair and read everything else from the staged slot. */
+    if (openpete_runahead_get() > 0) {
+        stage_led_fixed_pool(G_SPARKLES, 8u, 0x18u, 0x0Cu, 0xFFu);
+        stage_led_fixed_pool(D_GLOWS, 16u, 0x24u, 0x00u, 0xFFFFFFFFu);
+    }
+
+    op_time_t now = openpete_interp_present_now();
+    /* OPENPETE_PART_INTERP_DBG: per-second census of pool-interp verdicts —
+     * lerped vs each snap reason, MOVING particles (prev->curr delta > 2
+     * world/4) counted separately. A moving particle that keeps snapping is
+     * a 30 Hz stepper (the circling-stars class). */
+    static int s_pidbg = -1;
+    if (s_pidbg < 0) { const char* e = getenv("OPENPETE_PART_INTERP_DBG"); s_pidbg = (e && *e && *e != '0'); }
+    static long s_pi[8]; /* 0 lerp,1 noprev,2 classchg,3 lifestall,4 far,5 lerp-moving,6 classchg-moving,7 lifestall-moving */
+    uint8_t* pbase = (uint8_t*)openpete_psx_to_host_ptr(G_PARTICLES);
+    uint32_t ppool = 0; if (pbase) memcpy(&ppool, pbase, 4);
+    /* Under --runahead the walk reproduces the led pool the canonical
+     * present composed: a slot the led capture holds shows its captured
+     * bytes, a slot active only in the committed guest RAM is hidden, and
+     * the end sentinel moves to the led extent when the led pool reached
+     * past the committed one. */
+    const int led = openpete_runahead_get() > 0;
+    const uint32_t led_extent = (led && ppool >= 0x80000000u) ? particle_led_extent(ppool) : 0u;
+    int past_end = 0;
+    if (ppool >= 0x80000000u) {
+        for (uint32_t i = 0; i < 320u && n < PART_SAVE_MAX; i++) {
+            uint32_t pa = ppool + i * PART_STRIDE;
+            uint8_t* gh = (uint8_t*)openpete_psx_to_host_ptr(pa);
+            if (!gh) break;
+            uint8_t* ph = gh;
+            uint32_t hdr; memcpy(&hdr, ph, 4);
+            uint8_t sel = (uint8_t)((hdr >> PART_HDR_SEL) & 0xFFu);
+            const openpete_interp_obj_t* o = NULL;
+            if (led) {
+                int v = particle_led_slot(i, pa, gh, sel, led_extent, &past_end, &o, &ph);
+                if (v < 0) break;
+                if (v == 0) continue;
+            } else {
+                if (sel == 0xFFu) break;            /* end of pool */
+                if (sel & 0x80u) continue;          /* inactive slot */
+                o = openpete_interp_objs_find(pa);
+            }
+            if (particle_slot_lerp(pa, gh, ph, o, now, s_pi, &save[n])) n++;
+        }
+    }
+    if (s_pidbg) {
+        static op_time_t t0 = 0;
+        if (t0 == 0) t0 = now;
+        if (now - t0 >= OP_NS_PER_SEC) {
+            fprintf(stderr, "[part-interp f=%u] lerp=%ld (moving=%ld) noprev=%ld classchg=%ld (mov=%ld) lifestall=%ld (mov=%ld) far=%ld\n",
+                    openpete_frame, s_pi[0], s_pi[5], s_pi[1], s_pi[2], s_pi[6], s_pi[3], s_pi[7], s_pi[4]);
+            memset(s_pi, 0, sizeof s_pi);
+            t0 = now;
+        }
+    }
+    return n;
 }
 
 /** The sub-tick present body. Always entered through the wrapper below, which
@@ -1876,128 +2147,7 @@ static void game_reextract_body(void* cpu_v) {
         }
     }
 
-    /* Per-particle interpolation (g_Particles pool): lerp each active particle's
-     * position by its OWN distinct-roll alpha so smoke / triangles / line
-     * particles move at the present rate instead of stepping at 30 Hz. Keyed by
-     * slot address in the interp-objs table (same store as the mobys); particles
-     * spawn into inactive slots → have_prev=0 → snap (no streak from a stale slot),
-     * despawns are evicted. Pure LERP of two observed states → never calls the
-     * particle update's rand() (which would break gameplay 1:1), so it's safe for
-     * the rand-spawned cinders too. NOT the g_Sparkles pool (rand m_Life — no RAM
-     * writeback; its twinkle PHASE interps render-side in sparkle_build instead)
-     * or glows (they ride their owner moby). Teleport-guard a slot reused by a
-     * new particle mid-flight. */
-    {
-        op_time_t now = openpete_interp_present_now();
-        /* OPENPETE_PART_INTERP_DBG: per-second census of pool-interp verdicts —
-         * lerped vs each snap reason, MOVING particles (prev->curr delta > 2
-         * world/4) counted separately. A moving particle that keeps snapping is
-         * a 30 Hz stepper (the circling-stars class). */
-        static int s_pidbg = -1;
-        if (s_pidbg < 0) { const char* e = getenv("OPENPETE_PART_INTERP_DBG"); s_pidbg = (e && *e && *e != '0'); }
-        static long s_pi[8]; /* 0 lerp,1 noprev,2 classchg,3 lifestall,4 far,5 lerp-moving,6 classchg-moving,7 lifestall-moving */
-        uint8_t* pbase = (uint8_t*)openpete_psx_to_host_ptr(G_PARTICLES);
-        uint32_t ppool = 0; if (pbase) memcpy(&ppool, pbase, 4);
-        if (ppool >= 0x80000000u) {
-            for (uint32_t i = 0; i < 320u && part_save_n < PART_SAVE_MAX; i++) {
-                uint32_t pa = ppool + i * PART_STRIDE;
-                uint8_t* ph = (uint8_t*)openpete_psx_to_host_ptr(pa);
-                if (!ph) break;
-                uint32_t hdr; memcpy(&hdr, ph, 4);
-                uint8_t sel = (uint8_t)((hdr >> PART_HDR_SEL) & 0xFFu);
-                if (sel == 0xFFu) break;            /* end of pool */
-                if (sel & 0x80u) continue;          /* inactive slot */
-                const openpete_interp_obj_t* o = openpete_interp_objs_find(pa);
-                if (!o || !o->have_prev) { s_pi[1]++; continue; }  /* spawn → snap (curr) */
-                op_time_t period = o->curr_ns - o->prev_ns;
-                if (o->prev_ns == 0 || period <= 0) continue;
-                double pa_alpha = (double)(now - o->curr_ns) / interp_period_ns(o->prev_ns, o->curr_ns);
-                if (pa_alpha < 0.0) pa_alpha = 0.0; else if (pa_alpha > 1.0) pa_alpha = 1.0;
-                uint32_t pw1, pw2, cw1, cw2;
-                memcpy(&pw1, o->prev + PART_POS_OFF, 4); memcpy(&pw2, o->prev + 0x08u, 4);
-                memcpy(&cw1, o->curr + PART_POS_OFF, 4); memcpy(&cw2, o->curr + 0x08u, 4);
-                int pX = (int16_t)(pw1 & 0xFFFF), pY = (int16_t)(pw1 >> 16), pZ = (int16_t)(pw2 & 0xFFFF);
-                int cX = (int16_t)(cw1 & 0xFFFF), cY = (int16_t)(cw1 >> 16), cZ = (int16_t)(cw2 & 0xFFFF);
-                /* Positions are world/4 (int16) — the identity + teleport guards
-                 * below are in world/4 too. History of the ceiling: 8000 (32000
-                 * full-world, streaked visibly) → 1250 (matched the moby guards,
-                 * still far above screen scale) → 300 (particle-physics scale;
-                 * see the ceiling comment below). */
-                double dX = cX - pX, dY = cY - pY, dZ = cZ - pZ;
-                /* IDENTITY guard (slot reuse). The interp-objs table is keyed by slot
-                 * ADDRESS, so a slot a NEW particle respawns into within one tick — a
-                 * shatter/burst churning the pool faster than slots free — still reads
-                 * have_prev=1 and gets lerped between TWO DIFFERENT particles: a long
-                 * line streaks from the old position to the new one. The distance guard
-                 * below only catches FAR reuses; a burst clustered near its emitter
-                 * reuses well within it. Detect identity from the particle header word:
-                 * m_Class (byte0) + sel/type (byte1) is the stable type, and m_Life
-                 * (byte2) is an age counter that INCREMENTS every tick for a CONTINUING
-                 * particle (measured across the run: outside spawn bursts 100% of
-                 * have_prev particles have life strictly increasing; reuse — type change,
-                 * life reset, or life held — appears only inside bursts). So lerp only a
-                 * genuinely continuing particle; otherwise snap (present curr, no streak). */
-                {
-                    int moving = (dX*dX + dY*dY + dZ*dZ > 4.0);
-                    uint32_t ph2, ch2; memcpy(&ph2, o->prev, 4); memcpy(&ch2, o->curr, 4);
-                    if ((ph2 & 0xFFFFu) != (ch2 & 0xFFFFu)) { s_pi[2]++; if (moving) s_pi[6]++; continue; } /* m_Class/sel changed → reuse */
-                    uint8_t plife = (uint8_t)(ph2 >> 16), clife = (uint8_t)(ch2 >> 16);
-                    /* Life DECREASED → reset → slot reuse: snap. Life EQUAL is
-                     * ambiguous: burst reuse (rare same-life coincidence) vs a
-                     * PERSISTENT particle whose life byte stalls — the circling
-                     * damage stars: 245-300 moving particles/s snapped here
-                     * during the effect, stepping the orbit at the tick rate.
-                     * Lerp stalled-life particles only within a
-                     * TIGHT radius (300 world/4 per tick — orbiting stars move
-                     * ~50-100; burst reuses jump farther or reset life). */
-                    if (clife < plife) { s_pi[3]++; if (moving) s_pi[7]++; continue; }
-                    s_pi[0]++; if (moving) s_pi[5]++;
-                }
-                /* Teleport/reuse ceiling at particle-physics scale (was 1250
-                 * == 5000 full-world, stalled-life class already at 300):
-                 * under runahead the pair can span two prediction BRANCHES,
-                 * whose pool churn differs — slot reuse across branches can
-                 * pass the class + life-increase tests (no same-timeline
-                 * ordering to reset the life byte) and lerp as a screen-
-                 * crossing streak. 300 world/4 per tick == 1200 full-world
-                 * == ~20x Spyro's run speed: a real particle faster than
-                 * that crosses the screen in a couple of ticks, so snapping
-                 * it loses nothing visible. */
-                if (dX*dX + dY*dY + dZ*dZ > 300.0 * 300.0) { s_pi[4]++; continue; }
-                uint32_t live1, live2;
-                memcpy(&live1, ph + PART_POS_OFF, 4); memcpy(&live2, ph + 0x08u, 4);
-                s_part_save[part_save_n].addr = pa;
-                s_part_save[part_save_n].w1 = live1;
-                s_part_save[part_save_n].w2 = live2;
-                {   /* Stage the WHOLE record, not just the two written words: a
-                     * reader resolving any field of this particle must land in
-                     * the staged copy, or it would mix staged position with
-                     * canonical everything-else. */
-                    uint8_t* st = (uint8_t*)openpete_subtick_view_stage(pa, PART_STRIDE);
-                    s_part_save[part_save_n].staged = (st != NULL);
-                    if (st) ph = st;
-                }
-                part_save_n++;
-                int16_t lX = lerp16((int16_t)pX, (int16_t)cX, pa_alpha);
-                int16_t lY = lerp16((int16_t)pY, (int16_t)cY, pa_alpha);
-                int16_t lZ = lerp16((int16_t)pZ, (int16_t)cZ, pa_alpha);
-                uint32_t nw1 = (uint32_t)(uint16_t)lX | ((uint32_t)(uint16_t)lY << 16);
-                uint32_t nw2 = (live2 & 0xFFFF0000u) | (uint32_t)(uint16_t)lZ;
-                memcpy(ph + PART_POS_OFF, &nw1, 4);
-                memcpy(ph + 0x08u, &nw2, 4);
-            }
-        }
-        if (s_pidbg) {
-            static op_time_t t0 = 0;
-            if (t0 == 0) t0 = now;
-            if (now - t0 >= OP_NS_PER_SEC) {
-                fprintf(stderr, "[part-interp f=%u] lerp=%ld (moving=%ld) noprev=%ld classchg=%ld (mov=%ld) lifestall=%ld (mov=%ld) far=%ld\n",
-                        openpete_frame, s_pi[0], s_pi[5], s_pi[1], s_pi[2], s_pi[6], s_pi[3], s_pi[7], s_pi[4]);
-                memset(s_pi, 0, sizeof s_pi);
-                t0 = now;
-            }
-        }
-    }
+    part_save_n = particle_pools_bracket(s_part_save);
 
     /* Dragon-star record (D_DRAGONSTAR): staged through the view with the
      * sub-tick position, size and colour; its rotation reaches the feeder as

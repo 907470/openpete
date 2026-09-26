@@ -33,9 +33,15 @@ void flame_reextract(struct CPUState* cpu, int slot);
 int flame_bracket(uint8_t* fl, const uint8_t* pfl, const uint8_t* cfl,
                   double alpha, double* subframe);
 
-/* Run every flame record of this present at the producer's place in the scene
- * order, after the particles. `fl` is the caller's ambient staged copy of the
- * flame span, or NULL to let the loop stage the span itself. */
+/** Run every flame record of this present at the producer's place in the
+ * scene order, after the particles, each staged from its shown state (the led
+ * tick's bytes under --runahead) and bracketed against the paired record.
+ * @param cpu     guest state
+ * @param paired  1 when the interp ring paired this present
+ * @param cam_cut 1 when the camera cut between the paired ticks
+ * @param alpha   the present's sub-tick alpha
+ * @param fl      the caller's ambient staged copy of the flame span, or NULL
+ *                to let the loop stage the span itself */
 void flame_records_present(struct CPUState* cpu, int paired, int cam_cut,
                            double alpha, uint8_t* fl);
 
