@@ -1599,7 +1599,7 @@ static void special_census_face(const moby_wface_t* F, uint32_t mscol, uint32_t 
     if (openpete_frame >= s_cen_at + 200u) { s_cen_at = openpete_frame; special_census_report(); }
 }
 
-/** Appends one line to the file OPENPETE_ROWSCALE_CENSUS names: which
+/** @brief Appends one line to the file OPENPETE_ROWSCALE_CENSUS names: which
  * row-scale source fired on which record, moby and row, and the factor. A
  * harness sets it to count the firings over a corpus; unset, nothing is
  * written. */
@@ -1615,7 +1615,7 @@ static void rowscale_census(const char* src, uint32_t rec, uint32_t moby, int ro
     fclose(fp);
 }
 
-/** Applies the factors the game's draw multiplies into the record at `rec`
+/** @brief Applies the factors the game's draw multiplies into the record at `rec`
  * after its cull (moby_game.record_row_scale) to a matrix built for that
  * record, each row scaled in double and rounded once. The specular queue
  * shares the record addresses and is never scaled, so a specular pass
@@ -1631,7 +1631,7 @@ static int moby_draw_row_scale(CPUState* cpu, uint32_t rec, const char* mat, int
     return 1;
 }
 
-/** The canonical record of a draw-time row scale, rebuilt as the sub-tick
+/** @brief The canonical record of a draw-time row scale, rebuilt as the sub-tick
  * rebuild derives it: the camera·euler compose of the record's moby
  * (shaded_compose_euler, the builder's compose) with the game's factors
  * applied by moby_draw_row_scale. The record's own matrix carries the draw's
@@ -1649,7 +1649,7 @@ static void moby_canon_row_scale(CPUState* cpu, uint32_t rec, moby_record_t* R) 
     moby_draw_row_scale(cpu, rec, s_cur_mat, R->M);
 }
 
-/** Re-applies a render-time per-row scale the game baked into the record's
+/** @brief Re-applies a render-time per-row scale the game baked into the record's
  * matrix that no moby_game.record_row_scale source names and that the
  * euler rebuild in M cannot see. The rebuild is a camera·euler rotation, so
  * |rebuild row| equals |unscaled record row| and the ratio |record row| /
@@ -1670,7 +1670,7 @@ static void moby_ratio_row_scale(CPUState* cpu, uint32_t rec, uint32_t moby, int
 
 static void moby_animsw_census(CPUState* cpu, uint32_t moby);
 
-/** Projects every live cull record's vertices into s_proj (native float
+/** @brief Projects every live cull record's vertices into s_proj (native float
  * decode, RTPS and TR) for the canonical pass and fills s_recs, the record
  * metadata the walk and the sub-tick replays read. A record the game's draw
  * row-scales takes the rebuilt matrix (moby_canon_row_scale). Returns the
@@ -2026,7 +2026,7 @@ static int append_revealed_regular(CPUState* cpu) {
     s_us_reveal += (long)(openpete_phase_now_us() - t0);
     return n;
 }
-/** The reveal walk: host-built records for the live mobys the canonical cull
+/** @brief The reveal walk: host-built records for the live mobys the canonical cull
  * did not queue (widescreen edges, --no-lod range), decoded and appended to
  * the scene. On a sub-tick present each record takes the pose of the tick the
  * canonical present showed. Returns the records admitted, occlusion-culled
@@ -8277,7 +8277,7 @@ static uint32_t moby_fields_hold_prev(CPUState* cpu, uint32_t moby, moby_fields*
  * (held_skip). */
 static struct { long applied, differ, held_skip; } s_pose_snap;
 
-/** OPENPETE_MOBY_CENSUS: one `pose_snap` line per sub-tick present with the
+/** @brief OPENPETE_MOBY_CENSUS: one `pose_snap` line per sub-tick present with the
  * counts moby_fields_pose_from_snapshot accumulated, then reset them. */
 static void moby_pose_snap_census(void) {
     static int s = -1;
@@ -8288,7 +8288,7 @@ static void moby_pose_snap_census(void) {
     memset(&s_pose_snap, 0, sizeof s_pose_snap);
 }
 
-/** On a sub-tick present, replace a host-built record's pose with the one
+/** @brief On a sub-tick present, replace a host-built record's pose with the one
  * derived from the interp-objs snapshot's curr anim-state bytes: the tick the
  * canonical present showed, which under --runahead is the led tick while
  * guest RAM holds the committed one. Without runahead the snapshot's curr is
@@ -8355,7 +8355,7 @@ static int record_replay_fields(CPUState* cpu, uint32_t rec, uint32_t moby, moby
     return 1;
 }
 
-/** One sub-tick record pass over the cull queue for material `mat` ("REG" or
+/** @brief One sub-tick record pass over the cull queue for material `mat` ("REG" or
  * "SP"): rebuilds each record's fields from gamestate under the present's
  * camera (or replays the captured record on a game without host reveal),
  * applies the game's draw-time row scale, lerps the shape between the tick

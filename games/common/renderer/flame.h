@@ -33,7 +33,7 @@ void flame_reextract(struct CPUState* cpu, int slot);
 int flame_bracket(uint8_t* fl, const uint8_t* pfl, const uint8_t* cfl,
                   double alpha, double* subframe);
 
-/** Run every flame record of this present at the producer's place in the
+/** @brief Run every flame record of this present at the producer's place in the
  * scene order, after the particles, each staged from its shown state (the led
  * tick's bytes under --runahead) and bracketed against the paired record.
  * @param cpu     guest state

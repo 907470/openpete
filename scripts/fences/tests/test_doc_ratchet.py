@@ -6,14 +6,14 @@ the touched rule. MergeTest drives the per-entry merge (the worst form
 across a TU's entries, ordinals on a repeated name). ControlsTest runs the
 fixture controls and a tampered copy of them (the controls must fail when
 an expectation is wrong). EndToEndTest builds a throwaway git repository
-with the hook installed and its own compile database (OPENPETE_DOCS_DB)
-and commits each shape: A, M touching and not touching an undocumented
+with the hook installed and its own compile database (OPENPETE_DOCS_DB) and
+commits each shape: A, M touching and not touching an undocumented
 function, a comment-only commit, header against definition placement, a
 duplicate, a wrong @param, a comment above a #define, a macro-generated
-definition, an unstaged canonical header, an extern "C" definition in a
-C++ TU, a @brief comment, a header whose parameter names differ from the
-definition's, the accept escape, and a cherry-pick of a branch that retired
-rows across a landing that retired adjacent rows.
+definition, an unstaged canonical header, an extern "C" definition in a C++
+TU, a @brief comment, a paragraph-only comment, a header whose parameter
+names differ from the definition's, the accept escape, and a cherry-pick of
+a branch that retired rows across a landing that retired adjacent rows.
 
 Run: python3 scripts/fences/tests/test_doc_ratchet.py
 """
@@ -251,14 +251,14 @@ class ControlsTest(unittest.TestCase):
 
 HEADER = """#ifndef API_H
 #define API_H
-/** Adds one.
+/** @brief Adds one.
  * @param a The value.
  * @return a plus one. */
 int api_add(int a);
 
 int api_plain(int a);
 
-/** Returns the anchor.
+/** @brief Returns the anchor.
  * @param anchor The anchor.
  * @return The anchor. */
 int api_anchor(int anchor);
@@ -293,7 +293,7 @@ int use_other(int a) { return other(a); }
 """
 
 CPP = """extern "C" {
-/** Returns a.
+/** @brief Returns a.
  * @param a The value.
  * @return a. */
 int externc_fn(int a) { return a; }
@@ -396,8 +396,8 @@ class EndToEndTest(unittest.TestCase):
         self.git("add", "core/new.c")
         p = self.commit("add", ok=False)
         self.assertIn("REFUSED  core/new.c:fresh  (new)", p.stderr)
-        self.assertIn("External linkage: brief, @param a, @return.", p.stderr)
-        self.write("core/new.c", "/** Returns a.\n * @param a The value.\n"
+        self.assertIn("External linkage: @brief, @param a, @return.", p.stderr)
+        self.write("core/new.c", "/** @brief Returns a.\n * @param a The value.\n"
                    " * @return a. */\nint fresh(int a) { return a; }\n")
         self.git("add", "core/new.c")
         self.commit("add, documented")
@@ -409,7 +409,7 @@ class EndToEndTest(unittest.TestCase):
         p = self.commit("touch", ok=False)
         self.assertIn("REFUSED  core/api.c:helper  (touched, lines 16-18; "
                       "changed 17)", p.stderr)
-        self.assertIn("Internal linkage: a brief is enough.", p.stderr)
+        self.assertIn("Internal linkage: a @brief is enough.", p.stderr)
         self.assertIn("Ways to land this commit", p.stderr)
 
     def test_modify_not_touching_keeps_rows(self):
@@ -419,7 +419,7 @@ class EndToEndTest(unittest.TestCase):
         self.assertIn("core/api.c:helper", self.rows())
 
     def test_comment_only_commit_retires_the_row(self):
-        self.sub("core/api.c", "static int helper(", "/** Doubles a. */\nstatic int helper(")
+        self.sub("core/api.c", "static int helper(", "/** @brief Doubles a. */\nstatic int helper(")
         self.git("add", "core/api.c")
         self.commit("document helper")
         rows = self.rows()
@@ -435,7 +435,7 @@ class EndToEndTest(unittest.TestCase):
 
     def test_definition_comment_when_header_declares_is_misplaced(self):
         self.sub("core/api.c", "/* Plain comment, the row's form. */",
-                 "/** Returns a.\n * @param a The value.\n * @return a. */")
+                 "/** @brief Returns a.\n * @param a The value.\n * @return a. */")
         self.git("add", "core/api.c")
         p = self.commit("misplaced", ok=False)
         self.assertIn("REFUSED  core/api.c:api_plain  (misplaced)", p.stderr)
@@ -443,7 +443,7 @@ class EndToEndTest(unittest.TestCase):
 
     def test_duplicate_refused(self):
         self.sub("core/api.c", "int api_add(int a) {",
-                 "/** Adds one.\n * @param a The value.\n * @return a plus one. */\n"
+                 "/** @brief Adds one.\n * @param a The value.\n * @return a plus one. */\n"
                  "int api_add(int a) {")
         self.git("add", "core/api.c")
         p = self.commit("dup", ok=False)
@@ -457,7 +457,7 @@ class EndToEndTest(unittest.TestCase):
 
     def test_comment_above_define_refused_naming_the_token(self):
         self.sub("core/api.c", "static int other(",
-                 "/** Calls the helper. */\n#define OTHER_SCALE 1\nstatic int other(")
+                 "/** @brief Calls the helper. */\n#define OTHER_SCALE 1\nstatic int other(")
         self.sub("core/api.c", "return helper(a);", "return helper(a) * OTHER_SCALE;")
         self.git("add", "core/api.c")
         p = self.commit("blocked", ok=False)
@@ -473,7 +473,7 @@ class EndToEndTest(unittest.TestCase):
     def test_unstaged_canonical_header_comment_refused(self):
         self.sub("core/api.c", "return a;\n}", "return a + 0;\n}")
         self.sub("core/api.h", "int api_plain(int a);",
-                 "/** Returns a.\n * @param a The value.\n * @return a. */\n"
+                 "/** @brief Returns a.\n * @param a The value.\n * @return a. */\n"
                  "int api_plain(int a);")
         self.git("add", "core/api.c")
         p = self.commit("header not staged", ok=False)
@@ -484,7 +484,7 @@ class EndToEndTest(unittest.TestCase):
 
     def test_header_only_commit_acts_on_its_keys(self):
         self.sub("core/api.h", "int api_plain(int a);",
-                 "/** Returns a.\n * @param a The value.\n * @return a. */\n"
+                 "/** @brief Returns a.\n * @param a The value.\n * @return a. */\n"
                  "int api_plain(int a);")
         self.git("add", "core/api.h")
         self.commit("document at the header")
@@ -504,6 +504,14 @@ class EndToEndTest(unittest.TestCase):
         self.commit("brief")
         self.assertNotIn("core/api.c:helper", self.rows())
 
+    def test_paragraph_without_brief_command_refused(self):
+        self.write("core/new.c", "/** Returns one. */\nint fresh(void) { return 1; }\n")
+        self.wire("api.c", "ec.cpp", "new.c")
+        self.git("add", "core/new.c")
+        p = self.commit("paragraph only", ok=False)
+        self.assertIn("REFUSED  core/new.c:fresh  (new)", p.stderr)
+        self.assertIn("the comment has no @brief.", p.stderr)
+
     def test_header_parameter_names_differ_from_the_definition(self):
         # api_anchor: the header names `anchor`, the definition `a`; the
         # comment at the header validates against the header's names.
@@ -520,11 +528,11 @@ class EndToEndTest(unittest.TestCase):
         self.git("add", ".gitattributes")
         self.commit("attributes")
         self.git("switch", "-q", "-c", "topic")
-        self.sub("core/api.c", "static int other(", "/** Calls the helper. */\nstatic int other(")
+        self.sub("core/api.c", "static int other(", "/** @brief Calls the helper. */\nstatic int other(")
         self.git("add", "core/api.c")
         self.commit("topic documents other")
         self.git("switch", "-q", "main")
-        self.sub("core/api.c", "static int helper(", "/** Doubles a. */\nstatic int helper(")
+        self.sub("core/api.c", "static int helper(", "/** @brief Doubles a. */\nstatic int helper(")
         self.git("add", "core/api.c")
         self.commit("main documents helper")
         p = self.git("cherry-pick", "topic", ok=False)

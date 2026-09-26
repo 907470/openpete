@@ -1620,7 +1620,7 @@ void dragonstar_native_set_rot_interp(const double* ang_zxy) {
     if (ang_zxy) memcpy(s_ds_rot, ang_zxy, sizeof s_ds_rot);
 }
 
-/** The star's spoke matrix as gamestate 8 builds it before func_80058864:
+/** @brief The star's spoke matrix as gamestate 8 builds it before func_80058864:
  * RotVec8ToMatrix(+0x28 angles, g_Camera.m_ProjectionMatrix) into +0x10
  * (func_8001CFDC), composed here in double from the camera matrix the view
  * resolves (the bracketed camera on a sub-tick present) and the angles, which
@@ -1640,7 +1640,7 @@ static void dragonstar_matrix(CPUState* cpu, const ngte_view* v, double Me[3][3]
     ngte_compose_euler_f(cpu, v->cam_M, ang, Me);
 }
 
-/** Builds the star's 16-triangle centre fan into s_dstri: projects the
+/** @brief Builds the star's 16-triangle centre fan into s_dstri: projects the
  * record's centre, then the 16 ring spokes (even points at size, odd points
  * at 4x size) through the spoke matrix and the centre's view translation.
  * Leaves s_dstri_n 0 when the record's gate is clear or the centre is behind

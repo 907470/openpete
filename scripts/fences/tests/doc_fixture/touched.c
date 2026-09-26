@@ -2,7 +2,7 @@ static int touched_undoc(int a) {
     return a;
 }
 
-/** Returns its argument. */
+/** @brief Returns its argument. */
 static int touched_doc(int a) {
     return a;
 }

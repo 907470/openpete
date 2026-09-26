@@ -367,7 +367,7 @@ void openpete_options_set_default_renderer(openpete_options_t* opts,
     opts->default_renderer = r;
 }
 
-/** Print the command-line help for `display_name`'s build to stderr. */
+/** @brief Print the command-line help for `display_name`'s build to stderr. */
 static void print_help(const char* display_name, const char* argv0,
                        openpete_renderer_t default_renderer) {
     fprintf(stderr,

@@ -194,7 +194,7 @@ static int s1_cutscene_owns_draw(CPUState* cpu) {
     return cpu->read_word(G_GAMESTATE) == 8u && st >= 1u && st <= 6u;
 }
 
-/** The rescue cutscene's departure factors for record 0, as func_8001CFDC
+/** @brief The rescue cutscene's departure factors for record 0, as func_8001CFDC
  * applies them in m_State 5 (draw.c state 5): row 0 by
  * D_8006F3C0[m_CutsceneTicks], row 1 by Cos((m_CutsceneTicks - 8) * 42)
  * once the ticks pass 8, row 2 unscaled; every other state scales nothing.
@@ -217,7 +217,7 @@ static int s1_departure_factors(CPUState* cpu, const uint8_t* cs, double f[3]) {
     return 1;
 }
 
-/** Record 0's draw-time row scale in the rescue cutscene's departure
+/** @brief Record 0's draw-time row scale in the rescue cutscene's departure
  * (g_Gamestate 8, m_State 5): func_8001CFDC scales rows 0 and 1 of the first
  * cull record (the queue holds m_CutsceneSpyro alone) after
  * func_8001F158 builds it. A canonical present takes the live

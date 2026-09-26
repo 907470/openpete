@@ -237,7 +237,7 @@ void spyro_native_canon_capture_camera(void* cpu, int producer) { (void)cpu; (vo
 int  spyro_native_prod_camera_enter(int producer) { (void)producer; return 0; }
 void spyro_native_prod_camera_leave(void) {}
 
-/** The player's ground shadow, at its own place in the record order: the shadow
+/** @brief The player's ground shadow, at its own place in the record order: the shadow
  * feeder reads one state block, the record store holds the block each call
  * drew with, so the loop stages that block over the ambient bytes and runs the
  * fan once per record. The anchor is bracketed against the previous tick's,
@@ -267,7 +267,7 @@ static void player_record_shadow(CPUState* cpu, int k, uint8_t* shb, double rec_
     }
 }
 
-/** Replay every player call the canonical tick recorded, not just the avatar.
+/** @brief Replay every player call the canonical tick recorded, not just the avatar.
  *
  * The pass driver draws the avatar twice on a tick over a reflective surface:
  * a mirrored copy first, with the height above the surface in the state word,

@@ -50,7 +50,7 @@ typedef enum {
  * moby list (CopyHudMobysToShaded) and rendered through the moby pipeline, so it
  * is part of RP_MOBY, not separately isolatable via a dispatch bracket. */
 
-/** Parse the --render-paths CSV. NULL/empty = no selection (all paths render,
+/** @brief Parse the --render-paths CSV. NULL/empty = no selection (all paths render,
  * filtering off). Unknown names are warned and ignored.
  * @param spec comma- or space-separated path names */
 void render_paths_init(const char* spec);

@@ -158,7 +158,7 @@ void ngte_project_gte(const int M[3][3], const double TR[3],
 }
 
 static int s_unr_tab[257];
-/** The GTE's UNR reciprocal of SZ3 (capped at 0x1FFFF), as RTPS divides. */
+/** @brief The GTE's UNR reciprocal of SZ3 (capped at 0x1FFFF), as RTPS divides. */
 static int ngte_unr_divide(int H, int sz3)
 {
     if (!s_unr_tab[0]) for (int i = 0; i < 257; i++) {
@@ -177,7 +177,7 @@ static int ngte_unr_divide(int H, int sz3)
     return q > 0x1FFFF ? 0x1FFFF : (int)q;
 }
 
-/** `v` clamped to [lo, hi]. */
+/** @brief `v` clamped to [lo, hi]. */
 static int64_t ngte_sat64(int64_t v, int64_t lo, int64_t hi)
 {
     return v < lo ? lo : v > hi ? hi : v;

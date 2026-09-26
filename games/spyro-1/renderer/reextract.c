@@ -119,7 +119,7 @@ typedef struct { uint32_t addr, w1, w2; uint8_t staged; } part_save_t;  /* +0x04
 
 #define PART_SEL_HIDDEN 0xFEu        /* inactive, not the end of the pool */
 
-/** The g_Particles slot at `pa` as the canonical present showed it, under
+/** @brief The g_Particles slot at `pa` as the canonical present showed it, under
  * --runahead: the led tick's bytes the objs table captured at the speculation
  * head, staged over the committed guest bytes when they differ. Guest memory
  * is never written: when the view refuses staging the slot keeps its
@@ -137,7 +137,7 @@ static uint8_t* particle_stage_shown(uint32_t pa, uint8_t* gh, const openpete_in
     return st;
 }
 
-/** Stage the selector byte of the g_Particles slot at `pa` (PART_SEL_HIDDEN
+/** @brief Stage the selector byte of the g_Particles slot at `pa` (PART_SEL_HIDDEN
  * skips the slot, 0xFF ends the pool walk), leaving guest memory unwritten;
  * a refused stage keeps the committed byte. */
 static void particle_stage_sel(uint32_t pa, uint8_t sel) {
@@ -145,7 +145,7 @@ static void particle_stage_sel(uint32_t pa, uint8_t sel) {
     if (st) st[PART_HDR_SEL / 8u] = sel;
 }
 
-/** One past the highest g_Particles slot the objs table captured: the led
+/** @brief One past the highest g_Particles slot the objs table captured: the led
  * pool's extent under --runahead. The capture walk records only active slots,
  * and the led pool can reach past the committed pool's end sentinel. */
 static uint32_t particle_led_extent(uint32_t ppool) {
@@ -155,7 +155,7 @@ static uint32_t particle_led_extent(uint32_t ppool) {
     return n;
 }
 
-/** Stage every slot of a fixed record pool (`n` slots of `stride` bytes at
+/** @brief Stage every slot of a fixed record pool (`n` slots of `stride` bytes at
  * `base`) as the led capture holds it, under --runahead: a captured slot
  * shows its captured bytes, and a slot live only in the committed guest RAM
  * has the liveness bits `hide_mask` of its word at `hide_off` cleared so its
@@ -742,7 +742,7 @@ static int s_cut_cam_snap;
 static uint32_t s_cut_held[CUT_HELD_MAX];
 static int      s_cut_held_n;
 
-/** Whether the sub-tick view holds `moby` at its previous tick on the current
+/** @brief Whether the sub-tick view holds `moby` at its previous tick on the current
  * present (moby_cut_hold staged its whole previous record), so every byte of
  * it the feeders read is tick N-1's.
  * @param moby the moby's guest address
@@ -753,7 +753,7 @@ int spyro_moby_cut_held(uint32_t moby) {
     return 0;
 }
 
-/** Hold this moby's previous tick for the rest of the interval: stage the whole
+/** @brief Hold this moby's previous tick for the rest of the interval: stage the whole
  * previous record, so position, class, model and animation state all read N-1
  * through the view, pin the fractional position table to it, and record the
  * moby in the present's held set (spyro_moby_cut_held). Returns 1 when the
@@ -1055,7 +1055,7 @@ static void spyro_record_overlay(uint32_t addr, const uint8_t* bytes, uint32_t l
     if (h) memcpy(h, bytes, len);
 }
 
-/** Run the Spyro shadow feeder once per drawn shadow record bound to model
+/** @brief Run the Spyro shadow feeder once per drawn shadow record bound to model
  * record `k`, each staged from its shown state (`src`, the led tick under
  * --runahead) with the ground anchor lerped against the paired record,
  * teleport-guarded; `shb` is the staged shadow span. */
@@ -1080,7 +1080,7 @@ static void player_records_shadows(CPUState* cpu, int k, uint8_t* shb) {
     }
 }
 
-/** One Spyro feeder pass per model record of the committed epoch, each staged
+/** @brief One Spyro feeder pass per model record of the committed epoch, each staged
  * from its shown state (`src`, the led tick under --runahead) with position,
  * anim clock and rotation bracketed against the record it paired from, then
  * its shadow records; restores the ambient g_Spyro and shadow bytes after the
@@ -1253,7 +1253,7 @@ static int camera_cut(const openpete_interp_snapshot_t* prev,
     return why != NULL;
 }
 
-/** Sub-tick bracket for the dragon-rescue star record D_DRAGONSTAR (0x2C
+/** @brief Sub-tick bracket for the dragon-rescue star record D_DRAGONSTAR (0x2C
  * bytes: +0x00 gate, +0x04 world position, +0x10 the draw's spoke matrix,
  * +0x24 spoke size, +0x28 euler bytes Z/X/Y, +0x2B colour), which
  * func_8002F3E4 animates once per tick and the star feeder re-reads on every
@@ -1302,7 +1302,7 @@ static void dragonstar_bracket(void) {
     dragonstar_native_set_rot_interp(ang);
 }
 
-/** Slot `i` of the g_Particles pool (guest address `pa`, selector `sel`) as
+/** @brief Slot `i` of the g_Particles pool (guest address `pa`, selector `sel`) as
  * the led pool holds it, under --runahead: stages a captured slot's bytes,
  * hides a slot the led capture lacks, and ends the walk at the led extent
  * once the committed end sentinel has passed (`*past_end`).
@@ -1329,7 +1329,7 @@ static int particle_led_slot(uint32_t i, uint32_t pa, uint8_t* gh, uint8_t sel,
     return 1;
 }
 
-/** Bracket one shown g_Particles slot's position between its snapshot pair
+/** @brief Bracket one shown g_Particles slot's position between its snapshot pair
  * at its own alpha, behind the identity (class/sel, life) and teleport
  * guards; a guarded slot snaps to its shown bytes. Stages the whole slot and
  * records the guest position words in *e for the restore and the integrity
@@ -1418,7 +1418,7 @@ static int particle_slot_lerp(uint32_t pa, const uint8_t* gh, uint8_t* ph,
     return 1;
 }
 
-/** Per-particle interpolation (g_Particles pool): lerp each active particle's
+/** @brief Per-particle interpolation (g_Particles pool): lerp each active particle's
  * position by its OWN distinct-roll alpha so smoke / triangles / line
  * particles move at the present rate instead of stepping at 30 Hz. Keyed by
  * slot address in the interp-objs table (same store as the mobys); particles
@@ -1498,7 +1498,7 @@ static int particle_pools_bracket(part_save_t* save) {
     return n;
 }
 
-/** The sub-tick present body. Always entered through the wrapper below, which
+/** @brief The sub-tick present body. Always entered through the wrapper below, which
  * owns the view's begin/end pairing — this function has many exit paths and
  * an unpaired view would leave staged bytes visible to the next tick. */
 static void game_reextract_body(void* cpu_v) {

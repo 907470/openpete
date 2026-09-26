@@ -163,7 +163,7 @@ typedef struct {
     int16_t sx, sy;       /**< SX2, SY2, saturated to -0x400..0x3FF */
 } ngte_rtps_out;
 
-/** GTE RTPS (sf=1, lm=0), bit-exact integer mirror: MAC = (TR << 12) + M.V,
+/** @brief GTE RTPS (sf=1, lm=0), bit-exact integer mirror: MAC = (TR << 12) + M.V,
  * >> 12; SZ3 saturates to 0..0xFFFF, IR1/2 to int16; the divide is the
  * UNR reciprocal of SZ3 capped at 0x1FFFF; SX/SY = (IR * q + OF) >> 16,
  * saturated to -0x400..0x3FF.
@@ -245,7 +245,7 @@ void ngte_euler_sincos(CPUState* cpu, uint32_t rot, ngte_euler_sc* e);
  * (func_80022A2C block_80022DBC..80022F34). */
 void ngte_compose_euler(const int start[3][3], const ngte_euler_sc* e, int out[3][3]);
 
-/** out = start·Ry·Rx·Rz in double, the order of ngte_compose_euler, with
+/** @brief out = start·Ry·Rx·Rz in double, the order of ngte_compose_euler, with
  * each axis's sin/cos read through ngte_sincos_f at a fractional byte angle.
  * ang is {Z, X, Y} in byte angles, 256 to the turn (the packed euler word's
  * byte0, byte1, byte2). At integer angles the factors are the table's own

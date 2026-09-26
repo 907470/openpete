@@ -3462,7 +3462,7 @@ typedef struct {
     uint32_t prv;     /* previous accumulator */
 } tscroll_sweep_t;
 
-/** Fill *S with the accumulator offset from the committed `cur` of scroller
+/** @brief Fill *S with the accumulator offset from the committed `cur` of scroller
  * descriptor `desc` (tile `ct`) to the one a sub-tick present shows: the
  * snapshot pair's lerp(prev, curr, alpha). The snapshot's curr is the tick
  * the canonical present composed: the committed tick, equal to `cur`, or
@@ -9443,13 +9443,13 @@ static int32_t s_terrain_saved_occGroup = -1;
 static struct { CPUState* cpu; int32_t occ; int pending; } s_env_defer;
 static unsigned s_env_defer_n, s_env_defer_flushed, s_env_defer_late;
 
-/** Print the deferred-feed census at exit. */
+/** @brief Print the deferred-feed census at exit. */
 static void terrain_defer_census(void) {
     fprintf(stderr, "terrain: deferred env feed: deferred=%u flushed=%u late=%u\n",
             s_env_defer_n, s_env_defer_flushed, s_env_defer_late);
 }
 
-/** The canonical native terrain build and scene feed of one world draw. */
+/** @brief The canonical native terrain build and scene feed of one world draw. */
 static void terrain_native_build_feed(CPUState* cpu, int32_t occGroup) {
     { OP_PROF_ACCUM_SCOPE("terrain.build");
       terrain_build(cpu, occGroup); }            /* native walk + tris */
@@ -9465,7 +9465,7 @@ void terrain_native_flush_deferred(void) {
     terrain_native_build_feed(s_env_defer.cpu, s_env_defer.occ);
 }
 
-/** Flush a deferred feed still pending when the next world draw begins
+/** @brief Flush a deferred feed still pending when the next world draw begins
  * (never expected; counted as late in the census). */
 static void terrain_defer_flush_late(void) {
     if (!s_env_defer.pending) return;
@@ -9473,7 +9473,7 @@ static void terrain_defer_flush_late(void) {
     terrain_native_flush_deferred();
 }
 
-/** Run the canonical native build and feed now, or hold them for the tick's
+/** @brief Run the canonical native build and feed now, or hold them for the tick's
  * portal capture when the game draws the portals after this world draw. */
 static void terrain_native_build_feed_or_defer(CPUState* cpu, int32_t occGroup) {
     if (!terrain_game.env_feed_waits_for_portals ||
@@ -9491,7 +9491,7 @@ static void terrain_native_build_feed_or_defer(CPUState* cpu, int32_t occGroup) 
     s_env_defer_n++;
 }
 
-/** World-draw hook: runs the game's world draw once, records RP_TERRAIN and
+/** @brief World-draw hook: runs the game's world draw once, records RP_TERRAIN and
  * feeds the native terrain, or holds the feed for the tick's portal capture. */
 static int on_world_draw_terrain(CPUState* cpu, uint32_t addr) {
     (void)addr;

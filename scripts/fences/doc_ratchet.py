@@ -8,11 +8,12 @@ exactly one doxygen-form comment (`/** */`, `/*! */`, `///`, `//!`)
 attaches across its redeclarations in the TU, at the canonical site (the
 declaration in a tracked project header when one is visible, else the
 definition; a header `static inline` is its own site); the parsed comment
-has a brief (a first non-whitespace paragraph, or `@brief`/`@short`) and is
-not a group header (`@name`, `@defgroup`, `@addtogroup`, `@ingroup`,
-`@{`); no -Wdocumentation diagnostic lies in it; and, for external
-linkage, a valid `@param` names every named parameter of the canonical
-declaration and a non-void function carries `@return`.
+carries a `@brief` block command (either prefix, or its alias `@short`; a
+leading paragraph is not a brief) and is not a group header (`@name`,
+`@defgroup`, `@addtogroup`, `@ingroup`, `@{`); no -Wdocumentation
+diagnostic lies in it; and, for external linkage, a valid `@param` names
+every named parameter of the canonical declaration and a non-void function
+carries `@return`.
 
 Decision over the acted-on keys (the functions of the staged TUs, plus
 every function whose canonical site is a staged header):
@@ -73,7 +74,7 @@ FENCE = lib.Fence("doc-ratchet", "doc_ratchet.py", TSV, SCOPE_ROOTS,
 ACCEPT_VAR = "OPENPETE_DOCS_ACCEPT"
 DOC_FLAGS = ["-Wdocumentation", "-Wdocumentation-unknown-command"]
 FORMS = ("none", "plain", "misplaced", "malformed", "untagged")
-REQUIREMENT_LINE = ("brief on every function; @param per named parameter "
+REQUIREMENT_LINE = ("@brief on every function; @param per named parameter "
                     "and @return on non-void for external linkage")
 FIXTURE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "tests", "doc_fixture")
@@ -415,10 +416,7 @@ def parsed_comment_facts(ci, cursor):
     for i in range(L.clang_Comment_getNumChildren(fc)):
         ch = L.clang_Comment_getChild(fc, i)
         kind = L.clang_Comment_getKind(ch)
-        if kind == K_PARAGRAPH:
-            if not L.clang_Comment_isWhitespace(ch):
-                brief = True
-        elif kind in (K_BLOCK, K_VERBATIM_LINE):
+        if kind in (K_BLOCK, K_VERBATIM_LINE):
             name = lib.cxstring(ci, L.clang_BlockCommandComment_getCommandName(ch))
             if kind == K_VERBATIM_LINE or name in GROUP_CMDS:
                 group = group or name in GROUP_CMDS
@@ -796,7 +794,7 @@ def fmt_ranges(ranges):
 
 def skeleton(fx, root):
     ext = fx["linkage"] == "EXTERNAL"
-    lines = ["<what it does>"]
+    lines = ["@brief <what it does>"]
     if ext:
         lines += ["@param %s <meaning>" % p for p in fx["params"]]
         if not fx["void"]:
@@ -812,8 +810,8 @@ def skeleton(fx, root):
 
 def requirement(fx):
     if fx["linkage"] != "EXTERNAL":
-        return "%s linkage: a brief is enough." % fx["linkage"].capitalize()
-    need = ["brief"] + ["@param %s" % p for p in fx["params"]]
+        return "%s linkage: a @brief is enough." % fx["linkage"].capitalize()
+    need = ["@brief"] + ["@param %s" % p for p in fx["params"]]
     if not fx["void"]:
         need.append("@return")
     return "External linkage: %s." % ", ".join(need)
@@ -881,9 +879,9 @@ def explain(key, code, fx, root, rows, changed):
         elif fx.get("group"):
             out.append("  the comment is a group header (@name, @defgroup, "
                        "@addtogroup, @ingroup, @{); the function needs its own "
-                       "comment with a brief.")
+                       "comment with a @brief.")
         else:
-            out.append("  the comment has no brief: a first paragraph or @brief.")
+            out.append("  the comment has no @brief.")
         return out
     if form == "untagged":
         lacks = ["@param %s" % p for p in fx["missing"]]

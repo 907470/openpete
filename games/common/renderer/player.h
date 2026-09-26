@@ -127,7 +127,7 @@ void player_reextract_record(struct CPUState* cpu, int mirror);
 int  player_records_model_append(struct CPUState* cpu, uint32_t rp_start, uint32_t rp_end);
 int  player_records_shadow_append(struct CPUState* cpu);
 int  player_records_flame_append(struct CPUState* cpu);
-/** Close the hooks' record epoch, once per canonical present, after the
+/** @brief Close the hooks' record epoch, once per canonical present, after the
  * interp ring captured the tick: publish the committed list as the store's
  * newest, with each record's shown state (src, seg, fk, sxy) taken from the
  * led list under --runahead. */
