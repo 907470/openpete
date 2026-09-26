@@ -109,6 +109,16 @@ image_digest="$("$ENGINE" image inspect --format '{{.Digest}}' "$IMAGE" 2>/dev/n
     image_digest="$("$ENGINE" image inspect --format '{{.Id}}' "$IMAGE")"
 env_args=(-e OPENPETE_NO_COMMITS=1 -e OPENPETE_VIBRATION=0
           -e "OPENPETE_CAPTURE_IMAGE_DIGEST=$image_digest")
+# The image has no passwd entry for the mapped uid, so HOME is unset inside
+# the container and the engine's per-user directories ($HOME/.config/openpete)
+# and PulseAudio's runtime cookie resolve relative to the working directory,
+# the tree. A home under the container build directory keeps them out of it.
+home="$TREE/build/linux-release-container/home"
+mkdir -p "$home/run"
+chmod 700 "$home/run"
+env_args+=(-e "HOME=$home" -e "XDG_CONFIG_HOME=$home/.config"
+           -e "XDG_CACHE_HOME=$home/.cache" -e "XDG_DATA_HOME=$home/.local/share"
+           -e "XDG_RUNTIME_DIR=$home/run")
 # The reference store resolves as scripts/presentation-blessed.py resolves it,
 # and the container gets it by an explicit path: the container's home is not
 # the host's, so the default would otherwise name a directory inside the
