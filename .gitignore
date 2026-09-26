@@ -83,6 +83,10 @@ ram-*.bin
 # (games/<game>/oracle.conf); the gate captures them on first run.
 tests/golden/*/psxtrace-*
 
-# The dragon-rescue tier's tiles are generated: tests/harness/check_dragon_golden.sh
-# captures them on its first run. Its identity baseline stays committed.
-tests/golden/spyro-1/dragons/*.png
+# Golden images are generated: a golden's verdict is its committed blessed.tsv
+# digests, and the images live in the per-user store
+# (scripts/presentation-blessed.py). The identity baselines stay committed.
+# A negation per member of the tracked exception set keeps it addable
+# without -f; scripts/fences/golden-png-guard.py holds the same set.
+tests/golden/**/*.png
+!tests/golden/spyro-1/native-vk/*.png

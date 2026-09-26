@@ -361,6 +361,13 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     add_test(NAME ratchet_tsv_merge_selftest
              COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_ratchet_tsv_merge.py)
     set_tests_properties(ratchet_tsv_merge_selftest PROPERTIES LABELS "fence")
+    # The golden-image fence: the path rule, the staging guard `add` arm, the
+    # write-time script check, and the pre-commit dispatcher end to end in a
+    # scratch repository (staged image shapes, the bypass, and a complexity
+    # refusal through the dispatcher).
+    add_test(NAME golden_png_guard_selftest
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_golden_png_guard.py)
+    set_tests_properties(golden_png_guard_selftest PROPERTIES LABELS "fence")
 
     # Native renderer visual-regression gate (W1.2). Renders the native `-vk`
     # frame HEADLESS through a software rasterizer (surfaceless Vulkan, plan

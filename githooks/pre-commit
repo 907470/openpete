@@ -2,12 +2,16 @@
 # Tracked pre-commit hook. Active when core.hooksPath names this directory:
 #   git config core.hooksPath githooks
 # The build's `check --armed` of each fence refuses an unarmed clone.
-# Runs both ratchet fences (their shared machinery is
-# scripts/fences/ratchet_lib.py); both reports print, and the commit aborts
-# when either refuses, so one retry answers both.
+# Dispatcher: the golden-image scan (golden-png-guard.py: no image staged
+# under tests/golden outside the tracked exception set), then both ratchet
+# fences (their shared machinery is scripts/fences/ratchet_lib.py). Every
+# report prints, and the commit aborts when any refuses, so one retry
+# answers all three.
 fences="$(git rev-parse --show-toplevel)/scripts/fences"
+python3 "$fences/golden-png-guard.py" hook
+golden=$?
 python3 "$fences/complexity_ratchet.py" hook
 complexity=$?
 python3 "$fences/doc_ratchet.py" hook
 docs=$?
-[ "$complexity" -eq 0 ] && [ "$docs" -eq 0 ]
+[ "$golden" -eq 0 ] && [ "$complexity" -eq 0 ] && [ "$docs" -eq 0 ]
