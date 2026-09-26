@@ -11,7 +11,7 @@
  * This is the GENERIC half — the on/off + preview toggles, the hit published
  * by the renderer, the session verdict overrides and their file. It carries no
  * game addresses and no knowledge of the tag table; the terrain feeder
- * (games/spyro-1/renderer/terrain.c) does the projection-space pick and
+ * (games/common/renderer/terrain.c) does the projection-space pick and
  * consults openpete_fillpick_lookup ahead of the frozen table.
  *
  * Debug tool — inert unless engaged. Display-only: it changes which LP faces
@@ -48,15 +48,23 @@ typedef struct openpete_fillpick_hit {
     double   hp_vz;        /* HP surface view-Z at the crosshair (world/16) */
 } openpete_fillpick_hit;
 
-/* Engaged state. The inspector arms the pick, the tint and (with preview) the
- * candidate draw; disengaged it costs nothing. */
+/** @brief Report whether the inspector is engaged.
+ *
+ * Engaged, the terrain feeder runs the crosshair pick, the verdict tint
+ * and (with preview) the candidate draw; disengaged none of them run.
+ * Set by the P key, the overlay knob, and OPENPETE_FILLPICK=1 once a
+ * Spyro 1 level is live.
+ * @return 1 when engaged, else 0. */
 int  openpete_fillpick_active(void);
 void openpete_fillpick_toggle(void);
 void openpete_fillpick_set_active(int on);
 
-/* Preview: draw every LP face, not just the tagged ones, tinting the untagged
- * ones separately. This is how an under-fill site is found — the face that
- * *would* cover the hole is not drawn until it is tagged. */
+/** @brief Report whether preview is in effect: the preview mode is on and the inspector is engaged.
+ *
+ * Preview draws every LP face, not only the tagged ones, and tints the
+ * untagged ones separately; an under-fill site is found this way, since
+ * the face that would cover the hole is not drawn until it is tagged.
+ * @return 1 when preview is on and the inspector is engaged, else 0. */
 int  openpete_fillpick_preview(void);
 void openpete_fillpick_set_preview(int on);
 
@@ -68,8 +76,12 @@ void openpete_fillpick_set_preview(int on);
  * @return The current generation; starts at 1. */
 unsigned openpete_fillpick_generation(void);
 
-/* Renderer -> UI. Publish once per present; pass NULL (or a hit with
- * valid == 0) when nothing is under the crosshair. */
+/** @brief Store the crosshair pick for the overlay and the verdict keys.
+ *
+ * The terrain feeder calls it once per walk while the inspector is
+ * engaged. A NULL hit, or one with valid 0, means nothing is under the
+ * crosshair. Engaging or disengaging the inspector clears the stored hit.
+ * @param h Pick to copy, or NULL. */
 void openpete_fillpick_publish(const openpete_fillpick_hit* h);
 int  openpete_fillpick_get(openpete_fillpick_hit* out);   /* 1 = a face is picked */
 
@@ -96,10 +108,19 @@ int  openpete_fillpick_lookup(int level, int sec, int face);
  * @param verdict OPENPETE_FILLPICK_FILL, OPENPETE_FILLPICK_NOFILL or OPENPETE_FILLPICK_NONE. */
 void openpete_fillpick_mark(int verdict);
 
-/* Drop the most recent record (restoring whatever it replaced). */
+/** @brief Step back the most recent record and rewrite the session file.
+ *
+ * Pops the tail of the record order. A record that replaced a verdict
+ * gets that verdict back, returns to the tail, and loses its undo target,
+ * so a second undo on it removes it; a record that replaced nothing is
+ * removed. Warns and does nothing when there is no record. */
 void openpete_fillpick_undo(void);
 
-/* Session listing, for the overlay. */
+/** @brief Return the number of session records, cleared ones included.
+ *
+ * The overlay lists them through openpete_fillpick_entry, indices 0 to
+ * count - 1 in record order.
+ * @return Record count, at most 1024. */
 int  openpete_fillpick_count(void);
 int  openpete_fillpick_entry(int idx, int* level, const char** level_name,
                              int* sec, int* face, int* verdict);

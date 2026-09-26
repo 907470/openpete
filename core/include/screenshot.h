@@ -25,8 +25,17 @@ void openpete_screenshot_format_path(const char* tmpl, int frame,
 /* True if `path`'s extension (case-insensitive) is `.png`. */
 int  openpete_screenshot_path_is_png(const char* path);
 
-/* Write a raw RGBA8 buffer (byte order R,G,B,A; `pixels` is w*h*4 bytes,
- * top-down) to `path` as PNG via stb_image_write. Returns 0 on success. */
+/** @brief Write a top-down RGBA8 buffer to a PNG file with stb_image_write.
+ *
+ * No flip or channel swap is applied; the native renderer's readbacks
+ * already return top-down R,G,B,A. Alpha is written as given. Used by the
+ * native screenshot paths and the identity audit.
+ * @param path Output path.
+ * @param pixels w*h*4 bytes, rows packed.
+ * @param w Width in pixels.
+ * @param h Height in pixels.
+ * @return 0 on success; 1 on a NULL argument, a non-positive dimension,
+ *         or a write failure. */
 int  openpete_write_png_rgba(const char* path, const void* pixels, int w, int h);
 
 /* Name the next player-facing screenshot: "<screenshots dir>/openpete-<local

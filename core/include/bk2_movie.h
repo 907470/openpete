@@ -1,7 +1,8 @@
 /* core/include/bk2_movie.h — BizHawk (.bk2) movie reader.
  *
- * Octoshock PSX core, P1 pad. Digital buttons + the 4 analog axes (LStick
- * X/Y, RStick X/Y) are decoded; the second controller is ignored.
+ * Octoshock PSX core, ports 1 and 2. For each port the digital buttons and
+ * the 4 analog axes (LStick X/Y, RStick X/Y) are decoded; a second port's
+ * frames go to p2_frames.
  *
  * Each frame decodes to a bk2_frame_t: a 16-bit PSX pad bitfield in the
  * same "released = 1, pressed = 0" convention PsyCross's

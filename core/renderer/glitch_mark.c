@@ -149,13 +149,17 @@ static const char *const s_shows_name[] = { "scene", "vram-fb", "psycross-ref", 
 static const char *name_of(const char *const *tab, int n, int i)
 { return (i >= 0 && i < n) ? tab[i] : "?"; }
 
-/* Camera facing in the game's angle units, 4096 to the turn, so a record
- * pastes straight into --freecam-pose. Row 2 of the camera matrix is the
- * forward axis and world component 1 is up, which makes pitch the arcsine of
- * the forward row's component 1 and yaw the heading of the other two.
- * Computed at the dump and never on the present path: the record keeps the
- * matrix, so a convention error costs a rerun of the reader, not of the
- * capture. */
+/** @brief Convert a camera matrix to yaw and pitch in the game's angle units, 4096 to the turn.
+ *
+ * The units let a record paste straight into --freecam-pose. Row 2 of the
+ * camera matrix is the forward axis and world component 1 is up, so pitch
+ * is the arcsine of the forward row's component 1 (clamped to [-1, 1]) and
+ * yaw is atan2(-x, z) of the other two, wrapped to [0, 4096). Computed at
+ * the dump and never on the present path: the record keeps the matrix, so
+ * a convention error costs a rerun of the reader, not of the capture.
+ * @param M Camera matrix, row-major, rows unit-normalized.
+ * @param yaw Receives the yaw.
+ * @param pitch Receives the pitch. */
 static void cam_angles(const float M[9], float *yaw, float *pitch)
 {
     const double k = 4096.0 / (2.0 * 3.14159265358979323846);
@@ -168,7 +172,13 @@ static void cam_angles(const float M[9], float *yaw, float *pitch)
     *pitch = (float)(asin(u) * k);
 }
 
-/* Directory of the run's log file, or "." when there is no log sink. */
+/** @brief Write the mark file's directory: the log file's directory, else the working directory.
+ *
+ * The working directory is written as ".", used when there is no log
+ * file, when the log path has no separator, or when its directory does
+ * not fit.
+ * @param out Receives the directory, with no trailing separator.
+ * @param cap Capacity of @p out. */
 static void mark_dir(char *out, size_t cap)
 {
     const char *lp = openpete_log_file_path();

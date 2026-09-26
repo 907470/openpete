@@ -1,8 +1,9 @@
 /* core/record/bk2_record.c — see bk2_record.h.
  *
  * Output schema mirrors what BizHawk Octoshock 2.9.1 writes (the same
- * dialect bk2_movie.c parses). One Input Log frame per call to
- * bk2_record_append, plus a stub Header.txt so the file looks valid.
+ * dialect bk2_movie.c parses). At finalize, one Input Log line is written
+ * per input-log entry between bk2_record_begin and bk2_record_finalize,
+ * beside a Header.txt.
  *
  * Frame line layout (matches the LogKey we emit):
  *   |    1,...|  128,  128,  128,  128,XXXXXXXXXXXXXXXX.|
@@ -10,7 +11,8 @@
  * - Segment 0 ("    1,...") is constant: disc-select=1 plus three
  *   '.' for Open|Close|Reset. We never emit disc-swap or reset events.
  * - Segment 1 starts with the 4 analog axes (LX, LY, RX, RY), followed
- *   by 16 digital chars + 1 MODE char ('M' when the pad was analog).
+ *   by 16 digital chars + 1 MODE char, always '.'. A two-player movie
+ *   repeats this segment for port 2.
  * - Each digital char is '.' when released, the BizHawk display
  *   letter when pressed (U/D/L/R/s/S/Q/T/O/X/l/r/L/R/L/R) — only the
  *   '.'-vs-non-'.' distinction matters to bk2_movie_load, but the

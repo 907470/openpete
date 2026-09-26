@@ -19,15 +19,14 @@
 // The frame source is the present FBO at internal resolution, cropped to the
 // canonical PSX visible region (no letter/pillarbox bars) — the same source
 // the native-resolution screenshot path reads. Dimensions are locked on the
-// first captured frame; a later window resize that changes the native size is
-// dropped (counted + warned) for now — see the plan's robustness phase.
+// first captured frame; a frame from a later window resize that changes the
+// native size is dropped, counted and warned once.
 //
-// libav* is a hard build dependency on native builds (the user opted into
-// hard-require). The one exception is cross-compiling (e.g. the MinGW Windows
+// libav* is a hard build dependency on native builds. The one exception is cross-compiling (e.g. the MinGW Windows
 // preset), where no target libav exists and host pkg-config would poison the
 // build; there OPENPETE_HAS_LIBAV is undefined and this TU compiles to the
-// stub at the bottom of the file (the three public entry points become no-ops
-// that warn once if --record was requested). See core/CMakeLists.txt.
+// stubs at the bottom of the file (the public entry points do nothing, and
+// init warns once if --record was requested). See core/CMakeLists.txt.
 
 #include "openpete_record.h"
 #include "openpete_log.h"
@@ -169,10 +168,18 @@ static struct {
 
 /* ---- encode one frame (encoder thread, and main thread during flush) ---- */
 
-/* Send `buf` (RGBA, bottom-up, native_w x native_h) or NULL to flush, then
- * drain and mux any produced packets. Runs only on the encoder thread while
- * the loop is live, and on the main thread after the thread is joined — never
- * concurrently. Returns 0 on success, negative on a fatal encode error. */
+/** @brief Encode one ring image, or flush the video encoder, and mux every packet it produces.
+ *
+ * Converts the even-floored w x h sub-rectangle of the native-pitch buffer
+ * to the encoder pixel format: a bottom-up source is read from row h-1
+ * with a negated stride, a top-down source from row 0. The frame PTS is
+ * @p pts_us minus start_us (start_us is 0 under constant-rate capture,
+ * where @p pts_us is an ordinal). Runs on the encoder thread while it
+ * lives and on the shutdown thread after the join, never concurrently.
+ * @param buf RGBA image of native_w x native_h, or NULL to flush.
+ * @param pts_us Capture timestamp in microseconds, or the constant-rate
+ *        ordinal.
+ * @return 0 on success, -1 on a send, receive or write error. */
 static int rec_encode_one(const uint8_t* buf, uint64_t pts_us) {
     if (buf) {
         if (av_frame_make_writable(g_rec.frame) < 0)
@@ -228,10 +235,16 @@ static int rec_encode_one(const uint8_t* buf, uint64_t pts_us) {
 
 /* ---- audio (loopback SPU capture -> second stream) ---- */
 
-/* Build the audio encoder + resampler + sample FIFO. Called from lazy_init
- * BEFORE write_header (all streams must exist first). Audio failure is
- * non-fatal: logs, leaves audio_enabled=0, and recording continues
- * video-only. Returns 0 always (success or graceful video-only fallback). */
+/** @brief Add the audio stream: encoder, s16-to-encoder resampler, and sample FIFO.
+ *
+ * Called from rec_lazy_init before the container header is written, since
+ * every stream must exist first. Needs audio requested and the PsyCross
+ * loopback capture active; the stream is 44100 Hz stereo at 160 kb/s.
+ * Any failure logs a warning and leaves audio_enabled 0, so recording
+ * continues with video only. On success it discards the loopback backlog
+ * and resets its drop counters so audio sample 0 lines up with the first
+ * video image.
+ * @return 0 in every path. */
 static int rec_setup_audio(void) {
     if (!g_rec.audio_requested || !PsyX_SPUAL_CaptureActive())
         return 0;  /* not requested, or loopback not active -> video only */
@@ -304,9 +317,12 @@ static int rec_setup_audio(void) {
     return 0;
 }
 
-/* Send one audio frame (or NULL to flush) and mux produced packets. Same
- * single-writer discipline as rec_encode_one (encoder thread during the run,
- * main thread after join). Returns 0 ok, -1 fatal. */
+/** @brief Encode one audio frame, or flush the audio encoder, and mux every packet it produces.
+ *
+ * Reuses the video packet object; the same single-writer rule as
+ * rec_encode_one applies.
+ * @param af Audio frame, or NULL to flush.
+ * @return 0 on success, -1 on a send, receive or write error. */
 static int rec_encode_audio_frame(AVFrame* af) {
     int ret = avcodec_send_frame(g_rec.acodec, af);
     if (ret < 0) return -1;
@@ -323,8 +339,11 @@ static int rec_encode_audio_frame(AVFrame* af) {
     }
 }
 
-/* Drain captured PCM into the FIFO and encode every full frame available.
- * Runs on the encoder thread (and on the main thread at shutdown). */
+/** @brief Move the captured loopback PCM into the FIFO and encode every whole audio frame it holds.
+ *
+ * Frame PTS counts samples from 0. An encode error disables audio for the
+ * rest of the recording. Runs on the encoder thread, and on the shutdown
+ * thread after the join. No effect when audio is disabled. */
 static void rec_pump_audio(void) {
     if (!g_rec.audio_enabled) return;
     short buf[4096 * 2];
@@ -615,11 +634,15 @@ int openpete_record_init(const openpete_options_t* opts) {
     return 0;
 }
 
-/* Publish one RGBA frame (native_w x native_h, bottom-up) into the encoder
- * slot ring with timestamp pts_us. VFR drops (and counts) when the ring is
- * full so the game stays real-time; CFR waits instead, because a hole in a
- * constant-rate stream shifts the game time of every frame after it. Under
- * CFR the frame's own ordinal replaces pts_us. */
+/** @brief Copy one RGBA image into the encoder slot ring and wake the encoder thread.
+ *
+ * Under variable-rate capture a full ring drops and counts the image, so
+ * the game is never stalled; under constant-rate capture the call waits
+ * for a slot, since a missing image would shift the game time of every
+ * later one, and the next ordinal replaces @p pts_us. Filling the
+ * --record-frames budget sets finished; later images are ignored.
+ * @param rgba Image of native_w x native_h in the locked row order.
+ * @param pts_us Capture timestamp in microseconds. */
 static void rec_publish(const uint8_t* rgba, uint64_t pts_us) {
     SDL_LockMutex(g_rec.mutex);
     if (g_rec.finished) {
@@ -655,8 +678,11 @@ static void rec_publish(const uint8_t* rgba, uint64_t pts_us) {
     SDL_UnlockMutex(g_rec.mutex);
 }
 
-/* Retrieve the oldest completed PBO read and hand it to the encoder ring,
- * paired with its submit-time PTS. No-op if nothing is in flight. */
+/** @brief Map the oldest in-flight PBO read and publish it with its submit-time timestamp.
+ *
+ * A mapped image whose size differs from the locked size is discarded.
+ * The timestamp is consumed even when the map fails. No effect when no
+ * read is in flight. */
 static void rec_drain_one(void) {
     if (g_rec.pbo_pts_count <= 0)
         return;
@@ -699,7 +725,7 @@ void openpete_record_capture_frame(uint64_t pts_us) {
         /* Window resized mid-record => native size changed; the encoder is
          * locked to the initial dims. Drop the new-size frame (don't submit),
          * but keep draining in-flight frames so the pipeline stays
-         * consistent. (Resize-rescale is a plan robustness item.) */
+         * consistent. */
         if (!g_rec.warned_resize) {
             OPL_WARN_F("record",
                        "native size changed %dx%d -> %dx%d mid-record; "
@@ -730,13 +756,7 @@ int openpete_record_finished(void) {
     return g_rec.enabled && g_rec.finished;
 }
 
-/* Graphics-API-agnostic frame submit (the native Vulkan renderer reads its
- * offscreen back via rhi_read_offscreen — top-down — and hands the CPU RGBA
- * buffer here, so record.c gains no Vulkan knowledge). Unlike the PsyCross PBO
- * path this is a SYNCHRONOUS publish: the buffer is already in CPU memory, so it
- * copies straight into the encoder ring (the encoder thread still does the encode
- * off the host fiber). Lazy-builds the encoder + locks even dims on the first
- * frame; a mid-record size change is dropped + warned. */
+/* Native-renderer submit: a synchronous copy into the encoder ring. */
 void openpete_record_submit_frame(const uint8_t* rgba, int w, int h,
                                   int top_down, uint64_t pts_us) {
     if (!g_rec.enabled || g_rec.failed || !rgba || w <= 0 || h <= 0)
@@ -762,7 +782,12 @@ void openpete_record_submit_frame(const uint8_t* rgba, int w, int h,
     rec_publish(rgba, pts_us);
 }
 
-/* Free everything (idempotent). Encoder thread must already be joined. */
+/** @brief Free every encoder, stream, ring and lock, and log the loopback audio drop count.
+ *
+ * A non-zero drop count is a warning, because dropped loopback frames
+ * shorten the audio track against emulated time. Freed pointers are
+ * cleared, so a second call frees nothing. The encoder thread must be
+ * joined or never started. */
 static void rec_teardown(void) {
     /* The SPU capture ring discards its oldest frames when the encoder falls
      * behind, which shortens the audio track relative to emulated time. Report

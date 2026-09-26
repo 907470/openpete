@@ -840,7 +840,7 @@ extern int PsyX_SPUAL_SetMute(int on_off);
 /* The --debug-triangle infra-triangle (core/renderer/debug_render.cpp). */
 extern void openpete_debug_triangle_init(void);
 extern void openpete_debug_triangle_emit(void);
-extern void openpete_psyx_take_screenshot(const char* path);  /* BMP via SDL_SaveBMP */
+extern void openpete_psyx_take_screenshot(const char* path);  /* PNG or BMP by extension */
 extern void openpete_psyx_take_screenshot_ext(const char* path,
                                               int* out_w, int* out_h);
 

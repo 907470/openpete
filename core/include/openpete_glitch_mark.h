@@ -67,26 +67,49 @@ typedef struct {
     openpete_glitch_walk_t walk;   /* census of the walk this scene came from */
 } openpete_glitch_present_t;
 
-/* Allocate the rings. Called once at startup, before any other thread
- * exists, so the note paths below never have to test for initialization
- * under a lock. Depth comes from OPENPETE_GLITCH_MARK_N (default 600, about
- * 1.25 s of presents at 480 Hz), clamped to [16, 65536]. */
+/** @brief Allocate both rings and parse OPENPETE_GLITCH_MARK_AT.
+ *
+ * Called from openpete_run before any other thread exists, so the note
+ * paths never test for initialization under a lock; later calls do
+ * nothing. The depth comes from OPENPETE_GLITCH_MARK_N (default 600, about
+ * 1.25 s of presents at 480 Hz), clamped to [16, 65536]; a value of 0 or
+ * less allocates nothing and leaves the module off, as does an allocation
+ * failure. The wall-clock origin for the milliseconds trigger is taken
+ * here. An unparsable trigger is logged and ignored. */
 void openpete_glitch_mark_init(void);
 
-/* Ring depth actually allocated; 0 when the module is off. */
+/** @brief Return the ring depth allocated.
+ *
+ * @return Records per ring; 0 when the module is off. */
 int  openpete_glitch_mark_depth(void);
 
-/* Push one walk census. Called by the terrain walk on the guest thread. The
- * record is also held as "the walk most recently completed", which the scene
- * publish copies into its slot so the present that composes that scene
- * carries the right census under eager production. */
+/** @brief Push one walk census into the walk ring and hold it as the most recent walk.
+ *
+ * Called by the terrain walk on the guest thread, the ring's only
+ * writer. The stored record's ord is overwritten with the walk ordinal,
+ * 1-based. The held copy is what openpete_glitch_mark_last_walk returns,
+ * which the scene publish copies into its slot so the present that
+ * composes that scene carries its census under eager production. No
+ * effect when the module is off or @p w is NULL.
+ * @param w Walk census. */
 void openpete_glitch_mark_note_walk(const openpete_glitch_walk_t *w);
 
-/* The walk most recently completed, for the scene publish to snapshot. */
+/** @brief Copy the most recently completed walk census.
+ *
+ * Retries up to four times while the guest thread is writing it; when
+ * every try collides, or the module is off, @p out is left zeroed (ord 0
+ * means no walk). Called by the scene publish and by the present census
+ * when no scene slot is current. No effect when @p out is NULL.
+ * @param out Receives the census. */
 void openpete_glitch_mark_last_walk(openpete_glitch_walk_t *out);
 
-/* Push one present record. Called by the present census on the display
- * owner's thread. */
+/** @brief Push one present record into the present ring.
+ *
+ * Called by the native renderer's present census on the display owner's
+ * thread, the ring's only writer. The record is stored as given; its
+ * serial is the caller's. No effect when the module is off or @p p is
+ * NULL.
+ * @param p Present record. */
 void openpete_glitch_mark_note_present(const openpete_glitch_present_t *p);
 
 /* Raise the mark. `reason` names what raised it ("key", "env") and appears

@@ -4,7 +4,7 @@
 // with the wall-clock instant of capture, so the output plays back at real
 // game cadence (drops manifest as fewer frames per wall-second). The encoder
 // links libav* in-process and writes per-frame PTS directly; there is no
-// nominal frame rate. See notes/plans/openpete-record-video.md.
+// nominal frame rate.
 //
 // Frames are read from PsyCross's present FBO at internal resolution, cropped
 // to the canonical PSX visible region (no letter/pillarbox bars) — the same
@@ -21,48 +21,87 @@
 extern "C" {
 #endif
 
-/* Arm recording from the parsed options. No-op (returns 0) when
- * opts->record_path is NULL. The encoder and GPU-readback rings are NOT
- * built here — dimensions aren't known until the first frame renders — so
- * this only validates/stashes the encoder parameters. Returns 0 on success
- * (armed or disabled); non-zero on a fatal setup error the caller should
- * surface as OPENPETE_EXIT_SETUP_ERROR. */
+/** @brief Arm recording from the parsed options.
+ *
+ * Stores the path, encoder, pixel format, crf, gop, audio encoder and
+ * --record-frames budget; the encoder and the readback rings are built on
+ * the first captured present, when the dimensions are known. A positive
+ * --record-cfr selects constant-rate capture at the nearest whole multiple
+ * of the tick rate and disables audio. No effect when opts->record_path is
+ * NULL. In a build without libav a requested recording logs a warning and
+ * stays disabled.
+ * @param opts Parsed options; its strings must outlive the recording.
+ * @return 0 in every current path (armed, disabled or unsupported); a
+ *         non-zero value is a fatal setup error the caller reports as
+ *         OPENPETE_EXIT_SETUP_ERROR. */
 int  openpete_record_init(const openpete_options_t* opts);
 
-/* Capture the just-rendered scene at wall-clock `pts_us` (microseconds from
- * an arbitrary monotonic origin; the first call's value becomes t=0). Call
- * once per presented game frame, immediately before PsyX_EndScene. No-op if
- * recording is disabled. The first call lazily builds the encoder from the
- * present FBO's native dimensions and spawns the encoder thread. */
+/** @brief Queue an asynchronous readback of the PsyCross present FBO for encoding.
+ *
+ * Called once per PsyCross present, before PsyX_EndScene, on the thread
+ * that owns the GL context. The first call builds the encoder from the
+ * present FBO's dimensions (rows bottom-up) and starts the encoder thread;
+ * the first call's timestamp is t=0 under variable-rate capture. When the
+ * PBO ring is full its oldest completed read is handed to the encoder ring
+ * first. A present whose size differs from the locked size is dropped and
+ * counted, with one warning. No effect when recording is disabled or
+ * failed, or when the present FBO does not exist yet.
+ * @param pts_us Wall-clock capture time in microseconds from a monotonic
+ *        origin. */
 void openpete_record_capture_frame(uint64_t pts_us);
 
-/* True when this build can encode video at all: false for targets built
- * without libav* (OPENPETE_ENABLE_RECORD=OFF, or a cross-compile with no
- * target FFmpeg), where --record only warns and every recording knob is
- * inert. A build-time constant, safe to call before init. */
+/** @brief Report whether this build can encode video.
+ *
+ * A build-time constant, safe to call before openpete_record_init. It is 0
+ * for targets built without libav (OPENPETE_ENABLE_RECORD=OFF, or a
+ * cross-compile with no target FFmpeg), where --record only warns and
+ * every recording knob is inert; the overlay then hides its Recording rows.
+ * @return 1 with libav, 0 without. */
 int  openpete_record_supported(void);
 
-/* True while recording is armed, not failed, and still accepting frames — gate
- * the (non-trivial) native offscreen readback on this so it only runs when
- * actually recording. Goes false once a --record-frames budget is spent. */
+/** @brief Report whether recording is armed, not failed, and still accepting frames.
+ *
+ * The native renderer gates its offscreen readback on this. It turns 0
+ * once a --record-frames budget is spent.
+ * @return Non-zero while recording accepts frames. */
 int  openpete_record_active(void);
 
-/* True once a --record-frames budget has been filled. The host loop polls this
- * to end the run on the exact frame the capture window closes, so the clip is
- * neither short nor padded with presents past the window. */
+/** @brief Report whether a --record-frames budget has been filled.
+ *
+ * The host loop polls this and ends the run on the present that fills the
+ * budget, so the clip is neither short nor padded with later presents.
+ * @return Non-zero once the budget is filled; 0 when unlimited or not
+ *         recording. */
 int  openpete_record_finished(void);
 
-/* Graphics-API-agnostic frame submit for the native renderer: hand a CPU RGBA
- * buffer (w x h, `top_down` = 1 for the Vulkan offscreen) at wall-clock `pts_us`.
- * Lazy-builds the encoder + locks even dims on the first frame; copies into the
- * encoder ring (the encoder thread encodes off the host fiber). Keeps record.c
- * free of any Vulkan/GL knowledge. No-op if recording is disabled. */
+/** @brief Copy a CPU RGBA image into the encoder ring.
+ *
+ * The native renderer's entry point: it reads its offscreen back and hands
+ * the pixels here, so record.c holds no Vulkan code. The copy is
+ * synchronous; the encoder thread encodes it. The first call builds the
+ * encoder at this size (floored to even) and row order. An image whose
+ * size differs from the locked size is dropped and counted, with one
+ * warning. Under variable-rate capture a full ring drops the image; under
+ * constant-rate capture the call waits for a free slot and the image's
+ * ordinal replaces @p pts_us. No effect when recording is disabled or
+ * failed, or when @p rgba is NULL or a dimension is not positive.
+ * @param rgba Pixels, 4 bytes each, rows packed at @p w.
+ * @param w Width in pixels.
+ * @param h Height in pixels.
+ * @param top_down 1 when row 0 is the top row (the Vulkan offscreen), 0
+ *        when bottom-up.
+ * @param pts_us Wall-clock capture time in microseconds. */
 void openpete_record_submit_frame(const uint8_t* rgba, int w, int h,
                                   int top_down, uint64_t pts_us);
 
-/* Flush the encoder, write the container trailer, and tear everything down.
- * Safe to call unconditionally (no-op if recording was never armed or no
- * frame was ever captured). */
+/** @brief Finish the recording and release every resource.
+ *
+ * Drains the in-flight PBO reads into the encoder ring, stops and joins
+ * the encoder thread after it empties the ring, flushes the video and
+ * audio encoders, writes the container trailer, logs the captured and
+ * dropped counts, and frees everything. After a fatal error the trailer is
+ * not written. When no present was captured no file is written and a
+ * warning is logged. Safe to call when recording was never armed. */
 void openpete_record_shutdown(void);
 
 #ifdef __cplusplus

@@ -51,10 +51,21 @@ extern "C" void openpete_debug_triangle_init(void) {
     setRGB0(&s_drawenv, 0x00, 0x40, 0x60);  /* dark teal */
 }
 
-/* Screenshot dumper for the PsyCross present FBO. The row flip below is
- * required: glReadPixels returns rows bottom-up (GL origin is bottom-left),
- * SDL_CreateSurfaceFrom treats row 0 as the surface top, and SDL_SaveBMP
- * re-flips during BMP encoding — without it the image lands upside-down. */
+/** @brief Save the PsyCross scene to a PNG or BMP file chosen by the path's extension.
+ *
+ * Reads the present FBO at internal resolution, cropped to the PSX visible
+ * region, so the image carries no window bars and does not depend on the
+ * window size; with no present FBO it presents the cropped scene to the
+ * default framebuffer and reads the window instead. Rows are flipped to
+ * top-down, since glReadPixels returns them bottom-up. A PNG is read as
+ * RGBA with every alpha forced to 0xFF; any other extension is read as
+ * BGRA and written with SDL_SaveBMP. Writes nothing in PsyCross null-GPU
+ * mode, which has no GL context.
+ * @param path Output path; NULL writes SCREENSHOT.BMP.
+ * @param out_w Receives the image width, 0 when nothing was read; may be
+ *        NULL.
+ * @param out_h Receives the image height, 0 when nothing was read; may be
+ *        NULL. */
 extern "C" void openpete_psyx_take_screenshot_ext(const char* path,
                                                  int* out_w, int* out_h) {
     if (out_w) *out_w = 0;
@@ -150,8 +161,7 @@ extern "C" void openpete_psyx_take_screenshot(const char* path) {
     openpete_psyx_take_screenshot_ext(path, nullptr, nullptr);
 }
 
-/* Raw RGBA8 (top-down) -> PNG. Used by the native renderer's A/B screenshot
- * (its RHI readback already returns top-down R,G,B,A), so no flip/swizzle. */
+/* Top-down RGBA8 to PNG, with no flip or swizzle. */
 extern "C" int openpete_write_png_rgba(const char* path, const void* pixels,
                                        int w, int h) {
     if (!path || !pixels || w <= 0 || h <= 0) return 1;

@@ -1,9 +1,10 @@
 // core/include/openpete_state.h — save-state public API.
 //
-// First-pass coverage: CPUState register file + 2 MiB main RAM + 1 KiB
-// scratchpad + frame counter. Full coverage (VRAM, DRAWENV/DISPENV, SPU
-// voice state) lands in a follow-up that depends on the PsyCross
-// state-export API. See notes/plans/openpete-savestate-frame-step-rewind.md.
+// A state file carries the CPUState register file, 2 MiB main RAM, 1 KiB
+// scratchpad, VRAM, the SPU voice mirror and sample RAM, the CD cursors,
+// the per-game extra blob, the mod arena, the enabled-modset tag, and the
+// VBL counters. DRAWENV/DISPENV are not carried. The layout is documented
+// at the top of core/record/savestate.c.
 
 #ifndef OPENPETE_STATE_H
 #define OPENPETE_STATE_H
@@ -16,21 +17,58 @@ extern "C" {
 
 #define OPENPETE_STATE_NUM_SLOTS 10
 
-/* Persist g_game's CPUState register portion + g_ram + g_scratch + the
- * current openpete_frame to slot N. Returns 0 on success, non-zero on
- * I/O or path-resolution failure (errors are logged). */
+/** @brief Write the running state to slot file slot<N>.state in the states directory.
+ *
+ * Resolves the path and delegates to openpete_state_save_file.
+ * @param slot Slot number, below OPENPETE_STATE_NUM_SLOTS.
+ * @param cpu Guest CPU state whose register prefix is saved.
+ * @param frame openpete_frame value stored in the header.
+ * @return 0 on success; -1 on an out-of-range slot, a path failure or a
+ *         write failure, with the reason logged. */
 int openpete_state_save(unsigned slot, const CPUState* cpu, unsigned frame);
 
-/* Inverse of openpete_state_save. Refuses to load if the slot's
- * build_hash doesn't match this binary's. On success, *out_frame
- * receives the saved frame counter so the caller can re-anchor
- * openpete_frame. Returns 0 on success, non-zero otherwise. */
+/** @brief Load slot file slot<N>.state into the running state.
+ *
+ * Resolves the path and delegates to openpete_state_load_file, which
+ * refuses a file with a different identity, section sizes or modset.
+ * @param slot Slot number, below OPENPETE_STATE_NUM_SLOTS.
+ * @param cpu Guest CPU state whose register prefix is overwritten.
+ * @param out_frame Receives the saved openpete_frame, so the caller can
+ *        re-anchor it; may be NULL.
+ * @return 0 on success; -1 on refusal or failure, with the running state
+ *         untouched and the reason logged. */
 int openpete_state_load(unsigned slot, CPUState* cpu, unsigned* out_frame);
 
-/* Path-based variants (the process-handoff checkpoint file; slots
- * delegate to these). Same format + build-hash gating as slots. */
+/** @brief Write the running state to a file.
+ *
+ * Writes the header (magic, version, content identity, openpete_frame,
+ * section sizes, the guest-visible VBL counter) and then every section.
+ * The host mirrors (VRAM, SPU, game extra, mod arena) are copied to heap
+ * buffers before the disk writes. Checks the mod arena's immutable rows
+ * once per save. Used by the slot saves, the mod process handoff, and
+ * --state-save-on-frame.
+ * @param path Destination file, overwritten.
+ * @param cpu Guest CPU state whose register prefix is saved.
+ * @param frame openpete_frame value stored in the header.
+ * @return 0 on success; -1 on an open, snapshot or write failure, with
+ *         the reason logged. */
 int openpete_state_save_file(const char* path, const CPUState* cpu,
                              unsigned frame);
+/** @brief Load a state file into the running state.
+ *
+ * Refuses the load when the run follows the reference schedule, or when
+ * the magic, version, content identity, a section size, the mod arena
+ * ledger or the enabled-modset tag differs; every section is read before
+ * any is applied, so a refusal leaves the running state untouched. On
+ * commit it restores the register prefix, RAM (re-seeding the kernel's
+ * fixed low-RAM words), scratchpad, VRAM, SPU, CD cursors and the VBL
+ * counter, runs the game's post-load resync and extra-blob load, applies
+ * the arena, and broadcasts the guest discontinuity last.
+ * @param path Source file.
+ * @param cpu Guest CPU state whose register prefix is overwritten.
+ * @param out_frame Receives the saved openpete_frame; may be NULL.
+ * @return 0 on success; -1 on refusal or failure, with the reason
+ *         logged. */
 int openpete_state_load_file(const char* path, CPUState* cpu,
                              unsigned* out_frame);
 
@@ -62,11 +100,22 @@ int  openpete_state_mem_save(openpete_state_mem_t* m, const CPUState* cpu,
 int  openpete_state_mem_load(const openpete_state_mem_t* m, CPUState* cpu,
                              unsigned* out_frame, int quiet);
 
-/* Resolve the per-user state directory (created as needed). */
+/** @brief Resolve the states directory, creating it when missing.
+ *
+ * The directory is "states" beside the memory-card "cards" directory:
+ * under the executable in a portable install, else under the per-user
+ * state base (openpete_paths_state_dir). No trailing separator.
+ * @param out Receives the path.
+ * @param out_size Capacity of @p out.
+ * @return 0 on success, -1 when no base resolves or the path does not
+ *         fit. */
 int openpete_state_resolve_dir(char* out, unsigned long out_size);
 
-/* Whether slot N has a readable file on disk. Cheap stat-only check;
- * does not validate magic or build_hash. */
+/** @brief Report whether a slot's file exists as a regular file.
+ *
+ * A stat only; the magic and identity are not checked.
+ * @param slot Slot number; an out-of-range slot reports 0.
+ * @return 1 when the file exists, else 0. */
 int openpete_state_slot_present(unsigned slot);
 
 #ifdef __cplusplus

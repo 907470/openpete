@@ -231,11 +231,16 @@ static void ident_fill(char out[OPENPETE_STATE_HASH_LEN]) {
     /* 15 bytes of digest as 30 hex chars + NUL padding to 32. */
 }
 
-/* Resolve the states directory, creating the intermediate directories as
- * needed. A sibling of memcard.c's `cards` under whichever layout
- * openpete_paths.h resolved — the game folder for a portable install, the
- * per-user state directory otherwise. Writes the directory into `out` with
- * no trailing separator. Returns 0 on success. */
+/** @brief Resolve the states directory, creating it when missing.
+ *
+ * A sibling of memcard.c's "cards" directory under whichever layout
+ * openpete_paths_state_dir resolves: the executable's folder for a
+ * portable install, the per-user state directory otherwise. No trailing
+ * separator.
+ * @param out Receives the path.
+ * @param out_size Capacity of @p out.
+ * @return 0 on success, -1 when no base resolves or the path does not
+ *         fit. */
 static int resolve_state_dir(char* out, size_t out_size) {
     return openpete_paths_state_dir("states", out, out_size, 1);
 }
@@ -370,11 +375,15 @@ int openpete_state_save(unsigned slot, const CPUState* cpu, unsigned frame) {
     return openpete_state_save_file(path, cpu, frame);
 }
 
-/* Under the reference's schedule (a --psxtrace-verify run with sidecars)
+/** @brief Refuse a state load, with a logged error, while the run follows the reference's schedule.
+ *
+ * Under the reference's schedule (a --psxtrace-verify run with sidecars)
  * the thunk layer's position in the schedule's rows (VSync, read, seed,
  * CdSync, controller and interrupt cursors, the reference VBLANK reached)
  * is host state no state file carries; a load would replay from a RAM
- * image the schedule has moved past and desync every row after it. */
+ * image the schedule has moved past and desync every row after it.
+ * @param what Name of the refused load, for the log line.
+ * @return 1 when the load is refused, 0 when no schedule is active. */
 static int sched_refuses_load(const char* what) {
     if (!openpete_sched_active()) return 0;
     OPL_ERROR_F("savestate", "%s refused: the run is under the reference's "

@@ -8,8 +8,9 @@
  * and through our own bk2_movie_load. The log is shared with the
  * rewind/runahead drivers.
  *
- * P1 digital buttons and the 4 analog axes are recorded, plus the analog-
- * mode flag (MODE column).
+ * Each port's 16 digital buttons and 4 analog axes are recorded; the MODE
+ * column is always '.'. Port 2 is recorded when it was present for any
+ * recorded VBL, and the movie then also carries SyncSettings.json.
  */
 #ifndef OPENPETE_BK2_RECORD_H
 #define OPENPETE_BK2_RECORD_H
