@@ -286,6 +286,13 @@ int openpete_devui_wants_mouse(void)
 /* panel                                                              */
 /* ------------------------------------------------------------------ */
 
+/** @brief Name the source of a knob's boot value for the panel's source column.
+ *
+ * KNOB_SRC_CLI reads "cli", KNOB_SRC_ENV "env", and every other value
+ * (KNOB_SRC_DEFAULT) "def". The column shows "edited" instead while the
+ * row's value differs from its boot value.
+ * @param s The source recorded at boot.
+ * @return A static three-letter tag. */
 static const char *src_tag(knob_src_t s)
 {
     switch (s) {
@@ -1098,16 +1105,28 @@ static void draw_custom_level_rows(const char *mod_id)
     }
 }
 
-/* A row the run has no use for (see knob_desc_t::visible) is left out of the
- * panel entirely — including from the "does this section have anything to
- * show" scan, so its header goes with it. */
+/** @brief Report whether a knob row applies to this run.
+ *
+ * A row whose knob_desc_t::visible callback returns 0 is left out of the
+ * panel and out of the scan that decides whether its section has a row to
+ * show, so a section whose rows are all hidden emits no header. A NULL
+ * callback means always shown.
+ * @param k The knob row.
+ * @return true when the row applies. */
 static bool row_visible(const knob_desc_t *k)
 {
     return !k->visible || k->visible(k) != 0;
 }
 
-/* Does this row appear in the panel at all: relevant to the run, then
- * matching the text filter. */
+/** @brief Report whether a knob row appears in the panel under the text filter.
+ *
+ * The row must pass row_visible; an inactive filter then passes it, and an
+ * active one passes it when the filter matches the knob's id, label, CLI
+ * spelling, or environment variable name. The live-only toggle is applied
+ * by the caller.
+ * @param f The panel's text filter.
+ * @param k The knob row.
+ * @return true when the row is drawn. */
 static bool row_shown(const ImGuiTextFilter &f, const knob_desc_t *k)
 {
     if (!row_visible(k)) return false;

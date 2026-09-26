@@ -7,7 +7,6 @@
 // draw half lands in a later step). Display-only: every value maps to a
 // native-renderer / host-pacer setter, never gameplay state — except FREECAM,
 // which fronts the same intentionally-divergent debug toggle as the F key.
-// See notes/plans/openpete-ingame-settings-menu.md.
 //
 // The host loop (core/runtime/run.c) owns input: it toggles on `O`, feeds arrow
 // keys to nav()/adjust() while open, suppresses the game pad, and (later) calls
@@ -22,20 +21,33 @@
 extern "C" {
 #endif
 
-/* Seed the menu's value model from launch options and build the dynamic FPS
- * ladder (30, 60, k*60 up to refresh, then refresh). `refresh_hz` is the
- * monitor refresh in Hz (<= 0 → treated as 60). Applies nothing — it only makes
- * the menu reflect the flags the game launched with. Call once before the loop. */
+/** @brief Seed the menu's rows from the launch state and build the FPS ladder.
+ *
+ * The ladder is 30, 60, every multiple of 60 below the refresh, the refresh
+ * itself when above 60, then UNLIMITED, capped at 16 entries. The FPS row
+ * seeds from the live pacer target (30 when it reads 0 or less); WOBBLE,
+ * PIXELATION, TEXTURES and FOG from the values the renderer and no_lod
+ * already resolved; ASPECT, FOV, VSYNC, SHOW FPS, SSAA, DITHER and LOD from
+ * @p opts, a numeric value to its nearest ladder entry. Resets the cursor to
+ * the first row. Applies nothing. Called once before the host loop.
+ * @param opts The launch options; NULL builds the ladder and seeds nothing.
+ * @param refresh_hz Monitor refresh in Hz; below 60 is treated as 60. */
 void openpete_menu_init(const openpete_options_t* opts, int refresh_hz);
 
 /* Toggle open/closed; returns the new open state (1 = open). */
 int  openpete_menu_toggle(void);
 
-/* 1 while the menu is open. The host loop reads this to suppress pad input and
- * (later) to draw the overlay. */
+/** @brief Report whether the menu is open.
+ *
+ * The host loop reads it to route input to the menu and suppress the game
+ * pad; the renderer and the glyph builder read it to draw the panel; the
+ * mouse channel reads it to name the menu as the pointer's owner.
+ * @return 1 while open, else 0. */
 int  openpete_menu_is_open(void);
 
-/* Current cursor row (0 .. row_count-1). */
+/** @brief Read the cursor row.
+ *
+ * @return The row index, 0 .. row_count-1. */
 int  openpete_menu_cursor(void);
 
 /* Menu layout in the renderer's overlay space: x in units of window HEIGHT, y in
@@ -59,24 +71,35 @@ typedef struct {
 
 void openpete_menu_get_layout(openpete_menu_layout_t* out);
 
-/* The bounding box, in overlay units, of the close glyph's emitted ink. Only
- * the text builder knows a glyph's drawn extent: the layout square is the
- * advance box, which is wider than the X and would put the hit region beside
- * the visible pixels. Until the builder has run once the consumer falls back
- * to the layout square. */
+/** @brief Publish the bounding box, in overlay units, of the close glyph's emitted ink.
+ *
+ * Only the text builder knows a glyph's drawn extent: the layout square is
+ * the advance box, which is wider than the X and would put the hit region
+ * beside the visible pixels. Until the builder has run once, the mouse
+ * consumer tests the layout square. A changed rect is written to the mouse
+ * probe log.
+ * @param x0 Left edge.
+ * @param y0 Top edge.
+ * @param x1 Right edge.
+ * @param y1 Bottom edge. */
 void openpete_menu_note_close_rect(float x0, float y0, float x1, float y1);
 
-/* The cap height the builder actually drew the rows at. row_cap_h is a
- * ceiling; the builder shrinks every row uniformly to fit the widest value in
- * its column, and only it knows the font metrics that decide by how much. The
- * layout needs the drawn height to sit the bottom-anchored EXIT row's ink at
- * the panel's bottom inset. Until the builder has run once the layout uses
- * row_cap_h. */
+/** @brief Publish the cap height the text builder drew the rows at.
+ *
+ * row_cap_h is a ceiling; the builder shrinks every row uniformly to fit the
+ * widest value in its column, and only it knows the font metrics that decide
+ * by how much. openpete_menu_get_layout uses the drawn height to sit the
+ * bottom-anchored EXIT row's ink at the panel's bottom inset, and uses
+ * row_cap_h until a positive height is published.
+ * @param cap_h The drawn cap height; a non-positive value is stored as 0. */
 void openpete_menu_note_row_cap(float cap_h);
 
-/* Nonzero while the menu is open and the pointer sits inside the close
- * glyph's published ink. The glyph builder animates the X on it exactly as it
- * animates the row under the cursor. */
+/** @brief Report whether the pointer sits inside the close glyph's ink.
+ *
+ * The hover is taken on each openpete_menu_mouse_poll. The glyph builder
+ * wobbles the X on it as it wobbles the row under the cursor.
+ * @return Non-zero while the menu is open and the pointer was inside the
+ *         close glyph at the last poll. */
 int openpete_menu_close_hovered(void);
 
 /* Text + wobble phase for the game-side glyph builder (text_moby_native). */
@@ -92,37 +115,59 @@ unsigned    openpete_menu_wobble_phase(void);
  * moves off it. */
 int         openpete_menu_row_centered(int row);
 
-/* Move the row cursor: dy < 0 = up, dy > 0 = down (wraps). No-op unless open. */
+/** @brief Move the row cursor one row, wrapping at either end.
+ *
+ * Disarms EXIT and logs the new cursor. No-op unless open.
+ * @param dy Positive moves down; zero or negative moves up. */
 void openpete_menu_nav(int dy);
 
 /* Put the cursor on `row` (the pointer's hit row). Disarms EXIT like nav, so
  * callers invoke it only when the row differs from the cursor. */
 void openpete_menu_set_cursor(int row);
 
-/* The mouse consumer. Called once per host iteration while the menu is open,
- * after the keyboard/pad nav: hover moves the cursor on a pointer move, a
- * left press acts on the hit row (adjust +1, or activate on EXIT) or closes
- * the menu through the X glyph, a right press adjusts -1 on value rows, and
- * each wheel notch over a value row adjusts by one. DISPLAY, SETTINGS and
- * EXIT take left click only. Reads the host mouse channel as its MENU owner
- * and snaps its markers while the dev overlay owns the mouse. */
+/** @brief Apply the mouse's presses, wheel notches, and movement since the last poll to the menu.
+ *
+ * Called once per host iteration while the menu is open, after the keyboard
+ * and pad navigation. Consumes the host mouse channel's press and wheel
+ * totals against its own markers, which the open edge snaps so a press made
+ * before the menu opened is never a click. While the dev overlay owns the
+ * mouse it snaps the markers, clears the close hover, and does nothing else.
+ * A pointer move onto a different row moves the cursor there; a resting
+ * pointer never overrides keyboard navigation. Each left press closes the
+ * menu on the close glyph, activates EXIT, or adjusts the hit row by +1; each
+ * right press adjusts by -1 and each wheel notch by one step in its
+ * direction, on value rows only (DISPLAY, SETTINGS and EXIT ignore both).
+ * Presses outside every row are ignored. No-op unless open. */
 void openpete_menu_mouse_poll(void);
 
-/* Change the focused row's value: dx < 0 = previous, dx > 0 = next (wraps), and
- * apply it live via the matching setter. No-op unless open, and on an ACTION
- * row (openpete_menu_row_centered) — cycling a value must never fire a button. */
+/** @brief Step the cursor row's value one entry, wrapping, and apply it live.
+ *
+ * Applies through the row's setter, logs it, and raises the row's OSD toast.
+ * DISPLAY requests a fullscreen toggle in either direction. On SETTINGS the
+ * step picks the action (SAVE, CLEAR SAVED, or none) and the apply performs
+ * it at once. FREECAM toggles the free camera when the row disagrees with
+ * the live state. No-op unless open, and on the EXIT row, so cycling a value
+ * never fires it.
+ * @param dx Positive steps to the next entry; zero or negative to the
+ *        previous. */
 void openpete_menu_adjust(int dx);
 
-/* Press the focused ACTION row (EXIT GAME): arms on the first call, fires on
- * the second. No-op unless open and the row is an action row. */
+/** @brief Press the EXIT GAME row when the cursor is on it.
+ *
+ * The first press arms the row (its label reads REALLY EXIT?); the second
+ * requests a cooperative shutdown through openpete_request_shutdown. Moving
+ * the cursor or reopening the menu disarms it. No-op unless open and the
+ * cursor row is the centred action row. */
 void openpete_menu_activate(void);
 
 /* Advance the selected-item wobble / border-shimmer phase. Call once per
  * presented frame from the draw step. */
 void openpete_menu_tick(void);
 
-/* Draw the overlay (panel + gold border + 3D glyph rows). Called from the native
- * renderer's compose step on the live vk present. (Stub until the draw step.) */
+/** @brief Do nothing; an empty entry point with no caller.
+ *
+ * The native renderer draws the panel (draw_menu_overlay) and the glyph
+ * builder (text_moby_native_menu) the rows. */
 void openpete_menu_draw(void);
 
 #ifdef __cplusplus

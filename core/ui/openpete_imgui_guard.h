@@ -23,38 +23,61 @@
 extern "C" {
 #endif
 
-/* Queried by every generated wrapper. Non-zero while this thread is inside a
- * mod UI section body. */
+/** @brief Report whether this thread is inside a mod UI section body.
+ *
+ * Queried by every generated wrapper before it forwards a call to ImGui.
+ * @return Non-zero while the thread-local body depth is above zero. */
 int openpete_imgui_body_active(void);
 
-/* Logs OPL_ERROR once per (mod index, function name) so a mod calling from
- * the wrong place reports itself without flooding the log. */
+/** @brief Log a wrapper's refusal of an ImGui call made outside a section body.
+ *
+ * Logs OPL_ERROR once per (mod index, hook owner, function name) so a mod
+ * calling from the wrong place reports itself without flooding the log.
+ * Outside a body the message names the hook owner set by
+ * openpete_imgui_guard_set_hook_owner, else the mod id from
+ * openpete_imgui_guard_mod_id. The per-thread filter holds 64 pairs; past
+ * that, new pairs log every time.
+ * @param fn The refused ImGui function's name, a string literal. */
 void openpete_imgui_guard_refused(const char* fn);
 
-/* One call that reached ImGui, for the engagement counter. */
+/** @brief Count one call that reached ImGui, for the engagement counter.
+ *
+ * Adds one to this thread's counter, read by openpete_imgui_calls_take. */
 void openpete_imgui_count_call(void);
 
 /** @brief Enter a mod UI section body on this thread.
  *
- * The loader's section dispatch brackets each body with this and
- * openpete_imgui_body_leave(). Raises the thread-local depth. The outermost
- * entry records @p mod_index and zeroes the call counter; nested entries
- * only raise the depth, so a body that re-enters keeps the depth balanced.
- * Equivalent to openpete_imgui_body_enter_always() with no_input 0.
+ * Equivalent to openpete_imgui_body_enter_always() with no_input 0. Raises
+ * the thread-local depth. The outermost entry records @p mod_index and
+ * zeroes the call counter; nested entries only raise the depth, so a body
+ * that re-enters keeps the depth balanced. Paired with
+ * openpete_imgui_body_leave().
  * @param mod_index Index of the mod whose body runs; refusal messages name
  *        it through openpete_imgui_guard_mod_id(). */
 void openpete_imgui_body_enter(int mod_index);
+/** @brief Leave a mod UI section body on this thread.
+ *
+ * Lowers the depth; the outermost leave clears the mod index and the
+ * no-input bit. A leave at depth 0 does nothing. */
 void openpete_imgui_body_leave(void);
 
-/* Same, for a body the always pass is running with the dev overlay closed.
- * @p no_input raises a second thread-local bit for the depth of the body,
- * read by openpete_imgui_always_closed(). */
+/** @brief Enter a mod UI section body, marking whether it draws with the dev overlay closed.
+ *
+ * The loader's section dispatch brackets every body with this and
+ * openpete_imgui_body_leave(). The outermost entry records @p mod_index,
+ * zeroes the call counter, and latches @p no_input for the depth of the
+ * body; nested entries only raise the depth.
+ * @param mod_index Index of the mod whose body runs.
+ * @param no_input Non-zero for a body the always pass runs with the dev
+ *        overlay closed, read by openpete_imgui_always_closed(). */
 void openpete_imgui_body_enter_always(int mod_index, int no_input);
 
-/* Non-zero while this thread is inside an always-section body drawn with
- * the overlay closed. The ImGui_Begin / ImGui_BeginChild wrappers OR
- * ImGuiWindowFlags_NoInputs into their flags argument on it, so a window a
- * mod draws during play never eats the mouse the game is reading. */
+/** @brief Report whether this thread is inside an always-section body drawn with the overlay closed.
+ *
+ * The ImGui_Begin and ImGui_BeginChild wrappers OR ImGuiWindowFlags_NoInputs
+ * into their flags argument on it, so a window a mod draws during play never
+ * takes the mouse the game is reading.
+ * @return Non-zero inside a body entered with no_input set. */
 int openpete_imgui_always_closed(void);
 
 /** @brief Return and zero this thread's count of ImGui calls that reached ImGui.
@@ -65,30 +88,49 @@ int openpete_imgui_always_closed(void);
  * @return Calls counted since the counter was last zeroed. */
 uint64_t openpete_imgui_calls_take(void);
 
-/* Resolve a mod's ImGui descriptor (the openpete_imgui_desc symbol, see
- * core/include/openpete_imgui.h) against the engine's table and, when the
- * two agree, write the table into the mod's slot. @p desc is that symbol,
- * @p path the object it came from; both strings are used for the log line
- * only. Returns 1 when the mod may run — bound, or no descriptor at all,
- * which means the mod did not opt in — and 0 when the descriptor disagrees
- * with this engine, in which case the mod must be disabled: its table
- * pointer stays null and its first ImGui_* call from any hook would
- * dereference it. */
+/** @brief Bind a mod's ImGui descriptor to the engine's ImGui table.
+ *
+ * Checks the descriptor (the openpete_imgui_desc symbol, see
+ * core/include/openpete_imgui.h) for its magic and slot, then for the same
+ * IMGUI_VERSION_NUM, table size, and table SHA-256 as the engine; when all
+ * agree it writes the engine table into the mod's slot. On a mismatch the
+ * mod must be disabled: its table pointer stays null and its first ImGui_*
+ * call from any hook would dereference it.
+ * @param desc The mod's descriptor symbol; NULL means the mod did not opt in.
+ * @param mod_id The mod's id, for the log line only.
+ * @param path The object the descriptor came from, for the log line only.
+ * @return 1 when the mod may run (bound, or no descriptor), 0 when the
+ *         descriptor is malformed or disagrees with this engine. */
 int openpete_imgui_bind(const void* desc, const char* mod_id,
                               const char* path);
 
-/* The mod whose hook this thread is currently inside, or NULL on the way
- * out. A refusal raised outside a section body has no mod index to name, so
- * the dispatch sites that run mod code — the present-hook loop and the
- * override chain — leave the owner id here for the message. One pointer
- * store per dispatch; the string is the mod's own id and outlives the call. */
+/** @brief Record the mod whose hook this thread is about to run, for refusal messages.
+ *
+ * A refusal raised outside a section body has no mod index to name, so the
+ * dispatch sites that run mod code set the owner id here around each call:
+ * the present-hook loop sets it and clears it to NULL after, and the
+ * override chain restores the previous owner after, since its descent
+ * nests. The string is the mod's own id and outlives the call.
+ * @param id The owning mod's id, or NULL. */
 void openpete_imgui_guard_set_hook_owner(const char* id);
+/** @brief Read the owner id last set on this thread.
+ *
+ * @return The id, or NULL outside any hook dispatch. */
 const char* openpete_imgui_guard_hook_owner(void);
 
-/* Mod id for a refusal message. The loader installs the resolver, which owns
- * the mapping from index to id; until then the index is printed. The returned
- * pointer must stay valid for the process lifetime. */
+/** @brief Name a mod for a refusal message.
+ *
+ * Asks the resolver the loader installs, which owns the mapping from index
+ * to id; with no resolver, or a NULL or empty id, it formats "mod #<index>"
+ * into one of four thread-local buffers so two names in one log line both
+ * stay valid.
+ * @param mod_index The mod's index.
+ * @return The mod's id, or the formatted fallback. */
 const char* openpete_imgui_guard_mod_id(int mod_index);
+/** @brief Install the resolver from mod index to mod id.
+ *
+ * @param fn The resolver; each id it returns must stay valid for the process
+ *        lifetime. */
 void openpete_imgui_guard_set_mod_id_fn(const char* (*fn)(int mod_index));
 
 #ifdef __cplusplus

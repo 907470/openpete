@@ -157,8 +157,17 @@ static void init_gl_resources(void)
     s_initialised = 1;
 }
 
-/* Append two triangles (six vertices) covering the rect [x,x+w) × [y,y+h)
- * into s_verts. Returns updated vert-float count. */
+/** @brief Append two triangles covering the rect [x,x+w) × [y,y+h) to s_verts.
+ *
+ * Writes six vertices (twelve floats): TL, TR, BL, then TR, BR, BL. A quad
+ * that would pass OPENPETE_FPS_MAX_VERT_FLOATS is dropped.
+ * @param vfloat_count The number of floats already in s_verts.
+ * @param x Left edge in window pixels.
+ * @param y Top edge in window pixels.
+ * @param w Width in pixels.
+ * @param h Height in pixels.
+ * @return The float count after the append, unchanged when the quad was
+ *         dropped. */
 static int push_quad(int vfloat_count, float x, float y, float w, float h)
 {
     if (vfloat_count + 12 > OPENPETE_FPS_MAX_VERT_FLOATS)
@@ -181,9 +190,18 @@ static int push_quad(int vfloat_count, float x, float y, float w, float h)
     return vfloat_count + 12;
 }
 
-/* Build the vertex buffer for `text` at (origin_x, origin_y) with `pixel_size`
- * pixels per font cell, returning the float-count. Skips blank cells; emits
- * one quad per lit cell. */
+/** @brief Fill s_verts with one square quad per lit cell of the 5x7 glyphs of text.
+ *
+ * Characters advance six cells; each cell is pixel_size pixels square.
+ * Blank cells emit nothing. Called once with a (1, 1) offset for the shadow
+ * pass and once with (0, 0) for the text.
+ * @param text NUL-terminated string.
+ * @param origin_x Left edge of the first character in window pixels.
+ * @param origin_y Top edge in window pixels.
+ * @param pixel_size Pixels per glyph cell.
+ * @param dx Horizontal offset added to every quad.
+ * @param dy Vertical offset added to every quad.
+ * @return The number of floats written to s_verts. */
 static int build_text_quads(const char *text, int origin_x, int origin_y,
                             int pixel_size, int dx, int dy)
 {

@@ -156,10 +156,19 @@ static int wrap_idx(int i, int n) {
     return i;
 }
 
-/* The value string every two-state row shows. */
+/** @brief Spell a two-state row's value.
+ *
+ * @param v The row's state.
+ * @return "ON" for non-zero, else "OFF". */
 static const char* on_off(int v) { return v ? "ON" : "OFF"; }
 
-/* Index of the value in `vals` nearest to `want` (for seeding from opts). */
+/** @brief Find the entry of a ladder nearest to a value, for seeding a row.
+ *
+ * Ties go to the earlier entry.
+ * @param vals The ladder.
+ * @param n The ladder's length.
+ * @param want The value to match.
+ * @return The index of the nearest entry; 0 when n is 0 or less. */
 static int nearest_idx(const int* vals, int n, int want) {
     int best = 0, bestd = -1;
     for (int i = 0; i < n; i++) {
@@ -258,15 +267,15 @@ static const char* value_str(int row, char* buf, int buflen) {
     }
 }
 
-/* Announce a row's new value on the OSD. Coalesced PER ROW, so holding Right
- * through the FPS ladder repaints one toast instead of stacking a dozen — and
- * the toast then reads the value the player has actually landed on.
+/** @brief Announce a row's current value on the OSD as "LABEL: VALUE", or the label alone when the value is empty.
  *
- * Every string here is authored inside the glyph set the game's own text
- * mobys cover (0-9 A-Z % / ? + ^ . ' and a faked colon). Anything outside it
- * renders as a space, so a hyphen or a comma silently vanishes; the row
- * labels and values already obey that because the menu draws them with the
- * same glyphs. */
+ * Coalesced per row through the row's ROW_OSD_KEY, so holding Right through
+ * the FPS ladder repaints one toast instead of stacking a dozen, and the
+ * hotkeys that front the same settings repaint the same toast. Every string
+ * is authored inside the glyph set the game's own text mobys cover (0-9 A-Z
+ * % / ? + ^ . ' and a faked colon); anything outside it renders as a space.
+ * A row outside [0, ROW_COUNT) is ignored.
+ * @param row The row index. */
 static void notify_row(int row) {
     char vb[16];
     if (row < 0 || row >= ROW_COUNT) return;
@@ -283,7 +292,15 @@ static void log_state(const char* what) {
                ROW_LABEL[s_cursor], value_str(s_cursor, vb, sizeof vb));
 }
 
-/* Apply the focused row's current value via its setter. */
+/** @brief Push a row's selected value to its live setter, or perform the row's action.
+ *
+ * SETTINGS saves the edited knobs or clears the saved settings, per its
+ * selected action, records the result for its value string, and returns to
+ * idle. FREECAM toggles the free camera only when the row disagrees with the
+ * live state. LOD also re-reads the fog state the LOD setter resolved. EXIT
+ * requests a cooperative shutdown once armed twice. DISPLAY and the mod rows
+ * apply nothing here.
+ * @param row The row index. */
 static void apply_row(int row) {
     switch (row) {
     case ROW_ASPECT:   openpete_native_set_aspect(s_aspect[s_aspect_idx].wh); break;
@@ -466,9 +483,15 @@ void openpete_menu_note_close_rect(float x0, float y0, float x1, float y1) {
     s_close_rect[2] = x1; s_close_rect[3] = y1;
 }
 
-/* A left press closes the menu when it lands on the close glyph's drawn ink.
- * Before the first build of the menu text the ink rect is unknown and the
- * layout square stands in. */
+/** @brief Test whether an overlay-space point lies on the close glyph.
+ *
+ * Tests the ink rect the text builder published; before its first build the
+ * rect has zero width and the layout's close square stands in. Edges are
+ * inclusive.
+ * @param L The current menu layout.
+ * @param x Point x in units of window height.
+ * @param y Point y in units of window height.
+ * @return Non-zero when the point is on the glyph. */
 static int menu_in_close(const openpete_menu_layout_t* L, float x, float y) {
     if (s_close_rect[2] > s_close_rect[0])
         return x >= s_close_rect[0] && x <= s_close_rect[2] &&

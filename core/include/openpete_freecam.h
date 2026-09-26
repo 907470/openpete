@@ -47,34 +47,62 @@ typedef struct openpete_freecam_axes {
     float look_pitch;   /* + look up,    - look down */
 } openpete_freecam_axes;
 
-/* True while the free camera is engaged. */
+/** @brief Report whether the free camera is engaged.
+ *
+ * @return true while engaged. */
 bool openpete_freecam_active(void);
 
-/* Toggle engaged/disengaged (the F-key edge). Clears the latched axes so a
- * key held across the toggle doesn't carry stale intent into the new state.
- * Returns false when the engage is refused: while a bk2 movie is replaying
- * or recording, a free camera would freeze the player update and desync the
- * movie from its inputs, so the off→on edge is refused with a WARN; the
- * on→off edge always passes. */
+/** @brief Toggle the free camera engaged or disengaged (the F-key edge).
+ *
+ * Each accepted toggle bumps the engage generation, zeroes the latched axes
+ * so a key held across the toggle carries no stale intent, drops a pending
+ * teleport request, and logs the new state. The off-to-on edge is refused
+ * with a WARN while a bk2 movie is replaying or recording, since freezing
+ * the player update would desync the movie from its inputs; the on-to-off
+ * edge always passes.
+ * @return false when the engage was refused, else true. */
 bool openpete_freecam_toggle(void);
 
-/* True while a bk2 movie is replaying or recording (set by the run loop). */
+/** @brief Report whether a bk2 movie is replaying or recording.
+ *
+ * @return The flag the run loop last set through openpete_bk2_set_active. */
 bool openpete_bk2_active(void);
+/** @brief Record whether a bk2 movie is replaying or recording.
+ *
+ * Set by the run loop at movie setup; a scripted freecam engage clears it
+ * around its own toggle to pass the refusal.
+ * @param active true while a movie is replaying or recording. */
 void openpete_bk2_set_active(bool active);
 
-/* Latch this iteration's input intent (run.c → module). */
+/** @brief Latch this host iteration's fly and look intent.
+ *
+ * Written by the host loop every iteration the free camera or camlock is
+ * engaged (neutral while the menu owns the keyboard); a NULL argument
+ * leaves the latch unchanged.
+ * @param ax The intent to latch. */
 void openpete_freecam_set_axes(const openpete_freecam_axes* ax);
 
-/* Read the latched input intent (module → game drive). */
+/** @brief Copy out the latched fly and look intent.
+ *
+ * Read by the game-side freecam drive and by camlock; a NULL argument is
+ * ignored.
+ * @param out Receives the latched axes. */
 void openpete_freecam_get_axes(openpete_freecam_axes* out);
 
-/* Mouse look: running totals of the look axes' mouse displacement, in
- * counts, accumulated by the host loop every iteration the freecam or
- * camlock is engaged (run.c → module). Unlike the axes they are never
- * rewritten: each consumer keeps the total it last applied and takes the
- * difference, so a slow drag below one unit per tick still adds up and a
- * speculated or replayed tick applies nothing twice. */
+/** @brief Add mouse displacement, in counts, to the look axes' running totals.
+ *
+ * Called by the host loop every iteration the freecam or camlock is
+ * engaged. The totals are never rewritten: each consumer keeps the total it
+ * last applied and takes the difference, so a slow drag below one unit per
+ * tick still adds up and a speculated or replayed tick applies nothing
+ * twice. Atomic, relaxed.
+ * @param dx Horizontal counts to add.
+ * @param dy Vertical counts to add. */
 void openpete_freecam_add_look_counts(long long dx, long long dy);
+/** @brief Read the look axes' running mouse totals, in counts.
+ *
+ * @param x Receives the horizontal total; may be NULL.
+ * @param y Receives the vertical total; may be NULL. */
 void openpete_freecam_look_counts(long long* x, long long* y);
 
 /* Mouse look scale: angle units (a full turn is 4096) per count at
@@ -83,31 +111,48 @@ void openpete_freecam_look_counts(long long* x, long long* y);
  * round(OPENPETE_FREECAM_MOUSE_K * sensitivity * (total - base)). */
 #define OPENPETE_FREECAM_MOUSE_K 0.5
 
-/* --mouse-sensitivity / mouse_sensitivity, live. Consumers read it at every
- * apply and rebase when it changed, so a change never rotates
- * retroactively. */
+/** @brief Set the live mouse-look sensitivity (--mouse-sensitivity, mouse_sensitivity).
+ *
+ * Consumers read it at every apply and rebase when it changed, so a change
+ * never rotates retroactively. A negative or NaN value is ignored. Atomic,
+ * relaxed.
+ * @param s The multiplier on OPENPETE_FREECAM_MOUSE_K; default 1.0. */
 void  openpete_freecam_set_mouse_sensitivity(float s);
+/** @brief Read the live mouse-look sensitivity.
+ *
+ * @return The multiplier last set, 1.0 by default. */
 float openpete_freecam_mouse_sensitivity(void);
 
-/* Engage generation: bumped by every toggle. A consumer compares it at its
- * own apply site and rebases its mouse markers when it differs, so an
- * engage from any thread (key binding, O menu row, M overlay row, env pose)
- * starts the mouse term from the totals as they stand then. */
+/** @brief Read the engage generation, which every accepted toggle bumps.
+ *
+ * A consumer compares it at its own apply site and rebases its mouse
+ * markers when it differs, so an engage from any thread (key binding, O menu
+ * row, M overlay row, scripted pose) starts the mouse term from the totals
+ * as they stand then. Atomic, relaxed.
+ * @return The generation counter. */
 unsigned openpete_freecam_engage_generation(void);
 
-/* Request that the player be moved to the free camera's position (the T-key
- * edge). Only meaningful while engaged. The host loop latches the request;
- * the game side consumes it on the next tick — it needs the game fiber to
- * read the camera and write the player, and it disengages the free camera as
- * part of applying it. Ignored (and dropped) if the camera is disengaged
- * before the request is taken. */
+/** @brief Request that the player be moved to the free camera's position (the T-key edge).
+ *
+ * Ignored while disengaged. The host loop latches the request; the game
+ * side takes it on the next tick, since it needs the game fiber to read the
+ * camera and write the player, and disengages the free camera as part of
+ * applying it. A toggle before the request is taken drops it. */
 void openpete_freecam_request_teleport(void);
 
-/* Consume a pending teleport request: true once per request (game → drive). */
+/** @brief Take and clear the pending teleport request.
+ *
+ * @return true once per request, else false. */
 bool openpete_freecam_take_teleport_request(void);
 
-/* Current speed step, clamped to [0, OPENPETE_FREECAM_SPEED_STEPS). */
+/** @brief Read the current speed step.
+ *
+ * Starts at 2, the middle of the five steps.
+ * @return The step, clamped to [0, OPENPETE_FREECAM_SPEED_STEPS). */
 int openpete_freecam_speed_index(void);
 
-/* Step the speed up (dir > 0) or down (dir < 0), clamped. */
+/** @brief Step the speed one step up or down, clamped to the step range.
+ *
+ * Logs the new step when it changed.
+ * @param dir Positive steps up, negative steps down, 0 does nothing. */
 void openpete_freecam_adjust_speed(int dir);

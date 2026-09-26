@@ -93,18 +93,41 @@ void openpete_devui_close(void);
  * @param ev The event; NULL is ignored. */
 void openpete_devui_process_event(const union SDL_Event *ev);
 
-/* True while imgui wants the keyboard/mouse (only ever true while open).
- * wants_text_input() is the subset of wants_keyboard() in which a field has
- * focus and is consuming characters; bare nav focus reads 1 on the former
- * and 0 on the latter. */
+/** @brief Report whether imgui captured the keyboard on the last drawn present.
+ *
+ * Reads the want openpete_devui_render published after its last imgui
+ * frame; bare navigation focus counts. Always 0 while the overlay is closed.
+ * @return 1 while imgui wants the keyboard; 0 before init, while closed, or
+ *         otherwise. */
 int  openpete_devui_wants_keyboard(void);
+/** @brief Report whether an imgui text field has focus and consumes characters.
+ *
+ * The subset of openpete_devui_wants_keyboard in which a field takes text;
+ * bare navigation focus reads 0 here. Always 0 while the overlay is closed.
+ * @return 1 while a text field has focus; 0 before init, while closed, or
+ *         otherwise. */
 int  openpete_devui_wants_text_input(void);
+/** @brief Report whether imgui captured the mouse on the last drawn present.
+ *
+ * Holds with the overlay open, and also with it closed while the fill-tag
+ * inspector is active.
+ * @return 1 while imgui wants the mouse; 0 before init, with neither the
+ *         overlay nor the inspector up, or otherwise. */
 int  openpete_devui_wants_mouse(void);
 
-/* Build + record the overlay into the current offscreen pass. Call from the
- * live-present compose point, between rhi_begin_offscreen and
- * rhi_end_offscreen, at most once per present. No-op unless
- * openpete_devui_frame_wanted(). */
+/** @brief Build and record one imgui frame into the current offscreen pass.
+ *
+ * Called from the live-present compose point, between rhi_begin_offscreen
+ * (or rhi_begin_offscreen_load) and rhi_end_offscreen, at most once per
+ * present. Drains the queued SDL events on every call after init, so imgui's
+ * key and mouse state stays current while nothing is drawn. Draws the panel
+ * when the overlay is open, the OPENPETE_MOD_UI_ALWAYS sections, and the
+ * fill-tag inspector's crosshair and panel, then publishes the capture wants.
+ * When none of the three is up, dev is not the init device, or the device
+ * has no current command buffer, it records nothing and publishes every
+ * want as 0. The first draw with the overlay open calls
+ * knob_registry_late_stamp once.
+ * @param dev The device the overlay was initialised on. */
 void openpete_devui_render(struct rhi_device *dev);
 
 #ifdef __cplusplus
