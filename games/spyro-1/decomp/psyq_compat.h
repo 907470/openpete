@@ -3,8 +3,8 @@
  * Bridges the renaming of PSYQ types in PsyCross. Spyro's matching-decomp
  * source uses original PSYQ identifiers (RECT, …); PsyCross's libgpu.h
  * uses RECT16 for the same struct (PsyX renamed it because Win32 has its
- * own RECT). This shim is force-included BEFORE every spyro-1/src/*.c
- * compile so the source can stay identical to the decomp tree.
+ * own RECT). This shim is force-included BEFORE every compile of a .c file
+ * under spyro-1/src/, so the source can stay identical to the decomp tree.
  *
  * Add aliases here as new TUs surface. Each alias should be a one-liner
  * with a comment naming the upstream PsyCross symbol it points at.

@@ -1,8 +1,8 @@
 # function-documentation ratchet baseline (scripts/fences/doc_ratchet.py)
 # library: libclang 14
 # requirement: brief on every function; @param per named parameter and @return on non-void for external linkage
-# written-by: baseline
-# head: 8500cb755ff3d21b5c6616c15bbb5763c60e8d59
+# written-by: hook
+# head: e776c01091c81917c30a3495b4cf896c896a4312
 file	function	form	accepted
 core/config/build_id.c	openpete_build_shared_recomp	plain	
 core/config/build_id.c	openpete_build_tagged	plain	
@@ -1218,7 +1218,6 @@ core/mods/mod_vec.c	mod_cvec_count	untagged
 core/mods/mod_vec.c	mod_cvec_free	untagged	
 core/mods/mod_vec.c	mod_cvec_push	untagged	
 core/mods/mod_vec.c	mod_cvec_remove_at	untagged	
-core/mods/mod_vec.c	mod_fixed_init	untagged	
 core/mods/mod_vec.c	mod_fixed_note	untagged	
 core/mods/mod_vec.c	mod_fixed_set	untagged	
 core/mods/mod_vec.c	mod_fvec_at	untagged	
@@ -1331,9 +1330,6 @@ core/psx/psx_bios.c	openpete_psx_bios_seed_ram	plain
 core/psx/psx_bios.c	openpete_psx_bios_vbl	none	
 core/psx/psx_region.c	psx_runtime_canonicalize	untagged	
 core/psx/psx_region.c	psx_runtime_region_count	untagged	
-core/psx/psx_region.c	psx_runtime_region_host_to_vaddr	untagged	
-core/psx/psx_region.c	psx_runtime_register_region	untagged	
-core/psx/psx_region.c	psx_runtime_resolve_region	untagged	
 core/psx/psx_region.c	psx_runtime_unregister_region	untagged	
 core/psx/psx_region.c	ranges_overlap	plain	
 core/psx/psx_region.c	to_phys	none	

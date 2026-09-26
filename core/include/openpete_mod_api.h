@@ -215,7 +215,7 @@ enum {
     OP_PORTAL_BLENDED = 2,  /**< Fogged dome, medium cross-dissolve. */
 };
 /**
- * @brief Particle kinds: the high byte of the `ident` key for #OP_CHAN_PARTICLE.
+ * @brief Particle kinds: the high byte of the `ident` key for `OP_CHAN_PARTICLE`.
  *
  * The particle feeder draws six effects. The ident of a draw is
  * `(kind << 8) | sel`, where `sel` is the game's own particle class for

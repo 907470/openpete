@@ -89,7 +89,7 @@ typedef struct {
 /* Gate, latch, and run the guest draw once. Returns 0 when the hook declines
  * (inert, or re-entered) and the caller must return 0 so the ordinary
  * dispatch runs the draw; returns 1 having run it, with the polybuf interval
- * in *start/*end and the gate's verdicts in *feed/*verify. */
+ * in *start and *end and the gate's verdicts in *feed and *verify. */
 int hook_bracket_run(CPUState* cpu, uint32_t addr, const hook_bracket_desc* d,
                      uint32_t* start, uint32_t* end, int* feed, int* verify);
 

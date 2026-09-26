@@ -240,6 +240,7 @@ typedef struct mod_fixed {
 
 /**
  * @brief Register a fixed table in the census.
+ * @param t      The table.
  * @param name   Census name, or NULL to stay out of the census.
  * @param was    Capacity the table had before it was sized to the bound.
  * @param storage  Elements the storage holds.
@@ -271,8 +272,8 @@ void mod_vec_census_arm(void);
 /**
  * @brief Print the census: one summary line naming the number of tables,
  *        then one line per named table,
- *        "mod-table: <name> count=<n> peak=<p> was=<former capacity>
- *        storage=<blocks for a cvec, capacity for an fvec> grew=<k>".
+ *        "mod-table: {name} count={n} peak={p} was={former capacity}
+ *        storage={blocks for a cvec, capacity for an fvec} grew={k}".
  *
  * peak against was is what shows a table having carried more than its
  * former fixed capacity: count is the live size, which a table drained

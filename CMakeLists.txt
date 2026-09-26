@@ -126,6 +126,26 @@ if(OPENPETE_BUILD_TESTS)
     enable_testing()
 endif()
 
+# Rendered header documentation (Doxyfile at the source root). Not part of
+# ALL: `cmake --build --preset <preset> --target openpete_docs` writes
+# <build>/docs/html and <build>/docs/xml; without doxygen the target prints
+# a SKIP line and succeeds.
+find_package(Doxygen QUIET)
+if(DOXYGEN_FOUND)
+    add_custom_target(openpete_docs
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/docs
+        COMMAND ${CMAKE_COMMAND} -E env OPENPETE_DOXYGEN_OUT=${CMAKE_BINARY_DIR}/docs
+                ${DOXYGEN_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/Doxyfile
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMENT "doxygen: rendering the headers into ${CMAKE_BINARY_DIR}/docs"
+        VERBATIM)
+else()
+    add_custom_target(openpete_docs
+        COMMAND ${CMAKE_COMMAND} -E echo
+                "openpete_docs: SKIP, doxygen not found (sudo apt install doxygen)"
+        VERBATIM)
+endif()
+
 foreach(game IN LISTS OPENPETE_GAMES)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/games/${game}/CMakeLists.txt")
         add_subdirectory(games/${game})

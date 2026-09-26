@@ -1,0 +1,70 @@
+# Doxygen configuration for the openpete headers.
+# Built by the optional CMake target `openpete_docs` (not part of ALL):
+#   cmake --build --preset linux-release --target openpete_docs
+# Output lands in $(OPENPETE_DOXYGEN_OUT)/html and /xml, which the target sets
+# to build/<preset>/docs. The input is the tracked project headers: a
+# function whose canonical documentation site is its definition in a .c or
+# .cpp file is not rendered. Coverage is scripts/fences/doc_ratchet.py's
+# job; doxygen renders and reports malformed comments as errors.
+
+PROJECT_NAME           = openpete
+OUTPUT_DIRECTORY       = $(OPENPETE_DOXYGEN_OUT)
+CREATE_SUBDIRS         = NO
+FULL_PATH_NAMES        = YES
+STRIP_FROM_PATH        = .
+JAVADOC_AUTOBRIEF      = YES
+QT_AUTOBRIEF           = YES
+OPTIMIZE_OUTPUT_FOR_C  = YES
+EXTRACT_ALL            = NO
+EXTRACT_STATIC         = YES
+EXTRACT_PRIVATE        = NO
+CASE_SENSE_NAMES       = YES
+QUIET                  = YES
+WARNINGS               = YES
+WARN_IF_UNDOCUMENTED   = NO
+WARN_IF_DOC_ERROR      = YES
+WARN_NO_PARAMDOC       = NO
+WARN_AS_ERROR          = YES
+
+# The header directories of `git ls-files '*.h' '*.hpp'` under core/ and
+# games/ (generated output, third_party and the decomp checkouts excluded),
+# plus the runtime header that is the canonical site of the psx_runtime
+# functions.
+INPUT                  = core/config \
+                         core/host \
+                         core/include \
+                         core/mods \
+                         core/rhi \
+                         core/ui \
+                         games/common \
+                         games/common/features \
+                         games/common/psyq \
+                         games/common/renderer \
+                         games/spyro-1 \
+                         games/spyro-1/decomp \
+                         games/spyro-1/dist \
+                         games/spyro-1/features \
+                         games/spyro-1/mods \
+                         games/spyro-1/renderer \
+                         games/spyro-2 \
+                         games/spyro-2/features \
+                         games/spyro-3 \
+                         games/spyro-3/features \
+                         third_party/psxrecomp/runner/include
+FILE_PATTERNS          = *.h \
+                         *.hpp
+RECURSIVE              = NO
+
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = YES
+EXPAND_ONLY_PREDEF     = NO
+SEARCH_INCLUDES        = YES
+INCLUDE_PATH           = core/include
+SKIP_FUNCTION_MACROS   = YES
+
+GENERATE_HTML          = YES
+HTML_OUTPUT            = html
+GENERATE_XML           = YES
+XML_OUTPUT             = xml
+GENERATE_LATEX         = NO
+HAVE_DOT               = NO

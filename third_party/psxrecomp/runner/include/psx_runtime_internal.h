@@ -236,6 +236,7 @@ void openpete_envvert_probe(void* cpu, uint32_t w0, uint32_t w1,
  * @brief Register a region.
  * @param psx_base     A KSEG0/KSEG1/KUSEG vaddr whose physical address
  *                     (`& 0x1FFFFFFF`) is >= 0x200000.
+ * @param size         Region length in bytes.
  * @param host_buffer  Stays owned by the caller.
  * @return 0 on success, non-zero on overlap with canonical RAM, the
  *         scratchpad or another region, or when the table is full.
@@ -249,6 +250,7 @@ void     psx_runtime_unregister_region(uint32_t psx_base);
 
 /**
  * @brief Resolve a PSX address inside a registered region.
+ * @param psx_addr       The PSX address to resolve.
  * @param out_host       If non-NULL, receives the host pointer for that address.
  * @param out_remaining  If non-NULL, receives the bytes until the region's end.
  * @return 1 when @p psx_addr falls in a registered region, 0 otherwise.
@@ -259,6 +261,7 @@ int      psx_runtime_resolve_region(uint32_t psx_addr,
 
 /**
  * @brief Inverse of psx_runtime_resolve_region().
+ * @param host       A host pointer.
  * @param out_vaddr  If non-NULL, receives the KSEG0 vaddr.
  * @return 1 when the host pointer falls inside a registered region's
  *         buffer, 0 otherwise.
