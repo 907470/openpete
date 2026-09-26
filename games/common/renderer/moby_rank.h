@@ -65,10 +65,19 @@ typedef struct moby_otk_vert {
     int16_t sx, sy;
 } moby_otk_vert_t;
 
-/* RTPS (sf=1, lm=0) of the model-space vertex (vx, vy, vz) under rotation M
+/** RTPS (sf=1, lm=0) of the model-space vertex (vx, vy, vz) under rotation M
  * and translation tr, with the draw's screen offset (PSX pixels) and
  * projection distance H. A pose between two keyframes carries the INTPL
- * result, whose sf=1 shift is the floor of the float lerp. */
+ * result, whose sf=1 shift is the floor of the float lerp.
+ * @param tr  translation (TRX, TRY, TRZ)
+ * @param M   rotation, Q12
+ * @param vx  model-space x
+ * @param vy  model-space y
+ * @param vz  model-space z
+ * @param ofx screen offset x, pixels
+ * @param ofy screen offset y, pixels
+ * @param H   projection distance
+ * @param out SZ3 and SXY2 */
 void moby_otk_rtps(const int tr[3], const int M[3][3], double vx, double vy, double vz,
                    double ofx, double ofy, int H, moby_otk_vert_t* out);
 

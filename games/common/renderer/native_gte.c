@@ -157,6 +157,47 @@ void ngte_project_gte(const int M[3][3], const double TR[3],
     ngte_screen_gte(mac1, mac2, mac3, ofx, ofy, v, sxy_clamp, o);
 }
 
+static int s_unr_tab[257];
+/** The GTE's UNR reciprocal of SZ3 (capped at 0x1FFFF), as RTPS divides. */
+static int ngte_unr_divide(int H, int sz3)
+{
+    if (!s_unr_tab[0]) for (int i = 0; i < 257; i++) {
+        int u = (0x40000 / (i + 0x100) + 1) / 2 - 0x101;
+        s_unr_tab[i] = u > 0 ? u : 0;
+    }
+    if (H >= sz3 * 2) return 0x1FFFF;
+    int z = 0;
+    while (z < 16 && !((sz3 << z) & 0x8000)) z++;
+    int64_t n = (int64_t)H << z;
+    int64_t d = (int64_t)sz3 << z;
+    int64_t u = s_unr_tab[(d - 0x7FC0) >> 7] + 0x101;
+    d = (0x2000080 - d * u) >> 8;
+    d = (0x0000080 + d * u) >> 8;
+    int64_t q = (n * d + 0x8000) >> 16;
+    return q > 0x1FFFF ? 0x1FFFF : (int)q;
+}
+
+/** `v` clamped to [lo, hi]. */
+static int64_t ngte_sat64(int64_t v, int64_t lo, int64_t hi)
+{
+    return v < lo ? lo : v > hi ? hi : v;
+}
+
+void ngte_rtps_int(const int M[3][3], const int tr[3], int vx, int vy, int vz,
+                   double ofx, double ofy, int H, ngte_rtps_out* out)
+{
+    const int64_t V[3] = { vx, vy, vz };
+    int64_t mac[3];
+    for (int k = 0; k < 3; k++)
+        mac[k] = (((int64_t)tr[k] << 12) + M[k][0] * V[0] + M[k][1] * V[1] + M[k][2] * V[2]) >> 12;
+    out->sz3 = (int32_t)ngte_sat64(mac[2], 0, 0xFFFF);
+    const int64_t q = ngte_unr_divide(H, out->sz3);
+    const int64_t x = (ngte_sat64(mac[0], -0x8000, 0x7FFF) * q + llround(ofx * 65536.0)) >> 16;
+    const int64_t y = (ngte_sat64(mac[1], -0x8000, 0x7FFF) * q + llround(ofy * 65536.0)) >> 16;
+    out->sx = (int16_t)ngte_sat64(x, -0x400, 0x3FF);
+    out->sy = (int16_t)ngte_sat64(y, -0x400, 0x3FF);
+}
+
 int ngte_dpcs_ch(int c8, int fc12, int ir0) {
     long mac = (long)c8 << 16;
     long ird = (((long)fc12 << 12) - mac) >> 12;

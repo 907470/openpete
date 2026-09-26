@@ -157,6 +157,28 @@ void ngte_project_gte(const int M[3][3], const double TR[3],
                       double ofx, double ofy, const ngte_view* v,
                       int sxy_clamp, ngte_proj* o);
 
+/** One RTPS vertex as the GTE leaves it: SZ3 and SXY2. */
+typedef struct {
+    int32_t sz3;          /**< MAC3 saturated to 0..0xFFFF */
+    int16_t sx, sy;       /**< SX2, SY2, saturated to -0x400..0x3FF */
+} ngte_rtps_out;
+
+/** GTE RTPS (sf=1, lm=0), bit-exact integer mirror: MAC = (TR << 12) + M.V,
+ * >> 12; SZ3 saturates to 0..0xFFFF, IR1/2 to int16; the divide is the
+ * UNR reciprocal of SZ3 capped at 0x1FFFF; SX/SY = (IR * q + OF) >> 16,
+ * saturated to -0x400..0x3FF.
+ * @param M   rotation, Q12
+ * @param tr  translation (TRX, TRY, TRZ)
+ * @param vx  VX0 as loaded (int16)
+ * @param vy  VY0 as loaded (int16)
+ * @param vz  VZ0 as loaded (int16)
+ * @param ofx OFX in pixels
+ * @param ofy OFY in pixels
+ * @param H   the GTE's H
+ * @param out SZ3 and SXY2 */
+void ngte_rtps_int(const int M[3][3], const int tr[3], int vx, int vy, int vz,
+                   double ofx, double ofy, int H, ngte_rtps_out* out);
+
 /* GTE DPCS single channel, bit-exact integer mirror: c8 = 8-bit colour,
  * fc12 = 12-bit-expanded far colour, ir0 = 1.3.12 blend factor. */
 int ngte_dpcs_ch(int c8, int fc12, int ir0);

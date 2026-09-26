@@ -2,6 +2,7 @@
  * the integer RTPS / NCLIP mirror the rows read. */
 
 #include "renderer/moby_rank.h"
+#include "renderer/native_gte.h"   /* ngte_rtps_int */
 
 #include <limits.h>
 #include <math.h>
@@ -184,50 +185,19 @@ void moby_otk_record(moby_otk_row_t row, int a, int trz, moby_otk_rec_t* out)
 
 /* ---- integer RTPS / NCLIP mirror -------------------------------------------- */
 
-/* The GTE's UNR reciprocal of SZ3 (capped at 0x1FFFF), as RTPS divides. */
-static int s_unr_tab[257];
-static int otk_gte_divide(int H, int sz3)
-{
-    if (!s_unr_tab[0]) for (int i = 0; i < 257; i++) {
-        int u = (0x40000 / (i + 0x100) + 1) / 2 - 0x101;
-        s_unr_tab[i] = u > 0 ? u : 0;
-    }
-    if (H >= sz3 * 2) return 0x1FFFF;
-    int z = 0;
-    while (z < 16 && !((sz3 << z) & 0x8000)) z++;
-    int64_t n = (int64_t)H << z;
-    int64_t d = (int64_t)sz3 << z;
-    int64_t u = s_unr_tab[(d - 0x7FC0) >> 7] + 0x101;
-    d = (0x2000080 - d * u) >> 8;
-    d = (0x0000080 + d * u) >> 8;
-    int64_t q = (n * d + 0x8000) >> 16;
-    return q > 0x1FFFF ? 0x1FFFF : (int)q;
-}
-
-static int64_t otk_sat(int64_t v, int64_t lo, int64_t hi)
-{
-    return v < lo ? lo : v > hi ? hi : v;
-}
-
 /* The vertex packs into VXY0 as VX + (VY << 16), so a negative VX borrows one
- * from VY, and VZ0 takes the low half; MAC = (TR << 12) + R.V, >> 12. SZ3
- * saturates to 0..0xFFFF, IR1/2 to int16, SX/SY = (IR * q + OF) >> 16 to
- * -0x400..0x3FF. */
+ * from VY, and VZ0 takes the low half; the GTE step itself is ngte_rtps_int. */
 void moby_otk_rtps(const int tr[3], const int M[3][3], double vx, double vy, double vz,
                    double ofx, double ofy, int H, moby_otk_vert_t* out)
 {
     int32_t vxi = (int32_t)floor(vx), vyi = (int32_t)floor(vy), vzi = (int32_t)floor(vz);
     uint32_t packed = ((uint32_t)vyi << 16) + (uint32_t)vxi;
-    int64_t V[3] = { (int16_t)(packed & 0xFFFFu), (int16_t)(packed >> 16), (int16_t)vzi };
-    int64_t mac[3];
-    for (int k = 0; k < 3; k++)
-        mac[k] = (((int64_t)tr[k] << 12) + M[k][0] * V[0] + M[k][1] * V[1] + M[k][2] * V[2]) >> 12;
-    out->sz = (int32_t)otk_sat(mac[2], 0, 0xFFFF);
-    int64_t q = otk_gte_divide(H, out->sz);
-    int64_t x = (otk_sat(mac[0], -0x8000, 0x7FFF) * q + llround(ofx * 65536.0)) >> 16;
-    int64_t y = (otk_sat(mac[1], -0x8000, 0x7FFF) * q + llround(ofy * 65536.0)) >> 16;
-    out->sx = (int16_t)otk_sat(x, -0x400, 0x3FF);
-    out->sy = (int16_t)otk_sat(y, -0x400, 0x3FF);
+    ngte_rtps_out o;
+    ngte_rtps_int(M, tr, (int16_t)(packed & 0xFFFFu), (int16_t)(packed >> 16), (int16_t)vzi,
+                  ofx, ofy, H, &o);
+    out->sz = o.sz3;
+    out->sx = o.sx;
+    out->sy = o.sy;
 }
 
 long moby_otk_nclip(const moby_otk_vert_t* a, const moby_otk_vert_t* b, const moby_otk_vert_t* c)

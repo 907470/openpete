@@ -2,7 +2,7 @@
 # library: libclang 14
 # requirement: brief on every function; @param per named parameter and @return on non-void for external linkage
 # written-by: hook
-# head: d54ac0baaa0df43699fc71b602258b5713618fae
+# head: dca02f57bb8fbe7fbf8f2c55db9aae05086e2cc7
 file	function	form	accepted
 core/config/build_id.c	openpete_build_shared_recomp	plain	
 core/config/build_id.c	openpete_build_tagged	plain	
@@ -3291,17 +3291,14 @@ games/common/renderer/moby_game_spyro23.c	s23_write_anim_record	plain
 games/common/renderer/moby_rank.c	moby_otk_face_bucket	plain	
 games/common/renderer/moby_rank.c	moby_otk_nclip	plain	
 games/common/renderer/moby_rank.c	moby_otk_record	plain	
-games/common/renderer/moby_rank.c	moby_otk_rtps	plain	
 games/common/renderer/moby_rank.c	openpete_mobyrank_on	plain	
 games/common/renderer/moby_rank.c	otk_choose_dual	none	
 games/common/renderer/moby_rank.c	otk_choose_dual_flag_whole	none	
 games/common/renderer/moby_rank.c	otk_choose_flat	none	
 games/common/renderer/moby_rank.c	otk_choose_whole	none	
 games/common/renderer/moby_rank.c	otk_dual_front	plain	
-games/common/renderer/moby_rank.c	otk_gte_divide	none	
 games/common/renderer/moby_rank.c	otk_key	none	
 games/common/renderer/moby_rank.c	otk_prim	none	
-games/common/renderer/moby_rank.c	otk_sat	none	
 games/common/renderer/moby_rank.h	moby_otk_second	plain	
 games/common/renderer/moby_rank.h	moby_otk_tri	plain	
 games/common/renderer/moby_rank_cal.c	cal_find	plain	
@@ -4301,9 +4298,7 @@ games/spyro-1/renderer/portal.c	emit_split_by_outline	plain
 games/spyro-1/renderer/portal.c	fan_emit_poly	plain	
 games/spyro-1/renderer/portal.c	feed_portal_dome	none	
 games/spyro-1/renderer/portal.c	feed_portal_quad	none	
-games/spyro-1/renderer/portal.c	feed_revealed_portals	plain	
 games/spyro-1/renderer/portal.c	fit_invz	plain	
-games/spyro-1/renderer/portal.c	leaf_hook	none	
 games/spyro-1/renderer/portal.c	margin_px_per_vertex	plain	
 games/spyro-1/renderer/portal.c	nolod_portal_dome_on	plain	
 games/spyro-1/renderer/portal.c	on_8004F4BC	none	
@@ -4334,7 +4329,6 @@ games/spyro-1/renderer/portal.c	portal_outline_screen	none
 games/spyro-1/renderer/portal.c	portal_outline_screen_raw	plain	
 games/spyro-1/renderer/portal.c	portal_outline_world	plain	
 games/spyro-1/renderer/portal.c	portal_plane_invz	plain	
-games/spyro-1/renderer/portal.c	portal_reextract	plain	
 games/spyro-1/renderer/portal.c	portal_repr_skip	plain	
 games/spyro-1/renderer/portal.c	portal_scene_emit_enabled	plain	
 games/spyro-1/renderer/portal.c	portal_sky_depth_mode	plain	

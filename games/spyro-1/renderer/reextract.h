@@ -70,9 +70,13 @@ void player_native_set_rot_interp(const int* active, const double* ang);
  * @param ang_zxy three byte angles {Z, X, Y}, or NULL. */
 void dragonstar_native_set_rot_interp(const double* ang_zxy);
 
-/* Portal previews: the dome rotation matrix is captured prev+curr per canonical
+/** Portal previews: the dome rotation matrix is captured prev+curr per canonical
  * tick and lerped by the spine's sub-tick `alpha` (componentwise, like the camera
- * matrix); `interp_on` = camera bracketed (else snap to curr). */
+ * matrix); each capture's clip rect is rebuilt under the present's camera by
+ * its rect rule.
+ * @param cpu       guest state, the sub-tick view staged
+ * @param alpha     sub-tick fraction between the previous and current tick
+ * @param interp_on 1 = camera bracketed, else snap to curr */
 void portal_reextract(struct CPUState* cpu, double alpha, int interp_on);
 /* Terrain: mostly camera-driven (the bracket moves it for free), but poly-anim
  * sectors (env vert INTPL — the Sunny-Flight wall) lerp their decoded vert banks

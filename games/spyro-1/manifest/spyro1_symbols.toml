@@ -225,7 +225,12 @@ note = "portal OT depth"
 [[symbol]]
 name = "D_CLIPRECT"
 addr = 0x8007AA00
-note = "portal clip rect; minY,maxY,minX,maxX each <<16"
+note = "portal clip rect; minY,maxY,maxX,minX each <<16"
+
+[[symbol]]
+name = "D_SQRT_TABLE"
+addr = 0x80074B84
+note = "VecMagnitude square-root table (int16, indexed by the normalised sum - 0x40)"
 
 [[symbol]]
 name = "D_BLEND_TARGET"
