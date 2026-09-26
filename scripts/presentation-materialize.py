@@ -201,8 +201,10 @@ def load_rows(game, tier, at, tiles):
 
 
 def header_hash(m, key):
-    """(sha256, basename) of a disc header field; a field that records no
-    hash refuses, naming the file."""
+    """(sha256, path) of a disc header field: the path is repo-relative
+    (the file the engine loads) or, in a header written before paths were
+    recorded, a basename beside the cue. A field that records no hash
+    refuses, naming the file."""
     val = m.header.get(key, "absent")
     f = val.split(None, 1)
     if len(f) != 2 or not pb.DIGEST_RE.match(f[0]):
@@ -230,7 +232,9 @@ def disc_check(game, rev, m, main, from_archive=False):
     out = []
     for key, path in (("disc-cue", cue), ("disc-bin", None)):
         want, base = header_hash(m, key)
-        path = path or os.path.join(os.path.dirname(cue), base)
+        if not path:
+            path = (os.path.join(main, base) if "/" in base
+                    else os.path.join(os.path.dirname(cue), base))
         if not os.path.isfile(path):
             raise Refusal("disc file %s is absent from the main checkout"
                           % path)
@@ -238,7 +242,7 @@ def disc_check(game, rev, m, main, from_archive=False):
         if got != want:
             raise Refusal("disc file %s hashes %s, the header records %s"
                           % (path, got, want))
-        out.append((path, base))
+        out.append((path, os.path.basename(path)))
     return out
 
 
