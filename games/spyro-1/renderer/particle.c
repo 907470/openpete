@@ -1627,7 +1627,10 @@ void dragonstar_native_set_rot_interp(const double* ang_zxy) {
  * in double from the camera matrix the view resolves (the bracketed camera on a
  * sub-tick present) and the angles, which are the record's bytes on a canonical
  * present and the orchestrator's float lerp on a sub-tick one. The record's
- * +0x10 holds the GTE's truncated copy of the same product and is not read. */
+ * +0x10 holds the GTE's truncated copy of the same product and is not read.
+ * @param cpu guest CPU state
+ * @param v   the resolved view; its cam_M is the left factor
+ * @param Me  receives the spoke matrix, Q12 scale, unrounded */
 static void dragonstar_matrix(CPUState* cpu, const ngte_view* v, double Me[3][3]) {
     double ang[3];
     if (s_ds_rot_on) {
@@ -1646,7 +1649,8 @@ static void dragonstar_matrix(CPUState* cpu, const ngte_view* v, double Me[3][3]
  * Projects the record's centre, then the 16 ring spokes (even points at size,
  * odd points at 4x size) through the spoke matrix and the centre's view
  * translation. Leaves s_dstri_n 0 when the record's gate is clear or the centre
- * is behind the camera. */
+ * is behind the camera.
+ * @param cpu guest CPU state */
 static void dragonstar_build(CPUState* cpu) {
     s_dstri_n = 0;
     if (cpu->read_word(D_DRAGONSTAR + 0x00) == 0) return;       /* inactive */

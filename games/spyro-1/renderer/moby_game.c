@@ -202,7 +202,11 @@ static int s1_cutscene_owns_draw(CPUState* cpu) {
  * m_State (+0x28), so m_CutsceneTicks is at +0x14. Cos is the game's
  * 4096-per-turn angle over the 256-entry table with its 16-step linear
  * interpolation, taken in double; the factors are Q12 values over 4096 with no
- * FIXED_MUL truncation. Returns 1 in state 5. */
+ * FIXED_MUL truncation.
+ * @param cpu guest CPU state (reads D_8006F3C0 and the sine table)
+ * @param cs  g_DragonCutscene bytes from m_State (+0x28), live or captured
+ * @param f   receives the three row factors, 1.0 for an unscaled row
+ * @return 1 in state 5, else 0 with every factor 1.0 */
 static int s1_departure_factors(CPUState* cpu, const uint8_t* cs, double f[3]) {
     uint32_t st, ticks;
     memcpy(&st, cs, 4);
@@ -223,8 +227,14 @@ static int s1_departure_factors(CPUState* cpu, const uint8_t* cs, double f[3]) {
  * func_8001CFDC scales rows 0 and 1 of the first cull record (the queue holds
  * m_CutsceneSpyro alone) after func_8001F158 builds it. A canonical present
  * takes the live g_DragonCutscene; a sub-tick present lerps each factor between
- * the captured tick pair at the pair's alpha, a factor of the previous tick
- * outside state 5 being 1. */
+ * the captured tick pair at the pair's alpha clamped to [0, 1], a factor of
+ * the previous tick outside state 5 being 1. Without a captured pair the live
+ * factors stand.
+ * @param cpu   guest CPU state
+ * @param rec   the cull record's guest address
+ * @param scale receives the row factors
+ * @return 1 when the draw scales `rec` (the first record, g_Gamestate 8,
+ *         m_State 5), else 0 */
 static int s1_record_row_scale(CPUState* cpu, uint32_t rec, double scale[3]) {
     if (rec != game_layout.moby.rec_base || cpu->read_word(G_GAMESTATE) != 8u) return 0;
     const uint8_t* live = (const uint8_t*)openpete_psx_to_host_ptr(G_DRAGONCUTSCENE_STATE);

@@ -120,8 +120,12 @@ unsigned shadow_verify_frame(void);
 
 /** @brief Sub-tick re-extract: rebuild the moby drop-shadows from the current gamestate, extract-only.
  *
- * Runs only when the last canonical tick rendered them (RP_MOBY_SHADOW
- * canon-drawn).
+ * Runs only while the native scene is live, RP_MOBY_SHADOW is selected, and
+ * the last canonical tick rendered the moby shadows (RP_MOBY_SHADOW
+ * canon-drawn). Only the moby-shadow draw marks that path, so a tick whose draw
+ * filled the shadow list but never rendered it (rescue states 5 and 6 draw the
+ * player's shadow alone) replays none. The shadows follow their owners'
+ * interpolated poses and the interpolated camera.
  * @param cpu guest state, the sub-tick view staged */
 void   shadow_reextract(CPUState* cpu);
 

@@ -129,8 +129,18 @@ int  player_records_shadow_append(struct CPUState* cpu);
 int  player_records_flame_append(struct CPUState* cpu);
 /** @brief Close the hooks' record epoch, once per canonical present, after the interp ring captured the tick.
  *
- * It publishes the committed list as the store's newest, with each record's
- * shown state (src, seg, fk, sxy) taken from the led list under --runahead. */
+ * Takes the epoch's appended list when its stamp is the fresh canonical epoch,
+ * else an empty list, and empties the append list. An interp-ring reset
+ * (savestate load, rewind, runahead depth switch) invalidates the three-deep
+ * store first. When no model record holds the ring's tick-end position, a
+ * pairing-only model record is appended from the ring's bytes, and shadow and
+ * flame pairing-only records for the ring's avatar when their hooks did not
+ * fire; pairing-only records are never rendered. Under --runahead each record's
+ * shown state (src, seg, fk, sxy) is taken from the led list when that list
+ * has the committed list's shape. The list becomes the store's newest entry and
+ * is paired against the previous one only when the ring rolled or the list
+ * differs from the newest; otherwise it is dropped as a duplicate. Returns at
+ * once when no player layout is registered. */
 void player_records_epoch_commit(void);
 
 /* ---- record store, present side (host loop) --------------------------- */

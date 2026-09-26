@@ -158,7 +158,16 @@ void ngte_project_gte(const int M[3][3], const double TR[3],
 }
 
 static int s_unr_tab[257];
-/** @brief The GTE's UNR reciprocal of SZ3 (capped at 0x1FFFF), as RTPS divides. */
+/** @brief The GTE's UNR division H / SZ3 as RTPS computes it, capped at 0x1FFFF.
+ *
+ * Builds the 257-entry UNR reciprocal table on the first call. When H >= 2 *
+ * SZ3 (including SZ3 == 0) the divide overflows and returns 0x1FFFF, as the
+ * hardware does. Otherwise SZ3 is normalised to bit 15, the table seeds the
+ * reciprocal, two Newton steps refine it, and the product with the shifted H is
+ * rounded to the 16-bit fraction.
+ * @param H   the GTE's projection distance H
+ * @param sz3 SZ3, 0..0xFFFF
+ * @return H / SZ3 in 16.16 fixed point, at most 0x1FFFF */
 static int ngte_unr_divide(int H, int sz3)
 {
     if (!s_unr_tab[0]) for (int i = 0; i < 257; i++) {
@@ -177,7 +186,12 @@ static int ngte_unr_divide(int H, int sz3)
     return q > 0x1FFFF ? 0x1FFFF : (int)q;
 }
 
-/** @brief `v` clamped to [lo, hi]. */
+/** @brief `v` clamped to [lo, hi].
+ *
+ * @param v  the value
+ * @param lo lower bound
+ * @param hi upper bound, >= lo
+ * @return v saturated to the range */
 static int64_t ngte_sat64(int64_t v, int64_t lo, int64_t hi)
 {
     return v < lo ? lo : v > hi ? hi : v;

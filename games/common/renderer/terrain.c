@@ -9450,7 +9450,12 @@ static void terrain_defer_census(void) {
             s_env_defer_n, s_env_defer_flushed, s_env_defer_late);
 }
 
-/** @brief The canonical native terrain build and scene feed of one world draw. */
+/** @brief The canonical native terrain build and scene feed of one world draw.
+ *
+ * Builds the native terrain for the draw's occlusion group, opens the native
+ * scene for openpete_frame, and pushes the built triangles to it.
+ * @param cpu      guest CPU state
+ * @param occGroup the world draw's occlusion-group argument (a0), -1 = walk all */
 static void terrain_native_build_feed(CPUState* cpu, int32_t occGroup) {
     { OP_PROF_ACCUM_SCOPE("terrain.build");
       terrain_build(cpu, occGroup); }            /* native walk + tris */
@@ -9477,7 +9482,12 @@ static void terrain_defer_flush_late(void) {
 
 /** @brief Run the canonical native build and feed now, or hold them for the tick's portal capture.
  *
- * They are held when the game draws the portals after this world draw. */
+ * They are held when terrain_game.env_feed_waits_for_portals reports that the
+ * game draws the portals after this world draw; terrain_native_flush_deferred
+ * runs them. The first held feed registers the exit census when
+ * OPENPETE_TERRAIN_DEFER_CENSUS is set.
+ * @param cpu      guest CPU state
+ * @param occGroup the world draw's occlusion-group argument (a0), -1 = walk all */
 static void terrain_native_build_feed_or_defer(CPUState* cpu, int32_t occGroup) {
     if (!terrain_game.env_feed_waits_for_portals ||
         !terrain_game.env_feed_waits_for_portals(cpu)) {
@@ -9496,8 +9506,19 @@ static void terrain_native_build_feed_or_defer(CPUState* cpu, int32_t occGroup) 
 
 /** @brief World-draw hook.
  *
- * Runs the game's world draw once, records RP_TERRAIN and feeds the native
- * terrain, or holds the feed for the tick's portal capture. */
+ * Inert (returns 0) unless the terrain verify harness, the native scene, or a
+ * render-path selection is on, and on re-entry. Flushes a deferred feed still
+ * pending from the previous draw, saves the occlusion group (a0) for the
+ * sub-tick re-extract, runs the game's world draw once through the module's
+ * dispatch table, and records its polybuf interval under RP_TERRAIN. The native
+ * terrain is built and fed, or held for the tick's portal capture, when the
+ * draw emitted prims or under --no-lod, which marks RP_TERRAIN drawn when the
+ * draw emitted none. OPENPETE_ENV_LODDIST overrides the environment's LOD
+ * distance for the duration of the draw only. Under OPENPETE_TERRAIN_VERIFY
+ * the first 8 eligible ticks dump and compare the native build.
+ * @param cpu  guest CPU state
+ * @param addr the hooked draw's address (unused)
+ * @return 1 after running the draw, 0 when the hook is inert or re-entered */
 static int on_world_draw_terrain(CPUState* cpu, uint32_t addr) {
     (void)addr;
     int verify = terrain_verify_enabled();

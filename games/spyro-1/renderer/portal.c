@@ -1019,7 +1019,9 @@ static uint32_t s_sky_fed_epoch = 0;
  *
  * A capture made during a runahead speculation carries the epoch of the
  * canonical present that shows it, where its openpete_frame leads the committed
- * tick the sub-tick re-extract runs at. */
+ * tick the sub-tick re-extract runs at.
+ * @param stamp a canonical-render epoch stamp
+ * @return 1 when `stamp` is the current or the last committed epoch, else 0 */
 static int canon_epoch_recent(uint32_t stamp) {
     return stamp == spyro_native_canon_epoch_stamp() || spyro_native_canon_epoch_fresh(stamp);
 }
@@ -1183,11 +1185,27 @@ static int portal_repr_skip(int is_dome) {
     return (m >= 0) && ((m == 1) != (is_dome != 0));
 }
 
-/** @brief Feed one portal leaf quad (flat fill or skybox dome) to the native scene.
+/** @brief Feed one portal leaf's flat sky fill to the native scene.
  *
- * Resolves its portal, projects the opening outline, marks the stencil aperture
- * and emits the sky fan, stamping the portal-guard recency with the
- * canonical-render epoch. Returns 1 when the quad was fed. */
+ * Resolves the fill colour and its portal, projects the opening outline, marks
+ * the stencil aperture and emits the outline fan at per-vertex opening depth,
+ * stamping the portal-guard recency with the canonical-render epoch. When the
+ * outline has fewer than 3 points it fills the clip rect instead, at the
+ * opening plane's depth, or nearest when the camera has crossed the plane.
+ * Skipped under OPENPETE_PORTAL_REPR=dome.
+ * @param cpu          guest CPU state
+ * @param a0           the leaf's a0: a pointer to the fill colour, or the skybox
+ *                     record when `a0_is_skybox`
+ * @param a0_is_skybox 1 when a0 is the skybox record (colour at +0x18)
+ * @param portal_hint  the Portal record when the caller knows it, else 0 to
+ *                     resolve it from a0 and the clip rect
+ * @param rgb_override the fill colour, or PORTAL_RGB_RESOLVE to read it from a0
+ *                     and take the sky bucket from the live D_PORTAL_DEPTH
+ * @param ot_b_hint    the captured sky OT bucket when rgb_override is given,
+ *                     else 0
+ * @param fog_rgb      fog colour the fill is blended toward
+ * @param fog_t        blend fraction toward fog_rgb
+ * @return 1 when the quad was fed, 0 when skipped or the clip rect is empty */
 static int feed_portal_quad(CPUState* cpu, uint32_t a0, int a0_is_skybox,
                             uint32_t portal_hint,
                             uint32_t rgb_override, uint32_t ot_b_hint,
@@ -2102,10 +2120,13 @@ static void derive_dome_matrix_at(CPUState* cpu, double yaw, double pitch, int M
  * The func_80050BD0 prologue computes it once per tick on its STACK, unreadable
  * at leaf-hook time, so it is mirrored: M = RotX(cam.pitch(+0x4E) −
  * D_PORTAL_PITCH) × RotY(cam.head(+0x50) + D_PORTAL_YAW) ×
- * RotZ(cam.roll(+0x4C)), game angle units 2048/circle, Q12 components. Float
- * sin/cos per the float policy; the validation probe (OPENPETE_PORTAL_MAT_DBG)
- * measures it against the matrix the .s leaves in the GTE on ticks that draw
- * the dome. */
+ * RotZ(cam.roll(+0x4C)), game angle units 4096/circle, Q12 components rounded
+ * to nearest. RotX's middle row carries g_Camera's Y-aspect factor 2560/4096.
+ * Sin and cos are taken in double; the validation probe
+ * (OPENPETE_PORTAL_MAT_DBG) measures the result against the matrix the .s
+ * leaves in the GTE on ticks that draw the dome.
+ * @param cpu guest CPU state (reads g_Camera, D_PORTAL_YAW, D_PORTAL_PITCH)
+ * @param M   receives the matrix, Q12 */
 static void derive_dome_matrix(CPUState* cpu, int M[3][3]) {
     derive_dome_matrix_at(cpu, (double)(int32_t)cpu->read_word(D_PORTAL_YAW),
                           (double)(int32_t)cpu->read_word(D_PORTAL_PITCH), M);
@@ -2114,7 +2135,11 @@ static void derive_dome_matrix(CPUState* cpu, int M[3][3]) {
 /** @brief derive_dome_matrix with the portal spin angles `yaw` and `pitch` given instead of read.
  *
  * `yaw` stands for D_PORTAL_YAW and `pitch` for D_PORTAL_PITCH, so a sub-tick
- * present can pass angles between two ticks' values. */
+ * present can pass angles between two ticks' values.
+ * @param cpu   guest CPU state (reads g_Camera's angles)
+ * @param yaw   portal spin yaw, game angle units (4096/circle)
+ * @param pitch portal spin pitch, game angle units (4096/circle)
+ * @param M     receives the matrix, Q12 */
 static void derive_dome_matrix_at(CPUState* cpu, double yaw, double pitch, int M[3][3]) {
     double TAU = 6.283185307179586;
     /* Game angle units: 4096/circle (the game's Cos/Sin table domain). The
@@ -2206,9 +2231,17 @@ static int s_leaf_in = 0;
 static uint32_t s_fed_portal[8]; static int s_fed_n = 0;
 /** @brief Portal leaf hook body.
  *
- * Runs the leaf `real`, feeds its preview of kind `kind` (PORTAL_FLAT, _DOME,
- * _BLENDED) natively and captures the leaf's decision, clip rect and rect rule
- * for the sub-tick replay. */
+ * Inert (returns 0) unless the portal dump, the native scene, or a render-path
+ * selection is on, and on re-entry. Runs the leaf `real`, feeds its preview of
+ * kind `kind` (PORTAL_FLAT, _DOME, _BLENDED) natively, where --no-lod forces
+ * the geometric dome for a blended leaf, records the fed portal for the
+ * widescreen reveal, and captures the leaf's decision, clip rect and rect rule
+ * for the sub-tick replay.
+ * @param cpu   guest CPU state
+ * @param which the leaf's label in the portal dump
+ * @param real  the leaf's recompiled function
+ * @param kind  PORTAL_FLAT, PORTAL_DOME or PORTAL_BLENDED
+ * @return 1 after running the leaf, 0 when inert or re-entered */
 static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), int kind) {
     int feed = openpete_native_scene_enabled();   /* --renderer vk live */
     if (!portal_dump_enabled() && !feed && !render_paths_active()) return 0; /* inert */
@@ -2395,22 +2428,23 @@ static int on_8004FEA0(CPUState* cpu, uint32_t a) { (void)a; return leaf_hook(cp
 static int on_80050240(CPUState* cpu, uint32_t a) { (void)a; return leaf_hook(cpu, "50240(blended)",  func_80050240, PORTAL_BLENDED); }
 static int on_8004F4BC(CPUState* cpu, uint32_t a) { (void)a; return leaf_hook(cpu, "F4BC(secondary)", func_8004F4BC, PORTAL_DOME);    }
 
-/** @brief Widescreen off-4:3 portal reveal.
+/** @brief Draw the destination-sky previews of the portals RenderPortals culled but the view shows.
  *
- * The .s RenderPortals culls portals whose centroid is off the 4:3 screen, so
- * at wide AR a portal in the side margin shows no destination-sky preview (the
- * arch frames empty world). After the real RenderPortals has fed the on-4:3
- * portals via the leaves, walk g_Portals and draw a destination-sky preview for
- * each portal that is off-4:3 but inside the widened view and was NOT already
- * fed by a leaf: the flat outline-polygon fill (tilted-plane per-vertex view-Z,
- * front-biased) so the stone arch occludes it into the opening shape, PLUS the
- * gradient dome whenever the portal is within the .s's own dome range (mirrored
- * distance rule + DPCS crossfade below — the original flat-only reveal assumed
- * a margin portal is never close, which broke once edge-STRADDLING portals
- * started revealing: a nearby arch at the screen edge showed the solid colour
- * where the .s-at-centre shows the sky cyclorama). Inert at 4:3 (F=1).
- * Display-only — reads g_Portals + camera, never writes PSX RAM (D_CLIPRECT is
- * bracketed save/restore render scratch). */
+ * The .s RenderPortals culls portals whose centroid is off the 4:3 screen, and
+ * distance-culls far ones, so a widened view shows an arch in the side margin
+ * with no preview, and --no-lod terrain shows a far arch with an empty opening.
+ * After the real RenderPortals has fed its portals through the leaves, this
+ * walks g_Portals and, for each portal no leaf fed whose outline is fully in
+ * front of the camera, whose outline bbox reaches the widened view, and (at
+ * stock LOD) is not deep inside the 4:3 frame, draws the flat outline fill
+ * through feed_portal_quad, plus the gradient dome when the outline's mean
+ * view-Z is below the .s's dome range 16384, fading toward the flat colour over
+ * [12288, 16384), or always under the --no-lod dome. Each reveal is captured
+ * for the sub-tick replay. Returns at once on a canonical 4:3 view without
+ * --no-lod. The clip rect D_CLIPRECT and the GTE rotation registers are
+ * staged in the sub-tick view or saved and restored; no gameplay byte is
+ * written.
+ * @param cpu guest CPU state */
 static void feed_revealed_portals(CPUState* cpu) {
     ngte_view_build(cpu, &s_view);
     int nolod = nolod_portal_dome_on();
@@ -2569,9 +2603,17 @@ int openpete_portal_capture_follows(CPUState* cpu) {
 
 /** @brief RenderPortals hook.
  *
- * Runs the game's draw (the leaves feed and capture the on-4:3 portals),
- * reveals the off-4:3 ones, marks RP_PORTAL drawn and releases a terrain feed
- * that waited for this capture. */
+ * Inert (returns 0) unless the portal dump, the native scene, or a render-path
+ * selection is on, and on re-entry. Resets the tick's fed-portal set and
+ * capture set, rolls the shared dome matrix and the portal spin angles
+ * (D_PORTAL_YAW, D_PORTAL_PITCH) to prev, and runs the game's draw, whose
+ * leaves feed and capture the on-4:3 portals. With the native scene on it
+ * reveals the culled portals, stamps the capture with the canonical-render
+ * epoch and marks RP_PORTAL drawn. Last it releases a terrain feed that waited
+ * for this capture.
+ * @param cpu guest CPU state
+ * @param a   the hooked address (unused)
+ * @return 1 after running the draw, 0 when inert or re-entered */
 static int on_80050BE0(CPUState* cpu, uint32_t a) {
     (void)a;
     int feed = openpete_native_scene_enabled();

@@ -932,8 +932,15 @@ static const hook_bracket_desc k_shadow_bracket = {
 
 /** @brief Moby drop-shadow draw hook.
  *
- * Runs the game's draw once, records its polybuf interval under RP_MOBY_SHADOW
- * and feeds the native shadows. */
+ * Runs the game's draw once through the hook bracket, which records its
+ * polybuf interval under RP_MOBY_SHADOW. When the draw emitted prims, they are
+ * captured for the feed or the verify harness, the native shadows are fed from
+ * gamestate while RP_MOBY_SHADOW is selected, and under OPENPETE_SHADOW_VERIFY
+ * the first eligible tick dumps once and the first 60 compare.
+ * @param cpu  guest CPU state
+ * @param addr the hooked draw's address
+ * @return 1 after running the draw, 0 when the bracket declines and the
+ *         ordinary dispatch runs it */
 static int on_moby_shadows(CPUState* cpu, uint32_t addr) {
     uint32_t startp, endp; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_shadow_bracket, &startp, &endp, &feed, &verify))
@@ -953,13 +960,7 @@ static int on_moby_shadows(CPUState* cpu, uint32_t addr) {
     return hook_bracket_end(&k_shadow_bracket);
 }
 
-/* Sub-tick re-extract (high-FPS spine): reproduce the moby drop-shadows
- * from the current gamestate — extract-only (no render_fn, no verdicts). The
- * shadows project under their owners onto the ground; they follow the owners'
- * interpolated poses and the interpolated camera. Gated on RP_MOBY_SHADOW,
- * which only the moby-shadow draw records: a tick whose draw filled the
- * shadow list but never rendered it (rescue states 5 and 6 draw the player's
- * shadow alone) replays none. */
+/* Sub-tick moby drop-shadow re-extract; see shadow.h. */
 void shadow_reextract(CPUState* cpu) {
     if (!hook_reextract_ready(RP_MOBY_SHADOW)) return;
     shadow_moby_feed_native(cpu);
