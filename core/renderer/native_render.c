@@ -180,12 +180,25 @@ typedef struct {
 _Static_assert(sizeof(shadow_decal_tex_pc) == 128,
                "shadow_decal_tex_pc mirrors OP_DECAL_PC (openpete_psx_decal.glsl)");
 
-/* The packed material words the decal contract declares: VRAM coordinates are
- * 10 bits of x and 9 of y, and bpp 4/8/16 is the code 0/1/2 (4 << code). */
+/** @brief Pack a texture-page origin into the decal contract's tpage word.
+ *
+ * VRAM coordinates are packed as 10 bits of x and 9 bits of y, x | y << 10,
+ * the layout shadow_decal_tex_pc.tpage declares.
+ * @param x Page x in VRAM halfwords.
+ * @param y Page y in VRAM lines.
+ * @return The packed word. */
 static int32_t decal_pack_tpage(int x, int y)
 {
     return (int32_t)((x & 0x3FF) | ((y & 0x1FF) << 10));
 }
+/** @brief Pack a CLUT origin and colour depth into the decal contract's clut word.
+ *
+ * x and y are packed as in decal_pack_tpage; the colour depth is the code
+ * 0, 1 or 2 for 4, 8 or 16 bpp (bpp = 4 << code) at bit 20.
+ * @param x CLUT x in VRAM halfwords.
+ * @param y CLUT y in VRAM lines.
+ * @param bpp Colour depth; 16 or more codes 2, 8 or more codes 1, else 0.
+ * @return The packed word. */
 static int32_t decal_pack_clut(int x, int y, int bpp)
 {
     int code = bpp >= 16 ? 2 : (bpp >= 8 ? 1 : 0);
@@ -1175,12 +1188,16 @@ static int s_texmap_pending = 0;
 static int s_wireframe         = 0;   /* line-mode scene pipelines + NOTEX colour */
 static int s_wireframe_pending = 0;
 
-/* --vertex-precision integer: which draw layers get the PSX integer-grid vertex
- * snap. The 3D-world-projected layers wobbled on hardware (the GTE stored screen
- * X/Y as int16); the flat 2D UI layers — HUD text/icons, the dim HUD panel, and
- * the over-everything OVERLAY — were placed at integer screen coords by the game
- * and must stay put (snapping them would only add sub-pixel churn, never wobble).
- * HUD3D (the spinning 3D icon mobys) IS a real GTE projection, so it wobbles too. */
+/** @brief Return whether a draw layer takes the PSX integer-grid vertex snap of --vertex-precision integer.
+ *
+ * The 3D-projected layers wobbled on hardware because the GTE stored screen
+ * X and Y as int16, so they snap. The flat 2D UI layers (HUD text and icons,
+ * the dim HUD panel, and the OVERLAY layer drawn over everything) were placed
+ * by the game at integer screen coordinates; snapping them adds sub-pixel
+ * change and no wobble, so they do not snap. HUD3D, the spinning 3D icon
+ * mobys, is a GTE projection and snaps.
+ * @param category Scene category, an OPENPETE_SCENE_* value.
+ * @return 0 for HUD, OVERLAY and HUD_PANEL, else 1. */
 static int category_snaps_vertices(int category) {
     switch (category) {
     case OPENPETE_SCENE_HUD:
@@ -1828,13 +1845,26 @@ typedef struct {
 
 static uint32_t carry_hash(uint32_t h, uint32_t w) { h ^= w; return h * 16777619u; }
 
-/* A float quantized to the pixel, as a hash word. */
+/** @brief Round a float to the nearest pixel as a hash word.
+ *
+ * @param f Value in pixels.
+ * @return lrintf(f) as a uint32_t. */
 static uint32_t carry_qpx(float f) { return (uint32_t)(int32_t)lrintf(f); }
 
-/* The content key of an entry. Address-less entries are keyed by ordinal and
- * tagged with the top bit, which the content hash clears, so the two key spaces
- * never meet. A hash collision merges two content groups; the nearest-partner
- * rule then still resolves within the merged group. */
+/** @brief Return the content key of a carried 2D entry.
+ *
+ * The key is an FNV-1a hash of the draw layer, texturing, blend mode, colour
+ * depth, texture page, CLUT, the three vertices' texture coordinates, and the
+ * screen box's width and height quantized to the pixel, with the top bit
+ * cleared. An address-less entry (prim NULL) is keyed by its ordinal among
+ * the address-less entries with the top bit set, so the two key spaces never
+ * meet. A hash collision merges two content groups; a merged key is held more
+ * than once, so the single-entry pass (carry_pair_content) pairs none of its
+ * holders.
+ * @param tri Entry to key.
+ * @param zero_ord Running ordinal of the address-less entries; incremented
+ *        for each one keyed.
+ * @return The content key. */
 static uint32_t carry_key_of(const scene_tri_t* tri, int* zero_ord) {
     if (!tri->prim) return (1u << 31) | (uint32_t)(*zero_ord)++;
     uint32_t h = 2166136261u;
@@ -1858,8 +1888,15 @@ static uint32_t carry_key_of(const scene_tri_t* tri, int* zero_ord) {
     return h & 0x7FFFFFFFu;
 }
 
-/* The occupancy bucket of a screen cell on one layer. Entries within 0.5 px of
- * each other can fall in adjacent cells, so a lookup probes the 3x3 block. */
+/** @brief Return the occupancy bucket of a screen cell on one layer.
+ *
+ * Entries within 0.5 px of each other can fall in adjacent cells, so a
+ * lookup (carry_slot_take) probes the 3x3 block around the cell.
+ * @param cx Cell x, the floor of the first vertex's screen x plus any probe offset.
+ * @param cy Cell y, the floor of the first vertex's screen y plus any probe offset.
+ * @param cat Draw layer.
+ * @param textured Nonzero for a textured entry.
+ * @return A bucket index below CARRY_KEY_SLOTS. */
 static uint32_t carry_pos_slot(int cx, int cy, int cat, int textured) {
     uint32_t h = 2166136261u;
     h = carry_hash(h, (uint32_t)cx);
@@ -1874,7 +1911,12 @@ static uint32_t carry_pos_slot_of(const scene_tri_t* tri, int dx, int dy) {
                           tri->category, tri->textured);
 }
 
-/* The content keys of one capture, in feed order. */
+/** @brief Compute the content keys of one capture in feed order.
+ *
+ * @param tris Capture entries.
+ * @param n Entry count.
+ * @param key Receives carry_key_of of each entry; the address-less entries
+ *        are numbered from 0. */
 static void carry_keys_build(const scene_tri_t* tris, int n, uint32_t* key) {
     int zero_ord = 0;
     for (int t = 0; t < n; t++) key[t] = carry_key_of(&tris[t], &zero_ord);
@@ -1905,7 +1947,13 @@ static float tri_pos_dist(const scene_tri_t* a, const scene_tri_t* b) {
     return w;
 }
 
-/* `out[i]` = how many of the `n` entries carry entry i's content key. */
+/** @brief Count, for each entry of a capture, the entries holding its content key.
+ *
+ * The count uses an open-address table of CARRY_COUNT_SLOTS static slots
+ * with linear probing, so the function is not reentrant.
+ * @param key Content keys, one per entry.
+ * @param n Entry count.
+ * @param out Receives, at index i, the number of entries whose key equals key[i]. */
 static void carry_key_counts(const uint32_t* key, int n, uint16_t* out) {
     static uint32_t slot_key[CARRY_COUNT_SLOTS];
     static uint16_t slot_n[CARRY_COUNT_SLOTS];
@@ -1956,12 +2004,17 @@ typedef struct {
 /* Per-present run tallies for the census. */
 typedef struct { int runs, lerped, disagree, segmented, segs; } carry_run_stats_t;
 
-/* Two adjacent entries belong to one run when they draw on the same layer
- * through the same CLUT. The texture page is deliberately not part of this:
- * a font's glyphs are spread over several pages, so one line of text steps
- * through three or four of them and keying on the page would cut the line into
- * single glyphs — the unit this pass exists to keep whole. The page is still
- * part of each entry's content key, so it separates the run's members. */
+/** @brief Return whether two adjacent entries belong to one run.
+ *
+ * They join when they draw on the same layer, with the same texturing,
+ * through the same CLUT. The texture page is not compared: a font's glyphs
+ * are spread over several pages, so one line of text steps through three or
+ * four of them, and keying on the page would cut the line into single
+ * glyphs. The page is part of each entry's content key, so it still
+ * separates the run's members.
+ * @param a Earlier entry in feed order.
+ * @param b The entry after it.
+ * @return 1 when they join, else 0. */
 static int carry_run_joins(const scene_tri_t* a, const scene_tri_t* b) {
     return a->category == b->category && a->textured == b->textured &&
            a->clut_x == b->clut_x && a->clut_y == b->clut_y;
@@ -1991,12 +2044,17 @@ static void carry_runs_build(const scene_tri_t* tris, const uint32_t* key, int n
     }
 }
 
-/* The previous run of the same length and content multiset whose centroid is
- * nearest current run `ci`'s, inside the move bound, or -1. A nearest run that
- * another current run has already claimed yields -1 rather than the next one
- * out: a body emitted twice in one capture would otherwise send its second copy
- * to a partner elsewhere and sweep it across the screen, where holding it still
- * costs nothing — the first copy already draws where it belongs. */
+/** @brief Find the content partner of a current run: the nearest previous run of its length and content multiset.
+ *
+ * The partner's centroid lies inside CARRY_MOVE_MAX of the current run's. A
+ * nearest run that another current run has already claimed yields -1 rather
+ * than the next one out: a body emitted twice in one capture would otherwise
+ * send its second copy to a partner elsewhere and sweep it across the screen,
+ * while the first copy already draws where it belongs.
+ * @param pr Runs of the previous capture.
+ * @param cr Runs of the current capture.
+ * @param ci Index of the current run.
+ * @return The previous run's index, or -1. */
 static int carry_run_partner(const carry_runs_t* pr, const carry_runs_t* cr, int ci) {
     int best = -1;
     float bd = CARRY_MOVE_MAX;
@@ -2009,8 +2067,17 @@ static int carry_run_partner(const carry_runs_t* pr, const carry_runs_t* cr, int
     return (best >= 0 && pr->taken[best]) ? -1 : best;
 }
 
-/* Whether the translation (dx, dy) carries every vertex of the previous run
- * onto its ordinal partner in the current run, within CARRY_RIGID_TOL. */
+/** @brief Return whether one translation carries every vertex of a previous span onto its ordinal partner in a current span.
+ *
+ * Each vertex must land within CARRY_RIGID_TOL of its partner.
+ * @param prev Previous capture.
+ * @param plo First entry of the previous span.
+ * @param curr Current capture.
+ * @param clo First entry of the current span.
+ * @param len Entries in each span.
+ * @param dx Translation x, px.
+ * @param dy Translation y, px.
+ * @return 1 when every vertex agrees, else 0. */
 static int carry_run_rigid(const scene_tri_t* prev, int plo,
                            const scene_tri_t* curr, int clo, int len,
                            float dx, float dy) {
@@ -2023,7 +2090,12 @@ static int carry_run_rigid(const scene_tri_t* prev, int plo,
     return 1;
 }
 
-/* The mean of an entry's three vertex displacements from its ordinal partner. */
+/** @brief Compute the mean of an entry's three vertex displacements from its ordinal partner.
+ *
+ * @param p Previous entry.
+ * @param c Current entry.
+ * @param dx Receives the mean x displacement, c minus p.
+ * @param dy Receives the mean y displacement, c minus p. */
 static void carry_entry_delta(const scene_tri_t* p, const scene_tri_t* c,
                               float* dx, float* dy) {
     float sx = 0.0f, sy = 0.0f;
@@ -2034,22 +2106,31 @@ static void carry_entry_delta(const scene_tri_t* p, const scene_tri_t* c,
     *dx = sx / 3.0f; *dy = sy / 3.0f;
 }
 
-/* Segment pass over an ordinal-paired run that no single translation carries:
- * partition it into maximal contiguous spans whose every vertex displaces by
- * the span's own translation within CARRY_RIGID_TOL, and pair each span whole
- * by ordinal. A span's translation is the mean vertex displacement of its first
- * ordinal pair, and every later member is admitted only against that same
- * translation, so a span is one displacement by construction. An entry whose
- * own three vertices disagree with their mean opens no span and joins none: it
- * takes no pairing and falls through to the passes below. Two members of one
- * contiguous body therefore still never take different treatment — a body
- * carried by one translation gives all its members the same displacement and so
- * lands in one span — while a body sharing a run with a body that moves
- * differently keeps its own glide instead of both snapping. Returns the entries
- * paired and adds the spans it carried to *segs.
+/** @brief Pair an ordinal-paired run that no single translation carries, span by span.
  *
- * This runs only after the whole-run test has already failed, so a run carried
- * by one translation reaches none of this code. */
+ * The run is partitioned into maximal contiguous spans whose every vertex
+ * displaces by the span's own translation within CARRY_RIGID_TOL, and each
+ * span is paired whole by ordinal and marked anchored. A span's translation
+ * is the mean vertex displacement of its first ordinal pair, and every later
+ * member is admitted only against that same translation, so a span is one
+ * displacement by construction. An entry whose own three vertices disagree
+ * with their mean opens no span and joins none: it takes no pairing and
+ * falls through to the occupancy and single-entry passes. A body carried by
+ * one translation gives all its members the same displacement and lands in
+ * one span, so two members of one contiguous body never take different
+ * treatment, while a body sharing a run with a body that moves differently
+ * keeps its own glide instead of both snapping.
+ *
+ * carry_pair_runs calls this only after the whole-run test has failed, so a
+ * run carried by one translation reaches none of this code.
+ * @param prev Previous capture.
+ * @param plo First entry of the previous run.
+ * @param curr Current capture.
+ * @param clo First entry of the current run.
+ * @param len Entries in each run.
+ * @param mt Match under construction; match, prev_taken and anchored are written.
+ * @param segs Incremented once per span carried.
+ * @return The number of entries paired. */
 static int carry_pair_run_segments(const scene_tri_t* prev, int plo,
                                    const scene_tri_t* curr, int clo, int len,
                                    carry_match_t* mt, int* segs) {
@@ -2072,12 +2153,11 @@ static int carry_pair_run_segments(const scene_tri_t* prev, int plo,
     return paired;
 }
 
-/* The previous run that is current run `ci`'s body by geometry alone: of the
- * unclaimed previous runs of its layer, texturing and length that carry onto
- * it by one translation (carry_run_rigid under their centroid displacement)
- * inside the move bound, the one displaced least, or -1 when none is. *out_d
- * is its displacement; *out_unique is 0 when a second such run lies within
- * CARRY_RIGID_TOL of it, since two equally near bodies name neither.
+/** @brief Find a current run's body by geometry alone: the unclaimed previous run one translation carries onto it, displaced least.
+ *
+ * The candidates are the unclaimed previous runs of the current run's layer,
+ * texturing and length that carry onto it by one translation
+ * (carry_run_rigid under their centroid displacement) inside CARRY_MOVE_MAX.
  *
  * Content alone misnames a body whose sprites animate out of phase: a row of
  * spinning eggs, each one frame behind its neighbour, hands each egg's frame to
@@ -2087,7 +2167,18 @@ static int carry_pair_run_segments(const scene_tri_t* prev, int plo,
  * coordinates, so the CLUT is no part of this match. The run of the same shape
  * nearest by a rigid translation is the row itself: a row that stands still is
  * displaced by zero, a row that rises by its rise, and both are nearer than one
- * period. */
+ * period.
+ * @param prev Previous capture.
+ * @param pr Runs of the previous capture.
+ * @param curr Current capture.
+ * @param cr Runs of the current capture.
+ * @param ci Index of the current run.
+ * @param out_d Receives the chosen run's centroid displacement, or
+ *        CARRY_MOVE_MAX when none qualifies.
+ * @param out_unique Receives 0 when a second candidate lies within
+ *        CARRY_RIGID_TOL of the chosen one's displacement, since two equally
+ *        near bodies name neither; else 1 when a run was chosen.
+ * @return The previous run's index, or -1. */
 static int carry_run_body(const scene_tri_t* prev, const carry_runs_t* pr,
                           const scene_tri_t* curr, const carry_runs_t* cr, int ci,
                           float* out_d, int* out_unique) {
@@ -2110,7 +2201,12 @@ static int carry_run_body(const scene_tri_t* prev, const carry_runs_t* pr,
     return best;
 }
 
-/* The smaller side of the screen box of current run `ci`. */
+/** @brief Return the smaller side of a current run's screen bounding box.
+ *
+ * @param curr Current capture.
+ * @param cr Runs of the current capture.
+ * @param ci Index of the run.
+ * @return min(width, height) of the box over every vertex of the run, px. */
 static float carry_run_extent(const scene_tri_t* curr, const carry_runs_t* cr, int ci) {
     const scene_tri_t* t0 = &curr[cr->lo[ci]];
     float x0 = t0->v[0].sx, x1 = x0, y0 = t0->v[0].sy, y1 = y0;
@@ -2124,18 +2220,26 @@ static float carry_run_extent(const scene_tri_t* curr, const carry_runs_t* cr, i
 
 enum { CARRY_PICK_SNAP = 0, CARRY_PICK_BODY, CARRY_PICK_CONTENT };
 
-/* How the run pass carries current run `ci`, whose content partner is `q`
- * (carry_run_partner, or -1). The geometric body (carry_run_body) is taken
- * when it is unique and either is the content partner or lies nearer than the
- * run's own smaller side: two sprites of one shape that close overlap, so the
+/** @brief Decide how the run pass carries a current run: by its geometric body, by its content partner, or not at all.
+ *
+ * The geometric body (carry_run_body) is taken when it is unique and either
+ * is the content partner or lies nearer than the run's own smaller side: two
+ * sprites of one shape that close overlap, so the
  * nearer one is the sprite itself, whatever frame it shows. A body farther than
  * that with a different frame is some other sprite (an inventory egg above the
  * HUD row the moment the row appears), and does not name the run. The content
  * partner is taken only when no body, tied or not, lies as near as it: a row
  * whose layout jumps (eggs stacked two to a slot spread to one each) holds the
  * same frame one slot over at the same distance as the stacked twin, and the
- * pairing is a guess. Every other case snaps. *out is the previous run for
- * CARRY_PICK_BODY. */
+ * pairing is a guess. Every other case snaps.
+ * @param prev Previous capture.
+ * @param pr Runs of the previous capture.
+ * @param curr Current capture.
+ * @param cr Runs of the current capture.
+ * @param ci Index of the current run.
+ * @param q The run's content partner (carry_run_partner), or -1.
+ * @param out Receives the previous run for CARRY_PICK_BODY; untouched otherwise.
+ * @return CARRY_PICK_BODY, CARRY_PICK_CONTENT (carry by @p q) or CARRY_PICK_SNAP. */
 static int carry_run_pick(const scene_tri_t* prev, const carry_runs_t* pr,
                           const scene_tri_t* curr, const carry_runs_t* cr, int ci,
                           int q, int* out) {
@@ -2151,7 +2255,16 @@ static int carry_run_pick(const scene_tri_t* prev, const carry_runs_t* pr,
     return CARRY_PICK_CONTENT;
 }
 
-/* Pair current run `ci` with previous run `q` by ordinal, whole. */
+/** @brief Pair a current run with a previous run by ordinal, whole.
+ *
+ * Marks the previous run taken, and each pair's previous entry taken and
+ * current entry anchored.
+ * @param pr Runs of the previous capture; taken[q] is set.
+ * @param q Index of the previous run.
+ * @param cr Runs of the current capture.
+ * @param ci Index of the current run.
+ * @param mt Match under construction.
+ * @return The number of entries paired, the run's length. */
 static int carry_take_run(carry_runs_t* pr, int q, const carry_runs_t* cr, int ci,
                           carry_match_t* mt) {
     pr->taken[q] = 1;
@@ -2163,12 +2276,22 @@ static int carry_take_run(carry_runs_t* pr, int q, const carry_runs_t* cr, int c
     return cr->len[ci];
 }
 
-/* Rigid-run pass: each multi-entry run is paired by ordinal, whole, with the
- * previous run carry_run_pick names: its geometric body, or its content partner
- * when that carries it by one translation. A run it names none for takes no
- * pairing at all and every one of its entries falls through to the passes
- * below; a run whose entries displace by more than one amount goes to the
- * segment pass, and only the entries of it that no span carried fall through. */
+/** @brief Run the rigid-run pass, pairing each multi-entry current run whole with the previous run carry_run_pick names.
+ *
+ * The named run is the current run's geometric body, or its content partner
+ * when one translation carries it. A run for which none is named takes no
+ * pairing and every one of its entries falls through to the occupancy and
+ * single-entry passes; a content partner whose entries displace by more than
+ * one amount goes to the segment pass (carry_pair_run_segments), and only
+ * the entries of it that no span carried fall through. Single-entry runs are
+ * skipped.
+ * @param prev Previous capture.
+ * @param pr Runs of the previous capture; taken is written.
+ * @param curr Current capture.
+ * @param cr Runs of the current capture.
+ * @param mt Match under construction.
+ * @param st Receives the pass's run tallies for the census.
+ * @return The number of entries paired. */
 static int carry_pair_runs(const scene_tri_t* prev, carry_runs_t* pr,   /* pr->taken is written */
                            const scene_tri_t* curr, const carry_runs_t* cr,
                            carry_match_t* mt, carry_run_stats_t* st) {
@@ -2200,11 +2323,20 @@ static int carry_pair_runs(const scene_tri_t* prev, carry_runs_t* pr,   /* pr->t
     return paired;
 }
 
-/* Claim the unclaimed previous entry of `curr`'s layer standing on its slot, or
- * -1. Sets *occupied when the slot was occupied at all, claimed or not: the
- * same element emitted twice in one capture leaves the second copy occupied and
- * unmatched, which holds it still rather than letting the content pass sweep
- * it to a partner elsewhere. */
+/** @brief Claim the unclaimed previous entry of a current entry's layer and texturing standing on its slot.
+ *
+ * A previous entry stands on the slot when every vertex lies within 0.5 px
+ * of the current entry's; the 3x3 block of occupancy buckets around the
+ * first vertex's cell is probed. *occupied is set when the slot was occupied
+ * at all, claimed or not: the same element emitted twice in one capture
+ * leaves the second copy occupied and unmatched, which holds it still rather
+ * than letting the content pass sweep it to a partner elsewhere.
+ * @param m Previous capture's key map.
+ * @param prev Previous capture.
+ * @param curr Current entry.
+ * @param prev_taken Per previous entry claim flags; the claimed entry's is set.
+ * @param occupied Set to 1 when any previous entry stands on the slot.
+ * @return The claimed previous entry's index, or -1. */
 static int carry_slot_take(const carry_key_map_t* m, const scene_tri_t* prev,
                            const scene_tri_t* curr, int8_t* prev_taken,
                            int8_t* occupied) {
@@ -2223,8 +2355,15 @@ static int carry_slot_take(const carry_key_map_t* m, const scene_tri_t* prev,
     return -1;
 }
 
-/* Occupancy pass over the entries no run took: every current entry standing
- * where an entry of its layer stood, paired with that entry. */
+/** @brief Run the occupancy pass, pairing each entry no run took with the previous entry of its layer standing on its slot.
+ *
+ * Writes occupied for every current entry and marks each pair anchored.
+ * @param m Previous capture's key map.
+ * @param prev Previous capture.
+ * @param curr Current capture.
+ * @param curr_n Current entry count.
+ * @param mt Match under construction.
+ * @return The number of entries paired. */
 static int carry_pair_occupancy(const carry_key_map_t* m, const scene_tri_t* prev,
                                 const scene_tri_t* curr, int curr_n,
                                 carry_match_t* mt) {
@@ -2239,10 +2378,23 @@ static int carry_pair_occupancy(const carry_key_map_t* m, const scene_tri_t* pre
     return paired;
 }
 
-/* Single-entry pass over the entries that are a whole run on their own and
- * stand on an empty slot: the previous capture's sole holder of the entry's
- * content key, inside the move bound. This is where a lone 2D element that
- * slid is matched; a key held more than once on either side pairs nothing. */
+/** @brief Run the single-entry pass, pairing each unmatched lone entry on an empty slot with the previous sole holder of its content key.
+ *
+ * An entry qualifies when it is a whole run on its own, stands on an empty
+ * slot, and its key is held once in the current capture; its partner is the
+ * previous capture's sole holder of the key, unclaimed and inside
+ * CARRY_MOVE_MAX. This is where a lone 2D element that slid is matched; a
+ * key held more than once on either side pairs nothing. The pass then writes
+ * ambig for every current entry: its key is held more than once in the
+ * current capture, or its partner's key more than once in the previous one.
+ * @param m Previous capture's key map.
+ * @param prev Previous capture.
+ * @param prev_n Previous entry count.
+ * @param curr Current capture.
+ * @param curr_n Current entry count.
+ * @param cr Runs of the current capture.
+ * @param mt Match under construction.
+ * @return The number of entries paired. */
 static int carry_pair_content(const carry_key_map_t* m,
                               const scene_tri_t* prev, int prev_n,
                               const scene_tri_t* curr, int curr_n,
@@ -2268,7 +2420,18 @@ static int carry_pair_content(const carry_key_map_t* m,
     return paired;
 }
 
-/* Match one capture against the previous one. Returns the pair count. */
+/** @brief Match one capture against the previous one through the rigid-run, occupancy and single-entry passes.
+ *
+ * Resets the match, computes the current content keys into mt->ckey, builds
+ * both captures' runs, then runs the three passes in that order.
+ * @param m Previous capture's key map, built by carry_map_build.
+ * @param prev Previous capture.
+ * @param prev_n Previous entry count.
+ * @param curr Current capture.
+ * @param curr_n Current entry count.
+ * @param mt Receives the match.
+ * @param st Receives the rigid-run pass's tallies.
+ * @return The number of entries paired. */
 static int carry_pair_all(const carry_key_map_t* m,
                           const scene_tri_t* prev, int prev_n,
                           const scene_tri_t* curr, int curr_n,
@@ -2328,14 +2491,23 @@ static int carry_census_on(void) {
     return v;
 }
 
-/* An entry of the previous capture, other than `self`, standing where `curr`
- * stands now — `curr`'s real predecessor, so a pair that moves `curr` drags it
- * along a segment between two different sprites instead of holding it still. A
- * genuine slide has no such twin: the sprite's new position was occupied by
- * nothing last tick. `key` selects which twins count: the previous entry's
- * content key when `key` is non-zero (the element itself stood still), else any
- * entry of the same layer and texturing (a crossing of two identities,
- * whatever they are). Returns the twin's index, or -1. */
+/** @brief Find a previous entry other than the partner that stands where a current entry stands now.
+ *
+ * Such an entry is the current entry's real predecessor, so a pair that
+ * moves the current entry drags it along a segment between two different
+ * sprites instead of holding it still. A genuine slide has no such twin: the
+ * sprite's new position was occupied by nothing last tick. `key` selects
+ * which twins count: previous entries holding content key `key` when it is
+ * non-zero (the element itself stood still), else any entry of the same
+ * layer and texturing (a crossing of two identities, whatever they are). An
+ * entry stands there when every vertex lies within 0.5 px.
+ * @param prev Previous capture.
+ * @param prev_key Previous capture's content keys.
+ * @param prev_n Previous entry count.
+ * @param curr Current entry.
+ * @param key Content key to match, or 0 to match layer and texturing.
+ * @param self The current entry's partner, excluded.
+ * @return The twin's index, or -1. */
 static int carry_twin_of(const scene_tri_t* prev, const uint32_t* prev_key, int prev_n,
                          const scene_tri_t* curr, uint32_t key, int self) {
     for (int j = 0; j < prev_n; j++) {
@@ -2348,13 +2520,20 @@ static int carry_twin_of(const scene_tri_t* prev, const uint32_t* prev_key, int 
     return -1;
 }
 
-/* Whether a previous entry other than `self`, of `curr`'s layer and texturing
- * and of its shape (every vertex's offset from the first within 0.5 px), stands
- * nearer to `curr` than `self` does by more than 0.5 px. The nearer entry is
- * the likelier predecessor: `crossed` is the case where it stands on `curr`
- * exactly, and a body moving less than its own period (a row of identical
+/** @brief Return whether a previous entry of a current entry's shape stands nearer to it than its partner by more than 0.5 px.
+ *
+ * The candidate is any previous entry other than the partner, of the
+ * current entry's layer and texturing and of its shape (every vertex's
+ * offset from the first within 0.5 px). The nearer entry is the likelier
+ * predecessor: `crossed` is the case where it stands on `curr` exactly, and a
+ * body moving less than its own period (a row of identical
  * sprites rising) pairs with a neighbour one period over only past such an
- * entry. */
+ * entry.
+ * @param prev Previous capture.
+ * @param prev_n Previous entry count.
+ * @param curr Current entry.
+ * @param self The current entry's partner.
+ * @return 1 when such an entry exists, else 0. */
 static int carry_nearer_twin(const scene_tri_t* prev, int prev_n,
                              const scene_tri_t* curr, int self) {
     const float d0 = tri_pos_dist(&prev[self], curr);
@@ -2399,8 +2578,18 @@ static void carry_census_note(carry_census_t* cz, const scene_tri_t* prev,
     }
 }
 
-/* The census entry of current entry `t`, paired with previous entry
- * match[t], whose applied (interpolated) triangle is `app`. */
+/** @brief Record one carried pair in the carry census.
+ *
+ * A pair that does not move is noted with no mispair flags. A moving pair is
+ * noted with crossed (carry_twin_of over layer and texturing), static_moved
+ * (carry_twin_of over its own content key), and ambiguous (an unanchored
+ * pair from a repeated key), and nearer_twin is counted when
+ * carry_nearer_twin holds.
+ * @param cz Census being accumulated.
+ * @param m Previous capture's key map.
+ * @param mt This present's match.
+ * @param t Current entry index; match[t] is its partner in s_overlay_prev.
+ * @param app The entry's applied, interpolated triangle. */
 static void carry_census_pair(carry_census_t* cz, const carry_key_map_t* m,
                               const carry_match_t* mt, int t, const scene_tri_t* app) {
     const int pi = mt->match[t];
@@ -4954,8 +5143,17 @@ static mod_fvec s_cz_hud;                                          /* hud_paint_
 static int s_cz_tris;    /* entries every index run holds */
 static int s_cz_verts;   /* vertices every vertex run and scene GPU buffer holds */
 static int compose_reserve(int scene_n);
-/* Grow an instrument-only run to `n` elements. 0 when it cannot hold them
- * (logged by the vec) and the instrument skips this present. */
+/** @brief Grow an instrument-only compose run to hold n elements, initializing it on first use.
+ *
+ * The run is initialized with SCENE_RUN_INIT capacity on its first call.
+ * On failure mod_fvec_reserve_noted logs the refusal and the instrument
+ * skips this present.
+ * @param v The run.
+ * @param elem Element size in bytes, used on first use.
+ * @param name Census name, used on first use.
+ * @param was Former fixed capacity for the census line, used on first use.
+ * @param n Elements required; a negative value reserves 0.
+ * @return 1 when the run holds @p n elements, 0 when it cannot. */
 static int cz_instrument_run(mod_fvec *v, size_t elem, const char *name,
                              unsigned long was, int n)
 {
@@ -5618,10 +5816,18 @@ static int key_batch_drain_tris(const rhi_vertex* kbuf, int m)
     return n;
 }
 
-/* Draw one packed key batch into the currently-open key render pass:
- * untextured prefix through the flat full-footprint pipe, textured material
- * runs through the alpha-aware cutout pipe (transparent texels stamp no
- * key). `base` is the batch's bump-allocated offset in terrain_key_vb. */
+/** @brief Draw one packed key batch into the currently open key render pass.
+ *
+ * The untextured prefix draws through the flat full-footprint pipe
+ * (terrain_key_pipe) and each textured material span through the
+ * alpha-aware cutout pipe (terrain_key_tex_pipe, VRAM at set 0 and the
+ * drain records at set 1), where transparent texels stamp no key; without
+ * the cutout pipe the spans draw flat.
+ * @param base The batch's bump-allocated vertex offset in terrain_key_vb.
+ * @param m Vertices in the batch; nothing draws when 0 or less.
+ * @param untex Vertices in the untextured prefix.
+ * @param spans Textured material spans, offsets relative to @p base.
+ * @param nspans Span count. */
 static void draw_key_batch(int base, int m, int untex,
                            const keytex_span_t* spans, int nspans)
 {
@@ -5652,9 +5858,17 @@ static void draw_key_batch(int base, int m, int untex,
     }
 }
 
-/* Draw one packed RANK batch into the currently-open rank render pass:
- * untextured prefix through the flat pipe, textured material runs through
- * the alpha-aware cutout pipe. Same span discipline as draw_key_batch. */
+/** @brief Draw one packed rank batch into the currently open rank render pass.
+ *
+ * The untextured prefix draws through moby_rank_pipe and each textured
+ * material span through the alpha-aware moby_rank_cutout_pipe; a span with
+ * negative bpp, or every span when the cutout pipe is absent, draws through
+ * the flat pipe. Nothing draws without moby_rank_pipe.
+ * @param base The batch's bump-allocated vertex offset in terrain_key_vb.
+ * @param m Vertices in the batch; nothing draws when 0 or less.
+ * @param untex Vertices in the untextured prefix.
+ * @param spans Textured material spans, offsets relative to @p base.
+ * @param nspans Span count. */
 static void draw_rank_batch(int base, int m, int untex,
                             const keytex_span_t* spans, int nspans)
 {
@@ -5695,10 +5909,16 @@ static void terrain_key_pass_record(int full_extent, int vw, int vh)
     s_tk_last.vw = vw; s_tk_last.vh = vh;
 }
 
-/* Triangle t's drain record: its table, then the affine map from its
- * texture coordinate to its drain coordinate p (psx_key_contest.glsl
- * op_drain_record), solved from its three vertices. Returns 0 when the
- * texture coordinates are collinear (no map). */
+/** @brief Pack a triangle's drain record: its key table, then the affine map from texture coordinate to drain coordinate.
+ *
+ * Words 0 to 7 are the triangle's kc table. Words 8 to 13 hold the 2x3
+ * float affine from (u, v) to the drain coordinate (kfl), solved from the
+ * three vertices; word 14 is 1 (valid) and word 15 is 0. The layout is the
+ * one op_drain_record in psx_key_contest.glsl reads.
+ * @param t Triangle.
+ * @param w Receives the 16-word record; words 8 to 15 stay 0 when no map exists.
+ * @return 1 when packed with a map, 0 when the triangle is untextured or its
+ *         texture coordinates are collinear. */
 static int drain_record_pack(const scene_tri_t* t, uint32_t w[16])
 {
     memcpy(w, t->kc, 8 * sizeof(uint32_t));
@@ -5723,10 +5943,16 @@ static int drain_record_pack(const scene_tri_t* t, uint32_t w[16])
     return 1;
 }
 
-/* Build and upload the drain records of `scene` for this frame (once per
- * scene and frame serial), before any render pass opens: one record per
- * triangle whose table is set, up to the image's capacity (a triangle past
- * it keeps its face's least key). */
+/** @brief Build and upload the drain records of a scene, once per scene and frame serial.
+ *
+ * Runs before any render pass opens. One record is packed per triangle
+ * whose kc table is set, up to DRAIN_REC_PER_ROW * DRAIN_REC_ROWS records;
+ * a triangle past the capacity keeps its face's least key. s_drain.idx maps
+ * each triangle to its record or -1, and s_drain.untex counts the tables
+ * dropped because the triangle had no texture map. The records upload to
+ * drain_tex when any were packed and the image exists.
+ * @param scene Scene triangles.
+ * @param scene_n Triangle count. */
 static void drain_records_build(const scene_tri_t* scene, int scene_n)
 {
     const uint64_t serial = rhi_frame_serial(s_nr.dev);
@@ -6357,11 +6583,18 @@ void openpete_native_widescreen_x_bounds(float *xlo, float *xhi)
     if (xhi) *xhi = 256.0f + 256.0f * F;
 }
 
-/* The clip-space rect the full-frame cover quads (background fill / fade /
- * freeze backdrop) span. The --aspect RENDER rect (4:3 sub-rect widened by the
- * Hor+ factor) so the revealed side strips get a background behind the sky dome /
- * world — but NOT the letterbox/pillarbox bars beyond it (they stay black). The
- * whole target in full_extent (native_rtt) mode. */
+/** @brief Compute the clip-space rect the full-frame cover quads span.
+ *
+ * The cover quads are the background fill, the fade and the freeze
+ * backdrop. The rect is the --aspect render rect, the 4:3 sub-rect widened
+ * by the Hor+ factor, so the revealed side strips get a background behind
+ * the sky dome and world while the letterbox and pillarbox bars beyond it
+ * stay black. In full-extent mode (native_rtt) it is the whole target.
+ * @param full_extent Nonzero to span the whole target.
+ * @param l Receives the left edge.
+ * @param r Receives the right edge.
+ * @param t Receives the top edge.
+ * @param b Receives the bottom edge. */
 static void cover_rect(int full_extent, float *l, float *r, float *t, float *b)
 {
     float fhx = s_nr.p0_hx * s_nr.ws_factor;   /* --aspect rect half-width (= p0_hx at 4:3) */
@@ -6935,13 +7168,22 @@ static int ut_mat_spans_ok(int gi, int gb, int gc) {
            gc == OPENPETE_SCENE_ACTOR || gc == OPENPETE_SCENE_PLAYER;
 }
 
-/* Draw one bucket's deferred untextured material spans (S8c). Builds the
- * material's pipeline on first use — psx_scene stages as stock fallbacks
- * (their vertex interface, vUV loc 0 / vColor loc 1, is the mod-material
- * frag contract for textured AND untextured draws), with a stencil-MARK
- * twin for the hole-fill WORLD/ACTOR groups so overridden coverage still
- * masks the LP fill. A span that fails to resolve or build draws with the
- * stock pipe — never invisible. */
+/** @brief Draw one untextured bucket's deferred mod-material spans.
+ *
+ * Builds each material's pipeline on first use, with the psx_scene stages
+ * as stock fallbacks (their vertex interface, vUV at location 0 and vColor
+ * at location 1, is the mod-material fragment contract for textured and
+ * untextured draws), and a stencil-MARK twin for the hole-fill WORLD and
+ * ACTOR groups so overridden coverage still masks the LP fill. A span whose
+ * material fails to resolve or build draws with the stock pipe. The
+ * pipeline inherits the group's blend class, so a material changes colour
+ * math and never how the group composites; the quarter-add class has no
+ * material slot, and a group drawn with it draws no spans here.
+ * @param gi Untextured bucket index.
+ * @param stock Pipe a span falls back to.
+ * @param want_mark Nonzero to draw through the stencil-MARK twin.
+ * @param blend_class The group's blend class, 0 opaque to 4 quarter-add;
+ *        out of range reads as 0. */
 static void draw_ut_mat_spans(int gi, rhi_pipeline* stock, int want_mark,
                               int blend_class) {
     /* Reshade-only: a material replaces the group's COLOUR MATH, never how
@@ -7532,12 +7774,17 @@ static rhi_pipeline* material_run_pipe(const openpete_mod_material_gpu_t* mg,
     return *ov_slot == PFX_PIPE_FAILED ? NULL : (rhi_pipeline*)*ov_slot;
 }
 
-/* Draw a material-overridden run with its texture-pack replacements
- * (op_pack_shade): the run is walked per triangle through the same registry
- * resolve and match as the stock path, and triangles matching different pack
- * files (or none) need different set-1 bindings and file rects, so they draw
- * as separate sub-runs. `mh` holds the run's material; `pack_bound` is the
- * texture bound at set 1 on entry. */
+/** @brief Draw a material-overridden run with its texture-pack replacements (op_pack_shade).
+ *
+ * The run is walked per triangle through the same registry resolve and
+ * match as the stock path; triangles matching different pack files, or
+ * none, need different set 1 bindings and file rects, so they draw as
+ * separate sub-runs. A replacement not yet uploaded is queued for the next
+ * present and its sub-run draws with the dummy pack texture.
+ * @param r The run.
+ * @param mh The run's material push block; hd, the file rect and the fog
+ *        affine are rewritten per sub-run.
+ * @param pack_bound Texture bound at set 1 on entry. */
 static void draw_material_pack_walk(const tex_run* r, psx_material_hd* mh,
                                     rhi_texture* pack_bound) {
     int t = 0;
@@ -7586,14 +7833,22 @@ static void draw_material_pack_walk(const tex_run* r, psx_material_hd* mh,
     }
 }
 
-/* Mod material override (S8a): when the run's provenance tag resolves to a
- * registered selector, draw the WHOLE run with the mod pipeline in the same
- * bucket, pass and depth (scheduling is engine-owned; runs are tag-pure
- * because the split key is armed whenever a selector lives), then rebind
- * `restore`, the pipe the caller's stock draws continue on. Stock-stage
- * fallbacks: psx_scene.vert/.frag, forked from sdk/shaders/. Returns 0, the
- * run left to the stock path, when no selector matches or the material's
- * pipeline failed to build. */
+/** @brief Draw a textured run with its mod material when the run's provenance tag resolves to a registered selector.
+ *
+ * The whole run draws with the mod pipeline in the same bucket, pass and
+ * depth; scheduling is engine-owned, and runs are tag-pure because the
+ * split key is armed whenever a selector exists. The stock-stage fallbacks
+ * are psx_scene.vert and psx_scene.frag, forked from sdk/shaders/. The
+ * material UBO binds the engine block and the instance slot's mod block.
+ * Afterwards @p restore and VRAM are rebound for the caller's stock draws.
+ * @param r The run.
+ * @param ov_mark Nonzero to build the stencil-MARK pipeline variant.
+ * @param blend_class The caller group's blend class, inherited by the pipeline.
+ * @param want_replace Nonzero when texture-pack replacements apply; the run
+ *        then draws through draw_material_pack_walk, except a bpp-32 run.
+ * @param restore Pipe the caller's stock draws continue on.
+ * @return 1 when the run was drawn, 0 when tag splitting is off, the run
+ *         has no tag, no selector matches, or the pipeline failed to build. */
 static int draw_run_material(const tex_run* r, int ov_mark, int blend_class,
                              int want_replace, rhi_pipeline* restore) {
     const scene_tri_t* s0 = tex_run_tri(r, 0);
@@ -7631,8 +7886,9 @@ static int draw_run_material(const tex_run* r, int ov_mark, int blend_class,
     return 1;
 }
 
-/* Draw one textured bucket, coalescing adjacent same-material triangles into
- * runs. `pipes` is the bucket's pipe table indexed by blend class (see
+/** @brief Draw one textured bucket, coalescing adjacent same-material triangles into runs.
+ *
+ * `pipes` is the bucket's pipe table indexed by blend class (see
  * tex_run_pipe); the caller binds pipes[0] before the call. A bucket whose
  * triangles share one class passes a one-entry table and every run draws
  * through it. A multi-entry table (the 2D HUD layer, where each primitive
@@ -7645,11 +7901,26 @@ static int draw_run_material(const tex_run* r, int ov_mark, int blend_class,
  * the LP fill paints over them).
  *
  * blend_class is the caller group's PSX ABR+1 class (0 opaque, 1 average,
- * 2 additive, 3 subtract). Reshade-only: an override inherits it rather
- * than choosing, so a material changes colour math and never how the run
- * composites. Blended groups are painter-ordered — the override swaps the
- * pipeline for a contiguous run in place and draws it in the same slot, so
- * submission order survives. */
+ * 2 additive, 3 subtract, 4 quarter-add; out of range reads as 0). An
+ * override inherits it rather than choosing, so a material changes colour
+ * math and never how the run composites; quarter-add has no material slot
+ * and disables overrides. Blended groups are painter-ordered: the override
+ * swaps the pipeline for a contiguous run in place and draws it in the same
+ * slot, so submission order survives.
+ *
+ * Framebuffer-snapshot runs and bpp-32 mod-texture runs draw through
+ * hd_pipe with their own image; with texture-pack replacements active,
+ * matched triangles draw their replacement through hd_pipe, deferred and
+ * sorted by texture for the cutout pipes.
+ * @param first_vert First vertex of the bucket in scene_vb.
+ * @param vert_count Vertices in the bucket.
+ * @param tx_start First vertex of the textured block that s_txscene indexes.
+ * @param scene Scene triangles.
+ * @param pipes Pipe table indexed by blend class.
+ * @param npipes Entries in @p pipes.
+ * @param hd_pipe Pipe for HD, snapshot and mod-texture runs, or NULL.
+ * @param allow_override Material-override mode, 0, 1 or 2 as above.
+ * @param blend_class The caller group's blend class. */
 static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                           const scene_tri_t* scene, rhi_pipeline* const* pipes,
                           int npipes, rhi_pipeline* hd_pipe, int allow_override,
@@ -8028,13 +8299,20 @@ static rhi_texture *active_frozen_tex(int *out_valid)
     return s_nr.frozen_tex;
 }
 
-/* Backdrop pair: the far-plane bg fill (VB slot 0, built by the caller) and
- * the SKY (cyclorama dome, untextured bucket 11). Both z=1.0 through the
- * PLAIN opaque pipe (the dome never stencil-MARKs, so the W2.6-c hole-fill
- * can repaint sky showing through terrain seams); bg must precede the dome —
- * LESS_OR_EQUAL gives the later draw the z=1.0 ties, and the dome wins over
- * the fill. Called either before the group loop (draw-first order) or right
- * after the WORLD-opaque group (deferred: early-Z rejects covered pixels). */
+/** @brief Draw the backdrop pair: the far-plane background fill, then the sky dome.
+ *
+ * The fill is the quad at scene_vb vertex 0, built by the caller; the sky
+ * is the cyclorama dome, untextured bucket UT_BUCKET_SKY, with its deferred
+ * material spans. Both draw at z 1.0 through the plain opaque gouraud pipe;
+ * the dome never stencil-MARKs, so the hole-fill can repaint sky showing
+ * through terrain seams. The fill precedes the dome because LESS_OR_EQUAL
+ * gives the later draw the z 1.0 ties. Called either before the group loop
+ * or right after the WORLD-opaque group, where early-Z rejects the covered
+ * pixels.
+ * @param bg Background colour; 0 draws no fill.
+ * @param ut_first First vertex of each untextured bucket.
+ * @param ut_count Vertex count of each untextured bucket.
+ * @param sky_ok Nonzero to draw the sky bucket and its material spans. */
 static void draw_backdrop_fills(uint32_t bg, const int* ut_first,
                                 const int* ut_count, int sky_ok)
 {
@@ -8404,14 +8682,22 @@ static void bw_tercache_slots(const scene_tri_t* scene, int base, int ntri, int 
     }
 }
 
-/* One ordered pass over the blended world classes, in place of one fixed class
- * draw after another. The guest links these classes into the ordering table
+/** @brief Draw the blended world block in emission order, one draw per run of one class and texturing mode.
+ *
+ * This replaces one fixed class draw after another. The guest links these
+ * classes into the ordering table
  * interleaved -- at the tracer mesh the subtractive pass is chained ahead of
  * the additive pass over the same quads -- and the equations do not commute
  * once a channel clamps, so a fixed class order composites something the GPU
  * never produced. The block is packed in emission order; each maximal run of
  * one class and one texturing mode is one bind and one draw range. A run also
- * ends where a terrain-cache class draws (bw_tercache_slots). */
+ * ends where a terrain-cache class draws (bw_tercache_slots).
+ * @param scene Scene triangles.
+ * @param tx_start First vertex of the textured block that s_txscene indexes.
+ * @param first_vert First vertex of the blended world block.
+ * @param vert_count Vertices in the block.
+ * @param tercache_on Nonzero when the terrain cache draws its blended
+ *        classes inside this pass. */
 static void draw_blended_world(const scene_tri_t* scene, int tx_start,
                                int first_vert, int vert_count, int tercache_on) {
     const int base = (first_vert - tx_start) / 3, ntri = vert_count / 3;
@@ -8799,15 +9085,23 @@ static void hud3d_tex_census(const scene_tri_t* scene, int scene_n, int drawn) {
             s_scene_frame, fed, drawn, blended);
 }
 
-/* HUD3D layer: the in-game 3D HUD icon mobys (gem/dragon/Spyro-head/key/
- * digits/orb). They are real 3D models, so depth-off (the flat HUD layer)
- * paints their own faces inside-out. They draw last, on top of the whole
- * scene, with the depth buffer cleared first so they Z-sort among their own
- * faces while no world/actor/player geometry occludes them. The untextured
- * faces (untextured bucket 9, opaque gouraud_pipe) and the opaque textured
- * faces (textured bucket 12, scene_tex_pipe) share that one depth pass, so a
- * textured band in front of an untextured face hides it by Z. Returns the
- * textured triangles drawn. */
+/** @brief Draw the HUD3D layer, the in-game 3D HUD icon mobys, in its own depth pass on top of the scene.
+ *
+ * The icons (gem, dragon, Spyro head, key, digits, orb) are 3D models, so
+ * the depth-off flat HUD layer would paint their faces inside-out. They draw
+ * on top of the whole scene with the depth buffer cleared first, so they
+ * Z-sort among their own faces while no world, actor or player geometry
+ * occludes them. The untextured faces (untextured bucket 9, opaque
+ * gouraud_pipe) and the opaque textured faces (textured bucket 12,
+ * scene_tex_pipe) share that one depth pass, so a textured band in front of
+ * an untextured face hides it by Z.
+ * @param scene Scene triangles.
+ * @param tx_start First vertex of the textured block that s_txscene indexes.
+ * @param ut_first First vertex of the untextured faces.
+ * @param ut_count Vertices of the untextured faces.
+ * @param tx_first First vertex of the textured faces.
+ * @param tx_count Vertices of the textured faces.
+ * @return The textured triangles drawn. */
 static int draw_hud3d_layer(const scene_tri_t* scene, int tx_start,
                             int ut_first, int ut_count, int tx_first, int tx_count) {
     const int ut_ok = s_nr.gouraud_pipe && ut_count > 0;
@@ -10565,13 +10859,28 @@ void openpete_native_osd_slot_extent(float *w, float *h) {
     if (h) *h = (phh > 0) ? (float)phh / ph : OSD_SLOT_H;
 }
 
-/* Draw the overlay built from Spyro's own 3D HUD text mobys, fed each frame by
- * the game side (text_moby_native -> openpete_native_set_overlay_glyphs). Verts
- * arrive in window-height-fraction overlay space (origin top-left, +y down) with
- * a depth in [0,1); map to NDC (x via win_h so glyphs stay square) and draw
- * depth-tested through the opaque gouraud pipe after a local depth clear, so the
- * glyphs z-sort among their own faces yet sit on top of the whole frame — the
- * same isolation trick as the in-game HUD3D pass. Returns true if it drew. */
+/** @brief Draw a list of 3D text-moby glyph vertices over the current render pass.
+ *
+ * Serves the stats readout, the version line and the OSD toasts. Vertices
+ * arrive in overlay space, fractions of the window height with the origin
+ * top-left and +y down, with a depth in [0,1); each maps to NDC as
+ * ((x + ox) * ax - 1, 1 - (y + oy) * ay). With @p pipe NULL the list draws
+ * depth-tested through the opaque gouraud pipe after a local depth clear, so
+ * the glyphs Z-sort among their own faces on top of the whole frame, as the
+ * HUD3D pass does. A caller that fades the list passes a blended HUD pipe,
+ * whose depth test is off, and no depth clear runs.
+ * @param verts Glyph vertices, three per triangle.
+ * @param nverts Vertex count.
+ * @param vb Vertex buffer to upload into.
+ * @param cap Vertex capacity of @p vb, clamped to the static staging array.
+ * @param ax Overlay-to-NDC scale x.
+ * @param ay Overlay-to-NDC scale y.
+ * @param ox Overlay-space origin shift x.
+ * @param oy Overlay-space origin shift y.
+ * @param pipe Blended HUD pipe, or NULL for the depth-isolated opaque path.
+ * @param alpha8 Scale for every vertex's alpha byte, 0 to 255, or negative
+ *        to keep the alpha.
+ * @return true when a triangle was drawn. */
 static bool draw_glyph_list_3d(const openpete_hud_vert *verts, int nverts,
                                rhi_buffer *vb, int cap,
                                float ax, float ay, float ox, float oy,
@@ -10619,18 +10928,26 @@ static bool draw_glyph_list_3d(const openpete_hud_vert *verts, int nverts,
     return true;
 }
 
-/* The stats readout's own glyph list, through the shared draw above. */
+/** @brief Draw the stats readout's glyph list through draw_glyph_list_3d on the opaque path.
+ *
+ * @param ax Overlay-to-NDC scale x.
+ * @param ay Overlay-to-NDC scale y.
+ * @param ox Overlay-space origin shift x.
+ * @param oy Overlay-space origin shift y.
+ * @return true when a triangle was drawn. */
 static bool draw_overlay_glyphs_3d(float ax, float ay, float ox, float oy) {
     return draw_glyph_list_3d(s_overlay_glyph_verts, s_overlay_glyph_n,
                               s_nr.overlay_vb, OVL_MAX_VERTS, ax, ay, ox, oy,
                               NULL, -1);
 }
 
-/* Draw the mod draw-service overlay (rects + text glyphs) into the currently
- * open offscreen pass. Same overlay space + NDC mapping + depth-isolation
- * trick as draw_overlay_glyphs_3d, own vertex buffer, 1× direct draw (no
- * supersample pre-pass in v1). Runs in screenshot/record composes too — mod
- * HUD is content, not chrome. */
+/** @brief Draw the mod draw-service overlay (rects and text glyphs) into the currently open offscreen pass.
+ *
+ * Uses the overlay space, NDC mapping and depth isolation of
+ * draw_glyph_list_3d, its own vertex buffer, and a direct 1x draw with no
+ * supersample pre-pass. The vertices come from the composed scene slot when
+ * one is set, else the live list. It runs in screenshot and record composes
+ * too: a mod's HUD is content, not chrome. */
 static void draw_mod_overlay(void) {
     const openpete_hud_vert *ov = s_ps_slot ? s_ps_slot->ovl : s_mod_overlay_verts;
     const int ovn = s_ps_slot ? s_ps_slot->ovl_n : s_mod_overlay_n;
@@ -10938,9 +11255,12 @@ static void prepare_perf_overlay_ss(void) {
     rhi_end_render_target(s_nr.dev, s_nr.ovl_ss);
 }
 
-/* Composite the stats overlay into the currently-open offscreen pass. SS path:
- * box-downsample + straight-alpha-blend the ovl_ss the pre-pass built. Fallback:
- * draw the glyphs directly at 1× (the original crisp-but-aliased path). */
+/** @brief Composite the stats overlay into the currently open offscreen pass.
+ *
+ * On the supersample path the ovl_ss target the pre-pass built is
+ * box-downsampled and straight-alpha-blended through ovl_resolve_pipe.
+ * Without it the glyphs draw directly at 1x, aliased, at the stats block's
+ * placement offset (s_perf_ox, s_perf_oy). */
 static void draw_perf_overlay(void) {
     if (!perf_overlay_should_draw()) return;
     if (ovl_ss_ready()) {
@@ -11003,12 +11323,15 @@ static void prepare_version_ss(void) {
     rhi_end_render_target(s_nr.dev, s_nr.ver_ss);
 }
 
-/* Composite the version line into the currently-open offscreen pass, at the
- * placement and alpha the layout pass latched: box-downsample the
+/** @brief Composite the version line into the currently open offscreen pass.
+ *
+ * The line lands at the placement and alpha the layout pass latched:
+ * box-downsample the
  * supersampled target and straight-alpha-blend it, the same route the stats
  * readout takes, with the fade carried by the quad's tint. Fallback when the
  * supersample resources are not up: the glyphs at 1x through the
- * alpha-blended untextured HUD pipe, where the fade is the vertex alpha. */
+ * alpha-blended untextured HUD pipe, where the fade is the vertex alpha.
+ * s_ver_drawn counts each draw. */
 static void draw_version_overlay(void) {
     if (s_ver_alpha8 <= 0) return;
     const float ax = 2.0f * (float)s_nr.win_h / (float)s_nr.win_w;
@@ -11067,12 +11390,17 @@ static int menu_push_quad(rhi_vertex* buf, int n, float ax, float ay,
     return n;
 }
 
-/* Build + draw the menu glyph/border layer (s_menu_glyph_verts) into the current
- * render pass, mapped overlay→NDC by (ax,ay): x → x*ax-1, y → 1-y*ay, with a
- * local depth clear so the 3D glyph faces z-sort among themselves on top of
- * whatever is already there. The panel is flush at overlay origin (0,0), so the
- * SAME map serves both the 1× offscreen (ax=2·win_h/win_w, ay=2) and the menu_ss
- * supersample prepass (ax=2/panel_w, ay=2/panel_h → the panel fills the target). */
+/** @brief Draw the settings menu's glyph and border layer into the current render pass.
+ *
+ * The vertices (s_menu_glyph_verts) map from overlay space to NDC as
+ * (x * ax - 1, 1 - y * ay) and draw through the opaque gouraud pipe after a
+ * local depth clear, so the 3D glyph faces Z-sort among themselves on top of
+ * what is already drawn. The panel is flush at the overlay origin, so one
+ * map serves the 1x offscreen (ax = 2 * win_h / win_w, ay = 2) and the
+ * menu_ss supersample pre-pass (ax = 2 / panel_w, ay = 2 / panel_h, where
+ * the panel fills the target).
+ * @param ax Overlay-to-NDC scale x.
+ * @param ay Overlay-to-NDC scale y. */
 static void draw_menu_glyphs_3d(float ax, float ay) {
     if (s_menu_glyph_n < 3 || !s_nr.menu_glyph_vb || !s_nr.gouraud_pipe) return;
     static rhi_vertex gbuf[MENU_GLYPH_MAX];
@@ -11302,10 +11630,14 @@ static void prepare_osd_ss(void) {
     rhi_end_render_target(s_nr.dev, s_nr.osd_ss);
 }
 
-/* Composite the toasts into the currently-open offscreen pass: per toast a 1×
- * subtractive panel, then the slot's supersampled sub-rect at the toast's
- * alpha. Places through the anchor ledger, so the stats block (which claimed
- * first) is never overprinted. */
+/** @brief Composite the OSD toasts into the currently open offscreen pass.
+ *
+ * Per toast a 1x subtractive panel draws, then the slot's supersampled
+ * sub-rect at the toast's alpha. Placement goes through the anchor ledger,
+ * so the stats block, which claims first, is never overprinted. The toast
+ * state machine (openpete_osd_present_update) advances on the present clock
+ * before the draw gates, so toasts expire on schedule while a --record
+ * capture or a missing supersample grid suppresses their pixels. */
 static void draw_osd_overlay(void) {
     if (s_nr.win_w <= 0 || s_nr.win_h <= 0) return;
 
@@ -11483,23 +11815,21 @@ static void capture_freeze_from_offscreen(bool world_frame)
     }
 }
 
-/* Snapshot the freeze backdrop BEFORE any chrome lands in it.
+/** @brief Snapshot the freeze backdrop from the offscreen image before any chrome is drawn into it.
  *
- * capture_freeze_from_offscreen reads off_image, and off_image is where the
- * stats block, the settings menu and the OSD's toasts have already been
- * drawn — so whatever chrome was on the world frame at pause entry got BAKED
- * into frozen_tex and then sat there, frozen, behind the pause screen long
- * after the live thing had gone. The perf counter has always carried that
- * latent bug, masked only because its live redraw overprints the same rect;
- * moving it off the top-left corner unmasks it, and a toast that expired
- * during the pause has nothing to overprint it at all.
- *
- * So: end the pass, take the snapshot, re-open LOADing what is there, and let
- * chrome draw into the re-opened pass. Same end/run/re-open shape the postfx
- * SCENE split already uses. Costs one extra pass boundary on world presents
- * that actually feed the freeze; returns true when it captured, so the
- * caller's tail capture stands down. Mod content is deliberately on the
- * BACKDROP side of the split: a mod's HUD is content, not chrome. */
+ * capture_freeze_from_offscreen reads off_image, where the stats block, the
+ * version line, the settings menu and the OSD toasts are drawn; a snapshot
+ * taken after them keeps that chrome in frozen_tex behind the pause screen
+ * after the live chrome has changed or expired. This ends the offscreen
+ * pass, takes the snapshot, and reopens the pass loading its contents, so
+ * chrome draws into the reopened pass; scene_postfx_split has the same
+ * shape. It costs one extra pass boundary on the world presents that feed
+ * the freeze. Mod content is drawn before the split and is part of the
+ * backdrop: a mod's HUD is content, not chrome.
+ * @param world_frame True when this present composes a world scene.
+ * @return true when it captured, only during the live present's compose
+ *         with frozen_tex allocated; the caller's tail capture then stands
+ *         down. */
 static bool chrome_split_capture(bool world_frame)
 {
     if (!(world_frame && s_nr.frozen_tex && s_overlay_live)) return false;
