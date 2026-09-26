@@ -82,18 +82,24 @@ static void wp_spawn(void) {
     s_spawned = 1;
 }
 
-/* OPENPETE_WORKPOOL_SELFTEST=1: what a run costs with NO work in it — the
- * floor every caller pays to fan out at all. Separates the two halves of that
- * floor by sweeping item count at a fixed worker count: the constant part is
- * the semaphore wake + join (n-1 signals, n-1 waits, kernel transitions), and
- * the slope in item count is contention on the single pull counter, which
- * every worker RMWs once per item on one cache line. A caller deciding whether
- * a scene is big enough to fan out needs this number, and it is the half of
- * the decision that travels worst between machines. */
+/** @brief Do nothing: the per-item function of wp_selftest's empty runs.
+ *
+ * @param item Unused.
+ * @param worker Unused.
+ * @param arg Unused. */
 static void wp_noop(int item, int worker, void* arg) {
     (void)item; (void)worker; (void)arg;
 }
 
+/** @brief Log what a pool run costs with no work in it, per item count, at the resolved worker count.
+ *
+ * Runs under OPENPETE_WORKPOOL_SELFTEST=1. The sweep over item counts at a
+ * fixed worker count separates the two parts of the fan-out floor: the
+ * constant part is the semaphore wake and join (n-1 signals, n-1 waits),
+ * and the slope in item count is contention on the one pull counter, which
+ * every worker increments once per item. A caller deciding whether a scene
+ * is large enough to fan out needs this number, and it varies most between
+ * machines. Unlike openpete_workpool_run, every run wakes all helpers. */
 static void wp_selftest(void) {
     static const int ITEMS[] = { 1, 2, 8, 32, 128, 512 };
     const int reps = 200;

@@ -209,8 +209,9 @@ void openpete_devui_process_event(const union SDL_Event *ev)
     SDL_SetAtomicInt(&s_evq_head, next);
 }
 
-/* Drain queued events into imgui. Must run on the thread that records the
- * imgui frame, immediately before it. */
+/** @brief Feed every queued SDL event to imgui's SDL3 backend and advance the ring's tail.
+ *
+ * Runs on the thread that records the imgui frame, immediately before it. */
 static void devui_drain_events(void)
 {
     int tail = SDL_GetAtomicInt(&s_evq_tail);
@@ -294,7 +295,12 @@ static const char *src_tag(knob_src_t s)
     }
 }
 
-/* Current value formatted as the knob's CLI/env spelling (clipboard copy). */
+/** @brief Format a knob's current value as its CLI or environment spelling, for the clipboard copy.
+ *
+ * A bool reads 0 or 1; every other type uses knob_value_str.
+ * @param k The knob.
+ * @param buf Receives the text.
+ * @param cap The capacity of buf. */
 static void format_value_token(const knob_desc_t *k, char *buf, size_t cap)
 {
     if (k->type == KNOB_BOOL) {
@@ -360,14 +366,16 @@ static void row_tooltip(const knob_desc_t *k)
 static const knob_desc_t *s_edit_row = nullptr;
 static double             s_edit_val = 0.0;
 
-/* A float knob as a slider over its registered range, applied on every
- * change. A drag widget that commits only on release reads as dead while it
- * is moving, and its per-pixel speed suits one range and crawls on another;
- * a slider spans the range whatever the range is. Ctrl+click is imgui's own
+/** @brief Draw a float knob as a slider over its registered range, applied on every change.
+ *
+ * A drag widget that commits only on release reads as dead while it is
+ * moving, and its per-pixel speed suits one range and crawls on another; a
+ * slider spans the range whatever the range is. Ctrl+click is imgui's own
  * typed entry and applies through the same call. A row carrying a
  * zero_label has a mode at 0 that the span up to num_min does not reach: a
  * drag through that span only ever hands the setter values it refuses, so
- * the mode is a checkbox and the slider starts at num_min. */
+ * the mode is a checkbox and the slider starts at num_min.
+ * @param k The knob. */
 static void knob_row_float(knob_desc_t *k)
 {
     double live = k->get_num ? k->get_num(k) : k->stored_num;
@@ -524,9 +532,12 @@ static void draw_row(knob_desc_t *k)
 /* Save bar                                                           */
 /* ------------------------------------------------------------------ */
 
-/* Persisting is explicit, never on close: a config file that changes
- * behind your back is exactly what the old "did I leave a .env lying
- * around?" confusion was made of. */
+/** @brief Draw the Save settings and Reset saved buttons and the last status line.
+ *
+ * Save writes every row edited this session into the config file's [saved]
+ * block and is disabled while no row is edited; Reset saved empties that
+ * block. Persisting is explicit and never happens on close, so the config
+ * file changes only on a click. */
 static void draw_save_bar(void) {
     static char s_status[256];
 
@@ -578,9 +589,13 @@ static void draw_save_bar(void) {
 
 /* The SDK's openpete_mod_ui_t widget vtable, implemented over imgui —
  * mods draw their section through these and never see imgui types.
- * Callbacks run inside the mod's tree node under the render-purity
- * guard (openpete_mods_ui_draw). */
+ * Callbacks run inside the mod's section under the render-purity guard
+ * (openpete_mods_ui_draw for the tree node, openpete_mods_ui_draw_always
+ * for a top-level always section). */
 
+/** @brief Draw printf-formatted text, truncated to 1023 bytes.
+ *
+ * @param fmt The printf format, followed by its arguments. */
 static void mui_text(const char *fmt, ...)
 {
     char buf[1024];
@@ -868,10 +883,19 @@ static void mod_body_error_cb(ImGuiContext *, void *user_data,
  * was accumulating — the refusal would never fire. */
 static std::vector<int> s_mod_body_err_streak[2];
 
-/* @p always picks the pass: 0 draws the mod's node contents (status lines
- * plus a plain body), 1 draws an always-flagged body at top level. @p
- * no_input is 1 on an always pass with the overlay closed, which puts
- * ImGuiWindowFlags_NoInputs on every window the body opens. */
+/** @brief Draw one mod's UI section inside the error-recovery bracket and count its errors.
+ *
+ * Stores ImGui's stack state, style and writable IO fields before the body
+ * and restores them after; routes ImGui errors to mod_body_error_cb. A body
+ * that errors on three consecutive presents of the same pass has its
+ * section refused for the session.
+ * @param mod_index The loader's mod index; a negative index skips the
+ *        error count.
+ * @param mod_id The mod id, named in the error log.
+ * @param always false draws the mod's node contents (status lines plus a
+ *        plain body); true draws an always-flagged body at top level.
+ * @param no_input true on an always pass with the overlay closed, which
+ *        puts ImGuiWindowFlags_NoInputs on every window the body opens. */
 static void draw_mod_section_bracketed(int mod_index, const char *mod_id,
                                        bool always, bool no_input)
 {
@@ -1012,11 +1036,10 @@ static void draw_mods_section(const ImGuiTextFilter &filter)
     }
 }
 
-/* Declarative [[level]] rows, drawn inside their owning mod's node in
- * the Mods list. The registry's index order stays alphabetical across
- * ALL mods — that global order is what buckets levels 5 per "Custom
- * World" (the future in-game homeworlds after Gnasty's World), so the
- * world number is shown per row rather than as a grouping. */
+/** @brief Report whether a mod declares any [[level]] custom level.
+ *
+ * @param mod_id The mod id.
+ * @return true when a custom level in the registry names mod_id as owner. */
 static bool mod_owns_custom_levels(const char *mod_id)
 {
     const int n = openpete_mods_custom_count();
@@ -1028,6 +1051,12 @@ static bool mod_owns_custom_levels(const char *mod_id)
     return false;
 }
 
+/** @brief Draw a mod's declarative [[level]] rows, each with a Warp button, inside its node in the Mods list.
+ *
+ * The registry's index order is alphabetical across all mods, and that
+ * global order buckets levels five per Custom World (7 + index / 5), so the
+ * world number is shown per row in the tooltip rather than as a grouping.
+ * @param mod_id The owning mod's id. */
 static void draw_custom_level_rows(const char *mod_id)
 {
     const int n = openpete_mods_custom_count();
@@ -1184,10 +1213,12 @@ static void draw_panel(void)
 /* LP fill-tag inspector (P) — see openpete_fillpick.h                 */
 /* ------------------------------------------------------------------ */
 
-/* Crosshair marking the pick point. It is the window centre by construction:
- * the terrain walk picks at the projection centre (OFX/OFY), which is the
- * optical axis at every aspect. Drawn on the foreground list so it sits over
- * the scene without a window. */
+/** @brief Draw the fill-tag inspector's crosshair at the window centre, the pick point.
+ *
+ * The terrain walk picks at the projection centre (OFX/OFY), which is the
+ * optical axis at every aspect, so the window centre is the pick point.
+ * Drawn on the foreground list, yellow over a 1-px black shadow, so it sits
+ * over the scene without a window. */
 static void draw_fillpick_crosshair(void)
 {
     ImGuiIO &io = ImGui::GetIO();
@@ -1286,14 +1317,14 @@ static void draw_fillpick_panel(void)
 /* Always-on mod sections                                             */
 /* ------------------------------------------------------------------ */
 
-/* Bodies flagged OPENPETE_MOD_UI_ALWAYS, drawn at top level on every
- * present. Top level and not the Mods panel's tree node: a node the user
- * collapsed must not make a mod's window disappear, and the panel does not
- * exist at all while the overlay is closed.
+/** @brief Draw every enabled mod's OPENPETE_MOD_UI_ALWAYS body at top level on this present.
  *
- * Skipped while the settings menu is open. The menu and the overlay are
+ * Top level and not the Mods panel's tree node: a node the user collapsed
+ * must not make a mod's window disappear, and the panel does not exist at
+ * all while the overlay is closed. Skipped while the settings menu is open. The menu and the overlay are
  * mutually exclusive input owners, and both compose branches draw the menu
- * before this frame is recorded, so an always window would paint over it. */
+ * before this frame is recorded, so an always window would paint over it.
+ * With the overlay closed the bodies' windows take no input. */
 static void draw_always_sections(void)
 {
     if (openpete_menu_is_open()) return;

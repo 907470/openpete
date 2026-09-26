@@ -26,12 +26,14 @@ extern "C" {
  * regardless of fast-forward state. */
 extern int openpete_unlock_fps;
 
-/* Bring up the pacing clock before the first deadline, so the Win32
- * timer-resolution boost and QPC frequency probe are not paid inside
- * the first VBL. Idempotent. */
+/** @brief Bring up the pacing clock (op_time_init) before the host loop's first deadline.
+ *
+ * The Win32 timer-resolution boost and the QPC frequency probe are then
+ * paid before the first VBL instead of inside it. Idempotent. */
 void openpete_ticker_start(void);
 
-/* Release the clock's OS resources (pairs the timer-resolution boost).
+/** @brief Release the pacing clock's OS resources (op_time_shutdown), undoing the timer-resolution boost.
+ *
  * Safe to call without a prior start. */
 void openpete_ticker_stop(void);
 

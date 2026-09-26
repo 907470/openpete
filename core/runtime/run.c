@@ -92,15 +92,19 @@
  * lets feeder-side diagnostics tag which present leg produced a sample. */
 int g_openpete_canon_lag_leg = 0;
 
-/* Virtual present clock (see openpete_interp.h): PLL over the present stream
- * so each present's CONTENT is timed for the evenly-spaced display slot FIFO
- * will scan it out at, not the uneven wall instant it was generated at (the
- * canonical present fires off the render pacer's grid — measured +8ms/+25ms
- * alternation per tick at --render-fps 60, i.e. 3:1 display judder if phase
- * comes from generation time). Steps at the EMA of the measured present
- * cadence (robust to any achieved rate vs the nominal --render-fps), with a
- * bounded 1/16 pull toward reality and a resync on stalls/jumps.
- * OPENPETE_PRESENT_TARGET_CLOCK=0 disables (phase falls back to op_now()). */
+/** @brief Advance the virtual present clock and pass it to openpete_interp_set_present_target as this present's instant.
+ *
+ * Off unless OPENPETE_PRESENT_TARGET_CLOCK is set to a value not starting
+ * with '0'; while off the function returns at once and interpolation phase
+ * comes from op_now(). While on, the clock steps by an EMA (weight 0.05) of
+ * the measured present-to-present interval (samples under 100 ms), pulls
+ * 1/16 of the remaining distance toward op_now(), and is clamped to within
+ * 6 ms of op_now(); the first present, or a clock more than 50 ms from
+ * op_now(), resyncs it to op_now(). Each present's content is then timed for
+ * an evenly spaced display slot instead of the instant it was generated at,
+ * which removes submit-time jitter. It also gives a present held on screen
+ * through a tick the same slice of motion as one shown for one refresh,
+ * which is why it is off by default. */
 static void vp_set_present_target(void) {
     static int s_on = -1;
     if (s_on < 0) {
@@ -291,16 +295,16 @@ static int gpu_audit_selftest_arm(void)
     return 1;
 }
 
-/* Host thread split (on by default; OPENPETE_THREAD_SPLIT=0 disables).
+/** @brief Read OPENPETE_THREAD_SPLIT once: whether the host loop may move to a worker thread while main pumps the window.
  *
  * Win32 runs a modal loop inside DefWindowProc for a title-bar drag or a
- * resize, which blocks whichever thread owns the window. Today that thread
- * also runs the game, so dragging the window freezes the sim. The fix is to
- * keep the window and the pump on main and move the host loop to a worker:
- * a drag then blocks main while the worker keeps ticking.
- *
- * The knob remains as the A/B for diagnosing anything the split is suspected
- * of causing: OPENPETE_THREAD_SPLIT=0 puts the loop back on main. */
+ * resize, which blocks the thread that owns the window. With the window and
+ * the pump on main and the host loop on a worker (run_split_threaded), a
+ * drag blocks main while the worker keeps ticking. OPENPETE_THREAD_SPLIT=0
+ * keeps the host loop on main, the A/B for any defect suspected of coming
+ * from the split. openpete_split_applies adds the configuration conditions.
+ * @return 1 when the variable is unset, empty, or does not start with '0';
+ *         else 0. */
 static int openpete_thread_split_enabled(void)
 {
     static int v = -1;
@@ -688,21 +692,20 @@ uint64_t gameplay_hash_compute_ex(uint64_t* out_per_region) {
 
 #define OPENPETE_HASH_LOG_MAX_REGIONS 128
 
-/* --- OPENPETE_RA_PREDICT_CHECK: prediction-exactness oracle --------------
- * Runahead's correctness argument has two halves. The committed-timeline
- * half is gated (state-roundtrip determinism). The PREDICTION half — "with
- * unchanged input the led state IS the future committed state, bit for
- * bit" — was only an argument: a thunk reading host state that behaves
- * differently under speculation than in the real future (a stealth
- * rand()-alike — wall clock, an unsnapshotted host static) corrupts
- * predictions while leaving every determinism gate green, surfacing only
- * as unexplained presentation snaps. This check closes the gap: after each
- * speculation, hash the led guest RAM+scratch keyed by the led frame; when
- * the committed timeline reaches that frame the bytes must match.
- * Predictions crossing an input edge are invalidated (the branch
- * legitimately changed), as are all pending ones on a guest discontinuity
- * (rewind/state-load replays run under LIVE input, not the predicted
- * branch). Zero cost unless the env is set. */
+/** @brief Read OPENPETE_RA_PREDICT_CHECK once: the runahead prediction-exactness check level.
+ *
+ * The check tests that with unchanged input the led state is the future
+ * committed state bit for bit. A thunk that reads host state behaving
+ * differently under speculation than in the real future (the wall clock, a
+ * host static outside the snapshot) breaks that while every
+ * state-roundtrip determinism gate stays green. After each speculation the
+ * host loop hashes the led guest RAM, scratchpad and mod arena, keyed by
+ * the led tick; when the committed timeline reaches that tick the hashes
+ * must match. An input edge invalidates the pending predictions (the branch
+ * legitimately changed), and so does a guest discontinuity (rewind and
+ * state-load replays run under live input, not the predicted branch).
+ * @return 0 off, 1 hash check, 2 hash check plus a full copy of the led RAM
+ *         so a mismatch dumps the differing ranges. */
 static int ra_pc_on(void) {
     static int v = -1;
     if (v < 0) {
@@ -898,26 +901,21 @@ extern PsyXPostRenderOverlayFunc g_psyx_postRenderOverlay;
  * and we segfault on the first gl* call from GR_InitialisePSX). */
 extern SDL_Window* g_window;
 
-/* Push the resolved [keys.pad] bindings into PsyCross's pad maps.
+/** @brief Write the resolved [keys.pad] bindings into PsyCross's g_cfg_keyboardMapping and g_cfg_controllerMapping.
  *
- * PsyCross reads g_cfg_keyboardMapping / g_cfg_controllerMapping on every
- * internal pad update, but only ever fills them from its own hardcoded
- * table in PsyX_Sys_InitialiseInput. They are exported C globals, so
- * stamping them right after PsyX_Initialise makes the PSX pad
- * configurable without touching PsyCross at all.
- *
- * Structural limit: each field holds exactly ONE keyboard scancode or ONE
- * gamepad button/axis, so an action bound to several of either keeps the
- * first and warns about the rest. Lifting that means openpete synthesizing
- * the pad bits itself through the g_PsyX_Pad_InputOverride channel — a
- * change to the replay-critical path, deliberately not folded in here.
- *
- * This stamp covers player 1 only. Players 2-4 are decoded host-side from
- * their own devices and never pass through these PsyCross mapping structs,
- * so a `[keys.pad2..4]` map has nothing to stamp here — those players get
- * their buttons from the shared controller merge instead. Re-mapping one of
- * them is not wired yet; the warning below says so rather than let a bound
- * row look like it took. */
+ * PsyCross reads both exported structs on every internal pad update and
+ * fills them only from its hardcoded table in PsyX_Sys_InitialiseInput, so
+ * the callers run this right after PsyX_Initialise. Each field holds one
+ * keyboard scancode or one gamepad button or axis: an action bound to
+ * several of either keeps the first and warns about the rest; lifting that
+ * limit means synthesizing the pad bits through g_PsyX_Pad_InputOverride,
+ * which is on the replay path. An unbound half is set to PsyCross's unbound
+ * value (SDL_SCANCODE_UNKNOWN, SDL_GAMEPAD_BUTTON_INVALID) so a PsyCross
+ * default does not stay bound beside it. The four WASD stick directions take
+ * a keyboard key only, since they share the gc_axis_left_* fields; the four
+ * stick axes take a gamepad axis only. The stamp covers player 1: players
+ * 2-4 decode through the shared controller mapping, and a row bound under
+ * [keys.pad2..4] draws a warning that it does not re-map that player. */
 static void stamp_psx_pad_bindings(void) {
     /* Every field of both structs, paired with the action that feeds it.
      * A table rather than 20 assignments so a new pad action is one row. */
@@ -1077,9 +1075,13 @@ static int attach_disc_image(const openpete_options_t* opts) {
     return OPENPETE_EXIT_OK;
 }
 
-/* Phase 1b: try to load a PSX EXE; return 0 on success, non-zero on
- * failure (caller decides whether to continue without it). On success
- * sets *out_bytes (caller frees) and *out_size. */
+/** @brief Read the PSX EXE from --exe-path, else from the disc image under the game's EXE filename.
+ *
+ * @param opts The parsed options; exe_path takes precedence over disc_path.
+ * @param out_bytes Receives a malloc'd copy of the EXE (the caller frees
+ *        it), or NULL on failure.
+ * @param out_size Receives the EXE size in bytes.
+ * @return 0 on success, 1 when neither path is set or the read fails. */
 static int try_load_exe(const openpete_options_t* opts,
                         uint8_t** out_bytes, size_t* out_size) {
     *out_bytes = NULL;
@@ -1100,7 +1102,19 @@ static int try_load_exe(const openpete_options_t* opts,
     return 1;
 }
 
-/* Phase 1b smoke test: boot, dispatch one function, exit. */
+/** @brief Boot the EXE, dispatch one recompiled function, check its v0, and exit.
+ *
+ * Runs instead of the host loop when --test-recomp-call or --test-segv is
+ * given. Under PsyCross it initialises PsyCross, stamps the pad bindings
+ * and attaches the disc image (optional here) first. --test-segv raises
+ * SIGSEGV to exercise the crash handler. The entry is --test-recomp-call,
+ * else the EXE's entry pc; --test-recomp-gp overrides $gp; --probe logs the
+ * word at a PSX address after the call.
+ * @param opts The parsed options.
+ * @return OPENPETE_EXIT_OK; OPENPETE_EXIT_SETUP_ERROR when no EXE or disc
+ *         loads; OPENPETE_EXIT_PANIC on a boot or PsyCross init failure or
+ *         an address with no recompiled function; OPENPETE_EXIT_DIVERGENCE
+ *         when v0 differs from --test-recomp-expect-v0. */
 static int run_recomp_smoke_test(const openpete_options_t* opts) {
     CPUState cpu;
     openpete_psx_runtime_init(&cpu);
@@ -1729,24 +1743,15 @@ static int pace_force_pacing(void)
     return s_on;
 }
 
-/* Sleep to a deadline and record where the pacer aimed against where it
- * actually woke. Splitting a late tick into "the OS returned late" and
- * "everything after waking was slow" needs both instants; with only the
- * second, a residual fraction of late ticks has no attributable cause. */
-/* Spend the idle wait on a display-timing measurement, when one is asked for.
+/** @brief Read OPENPETE_PACE_FLIP_LOG once: whether the pacer's idle wait measures the display flip.
  *
- * OPENPETE_PACE_FLIP_LOG=1 turns the sleep before the next deadline into a
- * bounded vkWaitForPresentKHR on the present just queued. The wait returns at
- * the FLIP, which is the one timestamp the engine cannot otherwise observe —
- * and it costs nothing the loop was not already going to spend, because the
- * timeout never exceeds the deadline we were sleeping to. The remainder of the
- * sleep still runs, so the pacing contract is unchanged.
- *
- * It must run on the presenting thread: the swapchain is externally
- * synchronized and a wait from anywhere else races the present. That is also
- * why this is measurement-only rather than always on — a driver whose wait
- * misbehaves would stall the sim clock, and the point of the instrument is to
- * measure the pacer, not to become part of it. */
+ * When on, pace_sleep_until spends the sleep before the next deadline in a
+ * bounded vkWaitForPresentKHR on the present just queued, which returns at
+ * the flip, a timestamp the engine cannot otherwise observe. The wait runs
+ * on the presenting thread only, since the swapchain is externally
+ * synchronized. It stays a measurement and off by default: a driver whose
+ * wait misbehaves would stall the sim clock.
+ * @return 1 when the variable is set to a value not starting with '0'. */
 static int pace_flip_log_on(void)
 {
     static int on = -1;
@@ -1757,6 +1762,17 @@ static int pace_flip_log_on(void)
     return on;
 }
 
+/** @brief Sleep to a deadline and record the requested and actual wake instants.
+ *
+ * Recording both instants splits a late tick into an OS wake that returned
+ * late and work after waking that ran slow. With pace_flip_log_on() and no
+ * eager production, the first part of the sleep is a bounded wait for the
+ * last queued present's flip (logged through openpete_pace_flip); the wait
+ * ends no later than the sim deadline minus the pacer slack, and
+ * op_sleep_until then runs the remainder, so the pacing is unchanged.
+ * @param deadline_ns The instant to wake at.
+ * @param sim_deadline_ns The next sim tick's deadline, or 0 for none; bounds
+ *        the flip wait. */
 static void pace_sleep_until(op_time_t deadline_ns, op_time_t sim_deadline_ns)
 {
     const op_time_t req = op_now();
@@ -1821,12 +1837,15 @@ static int       s_present_shed_run;
  * and interpolation stayed off for the whole run. */
 static op_time_t s_present_budget_peak;
 
-/* Multiplier on the deviation. 0 selects the legacy centre-only bound, which
- * is how the two are A/B'd against each other on one machine. */
-/* OPENPETE_PACE_LATE_BUDGET_US: microseconds of tick lateness an intermediate
- * present may spend to reach the display. 0 = the strict rule (never start a
- * present that could overrun the tick's start). Capped well under the slip
- * threshold: this may cost phase, never the grid. */
+/** @brief Read OPENPETE_PACE_LATE_BUDGET_US once: how much tick lateness an intermediate present may spend.
+ *
+ * The host loop admits an intermediate present that overruns the next sim
+ * deadline by up to this budget when the tail cost bound (EMA plus three
+ * deviations) fits in it. 0, the default, keeps the strict rule: never start
+ * a present that could overrun the tick's start. The cap of 2000 us keeps
+ * the budget under the slip threshold, so it costs phase, never the tick
+ * grid.
+ * @return The budget in nanoseconds, 0 to 2 000 000. */
 static op_time_t pace_late_budget_ns(void)
 {
     static op_time_t v = -1;
@@ -1840,6 +1859,13 @@ static op_time_t pace_late_budget_ns(void)
     return v;
 }
 
+/** @brief Read OPENPETE_PACE_SHED_K once: the multiplier on the cost deviation in the present-shed margin.
+ *
+ * The host loop sheds an intermediate present whose predicted cost does
+ * not fit before the sim deadline; the predicted cost is the EMA plus k
+ * deviations, or EMA plus EMA/4 at k = 0, the default. The two are A/B'd on
+ * one machine through this variable.
+ * @return k, 0 or greater. */
 static int pace_shed_margin_k(void)
 {
     static int k = -1;
@@ -1955,8 +1981,10 @@ void openpete_set_mute(int on) {
     apply_mute_gains();
 }
 
-/* Follows openpete_skip_present_until_level: called wherever the flag can
- * have changed (boot arming, each host iteration), applies on edges only. */
+/** @brief Mute audio while openpete_skip_present_until_level fast-forwards, and restore it after.
+ *
+ * Called wherever the flag can change (boot arming, each host-loop
+ * iteration); applies the mute gains only on a change of the flag. */
 static void skip_mute_sync(void) {
     int want = openpete_skip_present_until_level ? 1 : 0;
     if (want == s_skip_mute) return;
@@ -2602,41 +2630,19 @@ static int run_host_init(const openpete_options_t* opts) {
     return 0;
 }
 
-/* The worker half: the game fiber and the host loop.
+/** @brief Read OPENPETE_SYNTH_PADS once: the synthetic pad-stream mode for slots 1-3.
  *
- * Split from run_host_init above because SDL brings its video, gamepad and
- * haptic subsystems up on one thread and pumps them on that same thread. With
- * init on the worker, main's pump raced it — a GAMEPAD_ADDED delivered on main
- * reaches PsyX_Pad_Event_ControllerAdded, which tears down and re-creates the
- * haptic subsystem while the worker is still inside PsyX_Pad_InitSystem. Init
- * on main serialises the two for free: main does not start pumping until init
- * has returned, so no barrier is needed (and a barrier could not work anyway —
- * the worker's SDL init needs main to be pumping, so main waiting on it
- * deadlocks).
- *
- * libco fibers are created and switched here, on the one thread that owns them
- * for their whole life. */
-/* Pre-yield-staging equality instrument. The input record is staged before
- * the tick so an in-tick reader can see it, but the bytes the log stores for
- * slot 0 remain the post-yield guest readback. These count how often the two
- * were compared and how often they disagreed; a nonzero mismatch means an
- * in-tick slot-0 read would see bytes the log never recorded. */
-/* Synthetic pad stream for slots 1-3 (OPENPETE_SYNTH_PADS=1), the harness
- * that lets the N-port log be exercised before host sampling exists to fill
- * those slots. The bytes are a pure function of the VBL index and the slot,
- * so any consumer can recompute what the record must hold: the append path
- * checks the staged ports survived the tick, and the rewind burst checks the
- * ports it restaged from the log match what that VBL originally carried.
- * Without it the N-port carry is untested code and a rewind gate over an
- * all-empty log proves nothing about it. */
-/* 0 off, 1 generate-and-verify, 2 verify-only (OPENPETE_SYNTH_PADS=verify).
- *
- * The two modes exist because a round-trip cannot be checked against a
- * generator that is still running: replaying a recording of the synthetic
- * stream with the generator ON would overwrite the bytes that came back off
- * disk with the bytes they are supposed to be compared against, and pass
- * regardless. Verify-only leaves the staged slots as the replay path filled
- * them and only checks them. */
+ * The synthetic stream lets the N-port input log be exercised without host
+ * devices filling slots 1-3. Its bytes are a pure function of the VBL index
+ * and the slot (synth_pad_for), so the append path checks that the staged
+ * ports survived the tick and the rewind burst checks that the ports it
+ * restaged from the log match what that VBL carried. Generate-and-verify
+ * stages the stream over the live devices. Verify-only leaves the staged
+ * slots as movie replay filled them and only checks them: replaying a
+ * recording of the stream with the generator on would overwrite the bytes
+ * read back from disk with the bytes they are compared against.
+ * @return 0 off (unset, empty or starting with '0'), 2 verify-only (a value
+ *         starting with 'v' or 'V'), else 1 generate-and-verify. */
 static int synth_pads_enabled(void) {
     static int s_on = -1;
     if (s_on < 0) {
@@ -2660,7 +2666,13 @@ static void synth_pad_for(unsigned frame, int slot,
     axes[3] = (unsigned char)((k / 11u) % 251u);
 }
 
-/* Do slots 1-3 of `rec` carry exactly the synthetic stream for `frame`? */
+/** @brief Test whether slots 1 to last_slot of an input record carry exactly the synthetic stream for a VBL.
+ *
+ * @param rec The input record.
+ * @param frame The VBL index the stream is generated for.
+ * @param last_slot The highest slot checked.
+ * @return 1 when every checked port is present with the synthetic bits and
+ *         axes, else 0. */
 static int synth_pads_match_upto(const openpete_input_rec_t* rec, unsigned frame,
                                  int last_slot) {
     for (int sl = 1; sl <= last_slot; sl++) {
@@ -2673,8 +2685,13 @@ static int synth_pads_match_upto(const openpete_input_rec_t* rec, unsigned frame
     return 1;
 }
 
-/* How many slots the current mode can hold to the synthetic stream: all of
- * them while generating, but only player 2 on a two-player movie replay. */
+/** @brief Test an input record against the synthetic stream over the slots the current mode fills.
+ *
+ * Generate-and-verify checks slots 1-3; verify-only checks slot 1 alone,
+ * the one player-2 slot a two-player movie replay carries.
+ * @param rec The input record.
+ * @param frame The VBL index the stream is generated for.
+ * @return 1 when every checked slot matches, else 0. */
 static int synth_pads_match(const openpete_input_rec_t* rec, unsigned frame) {
     const int last = (synth_pads_enabled() == 2) ? 1 : OPENPETE_PAD_SLOTS - 1;
     return synth_pads_match_upto(rec, frame, last);
@@ -2697,6 +2714,11 @@ static unsigned long long s_synth_stage_mismatches = 0;
 static unsigned long long s_synth_rewind_checks = 0;
 static unsigned long long s_synth_rewind_mismatches = 0;
 
+/* Pre-yield-staging equality instrument. The input record is staged before
+ * the tick so an in-tick reader can see it, but the bytes the log stores for
+ * slot 0 remain the post-yield guest readback. These count how often the two
+ * were compared and how often they disagreed; a nonzero mismatch means an
+ * in-tick slot-0 read would see bytes the log never recorded. */
 static unsigned long long s_p1_stage_checks = 0;
 static unsigned long long s_p1_stage_mismatches = 0;
 /* First disagreement, kept for the report: a count alone cannot say whether
@@ -2772,6 +2794,18 @@ static void rumble_census_report(void) {
     }
 }
 
+/** @brief Run the worker half of the host: create the game fiber and drive the tick and present loop until exit.
+ *
+ * Split from run_host_init because SDL brings its video, gamepad and haptic
+ * subsystems up on one thread and pumps them on that thread. With init on
+ * the worker, main's pump raced it: a GAMEPAD_ADDED delivered on main
+ * reaches PsyX_Pad_Event_ControllerAdded, which re-creates the haptic
+ * subsystem while the worker is inside PsyX_Pad_InitSystem. Init on main
+ * before main starts pumping serialises the two with no barrier. libco
+ * fibers are created and switched here, on the one thread that owns them
+ * for their whole life.
+ * @param opts The parsed options.
+ * @return The process exit code. */
 static int run_host_loop(const openpete_options_t* opts) {
     /* Which half of the input seam this thread owns (see run_host_init). */
     const bool split = openpete_split_applies(opts);
@@ -6378,8 +6412,12 @@ static void log_frame_on_exit(void) {
     OPL_INFO_F("exit", "last openpete_frame=%u", openpete_frame);
 }
 
-/* Single-threaded path: init then loop, on one thread, exactly as before the
- * split existed. */
+/** @brief Run host init and the host loop on the calling thread.
+ *
+ * The path when the thread split does not apply, and the fallback when
+ * run_split_threaded cannot create the worker thread.
+ * @param opts The parsed options.
+ * @return The init error code, or the host loop's exit code. */
 static int run_recomp_fiber(const openpete_options_t* opts) {
     int rc = run_host_init(opts);
     if (rc != 0) return rc;
@@ -6414,8 +6452,19 @@ static int SDLCALL openpete_sim_thread(void* unused)
     return 0;
 }
 
-/* main: owns SDL video, the window, and the event pump. See
- * openpete_thread_split_enabled for why. */
+/** @brief Run the host with main owning SDL video, the window and the event pump, and a worker thread running the host loop.
+ *
+ * Main runs run_host_init, seeds the input seam, releases PsyCross's GL
+ * context, and starts the worker (openpete_sim_thread, 64 MiB stack). Main
+ * then pumps events, publishes input, updates the cursor and mouse capture,
+ * and performs fullscreen toggles the worker requests, until the worker
+ * finishes. It logs a sim heartbeat silent for 5 s and forces exit when a
+ * quit request goes unhonoured for 3 s. After the join it retakes the GL
+ * context and shuts down the native renderer, the disc cache and PsyCross.
+ * openpete_thread_split_enabled gives the reason for the split.
+ * @param opts The parsed options.
+ * @return The init error code, the worker's exit code, or
+ *         run_recomp_fiber's when the thread cannot be created. */
 static int run_split_threaded(const openpete_options_t* opts)
 {
     /* Bring SDL video up HERE, on the thread that will pump. PsyX_Initialise

@@ -42,9 +42,14 @@ static bool   s_moved      = false;
 static double s_x, s_y, s_z;      /* world units */
 static double s_yaw, s_pitch;     /* game angle units */
 
-/* Lenient int scan (same contract as the freecam pose parser): pull up to
- * `max` signed integers out of arbitrary text so a whole "camlock:" log line
- * pastes verbatim into OPENPETE_CAMLOCK_POSE. */
+/** @brief Scan up to max signed decimal integers out of arbitrary text, skipping every other character.
+ *
+ * Same contract as the freecam pose parser, so a whole "camlock:" log line
+ * pastes verbatim into OPENPETE_CAMLOCK_POSE.
+ * @param s The text.
+ * @param out Receives the integers.
+ * @param max The capacity of out.
+ * @return The number of integers stored. */
 static int cl_parse_ints(const char* s, long* out, int max) {
     int n = 0;
     while (*s && n < max) {
@@ -58,8 +63,12 @@ static int cl_parse_ints(const char* s, long* out, int max) {
     return n;
 }
 
-/* One-time env intake: OPENPETE_CAMLOCK=1 engages at first query;
- * OPENPETE_CAMLOCK_POSE="x,y,z[,yaw,pitch]" engages at that pose. */
+/** @brief Read the camlock environment variables once, on the first query or toggle.
+ *
+ * OPENPETE_CAMLOCK_POSE="x,y,z[,yaw,pitch]" with at least three numbers
+ * engages at that pose, marked valid and moved; fewer draws a warning.
+ * Otherwise OPENPETE_CAMLOCK set to a value not starting with '0' engages
+ * with the pose left for the game side to latch. */
 static void cl_env_init(void) {
     static int s_done = 0;
     if (s_done) return;

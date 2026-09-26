@@ -1,8 +1,7 @@
 // core/include/openpete_workpool.h — data-parallel extraction worker pool.
 //
 // A persistent pool of worker threads for fan-out over independent items
-// (terrain sectors, compose buckets). Contracts (extraction-rearchitecture
-// plan, C1-C5):
+// (terrain sectors, compose buckets). Contracts:
 //  - Workers run ONLY inside openpete_workpool_run(); between runs they are
 //    parked. They must never touch the game fiber or any thread-affine state.
 //  - Callers may only hand work that reads guest RAM while the game fiber is
@@ -24,18 +23,33 @@ extern "C" {
 
 typedef void (*openpete_work_fn)(int item, int worker, void* arg);
 
-/* Configure the pool size before its first use (boot-latched; from
- * --extract-threads). 0 = auto (logical cores / 2, clamped to [1, 8]);
- * 1 = serial (no threads created, run() degrades to a plain loop). */
+/** @brief Set the requested pool size, from --extract-threads, before the pool's first use.
+ *
+ * The size is resolved on the first openpete_workpool_threads() call and
+ * does not change after it.
+ * @param threads 0 for auto (logical cores / 2, at least 1); 1 for serial
+ *        (no threads created, openpete_workpool_run is a plain loop); any
+ *        count is capped at 8. */
 void openpete_workpool_configure(int threads);
 
-/* Resolved worker count (>= 1). Worker ids passed to fn are 0..count-1;
- * id 0 is the calling thread (it participates in the run). */
+/** @brief Resolve and return the worker count.
+ *
+ * Worker ids passed to fn are 0..count-1; id 0 is the calling thread, which
+ * works the items alongside the helpers. The first call latches the
+ * configured size; a helper thread that fails to spawn lowers the count.
+ * @return The worker count, 1 to 8. */
 int openpete_workpool_threads(void);
 
-/* Run fn(item, worker, arg) for every item in [0, nitems). Returns after all
- * items completed. Serial (in caller order) when the pool is size 1 or
- * nitems <= 1. */
+/** @brief Run fn(item, worker, arg) for every item in [0, nitems) and return after all complete.
+ *
+ * Spawns the helper threads on first use. Serial, in item order, on the
+ * calling thread when the pool has one worker or nitems <= 1; otherwise
+ * wakes min(nitems, workers) - 1 helpers, and every participant pulls items
+ * from one atomic counter. OPENPETE_WORKPOOL_SELFTEST=1 logs the empty-run
+ * cost sweep once, on the first call.
+ * @param nitems The item count; 0 or less returns at once.
+ * @param fn The per-item function.
+ * @param arg Passed to every fn call. */
 void openpete_workpool_run(int nitems, openpete_work_fn fn, void* arg);
 
 #ifdef __cplusplus

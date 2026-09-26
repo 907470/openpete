@@ -8,10 +8,13 @@
 extern "C" {
 #endif
 
-/* The skip release blocks' fail-safe: VBLs from a skip's first check to its
- * "fail-safe release (no playable edge)" line. 4000, or
- * OPENPETE_SKIP_FAILSAFE_VBL when set positive (the skip-target harness's
- * negative control sets 1). Read once. */
+/** @brief Return the skip fail-safe: VBLs from a skip's first release check to its forced release.
+ *
+ * A skip release block that sees no playable edge by this deadline
+ * releases anyway and logs its "fail-safe release (no playable edge)" line.
+ * 4000, or OPENPETE_SKIP_FAILSAFE_VBL when set positive (the skip-target
+ * harness's negative control sets 1). The variable is read once.
+ * @return The fail-safe in VBLs, at least 1. */
 unsigned openpete_skip_failsafe_vbls(void);
 
 #ifdef __cplusplus

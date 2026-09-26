@@ -181,9 +181,18 @@ extern size_t                     openpete_state_region_count;
  * differs. */
 extern uint64_t                   openpete_state_regions_table_hash;
 
-/* Install the per-game region table. Call from game main before
- * openpete_run() (explicit registration — weak-symbol override
- * mis-resolves under the MinGW PE linker). */
+/** @brief Install the per-game gameplay-state region table that the hash log and .psxtrace paths read.
+ *
+ * Stores the three arguments in openpete_state_regions,
+ * openpete_state_region_count and openpete_state_regions_table_hash.
+ * game_state_regions_register calls it from game main before
+ * openpete_run(). Registration is an explicit call because a weak-symbol
+ * override mis-resolves under the MinGW PE linker. Without a call the table
+ * stays empty and every gameplay hash is the FNV-1a-64 offset basis.
+ * @param regions The generated region table.
+ * @param count The number of entries in regions.
+ * @param table_hash FNV-1a-64 of the flat table text the table was generated
+ *        from; the .psxtrace verifier refuses a golden carrying another. */
 void openpete_state_regions_register(const OpenpeteStateRegion* regions,
                                      size_t count, uint64_t table_hash);
 
