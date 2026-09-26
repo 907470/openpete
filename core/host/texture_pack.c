@@ -168,15 +168,18 @@ static int tp_add_root_source(int r);
 static void tp_decode_prefetch_all(void);
 static int s_seen_roots = 0; /* asset roots already turned into sources */
 
-/* Live-toggle awareness: a modset change flips which sources serve, so
- * every memoized resolution/match is stale. Bump the generation both
- * caches key on. Polled at the two query entry points (cheap: one
- * extern read + compare).
+/** @brief Fold mod toggles and newly registered asset roots into the pack state.
  *
- * Late asset roots: a deferred-entry mod registers its root at its
- * FIRST in-game enable — long after the boot scan enumerated sources.
- * Turn every root that appeared since into a source here, so enabling
- * a texture-pack mod mid-session serves without a restart. */
+ * A change of openpete_mods_toggle_epoch() changes which sources serve, so
+ * it bumps s_gen, which invalidates every memo slot keyed on the
+ * generation (resolve, match, decode). A mod with a deferred entry
+ * registers its asset root at its first in-game enable, after the boot
+ * scan enumerated sources; every root index past s_seen_roots is turned
+ * into a source by tp_add_root_source, and when any source was added the
+ * generation is bumped, s_repl_active is recomputed from the pack count,
+ * and the decode prefetch starts. Called from resolve, match, overlaps,
+ * texture_pack_replacements_active and texture_pack_generation; the
+ * common case costs one epoch read and one root-count read. */
 static void tp_poll_modset(void) {
     static unsigned s_seen_epoch = 0;
     unsigned ep = openpete_mods_toggle_epoch();
@@ -833,16 +836,19 @@ static const tp_entry *tp_cover(int x, int y, int w, int h)
     return NULL;
 }
 
-/* Palette hash: XXH3 over the full bpp-addressable CLUT row (16 entries for
- * 4bpp, 256 for 8bpp) read from the live VRAM model. NOT trimmed to the
- * query's used index range — that made phash a function of the QUERY BOX
- * (each clipped tri scans a different index range), so identical tiles
- * produced different identities per frame and containment matching fell
- * apart (falsified 2026-07-04; terrain never matched while rigid-box quads
- * did). The emulator-world "trim to used range" lesson guards against
- * nondeterministic garbage beyond the used indices — but this registry's
- * VRAM model is fed only by deterministic uploads, so the full row is
- * stable. 16bpp has no palette (phash 0). */
+/** @brief Hash the full CLUT row a texture's bpp addresses, read from the VRAM model.
+ *
+ * XXH3 over 16 entries for 4bpp and 256 for 8bpp, starting at
+ * (clut_x, clut_y); 16bpp has no palette and returns 0. The row is not
+ * trimmed to the indices the query box uses: the used range depends on
+ * the box, and each clipped triangle of one tile scans a different range,
+ * so a trimmed hash gives one tile several identities and containment
+ * matching fails. Entries past the used range are stable because the VRAM
+ * model is written only by the game's uploads, which are deterministic.
+ * @param bpp Texture depth: 4, 8 or 16.
+ * @param clut_x CLUT X in VRAM halfwords.
+ * @param clut_y CLUT row in VRAM.
+ * @return The palette hash, 0 for 16bpp. */
 static uint64_t tp_clut_hash(int bpp, int clut_x, int clut_y)
 {
     if (bpp == 16) return 0;
@@ -1194,9 +1200,15 @@ static const char *tp_cat_name(int c)
     return (c >= 0 && c < (int)(sizeof n / sizeof *n)) ? n[c] : "?";
 }
 
-/* Group identities by texel box (thash+box+bpp, ignoring the CLUT) so the
- * report can show how many distinct palettes — fog ladder rows — share one
- * texture, alongside the per-identity category spread. */
+/** @brief Key a census entry by its texel box, ignoring the CLUT.
+ *
+ * XORs the texel hash with a shifted mix of the box origin, size and bpp.
+ * tp_census_report groups entries with equal keys to count how many
+ * distinct palettes (fog ladder rows) share one texture. Distinct boxes
+ * can collide under the XOR mix; the census is an instrument and tolerates
+ * a merged group.
+ * @param e Census entry.
+ * @return The box key. */
 static uint64_t tp_box_key(const tp_census_ent *e)
 {
     return e->thash ^ ((uint64_t)(uint32_t)((e->bx << 20) ^ (e->by << 8) ^

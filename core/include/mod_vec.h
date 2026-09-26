@@ -262,11 +262,11 @@ void mod_fixed_set(mod_fixed* t, size_t count);
 void mod_fixed_note(mod_fixed* t, size_t count, size_t storage);
 
 /**
- * @brief Arm the exit-time census report.
+ * @brief Register mod_vec_census_report with atexit.
  *
- * Called once from the mod loader's init. The report runs at exit and
- * prints nothing unless OPENPETE_MOD_TABLE_CENSUS is set to a value
- * other than 0.
+ * Called from the mod loader's init before its no-mods return; a second
+ * call is a no-op. The report prints nothing unless
+ * OPENPETE_MOD_TABLE_CENSUS is set to a non-empty value other than "0".
  */
 void mod_vec_census_arm(void);
 

@@ -162,12 +162,20 @@ unsigned short openpete_host_input_latched_bits(void);
  * pump thread produces it) but is never nothing, so it is surfaced. */
 unsigned openpete_host_input_seqlock_failures(void);
 
-/* Timed pulse source (M5 Tier A), OPENPETE_INPUT_PULSE=<count>. Count is the
- * schedule's size; `fired` is how many press instants the run actually reached
- * (a short run reaches fewer). The analyzer needs both: "every injected pulse
- * was consumed" is only checkable against the number that was injected, and a
- * log with none must not be allowed to report a passing sweep. */
+/** @brief Return the timed pulse source's schedule size, OPENPETE_INPUT_PULSE, or 0 when the source is off.
+ *
+ * The env vars are read on the first call of any pulse accessor and
+ * latched; a negative or absent value turns the source off. The pace log
+ * header records it so the analyzer can check the consumed press count
+ * against the injected count, and treat a log with no pulses as carrying
+ * no sweep result.
+ * @return The pulse count, 0 when the source is off. */
 int openpete_host_input_pulse_count(void);
+/** @brief Return how many press instants of the pulse schedule have passed.
+ *
+ * A run shorter than the schedule reaches fewer than
+ * openpete_host_input_pulse_count.
+ * @return The number of pulses whose press instant has passed. */
 int openpete_host_input_pulses_fired(void);
 
 /* Which pad bit the pulse source drives, so the analyzer can separate injected
@@ -215,12 +223,24 @@ int  openpete_host_input_vpad_count(void);
  * NULL rather than as a use-after-close. */
 unsigned openpete_host_input_slot_device_id(int slot);
 
-/* Parity instrument (--input-parity). Compares what the host actually drove
- * into the pad against a fresh live decode taken in the same iteration, on the
- * frames where live decode is supposed to be the source. Counts engagement
- * (frames carrying real input) and refuses to report a pass at zero, because a
- * run that never pressed anything proves nothing. */
+/** @brief Arm the input parity instrument regardless of OPENPETE_INPUT_PARITY.
+ *
+ * The instrument is otherwise armed by OPENPETE_INPUT_PARITY set to a
+ * non-empty value not starting with '0', read once; no caller invokes
+ * this function and no command-line flag reaches it. When armed,
+ * openpete_host_input_parity_check compares the sample the iteration
+ * latched against the bits and axes that reached the PSX pad buffer on
+ * iterations no other writer claimed, and counts mismatches, stale
+ * latches (a sequence number repeated from the previous latch) and
+ * engaged iterations (a button pressed or an axis more than 1 from 128);
+ * openpete_host_input_parity_report returns -1 at zero engagement. */
 void openpete_host_input_parity_enable(void);
+/** @brief Compare the latched pad sample against the bits and axes in the PSX pad buffer.
+ *
+ * Does nothing when the instrument is not armed, when `claimed`, before
+ * the game registers a pad buffer, or when the iteration latched no
+ * valid sample.
+ * @param claimed True when a bk2 movie or the open settings menu drives the pad override this iteration. */
 void openpete_host_input_parity_check(bool claimed);
 /* Returns 1 = pass, 0 = mismatches seen, -1 = vacuous (nothing engaged). */
 int  openpete_host_input_parity_report(void);

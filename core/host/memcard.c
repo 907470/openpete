@@ -340,7 +340,15 @@ static int mc_find_file(int slot, const char* name)
     return -1;
 }
 
-/* Compute (present, formatted, new-card) verdict for a slot and latch it. */
+/** @brief Return the libmcrd result code for a slot's presence, format and new-card state.
+ *
+ * Checks in order: slot absent gives MC_ERR_CARD_NOT_EXIST; otherwise the
+ * image is loaded and an unformatted image gives MC_ERR_NOT_FORMAT; a set
+ * new-card flag gives MC_ERR_NEW_CARD once and is cleared, so the next
+ * call on the same card returns MC_ERR_NONE. The caller (mc_probe) latches
+ * the result.
+ * @param slot Card slot, 0 or 1.
+ * @return One of MC_ERR_CARD_NOT_EXIST, MC_ERR_NOT_FORMAT, MC_ERR_NEW_CARD, MC_ERR_NONE. */
 static int mc_verdict(int slot)
 {
     if (!s_present[slot]) return MC_ERR_CARD_NOT_EXIST;

@@ -54,6 +54,17 @@ static CPUState* g_diag_cpu = NULL;
 
 void openpete_psx_set_diag_cpu(CPUState* cpu) { g_diag_cpu = cpu; }
 
+/** @brief Print a crash dump to stderr, drain the log mirror, and re-raise the signal with the default handler.
+ *
+ * The dump holds the signal name, the fault address and si_code, on Linux
+ * the host RIP/RSP/RBP and the eight words at RSP (backtrace cannot walk
+ * a libco fiber stack), the registered guest CPUState registers with
+ * their guest addresses resolved, the mod whose override chain was
+ * executing, and a host backtrace resolved through dladdr. Uses fprintf
+ * and backtrace, so it is not async-signal-safe.
+ * @param sig Signal number.
+ * @param info Signal info; may be NULL.
+ * @param ucontext Host ucontext_t at the fault; may be NULL. */
 static void on_signal(int sig, siginfo_t* info, void* ucontext) {
     const char* name = "?";
     switch (sig) {
@@ -155,10 +166,9 @@ static void on_signal(int sig, siginfo_t* info, void* ucontext) {
     }
 #endif
     fflush(stderr);
-    /* The log file mirrors stderr through a pipe, so the dump we just
-     * wrote is still in flight; re-raising would kill the process with it
-     * unread. Drain before dying — a crash report with no crash in it is
-     * the one case the file exists for. */
+    /* The log file mirrors stderr through a pipe, so the dump written
+     * above may still be in the pipe; re-raising first would kill the
+     * process before the pump thread copies it to the log file. */
     openpete_log_file_sync();
 
     /* Restore default handler and re-raise so the OS can dump core etc. */

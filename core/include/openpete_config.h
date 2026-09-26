@@ -41,22 +41,26 @@ extern "C" {
 
 /* ---- boot ---------------------------------------------------------- */
 
-/* Load the config file(s), resolve every layer, and materialize the
- * result: `[env]` winners are applied to the process environment (the
- * real environment still wins), and flag winners are returned as a new
- * argv with the tokens spliced in after argv[0] — left of the caller's
- * own args, so anything typed still overrides.
+/** @brief Load the config files, resolve every layer, and materialize each knob's winning spelling.
  *
- * Called once from openpete_options_parse, before ANY getenv consumer:
- * features lazy-cache their env reads on first use.
+ * Seeds the keymap, scans argv for --no-config, --config-report,
+ * --keys-report and --config (OPENPETE_CONFIG when --config is absent;
+ * the value "none" disables the files), reads the exe-dir and per-user
+ * openpete.toml (or only the --config file), harvests the global, game,
+ * disc-serial, disc-sha and [saved] scopes, resolves the keymap, and
+ * materializes the winners: `[env]` winners are set in the process
+ * environment (a variable the real environment already carries still
+ * wins), and flag winners are spliced into a new argv after argv[0], left
+ * of the caller's arguments, so a typed flag still overrides them.
  *
- * `argv` may already carry the bk2 sidecar splice; `typed_argc` is the
- * original count so the report can tell a sidecar flag from a typed one
- * (both outrank every file tier, so it changes no decision).
- *
- * Returns 1 with *out_argc / *out_argv set (heap-owned, retained for the
- * process lifetime), 0 when nothing was spliced, or -1 on a config error
- * that should abort startup (already reported to stderr). */
+ * Called once from openpete_options_parse, before any getenv consumer
+ * runs, because features cache their env reads on first use.
+ * @param argc Argument count, including a bk2 sidecar splice.
+ * @param argv Arguments; may carry the bk2 sidecar tokens left of the typed ones.
+ * @param typed_argc Count of the arguments as typed, so the config report can label a sidecar token apart from a typed one; both outrank every file tier.
+ * @param out_argc Receives the spliced argument count when the return is 1.
+ * @param out_argv Receives the spliced argv when the return is 1; heap-owned and retained for the process lifetime.
+ * @return 1 when tokens were spliced, 0 when none were, -1 on a config error that aborts startup (already printed to stderr). */
 int openpete_config_apply(int argc, char** argv, int typed_argc,
                           int* out_argc, char*** out_argv);
 
@@ -82,12 +86,21 @@ void openpete_config_set_disc_identity_fn(openpete_disc_identity_fn fn);
 
 /* ---- diagnostics --------------------------------------------------- */
 
-/* The resolution table: every knob any layer touched, its winning layer,
- * and what that layer shadowed. Printed by --config-report (which exits
- * straight afterwards) and at debug level on every boot. */
+/** @brief Print the config files, scopes, write target, directory layout and knob resolution table.
+ *
+ * The table lists every knob any layer touched with its value, winning
+ * layer and the layers it shadowed, then the unshadowed contributions
+ * with no schema row (raw flags and debug env vars) below the real
+ * environment tier. The game mains call it for --config-report, printing
+ * to stdout and exiting 0.
+ * @param out Destination stream; NULL prints to stderr. */
 void openpete_config_report(FILE* out);
 
-/* True when --config-report was passed (the caller prints and exits). */
+/** @brief Return 1 when openpete_config_apply saw --config-report in argv, else 0.
+ *
+ * No caller reads it; the game mains test openpete_options_t.config_report
+ * instead.
+ * @return 1 when --config-report was passed, else 0. */
 int openpete_config_report_requested(void);
 
 /* Source label for a token the config spliced into argv ("game.spyro-1.args"),

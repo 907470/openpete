@@ -2,7 +2,7 @@
 # library: libclang 14
 # requirement: @brief of one sentence on one line on every function; @param per named parameter and @return on non-void for external linkage
 # written-by: hook
-# head: 5af613e7a72fd6eb27afc00d1048e6306faccd42
+# head: d75aca9a6e49c2d591065fd5ac3f814d50a2d839
 file	function	form	accepted
 core/config/build_id.c	openpete_build_shared_recomp	plain	
 core/config/build_id.c	openpete_build_tagged	plain	
@@ -31,12 +31,9 @@ core/config/config.c	is_shadowed	plain
 core/config/config.c	load_toml	none	
 core/config/config.c	materialize	plain	
 core/config/config.c	mutex_blocked	plain	
-core/config/config.c	openpete_config_apply	plain	
 core/config/config.c	openpete_config_knob_layer	plain	
 core/config/config.c	openpete_config_knob_pin_spelling	plain	
 core/config/config.c	openpete_config_knob_pinned	plain	
-core/config/config.c	openpete_config_report	plain	
-core/config/config.c	openpete_config_report_requested	plain	
 core/config/config.c	openpete_config_reset_for_test	plain	
 core/config/config.c	openpete_config_reset_saved	plain	
 core/config/config.c	openpete_config_save_flush	plain	
@@ -206,7 +203,6 @@ core/config/paths.c	user_data_dir	none
 core/config/paths.c	user_openpete_dir	none	
 core/config/paths.c	user_state_dir	none	
 core/diag/crash.c	crash_print_guest_addr	plain	
-core/diag/crash.c	on_signal	none	
 core/diag/crash.c	openpete_psx_install_crash_handler	plain	
 core/diag/crash.c	openpete_psx_set_diag_cpu	none	
 core/diag/func_trace.c	__cyg_profile_func_enter	plain	
@@ -248,7 +244,6 @@ core/diag/log_file.c	drop_lock	none
 core/diag/log_file.c	openpete_log_file_close	none	
 core/diag/log_file.c	openpete_log_file_open	plain	
 core/diag/log_file.c	openpete_log_file_path	none	
-core/diag/log_file.c	openpete_log_file_sync	plain	
 core/diag/log_file.c	pump_entry	none	
 core/diag/log_file.c	pump_join	none	
 core/diag/log_file.c	pump_loop	none	
@@ -270,7 +265,6 @@ core/diag/pace_log.c	cpu_model	none
 core/diag/pace_log.c	hist_bucket	none	
 core/diag/pace_log.c	maybe_clocksample	plain	
 core/diag/pace_log.c	openpete_pace_cd_miss	plain	
-core/diag/pace_log.c	openpete_pace_census_format	plain	
 core/diag/pace_log.c	openpete_pace_census_get	none	
 core/diag/pace_log.c	openpete_pace_env_build	plain	
 core/diag/pace_log.c	openpete_pace_extract_alpha	plain	
@@ -397,7 +391,6 @@ core/host/memcard.c	mc_probe	none
 core/host/memcard.c	mc_range_ok	plain	
 core/host/memcard.c	mc_resolve_card_dir	plain	
 core/host/memcard.c	mc_resolve_path	plain	
-core/host/memcard.c	mc_verdict	plain	
 core/host/memcard.c	openpete_memcard_accept	none	
 core/host/memcard.c	openpete_memcard_create	plain	
 core/host/memcard.c	openpete_memcard_exist	plain	
@@ -429,7 +422,6 @@ core/host/music_override.c	apply_gain	none
 core/host/music_override.c	ensure_al	none	
 core/host/music_override.c	load_track	none	
 core/host/music_override.c	manifest_line	plain	
-core/host/music_override.c	manifest_lookup	plain	
 core/host/music_override.c	music_override_init	plain	
 core/host/music_override.c	music_override_is_active	none	
 core/host/music_override.c	music_override_pump	plain	
@@ -522,11 +514,9 @@ core/host/texture_pack.c	texture_pack_set_dir_override	plain
 core/host/texture_pack.c	texture_pack_shutdown	none	
 core/host/texture_pack.c	tp_add_root_source	plain	
 core/host/texture_pack.c	tp_alloc	none	
-core/host/texture_pack.c	tp_box_key	plain	
 core/host/texture_pack.c	tp_cat_name	none	
 core/host/texture_pack.c	tp_cat_slug	plain	
 core/host/texture_pack.c	tp_census_report	none	
-core/host/texture_pack.c	tp_clut_hash	plain	
 core/host/texture_pack.c	tp_cover	plain	
 core/host/texture_pack.c	tp_decode_main	none	
 core/host/texture_pack.c	tp_decode_one	none	
@@ -541,7 +531,6 @@ core/host/texture_pack.c	tp_id_key	plain
 core/host/texture_pack.c	tp_match_reset	plain	
 core/host/texture_pack.c	tp_overlap	none	
 core/host/texture_pack.c	tp_parse_name	plain	
-core/host/texture_pack.c	tp_poll_modset	plain	
 core/host/texture_pack.c	tp_q_empty	none	
 core/host/texture_pack.c	tp_q_push	plain	
 core/host/texture_pack.c	tp_repl_scan	none	
@@ -632,14 +621,10 @@ core/input/host_input.c	openpete_host_input_pad_axis_slot	none
 core/input/host_input.c	openpete_host_input_pad_button	none	
 core/input/host_input.c	openpete_host_input_pad_button_slot	plain	
 core/input/host_input.c	openpete_host_input_pad_connected	none	
-core/input/host_input.c	openpete_host_input_parity_check	none	
-core/input/host_input.c	openpete_host_input_parity_enable	plain	
 core/input/host_input.c	openpete_host_input_parity_report	plain	
 core/input/host_input.c	openpete_host_input_publish_sdl	plain	
 core/input/host_input.c	openpete_host_input_pulse_bit	plain	
-core/input/host_input.c	openpete_host_input_pulse_count	plain	
 core/input/host_input.c	openpete_host_input_pulse_hold_us	plain	
-core/input/host_input.c	openpete_host_input_pulses_fired	none	
 core/input/host_input.c	openpete_host_input_sample	plain	
 core/input/host_input.c	openpete_host_input_seed_neutral	plain	
 core/input/host_input.c	openpete_host_input_seqlock_failures	plain	
@@ -792,8 +777,6 @@ core/input/keymap.c	openpete_keymap_mouse_markers	plain
 core/input/keymap.c	openpete_keymap_origin	plain	
 core/input/keymap.c	openpete_keymap_poll	plain	
 core/input/keymap.c	openpete_keymap_report	plain	
-core/input/keymap.c	openpete_keymap_report_requested	plain	
-core/input/keymap.c	openpete_keymap_request_report	none	
 core/input/keymap.c	openpete_keymap_resolve	plain	
 core/input/keymap.c	openpete_keymap_scancode_down	plain	
 core/input/keymap.c	openpete_keymap_set	plain	
@@ -1407,14 +1390,9 @@ core/renderer/fillpick.c	fp_word	none
 core/renderer/fillpick.c	openpete_fillpick_active	plain	
 core/renderer/fillpick.c	openpete_fillpick_count	plain	
 core/renderer/fillpick.c	openpete_fillpick_entry	none	
-core/renderer/fillpick.c	openpete_fillpick_generation	plain	
 core/renderer/fillpick.c	openpete_fillpick_get	none	
-core/renderer/fillpick.c	openpete_fillpick_lookup	plain	
-core/renderer/fillpick.c	openpete_fillpick_mark	plain	
 core/renderer/fillpick.c	openpete_fillpick_preview	plain	
 core/renderer/fillpick.c	openpete_fillpick_publish	plain	
-core/renderer/fillpick.c	openpete_fillpick_save	plain	
-core/renderer/fillpick.c	openpete_fillpick_session_path	plain	
 core/renderer/fillpick.c	openpete_fillpick_set_active	none	
 core/renderer/fillpick.c	openpete_fillpick_set_preview	none	
 core/renderer/fillpick.c	openpete_fillpick_toggle	none	
@@ -1455,7 +1433,6 @@ core/renderer/native_fb_snapshot.c	openpete_fb_snapshot_on_move	plain
 core/renderer/native_fb_snapshot.c	openpete_fb_snapshot_pending	plain	
 core/renderer/native_fb_snapshot.c	openpete_fb_snapshot_pixels	plain	
 core/renderer/native_fb_snapshot.c	openpete_fb_snapshot_store	plain	
-core/renderer/native_fb_snapshot.c	openpete_fb_snapshot_store_area	plain	
 core/renderer/native_fb_snapshot.c	openpete_fb_snapshot_take_pending	plain	
 core/renderer/native_fb_snapshot.c	openpete_fb_snapshot_take_pending_area	plain	
 core/renderer/native_render.c	active_frozen_tex	plain	

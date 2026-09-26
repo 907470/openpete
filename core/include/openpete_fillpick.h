@@ -60,8 +60,12 @@ void openpete_fillpick_set_active(int on);
 int  openpete_fillpick_preview(void);
 void openpete_fillpick_set_preview(int on);
 
-/* Bumped whenever a verdict override or the preview mode changes, so cached
- * sector tags re-derive. */
+/** @brief Return the generation counter the terrain feeder's cached sector fill tags key on.
+ *
+ * Bumped by openpete_fillpick_mark, openpete_fillpick_undo, a change of the
+ * preview mode, and a change of the engaged state (preview draws only while
+ * engaged), so the cached tags re-derive on the next walk.
+ * @return The current generation; starts at 1. */
 unsigned openpete_fillpick_generation(void);
 
 /* Renderer -> UI. Publish once per present; pass NULL (or a hit with
@@ -69,13 +73,27 @@ unsigned openpete_fillpick_generation(void);
 void openpete_fillpick_publish(const openpete_fillpick_hit* h);
 int  openpete_fillpick_get(openpete_fillpick_hit* out);   /* 1 = a face is picked */
 
-/* Verdict overrides, consulted by the tag lookup ahead of the frozen table.
- * Returns OPENPETE_FILLPICK_NONE when this face has no session verdict. */
+/** @brief Return the in-memory verdict override recorded for an LP face.
+ *
+ * The terrain feeder's tag lookup consults it ahead of the frozen fill-tag
+ * table. A record cleared with OPENPETE_FILLPICK_NONE is held in memory
+ * and returns OPENPETE_FILLPICK_NONE, as does a face with no record.
+ * @param level g_LevelId.
+ * @param sec LP sector index.
+ * @param face LP face index within the sector.
+ * @return OPENPETE_FILLPICK_FILL, OPENPETE_FILLPICK_NOFILL or OPENPETE_FILLPICK_NONE. */
 int  openpete_fillpick_lookup(int level, int sec, int face);
 
-/* Record (verdict FILL/NOFILL) or drop (OPENPETE_FILLPICK_NONE) a verdict for
- * the currently picked face, and rewrite the session file. No-op when nothing
- * is picked. */
+/** @brief Record or clear the verdict for the face under the crosshair and rewrite the session file.
+ *
+ * FILL or NOFILL creates the face's record or overwrites it, keeping the
+ * replaced verdict as the undo target; OPENPETE_FILLPICK_NONE marks an
+ * existing record cleared (it stays in memory and is omitted from the
+ * file). The record moves to the tail of the record order that
+ * openpete_fillpick_undo pops. Does nothing, with a warning, when no face
+ * is picked or when a new record would exceed the 1024-entry table;
+ * clearing a face with no record does nothing.
+ * @param verdict OPENPETE_FILLPICK_FILL, OPENPETE_FILLPICK_NOFILL or OPENPETE_FILLPICK_NONE. */
 void openpete_fillpick_mark(int verdict);
 
 /* Drop the most recent record (restoring whatever it replaced). */
@@ -86,12 +104,21 @@ int  openpete_fillpick_count(void);
 int  openpete_fillpick_entry(int idx, int* level, const char** level_name,
                              int* sec, int* face, int* verdict);
 
-/* Where the session is written (OPENPETE_FILLPICK_OUT, else
- * "fill-tags.session" in the working directory). */
+/** @brief Return the path the session file is written to.
+ *
+ * OPENPETE_FILLPICK_OUT when set and non-empty, else "fill-tags.session"
+ * in the working directory. The value is read on the first call and
+ * latched for the process.
+ * @return The session file path. */
 const char* openpete_fillpick_session_path(void);
 
-/* Rewrite the session file now. Called on every record; exposed so the overlay
- * can offer an explicit save after a failed write. Returns 1 on success. */
+/** @brief Rewrite the session file from the in-memory records.
+ *
+ * Writes a header naming scripts/fill-tags-apply.py, then one
+ * "<verdict> <level name> <sector> <face>" line per FILL or NOFILL record
+ * in record order; cleared records are omitted. Called by
+ * openpete_fillpick_mark and openpete_fillpick_undo; no other caller.
+ * @return 1 on success, 0 when the file cannot be opened for writing. */
 int  openpete_fillpick_save(void);
 
 #ifdef __cplusplus

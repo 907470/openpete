@@ -53,9 +53,14 @@ const char* openpete_log_file_path(void);  /* "" when inactive */
  * for a pipe. Colour selection would otherwise see the pipe. */
 void openpete_log_pin_stderr_tty(int is_tty);
 
-/* Flush and let the pump thread drain. For the crash path, where the
- * process is about to die and the dump would otherwise be lost in the
- * pipe. Not async-signal-safe. */
+/** @brief Flush stderr and wait 50 ms for the pump thread to copy it into the log file.
+ *
+ * No-op when no file sink is active. Called immediately before the
+ * process terminates without the normal shutdown (the crash handler, the
+ * halt-at-PC and hang-watchdog exits, the forced exit after a quit grace
+ * timeout), where text still in the stderr pipe would be lost with the
+ * process. The wait is a fixed sleep, not a drain handshake. Not
+ * async-signal-safe. */
 void openpete_log_file_sync(void);
 
 /* Log a message. `extra` is an optional NUL-terminated key=value sequence,

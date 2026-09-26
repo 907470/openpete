@@ -421,8 +421,17 @@ void openpete_pace_census_get(openpete_pace_census_t* out);
  * bucket is unbounded. Shared with the analyzer so both sides bucket alike. */
 extern const int64_t openpete_pace_hist_edges_ns[OP_PACE_HIST_BUCKETS];
 
-/* Format the end-of-run census summary into `buf`. Reports "unpaced" rather
- * than a phase-error figure when no iteration ran against a live deadline. */
+/** @brief Format the end-of-run pacing census as one summary line into `buf`.
+ *
+ * When no VBL was paced against a wall deadline, or none of the paced
+ * VBLs was clean, the line reads "unpaced" with VBL, present and slip
+ * counts and no phase error. Otherwise it carries the VBL and present
+ * counts, the share of clean paced VBLs that started within 250 us, the
+ * phase error bounds, latch and pad-read bounds (n/a when unmeasured),
+ * slips, sheds, host pump timings when a separate pump thread ran, and an
+ * input seqlock failure count when non-zero.
+ * @param buf Destination buffer.
+ * @param buf_bytes Capacity of `buf`; the line is truncated to fit. */
 void openpete_pace_census_format(char* buf, unsigned buf_bytes);
 
 /* ---- instrument self-verification --------------------------------------- */

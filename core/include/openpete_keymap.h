@@ -506,8 +506,14 @@ const char* openpete_keymap_origin(openpete_action_t a);
  * the ship-time audit of what a stock install responds to. */
 void openpete_keymap_report(FILE* out);
 
-/* True when --keys-report was passed (the caller prints and exits). */
+/** @brief Return 1 when openpete_keymap_request_report was called, else 0.
+ *
+ * openpete_config_apply sets the request when argv carries --keys-report.
+ * No caller reads it; the Spyro 1 main tests openpete_options_t.keys_report
+ * instead.
+ * @return 1 when a keymap report was requested, else 0. */
 int openpete_keymap_report_requested(void);
+/// @brief Record that --keys-report was passed; read back by openpete_keymap_report_requested.
 void openpete_keymap_request_report(void);
 
 /* Resolve a mod's declared binding name to an action-less source list: the

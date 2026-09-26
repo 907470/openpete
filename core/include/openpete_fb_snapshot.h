@@ -82,10 +82,19 @@ int openpete_fb_snapshot_take_pending_area(int *idx, int *src_x, int *src_y,
  * openpete_fb_snapshot_find, so the quad keeps the stock VRAM path. */
 void openpete_fb_snapshot_store(int idx, unsigned char *px, int pw, int ph);
 
-/* Hand a drained draw area the crop of the present composed into it, covering
- * the rect openpete_fb_snapshot_take_pending_area reported. The store takes
- * ownership of `px`. A later window copy out of that area crops this image
- * instead of waiting for a present that will never draw the area again. */
+/** @brief Store the content image of a drained draw area.
+ *
+ * `px` is the crop of the present composed into the area, covering the
+ * rect openpete_fb_snapshot_take_pending_area returned. A later window
+ * copy out of an area that is not the one being drawn crops this image
+ * instead of waiting for a present, and a quad whose texels lie inside the
+ * area samples it. The store takes ownership of `px`; it is freed and
+ * nothing is stored when `idx` is out of range or the size is not
+ * positive. Each store assigns the image a new key.
+ * @param idx Draw area index.
+ * @param px RGBA8 pixels, `pw` by `ph`, tightly packed.
+ * @param pw Image width in pixels.
+ * @param ph Image height in pixels. */
 void openpete_fb_snapshot_store_area(int idx, unsigned char *px, int pw, int ph);
 
 /* Resolve a fed textured quad against the store. `tpage_x`/`tpage_y` are the

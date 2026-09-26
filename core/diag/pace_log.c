@@ -910,12 +910,10 @@ void openpete_pace_census_format(char* buf, unsigned buf_bytes)
     const openpete_pace_census_t* c = &s_census;
 
     if (c->vbls_paced == 0 || c->vbls_clean == 0) {
-        /* An unlocked run (headless fast-forward, Tab, --record-cfr's virtual
-         * clock) never followed the grid, so quoting a phase error against it
-         * would be a number about nothing. Report engagement instead. */
-        /* Either nothing ran against a wall deadline, or everything that did
-         * was a transient. Quoting a phase error against a grid nothing
-         * followed would be a number about nothing; report engagement. */
+        /* No VBL ran against a wall deadline (headless fast-forward, Tab,
+         * --record-cfr's virtual clock), or every paced VBL was a transient,
+         * so no phase error is defined; the line reports VBL, present and
+         * slip counts instead. */
         SDL_snprintf(buf, buf_bytes,
             "unpaced (%llu VBL, %llu present) — no deadline was in force; "
             "slips sim %llu/%llu render %llu/%llu",

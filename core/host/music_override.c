@@ -64,10 +64,18 @@ static int manifest_line(const char* line, int* idx, char* rel, size_t cap)
     return sscanf(line, "%d %1023s", idx, rel) == 2;
 }
 
-/* A mod root's manifest.txt, probed at track start rather than cached:
- * mod roots come and go with the enabled set, the file is a few lines,
- * and a track starts a handful of times per session. Returns 1 and the
- * mapped relative path when `dir` maps `track`. */
+/** @brief Read `<dir>/music/manifest.txt` and report whether any line maps `track`.
+ *
+ * The file is read on every call, not cached, because the set of mod roots
+ * changes with the enabled mods; load_track calls it once per mod root
+ * when a track's cache entry is unloaded. manifest_line writes `rel` for
+ * every valid line, not only matching ones, so on a hit `rel` holds the
+ * mapped path only when no valid line follows the last matching one.
+ * @param dir Mod asset root, without the `music/` suffix.
+ * @param track Music table index.
+ * @param rel Receives the relative path of the last valid line parsed.
+ * @param cap Capacity of `rel`; below 1024 no line parses.
+ * @return 1 when a line maps `track`, else 0 (also when the file is absent). */
 static int manifest_lookup(const char* dir, int track, char* rel, size_t cap)
 {
     char path[1100];
