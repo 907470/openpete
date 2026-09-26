@@ -73,32 +73,23 @@ void dragonstar_native_set_rot_interp(const double* ang_zxy);
 
 /** @brief Portal previews of a sub-tick present.
  *
- * The dome rotation matrix is captured prev+curr per canonical tick and
- * lerped by the spine's sub-tick `alpha` (componentwise, like the camera
- * matrix); each capture's clip rect is rebuilt under the present's camera by
- * its rect rule.
+ * Replays each leaf capture of the last canonical RenderPortals through the
+ * canonical feeders (feed_portal_quad, feed_portal_dome). The dome rotation
+ * matrix is captured prev+curr per canonical tick and lerped by the spine's
+ * sub-tick `alpha` (componentwise, like the camera matrix), snapping to curr
+ * when a component moved more than 1200 in the tick; a dome the canonical feed
+ * drew with the derived matrix re-derives it instead. Each capture's clip rect
+ * is rebuilt under the present's camera by its rect rule. The clip rect
+ * (D_8007AA00) goes through the sub-tick view stage or is restored, and the
+ * GTE rotation registers are restored. Draws nothing when the native scene is
+ * off, nothing was captured, or RP_PORTAL was not drawn on the canonical
+ * present (RenderPortals stops during a level load and leaves a stale capture).
  * @param cpu       guest state, the sub-tick view staged
  * @param alpha     sub-tick fraction between the previous and current tick
  * @param interp_on 1 = camera bracketed, else snap to curr */
 void portal_reextract(struct CPUState* cpu, double alpha, int interp_on);
-/* Terrain: mostly camera-driven (the bracket moves it for free), but poly-anim
- * sectors (env vert INTPL — the Sunny-Flight wall) lerp their decoded vert banks
- * prev→cur by `alpha`; `interp_on` = camera bracketed (else snap to curr). */
 /* terrain_reextract, terrain_native_topdown_pose, terrain_native_sweep_pose:
  * renderer/terrain.h (the shared feeder). */
-/* Compute a whole-level top-down freecam pose from the live sector table:
- * camera at the level bounds' centre, looking straight down (pitch at the
- * freecam clamp), high enough that every sector's bounding sphere projects
- * inside the visible frame. Fills v = {x, y, z, yaw, pitch} in world units.
- * Returns 0 when no level is live (empty sector table). Used by
- * `--freecam-pose topdown` (the per-level perf harness). */
-/* Compute waypoint `corner` (0..3) of a low-altitude flight around the live
- * level: a rectangle inset inside the sector bounds, just above the highest
- * geometry, looking horizontally along the direction of travel. Where the
- * top-down pose reveals a whole level in one frame, flying this reveals it
- * progressively, which is what exercises sector-cache eviction and LOD
- * crossings. Fills v = {x, y, z, yaw, pitch} in world units; returns 0 when
- * no level is live. Used by `--freecam-path sweep0;sweep1;...`. */
 void shadow_reextract(struct CPUState* cpu);
 void shadow_spyro_reextract(struct CPUState* cpu, int slot);
 void player_reextract(struct CPUState* cpu);

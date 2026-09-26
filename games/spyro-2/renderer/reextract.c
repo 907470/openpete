@@ -241,9 +241,10 @@ void spyro_native_prod_camera_leave(void) {}
  *
  * The shadow feeder reads one state block and the record store holds the block
  * each call drew with, so the loop stages that block over the ambient bytes and
- * runs the fan once per record. The anchor is bracketed against the previous
- * tick's, teleport-guarded like the camera, so the shadow slides with the
- * avatar between ticks instead of stepping with it. The staged block is the
+ * runs the fan once per record. When the record lerps, the anchor is
+ * bracketed against the paired previous shadow record's and snaps on a move
+ * over 5000 world units, so the shadow slides with the avatar between ticks
+ * instead of stepping with it. The staged block is the
  * record's shown state (`src`, the led tick's under --runahead).
  *
  * Host-only: the staged span is a view copy and no guest word is written. */
@@ -274,10 +275,10 @@ static void player_record_shadow(CPUState* cpu, int k, uint8_t* shb, double rec_
  * a mirrored copy first, with the height above the surface in the state word,
  * the world Z moved to twice that height below it and its own ordering bias
  * in the sort byte, then the avatar with those three fields restored
- * (asm/nonmatchings/drawutil/func_8001EC5C.s:39-90). Live gamestate at present
- * time therefore describes neither call: the driver put it back. The record
- * store holds each call's own state block (its shown state: the led tick's
- * under --runahead), so the loop stages that block into
+ * (the Spyro 3 decomp's asm/nonmatchings/drawutil/func_8001EC5C.s:39-90).
+ * Live gamestate at present time therefore describes neither call: the driver
+ * put it back. The record store holds each call's own state block (its shown
+ * state: the led tick's under --runahead), so the loop stages that block into
  * the sub-tick view and runs the walk once per record, with the mirrored
  * verdict taken from the record rather than re-read. Reproducing the copy from
  * the capture is what makes it draw on an intermediate present; without it the

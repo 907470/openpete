@@ -12,12 +12,13 @@
 #include "renderer/terrain_game.h"   /* openpete_portal_skyplane */
 #include "renderer/portal_plane.h"    /* openpete_portal_plane_margin */
 
-/** @brief Portal-guard gate (terrain PORTAL_GUARD experiment).
+/** @brief Whether a portal fed sky during the canonical render in flight or the last one presented.
  *
- * Whether a portal fed sky during the canonical render in flight or the last
- * one presented, keyed on the canonical-render epoch so a sub-tick present
- * counts the capture of the scene it re-extracts, runahead speculation
- * included.
+ * Keyed on the canonical-render epoch, so a sub-tick present counts the
+ * capture of the scene it re-extracts, runahead speculation included. The
+ * terrain feeder reads it to gate the portal-guard re-feed
+ * (OPENPETE_PORTAL_GUARD), its deferred-queue oracle, and the GPU terrain
+ * cache's portal-plane fetch.
  * @return 1 when a portal sky feed is recent, 0 otherwise */
 int openpete_portal_sky_recent(void);
 
@@ -38,7 +39,9 @@ int openpete_portal_capture_follows(CPUState* cpu);
  * entry per portal. Freshness is the canonical-render epoch, not
  * openpete_frame, which a runahead speculation's capture leads. Live-derived
  * per call from g_Portals and the camera RAM, so canonical and sub-tick
- * presents each get the plane matching their own camera bracket.
+ * presents each get the plane matching their own camera bracket. A portal
+ * whose outline has a point behind the camera still gets an entry, with pn 0
+ * and an unbounded bbox, when its view-space outline has 3 or more points.
  * @param cpu guest state
  * @param v   the caller's pass view (camera, offset, H)
  * @param out receives the plane entries

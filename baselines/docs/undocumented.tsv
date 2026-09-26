@@ -2,7 +2,7 @@
 # library: libclang 14
 # requirement: @brief of one sentence on one line on every function; @param per named parameter and @return on non-void for external linkage
 # written-by: hook
-# head: f706bc70f44da54ead83849e15638dd7325975db
+# head: ce8ccf6e20ee38f83cd1b862e6af035eac34faf1
 file	function	form	accepted
 core/config/build_id.c	openpete_build_shared_recomp	plain	
 core/config/build_id.c	openpete_build_tagged	plain	
@@ -3550,8 +3550,6 @@ games/common/renderer/terrain.c	terrain_dump	none
 games/common/renderer/terrain.c	terrain_feed_native	none	
 games/common/renderer/terrain.c	terrain_fog_blend	none	
 games/common/renderer/terrain.c	terrain_fog_blend_inner	none	
-games/common/renderer/terrain.c	terrain_native_sweep_pose	plain	
-games/common/renderer/terrain.c	terrain_native_topdown_pose	plain	
 games/common/renderer/terrain.c	terrain_near_emit	none	
 games/common/renderer/terrain.c	terrain_near_emit_face	plain	
 games/common/renderer/terrain.c	terrain_near_emit_tri	none	

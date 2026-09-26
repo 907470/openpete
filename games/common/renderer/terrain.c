@@ -9684,10 +9684,7 @@ static void td_scan_verts(CPUState* cpu, uint32_t verts, int nv, int flat,
         }
     }
 }
-/* Waypoint `corner` of a low-altitude circuit of the level. Shares pass 1 of
- * the top-down pose (true vertex bounds over both LOD banks); skips pass 2,
- * since this camera sits just above the geometry rather than far enough back
- * to frame all of it. */
+/* Pass 1 of the top-down pose only: this camera sits just above the geometry. */
 int terrain_native_sweep_pose(CPUState* cpu, int corner, int32_t v[5]) {
     uint32_t sectorPtr = tenv_rd(cpu, game_layout.env.sector_ptr);
     uint32_t sectorCnt = tenv_rd(cpu, game_layout.env.sector_count);

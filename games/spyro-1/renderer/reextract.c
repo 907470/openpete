@@ -764,8 +764,10 @@ int spyro_moby_cut_held(uint32_t moby) {
  * state all read N-1 through the view, pins the fractional position table to
  * it, and records the moby in the present's held set (spyro_moby_cut_held).
  * Returns 1 when the hold is in force; 0 leaves the canonical tick-N record
- * (the snap). Guest memory is never written — a present the staging arena
- * refuses snaps. */
+ * (the snap) when the pair is not two consecutive ticks (cut_pair_is_tick),
+ * the present has reached alpha 1, the camera cut on this present without a
+ * hold, or the staging arena refuses the record. Guest memory is never
+ * written. */
 static int moby_cut_hold(uint32_t m, const uint8_t* mh,
                          const openpete_interp_obj_t* o, op_time_t now, int kind) {
     const int32_t* pp = (const int32_t*)(o->prev + MOBY_POS);
@@ -1430,19 +1432,20 @@ static int particle_slot_lerp(uint32_t pa, const uint8_t* gh, uint8_t* ph,
     return 1;
 }
 
-/** @brief Per-particle interpolation (g_Particles pool).
+/** @brief Bracket the position of every shown g_Particles slot for a sub-tick present.
  *
- * Lerps each active particle's position by its OWN distinct-roll alpha so
- * smoke / triangles / line particles move at the present rate instead of stepping at
- * the tick rate. Keyed by slot address in the interp-objs table (same store as
- * the mobys); particles spawn into inactive slots → have_prev=0 → snap (no
- * streak from a stale slot), despawns are evicted. Pure LERP of two observed
- * states → never calls the particle update's rand() (which would break gameplay
- * 1:1), so it's safe for the rand-spawned cinders too. NOT the g_Sparkles pool
- * (rand m_Life — no RAM writeback; its twinkle PHASE interps render-side in
- * sparkle_build instead) or glows (they ride their owner moby). Teleport-guard
- * a slot reused by a new particle mid-flight. Under --runahead the particle,
- * sparkle and glow pools are staged as the led capture holds them first.
+ * Each active slot's position is lerped between its snapshot pair at the
+ * slot's own alpha (the present instant against the pair's timestamps), so
+ * smoke, triangle and line particles move at the present rate instead of
+ * stepping at the tick rate. The pair is keyed by slot address in the
+ * interp-objs table, the store the mobys use; a spawn has no previous snapshot
+ * and snaps, and particle_slot_lerp's identity and teleport guards snap a
+ * reused slot. The lerp reads only the two observed states and never runs the
+ * particle update's rand(), so the rand-spawned cinders are covered. The
+ * g_Sparkles pool (twinkle phase lerped in sparkle_build) and the glow pool
+ * (centre on the owner moby, channels lerped in glow_build) get no position
+ * bracket here; under --runahead both are staged as the led capture holds
+ * them, and the g_Particles walk reproduces the led pool (particle_led_slot).
  * Records every slot whose position was bracketed in `save` (at most
  * PART_SAVE_MAX) for the restore and the integrity check.
  * @param save receives the bracketed slots
@@ -1512,9 +1515,10 @@ static int particle_pools_bracket(part_save_t* save) {
 
 /** @brief The sub-tick present body.
  *
- * Always entered through the wrapper below, which owns the view's begin/end
- * pairing — this function has many exit paths and an unpaired view would leave
- * staged bytes visible to the next tick. */
+ * Always entered through the wrapper game_reextract_view_install registers
+ * (renderer/reextract_view.c), which owns the view's begin/end pairing: this
+ * function has many exit paths and an unpaired view would leave staged bytes
+ * visible to the next tick. */
 static void game_reextract_body(void* cpu_v) {
     CPUState* cpu = (CPUState*)cpu_v;
 

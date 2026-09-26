@@ -15,11 +15,35 @@ struct CPUState;
  * of poly-anim sectors, `interp_on` = the camera is bracketed (else snap). */
 void terrain_reextract(struct CPUState* cpu, double alpha, int interp_on);
 
-/* A top-down camera pose (x, y, z in world units, yaw, pitch) that frames the
- * whole level from above; returns 0 when no sector table is loaded. */
+/** @brief A freecam pose that frames the whole live level from above.
+ *
+ * The first pass takes the vertex bounds of every sector over both LOD banks.
+ * The camera sits over the bounds' centre at yaw 0 and pitch 992 (the freecam
+ * drive clamp, about 3 degrees short of straight down); the second pass sets
+ * its height to the lowest at which every vertex projects inside the frame at
+ * the canonical H, plus 2%. The height is clamped to 30000 (world/16), under
+ * the view-Z at which the game's 16-bit frustum stage rejects every sector, so
+ * a level too wide for that height is cropped at the edges. Resolves the named
+ * pose `topdown` of `--freecam-pose` and `--freecam-path`.
+ * @param cpu guest state holding the live sector table
+ * @param v   receives {x, y, z, yaw, pitch}, the position in world units
+ * @return 1 on success, 0 when no sector table is loaded or it holds no vertex */
 int terrain_native_topdown_pose(struct CPUState* cpu, int32_t v[5]);
 
-/* Waypoint `corner` (0..3) of a low-altitude circuit of the level. */
+/** @brief Waypoint `corner` of a low-altitude rectangular circuit of the live level.
+ *
+ * Takes the vertex bounds of terrain_native_topdown_pose's first pass. The
+ * waypoints are the corners of a rectangle centred on the bounds with 30% of
+ * their half-extents, in the order (-x,-y), (+x,-y), (+x,+y), (-x,+y); the
+ * camera rides 64 (world/16) above the highest vertex at pitch 0, yawed toward
+ * the next waypoint. `corner` is taken modulo 4. Flying the circuit reveals the
+ * level progressively, which exercises sector-cache eviction and LOD
+ * crossings. Resolves the named poses `sweepN` of `--freecam-pose` and
+ * `--freecam-path`.
+ * @param cpu    guest state holding the live sector table
+ * @param corner the waypoint index, taken modulo 4
+ * @param v      receives {x, y, z, yaw, pitch}, the position in world units
+ * @return 1 on success, 0 when no sector table is loaded or it holds no vertex */
 int terrain_native_sweep_pose(struct CPUState* cpu, int corner, int32_t v[5]);
 
 /* The visibility table of a game whose world draw computes it in the

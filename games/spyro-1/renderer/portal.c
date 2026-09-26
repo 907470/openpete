@@ -1029,14 +1029,7 @@ static int canon_epoch_recent(uint32_t stamp) {
 int openpete_portal_sky_recent(void) {
     return s_sky_fed && canon_epoch_recent(s_sky_fed_epoch);
 }
-/* Plane provider for the terrain OT-conformance clamp (portal.h). One
- * entry per portal captured by the canonical leaf hooks this/last frame
- * (s_pcap holds a flat AND a dome entry for a close portal — dedup by the
- * Portal*). The plane + bbox are derived LIVE from g_Portals and the camera,
- * NOT from the capture, so the sub-tick reextract's interpolated camera
- * bracket yields a plane consistent with the terrain verts of the same
- * present. `v` is the caller's pass view, so the fit and the terrain it
- * clamps share one camera, offset and H. */
+/* Plane provider for the terrain OT-conformance clamp; documented in portal.h. */
 int openpete_portal_sky_planes(CPUState* cpu, const ngte_view* v, openpete_portal_skyplane* out, int max) {
     /* OPENPETE_PORTAL_PLANES_DBG: name the reason a portal produced no plane
      * entry. Every bail here is silent otherwise, and "no colours at all" was
@@ -1442,8 +1435,9 @@ static int   s_skyout_n = 0;      /* 0 = unavailable -> single-depth fallback */
 
 /** @brief Register the projected outline for the two-region split, oriented CCW by the centroid side.
  *
- * Serves both the dome and the flat-fill paths. Also refreshes s_ring_vz and
- * the portal-guard recency (canonical-render epoch). */
+ * Serves both the dome and the flat-fill paths. Also sets s_ring_vz to the
+ * outline's largest view-Z and stamps the portal-sky recency
+ * openpete_portal_sky_recent reads with the canonical-render epoch. */
 static void register_skyout(const ppt* poly, int pn) {
     double maxvz = 0.0, mx = 0.0, my = 0.0;
     for (int i = 0; i < pn; i++) {
@@ -2713,16 +2707,7 @@ static void portal_replay_rect(CPUState* cpu, const portal_cap_t* c, int rc[4]) 
     rc[2] = (int)floorf(lx0); rc[3] = (int)ceilf(lx1);
 }
 
-/* ---- sub-tick re-extract (high-FPS spine) --------------------------------
- * Replays the captured per-portal decisions on each intermediate present,
- * re-projecting against the spine-interpolated camera. The dome rotation matrix
- * is the prev→curr snapshot pair LERPED by the spine's sub-tick alpha (so the
- * camera rotation AND the portal spin, both baked into the snapshots, interpolate
- * smoothly with no extrapolation). Brackets the two transient inputs the feeders
- * read from RAM/GTE (the per-portal clip rect in D_8007AA00 and the GTE rotation
- * matrix), runs the same feed_portal_quad/feed_portal_dome the canonical path uses,
- * then restores them. Display-only: never perturbs gameplay RAM, never runs
- * headless (the spine doesn't run headless). */
+/* ---- sub-tick re-extract; documented in reextract.h ---- */
 void portal_reextract(CPUState* cpu, double alpha, int interp_on) {
     if (!openpete_native_scene_enabled()) return;
     if (s_pcap_n == 0) return;
