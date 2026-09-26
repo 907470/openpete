@@ -1,8 +1,8 @@
 # function-documentation ratchet baseline (scripts/fences/doc_ratchet.py)
 # library: libclang 14
-# requirement: brief on every function; @param per named parameter and @return on non-void for external linkage
-# written-by: hook
-# head: b0c28d676b6748d92ae1323c42ccc4e066bfb4c0
+# requirement: @brief on every function; @param per named parameter and @return on non-void for external linkage
+# written-by: tighten
+# head: 39d9891f670c9a73f46376a93f389e09383676b2
 file	function	form	accepted
 core/config/build_id.c	openpete_build_shared_recomp	plain	
 core/config/build_id.c	openpete_build_tagged	plain	

@@ -974,6 +974,13 @@ def check_carveouts(root, corpus):
                               else "not in the file"))
 
 
+def header_current(text):
+    """Whether the header's `requirement:` line is REQUIREMENT_LINE. A
+    baseline written under an older line is accepted and rewritten by the
+    next hook or tighten write."""
+    return lib.parse_header(text).get("requirement") == REQUIREMENT_LINE
+
+
 def library_line(text):
     return lib.parse_header(text).get("library") if text else None
 
@@ -1138,7 +1145,8 @@ def mode_hook(root):
         return 1
     for key, row, form in bins["ACCEPTED"]:
         say("doc-ratchet: ACCEPTED  %s  %s  (%s)" % (key, form, accept))
-    if new_rows == before and library_line(source_text) == version:
+    if new_rows == before and library_line(source_text) == version and \
+            header_current(source_text):
         text = source_text
     else:
         text = render_tsv(new_rows, "hook", lib.head_sha(root), version)
@@ -1290,7 +1298,7 @@ def mode_tighten(root):
                                           dirty, before, clean)
     lib.print_bins({"RETIRED": bins["RETIRED"], "FORM": bins["FORM"],
                     "DIRTY": dirty_keys}, quiet=("DIRTY",))
-    if new_rows == before:
+    if new_rows == before and header_current(htext):
         say("doc-ratchet: %s is current (%d rows); nothing written."
             % (TSV, len(new_rows)))
     else:
