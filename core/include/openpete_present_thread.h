@@ -10,8 +10,12 @@
 extern "C" {
 #endif
 
-/* OPENPETE_EAGER=1 enables eager production and the present thread.
- * Off by default until the A/B has priced it. */
+/** @brief Report whether eager production and the present thread are enabled.
+ *
+ * On by default; OPENPETE_EAGER set to a value starting with '0' disables
+ * it, which returns presents to the sim thread and removes the scene ring,
+ * the lag and the present thread together. Read once per process.
+ * @return 1 when enabled, else 0. */
 int  openpete_present_thread_enabled(void);
 /** @brief Return 1 when OPENPETE_EAGER_LATTICE=1 makes the present thread target and compose on the display's fitted vblank lattice.
  *
@@ -23,23 +27,40 @@ int  openpete_present_thread_lattice_enabled(void);
 int  openpete_present_thread_start(void);
 void openpete_present_thread_stop(void);
 
-/* Hand the display to the thread (1) or take it back (0). Taking it back
- * drops every pending scene, waits out a compose in flight, and returns only
- * when the thread will issue nothing further: from then on the calling thread
- * owns the device again. Idempotent. */
+/** @brief Hand the display to the present thread (1) or take it back (0).
+ *
+ * Handing over wakes the thread, which claims the display before its first
+ * present. Taking it back flushes the scene ring, waits out a compose or
+ * flip wait in flight, discards the staged scene, and claims the display
+ * for the caller, which then releases the stage's acquired swapchain image
+ * by presenting it once more; on return the present thread issues nothing
+ * further. Idempotent; a no-op before the thread has started.
+ * @param on 1 to hand the display to the thread, 0 to take it back. */
 void openpete_present_thread_set_active(int on);
 int  openpete_present_thread_active(void);
 
-/* A scene was published: wake the thread so it re-reads the earliest target. */
+/** @brief Wake the present thread after a scene was published so it re-reads the earliest target.
+ *
+ * Signals the thread's condition variable under its mutex; a no-op before
+ * the thread has started. */
 void openpete_present_thread_kick(void);
 
 /* Per-present callback on the present thread (frame-time log, profiler). */
 typedef void (*openpete_present_thread_cb)(void *ctx, int kind, double alpha, int paired);
 void openpete_present_thread_set_callback(openpete_present_thread_cb cb, void *ctx);
 
-/* The display's vblank lattice, v(n) = base + n * period, fitted from
- * observed flips; 1 when locked (vsynced swapchain, present timing on, enough
- * flips seen). The planner puts eager targets on it so a target is a vblank. */
+/** @brief Read the display's vblank lattice v(n) = base + n * period fitted from observed flips.
+ *
+ * The fit locks once the window holds 48 flips and the last 24 fell within
+ * an eighth of a slot of it; that needs a vsynced swapchain, present timing
+ * and OPENPETE_EAGER_LATTICE. The eager planner puts its targets on the
+ * lattice so each target is a vblank. The outputs are written only when
+ * locked.
+ * @param base_ns Receives the time of lattice instant 0 on the op_now()
+ *        clock; may be NULL.
+ * @param period_ns Receives the fitted period; may be NULL.
+ * @return 1 when the lattice is locked, 0 when not or before the thread
+ *         has started. */
 int      openpete_present_thread_lattice(int64_t *base_ns, double *period_ns);
 
 void     openpete_present_thread_report(void);

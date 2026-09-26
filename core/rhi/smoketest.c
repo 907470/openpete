@@ -45,8 +45,16 @@ static uint16_t bgr555(int r, int g, int b, int stp)
     return (uint16_t)((r & 31) | ((g & 31) << 5) | ((b & 31) << 10) | ((stp & 1) << 15));
 }
 
-/* Store an 8-bit CLUT index at texel (u,v): two indices per VRAM word,
- * low byte first — the PSX packing the sampler expects. */
+/** @brief Store an 8-bit CLUT index at texel (u,v) of an 8bpp texture in the VRAM mirror.
+ *
+ * Two indices share one 16-bit VRAM word, the even texel in the low byte:
+ * the PSX packing the sampler decodes. The other byte of the word is kept.
+ * @param vram The 1024x512 VRAM mirror.
+ * @param bx Texture origin x in 16-bit VRAM words.
+ * @param by Texture origin y in VRAM rows.
+ * @param u Texel column.
+ * @param v Texel row.
+ * @param idx CLUT index; the low 8 bits are stored. */
 static void put8(uint16_t *vram, int bx, int by, int u, int v, int idx)
 {
     uint16_t *w = &vram[(by + v) * VRAM_W + bx + (u >> 1)];
@@ -54,7 +62,16 @@ static void put8(uint16_t *vram, int bx, int by, int u, int v, int idx)
     else       *w = (uint16_t)((*w & 0xFF00) |  (idx & 0xFF));
 }
 
-/* Store a 4-bit CLUT index at texel (u,v): four nibbles per word, low first. */
+/** @brief Store a 4-bit CLUT index at texel (u,v) of a 4bpp texture in the VRAM mirror.
+ *
+ * Four indices share one 16-bit VRAM word, texel u in nibble u & 3
+ * counted from the low end. The other nibbles of the word are kept.
+ * @param vram The 1024x512 VRAM mirror.
+ * @param bx Texture origin x in 16-bit VRAM words.
+ * @param by Texture origin y in VRAM rows.
+ * @param u Texel column.
+ * @param v Texel row.
+ * @param idx CLUT index; the low 4 bits are stored. */
 static void put4(uint16_t *vram, int bx, int by, int u, int v, int idx)
 {
     uint16_t *w = &vram[(by + v) * VRAM_W + bx + (u >> 2)];
@@ -62,8 +79,19 @@ static void put4(uint16_t *vram, int bx, int by, int u, int v, int idx)
     *w = (uint16_t)((*w & ~(0xF << sh)) | ((idx & 0xF) << sh));
 }
 
-/* Six verts (two tris) for a quad: (x0,y0) top-left .. (x1,y1) bottom-right,
- * UVs in texel units, one modulate color. */
+/** @brief Write the six vertices of an axis-aligned quad as two triangles.
+ *
+ * Triangles tl-tr-br and tl-br-bl, z 0, all with one modulate colour.
+ * @param o Output array of six vertices.
+ * @param x0 Left edge in clip space.
+ * @param y0 Top edge in clip space.
+ * @param x1 Right edge in clip space.
+ * @param y1 Bottom edge in clip space.
+ * @param u0 Left texture coordinate in texels.
+ * @param v0 Top texture coordinate in texels.
+ * @param u1 Right texture coordinate in texels.
+ * @param v1 Bottom texture coordinate in texels.
+ * @param rgba Modulate colour. */
 static void make_quad(rhi_vertex *o, float x0, float y0, float x1, float y1,
                       float u0, float v0, float u1, float v1, uint32_t rgba)
 {
@@ -75,7 +103,14 @@ static void make_quad(rhi_vertex *o, float x0, float y0, float x1, float y1,
     o[3] = tl; o[4] = br; o[5] = bl;
 }
 
-/* Fill a synthetic PSX VRAM image exercising all three sample paths. */
+/** @brief Fill the VRAM mirror with one 64x64 test texture per sampler depth and their CLUTs.
+ *
+ * 16bpp direct at words (0,0): red rises with u, green with v, blue fixed
+ * at 1 so no texel is the transparent all-zero value. 8bpp at words (64,0):
+ * index ramps 0..255 across u into a 256-entry grey CLUT at row 256, whose
+ * blue channel has bit 0 set so entry 0 is not zero. 4bpp at words (128,0):
+ * index u * 16 / 64 into a 16-colour bar CLUT at row 257.
+ * @param vram The zeroed 1024x512 VRAM mirror. */
 static void build_vram(uint16_t *vram)
 {
     /* 16bpp texture at tpage (0,0): R across, G down, a dim blue floor so

@@ -78,7 +78,7 @@ int feature_registry_dispatch(CPUState* cpu, uint32_t addr) {
                 /* fn returned 0 = "saw it but want the recompiled body
                  * to run too" (titlescreen-pre-shift pattern). Keep
                  * walking in case another feature also hooks this
-                 * addr — last-handler-wins on the return code. */
+                 * addr; the first handler returning nonzero ends it. */
             }
         }
     }

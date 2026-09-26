@@ -937,46 +937,75 @@ int  openpete_options_parse(openpete_options_t* opts, int argc, char** argv);
  *         the ways to name a game. */
 int openpete_options_require_exe_source(const openpete_options_t* opts);
 
-/* Run the main loop. Returns one of OPENPETE_EXIT_*. */
+/** @brief Run the program: boot the guest and drive the host loop until exit.
+ *
+ * Initializes logging, the stderr log mirror and the extraction worker
+ * pool, installs the crash handler, then runs the recompiled-call smoke
+ * test when one is requested. PsyCross builds dispatch the guest entry on a
+ * fiber, with the host loop on a worker thread when the thread split
+ * applies. Builds without PsyCross open an SDL window that only clears and
+ * presents until quit, --frame-limit or --max-seconds.
+ * @param opts The parsed options.
+ * @return One of OPENPETE_EXIT_*. */
 int  openpete_run(const openpete_options_t* opts);
 
-/* Ask for a clean shutdown from anywhere (settings-menu EXIT row, the RHI on an
- * unrecoverable device loss, the SDL window-close path). Sets the cooperative
- * flag the host-fiber loop polls once per iteration, so teardown runs through
- * the normal drain instead of exiting from inside a scene. */
+/** @brief Ask for a clean shutdown from any thread.
+ *
+ * Sets the cooperative flag the host loop polls once per iteration, so
+ * teardown runs through the normal drain instead of exiting from inside a
+ * scene. Callers include the settings menu's exit row and the RHI on an
+ * unrecoverable device loss. */
 void openpete_request_shutdown(void);
 
-/* Live-set the render-fps target (present pacing) at runtime — e.g. from the
- * in-game settings menu. 0 = match sim (~30 Hz). The host loop recomputes the
- * pacer period and re-anchors its deadlines on the next iteration (no catch-up
- * burst). Pure pacing; never perturbs gameplay-readable state. See
- * notes/plans/openpete-ingame-settings-menu.md. */
+/** @brief Set the render-fps target of present pacing at runtime.
+ *
+ * Records the target and flags it; at the top of its next iteration the
+ * host loop sets the render period to 1 s / fps divided by the tick scale,
+ * re-anchors the sim and render deadlines to now (no catch-up burst), and
+ * enables sub-tick interpolation when the render rate exceeds the VBL rate.
+ * 0 selects the match-sim pacer: the render period is the VBL period and
+ * interpolation is off. Pacing only; writes no gameplay-readable state.
+ * @param fps Presents per second; a negative value is read as 0. */
 void openpete_set_render_fps(int fps);
 
-/* The live render-fps target the pacer is currently driving — the resolved
- * launch value (an unset --render-fps defaults to the display refresh rate,
- * windowed) or whatever openpete_set_render_fps last applied. 0 = legacy
- * match-sim pacer. The settings menu seeds its FPS row from this. */
+/** @brief Return the render-fps target the pacer drives.
+ *
+ * The resolved launch value (an unset --render-fps is the display refresh
+ * rate when windowed, 0 headless) or the value openpete_set_render_fps last
+ * set. The settings menu seeds its FPS row from it.
+ * @return Presents per second, or 0 for the match-sim pacer. */
 int openpete_get_render_fps(void);
 
-/* Live tick-scale (engine slow-mo/speed-up; sim and presents together).
- * Clamped to [0.05, 8]. The host loop re-derives every scaled period and
- * re-anchors its deadlines on the next iteration. Pacing only — the sim
- * executes identical ticks on a stretched wall clock. */
+/** @brief Set the engine speed factor, slowing or speeding the sim and presents together.
+ *
+ * At the top of its next iteration the host loop divides the VBL period by
+ * the factor, re-derives the tick, render and slip periods from it and
+ * re-anchors its deadlines. Pacing only: the sim executes identical ticks
+ * on a stretched wall clock, and an unlocked or headless run ignores the
+ * deadlines.
+ * @param scale The factor, clamped to [0.05, 8]. */
 void   openpete_set_tick_scale(double scale);
 double openpete_get_tick_scale(void);
 
-/* Live runahead depth (0 = off, clamped 0..3). The host loop re-arms on its
- * next iteration: the mod-capability gate re-runs on first arm and the
- * ~2 MiB speculation snapshot allocates lazily; the getter returns the
- * APPLIED depth (0 when the gate refused). Presents snap for one tick on a
- * depth change (interp ring reset across the timeline swap). */
+/** @brief Request a runahead depth in ticks at runtime.
+ *
+ * The host loop re-arms at the top of its next iteration. Arming checks
+ * that every enabled mod declares a runahead capability and allocates the
+ * speculation snapshot; a refusal sets the depth to 0. A change of depth
+ * resets the interpolation ring, so presents snap instead of pairing
+ * states from the two timelines. openpete_runahead_get returns the applied
+ * depth.
+ * @param n Depth, clamped to 0..3; 0 disables runahead. */
 void openpete_runahead_set(int n);
 int  openpete_runahead_get(void);
 
-/* Live engine-level mute (SPU AL + XA gain + music WAV override) — the same
- * clamps --mute applies at boot, callable at runtime. Host audio only; the
- * F7 pause exit restores this baseline. */
+/** @brief Mute or unmute host audio at runtime.
+ *
+ * Applies the gains --mute applies at boot: the SPU mixer mute, XA gain,
+ * music override gain and mod one-shot sounds, all held muted while either
+ * this baseline or the skip-to-level fast-forward mute is set. Leaving the
+ * pause toggle re-applies the baseline to the SPU mute. Host audio only.
+ * @param on Nonzero to mute. */
 void openpete_set_mute(int on);
 int  openpete_get_mute(void);
 
@@ -985,16 +1014,24 @@ int  openpete_get_mute(void);
  * host-side REQUEST only: the per-game audio-volume feature reads them on its
  * own tick hook and performs every guest write there, so a UI-thread edit
  * never touches gameplay-readable RAM off-schedule. */
+/** @brief Set the requested in-game sound-effects slider level, the --sfx value.
+ *
+ * Stores a host-side request only; the per-game audio-volume feature writes
+ * the game's volume on its tick hook.
+ * @param v Level 0..10, values above 10 read as 10; negative stores -1,
+ *        which leaves the game's slider alone. */
 void openpete_set_sfx_volume(int v);
 int  openpete_get_sfx_volume(void);
 void openpete_set_music_volume(int v);
 int  openpete_get_music_volume(void);
 
-/* Live controller-vibration strength (0..10, -1 = leave the game's own
- * setting alone) — the --vibration value, re-settable at runtime. Like the
- * sliders above this is a host-side REQUEST: the per-game vibration feature
- * performs the guest write on its tick hook, while the host half (motor
- * amplitude) is applied on the pump thread. */
+/** @brief Set the requested controller-vibration strength, the --vibration value.
+ *
+ * Stores a host-side request with openpete_rumble_set_strength: the
+ * per-game vibration feature writes the game's enable flag on its tick
+ * hook, and the pump thread scales motor amplitude by it.
+ * @param v Strength 0..10, values above 10 read as 10; negative stores -1,
+ *        which leaves the game's own setting alone. */
 void openpete_set_vibration(int v);
 int  openpete_get_vibration(void);
 

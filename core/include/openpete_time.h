@@ -232,9 +232,15 @@ static inline op_period_t op_scaled_vbl_period(double tick_scale) {
     return op_period_from_ns((op_time_t)(ns + 0.5));
 }
 
-/* Current monotonic time, nanoseconds. Strictly increasing across calls
- * on the same thread (we never lie even if the OS source has rounding —
- * the previous-return clamp guarantees it). */
+/** @brief Return the current monotonic time in nanoseconds.
+ *
+ * Under the virtual clock it returns the virtual time. Otherwise it reads
+ * QueryPerformanceCounter (GetTickCount64 when QPC has no frequency) on
+ * Win32, CLOCK_MONOTONIC elsewhere, and clamps to the previous return, one
+ * process-wide value, so the result never decreases across calls from any
+ * thread. A failed clock_gettime returns the previous value. The first
+ * real-clock call initializes the module.
+ * @return Nanoseconds since an arbitrary monotonic epoch. */
 op_time_t op_now(void);
 
 /** @brief Block until op_now() reaches @p deadline_ns.
@@ -251,51 +257,60 @@ op_time_t op_now(void);
  * @param deadline_ns Monotonic deadline in ns. */
 void op_sleep_until(op_time_t deadline_ns);
 
-/* Current safety margin between OS-sleep wake and the real deadline.
- * Defaults: 1500 µs Linux, 2500 µs Windows. Overridable at startup via
- * env var OPENPETE_PACER_SLACK_US (parsed once, lazy-initialized on
- * first call). Larger = more CPU spent spinning but tighter deadline;
- * smaller = less spin but more risk of overshoot when the OS oversleeps. */
+/** @brief Return the margin before a deadline at which op_sleep_until stops OS-sleeping and spins.
+ *
+ * 2500 us on Windows, 1500 us elsewhere, or OPENPETE_PACER_SLACK_US (in
+ * microseconds, negative read as 0), parsed once by op_time_init. A larger
+ * margin spends more CPU spinning and overshoots a deadline less often when
+ * the OS oversleeps.
+ * @return The margin in nanoseconds. */
 op_time_t op_pacer_slack_ns(void);
 
-/* Virtual clock: replace the monotonic source with a counter that only the
- * pacer advances, so op_now() reports *scheduled* time rather than elapsed
- * wall time and op_sleep_until() jumps straight to its deadline instead of
- * blocking. The host loop's sim/present deadlines then land on an exact grid
- * no matter how long a frame actually took to render, which is what an
- * offline capture needs: a software rasterizer that manages 8 fps still
- * produces the same present sequence a 120 fps machine would.
+/** @brief Replace the monotonic source with a counter that only op_sleep_until advances.
  *
- * Everything downstream of op_now() — the interpolation stamps, the present
- * PLL, the world-liveness gate — follows the same clock, so sub-tick alphas
- * land on exact fractions of a tick. Once enabled it stays enabled for the
- * process; there is no coherent way back to wall time mid-run.
- *
- * `start_ns` seeds the clock. Pass something comfortably above zero: several
- * consumers treat a zero timestamp as "unset". */
+ * op_now() then reports scheduled time rather than elapsed wall time, and
+ * op_sleep_until() moves the counter to its deadline instead of blocking.
+ * The host loop's sim and present deadlines land on an exact grid however
+ * long a render took, so an offline capture produces the same present
+ * sequence on a slow software rasterizer as on a fast GPU. Every consumer
+ * of op_now() (interpolation stamps, the present PLL, the world-liveness
+ * gate) follows the same clock, so sub-tick alphas land on exact fractions
+ * of a tick. There is no disable: the clock stays virtual for the process.
+ * @param start_ns Initial clock value; a value <= 0 is replaced by one
+ *        second, since several consumers read a zero timestamp as unset. */
 void op_virtual_clock_enable(op_time_t start_ns);
 
-/* Non-zero while the virtual clock is driving op_now(). */
+/** @brief Report whether the virtual clock drives op_now().
+ *
+ * @return 1 after op_virtual_clock_enable, else 0. */
 int  op_virtual_clock_active(void);
 
-/* One-shot init: requests timer-resolution boosts (Win32
- * timeBeginPeriod(1)) and probes for high-resolution waitable timers.
- * Idempotent. Optional — op_now / op_sleep_until self-init on first
- * call, but callers that want startup latency out of the hot loop can
- * call this explicitly. */
+/** @brief Initialize the clock module: the sleep margin, and on Win32 the QPC frequency and timer.
+ *
+ * Parses OPENPETE_PACER_SLACK_US. On Win32 it reads the QPC frequency and
+ * creates a high-resolution waitable timer (Windows 10 1803 and later);
+ * when that fails it requests a 1 ms system timer period with
+ * timeBeginPeriod(1) for the Sleep fallback. Idempotent until
+ * op_time_shutdown. op_now, op_sleep_until and op_pacer_slack_ns call it on
+ * first use; calling it early moves that cost out of the host loop. */
 void op_time_init(void);
 
-/* One-shot teardown: releases any OS resources acquired by op_time_init
- * (Win32 timeEndPeriod, waitable-timer handle). Idempotent. */
+/** @brief Release the clock module's OS resources and mark it uninitialized.
+ *
+ * On Win32 it closes the probe timer and every per-thread waitable timer
+ * and pairs timeBeginPeriod with timeEndPeriod. Idempotent. The per-thread
+ * timer handles are not cleared from their threads, so a later sleep on a
+ * thread that slept before fails to arm its closed timer and spins the
+ * whole wait. */
 void op_time_shutdown(void);
 
-/* Cancel any in-flight op_sleep_until on Win32 by force-signalling the
- * shared waitable timer. Callers that want to wake a sleeping thread
- * during shutdown (e.g. the ticker thread join in openpete_ticker_stop)
- * use this to bound shutdown latency at a few µs instead of waiting
- * for the natural period boundary. No-op on POSIX — clock_nanosleep is
- * already bounded by the deadline, and the natural period (~17 ms) is
- * acceptable shutdown latency there. */
+/** @brief Wake every thread blocked in the OS-sleep stage of op_sleep_until on Win32.
+ *
+ * Sets each per-thread waitable timer with a zero due time, which signals
+ * it; CancelWaitableTimer would not release a waiter. The woken thread
+ * then spins the rest of its wait to the deadline. Lets a shutdown join a
+ * sleeping thread without waiting out the sleep. No-op before op_time_init
+ * and on POSIX, where the sleep is bounded by its deadline. */
 void op_time_wake_pending_sleeps(void);
 
 #ifdef __cplusplus

@@ -101,10 +101,12 @@ static int s_enabled = -1;
  * render still finishes 0.6 ms before the following instant. */
 enum { PT_COMPOSE_GUARD_NS = 900000, PT_MIN_LEAD_NS = 800000, PT_FLIP_HOLDOFF = 3 };
 
-/* OPENPETE_PT_DBG=1: a per-iteration trace of the present thread's timing
- * decisions (waits, composes, lattice fits) to stderr, in microseconds
- * relative to the lattice base, bounded at PT_DBG_MAX lines. Diagnostic
- * only; it is how every finding in this file was made. */
+/** @brief Report whether OPENPETE_PT_DBG enables the present thread's timing trace.
+ *
+ * The trace writes the thread's waits, composes and lattice fits to stderr
+ * in microseconds relative to the lattice origin, bounded at PT_DBG_MAX
+ * lines. Any value not starting with '0' enables it; read once.
+ * @return 1 when the trace is on, else 0. */
 static int pt_dbg(void)
 {
     static int on = -1;
@@ -216,7 +218,12 @@ static void lattice_observe(uint64_t id, op_time_t t, double seed_period)
                 (unsigned long long)id, (long long)n, resid / 1000.0, p / 1000.0, s_lat.base / 1000.0, s_lat.cnt, s_lat.locked);
 }
 
-/* Next lattice instant at or after `t` (mutex held). */
+/** @brief Return the first lattice instant at or after t; the mutex is held.
+ *
+ * An instant up to a millionth of a slot before t counts as at t, so a t
+ * computed from the lattice does not round up a whole slot.
+ * @param t Time on the op_now() clock.
+ * @return The lattice instant in nanoseconds. */
 static op_time_t lattice_ceil_locked(op_time_t t)
 {
     const double rel = (double)(t - s_lat.t0);
@@ -259,10 +266,17 @@ int openpete_present_thread_lattice_enabled(void)
     return on;
 }
 
-/* Sleep until `t`, but wake early on a kick/deactivate/quit. Coarse
- * condvar waits for the bulk, a spin-capable hybrid for the last stretch:
- * at 480 Hz a slot is 2.08 ms and a millisecond timer is too blunt. Called
- * with the mutex held; returns with it held. */
+/** @brief Wait toward t with the mutex held, returning early on a kick, a deactivation or quit.
+ *
+ * Returns at once when the thread is quitting or inactive or t has passed.
+ * With more than 4 ms left it makes one condition-variable wait of the time
+ * left less 3 ms, in whole milliseconds, and returns so the caller
+ * re-evaluates its target, since a kick may have published an earlier one.
+ * With 4 ms or less left it releases the mutex for an op_sleep_until(t),
+ * whose spin tail lands within tens of microseconds: at 480 Hz a slot is
+ * 2.08 ms and a condition-variable timeout oversleeps by a millisecond or
+ * more on Windows. Returns with the mutex held.
+ * @param t Target time on the op_now() clock. */
 static void wait_until_locked(op_time_t t)
 {
     for (;;) {
@@ -289,8 +303,11 @@ static void wait_until_locked(op_time_t t)
     }
 }
 
-/* The vsynced slot, from the swapchain's refresh (0 = unknown / not FIFO,
- * or the lattice is not enabled: then there is nothing to lead). */
+/** @brief Return the display refresh period that composes lead their vblank by.
+ *
+ * @return 1e9 / the swapchain refresh rate in nanoseconds; 0 when
+ *         OPENPETE_EAGER_LATTICE is off, the refresh rate is unknown, or
+ *         the swapchain is not vsynced. */
 static double display_slot_ns(void)
 {
     if (!openpete_present_thread_lattice_enabled()) return 0.0;
@@ -299,13 +316,18 @@ static double display_slot_ns(void)
     return 1e9 / (double)hz;
 }
 
-/* Wait for the flip of the present last queued, at most until `bound`.
- * Called with the mutex held; releases it for the wait. Observing the flip
- * is what feeds the lattice, and it is also this thread's natural wake-up:
- * the scene for the next vblank is composed as soon as the previous one has
- * flipped. Counts as busy -- the swapchain is externally synchronised, so
- * the deactivating thread must not present while this wait is inside the
- * driver. */
+/** @brief Wait for the flip of the newest queued present, at most until bound; the mutex is held.
+ *
+ * Returns at once when bound has passed. Otherwise it marks the thread busy
+ * (the swapchain is externally synchronised, so a deactivating thread must
+ * not present while this wait is inside the driver), releases the mutex
+ * for one blocking present wait, then relocks and signals idle. An observed
+ * flip feeds the lattice fit and the pace log; this is also the thread's
+ * wake-up, since the scene for the next vblank is composed as soon as the
+ * previous one has flipped. A wait that runs to its bound is counted with
+ * its overrun and suppresses flip waits for the next PT_FLIP_HOLDOFF
+ * presents. Every outcome clears flip_pending.
+ * @param bound Latest wake time on the op_now() clock. */
 static void wait_flip_locked(op_time_t bound)
 {
     const op_time_t now = op_now();
@@ -366,11 +388,13 @@ static void wait_flip_locked(op_time_t bound)
     }
 }
 
-/* The present instant for a frame targeted at `target`: a guard after the
- * vblank before it (any earlier and a fit error could let the frame slip
- * onto that vblank instead; any later and the acquire + blit could miss
- * its own). OPENPETE_PT_GUARD_US overrides the guard, for measurement.
- * Mutex held. */
+/** @brief Return how long after the vblank before a target the present is issued.
+ *
+ * compose_at_locked places the present one slot before the target plus this
+ * guard: earlier, a lattice fit error could put the image on the previous
+ * vblank; later, the acquire and blit could miss the target's own.
+ * PT_COMPOSE_GUARD_NS, or OPENPETE_PT_GUARD_US in microseconds, read once.
+ * @return The guard in nanoseconds. */
 
 static op_time_t compose_guard_ns(void)
 {

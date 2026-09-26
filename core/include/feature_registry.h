@@ -62,16 +62,27 @@ extern const size_t                  openpete_feature_count;
 
 void feature_registry_apply_options(const openpete_options_t* opts);
 
-/* Register the resident-overlay probe consulted for entries carrying a
- * nonzero `overlay`. The overlay id is a per-game concept, so the registry
- * reaches it through this pointer instead of naming the game's table. The
- * probe is called only after an address match, never on the dispatch hot
- * path. Unregistered, every qualified entry stays inert. */
+/** @brief Register the resident-overlay probe consulted for entries carrying a nonzero `overlay`.
+ *
+ * The overlay id is a per-game concept, so the registry reaches it through
+ * this pointer instead of naming the game's table. The probe is called only
+ * after an address match, never on the dispatch hot path. Unregistered (or
+ * NULL), every qualified entry stays inert. A later call replaces the probe.
+ * @param fn Returns the id of the overlay resident in guest RAM. */
 void feature_registry_set_overlay_probe(uint32_t (*fn)(void));
 
-/* Walks each registered feature's dispatch_table for a matching addr.
- * Returns 1 if a feature handled the call (caller should skip the
- * recompiled body), 0 otherwise. */
+/** @brief Run the feature hooks registered for a guest function address.
+ *
+ * Walks every module of openpete_features in list order and every entry of
+ * its dispatch_table. A matching entry with a nonzero `overlay` runs only
+ * while the probe reports that overlay resident. The walk stops at the
+ * first hook that returns nonzero; a hook returning 0 lets later matches
+ * run and the recompiled body run after them. Under --profile-out each
+ * hook's time accumulates in a `hook.<module name>` bucket.
+ * @param cpu Guest CPU state passed to the hooks.
+ * @param addr PSX address of the function being entered.
+ * @return 1 when a hook handled the call and the caller skips the
+ *         recompiled body, else 0. */
 int  feature_registry_dispatch(CPUState* cpu, uint32_t addr);
 
 #ifdef __cplusplus

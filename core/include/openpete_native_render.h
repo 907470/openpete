@@ -157,9 +157,14 @@ const char* openpete_native_render_present_mode(void);
  * that owns the window. No-op until the native window is up, so it is inert
  * in headless and PsyCross-only runs. */
 void openpete_native_toggle_fullscreen(void);
-/* Thread-safe request form: raises a flag the host loop services on the
- * window-owning thread. Use this from the menu / overlay / any non-window
- * thread; call the toggle directly only from the window's own thread. */
+/** @brief Request a windowed/fullscreen toggle from any thread.
+ *
+ * Raises a flag that openpete_native_toggle_fullscreen services on the
+ * thread owning the window: main under the thread split, else the host
+ * loop. SDL_SetWindowFullscreen belongs to that thread; on Win32 a
+ * cross-thread call sends a message into a pump that may be busy, or
+ * misdelivers the resize. Callers include the settings menu and the dev
+ * overlay's knob row. */
 void openpete_native_request_fullscreen_toggle(void);
 
 /** @brief Return whether the native window is in borderless-desktop fullscreen.

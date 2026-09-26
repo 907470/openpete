@@ -229,9 +229,7 @@ int g_openpete_interp_enabled = 1;
  * the game fiber and vblank thread still mid-flight). */
 static volatile sig_atomic_t g_shutdown_requested = 0;
 
-/* Public request for a clean shutdown (the host-fiber loop polls
- * g_shutdown_requested and tears down through the normal path). Used by the RHI
- * on an unrecoverable VK_ERROR_DEVICE_LOST instead of spinning failed frames. */
+/* Sets g_shutdown_requested; documented at the declaration. */
 void openpete_request_shutdown(void) { g_shutdown_requested = 1; }
 
 /* Set by the SDL event filter on a window double-click; consumed once per host
@@ -244,13 +242,7 @@ static volatile sig_atomic_t g_native_fs_toggle_request = 0;
  * host-loop iteration — both on this thread, so a plain int is enough. */
 static int s_screenshot_request = 0;
 
-/* Ask for a windowed <-> fullscreen toggle from any thread.
- * SDL_SetWindowFullscreen belongs to the thread that owns the window (on
- * Win32 a cross-thread call SendMessages into a pump that may be busy, or
- * silently misdelivers the resize), so callers that are not that thread —
- * the settings menu on the sim worker, the dev overlay's knob row on the
- * presenting thread — raise this request and the host loop routes it: under
- * the thread split main performs the SDL call, unsplit the host loop does. */
+/* Raises g_native_fs_toggle_request; documented at the declaration. */
 void openpete_native_request_fullscreen_toggle(void)
 {
     g_native_fs_toggle_request = 1;
@@ -279,10 +271,14 @@ extern int      op_gpu_audit_names(const char **out, int max);
 extern unsigned op_gpu_audit_map_writes(void);
 extern unsigned long long op_gpu_audit_map_bytes(void);
 
-/* OPENPETE_GPU_AUDIT_SELFTEST=1 arms the guest flag around exactly one real
- * present. "Zero Vulkan calls during guest execution" is only worth reading
- * from a build that can be shown catching the calls it says never happen; a
- * mis-wired macro set reports the same zero as a genuinely clean tick. */
+/** @brief Return 1 once per process when OPENPETE_GPU_AUDIT_SELFTEST asks to audit one real present.
+ *
+ * The caller sets g_openpete_guest_running around that native present, so
+ * the GPU audit records its Vulkan calls. A reading of zero Vulkan calls
+ * during guest execution is evidence only from a build shown to catch
+ * calls; a mis-wired macro set reports the same zero as a clean tick.
+ * @return 1 on the first call with the variable set to a value not starting
+ *         with '0', else 0. */
 static int gpu_audit_selftest_arm(void)
 {
     static int state = -1;
@@ -315,13 +311,19 @@ static int openpete_thread_split_enabled(void)
     return v;
 }
 
-/* Every windowed play configuration splits: pure vk, and psycross display
- * mode, where PsyCross rasterizes on the worker through the GL context that
- * bring-up created on main (run_split_threaded hands it across). Headless and
- * screenshot capture stay single-threaded: those are the modes every gate
- * runs in, and a modal window loop cannot reach them. Without the split the
- * sim shares main with the window's message pump, and a Win32 move or size
- * loop parks it for the whole gesture. */
+/** @brief Decide whether the host loop runs on a worker thread while main pumps the window.
+ *
+ * Every windowed play configuration splits: the vk renderer, and the
+ * psycross renderer, where PsyCross rasterizes on the worker through the GL
+ * context bring-up created on main (run_split_threaded hands it across).
+ * Headless runs, screenshot captures (--screenshot-on-frame,
+ * --screenshot-presents-start) and legacy host input stay single-threaded;
+ * the gates run in those modes and no modal window loop reaches them.
+ * Without the split the sim shares main with the message pump, and a Win32
+ * move or size loop parks it for the whole gesture.
+ * @param opts The parsed options.
+ * @return true when the split is enabled (OPENPETE_THREAD_SPLIT) and the
+ *         configuration qualifies. */
 static bool openpete_split_applies(const openpete_options_t* opts)
 {
     return openpete_thread_split_enabled()
@@ -351,25 +353,17 @@ static bool openpete_handle_event(SDL_Event* ev);
  * host loop seeds it from the current tick on its first pass instead. */
 static SDL_AtomicU32 g_mouse_last_activity_ms;
 
-/* Cursor follows who owns the mouse. PsyCross used to hide it outright
- * whenever it owned a window, but it no longer creates one in the default
- * path, so the OS cursor sat over the game — including borderless fullscreen.
- * Hiding it unconditionally is wrong the other way: the dev overlay and the
- * settings menu are mouse-driven and need it back, and a player reaching for
- * the window controls needs to see where the pointer is. So over the game it
- * hides once the mouse has been still for CURSOR_IDLE_HIDE_MS and comes back
- * on the next mouse event.
+/** @brief Show or hide the OS cursor by who owns the mouse and how long it has been still.
  *
- * MUST run on the thread that owns the window. SDL's Win32 backend paints a
- * visibility change with SetCursor(), which only affects the calling thread's
- * windows; called from the sim worker it silently does nothing, and the
- * hidden state then waits for a WM_SETCURSOR — which only arrives on mouse
- * movement, the very thing that un-hides it again. Net effect off-thread: the
- * cursor never disappears. (The old unconditional hide survived that bug
- * because every later WM_SETCURSOR kept re-applying the same NULL cursor.)
- *
- * Edge-triggered, so this is one SDL call per transition rather than one per
- * iteration. */
+ * The cursor shows while the dev overlay is open or wants the mouse, while
+ * the settings menu is open, and for CURSOR_IDLE_HIDE_MS after the last
+ * mouse event; otherwise it hides over the game. The first call starts the
+ * idle clock. Edge-triggered: one SDL call per transition. Must run on the
+ * thread that owns the window: SDL's Win32 backend applies visibility with
+ * SetCursor(), which affects only the calling thread's windows, so an
+ * off-thread hide never takes effect until a WM_SETCURSOR, which only mouse
+ * movement sends and which un-hides it again.
+ * @param headless A headless run returns at once. */
 static void openpete_cursor_update(bool headless)
 {
     enum { CURSOR_IDLE_HIDE_MS = 2000 };
@@ -405,14 +399,20 @@ static void openpete_pump_events(void) {
     openpete_rumble_apply();
 }
 
-/* Handle one dequeued event. Returns true to pass it on to PsyCross, false to
- * consume it here.
+/** @brief Handle one event dequeued by the event pump and decide whether PsyCross also sees it.
  *
- * This used to be an SDL event *filter*, which ran at push time and dropped
- * events before they were ever queued — necessary back when PsyCross owned the
- * pump and the only way to keep an event away from it was to stop it existing.
- * Now that openpete owns the only pump, consuming an event is just declining
- * to forward it, and everything runs in one place in a defined order. */
+ * In order: the input lock drops physical-device events; the mouse channel
+ * and the dev overlay see every remaining event; a joystick arrival is
+ * reported against the mapping databases; mouse activity re-arms the
+ * cursor idle timer. Quit and window close set the shutdown flag and are
+ * consumed, so PsyX_Exit stays unreachable. A left double-click raises the
+ * fullscreen toggle request unless the overlay, the menu, a mouse capture
+ * or a mouse:left binding claims it. Escape closes an open dev overlay or
+ * settings menu and is consumed until release; the quit binding shuts
+ * down; an Escape left over is consumed so it cannot reach PsyCross's debug
+ * keys.
+ * @param ev The event.
+ * @return true to forward the event to PsyCross, false when consumed. */
 static bool openpete_handle_event(SDL_Event* ev) {
     /* The input lock discards an event from a physical input device before
      * any consumer below sees it. Quit and window events are not input and
@@ -1051,10 +1051,15 @@ static void stamp_psx_pad_bindings(void) {
 }
 #endif
 
-/* Point PsyCross's CDFS at the sector image behind --disc, so CdRead has
- * real data. The path may be the cue or the bin itself; the resolver
- * covers both and reports every candidate it tried. Returns 0 on success,
- * an OPENPETE_EXIT_* code when the image cannot be resolved. */
+/** @brief Point PsyCross's CD reads at the sector image behind --disc.
+ *
+ * The path may be the cue or the bin; the resolver covers both and the
+ * error names every candidate it tried. With --disc-cache the image is read
+ * into memory by openpete_disc_cache_attach; when that is off or fails,
+ * PsyX_CDFS_Init opens the file.
+ * @param opts The parsed options; disc_path must be set.
+ * @return OPENPETE_EXIT_OK, or OPENPETE_EXIT_SETUP_ERROR when no readable
+ *         image resolves. */
 static int attach_disc_image(const openpete_options_t* opts) {
     char bin[4096], tried[4096];
     if (openpete_psx_resolve_disc_bin(opts->disc_path, bin, sizeof bin,
@@ -1319,7 +1324,14 @@ static void eager_init(void)
     s_eager.lag_pin = (g && *g) ? (op_time_t)atoll(g) * 1000 : 0;
 }
 
-/* Next lattice instant at or after `t`: v(n) = base + n * period. */
+/** @brief Return the first instant of the lattice v(n) = base + n * period at or after t.
+ *
+ * An instant up to a millionth of a period before t counts as at t, so a t
+ * already on the lattice does not round up a whole period.
+ * @param t Time on the op_now() clock.
+ * @param base Time of lattice instant 0.
+ * @param period Lattice period in nanoseconds.
+ * @return The lattice instant in nanoseconds. */
 static op_time_t eager_lattice_ceil(op_time_t t, int64_t base, double period)
 {
     const double n = ceil((double)(t - base) / period - 1e-6);
@@ -1510,8 +1522,17 @@ static void eager_plan(op_time_t now, op_time_t first, op_time_t period,
     s_eager.spans++;
 }
 
-/* Produce one scene for instant `t`. The canonical scene (first of the
- * span) also carries the tick boundary for mods and the canon-lag leg. */
+/** @brief Extract one scene for display instant t and publish it into the scene ring.
+ *
+ * Syncs the VRAM mirror (the guest is idle), sets the interpolation present
+ * target to the animation instant t - lag, runs the re-extract, flushes the
+ * mods' present work and publishes the scene tagged with t, its kind and
+ * alpha; a published scene kicks the present thread, a refused one counts
+ * as refused. The canonical scene, first of the span, also raises
+ * g_openpete_canon_lag_leg for the re-extract. The scene's production time
+ * updates the cost mean and deviation that eager_tail_cost reads.
+ * @param t Display instant on the op_now() clock.
+ * @param canonical Nonzero for the span's canonical scene. */
 static void eager_produce_one(op_time_t t, int canonical)
 {
     extern int g_openpete_canon_lag_leg;
@@ -1556,8 +1577,16 @@ static void eager_produce_one(op_time_t t, int canonical)
     if (s_eager.cost_n < EAGER_COST_WARMUP) s_eager.cost_n++;
 }
 
-/* Produce planned scenes while they fit before `deadline`. Scene-atomic:
- * the check is between scenes. Returns the number produced. */
+/** @brief Produce the span's planned scenes in order while they fit before deadline.
+ *
+ * The canonical scene, first of the span, is always produced. A later scene
+ * is skipped when its instant is more than half a period past; the walk
+ * stops when the scene ring has one free slot or less, or when the tail
+ * cost of one more scene would pass the deadline, and resumes from the same
+ * scene on the next call. The checks run between scenes only.
+ * @param deadline Time by which production must stop.
+ * @param period Render-grid period in nanoseconds.
+ * @return The number of scenes produced. */
 static int eager_produce(op_time_t deadline, op_time_t period)
 {
     int made = 0;
@@ -1647,13 +1676,18 @@ static void game_fiber_entry(void) {
     while (1) co_switch((cothread_t)openpete_host_fiber);
 }
 
-/* Frame-time-log: write one 32-byte record per ACTUAL present — both the
- * canonical sim-tick present and each high-FPS sub-tick (intermediate) present.
- * The deadline advances by one target period per present (records_written), so
- * with --render-fps N the log captures the true ~N Hz present cadence; before,
- * only canonical presents were logged, so a 480 fps run read as ~30 Hz. The
- * `frame` field carries openpete_frame as cross-reference metadata (it repeats
- * across a tick's sub-ticks; measure-pacing.py keys off op_now_ns deltas). */
+/** @brief Write one frame-time-log record for a present, canonical or sub-tick.
+ *
+ * The record's deadline is start_ns plus one period per record already
+ * written, so under --render-fps N the log carries the N Hz present
+ * cadence; its slack is the deadline minus op_now(). No-op when the log
+ * is not open.
+ * @param log The frame-time log.
+ * @param start_ns Time of the log's first deadline.
+ * @param period_ns Target present period in nanoseconds.
+ * @param frame openpete_frame, cross-reference only: it repeats across a
+ *        tick's sub-tick presents, and measure-pacing.py keys on the
+ *        timestamps. */
 static void ftl_record_present(openpete_frame_time_log_t* log,
                                int64_t start_ns, int64_t period_ns,
                                uint32_t frame)
@@ -1952,10 +1986,7 @@ int  openpete_get_sfx_volume(void)    { return s_sfx_volume; }
 void openpete_set_music_volume(int v) { s_music_volume = clamp_volume(v); }
 int  openpete_get_music_volume(void)  { return s_music_volume; }
 
-/* --vibration. Unlike the sliders this one has two halves: the guest enable
- * flag (stamped by the per-game feature on its tick hook) and the host motor
- * amplitude (applied on the pump thread). Both read the same request, so a
- * dev-overlay edit moves them together. */
+/* --vibration: one request feeds the guest enable flag and the motor amplitude. */
 void openpete_set_vibration(int v) { openpete_rumble_set_strength(clamp_volume(v)); }
 int  openpete_get_vibration(void)  { return openpete_rumble_get_strength(); }
 
@@ -2676,11 +2707,13 @@ static uint16_t s_p1_stage_first_read_bits = 0;
 static unsigned char s_p1_stage_first_staged_axes[4] = {0};
 static unsigned char s_p1_stage_first_read_axes[4] = {0};
 
-/* The action that keeps reading the keyboard while the dev overlay holds it.
- * imgui's nav focus covers the whole panel for as long as it is open, so
- * suspending every keyboard action would make the key that opened the panel
- * unable to close it; a focused text field must swallow that key too, and
- * then nothing is exempt. */
+/** @brief Return the action that keeps reading the keyboard while the dev overlay holds it.
+ *
+ * imgui's nav focus covers the whole panel while it is open, so suspending
+ * every keyboard action would leave the key that opened the panel unable to
+ * close it. A focused text field must swallow that key too.
+ * @return OPK_DEVUI, or OPK_ACTION_COUNT (no exempt action) while a text
+ *         field takes input. */
 static openpete_action_t devui_suspend_exempt(void) {
     return openpete_devui_wants_text_input() ? OPK_ACTION_COUNT : OPK_DEVUI;
 }
