@@ -19,8 +19,19 @@ void openpete_handoff_init(const char* resume_path, int argc, char** argv);
  * menu's "brief restart" tier.) */
 void openpete_handoff_request(void);
 
-/* Run-loop quiescent point: performs the pending resume (first call of
- * a --resume-handoff process) or the pending checkpoint+exec. */
+/** @brief Run the pending handoff leg at a run-loop quiescent point.
+ *
+ * On the first call of a --resume-handoff process, loads the handoff file,
+ * restores openpete_frame, deletes the file, and disarms the checkpoint leg
+ * so a frame trigger that fired in the previous process does not fire
+ * again; a failed load logs an error and the process continues from its
+ * fresh state. Otherwise, when a handoff was requested or the
+ * OPENPETE_HANDOFF_AT frame is reached, saves a checkpoint to
+ * handoff.state in the savestate directory and execs /proc/self/exe with
+ * the original argv plus --resume-handoff (POSIX only; Windows logs an
+ * error). Each leg runs at most once per process; a failed save or execv
+ * logs an error and the current process keeps running.
+ * @param cpu Guest CPU state the checkpoint saves and the resume restores. */
 void openpete_handoff_poll(CPUState* cpu);
 
 #ifdef __cplusplus

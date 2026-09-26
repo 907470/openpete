@@ -144,11 +144,20 @@ typedef struct {
 
 int openpete_psxtrace_open(openpete_psxtrace_t* t, const char* path);
 
-/* Returns:
- *    1 - record consumed (check t->diverged for verdict)
- *    0 - EOF (no more records)
- *   -1 - parse/IO error
- */
+/** @brief Read the next reference record and compare openpete's region hashes against it.
+ *
+ * Called at each hash anchor. Checks the record's VBL delta against
+ * openpete's when the trace carries stamps, applies the
+ * OPENPETE_PSXTRACE_POKE negative control, then hashes every manifest
+ * region and compares per region. A mismatch sets @c diverged; a mismatch
+ * in a region that is neither transient nor neutral, a CD-load transient
+ * that outlives @c heal_window, a VBL-delta mismatch under the exact
+ * policy, or a failed schedule sets @c hard_failed, which decides the exit
+ * code. Inside a scheduler load window the record is consumed without a
+ * compare.
+ * @param t Trace opened by openpete_psxtrace_open().
+ * @return 1 when a record was consumed, 0 at EOF, -1 on a parse or I/O
+ *         error. */
 int openpete_psxtrace_advance(openpete_psxtrace_t* t);
 
 /* Call once after the last advance() (EOF). Any cd_load_transient region

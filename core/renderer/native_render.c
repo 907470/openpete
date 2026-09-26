@@ -2598,13 +2598,18 @@ static bool scene_has_world(const scene_tri_t* scene, int n) {
     return false;
 }
 
-/* True if the presented scene holds a triangle the game's own render produced.
- * The frame's content verdict: an empty scene composes the PSX VRAM framebuffer
- * instead, which is what a frame the game drew nothing on must show. Host-added
- * geometry is excluded, so a moby the extended-LOD reveal appended cannot turn
- * such a frame into a rendered scene — on the menu screens that suppress the
- * framebuffer clear, doing so replaces the game's own output with the retained
- * backdrop of an earlier frame. */
+/** @brief Test whether the presented scene holds a triangle the game's own render produced.
+ *
+ * The scene-content test of the compose, the window render and the
+ * freeze-source check: a scene without one composes the PSX VRAM
+ * framebuffer instead, which is what an image the game drew nothing on
+ * shows. Host-added geometry is excluded, so a moby the extended-LOD reveal
+ * appended cannot turn such an image into a rendered scene; on the menu
+ * screens that suppress the framebuffer clear, that would replace the
+ * game's own output with the retained backdrop of an earlier image.
+ * @param scene Scene triangles.
+ * @param n Triangle count.
+ * @return true when any triangle is not host-added. */
 static bool scene_has_game_tris(const scene_tri_t* scene, int n) {
     for (int t = 0; t < n; t++)
         if (!scene[t].host_added) return true;

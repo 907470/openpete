@@ -153,6 +153,12 @@ static unsigned short s_pulse_bit;
 static int64_t  s_pulse_t0;
 static int      s_pulse_fired;       /* pulses whose press instant has passed */
 
+/** @brief Parse the OPENPETE_INPUT_PULSE* variables on first call and report whether the timed pulse source is on.
+ *
+ * Reads the pulse count, the hold (default 20 ms), the gap (default 117 ms)
+ * and the button bit (default 0x0100, L2), and logs the schedule once when
+ * the count is positive.
+ * @return Non-zero when at least one pulse is configured. */
 static int pulse_on(void)
 {
     if (s_pulse_n < 0) {
@@ -167,9 +173,9 @@ static int pulse_on(void)
         s_pulse_hold_ns = (h && *h) ? atoi(h) * 1000 : 20 * 1000 * 1000;
 
         const char* g = getenv("OPENPETE_INPUT_PULSE_GAP_US");
-        /* Deliberately NOT a whole number of grid periods: an interval that
-         * divides the period would place every press at the same phase and
-         * the sweep would report a clean result over one bin. */
+        /* 117 ms is within 6 us of seven VBL periods, so the default gap
+         * alone places every press at nearly the same phase; pulse_apply's
+         * per-pulse jitter is what spreads the presses across the period. */
         s_pulse_gap_ns = (g && *g) ? atoi(g) * 1000 : 117 * 1000 * 1000;
 
         const char* b = getenv("OPENPETE_INPUT_PULSE_BIT");
@@ -441,19 +447,20 @@ static void vgamepad_maybe_attach(void)
         if (s_vpads[v]) vpad_selfprobe(v, vpad_ids[v]);
 }
 
-/* Arm one virtual pad as a test device and prove its recorder is wired.
+/** @brief Register one virtual pad as a rumble test device and check that its recorder receives commands.
  *
- * The actuator path may drive this device even headless and unfocused: the
- * gates it lifts exist to protect a human's controller, and this one is ours.
- * Membership is by instance id and is re-checked against the handle actually
- * driven, so a real pad that took a slot still gets the normal treatment.
- *
- * The probe itself is one deliberate non-zero pair, asserted to arrive before
- * any run is allowed to read a zero as "the motors stayed silent". It is
- * instrumentation, not data: the counters are zeroed behind it so everything
- * they report afterwards is a motor command something else asked for. Leaving
- * it in the totals would make a run that delivered nothing report one non-zero
- * command, indistinguishable from a run that delivered exactly one. */
+ * openpete_rumble_set_test_device() adds the pad's instance id to the set
+ * the actuator path may drive headless and unfocused; the headless and
+ * focus refusals protect a human's controller, which a harness-attached
+ * virtual pad is not. The probe is one non-zero pair (VPAD_PROBE_LOW,
+ * VPAD_PROBE_HIGH) followed by a stop; the callback latches probe_seen when
+ * the pair arrives, and an error is logged when it did not, since a zero
+ * motor count from such a run shows nothing. The calls, nonzero and last
+ * counters are then zeroed, so every command they count afterwards came
+ * through the actuator path; left in, the probe would make a run that
+ * delivered nothing read the same as a run that delivered one command.
+ * @param v Virtual pad index into s_vpads.
+ * @param id SDL instance id of that pad. */
 static void vpad_selfprobe(int v, SDL_JoystickID id)
 {
     openpete_rumble_set_test_device((unsigned)id);
@@ -638,14 +645,16 @@ static bool map_line_matches(const char* line, const char* guid)
                                                plat[n] == '\r' || plat[n] == '\n');
 }
 
-/* Which loaded file last supplied `guid`, or NULL when the mapping can only
- * have come from SDL's compiled-in database.
+/** @brief Name the loaded mapping file that last supplied a line for @p guid.
  *
  * SDL exposes no provenance for a mapping, so the files are re-scanned back
- * to front and the first hit wins — the same order that decided the table.
- * Rescanning is affordable because it runs once, for the pads attached at
- * that moment, and answers the question a bug report actually turns on:
- * whether the user's own file is the one being used. */
+ * to front and the first line matching the GUID and this platform wins, the
+ * same order that decided the table. The rescan runs once per attached pad,
+ * at boot and on each arrival, and tells whether the user's own file is the
+ * one in use.
+ * @param guid 32-hex-digit SDL GUID string.
+ * @return The file's label, or NULL when the mapping can only have come from
+ *         SDL's compiled-in database. */
 static const char* map_source_for(const char* guid)
 {
     for (int i = s_map_file_n - 1; i >= 0; i--) {
@@ -672,7 +681,11 @@ static const char* map_source_for(const char* guid)
     return NULL;
 }
 
-/* One device, reported the way map_log_pads reports the boot-present ones. */
+/** @brief Log one joystick's GUID, name, mapping source and resolved mapping, or a warning when it has no mapping.
+ *
+ * Called for each pad present at boot by map_log_pads() and for each later
+ * arrival by openpete_host_input_pad_arrived().
+ * @param id SDL instance id of the joystick. */
 static void map_log_one(SDL_JoystickID id)
 {
     char guid[33] = "";
@@ -684,9 +697,9 @@ static void map_log_one(SDL_JoystickID id)
         const char* src = map_source_for(guid);
         OPL_INFO_F("input", "pad %s \"%s\" mapped from %s",
                    guid, name ? name : "?", src ? src : "SDL's built-in database");
-        /* The resolved mapping itself, not just its origin: "my file is
-         * loaded" and "my file is what this pad uses" are different claims,
-         * and only the second one answers a bug report. */
+        /* The resolved mapping itself, not just its origin: a loaded file
+         * and the mapping this pad uses are different facts, and only the
+         * second shows which line drives the pad. */
         OPL_INFO_F("input", "pad %s mapping: %.240s", guid, mapping);
         SDL_free(mapping);
     } else {

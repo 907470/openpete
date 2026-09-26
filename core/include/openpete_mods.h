@@ -640,6 +640,16 @@ typedef struct {
     void**          pipeline_slot;
     const char*     owner;
 } openpete_postfx_pass_t;
+/** @brief Fill @p out with the enabled postfx passes at one insertion point, highest priority first.
+ *
+ * A pass counts when it is live, enabled, at @p point, and its owning mod is
+ * enabled. The whole set is insertion-sorted by the mod's load index, then
+ * per-mod order, then registration index, before @p cap is applied, so a
+ * truncated set keeps the highest-priority passes and logs one warning.
+ * @param point Postfx insertion point (OP_POSTFX_*).
+ * @param out Receives the passes.
+ * @param cap Capacity of @p out.
+ * @return Passes written. */
 int  openpete_mods_postfx_collect(int point, openpete_postfx_pass_t* out,
                                   int cap);
 int  openpete_mods_postfx_take_retired(void** out, int cap);
@@ -848,9 +858,20 @@ int openpete_mods_config_write(const char* mod_dir, const char* log_tag,
 int openpete_mods_texture_register(openpete_mod_t* self, uint16_t id,
                                    const void* rgba, int w, int h);
 const unsigned char* openpete_mods_texture_get(uint16_t id, int* w, int* h);
-/* Scan an asset root's textures/own/ for <hexid>.png files and register
- * each under its filename id (the declarative own-texture road). Called
- * by the asset-root registrar; returns the count registered. */
+/** @brief Register every <hexid>.png under an asset root's textures/own/ as a mod-owned texture.
+ *
+ * Mod-owned texture content without C code: each PNG registers under the
+ * 16-bit id its filename stem spells in hex, at most four digits
+ * ("53c1.png"); another stem is skipped with a warning, and a PNG that
+ * fails to decode or register is skipped with an error. Faceblocks select
+ * the texture with the same PSX-reserved mode-3 Tiledef encoding as
+ * openpete_mods_texture_register(). Generators derive the pixels from the
+ * user's disc into this directory, so no game-derived data ships. Called by
+ * openpete_mods_register_asset_root() when a root registers.
+ * @param dir Asset root directory (a mod's assets/).
+ * @param owner Owning mod id; stored by pointer, so it must live for the
+ *              process (the loader's id).
+ * @return Textures registered. */
 int openpete_mods_texture_scan_root(const char* dir, const char* owner);
 
 /* ── Engine services (core/mods/mod_services.c) ────────────────────── */

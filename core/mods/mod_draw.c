@@ -81,8 +81,11 @@ static int buf_count(const cmd_buf_t* b) {
     return (int)mod_fvec_count(&b->texts);
 }
 
-/* Drop the commands, keep the storage: the buffers refill every tick, so
- * the allocation is paid once for the session. */
+/** @brief Drop a buffer's text commands and keep its storage.
+ *
+ * The buffers refill every tick or present, so the allocation is paid once
+ * per run.
+ * @param b Buffer to clear. */
 static void buf_clear(cmd_buf_t* b) { mod_fvec_clear(&b->texts); }
 
 /* The draw service has one owner thread. The tick buffers are exchanged
@@ -244,9 +247,13 @@ void openpete_mods_draw_text(float x, float y, float cap_h, uint32_t rgb,
 #define MOD_DRAW_VERTS_MAX 16384
 static openpete_hud_vert s_verts[MOD_DRAW_VERTS_MAX];
 
-/* One warning per owner per session: the vertex stream is a real bound
- * (the renderer's buffer is sized to it), so the remedy is the mod
- * drawing less, and repeating the line every present would bury it. */
+/** @brief Warn once per run that a mod's text overflowed the overlay vertex budget.
+ *
+ * The vertex stream is a real bound (the renderer's buffer is sized to
+ * MOD_DRAW_VERTS_MAX), so the remedy is the mod drawing less, and repeating
+ * the line every present would bury it. Owners are matched by pointer; the
+ * first 32 are remembered, and an owner past that warns on every overflow.
+ * @param owner Mod id of the overflowing text; NULL logs as "?". */
 static void warn_glyph_overflow(const char* owner) {
     static const char* s_warned[32];
     static int s_warned_n = 0;

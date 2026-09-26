@@ -200,18 +200,18 @@ static inline op_period_t op_scaled_vbl_period(double tick_scale) {
  * the previous-return clamp guarantees it). */
 op_time_t op_now(void);
 
-/* Block until op_now() >= deadline_ns. Returns immediately if already
- * past the deadline. Hybrid strategy:
- *   1. If (deadline - now) > slack, OS-sleep until deadline - slack.
- *   2. Spin (yielding) until deadline reached.
- * "slack" is op_pacer_slack_ns().
+/** @brief Block until op_now() reaches @p deadline_ns.
  *
- * Overshoot on a quiet Linux dev box should be well under 100 µs; on
- * a noisy Windows box with the waitable-timer-high-res path it should
- * be under 500 µs. The frame-pacing harness in
- * notes/plans/openpete-frame-pacing.md measures the actual figure
- * per platform and gates regressions.
- */
+ * Returns at once when the deadline has passed. Otherwise, when more than
+ * op_pacer_slack_ns() remains, OS-sleeps until deadline - slack (a Win32
+ * waitable timer with a Sleep() fallback, else clock_nanosleep on
+ * CLOCK_MONOTONIC or a relative nanosleep), then spins on
+ * op_now() with cpu_relax() until the deadline; POSIX builds call
+ * sched_yield() once before the spin. Under the virtual clock it never
+ * blocks: it advances the virtual time to the deadline when the deadline
+ * is later. Under Emscripten it yields to the browser event loop for the
+ * remaining whole milliseconds, at least one turn even past the deadline.
+ * @param deadline_ns Monotonic deadline in ns. */
 void op_sleep_until(op_time_t deadline_ns);
 
 /* Current safety margin between OS-sleep wake and the real deadline.

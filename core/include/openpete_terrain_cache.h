@@ -263,11 +263,23 @@ void openpete_tercache_sector_set(int slot, float ox, float oy, float oz,
                                   uint32_t sflags, const float *grade6);
 void openpete_tercache_frame_commit(void);
 void openpete_tercache_frame_skip(uint32_t stamp, int immediate);
-/* Renderer side, once per rendered present: gate the retained draws on the
- * LIVE state's freshness (a stale state — menus, level transitions, a
- * stopped feeder — must not repaint old terrain). frame_open() reports the
- * verdict to the draw sites. */
+/** @brief Select the retained terrain state built by the scene being composed, or close the retained draws.
+ *
+ * Called by the renderer once per rendered present. The state whose stamp
+ * equals @p present_stamp is selected, searched in order: the eager scene
+ * ring (only for a stamp carrying OPTC_STAMP_SCENE_BIT), then the live
+ * state, then the staged state (a depth-0 compose renders the current
+ * scene, whose build sits in staged until the next build's promote). No
+ * other state stands in: the retained terrain must be the same extraction
+ * as the CPU tris it composes with, and a scene that ran no terrain feed
+ * (fades, level loads, menus) has no retained terrain, so an older state
+ * never repaints over VRAM a load is overwriting. The selection's UBO is
+ * flushed again at the present's first draw.
+ * @param present_stamp Stamp of the scene being composed. */
 void openpete_tercache_frame_select(uint32_t present_stamp);
+/** @brief Report whether the last openpete_tercache_frame_select() opened the retained draws.
+ *
+ * @return 1 when a state is selected, 0 when the retained draws are closed. */
 int  openpete_tercache_frame_open(void);
 /* Whether the selected state would paint anything: 1 = live sectors, 0 =
  * open but empty (the feeder skipped this scene's build), -1 = cache not
@@ -301,10 +313,25 @@ void openpete_native_tercache_service_headless(void);
  * models at their shipped defaults (the fold bakes those). Per-run latch. */
 int  openpete_native_hdfold_on(void);
 
-/* Intern the replacement verdict of one emitted tri (page texel corners).
- * Returns 0 = no replacement (draw-time resolve misses / no match too),
- * >0 = 1-based entry id, -1 = unbakeable (table/atlas full) — the caller
- * claims the sector back to the CPU walk. */
+/** @brief Intern the pack replacement for one emitted tri and return its fold entry id.
+ *
+ * Resolves and matches the tri's texel bounding box the way the draw-time
+ * path does, so a tri that returns 0 here also has no replacement at draw
+ * time. Entries are memoized per (replacement file, material); a new entry
+ * shelf-packs the file image into the fold atlas with a 1-texel gutter,
+ * queues its upload, fills its 4-vec4 payload (page-anchored rect, atlas
+ * rect, fog affine, filter class) and bumps the fold epoch.
+ * @param tpx Texture page X.
+ * @param tpy Texture page Y.
+ * @param clx CLUT X.
+ * @param cly CLUT Y.
+ * @param bpp Texel depth (4, 8 or 16).
+ * @param us The tri's three U texel coordinates in page space.
+ * @param vs The tri's three V texel coordinates in page space.
+ * @return 0 when the fold is off or the tri has no replacement, a 1-based
+ *         entry id, or -1 when the entry table, the atlas or the upload
+ *         queue is full; on -1 the caller claims the sector back to the CPU
+ *         walk. */
 int  openpete_native_hdfold_intern(int tpx, int tpy, int clx, int cly, int bpp,
                                    const float us[3], const float vs[3]);
 
@@ -387,31 +414,43 @@ void openpete_tercache_chunk_free(int arena, int buf, uint32_t first, int count)
  * where the replacement collapses both buffers into one fresh primary sized
  * for the incoming level. */
 
-/* ---- level-edge arena replacement ---------------------------------------
- * `high` never falls and a freed range returns to the free list only after
- * the defer window, so a session accumulates toward every arena cap across
- * level loads: the previous level's chunks are never released (their decode
- * slots are rebuilt only when another sector takes them) and the surviving
- * free spans re-fit the next level's chunk sizes imperfectly. The cure is
- * replacement, not reset in place: the defer window counts BUILDS and no
- * build runs during a load, so a range freed at the level edge can never
- * age out before the new level's first walk allocates over it.
+/* ---- level-edge arena replacement --------------------------------------- */
+/** @brief Record the incoming level and post a request to replace every arena's buffers with fresh ones.
  *
- * Three steps on two threads. The builder posts a request at the level
- * latch (request_resize) after giving up every slot's chunks. The
- * device-owning thread allocates one fresh {vb, pv} pair per arena
- * (present_service) — device objects are illegal on the builder's thread.
- * The builder adopts the pairs at its next frame_begin: the arena's
- * bookkeeping resets to high = 0 with an empty free list, and the outgoing
- * pairs go on a retire list that present_service destroys once both drain
- * floors have passed. Adopting resets every arena's counters, so a caller
- * holding chunk records frees them BEFORE the adopting frame_begin;
- * resize_ready reports that moment. */
+ * Builder thread, at a level latch that has an outgoing level, after every
+ * slot has given up its chunks. `high` never falls and a freed range returns
+ * to the free list only after the defer window, so without replacement the
+ * arenas accumulate toward every cap across level loads: the previous
+ * level's chunks are never released (their decode slots are rebuilt only
+ * when another sector takes them) and the surviving free spans re-fit the
+ * next level's chunk sizes imperfectly. A reset in place does not work
+ * because the defer window counts builds and no build runs during a load,
+ * so a range freed at the level edge cannot age out before the new level's
+ * first walk allocates over it.
+ *
+ * Three steps on two threads. This call stores the level and the request.
+ * The device-owning thread allocates one fresh {vb, pv} pair per arena,
+ * sized for the stored level (present_service), since device objects are
+ * illegal on the builder's thread. The builder adopts the pairs at its next
+ * frame_begin: each arena's bookkeeping resets to high = 0 with an empty
+ * free list, and the outgoing pairs go on a retire list that
+ * present_service destroys once both drain floors have passed. Adopting
+ * resets every arena's counters, so a caller holding chunk records frees
+ * them before the adopting frame_begin; openpete_tercache_resize_ready()
+ * reports that moment. A second request before the first completes only
+ * replaces the stored level. No-op while the cache is not ready.
+ * @param level_id Level the replacement buffers are sized for. */
 void openpete_tercache_request_resize(int level_id);
 int  openpete_tercache_resize_ready(void);
-/* The level the arenas are being filled for, which is what sizes every buffer
- * the cache allocates from here on. Set at every level latch, including the
- * first of a session, where no replacement is owed. */
+/** @brief Store the level the arenas are being filled for.
+ *
+ * The stored level sizes every buffer the cache allocates afterwards: the
+ * level-edge replacement pairs and the overflow buffers. Called directly at
+ * the first level latch after boot, where init has just made the buffers
+ * and no replacement is owed, and through
+ * openpete_tercache_request_resize() at every later latch.
+ * @param level_id Level id; an id with no measured row takes the union
+ *                 capacities. */
 void openpete_tercache_set_level(int level_id);
 /* Steps whenever an arena gains buffer room: a level-edge replacement or an
  * overflow buffer. A sector claimed back because an arena was full is baked

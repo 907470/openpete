@@ -248,12 +248,15 @@ static int census_enabled(void) {
     return e && *e && strcmp(e, "0") != 0;
 }
 
-/* Where the report goes. A bare on-value writes it to stderr, which is
- * what an interactive run wants. Any other value names a file and the
- * report is written there instead.
+/** @brief Open the census output named by OPENPETE_MOD_TABLE_CENSUS.
  *
- * The file form gives a reader that asserts one row per table the report
- * alone, without the rest of the run's stderr interleaved. */
+ * The value 1 (or an empty value) selects stderr, for an interactive run.
+ * Any other value names a file, opened for writing, so a reader that
+ * asserts one row per table gets the census without the rest of the run's
+ * stderr interleaved; a file that cannot be opened logs a line and falls
+ * back to stderr.
+ * @param needs_close Receives 1 when the caller must fclose the stream.
+ * @return The output stream. */
 static FILE* census_open(int* needs_close) {
     const char* e = getenv("OPENPETE_MOD_TABLE_CENSUS");
     *needs_close = 0;
@@ -307,9 +310,7 @@ void mod_fixed_set(mod_fixed* t, size_t count) {
     if (count > t->peak) t->peak = count;
 }
 
-/* The `tables=` header states how many rows follow, so a reader can tell
- * a short report from a complete one without knowing which tables to
- * expect. */
+/* Writes the tables= line, then one row per linked table; see the header. */
 void mod_vec_census_report(void) {
     const mod_vec_node_t* n;
     size_t tables = 0;

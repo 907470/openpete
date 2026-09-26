@@ -84,21 +84,23 @@ int openpete_paths_user_config_dir(char* out, size_t cap, int create);
  * @return 0 on success, -1 when no base resolves or the path does not fit. */
 int openpete_paths_state_dir(const char* leaf, char* out, size_t cap, int create);
 
-/* Directory holding a class of bulk user data — `leaf` is "library",
- * "mods", "assets", "bk2" or "screenshots". Same portable-vs-user rule as the state
- * dirs, but the per-user spelling is the XDG *data* directory: these hold
- * ingested discs, compiled modules and user-authored content, not
- * machine-local session state.
+/** @brief Resolve the directory holding one class of bulk user data.
  *
- * One extra rule the state dirs do not need: when the user layout is in
- * force and <exe>/<leaf> already exists in a writable install directory,
- * that directory is adopted. These four were unconditionally exe-relative
- * before, so every install predating the split already has content there,
- * and moving it out from under a launcher would read as data loss. A
- * read-only install (an AppImage mount, Program Files) has no such
- * directory to adopt and lands in the per-user location.
- *
- * `create` makes it; pass 0 to merely name it. Returns 0 on success. */
+ * Portable layout: <exe dir>/<leaf>. Otherwise, when <exe dir>/<leaf>
+ * already exists and is writable, that directory is adopted, since these
+ * leaves were exe-relative in earlier layouts and an older install holds
+ * content there; a read-only install (an AppImage mount, Program Files)
+ * has none to adopt. Failing that, <leaf> under the openpete directory in
+ * the per-user data base (%LOCALAPPDATA% on Windows, $XDG_DATA_HOME or
+ * ~/.local/share elsewhere). These leaves hold ingested discs, compiled
+ * modules and user-authored content, where the state dirs hold
+ * machine-local state. With @p create the directory is made; an adopted
+ * directory already exists.
+ * @param leaf "library", "mods", "assets", "bk2" or "screenshots".
+ * @param out Receives the path.
+ * @param cap Capacity of @p out.
+ * @param create Non-zero to create the directory.
+ * @return 0 on success, -1 when no base resolves or the path does not fit. */
 int openpete_paths_data_dir(const char* leaf, char* out, size_t cap, int create);
 
 #ifdef __cplusplus

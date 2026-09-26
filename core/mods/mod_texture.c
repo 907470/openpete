@@ -118,8 +118,13 @@ static void tex_retire(unsigned char* px) {
                    s_retired_n);
 }
 
-/* Re-take the owner's enabled verdict when the modset has changed. One
- * epoch compare on the render path; the id lookup runs only on change. */
+/** @brief Refresh a texture's cached owner-disabled flag when the mod toggle epoch has moved.
+ *
+ * One epoch compare on the render path; the owner lookup runs only when
+ * the epoch differs from the one the flag was taken at (stored as epoch + 1,
+ * so 0 means never taken). A refresh also clears the disabled-owner
+ * warning latch, so each epoch logs at most once per texture.
+ * @param t Texture entry to refresh. */
 static void tex_poll_owner(mod_texture_t* t) {
     unsigned ep = openpete_mods_toggle_epoch() + 1u;
     if (t->owner_epoch == ep) return;
@@ -175,15 +180,8 @@ int openpete_mods_texture_register(openpete_mod_t* self, uint16_t id,
     return tex_register_owned(openpete_mods_id_of(self), id, rgba, w, h);
 }
 
-/* ── Declarative own-textures: assets/textures/own/<hexid>.png ───────
- * The zero-C road for mod-owned texture content: each PNG under a
- * mod's assets/textures/own/ registers under the 16-bit id its
- * filename spells in hex ("53c1.png"). Faceblocks select it with the
- * same PSX-reserved mode-3 Tiledef encoding as the runtime entry;
- * generators derive the pixels from the user's disc into this
- * directory, so no game-derived data ships. Boot-scoped, like every
- * asset overlay. `owner` must be a session-lifetime string (the asset
- * root registry's copy). */
+/* ── Declarative own-textures: assets/textures/own/<hexid>.png ─────── */
+/* Registers each <hexid>.png under <dir>/textures/own/; see the header. */
 int openpete_mods_texture_scan_root(const char* dir, const char* owner) {
     char path[1200];
     snprintf(path, sizeof path, "%s/textures/own", dir);

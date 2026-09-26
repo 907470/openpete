@@ -100,16 +100,20 @@ uint32_t openpete_subtick_view_poke(uint32_t addr, const void* src, uint32_t len
  * that saves a window before overwriting it. */
 void openpete_subtick_view_peek(uint32_t addr, void* dst, uint32_t len);
 
-/* Diagnostics: spans staged and reads served from staging during the most
- * recent present. Both are zero when nothing engaged — a green that reports
- * zero served reads has not exercised the view.
+/** @brief Read the view's engagement counters for the most recent present.
  *
- * `out_writes` counts writes to guest memory attempted while the view was
- * open. The target is zero: a write during an intermediate present is the
- * display path mutating gameplay-readable memory, which is the defect this
- * view exists to retire. Until every producer is migrated the count is the
- * honest measure of what is left, so it is reported rather than blocked —
- * blocking would corrupt the present instead of the state. */
+ * All three reset at openpete_subtick_view_begin(). Spans and served reads
+ * are zero when the view did not engage, so a check that sees zero served
+ * reads has not exercised the view. The write count covers every store
+ * (word, half, byte, swl, swr) that reached guest memory while the view was
+ * open; a word, half or byte store into a staged span lands in the copy and
+ * is not counted. A
+ * counted write is the display path mutating gameplay-readable memory, and
+ * the target is zero. The write is performed after it is counted, because
+ * refusing it would corrupt the present rather than protect the state.
+ * @param out_spans Receives the spans staged; may be NULL.
+ * @param out_served Receives the reads served from staging; may be NULL.
+ * @param out_writes Receives the guest-memory writes; may be NULL. */
 void openpete_subtick_view_stats(uint32_t* out_spans, uint32_t* out_served,
                                  uint32_t* out_writes);
 

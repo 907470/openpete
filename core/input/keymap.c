@@ -552,10 +552,17 @@ static int km_ctx_overlap(int a, int b) {
     return 0;
 }
 
-/* Overlaps that are deliberate, so a stock boot stays silent. They are
- * still COLLECTED and still printed by --keys-report — the point is that
- * a warning which fires on every launch stops being read, not that these
- * should be invisible. */
+/** @brief Test whether two actions sharing an input is a known, deliberate overlap.
+ *
+ * Two pairs are deliberate: OPK_FREECAM with OPK_PAD_L3 (Spyro 1 never
+ * reads L3) and OPK_MENU_RIGHT with OPK_MENU_SELECT (a menu row is either a
+ * value row or an action row). openpete_keymap_resolve() logs no warning for them, so a
+ * stock boot stays silent, but still collects them, and --keys-report prints
+ * them with the reason.
+ * @param a First action index (OPK_*).
+ * @param b Second action index, in either order.
+ * @param why Receives the reason when the overlap is deliberate.
+ * @return 1 when deliberate, 0 otherwise. */
 static int km_overlap_is_intentional(int a, int b, const char** why) {
     int lo = a < b ? a : b, hi = a < b ? b : a;
     if (lo == OPK_FREECAM && hi == OPK_PAD_L3) {

@@ -569,10 +569,15 @@ static const openpete_sdk_symbol_t* sym_find(const char* name) {
 }
 
 
-/* Render-purity guard: present hooks may only draw. Presents are
- * non-deterministic in count/timing, so guest access / game calls /
- * registration from one would desync replay (plan: render-pure by API
- * shape AND enforcement). */
+/** @brief Refuse a sim-affecting mod API call made from inside a present hook.
+ *
+ * Present hooks may only draw. Presents vary in count and timing between
+ * runs, so guest access, game calls, overrides, hook registration, rumble
+ * or guest allocation from one would desync replay. Each such API entry
+ * calls this first and returns its failure value on 1.
+ * @param what API name for the error line.
+ * @return 1 (after logging an error) while openpete_mods_in_present is set,
+ *         0 otherwise. */
 static int purity_violation(const char* what) {
     if (!openpete_mods_in_present) return 0;
     OPL_ERROR_F("mods", "%s refused inside a present hook (render-pure "
@@ -1770,9 +1775,12 @@ static int api_pad_rumble(openpete_mod_t* self, uint32_t slot,
     return 0;
 }
 
-/* Register a parsed manifest's [[binding]] keys with the keymap under the
- * mod.<id> domain. Runs for every discovered mod at init and again for
- * the --keys-report path, which prints before any mod loads. */
+/** @brief Register a parsed manifest's [[binding]] keys with the keymap under the mod.<id> domain.
+ *
+ * Runs for every discovered mod at init, for the --keys-report path (which
+ * prints before any mod loads), and after a reload re-parses a manifest.
+ * @param mod Mod whose manifest rows are parsed.
+ * @param enabled Whether the mod's bindings take part in the keymap scans. */
 static void mod_register_key_defaults(const struct openpete_mod* mod, int enabled) {
     char where[MOD_PATH_MAX + 16];
     snprintf(where, sizeof where, "%s/mod.toml", mod->dir);

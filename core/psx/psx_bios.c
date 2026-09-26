@@ -440,9 +440,17 @@ static int bios_b0(CPUState* cpu, uint32_t fn) {
     }
 }
 
-/* Returns 1 when `addr` was a BIOS table entry, whether or not the service
- * itself is implemented: either way the call is consumed here and must not
- * be reported as a missing translation. */
+/** @brief Service a guest call to a BIOS function table entry (0xA0, 0xB0, 0xC0).
+ *
+ * The function number is $t1's low byte. Every call is counted by the BIOS
+ * census; A0 and B0 services are dispatched to their handlers, and a
+ * service with no handler (every C0 service among them) returns with $v0
+ * and $v1 zeroed.
+ * @param cpu Guest CPU state; NULL returns 0.
+ * @param addr Call target.
+ * @return 1 when @p addr is a BIOS table entry, whether or not the service
+ *         is implemented, so call_by_address() does not log it as a
+ *         missing translation; 0 otherwise. */
 int openpete_psx_bios_call(CPUState* cpu, uint32_t addr) {
     if (!cpu) return 0;
     if (addr != 0xA0u && addr != 0xB0u && addr != 0xC0u) return 0;

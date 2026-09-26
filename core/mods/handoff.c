@@ -131,7 +131,7 @@ void openpete_handoff_poll(CPUState* cpu) {
      * on the way up, carrying this run over to openpete.log.1. */
     openpete_log_file_close();
     execv("/proc/self/exe", nv);
-    /* Only reached on failure — never brick the session. */
+    /* Reached only when execv fails: the current process keeps running. */
     OPL_ERROR_F("handoff", "execv failed: continuing without handoff");
     free(nv);
 #endif

@@ -645,12 +645,15 @@ int openpete_mods_postfx_set_uniforms(openpete_mod_t* self, int fx,
                                       const void* data, uint32_t size) { REG_WR(); int r_ = openpete_mods_postfx_set_uniforms_locked(self, fx, data, size); REG_WR_END(); return r_; }
 
 
-/* Renderer-facing: enabled passes at `point`, ordered by enabled-list
- * priority (load index) then per-mod order then registration. The fx
- * table is small — selection sort into the out array. */
-/* One line per point per session: the renderer's pass ceiling is its
- * own bound, so a set that exceeds it keeps the highest-priority passes
- * and the mods that lost theirs are named by count, not by repetition. */
+/** @brief Warn once per run per insertion point that the enabled postfx passes exceed the renderer's cap.
+ *
+ * The renderer's pass ceiling is its own bound, so a set that exceeds it
+ * keeps the highest-priority passes; the line names the number of dropped
+ * passes and is not repeated per present. Points outside the table are
+ * ignored.
+ * @param point Postfx insertion point (OP_POSTFX_*).
+ * @param have Enabled passes at the point.
+ * @param cap Passes the renderer runs. */
 static void postfx_truncation_notice(int point, int have, int cap) {
     static unsigned char s_said[OP_POSTFX_PRESENT + 1];
     if (point < 0 || point >= (int)(sizeof s_said / sizeof s_said[0])) return;

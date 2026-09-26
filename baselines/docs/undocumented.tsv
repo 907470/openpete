@@ -2,7 +2,7 @@
 # library: libclang 14
 # requirement: @brief of one sentence on one line on every function; @param per named parameter and @return on non-void for external linkage
 # written-by: hook
-# head: 3cd8c799552ed73d98a286372efbb57531307148
+# head: 55e56fe97452b5653fda62f65a58b8ac7de08a74
 file	function	form	accepted
 core/config/build_id.c	openpete_build_shared_recomp	plain	
 core/config/build_id.c	openpete_build_tagged	plain	
@@ -191,7 +191,6 @@ core/config/paths.c	dir_exists	none
 core/config/paths.c	dir_writable	plain	
 core/config/paths.c	hint_legacy_state	plain	
 core/config/paths.c	openpete_exe_dir	plain	
-core/config/paths.c	openpete_paths_data_dir	plain	
 core/config/paths.c	openpete_paths_join	plain	
 core/config/paths.c	openpete_paths_portable	plain	
 core/config/paths.c	openpete_paths_set_portable	plain	
@@ -354,7 +353,6 @@ core/diag/psxtrace_schedule.c	read_sidecar	none
 core/diag/psxtrace_schedule.c	sched_cur_rec	none	
 core/diag/psxtrace_schedule.c	vbl_set_add	none	
 core/diag/psxtrace_schedule.c	vbl_set_has	plain	
-core/diag/psxtrace_verify.c	openpete_psxtrace_advance	plain	
 core/diag/psxtrace_verify.c	openpete_psxtrace_close	none	
 core/diag/psxtrace_verify.c	openpete_psxtrace_finalize	plain	
 core/diag/psxtrace_verify.c	openpete_psxtrace_open	none	
@@ -589,9 +587,7 @@ core/input/host_input.c	lock_filter_gamepad	plain
 core/input/host_input.c	map_file_exists	none	
 core/input/host_input.c	map_line_matches	plain	
 core/input/host_input.c	map_load_file	plain	
-core/input/host_input.c	map_log_one	plain	
 core/input/host_input.c	map_log_pads	plain	
-core/input/host_input.c	map_source_for	plain	
 core/input/host_input.c	openpete_host_input_inject_key	plain	
 core/input/host_input.c	openpete_host_input_key_down	none	
 core/input/host_input.c	openpete_host_input_last	plain	
@@ -630,14 +626,12 @@ core/input/host_input.c	pad_publish	plain
 core/input/host_input.c	pad_read_stable	plain	
 core/input/host_input.c	parity_on	plain	
 core/input/host_input.c	pulse_apply	plain	
-core/input/host_input.c	pulse_on	none	
 core/input/host_input.c	synth_on	none	
 core/input/host_input.c	synth_pad	plain	
 core/input/host_input.c	vgamepad_drive	plain	
 core/input/host_input.c	vgamepad_maybe_attach	none	
 core/input/host_input.c	vpad_index_ok	none	
 core/input/host_input.c	vpad_rumble_cb	none	
-core/input/host_input.c	vpad_selfprobe	plain	
 core/input/host_mouse.c	add_motion	none	
 core/input/host_mouse.c	devui_owner	plain	
 core/input/host_mouse.c	inj_button	none	
@@ -733,7 +727,6 @@ core/input/keymap.c	km_modbind_find	none
 core/input/keymap.c	km_mouse_name	none	
 core/input/keymap.c	km_mouse_neutral	plain	
 core/input/keymap.c	km_mouse_owned	none	
-core/input/keymap.c	km_overlap_is_intentional	plain	
 core/input/keymap.c	km_parse_list	plain	
 core/input/keymap.c	km_parse_token	plain	
 core/input/keymap.c	km_read_btn	none	
@@ -796,7 +789,6 @@ core/input/rumble_curve.c	openpete_rumble_motor_strength	none
 core/input/rumble_curve.c	openpete_rumble_motor_u16	plain	
 core/mods/handoff.c	handoff_path	none	
 core/mods/handoff.c	openpete_handoff_init	plain	
-core/mods/handoff.c	openpete_handoff_poll	plain	
 core/mods/handoff.c	openpete_handoff_request	plain	
 core/mods/mod_arena.c	arena_register	none	
 core/mods/mod_arena.c	arena_section_parse	none	
@@ -842,7 +834,6 @@ core/mods/mod_config.c	openpete_mods_config_write	plain
 core/mods/mod_config.c	slot_keys	none	
 core/mods/mod_config.c	slot_of	none	
 core/mods/mod_draw.c	assert_one_owner	plain	
-core/mods/mod_draw.c	buf_clear	plain	
 core/mods/mod_draw.c	buf_count	none	
 core/mods/mod_draw.c	buf_init	none	
 core/mods/mod_draw.c	emit_buf	none	
@@ -857,7 +848,6 @@ core/mods/mod_draw.c	owner_starts_disabled	plain
 core/mods/mod_draw.c	phook_at	none	
 core/mods/mod_draw.c	phook_count	none	
 core/mods/mod_draw.c	target_buf	plain	
-core/mods/mod_draw.c	warn_glyph_overflow	plain	
 core/mods/mod_glsl.c	include_free	none	
 core/mods/mod_glsl.c	include_load	none	
 core/mods/mod_glsl.c	include_local	none	
@@ -939,7 +929,6 @@ core/mods/mod_loader.c	mod_mat_count	none
 core/mods/mod_loader.c	mod_read_stamp	none	
 core/mods/mod_loader.c	mod_ref_resolve	plain	
 core/mods/mod_loader.c	mod_register_assets	plain	
-core/mods/mod_loader.c	mod_register_key_defaults	plain	
 core/mods/mod_loader.c	mod_register_materials	plain	
 core/mods/mod_loader.c	mod_resolve_imgui	plain	
 core/mods/mod_loader.c	mod_resolve_ui_section	plain	
@@ -1005,7 +994,6 @@ core/mods/mod_loader.c	parse_materials	plain
 core/mods/mod_loader.c	parse_mod_header	plain	
 core/mods/mod_loader.c	pend_at	none	
 core/mods/mod_loader.c	psx_render_fn_name	plain	
-core/mods/mod_loader.c	purity_violation	plain	
 core/mods/mod_loader.c	ref_at	none	
 core/mods/mod_loader.c	scan_keep_for_game	plain	
 core/mods/mod_loader.c	sdk_prefix	none	
@@ -1120,7 +1108,6 @@ core/mods/mod_shader.c	openpete_mods_material_terrain_tex_slot	plain
 core/mods/mod_shader.c	openpete_mods_material_terrain_untex_slot	plain	
 core/mods/mod_shader.c	openpete_mods_material_view_capture	none	
 core/mods/mod_shader.c	openpete_mods_material_view_set	plain	
-core/mods/mod_shader.c	openpete_mods_postfx_collect	none	
 core/mods/mod_shader.c	openpete_mods_postfx_enable	none	
 core/mods/mod_shader.c	openpete_mods_postfx_enable_locked	none	
 core/mods/mod_shader.c	openpete_mods_postfx_register	none	
@@ -1143,7 +1130,6 @@ core/mods/mod_shader.c	openpete_mods_shader_remove_owner_locked	none
 core/mods/mod_shader.c	openpete_mods_shader_spv	plain	
 core/mods/mod_shader.c	openpete_mods_shader_spv_terrain	plain	
 core/mods/mod_shader.c	openpete_mods_shader_watch_key	plain	
-core/mods/mod_shader.c	postfx_truncation_notice	plain	
 core/mods/mod_shader.c	reg_lock	none	
 core/mods/mod_shader.c	reg_wr_begin	none	
 core/mods/mod_shader.c	reg_wr_end	none	
@@ -1161,14 +1147,11 @@ core/mods/mod_shader.c	view_static_slot	none
 core/mods/mod_shader.c	write_whole_file	plain	
 core/mods/mod_texture.c	openpete_mods_texture_get	none	
 core/mods/mod_texture.c	openpete_mods_texture_register	plain	
-core/mods/mod_texture.c	openpete_mods_texture_scan_root	plain	
-core/mods/mod_texture.c	tex_poll_owner	plain	
 core/mods/mod_texture.c	tex_register_owned	none	
 core/mods/mod_texture.c	tex_retire	none	
 core/mods/mod_vec.c	census_enabled	none	
 core/mods/mod_vec.c	census_link	none	
 core/mods/mod_vec.c	census_lock	none	
-core/mods/mod_vec.c	census_open	plain	
 core/mods/mod_vec.c	census_row	none	
 core/mods/mod_vec.c	census_unlink	none	
 core/mods/mod_vec.c	census_unlock	none	
@@ -1284,7 +1267,6 @@ core/psx/psx_bios.c	mc_finish	none
 core/psx/psx_bios.c	mc_port	none	
 core/psx/psx_bios.c	mc_queue	plain	
 core/psx/psx_bios.c	mc_start	plain	
-core/psx/psx_bios.c	openpete_psx_bios_call	plain	
 core/psx/psx_bios.c	openpete_psx_bios_card_state_get	none	
 core/psx/psx_bios.c	openpete_psx_bios_card_state_set	none	
 core/psx/psx_bios.c	openpete_psx_bios_rom_read8	plain	
@@ -1593,7 +1575,6 @@ core/renderer/native_render.c	openpete_native_get_wireframe	none
 core/renderer/native_render.c	openpete_native_hdfold_atlas	plain	
 core/renderer/native_render.c	openpete_native_hdfold_epoch	plain	
 core/renderer/native_render.c	openpete_native_hdfold_flush	plain	
-core/renderer/native_render.c	openpete_native_hdfold_intern	plain	
 core/renderer/native_render.c	openpete_native_hdfold_on	plain	
 core/renderer/native_render.c	openpete_native_hdfold_pending	plain	
 core/renderer/native_render.c	openpete_native_hdfold_prime	plain	
@@ -1788,7 +1769,6 @@ core/renderer/native_render.c	scene_delay_depth	none
 core/renderer/native_render.c	scene_discrete_sig	none	
 core/renderer/native_render.c	scene_fragcoord_affine	none	
 core/renderer/native_render.c	scene_frame_at_depth	none	
-core/renderer/native_render.c	scene_has_game_tris	plain	
 core/renderer/native_render.c	scene_has_spyro_shadow	plain	
 core/renderer/native_render.c	scene_has_terrain	plain	
 core/renderer/native_render.c	scene_has_world	plain	
@@ -1879,8 +1859,6 @@ core/renderer/native_terrain_cache.c	openpete_tercache_frame_begin	plain
 core/renderer/native_terrain_cache.c	openpete_tercache_frame_commit	none	
 core/renderer/native_terrain_cache.c	openpete_tercache_frame_content	plain	
 core/renderer/native_terrain_cache.c	openpete_tercache_frame_globals	none	
-core/renderer/native_terrain_cache.c	openpete_tercache_frame_open	none	
-core/renderer/native_terrain_cache.c	openpete_tercache_frame_select	plain	
 core/renderer/native_terrain_cache.c	openpete_tercache_frame_skip	none	
 core/renderer/native_terrain_cache.c	openpete_tercache_frame_slots	none	
 core/renderer/native_terrain_cache.c	openpete_tercache_frame_source	none	
@@ -1889,10 +1867,8 @@ core/renderer/native_terrain_cache.c	openpete_tercache_get_stats	none
 core/renderer/native_terrain_cache.c	openpete_tercache_init	plain	
 core/renderer/native_terrain_cache.c	openpete_tercache_present_service	plain	
 core/renderer/native_terrain_cache.c	openpete_tercache_ready	none	
-core/renderer/native_terrain_cache.c	openpete_tercache_request_resize	plain	
 core/renderer/native_terrain_cache.c	openpete_tercache_resize_ready	none	
 core/renderer/native_terrain_cache.c	openpete_tercache_sector_set	plain	
-core/renderer/native_terrain_cache.c	openpete_tercache_set_level	plain	
 core/renderer/native_terrain_cache.c	openpete_tercache_shutdown	none	
 core/renderer/native_terrain_cache.c	tc_adopt_overflow	plain	
 core/renderer/native_terrain_cache.c	tc_adopt_pending	plain	
@@ -2007,7 +1983,6 @@ core/renderer/subtick_view.c	openpete_subtick_view_poke_drops	none
 core/renderer/subtick_view.c	openpete_subtick_view_report_writes	plain	
 core/renderer/subtick_view.c	openpete_subtick_view_stage	plain	
 core/renderer/subtick_view.c	openpete_subtick_view_staged_writes	plain	
-core/renderer/subtick_view.c	openpete_subtick_view_stats	plain	
 core/renderer/subtick_view.c	sv_find	none	
 core/renderer/subtick_view.c	sv_guard_begin	none	
 core/renderer/subtick_view.c	sv_guard_end	none	
@@ -2255,7 +2230,6 @@ core/runtime/openpete_time.c	cpu_relax	plain
 core/runtime/openpete_time.c	ensure_initialized	none	
 core/runtime/openpete_time.c	op_now	plain	
 core/runtime/openpete_time.c	op_pacer_slack_ns	plain	
-core/runtime/openpete_time.c	op_sleep_until	plain	
 core/runtime/openpete_time.c	op_time_init	plain	
 core/runtime/openpete_time.c	op_time_shutdown	plain	
 core/runtime/openpete_time.c	op_time_wake_pending_sleeps	plain	

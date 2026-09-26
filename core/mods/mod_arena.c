@@ -451,7 +451,7 @@ int openpete_mods_arena_state_verdict(const void* src, uint32_t size) {
         return -1;
     }
     /* Exact prefix, superseded marks included. A saved row the live
-     * session has superseded is the reload case — the file's bytes (or
+     * ledger has since superseded is the reload case: the file's bytes (or
      * frame words) describe a block or handle the mod no longer holds. */
     uint32_t common = h.count < row_count() ? h.count : row_count();
     for (uint32_t i = 0; i < common; i++) {

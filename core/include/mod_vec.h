@@ -273,9 +273,14 @@ void mod_vec_census_arm(void);
 /**
  * @brief Print the census: one summary line, then one line per named table.
  *
- * The summary line names the number of tables; each table line is "mod-table:
- * {name} count={n} peak={p} was={former capacity} storage={blocks for a cvec,
- * capacity for an fvec} grew={k}".
+ * Prints nothing unless OPENPETE_MOD_TABLE_CENSUS is set to a non-empty
+ * value other than "0"; the value 1 writes to stderr, any other value names
+ * the output file. The summary line "mod-table: tables={n}" states how many
+ * rows follow, so a reader can tell a truncated census from a complete one
+ * without knowing which tables to expect. Each table line is "mod-table:
+ * {name} count={n} peak={p} was={former capacity} storage={blocks for a
+ * cvec, capacity for an fvec or a fixed table} grew={k}" (grew is 0 for a
+ * fixed table).
  *
  * peak against was is what shows a table having carried more than its
  * former fixed capacity: count is the live size, which a table drained

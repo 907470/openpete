@@ -301,7 +301,7 @@ void openpete_mods_time_add(const char* owner, op_time_t ns, int is_present) {
 }
 
 void openpete_mods_time_report(unsigned ticks_elapsed) {
-    /* Re-read per report (~1/s — cheap): setenv is the live channel. */
+    /* Re-read at every report (every 512 ticks): setenv is the live channel. */
     const char* mt_env = getenv("OPENPETE_MOD_TIMERS");
     int s_dump = (mt_env && *mt_env && *mt_env != '0') ? 1 : 0;
     if (!ticks_elapsed) ticks_elapsed = 1;

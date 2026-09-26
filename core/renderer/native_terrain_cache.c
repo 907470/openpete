@@ -836,9 +836,7 @@ void openpete_tercache_chunk_free(int arena, int buf, uint32_t first, int count)
 
 /* ---- level-edge arena replacement --------------------------------------- */
 
-/* Builder thread, at the level latch, after every slot has given up its
- * chunks. Only the latest request survives: a second level edge before the
- * first replacement completes simply renames the incoming level. */
+/* Builder thread: stores the level, then raises the replacement request. */
 void openpete_tercache_request_resize(int level_id)
 {
     if (!s_tc.ready) return;
@@ -1247,11 +1245,7 @@ void openpete_tercache_frame_skip(uint32_t stamp, int immediate)
     s_tc.build_target = T->sec;
 }
 
-/* Called once per rendered present: open the retained draws only for the
- * state built by the scene being composed. A present whose scene ran no
- * terrain feed has no retained terrain — the feeder stops during fades,
- * level loads and menus, and the last live state must not repaint there
- * (it would sample VRAM the load is already overwriting). */
+/* Selects the retained state whose stamp matches the composed scene. */
 void openpete_tercache_frame_select(uint32_t present_stamp)
 {
     /* present_stamp = the stamp of the SCENE being composed. The retained
