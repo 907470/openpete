@@ -15,9 +15,14 @@
 extern "C" {
 #endif
 
-/* ASCII case-insensitive compare, locale-independent by construction.
- * Callers compare file names and extensions, where locale-sensitive
- * folding would be wrong rather than merely surprising. */
+/** @brief Compare two NUL-terminated strings with ASCII case folding, independent of the locale.
+ *
+ * Only 'A'..'Z' fold to lower case; other bytes compare as unsigned char.
+ * Callers compare directory entry names and mod names, whose matching and
+ * order must not change with the host locale.
+ * @param a first string.
+ * @param b second string.
+ * @return negative, zero or positive as a folds before, equal to or after b. */
 static inline int op_strcasecmp(const char* a, const char* b) {
     unsigned char ca, cb;
     for (;;) {

@@ -109,9 +109,13 @@ static inline op_time_t op_gcd(op_time_t a, op_time_t b) {
     return a ? a : 1;
 }
 
-/* Reduce rem/den to lowest terms. Keeps denominators small enough to read in
- * a debugger and keeps op_period_mul/div from compounding a denominator
- * across repeated use. */
+/** @brief Reduce a period's fraction rem/den to lowest terms.
+ *
+ * A zero remainder sets den to 1. Keeps denominators readable in a debugger
+ * and stops op_period_mul/div from compounding a denominator across
+ * repeated use.
+ * @param p the period.
+ * @return the same period with rem/den reduced. */
 static inline op_period_t op_period_reduce(op_period_t p) {
     if (p.rem == 0) { p.den = 1; return p; }
     const op_time_t g = op_gcd(p.rem, p.den);
@@ -119,7 +123,11 @@ static inline op_period_t op_period_reduce(op_period_t p) {
     return p;
 }
 
-/* Build a period of exactly num/den seconds. */
+/** @brief Build a period of exactly num/den seconds.
+ *
+ * @param num numerator in seconds.
+ * @param den denominator, >= 1.
+ * @return the period, reduced. */
 static inline op_period_t op_period_from_secs(op_time_t num, op_time_t den) {
     op_period_t p;
     const op_time_t total = num * OP_NS_PER_SEC;
@@ -129,12 +137,19 @@ static inline op_period_t op_period_from_secs(op_time_t num, op_time_t den) {
     return op_period_reduce(p);
 }
 
-/* Build a period of exactly `ns` nanoseconds (no fractional part). */
+/** @brief Build a period of exactly ns nanoseconds with no fractional part.
+ *
+ * @param ns the length in nanoseconds.
+ * @return the period. */
 static inline op_period_t op_period_from_ns(op_time_t ns) {
     op_period_t p; p.whole = ns; p.rem = 0; p.den = 1; return p;
 }
 
-/* Divide a period into `n` equal parts, exactly. */
+/** @brief Divide a period into n equal parts exactly.
+ *
+ * @param p the period.
+ * @param n the part count, >= 1.
+ * @return p / n, reduced. */
 static inline op_period_t op_period_div(op_period_t p, op_time_t n) {
     op_period_t q;
     const op_time_t num = p.whole * p.den + p.rem;   /* period = num/den ns */
@@ -145,7 +160,11 @@ static inline op_period_t op_period_div(op_period_t p, op_time_t n) {
     return op_period_reduce(q);
 }
 
-/* Multiply a period by `n`, exactly (n >= 1). */
+/** @brief Multiply a period by n exactly.
+ *
+ * @param p the period.
+ * @param n the multiplier, >= 1.
+ * @return p * n, reduced. */
 static inline op_period_t op_period_mul(op_period_t p, op_time_t n) {
     op_period_t q;
     const op_time_t num = (p.whole * p.den + p.rem) * n;
@@ -155,7 +174,12 @@ static inline op_period_t op_period_mul(op_period_t p, op_time_t n) {
     return op_period_reduce(q);
 }
 
-/* Nominal length in ns, rounded — for logs, ratios and threshold math only. */
+/** @brief Return a period's length in nanoseconds, rounded half up.
+ *
+ * For logs, ratios and threshold math only; deadlines advance through
+ * op_deadline_advance, which keeps the exact fraction.
+ * @param p the period.
+ * @return the rounded length in nanoseconds. */
 static inline op_time_t op_period_ns(op_period_t p) {
     return p.whole + (p.rem * 2 >= p.den ? 1 : 0);
 }
@@ -165,13 +189,22 @@ static inline double op_period_hz(op_period_t p) {
          / ((double)p.whole * (double)p.den + (double)p.rem);
 }
 
-/* Reset a deadline to `at`, dropping any accrued fraction. Use whenever the
- * grid is deliberately abandoned (slip, unlock, live rate change). */
+/** @brief Reset a deadline to at, dropping any accrued fraction.
+ *
+ * Used where the grid is abandoned (slip clamp, unlock, live rate change).
+ * @param d the deadline.
+ * @param at the new deadline in nanoseconds. */
 static inline void op_deadline_anchor(op_deadline_t* d, op_time_t at) {
     d->at = at; d->acc = 0;
 }
 
-/* Advance a deadline by `steps` exact periods (steps >= 1). */
+/** @brief Advance a deadline by steps exact periods.
+ *
+ * Adds steps whole parts and steps remainder numerators, then carries every
+ * full den of accrued remainder into the deadline, so no fraction is lost.
+ * @param d the deadline.
+ * @param p the period.
+ * @param steps the period count, >= 1. */
 static inline void op_deadline_advance(op_deadline_t* d, op_period_t p,
                                        op_time_t steps) {
     d->at  += p.whole * steps;
@@ -184,9 +217,13 @@ static inline void op_deadline_advance(op_deadline_t* d, op_period_t p,
 #define OP_TICK_PERIOD()  op_period_from_secs(OP_VBL_HZ_DEN, \
                                               OP_VBL_HZ_NUM / OP_TICK_VBLS)
 
-/* The VBL period under --tick-scale. F == 1 keeps the exact rational; any
- * other F is a debug slow-mo whose whole point is to leave the canonical
- * rate, so it collapses to a rounded whole-ns period. */
+/** @brief Return the VBL period under --tick-scale F, the exact VBL period divided by F.
+ *
+ * F == 1 returns the exact rational. Any other F is a debug speed change
+ * that leaves the canonical rate, so it returns the period rounded to whole
+ * nanoseconds.
+ * @param tick_scale the engine speed factor F, > 0.
+ * @return the scaled VBL period. */
 static inline op_period_t op_scaled_vbl_period(double tick_scale) {
     const op_period_t p = OP_VBL_PERIOD();
     if (tick_scale == 1.0) return p;

@@ -911,10 +911,12 @@ static inline int game_default_window_h(void)
     return game_layout.display.clip_h * 2;
 }
 
-/* disp_h / clip_h: how much taller the scanned-out display is than the drawn
- * region. A window sized for a requested display aspect must be this much
- * wider than the aspect alone implies, because the cropped source covers only
- * clip_h of the disp_h rows that aspect describes. */
+/** @brief Return disp_h / clip_h, the ratio of scanned-out display rows to drawn rows.
+ *
+ * A window sized for a requested display aspect is this much wider than
+ * the aspect alone implies, because the cropped source covers only clip_h
+ * of the disp_h rows that aspect describes. Returns 1.0 when clip_h is
+ * not positive. */
 static inline float game_display_crop_factor(void)
 {
     return (game_layout.display.clip_h > 0)

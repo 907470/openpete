@@ -31,22 +31,30 @@ typedef struct openpete_pad_snapshot {
     bool           valid;
 } openpete_pad_snapshot_t;
 
-/* 1 when OPENPETE_INPUT_LEGACY selects the pre-ownership path (PsyCross pumps,
- * decodes and injects). Diagnostic A/B only. */
+/** @brief Return 1 when OPENPETE_INPUT_LEGACY selects the path where PsyCross pumps, decodes and injects input itself.
+ *
+ * The variable is read on the first call and cached; a non-empty value not
+ * starting with '0' selects the path. It is a diagnostic A/B against the
+ * host-owned path. On the legacy path the mouse channel sees no events: the
+ * snapshot carries SDL's own position and button mask, and the press,
+ * motion and wheel totals never advance.
+ * @return 1 on the legacy path, else 0. */
 int openpete_host_input_legacy(void);
 
-/* Loads the controller-mapping databases and logs what each attached pad
- * resolved to. Call once, after the gamepad subsystem is up: a mapping added
- * before it exists is discarded, and one added after still reaches a pad that
- * is already attached. `cli_path` is --controller-db, NULL when unset (the
- * OPENPETE_CONTROLLER_DB environment variable is the fallback).
+/** @brief Load the controller-mapping databases and log what each attached pad resolved to.
  *
- * Runs on both input paths — the legacy one needs mappings just as much. */
+ * Call once, after the gamepad subsystem is up: a mapping added before it
+ * exists is discarded, and one added after still reaches a pad that is
+ * already attached. Runs on both input paths.
+ * @param cli_path --controller-db, NULL or empty when unset; the
+ *        OPENPETE_CONTROLLER_DB environment variable is the fallback. */
 void openpete_host_input_load_mappings(const char* cli_path);
 
-/* Reports one device's mapping provenance as it arrives, for the pads that
- * were not attached when the databases loaded. Hung off JOYSTICK_ADDED, not
- * GAMEPAD_ADDED: the latter fires only for a device SDL can already map. */
+/** @brief Log one arriving device's mapping provenance, for pads not attached when the databases loaded.
+ *
+ * Called on SDL_EVENT_JOYSTICK_ADDED, not GAMEPAD_ADDED: the latter fires
+ * only for a device SDL can already map.
+ * @param joystick_id SDL joystick instance id. */
 void openpete_host_input_pad_arrived(unsigned int joystick_id);
 
 /* Producer. Decodes live SDL input (as of the last event pump) and publishes
@@ -62,34 +70,42 @@ void openpete_host_input_sample(bool alt_held);
  * wrong thread. */
 void openpete_host_input_seed_neutral(void);
 
-/* Consumer. Stamps the published snapshot into the PsyCross override channel.
- * A no-op when `claimed` is set — that means a higher-priority override writer
- * (bk2 replay, the settings menu, the dev overlay, rewind) already owns the
- * channel this iteration. Live decode is the lowest-priority writer: it fills
- * the channel whenever nothing else claims it, which is what turns the
- * former "override inactive -> PsyCross polls SDL itself" fallback into
- * "override always active, host always the source". */
+/** @brief Consumer: stamp the published slot-0 snapshot into the PsyCross override channel and record the latched sample.
+ *
+ * Live decode is the lowest-priority override writer and fills the channel
+ * whenever nothing else claims it, so the override is always active and
+ * the host is always its source. When claimed, the channel is left to the
+ * other writer and the latch record (publish instant, sequence, every
+ * slot's snapshot) is cleared, so this tick reports no consumed sample.
+ * When the seqlock read fails or slot 0 is invalid, nothing is stamped and
+ * the previous record stands. Slots 1-3 are latched but never stamped.
+ * @param claimed true when a higher-priority writer (bk2 replay, the open
+ *        settings menu, the dev overlay while it owns the keyboard) holds
+ *        the channel this iteration. */
 void openpete_host_input_latch(bool claimed);
 
-/* ---- host SDL input-state snapshot -------------------------------------
+/* ---- host SDL input-state snapshot ------------------------------------- */
+/** @brief Producer: publish a snapshot of SDL keyboard, modifier, mouse and per-slot gamepad state.
  *
- * Everything that reads live SDL keyboard/gamepad state does so through this
- * snapshot instead of calling SDL directly. Same producer/consumer split as
- * the pad above and for the same reason: those SDL arrays are refreshed by
- * the event pump, and the pump is moving to a different thread from the host
- * loop that consumes them. A snapshot is the handoff that survives the move.
- *
- * Double-buffered with an atomic index, so a consumer always reads one
- * internally consistent sample rather than a half-updated one.
- *
- * Publishing is a producer-side (pump) act; every accessor below is
- * consumer-side and never touches SDL. */
+ * Everything that reads live SDL keyboard or gamepad state reads this
+ * snapshot instead. The SDL arrays are refreshed by the event pump, which
+ * under the thread split runs on a different thread from the consumers.
+ * The snapshot is double-buffered with an atomic index, so a consumer reads
+ * one internally consistent sample. Injected raw keys are merged before the
+ * input lock blanks the keyboard and modifiers; marked injected keys are
+ * merged after it. On the legacy input path the mouse fields come from
+ * SDL_GetMouseState. Every accessor below is consumer-side and never
+ * touches SDL. */
 void openpete_host_input_publish_sdl(void);
 
-/* Injection-script key state (pump thread). Sets or clears one scancode's
- * held state in every snapshot published from now on. `raw` files the key
- * with the physical keyboard, which the input lock blanks; otherwise it is a
- * marked injected key and the lock leaves it. */
+/** @brief Set or clear one injection-script key's held state in every snapshot published from now on.
+ *
+ * Pump thread only. An out-of-range scancode is ignored.
+ * @param scancode SDL scancode, 1 .. SDL_SCANCODE_COUNT - 1.
+ * @param down nonzero to hold, zero to release.
+ * @param raw nonzero files the key with the physical keyboard, which the
+ *        input lock blanks; zero makes it a marked injected key the lock
+ *        leaves. */
 void openpete_host_input_inject_key(int scancode, int down, int raw);
 
 int      openpete_host_input_key_down(int scancode);
@@ -101,24 +117,44 @@ int      openpete_host_input_pad_axis(int axis);
  * host_slot_gamepads assigns them. A slot with no device reads as all-released
  * and centred, which openpete_host_input_pad_connected distinguishes from a
  * device that is genuinely idle. */
+/** @brief Return whether a gamepad button is held on a pad slot in the published snapshot.
+ *
+ * @param slot pad slot, 0 .. OPENPETE_PAD_SLOTS - 1.
+ * @param button SDL_GamepadButton index.
+ * @return 1 when held, 0 when released, out of range, or the slot has no
+ *         device. */
 int      openpete_host_input_pad_button_slot(int slot, int button);
 int      openpete_host_input_pad_axis_slot(int slot, int axis);
 int      openpete_host_input_pad_connected(int slot);
 unsigned openpete_host_input_modstate(void);
 
-/* The mouse half of the same snapshot: event-derived position (window
- * points), window size in points, button mask and in-window flag, copied
- * from the mouse channel at publish. `button_index` is OPENPETE_MOUSE_BTN_*. */
+/* The mouse half of the same snapshot. `button_index` is
+ * OPENPETE_MOUSE_BTN_*. */
+/** @brief Copy the mouse half of the published snapshot.
+ *
+ * The state is event-derived (position in window points, window size in
+ * points, button mask, in-window flag), copied from the mouse channel at
+ * publish.
+ * @param out receives the state; NULL is ignored. */
 void     openpete_host_input_mouse(openpete_mouse_state_t* out);
 int      openpete_host_input_mouse_button(int button_index);
 
-/* Last published snapshot (diagnostics / the parity instrument). */
+/** @brief Copy slot 0 of the last published pad snapshot.
+ *
+ * A diagnostic accessor with no caller at present; the parity instrument
+ * compares against the latched sample instead.
+ * @param out receives the snapshot, valid false when nothing was published
+ *        or the seqlock retry bound was exhausted; NULL is ignored. */
 void openpete_host_input_last(openpete_pad_snapshot_t* out);
 
-/* The snapshot this iteration's latch consumed for one pad slot. Returns 1
- * when a device drove the slot, 0 otherwise (with `out->valid` false). Slot 0
- * is the sample that was stamped into the override channel; slots 1-3 are
- * latched for the input log and reach the guest only through a mod. */
+/** @brief Copy the snapshot this iteration's latch consumed for one pad slot.
+ *
+ * Slot 0 is the sample stamped into the override channel; slots 1-3 are
+ * latched for the input log and reach the guest only through a mod.
+ * @param slot pad slot, 0 .. OPENPETE_PAD_SLOTS - 1.
+ * @param out receives the snapshot; valid is false for an out-of-range slot
+ *        or one no device drove.
+ * @return 1 when a device drove the slot, else 0 (also for NULL out). */
 int openpete_host_input_latched_slot(int slot, openpete_pad_snapshot_t* out);
 
 /* VBLs `slot` decoded through its [keys.padN] bindings rather than the shared
@@ -127,32 +163,40 @@ int openpete_host_input_latched_slot(int slot, openpete_pad_snapshot_t* out);
  * re-map that happens to agree with the default. */
 unsigned long long openpete_host_input_slot_keymap_decodes(int slot);
 
-/* op_now() at the moment the last snapshot was published, or 0 before the
- * first one. The consumer runs on a different thread from the producer, so
- * "how stale was the input this tick consumed" is a real quantity now rather
- * than zero by construction; this is what makes it measurable. */
+/** @brief Return op_now() at the publish of the last pad snapshot.
+ *
+ * Under the thread split the consumer runs on a different thread from the
+ * producer, so input staleness is nonzero and this timestamp measures it.
+ * @return the publish instant in nanoseconds, or 0 before the first publish
+ *         or when the seqlock retry bound was exhausted. */
 int64_t openpete_host_input_last_sample_ns(void);
 
-/* Publish instant of the snapshot the last latch actually CONSUMED, captured
- * at the latch. This, not the one above, is what a tick's input staleness is
- * measured against: reading the live value after the tick has run names a
- * sample the tick never saw. Zero when nothing has latched (the legacy input
- * path never latches, and its staleness is therefore unmeasured, not zero). */
+/** @brief Return the publish instant of the snapshot the last latch consumed, captured at the latch.
+ *
+ * A tick's input staleness is measured against this, not against
+ * openpete_host_input_last_sample_ns: the live value read after the tick
+ * has run names a sample the tick never saw.
+ * @return nanoseconds, or 0 when nothing has latched or the last latch was
+ *         claimed (the legacy input path never latches, so its staleness is
+ *         unmeasured). */
 int64_t openpete_host_input_latched_sample_ns(void);
 
-/* Sequence number of the sample the last latch consumed, or 0 if that
- * iteration consumed none (a higher-priority writer had claimed the pad).
+/** @brief Return the sequence number of the sample the last latch consumed.
  *
- * This is what makes an input measurement attributable. A timestamp can only
- * say a sample was published before a tick ran; the sequence says WHICH
- * sample the tick actually took, so a pulse the latch never picked up is
- * countable instead of being credited to whichever tick happened to follow
- * it. Sequence numbers are even and increase by 2 per publish (the odd
- * values are the seqlock's in-flight state). */
+ * A timestamp only says a sample was published before a tick ran; the
+ * sequence says which sample the tick took, so a pulse the latch never
+ * picked up is countable instead of being credited to the next tick.
+ * Sequence numbers are even and increase by 2 per publish; odd values are
+ * the seqlock's in-flight state.
+ * @return the sequence number, or 0 before the first latch or when the last
+ *         latch was claimed by a higher-priority writer. */
 unsigned openpete_host_input_latched_seq(void);
 
-/* Pad bits of that same sample, so a caller can verify a specific edge was
- * consumed rather than merely superseded. */
+/** @brief Return the slot-0 pad bits of the sample the last latch consumed.
+ *
+ * Lets a caller verify a specific edge was consumed rather than superseded.
+ * @return the active-low bits, or 0xFFFF (all released) when the latched slot-0
+ *         sample is invalid. */
 unsigned short openpete_host_input_latched_bits(void);
 
 /* Times the consumer's seqlock retry bound was exhausted — the producer was
@@ -242,7 +286,11 @@ void openpete_host_input_parity_enable(void);
  * valid sample.
  * @param claimed True when a bk2 movie or the open settings menu drives the pad override this iteration. */
 void openpete_host_input_parity_check(bool claimed);
-/* Returns 1 = pass, 0 = mismatches seen, -1 = vacuous (nothing engaged). */
+/** @brief Log the parity instrument's verdict and return it.
+ *
+ * Stale latches are logged beside the verdict and do not change it.
+ * @return 1 on pass or when the instrument is not armed, 0 when mismatches
+ *         were seen, -1 when no iteration carried input (vacuous). */
 int  openpete_host_input_parity_report(void);
 
 #endif /* OPENPETE_HOST_INPUT_H */

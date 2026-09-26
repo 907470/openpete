@@ -41,9 +41,14 @@ extern const char *const openpete_anchor_names[OPENPETE_ANCHOR_COUNT];
  * a toml-flavoured `top_right` is accepted alongside `top-right`. */
 int openpete_anchor_parse(const char *s);
 
-/* Edge predicates — the placement rules below, exposed for callers that need
- * to mirror them (per-line text alignment inside a right-anchored block, a
- * slide-in direction). */
+/* Edge predicates of the placement rules, exposed for callers that mirror
+ * them (per-line text alignment inside a right-anchored block, a slide-in
+ * direction). */
+/** @brief Return nonzero when anchor a sits on the bottom edge.
+ *
+ * True for the three BOTTOM_* anchors, which follow the TOP_* ones in the enum.
+ * @param a an openpete_anchor_t value.
+ * @return nonzero for a bottom anchor. */
 static inline int openpete_anchor_is_bottom(int a) {
     return a >= OPENPETE_ANCHOR_BOTTOM_LEFT;
 }

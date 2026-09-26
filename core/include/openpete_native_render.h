@@ -748,46 +748,67 @@ typedef struct {
 /* A full-world view-Z. Only the constructors below produce one. */
 typedef struct { float vz; } openpete_worldvz;
 
-/* vz is ALREADY full-world view-Z (raw GTE MAC3 of full-world coords, or a
- * value normalized to full-world upstream where the unit is known). */
+/** @brief Wrap a view-Z that is already in full-world units.
+ *
+ * vz is a raw GTE MAC3 of full-world coordinates, or a value normalized to
+ * full-world upstream where its unit is known.
+ * @param vz full-world view-Z.
+ * @return the view-Z unchanged. */
 static inline openpete_worldvz openpete_worldvz_full(float vz) {
     openpete_worldvz w; w.vz = vz; return w;
 }
-/* vz is full-world DIVIDED BY mul (vz*mul == full-world): the unit claim for
- * sub-scaled GTE paths — 4 for >>2 camera paths, 16 for terrain cam>>4,
- * (1<<m_scale) for moby record scale. */
+/** @brief Convert a sub-scaled view-Z to full-world by multiplying by its unit divisor.
+ *
+ * The unit claim for sub-scaled GTE paths: vz * mul is full-world. mul is
+ * 4 for paths with the camera shifted >>2, 16 for terrain (camera >>4),
+ * and (1 << m_scale) for moby record scale.
+ * @param vz view-Z in units of full-world / mul.
+ * @param mul the unit divisor.
+ * @return the full-world view-Z. */
 static inline openpete_worldvz openpete_worldvz_scaled(float vz, float mul) {
     openpete_worldvz w; w.vz = vz * mul; return w;
 }
-/* An INTENTIONAL world-proportional ordering bias (mul>1 pushes behind, mul<1
- * pulls nearer), applied after unit normalization — the terrain LP tier-pull,
- * the shadow A/B bias envs. Distinct from a unit claim: use _scaled to state
- * what unit a value is in, _bias to state ordering policy. */
+/** @brief Apply a proportional ordering bias to a full-world view-Z.
+ *
+ * mul > 1 pushes the surface behind, mul < 1 pulls it nearer. Applied after
+ * unit normalization; the caller is shadow_depth with the
+ * OPENPETE_SHADOW_BIAS_SPYRO / _MOBY factors. _scaled states the unit a
+ * value is in; _bias states ordering policy.
+ * @param z full-world view-Z.
+ * @param mul the bias factor.
+ * @return z scaled by mul. */
 static inline openpete_worldvz openpete_worldvz_bias(openpete_worldvz z, float mul) {
     z.vz *= mul; return z;
 }
-/* _bias with the offset SATURATED at `cap` world units (cap <= 0 = uncapped).
+/** @brief Apply a proportional ordering bias whose offset saturates at cap world units.
  *
- * A proportional bias grows without bound, so at distance it eventually exceeds
- * the real clearance between whatever it is meant to separate and something
- * else entirely — it stops being a tie-break and starts reordering the scene.
- * Capping bounds that collateral while keeping the two properties the tie-break
- * needs: the biased surface is still strictly behind a coincident unbiased one
- * at every distance, and the map vz -> vz' stays strictly INCREASING, so the
- * relative order of two biased surfaces is preserved exactly. That second
- * property is what a per-face or per-sector exemption cannot offer — exempting
- * some faces of one continuous surface and not others tears it at the boundary. */
+ * The offset vz * (mul - 1) is clamped to [-cap, cap]; cap <= 0 leaves it
+ * uncapped. An uncapped proportional bias grows with distance until it
+ * exceeds the clearance between unrelated surfaces and reorders them. The
+ * capped form keeps a biased surface strictly behind a coincident unbiased
+ * one (for mul > 1) at every distance, and keeps the map vz -> vz' strictly
+ * increasing, so two biased surfaces keep their relative order; a per-face
+ * or per-sector exemption would tear one continuous surface at the
+ * exemption boundary. No caller uses it at present.
+ * @param z full-world view-Z.
+ * @param mul the bias factor.
+ * @param cap the offset bound in world units, <= 0 for none.
+ * @return the biased view-Z. */
 static inline openpete_worldvz openpete_worldvz_bias_capped(openpete_worldvz z, float mul, float cap) {
     float d = z.vz * (mul - 1.0f);
     if (cap > 0.0f) { if (d > cap) d = cap; else if (d < -cap) d = -cap; }
     z.vz += d; return z;
 }
-/* An INTENTIONAL ordering pull by a FIXED world-unit distance (toward the
- * camera), applied after unit normalization. For OT-tie-break emulation: the
- * PSX links a whole moby's prims at its CENTRE-depth bucket, so late-added
- * attachments (sparkles) draw over the entire model regardless of per-pixel
- * depth; a constant pull that clears the body's protrusion is the Z-buffer
- * realization. Use _bias for proportional policy, _pull for absolute. */
+/** @brief Pull a full-world view-Z toward the camera by a fixed world-unit distance.
+ *
+ * Applied after unit normalization to reproduce an ordering-table tie-break:
+ * the PSX links a moby's prims at its centre-depth bucket, so attachments
+ * added later (sparkles) draw over the whole model regardless of per-pixel
+ * depth. A constant pull larger than the body's protrusion gives the same
+ * order under a Z-buffer. _bias is the proportional form.
+ * @param z full-world view-Z.
+ * @param world_units the pull distance.
+ * @return z.vz - world_units. */
 static inline openpete_worldvz openpete_worldvz_pull(openpete_worldvz z, float world_units) {
     z.vz -= world_units; return z;
 }
@@ -800,20 +821,27 @@ static inline openpete_worldvz openpete_worldvz_pull(openpete_worldvz z, float w
  * terrain ties. Less than one slot, so it flips only pairs the table calls a
  * tie. */
 #define OPENPETE_MOBY_TIE_PULL_VZ 127.0
-/* An ordering-table key as a full-world view-Z on the moby feeders' depth
- * scale. The moby path keys each face at its average-depth slot minus the
+/** @brief Return an ordering-table key as a full-world view-Z on the moby feeders' depth scale.
+ *
+ * The moby path keys each face at its average-depth slot minus the
  * owning moby's authored depth offset, and feeds the face at its true depth
  * less the tie pull, so the faces of slot s land in [128*s - 127, 128*s + 1).
  * A primitive linked at key k over a moby whose offset is d sorts against that
  * moby's faces as the table does when fed at 128*(k + d) - 127: in front of
  * every face of slot k + d and beyond, behind every nearer one. `owner_slot` is
- * k + d. The quantization is the key's own. */
+ * k + d. The quantization is the key's own.
+ * @param owner_slot the key plus the owning moby's depth offset.
+ * @return 128 * owner_slot - 127 as a full-world view-Z. */
 static inline openpete_worldvz openpete_worldvz_owner_slot(int owner_slot) {
     return openpete_worldvz_full((float)((double)owner_slot * OPENPETE_OT_SLOT_VZ
                                          - OPENPETE_MOBY_TIE_PULL_VZ));
 }
-/* The scene vertex depth (openpete_scene_vert.z / .pvz) of a view-Z:
- * near-guarded at 1 (behind-camera geometry is culled upstream). */
+/** @brief Return the scene vertex depth (openpete_scene_vert.z / .pvz) of a view-Z, clamped below at 1.
+ *
+ * Behind-camera geometry is culled upstream; the clamp only guards the
+ * near plane.
+ * @param z full-world view-Z.
+ * @return max(z.vz, 1). */
 static inline float openpete_native_scene_viewz(openpete_worldvz z) {
     return z.vz < 1.0f ? 1.0f : z.vz;
 }

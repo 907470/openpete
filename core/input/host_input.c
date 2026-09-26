@@ -253,12 +253,7 @@ static unsigned s_parity_mismatch;
 static unsigned s_parity_stale;   /* pump produced nothing new: not a mismatch */
 static unsigned s_parity_last_seq;
 
-/* OPENPETE_INPUT_LEGACY=1 restores the pre-ownership input path (PsyCross
- * pumps, decodes and injects on its own). Kept only while the host-owned path
- * is being proven: it is the A/B that shows the two produce identical gameplay,
- * and the bisect switch if they ever stop doing so. The mouse channel sees no
- * events on this path: the snapshot carries SDL's own position and button
- * mask, and the press, motion and wheel totals never advance. */
+/* OPENPETE_INPUT_LEGACY, read once and cached. */
 int openpete_host_input_legacy(void)
 {
     static int v = -1;
@@ -548,8 +543,12 @@ void openpete_host_input_inject_key(int scancode, int down, int raw)
     (raw ? s_inj_keys_raw : s_inj_keys_marked)[scancode] = down != 0;
 }
 
-/* Under the input lock a slot keeps only an SDL virtual gamepad, which a
- * harness attaches; a physical pad reads as absent. */
+/** @brief Filter a slot's gamepad through the input lock: only an SDL virtual gamepad passes while the lock is active.
+ *
+ * A harness attaches the virtual gamepad; a physical pad reads as absent
+ * under the lock. With the lock off, or gp NULL, gp is returned unchanged.
+ * @param gp the slot's gamepad handle, or NULL.
+ * @return gp, or NULL when the lock hides a physical pad. */
 static SDL_Gamepad* lock_filter_gamepad(SDL_Gamepad* gp)
 {
     if (!gp || !openpete_input_lock_active()) return gp;
@@ -604,8 +603,15 @@ static bool map_file_exists(const char* path)
     return SDL_GetPathInfo(path, &info) && info.type == SDL_PATHTYPE_FILE;
 }
 
-/* Loads one database, recording it as a provenance source when it lands.
- * Returns whether it loaded, so a caller can fall back to another location. */
+/** @brief Load one controller-mapping database file and record it as a provenance source.
+ *
+ * A missing file logs at info level; a file SDL fails to parse logs a
+ * warning. A loaded file is appended to s_map_file (up to MAP_FILES_MAX
+ * entries) for map_source_for.
+ * @param path the file path; NULL or empty loads nothing.
+ * @param what the file's role for the log ("shipped", "user", ...).
+ * @return whether the file loaded, so a caller can fall back to another
+ *         location. */
 static bool map_load_file(const char* path, const char* what)
 {
     if (!path || !*path) return false;
@@ -630,9 +636,15 @@ static bool map_load_file(const char* path, const char* what)
     return true;
 }
 
-/* Does `line` map `guid` on the platform this build runs on? A mapping whose
- * platform field names a different OS is parsed and discarded by SDL, so a
- * file that merely mentions the GUID is not the file that supplied it. */
+/** @brief Return whether a mapping-database line maps guid on the platform this build runs on.
+ *
+ * The line must start with the 32 GUID characters (case-insensitive)
+ * followed by a comma. A line without a platform field applies everywhere;
+ * one whose platform field names another OS is discarded by SDL, so a file
+ * that only mentions the GUID is not the file that supplied it.
+ * @param line one NUL-terminated database line.
+ * @param guid 32-hex-digit SDL GUID string.
+ * @return true when the line supplies this platform's mapping for guid. */
 static bool map_line_matches(const char* line, const char* guid)
 {
     if (SDL_strncasecmp(line, guid, 32) != 0 || line[32] != ',') return false;
@@ -709,10 +721,12 @@ static void map_log_one(SDL_JoystickID id)
     }
 }
 
-/* One line per attached pad: what SDL sees, and where its mapping came from.
- * A count of mappings loaded per file would not answer either question — the
- * loader keeps only the lines whose platform field matches, so a count says
- * nothing about whose line won for the pad in the user's hands. */
+/** @brief Log each attached joystick's GUID, name and mapping source through map_log_one.
+ *
+ * Logs "no joysticks attached" when there are none. A per-file count of
+ * loaded mappings cannot say which line won for a given pad, since SDL
+ * keeps only the lines whose platform field matches, so the log is per
+ * pad. */
 static void map_log_pads(void)
 {
     int n = 0;
@@ -782,7 +796,11 @@ void openpete_host_input_load_mappings(const char* cli_path)
     map_log_pads();
 }
 
-/* First connected gamepad, matching the binding layer's "first pad wins". */
+/** @brief Return the first gamepad in SDL's enumeration that already has an open handle, the device of pad slot 0.
+ *
+ * SDL_GetGamepadFromID resolves only devices some caller has opened;
+ * enumerated gamepads nobody opened are skipped.
+ * @return the gamepad handle, or NULL when none is open. */
 static SDL_Gamepad* host_first_gamepad(void)
 {
     int n = 0;
@@ -828,7 +846,14 @@ unsigned openpete_host_input_slot_device_id(int slot)
     return (unsigned)SDL_GetAtomicInt(&s_slot_dev_id[slot]);
 }
 
-/* Resolve a device to a gamepad handle, opening it if nothing else has. */
+/** @brief Resolve a joystick instance id to a gamepad handle, opening it into s_owned when nothing else has.
+ *
+ * A device already open (by PsyCross or an earlier call) returns its
+ * existing handle. A device with no mapping is not a gamepad and returns
+ * NULL. Otherwise the device is opened into the first free s_owned entry;
+ * a full table or a failed open (logged) returns NULL.
+ * @param id SDL joystick instance id.
+ * @return the gamepad handle, or NULL. */
 static SDL_Gamepad* host_gamepad_for_id(SDL_JoystickID id)
 {
     SDL_Gamepad* gp = SDL_GetGamepadFromID(id);
@@ -853,8 +878,12 @@ static SDL_Gamepad* host_gamepad_for_id(SDL_JoystickID id)
     return NULL;
 }
 
-/* Release handles whose device is gone, so a replug does not exhaust the
- * table and leave a later slot unfillable. */
+/** @brief Close the s_owned gamepad handles whose device is no longer enumerated.
+ *
+ * Keeps a replug from exhausting the HOST_OWNED_PADS table and leaving a
+ * later slot unfillable.
+ * @param ids the currently enumerated gamepad ids.
+ * @param n the number of entries in ids. */
 static void host_owned_prune(const SDL_JoystickID* ids, int n)
 {
     for (int i = 0; i < HOST_OWNED_PADS; i++) {
@@ -1067,10 +1096,14 @@ unsigned openpete_host_input_seqlock_failures(void)
     return atomic_load_explicit(&s_snap_retry_fail, memory_order_relaxed);
 }
 
-/* Resolve bindings against the snapshot this sample is being built from,
- * rather than letting them reach for live SDL themselves. Same published
- * state the slot decode below reads, so a re-mapped player and a
- * default-mapped one cannot disagree about which instant they describe. */
+/* The kmr_* readers resolve bindings against the published SDL snapshot
+ * rather than live SDL. The slot decode reads the same snapshot, so a
+ * re-mapped player and a default-mapped one describe the same instant. */
+/** @brief Keymap reader: return whether scancode is down in the published SDL snapshot.
+ *
+ * @param ctx unused.
+ * @param scancode SDL scancode.
+ * @return 1 when down, else 0. */
 static int kmr_key(void* ctx, int scancode)
 {
     (void)ctx; return openpete_host_input_key_down(scancode);
@@ -1122,7 +1155,10 @@ unsigned long long openpete_host_input_slot_keymap_decodes(int slot)
          ? s_slot_keymap_decodes[slot] : 0;
 }
 
-/* Is anything bound under this player's [keys.padN] block? */
+/** @brief Return whether any button, axis or digital-stick action is bound under the slot's [keys.padN] block.
+ *
+ * @param slot pad slot index.
+ * @return 1 when at least one action is bound, else 0. */
 static int keymap_slot_bound(int slot)
 {
     const int base = OPK_PAD_BLOCK_FIRST(slot);
@@ -1141,13 +1177,18 @@ static int keymap_slot_bound(int slot)
     return 0;
 }
 
-/* Apply one player's [keys.padN] bindings over an already-decoded pad.
+/** @brief Apply one player's [keys.padN] bindings over an already-decoded pad.
  *
- * The merge result is the base and only BOUND rows override it, so re-mapping
- * one button re-maps exactly that button instead of silently unbinding every
- * row the user did not mention. Runs on the producer side, against the sample
- * being published, so the bytes reach the input log and replay reproduces
- * them — a decode from live SDL at consume time would not. */
+ * The controller-merge result is the base and only bound rows override it,
+ * so re-mapping one button changes that button and leaves every unmentioned
+ * row at its merged value. A bound button clears or sets its active-low bit;
+ * a bound stick axis replaces the axis byte through the merge's conversion
+ * (v / 256 + 128); a held digital-stick action forces its axis to 0 or 255.
+ * Runs on the producer side against the sample being published, so the
+ * bytes reach the input log and replay reproduces them.
+ * @param slot pad slot index.
+ * @param io_bits the pad bits, updated in place.
+ * @param io_axes the four axis bytes (RX, RY, LX, LY), updated in place. */
 static void keymap_decode_slot(int slot, unsigned short* io_bits,
                                unsigned char io_axes[4])
 {
