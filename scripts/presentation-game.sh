@@ -20,7 +20,8 @@
 #   PG_RUN_ARGS          per-game boot flags the game needs (array)
 #   PG_BK2_DIR           where the corpus bk2 movies live
 #   PG_TIER              the corpus tier (PRESENTATION_TIER, default presentation)
-#   PG_GOLDEN            the tier's committed golden image directory
+#   PG_GOLDEN            the tier's golden directory (manifest and baseline)
+#   PG_BLESSED           the tier's verdict manifest, $PG_GOLDEN/blessed.tsv
 #   PG_IDENT_BASELINE    the identity leg's per-tile baseline
 #   PG_CORPUS_DIR        the game's corpus manifest directory
 #   PG_CORPUS_MANIFEST   the tier's row manifest (bk2 and pose rows)
@@ -105,6 +106,7 @@ pg_resolve() {
       ;;
     *) echo "unknown PRESENTATION_TIER '$PG_TIER' (expected presentation or dragons)" >&2; return 1;;
   esac
+  PG_BLESSED="$PG_GOLDEN/blessed.tsv"
   PG_IDENT_BASELINE="$PG_GOLDEN/ident-baseline.tsv"
   return 0
 }

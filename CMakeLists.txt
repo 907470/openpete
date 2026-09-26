@@ -393,10 +393,11 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
 
     # Presentation-golden image gate (the image-side counterpart to the psx
     # oracle). Captures the native -vk corpus (canonical tick-keyed +
-    # deterministic alpha=0.5 intermediate) headless under llvmpipe and diffs it
-    # against the committed golden (tests/golden/spyro-1/presentation). A clean
-    # tree is pixel-identical, so any divergence is a presentation regression the
-    # gameplay oracle can't see. Covers the fanned-out corpus: the 53 skip-to-level
+    # deterministic alpha=0.5 intermediate) headless under llvmpipe and compares
+    # each tile's verdict digest against its row of the committed manifest
+    # tests/golden/spyro-1/presentation/blessed.tsv; no reference image is read
+    # on a pass. A clean tree is pixel-identical, so any divergence is a
+    # presentation regression the gameplay oracle can't see. Covers the fanned-out corpus: the 53 skip-to-level
     # bk2s (capped to a few evenly-spaced samples each, 16:9, both LOD modes) plus
     # the debug-freecam poses. Re-bless an intended change with
     # tests/harness/check_presentation_golden.sh --bless; scope a fast subset with

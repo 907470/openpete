@@ -3,9 +3,13 @@
 # check_presentation_golden.sh — the presentation-golden CTest gate.
 #
 # Captures the native -vk presentation corpus at the current (default) depth
-# encoding and diffs it against the committed golden. A clean tree is pixel-
-# identical (deterministic under llvmpipe), so ANY divergence is a
-# presentation regression the gameplay oracle is blind to. This is the strict
+# encoding and compares each tile's verdict digest (decoded RGB payload, mode
+# and size) against its row of the tier's committed blessed.tsv. The reference
+# images are not in the tree: a passing run reads none, and a divergent row's
+# reference is read from the local store or the archive for its heat diff
+# (scripts/presentation-blessed.py). A clean tree is pixel-identical
+# (deterministic under llvmpipe), so ANY divergence is a presentation
+# regression the gameplay oracle is blind to. This is the strict
 # pixel-identity leg (Mode B); an intended visual change is re-blessed with
 # tests/harness/presentation-corpus-promote.sh after reference-first adjudication.
 #
@@ -18,13 +22,9 @@
 #                       Either filter scopes the run to part of the corpus: the
 #                       golden tiles it does not capture are then reported as
 #                       out of scope instead of missing.
-#     --bless           (re)capture and promote --all instead of gating
-#     --first-run       for a generated golden (never committed): when the
-#                       golden holds no tile, copy the capture into it, write
-#                       the identity baseline only if none exists (a committed
-#                       baseline stays authoritative and is checked), and
-#                       report `verdict: BLESSED`; a golden with tiles gates
-#                       as without the flag
+#     --bless           (re)capture, promote --all (rewrite the changed rows of
+#                       blessed.tsv, file the tiles into the store) and
+#                       re-baseline the identity leg, instead of gating
 #     --game            game slug (default spyro-1); binary, disc, bk2 dir,
 #                       manifests and golden all derive from it
 #
@@ -32,6 +32,9 @@
 # PRESENTATION_GOLDEN_OUT) so a selective promote costs nothing: adjudicate the
 # diff, then run presentation-corpus-promote.sh against that directory. Only a
 # whole-corpus re-bless needs --bless. PRESENTATION_GOLDEN_KEEP=0 discards them.
+# Before capturing, the run writes capture-record.txt into the candidate
+# directory (the working copy's tree over the build's source roots and the
+# recomp identity), from which a promote takes the blessed revision.
 #
 # A third leg, tests/harness/check_credits_interp.sh, runs after the corpus capture:
 # sub-tick interpolation of the credits-roll letters (settled-line pose,
@@ -45,14 +48,16 @@
 # belongs to the presentation tier only. tests/harness/check_dragon_golden.sh
 # runs the `dragons` tier through this script.
 #
-# Every run prints its row counts: images captured, and of those the ones the
-# golden also holds. A run that captured nothing compared nothing, so it is
-# refused as VACUOUS rather than reported as a pass.
+# Every run prints its row counts: images captured, the captured tiles that
+# name a blessed.tsv row, and the manifest's row count. A run that captured
+# nothing compared nothing, so it is refused as VACUOUS rather than reported as
+# a pass; a run in which no captured tile names a row is refused by the diff.
 #
 # Exit: 0 = matches golden, the identity leg is within baseline and the credits
 #       leg passes; 1 = divergence, identity exceed, credits failure, a
-#       vacuous (zero-row) run, or a missing corpus manifest (either one; the
-#       message names the path); 64 = SKIP (prereqs missing).
+#       vacuous (zero-row) run, a missing corpus manifest (either one; the
+#       message names the path), or a blessed.tsv absent or with zero rows;
+#       64 = SKIP (prereqs missing).
 #
 # See notes/plans/openpete-presentation-golden.md.
 set -u
@@ -63,11 +68,9 @@ source scripts/presentation-game.sh
 FILTER=""           # bk2-name substring; default = the whole fanned-out corpus
 FREECAM_FILTER=""   # level substring for the freecam corpus; default = all poses
 BLESS=0
-FIRST_RUN=0
 BUILD_ARG=""
 for a in "$@"; do case "$a" in
   --bless) BLESS=1;;
-  --first-run) FIRST_RUN=1;;
   --filter=*) FILTER="${a#--filter=}";;
   --freecam-filter=*) FREECAM_FILTER="${a#--freecam-filter=}";;
   --build-dir=*) BUILD_ARG="$a";;
@@ -95,6 +98,8 @@ pg_manifest_dry_run_exit
 OUT="${PRESENTATION_GOLDEN_OUT:-$PG_CAND_DIR}"
 rm -rf "$OUT"; mkdir -p "$OUT"
 if [[ "${PRESENTATION_GOLDEN_KEEP:-1}" == "0" ]]; then trap 'rm -rf "$OUT"' EXIT; fi
+python3 scripts/presentation-blessed.py capture-record "$GAME" --tier "$PG_TIER" "$OUT" \
+  || { echo "[presentation-golden] FAIL: capture record not written"; exit 1; }
 
 # Capture at the compiled DEFAULT depth encoding (now screen-affine), so the
 # golden tracks whatever ships. The depth A/B is a separate manual tool
@@ -118,58 +123,34 @@ if [[ -n "$PG_FREECAM_MANIFEST" ]]; then
 fi
 
 # Row census. `captured` counts the images this run produced; `compared` counts
-# the golden tiles among them (the identity leg has no golden twin, so it is
-# excluded from both the compare set and the golden count). A capture that
-# produced nothing proves nothing about the renderer, so it is refused instead
-# of falling through the diff as "golden and candidate are both empty".
-captured=0 compared=0 goldrows=0
-for f in "$OUT"/*-vk.png; do
-  [[ -e "$f" ]] || continue
-  captured=$((captured+1))
-  [[ "$f" == *__ident__* ]] && continue
-  [[ -f "$PG_GOLDEN/$(basename "$f")" ]] && compared=$((compared+1))
-done
-if [[ -d "$PG_GOLDEN" ]]; then
-  for f in "$PG_GOLDEN"/*-vk.png; do [[ -e "$f" ]] && goldrows=$((goldrows+1)); done
-fi
+# the captured tiles that name a row of blessed.tsv and `golden` the manifest's
+# rows (the identity leg has no row, so it is excluded from both). A capture
+# that produced nothing proves nothing about the renderer, so it is refused
+# here; a capture no row matches is refused by the diff.
+captured=0
+for f in "$OUT"/*-vk.png; do [[ -e "$f" ]] && captured=$((captured+1)); done
+census="$(python3 scripts/presentation-blessed.py census "$GAME" --tier "$PG_TIER" --candidate "$OUT")" \
+  || { echo "[presentation-golden] FAIL: $PG_BLESSED unreadable (see above)"; exit 1; }
+goldrows="${census#rows=}"; goldrows="${goldrows%% *}"
+compared="${census##*matched=}"
 echo "[presentation-golden] $GAME$TIER_LABEL rows: captured=$captured compared=$compared golden=$goldrows"
 if [[ $captured -eq 0 ]]; then
   echo "[presentation-golden] VACUOUS: $GAME captured 0 rows — nothing was rendered,"
   echo "  so nothing was verified. Populate $PG_CORPUS_MANIFEST"
   [[ -n "$PG_FREECAM_MANIFEST" ]] && echo "  (or $PG_FREECAM_MANIFEST)"
-  echo "  and bless a golden into $PG_GOLDEN."
+  echo "  and bless rows into $PG_BLESSED."
   exit 1
 fi
 
+# A refused promote stops the bless before the identity baseline is rewritten,
+# so the baseline is never re-blessed against a manifest the promote did not
+# write.
 if [[ $BLESS -eq 1 ]]; then
-  tests/harness/presentation-corpus-promote.sh "$OUT" --all "$GAME_ARG"
-  python3 tests/harness/presentation-ident-check.py "$OUT" --bless --game "$GAME" --baseline "$PG_IDENT_BASELINE"
+  PRESENTATION_TIER="$PG_TIER" tests/harness/presentation-corpus-promote.sh "$OUT" --all "$GAME_ARG" \
+    || { echo "[presentation-golden] FAIL: promote refused; identity baseline left as is"; exit 1; }
+  python3 tests/harness/presentation-ident-check.py "$OUT" --bless --game "$GAME" --baseline "$PG_IDENT_BASELINE" || exit 1
+  git add -- "$PG_IDENT_BASELINE"
   echo "[presentation-golden] blessed — review 'git diff --cached --stat' and commit"
-  exit 0
-fi
-
-# First run of a generated golden: the golden holds no tile, so this run
-# compares nothing and seeds it, so the verdict is BLESSED, not PASS. The identity leg is a
-# relation inside this capture, so it still runs against a committed baseline.
-if [[ $FIRST_RUN -eq 1 && $goldrows -eq 0 ]]; then
-  mkdir -p "$PG_GOLDEN"
-  seeded=0
-  for f in "$OUT"/*-vk.png; do
-    [[ -e "$f" && "$f" != *__ident__* ]] || continue
-    cp "$f" "$PG_GOLDEN/"; seeded=$((seeded+1))
-  done
-  if [[ -f "$PG_IDENT_BASELINE" ]]; then
-    python3 tests/harness/presentation-ident-check.py "$OUT" --game "$GAME" --baseline "$PG_IDENT_BASELINE"
-    irc=$?
-    if [[ $irc -ne 0 && $irc -ne 64 ]]; then
-      echo "[presentation-golden] FAIL: identity leg exceeds the committed baseline (see EXCEED lines above)."
-      echo "verdict: FAIL (first run, $seeded tiles seeded, identity leg over baseline)"
-      exit 1
-    fi
-  else
-    python3 tests/harness/presentation-ident-check.py "$OUT" --bless --game "$GAME" --baseline "$PG_IDENT_BASELINE"
-  fi
-  echo "verdict: BLESSED (first run, $seeded tiles, nothing compared)"
   exit 0
 fi
 
@@ -193,7 +174,7 @@ fi
 # the strict shape check: every golden tile must be captured.
 SUBSET_ARG=()
 [[ -n "$FILTER" || -n "$FREECAM_FILTER" ]] && SUBSET_ARG=(--expect-subset)
-python3 tests/harness/presentation-corpus-diff.py "$OUT" --game "$GAME" --golden "$PG_GOLDEN" --diff-out "$OUT/diff" "${SUBSET_ARG[@]}"
+python3 tests/harness/presentation-corpus-diff.py "$OUT" --game "$GAME" --manifest "$PG_BLESSED" --diff-out "$OUT/diff" "${SUBSET_ARG[@]}"
 drc=$?
 if [[ $drc -eq 64 ]]; then echo "[presentation-golden] SKIP (diff prereqs missing)"; exit 64; fi
 if [[ $crc -ne 0 && $crc -ne 64 ]]; then

@@ -53,6 +53,19 @@ Subcommands:
   golden-at <rev> [<game>] [<tile-filter>] [--out DIR] [--materialize]
                                   resolve a revision's rows: store, then the
                                   archive, then the materialize price
+  capture-record <game> [--tier T] <candidate>
+                                  write capture-record.txt into a candidate
+                                  directory: the working copy's tree over the
+                                  build's source roots and the recomp identity
+  census <game> [--tier T] [--candidate DIR]
+                                  print `rows=N matched=M`: manifest rows, and
+                                  candidate tiles naming a row
+  promote <game> [--tier T] <candidate> [--all | <tile-filter>...]
+                                  rewrite the rows of changed candidate tiles
+                                  and file them into the store; the blessed
+                                  revision is HEAD when HEAD's tree equals the
+                                  record's source tree, else a refusal naming
+                                  the first differing path
 
 Exit: 0 success; 1 mismatch, refusal or missing input; 2 usage.
 """
@@ -988,6 +1001,199 @@ def golden_at_copy(out, hits, unverified, arch, local_cf):
     return n
 
 
+# ---- capture record, census, promote ----------------------------------------
+
+# Source roots of the build: the blessed revision is the commit whose tree over
+# these roots equals the capture's working copy. The recompiled source trees
+# (games/<game>/generated, ignored in a checkout, a symlink in a worktree) are
+# excluded; the recomp identity columns carry them.
+SOURCE_ROOTS = ("core", "games", "scripts", "CMakeLists.txt", "cmake")
+SOURCE_EXCLUDES = (":(exclude,glob)games/*/generated",
+                   ":(exclude,glob)games/*/generated/**",
+                   ":(exclude,glob)games/*/*/build/**")
+RECORD_NAME = "capture-record.txt"
+
+
+def source_tree():
+    """Tree sha of the working copy over SOURCE_ROOTS: a temporary index
+    seeded from HEAD, the roots added to it (tracked edits, deletions and
+    untracked files git does not ignore), then `git write-tree`."""
+    root = repo_root()
+    fd, idx = tempfile.mkstemp(prefix="golden-src-index-")
+    os.close(fd)
+    os.unlink(idx)
+    env = dict(os.environ, GIT_INDEX_FILE=idx)
+    try:
+        for args in (["read-tree", "HEAD"],
+                     ["add", "-A", "--"] + list(SOURCE_ROOTS)
+                     + list(SOURCE_EXCLUDES)):
+            p = subprocess.run(["git", "-C", root] + args, env=env,
+                               capture_output=True, text=True)
+            if p.returncode != 0:
+                raise RuntimeError("git %s: %s" % (args[0], p.stderr.strip()))
+        p = subprocess.run(["git", "-C", root, "write-tree"], env=env,
+                           capture_output=True, text=True, check=True)
+        return p.stdout.strip()
+    finally:
+        if os.path.exists(idx):
+            os.unlink(idx)
+
+
+def source_tree_diff(tree_a, tree_b):
+    """Paths under SOURCE_ROOTS at which two trees differ, sorted."""
+    out = git("diff-tree", "-r", "--name-only", tree_a, tree_b, "--",
+              *SOURCE_ROOTS) or ""
+    return sorted(ln for ln in out.splitlines() if ln)
+
+
+def read_record(cand):
+    """The capture record of a candidate directory as a dict; {} when
+    absent."""
+    out = {}
+    try:
+        with open(os.path.join(cand, RECORD_NAME)) as fh:
+            for line in fh:
+                k, sep, v = line.rstrip("\n").partition("=")
+                if sep:
+                    out[k] = v
+    except OSError:
+        pass
+    return out
+
+
+def cmd_capture_record(a):
+    """Write the capture record into a candidate directory: the source
+    tree over SOURCE_ROOTS, HEAD, and the recomp identity of the build."""
+    rec = {"game": a.game, "tier": a.tier,
+           "head": git("rev-parse", "HEAD").strip(),
+           "source-tree": source_tree(),
+           "recomp-input": recomp_input_digest(a.game),
+           "generated-tree": generated_tree_digest(a.game)}
+    os.makedirs(a.candidate, exist_ok=True)
+    path = os.path.join(a.candidate, RECORD_NAME)
+    with open(path + ".tmp", "w") as fh:
+        for k, v in rec.items():
+            fh.write("%s=%s\n" % (k, v))
+    os.replace(path + ".tmp", path)
+    print("[presentation-blessed] capture record %s: source-tree %s"
+          % (path, rec["source-tree"][:12]))
+    return 0
+
+
+def cmd_census(a):
+    """Print a manifest's row count and how many candidate tiles name a
+    row: `rows=N matched=M`."""
+    try:
+        m = load_manifest(a.game, a.tier)
+    except (OSError, ValueError) as e:
+        print("[presentation-blessed] census: %s" % e, file=sys.stderr)
+        return 1
+    names = {r["tile"] for r in m.rows}
+    tiles = set(list_tiles(a.candidate)) if a.candidate else set()
+    print("rows=%d matched=%d" % (len(names), len(tiles & names)))
+    return 0
+
+
+def resolve_reference(row, tdir, arch=None):
+    """A reference image for a manifest row, from the store, else from
+    the archive (golden-at's first two tiers). Returns (source, where):
+    source is a path or a BytesIO PIL opens, where is `store` or
+    `archive`; (None, None) when neither holds it."""
+    p = store_get(row["digest"])
+    if p:
+        return p, "store"
+    if arch is not None:
+        spec = archive_tile(arch, row, tdir)
+        if spec:
+            return io.BytesIO(arch.cf.read(spec)), "archive"
+    return None, None
+
+
+def blessed_revision(rec):
+    """HEAD when HEAD's tree equals the capture record's source tree over
+    SOURCE_ROOTS. Returns (sha, None) or (None, reason)."""
+    tree = rec.get("source-tree")
+    if not tree:
+        return None, "the candidate carries no %s" % RECORD_NAME
+    if git("cat-file", "-e", tree + "^{tree}", check=False) is None:
+        return None, "source tree %s is not in this repository" % tree
+    diff = source_tree_diff("HEAD^{tree}", tree)
+    if diff:
+        return None, ("HEAD's tree differs from the capture's source tree "
+                      "at %s (%d path(s))" % (diff[0], len(diff)))
+    return git("rev-parse", "HEAD").strip(), None
+
+
+def promote_select(cand, all_tiles, filters):
+    """Candidate tiles a promote considers: every golden tile under
+    --all, else those whose basename contains a filter."""
+    tiles = list_tiles(cand)
+    if all_tiles:
+        return tiles
+    return [t for t in tiles if any(f and f in t for f in filters)]
+
+
+def cmd_promote(a):
+    """Rewrite the manifest rows of promoted candidate tiles (digest,
+    blessed revision, recomp identity, origin) and file the tiles into the
+    store. A tile whose digest equals its row's is unchanged and keeps its
+    row. The header is kept, its size list extended by any new size."""
+    root = repo_root()
+    rec = read_record(a.candidate)
+    if rec.get("game", a.game) != a.game or rec.get("tier", a.tier) != a.tier:
+        print("[presentation-promote] the candidate was captured for %s/%s, "
+              "not %s/%s" % (rec.get("game"), rec.get("tier"), a.game, a.tier),
+              file=sys.stderr)
+        return 1
+    try:
+        m = load_manifest(a.game, a.tier)
+    except (OSError, ValueError) as e:
+        print("[presentation-promote] %s" % e, file=sys.stderr)
+        return 1
+    rows = {r["tile"]: r for r in m.rows}
+    sel = promote_select(a.candidate, a.all, a.filters)
+    paths = [os.path.join(a.candidate, t) for t in sel]
+    digs = digest_files(paths)
+    bad = [p for p in paths if digs[p] is None]
+    if bad:
+        print("[presentation-promote] undecodable: %s" % bad[0],
+              file=sys.stderr)
+        return 1
+    changed = [(t, p) for t, p in zip(sel, paths)
+               if t not in rows or rows[t]["digest"] != digs[p][0]]
+    if not changed:
+        print("[presentation-promote] nothing to promote (no matching / "
+              "changed tiles)")
+        return 0
+    rev, why = blessed_revision(rec)
+    if rev is None:
+        print("[presentation-promote] REFUSED: %s; commit the capture's "
+              "sources, rebuild and recapture, then promote" % why,
+              file=sys.stderr)
+        return 1
+    sizes = {s for s in m.header.get("size", "").split(",")
+             if re.match(r"^\d+x\d+$", s)}
+    for t, p in changed:
+        print("  %s  %s" % ("replace" if t in rows else "add", t))
+        rows[t] = dict(tile=t, digest=digs[p][0], revision=rev,
+                       recomp_input=rec.get("recomp-input", "unrecorded"),
+                       generated_tree=rec.get("generated-tree", "unrecorded"),
+                       origin="mapped")
+        sizes.add("%dx%d" % digs[p][1])
+        store_put(p, digs[p][0])
+    m.header["size"] = ",".join(sorted(sizes, key=lambda s: tuple(
+        int(x) for x in s.split("x")))) or "none"
+    m.rows = list(rows.values())
+    out = os.path.join(root, manifest_path(a.game, a.tier))
+    with open(out + ".tmp", "w") as fh:
+        fh.write(format_manifest(m))
+    os.replace(out + ".tmp", out)
+    print("[presentation-promote] %s: %d row(s) rewritten, blessed revision "
+          "%s, tiles filed into %s" % (manifest_path(a.game, a.tier),
+                                       len(changed), rev[:12], store_dir()))
+    return 0
+
+
 # ---- CLI --------------------------------------------------------------------
 
 def main(argv=None):
@@ -1029,6 +1235,17 @@ def main(argv=None):
     p.add_argument("--keep-days", type=int, default=90)
     p.add_argument("--to-head", action="store_true")
     p.add_argument("--dry-run", action="store_true")
+    p = sub.add_parser("capture-record")
+    game_tier(p)
+    p.add_argument("candidate")
+    p = sub.add_parser("census")
+    game_tier(p)
+    p.add_argument("--candidate")
+    p = sub.add_parser("promote")
+    game_tier(p)
+    p.add_argument("candidate")
+    p.add_argument("filters", nargs="*", help="tile basename substrings")
+    p.add_argument("--all", action="store_true")
     p = sub.add_parser("golden-at")
     p.add_argument("rev")
     p.add_argument("game", nargs="?", choices=GAMES)
@@ -1036,12 +1253,14 @@ def main(argv=None):
     p.add_argument("--out")
     p.add_argument("--materialize", action="store_true")
     a = ap.parse_args(argv)
-    if a.cmd in ("read", "write", "verify") and a.game not in TIERS[a.tier]:
+    if a.cmd in ("read", "write", "verify", "capture-record", "census",
+                 "promote") and a.game not in TIERS[a.tier]:
         ap.error("tier %s has no game %s" % (a.tier, a.game))
     return {"digest": cmd_digest, "read": cmd_read, "write": cmd_write,
             "verify": cmd_verify, "store-file": cmd_store_file,
             "store-read": cmd_store_read, "gc": cmd_gc,
-            "golden-at": cmd_golden_at}[a.cmd](a)
+            "golden-at": cmd_golden_at, "capture-record": cmd_capture_record,
+            "census": cmd_census, "promote": cmd_promote}[a.cmd](a)
 
 
 if __name__ == "__main__":

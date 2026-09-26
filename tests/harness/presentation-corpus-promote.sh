@@ -2,38 +2,44 @@
 #
 # presentation-corpus-promote.sh — re-bless the presentation golden.
 #
-# Copies candidate -vk PNGs over the committed golden and stages them, so a
-# reviewed re-bless commit records the deliberate image change. Never a blind
-# overwrite: it prints the exact files it will replace/add and, unless --all is
-# given, promotes only the named tiles (the adjudicated divergences).
+# Rewrites the tier's blessed.tsv rows for the promoted candidate tiles (verdict
+# digest, blessed revision, recomp identity, origin), files those tiles into the
+# reference store under their digests, and stages the manifest by name. No PNG
+# enters the tree. Never a blind overwrite: it prints each row it adds or
+# replaces and, unless --all is given, promotes only the named tiles (the
+# adjudicated divergences). A tile whose digest equals its row's keeps its row.
+#
+# The blessed revision is read from the candidate's capture-record.txt, which
+# the gate writes before it captures: HEAD is written when HEAD's tree over the
+# build's source roots equals the recorded tree, and the promote is refused
+# otherwise, naming the first differing path (scripts/presentation-blessed.py
+# promote).
 #
 # Usage:
 #   tests/harness/presentation-corpus-promote.sh <candidate_dir> [tile ...] [--game SLUG]
 #   tests/harness/presentation-corpus-promote.sh <candidate_dir> --all
 #     tile    a golden basename (e.g. cliff-town-vista__canon__300-vk.png) OR a
 #             substring filter; only matching candidate tiles are promoted
-#     --all   promote every -vk PNG in candidate_dir (first-bless / full re-bless)
-#     --game  game slug (default spyro-1); selects the golden directory
+#     --all   promote every -vk tile in candidate_dir (full re-bless)
+#     --game  game slug (default spyro-1); selects the manifest
+#   PRESENTATION_TIER=dragons selects the dragon-rescue tier's manifest.
 #
-# After running, review `git -C <openpete> diff --stat` and commit deliberately.
+# After running, review `git -C <openpete> diff --cached` and commit deliberately.
 #
-# See notes/plans/openpete-presentation-golden.md.
+# Exit: 0 promoted or nothing to promote; 1 refused; 2 usage.
 set -u
 cd "$(dirname "$0")/../.."
 # shellcheck source=scripts/presentation-game.sh
 source scripts/presentation-game.sh
 
 GAME="$(pg_parse_game "$@")" || exit 2
-pg_resolve "$GAME"
+pg_resolve "$GAME" || exit 2
 CAND="${1:-}"
-GOLDEN="$PG_GOLDEN"
 shift || true
 
 if [[ -z "$CAND" || ! -d "$CAND" ]]; then
   echo "usage: $0 <candidate_dir> [tile ...|--all]" >&2; exit 2; fi
 
-mkdir -p "$GOLDEN"
-shopt -s nullglob
 # --game and its value are consumed above; everything else is a tile filter.
 all=0; filters=(); skip=0
 for a in "$@"; do
@@ -44,27 +50,15 @@ for a in "$@"; do
   else                                 filters+=("$a")
   fi
 done
+if [[ $all -eq 0 && ${#filters[@]} -eq 0 ]]; then
+  echo "usage: $0 <candidate_dir> [tile ...|--all]" >&2; exit 2; fi
 
-promoted=0
-for f in "$CAND"/*-vk.png; do
-  [[ "$f" == *__ident__* ]] && continue   # identity-leg tile: never a golden
-  base="$(basename "$f")"
-  if [[ $all -eq 0 ]]; then
-    match=0
-    for flt in "${filters[@]:-}"; do [[ -n "$flt" && "$base" == *"$flt"* ]] && match=1; done
-    [[ $match -eq 1 ]] || continue
-  fi
-  if [[ -f "$GOLDEN/$base" ]] && cmp -s "$f" "$GOLDEN/$base"; then
-    continue   # identical, nothing to promote
-  fi
-  action="add"; [[ -f "$GOLDEN/$base" ]] && action="replace"
-  cp "$f" "$GOLDEN/$base"
-  echo "  $action  $base"
-  promoted=$((promoted+1))
-done
+ALL_ARG=()
+[[ $all -eq 1 ]] && ALL_ARG=(--all)
+before="$(git hash-object "$PG_BLESSED" 2>/dev/null)"
+python3 scripts/presentation-blessed.py promote "$GAME" --tier "$PG_TIER" \
+  "$CAND" "${ALL_ARG[@]}" -- "${filters[@]}" || exit 1
+if [[ "$(git hash-object "$PG_BLESSED")" == "$before" ]]; then exit 0; fi
 
-if [[ $promoted -eq 0 ]]; then
-  echo "[presentation-promote] nothing to promote (no matching / changed tiles)"; exit 0; fi
-
-git add "$GOLDEN" 2>/dev/null || true
-echo "[presentation-promote] $GAME: promoted $promoted tile(s) into $GOLDEN — review 'git diff --cached --stat' and commit"
+git add -- "$PG_BLESSED"
+echo "[presentation-promote] $GAME: staged $PG_BLESSED — review 'git diff --cached' and commit"
