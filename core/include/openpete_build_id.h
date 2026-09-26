@@ -18,17 +18,28 @@
 extern "C" {
 #endif
 
-/* Never NULL; "unknown" when the configure step had no git. */
+/** @brief The version string this build shows on screen and names its artifact with.
+ *
+ * OPENPETE_DIST_VERSION when configure was given one, else the configure-time
+ * `git describe` output; "unknown" when the configure step had no git.
+ * @return a static string, never NULL */
 const char *openpete_build_version(void);
 
-/* 1 = exactly a release, 0 = anything else. */
+/** @brief Whether the tree was exactly a release when it was configured.
+ *
+ * Set at configure time: an explicit OPENPETE_DIST_VERSION, or a
+ * `git describe --tags --exact-match` that resolves on a tree without the
+ * `-dirty` suffix. An untagged build keeps its version line on screen for the
+ * whole session.
+ * @return 1 for a release build, 0 otherwise */
 int openpete_build_tagged(void);
 
-/* 1 when the recomp module is linked the way the distribution presets link
- * it (OPENPETE_RECOMP_LINKAGE=shared), which is what every binary that leaves
- * this machine is built from. A locally built static-linkage binary is not a
- * build anybody has to identify from a screenshot, and shows no version
- * line. */
+/** @brief Whether the recomp module is linked the way the distribution presets link it.
+ *
+ * True for OPENPETE_RECOMP_LINKAGE=shared, the linkage every distributed
+ * binary is built with, or an explicit -DOPENPETE_BUILD_SHARED_RECOMP=1. A
+ * static-linkage binary shows no version line.
+ * @return 1 for a shared-recomp build, 0 otherwise */
 int openpete_build_shared_recomp(void);
 
 #ifdef __cplusplus

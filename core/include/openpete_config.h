@@ -110,17 +110,29 @@ const char* openpete_config_token_source(const char* token);
 
 /* ---- provenance (the M overlay / O menu) ---------------------------- */
 
-/* Winning layer for a knob id, as a display string: "default", "cli",
- * "env", "saved", "game.spyro-1.args", ... Never NULL. */
+/** @brief The layer that won a knob, as a display string.
+ *
+ * The winning contribution's origin: "cli", "bk2 sidecar", "env" (the real
+ * environment), "saved", or a file scope with its spelling ("global",
+ * "game.spyro-1.env", "disc.SCUS-94228.args"). "default" when no layer set
+ * the knob or the id is unknown.
+ * @param knob_id Schema knob id.
+ * @return The label, never NULL. */
 const char* openpete_config_knob_layer(const char* knob_id);
 
-/* True when the knob's winner is a launch tier (real env / sidecar / CLI),
- * i.e. a saved value would NOT take effect next launch while that override
- * is present. The UI renders this as a "pinned by --flag" badge. */
+/** @brief Whether a knob's winner is a launch tier: the real environment, the bk2 sidecar or the command line.
+ *
+ * A saved value does not take effect on the next launch while that
+ * override is present. The overlay shows the same condition as a "pinned"
+ * badge through openpete_config_knob_pin_spelling.
+ * @param knob_id Schema knob id.
+ * @return 1 when pinned, 0 otherwise or for an unknown id. */
 int openpete_config_knob_pinned(const char* knob_id);
 
-/* The launch-tier spelling that pinned it ("--lod", "$OPENPETE_MODS"), or
- * NULL when the knob is not pinned. */
+/** @brief The launch-tier spelling that pinned a knob ("--lod", "$OPENPETE_MODS").
+ *
+ * @param knob_id Schema knob id.
+ * @return The spelling, or NULL when the knob is not pinned. */
 const char* openpete_config_knob_pin_spelling(const char* knob_id);
 
 /* ---- persistence (the in-game menus) -------------------------------- */
@@ -129,13 +141,22 @@ const char* openpete_config_knob_pin_spelling(const char* knob_id);
  * [saved] zone, in memory. Call openpete_config_save_flush to commit. */
 int openpete_config_save_knob(const char* knob_id, const char* value);
 
-/* Commit the managed zone to disk. Everything above the managed marker is
- * copied through byte for byte, so hand-written config and its comments
- * survive; the zone below is regenerated. Atomic (temp + rename).
- * Returns 0 on success. */
+/** @brief Write the in-memory [saved] zone to the save target.
+ *
+ * Everything above the managed marker is copied through byte for byte, so
+ * hand-written config and its comments survive; a file without the marker
+ * is copied whole. The marker, a note and a [saved] table of every saved
+ * knob with a schema row, each written as its knob's type, follow. The file
+ * is written to `<path>.tmp`, the target removed, and the temporary renamed
+ * over it, so a failure between the remove and the rename leaves only the
+ * temporary.
+ * @return 0 on success, -1 when there is no save target or a write, remove
+ *         or rename fails. */
 int openpete_config_save_flush(void);
 
-/* Drop every saved knob and rewrite (an empty managed zone). */
+/** @brief Drop every saved knob and rewrite the save target with an empty managed zone.
+ *
+ * @return openpete_config_save_flush's result. */
 int openpete_config_reset_saved(void);
 
 /* Path the managed zone is written to, for UI display. Never NULL. */

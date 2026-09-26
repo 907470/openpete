@@ -2,41 +2,16 @@
 # library: libclang 14
 # requirement: @brief of one sentence on one line on every function; @param per named parameter and @return on non-void for external linkage
 # written-by: hook
-# head: ce8ccf6e20ee38f83cd1b862e6af035eac34faf1
+# head: b7e8f72dc5bc520537cf03f91d383e178ba9e654
 file	function	form	accepted
-core/config/build_id.c	openpete_build_shared_recomp	plain	
-core/config/build_id.c	openpete_build_tagged	plain	
-core/config/build_id.c	openpete_build_version	plain	
-core/config/config.c	contrib_new	plain	
 core/config/config.c	decision_for	none	
-core/config/config.c	decision_lookup	plain	
-core/config/config.c	did_you_mean	plain	
 core/config/config.c	dup_str	none	
 core/config/config.c	emit_token	none	
 core/config/config.c	enum_ok	none	
 core/config/config.c	enum_vocab_str	none	
-core/config/config.c	file_exists	plain	
-core/config/config.c	harvest_args	plain	
-core/config/config.c	harvest_base	plain	
-core/config/config.c	harvest_disc_sha	plain	
-core/config/config.c	harvest_env	plain	
-core/config/config.c	harvest_global	plain	
 core/config/config.c	harvest_keys	none	
-core/config/config.c	harvest_keys_domain	plain	
 core/config/config.c	harvest_named	none	
-core/config/config.c	harvest_saved	plain	
-core/config/config.c	harvest_scope	plain	
-core/config/config.c	is_directive_key	plain	
-core/config/config.c	is_shadowed	plain	
 core/config/config.c	load_toml	none	
-core/config/config.c	materialize	plain	
-core/config/config.c	mutex_blocked	plain	
-core/config/config.c	openpete_config_knob_layer	plain	
-core/config/config.c	openpete_config_knob_pin_spelling	plain	
-core/config/config.c	openpete_config_knob_pinned	plain	
-core/config/config.c	openpete_config_reset_for_test	plain	
-core/config/config.c	openpete_config_reset_saved	plain	
-core/config/config.c	openpete_config_save_flush	plain	
 core/config/config.c	openpete_config_save_knob	plain	
 core/config/config.c	openpete_config_save_path	plain	
 core/config/config.c	openpete_config_set_disc_identity_fn	none	

@@ -118,6 +118,7 @@ static char s_scope_sha[80];
 /* paths                                                              */
 /* ------------------------------------------------------------------ */
 
+/** @brief Whether `p` opens for reading in binary mode. */
 static int file_exists(const char *p) {
     FILE *f = fopen(p, "rb");
     if (!f) return 0;
@@ -129,6 +130,10 @@ static int file_exists(const char *p) {
 /* contribution table                                                 */
 /* ------------------------------------------------------------------ */
 
+/** @brief Append a zeroed contribution with no schema knob (`knob` = -1).
+ *
+ * Returns NULL, after printing to stderr, once the table holds
+ * CFG_MAX_CONTRIB entries. */
 static contrib_t *contrib_new(void) {
     if (s_contrib_n >= CFG_MAX_CONTRIB) {
         fprintf(stderr, "openpete: config: too many entries (max %d)\n",
@@ -206,8 +211,13 @@ static void enum_vocab_str(const cfg_knob_t *k, char *out, size_t cap) {
     }
 }
 
-/* Levenshtein-lite: enough to say "did you mean" for a one-character slip
- * or a dash/underscore mixup, which is what config typos actually are. */
+/** @brief The schema knob id closest to an unknown config key, or NULL.
+ *
+ * Scores each id by the characters that match `key` position by position up
+ * to the shorter length, with '-' and '_' equal, and returns the highest
+ * scorer whose score is at least half the id's length. Catches a substituted
+ * character, a truncation and a dash/underscore mixup; an inserted or
+ * deleted character shifts every later position and is not caught. */
 static const char *did_you_mean(const char *key) {
     size_t n;
     const cfg_knob_t *sch = cfg_schema(&n);
@@ -235,7 +245,7 @@ static const char *did_you_mean(const char *key) {
 /* harvesting one scope out of a parsed document                      */
 /* ------------------------------------------------------------------ */
 
-/* The one top-level word that is a directive rather than a knob.
+/** @brief Whether `key` is `portable`, the one top-level word that is a directive rather than a knob.
  *
  * The sub-table namespaces (env, args, game, disc, saved) need no
  * reserving: this walk only ever looks at scalars, and TOML cannot spell
@@ -277,7 +287,16 @@ static int renamed_truth(const char *val, int is_bool, int bool_val) {
     return !strcmp(val, "1") || !strcmp(val, "on") || !strcmp(val, "true");
 }
 
-/* Bare keys of `tab` — the friendly, validated spelling. */
+/** @brief Record the bare keys of `tab`, the validated spelling, as contributions at (tier, file).
+ *
+ * Sub-tables are skipped (their caller harvests them); `skip_directives`
+ * also skips `portable`. A renamed key is mapped to its new name with a
+ * warning, and its value to the new knob's vocabulary when the rename
+ * carries one. A
+ * non-scalar value, an unknown key (named with a did_you_mean hint), a
+ * value of a TOML type the config does not accept, a non-boolean value for
+ * a bool knob and an enum value outside the knob's vocabulary are errors
+ * printed with `where`. Returns 0, or -1 on the first error. */
 static int harvest_base(const toml_table_t *tab, int tier, int file,
                         const char *origin, const char *where,
                         int skip_directives) {
@@ -358,9 +377,13 @@ static int harvest_base(const toml_table_t *tab, int tier, int file,
     return 0;
 }
 
-/* [<scope>.env] — becomes environment variables. Free-form on purpose:
- * the ~150 debug OPENPETE_* vars have no schema rows and shouldn't need
- * any to be settable from a file. */
+/** @brief Record the rows of a [<scope>.env] table, which materialize as environment variables.
+ *
+ * Free-form: a variable needs no schema row, so the debug OPENPETE_* vars
+ * can be set from a file; a row whose variable a schema knob declares
+ * carries that knob. A name without the OPENPETE_ prefix is warned about
+ * and kept. A non-scalar value or a value of a TOML type the config does
+ * not accept is an error. Returns 0, or -1 on the first error. */
 static int harvest_env(const toml_table_t *tab, int tier, int file,
                        const char *origin, const char *where) {
     for (int i = 0;; i++) {
@@ -396,11 +419,15 @@ static int harvest_env(const toml_table_t *tab, int tier, int file,
     return 0;
 }
 
-/* [<scope>.args] — keys are flags verbatim. A boolean value means the
- * flag takes none: true emits it, false suppresses whatever a lower tier
- * asked for (the only way to un-set an inherited valueless flag). Flags
- * with a schema row know their own arity, so a boolean there is just the
- * 0/1 the flag expects. */
+/** @brief Record the rows of a [<scope>.args] table, whose keys are flags verbatim.
+ *
+ * A key must start with "--". On an unregistered or valueless flag a
+ * boolean value means the flag takes none: true emits it, false suppresses
+ * whatever a lower tier asked for (the only way to un-set an inherited
+ * valueless flag). On a schema alias flag ("--no-lod") true stands for the
+ * alias's fixed value and false suppresses. On any other schema flag a
+ * boolean is the 0/1 the flag expects, and an enum value outside the knob's
+ * vocabulary is an error. Returns 0, or -1 on the first error. */
 static int harvest_args(const toml_table_t *tab, int tier, int file,
                         const char *origin, const char *where) {
     for (int i = 0;; i++) {
@@ -462,14 +489,18 @@ static int harvest_args(const toml_table_t *tab, int tier, int file,
     return 0;
 }
 
-/* [<scope>.keys.<domain>] — input bindings. Unlike knobs, these do not
+/** @brief Forward the rows of a [<scope>.keys.<domain>] table to the keymap at `rank`.
+ *
+ * Input bindings. Unlike knobs, these do not
  * flow through the contribution table: the keymap owns its own layered
  * store (it merges per ACTION and replaces within one, which the knob
  * resolver's single-winner-per-key model cannot express), so this walk
  * just forwards each row with the scope's rank and lets keymap.c decide.
  *
- * A value is a string or an array of strings; arrays are legal HERE only
- * — harvest_base still rejects them for scalars. */
+ * A value is a string or an array of strings; arrays are legal here only
+ * (harvest_base rejects them). An array longer than 2 * KM_MAX_SOURCES is
+ * truncated; an empty array means "none". Returns 0, or -1 on a malformed
+ * row or a keymap refusal. */
 static int harvest_keys_domain(const toml_table_t *tab, const char *domain,
                                int rank, const char *origin,
                                const char *where) {
@@ -587,11 +618,14 @@ static int harvest_keys(const toml_table_t *keys, int tier, int file,
     return 0;
 }
 
-/* One scope = its bare keys, then its [env], [args] and [keys]
- * sub-tables. EVERY scope goes through here — global, [game.<id>],
- * [disc.<serial>], [disc.<sha>] and [saved] — which is why a new
- * sub-table is added here and nowhere else: a scope either harvests all
- * of them or none, so one of them cannot quietly end up global-only. */
+/** @brief Harvest one named scope table: its bare keys, then its [env], [args] and [keys] sub-tables.
+ *
+ * Serves [game.<id>], [disc.<serial>] and [disc.<sha>] through
+ * harvest_named. The global scope (harvest_global) repeats the same four
+ * walks with the `portable` directive skipped; [saved] (harvest_saved)
+ * harvests only its bare keys and [keys]. A sub-table added here is
+ * therefore added to harvest_global too. `origin` labels each
+ * contribution and error. Returns 0, or -1 on the first error. */
 static int harvest_scope(const toml_table_t *tab, int tier, int file,
                          const char *origin) {
     char where[CFG_PATH_MAX + 64];
@@ -640,8 +674,11 @@ static int load_toml(int file) {
     return 1;
 }
 
-/* Global scope: the document's own bare keys (minus the reserved
- * sub-tables) plus top-level [env] / [args] / [keys]. */
+/** @brief Harvest the global scope of loaded file `file`: its top-level bare keys and [env], [args] and [keys].
+ *
+ * The `portable` directive is skipped; sub-tables are not bare keys.
+ * Returns 0 when the file is not loaded or harvests cleanly, -1 on the
+ * first error. */
 static int harvest_global(int file) {
     toml_table_t *doc = s_doc[file];
     if (!doc) return 0;
@@ -673,9 +710,13 @@ static int harvest_named(int file, const char *ns, const char *name,
     return harvest_scope(tab, tier, file, origin);
 }
 
-/* [disc.<sha>] may be written as any unambiguous >=8-char prefix, git
- * style. An ambiguous one is an error: silently picking a side would make
- * the config mean different things as the library grows. */
+/** @brief Harvest the [disc.<sha>] scope of file `file` that matches the running image's hash.
+ *
+ * The key may be any prefix of the hash of at least 8 characters, git
+ * style; a shorter key is a serial and is skipped. Two matching keys are
+ * an error: picking one would make the config mean different things as
+ * the library grows. Returns 0 when nothing matches or the match harvests
+ * cleanly, -1 on an ambiguity or a harvest error. */
 static int harvest_disc_sha(int file) {
     toml_table_t *doc = s_doc[file];
     if (!doc || !s_scope_sha[0]) return 0;
@@ -701,7 +742,13 @@ static int harvest_disc_sha(int file) {
     return harvest_named(file, "disc", match, TIER_DISC_SHA, "disc");
 }
 
-/* The managed zone. Read like any other layer; written by the menus. */
+/** @brief Harvest the managed [saved] zone of file `file`: its bare keys and [saved.keys.*].
+ *
+ * Read like any other layer; written by the menus through
+ * openpete_config_save_flush. From the write target the zone's scalars are
+ * also copied into the in-memory saved table, so a later save rewrites the
+ * whole zone. A [saved] zone in a file ranked above the write target is
+ * warned about. Returns 0, or -1 on a harvest error. */
 static int harvest_saved(int file) {
     toml_table_t *doc = s_doc[file];
     if (!doc) return 0;
@@ -872,9 +919,11 @@ static decision_t *decision_for(int knob) {
     return d;
 }
 
-/* True when some higher-ranked contribution supplies the same setting.
- * Ties cannot happen: two entries at the same rank would be the same key
- * in the same table, which TOML rejects. */
+/** @brief Whether a higher-ranked contribution supplies the same setting as `c`.
+ *
+ * An equal rank does not shadow. Equal ranks arise from two spellings of
+ * one knob in one table (an alias flag beside its flag, a renamed key
+ * beside its new name) and from a flag repeated in argv. */
 static int is_shadowed(const contrib_t *c) {
     for (int i = 0; i < s_contrib_n; i++) {
         const contrib_t *o = &s_contrib[i];
@@ -885,8 +934,12 @@ static int is_shadowed(const contrib_t *c) {
     return 0;
 }
 
-/* A config-sourced flag also stands down when a higher tier supplied a
- * flag it cannot coexist with. */
+/** @brief Whether an unregistered [args] flag stands down for a flag it cannot coexist with.
+ *
+ * True when a higher-ranked, unsuppressed flag of the same
+ * cfg_schema_mutex_group is present. Flags with a schema row resolve
+ * through same_setting instead and always return 0 here, as do other
+ * spellings. */
 static int mutex_blocked(const contrib_t *c) {
     if (c->spelling != SP_ARGS || c->knob >= 0) return 0;
     const char *const *grp = cfg_schema_mutex_group(c->key);
@@ -927,12 +980,19 @@ static void record_decision(const contrib_t *win) {
     }
 }
 
-/* The flattening pass. Every surviving contribution is materialized in
- * ITS OWN spelling — an [env] winner becomes a setenv, a bare key or an
- * [args] winner becomes argv tokens — because the two vocabularies are
- * not interchangeable (OPENPETE_PRESENT_MODE says "immediate", --vsync
- * says 0). Exactly one spelling per setting reaches the parser, so no
- * consumer's own CLI-beats-env rule can re-order the tiers. */
+/** @brief The flattening pass: materialize each unshadowed contribution in its own spelling.
+ *
+ * An [env] winner becomes a setenv, a bare key or an [args] winner becomes
+ * argv tokens, because the two vocabularies are not interchangeable
+ * (OPENPETE_PRESENT_MODE says "immediate", --vsync says 0). Exactly one
+ * spelling per setting reaches the parser, so no consumer's own
+ * CLI-beats-env rule can re-order the tiers. Every unshadowed schema
+ * contribution records its decision. Launch-tier winners are already in
+ * argv or the environment and emit nothing, nor do suppressed and
+ * mutex-blocked flags. A bare key of an env-only knob is set as its
+ * variable, and a false bool is left unset because some consumers test
+ * presence only. setenv never replaces a variable the environment already
+ * carries. */
 static void materialize(void) {
     for (int i = 0; i < s_contrib_n; i++) {
         contrib_t *c = &s_contrib[i];
@@ -1021,9 +1081,14 @@ const char *openpete_config_token_source(const char *token) {
     return NULL;
 }
 
-/* Clear every resolver static. Only the unit test calls this: a process
- * resolves its config exactly once, but the test walks dozens of layer
- * stacks and each has to start from nothing. */
+/** @brief Clear the resolver's state so the next openpete_config_apply starts from nothing.
+ *
+ * Only the unit test calls this: a process resolves its config once, and
+ * the test walks many layer stacks. Frees the parsed documents and clears
+ * the file paths, the contribution, token, decision and saved tables, the
+ * save target, the disc scopes, the --no-config and --config-report
+ * latches and the disc-identity hook, and drops the portable directive.
+ * The game id and the keymap are kept; the spliced tokens are not freed. */
 void openpete_config_reset_for_test(void) {
     for (int f = 0; f < 2; f++) {
         if (s_doc[f]) toml_free(s_doc[f]);
@@ -1249,6 +1314,7 @@ void openpete_config_report(FILE *out) {
 /* provenance                                                         */
 /* ------------------------------------------------------------------ */
 
+/** @brief The recorded decision for knob id `knob_id`, or NULL when the id is unknown or no layer set it. */
 static const decision_t *decision_lookup(const char *knob_id) {
     int ki = cfg_schema_find_id(knob_id);
     if (ki < 0) return NULL;

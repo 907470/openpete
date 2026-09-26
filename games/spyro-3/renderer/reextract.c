@@ -241,9 +241,10 @@ void spyro_native_prod_camera_leave(void) {}
  *
  * The shadow feeder reads one state block and the record store holds the block
  * each call drew with, so the loop stages that block over the ambient bytes and
- * runs the fan once per record. The anchor is bracketed against the previous
- * tick's, teleport-guarded like the camera, so the shadow slides with the
- * avatar between ticks instead of stepping with it. The staged block is the
+ * runs the fan once per record. When the record lerps, the anchor is
+ * bracketed against the paired previous shadow record's and snaps on a move
+ * over 5000 world units, so the shadow slides with the avatar between ticks
+ * instead of stepping with it. The staged block is the
  * record's shown state (`src`, the led tick's under --runahead).
  *
  * Host-only: the staged span is a view copy and no guest word is written. */
