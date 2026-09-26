@@ -270,35 +270,69 @@ void openpete_psx_install_crash_handler(void);
 
 /* --- EXE loader (BIN/CUE → bytes) ---------------------------------------- */
 
-/* Open a .cue/.bin disc image, find game_get_exe_filename() in the root,
- * and return its bytes. Caller frees with free(). On failure returns NULL
- * and logs the reason. */
+/** @brief Read the game's EXE out of a disc image.
+ *
+ * Callers pass game_get_exe_filename(); the lookup is
+ * openpete_psx_load_file_from_disc's.
+ * @param cue_path Disc path, resolved by openpete_psx_resolve_disc_bin.
+ * @param exe_filename iso9660 path of the EXE.
+ * @param out_size Receives the byte count on success.
+ * @return The bytes, freed by the caller with free(); NULL on failure,
+ *         with the reason logged. */
 uint8_t* openpete_psx_load_exe_from_disc(const char* cue_path,
                                          const char* exe_filename,
                                          size_t* out_size);
 
-/* General form of the above: fetch any file from the image by iso9660
- * path ("SYSTEM.CNF", "S0/S000000D.NSF" — one directory level deep at
- * most, matching the reader). Caller frees with free(). Returns NULL and
- * logs on failure. */
+/** @brief Read one file out of a disc image by iso9660 path.
+ *
+ * The path is a root file ("SYSTEM.CNF") or one directory level deep
+ * ("S0/S000000D.NSF", '/' or '\'), matching psxrecomp's ISOReader; name
+ * matching is case-insensitive.
+ * @param cue_path Disc path, resolved by openpete_psx_resolve_disc_bin.
+ * @param filename iso9660 path of the file.
+ * @param out_size Receives the byte count on success.
+ * @return The bytes, freed by the caller with free(); NULL when an argument
+ *         is NULL, the image is not found or opened, the file is absent, or
+ *         the read is short, with the reason logged except on allocation
+ *         failure. */
 uint8_t* openpete_psx_load_file_from_disc(const char* cue_path,
                                           const char* filename,
                                           size_t* out_size);
 
-/* Resolve a --disc path to the BIN holding the sector image. A .bin/.img/
- * .iso path resolves to itself; a .cue resolves to, in order, the file its
- * FILE line names (relative to the cue's directory), the cue's own basename
- * with a .bin extension, and the single .bin sitting beside the cue. Writes
- * the resolved path to out and returns 0; on failure returns non-zero and
- * writes the candidates tried, separated by ", ", to tried (may be NULL).
- * Throws nothing: filesystem errors resolve to "candidate absent". */
+/** @brief Resolve a --disc path to the BIN file holding the sector image.
+ *
+ * A .bin, .img or .iso path resolves to itself when the file exists; a .cue
+ * that exists resolves to the first existing file of, in order, the file
+ * its FILE line names (relative to the cue's directory), the cue's own
+ * basename with a .bin extension, and the single .bin beside the cue. Any
+ * other extension resolves to nothing. Extensions match case-insensitively.
+ * Throws nothing: a filesystem error resolves to no candidate.
+ * @param disc_path The --disc path.
+ * @param out Receives the resolved path.
+ * @param out_cap Capacity of @p out; a path that does not fit fails.
+ * @param tried Receives the candidates tried, separated by ", "; may be
+ *        NULL.
+ * @param tried_cap Capacity of @p tried.
+ * @return 0 on success; -1 on failure or when @p disc_path or @p out is
+ *         NULL or @p out_cap is 0. */
 int openpete_psx_resolve_disc_bin(const char* disc_path,
                                   char* out, size_t out_cap,
                                   char* tried, size_t tried_cap);
 
-/* The image's release serial ("SCUS-94228") from its SYSTEM.CNF BOOT line.
- * Cheap (a few sectors) — it is read at boot to select the [disc.SERIAL]
- * scope in openpete.toml. Returns 0 on success. */
+/** @brief Read the image's release serial ("SCUS-94228") from its SYSTEM.CNF BOOT line.
+ *
+ * The BOOT value is read after optional spaces, an optional "cdrom:" and
+ * leading slashes or backslashes, up to ';' or the line end
+ * (SCUS_942.28); '.' and '_' become '-', and the second '-' is dropped.
+ * The read is a few sectors, so it runs at every boot to select the
+ * [disc.SERIAL] scope in openpete.toml for an image whose content hash is
+ * unknown.
+ * @param image_path Disc path, resolved by openpete_psx_resolve_disc_bin.
+ * @param out Receives the serial.
+ * @param out_cap Capacity of @p out; at least 12.
+ * @return 0 on success; -1 when an argument is invalid, the image or
+ *         SYSTEM.CNF (at most 4096 bytes) cannot be read, or no serial is
+ *         found. */
 int openpete_psx_read_disc_serial(const char* image_path,
                                   char* out, size_t out_cap);
 

@@ -187,12 +187,35 @@ void openpete_psx_bios_vbl(struct CPUState* cpu);
 #define PSX_BIOS_CARD_STATE_WORDS 7u
 void openpete_psx_bios_card_state_get(uint32_t w[PSX_BIOS_CARD_STATE_WORDS]);
 void openpete_psx_bios_card_state_set(const uint32_t w[PSX_BIOS_CARD_STATE_WORDS]);
-/* A byte read from the BIOS ROM window (physical 0x1FC00000..0x1FC7FFFF):
- * returns 1 with the byte of the ROM's identification block, 0 elsewhere;
- * 0 when the address is outside the window. */
+/** @brief Read one byte of the BIOS ROM window (physical 0x1FC00000..0x1FC7FFFF).
+ *
+ * Only the SCPH-1001 identification block is modelled: the date and
+ * console-type words at 0x100, the vendor and model strings at 0x108 and
+ * 0x12C, the version string at 0x7FF32 (its last character 'A' names the
+ * region) and the copyright string at 0x7FF54. Every other ROM byte reads
+ * as 0. Each call in the window increments the counter
+ * openpete_psx_bios_rom_reads returns.
+ * @param phys Physical address.
+ * @param out Receives the byte.
+ * @return 1 when @p phys is in the window, else 0 with @p out unwritten. */
 int      openpete_psx_bios_rom_read8(uint32_t phys, uint8_t* out);
-/* Writes the kernel's fixed low-RAM words (exception and call vectors, the
- * RAM size and boot flags) into a 2 MB RAM image, before the EXE loads. */
+/** @brief Write the kernel's fixed low-RAM words into a 2 MB RAM image.
+ *
+ * These are the words a game can observe after the SCPH-1001 boot
+ * (OpenBIOS kernel/handlers.c installKernelHandlers and main/main.c set
+ * the same words): the general exception vector at 0x80 and its copy at
+ * 0x00 (lui k0,0; addiu k0,k0,0xC80; jr k0; nop), the A0/B0/C0 function
+ * call vectors (lui t0,0; addiu t0,t0,0x5C4|0x5E0|0x600; jr t0; nop), the
+ * RAM size in megabytes at 0x60 and the boot flags word 0xFF at 0x68. Of
+ * the kernel's code and tables above 0x100 only the words libcard's patch
+ * routine reads are reproduced, so its stores land where they land on
+ * hardware: C0 table entry 6 (0x68C: the exception handler, 0xC80), the
+ * lui/addiu pair at handler+0x70 whose immediates compose the card
+ * fast-track patch slot (0x641C + 0x28), and B0 table entry 0x5B (0x9E0:
+ * ChangeClearPAD, 0x43D0), 0x9C8 past which the patch's second copy lands.
+ * Called at boot before the EXE loads and after a savestate load
+ * (idempotent on RAM that already carries the words).
+ * @param ram Host pointer to guest RAM. */
 void     openpete_psx_bios_seed_ram(uint8_t* ram);
 uint32_t openpete_psx_bios_rom_reads(void);
 /** @brief Copy one 128-byte frame of the card in chan to a host buffer.

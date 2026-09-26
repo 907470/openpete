@@ -108,11 +108,15 @@ static int ev_index(uint32_t handle) {
     return (i < EV_MAX && s_ev[i].open) ? (int)i : -1;
 }
 
-/* Signal every enabled event of exactly this class and spec (the kernel
- * compares both words for equality: OpenBIOS kernel/events.c deliverEvent).
- * An EvMdINTR event runs its handler now, which is where the card driver
- * does its bookkeeping; an EvMdNOINTR event latches, for TestEvent to
- * observe; any other mode ignores the delivery. */
+/** @brief Signal every open, enabled, undelivered event of exactly this class and spec.
+ *
+ * The kernel compares both words for equality (OpenBIOS kernel/events.c
+ * deliverEvent). An EvMdINTR event runs its handler now, which is where
+ * the card driver does its bookkeeping; an EvMdNOINTR event latches, for
+ * TestEvent to observe; any other mode ignores the delivery.
+ * @param cpu Guest CPU the handlers run on.
+ * @param cls Event class.
+ * @param spec Event spec. */
 static void deliver_event(CPUState* cpu, uint32_t cls, uint32_t spec) {
     for (int i = 0; i < EV_MAX; i++) {
         if (!s_ev[i].open || !s_ev[i].enabled || s_ev[i].delivered) continue;
@@ -157,7 +161,19 @@ static int mc_port(uint32_t device_id) {
     return ((d >= 0 ? d : d + 15) >> 4) & 1;
 }
 
-/* _card_info / _card_read / _card_write: queue the command on its port. */
+/** @brief Queue a _card_info, _card_read or _card_write command on its port.
+ *
+ * The port comes from the device id (0x00 port 0, 0x10 port 1). The
+ * port's _card_status becomes 0 (info), 2 (read) or 4 (write); the vblank
+ * step starts the transfer.
+ * @param device_id Device id as the game passed it.
+ * @param op MC_OP_INFO, MC_OP_READ or MC_OP_WRITE.
+ * @param sector Frame number for a read or write.
+ * @param buffer Guest address of the 128-byte frame buffer.
+ * @param via_bu Nonzero when the command came through the bu layer, so its
+ *        completion also signals the bu class.
+ * @return 1 when queued; 0 when the port's previous command has not
+ *         finished or a read or write names a sector above 0x400. */
 static uint32_t mc_queue(uint32_t device_id, uint32_t op, uint32_t sector, uint32_t buffer, int via_bu) {
     int port = mc_port(device_id);
     if (s_census > 0) OPL_INFO_F("bios", "card command %u on port %d queued at record %u, position %u (flip %u, flags %u)", op, port, openpete_sched_current_record(), openpete_sched_pos(), s_mc.flip, s_mc.flags[port]);
@@ -181,7 +197,15 @@ static void mc_finish(CPUState* cpu, int port, uint32_t flags, uint32_t spec) {
     deliver_event(cpu, EV_CLASS_CARD, spec);
 }
 
-/* Starts the pending command on `port`: the host card answers now. */
+/** @brief Start the pending command on a port; a present host card answers at once.
+ *
+ * An empty port leaves the transfer in progress, for the next vblank's
+ * timeout. Otherwise a read or write copies one frame between the card and
+ * guest RAM, and the command finishes with status 1 and EvSpIOE, or with
+ * 0x21 and EvSpERROR when the buffer is outside main RAM or the card
+ * access fails; an info command finishes with status 1.
+ * @param cpu Guest CPU the event handlers run on.
+ * @param port Port 0 or 1. */
 static void mc_start(CPUState* cpu, int port) {
     int chan = port;
     if (!openpete_memcard_present(chan)) { s_mc.in_progress = 1u; return; }
@@ -239,19 +263,7 @@ void openpete_psx_bios_vbl(CPUState* cpu) {
     mc_start(cpu, port);
 }
 
-/* The kernel's fixed words in low RAM after the SCPH-1001 boot, the ones a
- * game can observe (OpenBIOS kernel/handlers.c installKernelHandlers and
- * main/main.c set the same words): the general exception vector at 0x80
- * and its copy at 0x00 (lui k0,0; addiu k0,k0,0xC80; jr k0; nop), the
- * A0/B0/C0 function call vectors (lui t0,0; addiu t0,t0,0x5C4|0x5E0|0x600;
- * jr t0; nop), the RAM size in megabytes at 0x60 and the boot flags word
- * 0xFF at 0x68. Of the kernel's code and tables above 0x100 only the words
- * libcard's patch routine reads are reproduced, so its stores land where
- * they land on hardware: C0 table entry 6 (0x68C: the exception handler,
- * 0xC80), the lui/addiu pair at handler+0x70 whose immediates compose the
- * card fast-track patch slot (0x641C + 0x28), and B0 table entry 0x5B
- * (0x9E0: ChangeClearPAD, 0x43D0), 0x9C8 past which the patch's second
- * copy lands. */
+/* Kernel low-RAM words; see openpete_memcard.h. */
 void openpete_psx_bios_seed_ram(uint8_t* ram) {
     static const uint32_t vec80[4] = { 0x3C1A0000u, 0x275A0C80u, 0x03400008u, 0u };
     static const uint32_t call[3][4] = {

@@ -20,33 +20,52 @@
 extern "C" {
 #endif
 
-/* Begin recording. Must be paired with a finalize. Returns 0 on
- * success, non-zero (and logs via OPL_ERROR_F) if the buffer can't be
- * allocated. The path is stored verbatim and used at finalize time;
- * the file is not opened until then.
+/** @brief Begin recording the input log from its current end into a .bk2 at finalize.
  *
- * `args_sidecar`, if non-NULL, is written verbatim to "<path>.args"
- * alongside the .bk2 at finalize time (the caller builds this from the
- * launch flags so `--bk2 <path>` re-applies the scenario). NULL = no
- * sidecar. The string is copied; the caller may free it after the call. */
+ * Must be paired with bk2_record_finalize. The path is copied and used at
+ * finalize; the file is not opened until then. A guest discontinuity
+ * handler is registered so a savestate load finalizes the movie.
+ * @param path Output .bk2 path.
+ * @param args_sidecar Written verbatim to "<path>.args" at finalize, so
+ *        `--bk2 <path>` re-applies the launch flags the caller built it
+ *        from; NULL writes no sidecar. Copied; a failed copy skips the
+ *        sidecar.
+ * @return 0 on success; -1 when recording is already active or the path
+ *         cannot be copied, with the reason logged. */
 int  bk2_record_begin(const char* path, const char* args_sidecar);
 
-/* Note a just-logged frame while recording: emits the press/release
- * transition log line (`log_idx` is the input_log index the host loop got
- * back from input_log_append; the line shows the movie-relative frame).
- * The bits themselves already live in the input log — this never buffers.
- * No-op if recording isn't active. */
+/** @brief Log the press/release transitions of a just-logged VBL's pad bits while recording.
+ *
+ * The bits already live in the input log; nothing is buffered. A line is
+ * logged only when the bits differ from the previous call's. No effect
+ * when recording is not active.
+ * @param bits Player 1 pad bitfield (1 released, 0 pressed).
+ * @param log_idx Input log index input_log_append returned; the line shows
+ *        it relative to the movie's first entry. */
 void bk2_record_note(uint16_t bits, int log_idx);
 
-/* Write the .bk2 zip and free the buffer. No-op if recording isn't
- * active. Returns 0 on success, non-zero on write failure. Always safe
- * to call from an exit path. */
+/** @brief Write the recorded window of the input log as a .bk2 zip and end recording.
+ *
+ * The zip holds Header.txt (with a LoadDelay line when the CD load delay
+ * is nonzero), Input Log.txt, and, when any recorded VBL had a second port
+ * present, SyncSettings.json declaring two DualShock ports; the args
+ * sidecar is written after the zip. Recording ends on every path, so the
+ * call is safe from an exit path.
+ * @return 0 on success or when recording is not active; -1 on an
+ *         allocation or write failure, with the reason logged. */
 int  bk2_record_finalize(void);
 
-/* Format the press/release diff between `prev` and `cur` PSX pad bitfields
- * (1=released, 0=pressed) into two NUL-terminated strings of BizHawk
- * button letters. Each output buffer must hold at least 17 bytes. Useful
- * for debug logging on both the record and replay paths. */
+/** @brief Format the press/release diff between two PSX pad bitfields as BizHawk button letters.
+ *
+ * Bitfields use 1 released, 0 pressed. Letters follow the Input Log's
+ * column order (U D L R s S Q T O X l r L R L R). Used for debug logging
+ * on the record and replay paths.
+ * @param prev Previous bitfield.
+ * @param cur Current bitfield.
+ * @param press_out Receives the NUL-terminated letters of buttons pressed
+ *        in @p cur; at least 17 bytes.
+ * @param release_out Receives the NUL-terminated letters of buttons
+ *        released in @p cur; at least 17 bytes. */
 void bk2_format_button_diff(uint16_t prev, uint16_t cur,
                             char press_out[17], char release_out[17]);
 

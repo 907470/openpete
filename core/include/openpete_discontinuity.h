@@ -35,11 +35,19 @@ extern "C" {
 
 typedef void (*openpete_discontinuity_fn)(void);
 
-/* Register a resync action. Returns 0 on success, non-zero if the
- * subscriber table is full (logged; bump the cap in discontinuity.c). */
+/** @brief Register a resync action to run on every guest-state discontinuity.
+ *
+ * Registering a function already registered changes nothing and succeeds.
+ * The table holds MAX_SUBSCRIBERS (16) entries in discontinuity.c.
+ * @param fn Action to run.
+ * @return 0 on success; -1 when @p fn is NULL or the table is full (the
+ *         latter logged). */
 int openpete_on_guest_discontinuity(openpete_discontinuity_fn fn);
 
-/* Fire all subscribers. Called by the savestate load path after commit. */
+/** @brief Run every registered resync action and log the count.
+ *
+ * Called after a savestate load from file and after a non-quiet in-memory
+ * state load (openpete_state_mem_load), once the new state is committed. */
 void openpete_guest_discontinuity_notify(void);
 
 #ifdef __cplusplus

@@ -40,7 +40,14 @@ static uint32_t     s_region_count = 0;
 
 static uint32_t to_phys(uint32_t addr) { return addr & 0x1FFFFFFFu; }
 
-/* Inclusive-overlap test: [a_lo, a_lo+a_sz) ∩ [b_lo, b_lo+b_sz) ≠ ∅. */
+/** @brief Test whether the half-open ranges [a_lo, a_lo+a_sz) and [b_lo, b_lo+b_sz) intersect.
+ *
+ * The end sums are 32-bit and not checked for wrap.
+ * @param a_lo Start of the first range.
+ * @param a_sz Size of the first range.
+ * @param b_lo Start of the second range.
+ * @param b_sz Size of the second range.
+ * @return Nonzero when they intersect. */
 static int ranges_overlap(uint32_t a_lo, uint32_t a_sz,
                           uint32_t b_lo, uint32_t b_sz) {
     return a_lo < b_lo + b_sz && b_lo < a_lo + a_sz;

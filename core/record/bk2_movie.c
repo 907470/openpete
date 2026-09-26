@@ -55,12 +55,17 @@ static const uint16_t kBk2P1DigitalMask[16] = {
     /* index 16 is MODE — not a PSX bit; handled by stopping the loop at 16. */
 };
 
-/* Decode one input line into a bk2_frame_t (buttons + 4 analog axes).
+/** @brief Decode one player segment of an input line into a bk2_frame_t.
  *
- * The line shape we care about is a "|...|...|" frame with at least two
- * pipe-delimited segments. Segment 1 (P1) starts with 4 comma-terminated
- * analog ints (LX, LY, RX, RY — 0..255, 128 = centre), then a 17-char
- * digital tail (16 buttons + MODE). */
+ * The segment starts with 4 comma-terminated analog ints (LX, LY, RX, RY),
+ * each clamped to 0..255 (128 = centre), then the digital tail: 16 button
+ * characters, '.' released and any other character pressed, followed by
+ * the MODE column, which is ignored. @p out is reset to neutral first.
+ * @param seg Segment text between two pipes.
+ * @param seg_len Length of @p seg.
+ * @param out Receives the buttons and axes.
+ * @return 0 on success; -1 when an axis lacks its digits or comma, or the
+ *         tail is shorter than 16 characters. */
 static int bk2_decode_port(const char* seg, size_t seg_len, bk2_frame_t* out) {
     out->buttons = 0xFFFF;
     out->axes[0] = out->axes[1] = out->axes[2] = out->axes[3] = 128;
@@ -99,9 +104,21 @@ static int bk2_decode_port(const char* seg, size_t seg_len, bk2_frame_t* out) {
     return 0;
 }
 
-/* Decode one input line. Segment 0 is the system bus and is skipped; segment
- * 1 is player 1 and segment 2, when the movie declares one, is player 2.
- * `*out_ports` receives how many player segments actually decoded. */
+/** @brief Decode one input line into player 1's frame and, when present, player 2's.
+ *
+ * The line is "|seg0|seg1|seg2|", scanned within its length without a NUL.
+ * Segment 0 is the system bus and is skipped; segment 1 is player 1 and
+ * segment 2, when the movie declares one, is player 2. Both outputs are
+ * reset to neutral first; a malformed player 2 segment leaves @p p2
+ * neutral.
+ * @param line Line text, CR stripped.
+ * @param line_len Length of @p line.
+ * @param p1 Receives player 1's frame.
+ * @param p2 Receives player 2's frame; may be NULL.
+ * @param out_ports Receives how many player segments decoded (0, 1 or 2);
+ *        may be NULL.
+ * @return 0 on success; -1 when the line does not start with '|', has
+ *         fewer than two segments, or player 1's segment is malformed. */
 static int bk2_decode_frame(const char* line, size_t line_len,
                             bk2_frame_t* p1, bk2_frame_t* p2, int* out_ports) {
     p1->buttons = 0xFFFF;

@@ -109,9 +109,16 @@ void     openpete_psx_set_root_counter2(uint16_t value) { s_root_counter2 = valu
 uint16_t openpete_psx_root_counter2(void) { return s_root_counter2; }
 #define ROOT_COUNTER2_COUNT 0x1F801120u
 
-/* Reads from the BIOS ROM window compose from the ROM identification model
- * (psx_bios.c); root counter 2's count register answers the per-game
- * constant; every other unmapped address reads 0. */
+/** @brief Read an unmapped address: the BIOS ROM window, root counter 2's count, or 0.
+ *
+ * Root counter 2's count register (0x1F801120) answers the per-game
+ * constant. Otherwise the value composes little-endian from the ROM
+ * identification model (psx_bios.c) one byte at a time; when any byte
+ * lies outside the ROM window (physical 0x1FC00000..0x1FC7FFFF) the whole
+ * read is 0.
+ * @param addr Guest address.
+ * @param n Width in bytes (2 or 4).
+ * @return The value, zero-extended. */
 static uint32_t rom_read(uint32_t addr, unsigned n) {
     uint32_t v = 0;
     if ((addr & 0x1FFFFFFFu) == ROOT_COUNTER2_COUNT) return s_root_counter2;

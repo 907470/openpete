@@ -22,6 +22,12 @@
  * (static build) or the module loader (distribution D1) registers the
  * descriptor before the first dispatch. See openpete_recomp_module.h. */
 
+/** @brief Dispatch of the sentinel module: log the address and abort.
+ *
+ * Reached only by a dispatch before any recomp module was registered.
+ * @param cpu Unused.
+ * @param addr Guest address the dispatch targeted.
+ * @return Does not return. */
 static int recomp_unregistered_dispatch(CPUState* cpu, uint32_t addr) {
     (void)cpu;
     fprintf(stderr,
@@ -192,15 +198,20 @@ static void anchor_vbl_log(uint32_t hit) {
  * artifact, not a gameplay change). Suppress the anchor during the render
  * pass so exactly one record is consumed per game frame. */
 
-/* Write a 528-byte 'CSv1' CPU dump matching the format produced by
- * scripts/pcsx-redux-ram-dump.lua (so a single diff helper can post-
- * process either side's dump). Layout:
+/** @brief Write the CPU state at a halt as a 528-byte 'CSv1' dump to the halt CPU dump path.
+ *
+ * The format matches scripts/pcsx-redux-ram-dump.lua, so one diff helper
+ * reads either side's dump. Layout (byte offsets):
  *   0    magic 0x31765343 'CSv1'
  *   4    32 GPRs (zero, at, v0..ra; MIPS register-number order)
  * 132    pc / hi / lo
  * 144    32 cop0 regs
  * 272    32 GTE data regs (cop2)
- * 400    32 GTE control regs (cop2c) */
+ * 400    32 GTE control regs (cop2c)
+ * The cop0 and GTE banks are written as zeros. No effect when no CPU dump
+ * path is set; an open failure is logged.
+ * @param cpu CPU state.
+ * @param pc_at_halt Address written as pc. */
 static void openpete_halt_dump_cpu(CPUState* cpu, uint32_t pc_at_halt) {
     if (!openpete_halt_cpu_dump_path) return;
     FILE* fp = fopen(openpete_halt_cpu_dump_path, "wb");

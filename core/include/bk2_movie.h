@@ -34,7 +34,7 @@ typedef struct {
      * segment — a movie can only declare its port count for its whole
      * length, since the format has no per-frame connect column. */
     bk2_frame_t* p2_frames;
-    int          players;        /* 1 or 2 */
+    int          players;        /* 2 when any frame decoded a second port, else 0 */
     int          frame_count;
     int          first_input_frame; /* index of first frame with any button down,
                                       * or frame_count if the movie has no input */
@@ -43,16 +43,32 @@ typedef struct {
                                       * recorded; 0 when the header has no line */
 } bk2_movie_t;
 
-/* Load a .bk2 zip. Reads "Input Log.txt", parses Octoshock P1 digital
- * buttons. Returns 0 on success; on failure logs via OPL_ERROR_F and
- * returns non-zero. The caller owns `out->frames` and must call
- * bk2_movie_free. */
+/** @brief Load a .bk2 zip into a movie.
+ *
+ * Parses the "Input Log.txt" entry with bk2_movie_parse_log and reads the
+ * optional "LoadDelay N" line of "Header.txt" into load_delay.
+ * @param path Path to the .bk2 file.
+ * @param out Receives the movie; release it with bk2_movie_free.
+ * @return 0 on success; -1 when the zip cannot be opened, has no input
+ *         log, or the log holds no frames, with the reason logged. */
 int  bk2_movie_load(const char* path, bk2_movie_t* out);
 
 void bk2_movie_free(bk2_movie_t* m);
 
-/* Exposed for unit tests: parse an already-extracted "Input Log.txt"
- * blob (NUL-terminated or sized) directly. */
+/** @brief Parse an extracted "Input Log.txt" blob into a movie.
+ *
+ * Every line starting with '|' but not "|[" is one frame, decoded per
+ * player; the text is read within @p len and need not be NUL-terminated,
+ * and a trailing CR is stripped. A malformed line is kept as a neutral
+ * frame, counted and logged. first_input_frame is the first frame with a
+ * button down or a stick off-centre. Called by bk2_movie_load and the unit
+ * tests.
+ * @param text Log text.
+ * @param len Length of @p text.
+ * @param out Receives the movie; zeroed first; release it with
+ *        bk2_movie_free.
+ * @return 0 on success; -1 when no frame line exists or allocation fails,
+ *         with the reason logged. */
 int  bk2_movie_parse_log(const char* text, size_t len, bk2_movie_t* out);
 
 #ifdef __cplusplus

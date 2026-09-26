@@ -26,7 +26,11 @@
 
 namespace {
 
-/* Case-insensitive extension test against a lowercase literal. */
+/** @brief Test a path's extension, case-insensitively, against a lowercase literal.
+ *
+ * @param p Path.
+ * @param lower Extension with its dot, lowercase (".cue").
+ * @return true when the extension matches. */
 bool ext_is(const std::filesystem::path& p, const char* lower) {
     std::string e = p.extension().string();
     for (char& c : e) c = (char)std::tolower((unsigned char)c);
@@ -38,8 +42,13 @@ bool file_exists(const std::filesystem::path& p) {
     return std::filesystem::is_regular_file(p, ec);
 }
 
-/* The path the cue's first FILE "..." line names, resolved against the
- * cue's own directory when relative. Empty when the cue has no such line. */
+/** @brief Return the path the cue's first FILE line names, resolved against the cue's directory when relative.
+ *
+ * The first line containing FILE and a double-quoted string supplies the
+ * name between the quotes.
+ * @param cue Cue sheet path.
+ * @return The path; empty when the cue cannot be opened or has no such
+ *         line. */
 std::filesystem::path cue_named_bin(const std::filesystem::path& cue) {
     std::ifstream f(cue);
     if (!f.is_open()) return {};
@@ -57,8 +66,13 @@ std::filesystem::path cue_named_bin(const std::filesystem::path& cue) {
     return {};
 }
 
-/* The single .bin beside the cue. Ambiguous (more than one) resolves to
- * nothing, since guessing between images would boot the wrong disc. */
+/** @brief Return the single .bin file in the cue's directory.
+ *
+ * More than one .bin resolves to nothing, since guessing between images
+ * would boot the wrong disc. The extension test is case-insensitive.
+ * @param cue Cue sheet path.
+ * @return The path; empty when the directory holds no .bin or more than
+ *         one, or cannot be listed. */
 std::filesystem::path lone_sibling_bin(const std::filesystem::path& cue) {
     std::error_code ec;
     std::filesystem::path found;
@@ -174,11 +188,7 @@ extern "C" uint8_t* openpete_psx_load_exe_from_disc(const char* cue_path,
     return openpete_psx_load_file_from_disc(cue_path, exe_filename, out_size);
 }
 
-/* The disc's own serial ("SCUS-94228"), read out of SYSTEM.CNF's
- * BOOT=cdrom:\SCUS_942.28;1 line. A few sectors, so it is cheap enough to
- * run at every boot — which is what lets openpete.toml carry per-release
- * settings ([disc.SCUS-94228]) for an image the library has never seen and
- * whose content hash we therefore don't know. Returns 0 on success. */
+/* Serial from SYSTEM.CNF's BOOT line; see openpete_psx.h. */
 extern "C" int openpete_psx_read_disc_serial(const char* image_path,
                                              char* out, size_t out_cap) {
     if (!image_path || !out || out_cap < 12) return -1;

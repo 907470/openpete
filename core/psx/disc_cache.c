@@ -80,7 +80,15 @@ static int range_resident(size_t b, size_t e, size_t* first_missing) {
     return 1;
 }
 
-/* The wait: runs on whichever thread reads the image (the sim thread). */
+/** @brief Block until the image bytes [b, e) are resident; installed as PsyCross's memory-image wait.
+ *
+ * Runs on the thread that reads the image (the sim thread). A range already
+ * resident, or a cache being shut down, returns at once. Otherwise the
+ * first missing chunk becomes the loader's next target, the call waits for
+ * each broadcast until the range is resident, and the miss is counted,
+ * timed, logged, and emitted as a pacelog CD_MISS event.
+ * @param b First byte offset.
+ * @param e One past the last byte offset; clamped to the image size. */
 static void mem_wait(size_t b, size_t e) {
     if (e > s_size) e = s_size;
     if (b >= e) return;

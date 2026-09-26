@@ -17,14 +17,34 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* Attach `bin_path` as the memory image and start the loader. Returns 1 on
- * success (PsyCross is now reading from memory), 0 if the file could not
- * be opened or sized — the caller falls back to PsyX_CDFS_Init. */
+/** @brief Attach a disc image as PsyCross's memory image and start the background loader.
+ *
+ * Allocates the whole image, installs the miss wait with
+ * PsyX_CDFS_SetMemWait, hands the buffer to PsyX_CDFS_Init_Mem, and starts
+ * the loader thread; when the thread cannot be created the image loads
+ * inline before the call returns. A call while already attached changes
+ * nothing.
+ * @param bin_path Path to the disc image.
+ * @return 1 when PsyCross now reads from memory (or already did); 0 when
+ *         @p bin_path is NULL or the file cannot be opened, sized (larger
+ *         than 0x7FFFFFFF bytes) or allocated, and the caller falls back
+ *         to PsyX_CDFS_Init. */
 int  openpete_disc_cache_attach(const char* bin_path);
 int  openpete_disc_cache_active(void);
-/* Stop the loader (joins the thread); the image stays mapped for PsyCross. */
+/** @brief Stop the loader, join its thread, and remove the miss wait.
+ *
+ * The image buffer stays allocated because PsyCross holds the pointer
+ * until the process ends; chunks the loader had not read stay unfilled. No
+ * effect when the cache was never attached. */
 void openpete_disc_cache_shutdown(void);
-/* Exit census: misses and total blocked time. */
+/** @brief Report the cache's counters for the exit census.
+ *
+ * Each output pointer may be NULL.
+ * @param misses Receives the number of reads that blocked on the loader.
+ * @param waited_ns Receives the total time those reads blocked, in ns.
+ * @param bytes Receives the image size in bytes.
+ * @param load_ns Receives the loader's wall time from attach to the last
+ *        chunk, in ns; 0 until the loader finishes. */
 void openpete_disc_cache_census(uint64_t* misses, int64_t* waited_ns,
                                 size_t* bytes, int64_t* load_ns);
 #ifdef __cplusplus

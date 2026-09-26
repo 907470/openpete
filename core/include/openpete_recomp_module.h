@@ -34,14 +34,21 @@ typedef struct openpete_recomp_module {
     int (*dispatch)(CPUState* cpu, uint32_t addr); /* dispatch_chain entry */
 } openpete_recomp_module;
 
-/* Register the active module. Called exactly once before the first
- * dispatch (game main in static builds; the module loader in D1).
- * Returns 0 on success, -1 on ABI-version mismatch (refused). */
+/** @brief Register the active recomp module.
+ *
+ * Called before the first dispatch: by game main in static builds, by the
+ * module loader in shared builds.
+ * @param m Module descriptor; must outlive every dispatch.
+ * @return 0 on success; -1 when @p m is NULL or its abi_version differs
+ *         from OPENPETE_RECOMP_ABI_VERSION, and the active module is
+ *         unchanged. */
 int openpete_recomp_register(const openpete_recomp_module* m);
 
-/* The active module. Never NULL: before registration it points at a
- * fail-fast sentinel whose dispatch aborts with a clear message, so a
- * missed registration is loud instead of undefined. */
+/** @brief Return the active recomp module.
+ *
+ * Before registration it is a sentinel whose dispatch logs the address and
+ * aborts, so a missed registration fails at the first dispatch.
+ * @return The module; never NULL. */
 const openpete_recomp_module* openpete_recomp_module_get(void);
 
 #ifdef __cplusplus

@@ -120,15 +120,21 @@ extern int      openpete_skip_present_until_level;
  * screenshot capture). */
 extern int      openpete_skip_ffwd_windowed;
 
-/* Game fiber → host fiber. Bumps `openpete_frame` on the way through;
- * `openpete_vbl` is *not* touched here — psyq_VSync owns that counter,
- * so a yield and a VBL stay separately accountable. Used by the
- * VSync(0) thunk outside fast-boot. */
+/** @brief Switch from the game fiber to the host fiber, advancing openpete_frame.
+ *
+ * `openpete_vbl` is not touched: psyq_VSync owns that counter, so a yield
+ * and a VBL stay separately counted. Function tracing is paused across the
+ * switch so host time is excluded. No effect when no host fiber exists.
+ * Called by the VSync(0) thunk outside fast-boot. */
 void openpete_yield_to_host(void);
 
-/* Game fiber → host fiber WITHOUT advancing the frame counter. Used by stub
- * misses inside untranslated overlays (Phase 1d band-aid) so the host can
- * still drive frame_limit/max-runtime exits. Phase 2 retires this. */
+/** @brief Switch from the game fiber to the host fiber without advancing openpete_frame.
+ *
+ * Called after a dispatch to an address the recompiled image does not
+ * cover is stubbed, so a main loop that never reaches VSync(0) still lets
+ * the host drive the frame-limit and max-runtime exits without inflating
+ * the frame counter. Function tracing is paused across the switch. No
+ * effect when no host fiber exists. */
 void openpete_yield_to_host_no_tick(void);
 
 /* openpete_no_lod is declared in core/include/no_lod.h (there

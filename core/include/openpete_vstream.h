@@ -35,29 +35,54 @@ extern "C" {
 #define VSTREAM_HANDLE_BOUND 0x8000u
 #define VSTREAM_HANDLE_MAX   VSTREAM_HANDLE_BOUND /* table size; index 0 reserved */
 
-/* Resolve a masked 21-bit field value to the stream's vaddr. Stock values
- * (>= the bound) pass through bit-identical: the byte address, doubled on
- * the halved path. A handle resolves to its table entry; an unallocated
- * handle resolves to 0 (logged once; fatal under OPENPETE_VSTREAM_FATAL). */
+/** @brief Resolve a frame word's 21-bit stream field to the stream's vaddr.
+ *
+ * The value is masked to 21 bits. Stock values (at or above
+ * VSTREAM_HANDLE_BOUND) pass through bit-identical: the byte address,
+ * doubled on the halved path. A handle resolves to its table entry; an
+ * unbound handle (including 0) resolves to 0, is logged on the first
+ * occurrence, and aborts under OPENPETE_VSTREAM_FATAL. Each call counts
+ * into the census.
+ * @param masked Field value.
+ * @param halved Nonzero for the halved encoding (Spyro's own streams).
+ * @return The vaddr, or 0 for an unbound handle. */
 uint32_t openpete_vstream_addr(uint32_t masked, int halved);
 
-/* Same, plus a bounded host pointer to the stream's bytes so a native walk
- * can read without the guest access path: *host is NULL if the vaddr maps
- * nothing, else *remaining is the byte count readable from it before the
- * mapping ends. */
+/** @brief Resolve a stream field as openpete_vstream_addr does, plus a bounded host pointer to the stream's bytes.
+ *
+ * Lets a native walk read the stream without the guest access path. The
+ * vaddr maps through main RAM, then through the registered host regions.
+ * @param masked Field value.
+ * @param halved Nonzero for the halved encoding.
+ * @param host Receives the host pointer, NULL when the vaddr maps nothing;
+ *        may be NULL.
+ * @param remaining Receives the bytes readable from @p host before the
+ *        mapping ends, 0 when nothing maps; may be NULL.
+ * @return The vaddr, or 0 for an unbound handle. */
 uint32_t openpete_vstream_resolve(uint32_t masked, int halved,
                                   const uint8_t** host, uint32_t* remaining);
 
-/* Table writer: bind handle `index` (1..MAX-1) to `vaddr`. An entry is
- * written once; rebinding a live entry to a different vaddr is refused
- * (returns 0). Returns 1 on success. Owned by the mod arena's handle
- * ledger, which decides numbering. */
+/** @brief Bind a handle to a vaddr in the stream table.
+ *
+ * An entry is written once: rebinding a bound entry to a different vaddr
+ * is refused and logged; rebinding it to the same vaddr succeeds. The mod
+ * arena's handle ledger owns the table and decides numbering.
+ * @param index Handle, 1..VSTREAM_HANDLE_MAX-1.
+ * @param vaddr Stream vaddr (KSEG0, see above); nonzero.
+ * @return 1 on success; 0 when @p index is out of range, @p vaddr is 0, or
+ *         the entry holds a different vaddr. */
 int openpete_vstream_table_set(uint32_t index, uint32_t vaddr);
 
-/* Lookup: the handle already bound to `vaddr`, or 0. */
+/** @brief Return the lowest handle bound to a vaddr.
+ *
+ * @param vaddr Stream vaddr.
+ * @return The handle, or 0 when none is bound or @p vaddr is 0. */
 uint32_t openpete_vstream_table_find(uint32_t vaddr);
 
-/* The vaddr bound to `index`, or 0. */
+/** @brief Return the vaddr bound to a handle.
+ *
+ * @param index Handle.
+ * @return The vaddr, or 0 when unbound or out of range. */
 uint32_t openpete_vstream_table_get(uint32_t index);
 
 /* Census counters: stock resolutions, handle resolutions, and resolutions

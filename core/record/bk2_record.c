@@ -49,11 +49,13 @@ static struct {
     uint16_t     prev_bits;  /* last bits seen, for press/release diff logging */
 } s_rec = {0};
 
-/* A savestate load replaces guest state mid-recording. Frames appended
- * after the jump would splice two timelines into one non-replayable movie
- * (the replay can't reproduce the load), so finalize NOW: the .bk2 on disk
- * stays valid up to the load point, and appends after this no-op. There
- * is no truncate-to-loaded-frame support. */
+/** @brief Finalize the recording when guest state is replaced (a savestate load).
+ *
+ * Input after the load would splice two timelines into one movie the
+ * replay cannot reproduce, so the movie is written up to the load point
+ * and recording ends; input after the load is not recorded. The movie is
+ * not truncated back to the loaded state's VBL. No effect when recording
+ * is not active. */
 static void bk2_record_on_guest_discontinuity(void) {
     if (!s_rec.active) return;
     OPL_ERROR_F("bk2-record",
@@ -86,8 +88,11 @@ int bk2_record_begin(const char* path, const char* args_sidecar) {
     return 0;
 }
 
-/* Write "<bk2_path>.args" with `content`. Best-effort: a failure is
- * logged but never fails the recording (the .bk2 is the real output). */
+/** @brief Write "<bk2_path>.args" with the sidecar content.
+ *
+ * Best-effort: a failure is logged and never fails the recording.
+ * @param bk2_path The .bk2 path.
+ * @param content Sidecar text, written verbatim. */
 static void write_args_sidecar(const char* bk2_path, const char* content) {
     size_t plen = strlen(bk2_path);
     char* apath = (char*)malloc(plen + 6);  /* ".args" + NUL */
@@ -141,12 +146,16 @@ void bk2_record_note(uint16_t bits, int log_idx) {
     s_rec.prev_bits = bits;
 }
 
-/* Append one player's segment: 4 axes then the 17 digital columns.
+/** @brief Write one player's segment: 4 axes, the 16 button columns, the MODE column, and the closing pipe.
  *
- * Octoshock emits a port as axes first, then bool buttons — the order
- * BizHawk's log-entry generator produces by walking the controller
- * definition's axes before its buttons — so a second player is this same
- * segment again under a "P2 " prefix. Axes are %5d to match its PadLeft(5). */
+ * Octoshock emits a port as axes first, then bool buttons (BizHawk's
+ * log-entry generator walks the controller definition's axes before its
+ * buttons), so a second player is this same segment again. Axes are %5d to
+ * match its PadLeft(5). A pressed button writes its letter, a released one
+ * '.'; MODE is always '.' since replay is always analog.
+ * @param out Destination; not NUL-terminated.
+ * @param p Port record.
+ * @return Bytes written. */
 static int format_port(char* out, const openpete_input_port_t* p) {
     int n = sprintf(out, "%5d,%5d,%5d,%5d,",
                     p->axes[0], p->axes[1], p->axes[2], p->axes[3]);
@@ -157,9 +166,14 @@ static int format_port(char* out, const openpete_input_port_t* p) {
     return n;
 }
 
-/* Render one frame line into `out` (must hold >= 64 chars per player).
- * Returns bytes written (excluding NUL). Every line is the same length, so
- * the buffer size can be computed from one probe. */
+/** @brief Write one Input Log line: the constant system segment, then each player's segment and a newline.
+ *
+ * Every line is the same length while each axis fits %5d, so the finalize
+ * sizes its buffer from one probe line.
+ * @param out Destination; must hold 64 bytes per player; NUL-terminated.
+ * @param r Input log record.
+ * @param players Ports to write, 1 or 2.
+ * @return Bytes written, excluding the NUL. */
 static int format_frame_rec(char* out, const openpete_input_rec_t* r,
                             int players) {
     /* Constant segment 0: disc-select 1, then Open|Close|Reset unpressed. */
@@ -179,10 +193,16 @@ static const char* const kPortKeyFmt =
     "P%d Square|P%d Triangle|P%d Circle|P%d Cross|"
     "P%d L1|P%d R1|P%d L2|P%d R2|P%d L3|P%d R3|P%d MODE|";
 
-/* Build the [Input] header for `players` ports. The key is documentation
- * rather than a parsing directive — BizHawk reads frames positionally
- * against whatever controller definition the core is configured for, which
- * is why a multi-player movie also has to carry SyncSettings. */
+/** @brief Write the [Input] line and the LogKey line for a number of ports.
+ *
+ * The key is documentation rather than a parsing directive: BizHawk reads
+ * lines positionally against the controller definition the core is
+ * configured for, which is why a two-player movie also carries
+ * SyncSettings.
+ * @param out Destination.
+ * @param cap Capacity of @p out.
+ * @param players Ports, 1 or 2.
+ * @return Bytes written, excluding the NUL. */
 static int format_log_key(char* out, size_t cap, int players) {
     int n = snprintf(out, cap, "[Input]\r\n"
                      "LogKey:#Disc Select|Open|Close|Reset|");
@@ -220,10 +240,14 @@ static const char* const kHeader =
     "Core Octoshock\r\n"
     "rerecordCount 0\r\n";
 
-/* The header plus the load delay the movie was recorded under. Loads consume
- * VBLs, so every input after a load lands on a different tick under another
- * value; replay refuses the mismatch. A movie recorded instant carries no
- * line and stays byte-identical to what this writer always produced. */
+/** @brief Write Header.txt's text: the fixed header plus the load delay the movie was recorded under.
+ *
+ * Loads consume VBLs, so every input after a load lands on a different
+ * tick under another delay; replay refuses the mismatch. A delay of 0
+ * writes no LoadDelay line.
+ * @param out Destination.
+ * @param cap Capacity of @p out.
+ * @return Bytes written, excluding the NUL. */
 static int build_header(char* out, size_t cap) {
     int n = snprintf(out, cap, "%s", kHeader);
     if (openpete_cd_load_delay > 0)
