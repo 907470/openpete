@@ -144,10 +144,18 @@ const char* openpete_native_render_gpu_name(void);
 const char* openpete_native_render_driver_version(void);
 const char* openpete_native_render_present_mode(void);
 
-/* Toggle the native window between windowed and borderless-desktop fullscreen.
- * Bound to Alt+Enter and double-click by run.c, and the O-menu DISPLAY row.
- * No-op until the native window is up (so it's inert in headless /
- * PsyCross-only runs). */
+/** @brief Toggle the native window between windowed and borderless-desktop fullscreen.
+ *
+ * Entering fullscreen first sets the window's fullscreen mode to NULL, which
+ * SDL3 takes as borderless desktop with no video-mode switch. The resize
+ * debounce adopts the resulting size change on first sight, since it lands
+ * in one step; the present path re-reads the window size and the RHI
+ * recreates the swapchain on resize. Posts a DISPLAY toast naming the new
+ * state. Alt+Enter, the `fullscreen` binding and a window double-click reach
+ * it from the host loop in run.c; the O-menu and M-overlay rows reach it
+ * through openpete_native_request_fullscreen_toggle. Call only on the thread
+ * that owns the window. No-op until the native window is up, so it is inert
+ * in headless and PsyCross-only runs. */
 void openpete_native_toggle_fullscreen(void);
 /* Thread-safe request form: raises a flag the host loop services on the
  * window-owning thread. Use this from the menu / overlay / any non-window
@@ -254,9 +262,14 @@ void openpete_native_set_ssaa(int factor);
  * @return The factor, 1 when unset. */
 int openpete_native_get_ssaa(void);
 
-/* VSync on/off (1 = FIFO / vsync ON, 0 = immediate|mailbox / vsync OFF). Forwards
- * to the RHI, which flags the swapchain for recreation and rebuilds it (with the
- * new present mode) on the next frame. No-op until the native device is up. */
+/** @brief Set the vsync preference: FIFO when on, immediate or mailbox when off.
+ *
+ * Forwards to the RHI, which stores the preference and, on a windowed
+ * device, flags the swapchain for recreation; the next begin-frame rebuilds
+ * it with the present mode the preference selects. A value equal to the
+ * current preference changes nothing. Logs the new setting. The preference
+ * is dropped when the native device is not up.
+ * @param on Non-zero for vsync on. */
 void openpete_native_set_vsync(int on);
 /** @brief Return the current vsync preference.
  *
@@ -266,16 +279,24 @@ void openpete_native_set_vsync(int on);
  *         launched without --vsync so the environment or surface decides). */
 int openpete_native_get_vsync(void);
 
-/* Vertex screen-coordinate precision (0 = smooth sub-pixel, 1 = PSX integer-grid
- * snap = the original polygon wobble). Rounds only 3D-world display geometry in
- * the next scene feed (2D HUD/overlay stays smooth; depth + UVs untouched).
- * Display-only: touches only renderer state, never gameplay RAM. */
+/** @brief Set the vertex screen-coordinate precision: sub-pixel, or the PSX integer grid.
+ *
+ * With integer snap on, every triangle added afterwards has its sx and sy
+ * floored to the 512x240 PSX pixel grid, the GTE's SXY truncation that
+ * produces the polygon wobble; depth and UVs are untouched. HUD, OVERLAY and
+ * HUD_PANEL triangles and triangles fed while the presnap state is set keep
+ * their coordinates. Logs the new setting. Renderer state only.
+ * @param integer_snap Non-zero for the integer grid, zero for sub-pixel. */
 void openpete_native_set_vertex_precision(int integer_snap);
 
-/* Live vertex-snap state (1 = integer snap active). Feeders that synthesize
- * vertices ON another primitive's edge (the terrain near/HQ subdivide's
- * boundary midpoints) read this to emit snap-consistent screen coordinates,
- * keeping their T-vertices watertight against snapped neighbour edges. */
+/** @brief Return whether integer vertex snap is active.
+ *
+ * Feeders that synthesize vertices on another primitive's edge (the terrain
+ * subdivision midpoints, the shadow and retained-terrain feeds) read it to
+ * emit snap-consistent screen coordinates, so their T-vertices stay
+ * watertight against snapped neighbour edges. The O menu and the knob
+ * registry read it back as the setting's value.
+ * @return 1 when integer snap is active, else 0. */
 int openpete_native_vertex_snap_active(void);
 
 /** @brief Mark the triangles added next as already snap-consistent.
@@ -347,11 +368,16 @@ int  openpete_native_get_texture_mapping(void);
 void openpete_native_set_notex(int on);
 int  openpete_native_get_notex(void);
 
-/* Wireframe view: every 3D scene draw rasterizes as triangle edges coloured
- * by the gouraud vertex lighting (the NOTEX colouring); the 2D layers stay
- * filled. Seeded from --wireframe / OPENPETE_WIREFRAME at init; same
- * queued-rebuild contract as openpete_native_set_texture_mapping.
- * Display-only. */
+/** @brief Queue the wireframe view on or off.
+ *
+ * Under the view every depth-tested scene pipeline rasterizes triangle
+ * edges coloured by the gouraud vertex lighting (the NOTEX colouring);
+ * postfx and the depth-only passes stay filled, and a device without
+ * fillModeNonSolid draws filled. The setter only queues the value; at the
+ * next present boundary the renderer re-bakes every pipeline in place, and
+ * a failed rebuild keeps the previous mode. Bring-up seeds the value from
+ * --wireframe or OPENPETE_WIREFRAME. Renderer state only.
+ * @param on Non-zero for on. */
 void openpete_native_set_wireframe(int on);
 int  openpete_native_get_wireframe(void);
 
@@ -440,11 +466,20 @@ int  openpete_native_version_osd(void);
  * @return 1 when a version line is drawn, else 0. */
 int openpete_native_version_line_enabled(void);
 
-/* One phrase naming why, for the shutdown census. Never NULL. */
+/** @brief Return a phrase naming the build class and the version-line policy it gets, for the shutdown census.
+ *
+ * The classes are the three of openpete_native_version_line_enabled: not
+ * shared-recomp, untagged shared-recomp, and tagged release (brief, or
+ * suppressed by --version-osd off).
+ * @return A static string, never NULL. */
 const char *openpete_native_version_reason(void);
 
-/* Version lines actually drawn, cumulative — the engagement counter a check
- * harness reads to tell a drawn line from a suppressed one. */
+/** @brief Return the number of version-line draws since start.
+ *
+ * Counts every composite of the line on either path (supersampled or 1x);
+ * the shutdown census prints it, and a check harness reads it to tell a
+ * drawn line from a suppressed one.
+ * @return The cumulative draw count. */
 unsigned openpete_native_version_drawn(void);
 
 /** @brief Set the corner or edge the performance-stats block anchors to.
@@ -1503,10 +1538,14 @@ void openpete_native_scene_set_actor_front(int front);
  * vertical bounds do not change.
  * @return The widen factor, 1.0 when the rect is not wider than 4:3. */
 float openpete_native_widescreen_factor(void);
-/* The visible PSX screen-X range under the active widescreen factor: [0,512] at
- * 4:3, widened symmetrically about the screen centre (256) — e.g. ~[-85,597] at
- * 16:9. Feeders use it as the left/right bound of their horizontal trivial
- * reject (replacing the hard 0 / 512 edges). */
+/** @brief Return the visible PSX screen-X range under the active widescreen factor.
+ *
+ * The range is [0, 512] at 4:3, widened symmetrically about the screen
+ * centre 256 by openpete_native_widescreen_factor, about [-85, 597] at 16:9.
+ * Feeders use it as the left and right bound of their horizontal trivial
+ * reject in place of the fixed 0 and 512 edges.
+ * @param xlo Receives the left bound; may be NULL.
+ * @param xhi Receives the right bound; may be NULL. */
 void  openpete_native_widescreen_x_bounds(float *xlo, float *xhi);
 
 /* ---- field of view display policy ------------------------------------ */
@@ -1527,8 +1566,12 @@ void  openpete_native_widescreen_x_bounds(float *xlo, float *xhi);
 void   openpete_native_set_fov(float deg);
 float  openpete_native_fov_deg(void);             /* 0 = default */
 double openpete_native_fov_h_scale(double H_canon, double y_row);
-/* Rows of the visible band the panel shows (224 on Spyro 1; 224 before the
- * first frame). */
+/** @brief Return the number of rows in the visible band the panel shows.
+ *
+ * The value is the guest draw-clip height in s_nr (224 on Spyro 1), or 224
+ * while no clip height has been applied. The FOV scale and label derive the
+ * canonical vertical FOV from it.
+ * @return The visible row count. */
 int    openpete_native_visible_rows(void);
 /** @brief Return the horizontal FOV in degrees the current window displays for a canonical projection.
  *
@@ -1648,9 +1691,12 @@ void     openpete_native_present_census_report(void);
 float    openpete_native_display_refresh_hz(void);   /* current swapchain's display, 0 = unknown */
 int      openpete_native_display_vsync(void);        /* FIFO present mode in effect */
 int      openpete_native_scene_ring_free(void);
-/* Refresh the VRAM mirror from the guest's (dirty rects only). The eager
- * producer calls it while the guest is idle; the inline present path calls
- * it itself. */
+/** @brief Refresh the VRAM mirror from the guest's VRAM, dirty rects only.
+ *
+ * Takes the VRAM mirror lock the present-side upload also takes. The eager
+ * producer calls it before each scene while the guest is idle, so no guest
+ * VRAM write lands mid-drain; the inline present path syncs on its own.
+ * No-op when the native renderer is disabled or headless. */
 void     openpete_native_vram_sync(void);
 
 /* --- sub-tick re-feed spine ------------------------------------------------ */

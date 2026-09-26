@@ -309,9 +309,14 @@ void openpete_tercache_frame_slots(char *out, int cap);
  * portal recency).
  * @return 1 when the retained path is usable for this present, else 0. */
 int  openpete_native_tercache_usable(void);
-/* Host loop, once per VBL: run the terrain cache's device service on the
- * headless path. Self-no-ops with a window, where the present entry runs it
- * on the thread that owns the device for that present. */
+/** @brief Run the terrain cache's device service on the headless path.
+ *
+ * The host loop calls it once per VBL. Headless never reaches the present
+ * entry, the service's windowed site, so this entry drives it instead. It
+ * is a no-op with a window, so exactly one of the two sites is live in any
+ * mode and the device is never serviced from two threads, and a no-op when
+ * the retained path is not usable this present
+ * (openpete_native_tercache_usable). */
 void openpete_native_tercache_service_headless(void);
 
 /* ---- HD texture-replacement fold (pack art in the retained path) --------

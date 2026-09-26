@@ -383,8 +383,15 @@ static struct {
     uint32_t    words[DRAIN_REC_PER_ROW * DRAIN_REC_ROWS * 16];
 } s_drain;
 
-/* A scene vertex's rank ordinal: -(record + 1) on a triangle with a drain
- * record of this present, its own ordinal otherwise. */
+/** @brief Replace a vertex's rank ordinal with its triangle's drain-record reference when it has one.
+ *
+ * The ordinal travels in the vertex's sy slot. When @p t lies in the scene
+ * s_drain was built for and has a drain record, sy becomes -(record + 1),
+ * the tag the key-resolve stages index the records image with; otherwise
+ * the vertex is left as the caller wrote it.
+ * @param o Output vertex, its sy already holding the ordinal.
+ * @param t Scene triangle the vertex belongs to.
+ * @param k Vertex index within the triangle; unused. */
 static inline void rv_drain(rhi_vertex* o, const scene_tri_t* t, int k)
 {
     (void)k;
@@ -398,16 +405,25 @@ static mod_fvec           s_scene_v;              /* accumulating (frame N) */
 #define s_scene ((scene_tri_t*)s_scene_v.data)    /* moves on growth: index, never hold */
 static int                s_scene_n;
 
-/* How many of `n` scene triangles the run `v` holds after growing it to fit
- * them (initialising it on first use). Less than `n` only when the
- * allocation failed, which the vec logs. */
+/** @brief Grow a scene-triangle run to hold n triangles and return how many it holds.
+ *
+ * The run is initialised on first use. The result is less than @p n only
+ * when the allocation failed, which the vec logs; a negative @p n reserves
+ * nothing.
+ * @param v The run.
+ * @param name Name the vec logs under.
+ * @param n Triangles wanted.
+ * @return @p n, or the run's capacity when that is smaller. */
 static int scene_run_fit(mod_fvec *v, const char *name, int n) {
     if (!v->elem_size)
         mod_fvec_init(v, sizeof(scene_tri_t), SCENE_RUN_INIT, name, SCENE_TRIS_WAS);
     if (mod_fvec_reserve_noted(v, (size_t)(n > 0 ? n : 0)) == 0) return n;
     return (int)v->cap < n ? (int)v->cap : n;
 }
-/* Room for `n` triangles in the accumulating scene. */
+/** @brief Grow the accumulating scene to hold n triangles.
+ *
+ * @param n Triangles wanted.
+ * @return 1 when the scene holds @p n, 0 when the allocation fell short. */
 static int scene_room(int n) { return scene_run_fit(&s_scene_v, "scene.tri", n) >= n; }
 
 /* ---- eager scene ring ----------------------------------------------------
@@ -603,11 +619,20 @@ static const scene_box_cfg_t *scene_box_cfg(void) {
         fprintf(stderr, "[sbox] REJECTED spec '%s' (want x0,y0,x1,y1,fA,fB)\n", e);
     return &s_box;
 }
-/* The retained terrain cache draws sectors that never enter the scene list,
- * so an armed box instrument routes all terrain through the CPU walk (the
- * cache mirrors that walk bit-exactly) where it can be tested. */
+/** @brief Return whether the OPENPETE_SCENE_BOXDBG box instrument is armed.
+ *
+ * The retained terrain cache draws sectors that never enter the scene list,
+ * so while the instrument is armed the cache reports itself unusable and all
+ * terrain goes through the CPU walk, which the cache mirrors bit-exactly,
+ * where the box can test it.
+ * @return 1 when armed, else 0. */
 static int scene_box_armed(void) { return scene_box_cfg()->armed; }
-/* A run that never composes prints INACTIVE with the reason. */
+/** @brief Log that the armed box instrument will test nothing in this run, with the reason.
+ *
+ * Bring-up calls it when it declines the native renderer, so a run that
+ * never composes still prints an engagement line (tested 0, covering 0).
+ * No-op when the instrument is not armed.
+ * @param why Reason the run composes nothing. */
 static void scene_box_note_inactive(const char *why) {
     if (scene_box_armed())
         fprintf(stderr, "[sbox] INACTIVE: %s; tested=0 covering=0\n", why);
@@ -825,13 +850,17 @@ static int scene_sig_on(void)
     return on;
 }
 
-/* OPENPETE_SCENE_POS_SIG=1: the CONTINUOUS half, per draw category — an
- * order-independent hash over every vertex's screen position (exact float
- * bits) with the tri count, plus one bucket for the particle HUD bursts
- * (tag path 5, sel 4 and 5). A display policy that must leave the HUD
- * where the game put it (--fov) is checked by this: the HUD, HUD3D,
- * HUD_PANEL and OVERLAY hashes and the burst bucket are equal across the
- * policy's settings while the world categories differ. Census only. */
+/** @brief Return whether OPENPETE_SCENE_POS_SIG requests the per-category screen-position census.
+ *
+ * The census is the continuous counterpart of the OPENPETE_SCENE_SIG
+ * discrete signature: per draw category, an order-independent hash over
+ * every vertex's screen position (exact float bits) with the triangle
+ * count, plus one bucket for the particle HUD bursts (tag path 5, selectors
+ * 4 and 5). It checks a display policy that must leave the HUD where the
+ * game put it (--fov): the HUD, HUD3D, HUD_PANEL and OVERLAY hashes and the
+ * burst bucket stay equal across the policy's settings while the world
+ * categories differ. Read once and cached.
+ * @return 1 when the census is on, else 0. */
 static int scene_pos_sig_on(void)
 {
     static int on = -1;
@@ -1091,13 +1120,11 @@ static unsigned scene_frame_at_depth(int d) {
 
 static int scene_hist_depth_max(void) { return s_scene_hist_count; }
 
-/* Stamp of the scene scene_present_buf() would return under the CURRENT
- * selection (delay/shot-lag included) — what the retained-terrain freshness
- * gate compares against, so a frozen/lagged compose keeps its retained
- * content and a stale-state compose (menus) drops it. */
-/* Whether the scene scene_present_buf() would return was built by a re-extract
- * rather than by the game render itself — the same selection (publish slot,
- * delay history, live accumulator) scene_present_stamp() reads. */
+/** @brief Return whether the scene scene_present_buf returns was built by a re-extract rather than by the game's render.
+ *
+ * Uses the selection scene_present_stamp reads: the ring slot being
+ * composed, else the delayed history entry, else the live accumulator.
+ * @return Non-zero for a re-extracted scene. */
 static int scene_present_replay(void) {
     if (s_ps_slot) return s_ps_slot->replay;
     int depth = scene_delay_depth();
@@ -1108,6 +1135,13 @@ static int scene_present_replay(void) {
     return s_scene_replay;
 }
 
+/** @brief Return the stamp of the scene scene_present_buf returns under the current selection.
+ *
+ * The selection is the ring slot being composed, else the delayed history
+ * entry, else the live accumulator. The retained-terrain freshness gate
+ * compares against it, so a frozen or lagged compose keeps its retained
+ * content and a stale-state compose (menus) drops it.
+ * @return The scene's stamp. */
 static unsigned scene_present_stamp(void) {
     if (s_ps_slot) return s_ps_slot->stamp;
     int depth = scene_delay_depth();
@@ -2712,10 +2746,20 @@ void openpete_native_scene_apply_overlay(double alpha) {
     s_scene_fade   = fade_lerp(s_fade_prev, s_fade_curr, oalpha);
 }
 
-/* The scene buffer the present should draw: the depth-frames-back snapshot when
- * a reference-compare delay is set (A/B-synced with the lagged reference), else
- * the live accumulator (vk-only, runs ahead). Falls back to the live frame
- * during warmup before enough history has accumulated. */
+/** @brief Return the scene the present should draw, with its per-scene words.
+ *
+ * The scene is the ring slot being composed under eager production; else,
+ * when a reference-compare delay is set, the history entry that many scenes
+ * back, so the native image stays in step with the lagged reference; else
+ * the live accumulator. While the history holds fewer scenes than the delay
+ * the live accumulator is used.
+ * @param out_n Receives the triangle count.
+ * @param out_bg Receives the background word.
+ * @param out_fade Receives the fade word.
+ * @param out_freeze Receives the freeze word; may be NULL.
+ * @param out_hud_under Receives the HUD-under-player flag; may be NULL.
+ * @param out_actor_front Receives the actor-front flag; may be NULL.
+ * @return The scene's triangles. */
 static const scene_tri_t* scene_present_buf(int* out_n, uint32_t* out_bg,
                                                    uint32_t* out_fade, uint32_t* out_freeze,
                                                    int* out_hud_under, int* out_actor_front) {
@@ -2744,24 +2788,25 @@ static const scene_tri_t* scene_present_buf(int* out_n, uint32_t* out_bg,
 }
 
 
-/* True if the presented scene holds real WORLD or ACTOR geometry — i.e. a full
- * gameplay frame worth snapshotting into frozen_tex (the pause/inventory freeze
- * backdrop). Menu/transition frames (only HUD/OVERLAY tris, or empty) return false,
- * so the snapshot keeps the last gameplay frame to freeze.
+/** @brief Test whether a scene holds the game's own world geometry: WORLD, ACTOR, ACTOR_FRONT or SKY triangles.
  *
- * PLAYER (Spyro) alone does NOT qualify: at the pause-start transition the world
- * feeders cut out one present before the freeze FT4 is emitted, leaving a degenerate
- * frame with only Spyro's body (W=0, Ac=0, Pl>0, freeze not yet set). Counting that
- * as a world frame snapshots a near-empty image into frozen_tex — the "residual
- * framebuffer instead of the cyclorama" under the high-FPS spine's pause menu. A real
- * gameplay frame always carries terrain (WORLD) and/or mobys (ACTOR), so gate on
- * those and the transition frame is rejected, preserving the last full world. */
+ * A gameplay frame, the kind worth snapshotting into frozen_tex as the pause
+ * and inventory backdrop, carries terrain or mobys; menu and transition
+ * frames (HUD and OVERLAY triangles only, or empty) do not. PLAYER alone
+ * does not qualify: at pause entry the world feeds cut out one present
+ * before the freeze FT4 is emitted, leaving a frame with only Spyro's body,
+ * and snapshotting it freezes a near-empty image. SKY qualifies, so a frame
+ * holding only the cyclorama dome counts as a gameplay frame. Host-added
+ * triangles are ignored. The freeze-source test and the freeze hold at
+ * scene begin use it.
+ * @param scene Scene triangles.
+ * @param n Triangle count.
+ * @return true when a qualifying triangle is present. */
 static bool scene_has_world(const scene_tri_t* scene, int n) {
     for (int t = 0; t < n; t++) {
         if (scene[t].host_added) continue;   /* the game's own geometry decides */
         int c = scene[t].category;
-        /* SKY counts as world: the cyclorama was WORLD before the W2.6-c split
-         * and a dome-only frame qualified as a gameplay frame — preserve that. */
+        /* SKY counts as world: a dome-only frame is a gameplay frame. */
         if (c == OPENPETE_SCENE_WORLD || c == OPENPETE_SCENE_ACTOR ||
             c == OPENPETE_SCENE_ACTOR_FRONT || c == OPENPETE_SCENE_SKY)
             return true;
@@ -2787,22 +2832,30 @@ static bool scene_has_game_tris(const scene_tri_t* scene, int n) {
     return false;
 }
 
-/* True if the scene carries the game's terrain as CPU triangles. Host-added
- * geometry is excluded for the same reason as above: an appended moby is not
- * terrain. SKY does not count — the cyclorama draws on a frame whose ground
- * feed cut out. */
+/** @brief Test whether a scene carries the game's terrain as CPU triangles.
+ *
+ * Counts WORLD triangles that are not host-added: an appended moby is not
+ * terrain. SKY does not count, since the cyclorama draws on a frame whose
+ * ground feed cut out.
+ * @param scene Scene triangles.
+ * @param n Triangle count.
+ * @return true when a qualifying WORLD triangle is present. */
 static bool scene_has_terrain(const scene_tri_t* scene, int n) {
     for (int t = 0; t < n; t++)
         if (!scene[t].host_added && scene[t].category == OPENPETE_SCENE_WORLD) return true;
     return false;
 }
 
-/* True if every triangle the game drew belongs to the 2D screen layer: the
- * HUD ordering table's prims (HUD, HUD_PANEL, OVERLAY) and the composed carry
- * copies of them. Every other category is 3D — WORLD, WORLD_FILL, ACTOR,
- * ACTOR_FRONT, PLAYER, SKY, HUD3D, SHADOW, TERRAIN_KEY and the three PORTAL
- * categories, all of them projected from world space, so one of them present
- * means the frame is a view of the level and not a screen of 2D art. */
+/** @brief Test whether every triangle the game drew belongs to the 2D screen layer.
+ *
+ * The 2D layer is the HUD ordering table's prims (HUD, HUD_PANEL, OVERLAY)
+ * and the composed carry copies of them; host-added and carry triangles are
+ * skipped. Every other category is projected from world space, so one of
+ * them present means the frame is a view of the level and not a screen of
+ * 2D art. An empty scene passes.
+ * @param scene Scene triangles.
+ * @param n Triangle count.
+ * @return true when no game triangle outside the 2D layer is present. */
 static bool scene_is_2d_only(const scene_tri_t* scene, int n) {
     for (int t = 0; t < n; t++) {
         if (scene[t].host_added || scene[t].carry) continue;
@@ -4388,14 +4441,7 @@ int openpete_native_render_repeat_last(void)
     return 1;
 }
 
-/* Toggle the native window between windowed and borderless-desktop fullscreen.
- * Bound to Alt+Enter and double-click in run.c (moved out of PsyCross, which
- * only ever drove its now-hidden GL window). SDL3 decides the fullscreen *kind*
- * by the window's fullscreen mode: NULL = borderless desktop (no video-mode
- * switch), which is what we want — so force it NULL before entering. The present
- * path re-reads the window size every frame (SDL_GetWindowSizeInPixels) and the
- * RHI recreates the swapchain on resize, so layout + swapchain follow with no
- * extra work here. No-op until the native window is up. */
+/* Fullscreen toggle; documented at the declaration. */
 void openpete_native_toggle_fullscreen(void)
 {
     if (!s_nr.enabled || !s_nr.window) return;
@@ -5123,10 +5169,16 @@ static int occl_active(void)
     return s_nr.occl_pipe && s_nr.occl_grid && occl_cull_enabled();
 }
 
-/* Does the present scene carry a Spyro silhouette shadow? (The untextured
- * SUBTRACT group's membership test, mirrored: blend 3, not HUD-routed.) Gates
- * both the opaque_depth allocation and the per-present pre-pass, so menus /
- * cutscenes / shadowless scenes pay nothing. */
+/** @brief Test whether a scene carries a Spyro silhouette shadow.
+ *
+ * Mirrors the untextured subtractive group's membership test: an
+ * untextured triangle of blend class 3 outside the HUD, HUD3D and HUD_PANEL
+ * categories. With moby occlusion culling it gates the opaque_depth
+ * allocation and the per-present depth pre-pass, so scenes without either
+ * consumer (menus, cutscenes, shadowless scenes) allocate and draw neither.
+ * @param scene Scene triangles.
+ * @param scene_n Triangle count.
+ * @return 1 when a shadow triangle is present, else 0. */
 static int scene_has_spyro_shadow(const scene_tri_t* scene, int scene_n)
 {
     for (int t = 0; t < scene_n; t++) {
@@ -5682,16 +5734,29 @@ static void pack_key_vert(const scene_tri_t* T, int prop_class, int tex,
     }
 }
 
-/* Pack one key batch: UNTEXTURED keyed faces first (full-footprint flat
- * raster — a gouraud face covers its whole triangle), then TEXTURED keyed
- * faces sorted into per-material runs for the cutout pipe, which drops the
- * PSX p==0 transparent texels so a face's key occupies exactly the pixels
- * its opaque texels paint (og OT occupancy — a cloak edge or fence lattice
- * must not key-discard what its holes show). *out_untex receives the
- * untextured prefix length; spans/nspans the textured runs. Span-table
- * overflow keys the remainder full-footprint, drawn as a trailing sentinel
- * span (bpp < 0) through the cutout pipe, which skips the texel cutout at
- * bpp < 0 and still keys a drain record's sub-cell by its UV. */
+/** @brief Pack one key batch's vertices: untextured keyed faces first, then textured ones in per-material runs.
+ *
+ * Admission is by class: 0 opaque keyed WORLD faces, 1 opaque keyed props,
+ * 2 opaque keyed ACTOR faces and PLAYER faces with a player key that overlap
+ * an aura box. Untextured faces raster their full footprint, since a
+ * gouraud face covers its whole triangle. Textured faces are sorted into
+ * material runs for the cutout pipe, which drops the PSX p==0 transparent
+ * texels so a face's key occupies exactly the pixels its opaque texels
+ * paint: a cloak edge or fence lattice does not key-discard what its holes
+ * show. When the span table fills, the remainder goes into a trailing
+ * sentinel span (bpp < 0) that the cutout pipe draws without the texel
+ * cutout while still keying a drain record's sub-cell by its UV. Output
+ * stops at the compose vertex capacity. The full-extent mapping is set for
+ * the pack and restored after.
+ * @param scene Scene triangles.
+ * @param scene_n Triangle count.
+ * @param full_extent Non-zero to map in the full-extent PSX space.
+ * @param prop_class Batch class, 0 to 2.
+ * @param out Output vertices.
+ * @param out_untex Receives the untextured prefix length in vertices.
+ * @param spans Receives the textured runs.
+ * @param nspans Receives the run count.
+ * @return Vertices written. */
 static int pack_terrain_key_batch(const scene_tri_t* scene, int scene_n,
                                   int full_extent, int prop_class, rhi_vertex* out,
                                   int* out_untex, keytex_span_t* spans, int* nspans)
@@ -5746,12 +5811,21 @@ static int pack_terrain_key_batch(const scene_tri_t* scene, int scene_n,
     return m;
 }
 
-/* Moby RANK batch: ranked opaque moby faces rasterised with depth = their og
- * OT walk rank (moby_rank.vert encodes 1-(rank+1)/65536, so the LESS test
- * keeps og's LAST-painted face per pixel) into the RGBA8 (rank, ordinal)
- * image. Same untextured-prefix + textured-material-run layout as the key
- * batches; textured faces cut transparent texels out of the raster (rank
- * exists only on opaque texels — the alpha-aware key rule). */
+/** @brief Write one moby rank-batch triangle's three vertices.
+ *
+ * The rank batch rasterises ranked opaque moby faces into the RGBA8
+ * (rank, ordinal) image at depth equal to their OT walk rank:
+ * moby_rank.vert encodes 1 - (rank + 1) / 65536, so the LESS test keeps the
+ * last-painted face per pixel. It uses the key batches' layout of an
+ * untextured prefix and textured material runs, and textured faces cut
+ * transparent texels out of the raster, so a rank exists only on opaque
+ * texels. Each vertex carries its clip position, z 0, the true view-Z in w
+ * (the cutout stage's UV perspective and the owner depth the fragment
+ * stage encodes into the rank image's alpha), the UV when textured, and
+ * the (rank, ordinal) pair in sx and sy.
+ * @param T Scene triangle.
+ * @param tex Non-zero to carry the UVs.
+ * @param out Receives three vertices. */
 static void pack_rank_vert(const scene_tri_t* T, int tex, rhi_vertex* out)
 {
     for (int k = 0; k < 3; k++) {
@@ -6618,8 +6692,7 @@ void openpete_native_occl_suspend(int presents)
     if (presents > s_occl_suspend) s_occl_suspend = presents;
 }
 
-/* Widescreen (Hor+) factor for the feeders' horizontal trivial rejects. 1.0
- * unless vk-only with a wider-than-4:3 window (set in update_layout). */
+/* Hor+ widen factor; documented at the declaration. */
 float openpete_native_widescreen_factor(void)
 {
     if (s_nr.ws_factor > 1.0f) return s_nr.ws_factor;
@@ -6635,8 +6708,7 @@ float openpete_native_widescreen_factor(void)
     }
     return 1.0f;
 }
-/* Visible PSX screen-X range under the active widen factor: [0,512] at 4:3,
- * widened symmetrically about the screen centre (256). */
+/* Visible PSX screen-X range; documented at the declaration. */
 void openpete_native_widescreen_x_bounds(float *xlo, float *xhi)
 {
     float F = openpete_native_widescreen_factor();
@@ -8322,16 +8394,20 @@ static void shadow_hw_bias(float* c, float* s, float* cl)
     *c = vc; *s = vs; *cl = vcl;
 }
 
-/* Portal-mask camera-ward pull — the close-range "ground disocclusion" knob.
- * The mask is CONFINED to the portal footprint, so a pull here cannot
- * side-poke past the arch (the failure that killed the historical forward
- * view-Z biases); it only decides whether near lips INSIDE the aperture (the
- * arch threshold step at very close range) beat the preview, reproducing the
- * PSX painter look where the sky bucket covered the step. Default NEUTRAL
- * (0,0,0 = current behaviour: real near geometry occludes the preview); tune
- * live via OPENPETE_PORTAL_MASK_BIAS="c,s,clamp" in the forward sign
- * (negative = toward the camera; the constant is in units of the stored
- * value's step, see shadow_hw_bias). */
+/** @brief Return the portal mask's depth bias: constant, slope and clamp.
+ *
+ * The bias pulls the portal mask toward the camera. The mask is confined to
+ * the portal footprint, so a pull cannot reach past the arch; it only
+ * decides whether near lips inside the aperture (the arch threshold step at
+ * very close range) beat the sky preview, which reproduces the PSX painter
+ * result where the sky bucket covered the step. The default is 0, 0, 0: real
+ * near geometry occludes the preview. OPENPETE_PORTAL_MASK_BIAS, three
+ * comma-separated floats in the forward sign (negative toward the camera,
+ * the constant in units of the stored depth's step as in shadow_hw_bias),
+ * overrides it. Read once and cached.
+ * @param c Receives the constant term.
+ * @param s Receives the slope term.
+ * @param cl Receives the clamp. */
 static void portal_mask_bias(float* c, float* s, float* cl)
 {
     static int init = 0;
@@ -8535,8 +8611,11 @@ static void portal_cover_check(const scene_tri_t* sc, int n)
     }
 }
 
-/* VBL at which the scene the compose is reading was extracted (the ring
- * slot's, the delayed history entry's, or the live accumulator's). */
+/** @brief Return the VBL at which the scene the compose is reading was extracted.
+ *
+ * The scene is the ring slot being composed, else the delayed history
+ * entry, else the live accumulator.
+ * @return The VBL number, 0xFFFFFFFF before the first scene. */
 static unsigned scene_present_frame(void) {
     if (s_ps_slot) return s_ps_slot->frame;
     int depth = scene_delay_depth();
@@ -8608,8 +8687,15 @@ static void scene_box_log_tri(unsigned f, int idx, const scene_tri_t *T) {
             (double)T->v[2].sx, (double)T->v[2].sy, (double)T->v[2].z, T->v[2].rgba);
 }
 
-/* The box instrument's per-present walk (spec at scene_box_cfg). The index
- * is the triangle's position in the composed list. */
+/** @brief Run the box instrument over one composed scene.
+ *
+ * Active when OPENPETE_SCENE_BOXDBG is armed and the scene was extracted at
+ * a VBL inside its window (spec at scene_box_cfg). Logs every triangle whose
+ * area overlaps the box, by its position in the composed list, then one
+ * engagement line with the tested and covering counts and whether retained
+ * terrain was open, and adds the counts to the run totals.
+ * @param sc Composed scene triangles.
+ * @param n Triangle count. */
 static void scene_box_probe(const scene_tri_t *sc, int n) {
     const scene_box_cfg_t *B = scene_box_cfg();
     if (!B->armed) return;
@@ -11060,16 +11146,23 @@ static int fps_in_record_resolved(void) {
     return s_fps_in_record;
 }
 
-/* True when the stats overlay should render this frame: glyphs built, on, and
- * not suppressed by the record gating (kept out of recordings unless
- * OPENPETE_FPS_IN_RECORD lets the live look be captured for verification). */
+/** @brief Return whether the stats overlay draws on this present.
+ *
+ * Requires the stats level to be on, a known window size and at least one
+ * glyph triangle. While --record is active the overlay is kept out of the
+ * video unless fps_in_record_resolved allows chrome in it.
+ * @return true when the overlay draws. */
 static bool perf_overlay_should_draw(void) {
     if (s_perf_stats == OPENPETE_PERF_OFF || s_nr.win_w <= 0 || s_nr.win_h <= 0 || s_overlay_glyph_n < 3) return false;
     if (openpete_record_active() && !fps_in_record_resolved()) return false;
     return true;
 }
 
-/* True when the 4× supersample path is usable (all resources up). */
+/** @brief Return whether the stats overlay's supersample path is usable.
+ *
+ * The path needs the overlay resolve pipeline, the composite quad buffer and
+ * the ovl_ss target at OVL_SS_FACTOR (4).
+ * @return true when all three exist. */
 static bool ovl_ss_ready(void) {
     return s_nr.ovl_resolve_pipe && s_nr.ovl_quad_vb && s_nr.ovl_ss;
 }
@@ -11322,9 +11415,12 @@ static void ensure_ovl_ss(void) {
     }
 }
 
-/* Pre-pass: render the overlay glyphs at OVL_SS_FACTOR× into ovl_ss (cleared
- * transparent). Its own render-target pass, so call it BEFORE the offscreen pass
- * opens (no nested render passes). No-op unless the SS path is ready. */
+/** @brief Render the stats overlay glyphs into ovl_ss at OVL_SS_FACTOR, cleared transparent.
+ *
+ * The pass is its own render-target pass, so it runs before the offscreen
+ * pass opens; render passes do not nest. draw_perf_overlay composites the
+ * result. No-op unless the supersample path is ready and the overlay draws
+ * on this present. */
 static void prepare_perf_overlay_ss(void) {
     if (!ovl_ss_ready() || !perf_overlay_should_draw()) return;
     rhi_begin_render_target(s_nr.dev, s_nr.ovl_ss, 0.0f, 0.0f, 0.0f, 0.0f);  /* transparent */
@@ -11383,11 +11479,14 @@ static bool ver_ss_ready(void) {
     return s_nr.ovl_resolve_pipe && s_nr.ver_quad_vb && s_nr.ver_ss && s_nr.version_vb;
 }
 
-/* Pre-pass: the version glyphs at OVL_SS_FACTOR* into ver_ss, cleared
- * transparent. Its own render-target pass, so it runs BEFORE the offscreen
+/** @brief Render the version-line glyphs into ver_ss at OVL_SS_FACTOR, cleared transparent.
+ *
+ * The pass is its own render-target pass, so it runs before the offscreen
  * pass opens, beside the stats block's. The glyphs go in opaque and
- * region-local; the fade is applied to the composite quad, not here, so the
- * supersampled coverage is resolved once and then scaled as a whole. */
+ * region-local; the fade is applied to the composite quad, so the
+ * supersampled coverage is resolved once and then scaled as a whole. No-op
+ * while the supersample resources are not up, the line's alpha is zero, or
+ * no region has been published. */
 static void prepare_version_ss(void) {
     if (!ver_ss_ready() || s_ver_alpha8 <= 0) return;
     float vw, vh;
@@ -11565,9 +11664,12 @@ static void ensure_menu_ss(void) {
     }
 }
 
-/* Pre-pass: render the menu glyph/border layer at MENU_SS_FACTOR× into menu_ss
- * (cleared transparent). Its own render pass, so call it BEFORE the offscreen
- * pass opens. No-op unless the menu is open and the SS path is ready. */
+/** @brief Render the settings menu's glyph and border layer into menu_ss at MENU_SS_FACTOR, cleared transparent.
+ *
+ * The pass is its own render-target pass, so it runs before the offscreen
+ * pass opens. The layer is mapped over the menu panel's rect. No-op unless
+ * the supersample path is ready, the menu is open and at least one glyph
+ * triangle is built. */
 static void prepare_menu_ss(void) {
     if (!menu_ss_ready() || !openpete_menu_is_open() || s_menu_glyph_n < 3) return;
     openpete_menu_layout_t L; openpete_menu_get_layout(&L);
@@ -11649,11 +11751,13 @@ static bool osd_ss_ready(void) {
            s_nr.osd_ss;
 }
 
-/* --record video is ground truth for mod-shader A/Bs, and the codebase has
- * already ruled that chrome stays out of it: the stats overlay suppresses
- * itself while recording unless --record-fps-overlay asks otherwise. Toasts
- * follow the same rule, with the same override — a recording of the OSD
- * itself is a legitimate thing to want, just not the default. */
+/** @brief Return whether OSD toasts draw on this present.
+ *
+ * Toasts draw when the OSD is enabled, except while --record is active: the
+ * video serves as ground truth for mod-shader A/Bs and carries no chrome
+ * unless fps_in_record_resolved allows it, the rule and override the stats
+ * overlay uses.
+ * @return true when toasts draw. */
 static bool osd_should_draw(void) {
     if (!openpete_osd_enabled()) return false;
     if (openpete_record_active() && !fps_in_record_resolved()) return false;
@@ -11703,10 +11807,14 @@ static void ensure_osd_ss(void) {
                    want_w, want_h, OPENPETE_OSD_MAX, sw, sh, OSD_SS_FACTOR);
 }
 
-/* Pre-pass: every live toast's border + text at OSD_SS_FACTOR× into the grid.
- * Its own render pass, so it must run BEFORE the offscreen pass opens. The
- * glyphs arrive in TARGET-LOCAL overlay space (slot i at y = i * slot_h), so
- * one linear map covers the whole grid. */
+/** @brief Render every live toast's border and text into the osd_ss slot grid at OSD_SS_FACTOR.
+ *
+ * The pass is its own render-target pass, so it runs before the offscreen
+ * pass opens. The glyphs arrive in target-local overlay space (slot i at
+ * y = i * slot_h), so one linear map covers the whole grid. The published
+ * glyph list is read under the OSD publish mutex for the whole draw. No-op
+ * unless the grid is ready, toasts draw on this present, at least one glyph
+ * triangle is published and the slot extent is known. */
 static void prepare_osd_ss(void) {
     if (!osd_ss_ready() || !osd_should_draw()) return;
     int n;
@@ -11942,15 +12050,14 @@ static bool chrome_split_capture(bool world_frame)
     return true;
 }
 
-/* Compose the live present into the open frame's offscreen, ready for the
- * caller to rhi_blit_to_swapchain + rhi_end_frame. Assumes rhi_begin_frame
- * succeeded. The screenshot dump composes its own frame separately. */
-/* SCENE injection point (S5): called INSIDE the live offscreen pass,
- * right after the scene is composed into off_image and BEFORE the HUD
- * draws. If a SCENE-point chain is enabled, end the pass, run the chain
- * over the scene (depth available at set 1), and re-begin LOADing the
- * post-processed scene so the HUD lands crisp on top. Inert (no pass
- * split, byte-identical) when no SCENE pass is enabled. */
+/** @brief Run the SCENE-point postfx chain between the composed scene and the HUD.
+ *
+ * Called inside the live offscreen pass, after the scene is composed into
+ * off_image and before the HUD draws. When a SCENE-point pass is enabled it
+ * ends the pass, runs the chain over the scene at the swapchain extent
+ * (depth available at set 1), and reopens the pass loading the processed
+ * scene, so the HUD draws unfiltered on top. With no SCENE pass enabled the
+ * pass is not split and the image is unchanged. */
 static void scene_postfx_split(void)
 {
     if (!native_postfx_point_active(1 /* OP_POSTFX_SCENE */)) return;
@@ -12011,10 +12118,17 @@ static int pc_trace_on(void)
     return on;
 }
 
-/* Tally one trip through render_frame_common, at the point the composed
- * frame is submitted. A frame the present thread renders into a stage image
- * is counted here, when it is composed; the swapchain can still decline its
- * later submit, which the present thread's own census counts. */
+/** @brief Tally one composed present into the per-present census.
+ *
+ * Called by render_frame_common after the frame is submitted. It consumes
+ * the outcome compose_variant recorded (no compose leaves nothing to tally)
+ * and counts it under the scene kind (inline, canonical, intermediate), with
+ * the full-extent count, the triangle and retained-terrain ranges, the
+ * target extent and the outcome and kind flip counts; it also pushes one
+ * record to the glitch-mark ring and, under OPENPETE_PRESENT_TRACE, prints
+ * one trace line. A frame rendered into a stage image is
+ * counted here, when composed; the swapchain can still decline its later
+ * submit, which the present thread's own census counts. */
 static void pc_note(void)
 {
     const int outcome = s_pc_cur;
@@ -12575,8 +12689,12 @@ static rhi_texture** pfx_pings(int w, int h) {
     return s_pfx_pool[victim].t;
 }
 
-/* Destroy pipelines orphaned by a mod hot-reload sweep. Dev-mode only
- * path — the wait-idle is acceptable there. */
+/** @brief Destroy the postfx and material pipelines the mod registry retired.
+ *
+ * Pipelines are retired when a mod is unloaded and at shutdown. Takes up to
+ * PFX_MAX_PASSES per call; later presents drain the rest. Waits the device
+ * idle before destroying, only when the list is non-empty. Runs on every
+ * present before the COMPOSITE-point chain. */
 static void pfx_drain_retired(void) {
     void* dead[PFX_MAX_PASSES];
     int n = openpete_mods_postfx_take_retired(dead, PFX_MAX_PASSES);
@@ -12923,11 +13041,15 @@ static unsigned char *recbuf_ensure(size_t need)
     return s_recbuf;
 }
 
-/* Queue this present for async readback (tagged with its wall-clock PTS) and, if
- * a frame captured a couple presents ago is ready, hand it to the encoder. Rides
- * the frame's own fence — NO GPU stall, so the recording runs at real speed
- * (unlike the screenshot path's blocking rhi_read_offscreen). Called between the
- * blit and end_frame, while the frame slot is still current. */
+/** @brief Queue this present for --record readback and hand a completed earlier one to the encoder.
+ *
+ * The readback rides the frame's own fence through a ring, so the GPU is
+ * not stalled and the recording runs at real speed, unlike the screenshot
+ * path's blocking rhi_read_offscreen; a readback queued a couple of
+ * presents earlier that is ready is submitted top-down with its tag. Called
+ * between the blit and end_frame, while the frame slot is still current.
+ * No-op when the window-sized buffer cannot be allocated.
+ * @param pts_us Presentation timestamp, microseconds, the readback's tag. */
 static void record_cycle(uint64_t pts_us)
 {
     unsigned char *buf = recbuf_ensure((size_t)s_nr.win_w * (size_t)s_nr.win_h * 4u);
@@ -13158,21 +13280,33 @@ void openpete_native_render_frame(uint64_t record_pts_us)
  * present (rhi_end_frame_to_stage) when >= 0. */
 static int s_stage_target = -1;
 
-/* OPENPETE_PT_DUMP=N (diagnostic): write the render(s) of scenes extracted at
- * VBL >= N, straight from the offscreen target -- the actual output of either
- * present path, at one geometry, which no screenshot flag reaches. Under eager
- * production this runs on the present thread, inside the render it dumps, so
- * the whole eager present stream is captured without disengaging eager.
+/** @brief Trace a rendered present and write its offscreen image under OPENPETE_PT_DUMP.
  *
- * OPENPETE_PT_DUMP_COUNT=N: how many renders to write (default 1).
+ * OPENPETE_PT_DUMP=N (diagnostic) selects rendered scenes extracted at VBL N
+ * or later and writes each straight from the offscreen target: the output
+ * of either present path at one geometry, which no screenshot flag reaches.
+ * Under eager production this runs on the present thread, inside the render
+ * it dumps, so the eager present stream is captured without disengaging
+ * eager. Each selected render prints one pt-dump trace line.
+ *
+ * OPENPETE_PT_DUMP_COUNT=N: how many renders to take (default 1).
  * OPENPETE_PT_DUMP_PATH: a directory, or a printf template taking the stamp.
- *   Unset, no image is written and the run only traces the stream (the line
- *   below), which costs nothing and leaves the present rate alone.
- *   As a directory the name carries the sequence, the scene kind (canon /
- *   inter / inline), the VBL and the stamp, so the present order is the
- *   filename order.
- * OPENPETE_PT_DUMP_FROZEN=1: also write frozen_tex alongside each dump.
- * OPENPETE_PT_DUMP_MAXN=N: only scenes with at most N triangles. */
+ *   Unset, no image is written and only the trace line is printed. As a
+ *   directory the name carries the sequence, the scene kind (canon, inter,
+ *   inline), the VBL and the stamp, so the present order is the filename
+ *   order. Alpha is forced opaque.
+ * OPENPETE_PT_DUMP_FROZEN=1: also write frozen_tex beside each dump.
+ * OPENPETE_PT_DUMP_MAXN=N: the ring render path passes only scenes with at
+ *   most N triangles.
+ * @param rendered Non-zero when the render produced a frame.
+ * @param frame VBL the scene was extracted at.
+ * @param stamp Scene stamp.
+ * @param freeze Scene freeze word.
+ * @param kind Scene kind (OP_PACE_CANONICAL, OP_PACE_INTERMEDIATE, else inline).
+ * @param target_ns Present instant the alpha was computed for, nanoseconds.
+ * @param alpha Sub-tick alpha of the scene.
+ * @param paired The paired flag published with the scene.
+ * @param ntri Triangle count. */
 static void pt_dump_maybe(int rendered, unsigned frame, uint32_t stamp, uint32_t freeze, int kind,
                           int64_t target_ns, double alpha, int paired, int ntri)
 {
@@ -13546,7 +13680,15 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
     if (op_prof_on()) op_prof_thread_flush();
 }
 
-/* Insert a suffix before the extension: ("shot-42.png","-vk") -> "shot-42-vk.png". */
+/** @brief Insert a suffix before a path's extension, or append it when there is none.
+ *
+ * Inserting -vk into shot-42.png gives shot-42-vk.png. The extension is the
+ * text from the last dot, wherever that dot lies. The result is truncated
+ * to the buffer.
+ * @param base Source path.
+ * @param suffix Text to insert.
+ * @param out Output buffer.
+ * @param cap Size of @p out in bytes. */
 static void path_with_suffix(const char *base, const char *suffix,
                              char *out, size_t cap)
 {
@@ -13603,9 +13745,13 @@ static void terrain_key_dump(const char *base, int in_memory)
 static int native_render_screenshot_all_impl(const char *base, unsigned char **cap_out,
                                              int *cap_w, int *cap_h);
 
-/* 2D tris in a scene buffer: the categories the 2D layer feeds into. Used by
- * the freeze-leg probe to compare what a composite holds against the canonical
- * scene it should match. */
+/** @brief Count a scene's 2D-layer triangles: HUD, HUD_PANEL, OVERLAY and carry copies.
+ *
+ * The freeze-leg probe compares what a composite holds against the
+ * canonical scene it should match.
+ * @param sc Scene triangles.
+ * @param n Triangle count.
+ * @return The 2D triangle count. */
 static int scene_2d_count(const scene_tri_t* sc, int n) { return scene_2d_count_fwd(sc, n); }
 int scene_2d_count_fwd(const scene_tri_t* sc, int n);
 static int freeze_leg_probe(void) {
