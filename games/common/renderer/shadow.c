@@ -925,11 +925,13 @@ static void shadow_pre(CPUState* cpu, int feed, int verify) {
 
 static hook_bracket_state s_shadow_hb;
 static const hook_bracket_desc k_shadow_bracket = {
-    .path = RP_SHADOW, .prof_tag = "shadow.srend",
+    .path = RP_MOBY_SHADOW, .prof_tag = "shadow.srend",
     .verify_enabled = shadow_verify_enabled, .pre = shadow_pre,
     .st = &s_shadow_hb,
 };
 
+/** Moby drop-shadow draw hook: runs the game's draw once, records its
+ * polybuf interval under RP_MOBY_SHADOW and feeds the native shadows. */
 static int on_moby_shadows(CPUState* cpu, uint32_t addr) {
     uint32_t startp, endp; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_shadow_bracket, &startp, &endp, &feed, &verify))
@@ -937,7 +939,7 @@ static int on_moby_shadows(CPUState* cpu, uint32_t addr) {
 
     if ((feed || verify) && endp > startp) shadow_capture_prims(cpu, startp, endp);
 
-    if (feed && endp > startp && render_path_enabled(RP_SHADOW)) {
+    if (feed && endp > startp && render_path_enabled(RP_MOBY_SHADOW)) {
         shadow_moby_feed_native(cpu);                /* native gamestate walk */
     }
 
@@ -952,9 +954,12 @@ static int on_moby_shadows(CPUState* cpu, uint32_t addr) {
 /* Sub-tick re-extract (high-FPS spine): reproduce the moby drop-shadows
  * from the current gamestate — extract-only (no render_fn, no verdicts). The
  * shadows project under their owners onto the ground; they follow the owners'
- * interpolated poses and the interpolated camera. */
+ * interpolated poses and the interpolated camera. Gated on RP_MOBY_SHADOW,
+ * which only the moby-shadow draw records: a tick whose draw filled the
+ * shadow list but never rendered it (rescue states 5 and 6 draw the player's
+ * shadow alone) replays none. */
 void shadow_reextract(CPUState* cpu) {
-    if (!hook_reextract_ready(RP_SHADOW)) return;
+    if (!hook_reextract_ready(RP_MOBY_SHADOW)) return;
     shadow_moby_feed_native(cpu);
 }
 

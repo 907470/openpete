@@ -18,7 +18,7 @@
 
 static const char* const k_names[RP_COUNT] = {
     "cyclorama", "spyro", "moby", "terrain", "shadow", "flame", "particles", "tracer",
-    "transition", "portal", "glow", "sparkle",
+    "transition", "portal", "glow", "sparkle", "moby_shadow",
 };
 
 static uint32_t s_mask   = 0;      /* bit per selected path */
@@ -44,7 +44,7 @@ void render_paths_init(const char* spec) {
         if (matched >= 0) s_mask |= (1u << matched);
         else fprintf(stderr, "[render-paths] unknown path '%s' (known: "
                              "cyclorama,spyro,moby,terrain,shadow,flame,particles,"
-                             "tracer,transition,portal,glow,sparkle)\n", tok);
+                             "tracer,transition,portal,glow,sparkle,moby_shadow)\n", tok);
     }
 
     fprintf(stderr, "[render-paths] isolating:");
@@ -171,7 +171,7 @@ bool render_path_canon_drawn(render_path_t p) {
 static const uint32_t k_tag_family_paths[16] = {
     0, RPM(RP_MOBY), RPM(RP_TERRAIN), RPM(RP_SPYRO), RPM(RP_FLAME),
     RPM(RP_PARTICLES) | RPM(RP_GLOW) | RPM(RP_SPARKLE), RPM(RP_CYCLORAMA),
-    RPM(RP_SHADOW), RPM(RP_TRACER), RPM(RP_PORTAL), 0, 0, 0, 0, 0, 0
+    RPM(RP_SHADOW) | RPM(RP_MOBY_SHADOW), RPM(RP_TRACER), RPM(RP_PORTAL), 0, 0, 0, 0, 0, 0
 };
 static int family_first_path(uint32_t m) { for (int p = 0; p < RP_COUNT; p++) if (m & RPM(p)) return p; return -1; }
 static bool family_canon_drawn(uint32_t m) { for (int p = 0; p < RP_COUNT; p++) if ((m & RPM(p)) && render_path_canon_drawn((render_path_t)p)) return true; return false; }

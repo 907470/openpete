@@ -2,7 +2,7 @@
 # library: libclang 14
 # requirement: brief on every function; @param per named parameter and @return on non-void for external linkage
 # written-by: hook
-# head: 06bc7f1a02bcb893135de431b959b318e12eb322
+# head: bb059f70cffb996c95ae2b7a5394328f482af2c9
 file	function	form	accepted
 core/config/build_id.c	openpete_build_shared_recomp	plain	
 core/config/build_id.c	openpete_build_tagged	plain	
@@ -184,7 +184,6 @@ core/config/options.c	openpete_options_require_exe_source	plain
 core/config/options.c	openpete_options_set_default_renderer	plain	
 core/config/options.c	parse_flag_chain	plain	
 core/config/options.c	parse_volume_arg	plain	
-core/config/options.c	print_help	none	
 core/config/options.c	resolve_default_bk2_record_path	plain	
 core/config/options.c	sidecar_emit_token	none	
 core/config/options.c	sidecar_needs_quotes	plain	
@@ -3516,7 +3515,6 @@ games/common/renderer/render_paths.c	render_paths_current	plain
 games/common/renderer/render_paths.c	render_paths_feed_audit	none	
 games/common/renderer/render_paths.c	render_paths_feed_audit_census	none	
 games/common/renderer/render_paths.c	render_paths_frame_reset	plain	
-games/common/renderer/render_paths.c	render_paths_init	plain	
 games/common/renderer/render_paths.c	render_paths_set	plain	
 games/common/renderer/render_paths.c	rp_knob_get	plain	
 games/common/renderer/render_paths.c	rp_knob_set	none	
@@ -3532,7 +3530,6 @@ games/common/renderer/shadow.c	hull_cmp	none
 games/common/renderer/shadow.c	hull_cross	none	
 games/common/renderer/shadow.c	hull_project	plain	
 games/common/renderer/shadow.c	moby_shadow_slot	none	
-games/common/renderer/shadow.c	on_moby_shadows	none	
 games/common/renderer/shadow.c	packed_sxy	plain	
 games/common/renderer/shadow.c	sh_nclip	plain	
 games/common/renderer/shadow.c	shadow_apply_options	none	
@@ -3563,7 +3560,6 @@ games/common/renderer/shadow.c	shadow_prim_sink	plain
 games/common/renderer/shadow.c	shadow_project	plain	
 games/common/renderer/shadow.c	shadow_push_decal_params	plain	
 games/common/renderer/shadow.c	shadow_rd_s16	none	
-games/common/renderer/shadow.c	shadow_reextract	plain	
 games/common/renderer/shadow.c	shadow_s16	none	
 games/common/renderer/shadow.c	shadow_slot_koff	plain	
 games/common/renderer/shadow.c	shadow_sz16	none	

@@ -30,7 +30,8 @@ typedef enum {
     RP_SPYRO,
     RP_MOBY,      /* regular + specular + shaded mobys; also HUD mobys (CopyHudMobysToShaded) */
     RP_TERRAIN,   /* world/environment geometry (func_8002B9CC -> func_800258F0) */
-    RP_SHADOW,    /* moby shadows (func_80059F8C) + Spyro silhouette shadow (func_80059A48) */
+    RP_SHADOW,    /* the player's drop-shadow: Spyro 1 func_80059A48, the Spyro 2/3 player
+                   * shadow routine */
     RP_FLAME,     /* Spyro's flame breath (func_80058D64) */
     RP_PARTICLES, /* particle systems (func_800573C8) */
     RP_TRACER,    /* additive tracer/beam (func_800189F0) — charge streak, fireball trail */
@@ -39,6 +40,9 @@ typedef enum {
     RP_GLOW,      /* additive glow rings (func_800580F4); a separate .s renderer the game
                    * skips in some states (dragon-rescue cutscenes) while the pool stays active */
     RP_SPARKLE,   /* sparkle twinkles (func_800584C4), same independence as RP_GLOW */
+    RP_MOBY_SHADOW,/* moby drop-shadows (Spyro 1 func_80059F8C). Separate from RP_SHADOW:
+                   * the rescue-cutscene states 5 and 6 draw the player's shadow and not
+                   * the moby shadows while the moby draw still fills their list */
     RP_COUNT
 } render_path_t;
 
@@ -46,8 +50,9 @@ typedef enum {
  * moby list (CopyHudMobysToShaded) and rendered through the moby pipeline, so it
  * is part of RP_MOBY, not separately isolatable via a dispatch bracket. */
 
-/* Parse the --render-paths CSV. NULL/empty = no selection (all paths render,
- * filtering off). Unknown names are warned and ignored. */
+/** Parse the --render-paths CSV. NULL/empty = no selection (all paths render,
+ * filtering off). Unknown names are warned and ignored.
+ * @param spec comma- or space-separated path names */
 void render_paths_init(const char* spec);
 
 /* Live re-selection (dev overlay): re-parse the CSV and re-sync the native

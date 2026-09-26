@@ -118,8 +118,10 @@ float  shadow_bias_moby(void);
 int      shadow_verify_enabled(void);
 unsigned shadow_verify_frame(void);
 
-/* Sub-tick re-extract: rebuild the moby drop-shadows from the current
- * gamestate. Extract-only. */
+/** Sub-tick re-extract: rebuild the moby drop-shadows from the current
+ * gamestate, extract-only, when the last canonical tick rendered them
+ * (RP_MOBY_SHADOW canon-drawn).
+ * @param cpu guest state, the sub-tick view staged */
 void   shadow_reextract(CPUState* cpu);
 
 /* The same for the player's ground shadow (renderer/shadow_player.c, the leg

@@ -30,7 +30,7 @@
 #           OPENPETE_GLINT_SPIN=0 is the engagement leg;
 #           games/<slug>/corpus/glint-rot-subtick-corpus.manifest
 #   glow    OPENPETE_GLOW=1  against =0, games/<slug>/corpus/glow-subtick-corpus.manifest
-#   shadow  --render-paths terrain,moby,shadow against terrain,moby,
+#   shadow  --render-paths terrain,moby,shadow,moby_shadow against terrain,moby,
 #           games/<slug>/corpus/shadow-subtick-corpus.manifest
 #   portal  OPENPETE_PORTAL3_DBG=1, one leg per alpha, no leave-one-out,
 #           games/<slug>/corpus/portal-subtick-corpus.manifest
@@ -327,7 +327,7 @@ case "$PATHNAME" in
             ALPHAS=(0 0.5 1); JUDGE_DEF=0.5,1;;
     shadow) LEG_ENV_ON=(OPENPETE_SHADOW_PLAYER=0)
             LEG_ENV_OFF=(OPENPETE_SHADOW_PLAYER=0)
-            LEG_ARGS_ON=(--render-paths terrain,moby,shadow)
+            LEG_ARGS_ON=(--render-paths terrain,moby,shadow,moby_shadow)
             LEG_ARGS_OFF=(--render-paths terrain,moby)
             SUPPRESS=OPENPETE_SHADOW_INTERP
             ALPHAS=(0 0.5 1); JUDGE_DEF=0.5,1;;

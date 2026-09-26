@@ -51,7 +51,8 @@ const feature_module_t* const openpete_features[] = {
      * FT3 fan, ABR mode 0) + Spyro silhouette shadow (0x80059A48, untextured
      * G3 fan, ABR mode 0, an untextured-alpha consumer). Hooks both
      * only under OPENPETE_SHADOW_VERIFY or a native renderer mode; inert
-     * otherwise. Records the RP_SHADOW polybuf range itself (so the
+     * otherwise. Records the RP_MOBY_SHADOW and RP_SHADOW polybuf ranges
+     * itself (so the
      * render_paths thin brackets for shadow are retired — see render_paths.c). */
     &shadow_module,
     &shadow_spyro_module,
