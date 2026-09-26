@@ -912,9 +912,13 @@ static int      s_bw_key_n;
  * emitted before the feed began (the scene's first triangle marked ter_after or
  * tagged terrain; every key when neither occurs). */
 static int      s_bw_ter_rank;
-/* Recorded rank of a key: its position in the last game-render scene's
- * first-emission order, or s_bw_key_n for a key that scene never emitted (those
- * sort after every recorded key, keeping their relative order). */
+/** @brief Return a blended-world key's rank in the recorded first-emission order.
+ *
+ * The rank is the key's position in the last game-render scene's
+ * first-emission order, or s_bw_key_n for a key that scene never emitted;
+ * such keys sort after every recorded key and keep their relative order.
+ * @param key Key from bw_rank_key.
+ * @return The rank, 0 to s_bw_key_n. */
 static int bw_key_rank(uint32_t key) {
     for (int i = 0; i < s_bw_key_n; i++) if (s_bw_key_order[i] == key) return i;
     return s_bw_key_n;
@@ -955,7 +959,7 @@ void openpete_native_scene_begin(void) {
  * copy that matches the reference panel. */
 static unsigned s_scene_frame = 0xFFFFFFFFu;
 static void (*s_scene_frame_close_cb)(unsigned frame);  /* see the frame-close section */
-static void alpha_census(const scene_tri_t* scene, int scene_n);  /* 3c instrument, defined below */
+static void alpha_census(const scene_tri_t* scene, int scene_n);  /* blend census, defined below */
 static bool scene_has_world(const scene_tri_t* scene, int n);     /* defined below */
 static int s_scene_dropped;       /* tris refused this frame (cap hit) — capdbg */
 void openpete_native_scene_begin_frame(unsigned frame) {
@@ -3068,10 +3072,22 @@ static float s_render_freeze_wf = 1.0f;
 static bool s_isolation = false;
 void openpete_native_set_isolation(bool on) { s_isolation = on; }
 
-/* Fill a panel quad: clip-space rect centered at (cx,cy) with half-extents
- * (hx,hy); v0 is the UV-v at the TOP edge, v1 at the BOTTOM. (VRAM is uploaded
- * top-down so it uses v0<v1; the GL readback is bottom-up so the reference
- * uses v0>v1.) rgba is unused by the textured shaders. */
+/** @brief Fill six vertices, two triangles, with a clip-space rect carrying one vertex colour.
+ *
+ * VRAM is uploaded top-down, so a VRAM panel passes v0 < v1; a bottom-up
+ * GL readback passes v0 > v1. The colour is written to every vertex; the
+ * version stamp and OSD toast quads use it for their tint and alpha, and
+ * build_panel passes opaque white.
+ * @param out Receives the vertices, triangles tl-tr-br and tl-br-bl.
+ * @param cx Rect centre x, clip space.
+ * @param cy Rect centre y, clip space.
+ * @param hx Half-extent x.
+ * @param hy Half-extent y.
+ * @param u0 Texture u at the left edge.
+ * @param v0 Texture v at the top edge.
+ * @param u1 Texture u at the right edge.
+ * @param v1 Texture v at the bottom edge.
+ * @param rgba Vertex colour, packed RGBA8. */
 static void build_panel_tinted(rhi_vertex out[6], float cx, float cy, float hx, float hy,
                                float u0, float v0, float u1, float v1, uint32_t rgba)
 {
@@ -3105,8 +3121,12 @@ static void fit_cell(float cx, float cy, float chx, float chy,
     *out_hy = ((float)content_h * s) / (float)win_h;
 }
 
-/* Destroy every member of a blend family of `nsel` selection rows and clear
- * its slots. */
+/** @brief Destroy every member of a blend family and clear its slots.
+ *
+ * @param dev Device owning the pipelines.
+ * @param fam Family array, @p nsel times NR_BLEND_CLASSES slots; NULL slots
+ *        are skipped.
+ * @param nsel Number of texel STP selection rows. */
 static void blend_family_destroy(rhi_device* dev, rhi_pipeline** fam, int nsel) {
     for (int k = 0; k < nsel * NR_BLEND_CLASSES; k++) {
         if (fam[k]) rhi_destroy_pipeline(dev, fam[k]);
@@ -3114,12 +3134,18 @@ static void blend_family_destroy(rhi_device* dev, rhi_pipeline** fam, int nsel) 
     }
 }
 
-/* Create `base` once per member of the first `nsel` texel STP selection rows:
- * member sel * NR_BLEND_CLASSES + b, for each class b that k_stp_sel_classes
- * lists for the row, with k_blend_class_rhi[b], texel_stp_select sel, and every
- * other field of `base`; unlisted members are NULL. All or none: a missing
- * member would draw its class through another member's blend, so on any
- * failure the whole family is destroyed and left NULL. */
+/** @brief Create a pipeline family from one description, one member per listed blend class and STP selection row.
+ *
+ * Member sel * NR_BLEND_CLASSES + b is created for each class b that
+ * k_stp_sel_classes lists for row sel, with blend k_blend_class_rhi[b],
+ * texel_stp_select sel, and every other field of @p base; unlisted members
+ * are NULL. The family is all or none: a missing member would draw its
+ * class through another member's blend, so on any failure the whole family
+ * is destroyed and left NULL.
+ * @param dev Device to create on.
+ * @param base Pipeline description the members share.
+ * @param fam Receives the members, @p nsel times NR_BLEND_CLASSES slots.
+ * @param nsel Number of texel STP selection rows, starting at row 0. */
 static void blend_family_create(rhi_device* dev, const rhi_pipeline_desc* base,
                                 rhi_pipeline** fam, int nsel) {
     rhi_pipeline_desc d = *base;
@@ -5919,10 +5945,17 @@ static float shadow_decal_bind_keys(void)
     return keys ? 1.0f : 0.0f;
 }
 
-/* Bind a pipeline for scene drawing; the key-resolve pipes (layouts carrying
- * sampler set 2) additionally get the HP key image bound there — done at
- * pipeline-bind time so the invariant needs no per-site reasoning. Plain
- * passthrough for every other pipeline. */
+/** @brief Bind a pipeline for scene drawing, with the key images a key-resolve pipe samples.
+ *
+ * When all three key depth images exist and @p p is one of the key-resolve
+ * pipes (the opaque, marked, cutout, blended, additive, quarter-additive
+ * and punch variants of the gouraud, scene-texture and HD cutout pipes),
+ * the bind also sets the actor key depth at set 1, the terrain key depth
+ * paired with the drain texture at set 2, the moby key depth at set 3 and,
+ * when it exists, the moby rank target at set 4. Binding them here keeps
+ * every call site correct without per-site handling. Any other pipeline is
+ * bound alone.
+ * @param p Pipeline to bind. */
 static void bind_scene_pipe(rhi_pipeline* p)
 {
     rhi_bind_pipeline(s_nr.dev, p);
@@ -5966,12 +5999,15 @@ static void bind_shadow_footprint(void)
     rhi_ubo_bind_at(s_nr.dev, s_shfoot_ubo, 2, 0);
 }
 
-/* Bind the Spyro shadow decal (shadow_decal.frag) with its push block: the
- * camera reconstruction, the depth-rule thresholds, the pre-pass lookup
- * affine and this pass's fragment-coordinate affine; the footprint block at
- * set 2. OPENPETE_SHADOW_DECAL_MODE overrides the mode for the calibration and
- * census views; otherwise the rule runs when the game supplied valid
- * parameters and the plain fan (mode 0) draws when it did not. */
+/** @brief Bind the player shadow decal pipe (shadow_decal.frag) with its push block and footprint block.
+ *
+ * Binds gouraud_sub_pipe with the opaque depth at set 0, then pushes the
+ * camera reconstruction, the depth-rule thresholds, the key-contest flag,
+ * the pre-pass lookup affine and this pass's fragment-coordinate affine,
+ * and binds the player fan's footprint block at set 2.
+ * OPENPETE_SHADOW_DECAL_MODE overrides the mode for the calibration and
+ * census views; otherwise mode 1 (the depth rule) runs when the game
+ * supplied valid parameters and mode 0 (the plain fan) when it did not. */
 static void bind_player_shadow_decal(void)
 {
     bind_scene_pipe(s_nr.gouraud_sub_pipe);
@@ -6002,12 +6038,16 @@ static void bind_player_shadow_decal(void)
     bind_shadow_footprint();
 }
 
-/* The same four images for a MATERIAL pipeline, whose layout puts them at
- * sets 2 and 4..6 — above the UBO pair rather than replacing sets 1/2, so a
- * material's own uniform block keeps set 3 binding 1. The engine half of
- * openpete_psx_material.glsl runs the contest from these before the mod's
- * op_material() sees a colour; without them a material would silently
- * delete og's painter verdicts, which is what it used to do. */
+/** @brief Bind the key images bind_scene_pipe binds, at a material pipeline's set numbers.
+ *
+ * A material layout puts them above the UBO pair rather than replacing sets
+ * 1 and 2, so a material's own uniform block keeps set 3 binding 1: the
+ * terrain key depth paired with the drain texture at set 2, the moby key
+ * depth at set 4, the actor key depth at set 5 and, when it exists, the
+ * moby rank target at set 6. The engine half of openpete_psx_material.glsl
+ * runs the key contest from these before the mod's op_material() sees a
+ * colour, so a material keeps the painter verdicts of the stock pipes. No
+ * effect unless all three key depth images exist. */
 static void bind_material_keys(void)
 {
     if (!s_nr.terrain_key_depth || !s_nr.moby_key_depth || !s_nr.actor_key_depth) return;
@@ -7837,15 +7877,23 @@ static void draw_hud_flat_layer(const scene_tri_t* scene, int scene_n,
     }
 }
 
-/* 3c falsify-first instrument: per-present census of ALPHA-class (blend==1, ABR
- * mode 0 (B+F)/2) tris — the ONLY order-dependent class (additive/subtractive are
- * commutative, so a back-to-front sort is a provable no-op for them). Reports the
- * alpha count, its NDC-depth spread, and the number of overlapping pairs emitted
- * OUT of back-to-front order (i emitted before j, screen bboxes overlap, i nearer
- * than j -> i should have been drawn last). inversions>0 on any frame means the
- * sort would visibly change that frame; inversions==0 across a corpus means the
- * sort is unobservable there. Env-gated (OPENPETE_ALPHA_CENSUS), inert otherwise.
- * Display-only diagnostic. */
+/** @brief Census a completed scene's blend classes and the depth order of its alpha triangles, on stderr.
+ *
+ * Enabled by OPENPETE_ALPHA_CENSUS (read once); no effect otherwise. Called
+ * on each completed scene, headless included. A BLEND line gives the
+ * per-class triangle histogram (opaque, alpha, additive, subtractive) with
+ * a running maximum per class; it prints for the first four non-empty
+ * scenes, whenever a class sets a new maximum, and whenever the scene holds
+ * an alpha triangle. For the alpha class (blend 1, ABR mode 0, (B+F)/2) an
+ * ALPHA-CENSUS line gives the count (at most 4096 are examined), how many
+ * are textured, the centroid depth span, the number of screen-bbox
+ * overlapping pairs, and the inversions among them: pairs where the
+ * earlier-emitted triangle is nearer, which a back-to-front sort would
+ * reorder. Additive and subtractive equations commute without clamping,
+ * so the alpha class is the one a depth sort can change. Reads the scene
+ * only.
+ * @param scene Completed scene triangles.
+ * @param scene_n Triangle count. */
 static void alpha_census(const scene_tri_t* scene, int scene_n)
 {
     static int s_on = -1;
@@ -7961,11 +8009,15 @@ static void portal_mask_bias(float* c, float* s, float* cl)
  * and its far-sentinel fallback let level mobys reappear once the camera
  * crossed the plane. See the portal draw site in draw_native_scene.) */
 
-/* The freeze backdrop source. Prefer the capture-time shot_frozen (populated by
- * openpete_native_render_snapshot_frozen during a headless screenshot run) when
- * it holds a world frame; otherwise the live-present frozen_tex. Lets a headless
- * freeze-frame dump show the green frozen-world effect that frozen_tex (live-
- * window only) can't provide. */
+/** @brief Return the freeze backdrop texture: the screenshot-time capture when valid, else the live one.
+ *
+ * shot_frozen is written by openpete_native_render_snapshot_frozen during a
+ * screenshot run and is preferred whenever it exists and is valid; frozen_tex
+ * is written by the live present (capture_freeze_from_offscreen), so a
+ * headless dump would otherwise have no backdrop.
+ * @param out_valid Receives 1 when the returned texture holds a capture;
+ *        may be NULL.
+ * @return shot_frozen or frozen_tex; frozen_tex may be NULL. */
 static rhi_texture *active_frozen_tex(int *out_valid)
 {
     if (s_nr.shot_frozen && s_nr.shot_frozen_valid) {
@@ -8144,8 +8196,16 @@ static unsigned scene_present_frame(void) {
     return s_scene_frame;
 }
 
-/* 1 when all four box corners lie strictly outside the edge a->b, on the side
- * away from the third vertex c (a separating axis of the triangle). */
+/** @brief Test whether a triangle edge separates the probe box from the triangle.
+ *
+ * True when all four box corners lie strictly on the side of edge a->b away
+ * from the third vertex c. A degenerate edge (c on the line) never
+ * separates.
+ * @param a Edge start.
+ * @param b Edge end.
+ * @param c The triangle's third vertex.
+ * @param B Probe box, screen space.
+ * @return 1 when the edge separates, 0 otherwise. */
 static int box_outside_edge(const openpete_scene_vert *a, const openpete_scene_vert *b,
                             const openpete_scene_vert *c, const scene_box_cfg_t *B) {
     const float ex = b->sx - a->sx, ey = b->sy - a->sy;
@@ -8224,14 +8284,19 @@ static void scene_box_probe(const scene_tri_t *sc, int n) {
  * number changing, and sub-tick presents REUSE the current VBL number — so a
  * probe living there never observes an intermediate present, exactly where the
  * sub-tick re-extract path differs from the canonical one. */
-/* The blended world classes: ABR 0-3 (alpha, additive, subtractive,
- * quarter-additive) outside the shadow decals, which own the depth-aware decal
- * path, and outside the HUD layers, which draw depth-test off in their own
- * passes. The guest links these into the ordering table interleaved and their
- * equations do not commute once a channel clamps, so they are packed together
- * in emission order rather than one class after another. Untextured tris of
- * these classes exclude the HUD panel and textured ones exclude the portal
- * guard, matching the buckets each replaced. */
+/** @brief Test whether a scene triangle belongs to the blended-world block.
+ *
+ * The block holds blend classes 1 to 4 (ABR 0 to 3: alpha, additive,
+ * subtractive, quarter-additive; an out-of-range class counts as opaque)
+ * except the subtractive shadow decals, which own the depth-aware decal
+ * path, and the HUD and HUD3D layers, which draw depth-test off in their
+ * own passes. Untextured HUD-panel triangles and textured portal-guard
+ * triangles are also excluded. The guest links these classes into the
+ * ordering table interleaved and their equations do not commute once a
+ * channel clamps, so the block is packed in emission order rather than one
+ * class after another.
+ * @param s Scene triangle.
+ * @return 1 when the triangle is in the block, 0 otherwise. */
 static int blended_world_tri(const scene_tri_t* s) {
     int bl = s->blend; if (bl < 0 || bl > 4) bl = 0;
     if (bl == 0) return 0;
@@ -8243,11 +8308,21 @@ static int blended_world_tri(const scene_tri_t* s) {
     return 1;
 }
 
-/* Draw one run of the emission-ordered blended-world block: one class, one
- * texturing mode, hence one pipeline bind. A textured run still coalesces by
- * material inside draw_tex_runs. The class tables are indexed by blend class
- * minus one (alpha, additive, subtractive, quarter-additive); the last two
- * classes have no HD replacement twin. */
+/** @brief Draw one run of the emission-ordered blended-world block: one class and texturing mode, one pipeline bind.
+ *
+ * The pipeline tables are indexed by blend class minus one (alpha,
+ * additive, subtractive, quarter-additive); the last two classes have no
+ * HD replacement twin. The subtractive pipes carry the dynamic depth bias
+ * the shadow decals set, so a subtractive run resets it to zero. A
+ * textured run binds VRAM and coalesces by material inside draw_tex_runs.
+ * Nothing is drawn when the pipeline is missing, or for a textured run
+ * without the VRAM texture.
+ * @param scene Scene triangles.
+ * @param tx_start First vertex of the packed textured range.
+ * @param first_vert First vertex of the run.
+ * @param vert_count Vertex count of the run.
+ * @param bl Blend class, 1 to 4.
+ * @param textured Nonzero for a textured run. */
 static void bw_draw_run(const scene_tri_t* scene, int tx_start, int first_vert,
                         int vert_count, int bl, int textured) {
     rhi_pipeline* const utp[4] = { s_nr.gouraud_blend_pipe, s_nr.gouraud_add_pipe,
@@ -8273,8 +8348,11 @@ static void bw_draw_run(const scene_tri_t* scene, int tx_start, int first_vert,
     draw_tex_runs(first_vert, vert_count, tx_start, scene, &pipe, 1, hdp[c], 1, bl);
 }
 
-/* The retained terrain cache's blended class c (0 alpha, 1 additive,
- * 2 subtractive). */
+/** @brief Draw one blended class of the retained terrain cache.
+ *
+ * @param c Class: 0 alpha, 1 additive, 2 subtractive.
+ * @param tercache_on Nonzero when the cache is live this present; zero
+ *        draws nothing. */
 static void bw_draw_tercache(int c, int tercache_on) {
     static const int k_pass[3] = { OPTC_DRAW_ALPHA, OPTC_DRAW_ADD, OPTC_DRAW_SUB };
     if (!tercache_on) return;
@@ -8284,28 +8362,36 @@ static void bw_draw_tercache(int c, int tercache_on) {
                            s_nr.terrain_key_depth, s_nr.moby_key_depth);
 }
 
-/* Where scene triangle t of the blended-world block stands against the terrain
- * feed in the order the pass draws: 0 before the feed, 1 a terrain triangle,
- * 2 after the feed. The game render's block draws in scene order, where every
- * triangle added after the feed began carries ter_after. A re-extract's block
- * draws in recorded key rank, where the feed sits at the recorded terrain
- * rank. */
+/** @brief Place a blended-world triangle against the terrain feed in the order the pass draws.
+ *
+ * The game render's block draws in scene order, where every triangle added
+ * after the feed began carries ter_after. A re-extract's block draws in
+ * recorded key rank, where the feed sits at the recorded terrain rank.
+ * @param scene Scene triangles.
+ * @param t Scene index of the triangle.
+ * @param replay Nonzero for a re-extract's block.
+ * @return 0 before the feed, 1 a terrain triangle, 2 after the feed. */
 static int bw_ter_phase(const scene_tri_t* scene, int t, int replay) {
     if ((scene[t].tag >> 28) == 2u) return 1;
     if (replay) return bw_key_rank(bw_rank_key(&scene[t])) < s_bw_ter_rank ? 0 : 2;
     return scene[t].ter_after ? 2 : 0;
 }
 
-/* The block position before which each terrain-cache class draws (ntri: after
- * the block). The walk emits the cache's sectors inside the terrain feed, so a
- * cache class draws inside the feed's span: after every block triangle emitted
- * before the feed, and before the first triangle after it. Inside the span the
- * class keeps the slot it held when the classes drew one after another: after
- * the feed's own runs of a class at or before it, before its first run of a
- * later class. A block of terrain triangles alone is all span, so there the
- * slot is unchanged. The walk interleaves its blended terrain classes by
- * sector; one draw per cache class does not reproduce that interleave where
- * two blended terrain faces of different classes overlap. */
+/** @brief Compute the block position before which each terrain-cache class draws.
+ *
+ * The walk emits the cache's sectors inside the terrain feed, so a cache
+ * class draws inside the feed's span: after every block triangle emitted
+ * before the feed, and before the first triangle after it. Inside the span
+ * a class draws after the feed's triangles of its own or an earlier class
+ * and before the first of a later class. The walk interleaves its blended
+ * terrain classes by sector; one draw per cache class does not reproduce
+ * that interleave where two blended terrain faces of different classes
+ * overlap.
+ * @param scene Scene triangles.
+ * @param base Offset of the block in s_txscene.
+ * @param ntri Triangle count of the block.
+ * @param pos Receives, per class (alpha, additive, subtractive), the block
+ *        index it draws before; @p ntri means after the block. */
 static void bw_tercache_slots(const scene_tri_t* scene, int base, int ntri, int pos[3]) {
     pos[0] = pos[1] = pos[2] = ntri;
     const int replay = scene_present_replay();
@@ -8349,11 +8435,17 @@ static void draw_blended_world(const scene_tri_t* scene, int tx_start,
     for (; c < 3; c++) bw_draw_tercache(c, tercache_on);
 }
 
-/* Draw ranges one order costs over the blended-world classes of a scene: one
- * per material run inside each class run when ordered by emission, one per
- * material run inside each whole class when the classes draw one after
- * another. The difference is the pipeline-switch cost of emission order,
- * counted on the same scene so neither number depends on a second capture. */
+/** @brief Count the draw ranges one order costs over a scene's blended-world triangles.
+ *
+ * Emission order costs one range per material run inside each class run;
+ * the fixed class order costs one per material run inside each whole
+ * class. An untextured run is one range whatever its materials; a textured
+ * one splits where draw_tex_runs splits. The difference is the
+ * pipeline-switch cost of emission order, counted on one scene.
+ * @param sc Scene triangles.
+ * @param n Triangle count.
+ * @param ordered Nonzero for emission order, zero for the fixed class order.
+ * @return The number of draw ranges. */
 static int bw_draw_ranges(const scene_tri_t* sc, int n, int ordered) {
     int draws = 0;
     for (int bl = 1; bl <= 4; bl++)
@@ -8375,23 +8467,35 @@ static int bw_draw_ranges(const scene_tri_t* sc, int n, int ordered) {
     return draws;
 }
 
-/* The emission-rank key of a blended-world triangle. The provenance tag's
- * family (bits 31:28) names the feeder path; family 5 (particles) is shared by
- * the particle pool and the glow rings, which are separate feeders emitted at
- * separate points of the guest's render, so the particle KIND byte refines it.
- * Family 8 (tracers) is shared by the tracer pool and the zap ribbons with no
- * discriminator in the tag; those two collapse to one key. */
+/** @brief Compute the emission-rank key of a blended-world triangle.
+ *
+ * The provenance tag's family (bits 31:28) names the feeder path. Family 5
+ * (particles) is shared by feeders emitted at separate points of the
+ * guest's render (the particle pool and the glow rings among them), so the
+ * particle KIND byte (tag bits 15:8) refines it. Family 8 (tracers) is
+ * shared by the tracer pool and the zap ribbons with no discriminator in
+ * the tag; those two collapse to one key.
+ * @param t Scene triangle.
+ * @return The family in bits 11:8, and for family 5 the KIND byte in bits
+ *         7:0. */
 static unsigned bw_rank_key(const scene_tri_t* t) {
     const unsigned fam = t->tag >> 28;
     return (fam << 8) | (fam == 5u ? ((t->tag >> 8) & 0xFFu) : 0u);
 }
 
-/* OPENPETE_BWFAMCENSUS=<frame>[-<frame>] — per present in the range, the
- * blended-world block partitioned into bursts: a burst is a maximal run of
- * adjacent triangles sharing one key. Reported twice, keyed by the tag family
- * alone and by bw_rank_key. A key with more than one burst is a producer the
- * guest interleaves with another producer, which a replay that emits one
- * producer at a time cannot reproduce by producer order alone. */
+/** @brief Print one partition of a scene's blended-world triangles into bursts per key, on stderr.
+ *
+ * Called by bw_fam_census for presents in the OPENPETE_BWFAMCENSUS range. A
+ * burst is a maximal run of consecutive blended-world triangles sharing one
+ * key. A key with more than one burst is a producer the guest interleaves
+ * with another, which a replay that emits one producer at a time cannot
+ * reproduce by producer order alone. One summary line gives the triangle,
+ * key and split-key counts, then one line per key its bursts, triangles
+ * and first scene index. At most 32 keys are tracked.
+ * @param sc Scene triangles.
+ * @param n Triangle count.
+ * @param refined Nonzero to key by bw_rank_key, zero by the tag family alone.
+ * @param label Tag written into each line. */
 static void bw_fam_census_pass(const scene_tri_t* sc, int n, int refined,
                                const char* label) {
     enum { BWF_MAX = 32 };
@@ -8438,18 +8542,18 @@ static void bw_fam_census(const scene_tri_t* sc, int n) {
                             op_prof_begin(op_id_); } } while (0)
 #define NR_PROF_END() do { if (op_prof_on()) op_prof_end(); } while (0)
 
-/* Reorder a re-extract's blended-world block into the recorded emission order.
- * Stable per key: each triangle keeps its position inside its own key's run, so
- * only whole producer runs move, and a block already in recorded order comes
- * back unchanged (which is what makes the game render's own block, the block
- * the record was taken from, pass through untouched). */
-/* OPENPETE_BWDRAWORDER=<frame>[-<frame>] — the blended-world block of each
- * present in the range as the ordered pass will draw it: one line per maximal
- * run of one provenance key, blend class and texturing mode, with its triangle
- * count, then the totals. Scene indices are deliberately absent — the game
- * render and the re-extract build different scenes, so only the run SEQUENCE is
- * comparable, and that sequence is what the blend equations see. Two legs of
- * the same tick must produce identical dumps. */
+/** @brief Print a blended-world block as the ordered pass draws it, on stderr, for OPENPETE_BWDRAWORDER.
+ *
+ * OPENPETE_BWDRAWORDER=N or N-M selects the scene stamps dumped.
+ * One line per maximal run of one provenance key, blend class and texturing
+ * mode, with its triangle count, then the totals. Scene indices are left
+ * out: the game render and the re-extract build different scenes, so only
+ * the run sequence is comparable, and that sequence is what the blend
+ * equations see. The game render and the re-extract of one tick are
+ * expected to produce identical dumps.
+ * @param scene Scene triangles.
+ * @param idx Scene indices of the block, in draw order.
+ * @param n Block length. */
 static void bw_draw_order_dump(const scene_tri_t* scene, const int* idx, int n) {
     static int on = -2; static unsigned lo = 0, hi = 0;
     if (on == -2) { const char* e = getenv("OPENPETE_BWDRAWORDER");
@@ -8479,6 +8583,17 @@ static void bw_draw_order_dump(const scene_tri_t* scene, const int* idx, int n) 
 
 
 #define s_bw_sort_tmp ((int *)s_cz_bwsort.data)
+/** @brief Reorder a re-extract's blended-world block into the recorded emission order.
+ *
+ * Stable per key: each triangle keeps its position inside its own key's
+ * run, so only whole producer runs move, and a block already in recorded
+ * order comes back unchanged, which passes the game render's own block
+ * (the block the order was recorded from) through untouched. Keys the
+ * record lacks go last. No effect for fewer than two triangles or an empty
+ * record.
+ * @param scene Scene triangles.
+ * @param idx Scene indices of the block, reordered in place.
+ * @param n Block length. */
 static void bw_rank_sort(const scene_tri_t* scene, int* idx, int n) {
     if (n <= 1 || s_bw_key_n <= 0) return;
     int w = 0;
@@ -8517,12 +8632,18 @@ static void tx_bucket_order(int b, const scene_tri_t* scene, int* idx, int n) {
     bw_draw_order_dump(scene, idx, n);
 }
 
-/* OPENPETE_BLENDORDER=<frame>[-<frame>] — every blended-world triangle of each
- * present in the range, in emission order, with the class run it falls in. One
- * line per run: the emission index span, the blend class, the texturing mode
- * and the triangle count, i.e. the order the ordered pass draws in; then the
- * draw ranges the ordered and the fixed class order cost on that scene. A bare
- * frame dumps the first present labelled at or after it. */
+/** @brief Print a scene's blended-world class runs in emission order, on stderr, for OPENPETE_BLENDORDER.
+ *
+ * OPENPETE_BLENDORDER=N-M dumps each present whose scene stamp is at or
+ * after N, through the first one at or after M; a bare N dumps the first
+ * present at or after N. One line per run of consecutive blended-world
+ * triangles with one blend class and texturing mode: the emission index
+ * span, the class, the mode, the triangle count, and the first triangle's
+ * category, rank and moby ordinal. A final line gives the totals and the
+ * draw ranges emission order and the fixed class order cost on that scene
+ * (bw_draw_ranges).
+ * @param sc Scene triangles.
+ * @param n Triangle count. */
 static void blend_order_dump(const scene_tri_t* sc, int n) {
     static int bo = -2; static unsigned bof = 0, bol = 0;
     if (bo == -2) { const char* e = getenv("OPENPETE_BLENDORDER");
@@ -11332,14 +11453,18 @@ static void draw_osd_overlay(void) {
         rhi_draw(s_nr.dev, 6, (uint32_t)(i * 6));
 }
 
-/* Capture the freeze backdrop from the CLEAN windowed offscreen we just ended
- * (correctly projected/pillarboxed at every window size, and — under --ssaa —
- * already box-resolved back to 1× window resolution). Hardware-blit the
- * offscreen's 4:3 content region (cover_rect = the p0 sub-rect widened by
- * ws_factor, in window pixels) into frozen_tex; the pause/inventory/exit freeze
- * present then samples this clean snapshot. World frames only, so the snapshot
- * is the gameplay frame to freeze, not the menu drawn over it. Must be called
- * after rhi_end_offscreen (off_image in TRANSFER_SRC). */
+/** @brief Copy the just-ended offscreen's content region into frozen_tex as the freeze backdrop.
+ *
+ * The offscreen is projected and pillarboxed for the window, and under
+ * --ssaa already resolved to window resolution. The region blitted is the
+ * p0 panel rect with its half-width widened by ws_factor, in window pixels;
+ * the pause, inventory and exit freeze presents sample it. Only a world
+ * present is captured, so the backdrop is the gameplay image and not the
+ * menu drawn over it; nothing happens without frozen_tex or with an empty
+ * window or region. Marks frozen_valid on a capture. Must be called after
+ * rhi_end_offscreen (off_image in TRANSFER_SRC). OPENPETE_LOAD_CENSUS
+ * brackets the blit with the characters s and t on stderr.
+ * @param world_frame True when this present composed the world. */
 static void capture_freeze_from_offscreen(bool world_frame)
 {
     if (!(world_frame && s_nr.frozen_tex && s_nr.win_w > 0 && s_nr.win_h > 0)) return;

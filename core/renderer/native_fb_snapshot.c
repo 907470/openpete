@@ -63,8 +63,16 @@ static fb_area_t s_area[FB_AREA_MAX];
 static int       s_area_next;   /* the slot a new clip rect takes when all are live */
 static int       s_area_cur = -1;  /* the area the game last put: the buffer it draws */
 
-/* Mean and spread of an RGBA8 image's luma: a stored frame that is one clear
- * colour has a spread near zero, a frame carrying the world does not. */
+/** @brief Compute the mean and standard deviation of an RGBA8 image's luma, for the census.
+ *
+ * Luma is the unweighted mean of R, G and B. An image that is one clear
+ * colour has a spread near zero; an image carrying the world does not. An
+ * empty image yields zero for both.
+ * @param px RGBA8 pixels.
+ * @param pw Image width.
+ * @param ph Image height.
+ * @param mean Receives the mean luma.
+ * @param spread Receives the standard deviation of luma. */
 static void fb_image_stats(const unsigned char *px, int pw, int ph,
                            double *mean, double *spread)
 {
@@ -86,7 +94,11 @@ static int fbsnap_census(void)
     return s;
 }
 
-/* The screen rect an area covers: the clip rect less the drawing offset. */
+/** @brief Compute the screen origin an area covers: its clip rect origin less its drawing offset.
+ *
+ * @param a Draw area.
+ * @param sx Receives the screen x.
+ * @param sy Receives the screen y. */
 static void fb_area_screen(const fb_area_t *a, int *sx, int *sy)
 { *sx = a->x - a->ofx; *sy = a->y - a->ofy; }
 
@@ -120,7 +132,13 @@ void openpete_fb_snapshot_note_draw_env(int clip_x, int clip_y, int clip_w, int 
     s_area_cur = idx;
 }
 
-/* The area whose clip rect holds a VRAM rect, NULL when none does. */
+/** @brief Find the first live draw area whose clip rect contains a VRAM rect.
+ *
+ * @param x Rect left, VRAM texels.
+ * @param y Rect top.
+ * @param w Rect width.
+ * @param h Rect height.
+ * @return The area, or NULL when none contains the rect. */
 static fb_area_t *fb_area_holding(int x, int y, int w, int h)
 {
     for (int i = 0; i < FB_AREA_MAX; i++) {
@@ -139,9 +157,27 @@ int openpete_fb_snapshot_enabled(void)
     return s_en;
 }
 
-/* Box-sample `src` (RGBA8 `sw` by `sh`, standing for the screen rect at
- * `asx`,`asy` of size `aw` by `ah`) over the screen rect `sx`,`sy` `w` by `h`.
- * Returns a fresh buffer and its size, or NULL when the rect falls outside. */
+/** @brief Crop the part of an area's content image that covers a screen rect.
+ *
+ * The image stands for the screen rect at (asx, asy) of size aw by ah; the
+ * requested rect is mapped into image pixels by that scale, clamped to the
+ * image, and its rows are copied unscaled, so the result is at the image's
+ * resolution.
+ * @param src RGBA8 source image.
+ * @param sw Source width in pixels.
+ * @param sh Source height in pixels.
+ * @param asx Screen x the image's left edge stands for.
+ * @param asy Screen y the image's top edge stands for.
+ * @param aw Screen width the image stands for.
+ * @param ah Screen height the image stands for.
+ * @param sx Requested rect left, screen pixels.
+ * @param sy Requested rect top.
+ * @param w Requested rect width.
+ * @param h Requested rect height.
+ * @param out_w Receives the crop width.
+ * @param out_h Receives the crop height.
+ * @return A malloc'd RGBA8 buffer, or NULL when the area size is not
+ *         positive, the rect falls outside the image, or allocation fails. */
 static unsigned char *fb_crop_image(const unsigned char *src, int sw, int sh,
                                     int asx, int asy, int aw, int ah,
                                     int sx, int sy, int w, int h,
@@ -163,10 +199,17 @@ static unsigned char *fb_crop_image(const unsigned char *src, int sw, int sh,
     return px;
 }
 
-/* Claim the window slot for a destination rect: the slot already holding that
- * rect, else a free one, else slot 0. The stored pixels stay until the new ones
- * arrive, so a quad fed between the move and its resolve draws the previous
- * window rather than falling back to the transparent VRAM copy. */
+/** @brief Claim the window slot for a destination rect and set the rect on it.
+ *
+ * Takes the slot already holding that rect, else one with no pixels and
+ * nothing pending, else slot 0. The slot's stored pixels are kept until
+ * new ones arrive, so a quad fed between the move and its resolve draws
+ * the previous window rather than the transparent VRAM copy.
+ * @param dst_x Destination left, VRAM texels.
+ * @param dst_y Destination top.
+ * @param w Width in texels.
+ * @param h Height in texels.
+ * @return The claimed slot. */
 static fb_snap_t *fb_window_slot(int dst_x, int dst_y, int w, int h)
 {
     int idx = -1;
@@ -182,10 +225,21 @@ static fb_snap_t *fb_window_slot(int dst_x, int dst_y, int w, int h)
     return s;
 }
 
-/* A copy covering the destination area whole: the game moving a finished frame
- * into the buffer it is not drawing. The destination takes the source area's
- * content image; with none (the source is the buffer being drawn) it waits for
- * the next present, which composes that same frame. */
+/** @brief Handle a copy from one draw area into another that it covers whole.
+ *
+ * This is the game moving a finished image into the buffer it is not
+ * drawing. A copy that does not match the destination's clip rect exactly
+ * is ignored. Otherwise the destination's image is dropped and it takes a
+ * copy of the source area's content image with a new key; when the source
+ * has none, or the copy allocation fails, the destination waits for the
+ * next present, and with no source image the source waits too, both
+ * stamped with the current scene.
+ * @param from Source draw area.
+ * @param to Destination draw area.
+ * @param dst_x Destination left, VRAM texels.
+ * @param dst_y Destination top.
+ * @param w Width in texels.
+ * @param h Height in texels. */
 static void fb_move_area_to_area(fb_area_t *from, fb_area_t *to,
                                  int dst_x, int dst_y, int w, int h)
 {
@@ -338,18 +392,41 @@ void openpete_fb_snapshot_store(int idx, unsigned char *px, int pw, int ph)
     }
 }
 
-/* A quad's texel box, offset by `du`,`dv` from a stored rect's origin, stays
- * inside that `w` by `h` rect. The page origin may precede the rect (a copy
- * landed at row 12 of a page is drawn with v 12..120), so only the box is
- * bounded. A quad's far corner names the edge past its last texel (a 128-row
- * copy is drawn with v 0..128), so the far bound is inclusive of the edge. */
+/** @brief Test whether a quad's texel box, offset from a stored rect's origin, lies inside the rect.
+ *
+ * The page origin may precede the rect (a copy landed at row 12 of a page
+ * is drawn with v 12..120), so only the box is bounded. A quad's far corner
+ * names the edge past its last texel (a 128-row copy is drawn with v
+ * 0..128), so the far bound is inclusive of the edge.
+ * @param du Page origin x less the rect's x.
+ * @param dv Page origin y less the rect's y.
+ * @param u0 Texel box left.
+ * @param v0 Texel box top.
+ * @param u1 Texel box right edge.
+ * @param v1 Texel box bottom edge.
+ * @param w Rect width.
+ * @param h Rect height.
+ * @return 1 when the box lies inside, 0 otherwise. */
 static int fb_rect_holds(int du, int dv, int u0, int v0, int u1, int v1, int w, int h)
 {
     return du + u0 >= 0 && dv + v0 >= 0 && du + u1 <= w && dv + v1 <= h;
 }
 
-/* The mapping from page texels to pixels of a `pw` by `ph` image standing for a
- * `w` by `h` texel rect whose origin is `du`,`dv` from the page origin. */
+/** @brief Compute the mapping from page texels to pixels of an image standing for a texel rect.
+ *
+ * The scale is image size over rect size per axis; the offset is the
+ * page-to-rect displacement times that scale. Any output pointer may be
+ * NULL.
+ * @param du Page origin x less the rect's x.
+ * @param dv Page origin y less the rect's y.
+ * @param pw Image width in pixels.
+ * @param ph Image height in pixels.
+ * @param w Rect width in texels.
+ * @param h Rect height in texels.
+ * @param su Receives the x scale.
+ * @param sv Receives the y scale.
+ * @param ox Receives the image pixel x of the page origin.
+ * @param oy Receives the image pixel y of the page origin. */
 static void fb_fill_map(int du, int dv, int pw, int ph, int w, int h,
                         float *su, float *sv, float *ox, float *oy)
 {
@@ -360,7 +437,20 @@ static void fb_fill_map(int du, int dv, int pw, int ph, int w, int h,
     if (oy) *oy = (float)dv * sy;
 }
 
-/* The window slot whose copy holds the texel box, -1 when none does. */
+/** @brief Find the first window slot with pixels whose rect holds a quad's texel box.
+ *
+ * Fills the texel-to-pixel mapping on a hit, as fb_fill_map does.
+ * @param tpage_x Texture page origin x, VRAM texels.
+ * @param tpage_y Texture page origin y.
+ * @param u0 Texel box left.
+ * @param v0 Texel box top.
+ * @param u1 Texel box right edge.
+ * @param v1 Texel box bottom edge.
+ * @param su Receives the x scale.
+ * @param sv Receives the y scale.
+ * @param ox Receives the image pixel x of the page origin.
+ * @param oy Receives the image pixel y of the page origin.
+ * @return The slot index, or -1 when none holds the box. */
 static int fb_find_window(int tpage_x, int tpage_y, int u0, int v0, int u1, int v1,
                           float *su, float *sv, float *ox, float *oy)
 {
@@ -374,10 +464,23 @@ static int fb_find_window(int tpage_x, int tpage_y, int u0, int v0, int u1, int 
     return -1;
 }
 
-/* The draw area whose content image holds the texel box, -1 when none does. A
- * quad whose texels lie in a draw buffer samples the framebuffer itself rather
- * than a copy of it — the shrink of a frozen frame before it is copied out —
- * and the area's clip rect stands in for a copy's destination rect. */
+/** @brief Find the first draw area with a content image whose clip rect holds a quad's texel box.
+ *
+ * A quad whose texels lie in a draw buffer samples the framebuffer itself
+ * rather than a copy of it (the shrink of a frozen image before it is
+ * copied out), and the area's clip rect stands in for a copy's destination
+ * rect. Fills the texel-to-pixel mapping on a hit, as fb_fill_map does.
+ * @param tpage_x Texture page origin x, VRAM texels.
+ * @param tpage_y Texture page origin y.
+ * @param u0 Texel box left.
+ * @param v0 Texel box top.
+ * @param u1 Texel box right edge.
+ * @param v1 Texel box bottom edge.
+ * @param su Receives the x scale.
+ * @param sv Receives the y scale.
+ * @param ox Receives the image pixel x of the page origin.
+ * @param oy Receives the image pixel y of the page origin.
+ * @return FB_SNAP_MAX plus the area index, or -1 when none holds the box. */
 static int fb_find_area(int tpage_x, int tpage_y, int u0, int v0, int u1, int v1,
                         float *su, float *sv, float *ox, float *oy)
 {

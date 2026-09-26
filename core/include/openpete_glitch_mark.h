@@ -112,20 +112,35 @@ void openpete_glitch_mark_last_walk(openpete_glitch_walk_t *out);
  * @param p Present record. */
 void openpete_glitch_mark_note_present(const openpete_glitch_present_t *p);
 
-/* Raise the mark. `reason` names what raised it ("key", "env") and appears
- * in the file header. Safe from any thread: it sets a flag. */
+/** @brief Raise the mark, to be written by the next openpete_glitch_mark_service call.
+ *
+ * Copies @p reason into the name the file header carries (truncated to 23
+ * characters; a NULL or empty reason keeps the previous name, initially
+ * "key"), then sets the request flag with a release store. The flag is
+ * atomic; the name copy is not, so two concurrent callers may leave either
+ * name. No effect when the module is off.
+ * @param reason What raised the mark: "key" from the host key binding, "env"
+ *        from the OPENPETE_GLITCH_MARK_AT trigger. */
 void openpete_glitch_mark_request(const char *reason);
 
-/* Write a pending mark out, and evaluate OPENPETE_GLITCH_MARK_AT. Called
- * once per host-loop iteration, on the host loop, because it blocks on file
- * IO. Returns 1 when a file was written and fills `path_out` with its path.
+/** @brief Evaluate OPENPETE_GLITCH_MARK_AT and write a pending mark to a text file.
  *
- * OPENPETE_GLITCH_MARK_AT fires the mark automatically:
- *   <n> or p<n>   at present serial n
- *   w<n>          at walk ordinal n (the only spelling headless can reach,
- *                 since a headless run composes no presents)
- *   <n>ms         n milliseconds after the module was initialized
- */
+ * Called once per host-loop iteration on the host loop, the thread allowed
+ * to block on file IO. The trigger fires once, raising the mark with reason
+ * "env", when its counter reaches the value:
+ *   N or pN   present serial N
+ *   wN        walk ordinal N (a headless run composes no presents)
+ *   Nms       N wall-clock milliseconds after openpete_glitch_mark_init
+ * A pending mark is consumed and both rings are copied, then written to
+ * glitch-mark-S.txt in the log file's directory (else the working
+ * directory), S being the present count, or the walk count when no present
+ * was recorded. A record recycled before the copy is written as a lost row.
+ * The file name is also posted as an OSD notification.
+ * @param path_out Receives the written file's path.
+ * @param path_cap Capacity of @p path_out.
+ * @return 1 when a file was written; 0 when the module is off, an argument is
+ *         NULL or zero, no mark is pending, or the snapshot or file could not
+ *         be allocated or opened. */
 int  openpete_glitch_mark_service(char *path_out, size_t path_cap);
 
 #ifdef __cplusplus

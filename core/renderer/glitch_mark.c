@@ -202,8 +202,13 @@ static void write_walk_line(FILE *fp, const openpete_glitch_walk_t *w, const cha
             w->near_faces, w->near_tris, w->occl_culled);
 }
 
-/* Copy one slot, retrying while its writer holds it. Returns 0 when the
- * record could not be read whole. */
+/** @brief Copy one present-ring slot, retrying while its writer holds it.
+ *
+ * A read is whole when the slot's seq is even and unchanged across the
+ * copy; up to eight tries are made.
+ * @param sl Slot to read.
+ * @param out Receives the record; undefined on failure.
+ * @return 1 when the record was read whole, 0 otherwise. */
 static int read_pslot(gm_pslot *sl, openpete_glitch_present_t *out)
 {
     for (int i = 0; i < 8; i++) {
