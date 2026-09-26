@@ -120,6 +120,7 @@ nav:
       - Adding a game: developer/adding-a-game.md
       - Render channel census: developer/render-channel-census.md
       - PsyCross boundary: developer/psycross-boundary.md
+      - History: developer/history.md
       - PsyCross changes:
           - developer/psycross/README.md
           - "0001 — Linux build fixes": developer/psycross/0001-linux-build-fixes.md
