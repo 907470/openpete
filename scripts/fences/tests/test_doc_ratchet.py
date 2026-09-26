@@ -314,6 +314,10 @@ class EndToEndTest(unittest.TestCase):
                         GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
         self.env.pop(dr.ACCEPT_VAR, None)
         self.env.pop("GIT_INDEX_FILE", None)
+        # Configuration from the caller's environment would override the
+        # scratch repository's own (the merge driver under test).
+        for k in [k for k in self.env if k.startswith("GIT_CONFIG_")]:
+            del self.env[k]
         self.git("init", "-q", "-b", "main")
         self.write("core/api.h", HEADER)
         self.write("core/api.c", SOURCE)
