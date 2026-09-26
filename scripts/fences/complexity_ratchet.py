@@ -41,12 +41,15 @@ import concurrent.futures
 import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import sys
 
+import ratchet_lib as lib
 import ratchet_tsv_merge as tsv_merge
+from ratchet_lib import (Refusal, say, git, is_header, key_file, entry_flags,
+                         head_sha, print_bins, wired, UNSCORED,
+                         CONFIGURE, HOOK_REL, ARM)
 
 CAP = 25
 TOOL_MAJOR = 14
@@ -61,73 +64,14 @@ OPTIONS_LINE = "Threshold=0 IgnoreMacros=true header-filter=.* cap=%d" % CAP
 JOBS = 16
 
 TSV = "baselines/complexity/cognitive.tsv"
-DB_DEFAULT = "build/linux-release/compile_commands.json"
-CONFIGURE = "cmake --preset linux-release"
-HOOK_REL = "githooks/pre-commit"
-ARM = "git config core.hooksPath githooks"
 MARKER = re.compile(r"//\s*complexity-ratchet:\s*(\S.*)")
 
 SCOPE_ROOTS = ("core/", "games/", "tests/")
-SCOPE_EXCLUDE = re.compile(
-    r"(^|/)(generated|third_party|build|mods-attic)/"
-    r"|^games/(spyro-[123])/\3/")
-SOURCE_EXT = (".c", ".cc", ".cpp", ".cxx")
-HEADER_EXT = (".h", ".hh", ".hpp", ".inc")
-
-# Tracked in-scope sources that no linux-release target compiles. Acted on
-# without refusal, never given rows. Self-checked on every run: each path is
-# tracked and absent from the database, else the list is stale.
-UNSCORED = (
-    "games/spyro-1/dist/recomp_build.cpp",      # OPENPETE_RECOMP_LINKAGE=shared
-    "games/spyro-1/recomp_attach_shared.c",     # OPENPETE_RECOMP_LINKAGE=shared
-    "core/psx/pcsxr_gte_stub.c",                # MinGW only
-    "tests/recomp/gte_sideeffects/harness.c",   # built by check_recomp_gte.sh
-    "tests/unit/sdk_windows_include_test.c",    # cross-compiled by check_sdk_windows_include.sh
-    "core/mods/sdk/openpete_mod_abi.c",         # shipped SDK source, built with mods
-    # openpete_add_game() defaults that every linux-release game overrides
-    "games/common/feature_list_none.c",
-    "games/common/game_icon_none.c",
-    "games/common/renderer/interp_regions_none.c",
-    "games/common/renderer/layout_none.c",
-    "games/common/renderer/moby_game_none.c",
-    "games/common/renderer/orchestrator_none.c",
-    "games/common/renderer/player_game_none.c",
-    "games/common/renderer/terrain_game_none.c",
-)
-
-OWN_ROOT = os.path.normpath(os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+FENCE = lib.Fence("complexity-ratchet", "complexity_ratchet.py", TSV,
+                  SCOPE_ROOTS, "OPENPETE_COMPLEXITY_DB")
 FIXTURE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "tests", "complexity_fixture")
-
-
-class Refusal(Exception):
-    pass
-
-
-def say(msg=""):
-    sys.stderr.write(msg + "\n")
-
-
-def git(root, *args, check=True, env=None):
-    p = subprocess.run(["git", "-C", root] + list(args),
-                       capture_output=True, text=True, env=env)
-    if check and p.returncode != 0:
-        raise Refusal("git %s failed: %s" % (" ".join(args), p.stderr.strip()))
-    return p
-
-
-def is_header(path):
-    return path.endswith(HEADER_EXT)
-
-
-def in_scope(rel):
-    return (rel.startswith(SCOPE_ROOTS) and not SCOPE_EXCLUDE.search(rel)
-            and rel.endswith(SOURCE_EXT + HEADER_EXT))
-
-
-def key_file(key):
-    return key.rsplit(":", 1)[0]
+in_scope = FENCE.in_scope
 
 
 def excess(score):
@@ -269,40 +213,20 @@ def decide(before_rows, after_scores, acted_on, renames, extents,
 # --------------------------------------------------------------------------
 def parse_tsv(text):
     """-> (header dict, {key: (score, accepted)})"""
-    head, rows = {}, {}
-    for line in text.splitlines():
-        if line.startswith("#"):
-            m = re.match(r"#\s*([\w-]+):\s*(.*)", line)
-            if m:
-                head[m.group(1)] = m.group(2).strip()
-            continue
-        cols = line.split("\t")
-        if len(cols) < 5 or cols[0] == "file":
-            continue
-        rows[cols[0] + ":" + cols[1]] = (int(cols[2]), cols[4])
-    return head, rows
-
+    return lib.parse_header(text), {
+        c[0] + ":" + c[1]: (int(c[2]), c[4]) for c in lib.parse_rows(text, 5)}
 
 def marked_keys(text):
-    return {c[0] + ":" + c[1] for c in
-            (line.split("\t") for line in text.splitlines())
-            if len(c) >= 5 and c[3] == "1"}
-
+    return {c[0] + ":" + c[1] for c in lib.parse_rows(text, 5) if c[3] == "1"}
 
 def render_tsv(rows, markers, written_by, head_sha):
-    out = ["# cognitive-complexity ratchet baseline (scripts/fences/complexity_ratchet.py)",
-           "# tool: clang-tidy %d" % TOOL_MAJOR,
-           "# options: " + OPTIONS_LINE,
-           "# written-by: " + written_by,
-           "# head: " + head_sha,
-           "file\tfunction\tscore\tmarked\taccepted"]
-    for key in sorted(rows):
-        f, name = key.rsplit(":", 1)
-        score, reason = rows[key]
-        out.append("%s\t%s\t%d\t%s\t%s" % (
-            f, name, score, "1" if key in markers else "0", reason))
-    return "\n".join(out) + "\n"
-
+    return lib.render(
+        "cognitive-complexity ratchet baseline (scripts/fences/complexity_ratchet.py)",
+        [("tool", "clang-tidy %d" % TOOL_MAJOR), ("options", OPTIONS_LINE)],
+        ["file", "function", "score", "marked", "accepted"],
+        [(key, ["%d" % score, "1" if key in markers else "0", reason])
+         for key, (score, reason) in rows.items()],
+        written_by, head_sha)
 
 # --------------------------------------------------------------------------
 # Scoring
@@ -341,43 +265,7 @@ def verify_config(tool):
 
 
 def load_db(root):
-    path = os.environ.get("OPENPETE_COMPLEXITY_DB") or os.path.join(root, DB_DEFAULT)
-    if not os.path.isfile(path):
-        return path, None
-    try:
-        with open(path) as fh:
-            db = json.load(fh)
-    except ValueError:
-        raise Refusal("compile database %s does not parse (a configure may be "
-                      "rewriting it). Re-run: %s" % (path, CONFIGURE))
-    entries = {}
-    for e in db:
-        f = os.path.normpath(os.path.join(e["directory"], e["file"]))
-        rel = os.path.relpath(f, root)
-        if rel.startswith("..") or not in_scope(rel) or is_header(rel):
-            continue
-        entries.setdefault(rel, []).append(e)
-    return path, entries
-
-
-def entry_flags(entry):
-    toks = entry.get("arguments") or shlex.split(entry["command"])
-    src = os.path.normpath(os.path.join(entry["directory"], entry["file"]))
-    out, skip = [], False
-    for t in toks[1:]:
-        if skip:
-            skip = False
-        elif t == "-o":
-            skip = True
-        elif t == "-c":
-            pass
-        elif (not t.startswith("-")
-              and os.path.normpath(os.path.join(entry["directory"], t)) == src):
-            pass
-        else:
-            out.append(t)
-    return out
-
+    return lib.load_db(root, FENCE)
 
 DIAG = re.compile(r"^(.+?):(\d+):\d+: (warning|error|note): (.*)$")
 FUNC = re.compile(r"function '(.+?)' has cognitive complexity of (\d+)")
@@ -584,77 +472,13 @@ def score_corpus(tool, root, entries, moved):
 
 
 def check_unscored(root, entries, complete=False):
-    """The UNSCORED list against the tree. complete (check, tighten,
-    baseline): a tracked in-scope source with no entry and no UNSCORED line
-    is refused too; the hook skips that half, since the new path of a staged
-    move has no entry until the source list follows it."""
-    if os.path.realpath(root) != os.path.realpath(OWN_ROOT):
-        return
-    if complete:
-        missing = sorted(
-            f for f in git(root, "ls-files", "--",
-                           *[r.rstrip("/") for r in SCOPE_ROOTS]).stdout.split("\n")
-            if f and in_scope(f) and not is_header(f) and f not in entries
-            and f not in UNSCORED and os.path.isfile(os.path.join(root, f)))
-        if missing:
-            raise Refusal(
-                "tracked sources with no compile-database entry and no UNSCORED "
-                "line: %s. Wire each into CMake and re-run `%s`, or add it to "
-                "UNSCORED in scripts/fences/complexity_ratchet.py with the "
-                "reason no linux-release target compiles it."
-                % (", ".join(missing), CONFIGURE))
-    tracked = set(git(root, "ls-files", "--", *UNSCORED).stdout.split("\n"))
-    for p in UNSCORED:
-        if p not in tracked or p in entries:
-            raise Refusal("UNSCORED list is stale: %s is %s. Edit UNSCORED in "
-                          "scripts/fences/complexity_ratchet.py." % (
-                              p, "in the compile database" if p in entries
-                              else "not tracked"))
-    say("complexity-ratchet: UNSCORED (no linux-release entry): %d sources"
-        % len(UNSCORED))
-
+    lib.check_unscored(root, entries, FENCE, complete)
 
 def present_scope_files(root):
-    out = set()
-    for line in git(root, "ls-files", "--", *[r.rstrip("/") for r in SCOPE_ROOTS]
-                    ).stdout.split("\n"):
-        if line and in_scope(line) and os.path.isfile(os.path.join(root, line)):
-            out.add(line)
-    return out
-
-
-def wired(entries, present):
-    return set(entries) | {f for f in present if is_header(f)}
-
-
-def head_sha(root):
-    p = git(root, "rev-parse", "-q", "--verify", "HEAD", check=False)
-    return p.stdout.strip() if p.returncode == 0 else ""
-
+    return lib.present_scope_files(root, FENCE)
 
 def head_tsv(root):
-    p = git(root, "show", "HEAD:" + TSV, check=False)
-    return p.stdout if p.returncode == 0 else None
-
-
-def print_bins(bins, quiet=()):
-    for name in sorted(bins):
-        items = bins[name]
-        if not items:
-            continue
-        say("  %-12s %d" % (name, len(items)))
-        if name in quiet:
-            continue
-        for it in items[:12]:
-            if isinstance(it, tuple):
-                key, b, a = it
-                say("      %s  %s -> %s" % (key, "-" if b is None else b,
-                                            "-" if a is None else a))
-            else:
-                say("      %s" % it)
-        if len(items) > 12:
-            say("      ... %d more" % (len(items) - 12))
-
+    return lib.head_tsv(root, TSV)
 
 REFUSAL_OPTIONS = """
 How to land this commit. The refactor is the end-state design, never the
@@ -740,41 +564,14 @@ def print_refusal(root, corpus, bins, added):
 # --------------------------------------------------------------------------
 # hook
 # --------------------------------------------------------------------------
-def staged_changes(root):
-    base = "HEAD" if head_sha(root) else "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
-    p = git(root, "diff", "--cached", "--name-status", "-M", "-l", "100000", base)
-    if "rename detection was skipped" in p.stderr:
-        raise Refusal("git skipped rename detection (%s); a move would read as "
-                      "delete + add. Commit the move in smaller pieces."
-                      % p.stderr.strip())
-    out = []
-    for line in p.stdout.splitlines():
-        cols = line.split("\t")
-        out.append((cols[0][0], cols[1], cols[2] if len(cols) > 2 else None))
-    return out, base
-
-
 def diff_ranges(root, base, paths):
     """-> (touched, added): {path: [(first, last)]} in new-file line numbers.
-    touched includes the two lines around a pure deletion."""
-    touched, added = {}, {}
-    if not paths:
-        return touched, added
-    p = git(root, "diff", "--cached", "-U0", "-M", "-l", "100000", base, "--", *paths)
-    cur = None
-    for line in p.stdout.splitlines():
-        if line.startswith("+++ "):
-            cur = line[6:] if line.startswith("+++ b/") else None
-        elif line.startswith("@@") and cur:
-            m = re.match(r"@@ -\S+ \+(\d+)(?:,(\d+))? @@", line)
-            start, count = int(m.group(1)), int(m.group(2) or 1)
-            if count:
-                added.setdefault(cur, []).append((start, start + count - 1))
-                touched.setdefault(cur, []).append((start, start + count - 1))
-            else:
-                touched.setdefault(cur, []).append((start, start + 1))
-    return touched, added
-
+    touched includes the two lines around a pure deletion (the complexity
+    fence's touched rule: it feeds only the INHERITED bin)."""
+    hunks = lib.diff_hunks(root, base, paths)
+    touched = {p: [(s, s + c - 1) if c else (s, s + 1) for s, c in hs]
+               for p, hs in hunks.items()}
+    return touched, lib.added_ranges(hunks)
 
 def validate_source(root, head, rows, corpus_scores):
     """The staged TSV, written by tighten or baseline, against HEAD."""
@@ -805,32 +602,15 @@ def validate_source(root, head, rows, corpus_scores):
 
 
 def mode_hook(root):
-    if "next-index" in os.environ.get("GIT_INDEX_FILE", ""):
-        raise Refusal(
-            "this commit form (`git commit <pathspec>`, `--only`, "
-            "`--pathspec-from-file`) commits from a temporary index; the "
-            "baseline the hook stages would land while the real index keeps "
-            "the old blob. Use `git add <paths>` then `git commit`.")
-    changes, base = staged_changes(root)
-    tsv_staged = any(TSV in (a, b) for _, a, b in changes)
-    scope = [(s, a, b) for s, a, b in changes
-             if in_scope(b or a) or (s in "DR" and in_scope(a))]
-    staged_text = None
-    shead, srows = {}, {}
-    if tsv_staged:
-        p = git(root, "show", ":" + TSV, check=False)
-        if p.returncode == 0:
-            staged_text = p.stdout
-            shead, srows = parse_tsv(staged_text)
+    lib.refuse_temporary_index()
+    changes, base = lib.staged_changes(root)
+    scope = lib.scope_changes(changes, in_scope)
+    staged_text = lib.staged_tsv(root, TSV, changes)
+    shead, srows = parse_tsv(staged_text) if staged_text is not None else ({}, {})
 
     if not scope:
-        if staged_text is not None and shead.get("written-by") == "hook":
-            # Left by a commit that failed after its hook passed. Landing it
-            # here would revert rows tightened since.
-            git(root, "restore", "--staged", "--", TSV)
-            git(root, "checkout", "--", TSV, check=False)
-            say("complexity-ratchet: unstaged a stale hook-written %s" % TSV)
-        elif staged_text is not None:
+        if not lib.reset_stale_hook_tsv(root, FENCE, staged_text) \
+                and staged_text is not None:
             validate_source(root, shead, srows, {})
         return 0
 
@@ -842,22 +622,7 @@ def mode_hook(root):
     controls = run_controls(tool)
     check_unscored(root, entries)
 
-    renames, acted_on, need_entry, moved = {}, set(), [], set()
-    for status, a, b in scope:
-        if status == "R":
-            same = (git(root, "rev-parse", ":" + b).stdout
-                    == git(root, "rev-parse", base + ":" + a).stdout)
-            renames[a] = (b, same)
-            moved.add(a)
-            acted_on.add(b)
-            if not same:
-                need_entry.append(b)
-        elif status == "D":
-            acted_on.add(a)
-            moved.add(a)
-        else:
-            acted_on.add(a)
-            need_entry.append(a)
+    renames, acted_on, need_entry, moved = lib.acted_on_paths(root, base, scope)
 
     corpus, cbins = score_corpus(tool, root, entries, moved)
 
@@ -872,16 +637,7 @@ def mode_hook(root):
             raise Refusal("%s does not parse clean; functions after an error "
                           "are dropped and would read as retirements:\n  %s"
                           % (rel, "\n  ".join(corpus.errors[rel][:5])))
-    dirty = set(git(root, "diff", "--name-only").stdout.split("\n"))
-    unstaged = sorted(f for f in acted_on if f in dirty)
-    if unstaged:
-        raise Refusal("staged with unstaged hunks: %s. The commit carries the "
-                      "index blob and the tool read the working file. "
-                      "`git add` them, or stash the rest." % ", ".join(unstaged))
-    if TSV in dirty:
-        raise Refusal("%s differs between the working tree and the index "
-                      "(tighten output not staged?). `git add %s`, or "
-                      "`git checkout -- %s`." % (TSV, TSV, TSV))
+    dirty = lib.unstaged_refusal(root, acted_on, TSV)
     dirty_headers = sorted(f for f in dirty if f and in_scope(f) and is_header(f))
 
     # Baseline source: a staged tighten/baseline file, else HEAD's; never the
@@ -911,10 +667,7 @@ def mode_hook(root):
                                            if os.path.isfile(os.path.join(root, f))}
     touched, added = diff_ranges(root, base, sorted(
         f for f in acted_on if os.path.isfile(os.path.join(root, f))))
-    accept = os.environ.get("OPENPETE_COMPLEXITY_ACCEPT")
-    if accept is not None and accept.strip() in ("", "0", "1"):
-        raise Refusal("OPENPETE_COMPLEXITY_ACCEPT carries the reason; an empty "
-                      "value, 0 or 1 is refused.")
+    accept = lib.accept_reason("OPENPETE_COMPLEXITY_ACCEPT")
 
     args = (before, after, acted_on, renames)
     rest = (touched, markers, wired(entries, present), present)
@@ -951,13 +704,7 @@ def mode_hook(root):
         text = source_text
     else:
         text = render_tsv(new_rows, markers, "hook", head_sha(root))
-    path = os.path.join(root, TSV)
-    current = open(path).read() if os.path.isfile(path) else None
-    if text != current or staged_text not in (None, text):
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as fh:
-            fh.write(text)
-        git(root, "add", "--", TSV)
+    lib.write_staged(root, TSV, text, staged_text)
     say("complexity-ratchet: PASS")
     return 0
 
@@ -966,13 +713,7 @@ def mode_hook(root):
 # check / tighten / baseline
 # --------------------------------------------------------------------------
 def dirty_paths(root):
-    out = set()
-    p = git(root, "status", "--porcelain", "--", *[r.rstrip("/") for r in SCOPE_ROOTS])
-    for line in p.stdout.splitlines():
-        for part in line[3:].split(" -> "):
-            out.add(part.strip('"'))
-    return out
-
+    return lib.dirty_paths(root, FENCE)
 
 def corpus_inputs(root, ctest=False):
     db_path, entries = load_db(root)
@@ -1120,20 +861,7 @@ def mode_armed(root):
         say("complexity-ratchet: OPENPETE_NO_COMMITS=1, this machine declares "
             "it never commits; hook arming not required.")
         return 0
-    p = git(root, "rev-parse", "--git-path", "hooks/pre-commit")
-    resolved = os.path.realpath(os.path.normpath(
-        os.path.join(root, p.stdout.strip())))
-    want = os.path.realpath(os.path.join(root, HOOK_REL))
-    why = None
-    if resolved != want:
-        why = "git resolves the pre-commit hook to %s" % resolved
-    elif not os.path.isfile(want):
-        why = "%s is missing" % HOOK_REL
-    elif not os.access(want, os.X_OK):
-        why = "%s is not executable (git skips it)" % HOOK_REL
-    elif "complexity_ratchet.py\" hook" not in open(want).read() \
-            and "complexity_ratchet.py hook" not in open(want).read():
-        why = "%s does not call complexity_ratchet.py hook" % HOOK_REL
+    why = lib.armed_reason(root, ("complexity_ratchet.py",))
     arm = ARM
     if not why:
         p = git(root, "config", "--get", "merge.%s.driver" % tsv_merge.DRIVER_NAME,
@@ -1154,36 +882,19 @@ def mode_armed(root):
     return 0
 
 
-def main():
-    argv = sys.argv[1:]
-    mode = argv[0] if argv else ""
-    here = os.getcwd()
-    p = subprocess.run(["git", "-C", here, "rev-parse", "--show-toplevel"],
-                       capture_output=True, text=True)
-    root = p.stdout.strip() if p.returncode == 0 else OWN_ROOT
-    # A build directory's cwd can sit inside a nested checkout or outside any
-    # repo; the fence's own repo is the default then.
-    if mode != "hook" and not os.path.isfile(
-            os.path.join(root, "scripts", "fences", "complexity_ratchet.py")) \
-            and not os.environ.get("OPENPETE_COMPLEXITY_DB"):
-        root = OWN_ROOT
-    try:
-        if mode == "hook":
-            return mode_hook(root)
-        if mode == "check" and "--armed" in argv:
-            return mode_armed(root)
-        if mode == "check":
-            return mode_check(root, "--ctest" in argv)
-        if mode == "tighten":
-            return mode_tighten(root, argv[1:])
-        if mode == "baseline":
-            return mode_baseline(root)
-        say(__doc__)
-        return 2
-    except Refusal as e:
-        say("complexity-ratchet: REFUSED: %s" % e)
-        return 1
+def dispatch(root, mode, argv):
+    if mode == "hook":
+        return mode_hook(root)
+    if mode == "check" and "--armed" in argv:
+        return mode_armed(root)
+    if mode == "check":
+        return mode_check(root, "--ctest" in argv)
+    if mode == "tighten":
+        return mode_tighten(root, argv[1:])
+    if mode == "baseline":
+        return mode_baseline(root)
+    return None
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(lib.run(FENCE, dispatch, __doc__))
