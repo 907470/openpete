@@ -60,7 +60,9 @@ _spec.loader.exec_module(pb)
 def diff_images(ref_src, cand_path, heat_out):
     """Pixel diff of a reference against a candidate tile, both decoded to
     RGB. Returns ("size", ref_size, cand_size) or ("pixels", n, max channel
-    delta); writes the heat PNG when pixels differ."""
+    delta, bbox), bbox the (left, upper, right, lower) box of the differing
+    pixels or None when none differ; writes the heat PNG when pixels
+    differ."""
     with Image.open(ref_src) as a_img, Image.open(cand_path) as b_img:
         A = a_img.convert("RGB")
         B = b_img.convert("RGB")
@@ -75,7 +77,7 @@ def diff_images(ref_src, cand_path, heat_out):
     if heat_out and n:
         os.makedirs(os.path.dirname(heat_out), exist_ok=True)
         d.point(lambda v: min(255, v * 8)).save(heat_out)
-    return ("pixels", n, mx)
+    return ("pixels", n, mx, d.getbbox())
 
 
 def report_divergent(name, row, cand_path, cand_dig, tdir, arch, diff_out,
