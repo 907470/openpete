@@ -410,7 +410,13 @@ typedef struct {
     uint32_t ot_b;          /* captured D_PORTAL_DEPTH (the .s OT bucket)          */
     uint32_t fog_rgb;       /* blended-medium DPCS fog target (0 if none)         */
     double   fog_t;         /* blended-medium fog lerp coeff (0 if none)          */
-    int      clip[4];       /* captured D_CLIPRECT y0,y1,x0,x1 (>>16) base rect   */
+    int      clip[4];       /* base clip rect, D_CLIPRECT words >> 16: min y, max y,
+                             * then the x pair. FLAT, DOME and CAPTURED hold the
+                             * game's layout, max x then min x; OUTLINE holds
+                             * min x then max x. The feeders sort each pair or
+                             * use its midpoint; portal_rect_rule_for compares
+                             * it element-wise with portal_game_rect's output,
+                             * which is in the game's layout.                    */
     int      rect_rule;     /* how the replay rebuilds clip[] (PORTAL_RECT_*)     */
     int      derived_dome;  /* the dome drew with derive_dome_matrix (the --no-lod
                              * forced dome, a revealed portal's dome), not the

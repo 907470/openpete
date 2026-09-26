@@ -34,13 +34,19 @@ struct SDL_Window;
 
 typedef struct rhi_device rhi_device;
 
-/* Create the device against an SDL window created with SDL_WINDOW_VULKAN.
- * `vsync` selects the swapchain present mode: 1 = force FIFO (vsync ON, present
- * locked to the monitor refresh), 0 = force a vsync-OFF mode (immediate, else
- * mailbox — uncapped throughput / low latency), -1 = unset (defer to the
- * OPENPETE_PRESENT_MODE env var, else default FIFO). Falls back to FIFO with a
- * log if a requested vsync-OFF mode isn't supported by the surface.
- * Returns NULL on failure (a diagnostic is logged to stderr). */
+/** @brief Create a windowed device against an SDL window created with SDL_WINDOW_VULKAN.
+ *
+ * The calling thread claims the display (rhi_display_claim) and presents
+ * until a handoff. `vsync` selects the swapchain present mode: 1 forces FIFO
+ * (vsync on, present locked to the monitor refresh), 0 forces a vsync-off
+ * mode (immediate, else mailbox: uncapped throughput, low latency), -1 leaves
+ * it unset (the OPENPETE_PRESENT_MODE env var decides, else FIFO). A vsync-off
+ * request the surface does not support falls back to FIFO with a log.
+ * @param window SDL window created with SDL_WINDOW_VULKAN.
+ * @param app_name Application name for VkApplicationInfo; NULL selects
+ *                 "openpete".
+ * @param vsync Present-mode preference: 1, 0 or -1.
+ * @return The device, or NULL on failure (a diagnostic is logged to stderr). */
 rhi_device *rhi_create(struct SDL_Window *window, const char *app_name, int vsync);
 
 /* Change the swapchain present mode (vsync) at runtime. `vsync` has the same
@@ -60,33 +66,54 @@ void rhi_set_vsync(rhi_device *dev, int vsync);
  *         NULL. */
 int rhi_get_vsync(const rhi_device *dev);
 
-/* Create a SURFACELESS device: no window, no swapchain, no present. Renders into
- * the offscreen + render-target images only; retrieve pixels with
- * rhi_read_render_target / rhi_read_offscreen. width/height set the offscreen
- * extent (the would-be window size). For headless CI visual-regression capture
- * under a software rasterizer (lavapipe). Returns NULL on failure. */
+/** @brief Create a surfaceless device: no window, no swapchain, no present.
+ *
+ * The device renders into the offscreen and render-target images only;
+ * pixels are read back with rhi_read_render_target or rhi_read_offscreen.
+ * The offscreen color format is B8G8R8A8_UNORM, the windowed preference, so
+ * the readback swizzle is the same on both. The calling thread claims the
+ * display. Used for headless capture and CI visual regression under a
+ * software rasterizer (lavapipe).
+ * @param app_name Application name for VkApplicationInfo; NULL selects
+ *                 "openpete".
+ * @param width Offscreen extent width (the would-be window width); 0 is
+ *              raised to 1.
+ * @param height Offscreen extent height; 0 is raised to 1.
+ * @return The device, or NULL on failure. */
 rhi_device *rhi_create_headless(const char *app_name, uint32_t width, uint32_t height);
 
-/* True for a device created via rhi_create_headless. Such a device's begin/end
- * frame submit work without acquiring or presenting a swapchain image, and
- * rhi_blit_to_swapchain is a no-op. */
+/** @brief Return whether the device was created by rhi_create_headless.
+ *
+ * Such a device's begin and end frame submit work without acquiring or
+ * presenting a swapchain image, and rhi_blit_to_swapchain does nothing.
+ * @param dev Device, or NULL.
+ * @return true for a headless device; false for a windowed one or NULL. */
 bool        rhi_is_headless(const rhi_device *dev);
 
 void        rhi_destroy(rhi_device *dev);
 
-/* The GPU's maximum 2D image dimension (VkPhysicalDeviceLimits.maxImageDimension2D).
- * The renderer uses it to cap the SSAA supersampled render target so a large
- * --ssaa factor degrades gracefully instead of failing image creation. */
+/** @brief Return the GPU's maximum 2D image dimension (VkPhysicalDeviceLimits.maxImageDimension2D).
+ *
+ * The renderer steps the SSAA factor down until the supersampled render
+ * target fits this bound, so a large --ssaa factor does not fail image
+ * creation.
+ * @param dev Device, or NULL.
+ * @return The limit in texels; 0 for NULL. */
 uint32_t    rhi_max_image_dimension(const rhi_device *dev);
 
 /* Block until the GPU is idle. Call before destroying buffers/pipelines
  * that recent frames may still be using. */
 void rhi_wait_idle(rhi_device *dev);
 
-/* True between rhi_begin_frame* and the frame's end/submit: a command buffer
- * is recording. Descriptor sets, framebuffers and images it has already
- * referenced must not be destroyed until it has been submitted and retired;
- * resource (re)creation belongs before the frame begins. */
+/** @brief Return whether a frame's command buffer is recording.
+ *
+ * True between a successful rhi_begin_frame or rhi_begin_frame_staged and
+ * the frame's end and submit. Descriptor sets, framebuffers and images the
+ * command buffer has already referenced must not be destroyed until it has
+ * been submitted and retired; resource (re)creation belongs before the frame
+ * begins.
+ * @param dev Device, or NULL.
+ * @return true while recording; false otherwise or for NULL. */
 bool rhi_frame_active(const rhi_device *dev);
 
 /** @brief Begin a frame: retire the frame slot's previous submission, acquire a swapchain image, and open the command buffer.
@@ -101,15 +128,26 @@ bool rhi_frame_active(const rhi_device *dev);
  * @param dev Device to begin the frame on.
  * @return true when a command buffer is recording. */
 bool rhi_begin_frame(rhi_device *dev);
-/* True when the swapchain must be rebuilt before the next present. The rebuild
- * touches the window and calls SDL, so a thread that is not the window's owner
- * must decline to present rather than drive it. */
+/** @brief Return whether the swapchain must be rebuilt before the next present.
+ *
+ * The rebuild touches the window and calls SDL, so a thread that is not the
+ * window's owner declines to present rather than drive it.
+ * @param dev Device, or NULL.
+ * @return true when a rebuild is pending; false otherwise or for NULL. */
 bool rhi_needs_recreate(const rhi_device *dev);
-/* Monotonic count of rhi_begin_frame calls. A pass that must write its ring
- * vertex buffer more than once per frame (e.g. one batch per render target)
- * bump-allocates within the buffer and resets its offset when this changes —
- * a second same-frame rhi_update_buffer to the same offset clobbers data a
- * recorded-but-unexecuted pass will read. */
+/** @brief Return the number of frames that began since process start.
+ *
+ * A frame counts when rhi_begin_frame or rhi_begin_frame_staged returned true
+ * (slot fence retired, image acquired where one is, command buffer
+ * recording); a refused begin does not count, so a frame
+ * RHI_FRAMES_IN_FLIGHT serials back has had its fence waited. A pass that
+ * writes its ring vertex buffer more than once per frame (one batch per
+ * render target) bump-allocates within the buffer and resets its offset when
+ * this changes: a second same-frame rhi_update_buffer to the same offset
+ * clobbers data a recorded but unexecuted pass reads. The counter is global,
+ * not per device.
+ * @param dev Unused.
+ * @return The monotonic serial. */
 uint64_t rhi_frame_serial(rhi_device *dev);
 /* Block on the slot fence and the acquire instead of shedding the present:
  * for a thread whose only job is presenting. Off = the sim-thread contract
@@ -156,11 +194,24 @@ void rhi_end_offscreen(rhi_device *dev);
  * @param dev Device whose current frame records the pass. */
 void rhi_begin_offscreen_load(rhi_device *dev);
 
-/* Blit the offscreen color target onto the acquired swapchain image
- * (linear filter; handles the required layout transitions). */
+/** @brief Blit the offscreen color target onto the acquired swapchain image with a linear filter.
+ *
+ * The swapchain image is transitioned UNDEFINED to TRANSFER_DST before the
+ * blit and to PRESENT_SRC after it; off_image is read in the TRANSFER_SRC
+ * layout its render pass leaves. Does nothing outside an active frame or on
+ * a headless device.
+ * @param dev Device whose current frame records the blit. */
 void rhi_blit_to_swapchain(rhi_device *dev);
 
-/* Submit the recorded command buffer and present the swapchain image. */
+/** @brief Submit the recorded command buffer and present the swapchain image.
+ *
+ * The submit waits on the frame's acquire semaphore and signals the image's
+ * render-done semaphore, which the present waits on; the slot's in_flight
+ * fence gates the next reuse of the slot. OUT_OF_DATE and SUBOPTIMAL set
+ * needs_recreate; DEVICE_LOST invokes the device-lost handler. Headless
+ * submits with no semaphores and no present. Does nothing outside an active
+ * frame. The calling thread is verified against the display owner.
+ * @param dev Device whose current frame is ended. */
 void rhi_end_frame(rhi_device *dev);
 
 /* Staged presents: the render and the present as two steps, so a frame can
@@ -188,10 +239,15 @@ uint32_t rhi_stage_gen(const rhi_device *dev);
 void     rhi_end_frame_to_stage(rhi_device *dev, int stage);
 bool     rhi_present_stage(rhi_device *dev, int stage);
 bool     rhi_present_stage_release(rhi_device *dev);   /* give back a held acquire: present its stale contents */
-/* Display-seam fence, runtime half: the thread that will present next
- * claims the display at each handoff; every frame/present entry verifies
- * the caller. Violations log and count (OPENPETE_SEAM_GUARD_FATAL=1
- * aborts, for the stress harnesses). */
+/** @brief Make the calling thread the display owner.
+ *
+ * The runtime half of the display-seam fence: the thread that will present
+ * next claims the display at each handoff, and every frame and present entry
+ * verifies its caller against the owner. A violation logs (the first eight
+ * in full) and counts in rhi_seam_violations; OPENPETE_SEAM_GUARD_FATAL=1
+ * aborts at the first, for the stress harnesses. No check runs before the
+ * first claim. The owner is global, not per device.
+ * @param dev Unused. */
 void     rhi_display_claim(rhi_device *dev);
 unsigned rhi_seam_violations(void);
 /* The same in two steps: acquire the swapchain image early (right after the
@@ -223,9 +279,13 @@ int  rhi_present_wait(rhi_device *dev, uint64_t timeout_ns, uint64_t *out_id,
 int  rhi_present_outstanding(const rhi_device *dev);
 
 void rhi_notify_resize(rhi_device *dev);
-/* Same, for an app-driven (discrete) size change such as a fullscreen toggle:
- * rebuilds at the next begin_frame rather than waiting out the settle window
- * that exists to absorb a live drag's per-pixel steps. */
+/** @brief Flag a swapchain rebuild for a size change the app caused, such as a fullscreen toggle.
+ *
+ * Unlike rhi_notify_resize, the rebuild runs at the next begin_frame instead
+ * of waiting out the settle window that absorbs a live drag's per-pixel
+ * steps. The recreate and acquire back-off windows are cleared too: a toggle
+ * is not the sustained OUT_OF_DATE storm the back-off damps.
+ * @param dev Device, or NULL (ignored). */
 void rhi_notify_resize_immediate(rhi_device *dev);
 
 /* Register a handler called once on an unrecoverable VK_ERROR_DEVICE_LOST
@@ -233,7 +293,10 @@ void rhi_notify_resize_immediate(rhi_device *dev);
  * stays free of core-runtime symbols. NULL clears it. Global, not per-device. */
 void rhi_set_device_lost_handler(void (*fn)(void));
 
-/* Diagnostics: the selected physical device name (valid until destroy). */
+/** @brief Return the selected physical device's name.
+ *
+ * @param dev Device, or NULL.
+ * @return The name, valid until rhi_destroy; "" for NULL. */
 const char *rhi_device_name(const rhi_device *dev);
 
 /* The present mode the swapchain was actually GRANTED, as a short name
@@ -242,9 +305,14 @@ const char *rhi_device_name(const rhi_device *dev);
  * a pacing baseline taken against the wrong one is not comparable. */
 const char *rhi_present_mode_name(const rhi_device *dev);
 
-/* Driver version of the selected device, vendor-decoded. Part of a pacing
+/** @brief Return the selected device's driver version, decoded the way its vendor packs it.
+ *
+ * NVIDIA's driverVersion decodes as four fields (10.8.8.6 bits), every other
+ * vendor's as the Vulkan major.minor.patch triple. Part of a pacing
  * baseline's environment key: a driver update changes present behaviour and
- * must not compare as the same machine. */
+ * must not compare as the same machine.
+ * @param dev Device, or NULL.
+ * @return The version string; "unknown" for NULL or when none was recorded. */
 const char *rhi_driver_version(const rhi_device *dev);
 
 /* Present-path block time, for the pacing log. Under the host thread split
@@ -256,10 +324,16 @@ enum { RHI_BLOCK_FENCE = 0, RHI_BLOCK_ACQUIRE, RHI_BLOCK_PRESENT,
        RHI_BLOCK_RECREATE, RHI_BLOCK_IMAGE_FENCE, RHI_BLOCK_PHASE_COUNT };
 void rhi_take_block_times(int64_t *out, int n);
 
-/* Presents skipped because the slot's previous submission had not retired.
- * Windowed only: rather than block the presenting thread on the display's
- * cadence — which under the host thread split is also the sim thread — the
- * frame is dropped. Monotonic; the caller diffs it. */
+/** @brief Return the number of presents skipped because a fence had not retired.
+ *
+ * Counts a begin_frame whose slot fence had not signalled (a poll that found
+ * it busy, or a blocking presenter's bounded wait that expired) and a staged
+ * present whose ring slot fence wait expired. Windowed only: rather than
+ * block the presenting thread on the display's cadence, which under the host
+ * thread split is also the sim thread, the frame is dropped. Monotonic; the
+ * caller diffs it.
+ * @param dev Device, or NULL.
+ * @return The running count; 0 for NULL. */
 uint64_t rhi_fence_sheds(const rhi_device *dev);
 
 /** @brief Return the number of presents the acquire path refused.
@@ -282,15 +356,27 @@ uint64_t rhi_acquire_timeouts(const rhi_device *dev);
  * driver may give more). A back-pressure diagnosis is not checkable without
  * it. */
 uint32_t rhi_swapchain_image_count(const rhi_device *dev);
-/* True when the picked physical device is a software rasterizer (llvmpipe
- * reports VK_PHYSICAL_DEVICE_TYPE_CPU). Heavy vertex-shader paths (the
- * terrain sector-mesh cache) auto-disable on it. */
+/** @brief Return whether the picked physical device is a software rasterizer.
+ *
+ * The test is VK_PHYSICAL_DEVICE_TYPE_CPU, which llvmpipe reports. The
+ * terrain sector-mesh cache is not initialized on such a device unless
+ * OPENPETE_TERRAIN_CACHE_FORCE is set.
+ * @param dev Device, or NULL.
+ * @return true for a CPU device; false otherwise or for NULL. */
 bool        rhi_device_is_software(const rhi_device *dev);
-/* shaderFloat64 enabled on this device (the retained-terrain vertex stage
- * needs fp64 to mirror the CPU walk's double math bit-for-bit). */
+/** @brief Return whether shaderFloat64 is enabled on this device.
+ *
+ * The retained-terrain vertex stage needs fp64 to mirror the CPU walk's
+ * double math bit-for-bit; the terrain cache stays off without it.
+ * @param dev Device, or NULL.
+ * @return true when enabled; false otherwise or for NULL. */
 bool        rhi_device_has_float64(const rhi_device *dev);
-/* fillModeNonSolid enabled on this device: pipelines may rasterize with
- * VK_POLYGON_MODE_LINE (the wireframe view, rhi_set_wireframe). */
+/** @brief Return whether fillModeNonSolid is enabled on this device.
+ *
+ * With it, pipelines may rasterize with VK_POLYGON_MODE_LINE (the wireframe
+ * view, rhi_set_wireframe); without it that view draws filled.
+ * @param dev Device, or NULL.
+ * @return true when enabled; false otherwise or for NULL. */
 bool        rhi_device_has_fill_non_solid(const rhi_device *dev);
 
 /* Read the offscreen color target into a host RGBA8 buffer (byte order
@@ -305,21 +391,31 @@ bool rhi_read_offscreen(rhi_device *dev, void *out, size_t out_bytes,
  *
  * rhi_read_offscreen blocks the GPU (vkDeviceWaitIdle) every call, which
  * collapses pipelining and forces recording into slow motion. This ring
- * records the offscreen->host copy INTO the frame's OWN command buffer (no
- * extra wait — it rides the frame's existing fence) and retrieves the pixels a
- * couple of presents later, once that fence has naturally signaled. `tag` is an
- * opaque token (the caller's PTS) carried with each frame so the out-of-band
- * pixels keep their timestamp.
- *
- * Call rhi_cycle_readback ONCE per frame, between rhi_blit_to_swapchain and
- * rhi_end_frame (while the frame slot is still current). It queues this frame's
- * capture (tagged `tag`) and, if a frame captured RHI_FRAMES_IN_FLIGHT presents
- * ago is ready, swizzles it into `out` (RGBA8, opaque alpha), writes its extent
- * + originating tag, and returns true. Returns false until the ring fills.
+ * records the offscreen->host copy into the frame's own command buffer (no
+ * extra wait: it rides the frame's existing fence) and retrieves the pixels
+ * RHI_FRAMES_IN_FLIGHT frames later, once that fence has signalled.
  *
  * At record shutdown, call rhi_drain_readback repeatedly (it blocks once via
  * vkDeviceWaitIdle, then returns the still-queued frames oldest-first by tag)
- * until it returns false, so the final presents aren't lost. */
+ * until it returns false, so the final presents are not lost. */
+/** @brief Queue this frame's offscreen capture and return the one the current frame slot queued last.
+ *
+ * Call once per frame, between rhi_blit_to_swapchain and rhi_end_frame, while
+ * the frame slot is current. The slot's previous capture (queued
+ * RHI_FRAMES_IN_FLIGHT frames ago, retired by rhi_begin_frame's fence wait)
+ * is swizzled into `out` as R,G,B,A bytes with opaque alpha; a capture that
+ * does not fit `out_bytes` is dropped. Then off_image, at the swapchain
+ * extent, is copied into the slot's host-cached staging buffer, which grows
+ * as needed.
+ * @param dev Device whose current frame records the copy.
+ * @param tag Opaque token (the caller's PTS) stored with this frame's capture.
+ * @param out Destination for a retrieved capture, w*h*4 bytes.
+ * @param out_bytes Capacity of @p out.
+ * @param out_w Receives the retrieved capture's width; may be NULL.
+ * @param out_h Receives the retrieved capture's height; may be NULL.
+ * @param out_tag Receives the retrieved capture's tag; may be NULL.
+ * @return true when a capture was written to @p out; false until the ring
+ *         fills, outside an active frame, or for NULL @p dev. */
 bool rhi_cycle_readback(rhi_device *dev, uint64_t tag, void *out, size_t out_bytes,
                         int *out_w, int *out_h, uint64_t *out_tag);
 bool rhi_drain_readback(rhi_device *dev, void *out, size_t out_bytes,
@@ -699,33 +795,59 @@ typedef struct {
                                  * layers leave it false and stay filled.     */
 } rhi_pipeline_desc;
 
-/* Host-visible vertex buffer (map-and-memcpy updates).
+/** @brief Create a single-instance host-visible vertex buffer, updated by map and memcpy.
  *
- * rhi_create_vertex_buffer — SINGLE instance. Safe only for content that is
- * static after init, or rewritten under rhi_wait_idle (rare re-layout): a
- * per-present rewrite would race the frame two presents ago, whose GPU read
- * is only fenced at rhi_begin_frame (write-after-read tear).
- *
- * rhi_create_vertex_buffer_dynamic — per-frame-in-flight RING (W2.2). For
- * buffers rewritten EVERY present: update writes and bind reads the current
- * frame's slot, which rhi_begin_frame's fence has proven idle. Contract: the
- * content must be written on every frame that binds it (a slot written once
- * and bound on a later frame of the other parity reads that parity's stale
- * slot). rhi_update_buffer outside an active frame fills ALL slots (init /
- * under-wait-idle updates stay parity-safe). */
+ * Safe only for content that is static after init or rewritten under
+ * rhi_wait_idle (a rare re-layout): a per-present rewrite would race the
+ * frame RHI_FRAMES_IN_FLIGHT presents ago, whose GPU read is fenced only at
+ * rhi_begin_frame (a write-after-read tear).
+ * @param dev Device the buffer is created on.
+ * @param bytes Buffer size in bytes.
+ * @return The buffer, or NULL on failure. */
 rhi_buffer *rhi_create_vertex_buffer(rhi_device *dev, size_t bytes);
-/* SINGLE-instance vertex buffer preferring DEVICE_LOCAL host-mapped memory
- * (ReBAR): for retained geometry the GPU fetches every present but the CPU
- * writes rarely (the terrain sector-mesh arena). Falls back to the plain
- * host-visible type. Same overlap rules as rhi_create_vertex_buffer. */
+/** @brief Create a single-instance host-mapped vertex buffer, preferring device-local memory.
+ *
+ * For retained geometry the GPU fetches every present and the CPU writes
+ * rarely (the terrain sector-mesh arenas). Allocation is attempted on every
+ * host-visible, host-coherent memory type the buffer accepts, DEVICE_LOCAL
+ * types first (rhi_memtype_candidates), and the first type that allocates
+ * wins. A device-local host-visible heap can be far smaller than the device's
+ * video memory (a 256 MB BAR window, or what a resizable-BAR driver reports)
+ * and its free space varies with what else is resident, so an allocation
+ * that fits on one run can fail on the next; falling through to system
+ * memory costs bandwidth and keeps the buffer. Every type
+ * OPENPETE_RHI_FAIL_MEMTYPE names is refused without reaching the driver.
+ * Same overlap rules as rhi_create_vertex_buffer.
+ * @param dev Device the buffer is created on.
+ * @param bytes Buffer size in bytes.
+ * @return The buffer, or NULL when every candidate type fails. */
 rhi_buffer *rhi_create_vertex_buffer_device(rhi_device *dev, size_t bytes);
+/** @brief Create a per-frame-in-flight ring vertex buffer for content rewritten every present.
+ *
+ * rhi_create_vertex_buffer_dynamic_gens with one generation. rhi_update_buffer
+ * writes and the bind reads the current frame's slot, which rhi_begin_frame's
+ * fence has proven idle. The content must be written on every frame that
+ * binds it: a slot written once and bound on a later frame of the other
+ * parity reads that parity's stale slot. rhi_update_buffer outside an active
+ * frame fills every slot, so init and under-wait-idle updates are
+ * parity-safe.
+ * @param dev Device the buffer is created on.
+ * @param bytes Size of one slot in bytes.
+ * @return The buffer, or NULL on failure. */
 rhi_buffer *rhi_create_vertex_buffer_dynamic(rhi_device *dev, size_t bytes);
-/* Ring buffer with `gens` generations per frame slot. A write that follows
- * a bind in the same frame lands in the next generation, so the draw
- * recorded against the earlier data still reads it at GPU execution. Use
- * for a buffer refilled and drawn more than once per frame (the scene
- * buffers when the reference-diff or A/B variant renders the scene twice).
- * Memory = bytes x RHI_FRAMES_IN_FLIGHT x gens. */
+/** @brief Create a ring vertex buffer with `gens` generations per frame slot.
+ *
+ * A write that follows a bind in the same frame lands in the next
+ * generation, so a draw recorded against the earlier data still reads it at
+ * GPU execution; a write that finds no generation left overwrites bound data
+ * and counts in rhi_ring_gen_overflows. For a buffer refilled and drawn more
+ * than once per frame (the scene buffers when the reference-diff or A/B
+ * variant renders the scene twice). Memory is bytes x RHI_FRAMES_IN_FLIGHT x
+ * gens. Same per-frame write contract as rhi_create_vertex_buffer_dynamic.
+ * @param dev Device the buffer is created on.
+ * @param bytes Size of one generation slot in bytes.
+ * @param gens Generations per frame slot; 0 is raised to 1.
+ * @return The buffer, or NULL on failure. */
 rhi_buffer *rhi_create_vertex_buffer_dynamic_gens(rhi_device *dev, size_t bytes,
                                                   uint32_t gens);
 /* Counters of same-frame rewrites that moved to a fresh generation, and of
@@ -754,16 +876,23 @@ size_t      rhi_vertex_buffer_slot_bytes(const rhi_buffer *buf);
 rhi_pipeline *rhi_create_pipeline(rhi_device *dev, const rhi_pipeline_desc *desc);
 void          rhi_destroy_pipeline(rhi_device *dev, rhi_pipeline *pipe);
 
-/* True when the SCENE depth convention is reversed: z_ndc = 1/vz,
- * GREATER_OR_EQUAL, clear 0 (the D32_SFLOAT_S8 format). False on the
- * D24_UNORM_S8 fallback: z_ndc = 1 - 1/vz, LESS_OR_EQUAL, clear 1. The
- * format selects all three together; FORWARD-class images are forward on
- * every device. */
+/** @brief Return whether the SCENE depth convention is reversed on this device.
+ *
+ * Reversed is z_ndc = 1/vz, GREATER_OR_EQUAL, clear 0 (the D32_SFLOAT_S8
+ * format); forward, on the D24_UNORM_S8 fallback, is z_ndc = 1 - 1/vz,
+ * LESS_OR_EQUAL, clear 1. The format selects all three together;
+ * FORWARD-class images are forward on every device. The value is
+ * specialization constant 0 (DEPTH_REVERSED) of every SCENE-class pipeline.
+ * @param dev Device, or NULL.
+ * @return true when reversed; false when forward or for NULL. */
 bool          rhi_depth_reversed(const rhi_device *dev);
 
-/* The chosen depth attachment format (a VkFormat value) and the pipelines
- * compiled so far per depth compare op (a VkCompareOp value, 0..7): the depth
- * convention's engagement counters. rhi_depth_report logs both. */
+/* rhi_depth_format and rhi_depth_pipelines_by_compare are the depth
+ * convention's engagement counters; rhi_depth_report logs both. */
+/** @brief Return the chosen depth attachment format as a VkFormat value.
+ *
+ * @param dev Device, or NULL.
+ * @return D32_SFLOAT_S8_UINT or D24_UNORM_S8_UINT; 0 for NULL. */
 int           rhi_depth_format(const rhi_device *dev);
 unsigned      rhi_depth_pipelines_by_compare(const rhi_device *dev, int compare_op);
 void          rhi_depth_report(const rhi_device *dev);
@@ -815,11 +944,20 @@ void          rhi_set_slot_contest(int on);
  * constants but functional). Returns the number of failures (0 = clean). */
 int           rhi_rebuild_pipelines(rhi_device *dev);
 
-/* Pipeline from IN-MEMORY SPIR-V (mod shaders — S2 of
- * plans/openpete-mod-shaders.md). Words are copied into driver objects
- * during the call; the caller keeps ownership. Either side may be NULL
- * to fall back to the desc's embedded filename (e.g. mod postfx: vert
- * NULL + desc->vert_spv = "postfx_fs.vert.spv", frag from the mod). */
+/** @brief Create a pipeline from in-memory SPIR-V words (mod shaders).
+ *
+ * The words are copied into the pipeline, which keeps them for
+ * rhi_rebuild_pipelines; the caller keeps ownership of its buffers. A stage
+ * given NULL words or a zero count falls back to the desc's embedded
+ * filename (mod postfx: vert NULL with desc->vert_spv = "postfx_fs.vert.spv",
+ * frag from the mod).
+ * @param dev Device the pipeline is created on.
+ * @param desc Pipeline description, copied.
+ * @param vert_words Vertex SPIR-V words, or NULL.
+ * @param vert_n Word count of @p vert_words.
+ * @param frag_words Fragment SPIR-V words, or NULL.
+ * @param frag_n Word count of @p frag_words.
+ * @return The pipeline, or NULL on allocation or compile failure. */
 rhi_pipeline *rhi_create_pipeline_spv(rhi_device *dev,
                                       const rhi_pipeline_desc *desc,
                                       const uint32_t *vert_words, size_t vert_n,
@@ -854,14 +992,18 @@ void     rhi_ubo_bind_at(rhi_device *dev, rhi_ubo *ubo, uint32_t set,
                          uint32_t block);
 void     rhi_destroy_ubo(rhi_device *dev, rhi_ubo *ubo);
 
-/* ---- offscreen-as-input (S2: the COMPOSITE postfx point) ------------
- * rhi_offscreen_to_sampled: barrier off_image TRANSFER_SRC →
- * SHADER_READ (call between render passes) so a postfx pass can sample
- * the composed frame. rhi_bind_offscreen_tex: bind it as the sampler at
- * `set` (inside a pass, after the pipeline bind). resume_attachment:
- * the return barrier before re-beginning the offscreen pass (fragment
- * reads → color writes) for a chain's final pass, whose off_rp end
- * restores TRANSFER_SRC for the present blit. */
+/* ---- offscreen-as-input (the COMPOSITE postfx point) ----------------
+ * rhi_bind_offscreen_tex: bind off_image as the sampler at `set` (inside a
+ * pass, after the pipeline bind). resume_attachment: the return barrier
+ * before re-beginning the offscreen pass (fragment reads → color writes) for
+ * a chain's final pass, whose off_rp end restores TRANSFER_SRC for the
+ * present blit. */
+/** @brief Transition off_image from TRANSFER_SRC to SHADER_READ_ONLY so a postfx pass can sample the composed frame.
+ *
+ * Call between render passes. The offscreen pass's external dependency
+ * covers transfer reads only, so the barrier carries its own color-write to
+ * fragment-read dependency. Does nothing outside an active frame or for NULL.
+ * @param dev Device whose current frame records the barrier. */
 void rhi_offscreen_to_sampled(rhi_device *dev);
 void rhi_bind_offscreen_tex(rhi_device *dev, uint32_t set);
 void rhi_offscreen_resume_attachment(rhi_device *dev);
@@ -875,19 +1017,40 @@ void rhi_offscreen_resume_blit_src(rhi_device *dev);
  * @param tex Texture whose descriptor set is bound.
  * @param set Descriptor set index in the bound pipeline's layout. */
 void rhi_bind_texture_set(rhi_device *dev, rhi_texture *tex, uint32_t set);
-/* Postfx write-back blits: final ping RT → off_image (leaves it
- * TRANSFER_SRC for the present blit) / → another RT (leaves it
- * SHADER_READ for readback). Source is restored to SHADER_READ. */
+/** @brief Blit a postfx chain's final render target into off_image, leaving off_image TRANSFER_SRC for the present blit.
+ *
+ * Expects off_image in SHADER_READ (rhi_offscreen_to_sampled ran) and `src`
+ * in SHADER_READ after its render pass. The blit scales the whole of `src`
+ * to the swapchain extent with a nearest filter; `src` is restored to
+ * SHADER_READ. Call outside a render pass. Does nothing outside an active
+ * frame, for NULL, or when `src` is not a render target.
+ * @param dev Device whose current frame records the blit.
+ * @param src Render target holding the chain's output. */
 void rhi_blit_rt_to_offscreen(rhi_device *dev, rhi_texture *src);
+/** @brief Blit a render target into another render target, scaling the whole of `src` to `dst` with a nearest filter.
+ *
+ * The postfx write-back for a render-target compose path: `dst` is left
+ * SHADER_READ for readback and `src` is restored to SHADER_READ. Call
+ * outside a render pass. Does nothing outside an active frame, for NULL, or
+ * when either texture is not a render target.
+ * @param dev Device whose current frame records the blit.
+ * @param dst Destination render target.
+ * @param src Source render target, in SHADER_READ. */
 void rhi_blit_rt_to_rt(rhi_device *dev, rhi_texture *dst, rhi_texture *src);
 
 /* ---- the native-res PSX VRAM model (milestone 1b.2) -------------- */
 
-/* A single 16-bit-per-texel image (R16_UINT) that mirrors PSX VRAM one
- * uint per pixel — texture pages, CLUTs, and (later) the framebuffer
- * regions all live here, sampled through the ported PSX 4/8/16bpp + CLUT
- * decoder (shaders/psx_sample.frag). 1024x512 is the faithful PSX VRAM
- * extent; the renderer keeps a CPU mirror and uploads from it. */
+/** @brief Create the R16_UINT image that mirrors PSX VRAM one uint per pixel.
+ *
+ * Texture pages and CLUTs are sampled from it with texelFetch through the
+ * ported PSX 4/8/16bpp and CLUT decoder (shaders/psx_sample.frag), which does
+ * its own integer indexing, so no GPU filtering or normalization applies.
+ * 1024x512 is the PSX VRAM extent; the renderer keeps a CPU mirror and
+ * uploads from it. The image is device-local and sampleable on return.
+ * @param dev Device the image is created on.
+ * @param width Width in texels.
+ * @param height Height in texels.
+ * @return The texture, or NULL on failure. */
 rhi_texture *rhi_create_vram(rhi_device *dev, uint32_t width, uint32_t height);
 /* Upload the whole CPU mirror (width*height uint16 PSX pixels).
  *
@@ -916,15 +1079,25 @@ void rhi_update_vram_rects(rhi_device *dev, rhi_texture *tex,
                            const uint16_t *mirror,
                            const rhi_rect *rects, int nrects);
 
-/* An RGBA8 (R8G8B8A8_UNORM, bytes R,G,B,A) sampled image — e.g. a frame read
- * back from another renderer for A/B display. Shares the VRAM texture's
- * descriptor layout, so it binds via rhi_bind_vram and is drawn by a textured
- * pipeline that samples a normal sampler2D (shaders/blit.frag). `pixels` is
- * width*height*4 bytes. */
+/** @brief Create an R8G8B8A8_UNORM sampled image (bytes R,G,B,A), such as another renderer's frame for A/B display.
+ *
+ * Shares the VRAM texture's descriptor layout, so it binds with
+ * rhi_bind_vram and is drawn by a textured pipeline that samples a normal
+ * sampler2D (shaders/blit.frag). rhi_update_rgba8 fills it from
+ * width*height*4 bytes.
+ * @param dev Device the image is created on.
+ * @param width Width in texels.
+ * @param height Height in texels.
+ * @return The texture, or NULL on failure. */
 rhi_texture *rhi_create_rgba8(rhi_device *dev, uint32_t width, uint32_t height);
-/* A texelFetch-only R32G32B32A32_UINT image (usampler2D), bound with
- * rhi_bind_texture_set or a pair bind and written through
- * rhi_update_vram_rects_packed (16 bytes per texel). */
+/** @brief Create a texelFetch-only R32G32B32A32_UINT image, sampled through a usampler2D.
+ *
+ * Bound with rhi_bind_texture_set or a pair bind and written through
+ * rhi_update_vram_rects_packed (16 bytes per texel).
+ * @param dev Device the image is created on.
+ * @param width Width in texels.
+ * @param height Height in texels.
+ * @return The texture, or NULL on failure. */
 rhi_texture *rhi_create_u32x4(rhi_device *dev, uint32_t width, uint32_t height);
 void rhi_update_rgba8(rhi_device *dev, rhi_texture *tex, const void *pixels);
 
@@ -944,11 +1117,19 @@ void rhi_texture_set_filter_linear(rhi_device *dev, rhi_texture *tex);
 
 /* ---- render-to-texture (the diff pass; later: framebuffer effects) ----- */
 
-/* An RGBA8 image that is BOTH a color attachment AND a sampler2D — geometry
- * can be rendered into it (rhi_begin/end_render_target) and the result then
- * sampled by a later pass in the SAME frame. Carries its own depth buffer and
- * framebuffer; binds as a normal texture via rhi_bind_vram. Sized in pixels;
- * recreate (destroy + create) on size change. */
+/** @brief Create a color image that is both a color attachment and a sampler2D, with its own depth buffer and framebuffer.
+ *
+ * Geometry is rendered into it between rhi_begin_render_target and
+ * rhi_end_render_target, and a later pass in the same frame samples the
+ * result. The color format is the swapchain's (8-bit B,G,R,A in practice),
+ * so pipelines built for the offscreen pass are compatible; the image is
+ * also a transfer source and destination. Binds as a normal texture with
+ * rhi_bind_vram. Sized in pixels; recreate (destroy and create) on a size
+ * change.
+ * @param dev Device the target is created on.
+ * @param width Width in pixels.
+ * @param height Height in pixels.
+ * @return The render target, or NULL on failure. */
 rhi_texture *rhi_create_render_target(rhi_device *dev, uint32_t width, uint32_t height);
 
 /** @brief Begin a render pass into render target `rt`, clearing color to (r, g, b, a) and depth to far.
@@ -971,14 +1152,19 @@ void rhi_begin_render_target(rhi_device *dev, rhi_texture *rt,
                              float r, float g, float b, float a);
 void rhi_end_render_target(rhi_device *dev, rhi_texture *rt);
 
-/* Like rhi_create_render_target, but the DEPTH attachment is ALSO sampleable:
- * the target renders through a render pass whose depth is STORED and finishes
- * SHADER_READ_ONLY, so a LATER pass in the same frame can sample the per-pixel
- * depth (a WORLD-opaque depth PRE-PASS for shadows / decals / soft particles —
- * per-pixel occlusion with no global depth bias). Bind the depth via
- * rhi_bind_depth_sampler after the pre-pass has ended. Returns NULL if the
- * device cannot sample the depth format (not spec-required for the combined
- * depth+stencil formats; universal in practice — callers keep a fallback). */
+/** @brief Create a render target whose depth attachment is also sampleable.
+ *
+ * The target renders through a render pass whose depth is stored and ends
+ * SHADER_READ_ONLY, so a later pass in the same frame can sample the
+ * per-pixel depth (a world-opaque depth pre-pass for shadows, decals and
+ * soft particles: per-pixel occlusion with no global depth bias). The depth
+ * is bound with rhi_bind_depth_sampler after the pre-pass has ended.
+ * @param dev Device the target is created on.
+ * @param width Width in pixels.
+ * @param height Height in pixels.
+ * @return The render target, or NULL on failure or when the device cannot
+ *         sample the depth format (not spec-required for the combined
+ *         depth+stencil formats; callers keep a fallback). */
 rhi_texture *rhi_create_render_target_depth_sampled(rhi_device *dev,
                                                     uint32_t width, uint32_t height);
 /** @brief Bind a depth-sampled render target's depth aspect as a combined image sampler at descriptor `set`.
@@ -992,12 +1178,24 @@ rhi_texture *rhi_create_render_target_depth_sampled(rhi_device *dev,
  * @param rt Depth-sampled render target.
  * @param set Descriptor set index in the bound pipeline's layout. */
 void rhi_bind_depth_sampler(rhi_device *dev, rhi_texture *rt, uint32_t set);
-/* Async readback of a SMALL render target's color image (the occlusion grid),
- * ring-buffered exactly like rhi_cycle_readback: call once per frame AFTER the
- * pass that renders `rt`; queues this frame's copy into the frame slot and
- * returns the capture from RHI_FRAMES_IN_FLIGHT presents ago (true + fills
- * out/out_w/out_h in R,G,B,A byte order), riding the frame fence — no GPU
- * stall. Single ring per device (one client); `out` needs w*h*4 bytes. */
+/** @brief Queue this frame's copy of a small render target's color image and return the one the frame slot queued last.
+ *
+ * Ring-buffered like rhi_cycle_readback, for the occlusion grid: call once
+ * per frame after the pass that renders `rt`. The slot's previous capture,
+ * queued RHI_FRAMES_IN_FLIGHT frames ago and retired by rhi_begin_frame's
+ * fence wait, is written to `out` in R,G,B,A byte order with no GPU stall; a
+ * capture that does not fit `out_bytes` is dropped. The copy moves `rt` from
+ * SHADER_READ_ONLY to TRANSFER_SRC and back within the frame. One ring per
+ * device, so one client.
+ * @param dev Device whose current frame records the copy.
+ * @param rt Render target to capture, in SHADER_READ_ONLY.
+ * @param out Destination, w*h*4 bytes.
+ * @param out_bytes Capacity of @p out.
+ * @param out_w Receives the capture's width; may be NULL.
+ * @param out_h Receives the capture's height; may be NULL.
+ * @return true when a capture was written to @p out; false until the ring
+ *         fills, outside an active frame, or when @p rt is not a render
+ *         target. */
 bool rhi_cycle_rt_readback(rhi_device *dev, rhi_texture *rt,
                            void *out, size_t out_bytes, int *out_w, int *out_h);
 /* Override the current pass's viewport+scissor to a (w,h) Y-flipped rect. Used
@@ -1009,11 +1207,16 @@ void rhi_set_viewport(rhi_device *dev, int w, int h);
  * pass — rhi_begin_offscreen — renders at). Used to size a shared depth
  * pre-pass to cover the largest scene target. */
 void rhi_swapchain_extent(const rhi_device *dev, int *w, int *h);
-/* The render area of the current pass, recorded at every pass begin (offscreen
- * = the swapchain extent, render target = the target's own extent). Every pass
- * begin also sets an origin-0 viewport of exactly this size, so a fragment
- * shader's gl_FragCoord maps to clip space through it alone. Zero outside a
- * pass. */
+/** @brief Write the render area of the current pass, recorded at every pass begin.
+ *
+ * The offscreen pass records the swapchain extent, a render-target pass the
+ * target's own extent. Every pass begin also sets an origin-0 viewport of
+ * exactly this size, so a fragment shader's gl_FragCoord maps to clip space
+ * through it alone. Outside a pass the last pass's extent remains; it is
+ * zero only before the first pass.
+ * @param dev Device, or NULL (writes 0).
+ * @param w Receives the width; may be NULL.
+ * @param h Receives the height; may be NULL. */
 void rhi_pass_extent(const rhi_device *dev, int *w, int *h);
 
 /* Mark a render target's depth convention (default RHI_DEPTH_SCENE). Its
@@ -1021,15 +1224,24 @@ void rhi_pass_extent(const rhi_device *dev, int *w, int *h);
  * far value. The offscreen pass is always RHI_DEPTH_SCENE. */
 void rhi_set_render_target_depth_class(rhi_texture *rt, rhi_depth_class cls);
 
-/* Clear the depth attachment to far WITHIN the current pass (offscreen or render
- * target); far is the pass's depth class's clear value. Used to depth-isolate a late on-top overlay (3D HUD icons) so it
- * Z-sorts internally without being occluded by, or occluding, world geometry. */
+/** @brief Clear the depth aspect to far over the current pass's render area, within the pass.
+ *
+ * Far is the clear value of the pass's depth class. vkCmdClearAttachments
+ * clears in the active subpass, so no new render pass begins. Used to
+ * depth-isolate a late on-top overlay (the 3D HUD icons) so it Z-sorts
+ * internally without being occluded by, or occluding, world geometry. Does
+ * nothing outside an active frame; must be called inside the offscreen or a
+ * render-target pass.
+ * @param dev Device whose current pass is cleared. */
 void rhi_clear_depth(rhi_device *dev);
 
-/* Clear the STENCIL aspect to 0 WITHIN the current pass (offscreen or render
- * target). Used between per-object stencil-mask groups (e.g. one portal's
- * aperture mask + masked draw, then clear, then the next portal's), so a fixed
- * stencil reference of 1 isolates objects without reference juggling. */
+/** @brief Clear the stencil aspect to 0 over the current pass's render area, within the pass.
+ *
+ * Used between per-object stencil-mask groups (one portal's aperture mask
+ * and masked draw, then the clear, then the next portal's), so a fixed
+ * stencil reference of 1 isolates objects. Does nothing outside an active
+ * frame; must be called inside the offscreen or a render-target pass.
+ * @param dev Device whose current pass is cleared. */
 void rhi_clear_stencil(rhi_device *dev);
 
 /* Read a render target back into a host RGBA8 buffer (byte order R,G,B,A, alpha
@@ -1042,8 +1254,13 @@ void rhi_clear_stencil(rhi_device *dev);
 bool rhi_read_render_target(rhi_device *dev, rhi_texture *rt, void *out,
                             size_t out_bytes, int *out_w, int *out_h);
 
-/* A depth-sampled render target whose depth image also allows transfer reads,
- * for rhi_read_render_target_depth. */
+/** @brief Create a depth-sampled render target whose depth image also allows transfer reads, for rhi_read_render_target_depth.
+ *
+ * @param dev Device the target is created on.
+ * @param width Width in pixels.
+ * @param height Height in pixels.
+ * @return The render target, or NULL on failure or when the device cannot
+ *         sample the depth format. */
 rhi_texture *rhi_create_render_target_depth_readable(rhi_device *dev,
                                                      uint32_t width, uint32_t height);
 /* Read the depth aspect of a render target made by
@@ -1079,15 +1296,31 @@ void rhi_texture_extent(const rhi_texture *tex, int *w, int *h);
  * @param pipe Pipeline to bind. */
 void rhi_bind_pipeline(rhi_device *dev, rhi_pipeline *pipe);
 void rhi_bind_vertex_buffer(rhi_device *dev, rhi_buffer *buf);
-/* Bind binding 0 + binding 1 (terrain_anim pipelines: cur verts + prev twin). */
+/** @brief Bind two vertex buffers at bindings 0 and 1 (terrain_anim pipelines: current vertices and their previous twin).
+ *
+ * A ring buffer binds at its current frame slot and generation, a
+ * single-instance buffer at offset 0. Does nothing outside an active frame;
+ * neither buffer is checked for NULL.
+ * @param dev Device whose current frame records the bind.
+ * @param buf Buffer for binding 0.
+ * @param prev Buffer for binding 1. */
 void rhi_bind_vertex_buffer2(rhi_device *dev, rhi_buffer *buf, rhi_buffer *prev);
-/* Bind a texture's descriptor set to set 0 for the current (uses_vram)
- * pipeline; call after rhi_bind_pipeline, before the draw. Works for any
- * rhi_texture (the VRAM image or an RGBA8 image) — the set layout is the
- * same; only the shader's sampler type differs. */
+/** @brief Bind a texture's descriptor set at set 0 of the current (uses_vram) pipeline.
+ *
+ * Call after rhi_bind_pipeline, which sets the layout the bind uses, and
+ * before the draw. Works for any rhi_texture (the VRAM image, an RGBA8
+ * image, a render target): the set layout is the same and only the shader's
+ * sampler type differs. Does nothing outside an active frame; `tex` is not
+ * checked for NULL.
+ * @param dev Device whose current frame records the bind.
+ * @param tex Texture whose descriptor set is bound. */
 void rhi_bind_vram(rhi_device *dev, rhi_texture *tex);
-/* Bind a second texture to set 1 (for a uses_vram2 pipeline — e.g. the diff
- * pass's reference sampler). Call after rhi_bind_pipeline + rhi_bind_vram. */
+/** @brief Bind a second texture's descriptor set at set 1 (a uses_vram2 pipeline, such as the diff pass's reference sampler).
+ *
+ * Call after rhi_bind_pipeline and rhi_bind_vram. Does nothing outside an
+ * active frame; `tex` is not checked for NULL.
+ * @param dev Device whose current frame records the bind.
+ * @param tex Texture whose descriptor set is bound. */
 void rhi_bind_vram2(rhi_device *dev, rhi_texture *tex);
 /** @brief Bind the sampled depth of `depth_rt` (binding 0) and `tex` (binding 1) as a two-sampler pair set at `set`.
  *
@@ -1137,13 +1370,24 @@ void rhi_set_depth_bias(rhi_device *dev, float constant, float clamp, float slop
  * pipeline desc's push_const_size). */
 void rhi_push_constants(rhi_device *dev, const void *data, uint32_t size);
 void rhi_draw(rhi_device *dev, uint32_t vertex_count, uint32_t first_vertex);
-/* Instanced draw: vertex_count vertices per instance (gl_VertexIndex restarts
- * at first_vertex for each), instance_count instances from first_instance
- * (the instance-rate binding's record index). Counts as one draw call. */
+/** @brief Record an instanced draw.
+ *
+ * gl_VertexIndex restarts at first_vertex for each instance. Counts as one
+ * draw call in rhi_draw_calls. Does nothing outside an active frame.
+ * @param dev Device whose current frame records the draw.
+ * @param vertex_count Vertices per instance.
+ * @param instance_count Number of instances.
+ * @param first_vertex First vertex index of each instance.
+ * @param first_instance First instance index (the instance-rate binding's
+ *                       record index). */
 void rhi_draw_instanced(rhi_device *dev, uint32_t vertex_count, uint32_t instance_count,
                         uint32_t first_vertex, uint32_t first_instance);
-/* Number of rhi_draw calls recorded since the last rhi_begin_frame (perf
- * census — the draw-submission count the material batching is minimizing). */
+/** @brief Return the number of draws recorded since the last frame began.
+ *
+ * rhi_draw and rhi_draw_instanced each count one. A perf census: the
+ * draw-submission count the material batching minimizes.
+ * @param dev Device.
+ * @return The count, reset at every successful frame begin. */
 uint32_t rhi_draw_calls(rhi_device *dev);
 
 /* ------------------------------------------------------------------ */
@@ -1205,7 +1449,15 @@ typedef struct {
     uint32_t image_count;      /* swapchain image count (>= 2) */
     uint32_t api_version;      /* VK_API_VERSION the instance was created with */
 } rhi_imgui_info;
-/* False on a headless device (no window — the dev UI never initializes). */
+/** @brief Fill `out` with the Vulkan handles the dev UI backend initializes from.
+ *
+ * The render pass is the offscreen pass, image_count is the swapchain image
+ * count raised to at least 2, and api_version is Vulkan 1.2, the version the
+ * instance was created with.
+ * @param dev Device, or NULL.
+ * @param out Destination, or NULL.
+ * @return true when filled; false for NULL arguments or a headless device
+ *         (no window, so the dev UI never initializes). */
 bool  rhi_get_imgui_info(rhi_device *dev, rhi_imgui_info *out);
 void *rhi_current_command_buffer(rhi_device *dev);
 

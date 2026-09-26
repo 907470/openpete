@@ -1974,9 +1974,11 @@ static bool recreate(rhi_device *dev)
 
 /* ------------------------------------------------------------------ */
 
-/* The device's memory table, one line per type: which properties a type
- * carries and which heap it draws from. A harness that must name a heap
- * reads it here instead of inferring it from an allocation's type index. */
+/** @brief Log the device's memory table: one line per heap (size, flags) and per type (property flags, heap).
+ *
+ * Runs at every device creation. A harness that must name a heap reads it
+ * here instead of inferring it from an allocation's type index.
+ * @param dev Device whose physical device is queried. */
 static void rhi_log_memory_types(rhi_device *dev)
 {
     VkPhysicalDeviceMemoryProperties mp;
@@ -3202,10 +3204,6 @@ void rhi_notify_resize(rhi_device *dev)
     if (dev) dev->needs_recreate = true;
 }
 
-/* As rhi_notify_resize, for a size change the app itself caused: rebuild at
- * the next begin_frame instead of waiting out the settle window meant for a
- * live drag. The back-off is cleared too — a toggle is not the sustained
- * OUT_OF_DATE storm that back-off exists to damp. */
 void rhi_notify_resize_immediate(rhi_device *dev)
 {
     if (!dev) return;
@@ -3396,18 +3394,6 @@ static VkResult tc_alloc_try(rhi_device *dev, const VkMemoryAllocateInfo *mai,
     return vkAllocateMemory(dev->device, mai, NULL, out);
 }
 
-/* A host-mapped vertex buffer the vertex stage fetches every present (the
- * terrain arenas): written rarely, on sector rebuilds, and read by the GPU
- * continuously.
- *
- * Allocation is attempted on every host-visible, host-coherent memory type
- * the buffer accepts, DEVICE_LOCAL types first (rhi_memtype_candidates), and
- * the first type that allocates wins. A device-local host-visible heap can be
- * far smaller than the device's video memory (a 256 MB BAR window, or
- * whatever a resizable-BAR driver reports), and its free space varies with
- * what else is resident, so an allocation that fits on one run fails on the
- * next; falling through to system memory costs bandwidth and keeps the
- * buffer. NULL is returned only when every candidate fails. */
 rhi_buffer *rhi_create_vertex_buffer_device(rhi_device *dev, size_t bytes)
 {
     rhi_buffer *b = calloc(1, sizeof(*b));
@@ -3997,11 +3983,6 @@ void rhi_set_render_target_depth_class(rhi_texture *rt, rhi_depth_class cls)
     if (rt && rt->is_rt) rt->depth_class = cls;
 }
 
-/* Clear the depth attachment to far (the pass's depth class's clear value)
- * WITHIN the current render pass — used
- * to isolate a late depth-tested overlay (the 3D HUD icons) from world depth so
- * it sorts internally yet always draws on top. vkCmdClearAttachments clears in
- * the active subpass over the given rect (no new render pass). */
 void rhi_clear_depth(rhi_device *dev)
 {
     if (!dev->frame_active) return;
@@ -4016,8 +3997,6 @@ void rhi_clear_depth(rhi_device *dev)
     vkCmdClearAttachments(dev->cmd[dev->frame], 1, &att, 1, &rect);
 }
 
-/* Clear the STENCIL aspect to 0 within the current pass — between per-object
- * stencil-mask groups (fixed reference 1 + clear = per-object isolation). */
 void rhi_clear_stencil(rhi_device *dev)
 {
     if (!dev->frame_active) return;
@@ -5018,8 +4997,8 @@ static void terrain_vertex_input(const rhi_pipeline_desc *desc,
     }
 }
 
-/* The descriptor set layouts of a pipeline described by `desc`, written to
- * out[0..6]; returns how many of them the pipeline layout uses.
+/* Descriptor set layouts per pipeline kind, as pipeline_set_layouts writes
+ * them to out[0..6].
  *
  * set 0 (uses_vram) + optional set 1 (uses_vram2, e.g. the diff pass's
  * reference sampler) both reuse the single-binding vram set layout.
@@ -5035,8 +5014,20 @@ static void terrain_vertex_input(const rhi_pipeline_desc *desc,
  * ABOVE the UBO pair (sets 4..6) rather than replacing sets 1/2 so a
  * material's own uniform block stays at set 3 binding 1 — the one part of
  * the layout mod source actually writes. */
+/** @brief Return the larger of two unsigned 32-bit values.
+ *
+ * @param a First value.
+ * @param b Second value.
+ * @return max(@p a, @p b). */
 static uint32_t rhi_max_u32(uint32_t a, uint32_t b) { return a > b ? a : b; }
 
+/** @brief Write the descriptor set layouts of a pipeline described by `desc` to out[0..6].
+ *
+ * The per-kind assignment is the table in the comment above rhi_max_u32.
+ * @param dev Device holding the set layouts.
+ * @param desc Pipeline description.
+ * @param out Receives seven set layouts.
+ * @return How many of them, from set 0, the pipeline layout uses. */
 static uint32_t pipeline_set_layouts(const rhi_device *dev, const rhi_pipeline_desc *desc,
                                      VkDescriptorSetLayout out[7])
 {
@@ -5696,11 +5687,6 @@ void rhi_bind_texture_set(rhi_device *dev, rhi_texture *tex, uint32_t set)
                             dev->cur_layout, set, 1, &tex->set, 0, NULL);
 }
 
-/* Postfx chain write-back (S3): 1:1 blit of the chain's final ping RT
- * back into off_image, leaving off_image TRANSFER_SRC for the present
- * blit and the source RT sampleable again. Expects off_image in
- * SHADER_READ (rhi_offscreen_to_sampled ran) and src post-rt-pass
- * (SHADER_READ). */
 void rhi_blit_rt_to_offscreen(rhi_device *dev, rhi_texture *src)
 {
     if (!dev || !src || !src->is_rt || !dev->frame_active) return;
