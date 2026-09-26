@@ -141,9 +141,12 @@ control failing at its record ([`duckstation-oracle.md`](duckstation-oracle.md))
   sources listed in its `CMakeLists.txt`; the other games render through
   PsyCross (`openpete_options_set_default_renderer` in
   `games/common/game_main.cpp`).
-- The presentation golden (`tests/golden/spyro-1/presentation/`) and the
-  windowed oracle row (`psx_oracle_windowed`) exist for Spyro 1 alone,
-  since only it has the native renderer.
+- The dragon-rescue golden tier (`tests/golden/spyro-1/dragons/`) exists
+  for Spyro 1 alone. The presentation golden itself is per game
+  (`tests/golden/<game>/presentation/blessed.tsv` for spyro-1, spyro-2 and
+  spyro-3; ctest rows `presentation_golden` and `presentation_golden_spyro3`,
+  none for spyro-2), as is the windowed oracle row (`psx_oracle_windowed`,
+  `psx_oracle_windowed_spyro-3`).
 - `core/` still carries Spyro-named debug knobs (`SPYRO_SCRATCH_MAT`,
   `SPYRO_UNTEX` in `core/config/knob_registry.c`); the `core/` purity check
   refuses bare `0x800XXXXX` literals and Win32-only APIs, not Spyro-specific
