@@ -23,12 +23,20 @@
 # (the store and the state file beside it) is mounted read-write and the
 # variable is passed through.
 #
+# OPENPETE_CAPTURE_TREE names another source tree to mount and run in (a
+# materialize worktree at a past revision, which carries no copy of this
+# script); the image is built from this checkout's recipe either way.
+#
 # Rootless podman on a btrfs home has no overlay driver; build the image
 # there as scripts/release-container.sh describes (podman run + commit).
 # Elsewhere this script builds the image when it is absent, from an empty
 # context directory.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+RECIPE_DIR="$PWD"
+if [[ -n "${OPENPETE_CAPTURE_TREE:-}" ]]; then
+    cd "$OPENPETE_CAPTURE_TREE" || { echo "[capture-container] no tree at $OPENPETE_CAPTURE_TREE" >&2; exit 64; }
+fi
 TREE="$PWD"
 
 IMAGE="${OPENPETE_CAPTURE_IMAGE:-openpete-linux-capture}"
@@ -49,7 +57,7 @@ esac
 if ! "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1; then
     echo "[capture-container] building $IMAGE"
     ctx="$(mktemp -d)"
-    cp docs/linux-capture.Dockerfile "$ctx/Dockerfile"
+    cp "$RECIPE_DIR/docs/linux-capture.Dockerfile" "$ctx/Dockerfile"
     "$ENGINE" build -f "$ctx/Dockerfile" -t "$IMAGE" "$ctx"
     rm -rf "$ctx"
 fi

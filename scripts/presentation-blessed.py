@@ -102,8 +102,11 @@ DIGEST_RULE = ('sha256(b"RGB\\n" + width + b"\\n" + height + b"\\n" + '
 ENV_KEYS = ("recipe-hash", "mesa", "device", "compiler", "preset",
             "image-digest")
 # Materialize price components (the materialize rebuilds the blessed revision
-# and re-captures each corpus row a divergent tile belongs to).
-PRICE_BUILD_MIN = 10
+# and re-captures each corpus row a divergent tile belongs to): worktree,
+# decomp re-make, PSXRecomp and regens ~1 min; the in-image configure and
+# game build 3 to 10 min (spyro-1 to spyro-3); a capture per corpus row.
+PRICE_PREP_MIN = 1
+PRICE_BUILD_MIN = (3, 10)
 PRICE_ROW_S = 46
 
 
@@ -818,9 +821,8 @@ def corpus_row(tile):
 
 def price(nrows):
     """Materialize price for re-capturing nrows corpus rows."""
-    return ("build~%dmin+capture~%ds*%d corpus row(s)+unmeasured "
-            "(decomp re-make, decomp image, PSXRecomp rebuild, regens)"
-            % (PRICE_BUILD_MIN, PRICE_ROW_S, nrows))
+    return ("prep~%dmin+build~%d-%dmin+capture~%ds*%d corpus row(s)"
+            % ((PRICE_PREP_MIN,) + PRICE_BUILD_MIN + (PRICE_ROW_S, nrows)))
 
 
 class Archive:
@@ -968,10 +970,25 @@ def cmd_golden_at(a):
                   "carries no --materialize-ref; %d row(s) not materialized"
                   % len(misses), file=sys.stderr)
             return 1
-        tiles = sorted({r["tile"] for _, r in misses})
-        return subprocess.call(
-            ["tests/harness/check_presentation_golden.sh",
-             "--materialize-ref"] + tiles, cwd=root)
+        # Only a tier's blessed.tsv row is regenerable by a materialize.
+        tiers = {manifest_path(g, t): (g, t) for t in TIERS for g in TIERS[t]}
+        groups, rc = {}, 0
+        for mpath, r in misses:
+            if mpath not in tiers:
+                print("[presentation-blessed] --materialize: %s row %s is "
+                      "not a blessed.tsv row; not materialized"
+                      % (mpath, r["tile"]), file=sys.stderr)
+                rc = 1
+                continue
+            groups.setdefault(tiers[mpath], []).append(r["tile"])
+        sys.stdout.flush()
+        for (game, tier), tiles in sorted(groups.items()):
+            extra = [] if src_repo == root else ["--from-archive"]
+            rc |= subprocess.call(
+                ["tests/harness/check_presentation_golden.sh",
+                 "--materialize-ref", "--game", game, "--tier", tier,
+                 "--at", src_sha] + extra + sorted(set(tiles)), cwd=root)
+        return rc
     return 0
 
 

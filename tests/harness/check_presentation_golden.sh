@@ -17,6 +17,8 @@
 #   tests/harness/check_presentation_golden.sh [--build-dir=DIR] [--filter=SUBSTR]
 #                                        [--freecam-filter=SUBSTR] [--bless]
 #                                        [--game SLUG]
+#   tests/harness/check_presentation_golden.sh --materialize-ref [--game SLUG]
+#                                        [--tier T] [--at REV] <tile>...
 #     --filter          bk2-name substring (default all bk2s)
 #     --freecam-filter  freecam level substring (default all poses)
 #                       Either filter scopes the run to part of the corpus: the
@@ -64,6 +66,13 @@ set -u
 cd "$(dirname "$0")/../.."
 # shellcheck source=scripts/presentation-game.sh
 source scripts/presentation-game.sh
+
+# --materialize-ref [--game G] [--tier T] [--at REV] <tile>...: rebuild the
+# blessed revision of the named rows in a throwaway worktree and re-capture
+# their tiles (scripts/presentation-materialize.py). Manual; refused under ctest.
+if [[ "${1:-}" == "--materialize-ref" ]]; then
+  shift; exec python3 scripts/presentation-materialize.py "$@"
+fi
 
 FILTER=""           # bk2-name substring; default = the whole fanned-out corpus
 FREECAM_FILTER=""   # level substring for the freecam corpus; default = all poses
