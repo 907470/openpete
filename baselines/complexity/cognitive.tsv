@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 1622bd5c87c84bd4d3596255992f2111b1a7e5bf
+# head: 7e63d3acb5d3c52aafbd66984b7e8d1d06c80cf8
 file	function	score	marked	accepted
 core/config/config.c	harvest_args	30	0	
 core/config/config.c	harvest_base	39	0	
@@ -114,11 +114,10 @@ core/ui/openpete_osd.c	openpete_osd_present_update	47	0
 games/common/freecam_game.c	freecam_drive	38	0	
 games/common/freecam_game.c	freecam_path_parse	42	0	
 games/common/psyq/psyq_thunks.cpp	cd_command_host	27	0	
-games/common/psyq/psyq_thunks.cpp	format_from_mips	91	0	
-games/common/psyq/psyq_thunks.cpp	psyq_CdRead	41	0	
+games/common/psyq/psyq_thunks.cpp	format_from_mips	79	0	
+games/common/psyq/psyq_thunks.cpp	psyq_CdRead	36	0	
 games/common/psyq/psyq_thunks.cpp	psyq_CdSync	38	0	
 games/common/psyq/psyq_thunks.cpp	psyq_DrawOTag	174	0	
-games/common/psyq/psyq_thunks.cpp	psyq_SpuWrite	28	0	
 games/common/renderer/cyclorama.c	compare_and_report	45	0	
 games/common/renderer/cyclorama.c	cyc_extract_m	139	0	
 games/common/renderer/cyclorama.c	cyclorama_reextract	57	0	

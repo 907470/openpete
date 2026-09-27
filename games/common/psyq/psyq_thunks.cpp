@@ -264,14 +264,76 @@ extern "C" {
 
 /* --- Helpers ------------------------------------------------------------- */
 
-/* PSX vaddr (held in cpu->aN) → host pointer via openpete_core's memory map. */
-#define PTR(addr) ((void*)openpete_psx_to_host_ptr((uint32_t)(addr)))
-/* A guest NULL must stay NULL. PTR(0) resolves to the host address of PSX RAM
- * offset 0, which is a valid pointer, so a PSYQ call that writes through an
- * optional out-parameter would silently overwrite the start of guest RAM
- * instead of skipping the write. Every optional pointer argument goes through
- * this. */
-#define PTR_OPT(addr) ((addr) ? PTR(addr) : nullptr)
+/** @brief Resolve a guest pointer argument to a host pointer valid for @p len bytes, warning once per call site on refusal.
+ *
+ * The span must lie inside one guest region (openpete_psx_to_host_span). A
+ * refused span, guest NULL included, logs the call, the address and the
+ * length the first time its site refuses one; the caller then skips the
+ * access and returns the PSYQ call's failure value.
+ * @param call The thunk's name, for the warning.
+ * @param addr The guest address, as held in cpu->aN.
+ * @param len The bytes the thunk or PsyCross reads or writes there.
+ * @param warned The call site's once-flag.
+ * @return The host pointer, or NULL when the span is refused. */
+static void* psyq_span(const char* call, uint32_t addr, uint32_t len, bool* warned) {
+    void* p = openpete_psx_to_host_span(addr, len);
+    if (p == nullptr && !*warned) {
+        *warned = true;
+        OPL_WARN_F("psyq", "%s: guest span 0x%08X+0x%X refused; access skipped", call, addr, len);
+    }
+    return p;
+}
+
+/** @brief Resolve a guest C string read up to its NUL or @p max bytes, warning once per call site on refusal.
+ *
+ * The NUL scan stops at the end of the string's region
+ * (openpete_psx_to_host_str), so no host read built on the result passes
+ * it.
+ * @param call The thunk's name, for the warning.
+ * @param addr The guest address of the string.
+ * @param max The most bytes the reader consumes; UINT32_MAX for a string
+ *        read to its terminator.
+ * @param len_out Receives the string's length, the NUL excluded, capped at
+ *        @p max; may be NULL.
+ * @param warned The call site's once-flag.
+ * @return The host pointer, or NULL when the string is refused. */
+static const char* psyq_str(const char* call, uint32_t addr, uint32_t max, uint32_t* len_out, bool* warned) {
+    const char* p = openpete_psx_to_host_str(addr, max, len_out);
+    if (p == nullptr && !*warned) {
+        *warned = true;
+        OPL_WARN_F("psyq", "%s: guest string at 0x%08X runs past its region; access skipped", call, addr);
+    }
+    return p;
+}
+
+/** @brief Clamp a 64-bit byte count to the span length argument; a count past 4 GiB becomes UINT32_MAX, which every span refuses. */
+static inline uint32_t psyq_len(uint64_t n) {
+    return n > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)n;
+}
+
+/* Each expansion's lambda is its own type, so its static is a once-flag
+ * private to the call site. */
+#define PSYQ_SITE_ONCE() ([]() -> bool* { static bool s_warned; return &s_warned; }())
+/* Guest pointer argument → host pointer valid for len bytes, or NULL. */
+#define SPAN(addr, len) psyq_span(__func__, (uint32_t)(addr), psyq_len(len), PSYQ_SITE_ONCE())
+/* A guest NULL must stay NULL without a warning: an optional argument of 0
+ * skips the access the PSYQ call makes for it. A nonzero address resolves
+ * through SPAN; the site tells a refusal from an absent argument by the
+ * address. */
+#define SPAN_OPT(addr, len) ((addr) ? SPAN(addr, len) : nullptr)
+/* Guest C string → host pointer whose bytes to the NUL (or max) lie in one
+ * region, or NULL; lenp may be NULL. */
+#define GSTR(addr, max, lenp) psyq_str(__func__, (uint32_t)(addr), (uint32_t)(max), (lenp), PSYQ_SITE_ONCE())
+
+/* libgpu's environment block, as the thunks touch it: VRAM size at +4, the
+ * current DRAWENV (0x5C bytes) at +0x10, the current DISPENV (0x14 bytes)
+ * at +0x6C, ending at +0x80. */
+#define PSYQ_LIBGPU_ENV_SIZE 0x80u
+
+/** @brief Bytes a LoadImage or StoreImage transfer moves for @p r: w * h 16-bit pixels, 0 when either side is not positive (PsyCross then moves nothing). */
+static inline uint64_t psyq_image_bytes(const RECT16* r) {
+    return (r->w > 0 && r->h > 0) ? (uint64_t)r->w * (uint64_t)r->h * 2u : 0u;
+}
 
 /* PSYQ callbacks (CdReadCallback, VSyncCallback) take a PSX function
  * pointer that the compiled C wants invoked when the underlying event
@@ -1264,14 +1326,15 @@ void psyq_DrawSync(CPUState* cpu) {
  * environment block's DRAWENV. The restore words carry the same E3/E4/E5
  * payloads PutDrawEnv packs. The E1 payload is written as 0 (see the note in
  * the body). Nothing is written when the game names no environment or fill
- * block.
+ * block, or when either block's span runs past its region.
  * @param rect The guest rectangle, clamped in place.
  * @param color24 The fill colour, 0xBBGGRR. */
 static void psyq_mirror_clear_image(RECT16* rect, uint32_t color24) {
     const uint32_t env = psyq_game_libgpu_env_addr();
     const uint32_t blk = psyq_game_libgpu_clear_block_addr();
     if (!env || !blk) return;
-    const uint8_t* e = (const uint8_t*)PTR(env);
+    const uint8_t* e = (const uint8_t*)SPAN(env, PSYQ_LIBGPU_ENV_SIZE);
+    if (!e) return;
     int16_t vram_w, vram_h;
     memcpy(&vram_w, e + 4, 2);
     memcpy(&vram_h, e + 6, 2);
@@ -1303,11 +1366,18 @@ static void psyq_mirror_clear_image(RECT16* rect, uint32_t color24) {
         w[12] = 0xE5000000u | ((uint32_t)(cur->ofs[1] & 0x7FF) << 11) | (uint32_t)(cur->ofs[0] & 0x7FF);
         n = 13;
     }
-    memcpy(PTR(blk), w, 4u * (uint32_t)n);
+    void* b = SPAN(blk, 4u * (uint32_t)n);
+    if (b) memcpy(b, w, 4u * (uint32_t)n);
 }
 
+/** @brief Thunk for libgpu ClearImage: mirrors libgpu's RAM writes, then runs PsyCross's ClearImage on the guest RECT.
+ *
+ * a0 is the RECT, clamped in place; a1..a3 are r, g, b. A RECT span that
+ * runs past its region returns -1 with nothing written.
+ * @param cpu Guest CPU state. */
 void psyq_ClearImage(CPUState* cpu) {
-    RECT16* rect = (RECT16*)PTR(cpu->a0);
+    RECT16* rect = (RECT16*)SPAN(cpu->a0, sizeof(RECT16));
+    if (!rect) { cpu->v0 = (uint32_t)-1; return; }
     psyq_mirror_clear_image(rect, ((cpu->a3 & 0xFFu) << 16) | ((cpu->a2 & 0xFFu) << 8) | (cpu->a1 & 0xFFu));
     cpu->v0 = (uint32_t)ClearImage(rect,
                                    (u_char)cpu->a1,
@@ -1317,18 +1387,37 @@ void psyq_ClearImage(CPUState* cpu) {
     psyq_mirror_stack_frame(cpu, PSYQ_FRAME_CLEARIMAGE);
 }
 
+/** @brief Thunk for libgpu LoadImage: PsyCross's LoadImage from the guest RECT and the w * h 16-bit pixels at a1.
+ *
+ * v0 is -1 with no transfer when the RECT or the pixel span runs past its
+ * region.
+ * @param cpu Guest CPU state. */
 void psyq_LoadImage(CPUState* cpu) {
-    RECT16* r = (RECT16*)PTR(cpu->a0);
-    cpu->v0 = (uint32_t)LoadImage(r, (u_long*)PTR(cpu->a1));
+    RECT16* r = (RECT16*)SPAN(cpu->a0, sizeof(RECT16));
+    u_long* src = r ? (u_long*)SPAN(cpu->a1, psyq_image_bytes(r)) : nullptr;
+    if (!src) { cpu->v0 = (uint32_t)-1; return; }
+    cpu->v0 = (uint32_t)LoadImage(r, src);
 }
 
+/** @brief Thunk for libgpu StoreImage: PsyCross's StoreImage of the guest RECT into the w * h 16-bit pixels at a1.
+ *
+ * v0 is -1 with no transfer when the RECT or the pixel span runs past its
+ * region.
+ * @param cpu Guest CPU state. */
 void psyq_StoreImage(CPUState* cpu) {
-    cpu->v0 = (uint32_t)StoreImage((RECT16*)PTR(cpu->a0),
-                                   (u_long*)PTR(cpu->a1));
+    RECT16* r = (RECT16*)SPAN(cpu->a0, sizeof(RECT16));
+    u_long* dst = r ? (u_long*)SPAN(cpu->a1, psyq_image_bytes(r)) : nullptr;
+    if (!dst) { cpu->v0 = (uint32_t)-1; return; }
+    cpu->v0 = (uint32_t)StoreImage(r, dst);
 }
 
+/** @brief Thunk for libgpu MoveImage: PsyCross's MoveImage of the guest RECT to (a1, a2).
+ *
+ * v0 is -1 with no copy when the RECT runs past its region.
+ * @param cpu Guest CPU state. */
 void psyq_MoveImage(CPUState* cpu) {
-    RECT16* r = (RECT16*)PTR(cpu->a0);
+    RECT16* r = (RECT16*)SPAN(cpu->a0, sizeof(RECT16));
+    if (!r) { cpu->v0 = (uint32_t)-1; return; }
     cpu->v0 = (uint32_t)MoveImage(r, (int)cpu->a1, (int)cpu->a2);
 }
 
@@ -1343,11 +1432,18 @@ extern "C" void openpete_fb_snapshot_note_draw_env(int clip_x, int clip_y,
                                                    int ofs_x, int ofs_y, int isbg);
 extern "C" void openpete_native_set_clear_color(int isbg, int r, int g, int b);
 
+/** @brief Thunk for libgpu PutDispEnv: copies the guest DISPENV into libgpu's environment block and hands it to PsyCross and the native renderer.
+ *
+ * A DISPENV span that runs past its region returns 0 with nothing done.
+ * @param cpu Guest CPU state. */
 void psyq_PutDispEnv(CPUState* cpu) {
-    DISPENV* env = (DISPENV*)PTR(cpu->a0);
+    DISPENV* env = (DISPENV*)SPAN(cpu->a0, sizeof(DISPENV));
+    if (!env) { cpu->v0 = 0u; return; }
     /* libgpu keeps a copy of the current DISPENV in its environment block. */
-    if (psyq_game_libgpu_env_addr())
-        memcpy(PTR(psyq_game_libgpu_env_addr() + 0x6Cu), env, 0x14u);
+    if (psyq_game_libgpu_env_addr()) {
+        void* cur = SPAN(psyq_game_libgpu_env_addr() + 0x6Cu, 0x14u);
+        if (cur) memcpy(cur, env, 0x14u);
+    }
     PutDispEnv(env);
     openpete_native_set_display_rect(env->disp.x, env->disp.y, env->disp.w, env->disp.h);
     /* Real PutDispEnv @0x80060030: sp -= 40; sw s0,16; s1,20; s2,24; s3,28; ra,32. */
@@ -1390,12 +1486,20 @@ static void psyq_pack_draw_env(DRAWENV* env) {
     for (int i = 0; i < n; i++) memcpy(p + 4 + 4 * i, &code[i], 4);
 }
 
+/** @brief Thunk for libgpu PutDrawEnv: packs the guest DRAWENV's packet, copies it into libgpu's environment block, and hands it to PsyCross and the native renderer.
+ *
+ * The span is PsyCross's DRAWENV, which PutDrawEnv copies whole. A span
+ * that runs past its region returns 0 with nothing done.
+ * @param cpu Guest CPU state. */
 void psyq_PutDrawEnv(CPUState* cpu) {
-    DRAWENV* env = (DRAWENV*)PTR(cpu->a0);
+    DRAWENV* env = (DRAWENV*)SPAN(cpu->a0, sizeof(DRAWENV));
+    if (!env) { cpu->v0 = 0u; return; }
     psyq_pack_draw_env(env);
     /* libgpu keeps a copy of the current DRAWENV in its environment block. */
-    if (psyq_game_libgpu_env_addr())
-        memcpy(PTR(psyq_game_libgpu_env_addr() + 0x10u), env, 0x5Cu);
+    if (psyq_game_libgpu_env_addr()) {
+        void* cur = SPAN(psyq_game_libgpu_env_addr() + 0x10u, 0x5Cu);
+        if (cur) memcpy(cur, env, 0x5Cu);
+    }
     PutDrawEnv(env);
     openpete_native_set_draw_clip(env->clip.x, env->clip.y, env->clip.w, env->clip.h);
     /* The draw area a framebuffer-window copy maps its source through: the clip
@@ -1434,14 +1538,23 @@ void psyq_PutDrawEnv(CPUState* cpu) {
  * stack stores are replayed: the real SetDefDispEnv is a leaf.
  * @param cpu Guest CPU state. */
 void psyq_SetDefDispEnv(CPUState* cpu) {
-    SetDefDispEnv((DISPENV*)PTR(cpu->a0),
+    DISPENV* env = (DISPENV*)SPAN(cpu->a0, sizeof(DISPENV));
+    if (!env) { cpu->v0 = 0u; return; }
+    SetDefDispEnv(env,
                   (int)cpu->a1, (int)cpu->a2, (int)cpu->a3,
                   (int)cpu->read_word(cpu->sp + 0x10));
     /* Real SetDefDispEnv @0x8005EB4C is a leaf — no stack pushes. */
 }
 
+/** @brief Thunk for libgpu SetDefDrawEnv: PsyCross's SetDefDrawEnv on the guest DRAWENV.
+ *
+ * a0 is the DRAWENV, a1..a3 x, y and w, and the word at sp+0x10 h. A
+ * DRAWENV span that runs past its region returns 0 with nothing written.
+ * @param cpu Guest CPU state. */
 void psyq_SetDefDrawEnv(CPUState* cpu) {
-    SetDefDrawEnv((DRAWENV*)PTR(cpu->a0),
+    DRAWENV* env = (DRAWENV*)SPAN(cpu->a0, sizeof(DRAWENV));
+    if (!env) { cpu->v0 = 0u; return; }
+    SetDefDrawEnv(env,
                   (int)cpu->a1, (int)cpu->a2, (int)cpu->a3,
                   (int)cpu->read_word(cpu->sp + 0x10));
     /* Real SetDefDrawEnv @0x8005EA94: sp -= 40; sw s0,16; s1,20; s2,24;
@@ -1449,6 +1562,11 @@ void psyq_SetDefDrawEnv(CPUState* cpu) {
     psyq_mirror_stack_frame(cpu, PSYQ_FRAME_SETDEFDRAWENV);
 }
 
+/** @brief Thunk for libgpu SetDrawMode: builds the DR_MODE words host-side and stores them in native PSX layout.
+ *
+ * The texture-window RECT at sp+0x10 is optional; a nonzero one whose span
+ * runs past its region leaves the primitive unwritten.
+ * @param cpu Guest CPU state. */
 void psyq_SetDrawMode(CPUState* cpu) {
     /* DR_MODE* p, int dfe, int dtd, int tpage, RECT16* tw — five args.
      *
@@ -1468,9 +1586,11 @@ void psyq_SetDrawMode(CPUState* cpu) {
      * computed length + code words back in native PSX 4-byte-tag layout. Only
      * the tag's len byte is touched; the addr/next 24 bits are set later by
      * the game's addPrim (recompiled inline → already PSX layout). */
+    const uint32_t tw_addr = cpu->read_word(cpu->sp + 0x10);
+    RECT16* tw = (RECT16*)SPAN_OPT(tw_addr, sizeof(RECT16));
+    if (tw_addr && !tw) return;
     DR_MODE tmp;
-    SetDrawMode(&tmp, (int)cpu->a1, (int)cpu->a2, (int)cpu->a3,
-                (RECT16*)PTR(cpu->read_word(cpu->sp + 0x10)));
+    SetDrawMode(&tmp, (int)cpu->a1, (int)cpu->a2, (int)cpu->a3, tw);
     uint32_t p = cpu->a0;
     /* libgpu's SetDrawMode stores a length of 2 (the E1 and E2 words);
      * PsyCross's setDrawMode macro stores 3, which the OT walk would send
@@ -2035,9 +2155,15 @@ void psyq_SetGeomScreen(CPUState* cpu) {
      * psyq_SetGeomOffset for the rationale. */
 }
 
+/** @brief Thunk for libgte SetTransMatrix: loads the guest MATRIX's translation into the GTE.
+ *
+ * A MATRIX span that runs past its region loads nothing.
+ * @param cpu Guest CPU state. */
 void psyq_SetTransMatrix(CPUState* cpu) {
+    MATRIX* m = (MATRIX*)SPAN(cpu->a0, sizeof(MATRIX));
+    if (!m) return;
     gte_sync_cpu_to_psyx(cpu);
-    SetTransMatrix((MATRIX*)PTR(cpu->a0));
+    SetTransMatrix(m);
     gte_sync_psyx_to_cpu(cpu);
 }
 
@@ -2057,20 +2183,31 @@ static inline void psyq_matrix_swc2_sign_extend_pad(MATRIX* m) {
     *pad = (m->m[2][2] < 0) ? (int16_t)-1 : (int16_t)0;
 }
 
+/** @brief Thunk for libgte MulMatrix0: a2 = a0 * a1 on guest MATRIXes, with the result's sign-extension pad.
+ *
+ * Nothing is computed when any MATRIX span runs past its region.
+ * @param cpu Guest CPU state. */
 void psyq_MulMatrix0(CPUState* cpu) {
+    MATRIX* m0 = (MATRIX*)SPAN(cpu->a0, sizeof(MATRIX));
+    MATRIX* m1 = (MATRIX*)SPAN(cpu->a1, sizeof(MATRIX));
+    MATRIX* m2 = (MATRIX*)SPAN(cpu->a2, sizeof(MATRIX));
+    if (!m0 || !m1 || !m2) return;
     gte_sync_cpu_to_psyx(cpu);
-    MATRIX* m2 = (MATRIX*)PTR(cpu->a2);
-    MulMatrix0((MATRIX*)PTR(cpu->a0),
-               (MATRIX*)PTR(cpu->a1),
-               m2);
+    MulMatrix0(m0, m1, m2);
     psyq_matrix_swc2_sign_extend_pad(m2);
     gte_sync_psyx_to_cpu(cpu);
 }
 
+/** @brief Thunk for libgte MulMatrix: a0 = a0 * a1 on guest MATRIXes, with the result's sign-extension pad.
+ *
+ * Nothing is computed when either MATRIX span runs past its region.
+ * @param cpu Guest CPU state. */
 void psyq_MulMatrix(CPUState* cpu) {
+    MATRIX* m0 = (MATRIX*)SPAN(cpu->a0, sizeof(MATRIX));
+    MATRIX* m1 = (MATRIX*)SPAN(cpu->a1, sizeof(MATRIX));
+    if (!m0 || !m1) return;
     gte_sync_cpu_to_psyx(cpu);
-    MATRIX* m0 = (MATRIX*)PTR(cpu->a0);
-    MulMatrix(m0, (MATRIX*)PTR(cpu->a1));
+    MulMatrix(m0, m1);
     psyq_matrix_swc2_sign_extend_pad(m0);
     gte_sync_psyx_to_cpu(cpu);
 }
@@ -2087,8 +2224,10 @@ void psyq_MulMatrix(CPUState* cpu) {
 void psyq_PadInitDirect(CPUState* cpu) {
     uint32_t buf0 = cpu->a0;  /* &g_PadBuffer */
     uint32_t buf1 = cpu->a1;  /* &g_PadBufferSecondController */
-    PadInitDirect((unsigned char*)PTR(buf0),
-                  (unsigned char*)PTR(buf1));
+    /* PsyCross writes one PADRAW per port each VBL and takes NULL as no
+     * buffer; a refused buffer is passed as NULL. */
+    PadInitDirect((unsigned char*)SPAN_OPT(buf0, sizeof(PADRAW)),
+                  (unsigned char*)SPAN_OPT(buf1, sizeof(PADRAW)));
     s_pad_buf0 = buf0;
 
     /* The rest of what real PadInitDirect leaves in PSX RAM -- libpad's
@@ -2147,17 +2286,30 @@ void psyq_PadSetMainMode(CPUState* cpu) {
     cpu->v0 = 1u;
 }
 
+/** @brief Thunk for libpad PadSetActAlign: accepts the actuator alignment table when no pad sequence runs.
+ *
+ * v0 is 0 while a sequence runs or when the six-byte table runs past its
+ * region, else PsyCross's return.
+ * @param cpu Guest CPU state. */
 void psyq_PadSetActAlign(CPUState* cpu) {
     if (pad_busy()) { cpu->v0 = 0u; return; }
-    cpu->v0 = (uint32_t)PadSetActAlign((int)cpu->a0,
-                                       (unsigned char*)PTR(cpu->a1));
+    /* libpad reads the six-byte actuator alignment table. */
+    unsigned char* table = (unsigned char*)SPAN(cpu->a1, 6u);
+    if (!table) { cpu->v0 = 0u; return; }
+    cpu->v0 = (uint32_t)PadSetActAlign((int)cpu->a0, table);
     if (cpu->v0) pad_seq_start(PAD_ACTALIGN_VBLS);
 }
 
+/** @brief Thunk for libpad PadSetAct: registers the guest actuator buffer of a2 bytes for port a0.
+ *
+ * A buffer span that runs past its region is not registered.
+ * @param cpu Guest CPU state. */
 void psyq_PadSetAct(CPUState* cpu) {
-    PadSetAct((int)cpu->a0,
-              (unsigned char*)PTR(cpu->a1),
-              (int)cpu->a2);
+    /* The registered actuator buffer is read len bytes at a time. */
+    const int len = (int)cpu->a2;
+    unsigned char* table = (unsigned char*)SPAN(cpu->a1, len > 0 ? (uint32_t)len : 0u);
+    if (!table) return;
+    PadSetAct((int)cpu->a0, table, len);
 }
 
 /* --- libcd --------------------------------------------------------------- */
@@ -2353,10 +2505,40 @@ static int cdcontrol_host(u_char com, u_char* param, u_char* result) {
     return CdControl(com, param, result);
 }
 
+/* libcd's response buffer: a command's response is at most 8 bytes. */
+#define PSYQ_CD_RESULT_SIZE 8u
+
+/** @brief Bytes of a libcd command's parameter that the host and PsyCross read.
+ *
+ * A positional command (CdlSetloc, CdlReadN, CdlReadS, CdlSeekL, CdlSeekP)
+ * reads a CdlLOC, whose four bytes cd_mirror_pos mirrors; CdlSetfilter
+ * reads a CdlFILTER; CdlSetmode reads the mode byte. Any other command's
+ * parameter is read by neither, and one byte is resolved.
+ * @param com The command byte.
+ * @return The byte count. */
+static uint32_t cd_param_len(u_char com) {
+    switch (com) {
+        case CdlSetloc: case CdlReadN: case CdlReadS: case CdlSeekL: case CdlSeekP:
+            return sizeof(CdlLOC);
+        case CdlSetfilter:
+            return sizeof(CdlFILTER);
+        default:
+            return 1u;
+    }
+}
+
+/** @brief Thunk for libcd CdControl: the shared host body on the guest parameter and response buffers.
+ *
+ * The parameter span is the command's (cd_param_len). v0 is 0 with no
+ * command issued when a nonzero parameter runs past its region.
+ * @param cpu Guest CPU state. */
 void psyq_CdControl(CPUState* cpu) {
     u_char com = (u_char)cpu->a0;
-    u_char* param = (u_char*)PTR_OPT(cpu->a1);
-    u_char* result = (u_char*)PTR_OPT(cpu->a2);
+    u_char* param = (u_char*)SPAN_OPT(cpu->a1, cd_param_len(com));
+    if (cpu->a1 && !param) { cpu->v0 = 0u; return; }
+    /* Neither the host body nor PsyCross writes the response; a refused
+     * buffer is passed as absent. */
+    u_char* result = (u_char*)SPAN_OPT(cpu->a2, PSYQ_CD_RESULT_SIZE);
     OPL_INFO_F("thunks", "CdControl com=0x%02X param=0x%08X result=0x%08X",
                (unsigned)com, cpu->a1, cpu->a2);
     cpu->v0 = (uint32_t)cdcontrol_host(com, param, result);
@@ -2379,15 +2561,21 @@ extern "C" int openpete_CdControl(u_char com, u_char* param, u_char* result) {
     return cdcontrol_host(com, param, result);
 }
 
+/** @brief Thunk for libcd CdControlB: the host body, then PsyCross's CdControlB when the host body did not consume the command.
+ *
+ * v0 is 0 with no command issued when a nonzero parameter runs past its
+ * region.
+ * @param cpu Guest CPU state. */
 void psyq_CdControlB(CPUState* cpu) {
     u_char com = (u_char)cpu->a0;
-    u_char* param = (u_char*)PTR_OPT(cpu->a1);
+    u_char* param = (u_char*)SPAN_OPT(cpu->a1, cd_param_len(com));
+    if (cpu->a1 && !param) { cpu->v0 = 0u; return; }
     if (cd_command_host(com, param)) {
         cpu->v0 = 1u;
         cd_charge_pending(cpu, "CdControlB");
         return;
     }
-    cpu->v0 = (uint32_t)CdControlB(com, param, (u_char*)PTR_OPT(cpu->a2));
+    cpu->v0 = (uint32_t)CdControlB(com, param, (u_char*)SPAN_OPT(cpu->a2, PSYQ_CD_RESULT_SIZE));
     cd_charge_pending(cpu, "CdControlB");
 }
 
@@ -2409,7 +2597,8 @@ void psyq_CdControlB(CPUState* cpu) {
 
 void psyq_CdControlF(CPUState* cpu) {
     u_char com = (u_char)cpu->a0;
-    u_char* param = (u_char*)PTR_OPT(cpu->a1);
+    u_char* param = (u_char*)SPAN_OPT(cpu->a1, cd_param_len(com));
+    if (cpu->a1 && !param) { cpu->v0 = 0u; return; }
     OPL_DEBUG_F("thunks", "CdControlF com=0x%02X param=0x%08X",
                (unsigned)com, cpu->a1);
     /* PsyCross's CdControlF treats CdlGetlocP as "the caller is starting
@@ -2446,9 +2635,35 @@ void psyq_CdControlF(CPUState* cpu) {
  * needs to keep the overlay's bytes coherent (separate task). */
 #include "spyro_overlay_table.h"
 
+/** @brief Copy the guest bytes a read of @p sectors sectors at @p dst will overwrite, for the sector-paced landing.
+ *
+ * Sizes the landing buffer to the read and returns a malloc'd copy of the
+ * destination's current bytes, which the caller restores after the drain
+ * and frees; the read's own bytes then land sector by sector.
+ * @param dst The read's guest destination.
+ * @param sectors The read's sector count.
+ * @return The copy, or NULL when @p sectors is not positive or the range
+ *         leaves main RAM. */
+static uint8_t* cd_land_snapshot(uint32_t dst, int sectors) {
+    if (sectors <= 0) return NULL;
+    uint32_t bytes = (uint32_t)sectors * 2048u;
+    if (s_cd_land_cap < bytes) { s_cd_land_buf = (uint8_t*)realloc(s_cd_land_buf, bytes); s_cd_land_cap = bytes; }
+    uint32_t phys = (dst & 0x1FFFFFFFu);
+    if (phys + bytes > 0x200000u) return NULL;
+    uint8_t* old = (uint8_t*)malloc(bytes);
+    memcpy(old, openpete_psx_get_ram() + phys, bytes);
+    return old;
+}
+
+/** @brief Thunk for libcd CdRead: reads a0 2048-byte sectors into the guest buffer at a1 and schedules the completion.
+ *
+ * v0 is 0 with no read issued when the buffer span runs past its region.
+ * @param cpu Guest CPU state. */
 void psyq_CdRead(CPUState* cpu) {
     int sectors = (int)cpu->a0;
-    u_long* buf = (u_long*)PTR(cpu->a1);
+    /* CdReadSync drains 2048-byte data sectors into the buffer. */
+    u_long* buf = (u_long*)SPAN(cpu->a1, sectors > 0 ? (uint64_t)sectors * 2048u : 0u);
+    if (!buf) { cpu->v0 = 0u; return; }
     int     mode = (int)cpu->a2;
     OPL_INFO_F("thunks", "CdRead sectors=%d buf=0x%08X mode=0x%02X ra=0x%08X hit=%u vbl=%d",
                sectors, cpu->a1, mode, cpu->ra, openpete_psxtrace_anchor_hits,
@@ -2479,16 +2694,7 @@ void psyq_CdRead(CPUState* cpu) {
                 if (irq == 1u) { s_cd_land_rec[land_n] = rec; s_cd_land_vbl[land_n] = vbl; land_n++; }
         }
     }
-    /* The destination's bytes before the read, for the sector-paced landing. */
-    uint8_t* land_old = NULL;
-    if (land_n == (uint32_t)sectors && sectors > 0) {
-        uint32_t bytes = (uint32_t)sectors * 2048u;
-        if (s_cd_land_cap < bytes) { s_cd_land_buf = (uint8_t*)realloc(s_cd_land_buf, bytes); s_cd_land_cap = bytes; }
-        land_old = (uint8_t*)malloc(bytes);
-        uint32_t phys = (cpu->a1 & 0x1FFFFFFFu);
-        if (phys + bytes <= 0x200000u) memcpy(land_old, openpete_psx_get_ram() + phys, bytes);
-        else { free(land_old); land_old = NULL; }
-    }
+    uint8_t* land_old = (land_n == (uint32_t)sectors) ? cd_land_snapshot(cpu->a1, sectors) : NULL;
     cpu->v0 = (uint32_t)CdRead(sectors, buf, mode);
     /* PsyCross's CdRead only enqueues; CdReadSync drains the queue into
      * the buffer. Spyro polls via CdSync (which doesn't drain), so we
@@ -2617,19 +2823,32 @@ void psyq_overlay_resync_from_ram(void) {
  * @param cpu Guest CPU state: a0 the mode, a1 the result address or 0; v0
  *        receives CdSync's return. */
 void psyq_CD_sync(CPUState* cpu) {
-    u_char scratch[8];
-    u_char* result = (cpu->a1 != 0u) ? (u_char*)PTR(cpu->a1) : scratch;
+    u_char scratch[PSYQ_CD_RESULT_SIZE];
+    u_char* result = (u_char*)SPAN_OPT(cpu->a1, PSYQ_CD_RESULT_SIZE);
+    if (!result) result = scratch;
     cpu->v0 = (uint32_t)CdSync((int)cpu->a0, result);
 }
 
+/** @brief Thunk for libcd's internal CD_datasync: PsyCross's CdReadSync, with a scratch buffer standing in for a NULL or refused result pointer.
+ *
+ * @param cpu Guest CPU state. */
 void psyq_CD_datasync(CPUState* cpu) {
-    u_char scratch[8];
-    u_char* result = (cpu->a1 != 0u) ? (u_char*)PTR(cpu->a1) : scratch;
+    u_char scratch[PSYQ_CD_RESULT_SIZE];
+    u_char* result = (u_char*)SPAN_OPT(cpu->a1, PSYQ_CD_RESULT_SIZE);
+    if (!result) result = scratch;
     cpu->v0 = (uint32_t)CdReadSync((int)cpu->a0, result);
 }
 
+/** @brief Thunk for libcd's internal CD_getsector: copies a1 words of the current sector to the guest address a0.
+ *
+ * v0 is 0 with nothing copied when the span runs past its region.
+ * @param cpu Guest CPU state. */
 void psyq_CD_getsector(CPUState* cpu) {
-    cpu->v0 = (uint32_t)CdGetSector(PTR(cpu->a0), (int)cpu->a1);
+    /* The size argument counts 32-bit words. */
+    const int words = (int)cpu->a1;
+    void* dst = SPAN(cpu->a0, words > 0 ? (uint64_t)words * 4u : 0u);
+    if (!dst) { cpu->v0 = 0u; return; }
+    cpu->v0 = (uint32_t)CdGetSector(dst, words);
 }
 
 void psyq_CD_init(CPUState* cpu) {
@@ -2659,8 +2878,9 @@ void psyq_CdSync(CPUState* cpu) {
      *
      * Pass a stack scratch buffer when the caller didn't supply one;
      * the writes are harmless and PsyCross still returns CdlComplete. */
-    u_char  scratch[8];
-    u_char* result = (cpu->a1 != 0u) ? (u_char*)PTR(cpu->a1) : scratch;
+    u_char  scratch[PSYQ_CD_RESULT_SIZE];
+    u_char* result = (u_char*)SPAN_OPT(cpu->a1, PSYQ_CD_RESULT_SIZE);
+    if (!result) result = scratch;
 
     /* Pump XA every CdSync — this is Spyro's per-frame music tick. */
     PsyX_XA_Pump(0);
@@ -2813,12 +3033,24 @@ void psyq_CdReadCallback(CPUState* cpu) {
     cpu->v0 = prev;  /* PSYQ returns the previous handler. */
 }
 
+/** @brief Thunk for libcd CdPosToInt: the sector number of the guest CdlLOC.
+ *
+ * v0 is 0 when the CdlLOC runs past its region.
+ * @param cpu Guest CPU state. */
 void psyq_CdPosToInt(CPUState* cpu) {
-    cpu->v0 = (uint32_t)CdPosToInt((CdlLOC*)PTR(cpu->a0));
+    CdlLOC* loc = (CdlLOC*)SPAN(cpu->a0, sizeof(CdlLOC));
+    if (!loc) { cpu->v0 = 0u; return; }
+    cpu->v0 = (uint32_t)CdPosToInt(loc);
 }
 
+/** @brief Thunk for libcd CdIntToPos: writes sector a0 as a CdlLOC at a1 and returns a1.
+ *
+ * v0 is 0 with nothing written when the CdlLOC runs past its region.
+ * @param cpu Guest CPU state. */
 void psyq_CdIntToPos(CPUState* cpu) {
-    CdIntToPos((int)cpu->a0, (CdlLOC*)PTR(cpu->a1));
+    CdlLOC* loc = (CdlLOC*)SPAN(cpu->a1, sizeof(CdlLOC));
+    if (!loc) { cpu->v0 = 0u; return; }
+    CdIntToPos((int)cpu->a0, loc);
     cpu->v0 = cpu->a1;  /* PSYQ returns the same pointer. */
 }
 
@@ -2850,8 +3082,13 @@ static void spyro_apply_music_gain(void) {
     music_override_set_gain(g);
 }
 
+/** @brief Thunk for libspu SpuSetCommonAttr: PsyCross's SpuSetCommonAttr, and the music gain from the main and CD volumes.
+ *
+ * An attribute span that runs past its region applies nothing.
+ * @param cpu Guest CPU state. */
 void psyq_SpuSetCommonAttr(CPUState* cpu) {
-    SpuCommonAttr* attr = (SpuCommonAttr*)PTR(cpu->a0);
+    SpuCommonAttr* attr = (SpuCommonAttr*)SPAN(cpu->a0, sizeof(SpuCommonAttr));
+    if (!attr) return;
     SpuSetCommonAttr(attr);
     /* Spyro's music fader writes mask=SPU_COMMON_CDVOLL|SPU_COMMON_CDVOLR
      * with values in 0..0x3FFF. Route that to the XA streaming source's
@@ -2912,7 +3149,8 @@ static void sfx_key_log_attr(const SpuVoiceAttr* attr) {
  * logged per voice with its sample's slot name.
  * @param cpu Guest CPU state; a0 is the SpuVoiceAttr. */
 void psyq_SpuSetVoiceAttr(CPUState* cpu) {
-    const SpuVoiceAttr* attr = (const SpuVoiceAttr*)PTR(cpu->a0);
+    const SpuVoiceAttr* attr = (const SpuVoiceAttr*)SPAN(cpu->a0, sizeof(SpuVoiceAttr));
+    if (!attr) return;
     sfx_key_log_attr(attr);
     SpuSetVoiceAttr((SpuVoiceAttr*)attr);
 }
@@ -2922,10 +3160,16 @@ void psyq_SpuSetVoiceVolume(CPUState* cpu) {
                       (short)cpu->a1, (short)cpu->a2);
 }
 
+/** @brief Thunk for libspu SpuGetVoiceVolume: stores voice a0's left and right volume at the guest shorts a1 and a2.
+ *
+ * A side whose address is 0 or runs past its region is not stored.
+ * @param cpu Guest CPU state. */
 void psyq_SpuGetVoiceVolume(CPUState* cpu) {
+    /* PsyCross skips the store for a NULL side; a refused side is passed
+     * as NULL. */
     SpuGetVoiceVolume((int)cpu->a0,
-                      (short*)PTR(cpu->a1),
-                      (short*)PTR(cpu->a2));
+                      (short*)SPAN_OPT(cpu->a1, sizeof(short)),
+                      (short*)SPAN_OPT(cpu->a2, sizeof(short)));
 }
 
 void psyq_SpuSetKey(CPUState* cpu) {
@@ -2959,33 +3203,95 @@ void psyq_SpuGetKeyStatus(CPUState* cpu) {
     }
 }
 
+/** @brief Thunk for libspu SpuGetAllKeysStatus: stores one key-status byte per voice, 24 in all, at the guest address a0.
+ *
+ * A span that runs past its region stores nothing.
+ * @param cpu Guest CPU state. */
 void psyq_SpuGetAllKeysStatus(CPUState* cpu) {
-    SpuGetAllKeysStatus((char*)PTR(cpu->a0));
+    /* One status byte per SPU voice. */
+    char* status = (char*)SPAN(cpu->a0, 24u);
+    if (!status) return;
+    SpuGetAllKeysStatus(status);
 }
 
+/** @brief Thunk for libspu SpuRead: copies a1 bytes of SPU RAM from the transfer address to the guest address a0.
+ *
+ * v0 is 0 with nothing copied when the span runs past its region.
+ * @param cpu Guest CPU state. */
 void psyq_SpuRead(CPUState* cpu) {
-    cpu->v0 = SpuRead((unsigned char*)PTR(cpu->a0), (unsigned int)cpu->a1);
+    unsigned char* dst = (unsigned char*)SPAN(cpu->a0, cpu->a1);
+    if (!dst) { cpu->v0 = 0u; return; }
+    cpu->v0 = SpuRead(dst, (unsigned int)cpu->a1);
     if (sfx_key_log_on())
         fprintf(stderr, "[spu-read f=%u spu=%#x dst=%#x len=%#x ra=%#x]\n",
                 openpete_frame, s_spu_xfer_addr, cpu->a0, cpu->a1, cpu->ra);
     s_spu_xfer_addr += (unsigned int)cpu->a1;
 }
 
+/** @brief Write one SpuWrite payload to OPENPETE_SPU_WRITE_DUMP as DIR/<vbl>_<spu addr>.bin, the input of tools/audio_ring_check.py.
+ *
+ * The variable is read on the first call, which also deletes the
+ * directory's .bin files: an earlier run's files would be read as chunks
+ * this run never wrote.
+ * @param src The payload's host bytes.
+ * @param len The payload's byte count. */
+static void spu_write_dump(const unsigned char* src, unsigned int len) {
+    static const char* dir = NULL;
+    static int tried = 0;
+    if (!tried) {
+        tried = 1;
+        dir = getenv("OPENPETE_SPU_WRITE_DUMP");
+        if (dir && !*dir) dir = NULL;
+        /* The directory holds this run's payloads only: an earlier run's
+         * files would be read as chunks this run never wrote. */
+        if (dir) {
+            DIR* d = opendir(dir);
+            if (d) {
+                struct dirent* e;
+                while ((e = readdir(d)) != NULL) {
+                    size_t n = strlen(e->d_name);
+                    if (n > 4 && strcmp(e->d_name + n - 4, ".bin") == 0) {
+                        char old[1024];
+                        snprintf(old, sizeof old, "%s/%s", dir, e->d_name);
+                        remove(old);
+                    }
+                }
+                closedir(d);
+            }
+        }
+    }
+    if (dir) {
+        char path[1024];
+        snprintf(path, sizeof path, "%s/%08d_%06x.bin", dir,
+                 SDL_GetAtomicInt(&openpete_vbl), s_spu_xfer_addr);
+        FILE* f = fopen(path, "wb");
+        if (f) { fwrite(src, 1, len, f); fclose(f); }
+    }
+}
+
+/** @brief Thunk for libspu SpuWrite: uploads a1 bytes at the guest address a0 to SPU RAM at the transfer address.
+ *
+ * The sfx pack's staged replacements are invalidated over the written
+ * range, or all of them on a whole-bank write. v0 is 0 with nothing
+ * uploaded when the span runs past its region.
+ * @param cpu Guest CPU state. */
 void psyq_SpuWrite(CPUState* cpu) {
     /* The level-load bank blast overwrites all of SPU RAM including any
      * staged SFX replacements — invalidate them (re-staged lazily). The
      * sfx pack's identity cache follows the same two-tier rule: a blast
      * is a new generation, any other write (dragon speech lands over the
      * top of the bank mid-level) forgets just the addresses it covers. */
-    psyq_game_sfx_arm();
     unsigned int len = (unsigned int)cpu->a1;
+    unsigned char* src = (unsigned char*)SPAN(cpu->a0, len);
+    if (!src) { cpu->v0 = 0u; return; }
+    psyq_game_sfx_arm();
     if (len != 0u && len == psyq_game_spu_bank_blast_len()) {
         sfx_pack_generation_bump();
         PsyX_SPUAL_StopOrphans(); /* a new level: no tails from the old one */
     } else {
         sfx_pack_invalidate_range(s_spu_xfer_addr, len);
     }
-    cpu->v0 = SpuWrite((unsigned char*)PTR(cpu->a0), len);
+    cpu->v0 = SpuWrite(src, len);
     if (sfx_key_log_on()) {
         fprintf(stderr, "[spu-write f=%u vbl=%d spu=%#x src=%#x len=%#x ra=%#x]\n",
                 openpete_frame, SDL_GetAtomicInt(&openpete_vbl), s_spu_xfer_addr,
@@ -2995,41 +3301,7 @@ void psyq_SpuWrite(CPUState* cpu) {
             fprintf(stderr, "[spu-resync f=%u mask=%#x gap_us=%u]\n", openpete_frame,
                     mask, PsyX_SPUAL_LastResyncMicros());
     }
-    /* OPENPETE_SPU_WRITE_DUMP=DIR: every payload as DIR/<vbl>_<spu addr>.bin,
-     * the input of tools/audio_ring_check.py. */
-    {
-        static const char* dir = NULL;
-        static int tried = 0;
-        if (!tried) {
-            tried = 1;
-            dir = getenv("OPENPETE_SPU_WRITE_DUMP");
-            if (dir && !*dir) dir = NULL;
-            /* The directory holds this run's payloads only: an earlier run's
-             * files would be read as chunks this run never wrote. */
-            if (dir) {
-                DIR* d = opendir(dir);
-                if (d) {
-                    struct dirent* e;
-                    while ((e = readdir(d)) != NULL) {
-                        size_t n = strlen(e->d_name);
-                        if (n > 4 && strcmp(e->d_name + n - 4, ".bin") == 0) {
-                            char old[1024];
-                            snprintf(old, sizeof old, "%s/%s", dir, e->d_name);
-                            remove(old);
-                        }
-                    }
-                    closedir(d);
-                }
-            }
-        }
-        if (dir) {
-            char path[1024];
-            snprintf(path, sizeof path, "%s/%08d_%06x.bin", dir,
-                     SDL_GetAtomicInt(&openpete_vbl), s_spu_xfer_addr);
-            FILE* f = fopen(path, "wb");
-            if (f) { fwrite(PTR(cpu->a0), 1, len, f); fclose(f); }
-        }
-    }
+    spu_write_dump(src, len);
     s_spu_xfer_addr += len;
 }
 
@@ -3054,6 +3326,28 @@ void psyq_SpuIsTransferCompleted(CPUState* cpu) {
  * and marshal into openpete's host card module (core/host/memcard.c),
  * which owns two real 128 KiB .mcr images persisted under the per-user
  * state dir. */
+
+/* The on-card file name field: libmcrd compares and stores 20 bytes. */
+#define PSYQ_MC_NAME_MAX 20u
+/* libmcrd McErrFileNotExist. */
+#define PSYQ_MC_ERR_FILE_NOT_EXIST 5u
+
+/** @brief Copy a guest memory-card file name into a host buffer, NUL-terminated.
+ *
+ * The card module reads the name with strncmp and strncpy over 20 bytes,
+ * so the copy carries the name's bytes up to its NUL or the 20th byte;
+ * the guest bytes read lie inside one region.
+ * @param addr The guest address of the name.
+ * @param out Receives the name; PSYQ_MC_NAME_MAX + 1 bytes.
+ * @return 1 when copied, 0 when the name is refused. */
+static int psyq_mc_name(uint32_t addr, char* out) {
+    uint32_t n = 0;
+    const char* s = GSTR(addr, PSYQ_MC_NAME_MAX, &n);
+    if (!s) return 0;
+    memcpy(out, s, n);
+    out[n] = '\0';
+    return 1;
+}
 
 /** @brief Thunk for libmcrd MemCardInit: initializes the host card module and replays the real function's RAM writes.
  *
@@ -3098,41 +3392,60 @@ void psyq_MemCardAccept(CPUState* cpu) {
  * a0 is the port, a1 the file name, a2 the RAM destination, a3 the file
  * offset and the word at sp+0x10 the byte count; v0 is
  * openpete_memcard_read's libmcrd result code, which it also latches for
- * MemCardSync.
+ * MemCardSync. A name that runs past its region returns McErrFileNotExist
+ * unlatched.
  * @param cpu Guest CPU state. */
 void psyq_MemCardReadFile(CPUState* cpu) {
-    cpu->v0 = (uint32_t)openpete_memcard_read((int)cpu->a0,
-                                              (const char*)PTR(cpu->a1),
-                                              PTR(cpu->a2),
-                                              (int)cpu->a3,
-                                              (int)cpu->read_word(cpu->sp + 0x10));
+    char name[PSYQ_MC_NAME_MAX + 1];
+    if (!psyq_mc_name(cpu->a1, name)) { cpu->v0 = PSYQ_MC_ERR_FILE_NOT_EXIST; return; }
+    const int bytes = (int)cpu->read_word(cpu->sp + 0x10);
+    /* A refused destination is passed as NULL, which the card module
+     * answers McErrFileNotExist and latches for MemCardSync. */
+    void* dst = SPAN(cpu->a2, bytes > 0 ? (uint32_t)bytes : 0u);
+    cpu->v0 = (uint32_t)openpete_memcard_read((int)cpu->a0, name, dst,
+                                              (int)cpu->a3, bytes);
 }
 
+/** @brief Thunk for libmcrd MemCardWriteFile(chan, name, adrs, ofs, bytes): copies guest RAM into part of a card file.
+ *
+ * The argument layout is MemCardReadFile's; a refused source is passed as
+ * NULL, which the card module answers McErrFileNotExist.
+ * @param cpu Guest CPU state. */
 void psyq_MemCardWriteFile(CPUState* cpu) {
-    cpu->v0 = (uint32_t)openpete_memcard_write((int)cpu->a0,
-                                               (const char*)PTR(cpu->a1),
-                                               PTR(cpu->a2),
-                                               (int)cpu->a3,
-                                               (int)cpu->read_word(cpu->sp + 0x10));
+    char name[PSYQ_MC_NAME_MAX + 1];
+    if (!psyq_mc_name(cpu->a1, name)) { cpu->v0 = PSYQ_MC_ERR_FILE_NOT_EXIST; return; }
+    const int bytes = (int)cpu->read_word(cpu->sp + 0x10);
+    const void* src = SPAN(cpu->a2, bytes > 0 ? (uint32_t)bytes : 0u);
+    cpu->v0 = (uint32_t)openpete_memcard_write((int)cpu->a0, name, src,
+                                               (int)cpu->a3, bytes);
 }
 
+/** @brief Thunk for libmcrd MemCardCreateFile(chan, name, blocks): allocates a card file.
+ *
+ * @param cpu Guest CPU state; v0 receives the card module's libmcrd
+ *        result, or McErrFileNotExist when the name runs past its region. */
 void psyq_MemCardCreateFile(CPUState* cpu) {
-    cpu->v0 = (uint32_t)openpete_memcard_create((int)cpu->a0,
-                                                (const char*)PTR(cpu->a1),
-                                                (int)cpu->a2);
+    char name[PSYQ_MC_NAME_MAX + 1];
+    if (!psyq_mc_name(cpu->a1, name)) { cpu->v0 = PSYQ_MC_ERR_FILE_NOT_EXIST; return; }
+    cpu->v0 = (uint32_t)openpete_memcard_create((int)cpu->a0, name, (int)cpu->a2);
 }
 
 void psyq_MemCardFormat(CPUState* cpu) {
     cpu->v0 = (uint32_t)openpete_memcard_format((int)cpu->a0);
 }
 
+/** @brief Thunk for libmcrd MemCardSync: reports the card module's latched command and result to the guest out-slots a1 and a2.
+ *
+ * An out-slot whose address is 0 or runs past its region is skipped.
+ * @param cpu Guest CPU state. */
 void psyq_MemCardSync(CPUState* cpu) {
     /* mode 0 = Sync, 1 = Async; host I/O completes instantly so both report
      * Finished once an op has run, NothingRegistered (-1) before. Pre-read
      * the guest out-slots so a field the module leaves unset round-trips
      * unchanged (matches the original stub's "only overwrite when set"). */
-    int* cmds_out = cpu->a1 ? (int*)PTR(cpu->a1) : nullptr;
-    int* rslt_out = cpu->a2 ? (int*)PTR(cpu->a2) : nullptr;
+    /* A refused out-slot is skipped like an absent one. */
+    int* cmds_out = (int*)SPAN_OPT(cpu->a1, sizeof(int));
+    int* rslt_out = (int*)SPAN_OPT(cpu->a2, sizeof(int));
     int c = cmds_out ? *cmds_out : 0;
     int r = rslt_out ? *rslt_out : 0;
     int st = openpete_memcard_sync((int)cpu->a0, &c, &r);
@@ -3165,21 +3478,26 @@ void psyq_LoadExec(CPUState* cpu) {
 
 /** @brief Thunk for the C library's memcpy: copies a2 bytes from guest a1 to guest a0 with the host memcpy.
  *
- * Nothing is copied when either address has no host mapping; v0 is the
- * destination, as PSYQ's memcpy returns.
+ * Nothing is copied when either a2-byte span runs past its region; v0 is
+ * the destination, as PSYQ's memcpy returns.
  * @param cpu Guest CPU state. */
 void psyq_memcpy(CPUState* cpu) {
     /* PSYQ memcpy returns dest. */
-    void* dst = PTR(cpu->a0);
-    const void* src = PTR(cpu->a1);
     size_t n = (size_t)cpu->a2;
+    void* dst = SPAN(cpu->a0, n);
+    const void* src = dst ? SPAN(cpu->a1, n) : nullptr;
     if (dst && src) memcpy(dst, src, n);
     cpu->v0 = cpu->a0;
 }
 
+/** @brief Thunk for the C library's strlen: the length of the guest string at a0.
+ *
+ * v0 is 0 when the string runs past its region with no NUL.
+ * @param cpu Guest CPU state. */
 void psyq_strlen(CPUState* cpu) {
-    const char* s = (const char*)PTR(cpu->a0);
-    cpu->v0 = s ? (uint32_t)strlen(s) : 0u;
+    uint32_t n = 0;
+    const char* s = GSTR(cpu->a0, 0xFFFFFFFFu, &n);
+    cpu->v0 = s ? n : 0u;
 }
 
 /* PSYQ rand/srand: byte-identical re-implementation of the LCG at
@@ -3295,6 +3613,26 @@ size_t render_uint(uint32_t v, unsigned base, bool upper, char* out) {
     return n;
 }
 
+/** @brief Resolve a `%s` argument to host bytes and the count printed: to its NUL, or at most `precision` bytes when one is given.
+ *
+ * A guest NULL prints as "(null)"; a string that runs past its region
+ * prints as empty.
+ * @param addr The argument's guest address.
+ * @param precision The conversion's precision, or -1 for none.
+ * @param n_out Receives the byte count to print.
+ * @return The bytes to print. */
+const char* format_str_arg(uint32_t addr, int precision, size_t* n_out) {
+    const uint32_t max = precision >= 0 ? (uint32_t)precision : 0xFFFFFFFFu;
+    if (!addr) {
+        *n_out = max < 6u ? max : 6u;
+        return "(null)";
+    }
+    uint32_t len = 0;
+    const char* s = GSTR(addr, max, &len);
+    *n_out = s ? len : 0u;
+    return s ? s : "";
+}
+
 /** @brief Format `fmt` into `dst` from MIPS o32 variadic slots, with snprintf's truncation and return semantics.
  *
  * Conversions `d`, `i`, `u`, `x`, `X`, `o`, `s`, `c`, `p` and `%` are
@@ -3357,14 +3695,8 @@ size_t format_from_mips(char* dst, size_t cap, const char* fmt, MipsArgs& args) 
                 break;
             }
             case 's': {
-                uint32_t addr = args.fetch();
-                const char* s = addr ? (const char*)PTR(addr) : "(null)";
                 size_t n = 0;
-                if (precision >= 0) {
-                    while (n < (size_t)precision && s[n]) ++n;
-                } else {
-                    n = strlen(s);
-                }
+                const char* s = format_str_arg(args.fetch(), precision, &n);
                 put_str(s, n, width, left_align, false);
                 break;
             }
@@ -3431,8 +3763,13 @@ size_t format_from_mips(char* dst, size_t cap, const char* fmt, MipsArgs& args) 
 
 }  /* namespace */
 
+/** @brief Thunk for the C library's printf: formats from the MIPS variadic slots into the log.
+ *
+ * v0 is the formatted length, or 0 when the format string runs past its
+ * region.
+ * @param cpu Guest CPU state. */
 void psyq_printf(CPUState* cpu) {
-    const char* fmt = (const char*)PTR(cpu->a0);
+    const char* fmt = GSTR(cpu->a0, 0xFFFFFFFFu, nullptr);
     if (!fmt) { cpu->v0 = 0u; return; }
     char buf[512];
     MipsArgs args{cpu, 1};
@@ -3441,14 +3778,25 @@ void psyq_printf(CPUState* cpu) {
     cpu->v0 = (uint32_t)n;
 }
 
+/** @brief Thunk for the C library's sprintf: formats from the MIPS variadic slots into the guest buffer at a0.
+ *
+ * The output is capped at 4095 bytes plus the NUL. v0 is the formatted
+ * length, or 0 with nothing written when the format string or the output
+ * span runs past its region.
+ * @param cpu Guest CPU state. */
 void psyq_sprintf(CPUState* cpu) {
-    char* dst = (char*)PTR(cpu->a0);
-    const char* fmt = (const char*)PTR(cpu->a1);
-    if (!dst || !fmt) { cpu->v0 = 0u; return; }
-    /* No host-side bound — game allocates the buffer. Use a generous
-     * cap; sprintf has no length argument on the PSX side. */
+    const char* fmt = GSTR(cpu->a1, 0xFFFFFFFFu, nullptr);
+    if (!fmt) { cpu->v0 = 0u; return; }
+    /* sprintf has no length argument on the PSX side: the output is
+     * formatted into a host buffer with a generous cap, then its bytes and
+     * the NUL are copied to a destination span of exactly that length. */
+    static char out[4096];
     MipsArgs args{cpu, 2};
-    size_t n = format_from_mips(dst, 4096u, fmt, args);
+    size_t n = format_from_mips(out, sizeof out, fmt, args);
+    const size_t written = (n < sizeof out - 1u ? n : sizeof out - 1u) + 1u;
+    char* dst = (char*)SPAN(cpu->a0, written);
+    if (!dst) { cpu->v0 = 0u; return; }
+    memcpy(dst, out, written);
     cpu->v0 = (uint32_t)n;
 }
 
