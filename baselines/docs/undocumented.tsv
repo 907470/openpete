@@ -1610,11 +1610,7 @@ games/spyro-1/renderer/portal.c	ring_depth	none
 games/spyro-1/renderer/portal.c	sky_min2	none	
 games/spyro-1/renderer/portal.c	sky_ot_push_for	none	
 games/spyro-1/renderer/reextract.c	cl_trig_q12	none	
-games/spyro-1/renderer/reextract.c	fpos_drop	none	
 games/spyro-1/renderer/reextract.c	fpos_get	none	
-games/spyro-1/renderer/reextract.c	fpos_put	none	
-games/spyro-1/renderer/reextract.c	fpos_reset	none	
-games/spyro-1/renderer/reextract.c	fpos_set	none	
 games/spyro-1/renderer/reextract.c	herm_matrix	none	
 games/spyro-1/renderer/reextract.c	herm_vec3	none	
 games/spyro-1/renderer/reextract.c	hround16	none	

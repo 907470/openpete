@@ -366,13 +366,59 @@ static int s_fpos_n = 0;
  * body; the canonical path sees it 0 and every feeder falls back to live RAM. */
 static int s_fpos_active = 0;
 static int s_prod_cam_active;   /* a producer's captured camera is installed (defined below) */
-static void fpos_reset(void) { s_fpos_n = 0; }
-static void fpos_set(uint32_t key, const int32_t* prev, const int32_t* curr, double t) {
-    if (s_fpos_n >= FPOS_MAX) return;
+/* Key index over s_fpos: open addressing, linear probing, one slot per key
+ * naming its FIRST entry (the one a scan from index 0 finds). A slot is
+ * live only when its gen equals s_fpos_gen, so fpos_reset empties the
+ * index by bumping the generation. FPOS_HASH is a power of two at least
+ * twice FPOS_MAX, so a probe always reaches an empty slot. */
+#define FPOS_HASH 4096u
+static struct { uint32_t key; uint32_t gen; int idx; } s_fpos_hash[FPOS_HASH];
+static uint32_t s_fpos_gen = 1;
+_Static_assert(FPOS_HASH >= 2u * FPOS_MAX, "fpos index load factor");
+
+/** @brief Home slot of key in the fpos index (Fibonacci hash). */
+static uint32_t fpos_hash_slot(uint32_t key) {
+    return (uint32_t)(key * 2654435761u) >> 20;   /* top 12 bits: FPOS_HASH = 4096 */
+}
+
+/** @brief Index entry idx under key unless key is already indexed (its first entry wins). */
+static void fpos_index(uint32_t key, int idx) {
+    for (uint32_t h = fpos_hash_slot(key);; h = (h + 1u) & (FPOS_HASH - 1u)) {
+        if (s_fpos_hash[h].gen != s_fpos_gen) {
+            s_fpos_hash[h].gen = s_fpos_gen; s_fpos_hash[h].key = key; s_fpos_hash[h].idx = idx;
+            return;
+        }
+        if (s_fpos_hash[h].key == key) return;
+    }
+}
+
+/** @brief Empty the fpos index by advancing its generation (clearing the slots when the counter wraps). */
+static void fpos_index_clear(void) {
+    if (++s_fpos_gen == 0u) {
+        memset(s_fpos_hash, 0, sizeof s_fpos_hash);
+        s_fpos_gen = 1;
+    }
+}
+
+/** @brief Empty the fractional-position table and its index. */
+static void fpos_reset(void) { s_fpos_n = 0; fpos_index_clear(); }
+
+/** @brief Append an entry for key and index it; a full table (FPOS_MAX entries) drops it.
+ *
+ * @return The entry, or NULL when the table is full. */
+static double* fpos_append(uint32_t key) {
+    if (s_fpos_n >= FPOS_MAX) return NULL;
     s_fpos[s_fpos_n].key = key;
+    fpos_index(key, s_fpos_n);
+    return s_fpos[s_fpos_n++].p;
+}
+
+/** @brief Records key's fractional position as the lerp of prev and curr at t; a full table drops it. */
+static void fpos_set(uint32_t key, const int32_t* prev, const int32_t* curr, double t) {
+    double* p = fpos_append(key);
+    if (!p) return;
     for (int i = 0; i < 3; ++i)
-        s_fpos[s_fpos_n].p[i] = (double)prev[i] + ((double)curr[i] - (double)prev[i]) * t;
-    s_fpos_n++;
+        p[i] = (double)prev[i] + ((double)curr[i] - (double)prev[i]) * t;
 }
 /** @brief Records key's fractional position as the pred1 Hermite of prev2, prev and curr, the fpos_set variant.
  *
@@ -386,26 +432,33 @@ static void fpos_set(uint32_t key, const int32_t* prev, const int32_t* curr, dou
  * @param t The sub-tick phase. */
 static void fpos_set_h(uint32_t key, const int32_t* prev2, const int32_t* prev,
                        const int32_t* curr, double t) {
-    if (s_fpos_n >= FPOS_MAX) return;
-    s_fpos[s_fpos_n].key = key;
+    double* p = fpos_append(key);
+    if (!p) return;
     for (int i = 0; i < 3; ++i)
-        s_fpos[s_fpos_n].p[i] = hermite1((double)prev2[i], (double)prev[i], (double)curr[i], t);
-    s_fpos_n++;
+        p[i] = hermite1((double)prev2[i], (double)prev[i], (double)curr[i], t);
 }
 /** @brief Returns the fractional-position table index of key.
  *
  * With fpos_drop, fpos_get and fpos_put it lets the Spyro record loop swap
  * the G_SPYRO entry per record and restore the ambient one after its last
  * record.
+ * An index probe (fpos_index), so a lookup costs one compare while the
+ * table's keys hash apart instead of a scan of every entry.
  * @param key The object's guest address.
- * @return The index, -1 when key has no entry. */
+ * @return The index of key's first entry, -1 when key has no entry. */
 static int fpos_find(uint32_t key) {
-    for (int i = 0; i < s_fpos_n; ++i) if (s_fpos[i].key == key) return i;
-    return -1;
+    for (uint32_t h = fpos_hash_slot(key);; h = (h + 1u) & (FPOS_HASH - 1u)) {
+        if (s_fpos_hash[h].gen != s_fpos_gen) return -1;
+        if (s_fpos_hash[h].key == key) return s_fpos_hash[h].idx;
+    }
 }
+/** @brief Remove key's first entry (the last entry moves into its place) and rebuild the index. */
 static void fpos_drop(uint32_t key) {
     int i = fpos_find(key);
-    if (i >= 0) s_fpos[i] = s_fpos[--s_fpos_n];
+    if (i < 0) return;
+    s_fpos[i] = s_fpos[--s_fpos_n];
+    fpos_index_clear();
+    for (int k = 0; k < s_fpos_n; ++k) fpos_index(s_fpos[k].key, k);
 }
 static int fpos_get(uint32_t key, double out[3]) {
     int i = fpos_find(key);
@@ -413,21 +466,20 @@ static int fpos_get(uint32_t key, double out[3]) {
     out[0] = s_fpos[i].p[0]; out[1] = s_fpos[i].p[1]; out[2] = s_fpos[i].p[2];
     return 1;
 }
+/** @brief Overwrite key's first entry, or append one; a full table drops a new key. */
 static void fpos_put(uint32_t key, const double p[3]) {
     int i = fpos_find(key);
-    if (i < 0) { if (s_fpos_n >= FPOS_MAX) return; i = s_fpos_n++; s_fpos[i].key = key; }
-    s_fpos[i].p[0] = p[0]; s_fpos[i].p[1] = p[1]; s_fpos[i].p[2] = p[2];
+    double* d = (i >= 0) ? s_fpos[i].p : fpos_append(key);
+    if (!d) return;
+    d[0] = p[0]; d[1] = p[1]; d[2] = p[2];
 }
 int openpete_native_interp_pos(unsigned int key, double out[3]) {
     if (!s_fpos_active) return 0;   /* canonical render path → use live RAM */
     if (s_prod_cam_active && key == G_CAMERA) return 0;   /* held producer camera: integer RAM */
-    for (int i = 0; i < s_fpos_n; ++i) {
-        if (s_fpos[i].key == (uint32_t)key) {
-            out[0] = s_fpos[i].p[0]; out[1] = s_fpos[i].p[1]; out[2] = s_fpos[i].p[2];
-            return 1;
-        }
-    }
-    return 0;
+    int i = fpos_find(key);
+    if (i < 0) return 0;
+    out[0] = s_fpos[i].p[0]; out[1] = s_fpos[i].p[1]; out[2] = s_fpos[i].p[2];
+    return 1;
 }
 
 /* ---- render camera lock (G) ---------------------------------------------------
@@ -538,15 +590,8 @@ static double cl_fit_pose(const int16_t* live, double* out_yaw, double* out_pitc
  * @param y The world Y.
  * @param z The world Z. */
 static void cl_fpos_override(uint32_t key, double x, double y, double z) {
-    for (int i = 0; i < s_fpos_n; ++i)
-        if (s_fpos[i].key == key) {
-            s_fpos[i].p[0] = x; s_fpos[i].p[1] = y; s_fpos[i].p[2] = z;
-            return;
-        }
-    if (s_fpos_n >= FPOS_MAX) return;
-    s_fpos[s_fpos_n].key = key;
-    s_fpos[s_fpos_n].p[0] = x; s_fpos[s_fpos_n].p[1] = y; s_fpos[s_fpos_n].p[2] = z;
-    s_fpos_n++;
+    const double p[3] = { x, y, z };
+    fpos_put(key, p);
 }
 
 /** @brief Applies the render camera lock to one present's camera bytes.
@@ -1618,6 +1663,7 @@ static int particle_pools_bracket(part_save_t* save) {
  * visible to the next tick. */
 static void game_reextract_body(void* cpu_v) {
     CPUState* cpu = (CPUState*)cpu_v;
+    game_interp_hud_batch_begin();   /* HUD pool keys: one table for this present's lookups */
 
     /* Bracket-integrity: snapshot the fixed DIRECT gameplay regions BEFORE
      * any lerp write, so they can be re-checked after all restores at the end of
@@ -2497,6 +2543,7 @@ static void game_reextract_body(void* cpu_v) {
             amin = 2.0; amax = -1.0;
         }
     }
+    game_interp_hud_batch_end();
 }
 
 void game_reextract_init(void) {

@@ -48,7 +48,35 @@ void feature_registry_apply_options(const openpete_options_t* opts) {
     }
 }
 
+/* Address prefilter for feature_registry_dispatch: one bit per word address
+ * modulo 2^18 bytes ((addr >> 2) & 0xFFFF), set for every dispatch-table
+ * entry. The module list and its tables are const, so the filter is built
+ * once, on the first dispatch, on the thread that runs the guest. A clear
+ * bit proves no entry has the address; a set bit falls through to the
+ * table walk, which decides. */
+static uint8_t s_fr_filter[0x10000u / 8u];
+static int     s_fr_filter_ready;
+
+/** @brief Bit index of addr in the dispatch prefilter. */
+static uint32_t fr_filter_bit(uint32_t addr) { return (addr >> 2) & 0xFFFFu; }
+
+/** @brief Set the prefilter bit of every dispatch-table entry of every module. */
+static void fr_filter_build(void) {
+    for (size_t i = 0; i < openpete_feature_count; i++) {
+        const feature_module_t* m = openpete_features[i];
+        if (!m || !m->dispatch_table) continue;
+        for (const feature_dispatch_entry_t* e = m->dispatch_table; e->addr != 0u; e++) {
+            const uint32_t b = fr_filter_bit(e->addr);
+            s_fr_filter[b >> 3] |= (uint8_t)(1u << (b & 7u));
+        }
+    }
+    s_fr_filter_ready = 1;
+}
+
 int feature_registry_dispatch(CPUState* cpu, uint32_t addr) {
+    if (!s_fr_filter_ready) fr_filter_build();
+    const uint32_t fb = fr_filter_bit(addr);
+    if (!(s_fr_filter[fb >> 3] & (1u << (fb & 7u)))) return 0;   /* no entry has this address */
     for (size_t i = 0; i < openpete_feature_count; i++) {
         const feature_module_t* m = openpete_features[i];
         if (!m || !m->dispatch_table) continue;

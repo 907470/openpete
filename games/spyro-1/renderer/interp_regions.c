@@ -137,6 +137,60 @@ static void credits_track_generations(void) {
     }
 }
 
+/* Same-class ordinals of the HUD pool, computed in one pass while a batch is
+ * open (game_interp_hud_batch_begin/_end: the tick-end capture and each
+ * re-extract), so a key lookup is one table read instead of a rescan of the
+ * entries allocated before it. ord_n[k] is the number of entries before
+ * entry k with entry k's class; entries from `count` on (the first entry
+ * that does not map, or the pool's end) are not in the table and take the
+ * scan. The table describes the pool at `top` as it stood at batch begin. */
+static struct {
+    int      open;                 /* a batch is open and the table is current */
+    uint32_t top;                  /* D_800756FC at batch begin */
+    uint32_t count;                /* entries tabulated */
+    uint16_t cls[HUD_POOL_MAX];
+    uint16_t ord_n[HUD_POOL_MAX];
+} s_hud_ord;
+
+void game_interp_hud_batch_begin(void) {
+    static uint16_t seen[0x400];   /* per-class running count (class is 10 bits) */
+    memset(seen, 0, sizeof seen);
+    const uint32_t top = rd32(G_HUD_POOL_TOP);
+    s_hud_ord.top = top;
+    s_hud_ord.count = 0;
+    s_hud_ord.open = 1;
+    if (top < 0x80000000u) return;
+    for (uint32_t k = 0; k < HUD_POOL_MAX; k++) {
+        const uint8_t* e = (const uint8_t*)openpete_psx_to_host_span(top - (k + 1u) * MOBY_STRIDE, MOBY_STRIDE);
+        if (!e) break;
+        uint16_t c; memcpy(&c, e + 0x36u, 2);
+        s_hud_ord.cls[k] = c;
+        s_hud_ord.ord_n[k] = seen[c & 0x3FFu]++;
+        s_hud_ord.count = k + 1u;
+    }
+}
+
+void game_interp_hud_batch_end(void) { s_hud_ord.open = 0; }
+
+/** @brief The same-class ordinal of HUD pool entry ord (class cls) under pool top, from the batch table when it covers it, else by scanning.
+ *
+ * @param top The pool top.
+ * @param ord The entry's allocation ordinal (0 = first allocated).
+ * @param cls The entry's class.
+ * @return The number of entries allocated before it with its class. */
+static uint32_t hud_same_class_ordinal(uint32_t top, uint32_t ord, uint16_t cls) {
+    if (s_hud_ord.open && s_hud_ord.top == top && ord < s_hud_ord.count && s_hud_ord.cls[ord] == cls)
+        return s_hud_ord.ord_n[ord];
+    uint32_t n = 0;
+    for (uint32_t k = 0; k < ord; k++) {
+        const uint8_t* e = (const uint8_t*)openpete_psx_to_host_span(top - (k + 1u) * MOBY_STRIDE, MOBY_STRIDE);
+        if (!e) break;
+        uint16_t c2; memcpy(&c2, e + 0x36u, 2);
+        if (c2 == cls) n++;
+    }
+    return n;
+}
+
 /* Identities tried in the order renderer/interp_regions.h lists them. */
 uint32_t game_interp_moby_key(uint32_t m) {
     /* Credits letters: (class, record index, generation) — see
@@ -249,13 +303,7 @@ uint32_t game_interp_moby_key(uint32_t m) {
             uint32_t ord = delta / MOBY_STRIDE - 1u;   /* 0 = first entry allocated */
             const uint8_t* mh = (const uint8_t*)openpete_psx_to_host_span(m, MOBY_STRIDE);
             uint16_t cls = 0; if (mh) memcpy(&cls, mh + 0x36u, 2);
-            uint32_t n = 0;
-            for (uint32_t k = 0; k < ord; k++) {
-                const uint8_t* e = (const uint8_t*)openpete_psx_to_host_span(top - (k + 1u) * MOBY_STRIDE, MOBY_STRIDE);
-                if (!e) break;
-                uint16_t c2; memcpy(&c2, e + 0x36u, 2);
-                if (c2 == cls) n++;
-            }
+            const uint32_t n = hud_same_class_ordinal(top, ord, cls);
             return 0x40000000u | ((uint32_t)(cls & 0x3FFu) << 16) | (n & 0xFFFFu);
         }
     }
@@ -284,6 +332,7 @@ static uint32_t rd32(uint32_t addr) {
  * call below depends on it; the array walk keys by address and does not. */
 static void spyro_interp_extra_pools(void) {
     credits_track_generations();
+    game_interp_hud_batch_begin();   /* HUD pool keys below read one table */
 
     /* Static 3D HUD icons (g_Hud.m_Mobys[12]) — stride-0x58 Mobys OUTSIDE
      * g_LevelMobys. They spin (m_Rotation @ +0x44); capture them so the sub-tick
@@ -409,6 +458,7 @@ static void spyro_interp_extra_pools(void) {
             openpete_interp_objs_capture(G_DRAGON_CUTSCENE + 0x28u, host, 0x18u);
     }
 
+    game_interp_hud_batch_end();
 }
 
 void game_interp_register(void) {

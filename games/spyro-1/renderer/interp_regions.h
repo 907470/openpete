@@ -24,6 +24,16 @@ extern "C" {
  * @return The key. */
 uint32_t game_interp_moby_key(uint32_t m);
 
+/** @brief Tabulate the HUD pool's same-class ordinals for the key lookups that follow.
+ *
+ * Called at the start of a pass that keys many pool entries against one pool
+ * state (the tick-end capture, a re-extract); game_interp_moby_key then reads
+ * an entry's ordinal from the table instead of rescanning the entries
+ * allocated before it. Reads guest RAM only. */
+void game_interp_hud_batch_begin(void);
+/** @brief Close the batch game_interp_hud_batch_begin opened; later lookups scan. */
+void game_interp_hud_batch_end(void);
+
 #ifdef __cplusplus
 }
 #endif

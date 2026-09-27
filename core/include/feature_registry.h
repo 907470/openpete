@@ -73,8 +73,9 @@ void feature_registry_set_overlay_probe(uint32_t (*fn)(void));
 
 /** @brief Run the feature hooks registered for a guest function address.
  *
- * Walks every module of openpete_features in list order and every entry of
- * its dispatch_table. A matching entry with a nonzero `overlay` runs only
+ * An address whose bit is clear in a prefilter built from every table on
+ * the first call returns 0 without walking. Otherwise walks every module of
+ * openpete_features in list order and every entry of its dispatch_table. A matching entry with a nonzero `overlay` runs only
  * while the probe reports that overlay resident. The walk stops at the
  * first hook that returns nonzero; a hook returning 0 lets later matches
  * run and the recompiled body run after them. Under --profile-out each
