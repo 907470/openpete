@@ -246,6 +246,15 @@ int spyro1_splash_active(void) { return s_win != NULL; }
 
 /* ---- progress (called from disc_library + recomp_build) --------------- */
 
+/** @brief Draws one progress screen: the banner, the stage line, the bar and the footer.
+ *
+ * A stage starting "COMPILING MODS" takes the mods banner and footer and
+ * shows done/total after the stage text; any other stage takes the
+ * first-time setup banner. The bar fills done/total, clamped to 1, and is
+ * empty when total is 0.
+ * @param stage The stage text.
+ * @param done The completed units.
+ * @param total The total units. */
 static void progress_render(const char* stage, int done, int total) {
     /* Mod compiles ride the same screen as the first-boot disc build
      * but with their own banner — a warm boot that only recompiles a

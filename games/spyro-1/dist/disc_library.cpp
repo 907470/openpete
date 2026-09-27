@@ -81,10 +81,14 @@ std::string exe_dir() {
 #endif
 }
 
-/* Named, not created. Readers tolerate an absent library (nothing ingested
- * yet), and every writer goes through fs::create_directories, which makes
- * the parents — so a mere query (--config-report, a scope lookup) leaves
- * no empty directory behind. */
+/** @brief Returns the disc library's root directory without creating it.
+ *
+ * The root is the "library" data directory openpete_paths_data_dir names,
+ * or "library" beside the executable when that lookup fails. Readers
+ * tolerate an absent library (nothing ingested yet), and every writer goes
+ * through fs::create_directories, which makes the parents, so a query
+ * (--config-report, a scope lookup) leaves no empty directory behind.
+ * @return The library root path. */
 fs::path library_root() {
     char dir[2048];
     if (openpete_paths_data_dir("library", dir, sizeof dir, 0) != 0)
@@ -92,9 +96,14 @@ fs::path library_root() {
     return fs::path(dir);
 }
 
-/* Locate the .bin for an image path the user handed us (.bin itself,
- * or a .cue whose sibling/only .bin we find — same tolerance as
- * run.c's derive_bin_path + exe_loader's fallback). */
+/** @brief Locates the .bin for a disc image path given on the command line.
+ *
+ * A path with a .bin or .BIN extension is returned as is. Otherwise the
+ * path with its extension replaced by .bin is returned when it exists, else
+ * the first .bin or .BIN the directory iterator yields in the path's
+ * directory.
+ * @param given The image path, a .bin or a .cue.
+ * @return The .bin path, or an empty path when none is found. */
 fs::path locate_bin(const fs::path& given) {
     if (given.extension() == ".bin" || given.extension() == ".BIN")
         return given;
@@ -174,8 +183,11 @@ void touch_last_played(const Meta& m) {
     write_meta(m.dir, m.label, m.source, m.sha, (long long)time(nullptr));
 }
 
-/* The entry's cue is what the runtime consumes; single data track,
- * MODE2/2352, referencing the library copy by its fixed name. */
+/** @brief Writes a library entry's disc.cue, the file the runtime boots.
+ *
+ * The cue declares one MODE2/2352 data track referencing the entry's copy
+ * by its fixed name disc.bin, and replaces any existing cue.
+ * @param entry The library entry's directory. */
 void write_cue(const fs::path& entry) {
     std::ofstream f(entry / "disc.cue", std::ios::trunc);
     f << "FILE \"disc.bin\" BINARY\n"
@@ -218,18 +230,29 @@ int boot_entry(openpete_options_t* opts, Meta& m,
 
 }  // namespace
 
-/* Which image openpete.toml's [disc.*] scopes should describe, resolved
- * before the flag parser runs and therefore long before the library has
- * actually booted anything. Cheap by contract:
+/** @brief Resolves the serial and library hash of the image openpete.toml's [disc.*] scopes describe.
  *
- *   - the SERIAL comes from the image's own SYSTEM.CNF (a few sectors), so
+ * Runs before the flag parser, before the library has booted anything, and
+ * reads few bytes:
+ *
+ *   - the serial comes from the image's own SYSTEM.CNF (a few sectors), so
  *     it works for a dev --disc the library has never seen;
- *   - the SHA is only ever READ BACK from a library entry's meta.toml,
- *     recorded when the image was ingested. Hashing here would mean
- *     digesting half a gigabyte on every launch.
+ *   - the hash is only read back from a library entry's meta.toml, recorded
+ *     when the image was ingested; hashing here would digest the whole image
+ *     on every launch.
  *
- * A raw --disc outside the library therefore resolves a serial and no
- * hash, and [disc.<sha>] simply doesn't apply to it. */
+ * A named disc takes the hash of the library entry whose disc.cue or
+ * disc.bin is the same file, so a raw --disc outside the library resolves a
+ * serial and no hash, and a [disc.SHA] scope does not apply to it. With no disc
+ * named, the most recently played entry is used, the choice
+ * spyro1_library_resolve makes before the selector UI runs; a different
+ * version picked in the splash gets its scopes on the next launch.
+ * @param disc_path The --disc path, or NULL or empty for none.
+ * @param serial Receives the disc serial, or NULL.
+ * @param serial_cap The capacity of serial.
+ * @param sha Receives the library entry's hash, or NULL.
+ * @param sha_cap The capacity of sha.
+ * @return 0 when a serial or a hash was resolved, else -1. */
 extern "C" int spyro1_config_disc_identity(const char* disc_path,
                                            char* serial, size_t serial_cap,
                                            char* sha, size_t sha_cap) {

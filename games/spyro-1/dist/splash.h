@@ -6,40 +6,78 @@
 extern "C" {
 #endif
 
-/* Open/close the pre-game splash window (no-op fail-soft: callers must
- * tolerate open() returning -1, e.g. no display — the console path
- * still works). */
+/** @brief Opens the pre-game splash window, its renderer and the first connected gamepad.
+ *
+ * Initializes SDL video and gamepad, creates the window at the size
+ * spyro1_splash_set_window_size requested (else 640x448), and draws in a
+ * fixed 640x448 logical space letterboxed into it. Callers tolerate -1 (no
+ * display); the console path works without the splash.
+ * @return 0 when open (including already open), -1 on an SDL failure. */
 int  spyro1_splash_open(void);
+/** @brief Sets whether the splash UI may show, from main as the negation of headless.
+ *
+ * @param enabled Non-zero to allow the splash. */
 void spyro1_splash_set_enabled(int enabled);
+/** @brief Reports whether the splash UI may show.
+ *
+ * @return The value spyro1_splash_set_enabled stored. */
 int  spyro1_splash_ui_enabled(void);
+/** @brief Closes the splash's gamepad, renderer and window. */
 void spyro1_splash_close(void);
+/** @brief Reports whether the splash window is open.
+ *
+ * @return 1 when open, else 0. */
 int  spyro1_splash_active(void);
 
-/* Size the splash window opens at (call before the first open; 0 =
- * the game window's default). Lets an explicit --window carry through
- * so the vk-mode adoption below needs no resize. */
+/** @brief Sets the size the splash window opens at.
+ *
+ * Called before the first open; 0 selects 640x448, the game window's
+ * default size. An explicit --window carries through so the vk-mode
+ * adoption needs no resize.
+ * @param w The window width, or 0.
+ * @param h The window height, or 0. */
 void spyro1_splash_set_window_size(int w, int h);
 
-/* Adoption handoff (windowed vk mode): destroy the splash's renderer +
- * gamepad but keep the OS window alive and return it (an SDL_Window*;
- * void* keeps this header SDL-free). The splash is inactive afterwards
- * and the caller owns the window. NULL if the splash never opened. */
+/** @brief Hands the splash's OS window to the caller, destroying the splash's renderer and gamepad.
+ *
+ * Windowed vk mode adopts the window instead of opening a second one. The
+ * SDL_Renderer is destroyed here because its swapchain has to release the
+ * window surface before SDL_Vulkan_CreateSurface can claim it. The splash is
+ * inactive afterwards and the caller owns the window.
+ * @return The SDL_Window* (void* keeps this header SDL-free), or NULL when the splash is not open. */
 void* spyro1_splash_detach_window(void);
 
-/* DROP mode: block until a file is dropped (returns the path, owned by
- * the splash) or the user quits (NULL). */
+/** @brief Runs the drop screen until a disc image is dropped or chosen, or the user quits.
+ *
+ * A file dropped on the window, or chosen in the file dialog Space, Enter
+ * or the gamepad's south button opens, is returned. Escape, the gamepad's
+ * east button, or closing the window quits.
+ * @return The path, owned by the splash, or NULL on quit or when the splash is not open. */
 const char* spyro1_splash_wait_for_disc(void);
 
-/* SELECTOR mode: pick one of `count` labels. Returns the index, -1 on
- * quit, or -2 if a file was dropped instead (fetch it with
- * spyro1_splash_dropped_path() and ingest). */
+/** @brief Runs the version selector until a label is picked, the user quits, or a file is dropped.
+ *
+ * Shows at most six labels. Up and down (keys, d-pad or left stick) move the
+ * selection; Enter or the gamepad's south button picks; Escape, the east
+ * button or closing the window quits. A dropped file is stored for
+ * spyro1_splash_dropped_path, for the caller to ingest.
+ * @param labels The entry labels.
+ * @param count The number of labels.
+ * @return The picked index, -1 on quit, when the splash is not open or when
+ *         count is not positive, or -2 when a file was dropped. */
 int spyro1_splash_select(const char* const* labels, int count);
 const char* spyro1_splash_dropped_path(void);
 
-/* PROGRESS: render stage + bar and pump events. Safe to call when the
- * splash isn't open (no-op). Wired as spyro1_progress_cb by main.
- * Thread-aware: called from inside a spyro1_splash_run_task worker it
- * only stores the update (the runner loop renders on the UI thread). */
+/** @brief Reports a progress update: renders the stage line and bar, or stores it for the task runner.
+ *
+ * Wired as spyro1_progress_cb by main. A no-op when the splash UI is
+ * disabled. Called from inside a spyro1_splash_run_task worker it only
+ * stores the update under the task lock, and the runner loop renders it on
+ * the UI thread. On the UI thread it opens the splash when not yet open
+ * (returning when that fails), drains pending events and renders.
+ * @param stage The stage text.
+ * @param done The completed units.
+ * @param total The total units, or 0 for no bar. */
 void spyro1_splash_progress(const char* stage, int done, int total);
 
 /* Run a blocking pipeline stage (ingest copy, first-boot module build)

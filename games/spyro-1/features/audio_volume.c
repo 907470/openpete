@@ -73,9 +73,16 @@ extern int openpete_speculative;
 /* --- per-channel stamping ------------------------------------------------ */
 
 /* The game's own slider math, so the guest sees exactly the values its options
- * menu would have produced. Each writes the slider plus every derived field,
+ * menu would have produced. A stamp writes the slider plus every derived field;
+ * a derived function applies the same math to a level in channel_tick's check
  * and reports the derived word the checker compares against. */
 
+/** @brief Computes g_Spu.m_SoundVolume for a sound-effects slider level.
+ *
+ * The level scales to unk_0x320 = level * 0x3FFF / 10, which scales to
+ * unk_0x320 * 0x1000 / 0x3FFF, both in integer division as the game does.
+ * @param level The slider level, 0 to 10.
+ * @return The derived m_SoundVolume word. */
 static uint32_t sfx_derived(int level) {
     uint32_t raw = (uint32_t)((level * 0x3FFF) / 10);
     return (raw * 0x1000u) / 0x3FFFu;   /* g_Spu.m_SoundVolume */
@@ -164,7 +171,9 @@ static void channel_tick(CPUState* cpu, vol_channel_t* ch, int menu_open) {
 static int   s_mirrored_music = -1;
 static float s_mirrored_master = -1.0f;
 
-/* Reproduce the two hardware stages the XA stream passes through rather than
+/** @brief Sets the XA stream and music-override gain from the game's music slider and the SPU main volume.
+ *
+ * Reproduces the two hardware stages the XA stream passes through rather than
  * treating the slider as a 0..1 fader. The game derives its CD input volume as
  * m_MusicVolume = slider << 11, and the SPU applies both that and the main
  * volume as (sample * volume) >> 15. CD input volume is written to the
@@ -172,7 +181,9 @@ static float s_mirrored_master = -1.0f;
  * not 1.0; scaling it to 1.0 overdrives the music and, because gains above
  * unity clamp at AL_MAX_GAIN, flattens the top of the slider's range. The
  * main volume factor carries its own (14-bit) scale and arrives already
- * normalised. */
+ * normalised. The slider is clamped to 0..10, and the gain is set only when
+ * the slider or the main volume changed since the last call.
+ * @param cpu The guest CPU state. */
 static void music_gain_mirror(CPUState* cpu) {
     int level = (int)cpu->read_word(ADDR_MUSIC_SLIDER);
     if (level < 0)  level = 0;

@@ -190,11 +190,16 @@ int game_resolve_area_arg(const char* arg, int* out_area);
  * after game_set_skip_to_level and replaces its level. level 0 = disabled. */
 void game_set_skip_to_area(int level_id, int area);
 
-/* Validate a --cheats spec ("99_lives,unlock_all_levels") against the game's
- * own built-in cheat codes. Returns 0 when every name is known, -1 otherwise
- * (impl prints the valid names to stderr — this runs in CLI-parse context, so
- * a typo fails before the game boots). The cheats themselves are applied by
- * the per-game feature module from opts->cheats. */
+/** @brief Validates a --cheats spec against the game's own built-in cheat codes.
+ *
+ * The spec is comma-separated names ("99_lives,unlock_all_levels"). This
+ * runs in CLI-parse context, so a typo fails before the game boots; on
+ * failure the implementation prints the valid names to stderr. A game
+ * without --cheats support rejects every spec. The cheats themselves are
+ * applied by the per-game feature module from opts->cheats.
+ * @param spec The --cheats argument.
+ * @return 0 when the spec names at least one cheat and every name is known,
+ *         else -1. */
 int game_validate_cheats_arg(const char* spec);
 
 /* --no-lod setup is a feature module — see core/include/no_lod.h and

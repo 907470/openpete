@@ -45,8 +45,12 @@ static void row(uint32_t addr, unsigned size, uint32_t value) {
 static void wc_write_word(uint32_t a, uint32_t v) { row(a, 4, v); s_orig_write_word(a, v); }
 static void wc_write_half(uint32_t a, uint16_t v) { row(a, 2, v); s_orig_write_half(a, v); }
 static void wc_write_byte(uint32_t a, uint8_t v)  { row(a, 1, v); s_orig_write_byte(a, v); }
-/* swl/swr cover the aligned word containing addr; the merged value is not
- * known here, so the register value is logged. */
+/** @brief Logs an swl store as a row on the aligned word containing its address, then performs it.
+ *
+ * swl and swr cover the aligned word containing the address; the merged
+ * value is not known here, so the register value is logged.
+ * @param a The unaligned guest address.
+ * @param v The register value. */
 static void wc_swl(uint32_t a, uint32_t v) { row(a & ~3u, 4, v); s_orig_swl(a, v); }
 static void wc_swr(uint32_t a, uint32_t v) { row(a & ~3u, 4, v); s_orig_swr(a, v); }
 

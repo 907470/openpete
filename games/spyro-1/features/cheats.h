@@ -11,9 +11,14 @@
 
 typedef struct CPUState CPUState;
 
-/* Apply the selected cheats once gameplay is live, re-arming whenever the
- * player returns to the title screen (so New Game after a quit gets them
- * again), plus any cheat the dev overlay's per-cheat button has queued. Also
- * refreshes the "in a level" state those buttons gate on, so it must run every
- * tick even without --cheats. Call once per tick from game_on_frame_pre. */
+/** @brief Applies the --cheats selection and the dev overlay's queued cheats once gameplay is live.
+ *
+ * The --cheats selection is applied on the first live tick of each session
+ * and re-armed whenever the title screen shows, so New Game after a quit
+ * gets it again. Live means game state play, pause or inventory, a level
+ * loaded, and no attract demo. Also refreshes the live state the overlay's
+ * buttons gate on, so it runs every tick even without --cheats; called once
+ * per tick from game_on_frame_pre. Does nothing on a runahead speculative
+ * tick.
+ * @param cpu The guest CPU state. */
 void spyro1_cheats_on_tick(CPUState* cpu);

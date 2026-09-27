@@ -64,10 +64,13 @@
 #define GS_INVENTORYMENU 3u
 #define GS_TITLESCREEN   13u
 
-/* States where a cheat's writes make sense. Play, plus the pause and
- * inventory screens — the inventory screen is where the game's own pad codes
- * are entered (CheatsProcess runs from gamestate 3), so a cheat applied there
- * is exactly what the player could have typed. */
+/** @brief Reports whether a game state is one where a cheat's writes make sense.
+ *
+ * Play, plus the pause and inventory screens. The inventory screen is where
+ * the game's own pad codes are entered (CheatsProcess runs from gamestate 3),
+ * so a cheat applied there is what the player could have typed.
+ * @param gs The g_GameState value.
+ * @return 1 for play, pause or inventory, else 0. */
 static int gs_is_cheatable(uint32_t gs) {
     return gs == GS_PLAYING || gs == GS_PAUSEMENU || gs == GS_INVENTORYMENU;
 }
@@ -125,9 +128,15 @@ static void print_valid_names(void) {
         fprintf(stderr, "  %-18s %s\n", k_cheats[i].name, k_cheats[i].help);
 }
 
-/* Parse a comma-separated spec into a cheat mask. Returns 0 on success, -1 on
- * an unknown name (printing the valid list — this runs in CLI-parse context).
- * Names are matched case-insensitively with '-' accepted for '_'. */
+/** @brief Parses a comma-separated --cheats spec into a cheat mask.
+ *
+ * Names are matched case-insensitively with '-' accepted for '_'; blanks
+ * around a name and empty names are skipped, and a name is truncated to 31
+ * characters. An unknown name prints it and the valid list, since this runs
+ * in CLI-parse context.
+ * @param spec The spec.
+ * @param out_mask Receives the mask on success.
+ * @return 0 on success, -1 on an unknown name. */
 static int parse_spec(const char* spec, uint32_t* out_mask) {
     uint32_t mask = 0;
 
@@ -159,9 +168,7 @@ static int parse_spec(const char* spec, uint32_t* out_mask) {
     return 0;
 }
 
-/* CLI-time validation hook (game_extras.h) — same shape as
- * game_resolve_level_arg: reject a typo before the game boots rather than
- * silently ignoring it. */
+/* The --cheats validation hook game_extras.h declares. */
 int game_validate_cheats_arg(const char* spec) {
     uint32_t mask = 0;
     if (!spec || !*spec) {
@@ -180,13 +187,20 @@ int game_validate_cheats_arg(const char* spec) {
 
 /* ---- dev-overlay rows (one per cheat, fired by a button) -------------- */
 
+/** @brief Finds the cheat a dev-overlay row fires, by the row's id.
+ *
+ * @param k The row.
+ * @return The cheat's definition, or NULL when no cheat's knob_id matches. */
 static const cheat_def_t* def_for_row(const knob_desc_t* k) {
     for (size_t i = 0; i < CHEAT_COUNT; i++)
         if (!strcmp(k->id, k_cheats[i].knob_id)) return &k_cheats[i];
     return NULL;
 }
 
-/* Button gate: only offer a cheat while its writes would mean something. */
+/** @brief Reports whether a cheat row's button is enabled: only while gameplay is live.
+ *
+ * @param k The row (unused).
+ * @return 1.0 while gameplay is live, else 0.0. */
 static double row_ready(const knob_desc_t* k) { (void)k; return s_live ? 1.0 : 0.0; }
 
 static int row_fire(knob_desc_t* k, double v) {

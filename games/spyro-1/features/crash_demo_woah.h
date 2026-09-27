@@ -9,9 +9,13 @@
 extern "C" {
 #endif
 
-/* Per-tick: start the background decode of the woah once the title
- * screen is resident, and reset the once-per-press latches when the
- * combo comes up. Inert away from the title screen. */
+/** @brief Runs the Crash demo cheat's per-tick housekeeping while the title screen overlay is resident.
+ *
+ * Starts the background decode of the woah on the first such tick, clears
+ * the once-per-press latch when L1+Triangle is no longer held, and disarms a
+ * pending one-shot substitution whose key-on has not arrived within
+ * ARM_EXPIRY_TICKS ticks. Does nothing away from the title screen.
+ * @param cpu The guest CPU state. */
 void spyro1_crash_woah_on_tick(CPUState* cpu);
 
 #ifdef __cplusplus

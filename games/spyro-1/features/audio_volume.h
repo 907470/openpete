@@ -14,6 +14,12 @@
 
 typedef struct CPUState CPUState;
 
-/* Apply the pending presets and refresh the music gain. Call once per tick;
- * inert (no guest writes) while both presets are unset. */
+/** @brief Applies the pending --sfx and --music presets and refreshes the music gain.
+ *
+ * Called once per tick. Writes no guest RAM while both presets are unset,
+ * and does nothing on a runahead speculative tick, whose guest writes roll
+ * back while this module's latches and a cleared host request would not.
+ * With the sound-options submenu open it stamps nothing and drops a preset
+ * whose slider the player moved.
+ * @param cpu The guest CPU state. */
 void spyro1_audio_volume_on_tick(CPUState* cpu);

@@ -24,15 +24,34 @@
 extern "C" {
 #endif
 
-/* Installs the wrappers when the knob is set; a no-op otherwise. */
+/** @brief Installs the census wrappers over the CPU's five store hooks when OPENPETE_WRITE_CENSUS parses.
+ *
+ * Parses up to eight hex lo..hi ranges, opens OPENPETE_WRITE_CENSUS_OUT
+ * (default write-census.csv) and writes its header, saves the original
+ * write_word, write_half, write_byte, swl and swr hooks, installs the
+ * wrappers, latches OPENPETE_WRITE_CENSUS_PHASE, and registers an atexit
+ * close. An unset knob, a NULL cpu, no parsed range, or an unopenable output
+ * leaves the hooks untouched.
+ * @param cpu The guest CPU state whose store hooks are wrapped. */
 void write_census_install(CPUState* cpu);
 int  write_census_active(void);
-/* Every dispatch entry reports here; the last one is the `entry` column,
- * and the phase entry sets phase 1. Call only when write_census_active(). */
+/** @brief Records a dispatch entry address as the entry column of subsequent rows.
+ *
+ * An address equal to the OPENPETE_WRITE_CENSUS_PHASE entry sets phase 1.
+ * Callers call it only when write_census_active().
+ * @param addr The dispatched function's entry address. */
 void write_census_note_entry(uint32_t addr);
-/* Phase 0 = before the phase entry for this tick. */
+/** @brief Sets the phase column of subsequent rows.
+ *
+ * Phase 0 is before the phase entry for this tick. A transition from 0 to
+ * non-zero increments the seq column.
+ * @param phase The new phase. */
 void write_census_set_phase(int phase);
-/* Store hooks as they were before installation (NULL when inactive). */
+/** @brief Stores a word through the store hook saved at installation, producing no census row.
+ *
+ * A no-op when the census is not installed.
+ * @param addr The guest address.
+ * @param value The word to store. */
 void write_census_orig_word(uint32_t addr, uint32_t value);
 void write_census_orig_half(uint32_t addr, uint16_t value);
 

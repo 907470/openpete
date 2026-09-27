@@ -119,9 +119,17 @@ static uint32_t rd32(const uint8_t* p) {
     return v;
 }
 
-/* Decode SPU-ADPCM lines to mono s16, stopping before the loop-end line
- * (flag bit 0) like the SPU's one-shot envelope would. Returns the frame
- * count; caller frees *out. */
+/** @brief Decodes SPU-ADPCM lines to mono s16, stopping before the loop-end line.
+ *
+ * Each 16-byte line carries a shift and filter nibble, a flag byte and 28
+ * four-bit samples; a line whose flag bit 0 is set ends the decode before
+ * it is decoded, and a filter index above 4 is treated as 0. Samples clamp
+ * to the s16 range.
+ * @param body The ADPCM lines.
+ * @param len The byte length of body; a trailing partial line is ignored.
+ * @param out Receives the malloc'd sample buffer, which the caller frees;
+ *        untouched when the allocation fails.
+ * @return The sample count, or 0 when the allocation fails. */
 static uint32_t adpcm_to_pcm(const uint8_t* body, uint32_t len, int16_t** out) {
     static const int k_f0[5] = {0, 60, 115, 98, 122};
     static const int k_f1[5] = {0, 0, -52, -55, -60};
@@ -154,9 +162,17 @@ static uint32_t adpcm_to_pcm(const uint8_t* body, uint32_t len, int16_t** out) {
     return n;
 }
 
-/* Find the woah sound entry in the demo NSF's raw bytes. Walks every sound
- * chunk rather than trusting a chunk index, so a re-mastered image with the
- * same payload still resolves. Returns item length, 0 if absent. */
+/** @brief Finds the woah sound entry's ADPCM item in the demo NSF's raw bytes.
+ *
+ * Walks every uncompressed sound chunk rather than trusting a chunk index,
+ * so a re-mastered image with the same payload still resolves. The first
+ * entry with the entry magic, eID WOAH_EID and the sound type yields its
+ * first item, the bytes between item offsets 0 and 1. A chunk declaring
+ * more than 256 entries is skipped.
+ * @param nsf The NSF file's bytes.
+ * @param len The byte length of nsf.
+ * @param body Receives the item's start when found.
+ * @return The item's byte length, or 0 when absent. */
 static uint32_t find_woah(const uint8_t* nsf, size_t len, const uint8_t** body) {
     for (size_t base = 0; base + NSF_CHUNK_LEN <= len; base += NSF_CHUNK_LEN) {
         const uint8_t* ch = nsf + base;
@@ -216,8 +232,12 @@ static int SDLCALL woah_load_main(void* unused) {
     return 0;
 }
 
-/* Kick the decode the first time the title screen is resident: the title
- * sequence runs for seconds before substate 3 will take the combo. */
+/** @brief Starts the woah decode on a detached worker thread, once per session.
+ *
+ * Called each tick the title screen is resident; the title sequence runs
+ * for seconds before substate 3 takes the combo. Does nothing without a disc
+ * path or after a first attempt, including one whose thread creation
+ * failed. */
 static void woah_load_start(void) {
     if (s_loader || !s_disc_path[0]) return;
     s_loader = SDL_CreateThread(woah_load_main, "openpete-crashwoah", NULL);
@@ -225,22 +245,31 @@ static void woah_load_start(void) {
     else s_loader = (SDL_Thread*)-1;  /* thread refused; do not retry per tick */
 }
 
-/* Is the guest inside the L1+Triangle branch of substate 3? Every hook
- * below is gated on this, so the same functions used elsewhere on the
- * title screen behave normally. */
+/** @brief Reports whether the guest is inside the L1+Triangle branch of the title screen's substate 3.
+ *
+ * Tests the resident overlay, g_TitlescreenState.m_SubState and the held
+ * pad buttons. Every hook is gated on this, so the same functions used
+ * elsewhere on the title screen behave normally.
+ * @param cpu The guest CPU state.
+ * @return 1 inside the cheat branch, else 0. */
 static int in_cheat_branch(CPUState* cpu) {
     return spyro_get_active_overlay_magic() == OVERLAY_TITLESCREEN &&
            cpu->read_word(ADDR_TS_SUBSTATE) == TS_SUBSTATE_PRESS_START &&
            (cpu->read_word(ADDR_G_PAD_HELD) & CHEAT_COMBO) == CHEAT_COMBO;
 }
 
-/* Swallow the branch's KillSoundsAndMusic(0) so the title track keeps
- * playing and the CD is never stopped. The branch then spins until
+/** @brief Swallows the cheat branch's KillSoundsAndMusic(0) so the title track keeps playing.
+ *
+ * The CD is never stopped. The branch then spins until
  * g_CdMusic.m_Flags reports playback fully stopped, which will now never
  * happen, so hand it the SILENT bit for the few instructions until
  * CrashDemoLaunch restores the real value. Nothing else reads m_Flags in
  * between: the wait loop's body (CDLoadTime / SoundsUpdate /
- * CDMusicUpdate) is precisely what the spoof skips. */
+ * CDMusicUpdate) is what the spoof skips. Outside the cheat branch the call
+ * runs normally.
+ * @param cpu The guest CPU state.
+ * @param addr The hooked address (unused).
+ * @return 1 to skip the guest function inside the cheat branch, else 0. */
 static int on_kill_sounds_and_music(CPUState* cpu, uint32_t addr) {
     (void)addr;
     if (!in_cheat_branch(cpu)) return 0;
@@ -263,11 +292,17 @@ static int on_crash_demo_launch(CPUState* cpu, uint32_t addr) {
     return 1;
 }
 
-/* The branch's back/cancel blip. On the first tick of a press, arm the
- * woah underneath it and let the guest's own voice play it; on the
- * remaining ticks of the same held press, suppress it so the sound is not
- * retriggered every frame. Sound 9 is the generic back/cancel blip used
- * all over the title screen — the gate keeps every other use audible. */
+/** @brief Replaces the cheat branch's back/cancel blip with the woah on the first tick of a press.
+ *
+ * On the first tick of a press the woah is armed as a one-shot sample
+ * substitution and the guest's own voice plays it; while the woah is not
+ * decoded the blip plays unchanged. On the remaining ticks of the same held
+ * press the call is suppressed so the sound is not retriggered every tick.
+ * Sound 9 is the generic back/cancel blip used all over the title screen;
+ * the sound-id and cheat-branch gates keep every other use audible.
+ * @param cpu The guest CPU state; a0 holds the sound id.
+ * @param addr The hooked address (unused).
+ * @return 1 to skip the guest call on a repeat tick of the press, else 0. */
 static int on_titlescreen_play_sound(CPUState* cpu, uint32_t addr) {
     (void)addr;
     if ((int)cpu->a0 != TS_SOUND_BACK) return 0;
@@ -287,9 +322,7 @@ static int on_titlescreen_play_sound(CPUState* cpu, uint32_t addr) {
     return 0;
 }
 
-/* Per-tick housekeeping: start the decode once the title screen is up,
- * re-arm for the next press when the combo comes up, and drop a
- * substitution whose key-on never arrived. */
+/* Declared in crash_demo_woah.h. */
 void spyro1_crash_woah_on_tick(CPUState* cpu) {
     if (spyro_get_active_overlay_magic() != OVERLAY_TITLESCREEN) return;
     woah_load_start();
