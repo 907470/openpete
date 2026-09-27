@@ -5176,6 +5176,32 @@ static void scene_to_clip(float sx, float sy, float *cx, float *cy)
     }
 }
 
+/** @brief Pack scene vertex k of st into o: clip-space position through scene_to_clip, depth, the given UV, colour, key offset, moby paint pair and drain fields.
+ *
+ * The one vertex layout every scene pass of draw_native_scene and the depth
+ * pre-pass upload.
+ * @param o Destination vertex.
+ * @param st Scene triangle.
+ * @param k Vertex index, 0 to 2.
+ * @param u Texture U, 0 for an untextured pass.
+ * @param v Texture V, 0 for an untextured pass. */
+static inline void pack_scene_vert(rhi_vertex *o, const scene_tri_t *st, int k, float u, float v)
+{
+    float cx, cy;
+    scene_to_clip(st->v[k].sx, st->v[k].sy, &cx, &cy);
+    o->x = cx; o->y = cy; o->z = st->v[k].z; o->w = st->v[k].pvz;
+    o->u = u; o->v = v;
+    o->rgba = st->v[k].rgba; o->koff = st->koff;
+    o->sx = st->rank; o->sy = (float)st->mordinal;
+    rv_drain(o, st, k);
+}
+
+/** @brief Pack the three vertices of st into o[0..2] with UV 0 (pack_scene_vert). */
+static inline void pack_scene_tri(rhi_vertex *o, const scene_tri_t *st)
+{
+    for (int k = 0; k < 3; k++) pack_scene_vert(&o[k], st, k, 0.0f, 0.0f);
+}
+
 /* The current pass's inverse of scene_to_clip, composed with its viewport:
  * a fragment at gl_FragCoord (x,y) sits at PSX screen (fax*x + fbx,
  * fay*y + fby). scene_to_clip is affine in (sx,sy), and every pass begin sets
@@ -5532,16 +5558,7 @@ static void native_depth_prepass(void)
          * (it is canonical LP geometry at true depth). */
         if (scene[t].category != OPENPETE_SCENE_WORLD &&
             scene[t].category != OPENPETE_SCENE_WORLD_FILL) continue;
-        for (int k = 0; k < 3; k++) {
-            float cx, cy;
-            scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
-            rhi_vertex* o = &pbuf[m + k];
-            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
-            /* Vertex colour retained for vertex-struct completeness; the shadow
-             * and occlusion consumers sample the pre-pass depth only. */
-            o->u = 0.0f; o->v = 0.0f; o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
-                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal; rv_drain(o, &scene[t], k);
-        }
+        pack_scene_tri(&pbuf[m], &scene[t]);
         m += 3;
     }
     /* Record the PSX-screen→uv affine of THIS mapping for the consumers
@@ -7629,15 +7646,7 @@ static int ut_emit_deferred(int gi, const scene_tri_t* scene, rhi_vertex* buf,
                 cur = 0;    /* absorbed: this span's tail draws stock */
             }
         }
-        for (int k = 0; k < 3; k++) {
-            float cx, cy;
-            scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
-            rhi_vertex* o = &buf[n + k];
-            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
-            o->u = 0.0f; o->v = 0.0f;
-            o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
-            o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal; rv_drain(o, &scene[t], k);
-        }
+        pack_scene_tri(&buf[n], &scene[t]);
         n += 3;
     }
     if (open && s_utmat_n < UT_MAT_SPANS)
@@ -9774,6 +9783,75 @@ static int draw_hud3d_layer(const scene_tri_t* scene, int tx_start,
     return tx_count / 3;
 }
 
+/* Untextured single-category buckets of draw_native_scene, in vertex-buffer
+ * order; k_utc_bucket maps each to its ut_first/ut_count slot. */
+enum { UTC_OVERLAY, UTC_HUD_PANEL, UTC_HUD3D, UTC_PORTAL_GUARD, UTC_WORLD_FILL,
+       UTC_ACTOR_FRONT, UTC_N };
+static const int k_utc_bucket[UTC_N] = { 7, 8, 9, 10, 12, 14 };
+
+/** @brief The single-category untextured bucket a scene triangle packs into, or -1.
+ *
+ * Untextured OVERLAY, HUD_PANEL, HUD3D, PORTAL_GUARD and WORLD_FILL
+ * triangles of any blend class, and untextured ACTOR_FRONT triangles of
+ * blend class 0 (a class outside 0 to 4 counts as 0).
+ * @param st The triangle.
+ * @return A UTC_* index, or -1. */
+static int utc_class(const scene_tri_t *st)
+{
+    if (st->textured) return -1;
+    switch (st->category) {
+    case OPENPETE_SCENE_OVERLAY:      return UTC_OVERLAY;
+    case OPENPETE_SCENE_HUD_PANEL:    return UTC_HUD_PANEL;
+    case OPENPETE_SCENE_HUD3D:        return UTC_HUD3D;
+    case OPENPETE_SCENE_PORTAL_GUARD: return UTC_PORTAL_GUARD;
+    case OPENPETE_SCENE_WORLD_FILL:   return UTC_WORLD_FILL;
+    case OPENPETE_SCENE_ACTOR_FRONT:
+        return (st->blend <= 0 || st->blend > 4) ? UTC_ACTOR_FRONT : -1;
+    default:                          return -1;
+    }
+}
+
+/** @brief Count the scene's triangles per single-category untextured bucket in one pass. */
+static void utc_count(const scene_tri_t *scene, int scene_n, int cnt[UTC_N])
+{
+    for (int c = 0; c < UTC_N; c++) cnt[c] = 0;
+    for (int t = 0; t < scene_n; t++) {
+        const int c = utc_class(&scene[t]);
+        if (c >= 0) cnt[c]++;
+    }
+}
+
+/** @brief Give buckets lo..hi-1 consecutive vertex ranges from n, each truncated to what fits below cap.
+ *
+ * Sets each bucket's ut_first and ut_count and its scatter cursor and end.
+ * @return The vertex count after the ranges. */
+static int utc_reserve(int lo, int hi, const int cnt[UTC_N], int n, int cap,
+                       int cur[UTC_N], int end[UTC_N], int *ut_first, int *ut_count)
+{
+    for (int c = lo; c < hi; c++) {
+        const int room = cap > n ? (cap - n) / 3 : 0;
+        const int take = cnt[c] < room ? cnt[c] : room;
+        ut_first[k_utc_bucket[c]] = n;
+        ut_count[k_utc_bucket[c]] = take * 3;
+        cur[c] = n;
+        n += take * 3;
+        end[c] = n;
+    }
+    return n;
+}
+
+/** @brief Pack the triangles of buckets lo..hi-1 into their reserved ranges in one pass, in submission order. */
+static void utc_scatter(int lo, int hi, const scene_tri_t *scene, int scene_n, rhi_vertex *buf,
+                        int cur[UTC_N], const int end[UTC_N])
+{
+    for (int t = 0; t < scene_n; t++) {
+        const int c = utc_class(&scene[t]);
+        if (c < lo || c >= hi || cur[c] >= end[c]) continue;
+        pack_scene_tri(&buf[cur[c]], &scene[t]);
+        cur[c] += 3;
+    }
+}
+
 /** @brief Composes the present's scene into the bound render target, one pass per layer and bucket.
  *
  * Packs the scene triangles into the vertex buffer and draws the world
@@ -10010,16 +10088,10 @@ static bool draw_native_scene(bool full_extent)
              * blend 3 outside the shadow decals is the same case) draw from the
              * emission-ordered blended-world block, not from this bucket. */
             if (gb == 1 || gb == 2 || gb == 4) continue;
-            for (int k = 0; k < 3; k++) {
-                float cx, cy;
-                scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
-                rhi_vertex *o = &buf[n + k];
-                o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
-                o->u = is_shadow ? scene[t].v[k].sx : 0.0f;
-                o->v = is_shadow ? scene[t].v[k].sy : 0.0f;
-                o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
-                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal; rv_drain(o, &scene[t], k);
-            }
+            for (int k = 0; k < 3; k++)
+                pack_scene_vert(&buf[n + k], &scene[t], k,
+                                is_shadow ? scene[t].v[k].sx : 0.0f,
+                                is_shadow ? scene[t].v[k].sy : 0.0f);
             n += 3;
         }
         ut_count[utb] = n - ut_first[utb];         /* the PLAIN (stock-drawn) span */
@@ -10079,92 +10151,33 @@ static bool draw_native_scene(bool full_extent)
                             (double)c[2][0], (double)c[2][1]);
                 }
             }
-            for (int k = 0; k < 3; k++) {
-                float cx, cy;
-                scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
-                rhi_vertex *o = &buf[n + k];
-                o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
-            o->u = 0.0f; o->v = 0.0f;
-                o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
-                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal; rv_drain(o, &scene[t], k);
-            }
+            pack_scene_tri(&buf[n], &scene[t]);
             n += 3;
         }
     }
     ut_count[6] = n - ut_first[6];
-    /* OVERLAY untextured: HUD-OT 2D flat quads (letterbox bars). Drawn dead last,
-     * over everything (incl. the player). Untextured opaque; painter's order. */
-    ut_first[7] = n;
-    for (int t = 0; t < scene_n; t++) {
-        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_OVERLAY || n + 3 > s_cz_verts) continue;
-        for (int k = 0; k < 3; k++) {
-            float cx, cy;
-            scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
-            rhi_vertex *o = &buf[n + k];
-            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
-            o->u = 0.0f; o->v = 0.0f;
-            o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
-                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal; rv_drain(o, &scene[t], k);
-        }
-        n += 3;
-    }
-    ut_count[7] = n - ut_first[7];
-    /* HUD_PANEL untextured: the semi-transparent menu dark panel, drawn alpha-blended
-     * at the START of the HUD layer (before the HUD text/icons) so the text reads on
-     * top. Submission order; depth-test off. */
-    ut_first[8] = n;
-    for (int t = 0; t < scene_n; t++) {
-        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_HUD_PANEL || n + 3 > s_cz_verts) continue;
-        for (int k = 0; k < 3; k++) {
-            float cx, cy;
-            scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
-            rhi_vertex *o = &buf[n + k];
-            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
-            o->u = 0.0f; o->v = 0.0f;
-            o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
-                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal; rv_drain(o, &scene[t], k);
-        }
-        n += 3;
-    }
-    ut_count[8] = n - ut_first[8];
-    /* HUD3D untextured: the in-game 3D HUD icon mobys (gem/dragon/Spyro-head/key/
-     * digits). DEPTH-TESTED (drawn with the opaque gouraud_pipe after a mid-pass
-     * depth clear) so their own faces Z-sort — depth-off paints them inside-out.
-     * Per-vertex z is the real view-Z depth (openpete_native_scene_viewz),
-     * same as actors. */
-    ut_first[9] = n;
-    for (int t = 0; t < scene_n; t++) {
-        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_HUD3D || n + 3 > s_cz_verts) continue;
-        for (int k = 0; k < 3; k++) {
-            float cx, cy;
-            scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
-            rhi_vertex *o = &buf[n + k];
-            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
-            o->u = 0.0f; o->v = 0.0f;
-            o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
-                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal; rv_drain(o, &scene[t], k);
-        }
-        n += 3;
-    }
-    ut_count[9] = n - ut_first[9];
-    /* PORTAL_GUARD untextured: near-band terrain protection redraw (see the
-     * category doc). Depth-tested opaque, drawn right after the portal-sky
-     * sequence — re-wins its own pixels from the depth-write-off sky. */
-    ut_first[10] = n;
-    for (int t = 0; t < scene_n; t++) {
-        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_PORTAL_GUARD || n + 3 > s_cz_verts) continue;
-        for (int k = 0; k < 3; k++) {
-            float cx, cy;
-            scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
-            rhi_vertex *o = &buf[n + k];
-            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
-            o->u = 0.0f; o->v = 0.0f;
-            o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
-                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal; rv_drain(o, &scene[t], k);
-        }
-        n += 3;
-    }
-    ut_count[10] = n - ut_first[10];
+    /* The single-category untextured buckets, packed from one classifying
+     * count pass and two scatter passes instead of one full scan each:
+     *   7  OVERLAY: HUD-OT 2D flat quads (letterbox bars), drawn dead last
+     *      over everything (incl. the player); opaque, painter's order.
+     *   8  HUD_PANEL: the semi-transparent menu dark panel, drawn
+     *      alpha-blended at the start of the HUD layer; depth-test off.
+     *   9  HUD3D: the in-game 3D HUD icon mobys, depth-tested (opaque
+     *      gouraud_pipe after a mid-pass depth clear) so their faces Z-sort;
+     *      per-vertex z is the real view-Z depth.
+     *  10  PORTAL_GUARD: near-band terrain protection redraw, depth-tested
+     *      opaque right after the portal-sky sequence.
+     *  12  WORLD_FILL: terrain LP hole-fill, drawn after the WORLD group with
+     *      the TEST_ZERO pipe.
+     *  14  ACTOR_FRONT (blend 0): the rescue actors' flat-shaded faces, split
+     *      out so the dragon-rescue pass can front-pass only these.
+     * Each bucket keeps submission order and the vertex range it had, SKY
+     * (bucket 11) still packs between 10 and 12, and a full buffer truncates
+     * the buckets in the same order. */
+    int utc_cnt[UTC_N], utc_cur[UTC_N], utc_end[UTC_N];
+    utc_count(scene, scene_n, utc_cnt);
+    n = utc_reserve(UTC_OVERLAY, UTC_WORLD_FILL, utc_cnt, n, s_cz_verts, utc_cur, utc_end, ut_first, ut_count);
+    utc_scatter(UTC_OVERLAY, UTC_WORLD_FILL, scene, scene_n, buf, utc_cur, utc_end);
     /* SKY (cyclorama dome) + WORLD_FILL (terrain LP hole-fill) untextured
      * buckets (W2.6-c). SKY draws before the group loop with the PLAIN opaque
      * pipe (depth-tested backdrop, no stencil mark); FILL draws right after
@@ -10188,61 +10201,21 @@ static bool draw_native_scene(bool full_extent)
                 s_utdef_idx[sdn++] = t;
                 continue;
             }
-            for (int k = 0; k < 3; k++) {
-                float cx, cy;
-                scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
-                rhi_vertex *o = &buf[n + k];
-                o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
-                o->u = 0.0f; o->v = 0.0f;
-                o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
-                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal; rv_drain(o, &scene[t], k);
-            }
+            pack_scene_tri(&buf[n], &scene[t]);
             n += 3;
         }
         ut_count[UT_BUCKET_SKY] = n - ut_first[UT_BUCKET_SKY];   /* PLAIN span */
         n = ut_emit_deferred(UT_BUCKET_SKY, scene, buf, n, sdn);
     }
-    ut_first[12] = n;
-    for (int t = 0; t < scene_n; t++) {
-        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_WORLD_FILL || n + 3 > s_cz_verts) continue;
-        for (int k = 0; k < 3; k++) {
-            float cx, cy;
-            scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
-            rhi_vertex *o = &buf[n + k];
-            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
-            o->u = 0.0f; o->v = 0.0f;
-            o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
-                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal; rv_drain(o, &scene[t], k);
-        }
-        n += 3;
-    }
-    ut_count[12] = n - ut_first[12];
     /* Slot 13 is retired: untextured blend-3 content outside the shadow decals
      * rides the emission-ordered blended-world block with the rest of its
-     * class, so it no longer has a bucket of its own. */
+     * class, so it no longer has a bucket of its own. Its empty range sits
+     * between WORLD_FILL and ACTOR_FRONT. */
+    n = utc_reserve(UTC_WORLD_FILL, UTC_WORLD_FILL + 1, utc_cnt, n, s_cz_verts, utc_cur, utc_end, ut_first, ut_count);
     ut_first[13] = n;
     ut_count[13] = 0;
-    /* ACTOR_FRONT untextured (opaque): the rescue actors' flat-shaded faces.
-     * Same content class as ACTOR (blend 0, depth-tested opaque); split out so the
-     * dragon-rescue pass can front-pass ONLY these. */
-    ut_first[14] = n;
-    for (int t = 0; t < scene_n; t++) {
-        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_ACTOR_FRONT ||
-            n + 3 > s_cz_verts) continue;
-        int b = scene[t].blend; if (b < 0 || b > 4) b = 0;
-        if (b != 0) continue;   /* transparent rescue-actor faces route by blend (ALPHA/ADD) */
-        for (int k = 0; k < 3; k++) {
-            float cx, cy;
-            scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
-            rhi_vertex *o = &buf[n + k];
-            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
-            o->u = 0.0f; o->v = 0.0f;
-            o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
-                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal; rv_drain(o, &scene[t], k);
-        }
-        n += 3;
-    }
-    ut_count[14] = n - ut_first[14];
+    n = utc_reserve(UTC_ACTOR_FRONT, UTC_N, utc_cnt, n, s_cz_verts, utc_cur, utc_end, ut_first, ut_count);
+    utc_scatter(UTC_WORLD_FILL, UTC_N, scene, scene_n, buf, utc_cur, utc_end);
     /* PORTAL buckets (W2.6): sky colours (PORTAL_CYCLORAMA) + their stencil
      * aperture masks (PORTAL_MASK), collected per-portal via the feeder's group
      * id. Draw site (after the WORLD group): per group — clear stencil →
@@ -10290,15 +10263,7 @@ static bool draw_native_scene(bool full_extent)
                 if (fresh && pseg_n < MAX_PORTAL_SEGS)
                     pseg[pseg_n++] = (struct portal_seg){ cur, n, 0, mt };
             }
-            for (int k = 0; k < 3; k++) {
-                float cx, cy;
-                scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
-                rhi_vertex *o = &buf[n + k];
-                o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
-            o->u = 0.0f; o->v = 0.0f;
-                o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
-                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal; rv_drain(o, &scene[t], k);
-            }
+            pack_scene_tri(&buf[n], &scene[t]);
             runs[cur].count += 3;
             if (cat && pseg_n && pseg[pseg_n - 1].run == cur) pseg[pseg_n - 1].count += 3;
             n += 3;
@@ -10337,25 +10302,15 @@ static bool draw_native_scene(bool full_extent)
     NR_PROF_BEGIN("cmp.vb_tex");
     for (int i = 0; i < txtri; i++) {
         const scene_tri_t *st = &scene[s_txscene[i]];
-        for (int k = 0; k < 3; k++) {
-            float cx, cy;
-            scene_to_clip(st->v[k].sx, st->v[k].sy, &cx, &cy);
-            rhi_vertex *o = &buf[tx_start + i * 3 + k];
-            o->x = cx; o->y = cy; o->z = st->v[k].z; o->w = st->v[k].pvz;
-            /* The blended-world block carries untextured triangles too; they
-             * draw through the gouraud pipes, which read no UV. */
-            o->u = st->textured ? st->v[k].u : 0.0f;
-            o->v = st->textured ? st->v[k].v : 0.0f;
-            o->rgba = st->v[k].rgba; o->koff = st->koff;
-            /* Location 3 carries the moby paint (rank, ordinal) pair for every
-             * textured tri — psx_scene.vert forwards it to the same-moby
-             * painter select, and unranked tris (rank 0) keep the select off.
-             * The textured shadow decal parked its PSX screen coord here while
-             * its fragment stage read that coord as a varying; the decal now
-             * recovers the coord from gl_FragCoord and reads no attribute. */
-            o->sx = st->rank; o->sy = (float)st->mordinal;
-            rv_drain(o, st, k);
-        }
+        /* The blended-world block carries untextured triangles too; they
+         * draw through the gouraud pipes, which read no UV. Location 3
+         * carries the moby paint (rank, ordinal) pair for every textured tri:
+         * psx_scene.vert forwards it to the same-moby painter select, and
+         * unranked tris (rank 0) keep the select off. */
+        for (int k = 0; k < 3; k++)
+            pack_scene_vert(&buf[tx_start + i * 3 + k], st, k,
+                            st->textured ? st->v[k].u : 0.0f,
+                            st->textured ? st->v[k].v : 0.0f);
     }
     n = tx_start + txtri * 3;
 
