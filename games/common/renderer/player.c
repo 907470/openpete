@@ -83,12 +83,18 @@ static int player_parts(CPUState* cpu);
  * written at the game's own offsets from the provider's part_record, and part
  * 0's seam words at part_seam_off when the layout declares it. A part the
  * provider refuses, or one past part_block_len, ends the block, which the zero
- * flags word already spells.
+ * flags word already spells. A part_block_len over PLAYER_REC_PART_MAX
+ * leaves the first PLAYER_REC_PART_MAX bytes zeroed, an empty block, and
+ * writes nothing past them.
  * @param cpu Passed to the provider.
- * @param dst Receives part_block_len bytes. */
+ * @param dst Receives part_block_len bytes, at most PLAYER_REC_PART_MAX. */
 static void player_block_derive(CPUState* cpu, uint8_t* dst) {
+    if (PL.part_block_len > PLAYER_REC_PART_MAX) {
+        memset(dst, 0, PLAYER_REC_PART_MAX);
+        return;
+    }
     memset(dst, 0, PL.part_block_len);
-    if (!player_game.part_record || PL.part_block_len > PLAYER_REC_PART_MAX) return;
+    if (!player_game.part_record) return;
     const int n = player_parts(cpu);
     for (int p = 0; p < n; p++) {
         uint32_t rel = (uint32_t)p * PL.part_stride;
