@@ -791,6 +791,12 @@ def materialize(a, rev, m, rows, timer, logf):
             n = carry_psyq(decomp, game, main)
         log("decomp inputs: %d PSY-Q SDK file(s) carried in, %d nested "
             "submodule worktree(s)" % (n, len(nested)))
+        if not os.path.isdir(os.path.join(decomp, "psyq", "include")):
+            raise Refusal("no PSY-Q SDK headers at %s/psyq/include: the "
+                          "decomp's compiler would read the host's "
+                          "mips-linux-gnu headers and fail every file; set "
+                          "OPENPETE_PSYQ_DIR to a psyq/ holding include/ and "
+                          "lib/" % decomp)
         if disc:
             with timer.step("disc-carry"):
                 carry_disc(disc, decomp)
