@@ -405,9 +405,11 @@ std::string cc_target_fingerprint(const std::string& cc) {
                        " -dM -E -x c \"" + nul + "\" 2>&1");
 }
 
-/* The codegen identity for cache keying: hash of (PSXRecomp binary +
- * emission inputs + compiler identity + native-target feature set) at a
- * fixed opt level. Library entries key module dirs by this, so a
+/** @brief Return the first-boot module's codegen identity, the key its cache entries are stored under.
+ *
+ * A hash of (PSXRecomp binary + emission inputs + compiler identity +
+ * native-target feature set), suffixed with the fixed compile flags that
+ * are not hashed (-O2, -fno-strict-aliasing). Library entries key module dirs by this, so a
  * toolchain bump, a compiler swap, a manifest change OR a different-CPU
  * copy rebuilds under a fresh dir. Shared by the dir-keying entry point
  * and the in-build descriptor stamp so they never disagree.
@@ -418,7 +420,9 @@ std::string cc_target_fingerprint(const std::string& cc) {
  * is compiled against the source kit. Two releases sharing a PSXRecomp
  * but shipping a new funcs list emit DIFFERENT code, so keying on the
  * binary alone would hand an upgrading user the previous version's
- * module — silently, since nothing about it looks stale. */
+ * module — silently, since nothing about it looks stale.
+ * @param base The install directory.
+ * @return The stamp, or "" when PSXRecomp is not found. */
 std::string compute_codegen_stamp(const fs::path& base) {
     const std::string psxrecomp = find_psxrecomp(base);
     if (psxrecomp.empty()) return "";
@@ -428,7 +432,7 @@ std::string compute_codegen_stamp(const fs::path& base) {
     const std::string cc = find_cc(base);
     for (char c : cc_identity(cc))          { h ^= (uint8_t)c; h *= 0x100000001b3ull; }
     for (char c : cc_target_fingerprint(cc)){ h ^= (uint8_t)c; h *= 0x100000001b3ull; }
-    return "fnv1a-" + hex64(h) + "-O2";
+    return "fnv1a-" + hex64(h) + "-O2-fno-strict-aliasing";
 }
 
 }  // namespace
@@ -440,6 +444,16 @@ extern "C" int spyro1_recomp_codegen_stamp(char* out, size_t cap) {
     return 0;
 }
 
+/** @brief Build the recompiled game module on the player's machine from the disc.
+ *
+ * Extracts the executables from the disc, runs PSXRecomp over them with the
+ * shipped manifests, compiles the emitted C and the source kit with the
+ * compiler find_cc locates at -O2 -fno-strict-aliasing, and links the
+ * module.
+ * @param disc_path The disc image (a .cue or .bin).
+ * @param out_module_path Where the linked module is written; its build
+ *        directory is created beside it.
+ * @return 0 on success, -1 on any failure (reported on stderr). */
 extern "C" int spyro1_recomp_build_module(const char* disc_path,
                                           const char* out_module_path) {
     if (!disc_path) {
@@ -604,12 +618,16 @@ extern "C" int spyro1_recomp_build_module(const char* disc_path,
     /* Route exe-exported DATA symbols through the import table on PE
      * (psx_runtime.h) — no fragile pseudo-relocation. */
     const std::string moddef = " -DOPENPETE_RECOMP_MODULE_BUILD";
+    /* -fno-strict-aliasing: the recompiled C reads guest RAM through wider
+     * pointer casts of byte arrays, as the CMake-built module does. */
 #ifdef _WIN32
     const std::string common =
-        " -c -O2" + arch + moddef + " -w -std=gnu99 -I" + q + src.string() + q;
+        " -c -O2 -fno-strict-aliasing" + arch + moddef + " -w -std=gnu99 -I" + q +
+        src.string() + q;
 #else
     const std::string common =
-        " -c -O2 -fPIC" + arch + moddef + " -w -std=gnu99 -I" + q + src.string() + q;
+        " -c -O2 -fPIC -fno-strict-aliasing" + arch + moddef + " -w -std=gnu99 -I" + q +
+        src.string() + q;
 #endif
     if (!arch.empty())
         std::fprintf(stderr, "[first-boot] tuning for this CPU (%s)\n",

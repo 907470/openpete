@@ -352,6 +352,11 @@ if(NOT OPENPETE_GIT_REV)
 endif()
 target_compile_definitions(openpete_core
     PRIVATE OPENPETE_BUILD_ID="${OPENPETE_GIT_REV}")
+# The runtime reads and writes guest RAM (uint8_t arrays) through wider
+# pointer casts; -fno-strict-aliasing keeps the optimizer from reordering or
+# dropping those accesses. The game executables and their recompiled module
+# pass the same flag (cmake/openpete_game.cmake).
+target_compile_options(openpete_core PRIVATE -fno-strict-aliasing)
 
 # The version the running build SHOWS the player (core/config/build_id.c).
 # OPENPETE_DIST_VERSION, cache variable or environment, wins: an artifact

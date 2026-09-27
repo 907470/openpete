@@ -238,6 +238,30 @@ function(openpete_add_game GAME_ID)
         set(_symbols_sources ${_symbols_header})
     endif()
 
+    # PSYQ abort-on-call stubs for the symbols no thunk defines, filtered
+    # from the generated psyq_stubs.c by scanning the thunk-bearing sources
+    # (tools/filter_psyq_stubs.py). Every stub left is a strong definition,
+    # so the executable links with the linker's duplicate-definition check
+    # on and resolves each symbol the same way on ELF and PE: a thunk the
+    # scan misses fails the link as a multiple definition, and a name it
+    # matches that no source compiles fails it as an undefined reference.
+    set(_stubs_filtered ${CMAKE_CURRENT_BINARY_DIR}/psyq_stubs_unthunked.c)
+    set(_thunk_sources
+        ${G_MAIN}
+        ${G_SOURCES}
+        ${_common}/psyq/psyq_thunks.cpp
+        ${_common}/psyq/psyq_game_hooks_default.c
+        ${_common}/psyq/psyq_thunk_state.c
+        ${_common}/psyq/psyq_stub_runtime.c)
+    add_custom_command(
+        OUTPUT  ${_stubs_filtered}
+        COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/filter_psyq_stubs.py
+                ${_generated}/psyq_stubs.c ${_stubs_filtered} ${_thunk_sources}
+        DEPENDS ${_generated}/psyq_stubs.c ${_thunk_sources}
+                ${CMAKE_SOURCE_DIR}/tools/filter_psyq_stubs.py
+        COMMENT "Filtering ${_tag} PSYQ stubs against the thunks"
+        VERBATIM)
+
     add_executable(${_exe}
         ${G_MAIN}
         game_extras_impl.c
@@ -257,9 +281,6 @@ function(openpete_add_game GAME_ID)
 
         # The shared PSYQ-to-PsyCross layer, plus the default for every
         # per-game hook this game does not name in psyq_game_provides.h.
-        # Listed BEFORE the generated stubs so under MinGW link order lets a
-        # thunk's strong definition win against the stub's (paired with
-        # --allow-multiple-definition).
         ${_common}/psyq/psyq_thunks.cpp
         ${_common}/psyq/psyq_game_hooks_default.c
         ${_common}/psyq/psyq_thunk_state.c
@@ -299,13 +320,11 @@ function(openpete_add_game GAME_ID)
         ${_common}/renderer/reextract_view.c
         ${_common}/renderer/cut_guard.c
 
-        # PSYQ symbol stubs, abort-on-call. On ELF these are weak so any
-        # thunk strongly defines them; on MinGW the macro becomes strong and
-        # the link order plus --allow-multiple-definition resolves the
-        # collision in the thunk's favour. psyq_stubs.c stays exe-side: PE
-        # has no dynamic symbol preemption, so module-side weak stubs would
-        # shadow the strong thunks on Windows.
-        ${_generated}/psyq_stubs.c
+        # PSYQ symbol stubs, abort-on-call, for the symbols no thunk defines
+        # (filtered above). They stay exe-side: PE has no dynamic symbol
+        # preemption, so module-side stubs would shadow the thunks on
+        # Windows.
+        ${_stubs_filtered}
         ${_common}/psyq/psyq_stub_runtime.c)
 
     # Generated C addresses psx_runtime.h via the include path provided by
@@ -332,8 +351,14 @@ function(openpete_add_game GAME_ID)
     endif()
     target_link_libraries(${_exe} PRIVATE openpete_core)
 
+    # The executable and the recompiled module read guest RAM (uint8_t
+    # arrays) through wider pointer casts; -fno-strict-aliasing keeps the
+    # optimizer from reordering or dropping those accesses. The first-boot
+    # module build (dist/recomp_build.cpp) passes the same flag.
+    target_compile_options(${_exe} PRIVATE -fno-strict-aliasing)
+    target_compile_options(${_module} PRIVATE -fno-strict-aliasing)
+
     if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW)
-        target_link_options(${_exe} PRIVATE -Wl,--allow-multiple-definition)
         # OpenAL on Windows is always a runtime DLL load (no static .a in the
         # openal-soft prebuilt). Copy the renamed soft_oal.dll next to the
         # .exe so the loader resolves OpenAL32.dll without a system install;

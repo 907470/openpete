@@ -87,6 +87,9 @@ endif()
 option(OPENPETE_BUILD_PSYCROSS "Build third_party/PsyCross as a static lib" ON)
 if(OPENPETE_BUILD_PSYCROSS)
     add_subdirectory(third_party/PsyCross)
+    # PsyCross walks guest-RAM primitives and ordering tables through
+    # type-punned pointers, like the runtime (core/CMakeLists.txt).
+    target_compile_options(psycross_static PRIVATE -fno-strict-aliasing)
 endif()
 
 # Native render foundation: RHI + Vulkan backend (game-agnostic, under
