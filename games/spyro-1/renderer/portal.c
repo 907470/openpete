@@ -1427,11 +1427,12 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, int a0_is_skybox,
          * match the eroded mask. The dilation band's colours come from the
          * behind-depth ring below, matching the mask ring's extent. */
         const double fmargin = portal_margin_for(cpu, p);
-        double fpx[16], fzero[16];
+        double fpx[16], ferode[16];
         margin_px_per_vertex(cpu, &s_view, poly, pn, fmargin, fpx);
-        for (int i = 0; i < pn; i++) fzero[i] = 0.0;
+        const double fsign = (s_aperture_ok && fmargin < 0.0) ? -1.0 : 0.0;   /* inward */
+        for (int i = 0; i < pn; i++) ferode[i] = fsign * fpx[i];
         float fx[16], fy[16];
-        outline_offset(poly, pn, (s_aperture_ok && fmargin < 0.0) ? fpx : fzero, fx, fy);
+        outline_offset(poly, pn, ferode, fx, fy);
         double qa = 0.0, qb = 0.0, qc = 0.0;
         const int fan_plane = s_aperture_ok && fit_invz(poly, pn, &qa, &qb, &qc);
         for (int i = 1; i + 1 < pn; i++) {             /* fan-triangulate the outline */
@@ -1631,11 +1632,11 @@ static int portal_aperture_enabled(void) {
  * it keeps a constant relationship to the stone at every distance.
  *
  * A positive margin emits an outward ring around the opening
- * (emit_aperture_ring). A negative margin offsets the interior polygon by
- * outline_offset with a negative distance, which moves it outward as well.
- * The sky reaches at most |margin| past the opening, and the mask stays
- * depth-tested. Default 40, overridden by OPENPETE_PORTAL_APERTURE_MARGIN,
- * read once.
+ * (emit_aperture_ring), so the sky reaches at most margin past the opening
+ * and the mask stays depth-tested. A negative margin erodes the stencil
+ * interior and the flat fan inward by |margin| (outline_offset with a
+ * positive distance) and emits no ring. Default 40, overridden by
+ * OPENPETE_PORTAL_APERTURE_MARGIN, read once.
  * @return The margin in world units. */
 static double portal_aperture_margin_world(void) {
     static int init = 0;
@@ -1819,6 +1820,23 @@ static void emit_aperture_ring(const ppt* poly, int pn, const double* dpx,
     openpete_native_scene_set_tag(0);
 }
 
+/** @brief Marks the portal's stencil aperture from its opening polygon and sets s_aperture_ok when it does.
+ *
+ * The interior fan is the authored outline (portal_outline_screen_raw on a
+ * corrected portal, else poly) at the opening plane's depth, eroded inward
+ * by |margin| when portal_margin_for is negative. A positive margin adds an
+ * outward ring around poly behind the plane (emit_aperture_ring); a
+ * corrected portal adds the band between the authored outline and poly
+ * behind the plane. Marks nothing when the aperture is disabled, pn lies
+ * outside 3..16, or RP_PORTAL is filtered out.
+ * @param cpu The guest CPU state.
+ * @param portal The Portal* guest address, or 0 when there is none.
+ * @param poly The projected (corrected) outline.
+ * @param pn The point count.
+ * @param use_plane Nonzero when pa, pb, pc hold the opening plane; else it is fitted from poly.
+ * @param pa The plane's inverse-depth x coefficient.
+ * @param pb The plane's inverse-depth y coefficient.
+ * @param pc The plane's inverse-depth constant. */
 static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly, int pn,
                                  int use_plane, double pa, double pb, double pc) {
     s_aperture_ok = 0;
@@ -1848,11 +1866,12 @@ static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly
     }
     const ppt* interior = corrected ? raw : poly;   /* uncorrected = bit-identical */
     const double margin = portal_margin_for(cpu, portal);
-    double mpx[16], mzero[16];
+    double mpx[16], merode[16];
     margin_px_per_vertex(cpu, &s_view, interior, pn, margin, mpx);
-    for (int i = 0; i < pn; i++) mzero[i] = 0.0;
+    const double msign = (margin < 0.0) ? -1.0 : 0.0;                         /* inward */
+    for (int i = 0; i < pn; i++) merode[i] = msign * mpx[i];
     float ex[16], ey[16];
-    outline_offset(interior, pn, (margin < 0.0) ? mpx : mzero, ex, ey);
+    outline_offset(interior, pn, merode, ex, ey);
     /* The outline is planar, so fit the plane here when the caller had none. */
     if (!use_plane) use_plane = fit_invz(poly, pn, &pa, &pb, &pc);
     float cz = 0.0f;
