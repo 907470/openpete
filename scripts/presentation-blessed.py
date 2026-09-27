@@ -21,10 +21,20 @@ then the column line
 
     tile  digest  revision  recomp_input  generated_tree  origin
 
-`revision` is the engine revision the tile was blessed from; `recomp_input`
-digests the untracked build inputs (PSX.EXE, every overlay, psx.map,
-manifest/globals.toml, manifest/symbols.toml); `generated_tree` digests the
-recompiled source tree games/<game>/generated; `origin` is `mapped` (the
+`revision` is the engine revision the tile was blessed from. The recomp
+identity pair describes the untracked inputs and outputs of the regen, which
+the revision does not pin; both are content digests, so a checkout at another
+path, a decomp re-made by another linker and stale files in generated/ leave
+them unchanged. `recomp_input` digests PSX.EXE and every overlay by bytes,
+psx.map by the symbol table the regen parses from it (object-section and
+symbol tuples, sorted, no header, paths or debug sections), and
+manifest/globals.toml and manifest/symbols.toml without their comment lines
+(recomp_input_digest). `generated_tree` digests the regen outputs in
+games/<game>/generated that the build reads: the main EXE's C files, the
+overlay table, the PSYQ stubs, channel_sites.txt where the game has a channel
+manifest, and each registered overlay's C pair; any other file there is
+ignored, and a missing output or an unregistered overlay source the build
+would compile is refused (generated_tree_digest). `origin` is `mapped` (the
 revision resolves in this repository) or `archive-only` (it resolves in the
 archive alone).
 
@@ -58,6 +68,20 @@ Subcommands:
                                   directory: the working copy's tree over the
                                   build's source roots, the recomp identity and
                                   the capture environment
+  identity <game>                 print the recomp identity pair of the
+                                  checkout (recomp-input=, generated-tree=)
+  rebless-identity <game> [--tier T]
+                                  rewrite the recomp_input and generated_tree
+                                  columns of every row from the checkout's
+                                  identity; digests, revisions and the header
+                                  are kept. Refused outside the capture image
+                                  the header's recipe-hash names and when the
+                                  working tree differs from HEAD over the
+                                  recomp inputs (recomp_input_paths). Run it
+                                  inside the image after the regens:
+                                    scripts/golden-capture-container.sh run --
+                                      python3 scripts/presentation-blessed.py
+                                      rebless-identity <game> --tier <T>
   environment <game> [--tier T] [--candidate DIR] [--strict]
                                   print the header's comparison surface beside
                                   a candidate's (or this process's) environment
@@ -87,8 +111,10 @@ Exit: 0 success; 1 mismatch, refusal or missing input; 2 usage.
 """
 import argparse
 import hashlib
+import importlib.util
 import io
 import os
+import pathlib
 import re
 import shutil
 import subprocess
@@ -341,16 +367,75 @@ def source_conf(conf, names):
     return {n: (vals[i] if i < len(vals) else "") for i, n in enumerate(names)}
 
 
+class IdentityError(RuntimeError):
+    """A recomp identity that cannot be computed: an expected regen output
+    is missing, or the build would compile a file the regen did not write."""
+
+
+def load_map_parser():
+    """The psx.map parser the regen runs (tools/build_manifest.py of the
+    checkout repo_root() names), imported fresh so a materialize worktree
+    digests with its own revision's parser."""
+    path = os.path.join(repo_root(), "tools", "build_manifest.py")
+    name = "_openpete_build_manifest"
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    # dataclasses resolves the module's annotations through sys.modules.
+    sys.modules[name] = mod
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        sys.modules.pop(name, None)
+    return mod
+
+
+def map_symbol_table(path, parser=None):
+    """Canonical text of the symbol table a psx.map feeds the regen: one
+    line per object-section record (`S <section> <addr> <size> <object>`)
+    and per symbol (`Y <addr> <section> <name> <object>`), addresses and
+    sizes as 8-digit lowercase hex, lines sorted. The records are the ones
+    tools/build_manifest.py's parse_map returns, which is every tuple
+    regen-manifest.sh derives symbols.toml and globals.toml from."""
+    parser = parser or load_map_parser()
+    lines = []
+    for sec in parser.parse_map(pathlib.Path(path)):
+        lines.append("S\t%s\t%08x\t%08x\t%s" % (sec.name, sec.addr, sec.size,
+                                               sec.source_object))
+        for sym in sec.symbols:
+            lines.append("Y\t%08x\t%s\t%s\t%s" % (sym.addr, sym.section,
+                                                 sym.name, sec.source_object))
+    return "".join(ln + "\n" for ln in sorted(lines))
+
+
+def toml_content_digest(path):
+    """SHA-256 of a generated TOML file with its comment lines removed:
+    build_manifest.py's `# Source: <map path>` header carries the path
+    spelling the writer was invoked with, and no consumer reads a
+    comment."""
+    hsh = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for line in fh:
+            if not line.lstrip().startswith(b"#"):
+                hsh.update(line)
+    return hsh.hexdigest()
+
+
 def recomp_input_digest(game):
-    """Digest of the untracked build inputs of a game: PSX.EXE, every
-    overlay, psx.map and the psx.map-derived globals.toml and symbols.toml.
-    An absent input enters the preimage as `absent`."""
+    """Digest of the untracked inputs of a game's regen: PSX.EXE and every
+    overlay by bytes, psx.map by its symbol table (map_symbol_table), and
+    the map-derived manifest/globals.toml and manifest/symbols.toml by
+    their non-comment lines. The map's bytes are not hashed: its header,
+    .debug sections and address width carry the linker version and the
+    absolute directory the decomp was built in, none of which reaches a
+    symbol tuple. Each entry is `<repo-relative path>\\t<digest>`, sorted;
+    an absent input enters as `absent`."""
     root = repo_root()
     conf = source_conf("games/%s/recomp.conf" % game,
                        ("PSX_EXE", "WAD_DIR", "DECOMP_DIR"))
-    paths = [conf["PSX_EXE"], conf["DECOMP_DIR"] + "/build/psx.map",
-             "games/%s/manifest/globals.toml" % game,
+    map_rel = conf["DECOMP_DIR"] + "/build/psx.map"
+    tomls = ["games/%s/manifest/globals.toml" % game,
              "games/%s/manifest/symbols.toml" % game]
+    paths = [conf["PSX_EXE"], map_rel] + tomls
     wad = os.path.join(root, conf["WAD_DIR"])
     if os.path.isdir(wad):
         paths += [conf["WAD_DIR"] + "/" + f for f in sorted(os.listdir(wad))
@@ -358,26 +443,95 @@ def recomp_input_digest(game):
     hsh = hashlib.sha256()
     for rel in sorted(paths):
         ap = os.path.join(root, rel)
-        val = sha256_file(ap) if os.path.isfile(ap) else "absent"
+        if not os.path.isfile(ap):
+            val = "absent"
+        elif rel == map_rel:
+            val = "symbols:" + hashlib.sha256(
+                map_symbol_table(ap).encode()).hexdigest()
+        elif rel in tomls:
+            val = "toml:" + toml_content_digest(ap)
+        else:
+            val = sha256_file(ap)
         hsh.update(("%s\t%s\n" % (rel, val)).encode())
     return hsh.hexdigest()
 
 
+# The regen's outputs the game build reads, besides the per-overlay pair:
+# cmake/openpete_game.cmake compiles the four C files, and spyro-1's
+# CMakeLists copies channel_sites.txt into the recomp module kit.
+GENERATED_FIXED = ("PSX.EXE_full.c", "PSX.EXE_dispatch.c",
+                   "spyro_overlay_table.c", "psyq_stubs.c")
+GENERATED_CHANNEL = ("channel_sites.txt",)
+# spyro_overlay_table.c row: `{ <id>, "<name>", psx_dispatch_<name> },`.
+OVERLAY_ROW_RE = re.compile(
+    r'^\s*\{\s*\d+,\s*"([A-Za-z0-9_]+)",\s*psx_dispatch_\1\s*\},\s*$',
+    re.MULTILINE)
+# The build compiles every file these globs match (file(GLOB) in
+# cmake/openpete_game.cmake), whoever wrote it.
+OVERLAY_SOURCE_RE = re.compile(r"^([^/]+)/\1\.bin_(full|dispatch)\.c$")
+
+
+def generated_outputs(game):
+    """Paths, relative to games/<game>/generated, of the regen outputs the
+    game build reads: GENERATED_FIXED, channel_sites.txt when recomp.conf
+    names a CHANNEL_MANIFEST, and <name>/<name>.bin_full.c and
+    .bin_dispatch.c for every overlay spyro_overlay_table.c registers (the
+    regen writes the table from the overlays it translated). Raises
+    IdentityError when the table is missing."""
+    top = os.path.join(repo_root(), "games", game, "generated")
+    table = os.path.join(top, "spyro_overlay_table.c")
+    if not os.path.isfile(table):
+        raise IdentityError(
+            "%s: games/%s/generated/spyro_overlay_table.c is missing; run "
+            "`GAME=%s bash scripts/regen-recomp.sh`" % (game, game, game))
+    with open(table, errors="replace") as fh:
+        names = OVERLAY_ROW_RE.findall(fh.read())
+    conf = source_conf("games/%s/recomp.conf" % game, ("CHANNEL_MANIFEST",))
+    out = list(GENERATED_FIXED)
+    if conf["CHANNEL_MANIFEST"]:
+        out += GENERATED_CHANNEL
+    for n in names:
+        out += ["%s/%s.bin_full.c" % (n, n), "%s/%s.bin_dispatch.c" % (n, n)]
+    return sorted(set(out))
+
+
 def generated_tree_digest(game):
-    """Digest of games/<game>/generated: every file's relative path and
-    content hash, sorted. `absent` when the tree does not exist."""
+    """Digest of the regen's outputs in games/<game>/generated that the
+    build reads (generated_outputs): each file's relative path and content
+    hash, sorted. Any other file in the directory (recompiler scratch,
+    per-pass forced-entry lists, logs, outputs of a retired regen step) is
+    not read, so a stale file cannot change the digest. Raises
+    IdentityError naming the file when an expected output is missing, and
+    when an overlay source the build's glob compiles is not one the
+    overlay table registers, since that stale file would enter the
+    binary."""
     top = os.path.join(repo_root(), "games", game, "generated")
     if not os.path.isdir(top):
-        return "absent"
-    entries = []
-    for dp, dns, fns in os.walk(top, followlinks=True):
-        dns.sort()
-        for f in fns:
-            ap = os.path.join(dp, f)
-            entries.append((os.path.relpath(ap, top), ap))
+        raise IdentityError("%s: games/%s/generated does not exist; run "
+                            "`GAME=%s bash scripts/regen-recomp.sh`"
+                            % (game, game, game))
+    want = generated_outputs(game)
+    missing = [r for r in want if not os.path.isfile(os.path.join(top, r))]
+    if missing:
+        raise IdentityError(
+            "%s: regen output games/%s/generated/%s is missing (%d missing); "
+            "run `GAME=%s bash scripts/regen-recomp.sh`"
+            % (game, game, missing[0], len(missing), game))
+    wanted = set(want)
+    for d in sorted(os.listdir(top)):
+        if not os.path.isdir(os.path.join(top, d)):
+            continue
+        for f in sorted(os.listdir(os.path.join(top, d))):
+            rel = d + "/" + f
+            if OVERLAY_SOURCE_RE.match(rel) and rel not in wanted:
+                raise IdentityError(
+                    "%s: games/%s/generated/%s is an overlay source the build "
+                    "compiles but spyro_overlay_table.c does not register; "
+                    "delete it or rerun the regen" % (game, game, rel))
     hsh = hashlib.sha256()
-    for rel, ap in sorted(entries):
-        hsh.update(("%s\t%s\n" % (rel, sha256_file(ap))).encode())
+    for rel in want:
+        hsh.update(("%s\t%s\n" % (rel, sha256_file(os.path.join(top, rel))))
+                   .encode())
     return hsh.hexdigest()
 
 
@@ -582,10 +736,17 @@ def environment_problems(header, env):
     return out
 
 
-def environment_refused(who, problems, accept):
+ENV_REFUSAL_HINT = (
+    "  Capture and bless inside the capture image "
+    "(scripts/golden-capture-container.sh); a deliberate migration passes "
+    "--environment-accept \"<reason>\", which writes the reason into the "
+    "header.")
+
+
+def environment_refused(who, problems, accept, hint=ENV_REFUSAL_HINT):
     """Print the environment refusal for `problems` and return True, or
     return False when there are none or --environment-accept admits
-    them (the admission is printed)."""
+    them (the admission is printed). `hint` closes the refusal."""
     if not problems:
         return False
     if accept:
@@ -598,10 +759,7 @@ def environment_refused(who, problems, accept):
           "recorded in the manifest header:" % who, file=sys.stderr)
     for k, h, c in problems:
         print("    %s: header=%s capture=%s" % (k, h, c), file=sys.stderr)
-    print("  Capture and bless inside the capture image "
-          "(scripts/golden-capture-container.sh); a deliberate migration passes "
-          "--environment-accept \"<reason>\", which writes the reason into the "
-          "header.", file=sys.stderr)
+    print(hint, file=sys.stderr)
     return True
 
 
@@ -1475,6 +1633,86 @@ def cmd_promote(a):
     return 0
 
 
+def recomp_input_paths(game):
+    """Tracked paths the regen of a game reads: its recomp.conf and
+    manifest directory, the decomp submodule (asm, overlays.ld, sources),
+    the regen scripts, the tools they run and the recompiler's sources."""
+    return ["games/%s/recomp.conf" % game, "games/%s/manifest" % game,
+            "games/%s/%s" % (game, game), "tools", "third_party/psxrecomp",
+            "scripts/regen-recomp.sh", "scripts/regen-manifest.sh",
+            "scripts/emit-recomp-manifest.sh"]
+
+
+def cmd_identity(a):
+    """Print a game's recomp identity pair as `recomp-input=` and
+    `generated-tree=` lines."""
+    print("recomp-input=%s" % recomp_input_digest(a.game))
+    print("generated-tree=%s" % generated_tree_digest(a.game))
+    return 0
+
+
+def cmd_rebless_identity(a):
+    """Rewrite the recomp_input and generated_tree columns of every row of
+    a game tier's manifest from this checkout's recomp identity; digests,
+    revisions, origins and the header are kept. Refused outside the capture
+    image whose recipe hash the header records (environment_refused), and
+    when `git status` reports a change under recomp_input_paths, since the
+    identity would then describe sources no revision holds."""
+    who = "presentation-rebless"
+    try:
+        m = load_manifest(a.game, a.tier)
+    except (OSError, ValueError) as e:
+        print("[%s] %s" % (who, e), file=sys.stderr)
+        return 1
+    here = recipe_hash_here()
+    problems = []
+    if here == OUTSIDE_IMAGE:
+        problems.append(("blessing-process", "inside the capture image",
+                         here))
+    elif here != m.header.get("recipe-hash", "unrecorded"):
+        problems.append(("recipe-hash", m.header.get("recipe-hash",
+                                                     "unrecorded"), here))
+    if environment_refused(who, problems, None, hint=(
+            "  Run it inside the image: scripts/golden-capture-container.sh "
+            "run -- python3 scripts/presentation-blessed.py rebless-identity "
+            "%s --tier %s" % (a.game, a.tier))):
+        return 1
+    dirty = git("status", "--porcelain", "--", *recomp_input_paths(a.game))
+    if dirty.strip():
+        print("[%s] REFUSED: the working tree differs from HEAD over the "
+              "recomp inputs; commit or revert, rerun the regen, then "
+              "rebless:" % who, file=sys.stderr)
+        for ln in dirty.splitlines()[:20]:
+            print("    " + ln, file=sys.stderr)
+        return 1
+    rin = recomp_input_digest(a.game)
+    gen = generated_tree_digest(a.game)
+    moved = 0
+    for r in m.rows:
+        if (r["recomp_input"], r["generated_tree"]) != (rin, gen):
+            moved += 1
+        r["recomp_input"], r["generated_tree"] = rin, gen
+    head = git("rev-parse", "HEAD").strip()
+    for rev in sorted({r["revision"] for r in m.rows}):
+        diff = git("diff", "--name-only", rev, head, "--",
+                   *recomp_input_paths(a.game), check=False)
+        if diff is None:
+            print("[%s] note: revision %s does not resolve here; its rows "
+                  "take HEAD's identity" % (who, rev[:12]))
+        elif diff.strip():
+            print("[%s] note: revision %s differs from HEAD over the recomp "
+                  "inputs (%s); its rows take HEAD's identity"
+                  % (who, rev[:12], diff.split()[0]))
+    out = os.path.join(repo_root(), manifest_path(a.game, a.tier))
+    with open(out + ".tmp", "w") as fh:
+        fh.write(format_manifest(m))
+    os.replace(out + ".tmp", out)
+    print("[%s] %s: %d row(s), %d rewritten; recomp-input %s generated-tree "
+          "%s" % (who, manifest_path(a.game, a.tier), len(m.rows), moved,
+                  rin[:12], gen[:12]))
+    return 0
+
+
 # ---- CLI --------------------------------------------------------------------
 
 def main(argv=None):
@@ -1547,16 +1785,28 @@ def main(argv=None):
     p.add_argument("filter", nargs="?", help="tile basename substring")
     p.add_argument("--out")
     p.add_argument("--materialize", action="store_true")
+    p = sub.add_parser("identity")
+    p.add_argument("game", choices=GAMES)
+    p = sub.add_parser("rebless-identity")
+    game_tier(p)
     a = ap.parse_args(argv)
     if a.cmd in ("read", "write", "verify", "capture-record", "census",
-                 "promote", "environment") and a.game not in TIERS[a.tier]:
+                 "promote", "environment", "rebless-identity") \
+            and a.game not in TIERS[a.tier]:
         ap.error("tier %s has no game %s" % (a.tier, a.game))
-    return {"digest": cmd_digest, "read": cmd_read, "write": cmd_write,
-            "verify": cmd_verify, "store-file": cmd_store_file,
-            "store-read": cmd_store_read, "gc": cmd_gc,
-            "golden-at": cmd_golden_at, "capture-record": cmd_capture_record,
-            "census": cmd_census, "promote": cmd_promote,
-            "environment": cmd_environment}[a.cmd](a)
+    try:
+        return {"digest": cmd_digest, "read": cmd_read, "write": cmd_write,
+                "verify": cmd_verify, "store-file": cmd_store_file,
+                "store-read": cmd_store_read, "gc": cmd_gc,
+                "golden-at": cmd_golden_at,
+                "capture-record": cmd_capture_record,
+                "census": cmd_census, "promote": cmd_promote,
+                "environment": cmd_environment, "identity": cmd_identity,
+                "rebless-identity": cmd_rebless_identity}[a.cmd](a)
+    except IdentityError as e:
+        print("[presentation-blessed] recomp identity: %s" % e,
+              file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
