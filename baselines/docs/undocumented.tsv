@@ -848,7 +848,6 @@ core/rhi/rhi_gpu_audit.c	op_gpu_audit_map_writes	none
 core/rhi/rhi_vulkan.c	begin_frame_impl	none	
 core/rhi/rhi_vulkan.c	choose_extent	none	
 core/rhi/rhi_vulkan.c	create_offscreen	none	
-core/rhi/rhi_vulkan.c	create_render_pass	none	
 core/rhi/rhi_vulkan.c	create_render_target_impl	none	
 core/rhi/rhi_vulkan.c	create_stages	none	
 core/rhi/rhi_vulkan.c	create_swapchain	none	

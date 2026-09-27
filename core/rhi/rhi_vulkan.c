@@ -1175,6 +1175,15 @@ static bool create_swapchain(rhi_device *dev)
     return true;
 }
 
+/** @brief Create the offscreen render passes off_rp (color cleared) and off_load_rp (color loaded).
+ *
+ * Both share one color and one combined depth-stencil attachment; the color
+ * ends in TRANSFER_SRC for the present blit, depth and stencil clear and are
+ * not stored. The external dependencies order the previous pass's
+ * attachment writes and the previous frame's transfer reads before this
+ * pass's attachment access.
+ * @param dev Device whose formats are read and whose passes are written.
+ * @return true on success, false when vkCreateRenderPass fails. */
 static bool create_render_pass(rhi_device *dev)
 {
     VkAttachmentDescription color = {
@@ -1213,15 +1222,24 @@ static bool create_render_pass(rhi_device *dev)
         .pDepthStencilAttachment = &depth_ref,
     };
     VkSubpassDependency deps[3] = {
-        { /* external -> subpass: acquire color + depth attachments */
+        { /* external -> subpass: acquire color + depth attachments. The
+           * color and depth images are shared by every frame in flight and by
+           * each pass of a frame, so the previous pass's attachment writes
+           * (late-Z and store included) are the first scope (WAW), and the
+           * LOAD variant's attachment read is in the second. */
             .srcSubpass = VK_SUBPASS_EXTERNAL,
             .dstSubpass = 0,
             .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                            VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
             .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-            .srcAccessMask = 0,
-            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                            VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+            .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                             VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                             VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                             VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
                              VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
         },
         { /* subpass -> external: make color writes available to the blit */
@@ -1318,13 +1336,19 @@ static bool create_rt_render_pass(rhi_device *dev)
         .pDepthStencilAttachment = &depth_ref,
     };
     VkSubpassDependency deps[2] = {
-        { .srcSubpass = VK_SUBPASS_EXTERNAL, .dstSubpass = 0,
+        { /* external -> subpass: the target's color and depth are reused
+           * by every render into it (WAW on both, late-Z included). */
+          .srcSubpass = VK_SUBPASS_EXTERNAL, .dstSubpass = 0,
           .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                          VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                          VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                          VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
           .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                          VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-          .srcAccessMask = 0,
+                          VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                          VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+          .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                           VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
           .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                           VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
                            VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT },
         { /* subpass -> external: make the color result available to the sampler */
           .srcSubpass = 0, .dstSubpass = VK_SUBPASS_EXTERNAL,
@@ -1389,11 +1413,15 @@ static bool create_rt_ds_render_pass(rhi_device *dev)
         { .srcSubpass = VK_SUBPASS_EXTERNAL, .dstSubpass = 0,
           .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
                           VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                          VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT |
                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,   /* WAR vs last frame's sampling */
           .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                          VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-          .srcAccessMask = 0,
+                          VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                          VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+          .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                           VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
           .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                           VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
                            VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT },
         { /* subpass -> external: make color AND depth results sample-visible */
           .srcSubpass = 0, .dstSubpass = VK_SUBPASS_EXTERNAL,
@@ -2733,7 +2761,8 @@ void rhi_begin_offscreen_load(rhi_device *dev)
     image_barrier(dev->cmd[dev->frame], dev->off_image,
                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                   VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                  VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                  VK_ACCESS_TRANSFER_READ_BIT,
+                  VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                   VK_PIPELINE_STAGE_TRANSFER_BIT,
                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
     VkClearValue cv[2];
