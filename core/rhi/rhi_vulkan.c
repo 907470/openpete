@@ -520,13 +520,15 @@ static uint32_t ring_write_slot(rhi_buffer *buf)
  *
  * The first touch in a new frame resets the generation to 0. Marking it
  * bound makes the next same-frame write move to a fresh generation.
- * @param buf Ring buffer; its device must have a frame recording.
+ * @param buf Ring buffer; its device must have a frame recording. NULL
+ *            returns 0 without a read.
  * @return frame x gens + current generation; the frame's slot for a
- *         single-generation buffer. */
+ *         single-generation buffer; 0 for a NULL buffer. */
 static uint32_t ring_bind_slot(rhi_buffer *buf)
 {
+    if (!buf) return 0;
     rhi_device *dev = buf->dev;
-    if (!buf || buf->gens <= 1) return (uint32_t)dev->frame;
+    if (buf->gens <= 1) return (uint32_t)dev->frame;
     s_dbg_gb++;
     if (buf->gen_serial != s_frame_serial) {
         buf->gen_serial = s_frame_serial; buf->gen_cur = 0;
