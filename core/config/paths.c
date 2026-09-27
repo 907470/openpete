@@ -40,8 +40,14 @@ static int s_resolved = -1;
 int openpete_exe_dir(char* out, size_t cap) {
     char buf[OPP_PATH_MAX];
 #ifdef _WIN32
-    DWORD n = GetModuleFileNameA(NULL, buf, (DWORD)sizeof buf);
-    if (n == 0 || n >= sizeof buf) return -1;
+    /* The wide call is not limited to MAX_PATH; the narrow form of the
+     * path is taken in the active code page (UTF-8 under the exe's
+     * manifest), the encoding every narrow file API here interprets. */
+    static wchar_t wbuf[32768];
+    DWORD wn = GetModuleFileNameW(NULL, wbuf, (DWORD)(sizeof wbuf / sizeof wbuf[0]));
+    if (wn == 0 || wn >= sizeof wbuf / sizeof wbuf[0]) return -1;
+    if (WideCharToMultiByte(CP_ACP, 0, wbuf, -1, buf, (int)sizeof buf, NULL, NULL) <= 0)
+        return -1;
 #else
     ssize_t n = readlink("/proc/self/exe", buf, sizeof buf - 1);
     if (n <= 0) return -1;

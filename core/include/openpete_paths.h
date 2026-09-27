@@ -42,7 +42,8 @@ extern "C" {
 
 /** @brief Directory containing the running executable, with no trailing separator.
  *
- * Read from GetModuleFileNameA on Windows and /proc/self/exe elsewhere.
+ * Read from GetModuleFileNameW (converted to the active code page) on
+ * Windows and /proc/self/exe elsewhere.
  * @param out Receives the path.
  * @param cap Capacity of @p out.
  * @return 0 on success, -1 when the path cannot be read or does not fit. */

@@ -5,6 +5,10 @@
 // where a future Authenticode signing step expects sane fields.
 1 ICON "@_spyro_icon_ico@"
 
+// Application manifest (RT_MANIFEST = 24): UTF-8 active code page,
+// long-path awareness, Windows 10/11 supportedOS, asInvoker.
+1 24 "@_spyro_manifest@"
+
 1 VERSIONINFO
 FILEVERSION     @OPENPETE_VERSION_NUM@
 PRODUCTVERSION  @OPENPETE_VERSION_NUM@
