@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: a54f47bc9bb164cb5f4c18559219cc5e672049f5
+# head: 632fbadf0b1753ad5b50d4f6a804d1afe45a91d8
 file	function	score	marked	accepted
 core/config/config.c	harvest_args	30	0	
 core/config/config.c	harvest_base	39	0	
@@ -57,7 +57,7 @@ core/psx/psx_bios.c	bios_b0	29	0
 core/record/bk2_movie.c	bk2_decode_port	28	0	
 core/record/bk2_movie.c	bk2_movie_parse_log	42	0	
 core/record/record.c	rec_lazy_init	32	0	
-core/record/savestate.c	openpete_state_load_file	34	0	
+core/record/savestate.c	openpete_state_load_file	30	0	
 core/renderer/debug_render.cpp	openpete_psyx_take_screenshot_ext	30	0	
 core/renderer/glitch_mark.c	dump	27	0	
 core/renderer/native_render.c	alpha_census	53	0	

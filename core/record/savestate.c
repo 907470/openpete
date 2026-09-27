@@ -376,6 +376,92 @@ int openpete_state_save(unsigned slot, const CPUState* cpu, unsigned frame) {
     return openpete_state_save_file(path, cpu, frame);
 }
 
+/** @brief Check that the sections a state header declares add up to the bytes the file holds after the header.
+ *
+ * The fixed sections were already matched against this build; the three
+ * variable sections (game extra, arena, modset tag) are sized only by the
+ * header, so a corrupt or hostile header could otherwise ask for a
+ * multi-gigabyte allocation before any read fails. The sum is formed in
+ * 64 bits, so no declared size can wrap it.
+ * @param fp The state file, positioned just past the header.
+ * @param path Its path, for the log line.
+ * @param hdr The header read from it.
+ * @return 0 when the declared sections fill the rest of the file exactly, -1 otherwise. */
+static int state_sections_fit(FILE* fp, const char* path, const openpete_state_header_t* hdr) {
+    long pos = ftell(fp);
+    long end = (pos >= 0 && fseek(fp, 0, SEEK_END) == 0) ? ftell(fp) : -1;
+    if (end < pos || fseek(fp, pos, SEEK_SET) != 0) {
+        OPL_ERROR_F("savestate", "%s: cannot measure the file", path);
+        return -1;
+    }
+    uint64_t want = (uint64_t)hdr->cpu_bytes + hdr->ram_bytes + hdr->scratch_bytes +
+                    hdr->vram_bytes + hdr->spu_state_bytes + hdr->spu_mem_bytes +
+                    hdr->cd_state_bytes + hdr->game_extra_bytes + hdr->arena_bytes +
+                    hdr->modset_tag_bytes;
+    if (want == (uint64_t)(end - pos)) return 0;
+    OPL_ERROR_F("savestate", "%s: header declares %llu section bytes, the file holds %ld "
+                "(game-extra=%u arena=%u modset-tag=%u)", path, (unsigned long long)want,
+                end - pos, hdr->game_extra_bytes, hdr->arena_bytes, hdr->modset_tag_bytes);
+    return -1;
+}
+
+/** @brief Check a state file's header against this build: magic, version, identity, the fixed section sizes, and the variable sections against the file's length.
+ *
+ * Each refusal is logged with the values that differ.
+ * @param fp The state file, positioned just past the header.
+ * @param path Its path, for the log lines.
+ * @param hdr The header read from it.
+ * @return 0 when the file can be loaded by this build, -1 otherwise. */
+static int state_header_check(FILE* fp, const char* path, const openpete_state_header_t* hdr) {
+    if (hdr->magic != OPENPETE_STATE_MAGIC) {
+        OPL_ERROR_F("savestate", "%s: bad magic 0x%08X (expected 0x%08X)",
+                    path, hdr->magic, OPENPETE_STATE_MAGIC);
+        return -1;
+    }
+    if (hdr->version != OPENPETE_STATE_VERSION) {
+        OPL_ERROR_F("savestate", "%s: version %u not supported (expected %u)",
+                    path, hdr->version, OPENPETE_STATE_VERSION);
+        return -1;
+    }
+
+    char want_ident[OPENPETE_STATE_HASH_LEN];
+    ident_fill(want_ident);
+    if (memcmp(hdr->ident, want_ident, OPENPETE_STATE_HASH_LEN) != 0) {
+        char hh[OPENPETE_STATE_HASH_LEN + 1];
+        char wh[OPENPETE_STATE_HASH_LEN + 1];
+        memcpy(hh, hdr->ident,  OPENPETE_STATE_HASH_LEN); hh[OPENPETE_STATE_HASH_LEN] = '\0';
+        memcpy(wh, want_ident, OPENPETE_STATE_HASH_LEN); wh[OPENPETE_STATE_HASH_LEN] = '\0';
+        OPL_ERROR_F("savestate",
+                    "%s: identity mismatch (file=%s, this build=%s) — "
+                    "state was made against a different ROM / recomp module "
+                    "/ state ABI",
+                    path, hh, wh);
+        return -1;
+    }
+
+    if (hdr->cpu_bytes != CPU_REG_BYTES ||
+        hdr->ram_bytes != OPENPETE_PSX_RAM_SIZE ||
+        hdr->scratch_bytes != OPENPETE_PSX_SCRATCH_SIZE ||
+        hdr->vram_bytes != PsyX_VRAM_GetSize() ||
+        hdr->spu_state_bytes != PsyX_SPUAL_StateSize() ||
+        hdr->spu_mem_bytes != PsyX_SPUAL_MemSize() ||
+        hdr->cd_state_bytes != (uint32_t)sizeof(state_cd_t)) {
+        OPL_ERROR_F("savestate",
+                    "%s: section sizes mismatch (cpu=%u/%u ram=%u/%u "
+                    "scratch=%u/%u vram=%u/%u spu=%u/%u spumem=%u/%u cd=%u/%u)",
+                    path,
+                    hdr->cpu_bytes, CPU_REG_BYTES,
+                    hdr->ram_bytes, OPENPETE_PSX_RAM_SIZE,
+                    hdr->scratch_bytes, OPENPETE_PSX_SCRATCH_SIZE,
+                    hdr->vram_bytes, PsyX_VRAM_GetSize(),
+                    hdr->spu_state_bytes, PsyX_SPUAL_StateSize(),
+                    hdr->spu_mem_bytes, PsyX_SPUAL_MemSize(),
+                    hdr->cd_state_bytes, (uint32_t)sizeof(state_cd_t));
+        return -1;
+    }
+    return state_sections_fit(fp, path, hdr);
+}
+
 /** @brief Refuse a state load, with a logged error, while the run follows the reference's schedule.
  *
  * Under the reference's schedule (a --psxtrace-verify run with sidecars)
@@ -409,54 +495,8 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
         return -1;
     }
 
-    if (hdr.magic != OPENPETE_STATE_MAGIC) {
+    if (state_header_check(fp, path, &hdr) != 0) {
         fclose(fp);
-        OPL_ERROR_F("savestate", "%s: bad magic 0x%08X (expected 0x%08X)",
-                    path, hdr.magic, OPENPETE_STATE_MAGIC);
-        return -1;
-    }
-    if (hdr.version != OPENPETE_STATE_VERSION) {
-        fclose(fp);
-        OPL_ERROR_F("savestate", "%s: version %u not supported (expected %u)",
-                    path, hdr.version, OPENPETE_STATE_VERSION);
-        return -1;
-    }
-
-    char want_ident[OPENPETE_STATE_HASH_LEN];
-    ident_fill(want_ident);
-    if (memcmp(hdr.ident, want_ident, OPENPETE_STATE_HASH_LEN) != 0) {
-        fclose(fp);
-        char hh[OPENPETE_STATE_HASH_LEN + 1];
-        char wh[OPENPETE_STATE_HASH_LEN + 1];
-        memcpy(hh, hdr.ident,  OPENPETE_STATE_HASH_LEN); hh[OPENPETE_STATE_HASH_LEN] = '\0';
-        memcpy(wh, want_ident, OPENPETE_STATE_HASH_LEN); wh[OPENPETE_STATE_HASH_LEN] = '\0';
-        OPL_ERROR_F("savestate",
-                    "%s: identity mismatch (file=%s, this build=%s) — "
-                    "state was made against a different ROM / recomp module "
-                    "/ state ABI",
-                    path, hh, wh);
-        return -1;
-    }
-
-    if (hdr.cpu_bytes != CPU_REG_BYTES ||
-        hdr.ram_bytes != OPENPETE_PSX_RAM_SIZE ||
-        hdr.scratch_bytes != OPENPETE_PSX_SCRATCH_SIZE ||
-        hdr.vram_bytes != PsyX_VRAM_GetSize() ||
-        hdr.spu_state_bytes != PsyX_SPUAL_StateSize() ||
-        hdr.spu_mem_bytes != PsyX_SPUAL_MemSize() ||
-        hdr.cd_state_bytes != (uint32_t)sizeof(state_cd_t)) {
-        fclose(fp);
-        OPL_ERROR_F("savestate",
-                    "%s: section sizes mismatch (cpu=%u/%u ram=%u/%u "
-                    "scratch=%u/%u vram=%u/%u spu=%u/%u spumem=%u/%u cd=%u/%u)",
-                    path,
-                    hdr.cpu_bytes, CPU_REG_BYTES,
-                    hdr.ram_bytes, OPENPETE_PSX_RAM_SIZE,
-                    hdr.scratch_bytes, OPENPETE_PSX_SCRATCH_SIZE,
-                    hdr.vram_bytes, PsyX_VRAM_GetSize(),
-                    hdr.spu_state_bytes, PsyX_SPUAL_StateSize(),
-                    hdr.spu_mem_bytes, PsyX_SPUAL_MemSize(),
-                    hdr.cd_state_bytes, (uint32_t)sizeof(state_cd_t));
         return -1;
     }
 
