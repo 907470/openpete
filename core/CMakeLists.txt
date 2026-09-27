@@ -212,6 +212,8 @@ add_library(openpete_core STATIC
     host/texture_pack.c
     host/wav_loader.c
 
+    # Temp-file-and-rename replacement shared by every persisted file.
+    host/atomic_file.c
     # Host-backed PSX memory card (save/load).
     # See notes/plans/openpete-memcard-host-backed.md.
     host/memcard.c

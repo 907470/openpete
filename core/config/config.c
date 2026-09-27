@@ -18,6 +18,7 @@
 #include "config_schema.h"
 #include "openpete_keymap.h"
 #include "openpete_paths.h"
+#include "openpete_atomic_file.h"
 
 #include "../../third_party/tomlc99/toml.h"
 
@@ -1437,15 +1438,13 @@ int openpete_config_save_flush(void) {
         fclose(in);
     }
 
-    char tmp[CFG_PATH_MAX + 8];
-    snprintf(tmp, sizeof tmp, "%s.tmp", s_save_path);
-    FILE *out = fopen(tmp, "wb");
-    if (!out) {
-        fprintf(stderr, "openpete: config: cannot write %s: %s\n",
-                tmp, strerror(errno));
+    op_atomic_file_t af;
+    if (op_atomic_file_open(&af, s_save_path) != 0) {
+        fprintf(stderr, "openpete: config: cannot write beside %s\n", s_save_path);
         free(head);
         return -1;
     }
+    FILE *out = af.f;
     if (head && head_len) fwrite(head, 1, head_len, out);
     if (head_len && head[head_len - 1] != '\n') fputc('\n', out);
     free(head);
@@ -1461,12 +1460,12 @@ int openpete_config_save_flush(void) {
             write_saved_value(out, &cfg_schema(NULL)[ki], s_saved[i].value);
         }
     }
-    fclose(out);
-
-    remove(s_save_path);                  /* Windows rename won't clobber */
-    if (rename(tmp, s_save_path) != 0) {
-        fprintf(stderr, "openpete: config: cannot replace %s: %s\n",
-                s_save_path, strerror(errno));
+    /* The commit checks every write above (the stream's error flag), the
+     * flush, sync and close, and replaces the file in one rename; on any
+     * failure the previous file stays whole. */
+    if (op_atomic_file_commit(&af) != 0) {
+        fprintf(stderr, "openpete: config: cannot replace %s; previous file kept\n",
+                s_save_path);
         return -1;
     }
     fprintf(stderr, "openpete: config: saved %d setting(s) to %s\n",

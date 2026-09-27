@@ -59,6 +59,7 @@
 #include "openpete_state.h"
 #include "openpete_discontinuity.h"
 #include "openpete_fiber.h"  /* openpete_vbl — saved/restored via hdr.vbl */
+#include "openpete_atomic_file.h"
 #include "openpete_log.h"
 #include "openpete_memcard.h" /* openpete_psx_bios_seed_ram */
 #include "openpete_psxtrace.h" /* openpete_sched_active */
@@ -274,12 +275,9 @@ int openpete_state_slot_present(unsigned slot) {
 
 int openpete_state_save_file(const char* path, const CPUState* cpu,
                              unsigned frame) {
-    FILE* fp = fopen(path, "wb");
-    if (!fp) {
-        OPL_ERROR_F("savestate", "fopen %s for write failed: %s",
-                    path, strerror(errno));
-        return -1;
-    }
+    op_atomic_file_t af;
+    if (op_atomic_file_open(&af, path) != 0) return -1;
+    FILE* fp = af.f;
 
     const char* modset_tag = openpete_mods_modset_tag();
     if (!modset_tag) modset_tag = "";
@@ -326,7 +324,7 @@ int openpete_state_save_file(const char* path, const CPUState* cpu,
         PsyX_SPUAL_SnapshotMem(spumem_snap, hdr.spu_mem_bytes) != 0) {
         free(vram_snap); free(spu_snap); free(spumem_snap); free(extra_snap);
         free(arena_snap);
-        fclose(fp);
+        op_atomic_file_abort(&af);
         OPL_ERROR_F("savestate", "%s: host-mirror snapshot failed", path);
         return -1;
     }
@@ -343,28 +341,31 @@ int openpete_state_save_file(const char* path, const CPUState* cpu,
     cd.xa_start_lba = g_cdXaStartLBA;
     cd.xa_start_vbl = g_cdXaStartVBL;
 
+    /* The file layout, in order; a zero-length section writes nothing. */
+    const struct { const char* what; const void* buf; size_t n; } sections[] = {
+        { "header",     &hdr,                       sizeof(hdr) },
+        { "cpu",        cpu,                        CPU_REG_BYTES },
+        { "ram",        openpete_psx_get_ram(),     OPENPETE_PSX_RAM_SIZE },
+        { "scratch",    openpete_psx_get_scratch(), OPENPETE_PSX_SCRATCH_SIZE },
+        { "vram",       vram_snap,                  hdr.vram_bytes },
+        { "spu",        spu_snap,                   hdr.spu_state_bytes },
+        { "spumem",     spumem_snap,                hdr.spu_mem_bytes },
+        { "cd",         &cd,                        sizeof(cd) },
+        { "game-extra", extra_snap,                 hdr.game_extra_bytes },
+        { "arena",      arena_snap,                 hdr.arena_bytes },
+        { "modset-tag", modset_tag,                 hdr.modset_tag_bytes },
+    };
     int rc = 0;
-    if (rc == 0) rc = write_section(fp, path, "header",  &hdr, sizeof(hdr));
-    if (rc == 0) rc = write_section(fp, path, "cpu",     cpu, CPU_REG_BYTES);
-    if (rc == 0) rc = write_section(fp, path, "ram",     openpete_psx_get_ram(),
-                                    OPENPETE_PSX_RAM_SIZE);
-    if (rc == 0) rc = write_section(fp, path, "scratch", openpete_psx_get_scratch(),
-                                    OPENPETE_PSX_SCRATCH_SIZE);
-    if (rc == 0) rc = write_section(fp, path, "vram",    vram_snap, hdr.vram_bytes);
-    if (rc == 0) rc = write_section(fp, path, "spu",     spu_snap, hdr.spu_state_bytes);
-    if (rc == 0) rc = write_section(fp, path, "spumem",  spumem_snap, hdr.spu_mem_bytes);
-    if (rc == 0) rc = write_section(fp, path, "cd",      &cd, sizeof(cd));
-    if (rc == 0 && hdr.game_extra_bytes)
-        rc = write_section(fp, path, "game-extra", extra_snap, hdr.game_extra_bytes);
-    if (rc == 0 && hdr.arena_bytes)
-        rc = write_section(fp, path, "arena", arena_snap, hdr.arena_bytes);
-    if (rc == 0 && hdr.modset_tag_bytes)
-        rc = write_section(fp, path, "modset-tag", modset_tag, hdr.modset_tag_bytes);
+    for (size_t i = 0; rc == 0 && i < sizeof sections / sizeof sections[0]; i++)
+        rc = write_section(fp, path, sections[i].what, sections[i].buf, sections[i].n);
 
     free(vram_snap); free(spu_snap); free(spumem_snap); free(extra_snap);
     free(arena_snap);
-    fclose(fp);
-    if (rc != 0) return -1;
+    if (rc != 0) {
+        op_atomic_file_abort(&af);
+        return -1;
+    }
+    if (op_atomic_file_commit(&af) != 0) return -1;
     OPL_INFO_F("savestate", "saved %s (frame=%u)", path, frame);
     return 0;
 }

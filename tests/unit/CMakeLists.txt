@@ -107,6 +107,7 @@ add_executable(knob_registry_test
     # written. No log.c: this test stubs the log entry points itself.
     ${CMAKE_SOURCE_DIR}/core/input/keymap.c
     ${CMAKE_SOURCE_DIR}/core/config/paths.c
+    ${CMAKE_SOURCE_DIR}/core/host/atomic_file.c
     ${CMAKE_SOURCE_DIR}/third_party/tomlc99/toml.c)
 target_include_directories(knob_registry_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include
@@ -164,6 +165,7 @@ add_executable(config_resolve_test
     ${CMAKE_SOURCE_DIR}/core/input/keymap.c
     ${CMAKE_SOURCE_DIR}/core/diag/log.c
     ${CMAKE_SOURCE_DIR}/core/config/paths.c
+    ${CMAKE_SOURCE_DIR}/core/host/atomic_file.c
     ${CMAKE_SOURCE_DIR}/third_party/tomlc99/toml.c)
 target_include_directories(config_resolve_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include)

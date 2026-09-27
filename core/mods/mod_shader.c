@@ -21,6 +21,7 @@
  */
 
 #include "openpete_mods.h"
+#include "openpete_atomic_file.h"
 #include "openpete_log.h"
 #include "mod_vec.h"
 #include "openpete_native_render.h"   /* set_tag_split arming (S8) */
@@ -111,18 +112,6 @@ static mod_shader_t* shader_at(int i) {
 
 /* ------------------------------------------------------------------ */
 /* small file helpers                                                  */
-
-/** @brief Write a buffer to a file, replacing any previous content.
- *
- * @return 0 when every byte was written, -1 when the file cannot be opened
- *         or a write falls short. */
-static int write_whole_file(const char* path, const void* data, size_t len) {
-    FILE* f = fopen(path, "wb");
-    if (!f) return -1;
-    size_t put = fwrite(data, 1, len, f);
-    fclose(f);
-    return put == len ? 0 : -1;
-}
 
 /** @brief List the files in a directory whose extension is in a `;`-separated list, sorted by strcmp.
  *
@@ -333,9 +322,15 @@ static size_t compile_profile(const char* src, int stage,
         remove(stamp_path);          /* stamp only; a cached .spv survives */
         return 0;
     }
-    (void)write_whole_file(spv_path, *out_words, n * 4);
-    f = fopen(stamp_path, "wb");
-    if (f) { fprintf(f, "%s\n", key); fclose(f); }
+    /* The stamp marks the .spv current, so it is written only after the
+     * .spv landed whole; a failed .spv write leaves no stamp and the next
+     * boot compiles again. */
+    char stamp_line[80];
+    int stamp_len = snprintf(stamp_line, sizeof stamp_line, "%s\n", key);
+    if (op_atomic_write_file(spv_path, *out_words, n * 4) != 0 ||
+        stamp_len <= 0 || (size_t)stamp_len >= sizeof stamp_line ||
+        op_atomic_write_file(stamp_path, stamp_line, (size_t)stamp_len) != 0)
+        remove(stamp_path);
     OPL_INFO_F("mods", "%s: shader %s%s compiled (%zu words)", id, path,
                suffix, n);
     return n;

@@ -22,6 +22,7 @@
 
 #include "openpete_mods.h"
 #include "openpete_mod_api.h"
+#include "openpete_atomic_file.h"
 #include "openpete_log.h"
 
 #include <stdio.h>
@@ -447,28 +448,10 @@ int openpete_mods_config_write(const char* mod_dir, const char* log_tag,
         }
     }
 
-    char tmp[1220];
-    snprintf(tmp, sizeof tmp, "%s.tmp", path);
-    FILE* out = fopen(tmp, "wb");
-    if (!out) {
-        mod_fvec_free(&buf);
-        OPL_ERROR_F(log_tag, "config.toml: cannot open %s for writing", tmp);
-        return -1;
-    }
-    size_t wrote = fwrite(text, 1, len, out);
-    fclose(out);
+    int rc = op_atomic_write_file(path, text, len);
     mod_fvec_free(&buf);
-    if (wrote != len) {
-        remove(tmp);
-        OPL_ERROR_F(log_tag, "config.toml: short write — original kept");
-        return -1;
-    }
-#ifdef _WIN32
-    remove(path); /* rename() refuses to clobber on Windows */
-#endif
-    if (rename(tmp, path) != 0) {
-        remove(tmp);
-        OPL_ERROR_F(log_tag, "config.toml: rename failed — original kept");
+    if (rc != 0) {
+        OPL_ERROR_F(log_tag, "config.toml: write failed — original kept");
         return -1;
     }
     OPL_INFO_F(log_tag, "config.toml: %d key(s) written", n);
