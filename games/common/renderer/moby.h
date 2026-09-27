@@ -42,16 +42,19 @@ void moby_native_set_rot_interp(int on);
  * moby_reextract and reset to (1, 1) after. */
 void moby_native_set_verdict_alpha(double alpha, int bracketed);
 
-/* The camera the cull composed this tick's records against, for a game whose
- * cull stores view-space records (moby_game.host_reveal == 0): the interp
- * ring's curr snapshot, nine int16 matrix entries in GTE row order (1.0 =
- * 4096) and the three camera position words. With it the sub-tick record
- * replay re-bases each record onto the camera the present stages, so an
- * animated moby follows the interpolated view like every other feeder instead
- * of holding its tick pose in screen space. NULL/NULL clears it and the replay
- * leaves every record exactly as the cull wrote it. Set around the feeder
- * re-extract by the orchestrator; ignored by a game that rebuilds records
- * host-side. */
+/** @brief Install the camera the cull composed this tick's records against, or clear it with NULL.
+ *
+ * For a game whose cull stores view-space records (moby_game.host_reveal ==
+ * 0): the interp ring's curr snapshot, nine int16 matrix entries in GTE row
+ * order (4096 = 1.0) and the three camera position words. With it the
+ * sub-tick record replay re-bases each record onto the camera the present
+ * stages, so an animated moby follows the interpolated view like every other
+ * feeder instead of holding its tick pose in screen space. A NULL argument
+ * clears it and the replay leaves every record as the cull wrote it. The
+ * orchestrator sets it around the feeder re-extract; a game that rebuilds
+ * records host-side does not read it.
+ * @param mat The matrix, or NULL.
+ * @param pos The camera position, or NULL. */
 void moby_native_set_tick_camera(const int16_t mat[9], const int32_t pos[3]);
 
 /* The installed tick camera position, for a cull whose records bake the camera
@@ -104,21 +107,27 @@ int moby_record_halfword_offset(uint32_t moby, uint32_t off, double* out);
 int moby_record_euler_at_present(struct CPUState* cpu, uint32_t moby,
                                  ngte_euler_sc* e);
 
-/* Occlusion-cull pan allowance: the camera's rotation this tick expressed as
- * screen-pixel motion (rad/tick × ~px-per-radian, overestimated). The feeder
- * inflates cached screen rects by it per tick of cache age, so a pan cannot
- * cull a moby whose stale rect has swept toward a wall edge. */
+/** @brief Set the occlusion cull's pan allowance: the camera's rotation this tick as screen-pixel motion.
+ *
+ * The value is rad/tick times an overestimated pixels-per-radian. The feeder
+ * inflates a cached screen rect by it, scaled by the view's H scale, per tick
+ * of cache age, so a pan cannot cull a moby whose stale rect has swept toward
+ * a wall edge.
+ * @param px_per_tick The allowance in pixels per tick at the canonical H. */
 void moby_native_set_occl_pan(float px_per_tick);
 
-/* The mobys the canonical render passes drew this tick, taken from their cull
- * records (deduped across the material passes). Most are also reachable by
- * walking the moby array, but not all: a game may relocate a moby into render
- * scratch and draw it from there, and anything drawn from outside the array
- * has no prev/curr snapshot and no fractional position — it steps at the sim
- * rate while everything around it interpolates. Both the interp capture and
- * the sub-tick lerp walk consult this list so that class is covered
- * generally. Returns the entry count and points *out at the (borrowed)
- * array. */
+/** @brief The mobys the canonical render passes drew this tick, taken from their cull records and deduplicated across the material passes.
+ *
+ * Most are also reachable by walking the moby array, but not all: a game may
+ * relocate a moby into render scratch and draw it from there, and a moby
+ * drawn from outside the array has no prev/curr snapshot and no fractional
+ * position, so it would step at the tick rate while everything around it
+ * interpolates. The interp capture and the sub-tick lerp walk consult this
+ * list so that class is covered generally. A set older than two VBLs dates
+ * from before a stall (a CD load or level swap) and reports no entries, since
+ * its addresses may name other objects.
+ * @param out Receives the borrowed array.
+ * @return The entry count. */
 int moby_native_canon_drawn_mobys(const uint32_t** out);
 
 /* Sub-tick re-extract entry: rebuild this present's moby contribution from
@@ -221,12 +230,20 @@ void   moby_tiledef_decode(uint32_t td0, uint32_t td1, uint32_t td2, moby_wface_
 int    moby_face_emit(int fresh, int bit0, int bit0_unconditional,
                       double ncl1, double ncl2, int have_v3, int order[2][3]);
 
-/* The cull-record queue the last canonical moby pass read: its guest base and
- * its length in bytes. A game whose queue lives in memory the rest of the tick
- * reuses stages these bytes for each sub-tick present, so the replay reads the
- * queue the tick drew rather than whatever overwrote it. 0 = no queue read yet,
- * or the game keeps its queue at a fixed address that nothing else touches. */
+/** @brief The guest base of the cull-record queue the last canonical moby pass read, 0 before any pass.
+ *
+ * A game whose queue lives in memory the rest of the tick reuses stages the
+ * queue's bytes for each sub-tick present, so the replay reads the queue the
+ * tick drew rather than whatever overwrote it. The base is captured at the
+ * pass rather than recomputed, since a queue carved out of the polybuf rides
+ * the draw buffer that tick allocated.
+ * @return The base, or 0. */
 uint32_t moby_canon_rec_base(void);
+/** @brief The length in bytes of the queue moby_canon_rec_base names, game_layout.moby.rec_base_polybuf_off.
+ *
+ * A queue carved out of the polybuf runs from its base to the polybuf end.
+ * 0 for a game that keeps its queue at a fixed address nothing else touches.
+ * @return The length, or 0. */
 uint32_t moby_canon_rec_bytes(void);
 
 #ifdef __cplusplus
