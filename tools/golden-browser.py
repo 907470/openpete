@@ -21,7 +21,14 @@ directories, and shows them as images. Three views:
              whose digest differs with the same panel, and the rows one side
              lacks as added or removed. A row neither the store nor the archive
              holds shows its materialize price and the golden-at command; the
-             page runs nothing.
+             page runs nothing. Beside each revision field a list offers
+             every tag (newest first, with its date and the tagged commit's
+             subject) and the latest 200 commits that touched the compared
+             manifests; choosing one fills the field and submits. A game
+             with no reference manifest at a revision (before the manifest
+             cutover) is read as golden-at reads it: the PNGs tracked in
+             each tier directory at that revision are that side's rows,
+             digested from the tree and marked unverified.
 
 The page writes one output, the promote list: one tile name per line in
 <promote-dir>/promote-<game>-<tier>.txt, which
@@ -33,8 +40,10 @@ name is discarded on read, which is the store's own contract
 (presentation-blessed.py store_get).
 
 The server binds 127.0.0.1 and serves only files a rendered view registered.
-Its only child processes are the read-only `git cat-file --batch` and
-`git rev-parse` calls presentation-blessed.py makes to read a revision.
+Its only child processes are read-only git: the `git cat-file --batch` and
+`git rev-parse` calls presentation-blessed.py makes to read a revision, and
+`git for-each-ref`, `git log` and `git ls-tree` for the revision lists and the
+tracked tiles of a revision before the cutover.
 
 Usage:
   tools/golden-browser.py [--port N] [--promote-dir DIR]
@@ -329,6 +338,8 @@ class RevReader:
         self.local = pb.CatFile(ROOT)
         self.arch = pb.Archive()
 
+        self.tracked_cf = {}
+
     def resolve(self, rev):
         """(reader, sha) of a revision, or (None, None)."""
         sha = pb.resolve(ROOT, rev)
@@ -337,10 +348,72 @@ class RevReader:
         sha = self.arch.rev(rev) if self.arch.path else None
         return (self.arch.cf, sha) if sha else (None, None)
 
+    def cf_of(self, row):
+        """The reader holding a tracked-tile row's blob."""
+        return self.tracked_cf.get(row["revision"], self.local)
+
     def close(self):
         """End both readers."""
         self.local.close()
         self.arch.close()
+
+
+def tracked_tiles(repo, sha, tdir, cf):
+    """{tile: row} of the PNGs tracked directly in a tier directory at a
+    revision, the reference before the manifest cutover. A row carries the
+    decoded digest of the tracked blob (`undecodable:<oid>` when it does not
+    decode), `revision` = sha and `spec`, the object to read its bytes
+    from."""
+    out = git_out(repo, "ls-tree", sha, "--", tdir + "/")
+    ents = []
+    for line in out.splitlines():
+        meta, _, path = line.partition("\t")
+        f = meta.split()
+        if len(f) == 3 and f[1] == "blob" and path.endswith(".png"):
+            ents.append((os.path.basename(path), f[2]))
+    blob_digests(cf, [oid for _, oid in ents])
+    return {t: {"tile": t, "revision": sha, "spec": oid,
+                "digest": _BLOB_DIGEST.get(oid) or "undecodable:" + oid}
+            for t, oid in ents}
+
+
+_BLOB_DIGEST = {}
+
+
+def blob_digests(cf, oids):
+    """Fill _BLOB_DIGEST for blob ids not yet in it, digesting in chunks of
+    256 blobs so the bytes held at once stay bounded. A blob is immutable
+    under its id, so the cache never goes stale."""
+    todo = [o for o in dict.fromkeys(oids) if o not in _BLOB_DIGEST]
+    for i in range(0, len(todo), 256):
+        chunk = todo[i:i + 256]
+        got = pb.digest_blobs([cf.read(o) or b"" for o in chunk])
+        for o, d in zip(chunk, got):
+            _BLOB_DIGEST[o] = d[0] if d else None
+
+
+def git_out(repo, *args):
+    """stdout of a read-only git command in repo; empty on failure."""
+    return pb.git(*args, cwd=repo, check=False) or ""
+
+
+def side_manifests(rr, cf, sha, game):
+    """Per reference manifest path of a game, its {tile: row} at one side,
+    or None when absent. A game with no reference manifest at the revision
+    predates the cutover: the tracked PNGs of each tier directory fill the
+    first manifest naming that directory. Returns ({path: map}, pre)."""
+    paths = pb.reference_manifests(game)
+    got = {mpath: manifest_at(cf, sha, mpath) for mpath, _, _ in paths}
+    if any(m is not None for m in got.values()):
+        return got, False
+    repo = ROOT if cf is rr.local else rr.arch.path
+    seen = set()
+    for mpath, _, tdir in paths:
+        if tdir in seen:
+            continue
+        seen.add(tdir)
+        got[mpath] = tracked_tiles(repo, sha, tdir, cf) or None
+    return got, True
 
 
 def manifest_at(cf, sha, mpath):
@@ -358,7 +431,11 @@ def manifest_at(cf, sha, mpath):
 def locate(row, tdir, rr, rev, game, verify):
     """golden-at's tiers for one row: ("store", path), ("archive", BytesIO)
     or ("materialize", text). An unverified lookup checks store presence
-    only (the thumbnail verifies on build)."""
+    only (the thumbnail verifies on build). A row read from a tracked tile
+    before the cutover returns ("tracked", BytesIO) of that blob, which
+    nothing verifies."""
+    if row.get("spec"):
+        return "tracked", io.BytesIO(rr.cf_of(row).read(row["spec"]) or b"")
     if verify:
         p = pb.store_get(row["digest"])
     else:
@@ -382,12 +459,22 @@ def history_rows(p, ctx):
         if not sa or not sb:
             return [], [], "revision %s does not resolve" % (
                 p["a"] if not sa else p["b"])
+        p["a_sha"], p["b_sha"] = sa, sb
+        rr.tracked_cf.update({sa: cfa, sb: cfb})
         rows, notes = [], []
         games = [p["game"]] if p["game"] else list(pb.GAMES)
         for game in games:
+            sides = {}
+            for side, cf, sha, rev in (("a", cfa, sa, p["a"]),
+                                       ("b", cfb, sb, p["b"])):
+                sides[side], pre = side_manifests(rr, cf, sha, game)
+                if pre:
+                    n = sum(len(m or {}) for m in sides[side].values())
+                    notes.append("%s (%s) predates the manifest cutover for "
+                                 "%s: %d tracked PNG(s) read as unverified "
+                                 "references" % (side, rev, game, n))
             for mpath, tier, tdir in pb.reference_manifests(game):
-                ma = manifest_at(cfa, sa, mpath)
-                mb = manifest_at(cfb, sb, mpath)
+                ma, mb = sides["a"].get(mpath), sides["b"].get(mpath)
                 if ma is None and mb is None:
                     continue
                 for side, m, rev in (("a", ma, p["a"]), ("b", mb, p["b"])):
@@ -512,6 +599,8 @@ cb.dataset.tier,cand:cb.dataset.cand,tile:cb.dataset.tile,on:cb.checked})})
 .then(r=>r.json()).then(j=>{document.getElementById('plist').textContent=
 j.count+' tile(s) in the promote list'}).catch(e=>{cb.checked=!cb.checked;
 alert('promote list not written: '+e)})}
+function pick(s,f){if(s.value){s.form.elements[f].value=s.value;
+s.form.submit()}}
 """
 
 
@@ -525,6 +614,41 @@ def page(title, body, static):
             "<title>Golden browser</title><style>%s</style><script>%s</script>"
             "</head><body>%s<h2>%s</h2>%s</body></html>"
             % (CSS, JS, nav, E(title), body))
+
+
+def rev_options(paths):
+    """(value, label) revision choices: every tag, newest first, labelled
+    with its date and the tagged commit's subject, then the latest 200
+    commits of HEAD that touched any of paths, labelled with their tag or
+    short sha, commit date and subject."""
+    fmt = "%(refname:short)%09%(creatordate:short)%09" \
+        "%(if)%(*objectname)%(then)%(*objectname)%(else)%(objectname)%(end)" \
+        "%09%(if)%(*subject)%(then)%(*subject)%(else)%(subject)%(end)"
+    out, tag_of = [], {}
+    for line in git_out(ROOT, "for-each-ref", "--sort=-creatordate",
+                        "--format=" + fmt, "refs/tags").splitlines():
+        f = line.split("\t", 3)
+        if len(f) == 4:
+            tag_of.setdefault(f[2], f[0])
+            out.append((f[0], "%s  %s  %s" % (f[0], f[1], f[3])))
+    log = git_out(ROOT, "log", "-n", "200", "--format=%H%x09%cs%x09%s",
+                  "HEAD", "--", *paths)
+    for line in log.splitlines():
+        f = line.split("\t", 2)
+        if len(f) == 3:
+            rev = tag_of.get(f[0], f[0][:12])
+            out.append((rev, "%s  %s  %s" % (rev, f[1], f[2])))
+    return out
+
+
+def rev_select(field, value, opts):
+    """A <select> of revision choices that writes the chosen revision into
+    the text field named field and submits the form; it carries no name, so
+    only the field is submitted."""
+    body = "".join("<option value='%s'%s>%s</option>" % (
+        E(v), " selected" if v == value else "", E(lab)) for v, lab in opts)
+    return "<select onchange='pick(this,\"%s\")'><option value=''>" \
+        "tag or commit</option>%s</select>" % (field, body)
 
 
 def select(name, value, options):
@@ -639,17 +763,24 @@ def render_candidate(p, ctx, static, pdir):
 def render_history(p, ctx, static):
     """The history-compare view."""
     rows, notes, err = history_rows(p, ctx)
-    form = "" if static else (
-        "<form action=/history>a <input name=a value='%s'> b <input name=b "
-        "value='%s'> %s <input name=q value='%s' placeholder=substring> "
-        "<button>compare</button></form>" % (
-            E(p["a"]), E(p["b"]), select("game", p["game"],
-                                         [""] + list(pb.GAMES)), E(p["q"])))
+    form = ""
+    if not static:
+        games = [p["game"]] if p["game"] else list(pb.GAMES)
+        opts = rev_options([m for g in games
+                            for m, _, _ in pb.reference_manifests(g)])
+        form = "<form action=/history>a <input name=a value='%s'> %s b " \
+            "<input name=b value='%s'> %s %s <input name=q value='%s' " \
+            "placeholder=substring> <button>compare</button></form>" % (
+                E(p["a"]), rev_select("a", p["a"], opts), E(p["b"]),
+                rev_select("b", p["b"], opts),
+                select("game", p["game"], [""] + list(pb.GAMES)), E(p["q"]))
     if err:
         return page("history compare", form + "<p>%s</p>" % E(err),
                     static), []
-    head = "<p class=mut>%s -> %s: %d changed, %d added, %d removed</p>" % (
-        E(p["a"]), E(p["b"]), sum(e["kind"] == "changed" for e in rows),
+    head = "<p class=mut>%s (%s) -> %s (%s): %d changed, %d added, %d " \
+        "removed</p>" % (
+        E(p["a"]), E(p["a_sha"][:12]), E(p["b"]), E(p["b_sha"][:12]),
+        sum(e["kind"] == "changed" for e in rows),
         sum(e["kind"] == "added" for e in rows),
         sum(e["kind"] == "removed" for e in rows))
     head += "".join("<p class=mut>%s</p>" % E(n) for n in notes)
