@@ -548,33 +548,39 @@ static void tp_decode_stop(void) {
  * `urgent` marks a draw as waiting: the entry goes to the head of the
  * queue and the worker decodes it past the prefetch memory budget; the
  * mark is set even when the entry is already queued. The worker thread is
- * started on demand; when it cannot start, the entry decodes inline. */
-static void tp_decode_request(int ei, int urgent) {
+ * started on demand; when it cannot start, the entry decodes inline.
+ * @return 1 when this call put the entry on the ring, 0 otherwise (already
+ *         ready, failed or queued, decoded inline, or refused by a full ring). */
+static int tp_decode_request(int ei, int urgent) {
     tp_pack_entry *e = pack_at(ei);
-    if (!e) return;
+    if (!e) return 0;
     if (urgent) e->urgent = 1;
     int st = SDL_GetAtomicInt(&e->px_state);
-    if (st != TP_PX_NONE) return;              /* ready, failed, or queued */
+    if (st != TP_PX_NONE) return 0;            /* ready, failed, or queued */
     if (!s_dec.th) tp_decode_start();
     if (!s_dec.th) {                           /* no worker — decode inline */
         tp_decode_one(ei);
-        return;
+        return 0;
     }
     if (!SDL_CompareAndSwapAtomicInt(&e->px_state, TP_PX_NONE, TP_PX_QUEUED))
-        return;                                /* another thread queued it */
+        return 0;                              /* another thread queued it */
     SDL_LockMutex(s_dec.mu);
     /* A full ring leaves the entry at NONE, the state the worker's budget
      * skip also returns to, so a later draw re-requests it. */
-    if (!tp_q_push(ei, urgent)) SDL_SetAtomicInt(&e->px_state, TP_PX_NONE);
+    int queued = tp_q_push(ei, urgent);
+    if (!queued) SDL_SetAtomicInt(&e->px_state, TP_PX_NONE);
     SDL_SignalCondition(s_dec.cv);
     SDL_UnlockMutex(s_dec.mu);
+    return queued;
 }
 
 /** @brief Queue every entry of an enabled source for decode, so a draw normally finds its replacement already resident.
  *
  * Returns without queueing when no pack is active or
- * OPENPETE_TEXPACK_PREFETCH starts with '0'. The queued count is added to
- * the outstanding prefetch count, whose completion the worker logs. */
+ * OPENPETE_TEXPACK_PREFETCH starts with '0'. The count of entries that
+ * reached the ring is added to the outstanding prefetch count, whose
+ * completion the worker logs; an entry the full ring refused is not
+ * outstanding. */
 static void tp_decode_prefetch_all(void) {
     if (!s_repl_active) return;
     /* OPENPETE_TEXPACK_PREFETCH=0 leaves every entry on the on-demand path —
@@ -593,7 +599,7 @@ static void tp_decode_prefetch_all(void) {
     SDL_UnlockMutex(s_dec.mu);
     int n = 0;
     for (int i = 0; i < pack_count(); i++)
-        if (tp_src_enabled(pack_at(i)->src)) { tp_decode_request(i, 0); n++; }
+        if (tp_src_enabled(pack_at(i)->src)) n += tp_decode_request(i, 0);
     SDL_LockMutex(s_dec.mu);
     s_dec.pf_outstanding += n;
     SDL_UnlockMutex(s_dec.mu);
