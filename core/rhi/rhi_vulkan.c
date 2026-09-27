@@ -289,6 +289,18 @@ static VkResult fence_result(VkResult r, const char *where)
     return r;
 }
 
+/* Internal color format: the offscreen target, the stage images, every
+ * render target and every render pass's color attachment. It is fixed, so
+ * pipelines, readback sizes and the readback swizzle never depend on what a
+ * surface offers; the present blit converts to the swapchain format. */
+#define RHI_RT_FORMAT VK_FORMAT_B8G8R8A8_UNORM
+/* Bytes per RHI_RT_FORMAT texel: every color readback's staging size. The
+ * readback swizzle handles 4-byte BGRA or RGBA texels only. */
+#define RHI_RT_TEXEL_BYTES 4u
+_Static_assert(RHI_RT_FORMAT == VK_FORMAT_B8G8R8A8_UNORM ||
+               RHI_RT_FORMAT == VK_FORMAT_R8G8B8A8_UNORM,
+               "color readbacks and their swizzle assume 4-byte BGRA or RGBA texels");
+
 /* Descriptor pools a device may create; each holds RHI_DESC_POOL_SETS sets
  * (4096 sampler and 64 dynamic-UBO descriptors). */
 #define RHI_DESC_POOLS_MAX 16
@@ -1200,6 +1212,42 @@ static VkPresentModeKHR choose_present_mode(rhi_device *dev)
     return want;
 }
 
+/** @brief Choose the swapchain surface format the present blit can write.
+ *
+ * The shaders write display-encoded values into the RHI_RT_FORMAT offscreen
+ * image and the present blits it onto the swapchain, so the swapchain takes
+ * the first of B8G8R8A8_UNORM, R8G8B8A8_UNORM and A8B8G8R8_UNORM_PACK32 in
+ * SRGB_NONLINEAR whose optimal tiling supports BLIT_DST; an _SRGB format
+ * would encode those values a second time. Without one, the first
+ * blit-capable format the surface lists is taken and logged.
+ * @param dev Device whose physical device is queried.
+ * @param fmts The surface's formats.
+ * @param fn Number of @p fmts, at least 1.
+ * @return The chosen format. */
+static VkSurfaceFormatKHR pick_surface_format(rhi_device *dev, const VkSurfaceFormatKHR *fmts,
+                                              uint32_t fn)
+{
+    static const VkFormat pref[] = {
+        VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_A8B8G8R8_UNORM_PACK32,
+    };
+    int fallback = -1;
+    for (size_t p = 0; p <= sizeof pref / sizeof pref[0]; p++) {
+        for (uint32_t i = 0; i < fn; i++) {
+            VkFormatProperties fp;
+            vkGetPhysicalDeviceFormatProperties(dev->phys, fmts[i].format, &fp);
+            if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT)) continue;
+            if (p == sizeof pref / sizeof pref[0]) { fallback = (int)i; break; }
+            if (fmts[i].format == pref[p] &&
+                fmts[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) return fmts[i];
+        }
+    }
+    const VkSurfaceFormatKHR f = fmts[fallback >= 0 ? fallback : 0];
+    RHI_LOG("create_swapchain: no 8-bit UNORM SRGB_NONLINEAR format; using format %d "
+            "colorspace %d%s\n", (int)f.format, (int)f.colorSpace,
+            fallback >= 0 ? "" : " (no blit-capable format listed)");
+    return f;
+}
+
 /** @brief Read the new swapchain's images into sc_images, refusing a swapchain with more images than the device tracks.
  *
  * On refusal or failure the swapchain is destroyed and the reason logged.
@@ -1244,20 +1292,13 @@ static bool create_swapchain(rhi_device *dev)
     VkExtent2D extent = choose_extent(dev, &caps);
     if (extent.width == 0 || extent.height == 0) return false; /* minimized */
 
-    /* Format: prefer B8G8R8A8_UNORM / SRGB nonlinear, else first. */
     uint32_t fn = 0;
     vkGetPhysicalDeviceSurfaceFormatsKHR(dev->phys, dev->surface, &fn, NULL);
     if (fn == 0) { RHI_LOG("create_swapchain: surface reports zero formats\n"); return false; }
     VkSurfaceFormatKHR *fmts = calloc(fn, sizeof(*fmts));
     if (!fmts) { RHI_LOG("create_swapchain: OOM for %u surface formats\n", fn); return false; }
     vkGetPhysicalDeviceSurfaceFormatsKHR(dev->phys, dev->surface, &fn, fmts);
-    VkSurfaceFormatKHR pick = fmts[0];
-    for (uint32_t i = 0; i < fn; i++) {
-        if (fmts[i].format == VK_FORMAT_B8G8R8A8_UNORM &&
-            fmts[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
-            pick = fmts[i]; break;
-        }
-    }
+    VkSurfaceFormatKHR pick = pick_surface_format(dev, fmts, fn);
     free(fmts);
 
     uint32_t want = caps.minImageCount + 1;
@@ -1340,7 +1381,7 @@ static bool create_swapchain(rhi_device *dev)
 static bool create_render_pass(rhi_device *dev)
 {
     VkAttachmentDescription color = {
-        .format = dev->sc_format,
+        .format = RHI_RT_FORMAT,
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
@@ -1451,7 +1492,7 @@ static bool create_render_pass(rhi_device *dev)
 
 /** @brief Create dev->rt_rp, the render pass for render-to-texture targets.
  *
- * The attachment formats match off_rp (sc_format color, depth_format
+ * The attachment formats match off_rp (RHI_RT_FORMAT color, depth_format
  * depth-stencil), so pipelines built against off_rp are compatible with it.
  * The color attachment ends in SHADER_READ_ONLY_OPTIMAL, and the outgoing
  * dependency makes its writes visible to fragment-shader reads, so a later
@@ -1462,7 +1503,7 @@ static bool create_render_pass(rhi_device *dev)
 static bool create_rt_render_pass(rhi_device *dev)
 {
     VkAttachmentDescription color = {
-        .format = dev->sc_format,
+        .format = RHI_RT_FORMAT,
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
@@ -1536,7 +1577,7 @@ static bool create_rt_render_pass(rhi_device *dev)
 static bool create_rt_ds_render_pass(rhi_device *dev)
 {
     VkAttachmentDescription color = {
-        .format = dev->sc_format,
+        .format = RHI_RT_FORMAT,
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
@@ -1597,6 +1638,10 @@ static bool create_rt_ds_render_pass(rhi_device *dev)
     return true;
 }
 
+/** @brief Create the offscreen color image (RHI_RT_FORMAT), its depth-stencil image, their views and the framebuffer at the current extent.
+ *
+ * @param dev Device whose extent, formats and off_rp are read.
+ * @return false when any step fails. */
 static bool create_offscreen(rhi_device *dev)
 {
     /* The offscreen target matches the swapchain extent. The 3D scene composites
@@ -1605,7 +1650,7 @@ static bool create_offscreen(rhi_device *dev)
     VkImageCreateInfo ici = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .imageType = VK_IMAGE_TYPE_2D,
-        .format = dev->sc_format,
+        .format = RHI_RT_FORMAT,
         .extent = { dev->sc_extent.width, dev->sc_extent.height, 1 },
         .mipLevels = 1,
         .arrayLayers = 1,
@@ -1645,7 +1690,7 @@ static bool create_offscreen(rhi_device *dev)
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
         .image = dev->off_image,
         .viewType = VK_IMAGE_VIEW_TYPE_2D,
-        .format = dev->sc_format,
+        .format = RHI_RT_FORMAT,
         .subresourceRange = {
             .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
             .levelCount = 1, .layerCount = 1,
@@ -2146,13 +2191,17 @@ static void destroy_stages(rhi_device *dev)
     dev->stage_gen++;
 }
 
+/** @brief Create the RHI_STAGE_RING stage images (RHI_RT_FORMAT, the swapchain extent) that staged presents blit through.
+ *
+ * @param dev Device whose extent is read.
+ * @return false when any image or allocation fails. */
 static bool create_stages(rhi_device *dev)
 {
     for (int i = 0; i < RHI_STAGE_RING; i++) {
         VkImageCreateInfo ici = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
             .imageType = VK_IMAGE_TYPE_2D,
-            .format = dev->sc_format,
+            .format = RHI_RT_FORMAT,
             .extent = { dev->sc_extent.width, dev->sc_extent.height, 1 },
             .mipLevels = 1, .arrayLayers = 1,
             .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -2455,11 +2504,10 @@ static rhi_device *rhi_create_impl(struct SDL_Window *window, const char *app_na
     if (!headless) {
         if (!create_swapchain(dev)) goto fail;
     } else {
-        /* No swapchain: the offscreen render pass + offscreen image still need a
-         * format + extent. Pick B8G8R8A8_UNORM (matches the windowed preference,
-         * so rhi_read_render_target's B/R swizzle is correct) and the requested
-         * size. sc_count stays 0 → no render_done semaphores, no present. */
-        dev->sc_format = VK_FORMAT_B8G8R8A8_UNORM;
+        /* No swapchain: the offscreen image still needs an extent, the
+         * requested size. sc_count stays 0 → no render_done semaphores, no
+         * present. */
+        dev->sc_format = VK_FORMAT_UNDEFINED;
         dev->sc_extent = (VkExtent2D){ hl_w ? hl_w : 1u, hl_h ? hl_h : 1u };
         dev->sc_count  = 0;
         for (uint32_t i = 0; i < RHI_MAX_SC_IMAGES; i++)
@@ -2487,9 +2535,9 @@ static rhi_device *rhi_create_impl(struct SDL_Window *window, const char *app_na
     VkPhysicalDeviceProperties2 props2 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &drv };
     vkGetPhysicalDeviceProperties2(dev->phys, &props2);
-    RHI_LOG("device='%s'%s driver=%s driver-info='%s' format=%d %ux%u images=%u\n",
+    RHI_LOG("device='%s'%s driver=%s driver-info='%s' format=%d internal=%d %ux%u images=%u\n",
             dev->device_name, headless ? " (headless)" : "",
-            rhi_driver_version(dev), drv.driverInfo, (int)dev->sc_format,
+            rhi_driver_version(dev), drv.driverInfo, (int)dev->sc_format, (int)RHI_RT_FORMAT,
             dev->sc_extent.width, dev->sc_extent.height, dev->sc_count);
     return dev;
 
@@ -4099,7 +4147,7 @@ static rhi_texture *create_render_target_impl(rhi_device *dev, uint32_t width,
      * pipelines are compatible), usable as a color attachment AND a sampler. */
     VkImageCreateInfo ici = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-        .imageType = VK_IMAGE_TYPE_2D, .format = dev->sc_format,
+        .imageType = VK_IMAGE_TYPE_2D, .format = RHI_RT_FORMAT,
         .extent = { width, height, 1 }, .mipLevels = 1, .arrayLayers = 1,
         .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
         /* TRANSFER_DST: rhi_snapshot_offscreen_to_rt blits INTO a render
@@ -4128,7 +4176,7 @@ static rhi_texture *create_render_target_impl(rhi_device *dev, uint32_t width,
     vkBindImageMemory(dev->device, t->image, t->mem, 0);
     VkImageViewCreateInfo vci = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = t->image,
-        .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = dev->sc_format,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = RHI_RT_FORMAT,
         .subresourceRange = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .levelCount = 1, .layerCount = 1 },
     };
     if (vkCreateImageView(dev->device, &vci, NULL, &t->view) != VK_SUCCESS) {
@@ -4731,13 +4779,13 @@ void rhi_update_rgba8_rects(rhi_device *dev, rhi_texture *tex,
     tex->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }
 
-/** @brief Copy raw swapchain-format pixels from a readback staging buffer into an RGBA8 buffer with opaque alpha.
+/** @brief Copy RHI_RT_FORMAT pixels from a readback staging buffer into an RGBA8 buffer with opaque alpha.
  *
- * Red and blue are swapped when dev->sc_format is B8G8R8A8_UNORM or
- * B8G8R8A8_SRGB, and copied as is otherwise; alpha is forced to 0xFF. Used by
- * the blocking screenshot path, the async --record ring and the render-target
- * readback ring.
- * @param dev Device whose swapchain format decides the swizzle.
+ * Red and blue are swapped for a BGRA internal format and copied as is
+ * otherwise; alpha is forced to 0xFF. Used by the blocking screenshot path,
+ * the async --record ring, the render-target readback ring and the blocking
+ * render-target read.
+ * @param dev Device (unused: the internal format is fixed).
  * @param src_ Source pixels, 4 bytes each.
  * @param dst_ Destination RGBA8 pixels.
  * @param w Width in pixels.
@@ -4747,8 +4795,8 @@ static void readback_swizzle(const rhi_device *dev, const void *src_, void *dst_
 {
     const uint8_t *src = (const uint8_t *)src_;
     uint8_t *dst = (uint8_t *)dst_;
-    int swap_rb = (dev->sc_format == VK_FORMAT_B8G8R8A8_UNORM ||
-                   dev->sc_format == VK_FORMAT_B8G8R8A8_SRGB);
+    (void)dev;
+    const int swap_rb = (RHI_RT_FORMAT == VK_FORMAT_B8G8R8A8_UNORM);
     for (size_t i = 0; i < (size_t)w * (size_t)h; i++) {
         uint8_t c0 = src[i*4+0], c1 = src[i*4+1], c2 = src[i*4+2];
         dst[i*4+0] = swap_rb ? c2 : c0;
@@ -4756,6 +4804,16 @@ static void readback_swizzle(const rhi_device *dev, const void *src_, void *dst_
         dst[i*4+2] = swap_rb ? c0 : c2;
         dst[i*4+3] = 0xFF;
     }
+}
+
+/** @brief Return the staging bytes a color readback of a w x h RHI_RT_FORMAT image takes.
+ *
+ * @param w Width in pixels.
+ * @param h Height in pixels.
+ * @return w * h * RHI_RT_TEXEL_BYTES. */
+static size_t rt_readback_bytes(int w, int h)
+{
+    return (size_t)w * (size_t)h * RHI_RT_TEXEL_BYTES;
 }
 
 bool rhi_read_offscreen(rhi_device *dev, void *out, size_t out_bytes,
@@ -4766,7 +4824,7 @@ bool rhi_read_offscreen(rhi_device *dev, void *out, size_t out_bytes,
     int w = (int)dev->sc_extent.width, h = (int)dev->sc_extent.height;
     if (out_w) *out_w = w;
     if (out_h) *out_h = h;
-    size_t need = (size_t)w * (size_t)h * 4u;
+    size_t need = rt_readback_bytes(w, h);
     if (!out || out_bytes < need || w <= 0 || h <= 0) return false;
 
     /* The offscreen target is in TRANSFER_SRC_OPTIMAL after a rendered frame
@@ -4818,7 +4876,7 @@ bool rhi_cycle_readback(rhi_device *dev, uint64_t tag, void *out, size_t out_byt
     if (dev->readback_ring[fi].pending && dev->readback_ring[fi].staging &&
         dev->readback_ring[fi].w > 0 && dev->readback_ring[fi].h > 0) {
         int pw = dev->readback_ring[fi].w, ph = dev->readback_ring[fi].h;
-        size_t need = (size_t)pw * (size_t)ph * 4u;
+        size_t need = rt_readback_bytes(pw, ph);
         if (out && out_bytes >= need) {
             readback_swizzle(dev, dev->readback_ring[fi].staging->mapped, out, pw, ph);
             if (out_w)   *out_w   = pw;
@@ -4835,7 +4893,7 @@ bool rhi_cycle_readback(rhi_device *dev, uint64_t tag, void *out, size_t out_byt
      * overwriting off_image before this copy runs. */
     int w = (int)dev->sc_extent.width, h = (int)dev->sc_extent.height;
     if (w > 0 && h > 0) {
-        size_t need = (size_t)w * (size_t)h * 4u;
+        size_t need = rt_readback_bytes(w, h);
         rhi_buffer **slot_staging = &dev->readback_ring[fi].staging;
         if (!*slot_staging || (*slot_staging)->size < need) {
             if (*slot_staging) rhi_destroy_buffer(dev, *slot_staging);
@@ -4871,7 +4929,7 @@ bool rhi_cycle_rt_readback(rhi_device *dev, rhi_texture *rt,
     if (dev->grid_ring[fi].pending && dev->grid_ring[fi].staging &&
         dev->grid_ring[fi].w > 0 && dev->grid_ring[fi].h > 0) {
         int pw = dev->grid_ring[fi].w, ph = dev->grid_ring[fi].h;
-        size_t need = (size_t)pw * (size_t)ph * 4u;
+        size_t need = rt_readback_bytes(pw, ph);
         if (out && out_bytes >= need) {
             /* Normalize to R,G,B,A byte order (the RT color format may be BGRA). */
             readback_swizzle(dev, dev->grid_ring[fi].staging->mapped, out, pw, ph);
@@ -4887,7 +4945,7 @@ bool rhi_cycle_rt_readback(rhi_device *dev, rhi_texture *rt,
      * this frame's command buffer. Call AFTER the pass that renders the RT. */
     int w = (int)rt->width, h = (int)rt->height;
     if (w > 0 && h > 0) {
-        size_t need = (size_t)w * (size_t)h * 4u;
+        size_t need = rt_readback_bytes(w, h);
         rhi_buffer **staging = &dev->grid_ring[fi].staging;
         if (!*staging || (*staging)->size < need) {
             if (*staging) rhi_destroy_buffer(dev, *staging);
@@ -4953,7 +5011,7 @@ bool rhi_drain_readback(rhi_device *dev, void *out, size_t out_bytes,
     }
     if (best < 0) return false;
     int w = dev->readback_ring[best].w, h = dev->readback_ring[best].h;
-    size_t need = (size_t)w * (size_t)h * 4u;
+    size_t need = rt_readback_bytes(w, h);
     dev->readback_ring[best].pending = false;
     if (!out || out_bytes < need) return false;
     readback_swizzle(dev, dev->readback_ring[best].staging->mapped, out, w, h);
@@ -4970,7 +5028,7 @@ bool rhi_read_render_target(rhi_device *dev, rhi_texture *rt, void *out,
     int w = (int)rt->width, h = (int)rt->height;
     if (out_w) *out_w = w;
     if (out_h) *out_h = h;
-    size_t need = (size_t)w * (size_t)h * 4u;
+    size_t need = rt_readback_bytes(w, h);
     if (!out || out_bytes < need || w <= 0 || h <= 0) return false;
 
     /* The RT is left in SHADER_READ_ONLY by rhi_end_render_target. Wait for the
@@ -5003,18 +5061,7 @@ bool rhi_read_render_target(rhi_device *dev, rhi_texture *rt, void *out,
     one_shot_end(dev, cb);
     rt->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    /* Same B8G8R8A8 -> R,G,B,A swizzle + opaque alpha as rhi_read_offscreen. */
-    const uint8_t *src = (const uint8_t *)rb->mapped;
-    uint8_t *dst = (uint8_t *)out;
-    int swap_rb = (dev->sc_format == VK_FORMAT_B8G8R8A8_UNORM ||
-                   dev->sc_format == VK_FORMAT_B8G8R8A8_SRGB);
-    for (size_t i = 0; i < (size_t)w * (size_t)h; i++) {
-        uint8_t c0 = src[i*4+0], c1 = src[i*4+1], c2 = src[i*4+2];
-        dst[i*4+0] = swap_rb ? c2 : c0;
-        dst[i*4+1] = c1;
-        dst[i*4+2] = swap_rb ? c0 : c2;
-        dst[i*4+3] = 0xFF;
-    }
+    readback_swizzle(dev, rb->mapped, out, w, h);
     rhi_destroy_buffer(dev, rb);
     return true;
 }

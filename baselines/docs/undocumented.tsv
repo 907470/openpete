@@ -841,8 +841,6 @@ core/rhi/rhi_gpu_audit.c	op_gpu_audit_bind_thread	none
 core/rhi/rhi_gpu_audit.c	op_gpu_audit_map_bytes	none	
 core/rhi/rhi_gpu_audit.c	op_gpu_audit_map_writes	none	
 core/rhi/rhi_vulkan.c	choose_extent	none	
-core/rhi/rhi_vulkan.c	create_offscreen	none	
-core/rhi/rhi_vulkan.c	create_stages	none	
 core/rhi/rhi_vulkan.c	create_sync_and_commands	none	
 core/rhi/rhi_vulkan.c	depth_format_name	none	
 core/rhi/rhi_vulkan.c	destroy_stages	none	
@@ -861,7 +859,6 @@ core/rhi/rhi_vulkan.c	rhi_depth_pipelines_by_compare	none
 core/rhi/rhi_vulkan.c	rhi_depth_report	none	
 core/rhi/rhi_vulkan.c	rhi_destroy_buffer	none	
 core/rhi/rhi_vulkan.c	rhi_destroy_pipeline	none	
-core/rhi/rhi_vulkan.c	rhi_drain_readback	none	
 core/rhi/rhi_vulkan.c	rhi_draw	none	
 core/rhi/rhi_vulkan.c	rhi_end_offscreen	none	
 core/rhi/rhi_vulkan.c	rhi_end_render_target	none	

@@ -509,6 +509,19 @@ bool rhi_read_offscreen(rhi_device *dev, void *out, size_t out_bytes,
  *         fills, outside an active frame, or for NULL @p dev. */
 bool rhi_cycle_readback(rhi_device *dev, uint64_t tag, void *out, size_t out_bytes,
                         int *out_w, int *out_h, uint64_t *out_tag);
+/** @brief Wait the device idle and retrieve the pending --record capture with the lowest tag, without recording a new one.
+ *
+ * Called at shutdown, up to RHI_FRAMES_IN_FLIGHT times, to flush the
+ * ring's tail in tag order. The slot is released even when @p out is too
+ * small.
+ * @param dev Device.
+ * @param out Destination, w*h*4 bytes.
+ * @param out_bytes Capacity of @p out.
+ * @param out_w Receives the capture's width; may be NULL.
+ * @param out_h Receives the capture's height; may be NULL.
+ * @param out_tag Receives the capture's tag; may be NULL.
+ * @return true when a capture was written to @p out; false when none is
+ *         pending or @p out is too small. */
 bool rhi_drain_readback(rhi_device *dev, void *out, size_t out_bytes,
                         int *out_w, int *out_h, uint64_t *out_tag);
 
@@ -1295,8 +1308,8 @@ void rhi_texture_set_filter_linear(rhi_device *dev, rhi_texture *tex);
  *
  * Geometry is rendered into it between rhi_begin_render_target and
  * rhi_end_render_target, and a later pass in the same frame samples the
- * result. The color format is the swapchain's (8-bit B,G,R,A in practice),
- * so pipelines built for the offscreen pass are compatible; the image is
+ * result. The color format is the fixed internal format (8-bit B,G,R,A),
+ * the offscreen pass's, so pipelines built for the offscreen pass are compatible; the image is
  * also a transfer source and destination. Binds as a normal texture with
  * rhi_bind_vram. Sized in pixels; recreate (destroy and create) on a size
  * change.
@@ -1684,7 +1697,8 @@ uint64_t rhi_gpu_results_token(const rhi_device *dev);
  * Vulkan-free; the sole consumer (core/ui/devui.cpp) casts them back.
  *
  * render_pass is the offscreen pass (off_rp). It IS destroyed+recreated on a
- * swapchain rebuild, but always with identical attachment formats — and a
+ * swapchain rebuild, but always with identical attachment formats (the
+ * color format is fixed, independent of the swapchain's) — and a
  * VkPipeline only uses its creation render pass for compatibility, so a
  * pipeline built against the old pass stays valid under the new one (the
  * renderer's own pipelines rely on the same rule). No re-init needed on
