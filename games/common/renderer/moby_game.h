@@ -389,14 +389,19 @@ typedef struct moby_game {
 
 extern const moby_game_t moby_game;
 
-/* Read one word of a cull record. Where the game's cull is hooked the walk
- * holds a copy of the record list taken at that hook, and this resolves
- * against the copy: the draw pass that follows the cull reuses the scratch the
- * list sits in, so a record read back from memory afterwards may hold that
- * draw's output instead of the cull's fields. Addresses outside the copy, and
- * every game whose cull is not hooked, read guest memory. A record reader uses
- * this in place of cpu->read_word, and moby_rec_matrix in place of
- * ngte_read_matrix, for every field it takes out of a record. */
+/** @brief Read one word of a cull record, from the copy taken at the cull hook when it holds the address.
+ *
+ * Where the game's cull is hooked the walk holds a copy of the record list
+ * taken at that hook, and an aligned address inside the copy resolves against
+ * it: the draw pass that follows the cull reuses the scratch the list sits
+ * in, so a record read back from memory afterwards may hold that draw's
+ * output instead of the cull's fields. Addresses outside the copy, and every
+ * game whose cull is not hooked, read guest memory. A record reader uses this
+ * in place of cpu->read_word, and moby_rec_matrix in place of
+ * ngte_read_matrix, for every field it takes out of a record.
+ * @param cpu The guest CPU state, read only.
+ * @param addr The guest address of the word.
+ * @return The word. */
 uint32_t moby_rec_word(CPUState* cpu, uint32_t addr);
 void     moby_rec_matrix(CPUState* cpu, uint32_t addr, int M[3][3]);
 
@@ -416,24 +421,43 @@ typedef struct moby_anim_fields {
     int      M[3][3];               /* model->view rotation, 1.0 = 4096 */
 } moby_anim_fields_t;
 
-/* Fill `f` for one moby from gamestate. Returns 0 when the moby's class names
- * no animated model or its animation state names no keyframe. The centre is
- * computed against the view the current pass projects through. */
+/** @brief Fill the encoding-free fields of an animated cull record for one moby from gamestate.
+ *
+ * The keyframe pair and blend byte come from the moby's animation state bytes
+ * by the cull's rule; the rotation composes the byte-exact euler table lookup
+ * with the camera matrix of the view the current pass projects through; the
+ * centre is the cull's MVMVA over the quarter-world camera delta, accumulated
+ * at 64 bits and clamped to int32. Reads gamestate only.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @param f Receives the fields.
+ * @return 0 when the moby's class names no animated model or its animation
+ *         state names no keyframe header, else 1. */
 int moby_reveal_anim_fields(CPUState* cpu, uint32_t moby, moby_anim_fields_t* f);
 
-/* Reserve one record slot past the cull's own queue in the host copy taken at
- * the cull hook, for a reveal that composes an animated record in the game's
- * own encoding. Returns a zeroed array of rec_stride/4 words to compose into
- * and leaves the guest address the slot shadows in `addr`; NULL when the copy
- * is full. The copy's terminator moves past the new slot, so the walk reads
- * the appended records after the queued ones, and every record reader
- * resolves them through moby_rec_word. Writes no guest memory. */
+/** @brief Reserve one record slot past the cull's own queue in the host copy taken at the cull hook.
+ *
+ * For a reveal that composes an animated record in the game's own encoding.
+ * The copy's terminator moves past the new slot, so the walk reads the
+ * appended records after the queued ones, and every record reader resolves
+ * them through moby_rec_word. Only a copy that reached the cull's terminator
+ * can be extended: a copy that ran out of room ends on a live record whose
+ * successors read guest memory. Writes no guest memory.
+ * @param addr Receives the guest address the slot shadows, or NULL.
+ * @return A zeroed array of rec_stride/4 words to compose into; NULL when
+ *         there is no copy, the copy did not reach the terminator, or it is
+ *         full. */
 uint32_t* moby_rec_append(uint32_t* addr);
 
-/* Does the host copy already hold a record naming this moby, queued by the
- * cull or appended by a reveal? A cull admits on more than its distance box,
- * so a moby the box rejected can still carry a record, and a second one would
- * draw it twice. */
+/** @brief Whether the host copy already holds a record naming this moby, queued by the cull or appended by a reveal.
+ *
+ * A cull admits on more than its distance box, so a moby the box rejected can
+ * still carry a record, and a second one would draw it twice. The scan stops
+ * at the first record moby_game.read_record rejects.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @return 1 when a record names the moby; 0 otherwise, and always 0 with no
+ *         copy or no read_record slot. */
 int moby_rec_holds_moby(CPUState* cpu, uint32_t moby);
 
 /* The current VBL (`openpete_frame`) lies inside the OPENPETE_MOBY_VERIFY

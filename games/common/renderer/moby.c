@@ -61,8 +61,10 @@
 
 extern unsigned openpete_frame;
 
-/* Run one of the game's own moby draw passes through the recomp module. */
-/* Run one of the game's own moby draw passes through the recomp module. */
+/** @brief Run one of the game's own moby draw passes through the recomp module's dispatch.
+ *
+ * @param cpu The guest CPU state.
+ * @param addr The draw routine's guest address. */
 static void moby_run_draw(CPUState* cpu, uint32_t addr) {
     openpete_recomp_module_get()->dispatch(cpu, addr);
 }
@@ -94,11 +96,15 @@ static long s_hold_shown = 0, s_hold_period = 0, s_prevhdr_sig = 0, s_prevhdr_un
 static long s_shmode[3]; /* shaded face-mode census: [0]=gouraud [1]=flat-basic [2]=flat-metal(bit1) */
 static int  s_sh_nohl = -1; /* OPENPETE_SHADED_NOHL=1 disables the gouraud spec boost (A/B) */
 
-/* The cull-record queue the game's cull pass built, and one record's size.
- * Every material pass over the same model kind shares one queue. The base is a
- * fixed address, or the tick's own draw-scratch block below the polybuf end —
- * which moves with the draw buffer, so it is read per pass and never cached
- * across a tick. */
+/** @brief The base address of the cull-record queue the game's cull pass built.
+ *
+ * Every material pass over the same model kind shares one queue. The base is
+ * game_layout.moby.rec_base when the game fixes it, else the tick's
+ * draw-scratch block rec_base_polybuf_off bytes below the polybuf end, which
+ * moves with the draw buffer, so it is read per pass and never cached across
+ * a tick.
+ * @param cpu The guest CPU state, read only.
+ * @return The queue's first record address. */
 static uint32_t moby_rec_base(CPUState* cpu) {
     if (game_layout.moby.rec_base) return game_layout.moby.rec_base;
     return cpu->read_word(game_layout.polybuf.end) - game_layout.moby.rec_base_polybuf_off;
@@ -226,8 +232,11 @@ static void moby_rec_snapshot(CPUState* cpu) {
     s_rec_snap_ended  = ended;
 }
 
-/* Drop every appended record, leaving the copy exactly as the cull hook took
- * it. The appends belong to one tick's reveal and are rebuilt on the next. */
+/** @brief Drop every appended record, leaving the copy exactly as the cull hook took it.
+ *
+ * The appends belong to one tick's reveal and are rebuilt on the next. Also
+ * empties the appended-moby set and retires its generation, and puts the
+ * terminator back after the cull's own records when the copy reached it. */
 static void moby_rec_append_reset(void) {
     s_rec_append_moby_n = 0;
     s_rec_append_gen++;
@@ -343,8 +352,12 @@ static ngte_view s_view_canon;
 static ngte_view s_view_shd_canon;
 static void moby_view_build(CPUState* cpu)     { ngte_view_build(cpu, &s_view);     ngte_view_canon(&s_view,     &s_view_canon); }
 static void moby_view_shd_build(CPUState* cpu) { ngte_view_build(cpu, &s_view_shd); ngte_view_canon(&s_view_shd, &s_view_shd_canon); }
-/* The regular-walk view a record projects through: HUD-range mobys keep the
- * game's projection, the rest take the pass view. */
+/** @brief The regular-walk view a record projects through.
+ *
+ * A moby in the static or UI HUD address range keeps the game's projection
+ * (s_view_canon); every other moby takes the pass view (s_view).
+ * @param mob The Moby address.
+ * @return The view. */
 static const ngte_view* moby_record_view(uint32_t mob) {
     return (openpete_ui_moby_is_addr_static(mob) || openpete_ui_moby_is_addr_ui(mob))
         ? &s_view_canon : &s_view;
@@ -560,10 +573,16 @@ static void hex_dump(CPUState* cpu, uint32_t start, uint32_t end) {
  * behind the moby_game vertex slots: the walk owns the loop and the
  * projection, the decoder owns what one step of the stream means. */
 typedef moby_vstream_t vstream;
-/* Does this record carry the pose (header, frame)? A keyframe reference is a
- * pointer into the model's frame array, or — where the cull copies the
- * keyframe's leading stream word into the record instead — that word, which
- * may hold any value, so the pose exists exactly when its header does. */
+/** @brief Whether a record carries the pose (header, frame).
+ *
+ * A keyframe reference is a pointer into the model's frame array, or, where
+ * the cull copies the keyframe's leading stream word into the record instead
+ * (rec_frame_is_word), that word, which may hold any value, so the pose
+ * exists exactly when its header does. A pointer exists when it is at or
+ * above 0x80000000.
+ * @param header The AnimationHeader.
+ * @param frame The keyframe reference.
+ * @return 1 when the pose is live, else 0. */
 static inline int moby_pose_live(uint32_t header, uint32_t frame) {
     return game_layout.moby.rec_frame_is_word ? (header >= 0x80000000u)
                                               : (frame  >= 0x80000000u);
@@ -602,8 +621,19 @@ static uint32_t moby_keyframe_ref(CPUState* cpu, uint32_t header, uint32_t index
     return game_layout.moby.rec_frame_is_word ? cpu->read_word(at) : at;
 }
 
-/* st = the five animation state bytes, live or from an interp snapshot.
- * Returns 0 when anims[id] is not a header. */
+/** @brief Derive the keyframe pair one moby draws from its animation state bytes by the cull's rule.
+ *
+ * Header A is anims[id] of the model's animation table. The progress byte
+ * maps through moby_game.anim_blend_byte where the game has one; a nonzero
+ * blend takes header B from anims[nextId], and a blend toward an unfilled
+ * anims[nextId] holds keyframe A with blend 0, so the stream reader never
+ * dereferences a non-header. moby_pose_t carries the rule's asm references.
+ * @param cpu The guest CPU state, read only.
+ * @param model The model-table entry.
+ * @param st The five animation state bytes (id, nextId, frame, nextFrame,
+ *        progress), live or from an interp snapshot.
+ * @param p Receives the pose.
+ * @return 0 when anims[id] is not a header, else 1. */
 static int moby_pose_derive(CPUState* cpu, uint32_t model, const uint8_t st[5], moby_pose_t* p) {
     const uint32_t anims = model + game_layout.moby.model_anims_off;
     p->header = cpu->read_word(anims + (uint32_t)st[0] * 4u);
@@ -769,11 +799,18 @@ typedef struct { float sx, sy, vz; int sat; int unr; int rec;
                  ex/ey/ez = the model->view rotated vertex offset (M.v)/4096 = viewPos-TR,
                  the input to the specular env-reflection UV map (#1). */
 
-/* Opens the previous pose's keyframe streams for the two-pass shape lerp.
+/** @brief Open the previous pose's keyframe streams for the two-pass shape lerp.
+ *
  * Both decode with that pose's own ShortShift, equal to the current one within
  * a clip and free to differ across a count-matched clip switch; keyframe B's
- * stream starts on keyframe B's own header. Returns the pose's blend numerator
- * (1.0 = 4096; 0 opens keyframe A alone), or -1 when there is no previous pose. */
+ * stream starts on keyframe B's own header. Stream B opens only for a
+ * positive blend and a live keyframe B.
+ * @param cpu The guest CPU state, read only.
+ * @param prev The previous pose, or NULL.
+ * @param A Receives keyframe A's stream.
+ * @param B Receives keyframe B's stream when the blend is positive.
+ * @return The pose's blend numerator (1.0 = 4096; 0 opens keyframe A alone),
+ *         or -1 when there is no live previous pose. */
 static int moby_prev_streams(CPUState* cpu, const moby_pose_t* prev, vstream* A, vstream* B) {
     if (!prev || !moby_pose_live(prev->header, prev->frame_a)) return -1;
     int s5 = (cpu->read_byte(prev->header + game_layout.moby.anim_shift_off) & 0xFF) + 1;
@@ -841,16 +878,27 @@ static void rt_report(const char* mat, int ntri) {
 /* The feed is an intermediate present's (moby_reextract). */
 static int s_in_reextract;
 static int rank_carry_on(void);
-/* The paint key is computed only while the rank select is on, and not on an
- * intermediate present that carries the tick's verdict. */
+/** @brief Whether this feed computes the paint key.
+ *
+ * Only while the rank select is on, and not on an intermediate present
+ * (moby_reextract) that carries the tick's verdict.
+ * @return 1 when the key is wanted, else 0. */
 static int moby_otkey_wanted(void) {
     return openpete_mobyrank_on() && !(s_in_reextract && rank_carry_on());
 }
 
-/* An animated record's paint key through the game's record decode: row
- * MOBY_OTK_NONE while the rank is off or the game mirrors no key, the game's
- * specular row on the specular pass ("SPEC", its re-extract "SP"). `tr`
- * receives the integer translation the draw loads. */
+/** @brief An animated record's paint key through the game's record decode.
+ *
+ * The row is MOBY_OTK_NONE while the key is not wanted or the game mirrors
+ * no key (no otkey_record slot), and the game's specular row replaces the
+ * decoded row on the specular pass (material tag "SPEC", its re-extract "SP").
+ * @param cpu The guest CPU state, read only.
+ * @param header Keyframe A's AnimationHeader.
+ * @param headerB Keyframe B's AnimationHeader.
+ * @param w0 The record's flags word.
+ * @param TR_raw The record's stored translation.
+ * @param tr Receives the integer translation the draw loads, zero with no row.
+ * @param r Receives the record's paint key. */
 static void moby_otk_anim_record(CPUState* cpu, uint32_t header, uint32_t headerB, uint32_t w0,
                                  const int TR_raw[3], int tr[3], moby_otk_rec_t* r) {
     int a = 0;
@@ -864,8 +912,18 @@ static void moby_otk_anim_record(CPUState* cpu, uint32_t header, uint32_t header
     moby_otk_record(row, a, tr[2], r);
 }
 
-/* One vertex's integer RTPS for the record's paint key; nothing when the
- * record carries none. */
+/** @brief One vertex's integer RTPS for the record's paint key; nothing when the record carries none.
+ *
+ * @param r The record's paint key.
+ * @param tr The integer translation the draw loads.
+ * @param M The model-to-view rotation, 4096 = 1.0.
+ * @param vx The model-space vertex X.
+ * @param vy The model-space vertex Y.
+ * @param vz The model-space vertex Z.
+ * @param ofx The screen offset X.
+ * @param ofy The screen offset Y.
+ * @param H The projection distance.
+ * @param o Receives the integer RTPS output in its iv field. */
 static void moby_otk_vertex(const moby_otk_rec_t* r, const int tr[3], const int M[3][3],
                             double vx, double vy, double vz, double ofx, double ofy, int H,
                             proj_xy* o) {
@@ -1206,9 +1264,7 @@ static void build_moby_record_tr(CPUState* cpu, uint32_t moby, double tr[3]);
 static int moby_record_centre_final(CPUState* cpu, uint32_t moby, uint32_t header, double tr[3]);
 static void moby_centre_census(const char* pass);
 
-/* Project one live cull record, whose fields the game's record reader already
- * extracted. zsf4 = the record's (--no-lod-adjusted) tier verdict, computed by
- * the caller (record_zsf4) — feeds the tier-adjusted vertex-count read.
+/** @brief Project one live cull record, whose fields the game's record reader already extracted.
  *
  * The record's stored TR is the cull's MVMVA of the camera-moby delta taken
  * on the quarter-world grid ((cam - moby) >> 2, MAC >> 12), so it is the
@@ -1222,7 +1278,15 @@ static void moby_centre_census(const char* pass);
  * translation also carries the cull's unit scaling — the factor of 4 off the
  * quarter-world grid, the header's shift and the per-moby size rescale — and
  * the decode passes a fractional centre straight to the GTE, so the centre is
- * scaled the same way first (moby_record_centre_final). */
+ * scaled the same way first (moby_record_centre_final). When neither centre
+ * derivation applies, the decode projects the stored TR.
+ * @param cpu The guest CPU state, read only.
+ * @param R The extracted record.
+ * @param zsf4 The record's tier verdict after the --no-lod adjustment
+ *        (record_zsf4), which selects the tier's vertex count.
+ * @param out Receives the projected vertices.
+ * @param cap The capacity of out.
+ * @return The number of vertices written. */
 static int moby_project_record(CPUState* cpu, const moby_record_t* R, int zsf4,
                                proj_xy* out, int cap) {
     const ngte_view* v = moby_record_view(R->moby);
@@ -1516,7 +1580,8 @@ static void canon_drawn_harvest(int nrec) {
     }
 }
 
-/* ---- LOD tier (mirrors func_8001F798 block_8001FDD0; spec twin @80021670) ----
+/** @brief The face block a record draws under its LOD tier, mirroring func_8001F798 block_8001FDD0 (specular twin @80021670).
+ *
  * The record's ZSF4 (+0x2E, sign-extended via ctc2/cfc2 gte_ctrl[30]) is the
  * game's own per-record LOD verdict: the cull pass computes it @8001F404 as
  * ((moby->m_Renderer(+0x4B) & 0x3F) << 8) - viewZ (viewZ = the record's TR.z)
@@ -1528,14 +1593,16 @@ static void canon_drawn_harvest(int nrec) {
  *                      below -2048 (g_SkipLowPolyWorld > 0) DPCS-faded toward
  *                      the cyclorama fog colour by min(-(ZSF4+2048),2047)<<1
  *                      [.L8001FE98..FECC]
- * Under --no-lod the face select goes HP-everywhere NATIVELY (keyed on the
- * flag, not the game-side psx_runtime_moby_lp_face_offset knob — the knob
- * only arms in PsyCross mode now; on the native path the .s producers run
- * canonical and the native walk owns the tier). The zsf4≤0 residue under
- * --no-lod is the effect-AUTHORED fades (m_Renderer&0x3F < 4, exempt from
- * the zsf4 neutralization) — the game-side knob gave those HP faces too,
- * so mirror that. Colours stay tier-faithful in both modes — the game
- * keeps the far palette under --no-lod too. */
+ * Under --no-lod the face select takes the HP faces for every record, keyed
+ * on openpete_no_lod: the .s producers run canonical and this walk owns the
+ * tier. That includes the records whose ZSF4 stays <= 0 under --no-lod, the
+ * effect-authored fades (m_Renderer & 0x3F < 4, which record_zsf4 does not
+ * lift). Colours stay tier-faithful in both modes; the game keeps the far
+ * palette under --no-lod too.
+ * @param cpu The guest CPU state, read only.
+ * @param header The AnimationHeader.
+ * @param zsf4 The record's tier verdict.
+ * @return The face-block address, or 0 when header is not an address. */
 static uint32_t moby_tier_faceblock(CPUState* cpu, uint32_t header, int zsf4) {
     if (header < 0x80000000u) return 0u;
     uint32_t off = (zsf4 <= 0 && !openpete_no_lod) ? ANIM_FACES_LP : ANIM_FACES_HP;
@@ -1588,9 +1655,12 @@ static uint32_t moby_interp_key(uint32_t moby) {
     return moby_game.interp_key ? moby_game.interp_key(moby) : moby;
 }
 
-/* OPENPETE_MOBY_TRACE=<moby addr>: per-call gate trace for one moby. The
- * canonical extract logs queue membership, the reveal builder logs every
- * skip or admit verdict with the gate values; inert when unset. */
+/** @brief The moby OPENPETE_MOBY_TRACE names for a per-call gate trace, 0 when unset.
+ *
+ * The canonical extract logs the moby's queue membership and the reveal
+ * builder logs every skip or admit verdict with the gate values. The variable
+ * is parsed once, with strtoul base 0.
+ * @return The traced Moby address, or 0. */
 static uint32_t moby_trace_target(void) {
     static uint32_t t = 0xFFFFFFFFu;
     if (t == 0xFFFFFFFFu) { const char* e = getenv("OPENPETE_MOBY_TRACE");
@@ -2079,32 +2149,21 @@ static void reveal_publish_hysteresis(const uint32_t* drawn, int drawn_n,
     s_rev_prev_n = hn;
 }
 
-/* Run-once mobys: instances whose FIRST update does a one-shot job and then
- * retires them (m_State >= 0x80). The update-list builder (@80052040)
- * auto-includes any moby whose m_WasDrawn is set, ahead of its
- * m_UpdateDistance path, so canonically "drawn" implies "updated next tick"
- * and such an instance is on screen for at most the single tick that admits
- * it — never long enough to be intended as scenery.
+/** @brief Whether moby m is a run-once instance the walk emits nothing for and the reveal never admits.
  *
- * Two display bugs follow. The extended-LOD reveal must not write m_WasDrawn
- * (gameplay-readable), so a revealed instance is drawn WITHOUT ever entering
- * the update list: it never runs, never retires, and stands there until the .s
- * draw range finally reaches it and kills it. And even in range, the canonical
- * queue still yields that one-tick flash. Both are display-side, so the fix is
- * too: the walk emits no triangles for these and the reveal never admits them,
- * while the .s cull, m_WasDrawn, the update list and the moby's one-shot job
- * all proceed untouched.
- *
- * Identity is the level author's own spawn parameter: m_Props (+0x00) points
- * at a per-instance block whose word at +0x04 selects the class's behaviour
- * variant. Jacques' fools ship four instances at variant 6 — the ones that
- * only set a moving platform's height — against eight at variants 0/1/2, the
- * ordinary hopping fools. Nothing in the Moby record itself distinguishes
- * them: an ordinary fool sits at m_State 0 with a zero rotation matrix and
- * animation frame 0 exactly like an unreached run-once one, and STAYS at
- * m_State 0 after being drawn, so a liveness test would hide every distant
- * fool in the level. The table is keyed per level because class ids index the
- * level overlay's own g_Models, and the props layout is class-specific. */
+ * A run-once instance does a one-shot job on its first update and retires
+ * (m_State >= 0x80). The game's update list includes every moby whose
+ * m_WasDrawn is set, so canonically such an instance is on screen for the one
+ * tick that admits it. The reveal must not write m_WasDrawn, so a revealed
+ * instance would be drawn without entering the update list and stand until the
+ * canonical draw range reaches it; in range, the canonical queue still flashes
+ * it for one tick. Hiding it is display-side only: the cull, m_WasDrawn, the
+ * update list and the one-shot job proceed untouched. The identification is
+ * the game's (moby_game.run_once_hidden); a game without the slot hides none.
+ * @param cpu The guest CPU state, read only.
+ * @param m The Moby address.
+ * @param cls The moby's class id.
+ * @return 1 when the moby is hidden, else 0. */
 static int moby_run_once_hidden(CPUState* cpu, uint32_t m, unsigned cls) {
     return moby_game.run_once_hidden ? moby_game.run_once_hidden(cpu, m, cls) : 0;
 }
@@ -2539,8 +2598,14 @@ static void moby_precull_snapshot(CPUState* cpu) {
     }
 }
 
-/* The byte the cull read for moby `m`, or the live byte when the snapshot does
- * not cover the slot. */
+/** @brief The drawn-verdict byte the cull read for moby m, or the live byte when the snapshot does not cover the slot.
+ *
+ * The snapshot covers m when it was taken from the same array head and m's
+ * slot index lies inside it.
+ * @param cpu The guest CPU state, read only.
+ * @param m The Moby address.
+ * @param head The moby array head the caller walks from.
+ * @return The drawn-verdict byte. */
 static unsigned moby_precull_drawn(CPUState* cpu, uint32_t m, uint32_t head) {
     const uint32_t stride = game_layout.moby.array_stride;
     const uint32_t k = stride ? (m - head) / stride : PRECULL_SLOTS;
@@ -2548,13 +2613,22 @@ static unsigned moby_precull_drawn(CPUState* cpu, uint32_t m, uint32_t head) {
     return cpu->read_byte(m + game_layout.moby.drawn_off);
 }
 
-/* The widened-view clause. The cull tests an animated moby against a 4:3
- * cone, so under a wider presentation view a moby inside its distance box that
- * the lateral arm alone rejected is in the frame but has no record. A moby
- * whose drawn-verdict byte the cull left at 0 is offered to the game's record
- * builder when moby_game.cull_view_admits, the cull's admission re-evaluated
- * with the lateral slope scaled to the view, admits it. The drawn byte is read,
- * never written. Returns 1 when a record was appended; tallies each verdict. */
+/** @brief The widened-view clause of the reveal for one live moby.
+ *
+ * The cull tests an animated moby against a 4:3 cone, so under a wider
+ * presentation view a moby inside its distance box that the lateral arm alone
+ * rejected is in the frame but has no record. A moby whose drawn-verdict byte
+ * the cull left at 0 is offered to the game's record builder when
+ * moby_game.cull_view_admits, the cull's admission re-evaluated with the
+ * lateral slope scaled to the view, admits it and the occlusion cull does not
+ * reject it. The drawn byte is read, never written.
+ * @param cpu The guest CPU state, read only.
+ * @param m The Moby address.
+ * @param head The moby array head, for the pre-cull drawn byte.
+ * @param widen The view's horizontal widening (moby_native_view_widen).
+ * @param verdicts Tallies the admission verdict.
+ * @param occl Counts an admitted moby the occlusion cull rejected.
+ * @return 1 when a record was appended, else 0. */
 static int moby_reveal_widened(CPUState* cpu, uint32_t m, uint32_t head, double widen,
                                long verdicts[MOBY_WIDE_VERDICTS], long* occl) {
     if (cpu->read_byte(m + game_layout.moby.drawn_off) != 0u) return 0;
@@ -2577,9 +2651,17 @@ typedef struct {
     int  added, wide_added;
 } moby_reveal_census_t;
 
-/* The extended-LOD clause for one live moby: offer it to the game's record
- * builder when the cull's distance box rejected it and it stands in front of
- * the camera plane and outside the occlusion cull. */
+/** @brief The extended-LOD clause of the reveal for one live moby.
+ *
+ * Offers the moby to the game's record builder when the cull's distance box
+ * (moby_game.cull_box_threshold with the live drawn byte, over the
+ * quarter-world camera delta and the view-space Z) rejected it, it stands in
+ * front of the camera plane, and the occlusion cull does not reject it. A
+ * degenerate box (threshold <= 0) is a dormant slot and is skipped.
+ * @param cpu The guest CPU state, read only.
+ * @param m The Moby address.
+ * @param kind The model kind whose queue the record joins.
+ * @param c Tallies the moby's verdict. */
 static void moby_reveal_extended(CPUState* cpu, uint32_t m, moby_reveal_kind_t kind,
                                  moby_reveal_census_t* c) {
     /* The cull's own threshold, read with the moby's live verdict byte:
@@ -3210,7 +3292,9 @@ static int moby_fog_band_ir0(int zsf4) {
     return v < 0 ? 0 : (v > 4092 ? 4092 : v);
 }
 
-/* The fogged-CLUT rows a fractional fog-band present samples. The draw biases
+/** @brief Set the fogged-CLUT row and second-row mix a fractional fog-band present samples.
+ *
+ * The draw biases
  * a textured face's CLUT row by IR0 >> 9 (.s @8001FE04-FE08), so the texel side
  * of the fade steps once per 512 IR0 while the vertex side (dpcs_ch_f) moves
  * continuously. The present blends the rows of its two canonical ends instead:
@@ -3221,7 +3305,11 @@ static int moby_fog_band_ir0(int zsf4) {
  * face's CLUT y) and the other rides the vertex alpha byte as
  * ((other - base + 7) << 4) | round(30 w), w = min(t, 1 - t) in 0..0.5; the
  * scene fragment stages decode it (psx_scene.frag). Both canonical ends read
- * one row: t 0 is the tick's own row and t 1 the previous tick's. */
+ * one row: t 0 is the tick's own row and t 1 the previous tick's. When both
+ * ends select the same row, or the previous tick has no snapshot entry with
+ * a full-precision centre, the tick's row stands alone.
+ * @param R The record.
+ * @param fd The record's fade: ir0f in, row and tmix out. */
 static void moby_texel_fog_mix(const rec_meta* R, moby_fade_t* fd) {
     const int ir0c = moby_fog_band_ir0(R->zsf4);
     const fade_ent* p = fade_snap_find(s_fade_prev, s_fade_prev_n, R->moby);
@@ -3237,14 +3325,15 @@ static void moby_texel_fog_mix(const rec_meta* R, moby_fade_t* fd) {
     if (wq > 0) fd->tmix = (uint8_t)(((other - base + 7) << 4) | wq);
 }
 
-/* The record's per-vertex colour base and colour fade for this present, by its
- * LOD tier (ladder documented at moby_tier_faceblock; the tier is always the
- * tick's zsf4). NEAR (ZSF4 >= 1024): model colours (hdr+0x18) raw. FOG band
+/** @brief The record's per-vertex colour base and colour fade for this present, by its LOD tier.
+ *
+ * The ladder is documented at moby_tier_faceblock; the tier is always the
+ * tick's zsf4. Near (ZSF4 >= 1024): model colours (hdr+0x18) raw. Fog band
  * (0 < ZSF4 < 1024): model colours DPCS-faded toward the per-vertex far palette,
- * IR0 = (1024 - ZSF4) * 4 (.s @8001FDD0-8001FE54). LP/FAR band (ZSF4 <= 0): the
- * far palette (hdr+0x20) itself — the .s walks it with the LP faces; under
- * --no-lod the faces flip to HP but the palette stays, so mirror both —
- * DPCS-faded toward the ONE cyclorama fog colour once ZSF4 < -2048 while
+ * IR0 = (1024 - ZSF4) * 4 (.s @8001FDD0-8001FE54). LP/far band (ZSF4 <= 0): the
+ * far palette (hdr+0x20) itself, which the .s walks with the LP faces; under
+ * --no-lod the faces become HP and the palette stays, as in the game,
+ * DPCS-faded toward the single cyclorama fog colour once ZSF4 < -2048 while
  * g_SkipLowPolyWorld > 0 (.L8001FEA0..FECC: IR0 = min(-(ZSF4+2048), 2047) << 1).
  *
  * A record carrying a fractional present ZSF4 (zf_on, zf != zsf4) takes the
@@ -3252,8 +3341,20 @@ static void moby_texel_fog_mix(const rec_meta* R, moby_fade_t* fd) {
  * the HP table fades toward the far palette by (1024 - zf) * 4 clamped to
  * 0..4092, the band's own range (ZSF4 1..1023; 4096 >> 9 would index a ninth
  * row past the 8-row fogged-CLUT ladder), the LP table toward the fog colour
- * by 2 * min(-(zf + 2048), 2047) floored at 0. Every other record runs the
- * integer path above unchanged. */
+ * by 2 * min(-(zf + 2048), 2047) floored at 0, the latter only while
+ * g_SkipLowPolyWorld (moby_game.skip_lowpoly) > 0. Every other record runs
+ * the integer path above unchanged.
+ * @param cpu The guest CPU state, read only.
+ * @param R The record.
+ * @param farbase Receives the far palette the HP colours fade toward, 0 for
+ *        none.
+ * @param fogfc Storage for the 12-bit fog colour of the LP band's fade.
+ * @param fcc Receives fogfc when the LP band fades toward the fog colour,
+ *        else NULL.
+ * @param fd Receives the fade.
+ * @return The colour table: the HP model colours (hdr+0x18) for ZSF4 > 0,
+ *         else the far palette (hdr+0x20); 0 when the header is not an
+ *         address. */
 static uint32_t moby_record_fade(CPUState* cpu, const rec_meta* R, uint32_t* farbase,
                                  int fogfc[3], const int** fcc, moby_fade_t* fd) {
     const int frac = R->zf_on && R->zf != (double)R->zsf4;
@@ -3612,15 +3713,20 @@ static const fcache_t* moby_faces_for_record(CPUState* cpu, const rec_meta* R) {
     return moby_faces_for(cpu, R->addr, R->model_held, R->faceblock,
                           R->header, R->frameA, R->zsf4);
 }
-/* The model whose own table resolves the patch list of a keyframe no cull
- * record names. Where the record holds the keyframe as its stream word
+/** @brief The model whose own table resolves the patch list of a keyframe no cull record names.
+ *
+ * Where the record holds the keyframe as its stream word
  * (rec_frame_is_word) the list pointer is the cull's per-record store at
  * record +0x14, which exists for the keyframe this tick drew only; the
  * previous tick's keyframe resolves through the table that store was read
  * from (Model+0x34, mobydraw.s:563-569). Where the record holds a pointer
  * into the frame array the list sits inside the keyframe and no model is
- * needed: 0. Returns 0 on a word-form game when the moby has no animated
- * model, which the caller reads as no previous list. */
+ * needed: 0.
+ * @param cpu The guest CPU state, read only.
+ * @param R The record.
+ * @return The model; 0 on a pointer-form game, and 0 on a word-form game
+ *         when the record names no moby or the moby's class has no model,
+ *         which the caller reads as no previous list. */
 static uint32_t moby_prev_patch_model(CPUState* cpu, const rec_meta* R) {
     if (!game_layout.moby.rec_frame_is_word || R->moby < 0x80000000u) return 0u;
     uint32_t cls   = cpu->read_half(R->moby + game_layout.moby.class_off);
@@ -5583,8 +5689,10 @@ static void isect_select_census(void) {
             openpete_frame, s_cur_mat, n, st.px, st.disc, st.ideal, st.missed);
 }
 
-/* OPENPETE_MOBY_RANK_CAL=1 (instrument): the native rank against the game's
- * own ordering table (moby_rank_cal.c). */
+/** @brief Compare this feed's native rank against the game's own ordering table (OPENPETE_MOBY_RANK_CAL=1).
+ *
+ * An instrument: hands the walk's triangles, contest flags, ranks, paint keys
+ * and intersection pairs to moby_rank_cal_run (moby_rank_cal.c). */
 static void moby_rank_calibrate(void) {
     static uint8_t elig[MAX_NTRI];
     for (int i = 0; i < s_gout.n; i++) elig[i] = (uint8_t)isect_eligible(i);
@@ -5599,9 +5707,14 @@ static void rank_stage_time(int slot, uint64_t t0, uint64_t c0) {
     if (c0) s_rt_cpu_us[slot] += (double)(rt_cpu_ns() - c0) / 1000.0;
 }
 
-/* The contest flags and native ranks of this feed: computed on a canonical
- * feed (and stored for the sub-tick carry), read back from the carry on an
- * intermediate present. */
+/** @brief Produce the contest flags and native ranks of this feed.
+ *
+ * A canonical feed computes them (intersection census, then the rank build)
+ * and stores them for the sub-tick carry; an intermediate present reads them
+ * back from the carry while the carry is on and computes them otherwise.
+ * Inert unless the native rank or the intersection log is on. Also emits the
+ * rank-time, rank-carry and select census lines and runs the calibration
+ * instrument when each is enabled. */
 static void moby_rank_prepare(void) {
     if (!openpete_mobyrank_on() && !isect_log_on()) return;
     int carry = s_in_reextract && rank_carry_on();
@@ -5665,8 +5778,12 @@ static void moby_tri_debug(void) {
     }
 }
 
-/* A walk triangle's vertex alpha byte: 0xFF, or on a textured face the
- * second fogged-CLUT row and its weight (openpete_scene_vert.rgba). */
+/** @brief A walk triangle's vertex alpha byte, in bits 24-31.
+ *
+ * 0xFF, or on a textured face carrying a second fogged-CLUT row, that row and
+ * its weight (ntri_t.tmix, decoded from openpete_scene_vert.rgba).
+ * @param w The walk triangle.
+ * @return The alpha byte shifted to bits 24-31. */
 static uint32_t moby_tri_alpha(const ntri_t* w) {
     return (w->textured && w->tmix) ? ((uint32_t)w->tmix << 24) : 0xFF000000u;
 }
@@ -6159,17 +6276,18 @@ static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat)
     }
 }
 
-/* OPENPETE_MOBY_REVEALDBG: size the widescreen moby-reveal problem (the live-moby
- * task's mandated first step). Walks g_LevelMobys, replicates the .s moby cone
- * cull (spyro-moby-update-vs-render.md §3.3) at 4:3 AND at the active widescreen
- * factor, and classifies each moby the wide cone reveals (in the wide cone, NOT
- * the 4:3 cone) as LIVE (on the Spyro-anchored update list → animating, current
- * pose) or FROZEN (not updating → stale pose). The update gate is camera-angle-
- * INDEPENDENT (Spyro-anchored m_UpdateDistance xy-disk + always/never sentinels +
- * the m_WasDrawn grace), so a revealed moby being LIVE means we can draw it at its
- * current gameplay pose with no synthesis (the easy path); FROZEN means it needs
- * display-only animation (the deferred path). The live/frozen ratio sizes the
- * split. Read-only; prints once at the target frame. */
+/** @brief Census of the mobys a wider view reveals, split by whether gameplay updates them (OPENPETE_MOBY_REVEALDBG).
+ *
+ * Walks the moby array, repeats the cull's behind-camera and render-distance
+ * tests and its lateral cone test (r_moby.s 0x80022C04) at 4:3 and at the
+ * view's widening F/s, and classifies each moby inside the wide cone and
+ * outside the 4:3 one as live or frozen. Live is the update list's own gate,
+ * which does not depend on the camera angle: m_WasDrawn set, an
+ * always-update m_UpdateDistance sentinel (>= 0x80), or the player within
+ * m_UpdateDistance * 1024 on the XY plane. A live revealed moby holds its
+ * current gameplay pose; a frozen one holds a stale pose. Reads gamestate
+ * only; prints one line, once, at the first call at or after VBL 1850.
+ * @param cpu The guest CPU state, read only. */
 static void moby_reveal_dbg(CPUState* cpu) {
     static int s_on = -1;
     if (s_on < 0) { const char* e = getenv("OPENPETE_MOBY_REVEALDBG"); s_on = (e && *e && *e != '0'); }
@@ -6492,9 +6610,13 @@ static int moby_hold_expired(const openpete_interp_obj_t* o) {
     return s_rot_now - o->curr_ns >= g_openpete_tick_period_ns;
 }
 
-/* A pair's alpha at this present on the per-object clock: the present clock
- * past the current stamp over the pair's distinct interval, clamped to
- * [0, 1]. The caller has checked curr_ns > prev_ns. */
+/** @brief A pair's alpha at this present on the per-object clock.
+ *
+ * The present clock (s_rot_now) past the current stamp over the pair's
+ * distinct interval, clamped to [0, 1]. The caller has checked
+ * curr_ns > prev_ns.
+ * @param o The interp object.
+ * @return The alpha. */
 static double moby_pair_alpha(const openpete_interp_obj_t* o) {
     double t = (double)(s_rot_now - o->curr_ns) / (double)(o->curr_ns - o->prev_ns);
     return t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
@@ -7640,7 +7762,10 @@ static void moby_native_set_actor_front(CPUState* cpu) {
     openpete_native_scene_set_actor_front(s_en && moby_cutscene_owns_draw(cpu));
 }
 
-/* The shaded pass's own entry, not the hooked address. */
+/** @brief Run the game's shaded moby draw from its own entry (game_layout.moby.hook_draw_shaded), not the hooked address.
+ *
+ * @param cpu The guest CPU state.
+ * @param addr The hooked address, unused. */
 static void moby_run_draw_shaded(CPUState* cpu, uint32_t addr) {
     (void)addr;
     moby_run_draw(cpu, game_layout.moby.hook_draw_shaded);
@@ -8357,82 +8482,18 @@ static int hold_project_origin(CPUState* cpu, const double tr[3], double* sx, do
     return 1;
 }
 
-/* Sub-tick re-extract (high-FPS spine): render the moby scene re-derived from
- * gamestate through the (interpolated) g_Camera the orchestrator wrote, so
- * mobys move COHERENTLY with the interpolated terrain (no swimming) instead of
- * snapping to the baked tick-N records.
+/** @brief The object's prev/curr snapshot pair, with the present's phase past the curr stamp.
  *
- * Render set = the moby addresses the .s REGULAR cull recorded this tick (its
- * frustum/LOD verdict, reused as-is — no re-cull, no m_WasDrawn write); each is
- * REBUILT host-side via build_moby_record_fields (M/TR re-derived from
- * g_Camera, validated bit-exact vs the .s records by OPENPETE_MOBY_BUILDDBG)
- * and re-projected. The SHADED path (build_shaded_walk_tris → project_all_shaded)
- * already reads g_Camera, so it interpolates for free. Per-moby own-motion
- * (position/anim) lerp from the snapshot table is a later add (step 3b); for
- * now each moby holds its tick-N world pose but projects through the
- * interpolated camera — coherent with the rest of the scene. Extract-only. */
-/* One record-queue pass: read the cull records at the per-pass base, rebuild +
- * re-project each moby through the interpolated camera, walk + push. mat="REG"
- * snapshots s_reg_moby (no dedup); mat="SP" makes build_walk_tris dedup vs
- * s_reg_moby (so only specular-ONLY mobys feed). Returns the record count. */
-/* Re-base one replayed cull record from the camera the tick composed it
- * against onto the camera this present stages.
- *
- * A cull that stores view-space records hands the replay a matrix M = Rt*Rm,
- * the camera rotation times the moby's own (mobydraw.s:355-359), and a
- * translation TR = S*(Rt*d)/4096, where d is the camera-relative moby position
- * in quarter-world units in the GTE's axis order — ((camY-mobyY)/4,
- * (camZ-mobyZ)/4, (mobyX-camX)/4), mobydraw.s:79-94, transformed and left in
- * the GTE translation at mobydraw.s:125-130,189 — and S is the per-moby size
- * rescale the cull folds in before it stores that translation
- * (mobydraw.s:450,485,537,546-550,572). Replayed as stored, the record is
- * fixed in screen space for the whole tick: every other feeder re-reads the
- * staged camera, so the moby holds still while the world moves under it and
- * steps a full tick at each boundary.
- *
- * The record also carries the moby's own world position at the tick, so a moby
- * that moves through the world steps once per tick even after the camera term
- * below turns it onto the staged camera.
- *
- * With Rp, pp the staged camera and Rt, pt the tick one, and N = Rp*Rt^-1,
- *
- *     M'  = N*M
- *     TR' = N*TR + S*(Rp*e)/4096
- *
- * where e is (pp - pt) minus the moby's own displacement over the same
- * interval, both in d's units and axis order. The inverse is explicit
- * and in double: this matrix carries the projection's aspect and FOV scaling,
- * so it is not orthonormal and its transpose is not its inverse. S is read
- * back from the record's own inputs — the animation header's scale byte is the
- * shift the cull applied, and the record's low byte its GPF factor only on a
- * game whose cull left the translation unscaled — because only the
- * camera-motion term needs it; the N*TR term carries S already.
- *
- * A present whose staged camera words equal the tick's (the canonical present,
- * or alpha 1) returns with the record untouched, so that leg stays bit-exact.
- * Host-side only: the staged camera is a sub-tick view copy and no guest word
- * is written. */
-/* The moby's own world-position offset between the pose the record encodes and
- * the pose this present displays, in world units.
- *
- * The cull composed the record from the moby's position at the tick, which is
- * the snapshot table's curr; the present displays lerp(prev, curr, t), so the
- * offset is (prev - curr)*(1 - t). t is the present's phase past the curr
- * stamp over the roll interval, capped at one tick, so a pair whose two
- * distinct states are further apart sweeps the whole delta over the tick and
- * still lands exactly on curr at t = 1. Returns 0 (and leaves out[] untouched)
- * when the object has no usable pair, when its slot changed class between the
- * two states, or when the pair is stale — a multi-tick gap is a
- * discontinuity, not motion, and snapping keeps the record's own pose.
- * Returns 1 with a zero out[] for a moby that is static in the world, which is
- * what keeps such a record bit-identical. */
-/* The object's prev/curr snapshot pair, with *t set to the present's phase
- * past the curr stamp over the roll interval, capped at one tick so a pair
- * whose two distinct states are further apart sweeps the whole delta over the
- * tick and still lands exactly on curr at t = 1. Returns NULL when no term
- * built on the pair may be applied: no pair, a slot that changed class between
- * the two states, or a stale pair, where a multi-tick gap is a discontinuity
- * rather than motion and the record's own pose is what to keep. */
+ * The phase is the present clock past the curr stamp over the roll interval,
+ * capped at one tick so a pair whose two distinct states are further apart
+ * sweeps the whole delta over the tick and still lands exactly on curr at
+ * t = 1, and clamped to [0, 1].
+ * @param moby The Moby address.
+ * @param t Receives the phase when a pair is returned.
+ * @return The interp object, or NULL when no term built on the pair may be
+ *         applied: no pair, a slot that changed class between the two states,
+ *         or a stale pair, where a multi-tick gap is a discontinuity rather
+ *         than motion and the record's own pose is what to keep. */
 static const openpete_interp_obj_t* moby_record_pair(uint32_t moby, double* t) {
     const openpete_interp_obj_t* o = openpete_interp_objs_find(moby_interp_key(moby));
     if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return NULL;
@@ -8496,8 +8557,9 @@ static void moby_centre_census(const char* pass) {
     memset(&s_ctr_census, 0, sizeof s_ctr_census);
 }
 
-/* The translation a rec_tr_final cull stores, at full precision. The cull
- * takes the centre on the quarter-world grid (build_moby_record_tr's
+/** @brief The translation a rec_tr_final cull stores, at full precision.
+ *
+ * The cull takes the centre on the quarter-world grid (build_moby_record_tr's
  * derivation, truncated), shifts it left 2 and right by the animation
  * header's +2 low byte, and, when the moby's size byte (+0x4F) is nonzero,
  * runs it through GPF with IR0 = that byte and shifts right 5 (Spyro 3
@@ -8513,7 +8575,14 @@ static void moby_centre_census(const char* pass) {
  *
  * GPF reads the shifted centre from IR1-3, which the mtc2 truncates to
  * int16: a sized centre past that range is stored wrapped, which no float
- * form reproduces, so those records keep their own translation (returns 0). */
+ * form reproduces, so those records keep their own translation.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @param header The record's AnimationHeader, for the shift.
+ * @param tr Receives the translation when one is returned.
+ * @return 1 when tr was written; 0 on a game whose cull does not store the
+ *         final translation, when moby or header is not an address, or for a
+ *         wrapped sized centre. */
 static int moby_record_centre_final(CPUState* cpu, uint32_t moby, uint32_t header, double tr[3]) {
     if (!game_layout.moby.rec_tr_final || moby < 0x80000000u || header < 0x80000000u) return 0;
     int sh = (int)(cpu->read_byte(header + game_layout.moby.anim_scale_off) & 0xFFu);
@@ -8541,6 +8610,49 @@ static int moby_record_centre_final(CPUState* cpu, uint32_t moby, uint32_t heade
     return 1;
 }
 
+/** @brief Re-base one replayed cull record from the camera the tick composed it against onto the camera this present stages.
+ *
+ * A cull that stores view-space records hands the replay a matrix M = Rt*Rm,
+ * the camera rotation times the moby's own (mobydraw.s:355-359), and a
+ * translation TR = S*(Rt*d)/4096, where d is the camera-relative moby position
+ * in quarter-world units in the GTE's axis order — ((camY-mobyY)/4,
+ * (camZ-mobyZ)/4, (mobyX-camX)/4), mobydraw.s:79-94, transformed and left in
+ * the GTE translation at mobydraw.s:125-130,189 — and S is the per-moby size
+ * rescale the cull folds in before it stores that translation
+ * (mobydraw.s:450,485,537,546-550,572). Replayed as stored, the record is
+ * fixed in screen space for the whole tick: every other feeder re-reads the
+ * staged camera, so the moby holds still while the world moves under it and
+ * steps a full tick at each boundary.
+ *
+ * The record also carries the moby's own world position at the tick, so a moby
+ * that moves through the world steps once per tick even after the camera term
+ * below turns it onto the staged camera.
+ *
+ * With Rp, pp the staged camera and Rt, pt the tick one, and N = Rp*Rt^-1,
+ *
+ *     M'  = N*M
+ *     TR' = N*TR + S*(Rp*e)/4096
+ *
+ * where e is (pp - pt) minus the moby's own displacement over the same
+ * interval, both in d's units and axis order. The inverse is explicit
+ * and in double: this matrix carries the projection's aspect and FOV scaling,
+ * so it is not orthonormal and its transpose is not its inverse. S is read
+ * back from the record's own inputs (the animation header's scale byte is the
+ * shift the cull applied; the record's low byte is its GPF factor only on a
+ * game whose cull left the translation unscaled; on a game whose cull stored
+ * the final translation the moby's nonzero size byte over 32 is its rescale)
+ * because only the camera-motion term needs it; the N*TR term carries S
+ * already.
+ *
+ * A present whose staged camera words equal the tick's (the canonical present,
+ * or alpha 1) for a moby with no own-motion offset returns with the record
+ * untouched, so that leg stays bit-exact; so does a present with no tick
+ * camera installed, a record whose header is not an address, or a singular
+ * tick matrix. Host-side only: the staged camera is a sub-tick view copy and
+ * no guest word is written.
+ * @param cpu The guest CPU state, read only.
+ * @param f The record's fields, rebased in place.
+ * @param moby The Moby address, for its own-motion offset and size byte. */
 static void record_rebase_to_present(CPUState* cpu, moby_fields* f, uint32_t moby) {
     if (!s_tickcam_have || f->header < 0x80000000u) return;
 
@@ -8683,8 +8795,10 @@ static int record_rotation_to_present(CPUState* cpu, moby_fields* f, uint32_t mo
     return REC_ROT_SWAPPED;
 }
 
-/* OPENPETE_MOBY_CENSUS: one line per record-replay pass that replayed a
- * record, with the bins of record_rotation_to_present. */
+/** @brief OPENPETE_MOBY_CENSUS: log one line per record-replay pass that replayed a record, with the bins of record_rotation_to_present.
+ *
+ * @param pass The pass name.
+ * @param bins The rotation outcome counts, indexed by REC_ROT_*. */
 static void moby_rot_census(const char* pass, const long bins[REC_ROT_N]) {
     static int s = -1;
     if (s < 0) { const char* e = getenv("OPENPETE_MOBY_CENSUS"); s = (e && *e && *e != '0'); }

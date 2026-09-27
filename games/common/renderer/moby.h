@@ -34,12 +34,15 @@ struct CPUState;
  * @param on 1 to open a sub-tick present's feeder pass, 0 to close it */
 void moby_native_set_rot_interp(int on);
 
-/* The interpolation alpha of the present being re-extracted and whether the
- * camera bracket ran: alpha 0 shows the previous canonical tick, 1 the latest;
- * an unbracketed present shows the latest and reads as alpha 1. The sub-tick
- * carry of the same-moby paint verdict applies the previous tick's verdict
- * below 0.5 and the latest tick's from 0.5. Set by the orchestrator before
- * moby_reextract and reset to (1, 1) after. */
+/** @brief Set the interpolation alpha of the present being re-extracted and whether the camera bracket ran.
+ *
+ * Alpha 0 shows the previous canonical tick, 1 the latest; an unbracketed
+ * present shows the latest and reads as alpha 1. The sub-tick carry of the
+ * same-moby paint verdict applies the previous tick's verdict below 0.5 and
+ * the latest tick's from 0.5. Set by the orchestrator before moby_reextract
+ * and reset to (1, 1) after.
+ * @param alpha The present's interpolation alpha.
+ * @param bracketed 1 when the camera bracket ran, else 0. */
 void moby_native_set_verdict_alpha(double alpha, int bracketed);
 
 /** @brief Install the camera the cull composed this tick's records against, or clear it with NULL.
@@ -57,22 +60,27 @@ void moby_native_set_verdict_alpha(double alpha, int bracketed);
  * @param pos The camera position, or NULL. */
 void moby_native_set_tick_camera(const int16_t mat[9], const int32_t pos[3]);
 
-/* The installed tick camera position, for a cull whose records bake the camera
- * position into a stored per-record delta: the delta is re-based onto the
- * staged camera by the difference between the staged position and this one.
- * Returns 0 and leaves out[] untouched when no tick camera is installed, which
- * is every canonical inline render. */
+/** @brief The installed tick camera position, for a cull whose records bake the camera position into a stored per-record delta.
+ *
+ * The delta is re-based onto the staged camera by the difference between the
+ * staged position and this one.
+ * @param out Receives the three camera position words when a tick camera is
+ *        installed; untouched otherwise.
+ * @return 1 when a tick camera is installed; 0 otherwise, which is every
+ *         canonical inline render. */
 int moby_native_tick_camera_pos(int32_t out[3]);
 
-/* The horizontal widening of the pass view against the game's own 4:3 frame:
- * Hor+ multiplies the frame's half-width by F, and a --fov scale s divides
+/** @brief The horizontal widening of the pass view against the game's own 4:3 frame.
+ *
+ * The value is the view's F / s: Hor+ multiplies the frame's half-width by F, and a --fov scale s divides
  * the projection H by s, which widens it by the same ratio. 1.0 at 4:3 with
  * the game's FOV, so a test scaled by it is bit-identical there.
  *
  * A decode that repeats one of the draw's lateral cone tests scales that
  * test's slope by this, since the draw's slope is the 4:3 half-angle and the
  * frame on screen is wider. The vertical arm takes no factor: Hor+ keeps the
- * vertical FOV. Valid from the pass view's build at the pass entry. */
+ * vertical FOV. Valid from the pass view's build at the pass entry.
+ * @return The widening factor. */
 double moby_native_view_widen(void);
 
 /* ---- the present's own-motion terms, shared by both model kinds ---------
@@ -102,6 +110,15 @@ double moby_native_view_widen(void);
  * moby_record_euler_at_present fills *e with the moby's three euler axes at the
  * present's phase. Returns 0 and leaves *e untouched when the caller must use
  * the byte-exact table lookup instead. */
+/** @brief The moby's world-position offset at the present's phase t, (prev - curr) * (1 - t) in world units.
+ *
+ * Its axis order is the moby's own position words; a caller in another
+ * convention maps the components itself.
+ * @param moby The Moby address.
+ * @param out Receives the offset; zeroed when there is no usable pair.
+ * @return 0 when there is no usable prev/curr pair, including a stale one,
+ *         where a multi-tick gap is a discontinuity rather than motion; 1
+ *         otherwise, with a zero out[] for a moby static in the world. */
 int moby_record_world_offset(uint32_t moby, double out[3]);
 int moby_record_halfword_offset(uint32_t moby, uint32_t off, double* out);
 int moby_record_euler_at_present(struct CPUState* cpu, uint32_t moby,
@@ -130,15 +147,25 @@ void moby_native_set_occl_pan(float px_per_tick);
  * @return The entry count. */
 int moby_native_canon_drawn_mobys(const uint32_t** out);
 
-/* Sub-tick re-extract entry: rebuild this present's moby contribution from
- * the captured cull records and the interpolated camera. */
+/** @brief Sub-tick re-extract entry: rebuild this present's moby contribution from the captured cull records and the interpolated camera.
+ *
+ * Inert while the native scene is off or the canonical present did not draw
+ * the moby render path. Each material pass (regular, specular, second model
+ * kind, shaded) replays only when its own producer ran in the committed
+ * canonical epoch, so a state that ran a subset of the draws replays that
+ * subset. The paint key is not computed while the rank carry applies the
+ * tick's verdict.
+ * @param cpu The guest CPU state. */
 void moby_reextract(struct CPUState* cpu);
-/* Whether the second model kind has a queue this present may replay: the game
- * provides the kind, the canonical present ran its draw, and that draw's epoch
- * is the committed one. The queue is a host copy rather than a staged view of
+/** @brief Whether the second model kind has a queue this present may replay.
+ *
+ * True when the game provides the kind's replay (moby_game.simple_replay),
+ * the canonical present ran its draw, and that draw's epoch is the committed
+ * one. The queue is a host copy rather than a staged view of
  * the tick's draw scratch, so it replays independently of the animated queue's
  * staging: a state whose tick ran one of the two draws replays that one, and a
- * state that ran neither still replays nothing. */
+ * state that ran neither still replays nothing.
+ * @return 1 when the queue may replay, else 0. */
 int moby_native_simple_fresh(void);
 
 /* ---- second model kind ------------------------------------------------
@@ -151,50 +178,100 @@ int moby_native_simple_fresh(void);
  * tagging and the scene push stay with the shared walk, so the second kind
  * lands in the same scene category and the same depth space as the animated
  * one. Valid only from inside simple_pass. */
+/** @brief Name the moby the following second-kind triangles belong to.
+ *
+ * Sets the current record's moby, class, HUD tag (static or UI address
+ * range) and cutscene-actor front flag, and clears the screen-space origin
+ * and the per-face emit keys.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address, or 0. */
 void moby_simple_record(struct CPUState* cpu, uint32_t moby);
-/* A record whose model the game places in screen space rather than in the
- * world: the projection origin, in PSX pixels, that the following triangles of
- * this record project through, in place of the view's own. The record is
- * tagged HUD3D by the call. Called after moby_simple_record, which clears it,
- * so a world-placed record projects exactly as it did. */
+/** @brief Set the projection origin of a record whose model the game places in screen space rather than in the world.
+ *
+ * The following triangles of this record project through this origin, in PSX
+ * pixels, under the canonical view, which keeps the game's projection
+ * distance, in place of the view's own origin. The record is tagged HUD3D by
+ * the call. Called after moby_simple_record, which clears it, so a
+ * world-placed record projects through its view's origin.
+ * @param ofx The origin X, PSX pixels.
+ * @param ofy The origin Y, PSX pixels. */
 void moby_simple_screen_origin(double ofx, double ofy);
-/* The screen position of one view-space point under the pass's view, so a
- * provider can run its own winding test on the same coordinates the emit
- * projects with. */
+/** @brief The screen position of one view-space point under the current record's view.
+ *
+ * A provider runs its own winding test on the same coordinates the emit
+ * projects with: the raw float projection with the GTE near-plane mirror.
+ * @param p The view-space point, full world units.
+ * @param sx Receives the screen X.
+ * @param sy Receives the screen Y. */
 void moby_simple_project(const double p[3], float* sx, float* sy);
-/* `otk` is the triangle's bucket word in the record's paint order
- * (moby_rank.h: the face's moby_otk_face_bucket, MOBY_OTK_Q2 set on the
- * second triangle of one prim), -1 for none; `iv` the draw's integer RTPS of
- * the three vertices (moby_simple_otk_vertex), or NULL. */
+/** @brief Project and emit one second-kind triangle given in view space, full world units.
+ *
+ * Each vertex takes the raw float projection and the GTE near-plane mirror
+ * under the current record's view, then the triangle goes through the shared
+ * emit with the animated walk's tagging.
+ * @param p The three view-space vertices.
+ * @param rgb The three vertex colours.
+ * @param u The three texel U coordinates.
+ * @param v The three texel V coordinates.
+ * @param textured 1 when the triangle is textured.
+ * @param tpage_x The texture page X, VRAM pixels.
+ * @param tpage_y The texture page Y, VRAM pixels.
+ * @param clut_x The CLUT X, VRAM pixels.
+ * @param clut_y The CLUT Y, VRAM pixels.
+ * @param bpp The texture depth.
+ * @param blend 0 = opaque, else the blend id moby_abr_blend maps.
+ * @param fkey The face identity key.
+ * @param otk The triangle's bucket word in the record's paint order
+ *        (moby_rank.h: the face's moby_otk_face_bucket, MOBY_OTK_Q2 set on the
+ *        second triangle of one prim), -1 for none.
+ * @param iv The draw's integer RTPS of the three vertices
+ *        (moby_simple_otk_vertex), or NULL. */
 void moby_simple_tri(const double p[3][3], const uint32_t rgb[3],
                      const int u[3], const int v[3],
                      int textured, int tpage_x, int tpage_y,
                      int clut_x, int clut_y, int bpp, int blend,
                      uint32_t fkey, int32_t otk, const moby_otk_vert_t* const iv[3]);
-/* The paint key of the current record under `row`, with the TRZ the draw
- * loaded: row MOBY_OTK_NONE while the rank is off or the present carries the
- * tick's verdict. */
+/** @brief The paint key of the current record under a row, with the TRZ the draw loaded.
+ *
+ * The row becomes MOBY_OTK_NONE while the rank is off or the present carries
+ * the tick's verdict.
+ * @param row The record's row.
+ * @param trz The GTE TRZ the draw loaded.
+ * @param out Receives the paint key. */
 void moby_simple_otk_record(moby_otk_row_t row, int trz, moby_otk_rec_t* out);
-/* One model-space vertex's integer RTPS under rotation R and translation tr,
- * through the current record's view; nothing when `r` carries no key. */
+/** @brief One model-space vertex's integer RTPS under rotation R and translation tr, through the current record's view.
+ *
+ * Nothing is written when r carries no key. The projection distance is the
+ * view's canonical H.
+ * @param r The record's paint key.
+ * @param tr The integer translation.
+ * @param R The rotation, 4096 = 1.0.
+ * @param vx The model-space vertex X.
+ * @param vy The model-space vertex Y.
+ * @param vz The model-space vertex Z.
+ * @param out Receives SZ3 and SXY2. */
 void moby_simple_otk_vertex(const moby_otk_rec_t* r, const int tr[3], const int R[3][3],
                             double vx, double vy, double vz, moby_otk_vert_t* out);
 
-/* ---- extended-LOD reveal for a game with its own record encoding -------
- * Walks the moby array and offers every moby the canonical cull's distance
- * box rejected to moby_game.reveal_record, which appends a record for it in
- * the game's own encoding. The admission the walk applies before offering a
- * moby is the cull's own, widened only where extended LOD says so: the array
- * sentinel and dead states, the run-once classification, the cull's distance
- * box through moby_game.cull_box_threshold (which the extended-LOD clause
- * lifts), the camera plane, the view window and the occlusion test. A moby
- * the canonical box still admits is left to the cull, which either queued it
- * or rejected it for a reason the box does not express.
+/** @brief Offer the mobys the canonical cull rejected to moby_game.reveal_record, which appends records in the game's own encoding.
  *
- * Returns the number of records appended. Reads gamestate only. Call from
- * inside the pass whose queue the game appends to, once per model kind, after
- * that pass has captured the cull's own records and before it decodes them.
- * Inert unless extended LOD is on and the game supplies both slots. */
+ * Walks the moby array, skipping the sentinel, dead states and run-once
+ * instances, and applies two clauses. The widened-view clause (animated kind,
+ * moby_game.cull_view_admits supplied, view widening above 1) offers a moby
+ * the cull left undrawn that the cull's admission admits with the lateral
+ * slope scaled to the view. The extended-LOD clause (--no-lod) offers a moby
+ * outside the cull's distance box (moby_game.cull_box_threshold) that stands
+ * in front of the camera plane. Both clauses skip a moby the occlusion test
+ * culls. A moby the canonical box still admits is left to the cull, which
+ * either queued it or rejected it for a reason the box does not express.
+ *
+ * Reads gamestate only. Call from inside the pass whose queue the game
+ * appends to, once per model kind, after that pass has captured the cull's
+ * own records and before it decodes them. Inert unless the game supplies
+ * cull_box_threshold and reveal_record and one of the two clauses applies.
+ * @param cpu The guest CPU state, read only.
+ * @param kind The model kind whose queue the records join.
+ * @return The number of records appended. */
 int moby_reveal_candidates(struct CPUState* cpu, moby_reveal_kind_t kind);
 
 /* ---- decode pieces shared with the player feeder -----------------------
