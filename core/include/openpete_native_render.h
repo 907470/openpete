@@ -1260,6 +1260,7 @@ void openpete_native_scene_add_tri(const openpete_scene_tri *tri, int category, 
  * colours, so the renderer stencil-isolates portals per group. The group is
  * an argument, not ambient state, like the category and carry. The stored
  * tri also takes the sticky tag, fog delta, seq, prim and STP selection.
+ * A blend class outside 0..4 is stored as 0 (opaque).
  * @param tri Triangle to copy; NULL is ignored.
  * @param category Scene layer (OPENPETE_SCENE_*); ignored for blended tris.
  * @param carry 1 marks 2D UI the sub-tick re-extract cannot re-derive, so

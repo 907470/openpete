@@ -43,46 +43,15 @@
 #include "renderer/reextract.h"   /* sub-tick re-extract entry */
 #include "renderer/native_gte.h"    /* shared GTE float-mirror math */
 #include "spyro1_symbols.gen.h"
+#include "renderer/tracer_snapshot.h"
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE — fiber-hook cost split */
 
 extern void     func_800189F0(CPUState* cpu);   /* the real tracer/beam renderer */
 extern unsigned openpete_frame;
 
 
-#define MAX_SETS 16
-#define MAX_PTS  72
-
-typedef struct { int x, y, z, f; } tpoint;
-typedef struct { int count; tpoint pt[MAX_PTS]; } tset;
-static tset s_sets[MAX_SETS];
-static int  s_nsets;                 /* sets captured at the last canonical frame */
-
-/** @brief Copies the tracer sets' points (world XYZ at +0/+4/+8, fade at +24) into s_sets before the game renderer drains them.
- *
- * Reads the set count at TRACER_COUNT and, per set, the point count and
- * points base from TRACER_CNTTAB and TRACER_BASETAB. Sets with no points or
- * a base outside KSEG0 are skipped; at most MAX_SETS sets of MAX_PTS points
- * are kept.
- * @param cpu The guest CPU state. */
-static void tracer_snapshot(CPUState* cpu) {
-    s_nsets = 0;
-    uint32_t nsets = cpu->read_word(TRACER_COUNT);
-    for (uint32_t s = 0; s < nsets && s_nsets < MAX_SETS; s++) {
-        int count = (int)cpu->read_word(TRACER_CNTTAB + s * 4u);
-        uint32_t base = cpu->read_word(TRACER_BASETAB + s * 4u);
-        if (count <= 0 || base < 0x80000000u) continue;
-        if (count > MAX_PTS) count = MAX_PTS;
-        tset* ts = &s_sets[s_nsets++];
-        ts->count = count;
-        for (int i = 0; i < count; i++) {
-            uint32_t p = base + (uint32_t)i * 28u;
-            ts->pt[i].x = (int)cpu->read_word(p + 0u);
-            ts->pt[i].y = (int)cpu->read_word(p + 4u);
-            ts->pt[i].z = (int)cpu->read_word(p + 8u);
-            ts->pt[i].f = (int)cpu->read_word(p + 24u);
-        }
-    }
-}
+static tracer_set_t s_sets[TRACER_MAX_SETS];
+static int s_nsets;                  /* sets captured at the last canonical frame */
 
 /** @brief Projects a world point to screen position and full-scale view-Z with func_80017B48's axes, in float.
  *
@@ -150,7 +119,7 @@ static void tracer_build_and_feed(CPUState* cpu) {
     openpete_native_scene_begin_frame(openpete_frame);
 
     for (int s = 0; s < s_nsets; s++) {
-        tset* ts = &s_sets[s];
+        tracer_set_t* ts = &s_sets[s];
         int    havePrev = 0, emitted = 0;
         double pc0x=0,pc0y=0,pc1x=0,pc1y=0,pvz=0; uint32_t pcol = 0;
         /* The .s ribbon loop runs s6 = 0..count-2 (block_80018A9C requires
@@ -221,7 +190,8 @@ static void tracer_run_draw(CPUState* cpu, uint32_t addr) { (void)addr; func_800
  * @param verify Unused. */
 static void tracer_pre(CPUState* cpu, int feed, int verify) {
     (void)verify;
-    if (feed) tracer_snapshot(cpu);
+    if (feed) s_nsets = tracer_snapshot_take(cpu, TRACER_COUNT, TRACER_CNTTAB, TRACER_BASETAB,
+                                             s_sets, TRACER_MAX_SETS);
 }
 
 /* The recorded polybuf range drives the OT-filter isolation AND the canon-drawn

@@ -313,7 +313,8 @@ void openpete_crash_test(void);
 /** @brief Read the game's EXE out of a disc image.
  *
  * Callers pass game_get_exe_filename(); the lookup is
- * openpete_psx_load_file_from_disc's.
+ * openpete_psx_load_file_from_disc's. A directory entry larger than 2 MiB
+ * plus the 2048-byte header is refused before any allocation.
  * @param cue_path Disc path, resolved by openpete_psx_resolve_disc_bin.
  * @param exe_filename iso9660 path of the EXE.
  * @param out_size Receives the byte count on success.
@@ -327,14 +328,15 @@ uint8_t* openpete_psx_load_exe_from_disc(const char* cue_path,
  *
  * The path is a root file ("SYSTEM.CNF") or one directory level deep
  * ("S0/S000000D.NSF", '/' or '\'), matching psxrecomp's ISOReader; name
- * matching is case-insensitive.
+ * matching is case-insensitive. A directory size above 0x7FFFFFFF bytes
+ * is refused before any allocation.
  * @param cue_path Disc path, resolved by openpete_psx_resolve_disc_bin.
  * @param filename iso9660 path of the file.
  * @param out_size Receives the byte count on success.
  * @return The bytes, freed by the caller with free(); NULL when an argument
- *         is NULL, the image is not found or opened, the file is absent, or
- *         the read is short, with the reason logged except on allocation
- *         failure. */
+ *         is NULL, the image is not found or opened, the file is absent or
+ *         too large, or the read is short, with the reason logged except on
+ *         allocation failure. */
 uint8_t* openpete_psx_load_file_from_disc(const char* cue_path,
                                           const char* filename,
                                           size_t* out_size);

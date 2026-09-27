@@ -341,3 +341,74 @@ target_include_directories(mod_vec_test PRIVATE
 set_target_properties(mod_vec_test PROPERTIES C_STANDARD 99)
 add_test(NAME mod_vec_test COMMAND mod_vec_test)
 set_tests_properties(mod_vec_test PROPERTIES LABELS "mods")
+
+# tracer_snapshot_test — the Spyro 1 tracer set copy clamps the guest set
+# count to the game's four-entry tables (fake bus, no game link).
+add_executable(tracer_snapshot_test
+    tracer_snapshot_test.c
+    ${CMAKE_SOURCE_DIR}/games/spyro-1/renderer/tracer_snapshot.c)
+target_include_directories(tracer_snapshot_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/games/spyro-1
+    ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include)
+set_target_properties(tracer_snapshot_test PROPERTIES C_STANDARD 11)
+add_test(NAME tracer_snapshot_test COMMAND tracer_snapshot_test)
+
+# boot_memfill_test — a crafted EXE header whose memfill range wraps in
+# 32 bits is skipped (boot.c + cpu.c with local stubs).
+add_executable(boot_memfill_test
+    boot_memfill_test.c
+    ${CMAKE_SOURCE_DIR}/core/psx/boot.c
+    ${CMAKE_SOURCE_DIR}/core/psx/cpu.c
+    ${CMAKE_SOURCE_DIR}/core/psx/psx_region.c)
+target_include_directories(boot_memfill_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include)
+set_target_properties(boot_memfill_test PROPERTIES C_STANDARD 11)
+add_test(NAME boot_memfill_test COMMAND boot_memfill_test)
+
+# exe_loader_cap_test — the disc EXE loader refuses a directory size over
+# 2 MiB + 2048 before allocating (crafted ISO9660 image, psxrecomp reader).
+add_executable(exe_loader_cap_test
+    exe_loader_cap_test.cpp
+    ${CMAKE_SOURCE_DIR}/core/psx/exe_loader.cpp
+    ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/src/iso_reader.cpp)
+target_include_directories(exe_loader_cap_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include)
+set_target_properties(exe_loader_cap_test PROPERTIES CXX_STANDARD 20)
+add_test(NAME exe_loader_cap_test COMMAND exe_loader_cap_test)
+
+# disc_cache_short_read_test — a chunk the disc cache loader reads short is
+# retried, re-read on use, and never served as stale heap bytes. The test TU
+# includes disc_cache.c with fread and malloc replaced.
+add_executable(disc_cache_short_read_test
+    disc_cache_short_read_test.c
+    ${CMAKE_SOURCE_DIR}/core/runtime/openpete_time.c)
+target_include_directories(disc_cache_short_read_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/third_party/PsyCross/include)
+target_link_libraries(disc_cache_short_read_test PRIVATE SDL3::SDL3-static)
+if(WIN32)
+    target_link_libraries(disc_cache_short_read_test PRIVATE winmm)
+endif()
+set_target_properties(disc_cache_short_read_test PROPERTIES C_STANDARD 11)
+add_test(NAME disc_cache_short_read_test COMMAND disc_cache_short_read_test)
+
+# sfx_smpl_walk_test — the WAV smpl chunk walk ends on a chunk that runs past
+# the file and refuses loop points outside int range. The test TU includes
+# sfx_pack.c with stubs for PsyCross, the mod registry and paths.
+add_executable(sfx_smpl_walk_test
+    sfx_smpl_walk_test.c
+    ${CMAKE_SOURCE_DIR}/core/host/sfx_ident.c
+    ${CMAKE_SOURCE_DIR}/core/mods/mod_vec.c
+    ${CMAKE_SOURCE_DIR}/core/diag/log.c)
+target_include_directories(sfx_smpl_walk_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/core/host
+    ${CMAKE_SOURCE_DIR}/core/mods
+    ${CMAKE_SOURCE_DIR}/third_party/PsyCross/include
+    ${CMAKE_SOURCE_DIR}/third_party/PsyCross/src
+    ${CMAKE_SOURCE_DIR}/third_party/xxhash)
+target_link_libraries(sfx_smpl_walk_test PRIVATE SDL3::SDL3-static)
+set_target_properties(sfx_smpl_walk_test PROPERTIES C_STANDARD 11)
+add_test(NAME sfx_smpl_walk_test COMMAND sfx_smpl_walk_test)

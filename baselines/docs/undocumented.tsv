@@ -2,7 +2,7 @@
 # library: libclang 14
 # requirement: @brief of one sentence on one line on every function; @param per named parameter and @return on non-void for external linkage
 # written-by: hook
-# head: f9d3f5f4e2c188748c722914cb0390979c74578b
+# head: c2e012aeb3672e62bc30fcc89712f695c54cee0d
 file	function	form	accepted
 core/config/config.c	decision_for	none	
 core/config/config.c	dup_str	none	
@@ -550,8 +550,6 @@ core/psx/cpu.c	do_lwr	none
 core/psx/cpu.c	do_swl	none	
 core/psx/cpu.c	do_swr	none	
 core/psx/disc_cache.c	openpete_disc_cache_active	none	
-core/psx/disc_cache.c	range_resident	none	
-core/psx/disc_cache.c	read_chunk	none	
 core/psx/dispatch.c	anchor_vbl_log	none	
 core/psx/dispatch.c	call_by_address	untagged	
 core/psx/dispatch.c	diag_track_gp1	untagged	

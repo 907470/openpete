@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: f9d3f5f4e2c188748c722914cb0390979c74578b
+# head: c2e012aeb3672e62bc30fcc89712f695c54cee0d
 file	function	score	marked	accepted
 core/config/config.c	harvest_args	30	0	
 core/config/config.c	harvest_base	39	0	
@@ -24,7 +24,6 @@ core/diag/psxtrace_verify.c	openpete_psxtrace_finalize	30	0
 core/diag/psxtrace_verify.c	openpete_psxtrace_open	107	0	
 core/host/host_spawn.c	openpete_host_spawn_argv	28	0	
 core/host/sfx_pack.c	override_cb	55	0	
-core/host/sfx_pack.c	wav_read_smpl	27	0	
 core/host/texture_pack.c	texture_pack_dump_draw	74	0	
 core/host/texture_pack.c	texture_pack_grade_fit	48	0	
 core/host/texture_pack.c	texture_pack_match_locked	52	0	

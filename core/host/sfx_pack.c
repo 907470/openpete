@@ -3,6 +3,7 @@
 
 #include <SDL3/SDL.h>
 #include <dirent.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -108,6 +109,35 @@ static uint32_t s_cb_hist[SP_CB_BUCKETS];
 
 /* ── WAV in: whatever SDL reads, to S16 mono at the file's rate ───── */
 
+/* Loop sample indices at or above this are refused (2^30 samples). */
+#define WAV_LOOP_SAMPLE_MAX 0x40000000u
+
+/** @brief Read a little-endian 32-bit word. */
+static uint32_t wav_le32(const uint8_t* p) {
+    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
+}
+
+/** @brief The size of an open file in bytes, or 0 when it cannot be measured. */
+static uint64_t wav_file_size(FILE* f) {
+    if (fseek(f, 0, SEEK_END) != 0) return 0;
+    const long e = ftell(f);
+    return e > 0 ? (uint64_t)e : 0u;
+}
+
+/** @brief Parse the first loop of a 60-byte `smpl` chunk body into start and len.
+ *
+ * The loop count sits at offset 28 and the first loop's start and end
+ * sample at 44 and 48, the end inclusive. The end bound keeps start + len
+ * inside int for the consumer.
+ * @return 1 when the count is nonzero and start <= end < WAV_LOOP_SAMPLE_MAX. */
+static int wav_smpl_first_loop(const uint8_t* b, int* start, int* len) {
+    const uint32_t s0 = wav_le32(b + 44), e0 = wav_le32(b + 48);
+    if (wav_le32(b + 28) < 1u || e0 < s0 || e0 >= WAV_LOOP_SAMPLE_MAX) return 0;
+    *start = (int)s0;
+    *len = (int)(e0 - s0 + 1);
+    return 1;
+}
+
 /** @brief Read the first loop of a WAV file's `smpl` chunk into start and len; return 1 when one is found.
  *
  * Walks the RIFF/WAVE chunks, each size padded to even, to the first
@@ -115,34 +145,32 @@ static uint32_t s_cb_hist[SP_CB_BUCKETS];
  * the first loop's start and end sample at offsets 44 and 48; the end is
  * inclusive, so len = end - start + 1. A missing file, a non-RIFF/WAVE
  * header, no `smpl` chunk, a zero loop count or an end before the start
- * returns 0 and leaves start and len unwritten. */
+ * returns 0 and leaves start and len unwritten, as does a chunk that runs
+ * past the end of the file or a loop end at or above WAV_LOOP_SAMPLE_MAX. */
 static int wav_read_smpl(const char* path, int* start, int* len)
 {
     FILE* f = fopen(path, "rb");
     if (!f) return 0;
     uint8_t h[12];
     int found = 0;
-    if (fread(h, 1, 12, f) == 12 && !memcmp(h, "RIFF", 4) && !memcmp(h + 8, "WAVE", 4)) {
+    const uint64_t fsize = wav_file_size(f);
+    uint64_t pos = 12;
+    if (fseek(f, 0, SEEK_SET) == 0 &&
+        fread(h, 1, 12, f) == 12 && !memcmp(h, "RIFF", 4) && !memcmp(h + 8, "WAVE", 4)) {
         uint8_t ch[8];
         while (fread(ch, 1, 8, f) == 8) {
-            uint32_t sz = (uint32_t)ch[4] | (uint32_t)ch[5] << 8 |
-                          (uint32_t)ch[6] << 16 | (uint32_t)ch[7] << 24;
+            const uint32_t sz = wav_le32(ch + 4);
             if (!memcmp(ch, "smpl", 4) && sz >= 36 + 24) {
                 uint8_t b[36 + 24];
-                if (fread(b, 1, sizeof b, f) == sizeof b) {
-                    uint32_t nloops = (uint32_t)b[28] | (uint32_t)b[29] << 8 |
-                                      (uint32_t)b[30] << 16 | (uint32_t)b[31] << 24;
-                    if (nloops >= 1) {
-                        uint32_t s0 = (uint32_t)b[44] | (uint32_t)b[45] << 8 |
-                                      (uint32_t)b[46] << 16 | (uint32_t)b[47] << 24;
-                        uint32_t e0 = (uint32_t)b[48] | (uint32_t)b[49] << 8 |
-                                      (uint32_t)b[50] << 16 | (uint32_t)b[51] << 24;
-                        if (e0 >= s0) { *start = (int)s0; *len = (int)(e0 - s0 + 1); found = 1; }
-                    }
-                }
+                found = fread(b, 1, sizeof b, f) == sizeof b && wav_smpl_first_loop(b, start, len);
                 break;
             }
-            if (fseek(f, (long)((sz + 1) & ~1u), SEEK_CUR) != 0) break;
+            /* Chunk offsets are tracked in 64 bits against the file's size and
+             * every seek is absolute: a chunk size near 2^32 ends the walk
+             * instead of wrapping to a backward seek (a 32-bit long on LLP64)
+             * that re-reads an earlier header forever. */
+            pos += 8u + (((uint64_t)sz + 1u) & ~(uint64_t)1u);
+            if (pos > fsize || pos > (uint64_t)LONG_MAX || fseek(f, (long)pos, SEEK_SET) != 0) break;
         }
     }
     fclose(f);

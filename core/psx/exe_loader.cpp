@@ -141,9 +141,21 @@ extern "C" int openpete_psx_resolve_disc_bin(const char* disc_path,
     return 0;
 }
 
-extern "C" uint8_t* openpete_psx_load_file_from_disc(const char* cue_path,
-                                                    const char* filename,
-                                                    size_t* out_size) {
+/* The largest file the disc loader allocates: PsyCross addresses the image
+ * with an int, so no file on it is longer. */
+#define DISC_FILE_MAX_BYTES 0x7FFFFFFFu
+/* A PSX EXE's body loads into the 2 MiB of main RAM behind its 2048-byte header. */
+#define PSX_EXE_MAX_BYTES (OPENPETE_PSX_RAM_SIZE + 2048u)
+
+/** @brief Read one file out of a disc image, refusing a directory size above max_bytes before allocating.
+ *
+ * @param cue_path Disc path, resolved by openpete_psx_resolve_disc_bin.
+ * @param filename iso9660 path of the file.
+ * @param max_bytes The largest size the caller accepts.
+ * @param out_size Receives the byte count on success.
+ * @return The bytes, freed by the caller with free(); NULL on failure. */
+static uint8_t* load_disc_file(const char* cue_path, const char* filename,
+                               uint32_t max_bytes, size_t* out_size) {
     if (!cue_path || !filename) return nullptr;
 
     char bin[4096], tried[4096];
@@ -167,6 +179,11 @@ extern "C" uint8_t* openpete_psx_load_file_from_disc(const char* cue_path,
         return nullptr;
     }
     OPL_INFO_F("disc", "disc file %s @ LBA=%u size=%u", filename, entry.lba, entry.size);
+    if (entry.size > max_bytes) {
+        OPL_ERROR_F("disc", "disc file %s: directory size %u exceeds %u; refused",
+                    filename, entry.size, max_bytes);
+        return nullptr;
+    }
 
     auto* buf = static_cast<uint8_t*>(std::malloc(entry.size));
     if (!buf) return nullptr;
@@ -182,10 +199,16 @@ extern "C" uint8_t* openpete_psx_load_file_from_disc(const char* cue_path,
     return buf;
 }
 
+extern "C" uint8_t* openpete_psx_load_file_from_disc(const char* cue_path,
+                                                    const char* filename,
+                                                    size_t* out_size) {
+    return load_disc_file(cue_path, filename, DISC_FILE_MAX_BYTES, out_size);
+}
+
 extern "C" uint8_t* openpete_psx_load_exe_from_disc(const char* cue_path,
                                                    const char* exe_filename,
                                                    size_t* out_size) {
-    return openpete_psx_load_file_from_disc(cue_path, exe_filename, out_size);
+    return load_disc_file(cue_path, exe_filename, PSX_EXE_MAX_BYTES, out_size);
 }
 
 /* Serial from SYSTEM.CNF's BOOT line; see openpete_psx.h. */

@@ -180,6 +180,7 @@ openpete_add_game(spyro-1
         renderer/shadow_spyro.c
         renderer/particle.c
         renderer/tracer.c
+        renderer/tracer_snapshot.c
         renderer/layout.c
         renderer/portal.c
         # The 3D glyph text producer, shared with Spyro 3.

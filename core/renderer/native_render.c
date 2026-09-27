@@ -1239,6 +1239,11 @@ static void scene_vert_require_pvz(openpete_scene_vert v[3], int category)
         v[k].pvz = v[k].z;
     }
 }
+/** @brief The blend class a stored triangle keeps: blend itself when it is 0..NR_BLEND_CLASSES-1, else 0 (opaque). */
+static int scene_blend_class(int blend) {
+    return (blend >= 0 && blend < NR_BLEND_CLASSES) ? blend : 0;
+}
+
 void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int category,
                                            int carry, int group) {
     if (!tri) return;
@@ -1247,6 +1252,10 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
          * layout prefix — asserted at scene_tri_t), then stamp the routing
          * state from the explicit args. */
         memcpy(&s_scene[s_scene_n], tri, sizeof *tri);
+        /* One validation of the blend class for every pass that indexes a
+         * table by it; a class outside the table draws opaque, as each
+         * pass's own clamp already maps it. */
+        s_scene[s_scene_n].blend = scene_blend_class(s_scene[s_scene_n].blend);
         s_scene[s_scene_n].category = category;  /* explicit layer (ignored for blend!=0) */
         s_scene[s_scene_n].carry = carry;        /* explicit 2D-UI sub-tick carry flag */
         s_scene[s_scene_n].group = group;        /* portal grouping id (PORTAL_* only) */
@@ -8079,15 +8088,16 @@ static int tex_run_continues(const scene_tri_t* s0, const scene_tri_t* s1, int s
  * The table is indexed stp_sel * NR_BLEND_CLASSES + blend, the textured HUD
  * family's per-selection, per-class layout. Entry 0 serves an opaque
  * selection-0 head, a one-entry table (a bucket whose triangles share one
- * class), a class outside the table, and a member the table did not build.
+ * class), a class or index outside the table, and a member the table did
+ * not build.
  * @param pipes Pipeline table.
  * @param npipes Table length.
  * @param s Run head.
  * @return The pipeline. */
 static rhi_pipeline* tex_run_pipe(rhi_pipeline* const* pipes, int npipes, const scene_tri_t* s) {
     const int k = s->stp_sel * NR_BLEND_CLASSES + s->blend;
-    return (s->blend > 0 || s->stp_sel > 0) && s->blend < NR_BLEND_CLASSES &&
-           k < npipes && pipes[k] ? pipes[k] : pipes[0];
+    return (s->blend > 0 || s->stp_sel > 0) && s->blend >= 0 && s->blend < NR_BLEND_CLASSES &&
+           k >= 0 && k < npipes && pipes[k] ? pipes[k] : pipes[0];
 }
 
 /** @brief Return the length of the texture-pack sub-run that starts at triangle t of a run.

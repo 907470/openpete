@@ -78,7 +78,9 @@ int openpete_psx_boot(CPUState* cpu, const uint8_t* bytes, size_t len) {
     if (h.memfill_size > 0) {
         uint8_t* ram = openpete_psx_get_ram();
         uint32_t phys = h.memfill_start & 0x1FFFFFFFu;
-        if (phys + h.memfill_size <= 2u * 1024u * 1024u) {
+        const uint32_t ram_bytes = OPENPETE_PSX_RAM_SIZE;
+        /* Two compares, no sum: memfill_start + memfill_size can wrap in 32 bits. */
+        if (h.memfill_size <= ram_bytes && phys <= ram_bytes - h.memfill_size) {
             memset(ram + phys, 0, h.memfill_size);
         } else {
             OPL_WARN_F("boot",
