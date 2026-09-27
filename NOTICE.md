@@ -3,9 +3,10 @@
 OpenPete's own code is licensed under **PolyForm Noncommercial 1.0.0** (see
 `LICENSE`). It bundles or depends on the third-party projects below; each
 retains its upstream license. This file is the authoritative record of what
-travels in a distributed build and under which terms — the permissive
-licenses require their notices to accompany the binary, so this file (and,
-where noted, the upstream license texts) ships in every release archive.
+travels in a distributed build and under which terms. Every release archive
+ships this file and, under `licences/`, the upstream license text of each
+component below that the archive carries; `docs/licences/manifest.tsv` maps
+each row to its text, and packaging fails on a row with no text.
 
 ## Linked into the distributed binary — permissive (attribution required)
 
@@ -16,16 +17,18 @@ where noted, the upstream license texts) ships in every release archive.
 | SDL (SDL **3**)                      | Zlib                                           | https://github.com/libsdl-org/SDL                                                           |
 | miniz                                | MIT                                            | https://github.com/richgel999/miniz                                                         |
 | tomlc99                              | MIT                                            | https://github.com/cktan/tomlc99                                                            |
-| stb_image_write                      | public domain / MIT (dual)                     | https://github.com/nothings/stb                                                             |
+| stb_image / stb_image_write          | public domain / MIT (dual)                     | https://github.com/nothings/stb                                                             |
 | libco                                | ISC                                            | https://github.com/higan-emu/libco                                                          |
 | xxHash                               | BSD-2-Clause                                   | https://github.com/Cyan4973/xxHash                                                          |
-| dear_bindings (generated C API)      | MIT                                            | https://github.com/dearimgui/dear_bindings                                                  |
-| glad (GL loader)                     | MIT                                            | https://github.com/Dav1dde/glad                                                             |
+| Dear ImGui 1.92.8 (exe; SDK headers `sdk/imconfig.h`) | MIT                               | https://github.com/ocornut/imgui                                                            |
+| dear_bindings (generated C API; SDK header `sdk/dcimgui.h`) | MIT                         | https://github.com/dearimgui/dear_bindings                                                  |
+| glslang 15.4.0                       | BSD-3-Clause / BSD-2-Clause / MIT / Apache-2.0 / GPL-3.0 with Bison exception (per file; `LICENSE.txt`) | https://github.com/KhronosGroup/glslang |
+| glad 0.1.36 (GL loader, generated, vendored in PsyCross) | MIT                        | https://github.com/Dav1dde/glad                                                             |
 | volk (Vulkan loader)                 | MIT                                            | https://github.com/zeux/volk                                                                |
-| Vulkan-Headers                       | Apache-2.0                                     | https://github.com/KhronosGroup/Vulkan-Headers                                              |
+| Vulkan-Headers 1.3.204               | Apache-2.0                                     | https://github.com/KhronosGroup/Vulkan-Headers                                              |
 | libstdc++ / libgcc (static)          | GPL-3.0 **with GCC Runtime Library Exception** | GCC — the exception explicitly permits distributing the compiled binary in proprietary form |
-| MinGW-w64 CRT / winpthreads (static) | Zlib / BSD / public domain (permissive)        | https://www.mingw-w64.org                                                                   |
-| OpenAL Soft 1.25.1 (`OpenAL32.dll`)  | LGPL v2                                        | https://github.com/kcat/openal-soft                                                         |
+| MinGW-w64 CRT / winpthreads 8.0.0 (static, Windows) | Zlib / BSD / public domain (permissive) | https://www.mingw-w64.org                                                          |
+| OpenAL Soft 1.25.1 (`OpenAL32.dll`, Windows; text also as `OpenAL-COPYING.txt`) | LGPL v2 | https://github.com/kcat/openal-soft                                                  |
 
 ## Bundled data — shipped alongside the binary
 
@@ -76,7 +79,7 @@ notice.
 
 | Component                              | License                              | Notes                                                              |
 | -------------------------------------- | ------------------------------------ | ------------------------------------------------------------------ |
-| OpenAL Soft (`usr/lib/libopenal.so.1`) | LGPL v2                              | dynamic linking preserved                                          |
+| OpenAL Soft 1.19.1, Debian 11 package (`usr/lib/libopenal.so.1`) | LGPL v2    | dynamic linking preserved                                          |
 | sndio (`usr/lib/libsndio.so.7`)        | ISC                                  | required by OpenAL Soft (`DT_NEEDED`), unmodified                  |
 | libbsd (`usr/lib/libbsd.so.0`)         | BSD-2/BSD-3/ISC and others           | required by sndio, unmodified                                      |
 | libmd (`usr/lib/libmd.so.0`)           | BSD-2/BSD-3 and others               | required by libbsd, unmodified                                     |

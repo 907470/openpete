@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Licence fence run by scripts/package-dist.sh on the staged release tree.
+"""Licence checks run by scripts/package-dist.sh on the staged release tree.
 
   dist_compliance.py scan PATH...
       Refuses when a shipped ELF or PE binary under PATH carries a marker of
@@ -7,12 +7,22 @@
       (GPL-2.0-or-later) or a statically linked FFmpeg/x264 (GPL). Exit 1 on
       a hit, and on zero binaries scanned.
 
+  dist_compliance.py licences --stage DIR --scope S [--scope S...]
+                              [--toolchain-dir DIR]
+      Checks NOTICE.md against docs/licences/manifest.tsv and copies the
+      text of every component the archive carries into DIR/licences/.
+      Exit 1 when a NOTICE.md row has no manifest row, a manifest row has no
+      NOTICE.md row, a third_party/*/LICENSE* file is in no manifest row, or
+      an active row's text is missing or empty.
+
 Runs from the repository root.
 """
 
 import argparse
+import glob
 import mmap
 import os
+import shutil
 import sys
 
 # Byte strings a clean openpete binary never contains. The bare words
@@ -25,6 +35,10 @@ COPYLEFT_MARKERS = (
     b"Lavf",                # libavformat ident (LIBAVFORMAT_IDENT)
     b"libavcodec version",  # libavcodec's av_log version line
 )
+
+MANIFEST = "docs/licences/manifest.tsv"
+NOTICE = "NOTICE.md"
+
 
 def fail(msg):
     """Print a refusal to stderr and exit 1."""
@@ -84,6 +98,78 @@ def cmd_scan(args):
     print("[dist-compliance] scan PASS: no copyleft marker")
 
 
+def read_manifest():
+    """Return manifest rows as (component, scope, text, shipped) tuples."""
+    rows = []
+    with open(MANIFEST, encoding="utf-8") as f:
+        for n, line in enumerate(f, 1):
+            line = line.rstrip("\n")
+            if not line or line.startswith("#"):
+                continue
+            cols = line.split("\t")
+            if len(cols) != 4 or not all(cols):
+                fail(f"{MANIFEST}:{n}: expected 4 non-empty tab-separated columns")
+            rows.append(tuple(cols))
+    return rows
+
+
+def notice_components():
+    """Return the first cell of every NOTICE.md table body row."""
+    out = []
+    with open(NOTICE, encoding="utf-8") as f:
+        for line in f:
+            if not line.startswith("|"):
+                continue
+            cell = line.split("|")[1].strip()
+            if cell == "Component" or set(cell) <= {"-", ":"}:
+                continue
+            out.append(cell)
+    return out
+
+
+def cmd_licences(args):
+    """Cross-check NOTICE.md with the manifest and stage the active texts."""
+    rows = read_manifest()
+    shipped_rows = [r for r in rows if r[1] != "none"]
+    manifest_names = {r[0] for r in shipped_rows}
+    notice = notice_components()
+    missing = [c for c in notice if c not in manifest_names]
+    if missing:
+        fail("NOTICE.md rows with no licence text in " + MANIFEST + ": "
+             + "; ".join(missing))
+    stale = sorted(manifest_names - set(notice))
+    if stale:
+        fail(MANIFEST + " rows with no NOTICE.md row: " + "; ".join(stale))
+    texts = {r[2] for r in rows}
+    orphan = [p for p in sorted(glob.glob("third_party/*/LICENSE*"))
+              if p not in texts]
+    if orphan:
+        fail("third_party licence files in no " + MANIFEST + " row: "
+             + ", ".join(orphan))
+
+    dest = os.path.join(args.stage, "licences")
+    os.makedirs(dest, exist_ok=True)
+    scopes = set(args.scope)
+    copied = 0
+    for comp, scope, text, shipped in shipped_rows:
+        if scope not in scopes or text == "-" or text.startswith("lib:"):
+            continue
+        if scope.startswith("toolchain-"):
+            if not args.toolchain_dir:
+                fail(f"scope {scope} active with no --toolchain-dir")
+            src = os.path.join(args.toolchain_dir, text)
+        else:
+            src = text
+        if not os.path.isfile(src) or os.path.getsize(src) == 0:
+            fail(f"'{comp}' ships with no licence text: {src} missing or empty")
+        shutil.copyfile(src, os.path.join(dest, shipped))
+        copied += 1
+    if copied == 0:
+        fail("no licence text staged")
+    print(f"[dist-compliance] licences PASS: {copied} texts in {dest}"
+          f" (scopes: {' '.join(sorted(scopes))})")
+
+
 def main():
     """Parse the subcommand and run it."""
     ap = argparse.ArgumentParser(description=__doc__,
@@ -92,6 +178,13 @@ def main():
     s = sub.add_parser("scan")
     s.add_argument("paths", nargs="+")
     s.set_defaults(fn=cmd_scan)
+    lic = sub.add_parser("licences")
+    lic.add_argument("--stage", required=True)
+    lic.add_argument("--scope", action="append", required=True,
+                     choices=["all", "windows", "sdk", "toolchain-windows",
+                              "toolchain-linux", "appimage"])
+    lic.add_argument("--toolchain-dir")
+    lic.set_defaults(fn=cmd_licences)
     args = ap.parse_args()
     args.fn(args)
 

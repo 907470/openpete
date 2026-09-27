@@ -74,13 +74,21 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Licence fence over the staged tree (scripts/dist_compliance.py):
+# Licence fences over the staged tree (scripts/dist_compliance.py):
 # assert_no_copyleft refuses a shipped ELF/PE carrying pcsx-redux's GTE or
-# a static FFmpeg/x264. It runs before the archive is written.
+# a static FFmpeg/x264; stage_licences copies the upstream licence text of
+# every NOTICE.md component the archive carries into <stage>/licences/ and
+# refuses a component with no text. Both run before the archive is written.
 assert_no_copyleft() {  # assert_no_copyleft <path>...
     python3 scripts/dist_compliance.py scan "$@" \
         || { echo "[package] licence fence refused the staged binaries" >&2; exit 1; }
 }
+stage_licences() {  # stage_licences <stage> <dist_compliance.py licences args>...
+    local S="$1"; shift
+    python3 scripts/dist_compliance.py licences --stage "$S" "$@" \
+        || { echo "[package] licence texts incomplete" >&2; exit 1; }
+}
+
 sign_pe() {  # sign_pe <file> — no-op unless --sign was given
     [[ -n "$SIGN_CMD" ]] || return 0
     echo "[package] signing $(basename "$1")"
@@ -178,6 +186,10 @@ stage_common() {  # stage_common <build-game-dir>
     fi
     cp gamecontrollerdb.txt "$STAGE/" 2>/dev/null || true
     cp LICENSE NOTICE.md "$STAGE/"
+    local scopes=(--scope all)
+    [[ "$PLATFORM" == windows ]] && scopes+=(--scope windows)
+    [[ $WITH_MOD_SDK -eq 1 ]] && scopes+=(--scope sdk)
+    stage_licences "$STAGE" "${scopes[@]}"
     # Preconfigured settings, so a first run looks the way we intend
     # rather than falling back to bare defaults. Both in-game menus
     # rewrite this file, so anything here is only a starting point.
@@ -324,6 +336,10 @@ build_appimage() {  # build_appimage <stage-dir>
         cp "$lic" "$APPDIR/usr/licences/$so.txt"
     done
     echo "[package] bundled libs:" $(ls "$APPDIR/usr/lib")
+    # The tarball stage's licences/ became usr/licences/ above; add the
+    # texts only the image carries (its runtime, its bundled compiler).
+    stage_licences "$APPDIR/usr" --scope appimage --scope toolchain-linux \
+        --toolchain-dir "$APPDIR/usr/recomp/tools/clang"
     assert_no_copyleft "$APPDIR"
 
     assert_appdir_closure "$APPDIR" "$APPDIR/usr/openpete-spyro1" \
@@ -402,6 +418,10 @@ linux)
     fi
     [[ -n "$SIGN_CMD" ]] && echo "[package] NOTE: --sign is Windows-only" \
         "(Authenticode); ignored for linux" >&2
+    if [[ -n "$TOOLCHAIN" ]]; then
+        stage_licences "$STAGE" --scope toolchain-linux \
+            --toolchain-dir "$STAGE/recomp/tools/clang"
+    fi
     assert_no_copyleft "$STAGE"
     tar cJf "$OUT/$NAME.tar.xz" -C "$OUT" "$NAME"
     ( cd "$OUT" && sha256sum "$NAME.tar.xz" > "$NAME.tar.xz.sha256" )
@@ -434,6 +454,10 @@ windows)
         mkdir -p "$T"
         cp -a "$TOOLCHAIN"/bin "$TOOLCHAIN"/lib "$TOOLCHAIN"/include \
               "$TOOLCHAIN"/x86_64-w64-mingw32 "$T/" 2>/dev/null || true
+        # LLVM's licence rides with the trimmed tree; stage_licences below
+        # refuses the archive when the source tree has none.
+        cp "$TOOLCHAIN"/LICENSE.TXT "$T/" 2>/dev/null || true
+        stage_licences "$STAGE" --scope toolchain-windows --toolchain-dir "$T"
         # Upstream llvm-mingw's bin/ is FLAT — every entry is a driver binary,
         # wrapper script or config. Anything that is a directory got there by
         # accident (a build run with its cwd inside the toolchain leaves a whole

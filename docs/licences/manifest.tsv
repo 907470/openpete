@@ -1,0 +1,52 @@
+# Licence texts shipped under licences/ in every release archive.
+# scripts/dist_compliance.py reads this file during scripts/package-dist.sh.
+#
+# Columns (tab-separated):
+#   component  the first cell of a NOTICE.md table row, verbatim; or, with
+#              scope "none", a third_party/ directory that nothing ships
+#   scope      which archive carries the component:
+#                all       every archive
+#                windows   the Windows zip
+#                sdk       archives packaged with --with-mod-sdk
+#                toolchain-windows, toolchain-linux
+#                          that platform's archive when it bundles a
+#                          compiler; the text is <compiler root>/<text>
+#                          inside the archive
+#                appimage  the AppImage
+#                none      not shipped; the text is not copied
+#   text       repo path of the upstream licence text; for a toolchain scope
+#              the path inside the bundled compiler tree; "lib:<name>" for
+#              an AppImage library whose text APPIMAGE_LIB_LICENCE in
+#              package-dist.sh stages; "-" when no text is required
+#   shipped    file name under licences/; for text "-", the reason no text
+#              is required
+spyro-1	all	games/spyro-1/spyro-1/LICENSE	spyro-1.txt
+PsyCross	all	third_party/PsyCross/LICENSE	PsyCross.txt
+SDL (SDL **3**)	all	third_party/SDL/LICENSE.txt	SDL.txt
+miniz	all	third_party/miniz/LICENSE	miniz.txt
+tomlc99	all	third_party/tomlc99/LICENSE	tomlc99.txt
+stb_image / stb_image_write	all	docs/licences/stb.txt	stb.txt
+libco	all	docs/licences/libco.txt	libco.txt
+xxHash	all	docs/licences/xxhash.txt	xxHash.txt
+Dear ImGui 1.92.8 (exe; SDK headers `sdk/imconfig.h`)	all	third_party/imgui/LICENSE.txt	imgui.txt
+dear_bindings (generated C API; SDK header `sdk/dcimgui.h`)	all	third_party/dear_bindings/LICENSE.txt	dear_bindings.txt
+glslang 15.4.0	all	third_party/glslang/LICENSE.txt	glslang.txt
+glad 0.1.36 (GL loader, generated, vendored in PsyCross)	all	docs/licences/glad.txt	glad.txt
+volk (Vulkan loader)	all	docs/licences/volk.txt	volk.txt
+Vulkan-Headers 1.3.204	all	docs/licences/vulkan-headers.txt	Vulkan-Headers.txt
+libstdc++ / libgcc (static)	all	-	the GCC Runtime Library Exception permits distributing the compiled binary under any terms without the text
+MinGW-w64 CRT / winpthreads 8.0.0 (static, Windows)	windows	docs/licences/mingw-w64-runtime.txt	mingw-w64-runtime.txt
+MinGW-w64 CRT / winpthreads 8.0.0 (static, Windows)	windows	docs/licences/winpthreads.txt	winpthreads.txt
+OpenAL Soft 1.25.1 (`OpenAL32.dll`, Windows; text also as `OpenAL-COPYING.txt`)	windows	third_party/OpenAL-mingw/COPYING	OpenAL-Soft.txt
+SDL_GameControllerDB (`gamecontrollerdb.txt`)	all	docs/licences/gamecontrollerdb.txt	SDL_GameControllerDB.txt
+llvm-mingw (LLVM/Clang, lld, llvm-ar, …)	toolchain-windows	LICENSE.TXT	llvm-mingw.txt
+LLVM/Clang 18.1.8 + lld (llvm.org build)	toolchain-linux	LICENSE.TXT	LLVM.txt
+PSXRecomp (psxrecomp)	all	third_party/psxrecomp/LICENSE	PSXRecomp.txt
+crt-beans (`sdk/examples/crt-beans`)	sdk	mods/crt-beans/LICENSE	crt-beans.txt
+OpenAL Soft 1.19.1, Debian 11 package (`usr/lib/libopenal.so.1`)	appimage	lib:libopenal	-
+sndio (`usr/lib/libsndio.so.7`)	appimage	lib:libsndio	-
+libbsd (`usr/lib/libbsd.so.0`)	appimage	lib:libbsd	-
+libmd (`usr/lib/libmd.so.0`)	appimage	lib:libmd	-
+AppImage type-2 runtime	appimage	docs/licences/appimage-runtime.txt	appimage-runtime.txt
+third_party/cubeb	none	third_party/cubeb/LICENSE	-
+third_party/duckstation	none	third_party/duckstation/LICENSE	-
