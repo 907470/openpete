@@ -278,9 +278,6 @@ int moby_reveal_candidates(struct CPUState* cpu, moby_reveal_kind_t kind);
  * The avatar draw and the moby draw are different routines, but they encode a
  * face the same way and run the same emit tree, so these four live here once.
  *
- * moby_tri_nclip is the signed 2*area of a screen-space triangle, the NCLIP
- * analog, on float coordinates rather than the GTE's floored int16.
- *
  * moby_abr_blend maps a texture page's semi-transparency mode to the
  * renderer's blend id: ABR 0 average, 1 additive, 2 subtractive, 3
  * quarter-additive.
@@ -301,6 +298,17 @@ int moby_reveal_candidates(struct CPUState* cpu, moby_reveal_kind_t kind);
  * before the same tests, which differs from the first only on a zero-area
  * face. Returns the triangle count and fills order[e] with the three
  * face-vertex slots (0..3) of triangle e. */
+/** @brief The signed doubled area of a screen-space triangle, the GTE NCLIP analog on float coordinates rather than the GTE's floored int16.
+ *
+ * (b - a) x (c - a), the sign convention NCLIP uses; the caller reads the
+ * sign as the facing.
+ * @param ax Vertex a's screen X.
+ * @param ay Vertex a's screen Y.
+ * @param bx Vertex b's screen X.
+ * @param by Vertex b's screen Y.
+ * @param cx Vertex c's screen X.
+ * @param cy Vertex c's screen Y.
+ * @return The signed doubled area. */
 double moby_tri_nclip(float ax, float ay, float bx, float by, float cx, float cy);
 int    moby_abr_blend(int abr);
 void   moby_tiledef_decode(uint32_t td0, uint32_t td1, uint32_t td2, moby_wface_t* F);

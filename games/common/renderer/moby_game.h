@@ -49,6 +49,12 @@ typedef struct moby_vstream {
 
 /* Bounded reads through a vstream's host alias: inside [base_va, base_va+len)
  * the load goes straight to host memory, anything else takes the guest path. */
+/** @brief Read one guest word through a vstream's host alias.
+ *
+ * @param cpu The guest CPU state, read only.
+ * @param s The stream, whose alias bounds the direct read.
+ * @param va The guest address.
+ * @return The word. */
 static inline uint32_t moby_vs_read_word(CPUState* cpu, const moby_vstream_t* s, uint32_t va) {
     if (s->base && va >= s->base_va && va - s->base_va + 4u <= s->len) {
         uint32_t w; memcpy(&w, s->base + (va - s->base_va), 4); return w;
@@ -460,9 +466,15 @@ uint32_t* moby_rec_append(uint32_t* addr);
  *         copy or no read_record slot. */
 int moby_rec_holds_moby(CPUState* cpu, uint32_t moby);
 
-/* The current VBL (`openpete_frame`) lies inside the OPENPETE_MOBY_VERIFY
- * reporting window. Every probe line a game's moby provider prints under that
- * variable gates on this, so the VBLs the window names are the VBLs reported. */
+/** @brief Whether the current VBL (`openpete_frame`) lies inside the OPENPETE_MOBY_VERIFY reporting window.
+ *
+ * Every probe line a game's moby provider prints under that variable gates on
+ * this, so the VBLs the window names are the VBLs reported. The variable
+ * carries the window as a first VBL or a first-last VBL range; the value `1`
+ * selects the default window, 13 VBLs from OPENPETE_MOBY_VERIFY_FRAME
+ * (default 2000), plus every later VBL that is a multiple of 200. Always 0
+ * while the variable is unset or `0`.
+ * @return 1 inside the window, else 0. */
 int moby_verify_vbl(void);
 
 #ifdef __cplusplus

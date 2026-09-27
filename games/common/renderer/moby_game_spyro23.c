@@ -290,8 +290,10 @@ int s23_decode_faces(CPUState* cpu, uint32_t fb, uint32_t bytecount,
  * path.
  */
 
-/* The light matrix mode 2 loads, all three rows equal (mobydraw.s:2048-2057:
- * control 16-20 = F666F4E0, F4E0F62B, F62BF666, F666F4E0, F62B). */
+/** @brief Saturate a MAC value to a signed 16-bit IR register, as the GTE does with lm = 0.
+ *
+ * @param v The MAC value.
+ * @return v clamped to [-32768, 32767]. */
 static int s23_clamp_ir(long v) {
     if (v >  32767) return  32767;
     if (v < -32768) return -32768;
@@ -608,12 +610,17 @@ static uint32_t s23_frame_patch_list(CPUState* cpu, uint32_t rec, uint32_t model
     return moby_rec_word(cpu, rec + 0x14u);
 }
 
-/* Moby+0x40 is an animation-state index, not the keyframe blend numerator: the
- * cull reads the byte, indexes this table with it and stores the table entry as
- * the record's blend byte, taking the no-blend path (frame A alone, no frame B
- * header or keyframe) when the entry is zero (mobydraw.s:454,458-461,466,487).
- * The draw then scales that byte by 16 into the GTE's IR0
- * (mobydraw.s:922-923). */
+/** @brief The record's blend byte for a Moby+0x40 animation-state index, looked up in the game's blend table.
+ *
+ * Moby+0x40 is an animation-state index, not the keyframe blend numerator:
+ * the cull reads the byte, indexes this table with it and stores the table
+ * entry as the record's blend byte, taking the no-blend path (frame A alone,
+ * no frame B header or keyframe) when the entry is zero
+ * (mobydraw.s:454,458-461,466,487). The draw then scales that byte by 16 into
+ * the GTE's IR0 (mobydraw.s:922-923).
+ * @param cpu The guest CPU state, read only.
+ * @param state4 The animation-state byte; bits above the low 8 are ignored.
+ * @return The blend byte. */
 static uint32_t s23_anim_blend_byte(CPUState* cpu, uint32_t state4) {
     return cpu->read_byte(moby_game_s23.anim_blend_table + (state4 & 0xFFu)) & 0xFFu;
 }
@@ -1309,12 +1316,17 @@ static int s23_simple_replay(CPUState* cpu) {
     return n;
 }
 
-/* ---- extended-LOD reveal ------------------------------------------------
- * The distance box the cull tests every moby against (mobydraw.s:75-100): the
- * signed low byte of the halfword at Moby+0x4C scaled by 256, widened by the
- * verdict bits that halfword's high byte carries. A byte that is zero or
- * negative leaves a degenerate box and the cull skips the moby, which is the
- * unpopulated-slot sentinel. */
+/* ---- extended-LOD reveal ------------------------------------------------ */
+/** @brief The half-width of the distance box the cull tests a moby against (mobydraw.s:75-100).
+ *
+ * The signed low byte of the halfword at Moby+0x4C scaled by 256, widened by
+ * 256 per unit of the low two drawn-verdict bits that halfword's high byte
+ * carries. A byte that is zero or negative leaves a degenerate box and the
+ * cull skips the moby, which is the unpopulated-slot sentinel.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @param drawn_bits The drawn-verdict byte the cull tested.
+ * @return The half-width, or 0 for the sentinel. */
 static int s23_cull_box_threshold(CPUState* cpu, uint32_t moby, unsigned drawn_bits) {
     const int rad = (int)(int8_t)cpu->read_byte(moby + 0x4Cu);
     if (rad <= 0) return 0;
@@ -1396,9 +1408,11 @@ static int64_t s23_sat(int64_t v, int64_t lo, int64_t hi) {
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
-/* The animated record's translation: the quarter-world view-space centre
- * shifted left 2 and right by the model's scale byte, then rescaled by the
- * moby's size byte through a GPF and a shift of 5
+/** @brief The animated record's translation, composed as the cull composes it at full width.
+ *
+ * The quarter-world view-space centre shifted left 2 and right by the model's
+ * scale byte, then rescaled by the moby's size byte through a GPF and a shift
+ * of 5
  * (mobydraw.s:510,537-539,546-551,572-574). The size byte scales the moby on
  * screen by moving it in depth, 32 being unity.
  *
@@ -1413,7 +1427,11 @@ static int64_t s23_sat(int64_t v, int64_t lo, int64_t hi) {
  * GTE everywhere the GTE's own range holds.
  *
  * The cull drops a record whose result passes 63000 (mobydraw.s:546-551); that
- * is a range limit, which is what extended LOD lifts, so it is not applied. */
+ * is a range limit, which is what extended LOD lifts, so it is not applied.
+ * @param f The animated fields, whose centre is used.
+ * @param scale The model's scale byte, clamped to [0, 31].
+ * @param size The moby's size byte; 0 skips the rescale.
+ * @param tr Receives the translation, saturated to int32. */
 static void s23_anim_translation(const moby_anim_fields_t* f, int scale, int size,
                                  int32_t tr[3]) {
     for (int i = 0; i < 3; i++) {
@@ -1452,13 +1470,19 @@ static void s23_write_anim_record(uint32_t* w, const moby_anim_fields_t* f,
     w[game_layout.moby.rec_moby_off     / 4u] = moby;
 }
 
-/* The keyframe reference the record stores, and the faceblock patch list that
- * rides with it. A record on the low-poly tier carries the keyframe word with
- * its top bits set, which is how the draw skips the patch apply
+/** @brief The keyframe reference the record stores, and the faceblock patch list that rides with it.
+ *
+ * A record on the low-poly tier carries the keyframe word with its top bits
+ * set, which is how the draw skips the patch apply
  * (mobydraw.s:501,504-505); otherwise the list is resolved through the Model's
  * own table, whose base is Model+0x34, indexed by the keyframe word's top byte
  * masked to 0x7C, and the word read there is the list's byte offset from that
- * same base (mobydraw.s:511-517). */
+ * same base (mobydraw.s:511-517).
+ * @param cpu The guest CPU state, read only.
+ * @param f The animated fields.
+ * @param tier The record's LOD verdict; negative is the low-poly tier.
+ * @param patch Receives the patch list, or 0 when there is none.
+ * @return The keyframe reference. */
 static uint32_t s23_anim_keyframe_ref(CPUState* cpu, const moby_anim_fields_t* f,
                                       int tier, uint32_t* patch) {
     *patch = 0u;

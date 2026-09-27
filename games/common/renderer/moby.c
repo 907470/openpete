@@ -191,9 +191,13 @@ static int moby_rec_appended_moby(uint32_t moby) {
     return 0;
 }
 
-/* The set membership of one moby, memoized on the pointer and the set's
- * generation: the walk emits a moby's faces contiguously, so a per-triangle
- * call costs one scan per moby. */
+/** @brief Whether a reveal appended a record for this moby, memoized on the pointer and the appended set's generation.
+ *
+ * The walk emits a moby's faces contiguously, so a per-triangle call costs
+ * one scan of the appended set per moby; moby_rec_append_reset starts a new
+ * generation, which invalidates the memo.
+ * @param moby The Moby address.
+ * @return 1 when the moby is in the appended set, else 0. */
 static int moby_walk_tri_host_added(uint32_t moby) {
     static uint32_t last_moby;
     static unsigned last_gen;
@@ -363,8 +367,21 @@ static const ngte_view* moby_record_view(uint32_t mob) {
         ? &s_view_canon : &s_view;
 }
 
-/* Float RTPS mirror WITH translation: ngte_project_raw (shared).
- * Returns view-Z (MAC3); caller owns the near-plane policy. */
+/** @brief Float RTPS mirror with translation, through the shared ngte_project_raw.
+ *
+ * The caller owns the near-plane policy: the returned view Z is unfloored.
+ * @param M The model-to-view rotation, 4096 = 1.0.
+ * @param TR The projection translation.
+ * @param vx The model-space vertex X.
+ * @param vy The model-space vertex Y.
+ * @param vz The model-space vertex Z.
+ * @param ofx_px The screen offset X in pixels.
+ * @param ofy_px The screen offset Y in pixels.
+ * @param v The view, which supplies H.
+ * @param out_sx Receives the screen X.
+ * @param out_sy Receives the screen Y.
+ * @param out_sat Receives the GTE's would-have-saturated flags.
+ * @return The view Z (MAC3). */
 static double project(const int M[3][3], const double TR[3], double vx, double vy, double vz,
                       double ofx_px, double ofy_px, const ngte_view* v,
                       double* out_sx, double* out_sy, int* out_sat) {
@@ -506,10 +523,13 @@ static void capture_gte(CPUState* cpu, uint32_t start, uint32_t end) {
     }
 }
 
-/* Cumulative prim-code coverage line: every code F798 has emitted so far, and
- * which we still DON'T decode (those are dropped from the native feed = missing
- * polys). "UNDECODED: none" across a whole demo run means the feed is complete
- * for the regular material. */
+/** @brief Print the cumulative primitive-code coverage line of every captured moby draw pass.
+ *
+ * Lists each GPU code capture_gte has counted so far (s_code_hist) and the
+ * codes it decoded to no vertices (s_uncoded_hist), whose polygons are
+ * missing from the native feed. "UNDECODED(dropped): none" over a whole demo
+ * run means the capture decodes every code the passes emit. The verify path
+ * (OPENPETE_MOBY_VERIFY) prints it at most once per 2000 VBLs. */
 static void report_code_hist(void) {
     char hb[400]; int hp = 0; hb[0] = 0;
     for (int c = 0; c < 256; c++) if (s_code_hist[c] && hp < (int)sizeof(hb) - 16)
@@ -725,20 +745,24 @@ static double model_extent(CPUState* cpu, uint32_t header) {
     return e;
 }
 
-/* How far, in the units the cull's stored translation carries, a moby's body
- * may reach either side of its projected centre.
+/** @brief How far, in the units the cull's stored translation carries, a moby's body may reach either side of its projected centre.
  *
  * The .s cone's own bias is the header's bounding-radius byte
  * (4(|x| - 25r/32) < 3(z + 19r/32)): a sphere authored for the game's 4:3 cull
  * and quantized to 16 units, which a model whose mesh reaches further than it
  * still draws whole. Where the admission is the widened window rather than the
- * game's, that quantized sphere is not the bound — the model's real vertex
- * extent is — so the reveal takes the larger of the two, keeping its admission
- * a superset of the cone's for a model whose authored sphere exceeds its mesh.
+ * game's, that quantized sphere is not the bound; the model's real vertex
+ * extent is. The reveal takes the larger of the two, so its admission stays a
+ * superset of the cone's for a model whose authored sphere exceeds its mesh.
  *
  * model_extent is in the decode's rotated-vertex units; the centre projects
  * from the stored translation, which the header's m_Scale shifts
- * (TR = (stored << 2) >> m_Scale), so the extent takes that shift back. */
+ * (TR = (stored << 2) >> m_Scale, the shift capped at 30 here), so the extent
+ * takes that shift back.
+ * @param cpu The guest CPU state, read only.
+ * @param header The AnimationHeader.
+ * @param rr The header's bounding radius, its radius byte << 4.
+ * @return The lateral extent, at least 25 rr / 32. */
 static double reveal_lateral_extent(CPUState* cpu, uint32_t header, double rr) {
     double lat = 25.0 * rr / 32.0;
     double ext = model_extent(cpu, header);
@@ -753,28 +777,34 @@ static double reveal_lateral_extent(CPUState* cpu, uint32_t header, double rr) {
  * world/4, so this floors the nearest-point depth at four world units. */
 #define REVEAL_NEAR_RZ 1.0
 
-/* How far, in screen px, a record's body may reach either side of its
- * projected centre under the widened-window admission.
+/** @brief How far, in screen px, a record's body may reach either side of its projected centre under the widened-window admission.
  *
  * The centre projects at its own view-Z, but the body's nearest point sits up
  * to its lateral extent closer to the camera, and that point projects by the
  * nearer depth: a wide flat model seen obliquely spans more screen x than its
  * extent scaled at the centre's depth. reveal_lateral_extent returns the
- * extent in the units the stored translation carries — model_extent's
- * rotated-vertex units with the header's m_Scale shift taken back
- * (TR = (stored << 2) >> m_Scale) — which is what rz holds, so rz - ext is the
+ * extent in the units the stored translation carries (model_extent's
+ * rotated-vertex units with the header's m_Scale shift taken back,
+ * TR = (stored << 2) >> m_Scale), which is what rz holds, so rz - ext is the
  * nearest view-Z the body can occupy and ext * H / (rz - ext) its lateral
  * reach there. Dividing by rz instead bounds only a body whose vertices all
  * sit at the centre's depth, and drops a nearer-cornered model whose pixels
  * are inside the frame.
  *
- * A body whose extent sphere straddles the camera plane has no bounded lateral
- * projection: the margin is infinite and the window test cannot reject it. The
+ * A body whose nearest view-Z is at or below REVEAL_NEAR_RZ (its extent
+ * sphere reaches the camera plane) has no bounded lateral projection: the
+ * margin is infinite and the window test cannot reject it. The
  * behind-camera and camera-plane gates upstream already drop the records with
  * no projection at all.
  *
  * The bound is a superset of the centre-depth one for every record: ext >= 0,
- * so rz - ext <= rz and the margin never shrinks. */
+ * so rz - ext <= rz and the margin never shrinks.
+ * @param cpu The guest CPU state, read only.
+ * @param header The AnimationHeader.
+ * @param rr The header's bounding radius, its radius byte << 4.
+ * @param rz The centre's stored view-Z.
+ * @param H The projection plane distance of the admitting view.
+ * @return The margin in screen px, or INFINITY. */
 static double reveal_lateral_margin(CPUState* cpu, uint32_t header, double rr,
                                     double rz, double H) {
     double ext = reveal_lateral_extent(cpu, header, rr);
@@ -1237,13 +1267,19 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
     return count;
 }
 
-/* The record's ZSF4 LOD/colour-fade tier verdict = high16 of the matrix word
- * @rec+0x2C (renderer: ctc2/cfc2 gte_ctrl[30]); see moby_tier_faceblock.
- * --no-lod: neutralize the DISTANCE term host-side (READ-side twin of the
- * retired game-side zsf4-store hook; idempotent when a store hook did run).
- * Same carve-out as the hook: only when the zero-distance tier is near-band
- * ((md<<8) >= 1024) — sub-near is effect-AUTHORED fade (ring puffs shrink
- * m_Renderer) and keeps the canonical value. */
+/** @brief The record's ZSF4 LOD and colour-fade tier verdict, after the --no-lod adjustment.
+ *
+ * The verdict is the record's tier (moby_record_t.tier, the high half of the
+ * matrix word the renderer loads into GTE control 30); see
+ * moby_tier_faceblock. Under --no-lod the distance term is neutralized
+ * host-side on the read, which is idempotent over a verdict a game-side hook
+ * already adjusted: the verdict becomes the moby's zero-distance tier
+ * (m_Renderer byte << 8) when that tier is near-band ((md << 8) >= 1024). A
+ * sub-near tier is an effect-authored fade (ring puffs shrink m_Renderer) and
+ * keeps the canonical value.
+ * @param cpu The guest CPU state, read only.
+ * @param R The extracted record.
+ * @return The tier verdict. */
 static int record_zsf4(CPUState* cpu, const moby_record_t* R) {
     int zsf4 = R->tier;
     if (openpete_no_lod && moby_game.renderer_off && R->moby >= 0x80000000u) {
@@ -2132,15 +2168,21 @@ static int reveal_prev_has(uint32_t m) {
     return 0;
 }
 
-/* Publish one builder call's admitted set (drawn + occlusion-culled) as the
- * next call's hysteresis set. Both lists hold 0 for a record that was admitted
- * without a lateral verdict — its extent sphere straddled the camera plane, so
- * the window test could not reject it — and those entries are dropped here: the
- * record draws for that present, but publishing it would widen t4e by 0x200 on
- * every later call, which keeps a record the game's distance cull drops drawn
- * inside the canonical window for the rest of the run. A straddle admission
- * re-enters through the window test, or through the game's own queue, on any
- * later tick that gives it a bounded projection. No record address is 0. */
+/** @brief Publish one builder call's admitted set, drawn and occlusion-culled, as the next call's hysteresis set.
+ *
+ * Both lists hold 0 for a record that was admitted without a lateral verdict
+ * (its extent sphere straddled the camera plane, so the window test could not
+ * reject it), and those entries are dropped here: the record draws for that
+ * present, but publishing it would widen t4e by 0x200 on every later call,
+ * which keeps a record the game's distance cull drops drawn inside the
+ * canonical window for the rest of the run. A straddle admission re-enters
+ * through the window test, or through the game's own queue, on any later tick
+ * that gives it a bounded projection. No record address is 0. The set holds
+ * at most MAX_RECORDS entries, drawn ones first.
+ * @param drawn The admitted mobys that drew.
+ * @param drawn_n The length of drawn.
+ * @param occl The admitted mobys the occlusion cull dropped.
+ * @param occl_n The length of occl. */
 static void reveal_publish_hysteresis(const uint32_t* drawn, int drawn_n,
                                       const uint32_t* occl, int occl_n) {
     int hn = 0;
@@ -2853,7 +2895,17 @@ static _Thread_local uint8_t  s_emit_special;   /* special-material id for the n
 static _Thread_local uint8_t  s_emit_tmix;      /* texel fog-row mix for the next emit_wtri */
 #define PACK_FKEY(a,b,c) (((uint32_t)(a)&0x3FFu) | (((uint32_t)(b)&0x3FFu)<<10) | (((uint32_t)(c)&0x3FFu)<<20))
 
-/* signed 2*area of a screen-space triangle (NCLIP analog) -- backface/winding. */
+/** @brief The signed doubled area of a screen-space triangle, the GTE NCLIP analog on float coordinates.
+ *
+ * (b - a) x (c - a), the sign convention NCLIP uses; the caller reads the
+ * sign as the facing.
+ * @param ax Vertex a's screen X.
+ * @param ay Vertex a's screen Y.
+ * @param bx Vertex b's screen X.
+ * @param by Vertex b's screen Y.
+ * @param cx Vertex c's screen X.
+ * @param cy Vertex c's screen Y.
+ * @return The signed doubled area. */
 static double tri_nclip(float ax,float ay,float bx,float by,float cx,float cy) {
     return (double)(bx-ax)*(cy-ay) - (double)(cx-ax)*(by-ay);
 }
@@ -3839,7 +3891,19 @@ static int moby_face_otkey(const proj_xy* rec0, const wface_t* F, const proj_xy*
     return moby_otk_face_bucket(&rec0->otk, &f);
 }
 
-/* Walk records [r0, r1) into the calling worker's emit target. */
+/** @brief Walk the records [r0, r1) of s_recs into the calling worker's emit target.
+ *
+ * Per record: the specular pass skips a moby the regular pass already fed
+ * (s_reg_moby), since the specular cull has advanced its pose; a run-once
+ * moby emits nothing (moby_run_once_hidden); the record's HUD tag, front-pass
+ * eligibility, colour bases and fade (moby_record_fade) are resolved once;
+ * then each face of the record's resolved face cache runs the dual-NCLIP
+ * emit tree on the float screen coordinates. A record with no faceblock, no
+ * projected vertices or no resolved face cache emits nothing.
+ * @param cpu The guest CPU state, read only.
+ * @param is_spec Nonzero for the specular pass.
+ * @param r0 The first record index.
+ * @param r1 One past the last record index. */
 static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
     for (int r = r0; r < r1; r++) {
         rec_meta* R = &s_recs[r];
@@ -4531,7 +4595,13 @@ static void build_prim_tris(void) {
         }
     }
 }
-/* best order-independent max-vertex distance of walk tri w vs prim tri p (greedy). */
+/** @brief The screen distance between a walk triangle and a captured prim triangle under their best vertex correspondence.
+ *
+ * The minimum, over the six vertex permutations, of the largest per-vertex
+ * distance; the result does not depend on either triangle's vertex order.
+ * @param w The walk triangle.
+ * @param p The prim triangle.
+ * @return The distance in screen px. */
 static double tri_match_cost(const ntri_t* w, const ptri* p) {
     static const int perm[6][3]={{0,1,2},{0,2,1},{1,0,2},{1,2,0},{2,0,1},{2,1,0}};
     double bestmax=1e18;
@@ -4818,14 +4888,17 @@ static void compare_walk_vs_prims(void) {
     #undef ONSCR
 }
 
-/* Within-matched-tri colour A/B for the native shaded lighting (#2b). Global
- * position-NN is unreliable here — cliff_town packs ~58 shaded mobys into a
- * small region, so a vertex's nearest prim point often belongs to a DIFFERENT
- * moby. So: match each native walk tri to a prim tri by geometry (centroid
- * prune + tri_match_cost, the same as compare_walk_vs_prims), then min-assign
- * the 3 colour pairs (best of 6 permutations) and tally per-vertex exact match
- * + mean per-channel error. Staying inside a geometry-matched face pair keeps
- * the comparison within the same moby. On-screen tris only. */
+/** @brief Print the per-vertex colour A/B of the native shaded lighting against the captured shaded prims.
+ *
+ * A position-nearest-neighbour match is unreliable here: a level can pack
+ * dozens of shaded mobys into a small region, so a vertex's nearest prim
+ * point often belongs to a different moby. Each on-screen walk triangle is
+ * therefore matched to a prim triangle by geometry (centroids within 16 px,
+ * then tri_match_cost, accepted at 1 px or less), which keeps the comparison
+ * inside one moby; the three colour pairs then take the best of the six
+ * assignments by total channel error. The line tallies per shading mode
+ * (gouraud, flat basic, flat metal) the exact per-vertex matches and the mean
+ * per-channel error. */
 static void shaded_color_ab(void) {
     build_prim_tris();
     if (s_ptri_n <= 0 || s_gout.n <= 0) return;
@@ -4866,17 +4939,16 @@ static void shaded_color_ab(void) {
     #undef PMODE
 }
 
-/* Specular (shiny-metal) per-face colour is a GTE env-mapped reflection
- * (.L800226F8: light matrix D_800770C8+0x18 · face normal, atan2 reflection,
- * env lookup) gated by the metal flag in m_SpecularMetalColor's high byte. The
- * regular per-vertex colour path produces only the near-black DPCS *base*
- * (+0x1100), so specular metal rendered dark. Until the reflection is re-derived
- * natively, reuse the .s's already-correct per-face colour from the captured
- * prims (NN-matched to the walk geometry, per-vertex by nearest point) -- the
- * same "reuse the game-computed colour" the regular path does with the +0x1100
- * scratch, just per-face. Walk geometry (float, no wobble) is kept; only RGB is
- * overwritten. Walk tris with no nearby prim (the game's distance-culled far
- * mobys) keep their base colour. */
+/** @brief Overwrite each walk triangle's vertex colours, UVs and texture page with those of the nearest captured prim triangle.
+ *
+ * An instrument for the specular material: a walk triangle is matched to a
+ * prim triangle by geometry (centroids within 32 px, then tri_match_cost,
+ * accepted at 8 px or less), each vertex takes the colour and UV of the
+ * prim's nearest vertex, and a textured prim's tpage and CLUT decode onto the
+ * triangle. The walk's float geometry is kept. A walk triangle with no prim
+ * nearby (a moby the game's distance cull dropped) keeps its own colour.
+ * Only the OPENPETE_MOBY_VERIFY path on the specular pass calls it; the feed
+ * derives colour and env-reflection UVs natively. */
 static void recolor_walk_from_prims(void) {
     build_prim_tris();
     for (int wi = 0; wi < s_gout.n; wi++) {
@@ -4928,6 +5000,15 @@ static void recolor_walk_from_prims(void) {
 static int   s_metalM[3][3];     /* D_800770C8+0x18, int16 1.0=4096 */
 static int   s_camHead;          /* g_Camera+0x50 (camera heading word) */
 /* s_specL[3]/s_specLlen forward-declared above build_walk_tris (highlight uses them) */
+/** @brief Load the specular pass's per-tick inputs: the metal matrix, camera heading, specular light and metal env texture page.
+ *
+ * Reads the metal matrix at spec_light + 0x18 (the camera rotation with z
+ * negated), the camera heading word, the specular light direction at
+ * spec_light + 0xC..0x14 and its length (floored at 1), and decodes the metal
+ * Tiledef (word 0 high half the CLUT, word 1 high half the tpage) into the
+ * env texture fields. A game without a specular light or metal Tiledef
+ * leaves them untouched.
+ * @param cpu The guest CPU state, read only. */
 static void specular_env_load(CPUState* cpu) {
     if (!moby_game.spec_light || !moby_game.metal_tiledef) return;   /* no specular material */
     ngte_read_matrix(cpu, moby_game.spec_light + 0x18u, s_metalM);
@@ -4947,7 +5028,12 @@ static void specular_env_load(CPUState* cpu) {
     s_env_bpp = t.bpp;
     s_env_clx = t.clx; s_env_cly = t.cly;
 }
-/* refl = metalMatrix . vec  (vec = the rotated vertex offset ex/ey/ez). */
+/** @brief The environment-reflection vector: the metal matrix times a vertex's rotated offset.
+ *
+ * @param ex The rotated vertex offset X, (M v) / 4096.
+ * @param ey The rotated vertex offset Y.
+ * @param ez The rotated vertex offset Z.
+ * @param r Receives the reflection vector, in the offset's units. */
 static void specular_env_refl(float ex, float ey, float ez, float r[3]) {
     r[0] = (s_metalM[0][0]*ex + s_metalM[0][1]*ey + s_metalM[0][2]*ez) / 4096.0f;
     r[1] = (s_metalM[1][0]*ex + s_metalM[1][1]*ey + s_metalM[1][2]*ez) / 4096.0f;
@@ -5048,12 +5134,18 @@ static void specular_env_calibrate(CPUState* cpu) {
         openpete_frame, s_camHead, dumped, nv, nv?sumu/nv:0, nv?sumv/nv:0, nv?sgnu/nv:0, maxu, maxv);
 }
 
-/* SPECULAR HIGHLIGHT correlation (#1 follow-up: the flat-lit chest). The .s gives
- * non-metal shiny faces a per-face highlight (.L80021DB4: OP screen-face-normal ->
- * normalize -> CC against m_SpecularMetalColor + the specular light) that REPLACES
- * the per-vertex base colour. The native walk omits it -> flat/dim. Dump the
- * view-space face-normal . specular-light vs the prim colour to find the float
- * model. Runs BEFORE recolor so w->v[].rgb is still the native base. */
+/** @brief Print the specular highlight correlation: each walk face's normal against the specular light, beside its matched prim colour.
+ *
+ * The draw gives a non-metal shiny face a per-face highlight (.L80021DB4:
+ * the screen face normal, normalized, through CC against
+ * m_SpecularMetalColor and the specular light) that replaces the per-vertex
+ * base colour. For up to 24 walk triangles matched to a captured prim
+ * (centroids within 32 px, tri_match_cost at 8 px or less) the line gives the
+ * cosine of the view-space face normal with the light, the native base
+ * colour, the prim colour and their luminance ratio. Runs on the
+ * OPENPETE_MOBY_VERIFY specular path before recolor_walk_from_prims, so the
+ * walk colours are still the native base.
+ * @param cpu The guest CPU state, read only. */
 static void specular_hl_calibrate(CPUState* cpu) {
     int lx=(int32_t)cpu->read_word(moby_game.spec_light+0xCu);   /* m_specularLightDirectionMoby */
     int ly=(int32_t)cpu->read_word(moby_game.spec_light+0x10u);
@@ -5494,9 +5586,13 @@ static void native_rank_moby(int i0, int i1, int neg) {
     for (int i = i0 + 1; i < i1; i++)
         if (s_wtri_otk[i] >= 0 && (s_wtri_otk[i] & MOBY_OTK_Q2)) s_nrank[i] = s_nrank[i - 1];
 }
-/* Ranks the mobys with a contested face. The select reads a rank only on a
- * contested face, so the faces of the other mobys take rank 0 unsorted, and
- * the sub-tick carry stores none of them; an instrument reads every rank. */
+/** @brief Rank the faces of every moby with a contested face in the draw's paint order.
+ *
+ * The select reads a rank only on a contested face, so the faces of the other
+ * mobys take rank 0 unsorted and the sub-tick carry stores none of them; an
+ * instrument (isect_instrumented) ranks every moby. A moby is a contiguous run
+ * of walk triangles with one moby pointer. OPENPETE_MOBY_RANK_NEGCTL=1
+ * reverses the order. */
 static void native_rank_build(void) {
     static int s_neg = -1;
     if (s_neg < 0) { const char* e = getenv("OPENPETE_MOBY_RANK_NEGCTL"); s_neg = e && *e == '1'; }
@@ -5552,8 +5648,14 @@ void moby_native_set_verdict_alpha(double alpha, int bracketed) { s_rc_alpha = b
 static uint32_t rc_hash(uint32_t m, uint32_t k) {
     return ((m * 2654435761u) ^ (k * 2246822519u)) >> (32 - RC_BITS);
 }
-/* The first store of a new epoch turns the latest table into the T-1 table
- * and empties the other one for the new tick. */
+/** @brief The carry table a store under canonical epoch ep writes.
+ *
+ * The latest table while it is valid for ep. The first store of a new epoch
+ * turns the latest table into the T-1 table and empties the other one for
+ * the new tick by giving it a fresh generation; a generation wrap clears both
+ * tables.
+ * @param ep The canonical epoch.
+ * @return The table. */
 static rc_tab* rank_carry_table_for(uint32_t ep) {
     rc_tab* t = &s_rc_tab[s_rc_cur];
     if (t->valid && ep == t->epoch) return t;
@@ -5586,9 +5688,14 @@ static const rc_ent* rank_carry_find(const rc_tab* t, uint32_t moby, uint32_t fk
         if (t->e[h].moby == moby && t->e[h].fkey == fkey) return &t->e[h];
     return NULL;
 }
-/* The table whose verdict this present applies, NULL when that endpoint has
- * none: the latest table only while it is the last canonical present's, the
- * T-1 table only while it is the epoch directly before it. */
+/** @brief The carry table whose verdict this present applies, or NULL when that endpoint has none.
+ *
+ * Alpha at or above 0.5 takes the latest table, below it the T-1 table. The
+ * latest table counts only while its epoch is the last canonical present's
+ * (spyro_native_canon_epoch_fresh), and the T-1 table only while its epoch is
+ * the one directly before the latest. Records in s_rc_prev_used whether the
+ * T-1 table was chosen.
+ * @return The table, or NULL. */
 static const rc_tab* rank_carry_endpoint(void) {
     const rc_tab* latest = &s_rc_tab[s_rc_cur];
     const rc_tab* prev   = &s_rc_tab[s_rc_cur ^ 1];
@@ -5748,10 +5855,13 @@ static int moby_face_rank(int i) {
     return (openpete_mobyrank_on() && isect_eligible(i) && s_wtri_contest[i]) ? s_nrank[i] : 0;
 }
 
-/* OPENPETE_MOBY_TRIDBG="x0,y0,x1,y1,fA,fB" (instrument): every walk triangle
- * whose centroid falls in the PSX-screen box for VBLs [fA,fB], with its
- * identity (moby, fkey), material, contest flag, rank and bucket word, for an
- * offline identity diff across VBLs. */
+/** @brief Log the walk triangles whose centroid falls in a PSX-screen box over a VBL range (OPENPETE_MOBY_TRIDBG).
+ *
+ * The variable is "x0,y0,x1,y1,fA,fB" and is parsed once. For each VBL in
+ * [fA, fB] every triangle whose centroid is in the box prints one line with
+ * its identity (moby, fkey), material, contest flag, rank, bucket word and
+ * per-vertex screen position, depths, UV and colour, for an offline identity
+ * diff across VBLs. */
 static void moby_tri_debug(void) {
     static int s_td = -1; static int tx0, ty0, tx1, ty1, tfa, tfb;
     if (s_td < 0) {
@@ -5788,11 +5898,19 @@ static uint32_t moby_tri_alpha(const ntri_t* w) {
     return (w->textured && w->tmix) ? ((uint32_t)w->tmix << 24) : 0xFF000000u;
 }
 
-/* Append the moby triangles to the native scene (panel 0). Frame-keyed begin
- * composes with the cyclorama (drawn first, owns the bg fill) — mobys append
- * on top. Depth ordering is the real per-pixel Z-buffer (3a.3): each vertex
- * carries its own view-space Z, so opaque faces sort correctly regardless of
- * submission order. Determinism-safe: host-side display only. */
+/** @brief Append the walk's moby triangles to the native scene, panel 0.
+ *
+ * Does nothing unless the moby render path is selected. Begins the scene for
+ * the current VBL counter, which composes with the cyclorama: the cyclorama
+ * draws first and owns the background fill, and the mobys append on top.
+ * Each vertex carries its own view-space Z and the pre-bias perspective W, so
+ * the Z-buffer sorts opaque faces independent of submission order. Each
+ * triangle is stamped with its scene category from the walk's UI tag and
+ * front flag (HUD3D, HUD, actor-front, actor), its ordering-table key for
+ * opaque unmangled actor faces while key resolve is on, its rank while it contests a face of its own
+ * moby, its material slot (resolved per moby at emit time, since slot ids are
+ * interned per feed cycle) and whether a reveal added it. Writes host scene
+ * state only. */
 static void push_scene_moby(void) {
     if (!render_path_enabled(RP_MOBY)) return;  /* --render-paths: mobys not selected */
     static int s_logged = 0;
@@ -6359,9 +6477,16 @@ static void moby_reveal_dbg(CPUState* cpu) {
         openpete_frame, F, alive, drawn_s, in43, inwide, revealed, rev_live, rev_frozen);
 }
 
-/* The cull hook: run the game's cull, then take its record list before any
- * draw pass reuses the scratch it sits in. The cull is called exactly once,
- * as the fall-through would have called it, and nothing is written back. */
+/** @brief The cull hook: run the game's cull, then copy its record list before any draw pass reuses the scratch it sits in.
+ *
+ * Snapshots the drawn-verdict bytes the cull will test (moby_precull_snapshot)
+ * first. The cull is called exactly once, as the fall-through would have
+ * called it, and nothing is written back.
+ * @param cpu The guest CPU state.
+ * @param addr The cull routine's guest address.
+ * @return 1 when the hook ran the cull; 0 when no consumer is active
+ *         (verify, native scene, render paths) or on re-entry, leaving the
+ *         fall-through to run it. */
 static int on_cull(CPUState* cpu, uint32_t addr) {
     if (!moby_verify_enabled() && !openpete_native_scene_enabled() && !render_paths_active()) return 0;
     static int s_in = 0; if (s_in) return 0; s_in = 1;
@@ -6405,13 +6530,19 @@ static int on_draw_specular(CPUState* cpu, uint32_t addr) {
     return 1;
 }
 
-/* ---- SHADED material (func_80022A2C) -- layout-confirming dump (3a.4.3) ----
- * Shaded is structurally different from regular/specular: it loops a flat
- * Moby* array the descriptor names, decodes 3-signed-byte (×2) verts, and rebuilds
- * R per-moby = ProjMatrix · Rz·Ry·Rx(m_Rotation). Before implementing that,
- * dump the data layout to confirm the RE offsets empirically (falsify-first).
- * func_80022A2C writes m_WasDrawn (verdict) -- we call it exactly once, like
- * the other hooks, so determinism is unchanged. */
+/** @brief Print the shaded material's data layout once, for reading the offsets the shaded decode uses off live data.
+ *
+ * The shaded draw (func_80022A2C) loops a flat Moby* list the descriptor
+ * names rather than a record queue, decodes verts of three signed bytes each
+ * (doubled), and rebuilds R per moby as ProjMatrix * Ry * Rx * Rz from
+ * m_Rotation (block_80022DBC..80022F34). The dump prints the list's first 16 entries, the position,
+ * class, rotation word, render radius and m_WasDrawn of the first two live
+ * mobys with their model's first 12 words, the camera's projection matrix and
+ * position, the histogram of the captured prim codes, and the first four
+ * prims raw. It reads guest memory only.
+ * @param cpu The guest CPU state, read only.
+ * @param start The first polybuf address of the pass's output.
+ * @param end One past the last. */
 static void shaded_dump(CPUState* cpu, uint32_t start, uint32_t end) {
     fprintf(stderr, "[shaded-dump vbl=%u] prims [%08X,%08X) %u bytes\n",
             openpete_frame, start, end, end - start);
@@ -6566,18 +6697,22 @@ static int moby_euler_step_max(const openpete_interp_obj_t* o) {
     return worst;
 }
 
-/* The interval between a record's two interp snapshots as the two sub-tick
- * channels see it: *step is the euler sweep's largest axis step and
- * *kf_changed says whether the shape lerp spans a different pair of keyframe
- * streams (the pose the cull would draw from each snapshot's animation state
- * bytes: its header and keyframe A, and keyframe B's while both snapshots
- * blend). The blend byte alone moving does not count — that is one keyframe
- * pair at two weights, which is ordinary animation, continuous by
- * construction.
+/** @brief The interval between a record's two interp snapshots as the two sub-tick channels see it.
  *
- * Returns 0 when the record has no usable pair — no prev, no distinct states,
- * a slot whose two states hold different classes, or a model or pose that does
- * not resolve — leaving both outputs untouched. */
+ * *step is the euler sweep's largest axis step and *kf_changed says whether
+ * the shape lerp spans a different pair of keyframe streams (the pose the
+ * cull would draw from each snapshot's animation state bytes: its header and
+ * keyframe A, and keyframe B's while both snapshots blend). The blend byte
+ * alone moving does not count: that is one keyframe pair at two weights,
+ * which is ordinary animation, continuous by construction.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @param step Receives the largest euler axis step.
+ * @param kf_changed Receives 1 when the keyframe pair changed, else 0.
+ * @return 0 when the record has no usable pair (no previous snapshot, no
+ *         distinct states, two states holding different classes, or a model
+ *         or pose that does not resolve), leaving both outputs untouched;
+ *         else 1. */
 static int moby_turn_interval(CPUState* cpu, uint32_t moby, int* step, int* kf_changed) {
     const openpete_interp_obj_t* o = openpete_interp_objs_find(moby_interp_key(moby));
     if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return 0;
@@ -7026,10 +7161,23 @@ static int32_t sat_col8(int64_t v) {            /* mirrors GTEState::saturate_co
     return (int32_t)v;
 }
 
-/* RT = model->view rotation (same matrix used to project this moby's verts).
- * base = per-moby base-colour word. highlight=1 applies the gouraud spec boost
- * (block_800231C4..80023250); the flat path omits it. Returns 0x00BBGGRR (the
- * low 24 bits the .s stores, r in the low byte — matches s_gte/s_ptri rgb). */
+/** @brief The shaded draw's directional lighting of one normal, as the integer GTE chain computes it.
+ *
+ * MVMVA of the normal by RT, GPF by IR0 = (base >> 23) & 0x1E, then CC with
+ * the base colour as BK and the light direction (s_shL) broadcast as LC, then
+ * the white colour output. With highlight set the gouraud specular boost
+ * (block_800231C4..80023250) follows: a packed result below the base's low
+ * 24 bits returns those bits; otherwise, with hn = base >> 28 nonzero and
+ * d = IR1 - (hn << 7) - the red BK term positive, each channel's IR gains
+ * 2d and is shifted right 4, saturating to 0xFF from 4096.
+ * @param RT The model-to-view rotation this moby's verts project through.
+ * @param nx The normal X, a signed byte.
+ * @param ny The normal Y.
+ * @param nz The normal Z.
+ * @param base The per-moby base-colour word.
+ * @param highlight Nonzero on the gouraud path; the flat path omits the boost.
+ * @return The colour as 0x00BBGGRR, red in the low byte, as s_gte and s_ptri
+ *         carry rgb. */
 static uint32_t shaded_lit_color(const int RT[3][3], int nx, int ny, int nz,
                                  uint32_t base, int highlight) {
     int64_t m1 = ((int64_t)RT[0][0]*nx + (int64_t)RT[0][1]*ny + (int64_t)RT[0][2]*nz) >> 12;
@@ -7069,15 +7217,22 @@ static uint32_t shaded_lit_color(const int RT[3][3], int nx, int ny, int nz,
 }
 
 
-/* Shaded METAL sub-mode colour (word0 bit1, block_80023720) — env-mapped
- * reflection. The face normal is rotated to view space (RT·N), then the
- * reflection intensity = light·N' (the LCM is the directional light broadcast
- * across all rows, set from D_800770C8). The metal table entry (8B at
- * D_8006E44C[scolor>>21]) gives word0 = base tint, word1 = reflected tint; the
- * final colour = word0_base + (intensity·word1)>>12 + a brightness boost,
- * clamped 12->8. (This is the gem shine — without it gems read as the gray flat
- * table. The exact far-distance branch >>10/word0>>1 is approximated by the near
- * >>8 path; env-texture/depth select is display-irrelevant.) Returns 0x00BBGGRR. */
+/** @brief The shaded metal sub-mode colour of one face (word0 bit1, block_80023720).
+ *
+ * The face normal rotates to view space (RT N) and the reflection intensity
+ * is the light direction (s_shL, broadcast across the LCM rows) dotted with
+ * it, >> 8. The colour is the metal table entry's word 0 as base tint plus
+ * intensity times word 1 >> 12, plus a boost of (intensity - 0x5C0) << 3 on
+ * every channel when positive, clamped from 12 bits to 8. The draw's
+ * far-distance branch (>> 10 with word 0 >> 1) is approximated by this near
+ * >> 8 path.
+ * @param RT The model-to-view rotation.
+ * @param nx The face normal X, a signed byte.
+ * @param ny The face normal Y.
+ * @param nz The face normal Z.
+ * @param w0 The metal table entry's base-tint word.
+ * @param w1 The metal table entry's reflected-tint word.
+ * @return The colour as 0x00BBGGRR. */
 static uint32_t shaded_metal_color(const int RT[3][3], int nx, int ny, int nz,
                                    uint32_t w0, uint32_t w1) {
     int64_t m1=((int64_t)RT[0][0]*nx+(int64_t)RT[0][1]*ny+(int64_t)RT[0][2]*nz)>>12;
@@ -7116,10 +7271,16 @@ typedef struct { int sv_off, vcount; uint32_t faces; int fcount; int cls;
                  * model-space Z. Either spread ≥ threshold → HUD3D. */
 static shaded_rec s_shrecs[256]; static int s_nshrecs;
 
-/* The integer translation the shaded pass loads for a 3D moby (r_moby.s
- * 4015-4154): IR = ((camY - Y) >> 2, (camZ - Z) >> 2, (X - camX) >> 2) through
- * the camera matrix (MVMVA sf=1), doubled; a non-zero draw-scale byte then
- * runs GPF sf=0 on the int16 of each component and shifts right 5. */
+/** @brief The integer translation the shaded pass loads for a 3D moby (r_moby.s 4015-4154).
+ *
+ * IR = ((camY - Y) >> 2, (camZ - Z) >> 2, (X - camX) >> 2) through the camera
+ * matrix (MVMVA sf=1), doubled; a nonzero draw-scale byte then runs GPF sf=0
+ * on the int16 of each component and shifts right 5.
+ * @param PM The camera matrix, 4096 = 1.0.
+ * @param cam The camera position.
+ * @param pos The moby position.
+ * @param p57 The moby's draw-scale byte.
+ * @param tr Receives the translation. */
 static void shaded_int_tr(const int PM[3][3], const int32_t cam[3], const int32_t pos[3],
                           int p57, int tr[3]) {
     int32_t ir[3] = { (cam[1] - pos[1]) >> 2, (cam[2] - pos[2]) >> 2, (pos[0] - cam[0]) >> 2 };
@@ -7151,9 +7312,18 @@ static void shaded_otk_record(CPUState* cpu, uint32_t m, int billboard, const in
                     o->tr[2], &o->rec);
 }
 
-/* Project EVERY shaded moby's verts (billboard or 3D, both verified 100%) into
- * out[]. Returns vertex count. Shared by shaded_verify + the feed. Also records
- * per-moby metadata in s_shrecs[] for the native topology walk. */
+/** @brief Project every drawn shaded moby's verts, billboard or 3D, into out, and record each moby's metadata in s_shrecs.
+ *
+ * Walks the shaded Moby* list and skips what the shaded draw skips: a
+ * render-radius byte of 0 (a dormant moby), and, for a 3D moby outside
+ * extended LOD, a position outside the draw's three-axis distance band.
+ * s_shrecs carries each moby's vertex base and count, face stream, lighting
+ * inputs, static colour table and paint key for build_shaded_walk_tris.
+ * Refreshes the directional light (s_shL) first.
+ * @param cpu The guest CPU state, read only.
+ * @param out Receives the projected vertices.
+ * @param cap The capacity of out.
+ * @return The number of vertices written. */
 static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
     const ngte_view* v = &s_view_shd;
     int PM[3][3]; memcpy(PM, v->cam_M, sizeof PM);
@@ -7499,10 +7669,22 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
  * marks the METAL env-reflection sub-mode (block_80023720) — NOT yet derived
  * natively (same family as #1 specular reflection); rendered as basic-flat for
  * now (approximate but leak-free). The feed reads ZERO .s prim output. */
-/* Bucket word of one shaded face of the moby whose paint key is `rec` and
- * whose projected vertices start at `base` (vc of them): the pass's row
- * through moby_otk_face_bucket, -1 when the pass gives it none. i2 == i3
- * names a triangle. */
+/** @brief The bucket word of one shaded face, or -1 when the pass gives it none.
+ *
+ * The pass's row through moby_otk_face_bucket, with the game's face
+ * treatment (moby_game.shaded_otkey_face) applied to the face words; -1 when
+ * the paint key has no row or a quad's fourth vertex lies past vc. i2 == i3
+ * names a triangle.
+ * @param rec The moby's paint key.
+ * @param base The moby's first projected vertex.
+ * @param i0 The first vertex slot.
+ * @param i1 The second vertex slot.
+ * @param i2 The third vertex slot.
+ * @param i3 The fourth vertex slot, equal to i2 on a triangle.
+ * @param vc The moby's vertex count.
+ * @param w0 The face's first word.
+ * @param w1 The face's second word.
+ * @return The bucket word, or -1. */
 static int shaded_face_otkey(const moby_otk_rec_t* rec, const proj_xy* base, int i0, int i1,
                              int i2, int i3, int vc, uint32_t w0, uint32_t w1) {
     if (rec->row == MOBY_OTK_NONE || (i2 != i3 && i3 >= vc)) return -1;
@@ -7699,12 +7881,17 @@ static int build_shaded_walk_tris(CPUState* cpu) {
     return s_gout.n;
 }
 
-/* Ground-truth check for the gouraud per-vertex lighting: the .s writes its
- * per-vertex lit colours to the scratch window the descriptor names, one
- * word per vertex, for the LAST gouraud moby it processed (overwritten each
- * moby). Recompute pcol[] for each rec, find the one whose pcol matches the
- * scratchpad (that's the last gouraud moby), and dump element-wise — zero
- * tri-match / cross-moby confound. Call from the verify path. */
+/** @brief Print the gouraud per-vertex lighting check against the colours the shaded draw wrote to its scratch window.
+ *
+ * The draw writes one lit colour word per vertex to the scratch window the
+ * descriptor names (moby_game.shaded_colour), for the last gouraud moby it
+ * processed. The check recomputes the first eight vertex colours of each
+ * shaded record with shaded_lit_color, takes the record whose colours lie
+ * nearest the scratch as the one it holds, and compares up to 64 vertices
+ * element-wise, with no triangle match and so no cross-moby confound. The
+ * line also counts the shaded mobys by which euler axes they rotate on.
+ * Called from the OPENPETE_MOBY_VERIFY path.
+ * @param cpu The guest CPU state, read only. */
 static void shaded_pcol_scratch_check(CPUState* cpu) {
     uint32_t SCR = moby_game.shaded_colour;
     int brec=-1; double bscore=1e18;
@@ -8217,7 +8404,18 @@ static int occl_refresh_bounds(CPUState* cpu, uint32_t moby, const occl_rect_t* 
     return 1;
 }
 
-/* Cull verdict for one record BEFORE any decode work. 1 = provably hidden. */
+/** @brief The occlusion cull verdict for one record, before any decode work.
+ *
+ * A HUD or UI moby is never occluded, and a moby with no cached bounds is
+ * extracted, which refreshes them. Bounds older than two VBLs are rebuilt
+ * around the moby's current origin (occl_refresh_bounds), which owes no
+ * own-motion allowance; without a usable anchor the moby is extracted. The
+ * query rect inflates by 8 px plus the bounds' age times the camera pan and
+ * the moby's own-motion allowance, and the depth by a margin scaled the same
+ * way.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @return 1 when the moby is hidden behind nearer world depth, else 0. */
 static int occl_record_decide(CPUState* cpu, uint32_t moby) {
     if (openpete_ui_moby_is_addr_static(moby) || openpete_ui_moby_is_addr_ui(moby))
         { s_occl_f[0]++; return 0; }                /* HUD/UI: drawn depth-off, never occluded */
@@ -8259,15 +8457,19 @@ static int occl_record_decide(CPUState* cpu, uint32_t moby) {
     return culled;
 }
 
-/* The verdict is decided once per canonical epoch and held for every later
- * present of that epoch. Both the rect inflation and the depth margin scale
- * with the cached bounds' age, and a record the first present of the epoch
- * extracts is written back at age 0 by occl_cache_update: without the hold the
- * next present of the same tick queries tighter bounds and culls what the
- * previous present drew, which alternates the record in and out at the present
- * rate. The canonical leg always re-decides — it opens each epoch's span, so
- * the held verdict is the one it reached, and a run with a single present per
- * tick keeps the pre-hold output exactly. */
+/** @brief The occlusion cull verdict for one record, decided once per canonical epoch and held for every later present of it.
+ *
+ * Both the rect inflation and the depth margin scale with the cached bounds'
+ * age, and a record the first present of the epoch extracts is written back
+ * at age 0 by occl_cache_update: without the hold the next present of the
+ * same tick queries tighter bounds and culls what the previous present drew,
+ * which alternates the record in and out at the present rate. The canonical
+ * leg always re-decides; it opens each epoch's span, so the held verdict is
+ * the one it reached, and a run with a single present per tick decides every
+ * record fresh. Counts each verdict into the per-leg census.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @return 1 when culled, else 0. */
 static int occl_record_culled(CPUState* cpu, uint32_t moby) {
     occl_rect_t* e = &s_occl_cache[occl_slot(moby)];
     unsigned epoch = spyro_native_canon_epoch_stamp();
@@ -8284,8 +8486,7 @@ static int occl_record_culled(CPUState* cpu, uint32_t moby) {
     return culled;
 }
 
-/* One line per re-extract leg with that leg's cull verdict count since its
- * previous line. */
+/** @brief Print one line per re-extract leg with that leg's occlusion verdict counts since its previous line (OPENPETE_REEXTRACT_FEEDDBG). */
 static void occl_leg_census_report(void) {
     static int on = -1;
     if (on < 0) { const char* e = getenv("OPENPETE_REEXTRACT_FEEDDBG"); on = (e && *e && *e != '0'); }
@@ -8297,19 +8498,22 @@ static void occl_leg_census_report(void) {
     s_occl_leg_culled[leg] = 0; s_occl_leg_seen[leg] = 0;
 }
 
-/* ---- occl-verify audit mode (OPENPETE_MOBY_OCCL_VERIFY=1, inert otherwise) --
- * When the cull says "hidden", the pass extracts the moby ANYWAY and re-runs the
- * query on the bounds that extraction just produced. A fresh verdict of
- * "visible" means the cached bounds would have culled a moby the depth test
- * would NOT fully erase — a would-be single-present flicker. Census printed once
- * per second. The moby still draws in verify mode (verdict overridden), so a
- * live run with verify on is also the zero-flicker reference.
+/** @brief Whether the occlusion-verify audit mode (OPENPETE_MOBY_OCCL_VERIFY=1) is on, read once.
  *
- * A would-culled record does NOT write its cache entry here, exactly as it would
+ * When the cull says hidden, the pass extracts the moby anyway and re-runs
+ * the query on the bounds that extraction just produced. A fresh verdict of
+ * visible means the cached bounds would have culled a moby the depth test
+ * would not fully erase: a would-be single-present flicker. The census prints
+ * once per second beside the OPENPETE_MOBY_OCCL_DBG line. The moby still
+ * draws in verify mode (the verdict is overridden), so a live run with verify
+ * on is also the zero-flicker reference.
+ *
+ * A would-be-culled record does not write its cache entry here, as it would
  * not in a production run. Refreshing it would keep every entry young, the
- * extraction-free refresh path would never engage, and the audit would report on
- * a state the cull never reaches — so the fresh bounds are taken straight off the
- * projection instead of through the cache. */
+ * extraction-free refresh path would never engage, and the audit would report
+ * on a state the cull never reaches, so the fresh bounds are taken straight
+ * off the projection instead of through the cache.
+ * @return Nonzero when the mode is on. */
 static int occl_verify_on(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_MOBY_OCCL_VERIFY"); v = (e && *e && *e != '0'); }
@@ -8321,7 +8525,16 @@ static long s_ver_wrong = 0;   /* ...of which fresh bounds said VISIBLE */
 static void occl_proj_bounds(const proj_xy* p, int n, float* px0, float* py0,
                              float* px1, float* py1, float* pvz);
 
-/* Query one explicit set of bounds with the age-0 inflation. */
+/** @brief Query one explicit set of bounds with the age-0 inflation of occl_record_decide.
+ *
+ * @param x0 The rect's left edge, PSX screen px.
+ * @param y0 The rect's top edge.
+ * @param x1 The rect's right edge.
+ * @param y1 The rect's bottom edge.
+ * @param vzmin The nearest view-Z.
+ * @param mot The moby's measured screen motion per tick.
+ * @param mot_vz The moby's measured view-Z motion per tick.
+ * @return Nonzero when the query culls. */
 static int occl_query_at(float x0, float y0, float x1, float y1, float vzmin,
                          float mot, float mot_vz) {
     float vzm = vzmin < 512.0f ? 512.0f : vzmin;
@@ -8361,9 +8574,17 @@ static void occl_verify_end(uint32_t moby, const proj_xy* p, int n) {
             openpete_native_occl_last_scan_max());
 }
 
-/* Refresh the cache from a record's freshly projected verts (s_proj carries
- * PSX screen px + FULL-WORLD view-Z — exactly the query's units). Bounds over
- * ALL verts ⊇ bounds over the drawn subset, so the rect is conservative. */
+/** @brief The screen rect and nearest view-Z of a record's projected verts, in the units the occlusion query takes.
+ *
+ * s_proj carries PSX screen px and the fed view-Z. The bounds cover all n
+ * verts, a superset of the drawn subset, so the rect is conservative.
+ * @param p The projected verts.
+ * @param n Their count, at least 1.
+ * @param px0 Receives the left edge.
+ * @param py0 Receives the top edge.
+ * @param px1 Receives the right edge.
+ * @param py1 Receives the bottom edge.
+ * @param pvz Receives the nearest view-Z. */
 static void occl_proj_bounds(const proj_xy* p, int n, float* px0, float* py0,
                              float* px1, float* py1, float* pvz) {
     float x0 = p[0].sx, x1 = p[0].sx, y0 = p[0].sy, y1 = p[0].sy, vzm = p[0].vz;
@@ -8754,20 +8975,26 @@ static void euler_mat_d(const ngte_euler_sc* e, int inv, double out[3][3]) {
 /* Outcome of record_rotation_to_present, one census bin each. */
 enum { REC_ROT_NOPAIR = 0, REC_ROT_SAME, REC_ROT_SWAPPED, REC_ROT_OTHER_FORM, REC_ROT_N };
 
-/* A replayed cull record carries the rotation the tick composed:
- * M = camera · Ry · Rx · Rz from the moby's three angle bytes, each factor one
+/** @brief Turn a replayed cull record's rotation from the tick's euler angles to the ones this present displays.
+ *
+ * A replayed cull record carries the rotation the tick composed:
+ * M = camera * Ry * Rx * Rz from the moby's three angle bytes, each factor one
  * MVMVA pair and stored at record +0x28 (Spyro 3 mobydraw.s:230-359, Spyro 2
  * mobydraw.s:232-361), with no scale in the matrix: the moby's scale rides
- * the translation and the vertex decode. The rotation this present displays is E(present) from
- * moby_record_euler_at_present, so the matrix becomes M · E(curr)⁻¹ ·
- * E(present); translation and scale are untouched. Where E(present) equals
- * E(curr) — every alpha-1 present, a moby that did not turn — M is kept
- * bit-exact.
+ * the translation and the vertex decode. The rotation this present displays
+ * is E(present) from moby_record_euler_at_present, so the matrix becomes
+ * M * E(curr)^-1 * E(present); translation and scale are untouched. Where
+ * E(present) equals E(curr) (every alpha-1 present, a moby that did not
+ * turn), M is kept bit-exact.
  *
  * A moby whose colour word has bit 30 set takes the other composition
  * (Spyro 3 mobydraw.s:227-228 to .L80030DBC): the same axis order from angles
  * carrying a 4-bit fraction out of that word, which the byte-angle pair does
- * not describe, so it keeps the tick's rotation. */
+ * not describe, so it keeps the tick's rotation.
+ * @param cpu The guest CPU state, read only.
+ * @param f The record fields, whose M is rewritten in place.
+ * @param moby The Moby address.
+ * @return The outcome's census bin (REC_ROT_*). */
 static int record_rotation_to_present(CPUState* cpu, moby_fields* f, uint32_t moby) {
     if (game_layout.moby.colour_off &&
         (cpu->read_word(moby + game_layout.moby.colour_off) & 0x40000000u))
@@ -8903,17 +9130,25 @@ static void moby_fields_pose_from_snapshot(CPUState* cpu, uint32_t moby, moby_fi
         s_pose_snap.differ++;
 }
 
-/* A game with no host record builder replays the record the cull wrote,
- * read exactly as the canonical pass read it. The pose is then the one the
- * tick drew — identical to canonical at alpha 1. Its matrix and translation
- * are view-space against the camera the tick composed them with, so
- * record_rebase_to_present turns them onto the camera this present stages;
+/** @brief Build a record's fields by replaying the record the cull wrote, on a game with no host record builder.
+ *
+ * The record is read exactly as the canonical pass read it, so the pose is
+ * the one the tick drew, identical to canonical at alpha 1. Its matrix and
+ * translation are view-space against the camera the tick composed them with,
+ * so record_rebase_to_present turns them onto the camera this present stages;
  * without that the record would be the one thing in the scene that does not
- * follow the interpolated view. The rebased translation still carries the
- * tick's grid residue turned onto this camera, so the centre at this present
- * replaces it where the game stores the scaled centre; TR_raw keeps the
- * rebased integer for the paint key. rot_bins takes the rotation outcome.
- * Returns 0 when the record does not read. */
+ * follow the interpolated view. record_rotation_to_present then turns the
+ * rotation to this present's euler angles. The rebased translation still
+ * carries the tick's grid residue turned onto this camera, so the centre at
+ * this present replaces it where the game stores the scaled centre
+ * (moby_record_centre_final); TR_raw keeps the rebased integer for the paint
+ * key.
+ * @param cpu The guest CPU state, read only.
+ * @param rec The record's guest address.
+ * @param moby The Moby address.
+ * @param f Receives the fields.
+ * @param rot_bins Counts the rotation outcome into its bin.
+ * @return 0 when the record does not read, else 1. */
 static int record_replay_fields(CPUState* cpu, uint32_t rec, uint32_t moby, moby_fields* f,
                                 long rot_bins[REC_ROT_N]) {
     moby_record_t LR;
