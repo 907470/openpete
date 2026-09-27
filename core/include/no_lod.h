@@ -78,7 +78,7 @@ void openpete_fog_set(int on);
  * The knob registry's fog-scale row calls it. Takes fog off autopilot, so
  * LOD switches stop moving it. Terrain re-resolves the scale every walk, so
  * the value applies from the next one.
- * @param scale Multiplier, clamped to [0.25, 100.0]. */
+ * @param scale Multiplier, clamped to [0.25, 100.0]; NaN is ignored. */
 void openpete_fog_scale_set(float scale);
 
 #ifdef __cplusplus

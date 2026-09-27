@@ -340,8 +340,10 @@ static double fog_get(const knob_desc_t *k) { (void)k; return openpete_fog_enabl
 static int fog_set(knob_desc_t *k, double v) { (void)k; openpete_fog_set(v != 0.0); return 0; }
 
 static double fogscale_get(const knob_desc_t *k) { (void)k; return openpete_fog_scale; }
+/** @brief Set the fog-distance multiplier from the fog-scale row; a non-finite value is refused. */
 static int fogscale_set(knob_desc_t *k, double v) {
     (void)k;
+    if (!isfinite(v)) return -1;
     openpete_fog_scale_set((float)v);
     return 0;
 }
@@ -396,8 +398,9 @@ static int runahead_set(knob_desc_t *k, double v) {
 }
 
 static double fov_get(const knob_desc_t *k) { (void)k; return (double)openpete_native_fov_deg(); }
+/** @brief Set the native field of view from the fov row: 0 (the game's own) or [30, 120] degrees; anything else, NaN included, is refused. */
 static int fov_set(knob_desc_t *k, double v) {
-    if (v < 0.0 || (v > 0.0 && v < 30.0) || v > 120.0) return -1;
+    if (!isfinite(v) || v < 0.0 || (v > 0.0 && v < 30.0) || v > 120.0) return -1;
     openpete_native_set_fov((float)v);
     k->stored_num = v;
     return 0;

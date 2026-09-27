@@ -10,6 +10,7 @@
 
 #include "openpete_log.h"
 
+#include <math.h>
 #include <stddef.h>
 
 /* Definition of the global. The psx_runtime.h declaration resolves to
@@ -81,6 +82,7 @@ int openpete_fog_enabled(void) {
 }
 
 void openpete_fog_scale_set(float scale) {
+    if (isnan(scale)) return;   /* NaN passes both clamps below */
     if (scale < 0.25f) scale = 0.25f;
     if (scale > FOG_OFF_SCALE) scale = FOG_OFF_SCALE;
     /* A manual value takes fog off autopilot, same as openpete_fog_set —

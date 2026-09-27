@@ -6370,8 +6370,8 @@ static int run_host_loop(const openpete_options_t* opts) {
     }
 
     fprintf(stdout,
-            "openpete-exit: reason=%s frames=%u ms=%u code=%d\n",
-            exit_reason, openpete_frame, elapsed, exit_code);
+            "openpete-exit: reason=%s frames=%u ms=%llu code=%d\n",
+            exit_reason, openpete_frame, (unsigned long long)elapsed, exit_code);
     /* Host-input end state, printed when the lock or the injection script is
      * in play: what the lock discarded and what the host-side consumers a
      * stray key or pointer reaches ended up as. */

@@ -2,7 +2,7 @@
 # library: libclang 14
 # requirement: @brief of one sentence on one line on every function; @param per named parameter and @return on non-void for external linkage
 # written-by: hook
-# head: 5537c1faab2875c6a3a8c4fdb326096cc5360317
+# head: a54f47bc9bb164cb5f4c18559219cc5e672049f5
 file	function	form	accepted
 core/config/config.c	decision_for	none	
 core/config/config.c	dup_str	none	
@@ -32,9 +32,7 @@ core/config/knob_registry.c	fillpick_set	none
 core/config/knob_registry.c	fog_get	none	
 core/config/knob_registry.c	fog_set	none	
 core/config/knob_registry.c	fogscale_get	none	
-core/config/knob_registry.c	fogscale_set	none	
 core/config/knob_registry.c	fov_get	none	
-core/config/knob_registry.c	fov_set	none	
 core/config/knob_registry.c	freecam_get	none	
 core/config/knob_registry.c	freecam_set	none	
 core/config/knob_registry.c	fullscreen_set	none	

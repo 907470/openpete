@@ -12,6 +12,7 @@
 #include "openpete_knobs.h"
 #include "../../core/config/config_schema.h"
 
+#include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -164,6 +165,30 @@ static int sections_contiguous(void) {
         }
     }
     return 1;
+}
+
+/** @brief Check that the float rows' setters refuse NaN and infinity without calling through.
+ *
+ * NaN fails every range comparison, so a bounds test alone passes it on.
+ * @return 0 when every float row refuses both, 1 otherwise. */
+static int float_rows_refuse_non_finite(void) {
+    static const char *const float_rows[] = { "fov", "fog_scale", NULL };
+    int rc = 0;
+    for (int r = 0; float_rows[r]; r++) {
+        const knob_desc_t *fk = find_row(float_rows[r], NULL);
+        if (!fk || !fk->set_num) {
+            rc |= fail("float row missing");
+            continue;
+        }
+        float fov_before = s_native_fov;
+        if (fk->set_num((knob_desc_t *)fk, (double)NAN) == 0)
+            rc |= fail("a float row accepted NaN");
+        if (fk->set_num((knob_desc_t *)fk, (double)INFINITY) == 0)
+            rc |= fail("a float row accepted infinity");
+        if (memcmp(&s_native_fov, &fov_before, sizeof fov_before) != 0)
+            rc |= fail("a refused value reached the setter");
+    }
+    return rc;
 }
 
 int main(void) {
@@ -392,6 +417,8 @@ int main(void) {
             }
         }
     }
+
+    rc |= float_rows_refuse_non_finite();
 
     printf(rc ? "knob_registry_test: FAILED\n" : "knob_registry_test: ok\n");
     return rc;

@@ -32,6 +32,36 @@ static int needs_value(const char* flag, int argc, char** argv, int i, const cha
     return 0;
 }
 
+/** @brief Parse a flag's value as a finite number and clamp it to [lo, hi].
+ *
+ * The whole value must parse (strtod with an end-pointer check) and be
+ * finite, so "nan", "inf" and "9O" are refused rather than reaching a
+ * clamp that NaN would pass through. An in-range miss is clamped with a
+ * message naming the flag.
+ * @param flag The flag's spelling, for the messages.
+ * @param v The value text.
+ * @param lo Lower bound.
+ * @param hi Upper bound.
+ * @param out Receives the clamped value.
+ * @return 0 on success, -1 with a message on a refused value. */
+static int parse_finite_clamped(const char* flag, const char* v, float lo, float hi,
+                                float* out) {
+    char* end = NULL;
+    double d = strtod(v, &end);
+    if (!v[0] || end == v || *end || !isfinite(d)) {
+        fprintf(stderr, "openpete: %s expects a number in [%g,%g], got: %s\n",
+                flag, (double)lo, (double)hi, v);
+        return -1;
+    }
+    if (d < lo || d > hi) {
+        fprintf(stderr, "openpete: %s clamped to [%g,%g]; got %.2f\n",
+                flag, (double)lo, (double)hi, d);
+        d = d < lo ? lo : hi;
+    }
+    *out = (float)d;
+    return 0;
+}
+
 /** @brief Parse a --sfx, --music or --vibration value on the game's 0..10 slider scale.
  *
  * "off" is 0 and "on" is 10; -1 means the game's own setting stands. On
@@ -1064,13 +1094,9 @@ static int parse_flag_chain(openpete_options_t* opts, int argc, char** argv,
             }
         } else if (strcmp(a, "--fov") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->fov_deg = (float)atof(v); i++;
-            if (opts->fov_deg < 30.0f || opts->fov_deg > 120.0f) {
-                fprintf(stderr, "openpete: --fov clamped to [30,120]; got %.2f\n",
-                        opts->fov_deg);
-                if (opts->fov_deg < 30.0f) opts->fov_deg = 30.0f;
-                if (opts->fov_deg > 120.0f) opts->fov_deg = 120.0f;
-            }
+            if (parse_finite_clamped(a, v, 30.0f, 120.0f, &opts->fov_deg) != 0)
+                return OPENPETE_EXIT_SETUP_ERROR;
+            i++;
         } else if (strcmp(a, "--vertex-precision") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             if (strcmp(v, "subpixel") == 0) {
@@ -1162,13 +1188,9 @@ static int parse_flag_chain(openpete_options_t* opts, int argc, char** argv,
             opts->terrain_cache = atoi(v) != 0; i++;
         } else if (strcmp(a, "--fog-scale") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            opts->fog_scale = (float)atof(v); i++;
-            if (opts->fog_scale < 0.25f || opts->fog_scale > 128.0f) {
-                fprintf(stderr, "openpete: --fog-scale clamped to [0.25,128]; got %.2f\n",
-                        opts->fog_scale);
-                if (opts->fog_scale < 0.25f) opts->fog_scale = 0.25f;
-                if (opts->fog_scale > 128.0f) opts->fog_scale = 128.0f;
-            }
+            if (parse_finite_clamped(a, v, 0.25f, 128.0f, &opts->fog_scale) != 0)
+                return OPENPETE_EXIT_SETUP_ERROR;
+            i++;
         } else if (strcmp(a, "--screenshot-on-frame") == 0 ||
                    strcmp(a, "--screenshot-on-tick") == 0) {
             bool ticks = (a[16] == 't');   /* "--screenshot-on-[t]ick" */

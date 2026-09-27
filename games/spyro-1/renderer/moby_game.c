@@ -110,6 +110,7 @@ static int s1_decode_faces(CPUState* cpu, uint32_t fb, uint32_t bytecount,
                      : fresh  ? (textured ? 0x18u : 0x0Cu)
                      :          (textured ? 0x14u : 0x08u);   /* strip */
         if (sprite) sprites++;
+        skips += skip;
         if (skip || sprite) { fp += adv; continue; }   /* sprite (billboard FT4, .L8002256C) TODO; advance to stay aligned */
         if (n < cap) {
             moby_wface_t* F = &out[n];

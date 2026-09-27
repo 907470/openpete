@@ -632,11 +632,11 @@ static void cl_apply(uint8_t* cam) {
  * rides a separate full-precision 24-byte record table at +0x10. */
 /** @brief Reads a guest word through the sub-tick view.
  *
- * @param va The guest address, in [0x80000000, 0x801FFFFC).
+ * @param va The guest address, in [0x80000000, 0x801FFFFC].
  * @param out Receives the word.
  * @return 1 on success, 0 when va is out of range or unmapped. */
 static int cut_rd32(uint32_t va, uint32_t* out) {
-    if (va < 0x80000000u || va >= 0x80200000u - 4u) return 0;
+    if (va < 0x80000000u || va > 0x80200000u - 4u) return 0;
     const uint8_t* p = (const uint8_t*)openpete_psx_to_host_ptr(va);
     if (!p) return 0;
     memcpy(out, p, 4);
