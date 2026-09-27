@@ -1075,14 +1075,25 @@ void          rhi_set_slot_contest(int on);
  * The recompile captures the current creation-time globals
  * (rhi_set_affine_uv, rhi_set_notex, rhi_set_wireframe,
  * rhi_set_moby_truescope): the live-toggle path for state otherwise latched
- * at pipeline creation. It waits for device idle (a one-time hitch), then
- * swaps each pipeline's Vulkan objects in place: every rhi_pipeline handle
+ * at pipeline creation. Compiles go through the device's pipeline cache, so
+ * a variant built before (a toggle turned back) is a cache hit. Without a
+ * device idle it swaps each pipeline's Vulkan objects in place and retires
+ * the old ones until the frames that may have bound them retire: every rhi_pipeline handle
  * stays valid, so owners (renderer fields, mod material and mesh caches)
  * need no involvement. A pipeline whose recompile fails keeps its old
  * objects (stale constants, still functional).
  * @param dev Device, or NULL.
  * @return The number of failed recompiles; 0 when all succeed or for NULL. */
 int           rhi_rebuild_pipelines(rhi_device *dev);
+
+/** @brief Name the directory where devices created afterwards persist their Vulkan pipeline cache.
+ *
+ * Each device loads vk-pipelines-<vendor>-<device>-<cache uuid>.bin from it
+ * at creation and rewrites it at rhi_destroy when the cache grew. NULL or
+ * "" keeps the cache in memory only (the default). Process-global; call
+ * before rhi_create.
+ * @param dir Existing directory, or NULL. */
+void          rhi_set_pipeline_cache_dir(const char *dir);
 
 /** @brief Create a pipeline from in-memory SPIR-V words (mod shaders).
  *

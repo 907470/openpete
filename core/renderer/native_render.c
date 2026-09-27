@@ -28,6 +28,7 @@
 #include "openpete_devui.h"
 #include "openpete_mods.h"   /* openpete_mods_texture_get (mod-texture runs) */
 #include "openpete_fb_snapshot.h"   /* framebuffer-window snapshot runs */
+#include "openpete_paths.h"         /* pipeline cache directory */
 
 #include "openpete_log.h"
 #include "openpete_time.h"   /* op_now — overlay's own sub-tick alpha (camera-independent) */
@@ -3443,6 +3444,16 @@ static void blend_family_create(rhi_device* dev, const rhi_pipeline_desc* base,
     if (!ok) blend_family_destroy(dev, fam, nsel);
 }
 
+/** @brief Point the RHI's pipeline cache at the per-user state "cache" directory, created on demand.
+ *
+ * Compiled pipelines then persist per GPU and driver across runs; when the
+ * directory cannot be resolved the cache stays in memory. */
+static void nr_set_pipeline_cache_dir(void)
+{
+    char dir[1024];
+    rhi_set_pipeline_cache_dir(openpete_paths_state_dir("cache", dir, sizeof dir, 1) == 0 ? dir : NULL);
+}
+
 /** @brief Log the wireframe view's raster mode when the view is on.
  *
  * With fillModeNonSolid the scene pipelines draw triangle edges in line
@@ -3539,6 +3550,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
 
     SDL_Window *win = NULL;
     rhi_device *dev = NULL;
+    nr_set_pipeline_cache_dir();
     if (headless) {
         /* No window: render into the offscreen/RTT and read back for screenshots.
          * The offscreen extent is the resolved size; the screenshot path composes

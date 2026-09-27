@@ -324,6 +324,9 @@ struct rhi_device {
     VkPhysicalDevice         phys;
     VkDevice                 device;
     uint32_t                 gfx_family;
+    VkPipelineCache          pcache;          /* every pipeline compiles through it */
+    char                     pcache_path[1152]; /* file it loads from and saves to; "" = not persisted */
+    size_t                   pcache_loaded;   /* bytes loaded, so an unchanged cache is not rewritten */
     VkQueue                  gfx_queue;
     char                     device_name[256];
     char                     driver_version[64];
@@ -577,10 +580,20 @@ struct rhi_device {
      * kept until no submitted frame can still read it. */
     struct rhi_retired_buf *retired;
     struct rhi_texture *retired_tex;   /* rhi_destroy_texture_deferred, linked by retire_next */
+    struct rhi_retired_pipe *retired_pipes;   /* pipelines replaced by rhi_rebuild_pipelines */
 };
 
 /* One replaced buffer allocation and the frame serial current when it was
  * replaced: frames up to that serial may have recorded binds of it. */
+/* A pipeline and layout replaced by rhi_rebuild_pipelines, destroyed once
+ * every frame that may have bound them has retired. */
+struct rhi_retired_pipe {
+    struct rhi_retired_pipe *next;
+    VkPipeline       pipeline;
+    VkPipelineLayout layout;
+    uint64_t         serial;
+};
+
 struct rhi_retired_buf {
     struct rhi_retired_buf *next;
     VkBuffer       buffer;
@@ -2462,6 +2475,113 @@ static void rhi_balloon_free(rhi_device *dev)
     dev->balloon_count = 0;
 }
 
+static char s_pcache_dir[1024];   /* rhi_set_pipeline_cache_dir; "" = not persisted */
+
+void rhi_set_pipeline_cache_dir(const char *dir)
+{
+    snprintf(s_pcache_dir, sizeof s_pcache_dir, "%s", dir ? dir : "");
+}
+
+/** @brief Read a whole file into a malloc'd buffer.
+ *
+ * @param path File path.
+ * @param out_n Receives the byte count.
+ * @return The bytes, or NULL when the file is absent, empty or unreadable. */
+static void *read_whole_file(const char *path, size_t *out_n)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    void *buf = NULL;
+    long n = (fseek(f, 0, SEEK_END) == 0) ? ftell(f) : -1;
+    if (n > 0 && fseek(f, 0, SEEK_SET) == 0 && (buf = malloc((size_t)n)) != NULL &&
+        fread(buf, 1, (size_t)n, f) != (size_t)n) { free(buf); buf = NULL; }
+    fclose(f);
+    *out_n = buf ? (size_t)n : 0;
+    return buf;
+}
+
+/** @brief Create the device's pipeline cache, seeded from its file when the file's header matches this device.
+ *
+ * The file is named by the device's vendor id, device id and
+ * pipelineCacheUUID under the directory rhi_set_pipeline_cache_dir named, so
+ * a driver update or another GPU starts a fresh file. A header naming
+ * another device or driver is ignored. Without a directory the cache lives
+ * for the process only. A failure leaves dev->pcache VK_NULL_HANDLE, which
+ * every pipeline create accepts.
+ * @param dev Device whose physical device and logical device exist. */
+static void pipeline_cache_open(rhi_device *dev)
+{
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(dev->phys, &props);
+    dev->pcache_path[0] = '\0';
+    if (s_pcache_dir[0]) {
+        int n = snprintf(dev->pcache_path, sizeof dev->pcache_path,
+                         "%s/vk-pipelines-%04x-%04x-", s_pcache_dir,
+                         props.vendorID, props.deviceID);
+        for (int i = 0; i < VK_UUID_SIZE && n > 0 && (size_t)n + 3 < sizeof dev->pcache_path; i++)
+            n += snprintf(dev->pcache_path + n, sizeof dev->pcache_path - (size_t)n, "%02x",
+                          props.pipelineCacheUUID[i]);
+        if (n > 0 && (size_t)n + 5 < sizeof dev->pcache_path) memcpy(dev->pcache_path + n, ".bin", 5);
+        else dev->pcache_path[0] = '\0';
+    }
+    size_t n = 0;
+    void *data = dev->pcache_path[0] ? read_whole_file(dev->pcache_path, &n) : NULL;
+    const uint8_t *h = (const uint8_t *)data;
+    uint32_t hdr[4] = {0};
+    if (data && n >= 16 + VK_UUID_SIZE) memcpy(hdr, h, sizeof hdr);
+    const bool match = data && n >= 16 + VK_UUID_SIZE &&
+                       hdr[1] == VK_PIPELINE_CACHE_HEADER_VERSION_ONE &&
+                       hdr[2] == props.vendorID && hdr[3] == props.deviceID &&
+                       memcmp(h + 16, props.pipelineCacheUUID, VK_UUID_SIZE) == 0;
+    VkPipelineCacheCreateInfo ci = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
+        .initialDataSize = match ? n : 0,
+        .pInitialData = match ? data : NULL,
+    };
+    if (vkCreatePipelineCache(dev->device, &ci, NULL, &dev->pcache) != VK_SUCCESS) {
+        ci.initialDataSize = 0; ci.pInitialData = NULL;
+        if (vkCreatePipelineCache(dev->device, &ci, NULL, &dev->pcache) != VK_SUCCESS)
+            dev->pcache = VK_NULL_HANDLE;
+    }
+    dev->pcache_loaded = match ? n : 0;
+    if (dev->pcache_path[0])
+        RHI_LOG("pipeline cache: %s (%zu bytes loaded%s)\n", dev->pcache_path,
+                dev->pcache_loaded, data && !match ? "; stale header ignored" : "");
+    free(data);
+}
+
+/** @brief Write the pipeline cache to its file when it changed size since load, then destroy it.
+ *
+ * The data goes to a temporary file renamed over the target, so a reader
+ * never sees a partial file and two processes saving at once leave one
+ * whole file.
+ * @param dev Device, idle. */
+static void pipeline_cache_close(rhi_device *dev)
+{
+    if (!dev->pcache) return;
+    size_t n = 0;
+    void *data = NULL;
+    if (dev->pcache_path[0] &&
+        vkGetPipelineCacheData(dev->device, dev->pcache, &n, NULL) == VK_SUCCESS &&
+        n > 0 && n != dev->pcache_loaded && (data = malloc(n)) != NULL &&
+        vkGetPipelineCacheData(dev->device, dev->pcache, &n, data) == VK_SUCCESS) {
+        char tmp[sizeof dev->pcache_path + 16];
+        snprintf(tmp, sizeof tmp, "%s.tmp", dev->pcache_path);
+        FILE *f = fopen(tmp, "wb");
+        bool ok = f && fwrite(data, 1, n, f) == n;
+        if (f && fclose(f) != 0) ok = false;
+#ifdef _WIN32
+        if (ok) remove(dev->pcache_path);
+#endif
+        if (ok && rename(tmp, dev->pcache_path) == 0)
+            RHI_LOG("pipeline cache: saved %zu bytes\n", n);
+        else { remove(tmp); RHI_LOG("pipeline cache: save to %s failed\n", dev->pcache_path); }
+    }
+    free(data);
+    vkDestroyPipelineCache(dev->device, dev->pcache, NULL);
+    dev->pcache = VK_NULL_HANDLE;
+}
+
 /**
  * @brief Creates the Vulkan instance, device, queues and presentation target.
  *
@@ -2513,6 +2633,7 @@ static rhi_device *rhi_create_impl(struct SDL_Window *window, const char *app_na
         for (uint32_t i = 0; i < RHI_MAX_SC_IMAGES; i++)
             dev->images_in_flight[i] = VK_NULL_HANDLE;
     }
+    pipeline_cache_open(dev);
     if (!create_render_pass(dev))       goto fail;
     if (!create_rt_render_pass(dev))    goto fail;
     if (!create_rt_ds_render_pass(dev)) goto fail;
@@ -2635,6 +2756,7 @@ void rhi_destroy(rhi_device *dev)
         if (dev->in_flight[i]) vkDestroyFence(dev->device, dev->in_flight[i], NULL);
         if (dev->gpu_qp[i])    vkDestroyQueryPool(dev->device, dev->gpu_qp[i], NULL);
     }
+    pipeline_cache_close(dev);
     if (dev->pool)   vkDestroyCommandPool(dev->device, dev->pool, NULL);
     if (dev->device) vkDestroyDevice(dev->device, NULL);
     if (dev->surface) vkDestroySurfaceKHR(dev->instance, dev->surface, NULL);
@@ -2889,6 +3011,14 @@ static bool ensure_swapchain(rhi_device *dev)
  * @param all true frees every entry; the caller has waited the device idle. */
 static void retired_reclaim(rhi_device *dev, bool all)
 {
+    for (struct rhi_retired_pipe **pp = &dev->retired_pipes; *pp; ) {
+        struct rhi_retired_pipe *r = *pp;
+        if (!all && r->serial + RHI_FRAMES_IN_FLIGHT > s_frame_serial) { pp = &r->next; continue; }
+        *pp = r->next;
+        if (r->pipeline) vkDestroyPipeline(dev->device, r->pipeline, NULL);
+        if (r->layout)   vkDestroyPipelineLayout(dev->device, r->layout, NULL);
+        free(r);
+    }
     for (rhi_texture **tp = &dev->retired_tex; *tp; ) {
         rhi_texture *t = *tp;
         if (!all && t->retire_serial + RHI_FRAMES_IN_FLIGHT > s_frame_serial) { tp = &t->retire_next; continue; }
@@ -5815,7 +5945,7 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
     };
     VkPipeline pipeline = VK_NULL_HANDLE;
     const Uint64 pipe_t0 = SDL_GetTicksNS();
-    VkResult r = vkCreateGraphicsPipelines(dev->device, VK_NULL_HANDLE, 1, &gp, NULL, &pipeline);
+    VkResult r = vkCreateGraphicsPipelines(dev->device, dev->pcache, 1, &gp, NULL, &pipeline);
     s_census.pipe_builds++;
     s_census.pipe_ns += SDL_GetTicksNS() - pipe_t0;
     vkDestroyShaderModule(dev->device, vs, NULL);
@@ -5903,22 +6033,32 @@ rhi_pipeline *rhi_create_pipeline_spv(rhi_device *dev,
 int rhi_rebuild_pipelines(rhi_device *dev)
 {
     if (!dev) return 0;
-    vkDeviceWaitIdle(dev->device);   /* no pipeline may be in flight during the swap */
+    const Uint64 t0 = SDL_GetTicksNS();
     int fails = 0, rebuilt = 0;
     for (rhi_pipeline *p = dev->pipes_head; p; p = p->next) {
         VkPipeline np = VK_NULL_HANDLE;
         VkPipelineLayout nl = VK_NULL_HANDLE;
-        if (pipeline_compile(dev, p, &np, &nl) == 0) {
+        if (pipeline_compile(dev, p, &np, &nl) != 0) {
+            fails++;   /* keep the old objects: stale spec constants beat a hole */
+            continue;
+        }
+        /* Frames in flight may still execute the old objects: they are
+         * destroyed once those frames retire, so no device idle is needed. */
+        struct rhi_retired_pipe *r = calloc(1, sizeof(*r));
+        if (!r) { vkDeviceWaitIdle(dev->device); r = NULL; }
+        if (r) {
+            *r = (struct rhi_retired_pipe){ dev->retired_pipes, p->pipeline, p->layout, s_frame_serial };
+            dev->retired_pipes = r;
+        } else {
             if (p->pipeline) vkDestroyPipeline(dev->device, p->pipeline, NULL);
             if (p->layout)   vkDestroyPipelineLayout(dev->device, p->layout, NULL);
-            p->pipeline = np;
-            p->layout = nl;
-            rebuilt++;
-        } else {
-            fails++;   /* keep the old objects: stale spec constants beat a hole */
         }
+        p->pipeline = np;
+        p->layout = nl;
+        rebuilt++;
     }
-    RHI_LOG("rebuilt %d pipelines (%d failed)\n", rebuilt, fails);
+    RHI_LOG("rebuilt %d pipelines (%d failed) in %.1f ms\n", rebuilt, fails,
+            (double)(SDL_GetTicksNS() - t0) / 1e6);
     return fails;
 }
 
