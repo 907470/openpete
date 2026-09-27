@@ -105,12 +105,19 @@ static int     s_tscroll_have;
 
 /* ---- per-game decode switches --------------------------------------------- */
 
-/* One packed 11/11/10 sector vertex to its origin-relative offsets. X and Y
- * are the same in every game; the Z offset is scaled by the layout: Spyro 1
- * uses the 10 bits as they are, Spyro 3 doubles them, and a Spyro 3 sector
- * carrying the flat flag (header word 1 bit 12) stores Z at a quarter of the
- * unshifted value (the draw sorts such a sector into a list whose vertex loop
- * reads the Z offset unshifted, in quarter units). */
+/** @brief Unpacks one packed 11/11/10 sector vertex into its origin-relative offsets.
+ *
+ * X is bits 21..31 and Y bits 10..20 in every game. The 10-bit Z is scaled
+ * by the layout: Spyro 1 uses it as it is (vz_shl 0), Spyro 2 and 3 double
+ * it (vz_shl 1), and a Spyro 2 or 3 sector carrying the flat flag (header
+ * word 1 bit 12) stores Z at a quarter of the unshifted value (vz_flat_shr 2;
+ * the draw sorts such a sector into a list whose vertex loop reads the Z
+ * offset unshifted, in quarter units).
+ * @param v The packed vertex word.
+ * @param flat Nonzero when the sector carries the flat flag.
+ * @param x Receives the X offset.
+ * @param y Receives the Y offset.
+ * @param z Receives the scaled Z offset. */
 static inline void tvert_unpack(uint32_t v, int flat, int* x, int* y, int* z) {
     *x = (int)((v >> 21) & 0x7FF);
     *y = (int)((v >> 10) & 0x7FF);
@@ -883,11 +890,14 @@ static double s_nearz = -1.0;
 /* near/HQ subdivide pass enable (Route 2; OPENPETE_TERRAIN_NEARHQ, default ON). */
 static int s_nearhq = -1;
 
-/* Push one (already near-clipped) camera-space triangle: project to screen + the
- * scene-feed ttri (+ the colour-A/B verts). */
-/* Room for `need` triangles in the worker's output run, growing it. Each
- * worker grows only its own run; the serial walk's run is s_tri_v. On an
- * allocation failure the triangle is not stored (logged by the vec). */
+/** @brief Ensures room for `need` triangles in the worker's output run, growing it.
+ *
+ * Each worker grows only its own run; the serial walk's run is s_tri_v. A
+ * context with no output vector cannot grow.
+ * @param W The walk context.
+ * @param need The triangle count required.
+ * @return 1 when the run holds `need` triangles, 0 on an allocation failure
+ *         (logged by the vector), in which case the caller stores nothing. */
 static int tn_room(tn_wctx* W, int need) {
     if (need <= W->tri_cap) return 1;
     if (!W->out || mod_fvec_reserve_noted(W->out, (size_t)need) != 0) return 0;
@@ -895,6 +905,18 @@ static int tn_room(tn_wctx* W, int need) {
     return 1;
 }
 
+/** @brief Pushes one near-clipped camera-space triangle into the walk's output run.
+ *
+ * Each corner is projected to the screen unless it carries a precomputed
+ * screen position (oflag), and is floored under the integer vertex snap. The
+ * triangle takes the material and the walk context's emit_* tags (tier,
+ * guard, fill, sector and face, OT key and slots, key-cell table). The serial
+ * walk also appends the projected corners to the colour A/B arrays.
+ * @param W The walk context.
+ * @param a The first corner.
+ * @param b The second corner.
+ * @param c The third corner.
+ * @param m The triangle's material. */
 static void push_tri(tn_wctx* W, ngte_cvert a, ngte_cvert b, ngte_cvert c, const tmat* m) {
     if (!tn_room(W, W->tri_n + 1)) return;
     ngte_cvert cc[3] = { a, b, c };
@@ -1017,7 +1039,10 @@ static void emit_tri(tn_wctx* W, const lvert* sv, int a, int b, int c,
     clip_push_tri(W, A, B, C, m);
 }
 
-/* A projected vertex and its corner's colour and UVs as a cvert. */
+/** @brief Combines a projected vertex with its corner's colour and UVs into a cvert.
+ * @param p The projected vertex.
+ * @param k The corner's colour and UV.
+ * @return The cvert; the screen position, outcode flag and fx/fy are zero. */
 static ngte_cvert tn_cv(const lvert* p, lcorner k) {
     ngte_cvert c = { p->m1, p->m2, p->m3, k.rgb, k.u, k.v };
     return c;
@@ -1119,19 +1144,26 @@ static void emit_quad_cv(tn_wctx* W, ngte_cvert tl, ngte_cvert tr, ngte_cvert bl
  * the original quad's raw NEAR colours. (The minority per-cell detail-bit finer
  * subdivision — the D_8006CF98 pattern path — is NOT replicated here; the 2×2 is
  * the dominant geometry and fixes the medallion's affine warp.) */
-/* HQ sub-quad UV ORIENTATION (rotation/flip), mirroring func_800276A0
- * block_80027EA8: the HQ Tiledef carries an orientation index in `word1 >> 25`,
- * masked by the descriptor's `uv_ori_mask`; when nonzero it selects an 8-byte
- * entry in the offset table (`base + ori`: Spyro 1 D_8006D058 at 128 bytes,
- * Spyro 2 D_80062040 and Spyro 3 D_80065D08 at 64, the latter two holding
- * byte-identical 32-texel entries) of per-corner packed (du | dv<<8) deltas added to the base
- * UVs — TL/BL/BR relative to (u0,v0) [word0], TR relative to (u1,v1) [word1] —
- * then masked to the u/v bytes (carry between u,v is faithful). Entry 0/64 are
- * the identity transform (≡ decode_tiledef's default), so cells already drawn
- * correctly are untouched. Without this, rotated/flipped HQ tiles render
- * unrotated (~0.4% of near sub-quads in the attract demo: e.g. Artisans tiles
- * 6/23 ori=104, the right-column sub-quads of a cell). The 16px (0x0F) table
- * half is unused in practice. Returns the ori index (0 = identity, u/v kept). */
+/** @brief Applies a Tiledef's rotation or flip to its decoded corner UVs.
+ *
+ * Mirrors func_800276A0 block_80027EA8. The Tiledef carries an orientation
+ * byte offset in `word1 >> 25`, masked by the layout's uv_ori_mask; a nonzero
+ * offset selects an 8-byte entry of the offset table (uv_ori_table: Spyro 1
+ * D_8006D058, 128 bytes; Spyro 2 D_80062040 and Spyro 3 D_80065D08, 64 bytes
+ * of byte-identical 32-texel entries). The entry holds per-corner packed
+ * (du | dv << 8) deltas, added to word0's (u0, v0) for TL, BL and BR and to
+ * word1's (u1, v1) for TR as 16-bit sums, so a carry from u into v is kept as
+ * the game keeps it. Spyro 1's table has a 32-texel half and a 16-texel half
+ * (read by the 4x4 cells); offsets 0 and 64 are identity entries. A layout
+ * whose Tiledef word1 is the BR corner (tile_word1_br) subtracts 0x1F00 from
+ * it first, as the game does.
+ * @param cpu The guest CPU state.
+ * @param e The Tiledef's guest address.
+ * @param u The four corner U texels, [TL, TR, BL, BR]; rewritten when the
+ *          offset is nonzero.
+ * @param v The four corner V texels, [TL, TR, BL, BR]; rewritten likewise.
+ * @return The orientation offset; 0 (identity, or no table located) leaves
+ *         u and v unchanged. */
 static int tiledef_apply_ori(CPUState* cpu, uint32_t e, float u[4], float v[4]) {
     if (!game_layout.terrain.uv_ori_table) return 0;   /* no table located: identity */
     uint32_t w0 = rd(cpu, e), w1 = rd(cpu, e + 4);
@@ -1231,8 +1263,20 @@ static void tface_facing(const lvert* sv, int i0, int i1, int i2, int i3,
         hp ? tface_front3d(sv, i0, i1, i2, i3, quad, flip, dside) : 1;
 }
 
-/* Quadrant i's tile of a near face's HQ record (i = TL, TR, BL, BR): its
- * material and corner UVs [TL,TR,BL,BR], orientation and UV scroll applied. */
+/** @brief Decodes quadrant i's tile of a near face's HQ record with orientation and UV scroll applied.
+ *
+ * The tile is the 8-byte Tiledef at hq_sub0 + i * 8 of the record. Its
+ * material takes the record's texture id. A tile on the live scroll list adds
+ * the fractional V offset of its group (quadrants 0-1 the first, 2-3 the
+ * second) after the orientation.
+ * @param cpu The guest CPU state.
+ * @param hqBase The HQ record's guest address.
+ * @param texid The record's texture id.
+ * @param abe The face's semi-transparency gate.
+ * @param i The quadrant, 0..3 = TL, TR, BL, BR.
+ * @param out Receives the material.
+ * @param u Receives the four corner U texels, [TL, TR, BL, BR].
+ * @param v Receives the four corner V texels, [TL, TR, BL, BR]. */
 static void tn_near_quad_tile(CPUState* cpu, uint32_t hqBase, int texid, int abe, int i,
                               tmat* out, float u[4], float v[4]) {
     tmat mat; memset(&mat, 0, sizeof(mat)); mat.bpp = 16;
@@ -1265,13 +1309,14 @@ static void tn_near_quad_tile(CPUState* cpu, uint32_t hqBase, int texid, int abe
     *out = mat;
 }
 
-/* A 2x2 quadrant's drain side coordinates (psx_key_contest.glsl): for the
- * quadrant's corners Q = TL, TR, BL, BR, fx is the dot product of the
- * corner's camera-space position with the normal of the eye plane through
- * the quadrant's column isoline (the segment joining its top and bottom
- * edge midpoints), scaled to 1 at TR, and fy the same for its row isoline,
- * scaled to 1 at BL. Written out term by term as the retained cache's
- * vertex stage computes them (terrain.vert quad_side_fl). */
+/** @brief Computes the normal of the plane through the eye and two camera-space points.
+ *
+ * The normal is the cross product a x b of the camera-space positions,
+ * written out term by term as the retained cache's vertex stage computes it
+ * (terrain.vert quad_side_fl).
+ * @param a The first point.
+ * @param b The second point.
+ * @param n Receives the normal. */
 static void tn_eye_normal(const ngte_cvert* a, const ngte_cvert* b, double n[3]) {
     n[0] = a->m2 * b->m3 - b->m2 * a->m3;
     n[1] = a->m3 * b->m1 - b->m3 * a->m1;
@@ -1280,6 +1325,14 @@ static void tn_eye_normal(const ngte_cvert* a, const ngte_cvert* b, double n[3])
 static double tn_eye_side(const double n[3], const ngte_cvert* v) {
     return n[0] * v->m1 + n[1] * v->m2 + n[2] * v->m3;
 }
+/** @brief Sets a 2x2 quadrant's drain side coordinates fx and fy on its four corners.
+ *
+ * For the corners Q = TL, TR, BL, BR (psx_key_contest.glsl), fx is the dot
+ * product of the corner's camera-space position with the normal of the eye
+ * plane through the quadrant's column isoline (the segment joining its top
+ * and bottom edge midpoints), scaled to 1 at TR, and fy the same for its row
+ * isoline, scaled to 1 at BL. A zero scale is taken as 1.
+ * @param Q The corners, [TL, TR, BL, BR]; fx and fy are written. */
 static void tn_quad_sides(ngte_cvert Q[4]) {
     const ngte_cvert ct = cv_mid(Q[0], Q[1]), cb = cv_mid(Q[2], Q[3]);
     const ngte_cvert rl = cv_mid(Q[0], Q[2]), rr = cv_mid(Q[1], Q[3]);
@@ -2051,10 +2104,16 @@ static void tn_keycells_add(tn_keycells* K, int i, int on, float key, int slot) 
     K->n++;
 }
 
-/* The table (psx_key_contest.glsl): entry slot[i] of drain sub-cell i holds
- * its key above the least one (a skipped sub-cell 0, the face's least key),
- * 14 bits in a halfword; entry 0's top two bits the grid (1 quad cells, 2
- * tier-4 sub-triangles, 3 tier-2). */
+/** @brief Packs a face's sub-cell keys into the 16-halfword key table.
+ *
+ * Layout per psx_key_contest.glsl: halfword slot[i] of drain sub-cell i holds
+ * its key above the least one in 14 bits (a skipped sub-cell holds 0, the
+ * face's least key); bits 14..15 of halfword 0 hold the grid (1 quad cells,
+ * 2 tier-4 sub-triangles, 3 tier-2).
+ * @param K The face's sub-cell keys.
+ * @param cnt The sub-cell count.
+ * @param grid The grid code.
+ * @param out Receives the table, two halfwords per word. */
 static void tn_keycells_pack(const tn_keycells* K, int cnt, uint32_t grid, uint32_t out[8]) {
     memset(out, 0, 8 * sizeof(uint32_t));
     for (int i = 0; i < cnt; i++) {
@@ -2065,21 +2124,38 @@ static void tn_keycells_pack(const tn_keycells* K, int cnt, uint32_t grid, uint3
     out[0] |= grid << 14;
 }
 
-/* Install a face's table for the triangles emitted next, at its least key. */
+/** @brief Installs a face's key table for the triangles emitted next, keyed at its least key.
+ *
+ * Sets emit_keycells, emit_otkey (the least key) and emit_kc on the walk
+ * context; the caller clears emit_keycells after the face.
+ * @param W The walk context.
+ * @param K The face's sub-cell keys.
+ * @param cnt The sub-cell count.
+ * @param grid The grid code tn_keycells_pack stores. */
 static void tn_keycells_begin(tn_wctx* W, const tn_keycells* K, int cnt, uint32_t grid) {
     W->emit_keycells = 1;
     W->emit_otkey = K->kmin;
     tn_keycells_pack(K, cnt, grid, W->emit_kc);
 }
 
-/* A triangle corner's face-local coordinate (A, B, C at (0,0), (4,0),
- * (0,4)): the drain grid in quarter-edge units. */
+/** @brief Sets a triangle corner's face-local coordinate in the drain grid.
+ *
+ * Callers place A, B and C at (0,0), (4,0) and (0,4): the drain grid in
+ * quarter-edge units.
+ * @param v The corner; fx and fy are written.
+ * @param x The face-local x.
+ * @param y The face-local y. */
 static void tn_fl(ngte_cvert* v, float x, float y) { v->fx = x; v->fy = y; }
 
-/* The keys of a tier-4 quad's 16 cells over grid G, in the drain's
- * row-major order (table entry = cell). A straddling face's back-facing
- * cell (the drain's per-cell NCLIP, nc4_front) and a cell whose corner sum
- * is 0 are skipped, as the drain skips them. */
+/** @brief Computes the keys of a tier-4 quad's 16 cells over its 5x5 node grid.
+ *
+ * Cells are in the drain's row-major order (table entry = cell). A
+ * straddling single-sided face's back-facing cell (the drain's per-cell
+ * NCLIP, nc4_front) and a cell whose key (tn_drain_key4) is not positive are
+ * skipped, as the drain skips them.
+ * @param nf The face.
+ * @param G The 5x5 node grid.
+ * @param K Receives the keys; reset first. */
 static void tn_quad_cell_keys(const tn_nearface* nf, ngte_cvert G[5][5], tn_keycells* K) {
     K->n = 0; K->kmin = 0.0f;
     for (int i = 0; i < 16; i++) {
@@ -2228,13 +2304,23 @@ static int nt4_cell(CPUState* cpu, uint32_t row, int rot) {
     return (off >> 3) & 15;
 }
 
-/* A sub-triangle's corner UVs (r_environment.s 0x80029E88-0x80029ECC): the
- * entry (word1 >> 25) & hq_tri_uv_mask of orientation block (rot + o) & 3
- * of hq_tri_uv, added to the tile words as 32-bit sums, so a u or v byte
- * carries into the next: A = word0 + the entry's low half, B = word1 + its
- * high half (signed), C = word0 + the signed halfword at entry + 4. The prim
- * takes its CLUT from A's word and its TPAGE from B's; *matdiff is set when
- * those differ from the tile's own. */
+/** @brief Computes a sub-triangle's corner UVs from a Tiledef and the triangle UV table.
+ *
+ * Mirrors r_environment.s 0x80029E88-0x80029ECC. The table entry is byte
+ * offset (word1 >> 25) & hq_tri_uv_mask of orientation block (rot + o) & 3
+ * (128 bytes each) of hq_tri_uv. Its deltas are added to the tile words as
+ * 32-bit sums, so a u or v byte carries into the next: A = word0 + the
+ * entry's low half, B = word1 + its high half (signed), C = word0 + the
+ * signed halfword at entry + 4. The prim takes its CLUT from A's word and its
+ * TPAGE from B's.
+ * @param cpu The guest CPU state.
+ * @param e The Tiledef's guest address.
+ * @param rot The face's rotation.
+ * @param o The sub-triangle's orientation offset.
+ * @param u Receives the corner U texels, [A, B, C].
+ * @param v Receives the corner V texels, [A, B, C].
+ * @param matdiff Set to 1 when A's CLUT half or B's TPAGE half differs from
+ *                the tile's own, else 0. */
 static void tiledef_tri_uv(CPUState* cpu, uint32_t e, int rot, int o,
                            float u[3], float v[3], int* matdiff) {
     uint32_t w0 = rd(cpu, e), w1 = rd(cpu, e + 4);
@@ -2377,14 +2463,17 @@ static void nt_emit(tn_wctx* W, CPUState* cpu, const tn_nearface* nf, const ngte
     }
 }
 
-/* Near emit of a routed triangle face, the tier-4 (tier2 = 0) or tier-2
- * split: its three corners carry the raw near colours of word 1 bytes 3, 2
- * and 0 (C's from byte 0, 0x80029834 and 0x8002807C; the flat GT3 emit
- * reads byte 1). */
-/* A sub-triangle's table entry (psx_key_contest.glsl) from its nodes' grid
- * places (k_nt4_rc), h the grid step (1 tier 4, 2 tier 2): an upward
- * sub-triangle, two nodes on its top row, at 4j + i, a downward one at
- * 4(3 - j) + 3 - i, (j, i) its least row and column in steps. */
+/** @brief Returns a sub-triangle's key-table entry from its nodes' grid places.
+ *
+ * Per psx_key_contest.glsl, with the nodes' rows and columns from k_nt4_rc
+ * and (j, i) the least row and column in grid steps: an upward sub-triangle
+ * (two nodes on its top row) is entry 4j + i, a downward one
+ * 4(3 - j) + 3 - i.
+ * @param a The first node.
+ * @param b The second node.
+ * @param c The third node.
+ * @param h The grid step, 1 for tier 4 and 2 for tier 2.
+ * @return The table entry, 0..15. */
 static int tn_sub_slot(int a, int b, int c, int h) {
     const int ra = k_nt4_rc[a][0], rb = k_nt4_rc[b][0], rc = k_nt4_rc[c][0];
     int rmin = ra < rb ? ra : rb; if (rc < rmin) rmin = rc;
@@ -2396,10 +2485,18 @@ static int tn_sub_slot(int a, int b, int c, int h) {
     return top == 2 ? j * 4 + i : (3 - j) * 4 + (3 - i);
 }
 
-/* The keys of a split's sub-triangles over nodes N (tier 2: 4, tier 4: 16);
- * a straddling face's back-facing sub-triangle carries none, as the drains
- * skip it (nt_emit's facing test), and neither does a sub-triangle whose key
- * is 0 (every node at or behind the eye), as for the quad cells. */
+/** @brief Computes the keys of a triangle split's sub-triangles over its 15-node grid.
+ *
+ * Tier 2 has 4 sub-triangles, tier 4 has 16. A straddling single-sided
+ * face's back-facing sub-triangle carries no key, as the drains skip it
+ * (nt_emit's facing test), and neither does a sub-triangle whose key is not
+ * positive (every node at or behind the eye). Each key goes to the entry
+ * tn_sub_slot names.
+ * @param cpu The guest CPU state.
+ * @param nf The face.
+ * @param N The 15-node grid.
+ * @param tier2 1 for the tier-2 split, 0 for tier 4.
+ * @param K Receives the keys; reset first. */
 static void tn_tri_cell_keys(CPUState* cpu, const tn_nearface* nf, const ngte_cvert N[15],
                              int tier2, tn_keycells* K) {
     K->n = 0; K->kmin = 0.0f;
@@ -2417,6 +2514,21 @@ static void tn_tri_cell_keys(CPUState* cpu, const tn_nearface* nf, const ngte_cv
     }
 }
 
+/** @brief Emits a routed triangle face as its tier-4 or tier-2 split.
+ *
+ * The corners carry the raw near colours of word 1 bytes 3, 2 and 0 (C's
+ * from byte 0, 0x80029834 and 0x8002807C; the flat GT3 emit reads byte 1).
+ * The 15-node grid is built from A, B and C at face-local (0,0), (4,0) and
+ * (0,4) and snapped under the integer vertex snap. A tier-4 triangle drawn
+ * as the tier-2 split keys each fragment by the drain's tier-4 sub-triangle
+ * containing it; trisplit_faces counts the face.
+ * @param W The walk context.
+ * @param cpu The guest CPU state.
+ * @param nf The face.
+ * @param A The first corner.
+ * @param B The second corner.
+ * @param C The third corner.
+ * @param tier2 1 for the tier-2 split, 0 for tier 4. */
 static void terrain_near_emit_tri(tn_wctx* W, CPUState* cpu, const tn_nearface* nf,
                                   ngte_cvert A, ngte_cvert B, ngte_cvert C, int tier2) {
     ngte_cvert N[15];
@@ -2435,12 +2547,17 @@ static void terrain_near_emit_tri(tn_wctx* W, CPUState* cpu, const tn_nearface* 
     W->trisplit_faces[tier2]++;
 }
 
-/* The split-triangle census: zero a set of counters, or add one walk
- * context's into the per-walk sums. */
+/** @brief Zeroes one set of split-triangle census counters.
+ * @param f The face counts, per tier.
+ * @param s The sub-triangle counts, per tier.
+ * @param c The culled sub-triangle counts, per tier.
+ * @param m The material-differ counts, per tier. */
 static void trisplit_reset(int f[2], int s[2], int c[2], int m[2]) {
     memset(f, 0, 2 * sizeof(int)); memset(s, 0, 2 * sizeof(int));
     memset(c, 0, 2 * sizeof(int)); memset(m, 0, 2 * sizeof(int));
 }
+/** @brief Adds one walk context's split-triangle and tier-4 cell counters into the per-walk sums.
+ * @param W The walk context. */
 static void trisplit_sum(const tn_wctx* W) {
     for (int k = 0; k < 2; k++) {
         s_trisplit_faces[k] += W->trisplit_faces[k];
@@ -2966,11 +3083,18 @@ static int lp_artfix_lookup(CPUState* cpu, int sec, int face, uint32_t* rgb) {
     return terrain_game.lp_artfix(s_lvl, sec, face, rgb);
 }
 
-/* OPENPETE_TERRAIN_FIELDCENSUS=1 — one-shot per level: walk the FULL sector
- * table directly in emulated RAM (decode is lazy and camera-dependent; the
- * census must not be) and dump every face's authored LOD fields + the packed
- * local verts, for the offline distribution/correlation/coplanar-overlay
- * censuses. Layout mirrors tsc_get/tsc_decode_faces exactly. */
+/** @brief Dumps every sector's authored LOD fields and packed local vertices to stderr, once per sector table.
+ *
+ * Runs under OPENPETE_TERRAIN_FIELDCENSUS (any value) from tsc_tag_gapfill.
+ * Walks the whole sector table in guest RAM rather than the decode cache,
+ * since decode is lazy and camera-dependent. A sector table whose pointer
+ * and count hash to the previous call's key is skipped. Emits [fc-hdr], then
+ * per sector [fc-sec], [fc-lpv] and [fc-hpv] (at most 256 vertices each),
+ * one [fc-lpf] per LP face and one [fc-hpf] per HP face; at most 1024
+ * sectors. The layout mirrors tsc_get and tsc_decode_faces.
+ * @param cpu The guest CPU state.
+ * @param sectorPtr The sector pointer table's guest address.
+ * @param sectorCnt The sector count. */
 static void tsc_field_census(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt) {
     static uint32_t last_key;
     uint32_t ck = sectorPtr ^ (sectorCnt * 2654435761u) ^ 0x5CA1AB1Eu;
@@ -3085,12 +3209,17 @@ static void tsc_tag_gapfill(CPUState* cpu, tscache_t* C,
     }
 }
 
-/* Re-derive a CACHED sector's fill tags. The tags are static level data, so
- * they are normally decoded once — but the inspector's session verdicts and
- * preview mode change what the list says while the level is live, and a
- * sector already in the cache would otherwise keep the old tagging until it
- * is evicted. Keyed on the inspector's generation counter, so this costs one
- * integer compare per cache hit when nothing has changed. */
+/** @brief Re-derives a cached sector's fill tags after the fill inspector's list changed.
+ *
+ * The tags are static level data decoded once, but the inspector's session
+ * verdicts and preview mode change the list while the level is live. tsc_get
+ * calls this on a cache hit whose fillGen differs from
+ * openpete_fillpick_generation, so an unchanged list costs one compare per
+ * hit. A poly-anim sector's LP fill tags are cleared, as its LP bank is stale.
+ * @param cpu The guest CPU state.
+ * @param C The cached sector.
+ * @param sectorPtr The sector pointer table's guest address.
+ * @param sectorCnt The sector count. */
 static void tsc_retag_fill(CPUState* cpu, tscache_t* C,
                            uint32_t sectorPtr, uint32_t sectorCnt) {
     C->fillGen = openpete_fillpick_generation();
@@ -3254,15 +3383,19 @@ static int tsc_sector_polyanim(CPUState* cpu, uint32_t s,
     return 0;
 }
 
-/* Hash of the sector's packed LP and HP vertex words. The decode cache's
- * signature is the header (words +0x04..+0x14), which carries the counts, the
- * flags and the bounding sphere but not the geometry: a gameplay event that
- * collapses a prop by rewriting its vertex block in place leaves every
- * signature word untouched, so every later lookup hits the pre-event decode.
- * Sectors named by an env poly-anim descriptor are excluded by the caller —
- * their vertices are rewritten every tick by design, and the registry path
- * re-decodes them into prev/cur banks that a full miss would drop. 0 is
- * reserved for "not computed". */
+/** @brief Returns the FNV-1a hash of a sector's packed LP and HP vertex words.
+ *
+ * The decode cache's signature is the header (words +0x04..+0x14), which
+ * carries the counts, the flags and the bounding sphere but not the
+ * geometry: a gameplay event that rewrites a vertex block in place leaves
+ * every signature word untouched, and this hash detects it. The caller
+ * excludes sectors named by an env poly-anim descriptor, whose vertices are
+ * rewritten every tick and which the registry path re-decodes into prev and
+ * cur banks that a full miss would drop.
+ * @param cpu The guest CPU state.
+ * @param s The sector's guest address.
+ * @param g The sector's header words +0x04..+0x14.
+ * @return The hash, never 0 (0 means not computed). */
 static uint32_t tsc_vhash(CPUState* cpu, uint32_t s, const uint32_t g[5]) {
     uint32_t nLpV = g[3] & 0xFFu, nHpV = g[4] & 0xFFu;
     uint32_t hpVerts = s + 0x1Cu + ((g[4] >> 24) & 0xFFu) * 4u;
@@ -3732,8 +3865,12 @@ static uint32_t canim_lerp(uint32_t p, uint32_t c, double a) {
     return out;
 }
 
-/* The decode-cache slot holding sector `s` (the probe window tsc_get places
- * it in), NULL when it is not cached. */
+/** @brief Finds the decode-cache slot holding a sector.
+ *
+ * Probes the TSC_WINDOW slots tsc_get places a sector in, starting at its
+ * address hash.
+ * @param s The sector's guest address.
+ * @return The slot, or NULL when the sector is not cached. */
 static tscache_t* tsc_find(uint32_t s) {
     uint32_t h = (((s >> 2) * 2654435761u) >> 14) & (TSC_SLOTS - 1);
     for (uint32_t w = 0; w < TSC_WINDOW; w++) {
@@ -3743,9 +3880,12 @@ static tscache_t* tsc_find(uint32_t s) {
     return NULL;
 }
 
-/* The colour-anim slot of a decoded sector for this build: stamped by
- * tsc_col_anim_refresh, and only while its arrays sit where the decode put
- * them. NULL for every other sector. */
+/** @brief Returns a decoded sector's colour-anim slot for this build.
+ *
+ * The slot is the one tsc_col_anim_refresh stamped for this build, and only
+ * while its LP and HP colour bases and counts match the decode's.
+ * @param SC The decoded sector.
+ * @return The slot, or NULL for every other sector. */
 static const canim_t* tsc_canim(const tscache_t* SC) {
     const canim_t* A = SC->canimPres == s_vanim_pres ? SC->canim : NULL;
     if (!A || A->lpBase != SC->lpColBase || A->hpBase != SC->nearBase
@@ -3753,8 +3893,12 @@ static const canim_t* tsc_canim(const tscache_t* SC) {
     return A;
 }
 
-/* The walk's colour source: the slot's `mix` words while this build's alpha
- * is below 1 and the slot holds a previous tick; NULL = read guest RAM. */
+/** @brief Returns the colour-anim slot whose mix words the walk reads, or NULL to read guest RAM.
+ *
+ * The slot is returned while this build's colour alpha is not 1 and the
+ * slot holds a previous tick.
+ * @param SC The decoded sector.
+ * @return The slot, or NULL. */
 static const canim_t* tsc_canim_mix(const tscache_t* SC) {
     const canim_t* A = tsc_canim(SC);
     return (A && A->havePrev && s_canim_a != 1.0) ? A : NULL;
@@ -3953,19 +4097,34 @@ static int tsc_scroll_sweep(uint32_t desc, uint32_t ct, uint32_t cur,
     return 1;
 }
 
-/* The fractional V offset `dv` a tile group whose whole-texel base is `base`
- * draws at, moved by one scroll window `win` when base + dv would leave
- * [0, win): the sampler truncates toward zero, so a negative V fetches the
- * wrong row, and the content is periodic over the window. */
+/** @brief Wraps a tile group's fractional V offset so its drawn V stays inside the scroll window.
+ *
+ * The offset moves by one window when base + dv would leave [0, win): the
+ * sampler truncates toward zero, so a negative V fetches the wrong row, and
+ * the content is periodic over the window.
+ * @param base The group's whole-texel V base.
+ * @param dv The fractional V offset.
+ * @param win The scroll window, in texels.
+ * @return The wrapped offset. */
 static float tscroll_wrap(double base, double dv, double win) {
     if (base + dv < 0.0)       dv += win;
     else if (base + dv >= win) dv -= win;
     return (float)dv;
 }
 
-/* One scroller descriptor: mark its tile live for the retained-GPU claim,
- * carry the accumulator generation, and publish the tile's fractional V
- * offsets for this build. Returns 1 when a sub-tick sweep was applied. */
+/** @brief Publishes one scroller descriptor's tile state for this build.
+ *
+ * Marks the tile live for the retained-GPU claim, bumps the tile generation
+ * when the 7-bit accumulator advanced on a canonical build, and publishes the
+ * tile's fractional V offsets: the LQ entry, the two HQ quadrant groups and
+ * the four 4x4 cell rows. A descriptor naming a tile of 128 or above is
+ * ignored.
+ * @param cpu The guest CPU state.
+ * @param desc The descriptor's guest address.
+ * @param pair 1 to apply the sub-tick sweep toward the previous accumulator.
+ * @param now The present clock.
+ * @param dbg 1 to print a [tanim] line.
+ * @return tsc_scroll_sweep's verdict when pair is set, else 0. */
 static int tsc_scroll_desc(CPUState* cpu, uint32_t desc, int pair,
                            op_time_t now, int dbg) {
     uint32_t ct = rd(cpu, desc + 4) & 0xFFFFu;
@@ -4048,8 +4207,20 @@ scan:
                 openpete_frame, s_vanim_pres, s_vanim_sub, s_tanim_en, dbg_desc, dbg_paired);
 }
 
-/* Re-decode cached texmats whose tile content changed (env texture anim).
- * Epoch-gated: free when no tile changed since this sector's last refresh. */
+/** @brief Re-decodes a cached sector's texture materials whose tile content changed under the env texture anim.
+ *
+ * Returns at once when no tile generation changed since the sector's last
+ * refresh (s_tgen_epoch). Each HP face whose tile generation advanced is
+ * re-decoded; a quad's HQ record generation is tracked without a re-decode,
+ * since the near path decodes the record per emit. LP faces are untextured
+ * and skipped. Any change bumps texGen,
+ * which marks the sector's GPU bake stale.
+ * @param cpu The guest CPU state.
+ * @param C The cached sector.
+ * @param lqTable The LQ texture table's guest address.
+ * @param hqTable The HQ texture table's guest address.
+ * @param texTblMode 2 to decode from the HQ table, else the LQ table.
+ * @param hiDetail The hi-detail flag passed to terrain_texmat. */
 static void tsc_refresh_anim(CPUState* cpu, tscache_t* C,
                              uint32_t lqTable, uint32_t hqTable,
                              int texTblMode, int hiDetail) {
@@ -4172,12 +4343,21 @@ static void terrain_visdbg(CPUState* cpu, uint32_t sectorCnt, int group,
  * derived from it share one H. */
 static ngte_view s_view;
 
-/* Bounding-sphere frustum rejection, environment.s:800224E0-80022548. The
- * three comparisons are behind the near plane, and outside the horizontal and
- * vertical half-angles, the second and third widened by a radius-proportional
- * slack the draw builds by shifts. The GTE saturates IR1..IR3 to 16 bits
- * before the draw reads them back. wx/wy scale the two half-widths: 1.0 is the
- * 4:3 frame the draw itself tests, above 1.0 the displayed frame. */
+/** @brief Tests a sector's bounding sphere for frustum rejection, as environment.s 800224E0-80022548 does.
+ *
+ * The three comparisons are behind the near plane, and outside the
+ * horizontal and vertical half-angles, the second and third widened by a
+ * radius-proportional slack the draw builds by shifts. The inputs are
+ * saturated to 16 bits first, as the GTE saturates IR1..IR3 before the draw
+ * reads them back.
+ * @param c1m The sphere centre's horizontal view coordinate.
+ * @param c2m The sphere centre's vertical view coordinate.
+ * @param cbin The sphere centre's view depth.
+ * @param r The sphere radius.
+ * @param wx The horizontal half-width scale: 1.0 is the 4:3 frame the draw
+ *           tests, above 1.0 the displayed frame.
+ * @param wy The vertical half-width scale, likewise.
+ * @return Nonzero when the sphere is rejected. */
 static int tsec_sphere_cull(double c1m, double c2m, double cbin, int r,
                             double wx, double wy) {
     double vx = ngte_ir_clamp(c1m), vy = ngte_ir_clamp(c2m), vz = ngte_ir_clamp(cbin);
@@ -4199,9 +4379,16 @@ typedef struct {
     double   wx, wy;
 } tvis_sphere;
 
-/* 1 when sector i's header bounding sphere passes the frustum test at the
- * displayed half-widths. Header word 0 is centreX<<16 | centreY, word 1 is
- * centreZ<<16 | flags | radius. */
+/** @brief Tests whether a sector's header bounding sphere passes the frustum test at the displayed half-widths.
+ *
+ * Header word 0 is centreX << 16 | centreY, word 1 is
+ * centreZ << 16 | flags | radius. The centre is transformed through the
+ * draw's sector-binning matrix and tested by tsec_sphere_cull.
+ * @param cpu The guest CPU state.
+ * @param S The sphere-test inputs.
+ * @param i The sector index.
+ * @return 1 when the sphere passes, 0 when it is rejected or the sector
+ *         pointer is null. */
 static int tvis_sphere_in(CPUState* cpu, const tvis_sphere* S, uint32_t i) {
     uint32_t sp = rd(cpu, S->sectorPtr + i * 4);
     if (!sp) return 0;
@@ -6479,11 +6666,22 @@ static const tscache_t* s_pre_SC[1024];
 static uint32_t s_pre_sec[1024];
 static struct { uint8_t worker; int start, count; } s_pre_rec[1024];
 
-/* Emit a triangle the port draws whole (A, B, C its corners i0, i1, i2).
- * A near HP triangle the drain inserts as its tier-2 or tier-4
- * sub-triangles (no split textures located, or the face not routed to the
- * near path) keys each fragment by the sub-triangle containing it
- * (tn_keycells_begin). */
+/** @brief Emits a triangle face the port draws whole.
+ *
+ * A, B and C are the face's corners i0, i1 and i2, placed at face-local
+ * (0,0), (4,0) and (0,4). An opaque, unblended near HP triangle the drain
+ * inserts as its tier-2 or tier-4 sub-triangles keys each fragment by the
+ * sub-triangle containing it (tn_keycells_begin); this applies on a layout
+ * with both split node tables.
+ * @param W The walk context.
+ * @param cpu The guest CPU state.
+ * @param F The face.
+ * @param hp 1 for a high-poly face.
+ * @param straddle 1 when a corner is at or behind the eye.
+ * @param m The face's material.
+ * @param A The first corner.
+ * @param B The second corner.
+ * @param C The third corner. */
 static void tn_flat_tri_emit(tn_wctx* W, CPUState* cpu, const tsface_t* F, int hp, int straddle,
                              const tmat* m, ngte_cvert A, ngte_cvert B, ngte_cvert C) {
     tn_fl(&A, 0.0f, 0.0f); tn_fl(&B, 4.0f, 0.0f); tn_fl(&C, 0.0f, 4.0f);
@@ -6503,32 +6701,56 @@ static void tn_flat_tri_emit(tn_wctx* W, CPUState* cpu, const tsface_t* F, int h
     W->emit_keycells = 0;
 }
 
-/* The walk's near-path verdict for an HP face (the caller holds the facing
- * and table gates): a quad by face_is_near; a triangle, on a game with the
- * tier-2 triangle pass, by face_is_near over (A, B, C, C) (the triangle
- * classifier at 0x80027168 is the quad one with C counted twice, so a near
- * triangle takes tier 4 or tier 2 exactly where a quad would), otherwise by
- * face_tri4_routed alone, a near triangle outside tier 4 keeping the flat
- * GT3 emit. */
+/** @brief Returns the walk's near-path verdict for an HP face.
+ *
+ * The caller holds the facing and table gates. A quad is decided by
+ * face_is_near. A triangle, on a game with the tier-2 triangle pass, is
+ * decided by face_is_near over (A, B, C, C): the triangle classifier at
+ * 0x80027168 is the quad one with C counted twice, so a near triangle takes
+ * tier 4 or tier 2 exactly where a quad would. Otherwise face_tri4_routed
+ * decides alone, and a near triangle outside tier 4 keeps the flat GT3 emit.
+ * @param sv The sector's projected vertices.
+ * @param F The face.
+ * @param rec The face record's guest address, the key of the game's near queues.
+ * @return Nonzero when the face takes the near path. */
 static int tn_face_near(const lvert* sv, const tsface_t* F, uint32_t rec) {
     if (F->quad) return face_is_near(sv[F->i0].m3, sv[F->i1].m3, sv[F->i2].m3, sv[F->i3].m3, F->w3);
     if (game_layout.terrain.hq_tri2_tiles)
         return face_is_near(sv[F->i0].m3, sv[F->i1].m3, sv[F->i2].m3, sv[F->i2].m3, F->w3);
     return face_tri4_routed(sv[F->i0].m3, sv[F->i1].m3, sv[F->i2].m3, F->w3, rec, F->hq_idx);
 }
-/* The same verdict read off the game's filled queues (OPENPETE_TERRAIN_NEARQ
- * debug): a quad in either queue, a triangle in either queue with the tier-2
- * pass or in the +0x1E00 queue without it. */
+/** @brief Returns the near-path verdict read off the game's filled queues, for OPENPETE_TERRAIN_NEARQ.
+ *
+ * A quad is near when it is in either queue; a triangle when it is in either
+ * queue on a game with the tier-2 pass, or in the +0x1E00 queue on a game
+ * without it that locates the tier-4 triangle cells.
+ * @param quad 1 for a quad face.
+ * @param rec The face record's guest address, the key of the queues.
+ * @return Nonzero when the face is near. */
 static int tn_queue_near(int quad, uint32_t rec) {
     if (quad || game_layout.terrain.hq_tri2_tiles) return is_deferred(rec);
     return game_layout.terrain.hq_tri4_cells != 0 && is_deferred4(rec);
 }
 
-/* Near emit of one routed HP face: the raw near colours of its corners
- * (no DPCS fog on near cells), then the quad's 2x2 or 4x4 subdivide or the
- * triangle's tier-4 or tier-2 split. Corners in the drain's grid order: TL = i0,
- * TR = i1, BL = i3, BR = i2; a triangle's C is i2 = i3 with the colour of
- * word 1 byte 0 (c3). */
+/** @brief Emits one routed HP face on the near path.
+ *
+ * Reads the raw near colours of its corners (no DPCS fog on near cells),
+ * through host pointers when host_col is set, then emits the quad's 2x2 or
+ * 4x4 subdivide or the triangle's tier-4 or tier-2 split. Corners are in the
+ * drain's grid order: TL = i0, TR = i1, BL = i3, BR = i2; a triangle's C is
+ * i2 = i3 with the colour of word 1 byte 0 (c3). Counts near_q_agree or
+ * near_c_only by the face's presence in the game's queue, and the dbg_spike
+ * counters.
+ * @param W The walk context.
+ * @param cpu The guest CPU state.
+ * @param sv The sector's projected vertices.
+ * @param F The face.
+ * @param host_col 1 to read colours through h_near.
+ * @param h_near The near colour bank as a host pointer.
+ * @param nearBase The near colour bank's guest address.
+ * @param hqTable The HQ record table's guest address.
+ * @param rec The face record's guest address, the key of the game's near queues.
+ * @param straddle 1 when a corner is at or behind the eye. */
 static void tn_near_face(tn_wctx* W, CPUState* cpu, const lvert* sv, const tsface_t* F,
                          int host_col, const uint8_t* h_near, uint32_t nearBase,
                          uint32_t hqTable, uint32_t rec, int straddle) {
@@ -6556,10 +6778,20 @@ static void tn_near_face(tn_wctx* W, CPUState* cpu, const lvert* sv, const tsfac
     W->dbg_spike++;   /* near/HQ cells subdivided */
 }
 
-/* A pass's colour arrays as host pointers: guest RAM through the sub-tick
- * view, or an env-anim colour sector's lerped words between ticks (`CA`,
- * tsc_canim_mix). The LP pass reads one array, the HP pass the near and far
- * pair; the other pointers are NULL. */
+/** @brief Resolves a pass's colour arrays as host pointers.
+ *
+ * The source is guest RAM through the sub-tick view, or an env-anim colour
+ * sector's lerped words between ticks (CA, from tsc_canim_mix). The LP pass
+ * reads one array, the HP pass the near and far pair; the other pointers are
+ * NULL, and a guest array outside the sub-tick view resolves to NULL.
+ * @param CA The colour-anim slot, or NULL to read guest RAM.
+ * @param passLP 1 for an LP pass.
+ * @param lpColBase The LP colour array's guest address.
+ * @param nearBase The HP near colour array's guest address.
+ * @param farBase The HP far colour array's guest address.
+ * @param h_lp Receives the LP colours.
+ * @param h_near Receives the HP near colours.
+ * @param h_far Receives the HP far colours. */
 static void tn_col_ptrs(const canim_t* CA, int passLP, uint32_t lpColBase,
                         uint32_t nearBase, uint32_t farBase, const uint8_t** h_lp,
                         const uint8_t** h_near, const uint8_t** h_far) {
@@ -6577,9 +6809,17 @@ static void tn_col_ptrs(const canim_t* CA, int passLP, uint32_t lpColBase,
     *h_far  = (const uint8_t*)openpete_subtick_host_ptr(farBase);
 }
 
-/* One sector's face walk (all three passes), emitting into W. Extracted
- * verbatim from the build loop; the aliases below stand in for what used to
- * be the enclosing function's locals. */
+/** @brief Walks one visible sector's faces into W's triangle run.
+ *
+ * Reads the sector's precomputed verdicts (drawHP, drawLP, the fill and
+ * far-only flags). A sector the retained GPU cache owns publishes those
+ * verdicts as sector parameters and skips the face walk; an owned sector
+ * wholly behind the near threshold publishes nothing. Otherwise the walk
+ * runs three passes: 0 the LP tier drawn behind HP, 1 the HP tier, 2 the LP
+ * hole-fill backing, each skipped when its verdict is off.
+ * @param W The walk context receiving the triangles.
+ * @param G The walk's shared inputs.
+ * @param vi The sector's index in the visible list. */
 static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
     CPUState* cpu = G->cpu;
     int (*M)[3] = G->M; int (*Mbin)[3] = G->Mbin;
@@ -7634,8 +7874,7 @@ static uint32_t tc_global_flags(int nearhq, int lod_handoff) {
 /* Sector occlusion-cull verdicts, in the order they are tested. */
 enum { TOCC_KEEP = 0, TOCC_FRUSTUM = 1, TOCC_DEPTH = 2 };
 
-/* The occlusion-cull verdict for sector i, whose view-space bounding sphere
- * is (oc1, oc2, oc3) with the given radius, under this walk's camera.
+/** @brief Returns the occlusion-cull verdict for a sector's view-space bounding sphere under this walk's camera.
  *
  * The frustum reject is a test on the sector's own projected rect, so every
  * walk evaluates it under its own camera. The depth verdict reads the
@@ -7645,7 +7884,13 @@ enum { TOCC_KEEP = 0, TOCC_FRUSTUM = 1, TOCC_DEPTH = 2 };
  * reused frustum verdict would be wrong in the other direction: the
  * re-extract's interpolated camera lags the tick camera, so a sector the tick
  * camera has panned off is still in the re-extract's frame. A sector not
- * wholly in front of the camera has a meaningless rect and is kept. */
+ * wholly in front of the camera has a meaningless rect and is kept.
+ * @param i The sector index.
+ * @param oc1 The sphere centre's horizontal view coordinate.
+ * @param oc2 The sphere centre's vertical view coordinate.
+ * @param oc3 The sphere centre's view depth.
+ * @param radius The sphere radius.
+ * @return TOCC_KEEP, TOCC_FRUSTUM or TOCC_DEPTH. */
 static int tocc_sector_verdict(uint32_t i, double oc1, double oc2, double oc3,
                                double radius)
 {
@@ -9262,8 +9507,12 @@ static int portal_rim_face(CPUState* cpu, const ttri* t) {
  * distance decouple (with LOD forced off, the .s itself paints HP terrain
  * over its own fan) — the aperture is defined geometrically instead, in
  * both --lod modes. */
-/* OPENPETE_PORTAL_TRANSP_COVER=0: disable the transparent-terrain cover drop
- * (A/B lever — shows blended terrain through the preview again). */
+/** @brief Reports whether the transparent-terrain portal cover drop is enabled.
+ *
+ * OPENPETE_PORTAL_TRANSP_COVER=0 disables it, so blended terrain shows
+ * through the portal preview; unset or any other value enables it. Latched
+ * on the first call.
+ * @return 1 when enabled, else 0. */
 static int transp_cover_on(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_PORTAL_TRANSP_COVER");
@@ -9317,9 +9566,13 @@ static int portal_sky_covers(const ttri* t) {
     return 0;
 }
 
-/* A triangle of a face the drain inserts finer than it keys each fragment
- * by its own sub-cell: its face-local coordinates and the face's key table
- * ride the scene tri (sticky until the feed clears it). */
+/** @brief Sets the scene feed's key-cell state for a triangle that carries a key table.
+ *
+ * A triangle of a face the drain inserts finer than it keys each fragment by
+ * its own sub-cell: its face-local coordinates and the face's key table ride
+ * the scene triangle, sticky until the feed clears them. A triangle with no
+ * table (kc[0] zero) sets nothing.
+ * @param t The triangle. */
 static void tn_feed_key_cells(const ttri* t) {
     if (!t->kc[0]) return;
     const float fl[6] = { t->fx[0], t->fy[0], t->fx[1], t->fy[1], t->fx[2], t->fy[2] };
@@ -9957,11 +10210,16 @@ static void terrain_feed_native(CPUState* cpu) {
     }
 }
 
-/* UVDBG pairing: the captured textured prim nearest a native triangle's screen
- * centroid, with the squared distance in *out_d2. A quad prim is two native
- * triangles, so its own centroid sits half a tile from either triangle's and
- * the quad's two half centroids are candidates too; without them no triangle
- * of a subdivided quad pairs with the prim that drew it. */
+/** @brief Finds the captured textured prim nearest a native triangle's screen centroid.
+ *
+ * A quad prim is two native triangles, so its own centroid sits half a tile
+ * from either triangle's; the quad's two half centroids are candidates too,
+ * so a triangle of a subdivided quad pairs with the prim that drew it.
+ * @param ncx The native centroid's x.
+ * @param ncy The native centroid's y.
+ * @param out_d2 Receives the squared distance.
+ * @return The prim's index in s_gte, or -1 when no textured prim was
+ *         captured. */
 static int uvdbg_nn_prim(float ncx, float ncy, float* out_d2) {
     int bj = -1; float bd = 1e18f;
     for (int p = 0; p < s_gte_n; p++) {
@@ -9981,13 +10239,18 @@ static int uvdbg_nn_prim(float ncx, float ncy, float* out_d2) {
     *out_d2 = bd; return bj;
 }
 
-/* UVDBG corner UVs: pair each native triangle vertex with the captured prim's
- * vertex at the same screen position and require the same UV there. A rotated
- * or mirrored tile carries the same four UV pairs as the identity, permuted
- * between the corners, so only the per-corner pairing sees an orientation
- * divergence; the page, bpp and CLUT all agree across it. A corner with no
- * captured vertex within 3 px is not scored. Returns the corners scored and
- * clears *ok on the first disagreement. */
+/** @brief Compares a native triangle's corner UVs with the captured prim's at the same screen positions.
+ *
+ * Each native vertex is paired with the prim vertex nearest it and must carry
+ * the same rounded UV. A rotated or mirrored tile carries the same four UV
+ * pairs as the identity, permuted between the corners, so only the
+ * per-corner pairing sees an orientation divergence; the page, bpp and CLUT
+ * all agree across it. A corner with no prim vertex within 3 px is not
+ * scored.
+ * @param t The native triangle.
+ * @param g The captured prim.
+ * @param ok Cleared on a disagreement; left unchanged otherwise.
+ * @return The count of corners scored. */
 static int uvdbg_corner_uv(const ttri* t, const prim_t* g, int* ok) {
     int scored = 0;
     for (int k = 0; k < 3; k++) {

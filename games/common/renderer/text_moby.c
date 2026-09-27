@@ -190,8 +190,17 @@ static void glyph_set_xrange(glyph_cache_t* g) {
     g->vxmin = vxmin; g->vxmax = vxmax;
 }
 
-/* GAME_FONT_CLASS_PER_GLYPH: decode the model of class `cls` into `g`. Leaves
- * it invalid if the model isn't a loaded simple model. */
+/** @brief Decodes the simple model of one moby class into a glyph cache entry, for GAME_FONT_CLASS_PER_GLYPH.
+ *
+ * Each vertex is 3 bytes: Z, X and Y are its bytes 0, 1 and 2, sign-extended
+ * and doubled. Each face is 8 bytes: four 7-bit vertex indices in word 0 and
+ * a signed-byte normal (x byte 2, y byte 1, z byte 3) in word 1. The entry
+ * stays invalid when the class has no model, the model's word 0 is not
+ * negative (not a simple model, or its data not yet loaded), or its vertex or
+ * face count is out of range.
+ * @param cpu The guest CPU state.
+ * @param g The cache entry.
+ * @param cls The moby class. */
 static void cache_one_class(CPUState* cpu, glyph_cache_t* g, int cls) {
     g->valid = 0;
     uint32_t model = cpu->read_word(FONT.model_table + (uint32_t)cls * 4u);
@@ -238,9 +247,17 @@ static uint32_t one_class_model(CPUState* cpu, int need_blocks) {
     return model;
 }
 
-/* GAME_FONT_ONE_CLASS: decode block `index` of the font model into `g`. The
- * model's -Z faces the reader, so Z and the normal's Z are negated into the
- * host form. A face that is textured or not flat-lit is not a glyph face. */
+/** @brief Decodes one block of the font model into a glyph cache entry, for GAME_FONT_ONE_CLASS.
+ *
+ * The model's -Z faces the reader, so Z and the normal's Z are negated into
+ * the host form. A textured face (20 bytes) and a face without the flat-lit
+ * bit are skipped, as they are not glyph faces. The entry stays invalid when
+ * the block header is not a KSEG0 address, the vertex count is outside
+ * 3..TXT_MAX_GLYPH_V, or no glyph face remains.
+ * @param cpu The guest CPU state.
+ * @param g The cache entry.
+ * @param model The font model's guest address.
+ * @param index The block index. */
 static void cache_one_block(CPUState* cpu, glyph_cache_t* g, uint32_t model, int index) {
     g->valid = 0;
     uint32_t H = cpu->read_word(model + FONT.block_table_off + (uint32_t)index * 4u);
@@ -372,17 +389,17 @@ static void synth_hyphen(void) {
     g->valid = 1;
 }
 
-/* TABULAR FIGURES. The glyph models are proportional — '1' is markedly
- * narrower than '4' — so a number redrawn with different digits changes
- * width, and any text laid out from its measured width then reflows. On a
- * right-aligned readout that updates twice a second (the FPS counter) the
- * whole line visibly slides back and forth as the value changes.
+/** @brief Completes the glyph snapshot: sets the tabular digit advance and marks the cache ready.
  *
- * So every digit gets the SAME advance, the widest one's, and is centred
- * in it. A number's width then depends only on how many digits it has.
- * Done in the emitter rather than per consumer, so measure_string and
- * emit_string cannot disagree about it and every consumer — the counter,
- * the menu's values, the OSD, a mod's HUD — gets columns that line up. */
+ * The glyph models are proportional ('1' is narrower than '4'), so a number
+ * redrawn with different digits would change width and text laid out from
+ * its measured width would reflow. Every digit takes the widest valid
+ * digit's advance (s_digit_adv) and is centred in it (glyph_metrics), so a
+ * number's width depends only on its digit count. measure_string and
+ * emit_string both read it, so every consumer (the FPS counter, the menu's
+ * values, the OSD, a mod's HUD) gets aligned columns. Once ready, guest RAM
+ * is not read again.
+ * @param source The snapshot's source: 1 guest RAM, 2 the cache file. */
 static void cache_finish(int source) {
     s_digit_adv = 0;
     for (int d = 0; d < 10; d++) {
@@ -478,8 +495,13 @@ static void font_file_save(void) {
     OPL_INFO_F("font", "glyph cache written: %s (%u bytes)", path, (unsigned)total);
 }
 
-/* Fill s_glyph from the cache file. Returns 1 on success; on any mismatch
- * s_glyph is left all-invalid and 0 is returned. */
+/** @brief Fills the glyph cache from the font cache file.
+ *
+ * The file is rejected on a size, magic, version, disc, descriptor, length or
+ * checksum mismatch, a glyph out of bounds, or a missing digit '0'; the
+ * rejection is logged with its reason.
+ * @return 1 on success; 0 when no file is configured or present, or on a
+ *         rejection, which leaves every glyph invalid. */
 static int font_file_load(void) {
     const char* path = font_file_path();
     if (!path) return 0;
@@ -609,9 +631,14 @@ typedef struct {
     float gx[TXT_MAX_GLYPH_V], gy[TXT_MAX_GLYPH_V], gz[TXT_MAX_GLYPH_V];
 } emit_ctx_t;
 
-/* Start an emission into `out`, lit by the fixed front model (the FPS
- * counter's original look). Callers wanting the rotating specular overwrite
- * cx->light / cx->light_signed afterwards. */
+/** @brief Starts an emission into a vertex buffer, lit by the font's fixed front light.
+ *
+ * Counters are zeroed and the light is FONT.fixed_light with unsigned N.L
+ * shading. Callers wanting the rotating specular overwrite cx->light and
+ * cx->light_signed afterwards.
+ * @param cx The emission context.
+ * @param out The vertex buffer, or NULL to emit nothing.
+ * @param cap The buffer's capacity, in vertices. */
 static void emit_ctx_init(emit_ctx_t* cx, openpete_hud_vert* out, int cap) {
     cx->out = out;
     cx->cap = cap;
@@ -641,10 +668,24 @@ static void push_tri(emit_ctx_t* cx, int a, int b, int c, uint32_t rgba) {
     cx->glyph_n += 3;
 }
 
-/* Emit one cached glyph with its left edge at cursor_x, centred on center_y.
- * dy_model shifts the model vertically (model units) — used for the colon dots.
- * baseR/G/B is the (0..255) glyph colour. Returns the glyph width (overlay
- * frac), or -1 if the glyph isn't in the cache. */
+/** @brief Emits one cached glyph with its left edge at cursor_x, centred on center_y.
+ *
+ * The glyph is yawed about its own mid-X, normals included; the advance is
+ * the unyawed width. Each face is lit by N.L against the context's light and
+ * emitted without a winding cull (a quad as two triangles); the depth test
+ * keeps the nearer faces.
+ * @param cx The emission context.
+ * @param slot The glyph's cache slot.
+ * @param cursor_x The left edge, in overlay units.
+ * @param center_y The vertical centre, in overlay units.
+ * @param scale Overlay units per model unit.
+ * @param dy_model A vertical shift in model units (the colon dots).
+ * @param yaw The yaw in radians; 0 is front-facing.
+ * @param baseR The glyph colour's red, 0..255.
+ * @param baseG The glyph colour's green, 0..255.
+ * @param baseB The glyph colour's blue, 0..255.
+ * @return The glyph width in overlay units, or -1 when the slot is not
+ *         cached. */
 static float emit_glyph(emit_ctx_t* cx, int slot, float cursor_x, float center_y,
                         float scale, float dy_model, float yaw,
                         int baseR, int baseG, int baseB) {
@@ -695,8 +736,21 @@ static float emit_glyph(emit_ctx_t* cx, int slot, float cursor_x, float center_y
     return (float)(vxmax - vxmin) * scale;
 }
 
-/* Emit one string's glyphs into `out`. wob_phase >= 0 applies the selected-row
- * yaw wobble (a per-glyph phase ripple, like the PSX pause menu); < 0 = upright. */
+/** @brief Emits one string's glyphs into the context's buffer.
+ *
+ * A space, an uncached character and a character with no slot advance by
+ * TXT_SPACE; a colon is two scaled periods; a digit is centred in the
+ * tabular advance.
+ * @param cx The emission context.
+ * @param str The string.
+ * @param origin_x The left edge, in overlay units.
+ * @param origin_y The top edge, in overlay units.
+ * @param cap_h The cap height, in overlay units.
+ * @param base_rgb The glyph colour, 0xRRGGBB.
+ * @param wob_phase The selected-row yaw wobble phase (a per-glyph phase
+ *        ripple, like the PSX pause menu), or below 0 for upright glyphs.
+ * @return The count of vertices this string added; 0 when the cache is not
+ *         ready or the context has no buffer. */
 static int emit_string(emit_ctx_t* cx, const char* str,
                        float origin_x, float origin_y, float cap_h,
                        unsigned base_rgb, int wob_phase) {
@@ -772,10 +826,15 @@ int text_moby_native_mod_emit(const char* str, float x, float y,
  * line inside its region. */
 static float measure_string(const char* str, float cap_h);
 
-/* OPENPETE_TEXT_GLYPH_CENSUS=1: one stderr line each time the vertex count a
- * consumer publishes changes, with how many of them are glyph faces (the
- * rest is frame) and the snapshot's source (none, ram, file).
- * The count a check harness reads to tell a drawn font from an absent one. */
+/** @brief Prints one stderr line when a consumer's published vertex count changes, under OPENPETE_TEXT_GLYPH_CENSUS.
+ *
+ * The line carries the vertex count, how many of them are glyph faces (the
+ * rest is frame) and the snapshot's source (none, ram, file). A check
+ * harness reads it to tell a drawn font from an absent one. The variable is
+ * latched on the first call; any value but 0 enables it.
+ * @param consumer 0 perf, 1 menu, 2 osd, 3 version.
+ * @param nverts The vertex count published.
+ * @param glyph_verts Of those, the glyph-face vertices. */
 static void glyph_census(int consumer, int nverts, int glyph_verts) {
     static int s_on = -1;
     static int s_last[4] = { -1, -1, -1, -1 };
@@ -1038,14 +1097,25 @@ static uint32_t border_lit(const emit_ctx_t* cx, float nx, float ny) {
     return lit_colour(MENU_BORDER_R, MENU_BORDER_G, MENU_BORDER_B, t);
 }
 
-/* Emit a lit frame around (x0,y0)-(x1,y1) into `out` (lit by ecx's light — call
- * after the builder has installed the rotating specular). Returns verts written. Four straight edge strips: the
- * outer edge lies on the panel rect, the inner edge is a PERPENDICULAR inset by
- * bt (so each strip is a clean parallel-sided rectangle — no inward bulge). Each
- * strip is subdivided along its length; every column's colour comes from the
- * outward RADIAL normal at its outer point, so the glint travels smoothly along
- * the edge. Adjacent strips meet at a shared corner whose radial normal is
- * identical from either side, so the overlap is seamless. */
+/** @brief Emits a lit frame around a rectangle, lit by the emission context's light.
+ *
+ * Call after the builder has installed the rotating specular. The frame is
+ * four straight edge strips: the outer edge lies on the rectangle, the inner
+ * edge is a perpendicular inset by the thickness, so each strip is a
+ * parallel-sided rectangle. Each strip is split into MENU_BORDER_SAMP
+ * columns; a column's colour comes from the outward radial normal at its
+ * outer point, so the glint travels along the edge. Adjacent strips meet at
+ * a shared corner whose radial normal is identical from either side. A
+ * column that does not fit in cap is dropped.
+ * @param ecx The emission context supplying the light.
+ * @param x0 The left edge.
+ * @param y0 The top edge.
+ * @param x1 The right edge.
+ * @param y1 The bottom edge.
+ * @param thickness The frame thickness, in overlay units.
+ * @param out The vertex buffer.
+ * @param cap The buffer's free capacity, in vertices.
+ * @return The count of vertices written. */
 static int emit_lit_border(const emit_ctx_t* ecx,
                            float x0, float y0, float x1, float y1, float thickness,
                            openpete_hud_vert* out, int cap) {
