@@ -114,6 +114,9 @@ spyro-shadow-wall-disocclusion           | 1700  | 100  |        | 2700,3450
 # between such faces only. Foreground dragon in the new-game intro at 1614.
 start-new-game@mobyrank                  | 1609  | 10   |        | 1614 | OPENPETE_MOBY_RANK=1
 stone-hill-distant-terrain               | 1700  | 100  |        | 3020,3090
+# Gem in front of Spyro rendered partly behind his head at 1896: the gem's
+# facets lose the depth test to the player although closer in 3D.
+stone-hill-gem-spyro-occlusion           | 1700  | 100  |        | 1896
 # Same-moby self-interpenetration (as start-new-game@mobyrank): Lindar's neck
 # through the mouth at 2374.
 stone-hill-lindar-rescue@mobyrank        | 2369  | 10   |        | 2374 | OPENPETE_MOBY_RANK=1
