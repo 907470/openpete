@@ -102,37 +102,80 @@ extern int ngte_census_on;
 #define NGTE_LIMIT(site, canon, eff_) \
     ((void)(ngte_census_on ? ((canon) ? __atomic_fetch_add(&ngte_census.hit[site], 1ul, __ATOMIC_RELAXED) : 0ul, \
                               (eff_)  ? __atomic_fetch_add(&ngte_census.eff[site], 1ul, __ATOMIC_RELAXED) : 0ul) : 0ul))
-/* *c = *v with s = 1.0, H_eff = H_canon: the view for records whose screen
- * position the game authored (HUD, billboards) and for instruments that
- * compare against canonical prims. */
+/** @brief Copies `v` into `c` with s = 1.0 and H_eff = H_canon.
+ *
+ * The canonical view serves records whose screen position the game authored
+ * (HUD, billboards) and instruments that compare against canonical prims.
+ * @param v The view to copy.
+ * @param c Receives the copy at the canonical FOV. */
 void ngte_view_canon(const ngte_view* v, ngte_view* c);
 
-/* Unpack a GTE SHORTMATRIX (5 words = 9 packed int16) from raw words —
- * for callers whose source is the GTE control regs, not RAM. */
+/** @brief Unpacks a GTE SHORTMATRIX (5 words = 9 packed int16) from raw words.
+ *
+ * For callers whose source is the GTE control registers, not RAM. Each word
+ * holds two sign-extended int16 elements, low half first, in row-major order;
+ * the high half of w4 is unused.
+ * @param w0 Elements [0][0] and [0][1].
+ * @param w1 Elements [0][2] and [1][0].
+ * @param w2 Elements [1][1] and [1][2].
+ * @param w3 Elements [2][0] and [2][1].
+ * @param w4 Element [2][2] in its low half.
+ * @param M Receives the matrix, Q12. */
 void ngte_unpack_matrix(uint32_t w0, uint32_t w1, uint32_t w2,
                         uint32_t w3, uint32_t w4, int M[3][3]);
 
-/* Unpack a GTE SHORTMATRIX (5 words = 9 packed int16) from PSX RAM. */
+/** @brief Unpacks a GTE SHORTMATRIX (5 words = 9 packed int16) from PSX RAM.
+ *
+ * Reads the five words at p..p+16 and decodes them with ngte_unpack_matrix.
+ * @param cpu Reads guest RAM.
+ * @param p Guest address of the matrix.
+ * @param M Receives the matrix, Q12. */
 void ngte_read_matrix(CPUState* cpu, uint32_t p, int M[3][3]);
 
-/* MAC1/2/3 = (M · v) / 4096 — the rotate step alone, no TR, no divide. */
+/** @brief MAC1/2/3 = (M · v) / 4096, the rotate step alone with no TR and no divide.
+ *
+ * Computed in double with no truncation and no saturation.
+ * @param M Rotation, Q12.
+ * @param vx The vector's X.
+ * @param vy The vector's Y.
+ * @param vz The vector's Z.
+ * @param m1 Receives MAC1.
+ * @param m2 Receives MAC2.
+ * @param m3 Receives MAC3. */
 void ngte_mac(const int M[3][3], double vx, double vy, double vz,
               double* m1, double* m2, double* m3);
 
-/* IR1/2/3 as the hardware hands them back with lm = 0: MAC saturated to signed
- * 16 bits. A walk that mirrors a draw reading IR after MVMVA needs the
- * saturation, since the unsaturated MAC differs wherever the sector is far
- * enough for the product to overflow. */
+/** @brief IR1/2/3 as the hardware hands them back with lm = 0: MAC saturated to signed 16 bits.
+ *
+ * A walk that mirrors a draw reading IR after MVMVA needs the saturation,
+ * since the unsaturated MAC differs wherever the sector is far enough for the
+ * product to overflow.
+ * @param mac The MAC value.
+ * @return mac clamped to -32768..32767. */
 static inline double ngte_ir_clamp(double mac) {
     return mac < -32768.0 ? -32768.0 : (mac > 32767.0 ? 32767.0 : mac);
 }
 
-/* Raw-float projection family. TR may be NULL (treated as zero). ofx/ofy
- * are per-call (the shaded walk's billboards project about their own
- * anchor); H comes from the view.
- * z-floor: mac3 != 0 ? mac3 : 1.0 (exactly-zero guard only — callers
- * cull/clip on the RETURNED mac3, which is unfloored). out_sat mirrors
- * the GTE's would-have-saturated flags. Returns mac3 (view-Z). */
+/** @brief Projects a vertex in unclamped float: screen = offset + MAC · H_eff / z.
+ *
+ * MAC = TR + (M · v) / 4096 with no saturation. The divisor is mac3, or 1.0
+ * when mac3 is exactly zero; callers cull and clip on the returned mac3, which
+ * carries no floor. ofx/ofy are per call (the shaded walk's billboards project
+ * about their own anchor); H comes from the view. out_sat mirrors the GTE's
+ * would-have-saturated verdict at H_canon: MAC1 or MAC2 outside int16, mac3 <= 0,
+ * or H_canon >= 2 · mac3.
+ * @param M Rotation, Q12.
+ * @param TR Translation, or NULL for zero.
+ * @param vx The vertex's X.
+ * @param vy The vertex's Y.
+ * @param vz The vertex's Z.
+ * @param ofx_px Screen X offset in pixels.
+ * @param ofy_px Screen Y offset in pixels.
+ * @param v The view; supplies H_eff and H_canon.
+ * @param out_sx Receives the screen X.
+ * @param out_sy Receives the screen Y.
+ * @param out_sat Receives the saturation verdict, or NULL.
+ * @return mac3, the view-space Z. */
 double ngte_project_raw(const int M[3][3], const double TR[3],
                         double vx, double vy, double vz,
                         double ofx_px, double ofy_px, const ngte_view* v,
@@ -146,12 +189,37 @@ typedef struct {
     int sat;              /* SZ3 <= 0 or H >= 2*SZ3 (divide capped) */
 } ngte_proj;
 
-/* The divide half alone, for callers that already have view-space MACs. */
+/** @brief The GTE-faithful divide half alone, for callers that already have view-space MACs.
+ *
+ * IR1/IR2 are the MACs saturated to int16 and SZ3 is MAC3 saturated to
+ * 0..0xFFFF. When SZ3 <= 0 or H_canon >= 2 · SZ3 the quotient is the divide
+ * cap NGTE_DIV_CAP scaled by the view's s, else H_eff / SZ3; the regime reads
+ * H_canon so it does not move with --fov. With sxy_clamp the output is
+ * bounded to -1024..1023 on each axis. o->m1..m3 keep the unsaturated MACs.
+ * @param m1 MAC1.
+ * @param m2 MAC2.
+ * @param m3 MAC3.
+ * @param ofx Screen X offset in pixels.
+ * @param ofy Screen Y offset in pixels.
+ * @param v The view; supplies H_eff, H_canon and s.
+ * @param sxy_clamp Nonzero applies the SXY bound.
+ * @param o Receives the screen position, the MACs and the saturation flag. */
 void ngte_screen_gte(double m1, double m2, double m3,
                      double ofx, double ofy, const ngte_view* v,
                      int sxy_clamp, ngte_proj* o);
 
-/* Full GTE-faithful projection. TR may be NULL (treated as zero). */
+/** @brief Full GTE-faithful projection: MAC = TR + (M · v) / 4096, then ngte_screen_gte.
+ *
+ * @param M Rotation, Q12.
+ * @param TR Translation, or NULL for zero.
+ * @param vx The vertex's X.
+ * @param vy The vertex's Y.
+ * @param vz The vertex's Z.
+ * @param ofx Screen X offset in pixels.
+ * @param ofy Screen Y offset in pixels.
+ * @param v The view.
+ * @param sxy_clamp Nonzero applies the SXY bound.
+ * @param o Receives the projection. */
 void ngte_project_gte(const int M[3][3], const double TR[3],
                       double vx, double vy, double vz,
                       double ofx, double ofy, const ngte_view* v,
@@ -206,15 +274,22 @@ int ngte_dpcs_ch(int c8, int fc12, int ir0);
  * @return The blended colour, packed 0x00BBGGRR. */
 uint32_t ngte_depth_cue(uint32_t rgb, uint32_t fc, int ir0);
 
-/* The fog far colour (game_layout.fog.far_colour) as packed 0x00BBGGRR: one
- * word holding the three 8-bit components, or, when fog.far_colour_words is
- * set, three words R, G, B at the GTE's RFC/GFC/BFC scale (16 times the
- * 8-bit value). 0 when the game leaves the address unset. */
+/** @brief The fog far colour (game_layout.fog.far_colour) as packed 0x00BBGGRR.
+ *
+ * The source is one word holding the three 8-bit components, or, when
+ * fog.far_colour_words is set, three words R, G, B at the GTE's RFC/GFC/BFC
+ * scale (16 times the 8-bit value), each shifted right 4 and masked to 8 bits.
+ * @param cpu Reads guest RAM.
+ * @return The packed colour, or 0 when the game leaves the address unset. */
 uint32_t ngte_fog_far_colour(CPUState* cpu);
 
-/* O = (A · B) >> 12 on Q12 3x3 matrices, the column-rotate the game does
- * via MVMVA. Accumulates in 64 bits: the GTE's MAC is 44 bits wide, and
- * a scaled model matrix times a rotation exceeds int32 before the shift. */
+/** @brief O = (A · B) >> 12 on Q12 3x3 matrices, the column-rotate the game does via MVMVA.
+ *
+ * Accumulates in 64 bits: the GTE's MAC is 44 bits wide, and a scaled model
+ * matrix times a rotation exceeds int32 before the shift.
+ * @param A The left factor, Q12.
+ * @param B The right factor, Q12.
+ * @param O Receives the product, Q12; must not alias A or B. */
 void ngte_mat_mul3(const int A[3][3], const int B[3][3], int O[3][3]);
 
 /* The game's in-RAM sin/cos table (game_layout.sin_table): 256 entries per
@@ -222,30 +297,54 @@ void ngte_mat_mul3(const int A[3][3], const int B[3][3], int O[3][3]);
  * A game whose table is unlocated (the field is 0) gets sin 0 / cos 4096 from
  * every helper below instead of a read through address 0. */
 
-/* sin/cos at fractional byte-angle resolution: lerp adjacent table
- * entries. Exact at integer angles, smooth between, so a rotation renders
- * below the 1.4°/step byte grid. fb wraps into [0,256). */
+/** @brief sin/cos at fractional byte-angle resolution, lerping adjacent table entries.
+ *
+ * Exact at integer angles and linear between, so a rotation renders below the
+ * 1.4 degree byte grid. fb wraps into [0,256); entry 255 lerps toward entry 0.
+ * An unlocated table gives sin 0 and cos 4096.
+ * @param cpu Reads the game's sin/cos table.
+ * @param fb The byte angle, 256 to the turn.
+ * @param s_out Receives sin, Q12 scale.
+ * @param c_out Receives cos, Q12 scale. */
 void ngte_sincos_f(CPUState* cpu, double fb, double* s_out, double* c_out);
 
-/* ngte_sincos_f rounded to the nearest int for Q12 matrix composition. */
+/** @brief ngte_sincos_f rounded to the nearest int (halves away from zero) for Q12 matrix composition.
+ *
+ * @param cpu Reads the game's sin/cos table.
+ * @param fb The byte angle, 256 to the turn.
+ * @param s_out Receives sin, Q12.
+ * @param c_out Receives cos, Q12. */
 void ngte_sincos_interp(CPUState* cpu, double fb, int* s_out, int* c_out);
 
-/* Project a camera-relative offset the way every self-linking producer in
- * this engine does: the offset ordered (X - camX, camY - Y, camZ - Z) in the
- * pool's own world units, rotated by the camera matrix with a zero
- * translation, then divided. The SXY bound is dropped, as the particle feeder
- * drops it, because widescreen reveal needs the true X. */
+/** @brief Projects a camera-relative offset the way every self-linking producer in this engine does.
+ *
+ * off is ordered (X - camX, camY - Y, camZ - Z) in the pool's own world units;
+ * the camera matrix rotates the vector (off[1], off[2], off[0]) with a zero
+ * translation and ngte_screen_gte divides it about the view's ofx/ofy. The SXY
+ * bound is dropped, as the particle feeder drops it, because widescreen reveal
+ * needs the true X.
+ * @param v The view.
+ * @param off The camera-relative offset.
+ * @param o Receives the projection. */
 void ngte_project_offset(const ngte_view* v, const double off[3], ngte_proj* o);
 
-/* The rotation carrying a set of screen-space corner extents from the table
- * vector one angle names to the vector another names, as the cos/sin of the
- * change. Both angles are in table entries, 256 to the turn; a routine that
- * indexes the table at a fixed offset from its record's angle byte folds that
- * offset into both. The extents ride the table's own vector, so the change is
- * the rotation between the two table vectors: exact whatever the table's
- * phase, sense and amplitude, because the amplitude divides out. Writes the
- * identity and returns 0 when the two angles coincide or the table is
- * unlocated. */
+/** @brief The rotation carrying screen-space corner extents from the table vector one angle names to the vector another names.
+ *
+ * The result is the cos/sin of the change. Both angles are in table entries,
+ * 256 to the turn, read through ngte_sincos_f; a routine that indexes the table
+ * at a fixed offset from its record's angle byte folds that offset into both.
+ * The extents ride the table's own vector, so the change is the rotation
+ * between the two table vectors, divided by the squared amplitude of the first:
+ * exact whatever the table's phase, sense and amplitude. An unlocated table
+ * reads sin 0 / cos 4096 at every angle and so yields the identity with a
+ * return of 1.
+ * @param cpu Reads the game's sin/cos table.
+ * @param from_ang The source angle.
+ * @param to_ang The destination angle.
+ * @param rc Receives the cos of the change.
+ * @param rs Receives the sin of the change.
+ * @return 1 when a rotation was computed; 0 with the identity written when the
+ *         angles are equal or the first table vector's squared length is below 1. */
 int ngte_table_rot(CPUState* cpu, double from_ang, double to_ang,
                    double* rc, double* rs);
 
@@ -328,8 +427,13 @@ typedef enum {
 double ngte_nclip(double ax, double ay, double bx, double by,
                   double cx, double cy, ngte_nclip_mode mode);
 
-/* Hex dump of `nwords` guest words from `base`, eight per line, under
- * `label`. Verify-mode diagnostic; writes to stderr. */
+/** @brief Hex dump of `nwords` guest words from `base`, eight per line, under `label`, to stderr.
+ *
+ * A verify-mode diagnostic.
+ * @param cpu Reads guest RAM.
+ * @param label Printed before the base address.
+ * @param base Guest address of the first word.
+ * @param nwords Words to print. */
 void ngte_dump_words(CPUState* cpu, const char* label, uint32_t base, int nwords);
 
 /* ---- ordering-table polybuf walk ----------------------------------------

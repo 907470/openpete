@@ -48,10 +48,7 @@ extern op_time_t g_openpete_tick_period_ns;  /* one wall-time tick */
 
 #define PL (game_layout.player)
 
-/* ---- the part-transform block ------------------------------------------
- * A game with a fixed render scratch names its base; a game that carves the
- * scratch out of the polybuf every tick leaves the base 0 and the block starts
- * at *polybuf.end - part_base_polybuf_off, recomputed per pass. */
+/* ---- the part-transform block ------------------------------------------ */
 uint32_t player_part_block_base(CPUState* cpu) {
     if (PL.part_base) return PL.part_base + PL.part_off;
     if (!game_layout.polybuf.end || !PL.part_base_polybuf_off) return 0;
@@ -80,8 +77,15 @@ static uint32_t blk_get(const uint8_t* d) {
 
 static int player_parts(CPUState* cpu);
 
-/* Compose the whole block from gamestate. A part the provider refuses ends the
- * block, which the zero flags word already spells. */
+/** @brief Composes the whole part-transform block from gamestate into `dst`.
+ *
+ * The block is zeroed, then each part's flags word and A/B stream words are
+ * written at the game's own offsets from the provider's part_record, and part
+ * 0's seam words at part_seam_off when the layout declares it. A part the
+ * provider refuses, or one past part_block_len, ends the block, which the zero
+ * flags word already spells.
+ * @param cpu Passed to the provider.
+ * @param dst Receives part_block_len bytes. */
 static void player_block_derive(CPUState* cpu, uint8_t* dst) {
     memset(dst, 0, PL.part_block_len);
     if (!player_game.part_record || PL.part_block_len > PLAYER_REC_PART_MAX) return;
@@ -226,14 +230,17 @@ static double plane_dist(int part, double VX, double VY, double VZ) {
                  + s_plane.tr[part]);
 }
 
-/* The negative half's colour: the draw runs one DPCS per vertex colour with
- * the far colour in RFC/GFC/BFC, cueing the channel toward it by IR0. The
- * chain is reproduced integer for integer because both of its shifts truncate,
- * and a rounded blend lands a unit above the hardware on about half the
- * channels:
+/** @brief The water plane's negative-half colour for one packed 0x00BBGGRR vertex colour.
+ *
+ * The draw runs one DPCS per vertex colour with the far colour in
+ * RFC/GFC/BFC, cueing the channel toward it by IR0. The chain is reproduced
+ * integer for integer because both of its shifts truncate, and a rounded blend
+ * lands a unit above the hardware on about half the channels:
  *   IR  = SAR12((FC << 12) - (c << 16))   = FC - (c << 4)
  *   MAC = SAR12(IR * IR0 + (c << 16))
- *   out = MAC >> 4                        (the RGB2 pack), clamped to a byte */
+ *   out = MAC >> 4                        (the RGB2 pack), clamped to a byte
+ * @param rgb The vertex colour.
+ * @return The cued colour. */
 static uint32_t plane_shade(uint32_t rgb) {
     uint32_t out = 0;
     for (int i = 0; i < 3; i++) {
@@ -432,10 +439,15 @@ void player_walk_tri(int k, int idx[3], uint32_t rgb[3], int u[3], int v[3]) {
     }
 }
 
-/* Signed 2*area on the native FLOAT screen coordinates: the GTE's int16 floor
- * flips a near-zero-area face's sign at grazing angles and culls genuinely
- * front-facing thin geometry (a tail tip, a wing edge) so the background shows
- * through. The Z-buffer sorts the survivors. */
+/** @brief Signed 2*area of three projected stream vertices on the native float screen coordinates.
+ *
+ * The GTE's int16 grid flips a near-zero-area face's sign at grazing angles
+ * and culls front-facing thin geometry (a tail tip, a wing edge), so the float
+ * form is used. The Z-buffer sorts the survivors.
+ * @param i0 First vertex index.
+ * @param i1 Second vertex index.
+ * @param i2 Third vertex index.
+ * @return The area term, or -1 when an index is past the projected count. */
 static double player_nclip(int i0, int i1, int i2) {
     if (i0 >= s_sproj_n || i1 >= s_sproj_n || i2 >= s_sproj_n) return -1.0;
     return moby_tri_nclip(s_sproj[i0].sx, s_sproj[i0].sy,
@@ -443,11 +455,17 @@ static double player_nclip(int i0, int i1, int i2) {
                           s_sproj[i2].sx, s_sproj[i2].sy);
 }
 
-/* The depth key the draw sums before its per-face admission: the four
- * vertices of a quad, or — where the NCLIP tree left one triangle — that
- * triangle's three with the middle vertex counted twice, so both shapes share
- * one scale. SZ3 is the projected view-Z saturated to the GTE's 16-bit range,
- * which is what the draw reads back per vertex. */
+/** @brief The depth key the draw sums before its per-face admission.
+ *
+ * The sum is over the four vertices of a quad when the NCLIP tree emitted two
+ * triangles, or, where it left one triangle, that triangle's three with the
+ * middle vertex counted twice, so both shapes share one scale. Each term is
+ * SZ3: the projected view-Z saturated to 0..0xFFFF, which is what the draw
+ * reads back per vertex; an index past the projected count reads 0.
+ * @param idx The face's four stream vertex indices.
+ * @param order The emit tree's triangle orders; order[0] names the single triangle.
+ * @param nemit Triangles the emit tree produced, at least 1.
+ * @return The summed key. */
 static double player_depth_sum(const uint16_t idx[4], const int order[2][3], int nemit) {
     double sz[4];
     int n = (nemit >= 2) ? 4 : 3;
@@ -480,12 +498,18 @@ static void emit_raw(const pclv v[3], const swmat* m) {
     t->clut_x=m->clx; t->clut_y=m->cly; t->bpp=m->bpp; t->blend=m->blend;
 }
 
-/* Cut one triangle at the plane and emit each half under its own policy: the
- * positive half stock, the negative half shaded toward the far colour, or
- * dropped. With the split off, or with every vertex on one side, this is one
- * emit of the triangle it was handed. The cut interpolates screen position,
- * UV and colour, which is what the draw's three INTPL passes interpolate, and
- * view depth besides, which the draw does not carry per vertex. */
+/** @brief Cuts one triangle at the water plane and emits each half under its own policy.
+ *
+ * The positive half (plane distance >= 0) emits stock; the negative half is
+ * shaded toward the far colour by plane_shade, or dropped under drop_below.
+ * Each half is emitted as a fan. With the split off, or with every vertex on
+ * one side, this is one emit of the triangle it was handed. The cut
+ * interpolates screen position, UV and colour (rounded per channel), which is
+ * what the draw's three INTPL passes interpolate, and view depth besides,
+ * which the draw does not carry per vertex; a cut point takes the stream index
+ * of the edge's first vertex.
+ * @param in The triangle's three vertices with their plane distances.
+ * @param m The triangle's material. */
 static void plane_emit(const pclv in[3], const swmat* m) {
     if (!s_plane.active) { emit_raw(in, m); return; }
     pclv pos[4], neg[4]; int np = 0, nn = 0;
@@ -1163,9 +1187,13 @@ static rec_list_t s_list;             /* accumulating: the committed tick's hook
 static rec_list_t s_led;              /* accumulating: the speculative fires of one led frame */
 static uint32_t   s_cap_refused_epoch, s_spec_refused_epoch, s_led_fires_epoch;
 
-/* The list is keyed by (epoch stamp, VBL): the stamp advances only at a
- * commit, which a fast-forward and a CD stall skip, so a stamp-only key would
- * accumulate a fast-forward's calls to the cap. */
+/** @brief Opens the committed append list for this call, emptying it when its key changed.
+ *
+ * The list is keyed by (epoch stamp, VBL): a non-empty list whose stamp or
+ * VBL differs from the current one is emptied, and an empty list takes the
+ * current key. The stamp advances only at a commit, which a fast-forward and a
+ * CD stall skip, so a stamp-only key would accumulate a fast-forward's calls
+ * to the cap. */
 static void list_open(void) {
     uint32_t stamp = spyro_native_canon_epoch_stamp();
     int empty = (s_list.n == 0 && s_list.nsh == 0 && s_list.nfl == 0);
@@ -1173,8 +1201,11 @@ static void list_open(void) {
     if (empty) { s_list.stamp = stamp; s_list.frame = openpete_frame; }
 }
 
-/* One speculative frame's fires: runahead runs speculative VBLs after the
- * committed tick, and the last draw among them is the ring's capture tick. */
+/** @brief Opens the led list for one speculative VBL's fires and counts the fire.
+ *
+ * Runahead runs speculative VBLs after the committed tick, and the last draw
+ * among them is the ring's capture tick. The list is emptied when the VBL
+ * count differs from the one it holds. */
 static void led_open(void) {
     if (s_led.frame != openpete_frame) { s_led.n = 0; s_led.nsh = 0; s_led.nfl = 0; s_led.frame = openpete_frame; }
     s_led_fires_epoch++;
@@ -1299,11 +1330,16 @@ int player_records_model_append(CPUState* cpu, uint32_t rp_start, uint32_t rp_en
     return L->n++;
 }
 
-/* The model record drawn at the live position — the latest, since a caller
- * draws model, shadow and flame per avatar — or, when none was (hidden,
- * respawn blink), a pairing-only model record appended at this call's ordinal:
- * the next drawn model pairs with it and the shadow or flame renders under its
- * state fields; never rendered itself. -1 at the cap. */
+/** @brief The model record an auxiliary record renders under.
+ *
+ * The newest model record whose position words equal the live ones is
+ * returned, since a caller draws model, shadow and flame per avatar. When none
+ * matches (hidden, respawn blink), a pairing-only model record copied from the
+ * live state is appended: the next drawn model pairs with it and the shadow or
+ * flame renders under its state fields; it is never rendered itself.
+ * @param L The list being built.
+ * @param sp Host pointer to the live player record.
+ * @return The model record's index, or -1 at the cap. */
 static int bind_model(rec_list_t* L, const uint8_t* sp) {
     for (int k = L->n - 1; k >= 0; k--)
         if (memcmp(L->r[k].spyro + PL.pos_off, sp + PL.pos_off, 12) == 0) return k;
@@ -1378,9 +1414,15 @@ static int lists_differ(const rec_list_t* a, const rec_list_t* b) {
     return 0;
 }
 
-/* Two passes: index first, position-verified within the bound; then nearest
- * still-unpaired previous record within it, ties to the lower index. Runs on
- * the host loop's thread and reads no clock. */
+/** @brief Pairs each model record of `cur` with a record of `prv`, and each with the record before that through the previous pairing.
+ *
+ * With no previous list every record stays unpaired. One record on each side
+ * pairs unconditionally. Otherwise two passes run: index first, kept when the
+ * positions lie within pair_bound; then the nearest still-unpaired previous
+ * record within the bound, ties to the lower index. pair2 is the paired
+ * record's own pair. Runs on the host loop's thread and reads no clock.
+ * @param cur The newest list; its pair and pair2 fields are rewritten.
+ * @param prv The previous list, or NULL. */
 static void pair_lists(rec_list_t* cur, const rec_list_t* prv) {
     int taken[PLAYER_REC_MAX] = {0};
     const double B = PL.pair_bound;

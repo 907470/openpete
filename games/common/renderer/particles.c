@@ -135,9 +135,17 @@ static int part_prim_sink(void* ctx, const ngte_prim* s) {
     return 1;
 }
 
-/* Walk the interval the routine allocated. The longest primitive it appends
- * is the ten-word POLY_FT4 (tag length 9), and the line classes need their
- * raw words because a line is not a polygon and decodes here. */
+/** @brief Captures the primitives the routine appended to the polybuf interval [start, end) into s_item.
+ *
+ * Resets the captured set, then walks with ngte_walk_prims. The longest
+ * primitive the routine appends is the ten-word POLY_FT4 (tag length 9), so a
+ * longer tag ends the walk; every code is kept with its first ten raw words,
+ * since a line is not a polygon and the line feed decodes it from those words.
+ * The code and tag histograms count the stored primitives. At most
+ * PART_MAX_PRIMS are kept.
+ * @param cpu Reads guest RAM.
+ * @param start Guest address of the first primitive.
+ * @param end Guest address one past the last primitive. */
 static void part_capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
     s_item_n = 0;
     const ngte_walk_policy pol = {
@@ -148,26 +156,19 @@ static void part_capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
     ngte_walk_prims(cpu, start, end, &pol, part_prim_sink, NULL);
 }
 
-/* Pair each captured primitive with the record that appended it and store the
- * record's view-Z as a scene depth. The routine appends in pool order and at
- * most one primitive per record, so walking the pool and the captured list
- * together aligns them; a record emitted when its stamp is set, or when its
- * class links at the fixed front bucket, where the routine stamps nothing and
- * always appends.
+/** @brief Unpacks one record point from the pool's position words, displaced by `off`.
  *
- * The record position is three unsigned halves in quarter world units
- * (partsdraw.s:709-712), and the routine builds the GTE vector from it the
- * way every draw in this engine does: (camY - Y, camZ - Z, X - camX) with the
- * camera position shifted right by two, rotated by the camera matrix at
- * +0x00 with a zero translation. */
-/* The pool's position words, as the record packs them: X in the low half and Y
- * in the high half of the first word, Z in the low half of the second
- * (partsdraw.s:709-712). A two-point class's second point is packed one
- * halfword on from the first: X in the high half of the second word
+ * The first point is X in the low half and Y in the high half of the first
+ * word, Z in the low half of the second (partsdraw.s:709-712), each an unsigned
+ * halfword in quarter world units. A two-point class's second point occupies
+ * the next three halfwords: X in the high half of the second word
  * (partsdraw.s:650-651 subtracts the camera X from it), Y in the low half and Z
  * in the high half of the third (partsdraw.s:653-659 subtracts the camera Y and
- * Z from those two). `off` displaces the point in the pool's own quarter world
- * units. */
+ * Z from those two).
+ * @param it The captured primitive holding the record's position words.
+ * @param second Nonzero selects the second point.
+ * @param off Displacement in the pool's quarter world units, or NULL for none.
+ * @param p Receives the point (X, Y, Z). */
 static void part_rec_point(const part_item* it, int second, const double off[3],
                            double p[3]) {
     if (second) {
@@ -182,15 +183,33 @@ static void part_rec_point(const part_item* it, int second, const double off[3],
     if (off) { p[0] += off[0]; p[1] += off[1]; p[2] += off[2]; }
 }
 
-/* Project a pool point the way the routine does: the GTE vector is
- * (camY - Y, camZ - Z, X - camX) with the camera position shifted right by
- * two, rotated by the camera matrix at +0x00 with a zero translation. */
+/** @brief Projects a pool point the way the routine does.
+ *
+ * The GTE vector is (camY - Y, camZ - Z, X - camX) with the camera position
+ * divided by four into the pool's quarter world units, rotated by the camera
+ * matrix at +0x00 with a zero translation, through the GTE-faithful projection
+ * without the SXY bound.
+ * @param v The view; supplies the camera matrix, position and offsets.
+ * @param p The point (X, Y, Z) in quarter world units.
+ * @param o Receives the projection; o->m3 is the view-Z in quarter units. */
 static void part_project(const ngte_view* v, const double p[3], ngte_proj* o) {
     const double cx = v->cam[0] / 4.0, cy = v->cam[1] / 4.0, cz = v->cam[2] / 4.0;
     ngte_project_gte(v->cam_M, NULL, cy - p[1], cz - p[2], p[0] - cx,
                      v->ofx, v->ofy, v, 0, o);
 }
 
+/** @brief Pairs each captured primitive with the record that appended it and stores the record's view-Z as a scene depth.
+ *
+ * The routine appends in pool order and at most one primitive per record, so
+ * walking the pool and the captured list together aligns them. A record
+ * emitted a primitive when its stamp byte is set, or when its class links at
+ * the fixed front bucket, where the routine stamps nothing and always appends;
+ * the latter take the front depth and keep no record. A paired record keeps its
+ * position words, its projected point (and a two-point class's second point)
+ * and its view-Z. The walk ends at the pool's end sentinel or the last
+ * captured primitive, and does nothing when the pool pointer is outside RAM.
+ * @param cpu Reads the pool.
+ * @param v The tick's view. */
 static void part_pair_depths(CPUState* cpu, const ngte_view* v) {
     const uint32_t base = cpu->read_word(game_layout.particles.array_ptr);
     if (base < 0x80000000u || base >= 0x80800000u) return;
@@ -245,8 +264,11 @@ static void part_pair_depths(CPUState* cpu, const ngte_view* v) {
      * keeps depth 0, the nearest value, which is the fixed bucket's meaning. */
 }
 
-/* OPENPETE_PARTICLES=0 suppresses this feed alone. The guest draw still runs,
- * so the A/B prices the particles' painted pixels from one binary. */
+/** @brief Whether the native particle feed runs; OPENPETE_PARTICLES starting with '0' suppresses it alone.
+ *
+ * The guest draw still runs, so the A/B prices the particles' painted pixels
+ * from one binary. The variable is read once and latched.
+ * @return 1 when the feed runs, 0 when suppressed. */
 static int part_feed_enabled(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_PARTICLES"); v = !(e && *e && *e == '0'); }
@@ -280,22 +302,32 @@ static int part_feed_enabled(void) {
  * and holds its current pose otherwise. */
 enum { PART_PAIR_NONE = 0, PART_PAIR_LERP = 1, PART_PAIR_REUSE = 2 };
 
-/* The record's displacement between the pose the tick drew and the pose this
- * present shows, in the pool's units, with the previous tick's angle byte.
- * Returns PART_PAIR_LERP only when the previous blob is the same particle. A
- * record that spawned this tick, one whose two states are further apart than a
- * tick's capture interval, and one whose slot was reused return otherwise, and
- * the primitive then holds the tick's pose in the world with only the camera's
- * motion rebasing it.
+/** @brief The record's displacement, angle and size change between the pose the tick drew and the pose this present shows.
+ *
+ * The pair is the record's previous and current snapshots in the interp-object
+ * table; the displacement is (prev - curr) · (1 - alpha) in the pool's units.
+ * The shown angle lerps the angle byte along the shortest arc of the 256-step
+ * circle, and the size delta is the size byte's change scaled the same way. A
+ * record with no previous snapshot (one that spawned this tick), a pair
+ * further apart than PART_PAIR_STALE_NS, or a blob too short for the position
+ * words returns PART_PAIR_NONE; the primitive then holds the tick's pose in the
+ * world with only the camera's motion rebasing it.
  *
  * The table is keyed by slot address, so a slot a new record respawns into
  * pairs two different particles; lerping across that pair draws a line from the
  * dead particle's position to the live one's. Three tests separate the reuse
- * from a continuing particle, in order of what they catch: the selector
- * halfword changing catches a reuse of a different class or type; the age byte
- * falling catches a reuse that kept both, the pool update having reset it for
- * the new record; the speed ceiling catches the rest, at a distance no particle
- * covers in a tick. */
+ * from a continuing particle and return PART_PAIR_REUSE, in order of what they
+ * catch: the selector halfword changing catches a reuse of a different class
+ * or type; the age byte falling catches a reuse that kept both, the pool update
+ * having reset it for the new record; the speed ceiling PART_REUSE_CEILING
+ * catches the rest, at a distance no particle covers in a tick.
+ * @param it The paired captured primitive.
+ * @param alpha The present's phase between the two ticks.
+ * @param off Receives the displacement; zero unless the verdict is PART_PAIR_LERP.
+ * @param prev_ang Receives the shown angle byte, written only on PART_PAIR_LERP.
+ * @param size_delta Receives the shown size minus the tick's size; zero unless
+ *        the verdict is PART_PAIR_LERP.
+ * @return PART_PAIR_LERP, PART_PAIR_NONE or PART_PAIR_REUSE. */
 static int part_record_pair(const part_item* it, double alpha, double off[3],
                             double* prev_ang, double* size_delta) {
     off[0] = off[1] = off[2] = 0.0;
@@ -341,12 +373,20 @@ static int part_record_pair(const part_item* it, double alpha, double off[3],
     return PART_PAIR_LERP;
 }
 
-/* The rotation carrying the corner extents from the angle the tick built them
- * at to the angle this present shows, as the cos/sin of the change. The
- * routine indexes the game's own sine table at (angle + 0x40) & 0x1FE and
- * takes the quarter-circle entry 0x80 bytes on (partsdraw.s:497-504), so the
- * extents ride the table's vector and the change is the rotation between the
- * two table vectors: exact, whatever the table's phase and sense. */
+/** @brief The rotation carrying the corner extents from the angle the tick built them at to the angle this present shows.
+ *
+ * The result is the cos/sin of the change. The routine indexes the game's own
+ * sine table at (angle + 0x40) & 0x1FE and takes the quarter-circle entry 0x80
+ * bytes on (partsdraw.s:497-504), so both angles are offset by 32 entries and
+ * handed to ngte_table_rot: the extents ride the table's vector and the change
+ * is the rotation between the two table vectors, exact whatever the table's
+ * phase and sense.
+ * @param cpu Reads the game's sin/cos table.
+ * @param tick_ang The angle byte the tick drew with.
+ * @param show_ang The angle byte this present shows.
+ * @param rc Receives the cos of the change.
+ * @param rs Receives the sin of the change.
+ * @return ngte_table_rot's verdict: 1 when a rotation was computed. */
 static int part_corner_rot(CPUState* cpu, double tick_ang, double show_ang,
                            double* rc, double* rs) {
     return ngte_table_rot(cpu, tick_ang + 32.0, show_ang + 32.0, rc, rs);
@@ -462,9 +502,15 @@ static void part_rebase_report(void) {
     fprintf(stderr, "\n");
 }
 
-/* Rebase the captured set onto the pose this present shows. The staged camera
- * resolves through the sub-tick view, so building a view here reads the
- * interpolated transform the rest of the pass draws under. */
+/** @brief Rebases the captured set onto the pose this present shows.
+ *
+ * The staged camera resolves through the sub-tick view, so building a view
+ * here reads the interpolated transform the rest of the pass draws under.
+ * OPENPETE_PART_REBASE_DBG is latched on the first call: nonzero registers the
+ * per-class verdict report at exit, and 2 or more prints the view and one line
+ * per rebased primitive.
+ * @param cpu Reads the staged camera and the sin/cos table.
+ * @param alpha The present's phase between the two ticks. */
 static void part_rebase_all(CPUState* cpu, double alpha) {
     if (s_item_n <= 0) return;
     static int dbg = -1;
@@ -480,9 +526,17 @@ static void part_rebase_all(CPUState* cpu, double alpha) {
     for (int i = 0; i < s_item_n; i++) part_rebase_item(cpu, &v, alpha, i);
 }
 
-/* Carry one corner through its primitive's rebase: the corner keeps its offset
- * from the record point through the rotation, then the primitive translates by
- * that point's displacement. */
+/** @brief Carries one corner through its primitive's rebase.
+ *
+ * When the rebase rotates or scales, the corner's offset from the first record
+ * point is rotated by (rc, rs) and then scaled by scl; the corner then
+ * translates by the chosen record point's screen displacement. An inactive
+ * rebase leaves the corner unchanged.
+ * @param it The captured primitive; supplies the first record point.
+ * @param r The primitive's rebase.
+ * @param second Nonzero translates by the second record point's displacement.
+ * @param x The corner's screen X, updated in place.
+ * @param y The corner's screen Y, updated in place. */
 static void part_rebase_xy(const part_item* it, const part_rebase* r, int second,
                            float* x, float* y) {
     if (!r->active) return;
@@ -525,8 +579,17 @@ static void part_add_quad(const float x[4], const float y[4], const float u[4],
     }
 }
 
-/* A line primitive has no area, so it feeds as a one-pixel-wide quad across
- * its own perpendicular, the width the GPU rasterizes it at. */
+/** @brief Feeds a LINE_F2 or LINE_G2 primitive as a one-pixel-wide quad across its own perpendicular.
+ *
+ * A line has no area, so the quad extends half a pixel to each side, the width
+ * the GPU rasterizes it at; a line shorter than 1e-3 pixels widens along X.
+ * The endpoints go through the rebase, the second by the second record point
+ * for a two-point class. A gouraud line colours each endpoint from its own
+ * word; the semi-transparency bit selects blend code 1.
+ * @param it The captured primitive.
+ * @param r Its rebase.
+ * @param depth The scene depth to feed at.
+ * @param gouraud Nonzero for LINE_G2. */
 static void part_feed_line(const part_item* it, const part_rebase* r,
                            float depth, int gouraud) {
     const ngte_prim* p = &it->p;
@@ -592,15 +655,20 @@ static void part_feed_native(void) {
     openpete_native_scene_set_tag(0);
 }
 
-/* OPENPETE_PARTICLE_CENSUS=LO-HI (or a single frame): per call in that frame
- * range, the primitives the routine appended by GPU code, the native triangles
- * this feeder emitted from them, and the calibration the depth pairing rests
- * on — the distance between each paired record's own projected point and the
- * centroid of the primitive the pairing gave it. The routine projects the
- * record and then offsets the primitive's corners around that point, so a
- * correct pairing (and a correct camera matrix) keeps this small and a wrong
- * one scatters it across the frame. A capture whose fed count is zero measured
- * nothing. */
+/** @brief Prints the particle census line when openpete_frame lies in the OPENPETE_PARTICLE_CENSUS range.
+ *
+ * The range is LO-HI or a single VBL count. Per call it prints the primitives
+ * the routine appended by GPU code, the native triangles this feeder emitted
+ * from them, and per class the calibration the depth pairing rests on: the
+ * mean and worst Manhattan distance between each paired record's own projected
+ * point and the centroid of the primitive the pairing gave it, followed by the
+ * unpaired count. The routine projects the record and then offsets the
+ * primitive's corners around that point, so a correct pairing (and a correct
+ * camera matrix) keeps this small and a wrong one scatters it across the
+ * screen. A capture whose fed count is zero measured nothing.
+ * @param start Guest address of the polybuf interval's start.
+ * @param end Guest address one past its end.
+ * @param fed_before s_fed_tris before this capture's feed. */
 static void part_census(uint32_t start, uint32_t end, uint32_t fed_before) {
     static env_frame_range_t s_range = ENV_FRAME_RANGE_INIT;
     if (!env_frame_range_active(&s_range, "OPENPETE_PARTICLE_CENSUS", openpete_frame)) return;
@@ -641,16 +709,12 @@ static void part_census(uint32_t start, uint32_t end, uint32_t fed_before) {
     fprintf(stderr, " unpaired=%d\n", unpaired);
 }
 
-/* OPENPETE_PART_EXTENT_CENSUS: per present, per class, the decomposition of a
- * primitive's painted extent into the terms a sub-tick present could carry.
- * `ext` is the mean distance from the record's own projected point to the
- * primitive's furthest vertex, which is the extent the routine built from the
- * record's state under the tick's camera; `vz` is that point's view-Z, whose
- * reciprocal scales every extent; `dsz` counts the records whose size byte
- * differs between the pair's two states. A step in `ext` between two canonical
- * presents at a steady `n` is the primitive's own extent moving; a step in `n`
- * at a steady `ext` is the pool's population, which no rebase of the captured
- * set can carry. */
+/** @brief The distance from the record's own projected point to the primitive's furthest vertex, in pixels.
+ *
+ * A polygon measures every vertex; a line measures its two endpoints from the
+ * raw words, where a gouraud line carries a colour word between them.
+ * @param it The captured primitive.
+ * @return The largest vertex distance. */
 static double part_item_extent(const part_item* it) {
     const ngte_prim* p = &it->p;
     double worst = 0;
@@ -673,6 +737,17 @@ static double part_item_extent(const part_item* it) {
     return worst;
 }
 
+/** @brief OPENPETE_PART_EXTENT_CENSUS: per present, per class, the decomposition of a primitive's painted extent into the terms a sub-tick present could carry.
+ *
+ * `ext` is the mean part_item_extent, which is the extent the routine built
+ * from the record's state under the tick's camera; `vz` is the record point's
+ * mean view-Z, whose reciprocal scales every extent; `scl` is the mean rebase
+ * scale; `dsz` counts the records whose size byte differs between the pair's
+ * two states. A step in `ext` between two canonical presents at a steady `n`
+ * is the primitive's own extent moving; a step in `n` at a steady `ext` is the
+ * pool's population, which no rebase of the captured set can carry. The
+ * variable is latched on the first call.
+ * @param alpha The present's phase, printed; the tick's own capture passes -1. */
 static void part_extent_census(double alpha) {
     static int s = -1;
     if (s < 0) { const char* e = getenv("OPENPETE_PART_EXTENT_CENSUS"); s = (e && *e && *e != '0'); }
@@ -695,13 +770,7 @@ static void part_extent_census(double alpha) {
             openpete_frame, alpha, s_item_n, buf);
 }
 
-/* Sub-tick re-extract. The primitives are the guest's own output and are gone
- * once the polybuf is reused, so the replay re-feeds the set the canonical tick
- * captured, rebased onto the pose this present shows: each record point's
- * screen displacement carries its primitive's corners and its depth. At the
- * end of the tick's interval every term of the rebase is zero and the replay
- * reproduces the canonical present exactly, which is what the spine's identity
- * leg measures. */
+/* Sub-tick re-extract of the captured particle set; see particles.h. */
 void particles_reextract(CPUState* cpu, int bracketed, double alpha) {
     if (!hook_reextract_ready(RP_PARTICLES)) return;
     if (bracketed) part_rebase_all(cpu, alpha);

@@ -77,28 +77,51 @@ typedef struct {
 
 /* ---- orchestrator inputs (set per record, read by the re-extract) ------ */
 
-/* The sub-tick alpha and whether keyframe-blend interpolation is active
- * (camera bracketed). */
+/** @brief Sets the sub-tick alpha and whether keyframe-blend interpolation is active.
+ *
+ * The re-extract runs the two-pass shape lerp only while `on` is set and a
+ * prev/curr part-block pair is held (player_native_set_anim_pair).
+ * @param alpha The sub-tick phase the projected vertices lerp at.
+ * @param on Nonzero when the camera is bracketed and the record paired. */
 void player_native_set_anim_interp(double alpha, int on);
-/* The part-block pair the two-pass shape lerp blends: prev = the paired
- * previous record's block (NULL when unpaired), curr = this record's. */
+/** @brief Sets the part-block pair the two-pass shape lerp blends.
+ *
+ * The pointers are held, not copied, and must stay valid through the
+ * re-extract. With prev NULL the record renders from curr alone; with both
+ * NULL no pair is held.
+ * @param prev_seg The paired previous record's block, or NULL when unpaired.
+ * @param curr_seg This record's block, or NULL. */
 void player_native_set_anim_pair(const uint8_t* prev_seg, const uint8_t* curr_seg);
-/* The record index, which is the PLAYER tag slot of the triangles it emits. */
+/** @brief Sets the record index, which is the PLAYER tag slot of the triangles the walk emits.
+ *
+ * @param k The record index; a negative value (a refused append) is stored as 0. */
 void player_native_set_player_slot(int k);
-/* The front-layer flatten cap is shared by the calls of one tick or present:
- * a new key opens a new group. */
+/** @brief Keys the group of calls that share the front-layer flatten cap.
+ *
+ * The cap is shared by the calls of one tick or present. A key different from
+ * the current one moves the current group's call count and minimum to the
+ * previous group and opens an empty group; the same key is a no-op. The draw
+ * hook keys by VBL count (even keys), the sub-tick replay by present serial
+ * (odd keys).
+ * @param key The group key. */
 void player_native_set_flat_key(uint32_t key);
-/* Per-part float byte-angles the orchestrator interpolated from the prev/curr
- * euler snapshots, so the composer renders rotation below the 8-bit euler grid.
- * `active[p]` gates each part; `ang` is a row-major parts x 3 of byte-angles
- * [part][Z, X, Y]. active = NULL resets (off), so the canonical inline render
- * stays byte-exact. */
+/** @brief Sets the per-part float byte-angles the orchestrator interpolated from the prev/curr euler snapshots.
+ *
+ * The composer then renders rotation below the 8-bit euler grid
+ * (player_rot_interp). Both arrays are copied for PLAYER_PARTS_MAX parts.
+ * @param active Per-part gates, or NULL to turn every part off so the
+ *        canonical inline render stays byte-exact.
+ * @param ang Row-major PLAYER_PARTS_MAX x 3 byte-angles [part][Z, X, Y]; not
+ *        read when `active` is NULL. */
 void player_native_set_rot_interp(const int* active, const double* ang);
 
-/* The mirrored-copy latch: set from player_game.call_is_mirror at each hook
- * call and cleared for the sub-tick replay, which reproduces the avatar the
- * gameplay drives. A provider's transform reads it to apply the draw's own
- * reflection. */
+/** @brief Sets the mirrored-copy latch that player_mirror_pass returns.
+ *
+ * The draw hook sets it from player_game.call_is_mirror at each call; the
+ * sub-tick replay sets it from the replayed record's own answer, which the
+ * caller read off the staged bytes. A provider's transform reads it to apply
+ * the draw's own reflection, and the walk negates both NCLIP results under it.
+ * @param on Nonzero for the mirrored copy. */
 void player_native_set_mirror(int on);
 int  player_mirror_pass(void);
 
@@ -176,7 +199,15 @@ int  player_records_dbg(void);
 /* Decode and project the whole skeleton from the live pose. Returns the
  * vertex count, which indexes player_proj_vert below. */
 int  player_project_all(struct CPUState* cpu);
-/* Build the face-stream walk over the current projection. Returns triangles. */
+/** @brief Builds the face-stream walk over the current projection.
+ *
+ * Decodes each part's face and colour streams once per distinct face stream,
+ * runs the dual-NCLIP emit tree on the native float screen positions, applies
+ * the water-plane classification and the provider's depth admission, and
+ * stores the surviving triangles for player_walk_tri and the scene feed.
+ * Returns 0 when nothing is projected or the provider decodes no faces.
+ * @param cpu Reads the face and colour streams.
+ * @return The number of triangles built. */
 int  player_build_walk(struct CPUState* cpu);
 /* One projected vertex: screen position, view-Z, whether the projection
  * saturated, and which part it came from. */
@@ -185,7 +216,15 @@ void player_proj_vert(int i, float* sx, float* sy, float* vz, int* sat, int* par
 void player_walk_tri(int k, int idx[3], uint32_t rgb[3], int u[3], int v[3]);
 /* The transform the provider derived for part p (NULL when absent). */
 const struct player_xform* player_part_xform(int p);
-/* The part-transform block's guest base this tick, and the block length. */
+/** @brief The part-transform block's guest base this tick.
+ *
+ * A game with a fixed render scratch names its base (part_base + part_off); a
+ * game that carves the scratch out of the polybuf every tick leaves part_base
+ * 0 and the block starts at *polybuf.end - part_base_polybuf_off + part_off,
+ * recomputed per call.
+ * @param cpu Reads the polybuf end pointer.
+ * @return The block's guest address, or 0 when the layout names neither form
+ *         or the polybuf end is not a RAM address. */
 uint32_t player_part_block_base(struct CPUState* cpu);
 
 #ifdef __cplusplus

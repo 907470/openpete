@@ -384,10 +384,13 @@ void ngte_dump_words(CPUState* cpu, const char* label, uint32_t base, int nwords
 
 /* ---- ordering-table polybuf walk ---------------------------------------- */
 
-/* Payload word count of a GPU polygon packet, tag word excluded: the colour
- * word that carries the code, one screen-XY word per vertex, one extra colour
- * word per vertex past the first when gouraud, and one UV word per vertex when
- * textured. Zero for a code that is not a polygon. */
+/** @brief Payload word count of a GPU polygon packet, tag word excluded.
+ *
+ * The count is the colour word that carries the code, one screen-XY word per
+ * vertex, one extra colour word per vertex past the first when gouraud, and
+ * one UV word per vertex when textured.
+ * @param code The GPU command code byte.
+ * @return The word count, or 0 for a code that is not a polygon. */
 static uint32_t ngte_prim_payload_words(uint8_t code) {
     if ((code & 0xE0) != 0x20) return 0;
     uint32_t nv = (code & 0x08) ? 4u : 3u;
