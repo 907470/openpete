@@ -125,28 +125,61 @@ void player_native_set_rot_interp(const int* active, const double* ang);
 void player_native_set_mirror(int on);
 int  player_mirror_pass(void);
 
-/* The interpolated angles for part p, read by a provider's euler composer:
- * returns 0 when the canonical byte-exact table lookup is the one to use. */
+/** @brief The interpolated byte-angles for one part, read by a provider's euler composer.
+ *
+ * @param part The part index.
+ * @param out Receives [Z, X, Y] byte-angles when the part is gated on by
+ *        player_native_set_rot_interp.
+ * @return 1 when `out` was written; 0 when the part is out of range or gated
+ *         off, and the composer uses the canonical byte-exact table lookup. */
 int player_rot_interp(int part, double out[3]);
 
-/* Seam word k (0 = keyframe A, 1 = keyframe B) of the part block the walk is
- * reading, for a provider whose part_record fills player_record_t.seam. 0 when
- * the game composes no block or declares no part_seam_off. */
+/** @brief One seam word of the part block the walk is reading, for a provider whose part_record fills player_record_t.seam.
+ *
+ * The two-pass shape lerp swaps the whole block per pass, so each pass places
+ * the child part from the keyframe pair of its own pose.
+ * @param k 0 for keyframe A, 1 for keyframe B.
+ * @return The word; 0 when the game composes no block, declares no
+ *         part_seam_off, the word lies past part_block_len, or `k` is not 0 or 1. */
 uint32_t player_rec_seam_word(int k);
 
-/* Sub-tick re-extract: reproduce the avatar from the current gamestate and the
- * interpolated camera the orchestrator wrote. Extract-only. */
+/** @brief Sub-tick re-extract of the avatar, not mirrored, from the staged gamestate and the interpolated camera.
+ *
+ * Equals player_reextract_record(cpu, 0): the form an orchestrator with no
+ * per-record loop replays. Extract-only.
+ * @param cpu Reads the staged gamestate. */
 void player_reextract(struct CPUState* cpu);
-/* The same, for one record of the store: `mirror` is that record's own answer
- * to player_game.call_is_mirror, taken from the bytes the caller staged rather
- * than from live RAM, which the driver has already restored. */
+/** @brief Sub-tick re-extract of one record of the store, feeding the scene.
+ *
+ * Returns without feeding when the native scene is off or the canonical tick
+ * did not draw the avatar (render_path_canon_drawn). With keyframe-blend
+ * interpolation on and a prev/curr part-block pair held, projects the previous
+ * and the current pose and lerps the screen positions and view-Z by the set
+ * alpha when both passes project the same vertex count; a derived block is
+ * swapped through the walk's host copy, a guest block through the sub-tick
+ * view and then restored. Otherwise the walk runs once on the staged state.
+ * @param cpu Reads the staged gamestate.
+ * @param mirror The record's own answer to player_game.call_is_mirror, read by
+ *        the caller from the staged bytes, since the driver has already
+ *        restored the live word. */
 void player_reextract_record(struct CPUState* cpu, int mirror);
 
 /* ---- record store, canonical side (game fiber) ------------------------ */
 
-/* The draw hook's own append. Returns the record's index (the tag slot) or -1
- * when refused (speculative fire, cap). Called by the shared hook; an
- * auxiliary feeder calls its own append below. */
+/** @brief Appends the draw hook call's model record to the epoch's list.
+ *
+ * Copies the state block (as both the pairing key and the shown state), the
+ * part-transform block (derived from gamestate when the provider answers
+ * part_record), the pre-blend colour table and the projected-SXY block, and
+ * marks the record drawn with its is_player answer. A speculative fire under
+ * runahead appends to the led list instead of the canonical one. Called by the
+ * shared hook; an auxiliary feeder calls its own append below.
+ * @param cpu Reads the part block and colour scratch bases.
+ * @param rp_start The call's polybuf start.
+ * @param rp_end The call's polybuf end.
+ * @return The record's index (the tag slot), or -1 when the list holds
+ *         PLAYER_REC_MAX records or the state block or part block has no host
+ *         pointer. */
 int  player_records_model_append(struct CPUState* cpu, uint32_t rp_start, uint32_t rp_end);
 int  player_records_shadow_append(struct CPUState* cpu);
 int  player_records_flame_append(struct CPUState* cpu);
@@ -168,16 +201,33 @@ void player_records_epoch_commit(void);
 
 /* ---- record store, present side (host loop) --------------------------- */
 
+/** @brief Opens the store for one present and sets the alpha the records lerp at.
+ *
+ * Nothing is opened when the store's newest entry is invalid or not from the
+ * fresh canonical epoch. Records lerp only when the ring is paired, not cut,
+ * and the store holds a previous entry. The alpha is the ring's when the
+ * store's clock equals the ring's current tick; otherwise it is (present
+ * clock - store clock) / (store clock - previous clock), the period capped at
+ * one tick and the result clamped to -0.35..1.
+ * @param ring_paired Nonzero when the interp ring holds a prev/curr pair.
+ * @param ring_cut Nonzero on a camera cut.
+ * @param ring_alpha The ring's sub-tick alpha.
+ * @param out_alpha Receives the records' alpha, 0 when they do not lerp; may be NULL.
+ * @return The model record count this present, 0 when nothing is opened. */
 int  player_records_present_begin(int ring_paired, int ring_cut, double ring_alpha,
                                   double* out_alpha);
 const player_model_rec_t* player_records_curr(int k);
 const player_model_rec_t* player_records_prev(int k);
 const player_model_rec_t* player_records_prev2(int k);
 int  player_records_lerps(int k);
-/* Whether the model record an auxiliary feeder just bound to was drawn by a
- * hook call this tick, as opposed to created for pairing alone. An auxiliary
- * feeder whose geometry belongs to the avatar takes this verdict so it feeds
- * exactly what the sub-tick replay will reproduce. */
+/** @brief Whether a model record of the list being built was drawn by a hook call, as opposed to created for pairing alone.
+ *
+ * Reads the list the auxiliary binds go into (the led list on a speculative
+ * fire), so an auxiliary feeder hooking later in the same tick takes the
+ * avatar's own verdict, the one the replay loop applies when it decides
+ * whether to reproduce that record.
+ * @param k The model record index.
+ * @return 1 when drawn, 0 when pairing-only or out of range. */
 int  player_records_model_drawn(int k);
 int  player_records_shadow_count(void);
 const player_shadow_rec_t* player_records_shadow_curr(int j);
@@ -189,15 +239,28 @@ const player_flame_rec_t* player_records_flame_prev(int j);
 void player_records_flame_note(int j, const int32_t* staged_origin);
 void player_records_present_note(int k, const int32_t* staged_pos);
 void player_records_present_end(void);
-/* The store's newest clock stamp (0 = none). */
+/** @brief The store's newest clock stamp.
+ *
+ * @return The stamp, or 0 when the store holds no entry. */
 op_time_t player_records_curr_ns(void);
-/* 1 while OPENPETE_PLAYER_RECDBG is set (latched on first query). */
+/** @brief Whether OPENPETE_PLAYER_RECDBG is set, latched on the first call.
+ *
+ * @return 1 when set, else 0. */
 int  player_records_dbg(void);
 
 /* ---- introspection, for a game's own numerical harness ----------------- */
 
-/* Decode and project the whole skeleton from the live pose. Returns the
- * vertex count, which indexes player_proj_vert below. */
+/** @brief Decodes and projects every part's vertices from the current pose.
+ *
+ * Takes the water plane from the provider unless the negative control
+ * disables it, derives the part block from gamestate where the provider
+ * answers part_record (unless a replay pinned it), derives the part
+ * transforms under the current view, and projects each part up to the block's
+ * zero flags word, skipping a part with no vertices or no transform.
+ * @param cpu Reads the pose and the streams.
+ * @return The projected vertex count, which indexes player_proj_vert; 0 when
+ *         the provider has no vertex step, the block has no base, or no part
+ *         projected. */
 int  player_project_all(struct CPUState* cpu);
 /** @brief Builds the face-stream walk over the current projection.
  *
@@ -209,12 +272,29 @@ int  player_project_all(struct CPUState* cpu);
  * @param cpu Reads the face and colour streams.
  * @return The number of triangles built. */
 int  player_build_walk(struct CPUState* cpu);
-/* One projected vertex: screen position, view-Z, whether the projection
- * saturated, and which part it came from. */
+/** @brief Reads one vertex of the last projection.
+ *
+ * An index past the projected count writes nothing; a NULL output is skipped.
+ * @param i The vertex index.
+ * @param sx Receives the screen X.
+ * @param sy Receives the screen Y.
+ * @param vz Receives the view-Z.
+ * @param sat Receives whether the projection saturated.
+ * @param part Receives the part the vertex came from. */
 void player_proj_vert(int i, float* sx, float* sy, float* vz, int* sat, int* part);
-/* One walk triangle's three stream vertex indices, per-vertex colour and UV. */
+/** @brief Reads one triangle of the last face-stream walk.
+ *
+ * An index past the triangle count writes nothing; a NULL output is skipped.
+ * @param k The triangle index.
+ * @param idx Receives the three stream vertex indices.
+ * @param rgb Receives the per-vertex colours.
+ * @param u Receives the per-vertex U.
+ * @param v Receives the per-vertex V. */
 void player_walk_tri(int k, int idx[3], uint32_t rgb[3], int u[3], int v[3]);
-/* The transform the provider derived for part p (NULL when absent). */
+/** @brief The transform the provider derived for a part in the last projection.
+ *
+ * @param p The part index.
+ * @return The transform, or NULL when out of range or not derived. */
 const struct player_xform* player_part_xform(int p);
 /** @brief The part-transform block's guest base this tick.
  *

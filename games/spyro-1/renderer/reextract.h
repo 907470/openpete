@@ -37,29 +37,12 @@ struct CPUState;
  * they reproduce the feeder's scene contribution from current gamestate +
  * the (interpolated) g_Camera the orchestrator has written, without calling
  * the game render function or touching gameplay-readable RAM. */
-/* Set the sub-tick alpha + whether keyframe-blend interpolation is active
- * (camera bracketed). Call before player_reextract so Spyro's
- * animation blends sub-tick instead of stepping at the canonical tick rate. */
+/* player_native_set_*: defined in games/common/renderer/player.c, documented in games/common/renderer/player.h. */
 void player_native_set_anim_interp(double alpha, int on);
-/* Per record: the seg-row pair the two-pass shape lerp blends (prev = the
- * paired previous record's row, NULL when unpaired → no blend; curr = this
- * record's row) and the record index (the PLAYER tag slot). Defined in
- * renderer/spyro.c. */
 void player_native_set_anim_pair(const uint8_t* prev_seg, const uint8_t* curr_seg);
 void player_native_set_player_slot(int k);
-/* The front-layer flatten cap is shared by the calls of one frame / present:
- * a new key opens a new group (renderer/spyro.c). */
 void player_native_set_flat_key(uint32_t key);
 
-/* Sub-tick ROTATION interpolation for Spyro's body/head/tail. The orchestrator
- * interpolates g_Spyro's packed byte euler (+0xC/+0x10/+0x14) at FLOAT precision
- * (shortest-arc per axis) between the prev/curr snapshots and hands the result
- * here, so spyro_compose_euler renders the rotation below the 8-bit euler grid
- * (256/circle = 1.4°/step) instead of stepping on it — the same fix the moby
- * composer got. `active[s]` (s=0 body / 1 head / 2 tail) gates each segment
- * (head/tail off when sticky / mid-transition → byte-exact path); `ang` is a
- * row-major 3×3 of float byte-angles [seg][Z,X,Y]. active=NULL resets (off), so
- * the canonical inline render stays byte-exact. Defined in renderer/spyro.c. */
 void player_native_set_rot_interp(const int* active, const double* ang);
 
 /** @brief Sub-tick rotation for the dragon-rescue star (D_80076248).

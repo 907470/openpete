@@ -89,7 +89,11 @@ static int p3_dbg(void) {
     if (v < 0) { const char* e = getenv("OPENPETE_PORTAL3_DBG"); v = (e && *e && *e != '0'); }
     return v;
 }
-/* OPENPETE_PORTAL3_DBG_FROM: the first VBL the census reports from. */
+/** @brief The first VBL the OPENPETE_PORTAL3_DBG reports print from, read from OPENPETE_PORTAL3_DBG_FROM.
+ *
+ * Latched on the first call; unset reads 0. The value parses in any base
+ * strtoul accepts.
+ * @return The VBL. */
 static unsigned p3_dbg_from(void) {
     static unsigned v = 0; static int init = 0;
     if (!init) { const char* e = getenv("OPENPETE_PORTAL3_DBG_FROM"); v = e ? (unsigned)strtoul(e, NULL, 0) : 0u; init = 1; }
@@ -97,8 +101,11 @@ static unsigned p3_dbg_from(void) {
 }
 static int s_cen_faces, s_cen_idx, s_cen_oc, s_cen_edge, s_cen_tris;
 
-/* OPENPETE_PORTAL3_INTERP=0 replays every preview at the state its tick
- * captured, with no lerp toward the previous tick. */
+/** @brief Whether the sub-tick replay lerps previews, off when OPENPETE_PORTAL3_INTERP starts with 0.
+ *
+ * Latched on the first call. Off, every preview replays at the state its tick
+ * captured, with no lerp toward the previous tick.
+ * @return 1 when on, else 0. */
 static int p3_interp_on(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_PORTAL3_INTERP"); v = !(e && *e == '0'); }
@@ -110,8 +117,19 @@ static int p3_interp_on(void) {
 static const char* s_feed_src = "canon";
 static float s_feed_alpha = 1.0f;
 
-/* ---- capture: the block, before the leaf overwrites nothing and after the
- * pass rewrote it for this portal ---------------------------------------- */
+/* ---- capture ---------------------------------------------------------- */
+/** @brief Copies the pass's parameter block for one leaf call into the tick's preview list.
+ *
+ * Called before the leaf runs, after the pass rewrote the block for this
+ * portal. Reads the clip rect (+0x00..+0x0C), the mesh header (+0x10, plus
+ * 0x3C for the picture call), the depth >> 7 (+0x14), the far colour from
+ * three halfwords >> 4 (+0x18..+0x1C), IR0 (+0x1E) and up to P3_MAX_EDGES
+ * pentagon edges (count at +0x20, two packed int16 xy words each from +0x24).
+ * A picture call following its portal's background call shares its slot;
+ * every other call opens the next slot. Nothing is captured once the list holds
+ * P3_MAX_PORTALS * 2 previews.
+ * @param cpu Reads the block.
+ * @param arg The leaf's argument: 1 for the background record, 0 for the picture. */
 static void p3_capture(CPUState* cpu, int arg) {
     if (s_curr.n >= P3_MAX_PORTALS * 2) return;
     p3_preview* p = &s_curr.p[s_curr.n];
@@ -152,7 +170,19 @@ static float p3_cross(float ax, float ay, float bx, float by, float vx, float vy
     return (bx - ax) * (vy - ay) - (by - ay) * (vx - ax);
 }
 
-/* Clip polygon `in` (n verts) against the half-plane cross >= 0 of edge e. */
+/** @brief Clips a polygon to the inside half-plane (cross >= 0) of one edge, Sutherland-Hodgman.
+ *
+ * A crossing vertex takes the position and per-channel colour lerped at the
+ * crossing, rounded and clamped to a byte. Output stops once it holds 30
+ * vertices, so `out` needs room for 31.
+ * @param in The polygon.
+ * @param n Its vertex count.
+ * @param out Receives the clipped polygon.
+ * @param ax The edge's first X.
+ * @param ay The edge's first Y.
+ * @param bx The edge's second X.
+ * @param by The edge's second Y.
+ * @return The clipped vertex count. */
 static int p3_clip_edge(const p3_v* in, int n, p3_v* out, float ax, float ay, float bx, float by) {
     int m = 0;
     for (int i = 0; i < n; i++) {
@@ -202,7 +232,11 @@ typedef struct { float xmin, xmax, ymin, ymax; int widened; } p3_bounds;
 #define P3_FRAME_X0 0      /* the 4:3 framebuffer's screen-X range, the rect's */
 #define P3_FRAME_X1 512    /* clamp and the authored frame quad's edges */
 
-/* Every corner of the rect's frame on the inside of every pentagon edge. */
+/** @brief Whether every corner of the 4:3 frame's width at the rect's rows is inside every pentagon edge.
+ *
+ * The corners are X P3_FRAME_X0 and P3_FRAME_X1 at the rect's ymin and ymax.
+ * @param p The preview.
+ * @return 1 when no edge cuts those corners, else 0. */
 static int p3_edges_clear_frame(const p3_preview* p) {
     const float cx[4] = { (float)P3_FRAME_X0, (float)P3_FRAME_X1, (float)P3_FRAME_X1, (float)P3_FRAME_X0 };
     const float cy[4] = { (float)p->ymin, (float)p->ymin, (float)p->ymax, (float)p->ymax };
@@ -373,11 +407,14 @@ static void p3_extract_one(CPUState* cpu, const p3_preview* p, const ngte_view* 
 
 static int p3_opening_poly(const p3_preview* p, p3_v* out, int maxn);
 
-/* The aperture census: one uncapped line per fed preview, holding the opening
- * polygon in the screen space p3_emit_tri draws into and the per-record
- * channels the replay carries. It is the statistic
- * tests/harness/check_feeder_subtick.sh --path portal judges, the aperture being far
- * larger than the compact blob a pixel mask models. */
+/** @brief Prints the aperture census: a summary line, then one uncapped line per fed preview.
+ *
+ * Each preview line holds the opening polygon in the screen space p3_emit_tri
+ * draws into and the per-record channels the replay carries. It is the
+ * statistic tests/harness/check_feeder_subtick.sh --path portal judges, the
+ * aperture being far larger than the compact blob a pixel mask models.
+ * @param T The tick whose previews were fed.
+ * @param vw The view; supplies the screen recentring offset. */
 static void p3_census(const p3_tick* T, const ngte_view* vw) {
     const float offx = (float)(vw->ofx - 256.0), offy = (float)(vw->ofy - 120.0);
     fprintf(stderr, "[portal3-feed f=%u src=%s a=%.3f portals=%d tris=%d emitted=%d]\n",
@@ -444,14 +481,26 @@ static void p3_feed(CPUState* cpu, const p3_tick* T) {
  * runs before the portal pass within a present, so a canonical present reads
  * the previous tick's rect : one tick of lag while a portal moves on screen,
  * zero while the camera holds. */
+/** @brief A preview's plane depth in full-world view-Z, floored at 1.
+ *
+ * @param p The preview.
+ * @return depth_w, or 1 when it is at or below 1. */
 static double p3_plane_depth_world(const p3_preview* p) {
     double d = (double)p->depth_w;
     return d > 1.0 ? d : 1.0;
 }
 
-/* The preview's painted footprint as a screen polygon: the clip rect clipped
- * by each pentagon edge's inside half-plane (the same cross >= 0 rule the
- * colour extraction clips with). Returns the vertex count, 0 if it collapses. */
+/** @brief The preview's painted footprint as a screen polygon.
+ *
+ * The preview's colour bounds (p3_bounds_of: the clip rect, widened to the
+ * visible screen-X range for a camera inside the portal) are clipped by each
+ * pentagon edge's inside half-plane, the same cross >= 0 rule the colour
+ * extraction clips with. An edge with every vertex inside is skipped.
+ * @param p The preview.
+ * @param out Receives the polygon.
+ * @param maxn The capacity of `out`.
+ * @return The vertex count; 0 when the polygon collapses below three vertices,
+ *         lies wholly outside an edge, or exceeds `maxn`. */
 static int p3_opening_poly(const p3_preview* p, p3_v* out, int maxn) {
     p3_v poly[32], tmp[32];
     const p3_bounds B = p3_bounds_of(p);
@@ -531,6 +580,16 @@ int portal_s23_sky_planes(CPUState* cpu, const ngte_view* v, openpete_portal_sky
 }
 
 /* ---- hooks ------------------------------------------------------------ */
+/** @brief The preview leaf's hook: captures the parameter block, then runs the real leaf.
+ *
+ * Only inside the portal pass hook and only when the native scene is enabled
+ * or OPENPETE_PORTAL3_DBG is set; otherwise, and on the re-entry the dispatch
+ * makes, it returns 0 and the leaf runs unhooked. Under OPENPETE_PORTAL3_DBG
+ * the first six calls from p3_dbg_from dump up to six of the leaf's F3 and G3
+ * prims for the census.
+ * @param cpu The guest CPU state; a0 is the leaf's argument.
+ * @param addr The leaf's address, dispatched.
+ * @return 1 when the hook ran the leaf, else 0. */
 static int on_portal_leaf(CPUState* cpu, uint32_t addr) {
     int feed = openpete_native_scene_enabled();
     if (!feed && !p3_dbg()) return 0;
@@ -619,12 +678,17 @@ static int on_portal_pass(CPUState* cpu, uint32_t addr) {
     return 1;
 }
 
-/* The previous tick's record for one preview, or NULL when the portal was not
- * previewed then. The portal's identity is its preview mesh, since the pass's
- * slot numbering is the order of the portals it gated this tick and shifts
- * whenever one enters or leaves the set; the leaf argument separates the
- * backdrop record from the picture record of the same portal. A slot that
- * agrees as well settles the case of two portals previewing one destination. */
+/** @brief The previous tick's record for one preview.
+ *
+ * The portal's identity is its preview mesh, since the pass's slot numbering
+ * is the order of the portals it gated this tick and shifts whenever one
+ * enters or leaves the set; the leaf argument separates the backdrop record
+ * from the picture record of the same portal. A record whose slot agrees as
+ * well is returned at once, which settles two portals previewing one
+ * destination; otherwise the match is taken only when it is the one match.
+ * @param prev The previous tick.
+ * @param c The current preview.
+ * @return The partner, or NULL when there is none or several without a slot match. */
 static const p3_preview* p3_pair(const p3_tick* prev, const p3_preview* c) {
     const p3_preview* hit = NULL;
     int n = 0;
@@ -638,7 +702,7 @@ static const p3_preview* p3_pair(const p3_tick* prev, const p3_preview* c) {
     return n == 1 ? hit : NULL;
 }
 
-/* One preview's captured state at the instant `a` between its two ticks.
+/** @brief One preview's captured state at the instant `a` between its two ticks.
  *
  * The pentagon edges pair by index over the count the two ticks share; a tick
  * that shows more edges than its partner holds the extra ones at its own,
@@ -650,7 +714,12 @@ static const p3_preview* p3_pair(const p3_tick* prev, const p3_preview* c) {
  *
  * The preview mesh itself is not interpolated: it is baked screen-space art
  * whose vertices are identical from tick to tick, and the aperture is the only
- * thing that moves. */
+ * thing that moves.
+ * @param O The output; must hold the current capture, whose mesh, slot and
+ *        extra edges are kept.
+ * @param P The previous tick's record.
+ * @param C The current tick's record.
+ * @param a The sub-tick alpha. */
 static void p3_lerp_preview(p3_preview* O, const p3_preview* P, const p3_preview* C,
                             float a) {
     O->xmin = (int)lroundf((float)P->xmin + (float)(C->xmin - P->xmin) * a);

@@ -50,16 +50,24 @@
 #define SPYRO_COLOUR_FILT  0x20u
 #define COLOUR_SCRATCH_OFF 0x1800u
 
-/* The routine's own entry: the walk's hook wraps it, so the dispatch re-enters
- * the hook, whose re-entrancy guard is already set and lets the real function
- * run. */
+/** @brief Runs the game's avatar draw routine through the recompiled dispatch.
+ *
+ * The walk's hook wraps the routine's entry, so the dispatch re-enters the
+ * hook, whose re-entrancy latch is already set and lets the routine run.
+ * @param cpu The guest CPU state. */
 static void s23_run_draw(CPUState* cpu) {
     openpete_recomp_module_get()->dispatch(cpu, PL.hook_draw);
 }
 
-/* The Animation of part `part`. The animation word packs animation A in bits
- * 0-7, animation B in bits 8-15, keyframe A in bits 16-23 and keyframe B in
- * bits 24-31 (spyrodraw.s:37,44,51-54,86-88,118-121). */
+/** @brief The keyframe A Animation of a part.
+ *
+ * The part's animation word packs animation A in bits 0-7, animation B in
+ * bits 8-15, keyframe A in bits 16-23 and keyframe B in bits 24-31
+ * (spyrodraw.s:37,44,51-54,86-88,118-121); bits 0-7 index the Animation table.
+ * @param cpu Reads the table and the animation word.
+ * @param part 0 for the body, 1 for the head.
+ * @return The Animation's address, or 0 when the table pointer or the entry is
+ *         not a RAM address. */
 static uint32_t s23_animation(CPUState* cpu, int part) {
     uint32_t tab = cpu->read_word(PG.anim_table);
     if (tab < 0x80000000u) return 0;
@@ -100,7 +108,16 @@ static uint32_t s23_animation(CPUState* cpu, int part) {
 
 typedef struct { uint32_t entry, base, w0, w1, seam; } s23_kf_t;
 
-/* Animation `sel` of the table, at keyframe `idx`. */
+/** @brief Reads one keyframe record of an Animation of the table.
+ *
+ * Fills the Animation's address, its word at +0x10 (the stream base) and the
+ * keyframe's words at +0x14, +0x18 and +0x1C of `entry + idx * 0x14`.
+ * @param cpu Reads the table and the Animation.
+ * @param tab The Animation table's address.
+ * @param sel The entry's byte offset in the table.
+ * @param idx The keyframe index.
+ * @param k Receives the record.
+ * @return 1 on success, 0 when the entry is not a RAM address. */
 static int s23_kf_read(CPUState* cpu, uint32_t tab, uint32_t sel, uint32_t idx, s23_kf_t* k) {
     uint32_t e = cpu->read_word(tab + sel);
     if (e < 0x80000000u) return 0;
@@ -161,11 +178,16 @@ static int s23_part_record(CPUState* cpu, int part, player_record_t* out) {
     return 1;
 }
 
-/* Bits 16-23 of the flags word are the CUMULATIVE projected-vertex end, four
+/** @brief A part's vertex count from the cumulative end its flags word carries.
+ *
+ * Bits 16-23 of the flags word are the cumulative projected-vertex end, four
  * bytes per vertex: the routine's scratchpad cursor runs continuously across
  * the parts and stops at 0x1F800000 + ((flags >> 14) & 0x3FC)
  * (spyrodraw.s:376,388-391). A part's own count is the difference from the
- * previous part's end. */
+ * previous part's end.
+ * @param flags The part record's flags word.
+ * @param cursor The previous part's end in bytes, 0 before the first part; set to this part's end.
+ * @return The count, 0 when the end lies below the cursor. */
 static int s23_part_vcount(uint32_t flags, int* cursor) {
     int cur_end = (int)((flags >> 14) & 0x3FCu);
     int count = (cur_end - *cursor) >> 2;
@@ -173,11 +195,17 @@ static int s23_part_vcount(uint32_t flags, int* cursor) {
     return count < 0 ? 0 : count;
 }
 
-/* M = start . Ry.Rx.Rz from a packed byte euler, which is what func_8004EA90
- * composes (asm/stdutil.s: the Y byte at bits 16-23 first, then X at 8-15,
- * then Z at 0-7, each against the running matrix). `part` selects the sub-tick
- * float angles the orchestrator handed in so rotation renders below the 8-bit
- * euler grid. */
+/** @brief Composes the matrix start times Ry Rx Rz from a packed byte euler, as func_8004EA90 does.
+ *
+ * func_8004EA90 (asm/stdutil.s) applies the Y byte at bits 16-23 first, then X
+ * at 8-15, then Z at 0-7, each against the running matrix. Where
+ * player_rot_interp holds sub-tick float angles for the part, the sines and
+ * cosines come from those, so rotation renders below the 8-bit euler grid.
+ * @param cpu Reads the sine table.
+ * @param start The matrix the rotations apply against.
+ * @param rot The packed byte euler.
+ * @param out Receives the composed matrix.
+ * @param part The part whose interpolated angles are looked up. */
 static void s23_compose_euler(CPUState* cpu, const int start[3][3], uint32_t rot,
                              int out[3][3], int part) {
     ngte_euler_sc e;
@@ -241,14 +269,10 @@ static int s23_part_xform(CPUState* cpu, const ngte_view* v, int part,
     return 1;
 }
 
-/* The seam joint (spyrodraw.s:176-199,307-325): the body keyframe record's
- * word at +0x08 carries the head's offset with a vertex delta's field layout
- * (Z = >>21, X = <<11>>21, Y = <<22>>21), INTPL'd between the two keyframes by
- * the body record's own blend weight and then transformed through the body's
- * matrix and translation. The two words come from the part block the walk is
- * reading, where s23_part_record put them, never from the live animation word:
- * the shape lerp walks the previous tick's block and the current one in turn,
- * and each pass must hang the head off its own keyframe pair. */
+/** @brief Saturates a value to the int16 range, as the GTE's IR registers do.
+ *
+ * @param v The value.
+ * @return `v` clamped to -32768..32767. */
 static inline int s23_sat16(int v) { return v < -32768 ? -32768 : (v > 32767 ? 32767 : v); }
 static int s23_seam_field(int32_t jw, int32_t jwB, int lsh, int ir0, int dual) {
     int a = (int)((int32_t)((uint32_t)jw << lsh) >> 21);
@@ -258,6 +282,22 @@ static int s23_seam_field(int32_t jw, int32_t jwB, int lsh, int ir0, int dual) {
     return (int)((((int64_t)a << 12) + (int64_t)ir0 * diff) >> 12);
 }
 
+/** @brief The head's origin from the body's seam words, through the body's matrix and translation.
+ *
+ * The seam joint (spyrodraw.s:176-199,307-325): the body keyframe record's
+ * word at +0x08 carries the head's offset with a vertex delta's field layout
+ * (Z = >>21, X = <<11>>21, Y = <<22>>21), INTPL'd between the two keyframes by
+ * the body record's own blend weight and then transformed through the body's
+ * matrix and translation. The two words come from the part block the walk is
+ * reading, where s23_part_record put them, never from the live animation word:
+ * the shape lerp walks the previous tick's block and the current one in turn,
+ * and each pass must hang the head off its own keyframe pair.
+ * @param cpu Unused.
+ * @param parent The body's transform; NULL leaves `out` zero.
+ * @param part Unused.
+ * @param ir0 The body record's blend weight.
+ * @param dual Nonzero when the body blends two keyframes.
+ * @param out Receives the head's translation. */
 static void s23_seam_joint(CPUState* cpu, const player_xform_t* parent,
                           int part, int ir0, int dual, double out[3]) {
     (void)cpu; (void)part;
@@ -274,10 +314,16 @@ static void s23_seam_joint(CPUState* cpu, const player_xform_t* parent,
                 + (double)parent->M[i][2]*VZ) / 4096.0;
 }
 
-/* One face stream and one colour block serve the whole skeleton: the body
+/** @brief The face stream and colour block, shared by both parts.
+ *
+ * One face stream and one colour block serve the whole skeleton: the body
  * Animation's +0x08 and +0x0C (spyrodraw.s:737-741,883,888-891). The colour
- * filter swaps the block for the pre-blend table the routine builds at draw
- * scratch + 0x1800 (spyrodraw.s:743-749). */
+ * filter (g_Spyro+0x20 byte 3 nonzero) swaps the block for the pre-blend table
+ * the routine builds at draw scratch + 0x1800 (spyrodraw.s:743-749).
+ * @param cpu Reads the Animation and g_Spyro.
+ * @param part Unused.
+ * @param out Receives the face stream and colour block addresses.
+ * @return 1, or 0 when the body has no Animation. */
 static int s23_part_faces(CPUState* cpu, int part, player_faces_t* out) {
     (void)part;
     uint32_t anim = s23_animation(cpu, 0);
@@ -292,16 +338,23 @@ static int s23_part_faces(CPUState* cpu, int part, player_faces_t* out) {
     return 1;
 }
 
-/* The vertex stream is the animated moby's, with one difference: the literal
+/** @brief Advances the player's vertex stream by one vertex.
+ *
+ * The vertex stream is the animated moby's, with one difference: the literal
  * two-halfword form's Y field is 11 bits at bits 1-11 here
  * (spyrodraw.s:498-499) where the moby draw reads 12 bits at bits 2-11
  * (mobydraw.s:1076-1078), so a literal vertex decoded the moby way lands at
- * twice its model Y and every delta vertex after it inherits that origin. */
+ * twice its model Y and every delta vertex after it inherits that origin.
+ * @param cpu Reads the stream.
+ * @param s The stream state; advanced in place.
+ * @param first Nonzero on the part's first vertex. */
 static void s23_player_vstream_step(CPUState* cpu, moby_vstream_t* s, int first) {
     s23_vstream_next_lit(cpu, s, first, 1);
 }
 
-/* The face record is the animated moby's, with two differences. The player
+/** @brief Decodes the player's face stream with a fixed 0x14-byte stride, every face textured.
+ *
+ * The face record is the animated moby's, with two differences. The player
  * draw advances a fixed 0x14 bytes whether or not word 1's sign is set
  * (spyrodraw.s:936-937,960-961), where the moby draw sizes the record by that
  * sign; walking this stream with the variable stride desyncs it after the
@@ -311,20 +364,33 @@ static void s23_player_vstream_step(CPUState* cpu, moby_vstream_t* s, int first)
  * headers), and the three texture words sit in every record because the stride
  * is fixed. Word 1's sign is therefore the back-face exemption here, not a
  * texture flag, so it is decoded into `untested` and every face is textured.
- */
+ * @param cpu Reads the stream.
+ * @param fb The faceblock.
+ * @param bytecount The stream's length in bytes after the leading word.
+ * @param out Receives up to `cap` faces.
+ * @param cap The capacity of `out`.
+ * @param st Receives the raw record count and the alignment verdict.
+ * @return The number of faces decoded. */
 static int s23_player_decode_faces(CPUState* cpu, uint32_t fb, uint32_t bytecount,
                                   moby_wface_t* out, int cap, moby_face_stats_t* st) {
     return s23_decode_faces_stride(cpu, fb, bytecount, out, cap, st, 0x14u, 1);
 }
 
-/* The per-face depth admission (spyrodraw.s:997-1006 for a quad, 1096-1109 for
+/** @brief The draw's per-face depth admission.
+ *
+ * The per-face depth admission (spyrodraw.s:997-1006 for a quad, 1096-1109 for
  * a triangle): the summed vertex depths minus the face's own ordering bias
  * must stay above a threshold measured from the model's view-space origin, or
  * the draw drops the face before it emits anything. The threshold is
  * 4 * (originZ - 0x800), floored at 1 (spyrodraw.s:254,863-871: the origin's
  * MAC3 less 0x800, stashed in a GTE control register and shifted left two in
  * the face loop's preamble). The bias is the face word's low three bits,
- * signed, times 128 (spyrodraw.s:1001-1002). */
+ * signed, times 128 (spyrodraw.s:1001-1002).
+ * @param cpu Unused.
+ * @param root The body's transform; NULL takes the threshold 1.
+ * @param f The face; supplies the ordering bias.
+ * @param depth_sum The face's summed vertex depths.
+ * @return 1 when the face is kept, 0 when the draw drops it. */
 static int s23_face_depth_keep(CPUState* cpu, const player_xform_t* root,
                               const moby_wface_t* f, double depth_sum) {
     (void)cpu;
@@ -396,17 +462,26 @@ static void s23_plane_begin(CPUState* cpu, player_plane_t* pl) {
     pl->active = 1;
 }
 
-/* The routine runs twice a tick: the mirrored copy first, with the gate word
+/** @brief Whether this draw call is the avatar the gameplay drives, read from the mirror gate word.
+ *
+ * The routine runs twice a tick: the mirrored copy first, with g_Spyro+0x2C
  * set, then the avatar the gameplay drives with it clear (spyrodraw.s:268,
- * 282). Only the second call is fed; the first still gets a record, so the
- * pairing sees the same call sequence every tick. */
+ * 282). Each call gets a record and a tag slot, so the pairing sees the same
+ * call sequence every tick; the hook feeds the mirrored call through the
+ * mirror latch.
+ * @param cpu Reads g_Spyro+0x2C.
+ * @return 1 when the gate word is zero, else 0. */
 static int s23_call_is_player(CPUState* cpu) {
     return cpu->read_word(PL.base + SPYRO_MIRROR_GATE) == 0u;
 }
 
-/* The same gate read the other way: the call the pass driver makes with the
- * height above the reflective surface still in the state word
- * (drawutil.s/func_8001EC5C:39-90 sets it, draws, zeroes it, draws again). */
+/** @brief Whether this draw call is the mirrored copy, the mirror gate word read the other way.
+ *
+ * The pass driver makes this call with the height above the reflective
+ * surface still in the state word (func_8001EC5C in drawutil.s, lines 39-90,
+ * sets it, draws, zeroes it, draws again).
+ * @param cpu Reads g_Spyro+0x2C.
+ * @return 1 when the gate word is nonzero, else 0. */
 static int s23_call_is_mirror(CPUState* cpu) {
     return cpu->read_word(PL.base + SPYRO_MIRROR_GATE) != 0u;
 }

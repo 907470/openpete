@@ -107,8 +107,16 @@ static void player_block_derive(CPUState* cpu, uint8_t* dst) {
     }
 }
 
-/* One word of part `part`'s record: out of the derived copy where the game
- * derives, out of PSX RAM where it does not. */
+/** @brief One word of a part's record, from the derived copy or from PSX RAM.
+ *
+ * Where the provider answers part_record the word comes from the derived host
+ * copy s_blk and reads 0 past part_block_len; otherwise it is read from the
+ * guest block.
+ * @param cpu Reads the guest block.
+ * @param block The guest block base; unused under part_record.
+ * @param part The part index.
+ * @param off The word's offset inside the part's record.
+ * @return The word. */
 static uint32_t player_rec_word(CPUState* cpu, uint32_t block, int part, uint32_t off) {
     uint32_t rel = (uint32_t)part * PL.part_stride + off;
     if (player_game.part_record)
@@ -116,9 +124,6 @@ static uint32_t player_rec_word(CPUState* cpu, uint32_t block, int part, uint32_
     return cpu->read_word(block + rel);
 }
 
-/* Seam word `k` (0 = keyframe A, 1 = keyframe B) of the block the walk is
- * reading. The two-pass shape lerp swaps the whole block per pass, so each
- * pass places the child part from the keyframe pair of its own pose. */
 uint32_t player_rec_seam_word(int k) {
     if (!player_game.part_record || !PL.part_seam_off || k < 0 || k > 1) return 0u;
     uint32_t off = PL.part_seam_off + (uint32_t)k * 4u;
@@ -200,8 +205,6 @@ void player_native_set_rot_interp(const int* active, const double* ang) {
         for (int k = 0; k < 3; k++) s_rot_ang[p][k] = ang[p*3 + k];
     }
 }
-/* Read by a provider's euler composer: the interpolated angles for part p, or
- * 0 when the canonical byte-exact table lookup is the one to use. */
 static int s_mirror_pass;
 void player_native_set_mirror(int on) { s_mirror_pass = on ? 1 : 0; }
 int  player_mirror_pass(void) { return s_mirror_pass; }
@@ -253,24 +256,39 @@ static uint32_t plane_shade(uint32_t rgb) {
     return out;
 }
 
-/* OPENPETE_PLAYER_VERIFY_NOPLANE: the negative control of the split. It
- * refuses the provider's plane, so every face takes the unsplit path; on a
- * pose the draw actually splits, the probe's plane and colour legs collapse. */
+/** @brief Whether OPENPETE_PLAYER_VERIFY_NOPLANE, the water-plane split's negative control, is set.
+ *
+ * Latched on the first call. When set, player_project_all never asks the
+ * provider for the plane, so every face takes the unsplit path; on a pose the
+ * draw splits, the verify probe's plane and colour legs collapse.
+ * @return 1 when set, else 0. */
 static int player_plane_disabled(void) {
     static int v = -1;
     ENV_FLAG_LATCH(v, "OPENPETE_PLAYER_VERIFY_NOPLANE");
     return v;
 }
 
-/* ---- projection --------------------------------------------------------
- * Float RTPS mirror WITH translation, reproducing the GTE's near-plane
- * behaviour in float. For a vertex close to the camera the hardware caps the
- * perspective divide, which pins a near vertex near the screen centre; using
- * the true (much larger) reciprocal instead makes such vertices shoot off the
- * screen edge. Mirroring the cap (and the IR16 and SXY clamps) removes that
- * while leaving every in-range vertex byte-identical, where the quotient is
- * exact. The UNR reciprocal's sub-pixel wobble is not reproduced: the true
- * divide is strictly closer to ideal. */
+/* ---- projection -------------------------------------------------------- */
+/** @brief Projects one model-space vertex through a part transform with the GTE's clamps in float.
+ *
+ * Runs ngte_project_gte with the SXY bound on. For a vertex close to the
+ * camera the hardware caps the perspective divide, which pins a near vertex
+ * near the screen centre; the true, larger reciprocal would throw such a
+ * vertex off the screen edge. Mirroring the cap and the IR16 and SXY clamps
+ * leaves every in-range vertex equal to the hardware's, where the quotient is
+ * exact. The UNR reciprocal's sub-pixel error is not reproduced.
+ * @param M The part rotation, Q12.
+ * @param TR The part translation.
+ * @param vx The vertex's X.
+ * @param vy The vertex's Y.
+ * @param vz The vertex's Z.
+ * @param ofx_px Screen X offset in pixels.
+ * @param ofy_px Screen Y offset in pixels.
+ * @param v The view.
+ * @param out_sx Receives the screen X.
+ * @param out_sy Receives the screen Y.
+ * @param out_sat Receives the saturation flag (divide capped or SZ3 not positive); may be NULL.
+ * @return MAC3, the vertex's view-Z. */
 static double project(const int M[3][3], const double TR[3], double vx, double vy, double vz,
                       double ofx_px, double ofy_px, const ngte_view* v,
                       double* out_sx, double* out_sy, int* out_sat) {
@@ -302,10 +320,24 @@ void player_proj_vert(int i, float* sx, float* sy, float* vz, int* sat, int* par
     if (part) *part = s_sproj[i].seg;
 }
 
-/* Decode one part's vertices out of the two keyframe streams, project each and
- * append to s_sproj. The cursors and the opening stream form come out of the
- * part record at the descriptor's offsets; only the per-vertex step is
- * per-game (player_game.vstream_next). */
+/** @brief Decodes one part's vertices from its two keyframe streams, projects each and appends it to s_sproj.
+ *
+ * The stream cursors and each stream's opening form come from the part record
+ * at the layout's offsets; the per-vertex step is the provider's
+ * vstream_next. When the flags word's blend bits are nonzero both streams
+ * advance and the vertex is A + blend/4096 * (B - A); otherwise stream A
+ * alone. Each entry records its part and, when the water plane is active, its
+ * signed plane distance. Stops at MAX_SPROJ entries.
+ * @param cpu Reads the streams.
+ * @param block The part-transform block's guest base.
+ * @param M The part rotation, Q12.
+ * @param TR The part translation.
+ * @param ofx Screen X offset in pixels.
+ * @param ofy Screen Y offset in pixels.
+ * @param v The view.
+ * @param part The part index.
+ * @param count The part's vertex count.
+ * @return The vertices appended. */
 static int player_project_part(CPUState* cpu, uint32_t block, const int M[3][3], const double TR[3],
                                double ofx, double ofy, const ngte_view* v, int part, int count) {
     uint32_t fd = player_rec_word(cpu, block, part, PL.part_flags_off);
@@ -658,16 +690,20 @@ int player_build_walk(CPUState* cpu) {
  * per-vertex colour and texture; the texture itself comes from VRAM, a static
  * asset. */
 
-/* The ordering-table slot the draw inserts this face's part at:
- * max(0, (part-origin view-Z >> 7) - sortDepth), one slot per 128 full-world
- * units (r_pete.s 80023F8C lbu 0x27 / sra 7 / sub / floor at 0; spyrodraw.s
- * 8004215C and 8003D148 read the same byte at 0x1E). Returned as the slot + 1
- * so that 0 stays "no key" (openpete_scene_tri::pkey). The face's part is the
- * part its first vertex was projected under; one face never spans two.
+/** @brief The ordering-table slot the draw inserts a face's part at, plus one.
+ *
+ * The slot is max(0, (part-origin view-Z >> 7) - sortDepth), one slot per 128
+ * full-world units (r_pete.s 80023F8C lbu 0x27 / sra 7 / sub / floor at 0;
+ * spyrodraw.s 8004215C and 8003D148 read the same byte at 0x1E). The +1 keeps
+ * 0 as "no key" (openpete_scene_tri::pkey). The face's part is the part its
+ * first vertex was projected under; one face never spans two.
  *
  * The slot is an ordering key only: it never enters stored depth, which stays
  * true per vertex. Its one reader is the additive glow fan, which the table
- * paints under the avatar whenever his pulled slot is the nearer of the two. */
+ * paints under the avatar whenever his pulled slot is the nearer of the two.
+ * @param vidx The face's first stream vertex index.
+ * @param sd The sortDepth byte.
+ * @return The slot + 1, or 0 when the index or its part has no transform. */
 static float player_part_key(int vidx, int sd)
 {
     if (vidx < 0 || vidx >= s_sproj_n) return 0.0f;
@@ -853,8 +889,12 @@ static void pv_capture(CPUState* cpu, uint32_t start, uint32_t end) {
     }
 }
 
-/* OPENPETE_PLAYER_VERIFY_MIRROR: bracket the MIRRORED copy's polybuf window
- * instead of the avatar's, so the legs below measure the reflection. */
+/** @brief Whether OPENPETE_PLAYER_VERIFY_MIRROR is set, latched on the first call.
+ *
+ * When set, the OPENPETE_PLAYER_VERIFY report runs on the mirrored copy's
+ * call and its polybuf window instead of the avatar's, so the report's legs
+ * measure the reflection.
+ * @return 1 when set, else 0. */
 static int player_verify_mirror(void) {
     static int v = -1;
     ENV_FLAG_LATCH(v, "OPENPETE_PLAYER_VERIFY_MIRROR");
@@ -1025,6 +1065,10 @@ static void player_verify_report(CPUState* cpu, uint32_t startp, uint32_t endp) 
 
 /* ---- the hook ----------------------------------------------------------- */
 
+/** @brief Runs the game's own avatar draw inside the hook bracket.
+ *
+ * @param cpu Passed to player_game.run_draw.
+ * @param addr The hooked address; unused. */
 static void player_run_draw(CPUState* cpu, uint32_t addr) { (void)addr; player_game.run_draw(cpu); }
 static int  player_verify_enabled(void) {
     return player_game.verify_enabled ? player_game.verify_enabled() : 0;
@@ -1164,8 +1208,6 @@ void player_reextract_record(CPUState* cpu, int mirror) {
     if (!two_pass) player_feed_walk(cpu);
 }
 
-/* One call, the avatar, from live gamestate: the shape an orchestrator with no
- * per-record loop replays. */
 void player_reextract(CPUState* cpu) { player_reextract_record(cpu, 0); }
 
 /* ======================================================================== *
@@ -1245,8 +1287,12 @@ static void reg_init(void) {
     s_reg[PLAYER_REC_FLAME].region = "g_SpyroFlame";
 }
 
-/* The ring region index of feeder f, resolved once. -1 when the game did not
- * register the region; a caller then has no ring bytes to compare against. */
+/** @brief The interp-ring region index of a feeder's state block, resolved once per feeder.
+ *
+ * @param f The feeder, PLAYER_REC_MODEL, PLAYER_REC_SHADOW or PLAYER_REC_FLAME.
+ * @return The ring row index, or -1 when the layout gives the feeder no base
+ *         address or the game registered no ring region by that name; a
+ *         caller then has no ring bytes to compare against. */
 static int reg_region(int f) {
     static int cache[PLAYER_REC_FEEDERS] = { -2, -2, -2 };
     reg_init();
@@ -1699,11 +1745,6 @@ int player_records_lerps(int k) {
     const player_model_rec_t* c = player_records_curr(k);
     return c && s_pres_lerp && c->pair >= 0;
 }
-/* Was model record k drawn by a hook call this tick, rather than created for
- * pairing alone? Reads the list still being built — the one bind_model binds
- * into — so an auxiliary feeder hooking later in the same tick can take the
- * avatar's own verdict, which is the verdict the replay loop applies when it
- * decides whether to reproduce that record. */
 int player_records_model_drawn(int k) {
     const rec_list_t* L = openpete_speculative ? &s_led : &s_list;
     return (k >= 0 && k < L->n && L->r[k].drawn) ? 1 : 0;
