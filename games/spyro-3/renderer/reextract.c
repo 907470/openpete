@@ -79,12 +79,15 @@ static uint32_t s_epoch_ok;        /* the stamp a capture must carry to be fresh
 static uint32_t s_prod_epoch[3];
 
 
-/* OPENPETE_CAM_DBG=1: per canonical present and per sub-tick re-extract, the
- * camera transform the pass will draw with: the world matrix at +0x14 as nine
- * shorts and the position at +0x28 as three words. The canonical line reads
- * live guest memory, the re-extract line reads the ring's two endpoints and the
- * staged lerp, so a camera the two passes disagree on is a printed number.
- * Diagnostic only. */
+/** @brief Reports whether OPENPETE_CAM_DBG is set to a value other than 0, read once.
+ *
+ * When set, each canonical present and each sub-tick re-extract prints the
+ * camera transform the pass draws with: the world matrix at +0x14 as nine
+ * shorts, the position at +0x28 as three words and the sky matrix's first
+ * short. The canonical line reads live guest memory; the re-extract lines read
+ * live memory, the staged camera and the ring's two endpoints, so a camera the
+ * two passes disagree on is a printed number. Diagnostic only.
+ * @return 1 when the trace is on, else 0. */
 static int cam_dbg_on(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_CAM_DBG"); v = (e && *e && *e != '0'); }
@@ -99,10 +102,13 @@ static void cam_dbg_line(const char* tag, const uint8_t* c) {
             openpete_frame, tag, p[0], p[1], p[2],
             m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], sk[0]);
 }
-/* Where this game's camera fields sit, for the shared cut guard: the sky matrix
- * decides the rotation test and the world position the jump test. The regime
- * row is game.state, so the guard marks a pair that straddles one of its edges
- * as a cut. */
+/** @brief Returns where this game's camera fields sit, for the shared cut guard.
+ *
+ * The sky matrix at +0x00 decides the rotation test and the world position at
+ * +0x28 the jump test. The regime row is game.state, so the guard marks a pair
+ * that straddles one of its edges as a cut. The two interp row indices are
+ * resolved on the first call.
+ * @return The descriptor, static storage. */
 static const cut_cam_desc_t* cut_desc(void) {
     static cut_cam_desc_t d = { -2, -2, CAM_OFF_POS, CAM_OFF_SKY };
     if (d.cam_region == -2) {
@@ -185,8 +191,12 @@ void spyro_native_canon_capture_range(void* cpu_v, unsigned off, unsigned len) {
     s_range[slot].epoch = s_epoch_now;
 }
 
-/* Stage every captured range this present. Returns 0 unless all of them are
- * fresh and staged, so a partial stage never reaches the replay. */
+/** @brief Stages every captured player range over its own address for this present.
+ *
+ * A range whose capture is not from the last canonical present, or that the
+ * sub-tick view cannot stage, fails the whole call, so a partial stage never
+ * reaches the replay.
+ * @return The number of ranges staged, or 0 when none is captured or any fails. */
 static int stage_player_records(void) {
     int staged = 0;
     for (int i = 0; i < S3_RANGE_SLOTS; i++) {
@@ -200,8 +210,7 @@ static int stage_player_records(void) {
     return staged;
 }
 
-/* The player draw's projected-SXY block is not staged on this game: the player
- * walk decodes the captured part records instead of reading the block back. */
+/* No capture: the player walk decodes the captured part records, not the SXY block. */
 void spyro_native_canon_capture_sxy(void* cpu) {
     (void)cpu;
 }
@@ -218,8 +227,12 @@ void spyro_native_canon_capture_recs(void* cpu) {
     s_recs_len  = len;
 }
 
-/* Stage the captured queue for this present. Returns 0 when there is none, so
- * the caller skips the replay rather than reading whatever now lives there. */
+/** @brief Stages the captured moby cull queue over its own address for this present.
+ *
+ * Sets the staged flag that spyro_native_canon_mobyreg_fresh reads. With no
+ * capture, or when the sub-tick view cannot stage it, the caller skips the
+ * replay rather than reading whatever now lives there.
+ * @return 1 when staged, else 0. */
 static int stage_moby_records(void) {
     s_recs_staged = 0;
     if (!s_recs_len) return 0;
@@ -393,10 +406,13 @@ static void player_records_replay(CPUState* cpu, int paired, double alpha) {
     player_records_present_end();
 }
 
-/* OPENPETE_RX_CENSUS=LO-HI (or a single frame): per sub-tick re-extract in that
- * frame range, the triangles each producer added to the scene, in call order.
- * A producer that returns early reads as zero, which is what separates a
- * missing producer from an empty one. Diagnostic only. */
+/** @brief Reports whether openpete_frame lies in the OPENPETE_RX_CENSUS range (LO-HI, or one value).
+ *
+ * While it does, each sub-tick re-extract prints the triangles each producer
+ * added to the scene, in call order. A producer that returns early reads as
+ * zero, which separates a missing producer from an empty one. Diagnostic
+ * only.
+ * @return 1 inside the range, else 0. */
 static int rx_census_on(void) {
     static env_frame_range_t s_range = ENV_FRAME_RANGE_INIT;
     return env_frame_range_active(&s_range, "OPENPETE_RX_CENSUS", openpete_frame);

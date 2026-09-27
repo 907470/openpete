@@ -137,8 +137,14 @@ static const s3_transition_store_t k_warp_stores[] = {
     { S3_AREA, 4u, 0u, 0u },
 };
 
-/* Queue WarpToLevel(0, target). The request drains at the next Draw entry,
- * after this tick's Update. */
+/** @brief Queues WarpToLevel func_800584BC(0, target_id) through the transition queue.
+ *
+ * The request drains at the next Draw func_8001E638 entry, after this tick's
+ * Update; the drain re-reads warp_route_level, then writes 0 to the area word
+ * 0x8006C5C8 before the call. A request made while another is queued is
+ * ignored with a log line; an accepted one moves the warp to WARP_QUEUED.
+ * @param cpu The guest CPU state.
+ * @param target_id The level number to warp to. */
 static void warp_start(CPUState* cpu, int target_id) {
     s3_transition_request_t req = {
         .tag      = "levelwarp",

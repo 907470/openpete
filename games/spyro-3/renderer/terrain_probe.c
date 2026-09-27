@@ -118,9 +118,17 @@ static int pv_match(double sx, double sy, double tol, int reach, double* near, i
     return r;
 }
 
-/* 1 when (sx, sy) is within tol of the midpoint of two projected S3-packed
- * vertices of the same sector within 96 px: the signature of a subdivided
- * face. */
+/** @brief Tests whether a screen point lies at the midpoint of, or on the segment between, two projected sector vertices.
+ *
+ * Candidates are the S3-packed vertices (no Spyro 1 control, no flat-sector
+ * packing) in the grid cells within 96 px of the point, at most 512. A point
+ * within tol of a pair's midpoint is the signature of a subdivided face.
+ * @param sx The point's screen X.
+ * @param sy The point's screen Y.
+ * @param tol The match tolerance in pixels.
+ * @return Bits: 1 = a midpoint of a same-sector pair, 2 = a midpoint of a
+ *     cross-sector pair, 4 = on the segment strictly between a same-sector
+ *     pair, 8 = the same for a cross-sector pair. */
 static int pv_midpoint(double sx, double sy, double tol) {
     int cx = (int)floor((sx + 1024.0) / 8.0), cy = (int)floor((sy + 1024.0) / 8.0);
     int cand[512]; int n = 0;
@@ -292,6 +300,22 @@ static void probe_report(void) {
 }
 
 /* ---- the world-draw hook ------------------------------------------------ */
+/** @brief Runs the world draw once under the probe and matches its emitted polygon vertices to the decoded sectors.
+ *
+ * Inert (returns 0) unless OPENPETE_TERRAIN_PROBE is set, and on the nested
+ * dispatch the probe's own func_80022378 call makes, so that call runs the
+ * stock draw. Otherwise it arms the visibility capture, runs the draw between
+ * two reads of the polybuf cursor, projects every visible sector's LP and HP
+ * vertices (the Spyro 3 packing, the Spyro 1 packing as a control, and the
+ * flat-sector packing), walks the emitted primitives by OT tag length and
+ * matches each polygon vertex, then matches each decoded vertex back against
+ * the emitted set. Registers probe_report at exit on first use; mode 2 also
+ * prints one line per tick. OPENPETE_TERRAIN_PROBE_DUMP_VBL appends misses at
+ * that VBL and the next to terrain-probe-dump.txt. Writes no guest memory
+ * beyond what the draw itself writes.
+ * @param cpu The guest CPU state.
+ * @param addr The hooked address (unused).
+ * @return 1 when the probe ran the draw (the stock body is skipped), else 0. */
 static int on_world_draw(CPUState* cpu, uint32_t addr) {
     (void)addr;
     int mode = probe_mode();

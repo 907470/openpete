@@ -9,33 +9,64 @@
 
 typedef struct CPUState CPUState;
 
-/* game_resolve_area_arg: the level number, *out_area the area index; -1
- * and the list of valid targets for an empty, unknown or unreachable
- * argument. */
+/** @brief Resolves a --skip-to-area LEVEL:AREA argument for game_resolve_area_arg.
+ *
+ * The level part goes through spyro3_level_resolve (number or name); the area
+ * part must be decimal digits naming an area 1..count-1 of a level in the
+ * sub-area table. A missing colon or an invalid area prints the valid targets
+ * to stderr; an unknown level prints the level list.
+ * @param arg The argument.
+ * @param out_area Receives the area index on success.
+ * @return The level number, or -1. */
 int spyro3_area_resolve(const char* arg, int* out_area);
 
-/* game_set_skip_to_area: arms --skip-to-level `level` and the sub-area
- * entry; level 0 disarms. */
+/** @brief Arms a --skip-to-area target for game_set_skip_to_area.
+ *
+ * A level above 0 arms --skip-to-level `level` through spyro3_skip_set and the
+ * sub-area entry; 0 or less disarms the entry and leaves the level skip as it
+ * is.
+ * @param level The level number.
+ * @param area The sub-area index. */
 void spyro3_area_set(int level, int area);
 
-/* Per-tick driver (game_on_frame_pre). Inert while disarmed. */
+/** @brief Advances the sub-area entry by one tick, from game_on_frame_pre.
+ *
+ * Inert while disarmed and on a speculative tick. Armed, once the level skip
+ * has picked its target and the route holds (gameplay live, isDemoMode clear,
+ * area word 0, the target level current), it queues EnterSubArea(area, the
+ * area-0 portal's paired moby) for the next Draw entry, or disarms with a
+ * warning when the level has no such portal. After the call it waits for
+ * game.state 13, then releases, with a log line, when gameplay is live with
+ * the area word 0x8006C5C8 equal to the target.
+ * @param cpu The guest CPU state.
+ * @param frame_counter The openpete_frame counter printed on the release line. */
 void spyro3_area_on_tick(CPUState* cpu, uint32_t frame_counter);
 
-/* An area target is armed and its release or fail-safe line is not yet
- * logged: the skip release block (skip_to_level.c) watches it every tick,
- * headless too. */
+/** @brief Reports whether an area target is armed and its release or fail-safe line is not yet logged.
+ *
+ * The skip release block (skip_to_level.c) watches the target every tick
+ * while this holds, headless too.
+ * @return 1 while the target is watched, else 0. */
 int spyro3_area_watching(void);
 
-/* An area target is armed and not yet released: from the level skip through
- * the sub-area load. A scripted freecam pose waits on it, since the sub-area
- * transition re-seeds the camera from the game's. */
+/** @brief Reports whether an area target is armed and not yet released.
+ *
+ * Holds from the level skip through the sub-area load. The scripted free
+ * camera engage waits on it, since the sub-area transition re-seeds the camera
+ * from the game's.
+ * @return 1 while the target is pending, else 0. */
 int spyro3_area_pending(void);
 
-/* The armed target's release predicate held: game.state 13 was seen after
- * the call, then gameplay went live with the area word == the target. On a
- * release, writes " level=L area=A" read back from 0x8006C5BC and
- * 0x8006C5C8 to eng. */
+/** @brief Reports whether the armed target's release predicate has held.
+ *
+ * The predicate: game.state 13 seen after the call, then gameplay live with
+ * the area word equal to the target. On a release, writes " level=L area=A",
+ * read back from 0x8006C5BC and 0x8006C5C8, to eng.
+ * @param cpu The guest CPU state.
+ * @param eng Receives the release line's suffix.
+ * @param cap The capacity of eng in bytes.
+ * @return 1 once released, else 0. */
 int spyro3_area_released(CPUState* cpu, char* eng, size_t cap);
 
-/* The release block logged its line; the watch ends. */
+/** @brief Ends the watch after the skip release block has logged the target's line. */
 void spyro3_area_finish(void);

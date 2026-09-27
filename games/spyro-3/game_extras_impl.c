@@ -5,6 +5,37 @@
 // classifier, --skip-to-level and the freecam wiring carry real values; the
 // remaining per-tick and CLI entries are stubs that core calls and that must
 // not crash.
+//
+// Level-load delay: a load keeps a disc read in flight across at least 33
+// main-loop iterations (two VBLs each). The EXE's per-tick function
+// func_8002CA50 walks a checksum over the EXE and the loading overlay only
+// while a read is pending (func_800503F8 non-zero) and loadStage 0x8006C518
+// is 2..7, 5120 bytes per iteration over 164139 bytes, and loader state 7
+// waits for the walk's cursor 0x8006C6B8 to reach its end before it hands
+// over to the level; with reads completing inside the iteration that issued
+// them the walk never starts. The first read of a load is one sector, whose
+// retry timeout is 121 VBLs (sectors + 120, at func_80050680), so the per-read
+// cap stays under it. 66 VBLs on that read is the measured floor: 64 leaves
+// the loader in state 7, 66 loads every demo level.
+//
+// Load-read classifier (psyq_game_cd_read_in_load): a read belongs to a level
+// load while loadStage (the loading overlay's state machine, entry
+// 0x8007494C) is 2..7, the window the checksum walk runs in; those reads go
+// through the asynchronous path func_80050680 and are polled from the main
+// loop by func_800503F8. State 0 reads the loading overlay itself and states
+// below 2 belong to no load, so each pass through the loader opens a new
+// budget. Entering a level through a portal (game.state 0x8006E344 ==
+// GAMESTATE_LOADING_GLIDE, 7) runs the overlay's loading-image sequence
+// func_loading_80076538 on pauseData sub-state 0x8006FBC8: sub-state 2
+// fetches the loading image (the read issued at 0x8007665C, flagged in
+// D_8007232C) and polls it to completion without calling the walk; the state
+// machine's own reads start in sub-state 3, where the walk runs every
+// iteration. A budget spent on the image fetch leaves the walk with no read in
+// flight, the cursor never reaches its end, and the overlay's final
+// `while (loadStage < 8) func_8002CA50()` spin at 0x80076D98, which never
+// calls VSync, hangs; the image fetch is therefore not in load. The title path
+// (GAMESTATE_LOADING_IMG, 5) reads its image synchronously through
+// func_80050578 before the state machine starts and is unaffected.
 
 #include "game_extras.h"
 #include "openpete_psx.h"
@@ -32,18 +63,7 @@
  * reads. */
 uint32_t game_get_pad_read_pc(void) { return 0u; }
 
-/* The load must keep a disc read in flight across at least 33 main-loop
- * frames (two VBLs each): the EXE's per-frame function at 0x8002CA50 walks a
- * checksum over the EXE and the loading overlay only on frames a read is
- * pending (func_800503F8 non-zero) and only while the loading state
- * 0x8006C518 is 2..7, 5120 bytes per frame over 164139 bytes, and the
- * state machine's state 7 waits for the walk's cursor (0x8006C6B8) to reach
- * its end before it hands over to the level. With reads completing inside
- * the frame that issued them the walk never starts. The first read of a
- * load is one sector, whose retry timeout is 121 VBLs (sectors + 120, at
- * func_80050400), so the per-read cap stays under it. 66 VBLs on that read
- * is the measured floor: 64 leaves the loader in state 7, 66 loads every
- * demo level. */
+/* The measured floor for the checksum walk (the level-load delay note in the file header). */
 uint32_t game_get_load_delay_default(void) { return 66u; }
 
 /* --- Overlay handling --- */
@@ -115,9 +135,7 @@ int game_is_gameplay_live(CPUState* cpu) { return spyro3_skip_gameplay_live(cpu)
 void game_set_skip_to_level(int level_id) { spyro3_skip_set(level_id); }
 int  game_resolve_level_arg(const char* arg) { return spyro3_level_resolve(arg); }
 int  game_validate_cheats_arg(const char* spec) { (void)spec; return -1; }
-/* --skip-to-cutscene (features/cutscene_skip.c): a row starting from a
- * level rides a --skip-to-level to that level; a contradicting
- * --skip-to-level is refused. */
+/* A row starting from a level rides a --skip-to-level there; a contradicting --skip-to-level refuses it. */
 void game_set_skip_to_cutscene(int cutscene_id) {
     if (cutscene_id > 0) spyro3_cutscene_arm(cutscene_id, spyro3_skip_target());
 }
@@ -137,30 +155,7 @@ int  game_resolve_area_arg(const char* arg, int* out_area) {
  * per-game belongs to the recompiler, not to this file. */
 uint32_t psx_runtime_g_sony_image_base = 0x8006FCF4u;
 
-/* A read belongs to a level load while the loading overlay's state machine
- * (entry 0x8007494C, state word loadStage 0x8006C518) is in states 2..7, the
- * window the EXE's checksum walk (func_8002CA50) runs in; those reads are
- * issued through the asynchronous path (func_80050680) and polled from the
- * main loop by func_80050400. State 0 reads the loading overlay itself and
- * states below 2 belong to no load, so each pass through the loader opens a
- * new budget.
- *
- * The walk hashes only on frames a read is in flight, so the budget must be
- * spent on reads the walk observes. Entering a level through a portal
- * (game.state 0x8006E344 == GAMESTATE_LOADING_GLIDE, 7) runs the overlay's
- * loading-image sequence (func_loading_80076538) on pauseData sub-state
- * 0x8006FBC8: sub-state 2 fetches the loading image (the read issued at
- * 0x8007665C, flagged in D_8007232C) and polls it to completion without
- * calling the walk; the state machine's own reads start in sub-state 3, where
- * the walk runs every frame. A budget spent on the image fetch leaves the walk
- * with no read in flight, the cursor never reaches its end, and the overlay's
- * final `while (loadStage < 8) func_8002CA50()` spin (0x80076D98), which never
- * calls VSync, hangs. The image fetch is therefore classified as not in load.
- * The title path (GAMESTATE_LOADING_IMG, 5) reads its image synchronously
- * through func_80050578 before the state machine starts and is unaffected.
- *
- * The cap keeps every deferred read under the loader's shortest retry
- * timeout, 121 VBLs for a one-sector read. */
+/* loadStage 2..7 except the portal loading-image fetch (the load-read classifier note in the file header). */
 int psyq_game_cd_read_in_load(CPUState* cpu) {
     uint32_t state = cpu->read_word(0x8006C518u);
     if (state < 2u || state > 7u) return 0;
@@ -170,33 +165,20 @@ int psyq_game_cd_read_in_load(CPUState* cpu) {
 }
 uint32_t psyq_game_cd_read_delay_cap(void) { return 100u; }
 
-/* The loader's state word: states 2..7 are the window the checksum walk
- * runs in, one sliced step per frame, and 8..12 the level reads and
- * parses that follow, before the word returns to -1; the tick count of
- * the whole span is CPU time on hardware. */
+/* loadStage: 2..7 the checksum walk, one step per iteration, 8..12 the level reads and parses, then -1. */
 uint32_t psyq_game_load_window_word(void) { return 0x8006C518u; }
 
-/* The title overlay's disc check drives the CD-ROM controller's registers
- * itself (its command writer at 0x8007BB3C); every such site lies in the
- * overlay region, and libcd's own command writes in the main image below
- * it. */
+/* The overlay base: the title overlay's disc check writes CD-ROM commands from 0x8007BB3C, libcd below it. */
 uint32_t psyq_game_cd_raw_pc_min(void) { return 0x800742D0u; }
 
-/* The loader's poll (func_800503F8) reads its read-in-flight flag
- * (D_8006E480, cleared by the read callback func_80050504) and, with no
- * read in flight, polls CdSync(1) from 0x800504E4: that poll's return
- * address witnesses the callback having run before the flag read. */
+/* func_800503F8's CdSync(1) at 0x800504E0, taken when D_8006E480 (cleared by callback func_80050504) is 0. */
 uint32_t psyq_game_cd_done_witness_ra(void) { return 0x800504E8u; }
 int      psyq_game_load_window_active(uint32_t value) { (void)value; return 0; }
 
-/* PSYQ's rand seed: the word `rand` (0x8005C644) loads, steps by
- * seed * 0x41C64E6D + 0x3039 and stores back, and `srand` (0x8005C674)
- * overwrites, at D_80073F3C in the library's .bss. */
+/* D_80073F3C (psyq .bss): rand (func_8005C644) steps it, srand (func_8005C674) overwrites it. */
 uint32_t psyq_game_rand_seed_addr(void) { return 0x80073F3Cu; }
 
-/* Root counter 2's count as the boot's `lhu` at 0x8004F6A4 (stdutil.s)
- * read it on the hardware reference, passed to srand: the seed every boot
- * starts from. */
+/* The reference boot's `lhu` at 0x8004F6A4 (func_8004F6A0, stdutil.s) read this; it seeds srand. */
 uint16_t psyq_game_root_counter2(void) { return 0x58C7u; }
 
 /** @brief Log whether the level-load checksum walk passed, once per load, at entry to func_8002CA50.

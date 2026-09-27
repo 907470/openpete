@@ -50,8 +50,15 @@ static void store(CPUState* cpu, const s3_transition_store_t* s) {
     }
 }
 
-/* Draw takes no arguments and this is its entry, so only the return address
- * is live across the nested calls. */
+/** @brief Calls a guest function with two arguments from the Draw entry hook.
+ *
+ * Sets a0 and a1, runs the function through call_by_address and restores ra.
+ * Draw takes no arguments and this is its entry, so ra is the only register
+ * live across the nested call.
+ * @param cpu The guest CPU state.
+ * @param fn The guest function's address.
+ * @param a0 The first argument.
+ * @param a1 The second argument. */
 static void call_guest(CPUState* cpu, uint32_t fn, uint32_t a0, uint32_t a1) {
     uint32_t ra = cpu->ra;
     cpu->a0 = a0;

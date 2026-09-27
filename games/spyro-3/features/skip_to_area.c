@@ -172,7 +172,15 @@ static int area_route(CPUState* cpu) {
 static void area_called(CPUState* cpu)  { (void)cpu; s_phase = AREA_CALLED; }
 static void area_dropped(CPUState* cpu) { (void)cpu; s_phase = AREA_ARMED; }
 
-/* The paired moby of the area-0 portal leading to `area`, or 0. */
+/** @brief Finds the paired moby of the area-0 portal leading to a sub-area.
+ *
+ * Walks the moby table from *(0x8006C550) to *(0x8006C704) in 88-byte strides
+ * for a class-1022 moby (the half at moby+54) whose props, *(moby+0), hold 0
+ * at props+64 (the area it stands in) and `area` at props+52 (its
+ * destination), as the pause menu's return path func_8005783C does.
+ * @param cpu The guest CPU state.
+ * @param area The destination sub-area index.
+ * @return The table base plus props+48 times 88, or 0 when no such portal exists. */
 static uint32_t find_portal_pair(CPUState* cpu, int area) {
     uint32_t base = cpu->read_word(S3_MOBY_TABLE);
     uint32_t end  = cpu->read_word(S3_MOBY_TABLE_END);

@@ -14,8 +14,12 @@
 
 #include <stddef.h>
 
-/* The flame's first-cell cap colours: the second four-word set in the one
- * level whose id the emitter tests for (asm/mobyfunc.s:334-341). */
+/** @brief Returns the byte offset of the flame's first-cell cap colour set for this tick.
+ *
+ * The emitter reads the second four-word set of D_80069C38 when currentLevel
+ * 0x8006C5BC is 0x1F, else the first (asm/mobyfunc.s:334-341).
+ * @param cpu The guest CPU state.
+ * @return 0x10 on level 0x1F, else 0. */
 static uint32_t flame_cap_colour_off(CPUState* cpu) {
     return cpu->read_word(G_LEVELID) == 0x1Fu ? 0x10u : 0u;
 }

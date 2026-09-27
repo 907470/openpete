@@ -50,9 +50,15 @@ typedef struct {
     void (*dropped)(CPUState* cpu);
 } s3_transition_request_t;
 
-/* Queue `req` (copied; the pointed-to arrays must outlive the drain).
- * Returns 0 when a request is already pending. */
+/** @brief Queues a transition request for the next drain at its entry.
+ *
+ * The request is copied; the arrays it points to must outlive the drain. The
+ * queue holds one request.
+ * @param req The request.
+ * @return 1 when queued, 0 when a request is already pending. */
 int s3_transition_enqueue(const s3_transition_request_t* req);
 
-/* A request is queued and not yet drained. */
+/** @brief Reports whether a request is queued and not yet drained.
+ *
+ * @return 1 while a request is pending, else 0. */
 int s3_transition_pending(void);
