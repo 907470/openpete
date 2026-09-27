@@ -47,8 +47,8 @@ void openpete_memcard_set_presence(int slot, int present);
 /** @brief Select an all-zero unformatted image instead of a formatted empty card when provisioning a card (--card-unformatted).
  *
  * Provisioning happens on first access when the image file is absent or
- * short; the unformatted image is written to the file, and the game's own
- * format flow then runs.
+ * was moved aside as not a card image; the unformatted image is written to
+ * the file, and the game's own format flow then runs.
  * @param on Nonzero selects the unformatted image. */
 void openpete_memcard_set_unformatted(int on);
 
@@ -130,7 +130,8 @@ int  openpete_memcard_read (int chan, const char* name, void* dst_host,
  * @param bytes Byte count.
  * @return McErrNone (0); McErrCardNotExist for an empty slot;
  *         McErrFileNotExist when the file is absent, src_host is NULL, or
- *         the range falls outside the image. */
+ *         the range falls outside the image; McErrCardInvalid (2) when the
+ *         image did not reach the disk, with the card left as it was. */
 int  openpete_memcard_write(int chan, const char* name, const void* src_host,
                             int ofs, int bytes);
 
@@ -145,15 +146,18 @@ int  openpete_memcard_write(int chan, const char* name, const void* src_host,
  * @param name File name, stored in the 20-byte name field.
  * @param blocks Block count; values below 1 allocate 1.
  * @return McErrNone (0), McErrCardNotExist, McErrNotFormat,
- *         McErrAlreadyExist when the name exists, or McErrBlockFull when
- *         too few blocks are free. */
+ *         McErrAlreadyExist when the name exists, McErrBlockFull when
+ *         too few blocks are free, or McErrCardInvalid (2) when the image
+ *         did not reach the disk, with the card left as it was. */
 int  openpete_memcard_create(int chan, const char* name, int blocks);
 
 /** @brief Replace the card in chan with a formatted empty image and write it to disk.
  *
  * The sync latch and the new-card flag are not updated.
  * @param chan Raw PSX port encoding: port A = 0x00, port B = 0x10.
- * @return McErrNone (0), or McErrCardNotExist for an empty slot. */
+ * @return McErrNone (0), McErrCardNotExist for an empty slot, or
+ *         McErrCardInvalid (2) when the image did not reach the disk, with
+ *         the card left as it was. */
 int  openpete_memcard_format(int chan);
 
 /** @brief Report the sync latch for libmcrd MemCardSync.
@@ -227,14 +231,17 @@ uint32_t openpete_psx_bios_rom_reads(void);
  * @return 0 on success, -1 when the slot is empty, dst_host is NULL, or
  *         frame is out of range. */
 int  openpete_memcard_read_frame (int chan, int frame, void* dst_host);
-/** @brief Copy one 128-byte frame from a host buffer into the card in chan and write the image to disk.
+/** @brief Copy one 128-byte frame from a host buffer into the card in chan and write that frame to disk.
  *
- * Applies the modset tag rule for a write before the copy.
+ * The frame is written in place in the image file (128 bytes, synced),
+ * not the whole 128 KiB image; the modset tag rule for a write applies
+ * once it lands. A failed write restores the frame in memory, so the
+ * BIOS reports a card error for a save that did not persist.
  * @param chan Slot as 0 or 1, or the raw port encoding 0x00 or 0x10.
  * @param frame Frame number, 0 to 1023.
  * @param src_host Source of 128 bytes.
- * @return 0 on success, -1 when the slot is empty, src_host is NULL, or
- *         frame is out of range. */
+ * @return 0 on success, -1 when the slot is empty, src_host is NULL,
+ *         frame is out of range, or the write did not reach the file. */
 int  openpete_memcard_write_frame(int chan, int frame, const void* src_host);
 
 #ifdef __cplusplus

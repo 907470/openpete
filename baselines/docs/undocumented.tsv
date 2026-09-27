@@ -2,7 +2,7 @@
 # library: libclang 14
 # requirement: @brief of one sentence on one line on every function; @param per named parameter and @return on non-void for external linkage
 # written-by: hook
-# head: a54f47bc9bb164cb5f4c18559219cc5e672049f5
+# head: 85d4f6e3a7c380a8186ff513c61025d1f689e1b8
 file	function	form	accepted
 core/config/config.c	decision_for	none	
 core/config/config.c	dup_str	none	
@@ -178,7 +178,6 @@ core/host/memcard.c	mc_is_formatted	none
 core/host/memcard.c	mc_latch	none	
 core/host/memcard.c	mc_modset_check_open	none	
 core/host/memcard.c	mc_modset_read_sidecar	none	
-core/host/memcard.c	mc_modset_write_sidecar	none	
 core/host/memcard.c	mc_probe	none	
 core/host/memcard.c	openpete_memcard_start	none	
 core/host/memcard.c	openpete_memcard_stop	none	

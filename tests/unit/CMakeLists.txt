@@ -153,6 +153,25 @@ if(NOT WIN32)
 endif()
 add_test(NAME vibration_test COMMAND vibration_test)
 
+# memcard_test — the host memory card against killed and failed writes and
+# against card files it did not create (atomic replacement, the libmcrd and
+# BIOS error paths, set-aside of unknown files, read-only headered images,
+# in-place frame writes). POSIX only: the cases fork.
+if(NOT WIN32)
+    add_executable(memcard_test
+        memcard_test.c
+        ${CMAKE_SOURCE_DIR}/core/host/memcard.c
+        ${CMAKE_SOURCE_DIR}/core/host/atomic_file.c
+        ${CMAKE_SOURCE_DIR}/core/config/paths.c
+        ${CMAKE_SOURCE_DIR}/core/diag/log.c)
+    target_include_directories(memcard_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/include
+        ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include)
+    set_target_properties(memcard_test PROPERTIES C_STANDARD 11)
+    add_test(NAME memcard_test
+             COMMAND memcard_test ${CMAKE_CURRENT_BINARY_DIR}/memcard_test.d)
+endif()
+
 # config_resolve_test — openpete.toml precedence. The resolver decides which
 # of ~10 layers wins each knob and then materializes exactly one spelling of
 # it; this pins that ordering down so an edit can't quietly re-order the

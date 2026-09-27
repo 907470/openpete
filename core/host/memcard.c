@@ -18,6 +18,7 @@
  */
 
 #include "openpete_memcard.h"
+#include "openpete_atomic_file.h"
 #include "openpete_log.h"
 #include "openpete_paths.h"
 #include "openpete_mods.h" /* openpete_mods_modset_tag — save safety */
@@ -55,6 +56,7 @@ extern int openpete_speculative; /* openpete_fiber.h — runahead lookahead */
  * the PsyCross game header). Values are the PSYQ ABI constants. */
 #define MC_ERR_NONE            0
 #define MC_ERR_CARD_NOT_EXIST  1
+#define MC_ERR_CARD_INVALID    2   /* communication error: the write did not land */
 #define MC_ERR_NEW_CARD        3
 #define MC_ERR_NOT_FORMAT      4
 #define MC_ERR_FILE_NOT_EXIST  5
@@ -72,6 +74,12 @@ extern int openpete_speculative; /* openpete_fiber.h — runahead lookahead */
 /* --- state ---------------------------------------------------------------- */
 
 static uint8_t s_card[2][MC_CARD_SIZE];
+static uint8_t s_disk[2][MC_CARD_SIZE];        /* the image as last persisted */
+/* Writes to the slot are refused: its file is a headered image loaded
+ * read-only (s_readonly), or no card path resolved (s_mem_only). */
+static int     s_readonly[2];
+static int     s_mem_only[2];
+static int     s_refuse_warned[2];
 static int     s_present[2]      = { 1, 1 };   /* both cards inserted by default */
 static int     s_loaded[2]       = { 0, 0 };
 static int     s_new_card[2]     = { 1, 1 };   /* "new card" latch, clears on 1st probe */
@@ -191,16 +199,17 @@ static void mc_modset_read_sidecar(int slot) {
         s_ms_tag[slot][--got] = '\0';
 }
 
+/** @brief Replace the slot's modset sidecar with tag and a newline, and adopt tag as the slot's sidecar tag when the write lands.
+ *
+ * @param slot Card slot, 0 or 1.
+ * @param tag The modset tag; "" is vanilla. */
 static void mc_modset_write_sidecar(int slot, const char* tag) {
     char p[1300];
+    char line[1100];
     mc_modset_sidecar_path(slot, p, sizeof p);
-    FILE* f = fopen(p, "wb");
-    if (!f) {
-        OPL_ERROR_F("memcard", "cannot write %s: %s", p, strerror(errno));
-        return;
-    }
-    fprintf(f, "%s\n", tag);
-    fclose(f);
+    int n = snprintf(line, sizeof line, "%s\n", tag);
+    if (n < 0 || (size_t)n >= sizeof line) return;
+    if (op_atomic_write_file(p, line, (size_t)n) != 0) return;
     snprintf(s_ms_tag[slot], sizeof s_ms_tag[slot], "%s", tag);
 }
 
@@ -265,80 +274,216 @@ static void mc_modset_on_write(int slot) {
     }
 }
 
-/** @brief Write the slot's card image to its file and apply the modset tag rule for a write.
+/** @brief Report whether the slot refuses writes, logging the reason once per slot.
  *
- * Called after every mutation, so the file is written through. No-op when
- * the slot is not loaded, and suppressed with a warning during a
- * speculative (runahead) tick. An open failure is logged and skips the
- * modset rule; a short write is logged. */
-static void mc_flush(int slot)
+ * @param slot Card slot, 0 or 1.
+ * @return 1 when the slot's image is read-only or memory-only, else 0. */
+static int mc_write_refused(int slot)
 {
-    if (!s_loaded[slot]) return;
-    if (openpete_speculative) {
-        /* Runahead lookahead: this mutation belongs to a timeline that is
-         * about to be rolled back — persisting it would leak a phantom
-         * save to disk. The real tick re-runs the same guest code and
-         * flushes for real. (Residual: s_card[] itself is host state; a
-         * speculative mutation the real tick doesn't repeat would linger
-         * in the in-memory card until the next real write. Card writes
-         * happen at save points, which are not gameplay-live, and
-         * runahead is gated on liveness — accepted.) */
-        OPL_WARN_F("memcard", "flush during speculative tick suppressed "
-                   "(slot %d)", slot);
-        return;
+    if (!s_readonly[slot] && !s_mem_only[slot]) return 0;
+    if (!s_refuse_warned[slot]) {
+        s_refuse_warned[slot] = 1;
+        OPL_ERROR_F("memcard", "card %d: save refused — %s", slot,
+                    s_mem_only[slot] ? "no card directory resolves"
+                                     : "the image is a headered format loaded read-only");
     }
-    FILE* f = fopen(s_path[slot], "wb");
-    if (!f) {
-        OPL_ERROR_F("memcard", "fopen %s for write failed: %s",
-                    s_path[slot], strerror(errno));
-        return;
-    }
-    if (fwrite(s_card[slot], 1, MC_CARD_SIZE, f) != MC_CARD_SIZE)
-        OPL_ERROR_F("memcard", "short write to %s", s_path[slot]);
-    fclose(f);
-    mc_modset_on_write(slot);
+    return 1;
 }
 
-/** @brief Load the slot's card image on first access, or provision one when the file is absent or short.
+/** @brief Report whether a slot write is suppressed because the tick is speculative (runahead).
+ *
+ * Runahead lookahead: the mutation belongs to a timeline that is about to
+ * be rolled back, and persisting it would leak a phantom save to disk. The
+ * real tick re-runs the same guest code and writes for real. s_card[]
+ * itself is host state; a speculative mutation the real tick does not
+ * repeat lingers in the in-memory card until the next real write. Card
+ * writes happen at save points, which are not gameplay-live, and runahead
+ * is gated on liveness.
+ * @param slot Card slot, 0 or 1, named in the warning.
+ * @return 1 when the write is suppressed. */
+static int mc_speculative_suppressed(int slot)
+{
+    if (!openpete_speculative) return 0;
+    OPL_WARN_F("memcard", "flush during speculative tick suppressed (slot %d)", slot);
+    return 1;
+}
+
+/** @brief Write the slot's card image to its file atomically and apply the modset tag rule for a write.
+ *
+ * Called after every mutation, so the file is written through. No-op when
+ * the slot is not loaded or the tick is speculative. On a refused or failed
+ * write the in-memory image is restored to the last persisted one, so the
+ * card the game sees stays the card on disk.
+ * @param slot Card slot, 0 or 1.
+ * @return 0 when the image is on disk (or nothing was due), -1 when the write failed. */
+static int mc_flush(int slot)
+{
+    if (!s_loaded[slot] || mc_speculative_suppressed(slot)) return 0;
+    if (mc_write_refused(slot) ||
+        op_atomic_write_file(s_path[slot], s_card[slot], MC_CARD_SIZE) != 0) {
+        memcpy(s_card[slot], s_disk[slot], MC_CARD_SIZE);
+        return -1;
+    }
+    memcpy(s_disk[slot], s_card[slot], MC_CARD_SIZE);
+    mc_modset_on_write(slot);
+    return 0;
+}
+
+/** @brief Write one 128-byte frame of the slot's card image in place and apply the modset tag rule for a write.
+ *
+ * The BIOS card path changes the image one frame per command; a frame is
+ * smaller than a device sector, so it is written where it lies instead of
+ * rewriting the 128 KiB image. A file that cannot take the in-place write
+ * (missing, or replaced by another program) falls back to the whole-image
+ * atomic write. On a refused or failed write the frame is restored from
+ * the last persisted image.
+ * @param slot Card slot, 0 or 1.
+ * @param frame Frame number, 0 to 1023.
+ * @return 0 when the frame is on disk (or nothing was due), -1 when the write failed. */
+static int mc_flush_frame(int slot, int frame)
+{
+    if (!s_loaded[slot] || mc_speculative_suppressed(slot)) return 0;
+    const size_t at = (size_t)frame * MC_SECTOR_SIZE;
+    if (mc_write_refused(slot)) {
+        memcpy(s_card[slot] + at, s_disk[slot] + at, MC_SECTOR_SIZE);
+        return -1;
+    }
+    if (op_file_write_at(s_path[slot], (long)at, s_card[slot] + at, MC_SECTOR_SIZE) != 0)
+        return mc_flush(slot);
+    memcpy(s_disk[slot] + at, s_card[slot] + at, MC_SECTOR_SIZE);
+    mc_modset_on_write(slot);
+    return 0;
+}
+
+/* Headered card-image containers: a fixed header, then the raw 128 KiB
+ * image. Detected by total size and magic, loaded read-only. */
+typedef struct {
+    const char* name;
+    long        size;       /* header + MC_CARD_SIZE */
+    long        header;
+    const char* magic;
+    size_t      magic_len;
+} mc_container_t;
+
+static const mc_container_t k_containers[] = {
+    { "DexDrive .gme",  3904 + MC_CARD_SIZE, 3904, "123-456-STD", 11 },
+    { "VGS .mem",       64 + MC_CARD_SIZE,   64,   "VgsM",        4 },
+    { "PSP/PS3 .vmp",   128 + MC_CARD_SIZE,  128,  "\0PMV",       4 },
+};
+
+/** @brief Load the payload of a headered image of a known container format into the slot, read-only.
+ *
+ * @param slot Card slot, 0 or 1.
+ * @param f The image, open for reading.
+ * @param size Its size in bytes.
+ * @return 1 when a container matched and its payload was read, else 0. */
+static int mc_load_container(int slot, FILE* f, long size)
+{
+    for (size_t i = 0; i < sizeof k_containers / sizeof k_containers[0]; i++) {
+        const mc_container_t* c = &k_containers[i];
+        char magic[16];
+        if (size != c->size || fseek(f, 0, SEEK_SET) != 0 ||
+            fread(magic, 1, c->magic_len, f) != c->magic_len ||
+            memcmp(magic, c->magic, c->magic_len) != 0)
+            continue;
+        if (fseek(f, c->header, SEEK_SET) != 0 ||
+            fread(s_card[slot], 1, MC_CARD_SIZE, f) != MC_CARD_SIZE)
+            return 0;
+        s_readonly[slot] = 1;
+        OPL_WARN_F("memcard", "card %d: %s is a %s image; loaded read-only — "
+                   "saves are refused until it is converted to a raw 128 KiB .mcr",
+                   slot, s_path[slot], c->name);
+        return 1;
+    }
+    return 0;
+}
+
+/** @brief Rename the slot's image aside to the first free "<path>.bad-<n>", n from 1 to 999.
+ *
+ * @param slot Card slot, 0 or 1.
+ * @return 0 when renamed, -1 when no free name exists or the rename fails. */
+static int mc_set_aside(int slot)
+{
+    char aside[1300];
+    for (int n = 1; n < 1000; n++) {
+        snprintf(aside, sizeof aside, "%s.bad-%d", s_path[slot], n);
+        FILE* probe = fopen(aside, "rb");
+        if (probe) { fclose(probe); continue; }
+        if (rename(s_path[slot], aside) != 0) break;
+        OPL_ERROR_F("memcard", "card %d: %s is not a 128 KiB card image; moved to %s "
+                    "and a new card provisioned", slot, s_path[slot], aside);
+        return 0;
+    }
+    OPL_ERROR_F("memcard", "card %d: %s is not a 128 KiB card image and cannot be "
+                "moved aside (%s); the slot runs in memory and saves are refused",
+                slot, s_path[slot], strerror(errno));
+    return -1;
+}
+
+enum { MC_FILE_LOADED, MC_FILE_ABSENT, MC_FILE_UNUSABLE };
+
+/** @brief Read the slot's image file into s_card, classifying what the file holds.
+ *
+ * A raw 131072-byte image loads as is and a known headered container loads
+ * read-only. Any other file (truncated, oversized, unknown header) is
+ * renamed aside so that provisioning never writes over it.
+ * @param slot Card slot, 0 or 1.
+ * @return MC_FILE_LOADED, MC_FILE_ABSENT (no file, or moved aside), or
+ *         MC_FILE_UNUSABLE (a bad file that could not be moved aside). */
+static int mc_load_file(int slot)
+{
+    FILE* f = fopen(s_path[slot], "rb");
+    if (!f) return MC_FILE_ABSENT;
+    long size = (fseek(f, 0, SEEK_END) == 0) ? ftell(f) : -1;
+    int loaded = 0;
+    if (size == MC_CARD_SIZE && fseek(f, 0, SEEK_SET) == 0)
+        loaded = fread(s_card[slot], 1, MC_CARD_SIZE, f) == MC_CARD_SIZE;
+    else if (size > 0)
+        loaded = mc_load_container(slot, f, size);
+    fclose(f);
+    if (loaded) return MC_FILE_LOADED;
+    return mc_set_aside(slot) == 0 ? MC_FILE_ABSENT : MC_FILE_UNUSABLE;
+}
+
+/** @brief Load the slot's card image on first access, or provision one when the file is absent or unusable.
  *
  * A loaded image runs the modset tag check. A provisioned image is
  * formatted, or zeroed under --card-unformatted, and written to the file at
  * once, which tags it under the active modset. When no image path
- * resolves, the slot gets a formatted in-memory card that is never
- * written. */
+ * resolves, or a bad file cannot be moved aside, the slot gets a formatted
+ * in-memory card whose writes are refused, so a save reports a card error
+ * to the game instead of being lost at exit.
+ * @param slot Card slot, 0 or 1. */
 static void mc_ensure_loaded(int slot)
 {
     if (s_loaded[slot]) return;
-    if (mc_resolve_path(slot) != 0) {
-        /* No usable path — fall back to an in-memory formatted card so the
-         * game still sees a working (if non-persistent) card. */
-        mc_format_image(s_card[slot]);
+    int st = MC_FILE_UNUSABLE;
+    if (mc_resolve_path(slot) != 0)
+        OPL_ERROR_F("memcard", "card %d: no card directory resolves; the slot runs "
+                    "in memory and saves are refused", slot);
+    else
+        st = mc_load_file(slot);
+    if (st == MC_FILE_LOADED) {
+        memcpy(s_disk[slot], s_card[slot], MC_CARD_SIZE);
         s_loaded[slot] = 1;
+        OPL_INFO_F("memcard", "loaded card %d from %s", slot, s_path[slot]);
+        mc_modset_check_open(slot);
         return;
     }
 
-    FILE* f = fopen(s_path[slot], "rb");
-    if (f) {
-        size_t got = fread(s_card[slot], 1, MC_CARD_SIZE, f);
-        fclose(f);
-        if (got == MC_CARD_SIZE) {
-            s_loaded[slot] = 1;
-            OPL_INFO_F("memcard", "loaded card %d from %s", slot, s_path[slot]);
-            mc_modset_check_open(slot);
-            return;
-        }
-        OPL_ERROR_F("memcard", "%s: short read (%zu/%d) — reprovisioning",
-                    s_path[slot], got, MC_CARD_SIZE);
-    }
-
-    /* First run for this slot: provision + materialize on disk. The
-     * flush birth-tags the fresh card under the active modset. */
     if (s_unformatted) memset(s_card[slot], 0, MC_CARD_SIZE);
     else               mc_format_image(s_card[slot]);
+    memcpy(s_disk[slot], s_card[slot], MC_CARD_SIZE);
     s_loaded[slot] = 1;
-    mc_flush(slot);
-    OPL_INFO_F("memcard", "provisioned %s card %d at %s",
-               s_unformatted ? "unformatted" : "formatted", slot, s_path[slot]);
+    if (st == MC_FILE_UNUSABLE) {
+        s_mem_only[slot] = 1;
+        return;
+    }
+    /* First run for this slot: materialize on disk. The flush birth-tags
+     * the fresh card under the active modset. */
+    if (mc_flush(slot) == 0)
+        OPL_INFO_F("memcard", "provisioned %s card %d at %s",
+                   s_unformatted ? "unformatted" : "formatted", slot, s_path[slot]);
 }
 
 static uint8_t* mc_dir_frame(int slot, int block)   /* block 1..15 */
@@ -537,9 +682,9 @@ int openpete_memcard_write(int chan, const char* name, const void* src_host,
         return MC_ERR_FILE_NOT_EXIST;
     }
     memcpy(&s_card[slot][blk * MC_BLOCK_SIZE + ofs], src_host, (size_t)bytes);
-    mc_flush(slot);
-    mc_latch(MC_FUNC_WRITE, MC_ERR_NONE);
-    return MC_ERR_NONE;
+    int rslt = mc_flush(slot) == 0 ? MC_ERR_NONE : MC_ERR_CARD_INVALID;
+    mc_latch(MC_FUNC_WRITE, rslt);
+    return rslt;
 }
 
 int openpete_memcard_create(int chan, const char* name, int blocks)
@@ -583,19 +728,16 @@ int openpete_memcard_create(int chan, const char* name, int blocks)
         de[9] = (uint8_t)((next >> 8) & 0xFF);
         de[MC_SECTOR_SIZE - 1] = mc_frame_checksum(de);
     }
-    mc_flush(slot);
-    return MC_ERR_NONE;
+    return mc_flush(slot) == 0 ? MC_ERR_NONE : MC_ERR_CARD_INVALID;
 }
 
 int openpete_memcard_format(int chan)
 {
     int slot = (chan >> 4) & 1;
     if (!s_present[slot]) return MC_ERR_CARD_NOT_EXIST;
-    if (mc_resolve_path(slot) != 0) { /* keep going with in-memory image */ }
+    mc_ensure_loaded(slot);
     mc_format_image(s_card[slot]);
-    s_loaded[slot] = 1;
-    mc_flush(slot);
-    return MC_ERR_NONE;
+    return mc_flush(slot) == 0 ? MC_ERR_NONE : MC_ERR_CARD_INVALID;
 }
 
 int openpete_memcard_sync(int mode, int* out_cmds, int* out_rslt)
@@ -637,9 +779,7 @@ int openpete_memcard_write_frame(int chan, int frame, const void* src_host)
     if (!s_present[slot] || !src_host) return -1;
     if (frame < 0 || frame >= MC_CARD_SIZE / MC_SECTOR_SIZE) return -1;
     mc_ensure_loaded(slot);
-    mc_modset_on_write(slot);
     memcpy(s_card[slot] + (size_t)frame * MC_SECTOR_SIZE, src_host,
            MC_SECTOR_SIZE);
-    mc_flush(slot);
-    return 0;
+    return mc_flush_frame(slot, frame);
 }
