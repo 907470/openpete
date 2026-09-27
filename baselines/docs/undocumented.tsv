@@ -2,7 +2,7 @@
 # library: libclang 14
 # requirement: @brief of one sentence on one line on every function; @param per named parameter and @return on non-void for external linkage
 # written-by: hook
-# head: 8ae07cb9dffe0e98e6f870e960345567367f399b
+# head: 28101c3ada44bde4b0ffb8d8b385b61da5e26529
 file	function	form	accepted
 core/config/config.c	decision_for	none	
 core/config/config.c	dup_str	none	
@@ -1801,13 +1801,9 @@ games/spyro-2/features/levelwarp.c	warp_in_flight	none
 games/spyro-2/features/levelwarp.c	warp_in_flight_status	none	
 games/spyro-2/game_extras_impl.c	game_get_disc_layout	none	
 games/spyro-2/game_extras_impl.c	game_on_overlay_init	none	
-games/spyro-2/game_extras_impl.c	psx_override_dispatch_game	plain	
 games/spyro-2/renderer/reextract.c	cam_dbg_line	none	
-games/spyro-2/renderer/reextract.c	cam_dbg_on	plain	
-games/spyro-2/renderer/reextract.c	cut_desc	plain	
 games/spyro-2/renderer/reextract.c	game_reextract_body	none	
 games/spyro-2/renderer/reextract.c	game_reextract_body_v	none	
-games/spyro-2/renderer/reextract.c	rx_census_on	plain	
 games/spyro-2/renderer/reextract.c	rx_scene_tris	none	
 games/spyro-2/renderer/reextract.c	spyro_native_canon_capture_camera	none	
 games/spyro-2/renderer/reextract.c	spyro_native_canon_capture_recs	none	
@@ -1816,42 +1812,18 @@ games/spyro-2/renderer/reextract.c	spyro_native_canon_mobyreg_fresh	none
 games/spyro-2/renderer/reextract.c	spyro_native_canon_shaded_fresh	none	
 games/spyro-2/renderer/reextract.c	spyro_native_prod_camera_enter	none	
 games/spyro-2/renderer/reextract.c	spyro_native_prod_camera_leave	none	
-games/spyro-2/renderer/reextract.c	stage_moby_records	plain	
-games/spyro-2/renderer/reextract.c	stage_player_records	plain	
-games/spyro-2/renderer/terrain_game.c	s2_fill_tag	plain	
 games/spyro-2/renderer/terrain_game.c	s2_level_name	none	
-games/spyro-2/renderer/terrain_game.c	s2_lp_artfix	none	
-games/spyro-2/skip_to_level.c	skip_release_on_tick	plain	
-games/spyro-2/skip_to_level.c	spyro2_level_resolve	plain	
-games/spyro-2/skip_to_level.c	spyro2_level_table	plain	
-games/spyro-2/skip_to_level.c	spyro2_skip_gameplay_live	plain	
-games/spyro-2/skip_to_level.c	spyro2_skip_on_tick	plain	
-games/spyro-2/skip_to_level.c	spyro2_skip_set	plain	
-games/spyro-2/skip_to_level.c	spyro2_skip_target	plain	
 games/spyro-3/features/cutscene_skip.c	cut_called	none	
 games/spyro-3/features/cutscene_skip.c	cut_dropped	none	
 games/spyro-3/features/cutscene_skip.c	cut_enqueue	none	
 games/spyro-3/features/cutscene_skip.c	cut_route	none	
-games/spyro-3/features/cutscene_skip.c	log_playing	plain	
-games/spyro-3/features/cutscene_skip.c	preconditions	plain	
-games/spyro-3/features/cutscene_skip.c	route_tick	plain	
 games/spyro-3/features/cutscene_skip.c	row_of	none	
-games/spyro-3/features/cutscene_skip.c	spyro3_cutscene_arm	plain	
-games/spyro-3/features/cutscene_skip.c	spyro3_cutscene_finish	plain	
-games/spyro-3/features/cutscene_skip.c	spyro3_cutscene_on_tick	plain	
-games/spyro-3/features/cutscene_skip.c	spyro3_cutscene_released	plain	
-games/spyro-3/features/cutscene_skip.c	spyro3_cutscene_resolve	plain	
-games/spyro-3/features/cutscene_skip.c	spyro3_cutscene_watching	plain	
-games/spyro-3/features/freecam.c	player_placeable	plain	
 games/spyro-3/features/levelwarp.c	levelwarp_apply_options	none	
-games/spyro-3/features/levelwarp.c	spyro3_levelwarp_on_tick	plain	
 games/spyro-3/features/levelwarp.c	warp_called	none	
 games/spyro-3/features/levelwarp.c	warp_current_level	none	
 games/spyro-3/features/levelwarp.c	warp_dropped	none	
 games/spyro-3/features/levelwarp.c	warp_in_flight	none	
 games/spyro-3/features/levelwarp.c	warp_in_flight_status	none	
-games/spyro-3/features/levelwarp.c	warp_level_id	plain	
-games/spyro-3/features/levelwarp.c	warp_route	plain	
 games/spyro-3/features/levelwarp.c	warp_route_level	none	
 games/spyro-3/features/levelwarp.c	warp_start	plain	
 games/spyro-3/features/skip_to_area.c	area_called	none	

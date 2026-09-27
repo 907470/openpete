@@ -78,6 +78,10 @@ static int         s_count;
 
 /* ---- the shared overlay half ------------------------------------------ */
 
+/** @brief Maps a dropdown index to its level number in the Spyro 3 level table.
+ *
+ * @param index The dropdown index.
+ * @return The level number, or -1 for an index out of range. */
 static int warp_level_id(int index) {
     size_t  n;
     const spyro3_level_t* t = spyro3_level_table(&n);
@@ -92,8 +96,13 @@ static int warp_in_flight_status(char* buf, size_t cap) {
     return 1;
 }
 
-/* The attract demo runs the gameplay state with a level resident, so it
- * needs excluding explicitly. */
+/** @brief Picks the warp route the live guest state allows.
+ *
+ * The title route when game.state is 11; the in-level route when gameplay is
+ * live and isDemoMode is 0, since the attract demo runs the gameplay state
+ * with a level resident and must be excluded explicitly; else none.
+ * @param cpu The guest CPU state.
+ * @return A LEVELWARP_ROUTE_* value. */
 static int warp_route(CPUState* cpu) {
     if (cpu->read_word(S3_GAME_STATE) == S3_GS_TITLE)
         return LEVELWARP_ROUTE_TITLE;

@@ -91,8 +91,6 @@ const spyro2_level_t* spyro2_level_table(size_t* out_count) {
     return k_levels;
 }
 
-/* A numeric argument is accepted only when the table holds it: an unknown
- * number would index the level table past its end. */
 int spyro2_level_resolve(const char* arg) {
     const named_target_table_t levels =
         NAMED_TARGET_TABLE(k_levels, spyro2_level_t, name, number);
@@ -135,17 +133,21 @@ int spyro2_skip_gameplay_live(CPUState* cpu) {
            cpu->read_word(S2_LEVEL_TICK) != 0u;
 }
 
-/* The skip's release block, every tick while a present fast-forward or a
- * cutscene target is armed, whatever the phase. Presents resume
- * (openpete_skip_present_until_level clears) on the playable edge: the
- * picked level's first live tick, or, while a cutscene target is armed,
- * that target's release predicate (features/cutscene_skip.c), which holds
- * outside the SKIP_PICKED gate because the cutscene's loader-word-0 store
- * ends the hold. The line names the engagement values read back at release.
- * openpete_skip_failsafe_vbls() after the first check is the fail-safe
- * against a never-reached edge; it logs its own line. The cutscene watch
- * runs headless too, where there is no fast-forward, so a harness reads the
- * same lines. */
+/** @brief Releases a skip's present fast-forward and cutscene watch on the playable edge or the fail-safe deadline.
+ *
+ * Runs every tick while a present fast-forward or a cutscene target is
+ * watched, whatever the phase. Presents resume
+ * (openpete_skip_present_until_level clears) on the playable edge: the picked
+ * level's first live tick, or, while a cutscene target is watched, that
+ * target's release predicate (features/cutscene_skip.c), which is tested
+ * outside the SKIP_PICKED gate because the cutscene's loader-word-0 store ends
+ * the phase. The release line names the engagement values read back at
+ * release. A deadline openpete_skip_failsafe_vbls() after the first check is
+ * the fail-safe against a never-reached edge and logs its own line. The
+ * cutscene watch runs headless too, where there is no fast-forward, so a
+ * harness reads the same lines. Either release ends the cutscene watch.
+ * @param cpu The guest CPU state.
+ * @param frame_counter The openpete_frame counter. */
 static void skip_release_on_tick(CPUState* cpu, uint32_t frame_counter) {
     int watching = spyro2_cutscene_skip_watching();
     if (!openpete_skip_present_until_level && !watching) return;

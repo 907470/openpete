@@ -61,11 +61,18 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
     if (write_census_active()) write_census_set_phase(0);
 }
 
-/* Debug free camera (F): while engaged and gameplay is live, drive the
- * camera in place of the camera update and suppress it and the player update.
- * Inactive: one bool test. Anything the freecam does not claim goes to the
- * registered feature modules (feature_list.c), which is how the shared
- * presentation feeders reach their hook addresses. */
+/** @brief Runs this game's intercepts at a recompiled function's entry: the free camera, the write census, then the feature modules.
+ *
+ * The debug free camera (F), while engaged and gameplay is live, drives the
+ * camera in place of the camera follow (0x8001D87C) and suppresses it and the
+ * player update (0x8002A07C); disengaged it costs one bool test. Under the
+ * write census the address becomes the entry column of later rows. An address
+ * the free camera does not claim goes to the registered feature modules
+ * (feature_list.c), which is how the shared presentation feeders reach their
+ * hook addresses.
+ * @param cpu The guest CPU state.
+ * @param addr The guest address of the function being entered.
+ * @return 1 when the recompiled body must return at once, else 0. */
 int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
     if (freecam_should_freeze(cpu, addr)) return 1;
     if (write_census_active()) write_census_note_entry(addr);
@@ -90,11 +97,7 @@ int game_is_gameplay_live(CPUState* cpu) { return spyro2_skip_gameplay_live(cpu)
 void game_set_skip_to_level(int level_id) { spyro2_skip_set(level_id); }
 int  game_resolve_level_arg(const char* arg) { return spyro2_level_resolve(arg); }
 int  game_validate_cheats_arg(const char* spec) { (void)spec; return -1; }
-/* --skip-to-cutscene (features/cutscene_skip.c): each cutscene starts from
- * its source level (Dragon Shores for the story cutscenes, the homeworld
- * for a level intro, the level for its outro), so the target rides a
- * --skip-to-level there; an explicit --skip-to-level to another level is
- * refused. */
+/* The target rides a --skip-to-level to its source level; a different explicit --skip-to-level refuses it. */
 void game_set_skip_to_cutscene(int cutscene_id) {
     if (cutscene_id <= 0) return;
     int source = spyro2_cutscene_source_level(cutscene_id);
@@ -128,14 +131,10 @@ int  game_resolve_area_arg(const char* arg, int* out_area) {
  * per-game belongs to the recompiler, not to this file. */
 uint32_t psx_runtime_g_sony_image_base = 0x8006FCF4u;
 
-/* PSYQ's rand seed: the word `rand` (0x80059D2C) loads, steps by
- * seed * 0x41C64E6D + 0x3039 and stores back, and `srand` (0x80059D5C)
- * overwrites, at D_8006D144 in the library's .bss. */
+/* D_8006D144 (psyq .bss): rand (func_80059D2C) steps it, srand (func_80059D5C) overwrites it. */
 uint32_t psyq_game_rand_seed_addr(void) { return 0x8006D144u; }
 
-/* Root counter 2's count as the boot's `lhu` at 0x8001C2DC (stdutil.s)
- * read it on the hardware reference, passed to srand: the seed every boot
- * starts from. */
+/* The reference boot's `lhu` at 0x8001C2DC (func_8001C2D8, stdutil.s) read this; it seeds srand. */
 uint16_t psyq_game_root_counter2(void) { return 0x4876u; }
 
 /* Disc layout is not mapped for this game yet. */

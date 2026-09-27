@@ -214,8 +214,14 @@ int spyro3_cutscene_released(CPUState* cpu, char* eng, size_t cap) {
     return 1;
 }
 
-/* The route's tick: the title's idle sub-state phase 1, or the source
- * level's live gameplay with isDemoMode clear. */
+/** @brief Reports whether this tick is the armed route's tick.
+ *
+ * For a title-source route: game.state 11 (title) with the idle sub-state byte
+ * 0x8007F12C and its phase byte 0x8007F12E both 1. For a level route: the level
+ * skip has picked its target, gameplay is live, and currentLevel 0x8006C5BC is
+ * the route's source level. isDemoMode is tested by preconditions.
+ * @param cpu The guest CPU state.
+ * @return 1 on the route's tick, else 0. */
 static int route_tick(CPUState* cpu) {
     if (s_route->source == TITLE_SOURCE)
         return cpu->read_word(S3_GAME_STATE) == S3_GS_TITLE &&
@@ -225,7 +231,13 @@ static int route_tick(CPUState* cpu) {
            cpu->read_word(S3_CURRENT_LEVEL) == (uint32_t)s_route->source;
 }
 
-/* The state the trigger's branch reads before its call (file header). */
+/** @brief Reports whether the state the trigger's branch reads before its call admits the route.
+ *
+ * Requires previousLevel 0x8006FB95 0, isDemoMode 0x8006C658 0, the route's
+ * seen byte 0 when it has one, and for a title-source route currentLevel and
+ * the cutscene index 0x8006EDD8 both 0 (New Game's branch).
+ * @param cpu The guest CPU state.
+ * @return 1 when every precondition holds, else 0. */
 static int preconditions(CPUState* cpu) {
     if (cpu->read_byte(S3_PREVIOUS_LEVEL) != 0u) return 0;
     if (cpu->read_word(S3_IS_DEMO_MODE) != 0u) return 0;
@@ -261,8 +273,11 @@ static void cut_enqueue(void) {
     if (s3_transition_enqueue(&req)) s_phase = CUT_QUEUED;
 }
 
-/* Each cutscene the chain plays, logged once on its game.state 6 entry.
- * Reads only. */
+/** @brief Logs each cutscene the chain plays, once when game.state 6 shows a new cutscene index.
+ *
+ * Reads guest RAM only.
+ * @param cpu The guest CPU state.
+ * @param frame_counter The openpete_frame counter printed on the line. */
 static void log_playing(CPUState* cpu, uint32_t frame_counter) {
     uint32_t n;
     if (cpu->read_word(S3_GAME_STATE) != S3_GS_CUTSCENE) return;

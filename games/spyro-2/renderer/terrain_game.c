@@ -15,13 +15,25 @@ static void s2_level_name(int level, char* out, size_t cap) {
         if (lv[k].number == level) { snprintf(out, cap, "%s", lv[k].name); break; }
 }
 
-/* No frozen LP fill-face list and no authored-data colour corrections: both
- * are per-face verdicts produced by a reviewed sweep, and no sweep has run on
- * this game's levels. Absence means "not tagged", the same answer a face the
- * sweep never measured gets on the game that has a list. */
+/** @brief Reports every LP face as not a fill face: this game has no frozen LP fill-face list.
+ *
+ * The list is a per-face verdict table built by a sweep over a game's levels,
+ * and none exists for this game. Absence means "not tagged", the answer a face
+ * missing from the list gets on a game that has one.
+ * @param level The level id.
+ * @param sec The sector index.
+ * @param face The LP face index.
+ * @return 0. */
 static int s2_fill_tag(int level, int sec, int face) {
     (void)level; (void)sec; (void)face; return 0;
 }
+/** @brief Reports no colour correction for any LP face: this game has no authored-data correction table.
+ *
+ * @param level The level id.
+ * @param sec The sector index.
+ * @param face The LP face index.
+ * @param rgb Not written.
+ * @return 0. */
 static int s2_lp_artfix(int level, int sec, int face, uint32_t* rgb) {
     (void)level; (void)sec; (void)face; (void)rgb; return 0;
 }
