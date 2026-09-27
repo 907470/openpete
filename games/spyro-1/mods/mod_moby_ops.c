@@ -26,10 +26,16 @@ static int ops_level_id(CPUState* cpu) {
     return (int)cpu->read_word(ADDR_G_LEVELID);
 }
 
-/* The classes this level loaded: every non-NULL g_Models row, since the
- * table is indexed directly by m_Class and the loader only populates rows
- * the level uses. Reported outside GS_Playing as "unknown" rather than as a
- * short list — mid-load the loader is still filling the table. */
+/** @brief Lists the moby classes the current level loaded.
+ *
+ * Returns every class id whose g_Models row is non-NULL: the table is
+ * indexed directly by m_Class and the loader populates only the rows the
+ * level uses. Outside GS_Playing the list is unknown, since mid-load the
+ * loader is still filling the table, and the call returns -1.
+ * @param cpu The guest CPU state.
+ * @param out Receives up to `cap` class ids in ascending order.
+ * @param cap The capacity of `out`.
+ * @return The number of ids written, or -1 outside GS_Playing. */
 static int ops_classes_loaded(CPUState* cpu, uint16_t* out, int cap) {
     if (cpu->read_word(ADDR_G_GAMESTATE) != 0u) return -1;   /* GS_Playing */
     int n = 0;

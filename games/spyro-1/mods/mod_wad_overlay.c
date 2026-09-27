@@ -95,12 +95,18 @@ static int         s_raw = 0;       /* 1 = 2352-byte raw sectors */
 static uint32_t    s_next_sector = 0;
 static uint32_t    s_wad_sector = 37;
 
-/* Savestate participation (game_state_extra): the append cursor is host
- * state the guest depends on — TOC entries written into restored guest RAM
- * point at sectors this cursor allocated. Restoring RAM without the cursor
- * would let the next mod-asset append reuse sectors the restored TOC still
- * references. */
+/** @brief Returns the tracked disc head sector for the savestate extra block.
+ *
+ * The sector is set by each CdlSetloc and advanced by every CdRead that
+ * mod_wad_apply sees; the overlay compares it against each WAD segment's
+ * sector range to decide which reads it serves. The game-extra savestate
+ * block saves and restores it beside guest RAM, so a restored state resumes
+ * a multi-read load at the head position the guest's CdRead sequence
+ * expects.
+ * @return The absolute disc sector the next read starts at. */
 uint32_t spyro1_mod_wad_cursor_get(void)        { return s_next_sector; }
+/** @brief Restores the tracked disc head sector from the savestate extra block.
+ * @param s The absolute disc sector the next read starts at. */
 void     spyro1_mod_wad_cursor_set(uint32_t s)  { s_next_sector = s; }
 
 void spyro1_mod_wad_configure(const char* disc_path) {
@@ -110,8 +116,13 @@ void spyro1_mod_wad_configure(const char* disc_path) {
     s_state = 1;
 }
 
-/* cue or bin -> the sector image on disk, through the runtime's own disc
- * resolver, so a disc that boots also serves WAD reads. */
+/** @brief Resolves the configured disc path (cue or bin) to its sector image file.
+ *
+ * Uses the runtime's own disc resolver, so a disc that boots also serves
+ * host-side WAD reads. Logs a warning naming the paths tried on failure.
+ * @param out Receives the image path.
+ * @param cap The capacity of `out`.
+ * @return 0 on success, -1 when no image resolves. */
 static int resolve_bin(char* out, size_t cap) {
     char tried[1200];
     if (openpete_psx_resolve_disc_bin(s_disc_path, out, cap,
@@ -123,7 +134,13 @@ static int resolve_bin(char* out, size_t cap) {
     return 0;
 }
 
-/* Read the 2048-byte user data of one absolute disc sector. */
+/** @brief Reads the 2048-byte user data of one absolute disc sector from the open image.
+ *
+ * A raw (2352-byte) image is addressed at the sector's mode 2 form 1 user
+ * data, 24 bytes into the raw sector; a cooked image at sector * 2048.
+ * @param sector The absolute disc sector.
+ * @param out Receives 2048 bytes.
+ * @return 0 on success, -1 on a seek or short read. */
 static int read_sector(uint32_t sector, uint8_t* out) {
     long off = s_raw ? (long)sector * SEC_RAW + SEC_RAW_SKEW
                      : (long)sector * SEC_DATA;
@@ -135,10 +152,19 @@ static int level_index_to_id(int idx) {
     return (idx / 6 + 1) * 10 + idx % 6;
 }
 
-/* Build the override path LOGICAL level `id` would take from asset root
- * `root`. Root indices are stable for the session (the loader only ever
- * appends roots; a disabled mod keeps its slot), so an index may be
- * latched. kind: "data" or "ovl". */
+/** @brief Builds the override file path logical level `id` would take from one asset root.
+ *
+ * The path is `ROOT/wad/levelID.KIND.bin`: the root's directory, `id` in
+ * two digits, and `kind`.
+ * Root indices are stable for the session (the loader only appends roots;
+ * a disabled mod keeps its slot), so a caller may latch an index.
+ * @param id The logical level id.
+ * @param kind "data" or "ovl".
+ * @param root The asset root index.
+ * @param out Receives the path.
+ * @param cap The capacity of `out`.
+ * @param owner_out When non-NULL, receives the root's owning mod id.
+ * @return 0 on success, -1 for an index with no root. */
 static int wad_override_path(int id, const char* kind, int root, char* out,
                              size_t cap, const char** owner_out) {
     const char* owner = NULL;
@@ -149,17 +175,27 @@ static int wad_override_path(int id, const char* kind, int root, char* out,
     return 0;
 }
 
-/* Resolve the winning override for LOGICAL level `id` against the CURRENT
- * enabled set: the highest-priority (= last-registered) asset root whose
- * owner is enabled and ships assets/wad/level<id>.<kind>.bin whose size
- * EQUALS want_len — the length the guest WAD TOC declares for that
- * level's entry. The guest table is the contract: a resize mod declares
- * its new length there, and an undeclared mismatched file simply never
- * serves. A level's files serve as a SET: an ovl only serves when the
- * same root's data file (if present) also matches want_data_len, so a
- * root shipping a whole level can never leak just its code overlay into
- * a stock load of the same sectors.
- * Returns the root index, or -1 for "no override — serve the disc". */
+/** @brief Resolves the winning WAD override for logical level `id` against the current enabled set.
+ *
+ * Walks the asset roots from the highest priority (last registered) down
+ * and takes the first whose owner is enabled (or unowned) and which ships
+ * `wad/levelID.KIND.bin` of exactly `want_len` bytes, the length the
+ * guest WAD TOC declares for the entry. A resize mod declares its new
+ * length in that table; a file of any other size never serves. A level's
+ * files serve as a set: an ovl serves only when the same root's data file,
+ * if present, is `want_data_len` bytes, so a root shipping a whole level
+ * never leaks its code overlay into a stock load of the same sectors.
+ * @param id The logical level id.
+ * @param kind "data" or "ovl".
+ * @param want_len The byte length the guest TOC declares for this entry.
+ * @param want_data_len The byte length the guest TOC declares for the
+ *     level's data entry.
+ * @param path_out When non-NULL, receives the winning file's path.
+ * @param cap The capacity of `path_out`.
+ * @param owner_out When non-NULL, receives the owning mod id ("?" when
+ *     unowned).
+ * @param len_out When non-NULL, receives the file's byte length.
+ * @return The winning root index, or -1 to serve the disc. */
 static int wad_find_override(int id, const char* kind, uint32_t want_len,
                              uint32_t want_data_len, char* path_out,
                              size_t cap, const char** owner_out,
@@ -416,11 +452,7 @@ void mod_wad_apply(uint8_t* host_buf, int sectors) {
     }
 }
 
-/* Read a level's raw Data WAD entry host-side from the user's own disc image
- * (the same TOC the overlay uses). buf=NULL just probes the length. Returns the
- * entry byte length (>=0) or -1 if unavailable / buffer too small. Used by mods
- * that borrow another level's data (e.g. its cyclorama) at runtime, so no
- * derived game data is shipped. */
+/* Reads a level's stock data WAD entry from the disc image's TOC. */
 int spyro1_mod_wad_read_level_data(int level_id, void* buf, uint32_t cap) {
     if (s_state == 1) wad_init();
     if (s_state != 2) return -1;

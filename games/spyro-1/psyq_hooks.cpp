@@ -1,12 +1,12 @@
-// games/spyro-1/psyq_hooks.c — what Spyro 1 supplies to the shared PSYQ thunk
+// games/spyro-1/psyq_hooks.cpp — what Spyro 1 supplies to the shared PSYQ thunk
 // layer.
 //
 // The thunk layer is game-neutral; everything here is not. Three kinds of
 // thing live in this file:
 //
 //  - PSYQ's own data structures, written into PSX RAM at Spyro 1's addresses
-//    because gameplay code reads them back and those bytes have to
-//    match hardware. The values were recovered by observation from emulator
+//    because gameplay code reads them back and those bytes must match what
+//    hardware leaves. The values were recovered by observation from emulator
 //    RAM dumps, not derived, and they are specific to PSYQ 4.0 as this game
 //    links it.
 //  - The stack frame each real PSYQ function leaves behind. An empty C thunk
@@ -372,9 +372,19 @@ static const char* spyro_sfx_canon(const char* name) {
 #define SPYRO_SOUNDDEF_STRIDE   0x14u
 #define SPYRO_SPU_BANK_BLAST    (0x80000u - 0x1010u) /* level SPU upload */
 
-/* Slot names whose def owns `spu_addr` in the CURRENT tables. When the
- * game has pointed m_SoundDefinitions at the one-entry cutscene def the
- * level table is meaningless for it: no slot names then. */
+/** @brief Resolves an SPU sample address to the names of the sound slots whose definition owns it.
+ *
+ * Walks the 256-entry slot table at g_Spu.m_SoundTable, maps each slot
+ * through its definition id to g_Spu.m_SoundDefinitions (0x14-byte
+ * entries, SPU address first), and names every slot whose definition's
+ * address equals `spu_addr`. Returns no names while m_SoundDefinitions
+ * points at the one-entry g_CutsceneSoundDef, since the level slot table
+ * does not index it, or while either table pointer is NULL or the table's
+ * definition count (the word after the 256 slot bytes) is outside 1..256.
+ * @param spu_addr SPU RAM address of the sample.
+ * @param out Receives up to `max` slot name pointers.
+ * @param max The capacity of `out`.
+ * @return The number of names written. */
 static int spyro_sfx_slot_names(uint32_t spu_addr, const char** out, int max) {
     uint32_t defs_va  = *(uint32_t*)PTR(SPYRO_SPU_SOUNDDEFS_VA);
     uint32_t table_va = *(uint32_t*)PTR(SPYRO_SPU_SOUNDTABLE_VA);

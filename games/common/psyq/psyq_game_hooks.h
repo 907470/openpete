@@ -51,7 +51,7 @@ typedef enum {
 } psyq_frame_site_t;
 
 /* A PSYQ prologue: `sp -= frame_size`, `sw ra, ra_off(sp)`, and the first
- * n_sregs of s0..s3 stored at 16, 20, 24, 28. The saved registers are
+ * n_sregs of s0..s4 stored at 16, 20, 24, 28, 32. The saved registers are
  * consecutive from s0 at a fixed offset in every observed frame, so a count is
  * enough and no register id has to be encoded. */
 typedef struct {
@@ -88,9 +88,13 @@ void psyq_game_mirror_pad_init(CPUState* cpu, uint32_t buf0, uint32_t buf1);
 void psyq_game_mirror_pad_slot2(CPUState* cpu);
 void psyq_game_mirror_memcard_init(CPUState* cpu);
 
-/* PSYQ's rand seed lives in the library's own data. 0 means this game has no
- * seed slot located yet, and the LCG then runs on host-side state: still
- * correct as a generator, just not observable in guest RAM. */
+/** @brief Return the address of PSYQ's rand seed word in the library's own data.
+ *
+ * psyq_rand loads and stores the LCG state there. When the address is 0 the
+ * LCG runs on host-side state instead: the generator's output is the same,
+ * but the seed is not visible in guest RAM.
+ * @return The seed word's address, or 0 when this game's seed slot is not
+ *     located. */
 uint32_t psyq_game_rand_seed_addr(void);
 
 /** @brief Return root counter 2's count as the game's boot reads it (0x1F801120, an `lhu`) to seed rand.
@@ -256,8 +260,8 @@ void psyq_overlay_resync_from_ram(void);
  *
  * The SpuInit and SpuWrite thunks call it on every entry, so it must be
  * idempotent. Spyro 1 installs its pitch reader and slot-name resolver in
- * the sfx pack once and sets its canonical sound table in the mod layer on
- * every call; the default does nothing. */
+ * the sfx pack once and sets its sound-name canonicaliser (mod-facing alias
+ * to slot name) in the mod layer on every call; the default does nothing. */
 void psyq_game_sfx_arm(void);
 
 /** @brief Return the SPU transfer length that means a whole new level sound bank, as opposed to a smaller write landing over part of it.

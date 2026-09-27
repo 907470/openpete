@@ -10,8 +10,13 @@
 
 #include <stddef.h>
 
-/* The flame's first-cell cap colours: the second four-word set while the wide
- * form is set (r_flame.s:80059040-80059048). */
+/** @brief Returns the byte offset of the flame's first-cell cap colour set for this tick.
+ *
+ * The cap colours at D_FLAME_UV hold two four-word sets; the flame draw
+ * reads the second while g_SpyroFlame's wide-form word (+0x9C) is nonzero
+ * (r_flame.s:80059040-80059048).
+ * @param cpu The guest CPU state.
+ * @return 0x10 while the wide form is set, else 0. */
 static uint32_t flame_cap_colour_off(CPUState* cpu) {
     return cpu->read_word(G_SPYROFLAME + 0x9Cu) ? 0x10u : 0u;
 }

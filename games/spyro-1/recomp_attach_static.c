@@ -11,8 +11,15 @@
 
 extern const openpete_recomp_module openpete_game_recomp_module; /* module_main.c */
 
-/* Library module-dir keying is a shared-linkage concept; static builds
- * carry the module in the exe. */
+/** @brief Reports that a static-linkage build has no codegen stamp.
+ *
+ * The stamp keys a disc library's module directory, which only a
+ * shared-linkage build loads a module from; a static build carries the
+ * module in the exe. The shared build's definition is in
+ * dist/recomp_build.cpp.
+ * @param out Unused.
+ * @param cap Unused.
+ * @return -1. */
 int spyro1_recomp_codegen_stamp(char* out, size_t cap) {
     (void)out; (void)cap;
     return -1;

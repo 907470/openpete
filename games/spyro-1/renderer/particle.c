@@ -103,8 +103,15 @@ static int particle_prim_sink(void* ctx, const ngte_prim* s) {
     return 1;
 }
 
-/* Walk the polybuf [start, end) into s_prim. Particle tags are at most 12
- * words and the dump prints at most 16 raw words per primitive. */
+/** @brief Walks the guest polybuf range [start, end) and appends each primitive to s_prim.
+ *
+ * Appends from s_prim_n, which the caller resets, up to MAX_PRIMS, and adds
+ * each primitive's GPU code and tag length to the histograms the dump
+ * prints. Particle tags are at most 12 words and the dump prints at most 16
+ * raw words per primitive.
+ * @param cpu The guest CPU state.
+ * @param start The first polybuf byte the renderer wrote.
+ * @param end One past the last polybuf byte the renderer wrote. */
 static void capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
     OP_PROF_ACCUM_SCOPE("particle.capture");
     const ngte_walk_policy pol = {
@@ -116,6 +123,14 @@ static void capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
 }
 
 /* ---- one-shot dump (gamestate pools + raw polybuf + decoded prims) -------- */
+/** @brief Prints the particle, sparkle and glow pools, the camera and the GTE projection registers to stderr.
+ *
+ * Verify-mode diagnostic, run once. Lists the first 16 live g_Particles
+ * slots of the pool the renderer walked (s_part_pool, stashed at hook
+ * entry) with the live total, every g_Sparkles[8] slot, the active
+ * D_80078800 glow slots, the camera's first five projection words and
+ * position, and GTE OFX, OFY, H, DQA and DQB.
+ * @param cpu The guest CPU state. */
 static void dump_pools(CPUState* cpu) {
     fprintf(stderr, "  [particles] g_Particles walk (sel/m_Class Life m03 | +4 +8):");
     uint32_t pp = s_part_pool; int npart = 0;   /* pool the .s walked (hook-entry) */
@@ -360,7 +375,11 @@ static int part_phase_dbg(void) {
     return s;
 }
 static int s_ppdbg_done = 0;   /* reset per build walk */
-/* OPENPETE_GLOW_ANIM_DBG: raw-change census + per-present phase trace (glows) */
+/** @brief Reports whether OPENPETE_GLOW_ANIM_DBG enables the glow animation trace.
+ *
+ * The trace is a census of raw glow-record changes plus a per-present
+ * phase line. The variable is read once and cached.
+ * @return 1 when the variable is set and not "0", else 0. */
 static int glow_anim_dbg(void) {
     static int s = -1;
     if (s < 0) { const char* e = getenv("OPENPETE_GLOW_ANIM_DBG"); s = (e && *e && *e != '0'); }
@@ -419,9 +438,16 @@ static int screen_rect_cull(double sxf, double syf) {
     return 0;
 }
 
-/* the default class's 4-corner Sutherland reject (block_8005768C..80057718):
- * cull only when ALL 4 corners lie outside the SAME screen edge (s4=top,
- * s5=bottom, s6=right; left = SX<=0), on the packed int32 SXY like the .s. */
+/** @brief Applies the default particle class's four-corner screen reject (block_8005768C..80057718).
+ *
+ * Culls only when all four corners lie outside the same screen edge,
+ * tested on the packed int32 (SY << 16) | (SX & 0xFFFF) as the .s does:
+ * top against 0x10000 (s4), bottom against 0x1000000 (s5). The left and
+ * right edges (the .s SX <= 0 and s6) are the running view's horizontal
+ * bounds, which widen past [0, 512] for a wider-than-4:3 view.
+ * @param sx The four corners' screen X.
+ * @param sy The four corners' screen Y.
+ * @return 1 to cull, 0 to keep. */
 static int clip4_cull(const float* sx, const float* sy) {
     /* horizontal edges widen for widescreen (Hor+); vertical stays 4:3. */
     float xlo = s_pv.xlo, xhi = s_pv.xhi;
@@ -461,11 +487,19 @@ typedef struct {
 #define MAX_PLINE 1024
 static pline s_pline[MAX_PLINE]; static int s_pline_n;
 
-/* Decode the FT4 material from gamestate (static texture table + the particle's
- * colour word) — same idiom for all FT4 classes: cmd/colour at +0x0C (hi byte =
- * GPU code, STP=bit1), texture record = D_80076278[m_Class] + (byte +0x10)*8,
- * UV0/clut at texrec+4, UV3/tpage at texrec+8, the other two corners are the
- * (u3,v0)/(u0,v3) split. corner k <-> UVk (matches the .s vertex order). */
+/** @brief Decodes a particle's FT4 material from gamestate into a native quad.
+ *
+ * One idiom serves every FT4 class: the colour/command word at +0x0C (high
+ * byte the GPU code, bit 1 of it STP), the texture record at
+ * D_80076278[m_Class] + (byte +0x10) * 8, UV0 and the CLUT at texrec + 4,
+ * UV3 and the tpage at texrec + 8, and the other two corners the (u3, v0)
+ * and (u0, v3) split, corner k taking UVk in the .s vertex order. A class
+ * with no texture table entry decodes as flat. The blend is the tpage's ABR
+ * mode when STP is set (the quarter rate drawn as additive), else opaque.
+ * @param cpu The guest CPU state.
+ * @param pp The particle record's guest address.
+ * @param mclass The particle's m_Class.
+ * @param q Receives the colour, UVs, VRAM material and blend. */
 static void decode_material(CPUState* cpu, uint32_t pp, int mclass, fquad* q) {
     uint32_t cmd = cpu->read_word(pp + 0x0C);
     q->rgb = cmd & 0xFFFFFF;
@@ -1198,9 +1232,13 @@ static void glow_feed_native(CPUState* cpu) {
     openpete_native_scene_set_tag(0);
 }
 
-/* A/B the native glow fan vs the captured G3-STP prims (code 0x32). Per-vertex
- * NN (order-independent) over all native fan verts -> nearest .s G3 vertex;
- * validates the centre projection AND the ring corners (persize + template). */
+/** @brief Compares the native glow fan against the renderer's captured G3 semi-transparent prims (code 0x32).
+ *
+ * Rebuilds the fan, then matches every native vertex to its nearest .s G3
+ * vertex by Manhattan distance, independent of order, which checks both the
+ * centre projection and the ring corners. Prints one [glow-ab] line with
+ * the triangle and prim counts, the mean and the worst distance.
+ * @param cpu The guest CPU state. */
 static void glow_compare(CPUState* cpu) {
     glow_build(cpu);
     int prim_g3 = 0; for (int p = 0; p < s_prim_n; p++) if (s_prim[p].code == 0x32) prim_g3++;
@@ -1712,9 +1750,13 @@ static void dragonstar_build(CPUState* cpu) {
     }
 }
 
-/* Feed the star fan into the scene — untextured flat tris, ADDITIVE (blend 2).
- * Drawn at the effect-centre view-Z so the native Z-buffer sorts it against the
- * world (the PSX bucketed it in g_HudOT, always on top). Display-only. */
+/** @brief Builds the dragon-rescue star fan and feeds it into the native scene.
+ *
+ * Emits untextured flat triangles in the additive blend group (blend 2) at
+ * view-Z 1, the near plane: the additive pipeline writes no depth, so the
+ * star draws over the whole 3D scene as the PSX's g_HudOT link does. Emits
+ * nothing when the record's gate is clear. Display-only.
+ * @param cpu The guest CPU state. */
 static void dragonstar_feed_native(CPUState* cpu) {
     dragonstar_build(cpu);
     if (s_dstri_n <= 0) return;
@@ -1744,8 +1786,12 @@ static void dragonstar_feed_native(CPUState* cpu) {
     openpete_native_scene_set_tag(0);
 }
 
-/* A/B the native star fan vs the captured F3-STP prims (code 0x22): per-vertex
- * NN (order-independent) over all native verts -> nearest .s F3 vertex. */
+/** @brief Compares the native star fan against the renderer's captured F3 semi-transparent prims (code 0x22).
+ *
+ * Rebuilds the fan, then matches every native vertex to its nearest .s F3
+ * vertex by Manhattan distance, independent of order. Prints one [dstar-ab]
+ * line with the triangle and prim counts, the mean and the worst distance.
+ * @param cpu The guest CPU state. */
 static void dragonstar_compare(CPUState* cpu) {
     dragonstar_build(cpu);
     int prim22 = 0; for (int p = 0; p < s_prim_n; p++) if (s_prim[p].code == 0x22) prim22++;
@@ -1940,15 +1986,19 @@ static int on_800573C8_particles(CPUState* cpu, uint32_t addr) { (void)addr; ret
 static int on_800580F4_glows(CPUState* cpu, uint32_t addr)     { (void)addr; return on_particle_renderer(cpu, func_800580F4, "glows", RP_GLOW, 0); }
 static int on_800584C4_sparkles(CPUState* cpu, uint32_t addr)  { (void)addr; return on_particle_renderer(cpu, func_800584C4, "sparkles", RP_SPARKLE, 0); }
 
-/* Dragon-rescue star flash (func_80058864): a single-record effect, not in the
- * particle pools, so it gets its own thin hook (no census). Run the real
- * renderer (g_HudOT prims for the PsyCross path), capture its F3 prims for the
- * A/B, then feed the float star. Display-only. The star shares RP_PARTICLES
- * with the pool feeders: the sub-tick re-extract replays it only while that
- * path is canon-drawn, so the hook records its polybuf interval and marks the
- * path whenever the native feed emitted — on a frame where only the star
- * draws, nothing else would, and the star would flash on canonical presents
- * and vanish on the intermediates. */
+/** @brief Runs the guest dragon-rescue star renderer (func_80058864) as the hook bracket's draw.
+ *
+ * The star flash is a single-record effect outside the particle pools, so
+ * it has its own hook, on_80058864_dragonstar, without the path census. The
+ * hook runs this draw (g_HudOT prims for the PsyCross path), captures its
+ * F3 prims for the A/B, and feeds the float star. Display-only. The star
+ * shares RP_PARTICLES with the pool feeders, and the sub-tick re-extract
+ * replays it only while that path is canon-drawn, so the hook records its
+ * polybuf interval and marks the path whenever the native feed emitted: on
+ * a tick where only the star draws, nothing else marks it, and the star
+ * would show on canonical presents and vanish on the intermediates.
+ * @param cpu The guest CPU state.
+ * @param addr The hooked address (unused). */
 static void dragonstar_run_draw(CPUState* cpu, uint32_t addr) { (void)addr; func_80058864(cpu); }
 
 static hook_bracket_state s_dragonstar_hb;

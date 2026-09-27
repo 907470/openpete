@@ -13,12 +13,32 @@ extern "C" {
 
 void spyro1_mod_wad_configure(const char* disc_path);
 void mod_wad_setloc(uint32_t sector);
-/* Serve override bytes into the just-read guest buffer and advance the
- * tracked head position. host_buf = host pointer to the read dest;
- * sectors = data sectors read (2048 bytes each). */
+/** @brief Serves override bytes into a just-completed CdRead's guest buffer and advances the tracked head.
+ *
+ * Parses the disc's WAD TOC on first use once an asset root exists. For
+ * each level data or overlay segment the read overlaps, the serving file
+ * is resolved once per level load, at the read that starts at the
+ * segment's first sector (or at the first read into an unlatched
+ * segment), and held for every later read of that segment; a mod toggle
+ * therefore takes effect at the next load. The logical level is the one
+ * whose guest TOC entry (g_NextLevelId, then g_LevelId) points at the
+ * segment, and that entry's length is the size contract; a declared
+ * custom level's files are tried before the asset roots. A served data
+ * override longer than the stock entry extends the segment's range to the
+ * file's length.
+ * @param host_buf Host pointer to the read's destination buffer.
+ * @param sectors The number of 2048-byte data sectors read. */
 void mod_wad_apply(uint8_t* host_buf, int sectors);
-/* Read a level's raw Data WAD entry host-side from the user's disc. buf=NULL
- * probes length. Returns entry byte length or -1 (unavailable / cap too small). */
+/** @brief Reads a level's stock data WAD entry host-side from the user's disc image.
+ *
+ * Reads the entry the disc's own WAD TOC names, independent of any
+ * override or guest TOC edit, so a mod can borrow another level's data at
+ * runtime without shipping derived game data.
+ * @param level_id The logical level id.
+ * @param buf Receives the entry bytes; NULL probes the length only.
+ * @param cap The capacity of `buf`.
+ * @return The entry byte length, or -1 when the TOC is unavailable, the
+ *     level has no data entry, `cap` is too small, or a sector read fails. */
 int spyro1_mod_wad_read_level_data(int level_id, void* buf, uint32_t cap);
 
 #ifdef __cplusplus

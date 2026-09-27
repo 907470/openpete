@@ -168,9 +168,17 @@ static int ops_read_level_data(int level_id, void* buf, uint32_t cap) {
     return spyro1_mod_wad_read_level_data(level_id, buf, cap);
 }
 
-/* Re-aim an already-claimed slot at a new donor: re-copy the donor's
- * TOC entry over the slot's and swap the alias donor. The custom-level
- * registry calls this when a different level takes the shared slot. */
+/** @brief Re-aims the claimed custom-level slot at a new donor level.
+ *
+ * Copies the donor's guest WAD TOC entry over the slot's (index 35), copies
+ * the donor's XA track into the slot's row of the per-level track table
+ * (D_8006EF9C), and makes the donor the id that alias_call swaps into
+ * g_LevelId. The mod registry calls it when a different custom level takes
+ * the shared slot.
+ * @param cpu The guest CPU state.
+ * @param donor_level_id The donor's level id, 10 to 64.
+ * @return 0 on success, -1 when no slot is claimed or the id is out of
+ *     range. */
 static int ops_retarget_slot(CPUState* cpu, int donor_level_id) {
     if (!s_slot_donor) return -1;
     if (donor_level_id < 10 || donor_level_id > 64) return -1;
@@ -252,12 +260,20 @@ void spyro1_mod_level_capture_stock_counts(CPUState* cpu) {
     s_stock_captured = 1;
 }
 
-/* Reconcile one level's target totals. A non-negative value is written;
- * a negative one restores what the table held at boot, which is how a
- * row that stops being live gives its index back. `eggs` is ignored for
- * an index with no row in the egg table. Only differing bytes are
- * written, so calling this every tick costs three reads once the tables
- * already agree. Returns the number of bytes written. */
+/** @brief Reconciles one level's dragon, gem, and egg target totals in guest RAM.
+ *
+ * A non-negative value is written; a negative one restores the value the
+ * table held at boot, which is how a row that stops being live gives its
+ * index back. `eggs` is ignored for an index with no row in the egg table.
+ * Only differing bytes are written, so a call on tables that already agree
+ * costs three reads and no write.
+ * @param cpu The guest CPU state.
+ * @param level_id The level id (10 to 64, or the custom slot's 65).
+ * @param dragons The dragon total, or negative for the stock value.
+ * @param gems The gem total, or negative for the stock value.
+ * @param eggs The egg total, or negative for the stock value.
+ * @return The number of bytes written, or -1 for an id with no count row
+ *     or before the stock tables were captured. */
 static int ops_set_level_counts(CPUState* cpu, int level_id,
                                 int dragons, int gems, int eggs) {
     int idx = level_index_of(level_id);

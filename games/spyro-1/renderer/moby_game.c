@@ -22,12 +22,20 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ---- vertex stream -------------------------------------------------
- * Packed 11/11/10 literals interleaved with 5/5/5 short-deltas, the bit-0
- * flag of each item selecting the form of the next. A literal RESETS the
- * accumulator; a short ADDS. The literal and short cursors run from the same
- * base, the shorts starting one word per the frame's second word high byte.
- * The model has no static vertex array, so `header` is unused here. */
+/** @brief Opens one keyframe's vertex stream.
+ *
+ * The stream holds packed 11/11/10 literal words interleaved with 5/5/5
+ * short deltas, the bit-0 flag of each item selecting the form of the
+ * next. The keyframe's first word carries a 21-bit field, a byte address
+ * or a stream handle that openpete_vstream_resolve maps to the literal
+ * cursor (read through KSEG0); the short cursor starts N words after it,
+ * N being the high byte of the keyframe's second word. The model
+ * has no static vertex array, so `header` is unused.
+ * @param cpu The guest CPU state.
+ * @param s The stream state to initialise.
+ * @param header The AnimationHeader (unused).
+ * @param frame The keyframe's guest address.
+ * @param s5 The per-model shift applied to each short delta. */
 static void s1_vstream_init(CPUState* cpu, moby_vstream_t* s,
                             uint32_t header, uint32_t frame, int s5) {
     (void)header;
@@ -42,6 +50,13 @@ static void s1_vstream_init(CPUState* cpu, moby_vstream_t* s,
     s->VX = s->VY = s->VZ = s->flag = 0; s->s5 = s5;
 }
 
+/** @brief Decodes the next vertex of the stream into s->VX, s->VY and s->VZ.
+ *
+ * A literal (the first item, or any item after a clear flag) resets the
+ * accumulator; a short delta adds to it, shifted left by `s5`.
+ * @param cpu The guest CPU state.
+ * @param s The stream state.
+ * @param first Nonzero to read the stream's first item. */
 static void s1_vstream_next(CPUState* cpu, moby_vstream_t* s, int first) {
     if (first || s->flag == 0) {
         uint32_t w = moby_vs_read_word(cpu, s, s->litp); s->litp += 4;
@@ -58,15 +73,27 @@ static void s1_vstream_next(CPUState* cpu, moby_vstream_t* s, int first) {
     }
 }
 
-/* ---- face stream ---------------------------------------------------
- * Byte-variable and self-describing. Word 0: sign = fresh (its own indices)
+/** @brief Decodes a whole animated-model faceblock into emittable faces.
+ *
+ * The face stream is byte-variable and self-describing. Word 0: sign = fresh (its own indices)
  * against strip (advancing), bit 0 = quad enable / winding, bit 1 = textured,
  * bit 2 = billboard sprite on a fresh face and a special-material flag on a
  * strip face, bit 3 = skip. The record advance follows those flags. Vertex
  * indices are 9-bit fields of word 0 (scaled by 4 as scratchpad byte offsets),
  * the fourth vertex's in the low field of the third word; colour indices are
  * 9-bit fields of word 1 and the high field of the third word. A textured face
- * carries its Tiledef in the three words before the next record. */
+ * carries its Tiledef in the three words before the next record. Skip faces
+ * and billboard sprites advance the cursor and emit nothing; the walk stops
+ * after 8192 records.
+ * @param cpu The guest CPU state.
+ * @param fb The faceblock's guest address (its length word).
+ * @param bytecount The faceblock's length word.
+ * @param out Receives up to `cap` faces.
+ * @param cap The capacity of `out`.
+ * @param st Receives the raw record and sprite counts and the end
+ *     alignment: 0 when the cursor stopped at fb + bytecount, 1 at
+ *     fb + 4 + bytecount, 2 otherwise.
+ * @return The number of faces decoded, at most `cap`. */
 static int s1_decode_faces(CPUState* cpu, uint32_t fb, uint32_t bytecount,
                            moby_wface_t* out, int cap, moby_face_stats_t* st) {
     uint32_t end = fb + 4u + bytecount;   /* end_hi (generous; alignment classified below) */
@@ -130,7 +157,8 @@ static int s1_decode_faces(CPUState* cpu, uint32_t fb, uint32_t bytecount,
     return n;
 }
 
-/* ---- cull record ---------------------------------------------------
+/** @brief Reads one moby cull record from the render scratch.
+ *
  * Stride 0x38 in the render scratch: flags word, AnimationHeader*, the two
  * keyframes, the view-space translation, the 3x3 model->view matrix (whose
  * unused high half of +0x2C carries the LOD verdict), the specular colour
@@ -141,7 +169,11 @@ static int s1_decode_faces(CPUState* cpu, uint32_t fb, uint32_t bytecount,
  * as the previous tick left it (r_moby.s:8001F744, 80020EE0), and the draw
  * stops on exactly that word (r_moby.s:8001F7FC-8001F804). Testing any other
  * word runs the walk past the terminator into stale bytes, whose header can
- * pass the decode guard. */
+ * pass the decode guard.
+ * @param cpu The guest CPU state.
+ * @param rec The record's guest address.
+ * @param R Receives the record's fields; one header serves both keyframes.
+ * @return 1 for a record, 0 at the terminator. */
 static int s1_read_record(CPUState* cpu, uint32_t rec, moby_record_t* R) {
     const uint32_t w0 = cpu->read_word(rec);
     if (w0 == 0) return 0;
@@ -161,8 +193,13 @@ static int s1_read_record(CPUState* cpu, uint32_t rec, moby_record_t* R) {
     return 1;
 }
 
-/* A negative animation count marks the second model kind (SimpleModel), which
- * the shaded pass draws from its own Moby* list. */
+/** @brief Reports whether a model-table entry is an animated model.
+ *
+ * A negative animation count (the entry's word 0) marks the second model
+ * kind (SimpleModel), which the shaded pass draws from its own Moby* list.
+ * @param cpu The guest CPU state.
+ * @param model The model's guest address.
+ * @return 1 for an animated model, 0 for a SimpleModel. */
 static int s1_model_is_animated(CPUState* cpu, uint32_t model) {
     return (int32_t)cpu->read_word(model + 0x00u) >= 0;
 }
@@ -185,10 +222,14 @@ static int s1_cutscene_actor(CPUState* cpu, uint32_t mob) {
            mob == cpu->read_word(G_DRAGONCUTSCENE_CUTSPYRO);
 }
 
-/* The cutscene renderer (func_8001CFDC) owns the actor set above while
- * g_Gamestate is GS_Dragon and m_State is 1..6. State 0 is the ordinary full
- * draw; past state 6 the full level moby set is re-queued, so the actors are
- * no longer drawn by a producer of their own. */
+/** @brief Reports whether the dragon cutscene renderer owns the actor set's draw this tick.
+ *
+ * func_8001CFDC owns it while g_Gamestate is GS_Dragon (8) and
+ * g_DragonCutscene.m_State is 1..6. State 0 is the ordinary full draw; past
+ * state 6 the full level moby set is re-queued, so the actors are no longer
+ * drawn by a producer of their own.
+ * @param cpu The guest CPU state.
+ * @return 1 while the cutscene renderer owns the draw, else 0. */
 static int s1_cutscene_owns_draw(CPUState* cpu) {
     uint32_t st = cpu->read_word(G_DRAGONCUTSCENE_STATE);
     return cpu->read_word(G_GAMESTATE) == 8u && st >= 1u && st <= 6u;
@@ -255,25 +296,30 @@ extern int spyro_cutpath_is_actor(uint32_t m);
 static int s1_cutpath_actor(uint32_t m) { return spyro_cutpath_is_actor(m); }
 extern int spyro_moby_cut_held(uint32_t moby);
 
-/* Flat HUD and text draw OVER the player by default; UNDER it only during the
- * "THE ADVENTURE BEGINS" reveal where Spyro flies in front of the text being
- * revealed — that runs under GS_TitleScreen (13). NOT GS_LevelTransition (1):
- * the "ENTERING <level>" portal transition has no Spyro reveal, so text stays
- * on top there like every other state. */
+/** @brief Reports whether flat HUD and text draw under the player model this tick.
+ *
+ * They draw over the player by default and under it only during the "THE
+ * ADVENTURE BEGINS" reveal, where Spyro flies in front of the text being
+ * revealed, which runs under GS_TitleScreen (13). GS_LevelTransition (1)
+ * is excluded: the "ENTERING" level-name transition has no Spyro reveal, so
+ * the text stays on top there.
+ * @param cpu The guest CPU state.
+ * @return 1 under GS_TitleScreen, else 0. */
 static int s1_hud_under_player(CPUState* cpu) {
     return cpu->read_word(G_GAMESTATE) == 13u;
 }
 
-/* ---- run-once instances --------------------------------------------
- * Instances whose FIRST update does a one-shot job and then retires them
- * (m_State >= 0x80). The update-list builder (@80052040) auto-includes any
+/** @brief Reports whether a moby is a run-once instance the walk and the reveal must not draw.
+ *
+ * Instances whose first update does a one-shot job and then retires them
+ * (m_State >= 0x80). The update-list builder (80052040) auto-includes any
  * moby whose m_WasDrawn is set, ahead of its m_UpdateDistance path, so
  * canonically "drawn" implies "updated next tick" and such an instance is on
  * screen for at most the single tick that admits it — never long enough to be
  * intended as scenery.
  *
  * Two display bugs follow. The extended-LOD reveal must not write m_WasDrawn
- * (gameplay-readable), so a revealed instance is drawn WITHOUT ever entering
+ * (gameplay-readable), so a revealed instance is drawn without ever entering
  * the update list: it never runs, never retires, and stands there until the
  * draw range finally reaches it and kills it. And even in range, the canonical
  * queue still yields that one-tick flash. Both are display-side, so the fix is
@@ -287,10 +333,14 @@ static int s1_hud_under_player(CPUState* cpu) {
  * only set a moving platform's height — against eight at variants 0/1/2, the
  * ordinary hopping fools. Nothing in the Moby record itself distinguishes
  * them: an ordinary fool sits at m_State 0 with a zero rotation matrix and
- * animation frame 0 exactly like an unreached run-once one, and STAYS at
+ * animation frame 0 exactly like an unreached run-once one, and stays at
  * m_State 0 after being drawn, so a liveness test would hide every distant
  * fool in the level. The table is keyed per level because class ids index the
- * level overlay's own g_Models, and the props layout is class-specific. */
+ * level overlay's own g_Models, and the props layout is class-specific.
+ * @param cpu The guest CPU state.
+ * @param m The moby's guest address.
+ * @param cls The moby's class.
+ * @return 1 for a run-once instance, else 0. */
 static int s1_run_once_hidden(CPUState* cpu, uint32_t m, unsigned cls) {
     static const struct { uint16_t level, cls; uint32_t variant; } k_run_once[] = {
         /* jacques: the fools that set the moving platforms' heights */
@@ -306,8 +356,10 @@ static int s1_run_once_hidden(CPUState* cpu, uint32_t m, unsigned cls) {
     return 0;
 }
 
-/* ---- paint-key decodes (moby_rank.h rows MOBY_OTK_S1_REGULAR,
- * MOBY_OTK_S1_SPECULAR and MOBY_OTK_S1_SHADED) ------------------------------
+/** @brief Decodes an animated record's paint-key fields for the MOBY_OTK_S1_REGULAR row.
+ *
+ * The moby_rank.h rows MOBY_OTK_S1_REGULAR, MOBY_OTK_S1_SPECULAR and
+ * MOBY_OTK_S1_SHADED are decoded here and in s1_shaded_otkey_face.
  * The regular and specular walks' record: both draws read a1 from w0 bits
  * 24-28 [r_moby.s 476-479, 2114-2117], where the cull packs the animation
  * header's byte 0xB, raised to the next animation's header byte 0xB on a
@@ -318,7 +370,15 @@ static int s1_run_once_hidden(CPUState* cpu, uint32_t m, unsigned cls) {
  * The translation the walk loads is (TR << 2) >> m_Scale, or on a record with
  * a GPF scale byte (w0 & 0xFF) (byte * int16((TR << 2) >> m_Scale)) >> 5
  * [r_moby.s 506-517]. The face bias is the signed top nibble of the
- * colour-index word, decoded into moby_wface_t.otbias (r_moby.s 1018, 1141). */
+ * colour-index word, decoded into moby_wface_t.otbias (r_moby.s 1018, 1141).
+ * @param cpu The guest CPU state.
+ * @param header The record's AnimationHeader.
+ * @param header_b The next animation's header on a blending record.
+ * @param w0 The record's flags word.
+ * @param TR_raw The record's view-space translation.
+ * @param tr Receives the translation the draw loads into TRX/TRY/TRZ.
+ * @param a Receives a1, the 5-bit header byte the row scales by.
+ * @return MOBY_OTK_S1_REGULAR. */
 static moby_otk_row_t s1_otkey_record(CPUState* cpu, uint32_t header, uint32_t header_b,
                                       uint32_t w0, const int TR_raw[3], int tr[3], int* a) {
     int ms = cpu->read_byte(header + game_layout.moby.anim_scale_off) & 31;
@@ -337,11 +397,16 @@ static moby_otk_row_t s1_otkey_record(CPUState* cpu, uint32_t header, uint32_t h
     return MOBY_OTK_S1_REGULAR;
 }
 
-/* The shaded walk's face words: gouraud faces (word 0 bit 0 clear) carry the
- * bias in word 1's low two bits (r_moby.s 4619-4620, 4679-4680); flat and
- * metal faces carry a face normal there. A metal face (word 0 bits 0 and 1)
- * keeps both facings while TRZ < 0x800 (r_moby.s 4841-4847) and takes the
- * back-face offset (r_moby.s 4894-4899). */
+/** @brief Decodes one shaded-walk face's two words into its paint-key fields.
+ *
+ * Gouraud faces (word 0 bit 0 clear) carry the bias in word 1's low two
+ * bits (r_moby.s 4619-4620, 4679-4680); flat and metal faces carry a face
+ * normal there and take bias 0. A metal face (word 0 bits 0 and 1) keeps
+ * both facings while TRZ < 0x800 (r_moby.s 4841-4847) and takes the
+ * back-face offset (r_moby.s 4894-4899).
+ * @param w0 The face's first word.
+ * @param w1 The face's second word.
+ * @param f Receives the bias, back-face and near-keep fields. */
 static void s1_shaded_otkey_face(uint32_t w0, uint32_t w1, moby_otk_face_t* f) {
     int metal = (w0 & 3u) == 3u;
     f->bias = (w0 & 1u) ? 0 : (int)(w1 & 3u);
@@ -349,8 +414,16 @@ static void s1_shaded_otkey_face(uint32_t w0, uint32_t w1, moby_otk_face_t* f) {
     f->near_limit = metal ? 0x800 : INT32_MIN;
 }
 
-/* The keyframe's faceblock patch list: the keyframe's second word carries the
- * list's byte offset from the keyframe, scaled by four; zero means none. */
+/** @brief Returns the faceblock patch list a keyframe carries.
+ *
+ * The low halfword of the keyframe's second word is the list's byte offset
+ * from the keyframe, divided by four; zero means none. The list lives
+ * inside the keyframe, so `rec` and `model` are unused.
+ * @param cpu The guest CPU state.
+ * @param rec The cull record (unused).
+ * @param model The moby's model (unused).
+ * @param frame_a The keyframe's guest address.
+ * @return The list's guest address, or 0 when the keyframe carries none. */
 static uint32_t s1_frame_patch_list(CPUState* cpu, uint32_t rec, uint32_t model,
                                     uint32_t frame_a) {
     (void)rec; (void)model;   /* the list is inside the keyframe, not the record */
@@ -358,8 +431,12 @@ static uint32_t s1_frame_patch_list(CPUState* cpu, uint32_t rec, uint32_t model,
     return off ? frame_a + off : 0u;
 }
 
-/* AnimationHeader m_NumFrames: the keyframe array at m_Frames holds this many
- * 8-byte records. */
+/** @brief Returns how many keyframes an AnimationHeader's keyframe array holds.
+ *
+ * Reads m_NumFrames; the array at m_Frames holds that many 8-byte records.
+ * @param cpu The guest CPU state.
+ * @param header The AnimationHeader's guest address.
+ * @return The keyframe count. */
 static int s1_anim_frame_count(CPUState* cpu, uint32_t header) {
     return (int)(int16_t)(uint16_t)cpu->read_half(header + offsetof(AnimationHeader, m_NumFrames));
 }

@@ -95,11 +95,19 @@ void spyro_native_canon_capture_camera(void* cpu, int producer);
 int  spyro_native_prod_camera_enter(int producer);
 void spyro_native_prod_camera_leave(void);
 
-/* Registration, called by main() before the run loop: the game's interp
- * region table into the interp ring (the game's interp_regions TU), and the
- * orchestrator's re-extract entry with the native renderer. Explicit calls
- * rather than weak symbols: the PE/COFF linker mis-resolves weak overrides. */
+/** @brief Registers the game's interp region table and per-object capture with the interp ring.
+ *
+ * Defined by the game's interp_regions TU, or as a no-op by
+ * interp_regions_none.c for a game with no sub-tick presentation. main()
+ * calls it once before openpete_run(), so openpete_interp_init() sees the
+ * regions. An explicit call replaces a weak-symbol override, which the
+ * PE/COFF linker mis-resolves. */
 void game_interp_register(void);
+/** @brief Registers the game's sub-tick re-extract body with the native renderer.
+ *
+ * The game's reextract TU passes its body to game_reextract_view_install;
+ * orchestrator_none.c defines it as a no-op. main() calls it beside
+ * game_interp_register, as an explicit call for the same reason. */
 void game_reextract_init(void);
 
 #ifdef __cplusplus

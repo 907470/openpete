@@ -136,11 +136,7 @@ static void credits_track_generations(void) {
     }
 }
 
-/* See interp_regions.h. Tried in order of how much of the game's own
- * state backs the identity: the record index for credits letters,
- * emitter-call provenance for text glyphs, the fly-out source slot for tally
- * gems, then a class-relative pool ordinal for everything else in the HUD
- * pool, and finally the moby's own address. */
+/* Identities tried in the order renderer/interp_regions.h lists them. */
 uint32_t game_interp_moby_key(uint32_t m) {
     /* Credits letters: (class, record index, generation) — see
      * credits_track_generations. */

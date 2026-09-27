@@ -11,11 +11,19 @@
 extern "C" {
 #endif
 
-/* Attach + register the recomp module. `module_path_override` is the
- * --recomp-module value or NULL for the default (shared linkage: the
- * platform library name next to the exe). `disc_path` feeds the
- * first-boot module build when no module exists yet (shared linkage
- * only; ignored by static builds). Returns 0 on success. */
+/** @brief Attaches the recomp module and registers it as the active module.
+ *
+ * Static linkage registers the descriptor linked into the exe and ignores
+ * every argument. Shared linkage loads the module library, binds its
+ * descriptor and forwarders, and, when the library is absent or unusable
+ * and a build is allowed, rebuilds it from the disc behind the splash
+ * before binding again.
+ * @param module_path_override The --recomp-module path, or NULL for the
+ *     default (shared linkage: the platform library name next to the exe).
+ * @param disc_path The disc a missing or unusable module is rebuilt from
+ *     (shared linkage only).
+ * @param allow_build Nonzero to permit that rebuild.
+ * @return 0 on success, -1 when no usable module could be registered. */
 int spyro1_recomp_attach(const char* module_path_override,
                          const char* disc_path,
                          int allow_build);
