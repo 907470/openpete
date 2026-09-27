@@ -1,11 +1,12 @@
 // core/host/host_spawn.h — silent child-process spawn for host-side
-// build steps (mod compile-on-boot; see plan openpete-mod-compile-on-boot).
+// build steps (mod compile-on-boot).
 //
-// The Windows exe is a GUI-subsystem app (-mwindows) with no console of
-// its own, so a plain system()/_popen() child pops a fresh console
-// window per invocation. These helpers run the command with a hidden
-// console on Windows (CREATE_NO_WINDOW) and plain system()/popen() on
-// POSIX — same trick as the first-boot module build in recomp_build.cpp.
+// The child is started from an argument vector, never through a shell, so
+// a path holding a space, a quote, `%NAME%` or `$(...)` is one argument
+// and nothing in it is interpreted. The Windows exe is a GUI-subsystem app
+// (-mwindows) with no console of its own; the child runs with
+// CREATE_NO_WINDOW so no console window appears, and grandchildren
+// inherit the hidden console.
 #ifndef OPENPETE_HOST_SPAWN_H
 #define OPENPETE_HOST_SPAWN_H
 
@@ -15,32 +16,24 @@
 extern "C" {
 #endif
 
-/** @brief Run cmd through the platform shell and wait for it, with no console window on Windows.
+/** @brief Run the program an argument vector names, with its arguments, and wait for it, its stdout and stderr going to a file or to a buffer.
  *
- * On Windows the command runs as `cmd.exe /C "<cmd>"` under
- * CREATE_NO_WINDOW; the extra quote pair keeps cmd.exe from stripping the
- * outer quotes of a command with several quoted tokens, and grandchildren
- * inherit the hidden console. On POSIX it is system(). The mod
- * compile-on-boot step runs the compiler through it.
- * @param cmd Shell command line.
- * @return On Windows the child's exit code; on POSIX the system() wait
- *         status, which is 0 exactly when the child exited 0; -1 when the
- *         child could not be started. */
-int openpete_host_spawn(const char* cmd);
-
-/** @brief Run cmd like openpete_host_spawn and collect its output into out.
- *
- * On Windows the child's stdout and stderr both go to a pipe; on POSIX
- * popen() collects stdout only, so a caller that wants stderr redirects it
- * in cmd (`2>&1`). Output past cap - 1 bytes is read and discarded, so the
- * child never blocks on a full pipe.
- * @param cmd Shell command line.
- * @param out Output buffer, always NUL-terminated; set to "" before the
- *        spawn. Must be non-NULL with cap at least 1 on POSIX.
- * @param cap Size of out in bytes.
- * @return On Windows the child's exit code; on POSIX the pclose() wait
- *         status; -1 when the child could not be started. */
-int openpete_host_spawn_capture(const char* cmd, char* out, size_t cap);
+ * POSIX: posix_spawnp, so argv[0] is searched on PATH when it has no
+ * slash. Windows: CreateProcessW with no shell; the command line is built
+ * from argv with the quoting CommandLineToArgvW and the C runtime undo
+ * (each argument in double quotes, backslashes before a quote doubled,
+ * the quote escaped), converted through the active code page.
+ * @param argv NULL-terminated argument vector; argv[0] is the program.
+ * @param log_path When non-NULL, stdout and stderr are written to this
+ *        file (created or truncated).
+ * @param capture When non-NULL (and log_path is NULL), stdout and stderr
+ *        are collected here, NUL-terminated; output past cap - 1 bytes is
+ *        read and discarded, so the child never blocks on a full pipe.
+ * @param cap Size of capture in bytes (at least 1 when capture is used).
+ * @return The child's exit code (0 on success), or -1 when it could not
+ *         be started or did not exit normally. */
+int openpete_host_spawn_argv(const char* const* argv, const char* log_path,
+                             char* capture, size_t cap);
 
 #ifdef __cplusplus
 }

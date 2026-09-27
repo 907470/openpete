@@ -51,6 +51,7 @@
 #include "../ui/openpete_imgui_guard.h" /* ImGui table bind */
 #include "../host/sha256.h"     /* content-hash build cache key */
 #include "../host/host_spawn.h" /* silent compiler spawn + cc identity */
+#include "openpete_atomic_file.h" /* the unpacked zip's stamp */
 #include "miniz.h"              /* zip mods (folder or zip, identical) */
 
 #include <stdarg.h>
@@ -67,7 +68,6 @@
 #include <windows.h>
 #include <direct.h>
 #define MOD_DL_EXT ".dll"
-#define MOD_Q "\""  /* cmd.exe argument quoting */
 #define mod_mkdir(p) _mkdir(p)
 static void* mod_dlopen(const char* path) {
     return (void*)LoadLibraryA(path);
@@ -85,8 +85,8 @@ static const char* mod_dlerror(void) {
 }
 #else
 #include <dlfcn.h>
+#include <unistd.h> /* rmdir */
 #define MOD_DL_EXT ".so"
-#define MOD_Q "'"   /* POSIX shell argument quoting */
 #define mod_mkdir(p) mkdir((p), 0755)
 static void* mod_dlopen(const char* path) {
     return dlopen(path, RTLD_NOW | RTLD_LOCAL);
@@ -2068,6 +2068,23 @@ static int level_count_key(toml_table_t* lt, const char* key, int max,
     return (int)d.u.i;
 }
 
+/** @brief Report whether a manifest id is a plain name of letters, digits, dots, underscores and hyphens, not led by a dot and free of a double dot.
+ *
+ * The id names files and directories (.build/<id>, .unpacked/<id>) and
+ * reaches the compiler's output path, so a separator, a quote or a ".."
+ * would write outside the mod's own directory.
+ * @param id The id.
+ * @return 1 when safe, else 0. */
+static int mod_id_valid(const char* id) {
+    if (!id[0] || id[0] == '.' || strstr(id, "..")) return 0;
+    for (const char* p = id; *p; p++) {
+        int ok = (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+                 (*p >= '0' && *p <= '9') || *p == '.' || *p == '_' || *p == '-';
+        if (!ok) return 0;
+    }
+    return 1;
+}
+
 /** @brief Parse the [mod] table: identity, the api floor, and the declarations that gate savestate, rewind and runahead.
  *
  * id and version are required; name defaults to the id; dir and log_tag
@@ -2083,15 +2100,20 @@ static int level_count_key(toml_table_t* lt, const char* key, int max,
  * @param mod The mod being parsed.
  * @param mod_dir The mod directory.
  * @param path Manifest path for log lines.
- * @return 0, or -1 when id or version is missing or the api is newer than
- *         the engine's. */
+ * @return 0, or -1 when id or version is missing, the id is not a plain
+ *         name (mod_id_valid), or the api is newer than the engine's. */
 static int parse_mod_header(toml_table_t* t, struct openpete_mod* mod,
                             const char* mod_dir, const char* path) {
     toml_datum_t id = toml_string_in(t, "id");
     toml_datum_t ver = toml_string_in(t, "version");
     toml_datum_t api = toml_int_in(t, "api");
-    if (!id.ok || !ver.ok) {
-        OPL_ERROR_F("mods", "%s: [mod] requires id and version", path);
+    if (!id.ok || !ver.ok || !mod_id_valid(id.u.s)) {
+        if (id.ok && ver.ok)
+            OPL_ERROR_F("mods", "%s: [mod] id \"%s\" is not a plain name "
+                        "(letters, digits, '.', '_', '-'; no \"..\") — disabled",
+                        path, id.u.s);
+        else
+            OPL_ERROR_F("mods", "%s: [mod] requires id and version", path);
         if (id.ok) free(id.u.s);
         if (ver.ok) free(ver.u.s);
         return -1;
@@ -2718,10 +2740,9 @@ static const char* mods_cc_identity(void) {
     char cc[MOD_PATH_MAX];
     mods_resolve_cc(cc, sizeof cc);
     if (!cc[0]) return s_identity;
-    char cmd[MOD_PATH_MAX + 32];
-    snprintf(cmd, sizeof cmd, MOD_Q "%s" MOD_Q " --version 2>&1", cc);
+    const char* argv[] = { cc, "--version", NULL };
     char out[1024];
-    if (openpete_host_spawn_capture(cmd, out, sizeof out) < 0) return s_identity;
+    if (openpete_host_spawn_argv(argv, NULL, out, sizeof out) < 0) return s_identity;
     out[strcspn(out, "\r\n")] = '\0';
     snprintf(s_identity, sizeof s_identity, "%s", out);
     return s_identity;
@@ -2952,10 +2973,16 @@ static int write_sources_rsp(const char* rsp_path, const mod_fvec* srcs,
     return ok ? 0 : -1;
 }
 
-/* Compile src/*.c → out_path with the resolved compiler. `stamp` = 1
- * records the build key on success so an unchanged mod never
- * recompiles (0 = hot-reload .hotN objects on Windows, where the base
- * DLL is file-locked and must go stale until the next boot). */
+/** @brief Compile a mod's src/ C files into out_path with the resolved compiler, its output in .build/compile.log.
+ *
+ * The compiler runs from an argument vector (openpete_host_spawn_argv),
+ * the sources and the SDK's ABI descriptor from a response file. `stamp`
+ * = 1 records the build key on success so an unchanged mod never
+ * recompiles (0 = hot-reload .hotN objects on Windows, where the base DLL
+ * is file-locked and must go stale until the next boot). A failed compile
+ * removes the stamp and keeps any existing object.
+ * @return 0 on success, -1 when there are no sources, no compiler, the
+ *         response file cannot be written, or the compile fails. */
 static int mod_compile(const char* mod_dir, const char* id,
                        const char* sdk_dir, const char* key,
                        const char* out_path, int stamp) {
@@ -2985,19 +3012,10 @@ static int mod_compile(const char* mod_dir, const char* id,
     char stamp_path[MOD_PATH_MAX + 16];
     mod_stamp_path(mod_dir, id, stamp_path, sizeof stamp_path);
 
-#ifdef _WIN32
-    static const char* const flags =
-        "-shared -O2 -g -fno-strict-aliasing -Wall";
-#else
-    static const char* const flags =
-        "-shared -fPIC -O2 -g -fno-strict-aliasing -Wall";
-#endif
-    /* The sources go in a response file, not on the command line: on
-     * Windows the line is wrapped in `cmd.exe /C "..."`, whose limit is
-     * 8191 characters and is external to this program. A mod with
-     * enough sources used to silently lose the tail of its own compile
-     * line. The ABI descriptor rides the same file (openpete_mod_api.h,
-     * "ABI descriptor"): compiled against the same SDK as the mod's own
+    /* The sources go in a response file, not on the command line, whose
+     * length the platform limits (32767 characters on Windows). The ABI
+     * descriptor rides the same file (openpete_mod_api.h, "ABI
+     * descriptor"): compiled against the same SDK as the mod's own
      * sources, it records the api the object is really built for. */
     char rsp_path[MOD_PATH_MAX + 16];
     snprintf(rsp_path, sizeof rsp_path, "%s/sources.rsp", build_dir);
@@ -3008,25 +3026,23 @@ static int mod_compile(const char* mod_dir, const char* id,
     }
     mod_fvec_free(&srcs);
 
-    char cmd[8192];
-    int off = snprintf(cmd, sizeof cmd,
-                       MOD_Q "%s" MOD_Q " %s -I" MOD_Q "%s" MOD_Q
-                       " -o " MOD_Q "%s" MOD_Q " @" MOD_Q "%s" MOD_Q,
-                       cc, flags, sdk_dir, out_path, rsp_path);
-    /* snprintf returns the length it would have written, so `off` can
-     * run past the buffer; `sizeof cmd - off` would then underflow and
-     * the write would run off the end. */
-    if (off < 0 || off >= (int)sizeof cmd) {
-        OPL_ERROR_F("mods", "%s: compile command too long (%d bytes) — "
-                    "disabled", id, off);
-        return -1;
-    }
-    snprintf(cmd + off, sizeof cmd - (size_t)off,
-             " >" MOD_Q "%s/compile.log" MOD_Q " 2>&1", build_dir);
+    /* The compiler is started from an argument vector, never a shell: a
+     * mods, SDK or output path holding a quote, a space, `%NAME%` or `$`
+     * is one argument, taken literally. */
+    char inc[MOD_PATH_MAX + 4], rsp_arg[MOD_PATH_MAX + 20], log_path[MOD_PATH_MAX + 16];
+    snprintf(inc, sizeof inc, "-I%s", sdk_dir);
+    snprintf(rsp_arg, sizeof rsp_arg, "@%s", rsp_path);
+    snprintf(log_path, sizeof log_path, "%s/compile.log", build_dir);
+    const char* argv[] = { cc, "-shared",
+#ifndef _WIN32
+                           "-fPIC",
+#endif
+                           "-O2", "-g", "-fno-strict-aliasing", "-Wall",
+                           inc, "-o", out_path, rsp_arg, NULL };
 
     OPL_INFO_F("mods", "%s: compiling %d source file%s", id, n_srcs,
                n_srcs == 1 ? "" : "s");
-    int rc = openpete_host_spawn(cmd);
+    int rc = openpete_host_spawn_argv(argv, log_path, NULL, 0);
     if (rc != 0) {
         OPL_ERROR_F("mods", "%s: compile failed (see %s/compile.log) — "
                     "disabled", id, build_dir);
@@ -3415,18 +3431,124 @@ static int topo_visit(topo_ctx_t* c, int i) { /* 0 = ok, -1 = failed */
     return 0;
 }
 
+/** @brief Remove a directory tree (or a file) at path, depth first.
+ *
+ * Entries that cannot be removed (a DLL the process holds on Windows) are
+ * left, and the removal of their parents then fails.
+ * @param path The tree's root.
+ * @return 0 when nothing remains at path, -1 otherwise. */
+static int mod_rmtree(const char* path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    if (!S_ISDIR(st.st_mode)) return remove(path) == 0 ? 0 : -1;
+    DIR* d = opendir(path);
+    if (d) {
+        struct dirent* e;
+        while ((e = readdir(d)) != NULL) {
+            if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+            char child[MOD_PATH_MAX];
+            snprintf(child, sizeof child, "%s/%s", path, e->d_name);
+            (void)mod_rmtree(child);
+        }
+        closedir(d);
+    }
+#ifdef _WIN32
+    return _rmdir(path) == 0 ? 0 : -1;
+#else
+    return rmdir(path) == 0 ? 0 : -1;
+#endif
+}
+
+/** @brief Find the single top-level directory that wraps every entry of a zip with no root-level mod.toml.
+ *
+ * @param zip The open archive.
+ * @param wrap Receives the wrapper with its trailing '/', or "".
+ * @param cap Capacity of wrap.
+ * @return The wrapper's length, 0 when the archive has none. */
+static size_t zip_wrapper_prefix(mz_zip_archive* zip, char* wrap, size_t cap) {
+    size_t wrap_len = 0;
+    int root_toml = 0, single = 1;
+    wrap[0] = '\0';
+    mz_uint n = mz_zip_reader_get_num_files(zip);
+    for (mz_uint i = 0; i < n && single; i++) {
+        mz_zip_archive_file_stat st;
+        if (!mz_zip_reader_file_stat(zip, i, &st)) { single = 0; break; }
+        if (strcmp(st.m_filename, "mod.toml") == 0) root_toml = 1;
+        const char* slash = strchr(st.m_filename, '/');
+        if (!slash) { single = 0; break; } /* root-level file */
+        size_t len = (size_t)(slash - st.m_filename) + 1;
+        if (wrap_len == 0) {
+            if (len >= cap) { single = 0; break; }
+            memcpy(wrap, st.m_filename, len);
+            wrap[len] = '\0';
+            wrap_len = len;
+        } else if (len != wrap_len || memcmp(wrap, st.m_filename, len) != 0) {
+            single = 0;
+        }
+    }
+    return (root_toml || !single) ? 0 : wrap_len;
+}
+
+/** @brief Extract every entry of a zip into dest, with the wrapper prefix stripped from each path.
+ *
+ * An entry path that is absolute or contains ".." aborts the extraction.
+ * Intermediate directories are made as needed (zips may omit them).
+ * @param zip The open archive.
+ * @param dest Destination directory, existing.
+ * @param wrap_len Length of the wrapper prefix to strip, 0 for none.
+ * @param id Mod id, for log lines.
+ * @param files Receives the number of files written.
+ * @return 1 when every entry extracted, 0 otherwise. */
+static int zip_extract_all(mz_zip_archive* zip, const char* dest, size_t wrap_len,
+                           const char* id, int* files) {
+    mz_uint n = mz_zip_reader_get_num_files(zip);
+    *files = 0;
+    for (mz_uint i = 0; i < n; i++) {
+        mz_zip_archive_file_stat st;
+        if (!mz_zip_reader_file_stat(zip, i, &st)) return 0;
+        if (st.m_filename[0] == '/' || strstr(st.m_filename, "..")) {
+            OPL_ERROR_F("mods", "%s.zip: unsafe entry path \"%s\" — "
+                        "skipped archive", id, st.m_filename);
+            return 0;
+        }
+        const char* rel = st.m_filename + wrap_len;
+        if (!*rel) continue; /* the wrapper directory entry itself */
+        char out[MOD_PATH_MAX * 2];
+        snprintf(out, sizeof out, "%s/%s", dest, rel);
+        if (mz_zip_reader_is_file_a_directory(zip, i)) {
+            mod_mkdir(out);
+            continue;
+        }
+        for (char* p = out + strlen(dest) + 1; *p; p++) {
+            if (*p != '/') continue;
+            *p = '\0';
+            mod_mkdir(out);
+            *p = '/';
+        }
+        if (!mz_zip_reader_extract_to_file(zip, i, out, 0)) {
+            OPL_ERROR_F("mods", "%s.zip: extract failed for \"%s\"", id,
+                        st.m_filename);
+            return 0;
+        }
+        (*files)++;
+    }
+    return 1;
+}
+
 /** @brief Unpack `<mods_dir>/<id>.zip` to `<mods_dir>/.unpacked/<id>/` so a zipped mod loads like a folder.
  *
  * The zip's SHA-256 is stamped at `.unpacked/<id>.hash`, so an unchanged
  * zip whose mod.toml is present is not re-extracted. mod.toml sits at the
  * zip root, or inside a single top-level directory that wraps every
  * entry (the layout zipping the folder produces); that wrapper is
- * stripped on extraction. An entry path that is absolute or contains ".."
- * aborts the whole archive. Extraction overwrites in place and does not
- * delete files a previous unpack left.
+ * stripped on extraction. A changed zip is extracted into
+ * `.unpacked/<id>.new/`, which then replaces the previous tree whole, so
+ * a file the new version dropped (a source, a texture, a shader) does not
+ * survive, and a failed extraction leaves the previous tree untouched.
+ * An entry path that is absolute or contains ".." aborts the archive.
  * @return 0 when unpacked or already current; -1 when the zip is missing
- *         or unreadable, an entry is unsafe or fails to extract, or no
- *         mod.toml results. */
+ *         or unreadable, an entry is unsafe or fails to extract, no
+ *         mod.toml results, or the previous tree cannot be replaced. */
 static int mod_unpack_zip(const char* mods_dir, const char* id) {
     char zip_path[MOD_PATH_MAX];
     snprintf(zip_path, sizeof zip_path, "%s/%s.zip", mods_dir, id);
@@ -3464,82 +3586,38 @@ static int mod_unpack_zip(const char* mods_dir, const char* id) {
         OPL_ERROR_F("mods", "%s.zip: not a readable zip — skipped", id);
         return -1;
     }
+    char wrap[MOD_PATH_MAX];
+    size_t wrap_len = zip_wrapper_prefix(&zip, wrap, sizeof wrap);
+    if (wrap_len)
+        OPL_INFO_F("mods", "%s.zip: stripping wrapper directory \"%s\"", id, wrap);
+
+    char staging[MOD_PATH_MAX + 8], staged_toml[MOD_PATH_MAX + 20];
+    snprintf(staging, sizeof staging, "%s.new", dest);
+    snprintf(staged_toml, sizeof staged_toml, "%s/mod.toml", staging);
     mod_mkdir(root);
-    mod_mkdir(dest);
-    int files = 0, ok = 1;
-    mz_uint n = mz_zip_reader_get_num_files(&zip);
-
-    /* Wrapper detection: when no root-level mod.toml exists and every
-     * entry shares one top-level directory, that directory is stripped
-     * from each path so the mod lands at .unpacked/<id>/ directly. */
-    char wrap[MOD_PATH_MAX] = "";
-    size_t wrap_len = 0;
-    {
-        int root_toml = 0, single = 1;
-        for (mz_uint i = 0; i < n && single; i++) {
-            mz_zip_archive_file_stat st;
-            if (!mz_zip_reader_file_stat(&zip, i, &st)) { single = 0; break; }
-            if (strcmp(st.m_filename, "mod.toml") == 0) root_toml = 1;
-            const char* slash = strchr(st.m_filename, '/');
-            if (!slash) { single = 0; break; } /* root-level file */
-            size_t len = (size_t)(slash - st.m_filename) + 1;
-            if (wrap_len == 0) {
-                if (len >= sizeof wrap) { single = 0; break; }
-                memcpy(wrap, st.m_filename, len);
-                wrap[len] = '\0';
-                wrap_len = len;
-            } else if (len != wrap_len ||
-                       memcmp(wrap, st.m_filename, len) != 0) {
-                single = 0;
-            }
-        }
-        if (root_toml || !single) wrap_len = 0;
-        if (wrap_len)
-            OPL_INFO_F("mods", "%s.zip: stripping wrapper directory \"%s\"",
-                       id, wrap);
-    }
-
-    for (mz_uint i = 0; i < n; i++) {
-        mz_zip_archive_file_stat st;
-        if (!mz_zip_reader_file_stat(&zip, i, &st)) { ok = 0; break; }
-        if (st.m_filename[0] == '/' || strstr(st.m_filename, "..")) {
-            OPL_ERROR_F("mods", "%s.zip: unsafe entry path \"%s\" — "
-                        "skipped archive", id, st.m_filename);
-            ok = 0;
-            break;
-        }
-        const char* rel = st.m_filename + wrap_len;
-        if (!*rel) continue; /* the wrapper directory entry itself */
-        char out[MOD_PATH_MAX];
-        snprintf(out, sizeof out, "%s/%s", dest, rel);
-        if (mz_zip_reader_is_file_a_directory(&zip, i)) {
-            mod_mkdir(out);
-            continue;
-        }
-        /* Ensure intermediate dirs exist (zips may omit dir entries). */
-        for (char* p = out + strlen(dest) + 1; *p; p++) {
-            if (*p != '/') continue;
-            *p = '\0';
-            mod_mkdir(out);
-            *p = '/';
-        }
-        if (!mz_zip_reader_extract_to_file(&zip, i, out, 0)) {
-            OPL_ERROR_F("mods", "%s.zip: extract failed for \"%s\"", id,
-                        st.m_filename);
-            ok = 0;
-            break;
-        }
-        files++;
-    }
+    (void)mod_rmtree(staging);
+    mod_mkdir(staging);
+    int files = 0;
+    int ok = zip_extract_all(&zip, staging, wrap_len, id, &files);
     mz_zip_reader_end(&zip);
-    if (!ok) return -1;
-    if (file_mtime(probe) == (time_t)-1) {
+    if (ok && file_mtime(staged_toml) == (time_t)-1) {
         OPL_ERROR_F("mods", "%s.zip: no mod.toml at the archive root "
                     "(or inside a single wrapper directory) — skipped", id);
+        ok = 0;
+    }
+    if (!ok) {
+        (void)mod_rmtree(staging);
         return -1;
     }
-    sf = fopen(stamp, "wb");
-    if (sf) { fprintf(sf, "%s\n", key); fclose(sf); }
+    if (mod_rmtree(dest) != 0 || rename(staging, dest) != 0) {
+        OPL_ERROR_F("mods", "%s.zip: cannot replace %s (a file in it is in "
+                    "use?) — skipped", id, dest);
+        (void)mod_rmtree(staging);
+        return -1;
+    }
+    char line[80];
+    int ln = snprintf(line, sizeof line, "%s\n", key);
+    (void)op_atomic_write_file(stamp, line, (size_t)ln);
     OPL_INFO_F("mods", "%s: unpacked %d file%s from %s.zip", id, files,
                files == 1 ? "" : "s", id);
     return 0;

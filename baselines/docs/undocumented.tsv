@@ -413,7 +413,6 @@ core/mods/mod_loader.c	mod_cfg_count	none
 core/mods/mod_loader.c	mod_cfg_item_at	none	
 core/mods/mod_loader.c	mod_cfg_item_count	none	
 core/mods/mod_loader.c	mod_check_abi	none	
-core/mods/mod_loader.c	mod_compile	plain	
 core/mods/mod_loader.c	mod_compute_key	none	
 core/mods/mod_loader.c	mod_count	none	
 core/mods/mod_loader.c	mod_dep_at	none	
