@@ -170,7 +170,20 @@ unsigned rhi_seam_violations(void) { return s_seam_violations; }
 static void (*s_device_lost_cb)(void) = NULL;
 void rhi_set_device_lost_handler(void (*fn)(void)) { s_device_lost_cb = fn; }
 static const char *s_last_gpu_zone;   /* set by rhi_gpu_zone_begin */
+/* Set once the device is lost or a submit failed; every later frame and
+ * present entry point refuses, so no caller waits on a fence whose
+ * submission never happened. */
+static bool s_device_lost;
+
+/** @brief Record device loss, log it once, and run the registered handler once.
+ *
+ * Also reached from a failed queue submit: the frame's fence then has no
+ * pending signal and the acquire semaphore no pending wait, a state no later
+ * frame can recover, so it is handled as a loss.
+ * @param where Name of the call that reported the loss. */
 static void rhi_signal_device_lost(const char *where) {
+    if (s_device_lost) return;
+    s_device_lost = true;
     RHI_LOG("FATAL: device lost on %s — requesting shutdown\n", where);
     if (s_last_gpu_zone)
         RHI_LOG("device-lost suspect: last GPU zone begun = \"%s\" "
@@ -189,6 +202,92 @@ static void rhi_signal_device_lost(const char *where) {
                     __FILE__, __LINE__);                                     \
         }                                                                    \
     } while (0)
+
+/* Resource census, printed every RHI_CENSUS_PERIOD begun frames while
+ * OPENPETE_RHI_CENSUS is set: live sampled textures with their device and
+ * host staging bytes, vkQueueWaitIdle calls, and pipeline compiles with
+ * their wall time. Counters are touched only by the display owner. */
+#define RHI_CENSUS_PERIOD 60
+static struct {
+    int      on;             /* -1 until the env is read */
+    int64_t  tex_live;       /* create_sampled_image textures not yet destroyed */
+    int64_t  tex_dev_bytes;  /* their device-local image memory */
+    int64_t  tex_host_bytes; /* their host staging (per-texture buffers and arenas) */
+    uint64_t queue_idles;    /* vkQueueWaitIdle calls */
+    uint64_t pipe_builds;    /* vkCreateGraphicsPipelines calls */
+    uint64_t pipe_ns;        /* wall time inside them */
+    uint64_t frames;         /* frames begun */
+    uint64_t idles_mark;     /* queue_idles at the previous report */
+} s_census = { .on = -1 };
+
+/** @brief Return whether the resource census is on (OPENPETE_RHI_CENSUS not starting with '0').
+ *
+ * @return 1 when on, else 0. */
+static int census_on(void)
+{
+    if (s_census.on < 0) {
+        const char *e = getenv("OPENPETE_RHI_CENSUS");
+        s_census.on = (e && *e && *e != '0');
+    }
+    return s_census.on;
+}
+
+/** @brief Count one begun frame and print the census line every RHI_CENSUS_PERIOD frames. */
+static void census_frame(void)
+{
+    s_census.frames++;
+    if (!census_on() || s_census.frames % RHI_CENSUS_PERIOD) return;
+    RHI_LOG("census: frames=%llu tex=%lld dev=%.1fMiB host=%.1fMiB "
+            "queue_idle=%llu (+%llu) pipe_builds=%llu pipe_ms=%.1f\n",
+            (unsigned long long)s_census.frames, (long long)s_census.tex_live,
+            (double)s_census.tex_dev_bytes / 1048576.0,
+            (double)s_census.tex_host_bytes / 1048576.0,
+            (unsigned long long)s_census.queue_idles,
+            (unsigned long long)(s_census.queue_idles - s_census.idles_mark),
+            (unsigned long long)s_census.pipe_builds, (double)s_census.pipe_ns / 1e6);
+    s_census.idles_mark = s_census.queue_idles;
+}
+
+/** @brief Drain the graphics queue, counted by the census.
+ *
+ * @param q Queue to drain.
+ * @return The vkQueueWaitIdle result. */
+static VkResult queue_wait_idle(VkQueue q)
+{
+    s_census.queue_idles++;
+    return vkQueueWaitIdle(q);
+}
+
+/** @brief Return whether OPENPETE_VK_FAULT schedules an injected failure for this queue submit.
+ *
+ * OPENPETE_VK_FAULT=submit:N makes the N-th fenced vkQueueSubmit of the
+ * process (a frame or present submit; N >= 1, "submit" alone means 1)
+ * return VK_ERROR_DEVICE_LOST without submitting, which exercises the
+ * submit-failure path on a working device. Unfenced one-shot submits are
+ * not counted.
+ * @return 1 for the scheduled submit, else 0. */
+static int fault_submit_due(void)
+{
+    static long long at = -1, n = 0;
+    if (at < 0) {
+        const char *e = getenv("OPENPETE_VK_FAULT");
+        at = 0;
+        if (e && !strncmp(e, "submit", 6)) at = (e[6] == ':') ? atoll(e + 7) : 1;
+        if (at > 0) RHI_LOG("fault injection: queue submit %lld fails\n", at);
+    }
+    return at > 0 && ++n == at;
+}
+
+/** @brief Route a fence wait or status result to the device-lost handler when it reports loss.
+ *
+ * @param r The vkWaitForFences or vkGetFenceStatus result.
+ * @param where Name of the wait, for the log.
+ * @return @p r unchanged. */
+static VkResult fence_result(VkResult r, const char *where)
+{
+    if (r == VK_ERROR_DEVICE_LOST) rhi_signal_device_lost(where);
+    return r;
+}
 
 /* Two-sampler sets one frame slot may take (rhi_bind_vram_depth_pair). */
 #define RHI_PAIR_SETS_MAX 32
@@ -597,6 +696,8 @@ struct rhi_texture {
      * as a combined image sampler. NULL on a plain render target. */
     VkImageView     rt_depth_sample_view;
     VkDescriptorSet depth_set;
+    bool            census;    /* counted in s_census (create_sampled_image) */
+    int64_t         census_dev_bytes, census_host_bytes;
     bool            depth_readable; /* depth image carries TRANSFER_SRC
                                      * (rhi_read_render_target_depth) */
     rhi_depth_class depth_class; /* the depth convention of its pass (SCENE default) */
@@ -1898,6 +1999,33 @@ static VkCommandBuffer one_shot_begin(rhi_device *dev)
     return cb;
 }
 
+/** @brief Submit one batch to the graphics queue; a failure is handled as device loss.
+ *
+ * Any failed result (an injected one included) is logged with @p where and
+ * routed to rhi_signal_device_lost.
+ * @param dev Device whose graphics queue receives the batch.
+ * @param si The batch.
+ * @param fence Fence the batch signals, or VK_NULL_HANDLE.
+ * @param where Name of the submitting call, for the log.
+ * @return true when the batch was submitted. */
+static bool queue_submit(rhi_device *dev, const VkSubmitInfo *si, VkFence fence,
+                         const char *where)
+{
+    const VkResult r = (fence != VK_NULL_HANDLE && fault_submit_due())
+                           ? VK_ERROR_DEVICE_LOST
+                           : vkQueueSubmit(dev->gfx_queue, 1, si, fence);
+    if (r == VK_SUCCESS) return true;
+    RHI_LOG("vkQueueSubmit (%s) failed: VkResult=%d\n", where, (int)r);
+    rhi_signal_device_lost(where);
+    return false;
+}
+
+/** @brief End, submit and drain a one-shot command buffer, then free it.
+ *
+ * Blocks in vkQueueWaitIdle; a failed submit or a lost device during the
+ * drain reaches the device-lost handler.
+ * @param dev Device whose graphics queue runs the buffer.
+ * @param cb Command buffer from one_shot_begin. */
 static void one_shot_end(rhi_device *dev, VkCommandBuffer cb)
 {
     vkEndCommandBuffer(cb);
@@ -1905,8 +2033,8 @@ static void one_shot_end(rhi_device *dev, VkCommandBuffer cb)
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
         .commandBufferCount = 1, .pCommandBuffers = &cb,
     };
-    VK_CHECK(vkQueueSubmit(dev->gfx_queue, 1, &si, VK_NULL_HANDLE));
-    vkQueueWaitIdle(dev->gfx_queue);
+    if (queue_submit(dev, &si, VK_NULL_HANDLE, "one-shot"))
+        fence_result(queue_wait_idle(dev->gfx_queue), "one-shot wait");
     vkFreeCommandBuffers(dev->device, dev->pool, 1, &cb);
 }
 
@@ -2496,10 +2624,12 @@ static int acquire_image(rhi_device *dev, VkSemaphore sem, VkFence *owner_fence)
              * it. In practice it is almost always already signalled once the
              * poll above has passed, so the bound is a backstop. */
             Uint64 iif_t0 = SDL_GetTicksNS();
-            VkResult iw = vkWaitForFences(dev->device, 1, &dev->images_in_flight[dev->image_index],
-                                          VK_TRUE, dev->headless ? UINT64_MAX
-                                                 : dev->present_blocking ? RHI_BLOCKING_FENCE_TIMEOUT_NS
-                                                 : RHI_IMAGE_FENCE_TIMEOUT_NS);
+            VkResult iw = fence_result(
+                vkWaitForFences(dev->device, 1, &dev->images_in_flight[dev->image_index],
+                                VK_TRUE, dev->headless ? UINT64_MAX
+                                       : dev->present_blocking ? RHI_BLOCKING_FENCE_TIMEOUT_NS
+                                       : RHI_IMAGE_FENCE_TIMEOUT_NS),
+                "image fence wait");
             rhi_note_stall_phase("image-fence", RHI_BLOCK_IMAGE_FENCE, iif_t0);
             if (iw != VK_SUCCESS) {
                 /* The image is still owned by a frame in flight and the
@@ -2597,9 +2727,20 @@ static void retired_reclaim(rhi_device *dev, bool all)
     }
 }
 
+/** @brief Begin recording a frame: retire the slot's previous submission, optionally acquire a swapchain image, reset and begin the command buffer.
+ *
+ * Headless waits the slot fence without bound; the present thread waits it
+ * up to RHI_BLOCKING_FENCE_TIMEOUT_NS; the inline presenter polls it and
+ * sheds the present when it has not retired. A fence result of
+ * VK_ERROR_DEVICE_LOST reaches the device-lost handler, and after a loss
+ * every call refuses.
+ * @param dev Device to begin the frame on.
+ * @param acquire Whether to acquire a swapchain image (windowed only).
+ * @return true when a command buffer is recording. */
 static bool begin_frame_impl(rhi_device *dev, bool acquire)
 {
     seam_check("begin_frame");
+    if (s_device_lost) return false;
     if (!ensure_swapchain(dev)) return false;
 
     {
@@ -2627,8 +2768,9 @@ static bool begin_frame_impl(rhi_device *dev, bool acquire)
          * or by stalling the game. */
         Uint64 t0 = SDL_GetTicksNS();
         if (dev->headless) {
-            vkWaitForFences(dev->device, 1, &dev->in_flight[dev->frame],
-                            VK_TRUE, UINT64_MAX);
+            if (fence_result(vkWaitForFences(dev->device, 1, &dev->in_flight[dev->frame],
+                                             VK_TRUE, UINT64_MAX), "fence wait") != VK_SUCCESS)
+                return false;
         } else if (dev->present_blocking) {
             /* A dedicated present thread is paced by the display by design:
              * waiting here costs the sim nothing. Bounded so a dead
@@ -2637,15 +2779,16 @@ static bool begin_frame_impl(rhi_device *dev, bool acquire)
              * a command buffer the GPU is still executing, which is a
              * device loss a few submits later (seen on a 60 Hz display after
              * a fullscreen toggle, where a rebuild pushed one wait past it). */
-            VkResult fw = vkWaitForFences(dev->device, 1, &dev->in_flight[dev->frame],
-                                          VK_TRUE, RHI_BLOCKING_FENCE_TIMEOUT_NS);
+            VkResult fw = fence_result(vkWaitForFences(dev->device, 1, &dev->in_flight[dev->frame],
+                                                       VK_TRUE, RHI_BLOCKING_FENCE_TIMEOUT_NS),
+                                       "fence wait");
             if (fw != VK_SUCCESS) {
                 dev->fence_sheds++;
                 rhi_note_stall_phase("fence-wait", RHI_BLOCK_FENCE, t0);
                 return false;
             }
-        } else if (vkGetFenceStatus(dev->device,
-                                    dev->in_flight[dev->frame]) != VK_SUCCESS) {
+        } else if (fence_result(vkGetFenceStatus(dev->device, dev->in_flight[dev->frame]),
+                                "fence poll") != VK_SUCCESS) {
             dev->fence_sheds++;
             rhi_note_stall_phase("fence-poll", RHI_BLOCK_FENCE, t0);
             return false;
@@ -2697,6 +2840,7 @@ static bool begin_frame_impl(rhi_device *dev, bool acquire)
      * still-executing submission reads. Every counted begin is followed by
      * its submit, so slot alternation is exact and the promise holds. */
     s_frame_serial++;
+    census_frame();
     retired_reclaim(dev, false);
     dev->pair_used[dev->frame] = 0;   /* the slot's pair sets have retired */
     dev->frame_active = true;
@@ -2889,7 +3033,7 @@ void rhi_end_frame(rhi_device *dev)
             .commandBufferCount = 1,
             .pCommandBuffers = &cb,
         };
-        VK_CHECK(vkQueueSubmit(dev->gfx_queue, 1, &si, dev->in_flight[dev->frame]));
+        queue_submit(dev, &si, dev->in_flight[dev->frame], "headless frame");
         dev->frame = (dev->frame + 1) % RHI_FRAMES_IN_FLIGHT;
         dev->frame_active = false;
         return;
@@ -2906,7 +3050,11 @@ void rhi_end_frame(rhi_device *dev)
         .signalSemaphoreCount = 1,
         .pSignalSemaphores = &dev->render_done[dev->image_index],
     };
-    VK_CHECK(vkQueueSubmit(dev->gfx_queue, 1, &si, dev->in_flight[dev->frame]));
+    if (!queue_submit(dev, &si, dev->in_flight[dev->frame], "frame")) {
+        dev->frame = (dev->frame + 1) % RHI_FRAMES_IN_FLIGHT;
+        dev->frame_active = false;
+        return;
+    }
 
     /* Ids start at 1 and must strictly increase per swapchain; a rebuild
      * restarts the sequence, which rhi_present_wait handles by refusing to
@@ -3000,7 +3148,7 @@ void rhi_end_frame_to_stage(rhi_device *dev, int stage)
         .commandBufferCount = 1,
         .pCommandBuffers = &cb,
     };
-    VK_CHECK(vkQueueSubmit(dev->gfx_queue, 1, &si, dev->in_flight[dev->frame]));
+    queue_submit(dev, &si, dev->in_flight[dev->frame], "stage frame");
     dev->frame = (dev->frame + 1) % RHI_FRAMES_IN_FLIGHT;
     dev->frame_active = false;
 }
@@ -3008,7 +3156,7 @@ void rhi_end_frame_to_stage(rhi_device *dev, int stage)
 bool rhi_present_stage_acquire(rhi_device *dev)
 {
     seam_check("present_stage_acquire");
-    if (dev->headless || dev->frame_active) return false;
+    if (dev->headless || dev->frame_active || s_device_lost) return false;
     if (dev->pacquired) return true;
     if (!ensure_swapchain(dev)) return false;
     const uint32_t p = dev->pslot;
@@ -3016,7 +3164,8 @@ bool rhi_present_stage_acquire(rhi_device *dev)
      * command buffer is re-recorded. A dedicated presenter blocks here by
      * design; the bound is honoured (a stale re-record is a device loss). */
     Uint64 t0 = SDL_GetTicksNS();
-    VkResult fw = vkWaitForFences(dev->device, 1, &dev->pfence[p], VK_TRUE, RHI_BLOCKING_FENCE_TIMEOUT_NS);
+    VkResult fw = fence_result(vkWaitForFences(dev->device, 1, &dev->pfence[p], VK_TRUE,
+                                               RHI_BLOCKING_FENCE_TIMEOUT_NS), "stage fence wait");
     if (fw != VK_SUCCESS) { dev->fence_sheds++; rhi_note_stall_phase("stage-fence", RHI_BLOCK_FENCE, t0); return false; }
     rhi_note_stall_phase("stage-fence", RHI_BLOCK_FENCE, t0);
     if (!acquire_image(dev, dev->pimg_avail[p], &dev->pfence[p])) return false;
@@ -3030,7 +3179,7 @@ bool rhi_present_stage_acquire(rhi_device *dev)
 bool rhi_present_stage_submit(rhi_device *dev, int stage)
 {
     seam_check("present_stage_submit");
-    if (dev->headless || dev->frame_active) return false;
+    if (dev->headless || dev->frame_active || s_device_lost) return false;
     if (stage < 0 || stage >= RHI_STAGE_RING) return false;
     if (!dev->pacquired) { if (!rhi_present_stage_acquire(dev)) return false; }
     /* The acquire belongs to the swapchain it was made on: a rebuild in
@@ -3078,8 +3227,8 @@ bool rhi_present_stage_submit(rhi_device *dev, int stage)
         .signalSemaphoreCount = 1,
         .pSignalSemaphores = &dev->render_done[dev->image_index],
     };
-    VK_CHECK(vkQueueSubmit(dev->gfx_queue, 1, &si, dev->pfence[p]));
     dev->pslot = (p + 1) % RHI_STAGE_RING;
+    if (!queue_submit(dev, &si, dev->pfence[p], "present step")) return false;
 
     const uint64_t this_id = dev->present_id_next;
     VkPresentIdKHR pid = {
@@ -3134,6 +3283,7 @@ bool rhi_present_stage_release(rhi_device *dev)
     seam_check("present_stage_release");
     if (!dev || dev->headless || !dev->pacquired) return true;
     dev->pacquired = false;
+    if (s_device_lost) return false;
     if (dev->pacquired_gen != dev->stage_gen) return true;  /* rebuilt: acquire died with the swapchain */
     const uint32_t p = dev->pslot;
     dev->image_index = dev->pacquired_index;
@@ -3161,8 +3311,8 @@ bool rhi_present_stage_release(rhi_device *dev)
         .signalSemaphoreCount = 1,
         .pSignalSemaphores = &dev->render_done[dev->image_index],
     };
-    VK_CHECK(vkQueueSubmit(dev->gfx_queue, 1, &si, dev->pfence[p]));
     dev->pslot = (p + 1) % RHI_STAGE_RING;
+    if (!queue_submit(dev, &si, dev->pfence[p], "stage release")) return false;
     VkPresentInfoKHR pi = {
         .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
         .waitSemaphoreCount = 1,
@@ -3674,6 +3824,10 @@ static rhi_texture *create_sampled_image(rhi_device *dev, uint32_t width,
         RHI_LOG("vram vkAllocateMemory failed\n"); goto fail;
     }
     vkBindImageMemory(dev->device, t->image, t->mem, 0);
+    t->census_dev_bytes = (int64_t)mr.size;
+    t->census = true;
+    s_census.tex_live++;
+    s_census.tex_dev_bytes += (int64_t)mr.size;
 
     VkImageViewCreateInfo vci = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -3693,6 +3847,8 @@ static rhi_texture *create_sampled_image(rhi_device *dev, uint32_t width,
                                     VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                                     /*prefer_cached=*/false);
     if (!t->staging) { RHI_LOG("staging alloc failed\n"); goto fail; }
+    t->census_host_bytes += (int64_t)width * height * bpp;
+    s_census.tex_host_bytes += (int64_t)width * height * bpp;
 
     /* Allocate + point a descriptor set at (this view, the shared sampler). */
     VkDescriptorSetAllocateInfo dsi = {
@@ -4122,6 +4278,7 @@ static bool stage_acquire(rhi_device *dev, rhi_texture *tex, size_t need,
     n->buf = create_host_buffer(dev, cap, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, /*prefer_cached=*/false);
     if (!n->buf || !n->buf->mapped) { if (n->buf) rhi_destroy_buffer(dev, n->buf); free(n); return false; }
     n->cap = cap; n->used = need;
+    if (tex->census) { tex->census_host_bytes += (int64_t)cap; s_census.tex_host_bytes += (int64_t)cap; }
     if (last) last->next = n; else tex->stage_arena[slot] = n;
     *out_buf = n->buf->buffer; *out_map = (uint8_t *)n->buf->mapped; *out_off = 0;
     return true;
@@ -4741,6 +4898,11 @@ bool rhi_read_render_target_depth(rhi_device *dev, rhi_texture *rt, float *out,
 void rhi_destroy_texture(rhi_device *dev, rhi_texture *tex)
 {
     if (!tex) return;
+    if (tex->census) {
+        s_census.tex_live--;
+        s_census.tex_dev_bytes -= tex->census_dev_bytes;
+        s_census.tex_host_bytes -= tex->census_host_bytes;
+    }
     if (tex->set)       vkFreeDescriptorSets(dev->device, dev->desc_pool, 1, &tex->set);
     if (tex->depth_set) vkFreeDescriptorSets(dev->device, dev->desc_pool, 1, &tex->depth_set);
     if (tex->rt_depth_sample_view) vkDestroyImageView(dev->device, tex->rt_depth_sample_view, NULL);
@@ -5417,7 +5579,10 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
         .subpass = 0,
     };
     VkPipeline pipeline = VK_NULL_HANDLE;
+    const Uint64 pipe_t0 = SDL_GetTicksNS();
     VkResult r = vkCreateGraphicsPipelines(dev->device, VK_NULL_HANDLE, 1, &gp, NULL, &pipeline);
+    s_census.pipe_builds++;
+    s_census.pipe_ns += SDL_GetTicksNS() - pipe_t0;
     vkDestroyShaderModule(dev->device, vs, NULL);
     vkDestroyShaderModule(dev->device, fs, NULL);
     if (r != VK_SUCCESS) {

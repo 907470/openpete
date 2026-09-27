@@ -1189,6 +1189,11 @@ static const knob_desc_t g_builtin[] = {
         "and errors as 'validation:' lines. Needs the Vulkan SDK (the layer "
         "is not part of a driver install); costs CPU time on every Vulkan "
         "call. Read at instance creation."),
+    ENVROW_LATCHED("VK_FAULT", "Debug", "",
+        "submit:N = the N-th fenced Vulkan queue submit (a frame or present "
+        "submit) returns device-lost without submitting, which drives the "
+        "device-lost shutdown on a working device. Read at the first "
+        "submit."),
     ENVROW_LATCHED("GPU_TIMERS", "Debug", "0",
         "Per-pass GPU timestamp zones (query pools created at device init)."),
     ENVROW_LIVE("PHASE_TIMERS", "Debug", "0",

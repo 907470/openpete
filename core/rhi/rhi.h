@@ -260,9 +260,22 @@ void rhi_end_frame(rhi_device *dev);
 bool     rhi_begin_frame_staged(rhi_device *dev);   /* rhi_begin_frame without the acquire */
 int      rhi_stage_count(void);
 uint32_t rhi_stage_gen(const rhi_device *dev);
+/** @brief End a staged frame: blit the offscreen target into a stage image and submit, acquiring nothing.
+ *
+ * Headless, or with an out-of-range or absent stage image, ends the frame
+ * with rhi_end_frame instead. A failed submit reaches the device-lost
+ * handler.
+ * @param dev Device whose current frame is ended.
+ * @param stage Stage image index, 0..rhi_stage_count()-1. */
 void     rhi_end_frame_to_stage(rhi_device *dev, int stage);
 bool     rhi_present_stage(rhi_device *dev, int stage);
-bool     rhi_present_stage_release(rhi_device *dev);   /* give back a held acquire: present its stale contents */
+/** @brief Give back a held acquire by presenting the image's previous contents unchanged.
+ *
+ * @param dev Device whose display the calling thread owns.
+ * @return false when the submit fails, the device is lost, or the present
+ *         reports device loss; true otherwise, including when nothing was
+ *         held or the swapchain was rebuilt since the acquire. */
+bool     rhi_present_stage_release(rhi_device *dev);
 /** @brief Make the calling thread the display owner.
  *
  * The runtime half of the display-seam fence: the thread that will present
@@ -290,6 +303,15 @@ unsigned rhi_seam_violations(void);
  *         frame, when the swapchain cannot be rebuilt, or when the fence
  *         wait or the acquire fails. */
 bool     rhi_present_stage_acquire(rhi_device *dev);
+/** @brief Blit a stage image onto the held swapchain image and present it.
+ *
+ * Acquires first when no image is held. A failed submit or a device-lost
+ * present reaches the device-lost handler.
+ * @param dev Device whose display the calling thread owns.
+ * @param stage Stage image index, 0..rhi_stage_count()-1.
+ * @return true when the present was queued; false headless, inside an
+ *         active frame, after a device loss, for a stage that was never
+ *         filled or was rebuilt, or when the acquire, submit or present fails. */
 bool     rhi_present_stage_submit(rhi_device *dev, int stage);
 
 /* Tell the device the window size changed; the swapchain + offscreen
@@ -1438,6 +1460,12 @@ bool rhi_read_render_target_depth(rhi_device *dev, rhi_texture *rt, float *out,
 void rhi_snapshot_offscreen_to_rt(rhi_device *dev, rhi_texture *dst,
                                   int sx, int sy, int sw, int sh);
 
+/** @brief Destroy a texture and every Vulkan object and staging buffer it owns, immediately.
+ *
+ * The caller guarantees no submitted or recording command buffer still
+ * references it. NULL is ignored.
+ * @param dev Device the texture was created on.
+ * @param tex Texture to destroy. */
 void rhi_destroy_texture(rhi_device *dev, rhi_texture *tex);
 
 /** @brief Write the pixel extent a texture was created with.

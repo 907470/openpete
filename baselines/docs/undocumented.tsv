@@ -845,7 +845,6 @@ core/rhi/rhi_gpu_audit.c	on_guest_thread	none
 core/rhi/rhi_gpu_audit.c	op_gpu_audit_bind_thread	none	
 core/rhi/rhi_gpu_audit.c	op_gpu_audit_map_bytes	none	
 core/rhi/rhi_gpu_audit.c	op_gpu_audit_map_writes	none	
-core/rhi/rhi_vulkan.c	begin_frame_impl	none	
 core/rhi/rhi_vulkan.c	choose_extent	none	
 core/rhi/rhi_vulkan.c	create_offscreen	none	
 core/rhi/rhi_vulkan.c	create_render_target_impl	none	
@@ -859,7 +858,6 @@ core/rhi/rhi_vulkan.c	find_memtype	none
 core/rhi/rhi_vulkan.c	image_barrier	none	
 core/rhi/rhi_vulkan.c	layer_available	none	
 core/rhi/rhi_vulkan.c	load_shader_module	none	
-core/rhi/rhi_vulkan.c	one_shot_end	none	
 core/rhi/rhi_vulkan.c	pick_physical_and_device	none	
 core/rhi/rhi_vulkan.c	pipeline_polygon_mode	none	
 core/rhi/rhi_vulkan.c	recreate	none	
@@ -873,11 +871,9 @@ core/rhi/rhi_vulkan.c	rhi_depth_report	none
 core/rhi/rhi_vulkan.c	rhi_destroy	none	
 core/rhi/rhi_vulkan.c	rhi_destroy_buffer	none	
 core/rhi/rhi_vulkan.c	rhi_destroy_pipeline	none	
-core/rhi/rhi_vulkan.c	rhi_destroy_texture	none	
 core/rhi/rhi_vulkan.c	rhi_destroy_ubo	none	
 core/rhi/rhi_vulkan.c	rhi_drain_readback	none	
 core/rhi/rhi_vulkan.c	rhi_draw	none	
-core/rhi/rhi_vulkan.c	rhi_end_frame_to_stage	none	
 core/rhi/rhi_vulkan.c	rhi_end_offscreen	none	
 core/rhi/rhi_vulkan.c	rhi_end_render_target	none	
 core/rhi/rhi_vulkan.c	rhi_gpu_frame_token	none	
@@ -891,14 +887,11 @@ core/rhi/rhi_vulkan.c	rhi_notify_resize	none
 core/rhi/rhi_vulkan.c	rhi_offscreen_resume_attachment	none	
 core/rhi/rhi_vulkan.c	rhi_offscreen_resume_blit_src	none	
 core/rhi/rhi_vulkan.c	rhi_present_stage	none	
-core/rhi/rhi_vulkan.c	rhi_present_stage_release	none	
-core/rhi/rhi_vulkan.c	rhi_present_stage_submit	none	
 core/rhi/rhi_vulkan.c	rhi_present_wait	none	
 core/rhi/rhi_vulkan.c	rhi_reset_scissor	none	
 core/rhi/rhi_vulkan.c	rhi_ring_gen_overflows	none	
 core/rhi/rhi_vulkan.c	rhi_seam_violations	none	
 core/rhi/rhi_vulkan.c	rhi_set_slot_contest	none	
-core/rhi/rhi_vulkan.c	rhi_signal_device_lost	none	
 core/rhi/rhi_vulkan.c	rhi_stage_count	none	
 core/rhi/rhi_vulkan.c	rhi_stage_gen	none	
 core/rhi/rhi_vulkan.c	rhi_take_block_times	none	
