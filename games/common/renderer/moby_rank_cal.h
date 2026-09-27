@@ -11,8 +11,10 @@
 extern "C" {
 #endif
 
-/* OPENPETE_MOBY_RANK_CAL: 1 prints one summary line per feed pass, 2 also one
- * line per disagreeing pair. Boot-latched. */
+/** @brief The calibration instrument's level, from OPENPETE_MOBY_RANK_CAL (boot-latched).
+ *
+ * @return 0 off; 1 prints one summary line per feed pass; 2 also prints one
+ *         line per disagreeing pair. */
 int moby_rank_cal_on(void);
 
 /* One feed pass's walk triangles, in walk order (a moby's triangles are
@@ -35,12 +37,16 @@ typedef struct {
     const char* pass;
 } moby_rank_cal_in_t;
 
-/* Walks the world ordering table's bucket array as the game's linker will
+/** @brief Compares one feed pass's native same-moby paint rank against the game's ordering table for the same pose.
+ *
+ * Walks the world ordering table's bucket array as the game's linker will
  * (game_layout.moby.cal_world_ot), gives every ranked native prim whose
  * integer screen points are exactly the vertices of one game prim that prim's
  * paint position, and compares the native order with it over same-moby pairs
  * of such triangles: the intersecting pairs, the pairs of two contested
- * triangles, and all pairs. */
+ * triangles, and all pairs. Prints one `[rank-cal]` line to stderr, and a
+ * `[rank-cal-dis]` line per disagreeing pair at level 2.
+ * @param in The feed pass's walk triangles. */
 void moby_rank_cal_run(const moby_rank_cal_in_t* in);
 
 #ifdef __cplusplus

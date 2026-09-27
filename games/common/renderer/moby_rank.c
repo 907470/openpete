@@ -226,7 +226,16 @@ static void otk_prim(otk_prim_t* p, const moby_otk_face_t* f, int quad, int v3, 
     p->back = back;
 }
 
-/* The front prims both dual tests pick: 1 and the prim, or 0 when neither. */
+/** @brief The front prim of a quad under the dual NCLIP test.
+ *
+ * A negative first NCLIP keeps (v0,v1,v2), widened to the whole quad when the
+ * second NCLIP is positive; otherwise a positive second NCLIP keeps
+ * (v3,v1,v2).
+ * @param f The face.
+ * @param n1 The NCLIP of (v0,v1,v2).
+ * @param n2 The NCLIP of (v3,v1,v2).
+ * @param p Receives the prim, as a front face.
+ * @return 1 when a prim was chosen, 0 when neither test keeps one. */
 static int otk_dual_front(const moby_otk_face_t* f, long n1, long n2, otk_prim_t* p)
 {
     if (n1 < 0) { otk_prim(p, f, n2 > 0, 0, 0); return 1; }

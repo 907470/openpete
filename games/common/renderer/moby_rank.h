@@ -20,7 +20,10 @@
 extern "C" {
 #endif
 
-/* Master gate (OPENPETE_MOBY_RANK, default off; boot-latched). */
+/** @brief Whether the same-moby paint rank is on (OPENPETE_MOBY_RANK, default off; boot-latched).
+ *
+ * @return 1 when OPENPETE_MOBY_RANK is set to a value other than 0; unset or 0,
+ *         the faces of one moby order by true depth alone. */
 int  openpete_mobyrank_on(void);
 
 /* ---- the game's paint key, evaluated natively ------------------------------
@@ -53,10 +56,14 @@ typedef struct moby_otk_rec {
     int32_t trz;
 } moby_otk_rec_t;
 
-/* Fills `out` for one record of `row`. `a` is the record's animation-header
- * byte the row scales its base and shift by (0 on a row that reads none);
- * `trz` the GTE TRZ the draw loaded. MOBY_OTK_NONE yields a record whose
- * faces all return -1. */
+/** @brief Fills one record's key parameters for a row of the paint-key table.
+ *
+ * An out-of-range row and MOBY_OTK_NONE yield a MOBY_OTK_NONE record, whose
+ * faces all return -1 from moby_otk_face_bucket.
+ * @param row The record's row.
+ * @param a The record's animation-header byte the row scales its base and shift by (0 on a row that reads none).
+ * @param trz The GTE TRZ the draw loaded.
+ * @param out Receives the row, the depth base, the bucket shift and `trz`. */
 void moby_otk_record(moby_otk_row_t row, int a, int trz, moby_otk_rec_t* out);
 
 /* One vertex as the draw's RTPS leaves it: SZ3 and SXY2. */
@@ -82,7 +89,12 @@ typedef struct moby_otk_vert {
 void moby_otk_rtps(const int tr[3], const int M[3][3], double vx, double vy, double vz,
                    double ofx, double ofy, int H, moby_otk_vert_t* out);
 
-/* NCLIP of three RTPS outputs. */
+/** @brief The GTE NCLIP of three RTPS outputs: twice the signed screen area of (a, b, c).
+ *
+ * @param a The first vertex.
+ * @param b The second vertex.
+ * @param c The third vertex.
+ * @return The cross product of the screen edges, positive for one winding and negative for the other. */
 long moby_otk_nclip(const moby_otk_vert_t* a, const moby_otk_vert_t* b,
                     const moby_otk_vert_t* c);
 
@@ -100,10 +112,17 @@ typedef struct moby_otk_face {
     int8_t  back_adds;
 } moby_otk_face_t;
 
-/* The bucket word of the prim the draw makes of face `f` in record `r`: its
- * local bucket, with MOBY_OTK_QUAD set when that prim is the whole quad and
- * MOBY_OTK_V3 when it is the triangle (v3,v1,v2); -1 when the draw culls the
- * face or drops the prim from its table. */
+/** @brief The bucket word of the prim the draw makes of one face of a record.
+ *
+ * The row's NCLIP rule picks the prim (the triangle (v0,v1,v2), the triangle
+ * (v3,v1,v2) or the whole quad) and whether it is a back face; the row's key
+ * arithmetic turns its vertices' SZ3 into a local bucket.
+ * @param r The record's key parameters.
+ * @param f The face.
+ * @return The local bucket, with MOBY_OTK_QUAD set when the prim is the whole
+ *         quad and MOBY_OTK_V3 when it is the triangle (v3,v1,v2); -1 when the
+ *         draw culls the face or drops the prim from its table, or the record's
+ *         row is MOBY_OTK_NONE. */
 int moby_otk_face_bucket(const moby_otk_rec_t* r, const moby_otk_face_t* f);
 
 /* A walk triangle's bucket word: its face's bucket word, with MOBY_OTK_Q2 set
@@ -121,8 +140,12 @@ int moby_otk_face_bucket(const moby_otk_rec_t* r, const moby_otk_face_t* f);
  * quad's second half (v1,v3,v2). */
 typedef enum { MOBY_OTK_TRI_A, MOBY_OTK_TRI_V3, MOBY_OTK_TRI_QUAD_B } moby_otk_tri_t;
 
-/* The bucket word of the emitted triangle `tri` of a face whose bucket word is
- * `otk`: MOBY_OTK_FOREIGN added when the key's prim does not contain it. */
+/** @brief The bucket word of one emitted triangle of a face, marked foreign when the key's prim does not contain it.
+ *
+ * A negative word and a whole-quad word pass unchanged.
+ * @param otk The face's bucket word.
+ * @param tri Which of the face's triangles.
+ * @return `otk`, with MOBY_OTK_FOREIGN added when the prim the key chose does not contain `tri`. */
 static inline int32_t moby_otk_tri(int32_t otk, moby_otk_tri_t tri)
 {
     if (otk < 0 || (otk & MOBY_OTK_QUAD)) return otk;
@@ -131,8 +154,11 @@ static inline int32_t moby_otk_tri(int32_t otk, moby_otk_tri_t tri)
     return in ? otk : (otk | MOBY_OTK_FOREIGN);
 }
 
-/* The bucket word of a prim's second emitted triangle, given whether its
- * first triangle was emitted. */
+/** @brief The bucket word of a prim's second emitted triangle, given whether its first triangle was emitted.
+ *
+ * @param otk The prim's bucket word.
+ * @param first_emitted 1 when the prim's first triangle was emitted.
+ * @return `otk` with MOBY_OTK_Q2 set when it is non-negative and the first triangle was emitted, else `otk`. */
 static inline int32_t moby_otk_second(int32_t otk, int first_emitted)
 {
     return (otk >= 0 && first_emitted) ? (otk | MOBY_OTK_Q2) : otk;

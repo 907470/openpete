@@ -49,9 +49,16 @@ typedef struct {
     int16_t x[CAL_OT_MAX][4], y[CAL_OT_MAX][4];
 } cal_ot_t;
 
-/* A polygon prim's vertex XY words: code 0x20-0x3F, bit 3 quad, bit 2
- * textured (a UV word follows each XY), bit 4 gouraud (a colour word precedes
- * each XY after the first); word 0 holds the first colour and the code. */
+/** @brief Appends one polygon prim's vertex XY words to the table.
+ *
+ * Code 0x20-0x3F, bit 3 quad, bit 2 textured (a UV word follows each XY), bit
+ * 4 gouraud (a colour word precedes each XY after the first); word 0 holds the
+ * first colour and the code. A full table or a payload shorter than the code's
+ * vertex words is skipped.
+ * @param T The table.
+ * @param payload The prim's words after the tag.
+ * @param bytes The payload's length in bytes.
+ * @param wb The world bucket the prim sits in. */
 static void cal_ot_append(cal_ot_t* T, const uint8_t* payload, unsigned bytes, int wb)
 {
     int code = payload[3];
@@ -69,8 +76,14 @@ static void cal_ot_append(cal_ot_t* T, const uint8_t* payload, unsigned bytes, i
     }
 }
 
-/* One bucket's sub-chain, start node to end node. Returns 0 on an unmapped
- * node or the node bound. */
+/** @brief Walks one bucket's sub-chain from its start node to its end node, appending its polygon prims.
+ *
+ * @param T The table.
+ * @param start The bucket's start node.
+ * @param endn The bucket's end node.
+ * @param nodes The node count across the whole walk, advanced per node against CAL_NODES_MAX.
+ * @param wb The bucket's index.
+ * @return 1 when the end node was reached, 0 on an unmapped node or the node bound. */
 static int cal_walk_bucket(cal_ot_t* T, uint32_t start, uint32_t endn, int* nodes, int wb)
 {
     for (uint32_t addr = start; addr && (*nodes)++ < CAL_NODES_MAX; ) {
@@ -87,8 +100,12 @@ static int cal_walk_bucket(cal_ot_t* T, uint32_t start, uint32_t endn, int* node
     return *nodes < CAL_NODES_MAX;
 }
 
-/* -1 when the table is not located or not mapped, else the prim count (0
- * when the linker has already consumed the array). */
+/** @brief Walks the world ordering table's buckets from the top index down into the table.
+ *
+ * Stops at the first bucket whose walk fails.
+ * @param T Receives the prims in paint order.
+ * @return -1 when the table is not located or not mapped, else the prim count
+ *         (0 when the linker has already consumed the array). */
 static int cal_walk_ot(cal_ot_t* T)
 {
     T->n = 0;
@@ -140,8 +157,14 @@ static int cal_prim_has(const cal_ot_t* T, int p, int x, int y)
     return 0;
 }
 
-/* Paint position + 1 of the one prim with `nv` vertices whose vertices are
- * exactly the `n` distinct points `pt`; 0 for none, -1 for more than one. */
+/** @brief Finds the one game prim with `nv` vertices that contains every one of `n` distinct points.
+ *
+ * Candidates come from the hash chain of the first point (cal_index).
+ * @param T The table.
+ * @param pt The points.
+ * @param n The point count.
+ * @param nv The vertex count the prim must have.
+ * @return The prim's paint position + 1; 0 for none, -1 for more than one. */
 static int cal_find(const cal_ot_t* T, const int16_t (*pt)[2], int n, int nv)
 {
     int found = 0, last = -1;
@@ -155,8 +178,13 @@ static int cal_find(const cal_ot_t* T, const int16_t (*pt)[2], int n, int nv)
     return found;
 }
 
-/* The distinct integer points of the walk triangles [i0, i1) (the triangles
- * of one prim); returns their count, 0 past four. */
+/** @brief Collects the distinct integer points of the walk triangles [i0, i1), the triangles of one prim.
+ *
+ * @param in The feed pass.
+ * @param i0 The first triangle.
+ * @param i1 One past the last triangle.
+ * @param pt Receives the points.
+ * @return The point count, or 0 past four. */
 static int cal_points(const moby_rank_cal_in_t* in, int i0, int i1, int16_t pt[4][2])
 {
     int n = 0;
@@ -178,8 +206,15 @@ typedef struct { long cmp, agree; } cal_tally;
 
 static int s_pos[1 << 15];   /* per walk triangle: cal_find, 0 when unranked */
 
-/* 1 and the verdict when both triangles carry a paint position and a rank and
- * the pair is ordered by both; 0 when the pair is not compared. */
+/** @brief Compares one triangle pair's paint positions against its native ranks.
+ *
+ * The pair is compared when both triangles carry a paint position, and both
+ * the positions and the ranks differ.
+ * @param in The feed pass.
+ * @param a The first triangle.
+ * @param b The second triangle.
+ * @param agree Receives 1 when the two orders agree, 0 when they disagree.
+ * @return 1 when the pair was compared, 0 otherwise. */
 static int cal_pair(const moby_rank_cal_in_t* in, int a, int b, int* agree)
 {
     int pa = s_pos[a], pb = s_pos[b], ra = in->rank[a], rb = in->rank[b];
@@ -190,7 +225,10 @@ static int cal_pair(const moby_rank_cal_in_t* in, int a, int b, int* agree)
 
 static const cal_ot_t* s_T;   /* the table of the current run */
 
-/* One triangle of a disagreeing pair: its integer points and its prim's. */
+/** @brief Prints one triangle of a disagreeing pair to stderr: its key fields, its integer points and its prim's.
+ *
+ * @param in The feed pass.
+ * @param f The triangle, which carries a paint position. */
 static void cal_print_face(const moby_rank_cal_in_t* in, int f)
 {
     const int16_t* q = in->isxy[f];
@@ -217,7 +255,13 @@ static void cal_tally_pair(const moby_rank_cal_in_t* in, int a, int b, cal_tally
     fputc('\n', stderr);
 }
 
-/* Same-moby pairs of the faces [i0, i1): contested pairs and all pairs. */
+/** @brief Tallies the same-moby pairs of the triangles [i0, i1): contested pairs and all pairs.
+ *
+ * @param in The feed pass.
+ * @param i0 The moby's first triangle.
+ * @param i1 One past its last triangle.
+ * @param cont Tallies the pairs whose triangles are both contested.
+ * @param all Tallies every compared pair. */
 static void cal_moby_pairs(const moby_rank_cal_in_t* in, int i0, int i1, cal_tally* cont,
                            cal_tally* all)
 {
@@ -234,9 +278,16 @@ static void cal_moby_pairs(const moby_rank_cal_in_t* in, int i0, int i1, cal_tal
 
 typedef struct { long ranked, exact, ambig; } cal_ident;
 
-/* The end of the native prim starting at walk triangle i0: its triangles are
- * consecutive, of one moby, with one rank. `on` is whether the prim is
- * identified at all. */
+/** @brief The end of the native prim that starts at walk triangle i0.
+ *
+ * A prim's triangles are consecutive, eligible, of one moby, with one rank. A
+ * prim is identified only when its first triangle is eligible, ranked and not
+ * foreign to the key's prim; an unidentified one is one triangle long.
+ * @param in The feed pass.
+ * @param i0 The prim's first triangle.
+ * @param n The triangle count.
+ * @param on Receives whether the prim is identified.
+ * @return One past the prim's last triangle. */
 static int cal_prim_end(const moby_rank_cal_in_t* in, int i0, int n, int* on)
 {
     *on = in->eligible[i0] && in->rank[i0] > 0 && !(in->otk[i0] & MOBY_OTK_FOREIGN);
@@ -246,7 +297,14 @@ static int cal_prim_end(const moby_rank_cal_in_t* in, int i0, int n, int* on)
     return i1;
 }
 
-/* Paint position (cal_find) of the native prim [i0, i1) in the table T. */
+/** @brief The paint position (cal_find) of the native prim [i0, i1) in the table.
+ *
+ * The prim's vertex count is 4 when its bucket word marks the whole quad, else 3.
+ * @param T The table.
+ * @param in The feed pass.
+ * @param i0 The prim's first triangle.
+ * @param i1 One past its last triangle.
+ * @return As cal_find; 0 when the prim has fewer than three or more than four distinct points. */
 static int cal_prim_pos(const cal_ot_t* T, const moby_rank_cal_in_t* in, int i0, int i1)
 {
     int16_t pt[4][2];
@@ -255,7 +313,13 @@ static int cal_prim_pos(const cal_ot_t* T, const moby_rank_cal_in_t* in, int i0,
     return np >= 3 ? cal_find(T, (const int16_t (*)[2])pt, np, nv) : 0;
 }
 
-/* s_pos of the walk triangles [0, n). */
+/** @brief Fills s_pos for the walk triangles [0, n) and counts the identification outcomes.
+ *
+ * @param T The table.
+ * @param tn The table's prim count; at or below 0 no prim is identified.
+ * @param in The feed pass.
+ * @param n The triangle count.
+ * @param c Accumulates the ranked, exactly identified and ambiguous triangle counts. */
 static void cal_identify(const cal_ot_t* T, int tn, const moby_rank_cal_in_t* in, int n,
                          cal_ident* c)
 {

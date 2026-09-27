@@ -180,18 +180,30 @@ typedef struct {
 void ngte_rtps_int(const int M[3][3], const int tr[3], int vx, int vy, int vz,
                    double ofx, double ofy, int H, ngte_rtps_out* out);
 
-/* GTE DPCS single channel, bit-exact integer mirror: c8 = 8-bit colour,
- * fc12 = 12-bit-expanded far colour, ir0 = 1.3.12 blend factor. */
+/** @brief One channel of GTE DPCS, the bit-exact integer mirror.
+ *
+ * MAC = c8 << 16; the far-colour difference ((fc12 << 12) - MAC) >> 12 is
+ * saturated to int16, scaled by IR0 and added back, and the result shifted
+ * right 16 in all and clamped to 0..255.
+ * @param c8 The 8-bit colour channel.
+ * @param fc12 The far colour channel expanded to 12 bits (RFC/GFC/BFC scale).
+ * @param ir0 The 1.3.12 blend factor.
+ * @return The depth-cued 8-bit channel. */
 int ngte_dpcs_ch(int c8, int fc12, int ir0);
 
-/* GTE DPCS in float: lerp every 8-bit channel of rgb toward the matching
- * channel of fc by ir0/4096, rounded and clamped to 0..255. Both are packed
+/** @brief GTE DPCS in float: every 8-bit channel of `rgb` lerped toward the matching channel of `fc` by ir0/4096.
+ *
+ * Each channel is rounded and clamped to 0..255. Both colours are packed
  * 0x00BBGGRR. The sky and portal-preview draws run the real op (cmd 0x10,
  * sf=1) over a colour table with FC = the fog far colour's components SHL 4
  * and IR0 = the fog factor; FC SHL 12 then lines up with the colour's SHL 16,
  * so the op reduces to this per-channel lerp. The float form is what the rest
  * of the native path carries; ngte_dpcs_ch is the bit-exact integer mirror
- * for the walks that must match the GTE to the unit. */
+ * for the walks that must match the GTE to the unit.
+ * @param rgb The source colour.
+ * @param fc The far colour.
+ * @param ir0 The blend factor, 4096 = the far colour.
+ * @return The blended colour, packed 0x00BBGGRR. */
 uint32_t ngte_depth_cue(uint32_t rgb, uint32_t fc, int ir0);
 
 /* The fog far colour (game_layout.fog.far_colour) as packed 0x00BBGGRR: one
@@ -242,8 +254,13 @@ int ngte_table_rot(CPUState* cpu, double from_ang, double to_ang,
 typedef struct { int sy, cy, sx, cx, sz, cz; } ngte_euler_sc;
 void ngte_euler_sincos(CPUState* cpu, uint32_t rot, ngte_euler_sc* e);
 
-/* out = start·Ry·Rx·Rz in Q12, the order the game's MVMVA sequence applies
- * (func_80022A2C block_80022DBC..80022F34). */
+/** @brief out = start·Ry·Rx·Rz in Q12, the order the game's MVMVA sequence applies.
+ *
+ * func_80022A2C block_80022DBC..80022F34. Each product goes through
+ * ngte_mat_mul3, so every step truncates by >> 12 as the GTE does.
+ * @param start The left factor, Q12.
+ * @param e The three axes' table sin/cos (ngte_euler_sincos).
+ * @param out Receives the product, Q12. */
 void ngte_compose_euler(const int start[3][3], const ngte_euler_sc* e, int out[3][3]);
 
 /** @brief out = start·Ry·Rx·Rz in double, the order of ngte_compose_euler, at fractional byte angles.
@@ -388,12 +405,18 @@ typedef struct { double m1, m2, m3; uint32_t rgb; float u, v;
                  float osx, osy; uint8_t oflag;
                  float fx, fy; } ngte_cvert;
 
-/* The point where the edge a->b crosses the plane m3 == zc. Position, UV
- * and the face-local coordinate interpolate linearly in camera space; each colour channel rounds to nearest.
- * The parameter is clamped to [0,1], so an edge that does not cross returns
- * whichever endpoint the caller's inside test already picked. The result
- * projects normally: a crossing point is not one of the parent corners, so it
- * carries no screen override. */
+/** @brief The point where the edge a->b crosses the plane m3 == zc.
+ *
+ * Position, UV and the face-local coordinate interpolate linearly in camera
+ * space; each colour channel rounds to nearest. The parameter is clamped to
+ * [0,1], so an edge that does not cross yields the attributes of whichever
+ * endpoint the caller's inside test already picked, with m3 set to zc. The
+ * result projects normally: a crossing point is not one of the parent
+ * corners, so it carries no screen override.
+ * @param a The edge's first corner.
+ * @param b The edge's second corner; its m3 must differ from a's.
+ * @param zc The plane's depth.
+ * @return The crossing corner. */
 ngte_cvert ngte_clip_lerp(ngte_cvert a, ngte_cvert b, double zc);
 
 #endif /* OPENPETE_NATIVE_GTE_H */

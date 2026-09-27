@@ -54,7 +54,8 @@
 #define ANIM_DATA_BASE   0x20u
 #define ANIM_STATIC_VERT 0x0Cu
 
-/* ---- vertex stream -------------------------------------------------
+/** @brief Opens one keyframe's vertex stream: the block, adjust and static-vertex cursors and the first item's form.
+ *
  * Three forms, chained: bit 0 of the item just consumed picks the next one,
  * and the keyframe word's bit 25 picks the first (mobydraw.s:968,986-988).
  * Bit 0 clear takes the ADJUST form — one byte from the adjust stream whose
@@ -72,6 +73,13 @@
  *
  * vstream state: litp = the adjust byte cursor, shortp = the block halfword
  * cursor, scratch_u[0] = the static vertex cursor, flag = which form is next.
+ * @param cpu The guest CPU state, read only.
+ * @param s Receives the stream state, zeroed first.
+ * @param header The AnimationHeader; +0x20 is the data base, +0x0C the static vertex array.
+ * @param frame The keyframe word: bits 0-15 the block offset in halfwords,
+ *        bits 16-24 the adjust-stream offset from the block in halfwords, bit 25
+ *        the first item's form.
+ * @param s5 The per-model shift, stored unused: this codec has none.
  */
 static void s23_vstream_init(CPUState* cpu, moby_vstream_t* s,
                             uint32_t header, uint32_t frame, int s5) {
@@ -128,26 +136,7 @@ void s23_vstream_next(CPUState* cpu, moby_vstream_t* s, int first) {
     s23_vstream_next_lit(cpu, s, first, 0);
 }
 
-/* ---- face stream ---------------------------------------------------
- * Fixed records, two words untextured and five textured, the textured flag
- * being word 1's sign (mobydraw.s:1530-1531,1536,1544). Word 0 holds four
- * 8-bit vertex indices, and the face is a triangle when the last two match
- * (mobydraw.s:1495-1506). Word 1 holds four 7-bit colour indices at bits
- * 24-30, 17-23, 10-16 and 3-9 (mobydraw.s:1554,1561-1563,1564-1566); on a
- * triangle the fourth index's field is flags instead — bit 3 accepts either
- * winding where a quad's face is front-facing only (mobydraw.s:1707,1731-1734),
- * and bits 4 and 5 select alternate colour sources for the same geometry
- * (mobydraw.s:1710,1793-1800). Bits 0-2 are a signed per-face ordering-table
- * bias, which is paint order, not geometry.
- *
- * The three texture words are {u0|v0<<8|clut<<16}, {u1|v1<<8|tpage<<16} and
- * {u2|v2<<8|u3<<16|v3<<24} (mobydraw.s:1655-1662); the second word's sign is
- * the GPU semi-transparency enable (mobydraw.s:1660-1661).
- *
- * The walk's own topology vocabulary carries this exactly: a quad face is a
- * "fresh" face with the winding flag clear, whose dual-NCLIP emit tree is the
- * same four-way one this draw runs (mobydraw.s:1564-1573); a triangle is a
- * "strip" face, whose keep rule is the same NCLIP sign test. */
+/* The face-stream decode; the record layout is documented at the declaration. */
 int s23_decode_faces_stride(CPUState* cpu, uint32_t fb, uint32_t bytecount,
                            moby_wface_t* out, int cap, moby_face_stats_t* st,
                            uint32_t fixed_stride, int all_textured) {
@@ -332,13 +321,14 @@ static int s23_clamp_ir(long v) {
  *
  * UNRESOLVED: the azimuth carries a per-moby bias the setup leaves in GTE
  * control 17 (mobydraw.s:2100-2112), built from the record's view-space depth
- * shifted by a per-model byte pair and a global word. `OPENPETE_S3_ENV_BIAS`
- * overrides it while it is being derived; the default 0 leaves the map
- * unrotated.
+ * shifted by a per-model byte pair and a global word. The walk holds it at 0,
+ * which leaves the map unrotated.
  */
 
-/* GTE LZCS/LZCR: leading zeroes of a positive value, leading ones of a
- * negative one, 1..32. */
+/** @brief The GTE's LZCS/LZCR count: leading zeroes of a positive value, leading ones of a negative one.
+ *
+ * @param v The value, read as signed.
+ * @return The count, 1..32. */
 static int s23_lzcr(uint32_t v) {
     if (v & 0x80000000u) v = ~v;
     int n = 0;
@@ -364,7 +354,18 @@ static void s23_env_setup_read(CPUState* cpu, uint32_t rec, s23_env_setup* E) {
     E->bias = 0;
 }
 
-/* One face corner's coordinate pair, from that corner's rotated position. */
+/** @brief One face corner's mode-1 environment coordinate pair, from that corner's rotated position.
+ *
+ * The per-vertex routine of mobydraw.s:2377-2547: the azimuth from the
+ * arctangent table in the octant the signs of z and -x place it, the elevation
+ * from -y over the vector's length through the radius table, and the disc
+ * coordinate from that radius times the azimuth's cosine and sine, centred on
+ * texel 0x40.
+ * @param cpu The guest CPU state, read only (the square-root, arctangent, radius and sine tables).
+ * @param E The per-record setup; its azimuth bias is added before the sine lookup.
+ * @param e The corner's model-to-view rotated position.
+ * @param pu Receives U.
+ * @param pv Receives V. */
 static void s23_env_uv(CPUState* cpu, const s23_env_setup* E, const float e[3],
                       uint8_t* pu, uint8_t* pv) {
     /* The walk already holds the rotated vector the draw's MVMVA produces: the
@@ -426,10 +427,13 @@ static void s23_env_uv(CPUState* cpu, const s23_env_setup* E, const float e[3],
     *pv = (uint8_t)(((((long)rad * sn) >> 12) + 0x40) & 0xFF);
 }
 
-/* OPENPETE_MOBY_MODE0_IR0_SUM=0|1 overrides the per-game switch for one run,
- * so the two coded forms of the mode-0 treatment can be priced against the
- * guest's own primitive colours on the same pose. Unset, the game's own switch
- * decides. */
+/** @brief Which of the two forms the special material's mode 0 takes.
+ *
+ * OPENPETE_MOBY_MODE0_IR0_SUM=0|1, read once, overrides
+ * moby_game_s23.mode0_ir0_from_colour_sum for one run, so the two coded forms
+ * can be priced against the guest's own primitive colours on the same pose.
+ * Unset or empty, the game's own switch decides.
+ * @return 1 for IR0 from the vertex colour sum, 0 for the per-moby IR0. */
 static int s23_mode0_ir0_sum(void) {
     static int s = -2;
     if (s == -2) { const char* e = getenv("OPENPETE_MOBY_MODE0_IR0_SUM");
@@ -559,13 +563,18 @@ static int s23_special_face(CPUState* cpu, uint32_t mat, const int M[3][3],
     return 3;
 }
 
-/* ---- cull record ---------------------------------------------------
+/** @brief Reads one animated cull record into the walk's record form.
+ *
  * Stride 0x44 in the tick's draw scratch, terminated by a zero flags word
  * (mobydraw.s:888). The flags word carries the keyframe blend byte and, in its
  * top half, the LOD verdict whose sign picks the low-poly vertex count and
  * face list (mobydraw.s:918-921). The two keyframes are the stream words
  * themselves with their own headers at +0x04 and +0x08 (mobydraw.s:888-889,
- * 911,988-989). */
+ * 911,988-989).
+ * @param cpu The guest CPU state, read only.
+ * @param rec The record's address.
+ * @param R Receives the record; its tier is the flags word's signed top half.
+ * @return 0 at the zero flags word that terminates the list, 1 otherwise. */
 static int s23_read_record(CPUState* cpu, uint32_t rec, moby_record_t* R) {
     const uint32_t w0 = moby_rec_word(cpu, rec);
     if (w0 == 0) return 0;
@@ -583,18 +592,31 @@ static int s23_read_record(CPUState* cpu, uint32_t rec, moby_record_t* R) {
     return 1;
 }
 
-/* A model-table entry that is a KSEG0 pointer is an animated model; a KUSEG
- * one is the second kind, drawn by its own pass (mobydraw.s:116). */
+/** @brief Whether a model-table entry is an animated model.
+ *
+ * A KSEG0 pointer is an animated model; a KUSEG one is the second kind, drawn
+ * by its own pass (mobydraw.s:116).
+ * @param cpu Unused.
+ * @param model The model-table entry.
+ * @return 1 for an animated model, 0 for the second kind. */
 static int s23_model_is_animated(CPUState* cpu, uint32_t model) {
     (void)cpu;
     return (int32_t)model < 0;
 }
 
-/* The keyframe's faceblock patch list. The cull resolves it through the
- * Model's own table and stores the pointer at record +0x14, and marks a
- * keyframe that patches NOTHING by setting the stored keyframe word's top bits
- * (mobydraw.s:532-534,561-568); the draw skips the apply on exactly that sign
- * (mobydraw.s:935). */
+/** @brief The keyframe's faceblock patch list, or 0 when the keyframe patches nothing.
+ *
+ * The cull resolves the list through the Model's own table and stores the
+ * pointer at record +0x14, and marks a keyframe that patches nothing by
+ * setting the stored keyframe word's top bits (mobydraw.s:532-534,561-568); the
+ * draw skips the apply on exactly that sign (mobydraw.s:935). A keyframe the
+ * record does not name is resolved through the model's table the way the cull
+ * resolves it.
+ * @param cpu The guest CPU state, read only.
+ * @param rec The cull record, whose +0x14 holds the list the cull resolved.
+ * @param model The moby's model for a keyframe the record does not name, else 0.
+ * @param frame_a The keyframe word; a negative one patches nothing.
+ * @return The list's address, or 0. */
 static uint32_t s23_frame_patch_list(CPUState* cpu, uint32_t rec, uint32_t model,
                                      uint32_t frame_a) {
     if ((int32_t)frame_a < 0) return 0u;
@@ -759,7 +781,9 @@ static void s23_simple_capture(CPUState* cpu) {
     }
 }
 
-/* The flat-lit face colour (mobydraw.s:4758-4813). Word 1's bits 7-30 are a
+/** @brief The flat-lit material's face colour, from the normal packed in face word 1 (mobydraw.s:4758-4813).
+ *
+ * Word 1's bits 7-30 are a
  * face normal instead of four colour indices; the draw rotates it into view by
  * the model matrix, projects it onto the light vector it loads into the GTE
  * colour matrix at entry (all three rows of that matrix are the same vector,
@@ -767,7 +791,13 @@ static void s23_simple_capture(CPUState* cpu) {
  * colours of the moby's entry in the flat-colour table by it: the second word
  * scaled by the projection, the first added flat, plus a highlight that opens
  * above 1472. The back side halves the flat word and quarters the projection
- * (mobydraw.s:4790-4795). */
+ * (mobydraw.s:4790-4795).
+ * @param R The model-to-view rotation.
+ * @param w1 Face word 1.
+ * @param cbase The table word added flat.
+ * @param clit The table word scaled by the projection.
+ * @param backface 1 for the back side.
+ * @return The colour, one byte per channel in bits 0-23. */
 static uint32_t s23_simple_flat_colour(const int R[3][3], uint32_t w1,
                                       uint32_t cbase, uint32_t clit, int backface) {
     int n1 = (int8_t)((w1 >> 15) & 0xFFu);
@@ -808,7 +838,9 @@ typedef struct {
     uint32_t col[4];
 } s23_shade;
 
-/* The flat-lit material's face treatment: two-sided, untextured F3/F4 whatever
+/** @brief The flat-lit material's face treatment: the winding verdict, the back side's blend and one colour.
+ *
+ * Two-sided, untextured F3/F4 whatever
  * the face's own texture words say, and one colour off a face normal instead of
  * four out of the colour block (mobydraw.s:4720-4724,4756-4765,4849-4862).
  *
@@ -821,7 +853,16 @@ typedef struct {
  * second negative, drops when the first is non-negative and the second zero, and
  * otherwise keeps the first, which is negative (mobydraw.s:4719-4746). Every
  * surviving quad case therefore reduces to: front exactly when the second NCLIP
- * is positive. Returns 0 when the face emits nothing. */
+ * is positive.
+ * @param R The model-to-view rotation the normal rotates by.
+ * @param f1 Face word 1.
+ * @param tri 1 for a triangle.
+ * @param nA The NCLIP of (v0,v1,v2).
+ * @param nB The NCLIP of (v3,v1,v2), on a quad.
+ * @param trz The record's translation depth the back side is tested against.
+ * @param flat_w The four material words in force.
+ * @param sh Receives the halves, the blend flag and the colour; `textured` is cleared.
+ * @return 0 when the face emits nothing, 1 otherwise. */
 static int s23_simple_flat_face(const int R[3][3], uint32_t f1, int tri,
                                 double nA, double nB, double trz,
                                 const uint32_t flat_w[4], s23_shade* sh) {
@@ -853,15 +894,24 @@ static int s23_simple_flat_face(const int R[3][3], uint32_t f1, int tri,
     return 1;
 }
 
-/* The face's material, its winding verdict and its colours, the step between the
- * vertex walk and the emit. Word 1 bit 1 selects the flat-lit material above;
- * bit 0 alone selects neither (mobydraw.s:4721,4666). Returns 0 when the face
- * emits nothing.
+/** @brief One second-kind face's material, winding verdict and colours, the step between the vertex walk and the emit.
  *
- * R rotates the flat material's normal, trz is the record's translation depth
- * the back side is tested against, flat_w the four material words in force, and
- * ctab the record's ncol decoded colours. nA is the NCLIP of (v0,v1,v2) and nB,
- * on a quad, that of (v3,v1,v2). */
+ * Word 1 bit 1 selects the flat-lit material (s23_simple_flat_face); bit 0
+ * alone selects neither (mobydraw.s:4721,4666). A standard quad keeps each
+ * half on its own NCLIP sign test and a standard triangle keeps on a positive
+ * NCLIP; its four colours are word 1's 7-bit indices into `ctab`, an index
+ * past `ncol` taking entry 0.
+ * @param R The model-to-view rotation the flat material's normal rotates by.
+ * @param f1 Face word 1; its sign is the textured flag.
+ * @param tri 1 for a triangle.
+ * @param nA The NCLIP of (v0,v1,v2).
+ * @param nB The NCLIP of (v3,v1,v2), on a quad.
+ * @param trz The record's translation depth the back side is tested against.
+ * @param flat_w The four material words in force.
+ * @param ctab The record's decoded colours.
+ * @param ncol The number of entries in `ctab`.
+ * @param sh Receives the halves, the textured and blend flags and the colours.
+ * @return 0 when the face emits nothing, 1 otherwise. */
 static int s23_simple_shade_face(const int R[3][3], uint32_t f1, int tri,
                                  double nA, double nB, double trz,
                                  const uint32_t flat_w[4],
@@ -981,13 +1031,21 @@ static int s23_simple_place(CPUState* cpu, int r, const int Rcam[3][3],
     return 1;
 }
 
-/* One face's bucket word in the record's paint order (moby_rank.h rows
- * MOBY_OTK_S23_SIMPLE and MOBY_OTK_S23_SIMPLE_FLAT, `ork` in that order):
+/** @brief One second-kind face's bucket word in the record's paint order.
+ *
+ * moby_rank.h rows MOBY_OTK_S23_SIMPLE and MOBY_OTK_S23_SIMPLE_FLAT:
  * face word 1 bit 1 selects the flat-lit branch (mobydraw.s 4720-4722,
  * 4743-4745), whose back faces the walk keeps while TRZ, less 0x800 under word
  * 1 bit 0, is negative (4748-4760). A standard face's bias is the signed top
  * nibble of word 0 (4436, 4584), and word 1 bit 0 lets a standard triangle
- * pass the facing test either way round (4602-4605, 4743-4745). */
+ * pass the facing test either way round (4602-4605, 4743-4745).
+ * @param ork The record's two row states, standard then flat-lit.
+ * @param iv The record's per-vertex key inputs.
+ * @param idx The face's four vertex indices.
+ * @param tri 1 for a triangle; idx[3] is then unused.
+ * @param f0 Face word 0.
+ * @param f1 Face word 1.
+ * @return The bucket word moby_otk_face_bucket returns. */
 static int32_t s23_simple_face_otk(const moby_otk_rec_t ork[2], const moby_otk_vert_t* iv,
                                    const int idx[4], int tri, uint32_t f0, uint32_t f1) {
     const int flat = (f1 & 2u) != 0;
@@ -1296,8 +1354,13 @@ static int s23_simple_decode(CPUState* cpu) {
     return emitted;
 }
 
-/* A sub-tick present's replay: the captured queue decoded again under the
- * present's camera, with no second call into the game's draw. */
+/** @brief A sub-tick present's replay of the second kind: the captured queue decoded again under the present's camera.
+ *
+ * Makes no call into the game's draw. Resets the pass counters, and prints its
+ * own census line under moby_verify_vbl, since the pass census covers the
+ * canonical tick alone.
+ * @param cpu The guest CPU state, read only.
+ * @return The number of triangles emitted. */
 static int s23_simple_replay(CPUState* cpu) {
     s_simple_recs = s_simple_verts = s_simple_faces = s_simple_tris = 0;
     s_simple_flat = s_simple_screen = s_simple_culled = s_simple_screen_drawn = 0;
@@ -1333,9 +1396,9 @@ static int s23_cull_box_threshold(CPUState* cpu, uint32_t moby, unsigned drawn_b
     return (rad << 8) + (int)((drawn_bits & 3u) << 8);
 }
 
-/* The animated kind's admission as the cull runs it (mobydraw.s:62-187; Spyro
- * 2 0x80043920-0x80043AFC, the same instructions), with the lateral slope
- * scaled by `widen`. The cull clears the drawn-verdict byte and writes 1 or 2
+/** @brief The animated kind's admission as the cull runs it, with the lateral slope scaled by `widen`.
+ *
+ * mobydraw.s:62-187; Spyro 2 0x80043920-0x80043AFC, the same instructions. The cull clears the drawn-verdict byte and writes 1 or 2
  * only on a moby that passes every test (mobydraw.s:73,224), so a byte of 0
  * inside the box names a moby one of these tests rejected; under a view wider
  * than 4:3 the lateral arm is the one whose answer changes.
@@ -1359,7 +1422,14 @@ static int s23_cull_box_threshold(CPUState* cpu, uint32_t moby, unsigned drawn_b
  * The lateral arm's 3:4 slope is the 4:3 half-angle, so the widened view
  * multiplies its MAC3 term by `widen`; the vertical arm keeps the game's
  * slope, since Hor+ leaves the vertical field of view alone. At `widen` 1.0 the
- * widened and canonical lateral arms are one test and nothing is admitted. */
+ * widened and canonical lateral arms are one test and nothing is admitted.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @param drawn_bits The drawn-verdict byte the box threshold widens by.
+ * @param widen The lateral slope factor, 1.0 at 4:3.
+ * @return The first test that rejects the moby, MOBY_WIDE_CANONICAL when the
+ *         game's own lateral arm also admits it, or MOBY_WIDE_ADMIT when only
+ *         the widened arm does. */
 static moby_wide_verdict_t s23_cull_view_admits(CPUState* cpu, uint32_t moby,
                                                 unsigned drawn_bits, double widen) {
     const int64_t t = s23_cull_box_threshold(cpu, moby, drawn_bits);
@@ -1399,11 +1469,17 @@ static moby_wide_verdict_t s23_cull_view_admits(CPUState* cpu, uint32_t moby,
     return MOBY_WIDE_ADMIT;
 }
 
-/* Saturating narrow. Every intermediate the cull stores lands in an int16 GTE
+/** @brief Saturating narrow of a full-width intermediate to the range the cull's register or field holds.
+ *
+ * Every intermediate the cull stores lands in an int16 GTE
  * register or an int16 record field, which wraps once extended LOD reveals a
  * moby past the range the cull could ever queue. Inside that range this is the
  * identity, past it a saturated value stays at the end of the range instead of
- * reappearing at the other end. */
+ * reappearing at the other end.
+ * @param v The value.
+ * @param lo The range's low end.
+ * @param hi The range's high end.
+ * @return v clamped to [lo, hi]. */
 static int64_t s23_sat(int64_t v, int64_t lo, int64_t hi) {
     return v < lo ? lo : (v > hi ? hi : v);
 }
@@ -1441,13 +1517,23 @@ static void s23_anim_translation(const moby_anim_fields_t* f, int scale, int siz
     }
 }
 
-/* Compose the animated record's 0x44 bytes, the inverse of s23_read_record.
+/** @brief Composes the animated record's 0x44 bytes, the inverse of s23_read_record.
+ *
  * The flags word carries the cull's draw verdict in byte 0, the keyframe-blend
  * byte in byte 1 (mobydraw.s:459-461,522) and the LOD verdict in its top half
  * (mobydraw.s:501,918-921). The matrix is five words, and the ordering-table
  * key shares the spare half of the last (mobydraw.s:344-348,559). The verdict
  * byte is the near one: the far verdict only ever narrows what the record
- * draws, and extended LOD is the rule that it is drawn. */
+ * draws, and extended LOD is the rule that it is drawn.
+ * @param w Receives the record's words.
+ * @param f The animated fields: headers, keyframe B, blend byte and matrix.
+ * @param moby The Moby address.
+ * @param material The record's material word.
+ * @param frame_a Keyframe A's reference.
+ * @param patch The faceblock patch list, or 0.
+ * @param tier The LOD verdict.
+ * @param key The ordering-table key.
+ * @param tr The translation. */
 static void s23_write_anim_record(uint32_t* w, const moby_anim_fields_t* f,
                                   uint32_t moby, uint32_t material,
                                   uint32_t frame_a, uint32_t patch,
@@ -1493,8 +1579,9 @@ static uint32_t s23_anim_keyframe_ref(CPUState* cpu, const moby_anim_fields_t* f
     return f->frame_a;
 }
 
-/* Build the animated kind's cull record for one moby the box rejected, the way
- * the cull composes it, and append it to the host copy of the cull's own
+/** @brief Builds the animated kind's cull record for one moby the box rejected and appends it to the host record list.
+ *
+ * The record is composed the way the cull composes it and appended to the host copy of the cull's own
  * record list. The regular walk reads that copy, so an appended record decodes
  * through exactly the path a queued one does and a sub-tick present replays it
  * with the rest.
@@ -1517,7 +1604,11 @@ static uint32_t s23_anim_keyframe_ref(CPUState* cpu, const moby_anim_fields_t* f
  * depth buffer replaces.
  *
  * Nothing here writes guest memory: the copy is the host's and the moby's own
- * verdict byte stays the cull's. */
+ * verdict byte stays the cull's.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @param why Receives the reason: MOBY_REVEAL_OK, or why no record was appended.
+ * @return 1 when a record was appended, 0 otherwise. */
 static int s23_reveal_anim_record(CPUState* cpu, uint32_t moby, moby_reveal_reason_t* why) {
     /* A moby whose colour word has bit 30 set takes a second composition path
      * for its rotation and colour (mobydraw.s:228,633-640), which this builder
@@ -1550,8 +1641,10 @@ static int s23_reveal_anim_record(CPUState* cpu, uint32_t moby, moby_reveal_reas
     return 1;
 }
 
-/* Build the second kind's queue record for one moby the box rejected, the way
- * the cull composes it (mobydraw.s:604-630): the Moby, the three quarter-world
+/** @brief Builds one rejected moby's record for the queue of its model kind.
+ *
+ * An animated model goes to s23_reveal_anim_record. A second-kind model's queue
+ * record is built the way the cull composes it (mobydraw.s:604-630): the Moby, the three quarter-world
  * camera deltas — (moby - cam) >> 2 on the first component and (cam - moby)
  * >> 2 on the other two (mobydraw.s:81,87,94) — and the model's animation slot
  * at Model + (Moby+0x3C byte 0) * 4. A model-table entry that is KSEG0 is the
@@ -1561,7 +1654,12 @@ static int s23_reveal_anim_record(CPUState* cpu, uint32_t moby, moby_reveal_reas
  * past what the packed halves can hold, and the far-cull distance is -1: a
  * host-built record carries no range limit, which is what extended LOD means.
  * Nothing here writes guest memory — the queue is the host copy taken at the
- * cull hook, and the moby's own verdict byte stays the cull's. */
+ * cull hook, and the moby's own verdict byte stays the cull's.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @param kind The queue being filled; a moby of the other kind is refused.
+ * @param why Receives the reason: MOBY_REVEAL_OK, or why no record was built.
+ * @return 1 when a record was built, 0 otherwise. */
 static int s23_reveal_record(CPUState* cpu, uint32_t moby, moby_reveal_kind_t kind,
                              moby_reveal_reason_t* why) {
     const uint32_t cls   = cpu->read_half(moby + game_layout.moby.class_off);
@@ -1599,9 +1697,15 @@ static int s23_reveal_record(CPUState* cpu, uint32_t moby, moby_reveal_kind_t ki
     return 1;
 }
 
-/* The pass the walk's second-kind hook runs: capture the cull's queue, run the
- * game's own draw (which writes the drawn verdict and the prims), then decode
- * the captured queue natively. */
+/** @brief The second kind's pass on its draw hook: capture the cull's queue, run the game's draw, decode the queue natively.
+ *
+ * The game's own draw writes the drawn verdict and the prims. Before it runs,
+ * the pass appends the extended-LOD reveal records to the host queue and
+ * snapshots the four flat-material scratchpad words the draw starts from;
+ * after it, the queued Mobys are stashed for interpolation and the queue is
+ * decoded. Prints a census line under moby_verify_vbl.
+ * @param cpu The guest CPU state; the game's draw writes guest memory.
+ * @return The number of triangles emitted. */
 static int s23_simple_pass(CPUState* cpu) {
     s_simple_recs = s_simple_verts = s_simple_faces = s_simple_tris = 0;
     s_simple_flat = s_simple_screen = s_simple_culled = s_simple_screen_drawn = 0;
@@ -1636,14 +1740,23 @@ static int s23_simple_pass(CPUState* cpu) {
     return n;
 }
 
-/* ---- paint-key decode (moby_rank.h row MOBY_OTK_S23_REGULAR) ----------
+/** @brief The animated record's paint-key inputs for moby_rank.h row MOBY_OTK_S23_REGULAR.
+ *
  * A = the animation header's byte 3, raised to keyframe B's header byte 3 on
- * a blending record (w0 bits 8-15 non-zero) (mobydraw.s 474-483, 496, 499);
+ * a blending record (w0 bits 8-15 non-zero, keyframe B's header a pointer) (mobydraw.s 474-483, 496, 499);
  * the translation the draw loads is the record's own (the cull stored the
  * final one, mobydraw.s 557-560). The face bias is the signed low three bits
  * of the face's second word, decoded into moby_wface_t.otbias. The
  * mirrored-winding material modes and the plane walk (record +0x3C) key the
- * same here. */
+ * same here.
+ * @param cpu The guest CPU state, read only.
+ * @param header Keyframe A's AnimationHeader.
+ * @param header_b Keyframe B's AnimationHeader.
+ * @param w0 The record's flags word.
+ * @param TR_raw The record's translation.
+ * @param tr Receives the translation the key reads.
+ * @param a Receives A.
+ * @return MOBY_OTK_S23_REGULAR, or MOBY_OTK_NONE when `header` is not a pointer. */
 static moby_otk_row_t s23_otkey_record(CPUState* cpu, uint32_t header, uint32_t header_b,
                                        uint32_t w0, const int TR_raw[3], int tr[3], int* a) {
     if (header < 0x80000000u) return MOBY_OTK_NONE;
