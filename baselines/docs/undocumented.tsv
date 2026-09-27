@@ -2,7 +2,7 @@
 # library: libclang 14
 # requirement: @brief of one sentence on one line on every function; @param per named parameter and @return on non-void for external linkage
 # written-by: hook
-# head: c1e5f07ef83f9108070ae6b4186ddd6be6741eea
+# head: 343305257bdc02c20d18fb03a71cf7a77a6d326b
 file	function	form	accepted
 core/config/config.c	decision_for	none	
 core/config/config.c	dup_str	none	
@@ -62,7 +62,6 @@ core/config/knob_registry.c	perfpos_get	none
 core/config/knob_registry.c	perfpos_set	none	
 core/config/knob_registry.c	perfstats_get	none	
 core/config/knob_registry.c	perfstats_set	none	
-core/config/knob_registry.c	portable_setenv	none	
 core/config/knob_registry.c	recfps_set	none	
 core/config/knob_registry.c	renderer_get	none	
 core/config/knob_registry.c	renderfps_set	none	
@@ -638,7 +637,6 @@ core/renderer/native_render.c	hd_cache_lookup	none
 core/renderer/native_render.c	hd_defer_cmp	none	
 core/renderer/native_render.c	hd_defer_flush	none	
 core/renderer/native_render.c	hd_defer_push	none	
-core/renderer/native_render.c	hdfold_flush_locked	none	
 core/renderer/native_render.c	hud_paint_cmp	none	
 core/renderer/native_render.c	native_postfx_point_active	none	
 core/renderer/native_render.c	native_terrain_key_pass	none	

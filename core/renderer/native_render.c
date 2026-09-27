@@ -4411,6 +4411,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.enabled     = true;
     s_nr.scene_live  = (opts->renderer == OPENPETE_RENDERER_VK);
     s_nr.window      = win;
+    openpete_native_publish_fullscreen();
     s_nr.dev         = dev;
     s_nr.win_w       = w;
     s_nr.win_h       = h;
@@ -4630,6 +4631,19 @@ int openpete_native_render_repeat_last(void)
     return 1;
 }
 
+/* The native window's fullscreen state as the window-owning thread last saw
+ * it: set by the toggle to the state it requested and by the owner on every
+ * SDL enter/leave-fullscreen event. Other threads read this instead of the SDL
+ * window flags, which the owner's event pump writes. */
+static SDL_AtomicInt s_nr_fullscreen;
+
+void openpete_native_publish_fullscreen(void)
+{
+    if (!s_nr.window) return;
+    SDL_SetAtomicInt(&s_nr_fullscreen,
+                     (SDL_GetWindowFlags(s_nr.window) & SDL_WINDOW_FULLSCREEN) != 0);
+}
+
 /* Fullscreen toggle; documented at the declaration. */
 void openpete_native_toggle_fullscreen(void)
 {
@@ -4641,6 +4655,7 @@ void openpete_native_toggle_fullscreen(void)
      * applies to it: adopt it as soon as it is seen. */
     s_nr.resize_immediate_at_ns = SDL_GetTicksNS(); /* clock-guard: wall */ /* resize debounce */
     SDL_SetWindowFullscreen(s_nr.window, !fs);
+    SDL_SetAtomicInt(&s_nr_fullscreen, !fs);
     OPL_INFO_F("native", "fullscreen %s", !fs ? "on (borderless desktop)" : "off");
     /* Announced HERE rather than at the call sites: Alt+Enter, the fullscreen
      * binding, a window double-click, the O-menu DISPLAY row and the M-overlay
@@ -4655,11 +4670,11 @@ SDL_Window* openpete_native_render_window(void)
     return s_nr.enabled ? s_nr.window : NULL;
 }
 
-/* Reads SDL_WINDOW_FULLSCREEN from the native window's flags. */
+/* Reads the state the window-owning thread published. */
 int openpete_native_fullscreen_active(void)
 {
     if (!s_nr.enabled || !s_nr.window) return 0;
-    return (SDL_GetWindowFlags(s_nr.window) & SDL_WINDOW_FULLSCREEN) != 0;
+    return SDL_GetAtomicInt(&s_nr_fullscreen);
 }
 
 /* The display/clip rects arrive from the guest's PutDispEnv/PutDrawEnv on the
@@ -8083,7 +8098,7 @@ static rhi_tex_rect_src s_hdf_pending[512];   /* a full pack's load burst */
 static int   s_hdf_pending_n = 0;
 /* Bumped on every intern and every flush that drains the queue: sectors
  * claimed for fold overflow re-bake when it moves (tgpu_ensure). */
-static uint32_t s_hdf_epoch = 1;
+static SDL_AtomicInt s_hdf_epoch = { 1 };
 
 int openpete_native_hdfold_on(void)
 {
@@ -8220,7 +8235,7 @@ int openpete_native_hdfold_intern(int tpx, int tpy, int clx, int cly, int bpp,
     }
     p[15] = 0.0f;
     memcpy(s_hdf_tab[s_hdf_n], e->payload, sizeof(e->payload));
-    s_hdf_epoch++;
+    SDL_AddAtomicInt(&s_hdf_epoch, 1);
     return ++s_hdf_n;
 }
 
@@ -8242,12 +8257,15 @@ struct rhi_texture *openpete_native_hdfold_atlas(void)
 
 int openpete_native_hdfold_pending(void)
 {
-    return s_hdf_pending_n;
+    SDL_LockMutex(hdf_mx());
+    const int n = s_hdf_pending_n;
+    SDL_UnlockMutex(s_hdf_mx);
+    return n;
 }
 
 uint32_t openpete_native_hdfold_epoch(void)
 {
-    return s_hdf_epoch;
+    return (uint32_t)SDL_GetAtomicInt(&s_hdf_epoch);
 }
 
 /* Safe before any replacement exists: the content is unread until an entry folds in. */
@@ -8268,11 +8286,16 @@ void openpete_native_hdfold_prime(rhi_device *dev)
 static void hdfold_flush_locked(void);
 void openpete_native_hdfold_flush(void)
 {
-    if (!s_hdf_pending_n || !s_nr.enabled) return;
+    if (!s_nr.enabled) return;
     SDL_LockMutex(hdf_mx());
     hdfold_flush_locked();
     SDL_UnlockMutex(s_hdf_mx);
 }
+/** @brief Upload up to HDFOLD_UPLOAD_PER_FRAME pending rects into the fold atlas; the caller holds s_hdf_mx.
+ *
+ * Creates the atlas on first use. Returns at once with nothing pending, so
+ * the epoch moves only when a flush drains a non-empty queue, which makes
+ * fold-claimed sectors retry. */
 static void hdfold_flush_locked(void)
 {
     if (!s_hdf_pending_n || !s_nr.enabled) return;
@@ -8299,7 +8322,7 @@ static void hdfold_flush_locked(void)
         memmove(s_hdf_pending, s_hdf_pending + n,
                 (size_t)s_hdf_pending_n * sizeof(s_hdf_pending[0]));
     else
-        s_hdf_epoch++;                /* drained: fold-claimed sectors retry */
+        SDL_AddAtomicInt(&s_hdf_epoch, 1);   /* drained: fold-claimed sectors retry */
 }
 
 /* One draw run of a textured bucket: `ntri` consecutive entries of s_txscene

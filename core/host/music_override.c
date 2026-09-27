@@ -373,7 +373,9 @@ static int ensure_worker(void)
 /** @brief Replace the stream the worker serves: none when f is NULL, else f with its first chunk primed.
  *
  * A stream handed over earlier and not yet adopted is closed here. The
- * ring restarts empty, then takes the primed frames.
+ * ring restarts empty, then takes the primed frames, which count in
+ * st.bytes_read here under st.mx, since the worker adds its reads to the
+ * same counter.
  * @param f Open stream positioned after the primed frames, or NULL.
  * @param ch Channels of @p f.
  * @param primed Frames already read from @p f into s_chunk.
@@ -389,6 +391,7 @@ static void stream_hand_over(FILE* f, int ch, uint32_t primed, uint32_t left)
     if (f) {
         st.channels = ch;
         ring_put(s_chunk, primed);
+        st.bytes_read += (uint64_t)primed * (uint64_t)ch * sizeof(int16_t);
     }
     SDL_SignalCondition(st.cv);
     SDL_UnlockMutex(st.mx);
@@ -417,7 +420,6 @@ static int stream_open(const char* path)
     s.channels = info.channels;
     s.sample_rate = info.sample_rate;
     st.starts++;
-    st.bytes_read += got * (size_t)info.channels * sizeof(int16_t);
     stream_hand_over(f, info.channels, (uint32_t)got, left);
     OPL_INFO_F("music", "wav override: streaming %s (%u frames, %d ch, %d Hz)",
                path, info.frame_count, info.channels, info.sample_rate);

@@ -167,12 +167,19 @@ void openpete_native_toggle_fullscreen(void);
  * overlay's knob row. */
 void openpete_native_request_fullscreen_toggle(void);
 
+/** @brief Publish the native window's fullscreen flag for other threads to read.
+ *
+ * Reads the SDL window flags, so call only on the thread that owns the
+ * window: at bring-up and on each SDL enter/leave-fullscreen event. */
+void openpete_native_publish_fullscreen(void);
+
 /** @brief Return whether the native window is in borderless-desktop fullscreen.
  *
- * The state is read from the SDL window flags on each call. The O-menu
- * DISPLAY row and the fullscreen knob row read it instead of keeping a
- * shadow value, so they stay in sync with the Alt+Enter and double-click
- * toggles.
+ * Any thread may call it: the state is the one the window-owning thread
+ * published (openpete_native_publish_fullscreen, and the toggle's requested
+ * state), never a read of the SDL window flags, which that thread's event
+ * pump writes. The O-menu DISPLAY row and the fullscreen knob row read it,
+ * so they stay in sync with the Alt+Enter and double-click toggles.
  * @return 1 when fullscreen, 0 when windowed or when there is no native
  *         window (headless, native path disabled). */
 int openpete_native_fullscreen_active(void);

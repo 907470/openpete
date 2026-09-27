@@ -70,6 +70,7 @@
 #include <errno.h>
 #include <math.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -232,8 +233,12 @@ int g_openpete_interp_enabled = 1;
  * an Escape keypress, or our SIGINT handler. The host-fiber loop checks this
  * once per iteration and drains cleanly, instead of PsyCross's PsyX_Exit()
  * calling exit(0) from inside PsyX_BeginScene (which can hang in WSL/GL with
- * the game fiber and vblank thread still mid-flight). */
-static volatile sig_atomic_t g_shutdown_requested = 0;
+ * the game fiber and vblank thread still mid-flight). Written by the pump,
+ * the SIGINT handler and any thread calling openpete_request_shutdown, read by
+ * the host loop and the pump's liveness check: a lock-free atomic, which is
+ * both async-signal-safe and ordered across threads, where a volatile
+ * sig_atomic_t is only the former. */
+static atomic_int g_shutdown_requested = 0;
 
 /* Sets g_shutdown_requested; documented at the declaration. */
 void openpete_request_shutdown(void) { g_shutdown_requested = 1; }
@@ -486,6 +491,11 @@ static bool openpete_handle_event(SDL_Event* ev) {
         g_shutdown_requested = 1;
         return false;
     }
+    /* The pump runs on the window's owner, the one thread that may read its
+     * flags; the published state serves every other reader. */
+    if (ev->type == SDL_EVENT_WINDOW_ENTER_FULLSCREEN ||
+        ev->type == SDL_EVENT_WINDOW_LEAVE_FULLSCREEN)
+        openpete_native_publish_fullscreen();
     /* Quit-by-key, and Escape's overlay dismiss.
      *
      * Handled here rather than through the polled hotkey block because the

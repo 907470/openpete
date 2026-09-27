@@ -30,6 +30,7 @@
 #include "no_lod.h"
 
 #include <math.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -556,17 +557,28 @@ static int logfmt_set(knob_desc_t *k, double v) {
  * this epoch it pays one per EDIT. On Windows that matters twice over: the
  * CRT's getenv is ~46x glibc's, and concurrent getenv/putenv from two
  * threads has been observed to wedge the process. */
-static unsigned s_env_epoch = 1;
-unsigned knob_registry_env_epoch(void) { return s_env_epoch; }
+static atomic_uint s_env_epoch = 1;
+unsigned knob_registry_env_epoch(void) {
+    return atomic_load_explicit(&s_env_epoch, memory_order_acquire);
+}
 
+/** @brief Write or unset an env var, then bump the registry env epoch.
+ *
+ * The epoch moves after the write with release order, so a consumer on
+ * another thread that loads the new epoch (acquire) and then calls getenv
+ * reads the new value; bumped before the write, a consumer could cache the
+ * old value under the new epoch and keep it until the next edit.
+ * @param name Variable name.
+ * @param val New value; NULL or "" unsets the variable.
+ * @return 0 on success, else the platform call's failure value. */
 static int portable_setenv(const char *name, const char *val) {
-    s_env_epoch++;
 #ifdef _WIN32
-    return _putenv_s(name, val ? val : "");
+    const int rc = _putenv_s(name, val ? val : "");
 #else
-    if (!val || !*val) return unsetenv(name);
-    return setenv(name, val, 1);
+    const int rc = (!val || !*val) ? unsetenv(name) : setenv(name, val, 1);
 #endif
+    atomic_fetch_add_explicit(&s_env_epoch, 1u, memory_order_release);
+    return rc;
 }
 
 static void env_get_str(const knob_desc_t *k, char *buf, size_t cap) {
