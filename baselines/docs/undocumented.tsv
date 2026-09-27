@@ -2,7 +2,7 @@
 # library: libclang 14
 # requirement: @brief of one sentence on one line on every function; @param per named parameter and @return on non-void for external linkage
 # written-by: hook
-# head: 5ea600ea8566d6b768b236c103490f513610e299
+# head: 80f1ce4346f8c744827eaea626c5c2f8625851b3
 file	function	form	accepted
 core/config/config.c	decision_for	none	
 core/config/config.c	dup_str	none	
@@ -1860,16 +1860,5 @@ games/spyro-3/renderer/terrain_probe.c	pv_add	none
 games/spyro-3/renderer/terrain_probe.c	pv_cell	none	
 games/spyro-3/renderer/terrain_probe.c	pv_match	none	
 games/spyro-3/renderer/terrain_probe.c	pv_reset	none	
-games/spyro-3/renderer/terrain_probe.c	view_project	plain	
 games/spyro-3/renderer/terrain_probe.c	view_read	none	
-games/spyro-3/skip_to_level.c	skip_release_tick	plain	
-games/spyro-3/skip_to_level.c	spyro3_level_resolve	plain	
-games/spyro-3/skip_to_level.c	spyro3_level_table	plain	
-games/spyro-3/skip_to_level.c	spyro3_skip_ffwd_arm	plain	
-games/spyro-3/skip_to_level.c	spyro3_skip_gameplay_live	plain	
-games/spyro-3/skip_to_level.c	spyro3_skip_level_picked	plain	
-games/spyro-3/skip_to_level.c	spyro3_skip_on_tick	plain	
-games/spyro-3/skip_to_level.c	spyro3_skip_set	plain	
-games/spyro-3/skip_to_level.c	spyro3_skip_target	plain	
 games/spyro-3/skip_to_level.c	target_finish	none	
-games/spyro-3/skip_to_level.c	target_released	plain	

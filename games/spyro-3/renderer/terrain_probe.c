@@ -198,8 +198,23 @@ static void view_read(CPUState* cpu, view_t* v) {
     v->cz4 = (int32_t)cpu->read_word(game_layout.cam.position + 8u) >> 2;
 }
 
-/* RTPS as the GTE computes it: IR saturation, SZ3 clamp, the divide cap at
- * H/2. Returns 0 when the vertex is behind the camera. */
+/** @brief Project a world vertex to screen coordinates the way the GTE's RTPS does.
+ *
+ * The vertex is taken relative to the camera position shifted right by 2
+ * (cx, cy, cz), with axes permuted to (cy - Y, cz - Z, X - cx), rotated by the
+ * projection matrix in 4.12 fixed point. IR1 and IR2 saturate to 16 bits,
+ * SZ3 clamps at 65535, and the divide returns 0x1FFFF / 0x10000 when
+ * H >= 2 * SZ3, as the GTE's overflow result does. Screen position is the
+ * offset (OFX, OFY) plus IR times the quotient, unrounded.
+ * @param v The captured projection state.
+ * @param X World X of the vertex.
+ * @param Y World Y of the vertex.
+ * @param Z World Z of the vertex.
+ * @param sx Receives the screen X.
+ * @param sy Receives the screen Y.
+ * @param z Receives the unclamped view depth.
+ * @return 1 when projected, 0 when the view depth is not positive (outputs
+ *         untouched). */
 static int view_project(const view_t* v, int32_t X, int32_t Y, int32_t Z, double* sx, double* sy, double* z) {
     double vx = (double)(v->cy4 - Y), vy = (double)(v->cz4 - Z), vz = (double)(X - v->cx4);
     double m1 = (v->M[0][0]*vx + v->M[0][1]*vy + v->M[0][2]*vz) / 4096.0;

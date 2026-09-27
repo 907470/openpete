@@ -117,8 +117,6 @@ const spyro3_level_t* spyro3_level_table(size_t* out_count) {
     return k_levels;
 }
 
-/* A numeric argument is accepted only when the table holds it: an unknown
- * number would index the level table past its end. */
 int spyro3_level_resolve(const char* arg) {
     const named_target_table_t levels =
         NAMED_TARGET_TABLE(k_levels, spyro3_level_t, name, number);
@@ -165,8 +163,16 @@ int spyro3_skip_gameplay_live(CPUState* cpu) {
            cpu->read_word(S3_GAME_STATE) == S3_GS_GAMEPLAY;
 }
 
-/* The playable edge: the armed sub-area's or cutscene's release predicate
- * while one is armed, else the level's first live tick after the pick. */
+/** @brief Test for the playable edge that ends the skip's present fast-forward.
+ *
+ * An armed --skip-to-area watch decides first, then an armed
+ * --skip-to-cutscene watch; with neither, the edge is the first call after
+ * the pick on which spyro3_skip_gameplay_live holds.
+ * @param cpu The guest CPU state.
+ * @param eng Buffer the area or cutscene predicate fills with the words it
+ *        appends to the release log line.
+ * @param cap Size of `eng` in bytes.
+ * @return Nonzero on the playable edge. */
 static int target_released(CPUState* cpu, char* eng, size_t cap) {
     if (spyro3_area_watching()) return spyro3_area_released(cpu, eng, cap);
     if (spyro3_cutscene_watching()) return spyro3_cutscene_released(cpu, eng, cap);
@@ -178,16 +184,22 @@ static void target_finish(void) {
     if (spyro3_cutscene_watching()) spyro3_cutscene_finish();
 }
 
-/* The skip release block, every tick while a present fast-forward, a
- * --skip-to-area target or a --skip-to-cutscene target is armed. Presents
- * resume (openpete_skip_present_until_level clears) on the playable edge
- * (target_released). The area and cutscene lines carry the words their
- * modules read back at release. openpete_skip_failsafe_vbls() after the
- * first check is the fail-safe against a never-reached edge; it logs its own
- * line and re-arms on each game.state 6 (cutscene) entry: a cutscene chain
- * holds the game out of gameplay for longer than one deadline. The area and
- * cutscene watches run headless too, where there is no fast-forward, so a
- * harness reads the same lines. */
+/** @brief Release the skip on its playable edge or on the fail-safe deadline.
+ *
+ * Runs on every call while a present fast-forward, a --skip-to-area target
+ * or a --skip-to-cutscene target is armed. On the edge (target_released) it
+ * logs "level playable", with the words the area and cutscene modules read
+ * back at release. The deadline is openpete_skip_failsafe_vbls() past the
+ * first check and is re-set on each game.state 6 (cutscene) entry, since a
+ * cutscene chain holds the game out of gameplay for longer than one
+ * deadline; passing it logs "fail-safe release (no playable edge)". Either
+ * release clears openpete_skip_present_until_level, zeroes the deadline and
+ * finishes the armed area or cutscene watch. The area and cutscene watches
+ * run headless too, where there is no fast-forward, so a harness reads the
+ * same lines.
+ * @param cpu The guest CPU state.
+ * @param frame_counter openpete_frame, compared with the deadline and
+ *        printed in the log lines. */
 static void skip_release_tick(CPUState* cpu, uint32_t frame_counter) {
     static uint32_t s_prev_state = 0;
     uint32_t state = cpu->read_word(S3_GAME_STATE);
