@@ -10,6 +10,12 @@
 #include <libco.h>
 #include <stddef.h>
 
+#if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
+#  define OPENPETE_FIBER_GUARD 1
+#  include <sys/mman.h>
+#  include <unistd.h>
+#endif
+
 void*        openpete_host_fiber       = NULL;
 void*        openpete_game_fiber       = NULL;
 SDL_AtomicInt openpete_vbl             = {0};
@@ -25,6 +31,56 @@ int          openpete_cd_load_delay    = 0;
 int          openpete_skip_present_until_level = 0;
 int          openpete_skip_ffwd_windowed       = 0;
 /* openpete_no_lod lives in core/renderer/no_lod.c. */
+
+#if defined(OPENPETE_FIBER_GUARD)
+/* The one guarded mapping: the game fiber's stack, guard page first. */
+static void*     s_fiber_map;
+static size_t    s_fiber_map_len;
+static uintptr_t s_guard_lo, s_guard_hi;
+
+void* openpete_fiber_create_guarded(unsigned size, void (*entry)(void)) {
+    const size_t page = (size_t)sysconf(_SC_PAGESIZE);
+    const size_t len  = page + (((size_t)size + page - 1) & ~(page - 1));
+    void* map = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (map == MAP_FAILED) return NULL;
+    if (mprotect(map, page, PROT_NONE) != 0) {
+        munmap(map, len);
+        return NULL;
+    }
+    s_fiber_map = map;
+    s_fiber_map_len = len;
+    s_guard_lo = (uintptr_t)map;
+    s_guard_hi = s_guard_lo + page;
+    /* libco's amd64 co_derive keeps the saved context at the low end of
+     * the memory it is given, so the context sits just above the guard and
+     * the stack grows down toward both. */
+    return co_derive((char*)map + page, (unsigned)(len - page), entry);
+}
+
+void openpete_fiber_delete_guarded(void* fiber) {
+    if (!fiber || !s_fiber_map) return;
+    munmap(s_fiber_map, s_fiber_map_len);
+    s_fiber_map = NULL;
+    s_guard_lo = s_guard_hi = 0;
+}
+
+int openpete_fiber_guard_contains(uintptr_t addr) {
+    return addr >= s_guard_lo && addr < s_guard_hi;
+}
+#else
+void* openpete_fiber_create_guarded(unsigned size, void (*entry)(void)) {
+    return co_create(size, entry);
+}
+
+void openpete_fiber_delete_guarded(void* fiber) {
+    if (fiber) co_delete((cothread_t)fiber);
+}
+
+int openpete_fiber_guard_contains(uintptr_t addr) {
+    (void)addr;
+    return 0;
+}
+#endif
 
 void openpete_yield_to_host(void) {
     if (!openpete_host_fiber) return;  /* not in fiber mode (smoke test path) */

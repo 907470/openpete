@@ -12,6 +12,7 @@
 #define OPENPETE_FIBER_H
 
 #include <SDL3/SDL_atomic.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -19,6 +20,31 @@ extern "C" {
 
 extern void*    openpete_host_fiber;     /* set in openpete_run before fiber spawn */
 extern void*    openpete_game_fiber;
+
+/** @brief Create the game fiber with a stack whose lowest page is a PROT_NONE guard.
+ *
+ * On POSIX the stack is mmap'd and handed to libco's co_derive, so an
+ * overflow faults on the guard page (SIGSEGV, reported by the crash
+ * handler as a fiber stack overflow) instead of writing into whatever the
+ * allocator placed below a malloc'd stack. On Windows it is co_create:
+ * Windows fiber stacks carry the system's own guard page. Emscripten's libco
+ * backend has no co_derive and also takes co_create.
+ * @param size Usable stack size in bytes (rounded up to whole pages).
+ * @param entry The fiber's body.
+ * @return The fiber handle, or NULL when the mapping fails. */
+void* openpete_fiber_create_guarded(unsigned size, void (*entry)(void));
+
+/** @brief Delete a fiber made by openpete_fiber_create_guarded and release its stack.
+ *
+ * @param fiber The handle; NULL is a no-op. */
+void openpete_fiber_delete_guarded(void* fiber);
+
+/** @brief Report whether addr lies in the game fiber's guard page.
+ *
+ * Reads two words only, so the crash handler may call it.
+ * @param addr A fault address.
+ * @return 1 inside the guard page, else 0 (always 0 without a guard page). */
+int openpete_fiber_guard_contains(uintptr_t addr);
 
 /* PSX-facing vblank counter. Monotonic from boot, including fast-boot
  * iterations where the host fiber is never resumed. This is the value

@@ -2825,9 +2825,9 @@ static int run_host_loop(const openpete_options_t* opts) {
     openpete_host_fiber = co_active();
     /* 8 MB fiber stack — Spyro's deepest reasonable call chain is well under
      * 1 MB but PSYQ + recompiler shadow stacks add up; budget generously. */
-    openpete_game_fiber = co_create(8u * 1024u * 1024u, game_fiber_entry);
+    openpete_game_fiber = openpete_fiber_create_guarded(8u * 1024u * 1024u, game_fiber_entry);
     if (!openpete_game_fiber) {
-        OPL_ERROR_F("boot", "co_create failed (out of memory?)");
+        OPL_ERROR_F("boot", "game fiber stack allocation failed (out of memory?)");
         return OPENPETE_EXIT_PANIC;
     }
     OPL_INFO_F("boot", "fibers ready: host=%p game=%p",
@@ -6247,7 +6247,7 @@ static int run_host_loop(const openpete_options_t* opts) {
     /* Best-effort fiber teardown. Our game fiber is parked in its forever-
      * yield loop, so co_delete is safe. */
     if (openpete_game_fiber) {
-        co_delete((cothread_t)openpete_game_fiber);
+        openpete_fiber_delete_guarded(openpete_game_fiber);
         openpete_game_fiber = NULL;
     }
 
