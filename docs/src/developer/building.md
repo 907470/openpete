@@ -187,15 +187,13 @@ What the preset files pin, beyond `CMAKE_BUILD_TYPE`:
 | `OPENPETE_ENABLE_RECORD=OFF` | `*-shared` | compiles out `--record`, dropping the libav dependency |
 | `OPENPETE_HIDE_DEBUG_FLAGS=ON` | `*-shared` | `--help` shows only the user-facing flag block. Display-only: `core/config/options.c` splits the help text, every flag still parses |
 | `OPENPETE_STAGE_MOD_DLLS=OFF` | `windows-mingw-shared` | stage mod sources only, no cmake-side DLLs — the dist exe's first-boot mod compile is the validation surface, and pre-seeding `.build/` would mask it. Default ON: cross presets pre-build every mod DLL into `<build>/games/spyro-1/mods/<id>/.build/` |
-| `OPENPETE_BUILD_PCSX_REDUX_GTE=OFF`, `OPENPETE_BUILD_TESTS=OFF` | `wasm` | trim non-browser components |
+| `OPENPETE_BUILD_TESTS=OFF` | `wasm` | trim non-browser components |
 
 Related non-preset knobs, defaults applying everywhere:
 `OPENPETE_COMPILE_MODS=ON` (every `cmake --build` also compiles all mods —
 native presets by invoking the exe's `--compile-mods` mode, cross presets
 cmake-side) and `OPENPETE_COMPILE_MODS_DIR` (the mods root that tier runs
 over, default `<repo>/mods`).
-`OPENPETE_BUILD_PCSX_REDUX_GTE` also defaults OFF for any MinGW cross build:
-it needs C++23 and MinGW-GCC 10 caps at C++20.
 
 ### Cache variables are sticky — why the preset files exist
 

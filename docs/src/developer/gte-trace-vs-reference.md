@@ -1,31 +1,22 @@
 # GTE side-by-side trace workflow
 
-Runs three independent GTE implementations on identical pre-state for every
-COP2 op inside a VBL window and dumps the post-state to CSV. Divergence
-between any pair localizes a GTE math bug to one engine. Three rows per
-logged op:
+Runs two independent GTE implementations on identical pre-state for every
+COP2 op inside a VBL window and dumps the post-state to CSV. A divergence
+between them localizes a GTE math bug to one engine. Two rows per logged op:
 
 | `engine` | source |
 |----------|--------|
 | `rec`    | psxrecomp's GTE (`third_party/psxrecomp/runner/src/gte.cpp`) |
 | `psy`    | PsyCross's GTE (`third_party/PsyCross/src/gte/PsyX_GTE.cpp`) |
-| `pcsx`   | pcsx-redux's GTE, vendored at `third_party/pcsx_redux_gte/` |
 
-A bug shared by two codebases derived from a common ancestor survives a
-2-way diff. pcsx-redux's GTE was written from the Nocash spec independently
-of PsyCross, so a 3-way bit-identical match is the stronger claim
-(`third_party/pcsx_redux_gte/README.md`).
+A bug shared by both engines survives the diff; the DuckStation fork's
+`-psxtrace-gte-log` and the live pcsx-redux replay below are independent
+third references.
 
 ## In-tree usage
 
-All three engines link into `openpete-spyro1` on the `linux-release`
-preset, so this needs no setup beyond env vars. On `windows-mingw` the
-vendored engine is off: `third_party/pcsx_redux_gte` needs C++23 and
-MinGW-GCC 10 caps at C++20, so `CMakeLists.txt` defaults
-`OPENPETE_BUILD_PCSX_REDUX_GTE` OFF when cross-compiling and
-`core/psx/pcsxr_gte_stub.c` supplies a `pcsxr_gte_run` that zeroes the
-post-state. Every `pcsx` row is then all-zero and the 3-way diff is
-meaningless; trace on Linux.
+Both engines link into every openpete build, so this needs no setup
+beyond env vars.
 
 ```sh
 rm -f /tmp/openpete-gte.csv
@@ -52,21 +43,18 @@ Knobs, all read once on the first COP2 op and parsed in `gte_trace_init()`
 
 `openpete_frame` is a VBL counter, not a tick counter.
 
-Output is three rows per logged op in the order `rec`, `psy`, `pcsx`. The
-multi-vertex ops RTPT, NCDT, NCT and NCCT emit one triple per vertex,
-labelled `_v0`, `_v1`, `_v2`. Diff pairwise, with the engine column blanked:
+Output is two rows per logged op in the order `rec`, `psy`. The
+multi-vertex ops RTPT, NCDT, NCT and NCCT emit one pair per vertex,
+labelled `_v0`, `_v1`, `_v2`. Diff with the engine column blanked:
 
 ```sh
 awk -F, 'NR==1 || $2=="rec"'  /tmp/openpete-gte.csv > /tmp/rec.csv
 awk -F, 'NR==1 || $2=="psy"'  /tmp/openpete-gte.csv > /tmp/psy.csv
-awk -F, 'NR==1 || $2=="pcsx"' /tmp/openpete-gte.csv > /tmp/pcsx.csv
 diff <(awk -F, '{$2="";print}' /tmp/rec.csv) \
      <(awk -F, '{$2="";print}' /tmp/psy.csv)
-diff <(awk -F, '{$2="";print}' /tmp/rec.csv) \
-     <(awk -F, '{$2="";print}' /tmp/pcsx.csv)
 ```
 
-Both diffs are empty on a healthy tree. The logged columns are the decoded
+The logged columns are the decoded
 CP2D/CP2C register file: the input vector, translation, rotation matrix,
 screen offsets, `H`, `DQA`, `DQB`, `MAC0-3`, `IR0-3`, `SZ0-3`, `SXY0-2`,
 `RGB0-2`, and `FLAG`.
@@ -78,9 +66,9 @@ Op codes: `01`=RTPS, `06`=NCLIP, `0C`=OP, `10`=DPCS, `11`=INTPL, `12`=MVMVA,
 
 ## Live pcsx-redux replay
 
-The vendored `pcsx` engine runs only on pre-state captured by openpete, so
+The in-tree `psy` engine runs only on pre-state captured by openpete, so
 it cannot detect openpete's MIPS recompiler feeding the GTE different
-different inputs than the original code path would. Ruling that out needs
+inputs than the original code path would. Ruling that out needs
 pcsx-redux running the actual disc. See also
 [ram-diff-vs-pcsxr](ram-diff-vs-pcsxr.md), which compares whole-RAM
 snapshots for the same class of question.

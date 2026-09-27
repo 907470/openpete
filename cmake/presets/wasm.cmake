@@ -2,5 +2,4 @@
 include(${CMAKE_CURRENT_LIST_DIR}/_helpers.cmake)
 set(CMAKE_BUILD_TYPE Release)
 openpete_preset_default(OPENPETE_SKIP_DECOMP ON)
-openpete_preset_default(OPENPETE_BUILD_PCSX_REDUX_GTE OFF)
 openpete_preset_default(OPENPETE_BUILD_TESTS OFF)

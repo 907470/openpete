@@ -957,16 +957,13 @@ uint32_t gte_cfc2(GTEState* gte, uint8_t reg) {
 } // namespace PSXRecomp
 
 // ---------------------------------------------------------------------------
-// GTE trace logger — emits a CSV with three rows per logged op: psxrecomp's
-// own GTE ("rec"), PsyCross's GTE ("psy"), and pcsx-redux's GTE ("pcsx") run
-// on identical pre-state. Three independent codebases on the same canonical
-// CP2D/CP2C register layout — divergence between any pair flags a bug in
-// one engine.
+// GTE trace logger — emits a CSV with two rows per logged op: psxrecomp's
+// own GTE ("rec") and PsyCross's GTE ("psy") run on identical pre-state.
+// Two independent codebases on the same canonical CP2D/CP2C register
+// layout — a divergence between them flags a bug in one engine.
 //
-// Used to validate the GTE depth-cue + bit-exact divide rewrite (commit
-// 9467e0e) against the user-reported titlescreen-cutscene mountain-peak
-// flicker. Keep the logger around as a regression check for any future GTE
-// math change.
+// A regression check for GTE math changes (depth cue, the bit-exact
+// divide).
 //
 // Activate with env vars (all read once on first call):
 //   OPENPETE_GTE_TRACE     path to output CSV (no env = disabled)
@@ -976,18 +973,12 @@ uint32_t gte_cfc2(GTEState* gte, uint8_t reg) {
 //                          AVSZ3/AVSZ4 ("01,06,30,2D,2E")
 //
 // Diff with: awk -F, '$2=="rec"' trace.csv > rec; '$2=="psy"' > psy;
-//            '$2=="pcsx"' > pcsx; diff rec psy; diff rec pcsx.
+//            diff rec psy.
 // The last column is the guest PC of the instruction; the DuckStation fork's
 // -psxtrace-gte-log writes the same columns (engine "ds") from the reference
 // under -cpu Interpreter, so the two sides diff row for row.
 // ---------------------------------------------------------------------------
 // PsyCross GTERegisters / GTE_operator pulled in via psx/gtereg.h above.
-
-extern "C" void pcsxr_gte_run(uint32_t cmd,
-                              const uint32_t pre_data[32],
-                              const uint32_t pre_ctrl[32],
-                              uint32_t       post_data[32],
-                              uint32_t       post_ctrl[32]);
 
 namespace {
 
@@ -1123,49 +1114,68 @@ void gte_trace_emit(FILE* fp, const DecodedGTE& d, const char* engine,
         d.FLAG, openpete_gte_caller_pc);
 }
 
+/** @brief Writes one "rec" and one "psy" CSV row per result vector of GTE op `func`.
+ *
+ * Triple-vertex ops (RTPT, NCDT, NCT, NCCT) emit one row pair per vertex
+ * index; an unlisted opcode is labelled "UNK".
+ * @param fp    Open trace CSV.
+ * @param d_rec Post-state of psxrecomp's GTE.
+ * @param d_psy Post-state of PsyCross's GTE on the same pre-state.
+ * @param func  GTE command function field (cmd & 0x3F). */
 void emit_op_rows(FILE* fp, const DecodedGTE& d_rec, const DecodedGTE& d_psy,
-                  const DecodedGTE& d_pcsx, uint8_t func) {
-    auto triple = [&](const char* op, int vidx) {
+                  uint8_t func) {
+    auto rows = [&](const char* op, int vidx) {
         gte_trace_emit(fp, d_rec,  "rec",  op, vidx);
         gte_trace_emit(fp, d_psy,  "psy",  op, vidx);
-        gte_trace_emit(fp, d_pcsx, "pcsx", op, vidx);
     };
     switch (func) {
-        case 0x01: triple("RTPS",    0); break;
-        case 0x30: triple("RTPT_v0", 0);
-                   triple("RTPT_v1", 1);
-                   triple("RTPT_v2", 2); break;
-        case 0x06: triple("NCLIP",  -1); break;
-        case 0x2D: triple("AVSZ3",  -1); break;
-        case 0x2E: triple("AVSZ4",  -1); break;
-        case 0x0C: triple("OP",     -1); break;
-        case 0x10: triple("DPCS",   -1); break;
-        case 0x11: triple("INTPL",  -1); break;
-        case 0x12: triple("MVMVA",  -1); break;
-        case 0x13: triple("NCDS",    0); break;
-        case 0x14: triple("CDP",    -1); break;
-        case 0x16: triple("NCDT_v0", 0);
-                   triple("NCDT_v1", 1);
-                   triple("NCDT_v2", 2); break;
-        case 0x1B: triple("NCCS",    0); break;
-        case 0x1C: triple("CC",     -1); break;
-        case 0x1E: triple("NCS",     0); break;
-        case 0x20: triple("NCT_v0",  0);
-                   triple("NCT_v1",  1);
-                   triple("NCT_v2",  2); break;
-        case 0x28: triple("SQR",    -1); break;
-        case 0x29: triple("DPCL",   -1); break;
-        case 0x2A: triple("DPCT",   -1); break;
-        case 0x3D: triple("GPF",    -1); break;
-        case 0x3E: triple("GPL",    -1); break;
-        case 0x3F: triple("NCCT_v0", 0);
-                   triple("NCCT_v1", 1);
-                   triple("NCCT_v2", 2); break;
+        case 0x01: rows("RTPS",    0); break;
+        case 0x30: rows("RTPT_v0", 0);
+                   rows("RTPT_v1", 1);
+                   rows("RTPT_v2", 2); break;
+        case 0x06: rows("NCLIP",  -1); break;
+        case 0x2D: rows("AVSZ3",  -1); break;
+        case 0x2E: rows("AVSZ4",  -1); break;
+        case 0x0C: rows("OP",     -1); break;
+        case 0x10: rows("DPCS",   -1); break;
+        case 0x11: rows("INTPL",  -1); break;
+        case 0x12: rows("MVMVA",  -1); break;
+        case 0x13: rows("NCDS",    0); break;
+        case 0x14: rows("CDP",    -1); break;
+        case 0x16: rows("NCDT_v0", 0);
+                   rows("NCDT_v1", 1);
+                   rows("NCDT_v2", 2); break;
+        case 0x1B: rows("NCCS",    0); break;
+        case 0x1C: rows("CC",     -1); break;
+        case 0x1E: rows("NCS",     0); break;
+        case 0x20: rows("NCT_v0",  0);
+                   rows("NCT_v1",  1);
+                   rows("NCT_v2",  2); break;
+        case 0x28: rows("SQR",    -1); break;
+        case 0x29: rows("DPCL",   -1); break;
+        case 0x2A: rows("DPCT",   -1); break;
+        case 0x3D: rows("GPF",    -1); break;
+        case 0x3E: rows("GPL",    -1); break;
+        case 0x3F: rows("NCCT_v0", 0);
+                   rows("NCCT_v1", 1);
+                   rows("NCCT_v2", 2); break;
         default:
-            triple("UNK",  -1); break;
+            rows("UNK",  -1); break;
     }
 }
 
+/** @brief Logs one executed GTE op: the recompiled post-state and PsyCross's result on the same pre-state.
+ *
+ * Returns without work unless OPENPETE_GTE_TRACE is set, `openpete_frame`
+ * lies in [LO, HI) and `func` is in the op mask; closes the CSV on the
+ * first call past HI. PsyCross's global register file is saved and
+ * restored around its run.
+ * @param func      GTE command function field (cmd & 0x3F).
+ * @param cmd       Full GTE command word.
+ * @param pre_data  CP2D before the op.
+ * @param pre_ctrl  CP2C before the op.
+ * @param post_data CP2D after the recompiled op.
+ * @param post_ctrl CP2C after the recompiled op. */
 void gte_trace_log_post(uint8_t func, uint32_t cmd,
                         const uint32_t pre_data[32], const uint32_t pre_ctrl[32],
                         const uint32_t post_data[32], const uint32_t post_ctrl[32]) {
@@ -1205,16 +1215,7 @@ void gte_trace_log_post(uint8_t func, uint32_t cmd,
         std::memcpy(gteRegs.CP2C.r, saved_c, sizeof(saved_c));
     }
 
-    // Run pcsx-redux's GTE on the same pre-state. The vendored runner.cpp
-    // owns a private register file, so no save/restore needed.
-    DecodedGTE d_pcsx{};
-    {
-        uint32_t pcsx_data[32], pcsx_ctrl[32];
-        pcsxr_gte_run(cmd, pre_data, pre_ctrl, pcsx_data, pcsx_ctrl);
-        decode_gte(d_pcsx, pcsx_data, pcsx_ctrl);
-    }
-
-    emit_op_rows(fp, d_rec, d_psy, d_pcsx, func);
+    emit_op_rows(fp, d_rec, d_psy, func);
 }
 } // namespace
 

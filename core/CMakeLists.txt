@@ -589,18 +589,6 @@ if(WIN32)
     target_link_libraries(openpete_core PUBLIC winmm)
 endif()
 
-# Vendored pcsx-redux GTE — third reference engine for the trace logger in
-# third_party/psxrecomp/runner/src/gte.cpp.
-if(TARGET pcsx_redux_gte)
-    target_link_libraries(openpete_core PUBLIC pcsx_redux_gte)
-else()
-    # When the vendored GTE is disabled (e.g. MinGW preset, where its C++23
-    # requirement isn't met), define `pcsxr_gte_run` as a no-op so the
-    # trace-logger path links. The trace logger is only invoked when the
-    # logger is explicitly enabled, which it isn't on the runtime path.
-    target_sources(openpete_core PRIVATE psx/pcsxr_gte_stub.c)
-endif()
-
 # Fail the build (cheap automated check) if anyone smuggles a Spyro
 # address or Win32-only header into core/. The exit-criteria greps in
 # §5 Phase 0b live here as build-time guards.

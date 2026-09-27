@@ -61,8 +61,7 @@ set(OPENPETE_GAMES "spyro-1;spyro-2;spyro-3" CACHE STRING "Games to build (semic
 
 # In-process GLSL→SPIR-V for the mod shader compile service
 # (notes/plans/openpete-mod-shaders.md S1). glslang 15.4.0 pinned:
-# C++17 under GCC 10 (the MinGW cross compiler's ceiling — same
-# constraint that keeps pcsx_redux_gte off for Windows), targets
+# C++17 under GCC 10 (the MinGW cross compiler's ceiling), targets
 # vulkan1.0 like the engine's own glslangValidator -V builds. OFF is a
 # degraded build: mods' prebuilt .spv still load, GLSL sources refuse
 # with a log pointer.
@@ -88,27 +87,6 @@ endif()
 option(OPENPETE_BUILD_PSYCROSS "Build third_party/PsyCross as a static lib" ON)
 if(OPENPETE_BUILD_PSYCROSS)
     add_subdirectory(third_party/PsyCross)
-endif()
-
-# Vendored pcsx-redux GTE — third reference engine for the GTE trace logger
-# (PsyCross is the second). Adds a static lib `pcsx_redux_gte` exposing one
-# C-callable: pcsxr_gte_run(cmd, pre_data[32], pre_ctrl[32], post_data[32],
-# post_ctrl[32]).
-# pcsx_redux_gte is a GTE trace-logger reference (diagnostic only, not on
-# the runtime path) and requires C++23. MinGW-GCC 10 — the version Ubuntu
-# 22.04 ships in `gcc-mingw-w64-x86-64-posix` — caps at C++20, so default
-# the option OFF when cross-compiling. Native Linux/macOS keep it ON.
-if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW)
-    set(_OPENPETE_PCSX_REDUX_GTE_DEFAULT OFF)
-else()
-    set(_OPENPETE_PCSX_REDUX_GTE_DEFAULT ON)
-endif()
-option(OPENPETE_BUILD_PCSX_REDUX_GTE
-       "Build third_party/pcsx_redux_gte as a static lib"
-       ${_OPENPETE_PCSX_REDUX_GTE_DEFAULT})
-unset(_OPENPETE_PCSX_REDUX_GTE_DEFAULT)
-if(OPENPETE_BUILD_PCSX_REDUX_GTE)
-    add_subdirectory(third_party/pcsx_redux_gte)
 endif()
 
 # Native render foundation: RHI + Vulkan backend (game-agnostic, under
