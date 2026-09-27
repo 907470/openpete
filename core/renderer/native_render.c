@@ -6618,20 +6618,90 @@ void openpete_native_occl_set_camera(const openpete_occl_camera *c)
 typedef struct { float uax, ubx, vay, vby; unsigned stamp;
                  openpete_occl_camera cam; } occl_meta_t;
 #define OCCL_FIFO_N 16
-static float       s_occl_vz[OCCL_GW * OCCL_GH]; /* decoded farthest view-Z per cell */
-static int         s_occl_have = 0;
-static unsigned    s_occl_presents = 0;          /* live present counter */
-static unsigned    s_occl_stamp = 0;             /* present the current grid was captured at */
-static int         s_occl_suspend = 0;           /* presents left of cut suspension */
+/* One decoded occluder grid: the cell depths with the screen affine, the
+ * present stamp and the camera they were rendered under. The fields are
+ * only meaningful together (a cell depth read through another grid's
+ * affine or camera breaks the conservative-cull guarantee), so they
+ * cross threads as one struct. */
+typedef struct {
+    float vz[OCCL_GW * OCCL_GH];        /* decoded farthest view-Z per cell */
+    float uax, ubx, vay, vby;           /* PSX screen -> extent affine */
+    unsigned stamp;                     /* present the grid was captured at */
+    openpete_occl_camera cam;           /* camera the grid was rendered from */
+    int have;                           /* 0 until the first grid decodes */
+} occl_grid_t;
+/* Publish protocol. The presenting thread decodes into s_occl_dec, then
+ * copies it into s_occl_pub under s_occl_pub_mx and bumps s_occl_pub_seq
+ * (release). The querying thread (the extraction on the guest thread)
+ * copies s_occl_pub into s_occl_rd under the same mutex when the sequence
+ * moved, then answers every query from s_occl_rd, which only it touches.
+ * The present counter and the cut suspension are single atomics. */
+static occl_grid_t   s_occl_dec;                 /* presenting thread only */
+static occl_grid_t   s_occl_pub;                 /* under s_occl_pub_mx */
+static occl_grid_t   s_occl_rd;                  /* querying thread only */
+static void *s_occl_pub_mx;                   /* SDL_Mutex, created by nr_mutex_once */
+static SDL_AtomicInt s_occl_pub_seq;             /* bumped per publish */
+static int           s_occl_rd_seq;              /* querying thread: sequence copied */
+static SDL_AtomicInt s_occl_presents;            /* live present counter */
+static SDL_AtomicInt s_occl_suspend;             /* presents left of cut suspension */
 static occl_meta_t s_occl_fifo[OCCL_FIFO_N];     /* affine+stamp queued with each copy */
 static unsigned    s_occl_fifo_head = 0, s_occl_fifo_tail = 0;
-static float       s_occl_uax, s_occl_ubx, s_occl_vay, s_occl_vby;
-static openpete_occl_camera s_occl_cam_grid;     /* camera the held grid was rendered from */
 
+/** @brief Return the mutex in slot, creating it on first use; concurrent first calls agree on one. */
+static SDL_Mutex *nr_mutex_once(void **slot)
+{
+    SDL_Mutex *m = (SDL_Mutex *)SDL_GetAtomicPointer(slot);
+    if (m) return m;
+    SDL_Mutex *fresh = SDL_CreateMutex();
+    if (SDL_CompareAndSwapAtomicPointer(slot, NULL, fresh)) return fresh;
+    SDL_DestroyMutex(fresh);
+    return (SDL_Mutex *)SDL_GetAtomicPointer(slot);
+}
+
+/** @brief Publish the presenting thread's decoded grid for the querying thread. */
+static void occl_grid_publish(void)
+{
+    SDL_Mutex *mx = nr_mutex_once(&s_occl_pub_mx);
+    SDL_LockMutex(mx);
+    s_occl_pub = s_occl_dec;
+    SDL_UnlockMutex(mx);
+    SDL_AddAtomicInt(&s_occl_pub_seq, 1);
+}
+
+/** @brief Bring the querying thread's grid copy up to the latest publish.
+ *
+ * @return The grid every query of this call reads. */
+static const occl_grid_t *occl_grid_reader(void)
+{
+    const int seq = SDL_GetAtomicInt(&s_occl_pub_seq);
+    if (seq != s_occl_rd_seq) {
+        SDL_Mutex *mx = nr_mutex_once(&s_occl_pub_mx);
+        SDL_LockMutex(mx);
+        s_occl_rd = s_occl_pub;
+        SDL_UnlockMutex(mx);
+        s_occl_rd_seq = seq;
+    }
+    return &s_occl_rd;
+}
+
+/** @brief Decrement an atomic counter that is above zero; a counter at zero stays. */
+static void occl_atomic_dec_positive(SDL_AtomicInt *a)
+{
+    for (;;) {
+        const int v = SDL_GetAtomicInt(a);
+        if (v <= 0 || SDL_CompareAndSwapAtomicInt(a, v, v - 1)) return;
+    }
+}
+
+/** @brief Reduce this present's depth pre-pass into the grid, retrieve and publish an older grid, and queue this present's metadata.
+ *
+ * Runs on the presenting thread. The retrieved grid is decoded into
+ * s_occl_dec with the affine, stamp and camera queued with it, then
+ * published whole (occl_grid_publish). */
 static void native_occl_downsample(void)
 {
-    s_occl_presents++;
-    if (s_occl_suspend > 0) s_occl_suspend--;
+    const unsigned presents = (unsigned)SDL_AddAtomicInt(&s_occl_presents, 1) + 1u;
+    occl_atomic_dec_positive(&s_occl_suspend);
     if (!occl_active() || !s_od_ready || !s_nr.fs_quad_vb) return;
 
     /* Reduce this present's pre-pass into the grid RT (viewport = full RT). */
@@ -6658,30 +6728,31 @@ static void native_occl_downsample(void)
             uint32_t q = ((uint32_t)raw[i*4+0] << 16) | ((uint32_t)raw[i*4+1] << 8) | raw[i*4+2];
             /* Decode the pre-pass encode d = 1 - 1/viewZ; q at full scale is
              * the far-clear (sky / no occluder) sentinel. */
-            s_occl_vz[i] = (q >= 16777200u) ? 3.4e38f
-                         : 1.0f / (1.0f - (float)q / 16777215.0f);
+            s_occl_dec.vz[i] = (q >= 16777200u) ? 3.4e38f
+                             : 1.0f / (1.0f - (float)q / 16777215.0f);
         }
-        s_occl_uax = m->uax; s_occl_ubx = m->ubx;
-        s_occl_vay = m->vay; s_occl_vby = m->vby;
-        s_occl_stamp = m->stamp;
-        s_occl_cam_grid = m->cam;
-        s_occl_have = 1;
+        s_occl_dec.uax = m->uax; s_occl_dec.ubx = m->ubx;
+        s_occl_dec.vay = m->vay; s_occl_dec.vby = m->vby;
+        s_occl_dec.stamp = m->stamp;
+        s_occl_dec.cam = m->cam;
+        s_occl_dec.have = 1;
+        occl_grid_publish();
         if (occl_camdbg())
             fprintf(stderr, "[occl-grid] sframe=%u present=%u stamp=%u age=%u valid=%d "
-                    "gcam=(%.0f,%.0f,%.0f)\n", s_scene_frame, s_occl_presents, m->stamp,
-                    s_occl_presents - m->stamp, s_occl_cam_grid.valid,
-                    s_occl_cam_grid.pos[0], s_occl_cam_grid.pos[1], s_occl_cam_grid.pos[2]);
+                    "gcam=(%.0f,%.0f,%.0f)\n", s_scene_frame, presents, m->stamp,
+                    presents - m->stamp, s_occl_dec.cam.valid,
+                    s_occl_dec.cam.pos[0], s_occl_dec.cam.pos[1], s_occl_dec.cam.pos[2]);
     } else if (got) {
         s_occl_fifo_tail = s_occl_fifo_head;   /* desync (shouldn't happen) — resync empty */
     }
     if (s_occl_fifo_head - s_occl_fifo_tail >= OCCL_FIFO_N) s_occl_fifo_tail++; /* overflow: drop oldest */
     occl_meta_t* mm = &s_occl_fifo[s_occl_fifo_head % OCCL_FIFO_N];
     mm->uax = s_od_uax; mm->ubx = s_od_ubx; mm->vay = s_od_vay; mm->vby = s_od_vby;
-    mm->stamp = s_occl_presents;
+    mm->stamp = presents;
     mm->cam = *ps_occl_cam();
     if (occl_camdbg())
         fprintf(stderr, "[occl-queue] sframe=%u present=%u slot=%d valid=%d "
-                "qcam=(%.0f,%.0f,%.0f)\n", s_scene_frame, s_occl_presents, s_ps_slot ? 1 : 0,
+                "qcam=(%.0f,%.0f,%.0f)\n", s_scene_frame, presents, s_ps_slot ? 1 : 0,
                 mm->cam.valid, mm->cam.pos[0], mm->cam.pos[1], mm->cam.pos[2]);
     s_occl_fifo_head++;
 }
@@ -6695,11 +6766,12 @@ static float s_occl_last_scan_max;                 /* diagnostics (last CULLED s
  * then the relative rotation against occl_cam_turn_trace. Either side
  * lacking a valid camera is a mismatch, so an unpublished camera culls
  * nothing.
+ * @param G The grid.
  * @param q Querying camera; NULL is a mismatch.
  * @return 1 when both bounds hold, else 0. */
-static int occl_cam_in_bound(const openpete_occl_camera *q)
+static int occl_cam_in_bound(const occl_grid_t *G, const openpete_occl_camera *q)
 {
-    const openpete_occl_camera *g = &s_occl_cam_grid;
+    const openpete_occl_camera *g = &G->cam;
     if (!q || !q->valid || !g->valid) return 0;
     float dx = q->pos[0] - g->pos[0], dy = q->pos[1] - g->pos[1], dz = q->pos[2] - g->pos[2];
     float mv = occl_cam_move();
@@ -6714,13 +6786,14 @@ static int occl_cam_in_bound(const openpete_occl_camera *q)
  * OPENPETE_OCCL_Q_NOGRID when no grid is held, OPENPETE_OCCL_Q_SUSPENDED
  * while grid use is suspended, OPENPETE_OCCL_Q_STALE when the grid is more
  * than 8 presents old.
+ * @param G The grid.
  * @return The refusing outcome index, or -1 when the grid and its screen
  *         affine are usable. */
-static int occl_grid_refusal(void)
+static int occl_grid_refusal(const occl_grid_t *G)
 {
-    if (!s_occl_have) return OPENPETE_OCCL_Q_NOGRID;
-    if (s_occl_suspend > 0) return OPENPETE_OCCL_Q_SUSPENDED;
-    if (s_occl_presents - s_occl_stamp > 8u) return OPENPETE_OCCL_Q_STALE;
+    if (!G->have) return OPENPETE_OCCL_Q_NOGRID;
+    if (SDL_GetAtomicInt(&s_occl_suspend) > 0) return OPENPETE_OCCL_Q_SUSPENDED;
+    if ((unsigned)SDL_GetAtomicInt(&s_occl_presents) - G->stamp > 8u) return OPENPETE_OCCL_Q_STALE;
     return -1;
 }
 
@@ -6730,15 +6803,16 @@ typedef struct { float u0, u1, v0, v1; } occl_uv_rect;
  *
  * The visible extent spans [0,1] on each axis; each axis of the result is
  * ordered low to high.
+ * @param G The grid.
  * @param sx0 First x edge in PSX screen pixels.
  * @param sy0 First y edge in PSX screen pixels.
  * @param sx1 Second x edge in PSX screen pixels.
  * @param sy1 Second y edge in PSX screen pixels.
  * @return The mapped rectangle. */
-static occl_uv_rect occl_rect_uv(float sx0, float sy0, float sx1, float sy1)
+static occl_uv_rect occl_rect_uv(const occl_grid_t *G, float sx0, float sy0, float sx1, float sy1)
 {
-    occl_uv_rect r = { s_occl_uax * sx0 + s_occl_ubx, s_occl_uax * sx1 + s_occl_ubx,
-                       s_occl_vay * sy0 + s_occl_vby, s_occl_vay * sy1 + s_occl_vby };
+    occl_uv_rect r = { G->uax * sx0 + G->ubx, G->uax * sx1 + G->ubx,
+                       G->vay * sy0 + G->vby, G->vay * sy1 + G->vby };
     if (r.u1 < r.u0) { float t = r.u0; r.u0 = r.u1; r.u1 = t; }
     if (r.v1 < r.v0) { float t = r.v0; r.v0 = r.v1; r.v1 = t; }
     return r;
@@ -6763,8 +6837,9 @@ static int occl_uv_offscreen(const occl_uv_rect *r, float vz_near)
 
 int openpete_native_occl_offscreen(float sx0, float sy0, float sx1, float sy1, float vz_near)
 {
-    if (occl_grid_refusal() >= 0) return 0;
-    occl_uv_rect r = occl_rect_uv(sx0, sy0, sx1, sy1);
+    const occl_grid_t *G = occl_grid_reader();
+    if (occl_grid_refusal(G) >= 0) return 0;
+    occl_uv_rect r = occl_rect_uv(G, sx0, sy0, sx1, sy1);
     if (!occl_uv_offscreen(&r, vz_near)) return 0;
     s_occl_qstat[OPENPETE_OCCL_Q_OFFSCREEN]++;
     return 1;
@@ -6773,9 +6848,10 @@ int openpete_native_occl_offscreen(float sx0, float sy0, float sx1, float sy1, f
 int openpete_native_occl_query(float sx0, float sy0, float sx1, float sy1, float vz_near,
                                const openpete_occl_camera *cam)
 {
-    int refusal = occl_grid_refusal();
+    const occl_grid_t *G = occl_grid_reader();
+    int refusal = occl_grid_refusal(G);
     if (refusal >= 0) { s_occl_qstat[refusal]++; return 0; }
-    occl_uv_rect r = occl_rect_uv(sx0, sy0, sx1, sy1);
+    occl_uv_rect r = occl_rect_uv(G, sx0, sy0, sx1, sy1);
     if (occl_uv_offscreen(&r, vz_near)) {
         s_occl_qstat[OPENPETE_OCCL_Q_OFFSCREEN]++;
         return 1;
@@ -6783,17 +6859,18 @@ int openpete_native_occl_query(float sx0, float sy0, float sx1, float sy1, float
     /* Past the frustum reject, which is a test on the caller's own rect and
      * needs no depth: every verdict below reads the grid's cells, so it is
      * only valid while the two cameras agree. */
-    if (!occl_cam_in_bound(cam)) { s_occl_qstat[OPENPETE_OCCL_Q_MOVED]++; return 0; }
+    if (!occl_cam_in_bound(G, cam)) { s_occl_qstat[OPENPETE_OCCL_Q_MOVED]++; return 0; }
     if (occl_camdbg() && cam) {
-        float dx = cam->pos[0] - s_occl_cam_grid.pos[0];
-        float dy = cam->pos[1] - s_occl_cam_grid.pos[1];
-        float dz = cam->pos[2] - s_occl_cam_grid.pos[2];
-        float tr = 0.0f; for (int k = 0; k < 9; k++) tr += cam->M[k] * s_occl_cam_grid.M[k];
+        const openpete_occl_camera *gc = &G->cam;
+        float dx = cam->pos[0] - gc->pos[0];
+        float dy = cam->pos[1] - gc->pos[1];
+        float dz = cam->pos[2] - gc->pos[2];
+        float tr = 0.0f; for (int k = 0; k < 9; k++) tr += cam->M[k] * gc->M[k];
         fprintf(stderr, "[occl-inbound] sframe=%u age=%u d=%.1f tr=%.5f "
                 "gcam=(%.0f,%.0f,%.0f) qcam=(%.0f,%.0f,%.0f)\n",
-                s_scene_frame, s_occl_presents - s_occl_stamp,
+                s_scene_frame, (unsigned)SDL_GetAtomicInt(&s_occl_presents) - G->stamp,
                 sqrtf(dx*dx + dy*dy + dz*dz), tr,
-                s_occl_cam_grid.pos[0], s_occl_cam_grid.pos[1], s_occl_cam_grid.pos[2],
+                gc->pos[0], gc->pos[1], gc->pos[2],
                 cam->pos[0], cam->pos[1], cam->pos[2]);
     }
     float need = vz_near - occl_slack();
@@ -6810,7 +6887,7 @@ int openpete_native_occl_query(float sx0, float sy0, float sx1, float sy1, float
     float scan_max = 0.0f;
     for (int cy = cy0; cy <= cy1; cy++)
         for (int cx = cx0; cx <= cx1; cx++) {
-            float c = s_occl_vz[cy * OCCL_GW + cx];
+            float c = G->vz[cy * OCCL_GW + cx];
             if (c > scan_max) scan_max = c;
             if (c >= need) {
                 s_occl_qstat[OPENPETE_OCCL_Q_VISIBLE]++; return 0;
@@ -6824,7 +6901,10 @@ int openpete_native_occl_query(float sx0, float sy0, float sx1, float sy1, float
 float openpete_native_occl_last_scan_max(void) { return s_occl_last_scan_max; }
 
 int openpete_native_occl_grid_age(void)
-{ return s_occl_have ? (int)(s_occl_presents - s_occl_stamp) : -1; }
+{
+    const occl_grid_t *G = occl_grid_reader();
+    return G->have ? (int)((unsigned)SDL_GetAtomicInt(&s_occl_presents) - G->stamp) : -1;
+}
 
 void openpete_native_occl_qstats(long out[OPENPETE_OCCL_Q_COUNT])
 {
@@ -6833,7 +6913,10 @@ void openpete_native_occl_qstats(long out[OPENPETE_OCCL_Q_COUNT])
 
 void openpete_native_occl_suspend(int presents)
 {
-    if (presents > s_occl_suspend) s_occl_suspend = presents;
+    for (;;) {   /* raise to presents; the presenting thread decrements concurrently */
+        const int v = SDL_GetAtomicInt(&s_occl_suspend);
+        if (presents <= v || SDL_CompareAndSwapAtomicInt(&s_occl_suspend, v, presents)) return;
+    }
 }
 
 /* Hor+ widen factor; documented at the declaration. */

@@ -1781,6 +1781,19 @@ typedef struct openpete_occl_camera {
     int   valid;
 } openpete_occl_camera;
 void openpete_native_occl_set_camera(const openpete_occl_camera *c);
+/** @brief Return 1 when every grid cell over a screen rect is nearer than vz_near: the geometry is occluded.
+ *
+ * Called on the extracting thread; it reads that thread's copy of the last
+ * published grid (cells, affine, stamp and camera from one present). Returns
+ * 0 while the grid is absent, suspended, more than 8 presents old, or taken
+ * under a camera outside the bound of cam; an off-screen rect returns 1.
+ * @param sx0 Left edge in PSX screen pixels.
+ * @param sy0 Top edge in PSX screen pixels.
+ * @param sx1 Right edge in PSX screen pixels.
+ * @param sy1 Bottom edge in PSX screen pixels.
+ * @param vz_near Nearest view-Z of the object, including the caller's slack.
+ * @param cam The camera the caller's walk projects with.
+ * @return 1 to cull, 0 to keep. */
 int  openpete_native_occl_query(float sx0, float sy0, float sx1, float sy1, float vz_near,
                                 const openpete_occl_camera *cam);
 /** @brief Return 1 when a screen rect lies wholly outside the occlusion grid's visible extent.
@@ -1799,6 +1812,11 @@ int  openpete_native_occl_query(float sx0, float sy0, float sx1, float sy1, floa
  * @param vz_near Nearest view-Z of the object, including the caller's slack.
  * @return 1 when the rect is off-screen, else 0. */
 int  openpete_native_occl_offscreen(float sx0, float sy0, float sx1, float sy1, float vz_near);
+/** @brief Refuse occlusion verdicts for at least the next presents presents; callable from any thread.
+ *
+ * Raises the suspension to presents when it is lower; the presenting thread
+ * decrements it once per present.
+ * @param presents Presents to suspend for. */
 void openpete_native_occl_suspend(int presents);
 /* Query-outcome census (cumulative counters; diagnostics). OFFSCREEN = culled
  * because the rect lies fully outside the visible extent (native frustum cull

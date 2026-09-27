@@ -643,7 +643,6 @@ core/renderer/native_render.c	hd_defer_flush	none
 core/renderer/native_render.c	hd_defer_push	none	
 core/renderer/native_render.c	hdfold_flush_locked	none	
 core/renderer/native_render.c	hud_paint_cmp	none	
-core/renderer/native_render.c	native_occl_downsample	none	
 core/renderer/native_render.c	native_postfx_point_active	none	
 core/renderer/native_render.c	native_terrain_key_pass	none	
 core/renderer/native_render.c	notex_apply_pending	none	
@@ -664,9 +663,7 @@ core/renderer/native_render.c	openpete_native_get_reextract	untagged
 core/renderer/native_render.c	openpete_native_get_terrain_visibility	untagged	
 core/renderer/native_render.c	openpete_native_get_wireframe	none	
 core/renderer/native_render.c	openpete_native_occl_qstats	none	
-core/renderer/native_render.c	openpete_native_occl_query	none	
 core/renderer/native_render.c	openpete_native_occl_set_camera	none	
-core/renderer/native_render.c	openpete_native_occl_suspend	none	
 core/renderer/native_render.c	openpete_native_perf_anchor	none	
 core/renderer/native_render.c	openpete_native_perf_stats_level	none	
 core/renderer/native_render.c	openpete_native_present_stage	none	
