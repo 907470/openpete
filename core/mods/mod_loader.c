@@ -2068,21 +2068,46 @@ static int level_count_key(toml_table_t* lt, const char* key, int max,
     return (int)d.u.i;
 }
 
-/** @brief Report whether a manifest id is a plain name of letters, digits, dots, underscores and hyphens, not led by a dot and free of a double dot.
+/** @brief Report whether an id's stem (the text before its first dot) is a Windows reserved device name.
+ *
+ * CON, PRN, AUX, NUL, COM1-COM9 and LPT1-LPT9 name devices in every
+ * directory on Windows, with or without an extension, in any case.
+ * @param id The id.
+ * @return 1 when reserved, else 0. */
+static int mod_id_reserved_stem(const char* id) {
+    static const char* const names[] = {"CON", "PRN", "AUX", "NUL"};
+    size_t n = strcspn(id, ".");
+    char stem[5];
+    if (n < 3 || n > 4) return 0;
+    for (size_t i = 0; i < n; i++)
+        stem[i] = (char)((id[i] >= 'a' && id[i] <= 'z') ? id[i] - 32 : id[i]);
+    stem[n] = '\0';
+    if (n == 4)
+        return (!strncmp(stem, "COM", 3) || !strncmp(stem, "LPT", 3)) &&
+               stem[3] >= '1' && stem[3] <= '9';
+    for (size_t i = 0; i < sizeof names / sizeof names[0]; i++)
+        if (!strcmp(stem, names[i])) return 1;
+    return 0;
+}
+
+/** @brief Report whether a manifest id is usable as a single file name component on every host.
  *
  * The id names files and directories (.build/<id>, .unpacked/<id>) and
- * reaches the compiler's output path, so a separator, a quote or a ".."
- * would write outside the mod's own directory.
+ * reaches the compiler's output path through an argv, never a shell, so
+ * quotes and spaces are legal. Refused: an empty id, a leading dot, a
+ * "..", a path separator (/ or \), a character Windows file names cannot
+ * hold (< > : " | ? * and control bytes), a trailing dot or space, and a
+ * reserved device stem (mod_id_reserved_stem). Any of these either leaves
+ * the mod's own directory or names a file Windows cannot create.
  * @param id The id.
  * @return 1 when safe, else 0. */
 static int mod_id_valid(const char* id) {
-    if (!id[0] || id[0] == '.' || strstr(id, "..")) return 0;
-    for (const char* p = id; *p; p++) {
-        int ok = (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
-                 (*p >= '0' && *p <= '9') || *p == '.' || *p == '_' || *p == '-';
-        if (!ok) return 0;
-    }
-    return 1;
+    size_t n = strlen(id);
+    if (!n || id[0] == '.' || strstr(id, "..")) return 0;
+    if (id[n - 1] == '.' || id[n - 1] == ' ') return 0;
+    for (const char* p = id; *p; p++)
+        if ((unsigned char)*p < 0x20 || strchr("/\\<>:\"|?*", *p)) return 0;
+    return !mod_id_reserved_stem(id);
 }
 
 /** @brief Parse the [mod] table: identity, the api floor, and the declarations that gate savestate, rewind and runahead.
@@ -2100,8 +2125,8 @@ static int mod_id_valid(const char* id) {
  * @param mod The mod being parsed.
  * @param mod_dir The mod directory.
  * @param path Manifest path for log lines.
- * @return 0, or -1 when id or version is missing, the id is not a plain
- *         name (mod_id_valid), or the api is newer than the engine's. */
+ * @return 0, or -1 when id or version is missing, the id cannot be a
+ *         file name (mod_id_valid), or the api is newer than the engine's. */
 static int parse_mod_header(toml_table_t* t, struct openpete_mod* mod,
                             const char* mod_dir, const char* path) {
     toml_datum_t id = toml_string_in(t, "id");
@@ -2109,8 +2134,9 @@ static int parse_mod_header(toml_table_t* t, struct openpete_mod* mod,
     toml_datum_t api = toml_int_in(t, "api");
     if (!id.ok || !ver.ok || !mod_id_valid(id.u.s)) {
         if (id.ok && ver.ok)
-            OPL_ERROR_F("mods", "%s: [mod] id \"%s\" is not a plain name "
-                        "(letters, digits, '.', '_', '-'; no \"..\") — disabled",
+            OPL_ERROR_F("mods", "%s: [mod] id \"%s\" cannot be a file name "
+                        "(no / \\ < > : \" | ? *, control bytes, \"..\", leading "
+                        "dot, trailing dot or space, or device name) — disabled",
                         path, id.u.s);
         else
             OPL_ERROR_F("mods", "%s: [mod] requires id and version", path);
