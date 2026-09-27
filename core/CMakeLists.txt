@@ -632,6 +632,7 @@ if(NOT CMAKE_HOST_WIN32)
     #                         DLL loading — Windows' dlopen analog)
     #   - config/paths.c      GetModuleFileNameA (the exe directory, which
     #                         is the root of the portable data layout)
+    #   - host/atomic_file.c  MoveFileExW (replace a file in one step)
     # The rest of core/ must remain game-agnostic AND platform-agnostic,
     # so keep the grep-guard but list the exempt TUs by name. New core
     # TUs that need Win32 APIs MUST be added here AND keep their
@@ -648,7 +649,7 @@ if(NOT CMAKE_HOST_WIN32)
     add_custom_target(openpete_core_purity_check ALL
         COMMAND ${CMAKE_COMMAND} -E echo "Checking core/ purity..."
         COMMAND bash -c "! grep -rE '0x800[0-9a-fA-F]{4}' ${CMAKE_SOURCE_DIR}/core/ --include='*.c' --include='*.h' --include='*.cpp' --include='*.hpp' | grep -vE '^[^:]+:[[:space:]]*#[[:space:]]*define'"
-        COMMAND bash -c "! grep -rE 'CreateFiber|<windows.h>' ${CMAKE_SOURCE_DIR}/core/ --include='*.c' --include='*.h' --include='*.cpp' --include='*.hpp' --exclude='crash.c' --exclude='openpete_time.c' --exclude='openpete_frame_time_log.c' --exclude='mod_loader.c' --exclude='host_spawn.c' --exclude='paths.c' --exclude='log_file.c' --exclude='window_restack.c'"
+        COMMAND bash -c "! grep -rE 'CreateFiber|<windows.h>' ${CMAKE_SOURCE_DIR}/core/ --include='*.c' --include='*.h' --include='*.cpp' --include='*.hpp' --exclude='crash.c' --exclude='openpete_time.c' --exclude='openpete_frame_time_log.c' --exclude='mod_loader.c' --exclude='host_spawn.c' --exclude='paths.c' --exclude='log_file.c' --exclude='window_restack.c' --exclude='atomic_file.c'"
         COMMENT "core/ purity check: no Spyro addresses, no Win32-only APIs"
         VERBATIM)
 
