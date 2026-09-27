@@ -571,7 +571,6 @@ core/psx/dispatch.c	call_by_address	untagged
 core/psx/dispatch.c	diag_track_gp1	untagged	
 core/psx/dispatch.c	note_miss	none	
 core/psx/dispatch.c	openpete_halt_dump_and_exit	none	
-core/psx/dispatch.c	openpete_hang_dump_and_exit	none	
 core/psx/dispatch.c	psx_get_ram	untagged	
 core/psx/dispatch.c	psx_get_scratch	untagged	
 core/psx/dispatch.c	psx_mmio_trace_enable	untagged	

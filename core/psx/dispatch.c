@@ -6,7 +6,9 @@
 // top of the generated dispatch table.
 
 #include "openpete_fiber.h"
+#include "openpete_fatal.h"
 #include "openpete_log.h"
+#include "openpete_paths.h"
 #include "openpete_psx.h"
 #include "openpete_pace_log.h"
 #include "openpete_recomp_module.h"
@@ -298,7 +300,10 @@ static void openpete_halt_dump_and_exit(CPUState* cpu, uint32_t addr) {
  * frame — don't look like hangs.)
  *
  * On trip: write three rings of (addr, ra, sp) to `OPENPETE_HANG_TRACE`
- * (default ./hang-trace.bin) and `_Exit(2)`. Format: u32 magic 'HANG2', then
+ * (default hang-trace.bin in the logs state directory, beside the log
+ * file) and guest RAM to `OPENPETE_HANG_RAM` (default hang-ram.bin there),
+ * tell the player (openpete_fatal_message) and `_Exit(2)`. Format: u32
+ * magic 'HANG2', then
  * for each ring a u32 count, a u32 head index, and count*{u32 addr, u32 ra,
  * u32 sp}: the entry ring for the tripping interval, the entry ring as it
  * stood at the previous vbl boundary, and the recent ring.
@@ -325,10 +330,38 @@ static int s_hang_threshold_inited = 0;
 static uint32_t s_hang_threshold = 50000000u;  /* env-overridable */
 static int s_hang_tripped = 0;
 
+/** @brief Write the default path of a hang-watchdog output file, `leaf` in the logs state directory, into out.
+ *
+ * The working directory of a launched game is arbitrary (the install
+ * directory, the user's home, a system directory), so the dumps go where
+ * the log file goes. Falls back to the working directory only when no
+ * state directory resolves.
+ * @param leaf File name.
+ * @param out Receives the path.
+ * @param cap Capacity of out. */
+static void hang_output_path(const char* leaf, char* out, size_t cap) {
+#ifdef _WIN32
+    const char sep = '\\';
+#else
+    const char sep = '/';
+#endif
+    char dir[1024];
+    if (openpete_paths_state_dir("logs", dir, sizeof dir, 1) == 0)
+        snprintf(out, cap, "%s%c%s", dir, sep, leaf);
+    else
+        snprintf(out, cap, "%s", leaf);
+}
+
+/** @brief Trip the hang watchdog: write the dispatch rings and guest RAM, tell the player, and exit with code 2.
+ *
+ * @param trip_addr The guest function whose entry crossed the threshold. */
 static void openpete_hang_dump_and_exit(uint32_t trip_addr) {
     s_hang_tripped = 1;
+    char trace_default[1100], ram_default[1100];
+    hang_output_path("hang-trace.bin", trace_default, sizeof trace_default);
+    hang_output_path("hang-ram.bin", ram_default, sizeof ram_default);
     const char* path = getenv("OPENPETE_HANG_TRACE");
-    if (!path || !*path) path = "./hang-trace.bin";
+    if (!path || !*path) path = trace_default;
     FILE* fp = fopen(path, "wb");
     if (fp) {
         uint32_t magic = 0x32474E48u;  /* 'HNG2' */
@@ -349,7 +382,7 @@ static void openpete_hang_dump_and_exit(uint32_t trip_addr) {
     }
     /* Also dump 2 MB RAM so post-mortem can inspect any address. */
     const char* rampath = getenv("OPENPETE_HANG_RAM");
-    if (!rampath || !*rampath) rampath = "./hang-ram.bin";
+    if (!rampath || !*rampath) rampath = ram_default;
     FILE* rp = fopen(rampath, "wb");
     if (rp) {
         const size_t ram_size = 2u * 1024u * 1024u;
@@ -361,6 +394,10 @@ static void openpete_hang_dump_and_exit(uint32_t trip_addr) {
                 "(trip addr=0x%08X), wrote trace=%s ram=%s — exiting",
                 s_hang_calls_since_tick, s_hang_last_vbl, trip_addr,
                 path, rampath);
+    char msg[2600];
+    snprintf(msg, sizeof msg, "The game stopped responding and was closed. "
+             "Diagnostic files were written to %s and %s.", path, rampath);
+    openpete_fatal_message("OpenPete stopped responding", msg);
     fflush(stdout); fflush(stderr);
     /* stderr is a pipe drained by the log pump thread; _Exit would take the
      * watchdog's own diagnosis down with the process before it is copied. */
