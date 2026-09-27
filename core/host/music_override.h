@@ -21,6 +21,10 @@ extern "C" {
  * music_override_shutdown; the start functions call it lazily, and boot
  * code calls it to log the search path early. */
 void music_override_init(void);
+/** @brief Stop playback, release the AL objects, join the streaming worker and forget the roots and manifests.
+ *
+ * Logs a stream census line (starts, bytes read, resident ring bytes,
+ * longest start on the calling thread) when any stream started. */
 void music_override_shutdown(void);
 
 /** @brief Start WAV playback in place of a starting music stream when an override file exists for the track.
@@ -29,11 +33,15 @@ void music_override_shutdown(void);
  * later-enabled mod first, each by its music/manifest.txt entry and then
  * music/track_NN.wav; then in the user and shipped base roots by their
  * manifest entry, else track_NN.wav. A missing file is not latched, so a
- * file added mid-process is found at the next start; a file that fails to
- * load is latched as failed until the modset toggle epoch changes. Returns
- * 0 without probing the mod roots when neither base root resolved. The
- * playback position the game reads back belongs to the game layer's
- * virtual CD head, not to this module.
+ * file added mid-process is found at the next start; a file whose header
+ * is rejected is latched as failed until the modset toggle epoch changes.
+ * Returns 0 without probing the mod roots when neither base root resolved.
+ * Only the RIFF header and the first 8192 sample frames are read on the
+ * calling thread; a streaming worker reads the rest into a fixed ring of
+ * 131072 frames (512 KiB), so neither the start cost nor the memory held
+ * grows with the track's length, and nothing stays resident after the
+ * stream is replaced. The playback position the game reads back belongs
+ * to the game layer's virtual CD head, not to this module.
  * @param track_index Music table index, 0 to 63.
  * @param start_sector The stream's LBA, used only in the log line.
  * @return 1 when playback started, 0 to fall back to the XA path. */
@@ -42,20 +50,24 @@ int  music_override_try_start(int track_index, int start_sector);
 /** @brief Start WAV playback of an explicit file in place of a starting music stream.
  *
  * Used for content with no stock track index, such as a custom level's
- * own song. The decoded file is held in one cached slot that a different
- * path evicts; a load failure is latched until the path changes.
+ * own song. Streamed as music_override_try_start streams; a rejected
+ * header is latched until the path changes.
  * @param path WAV file path; NULL or "" returns 0.
  * @param start_sector The stream's LBA, used only in the log line.
  * @return 1 when playback started, 0 to fall back to the XA path. */
 int  music_override_try_start_path(const char* path, int start_sector);
+/** @brief End override playback: the streaming worker drops its stream and the AL source is stopped and emptied.
+ *
+ * No-op while no override is active. */
 void music_override_stop(void);
 int  music_override_is_active(void);
 
 /** @brief Refill the four-buffer AL ring with the next PCM chunks and keep the source playing.
  *
  * Processed buffers are unqueued and refilled with up to 8192 sample
- * frames each until the WAV is exhausted; the source then drains and
- * stops. Looping is the game's: it re-issues the stream read when the CD
+ * frames each from what the streaming worker has read ahead, and the
+ * worker is woken to read more; once the WAV is exhausted the source
+ * drains and stops. Looping is the game's: it re-issues the stream read when the CD
  * head passes the track end, which restarts playback from frame 0. No-op
  * while no override is active. Called on every CdSync thunk, beside
  * PsyX_XA_Pump. */

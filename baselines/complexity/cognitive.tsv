@@ -23,7 +23,6 @@ core/diag/psxtrace_verify.c	openpete_psxtrace_advance	132	0
 core/diag/psxtrace_verify.c	openpete_psxtrace_finalize	30	0	
 core/diag/psxtrace_verify.c	openpete_psxtrace_open	107	0	
 core/host/host_spawn.c	openpete_host_spawn_argv	28	0	
-core/host/music_override.c	load_track	31	0	
 core/host/sfx_pack.c	override_cb	55	0	
 core/host/sfx_pack.c	wav_read_smpl	27	0	
 core/host/texture_pack.c	texture_pack_dump_draw	74	0	

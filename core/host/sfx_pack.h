@@ -8,10 +8,13 @@
  * Substitution happens inside PsyCross at the voice's PCM upload
  * (PsyX_SPUAL_SetSampleOverride): the guest, the SPU RAM image, the
  * attr mirror and the one-shot duration scan all see the stock sample;
- * only the audible buffer changes. Everything here runs on the thread
- * that keys voices and blasts banks (the sim thread): the scan, the WAV
- * decode, the identity cache and the override callback, so no lock is
- * needed beyond the SPU mutex PsyCross already holds at the callback.
+ * only the audible buffer changes. The scan, the identity cache and the
+ * override callback run on the thread that keys voices and blasts banks
+ * (the sim thread). WAV decoding runs on a decode worker, which decodes
+ * every file entry after each scan; the callback serves resident PCM,
+ * waits for an entry the worker is decoding, and decodes on its own
+ * thread only an entry the worker has not reached. One mutex guards the
+ * entry table and the decode results.
  *
  * Identity at runtime is a (generation, address) cache filled on miss
  * by hashing the sample straight out of SPU RAM — the level bank blast
@@ -26,6 +29,9 @@
 extern "C" {
 #endif
 
+/** @brief Scan the sources, start the decode worker on the files found, and install the override callback.
+ *
+ * Without the table lock the pack stays off (logged). */
 void sfx_pack_init(void);
 void sfx_pack_set_dir_override(const char* dir); /* before init */
 
@@ -75,7 +81,8 @@ int  sfx_pack_register_symbolic_adpcm(const char* owner, const char* name,
  * Drops every cached sample identity and rescans the sources, so an
  * edited WAV takes effect at the next level entry: entries whose file
  * vanished are dropped, entries whose file changed size or mtime release
- * their decoded PCM, and unchanged entries keep it. */
+ * their decoded PCM, and unchanged entries keep it; the decode worker is
+ * then woken for the entries without PCM. */
 void sfx_pack_generation_bump(void);
 /** @brief Forget every cached sample identity whose ADPCM bytes overlap [addr, addr + len).
  *
@@ -106,7 +113,15 @@ typedef struct {
     uint64_t verify_bad;
     int      active;      /* any file in any source */
     int      files;
+    /* Time the override callback spent on the calling (sim) thread, over
+     * committed key-ons: the longest call, the 99th percentile (upper edge
+     * of a 100 us bucket), and the pack decodes the callback ran itself. */
+    uint64_t cb_max_us;
+    uint64_t cb_p99_us;
+    uint64_t sync_decodes;
 } sfx_pack_census_t;
+/** @brief Copy the sfx pack census, computing the callback-time percentile from its histogram.
+ * @param out Receives the census. */
 void sfx_pack_census(sfx_pack_census_t* out);
 
 #ifdef __cplusplus

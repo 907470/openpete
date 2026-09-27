@@ -183,10 +183,7 @@ core/host/mod_sound.c	snd_buffer_for	none
 core/host/mod_sound.c	snd_init	none	
 core/host/music_override.c	apply_gain	none	
 core/host/music_override.c	ensure_al	none	
-core/host/music_override.c	load_track	none	
 core/host/music_override.c	music_override_is_active	none	
-core/host/music_override.c	music_override_shutdown	none	
-core/host/music_override.c	music_override_stop	none	
 core/host/music_override.c	parse_manifest	none	
 core/host/sfx_ident.c	hex_run	none	
 core/host/sfx_ident.c	op_sfx_hash	none	
@@ -195,15 +192,11 @@ core/host/sfx_ident.c	put_u32	none
 core/host/sfx_pack.c	add_root_source	none	
 core/host/sfx_pack.c	entry_at	none	
 core/host/sfx_pack.c	entry_count	none	
-core/host/sfx_pack.c	entry_decode	none	
 core/host/sfx_pack.c	entry_release	none	
-core/host/sfx_pack.c	override_cb	none	
 core/host/sfx_pack.c	override_done	none	
 core/host/sfx_pack.c	rescan	none	
 core/host/sfx_pack.c	scan_dir	none	
-core/host/sfx_pack.c	sfx_pack_census	none	
 core/host/sfx_pack.c	sfx_pack_disarm_oneshot	none	
-core/host/sfx_pack.c	sfx_pack_init	none	
 core/host/sfx_pack.c	sfx_pack_oneshot_armed	none	
 core/host/sfx_pack.c	sfx_pack_set_dir_override	none	
 core/host/sfx_pack.c	sfx_pack_set_name_resolver	none	
@@ -237,7 +230,6 @@ core/host/texture_pack.c	tp_overlap	none
 core/host/texture_pack.c	tp_q_empty	none	
 core/host/texture_pack.c	tp_repl_scan	none	
 core/host/texture_pack.c	tp_vram_texel	none	
-core/host/wav_loader.c	op_wav_free	none	
 core/include/openpete_fnv1a64.h	openpete_fnv1a64	none	
 core/include/openpete_fnv1a64.h	openpete_fnv1a64_init	none	
 core/include/openpete_fnv1a64.h	openpete_fnv1a64_update	none	

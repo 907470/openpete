@@ -36,8 +36,10 @@ typedef struct {
     char     path[640];
     long     mtime;
     long     size;
-    /* decoded (lazily, on the sim thread) */
+    /* decoded by the decode worker, or by the callback when it reaches an
+     * entry first; guarded by s_mx */
     int      decoded;    /* 1 = pcm valid, -1 = failed */
+    int      claimed;    /* a thread is decoding this entry's file */
     int16_t* pcm;
     int      count;
     uint32_t rate;
@@ -92,6 +94,18 @@ static sfx_pack_pitch_reader_fn  s_pitch_reader;
 static sfx_pack_name_resolver_fn s_name_resolver;
 static sfx_pack_census_t s_census;
 
+/* Decode worker. Decodes every file entry after each scan so the override
+ * callback finds its PCM resident. s_mx guards the entry table and every
+ * entry's decode fields; only the thread that scans (the sim thread, which
+ * also runs the callback) changes the table's shape, so an entry pointer
+ * that thread holds stays valid across its own unlocks. */
+static SDL_Mutex*     s_mx;
+static SDL_Condition* s_cv;          /* worker work, and decode completion */
+static SDL_Thread*    s_worker;
+/* Callback wall time per committed key-on, 100 us buckets to 50 ms. */
+#define SP_CB_BUCKETS 501
+static uint32_t s_cb_hist[SP_CB_BUCKETS];
+
 /* ── WAV in: whatever SDL reads, to S16 mono at the file's rate ───── */
 
 /** @brief Read the first loop of a WAV file's `smpl` chunk into start and len; return 1 when one is found.
@@ -135,38 +149,181 @@ static int wav_read_smpl(const char* path, int* start, int* len)
     return found;
 }
 
-static int entry_decode(sp_entry* e)
+/* One decoded file: S16 mono PCM at the file's rate, and its first loop. */
+typedef struct {
+    int16_t* pcm;
+    int      count;
+    uint32_t rate;
+    int      loop_start, loop_len;
+} sp_pcm;
+
+/** @brief Decode a WAV file to S16 mono PCM at its own rate and read its first smpl loop.
+ *
+ * Touches no shared state beyond the log, so any thread may call it.
+ * @param path WAV file path.
+ * @param out Receives the PCM (SDL-allocated) and loop on success.
+ * @return 1 on success; 0 when SDL cannot read or convert the file (logged). */
+static int decode_file(const char* path, sp_pcm* out)
 {
-    if (e->decoded) return e->decoded > 0;
     SDL_AudioSpec spec;
     Uint8* buf = NULL;
     Uint32 len = 0;
-    if (!SDL_LoadWAV(e->path, &spec, &buf, &len)) {
-        OPL_WARN_F("sfxpack", "%s: %s", e->path, SDL_GetError());
-        e->decoded = -1;
+    if (!SDL_LoadWAV(path, &spec, &buf, &len)) {
+        OPL_WARN_F("sfxpack", "%s: %s", path, SDL_GetError());
         return 0;
     }
     SDL_AudioSpec want = { SDL_AUDIO_S16LE, 1, spec.freq };
-    Uint8* out = NULL;
+    Uint8* conv = NULL;
     int outlen = 0;
-    int ok = SDL_ConvertAudioSamples(&spec, buf, (int)len, &want, &out, &outlen);
+    int ok = SDL_ConvertAudioSamples(&spec, buf, (int)len, &want, &conv, &outlen);
     SDL_free(buf);
-    if (!ok || !out) {
-        OPL_WARN_F("sfxpack", "%s: cannot convert (%s)", e->path, SDL_GetError());
-        e->decoded = -1;
+    if (!ok || !conv) {
+        OPL_WARN_F("sfxpack", "%s: cannot convert (%s)", path, SDL_GetError());
         return 0;
     }
     if (spec.channels != 1)
         OPL_WARN_F("sfxpack", "%s: %d channels downmixed to mono (the SPU "
-                   "voice is mono; pan is the game's)", e->path, spec.channels);
-    e->pcm   = (int16_t*)out;
-    e->count = outlen / 2;
-    e->rate  = (uint32_t)spec.freq;
-    if (!wav_read_smpl(e->path, &e->loop_start, &e->loop_len)) {
-        e->loop_start = 0; e->loop_len = 0;
+                   "voice is mono; pan is the game's)", path, spec.channels);
+    out->pcm   = (int16_t*)conv;
+    out->count = outlen / 2;
+    out->rate  = (uint32_t)spec.freq;
+    if (!wav_read_smpl(path, &out->loop_start, &out->loop_len)) {
+        out->loop_start = 0; out->loop_len = 0;
     }
-    e->decoded = 1;
     return 1;
+}
+
+/** @brief Store a decode result in an entry and clear its claim.
+ *
+ * Caller holds s_mx.
+ * @param e The entry.
+ * @param ok The decode_file result.
+ * @param r The decoded PCM when @p ok. */
+static void entry_store(sp_entry* e, int ok, const sp_pcm* r)
+{
+    e->claimed = 0;
+    if (!ok) { e->decoded = -1; return; }
+    e->pcm = r->pcm; e->count = r->count; e->rate = r->rate;
+    e->loop_start = r->loop_start; e->loop_len = r->loop_len;
+    e->decoded = 1;
+}
+
+/** @brief Return 1 when an entry's PCM is resident, decoding it on this thread when no worker has claimed it.
+ *
+ * Caller holds s_mx. An entry the worker is decoding is waited for rather than decoded twice.
+ * An unclaimed entry is claimed and decoded here with s_mx released, which
+ * counts in sync_decodes on a committed tick. Must run on the thread that
+ * scans, so @p e cannot move while s_mx is released.
+ * @param e The entry.
+ * @return 1 when the PCM is valid, 0 when the file failed to decode. */
+static int entry_decode(sp_entry* e)
+{
+    while (e->claimed) SDL_WaitCondition(s_cv, s_mx);
+    if (e->decoded) return e->decoded > 0;
+    if (!openpete_speculative) s_census.sync_decodes++;
+    char path[sizeof e->path];
+    memcpy(path, e->path, sizeof path);
+    e->claimed = 1;
+    SDL_UnlockMutex(s_mx);
+    sp_pcm r;
+    const int ok = decode_file(path, &r);
+    SDL_LockMutex(s_mx);
+    entry_store(e, ok, &r);
+    SDL_BroadcastCondition(s_cv);
+    return ok;
+}
+
+/** @brief Claim the first file entry with no PCM and no claim.
+ *
+ * Caller holds s_mx.
+ * @param path Receives the entry's path.
+ * @param mtime Receives the entry's mtime.
+ * @param size Receives the entry's size.
+ * @return 1 when an entry was claimed, else 0. */
+static int worker_claim(char* path, long* mtime, long* size)
+{
+    for (int i = 0; i < entry_count(); i++) {
+        sp_entry* e = entry_at(i);
+        if (e->src < 0 || e->decoded || e->claimed) continue;
+        e->claimed = 1;
+        memcpy(path, e->path, sizeof e->path);
+        *mtime = e->mtime; *size = e->size;
+        return 1;
+    }
+    return 0;
+}
+
+/** @brief Hand a worker decode back to the entry it was claimed from, or free it.
+ *
+ * Caller holds s_mx. The entry is found again by path, since a scan may have moved it. The
+ * PCM is kept only when that entry still describes the same file (mtime and
+ * size) and has none yet; the entry's claim is cleared either way.
+ * @param path Path the decode read.
+ * @param mtime The entry's mtime at claim.
+ * @param size The entry's size at claim.
+ * @param ok The decode_file result.
+ * @param r The decoded PCM when @p ok. */
+static void worker_publish(const char* path, long mtime, long size, int ok, sp_pcm* r)
+{
+    for (int i = 0; i < entry_count(); i++) {
+        sp_entry* e = entry_at(i);
+        if (e->src < 0 || !e->claimed || strcmp(e->path, path) != 0) continue;
+        if (e->mtime == mtime && e->size == size && !e->decoded) {
+            entry_store(e, ok, r);
+            return;
+        }
+        e->claimed = 0;
+        break;
+    }
+    if (ok) SDL_free(r->pcm);
+}
+
+/** @brief Decode worker: decode every file entry without PCM, then wait for the next scan.
+ * @param ud Unused.
+ * @return 0 (never returns while the process runs). */
+static int SDLCALL sfx_decode_worker(void* ud)
+{
+    (void)ud;
+    char path[sizeof(((sp_entry*)0)->path)];
+    long mtime = 0, size = 0;
+    SDL_LockMutex(s_mx);
+    for (;;) {
+        if (!worker_claim(path, &mtime, &size)) {
+            SDL_WaitCondition(s_cv, s_mx);
+            continue;
+        }
+        SDL_UnlockMutex(s_mx);
+        sp_pcm r;
+        const int ok = decode_file(path, &r);
+        SDL_LockMutex(s_mx);
+        worker_publish(path, mtime, size, ok, &r);
+        SDL_BroadcastCondition(s_cv);
+    }
+    return 0;
+}
+
+/** @brief Create the table lock on first use.
+ * @return 1 when s_mx and s_cv exist. */
+static int ensure_lock(void)
+{
+    if (!s_mx) s_mx = SDL_CreateMutex();
+    if (!s_cv) s_cv = SDL_CreateCondition();
+    return s_mx && s_cv;
+}
+
+/** @brief Start the decode worker when file entries exist, and wake it to decode the current table.
+ *
+ * Caller holds s_mx. Without a worker (creation failed) the callback
+ * decodes each entry on first use. */
+static void worker_kick(void)
+{
+    if (!s_worker && entry_count() > 0) {
+        s_worker = SDL_CreateThread(sfx_decode_worker, "sfx-decode", NULL);
+        if (s_worker) SDL_DetachThread(s_worker);
+        else OPL_WARN_F("sfxpack", "decode worker unavailable (%s); decoding on first use",
+                        SDL_GetError());
+    }
+    SDL_BroadcastCondition(s_cv);
 }
 
 static void entry_release(sp_entry* e)
@@ -399,6 +556,20 @@ static void override_done(PsyX_SPUAL_SampleOverride* ov)
     if (ov->rings_out) s_census.rings_out++;
 }
 
+/** @brief Answer a voice key-on with the pack sample or one-shot PCM that replaces it, or decline.
+ *
+ * A one-shot arm outranks the pack. Otherwise the sample's identity is
+ * looked up (hashed from SPU RAM on a miss), matched against the enabled
+ * entries, and the entry's PCM is served with its rate folded for the
+ * file's pitch tag, decoding it first when it is not resident. Caller
+ * holds s_mx (override_cb_timed). With OPENPETE_SFXPACK_VERIFY a hash-form
+ * match is compared against the stock sample decoded from SPU RAM.
+ * @param voice SPU voice index.
+ * @param addr SPU address of the keyed sample.
+ * @param stock_samples Decoded length of the stock sample.
+ * @param stock_loops Nonzero when the stock sample loops (unused).
+ * @param out Receives the replacement.
+ * @return 1 when @p out holds a replacement, else 0. */
 static int override_cb(int voice, unsigned int addr, int stock_samples,
                        int stock_loops, PsyX_SPUAL_SampleOverride* out)
 {
@@ -427,7 +598,7 @@ static int override_cb(int voice, unsigned int addr, int stock_samples,
     if (entry_count() == 0) return 0;
     /* Late asset roots (a mod enabled mid-session) become sources here,
      * the way the texture pack does it. */
-    if (openpete_mods_asset_root_count() > s_seen_roots) rescan();
+    if (openpete_mods_asset_root_count() > s_seen_roots) { rescan(); worker_kick(); }
     const sp_ident* id = ident_lookup(addr);
     if (!openpete_speculative && id) s_census.resolved++;
     int base_pitch = s_pitch_reader ? s_pitch_reader(voice) : 0;
@@ -513,6 +684,33 @@ static int override_cb(int voice, unsigned int addr, int stock_samples,
     return 1;
 }
 
+/** @brief PsyCross sample-override callback: run override_cb under the table lock and time it for the census.
+ *
+ * On a committed (non-speculative) tick the call's wall time enters the
+ * callback-time histogram and maximum.
+ * @param voice SPU voice index.
+ * @param addr SPU address of the keyed sample.
+ * @param stock_samples Decoded length of the stock sample.
+ * @param stock_loops Nonzero when the stock sample loops.
+ * @param out Receives the replacement.
+ * @return 1 when @p out holds a replacement, else 0. */
+static int override_cb_timed(int voice, unsigned int addr, int stock_samples,
+                             int stock_loops, PsyX_SPUAL_SampleOverride* out)
+{
+    const Uint64 t0 = SDL_GetTicksNS();
+    if (s_mx) SDL_LockMutex(s_mx);
+    const int rc = override_cb(voice, addr, stock_samples, stock_loops, out);
+    if (s_mx) SDL_UnlockMutex(s_mx);
+    if (!openpete_speculative) {
+        const uint64_t us = (SDL_GetTicksNS() - t0) / 1000u;
+        uint64_t b = us / 100u;
+        if (b >= SP_CB_BUCKETS) b = SP_CB_BUCKETS - 1;
+        s_cb_hist[b]++;
+        if (us > s_census.cb_max_us) s_census.cb_max_us = us;
+    }
+    return rc;
+}
+
 /* ── public ──────────────────────────────────────────────────────── */
 
 void sfx_pack_arm_oneshot(const int16_t* pcm, int count, unsigned int rate)
@@ -542,6 +740,7 @@ int sfx_pack_register_symbolic_adpcm(const char* owner, const char* name,
                                     pcm, &ls, &ll);
     if (n <= 0) { SDL_free(pcm); return -1; }
     const char* own = owner ? owner : "";
+    if (s_mx) SDL_LockMutex(s_mx);
     sp_entry* e = NULL;
     for (int i = 0; i < entry_count(); i++) {
         sp_entry* o = entry_at(i);
@@ -550,7 +749,11 @@ int sfx_pack_register_symbolic_adpcm(const char* owner, const char* name,
     }
     if (!e) {
         e = entry_push();
-        if (!e) { SDL_free(pcm); return -1; }
+        if (!e) {
+            if (s_mx) SDL_UnlockMutex(s_mx);
+            SDL_free(pcm);
+            return -1;
+        }
         e->src = -1;
         snprintf(e->owner, sizeof e->owner, "%s", own);
     } else {
@@ -570,6 +773,7 @@ int sfx_pack_register_symbolic_adpcm(const char* owner, const char* name,
     e->loop_len   = ll;
     e->decoded    = 1;
     s_census.active = 1;
+    if (s_mx) SDL_UnlockMutex(s_mx);
     return 0;
 }
 
@@ -585,8 +789,16 @@ void sfx_pack_set_name_resolver(sfx_pack_name_resolver_fn fn) { s_name_resolver 
 
 void sfx_pack_init(void)
 {
+    if (!ensure_lock()) {
+        OPL_ERROR_F("sfxpack", "cannot create the table lock (%s); sfx pack off",
+                    SDL_GetError());
+        return;
+    }
+    SDL_LockMutex(s_mx);
     rescan();
-    PsyX_SPUAL_SetSampleOverride(override_cb);
+    worker_kick();
+    SDL_UnlockMutex(s_mx);
+    PsyX_SPUAL_SetSampleOverride(override_cb_timed);
     if (entry_count())
         OPL_INFO_F("sfxpack", "sfx pack active: %d file%s (%d source%s)",
                    entry_count(), entry_count() == 1 ? "" : "s", src_count(),
@@ -597,7 +809,11 @@ void sfx_pack_generation_bump(void)
 {
     s_gen++;
     memset(s_cache, 0, sizeof s_cache);
+    if (!s_mx) { rescan(); return; }
+    SDL_LockMutex(s_mx);
     rescan();
+    worker_kick();
+    SDL_UnlockMutex(s_mx);
 }
 
 void sfx_pack_invalidate_range(uint32_t addr, uint32_t len)
@@ -610,4 +826,14 @@ void sfx_pack_invalidate_range(uint32_t addr, uint32_t len)
     }
 }
 
-void sfx_pack_census(sfx_pack_census_t* out) { *out = s_census; }
+void sfx_pack_census(sfx_pack_census_t* out)
+{
+    uint64_t total = 0, run = 0;
+    for (int i = 0; i < SP_CB_BUCKETS; i++) total += s_cb_hist[i];
+    s_census.cb_p99_us = 0;
+    for (int i = 0; i < SP_CB_BUCKETS && total; i++) {
+        run += s_cb_hist[i];
+        if (run * 100 >= total * 99) { s_census.cb_p99_us = (uint64_t)(i + 1) * 100u; break; }
+    }
+    *out = s_census;
+}
