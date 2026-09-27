@@ -202,7 +202,7 @@ int  spyro2_cutscene_skip_watching(void) { return s_watching; }
 void spyro2_cutscene_skip_finish(void)   { s_watching = 0; }
 
 /* A story row plays with D_800698F4 == k; a level row with StartCutscene's
- * slot and entry words equal to the row's. */
+ * slot and entry words equal to the row's. See cutscene_skip.h. */
 int spyro2_cutscene_skip_released(CPUState* cpu, char* eng, size_t cap) {
     if (!s_row || !s_induced) return 0;
     uint32_t top = cpu->read_word(ADDR_TOP_STATE);
@@ -226,9 +226,15 @@ int spyro2_cutscene_skip_released(CPUState* cpu, char* eng, size_t cap) {
     return 1;
 }
 
-/* The first tick of the source level's gameplay: the level resident and
- * running, the top-level state gameplay (the fade-in's 3 also passes the
- * level skip's live test) and the demo flag clear. */
+/** @brief Tests for a tick of the source level's gameplay, the tick the skip hook acts on.
+ *
+ * True when the level is resident (loader word -1) with a nonzero level
+ * tick, g_NextLevelNum is the level, the top-level state D_800681C8 is 0
+ * (the fade-in's 3, which also passes the level skip's live test, is
+ * excluded) and the demo flag is clear.
+ * @param cpu The guest CPU state.
+ * @param level The source level.
+ * @return 1 when live, else 0. */
 static int source_live(CPUState* cpu, uint32_t level) {
     return cpu->read_word(ADDR_LOADER_STATE) == LOADER_RESIDENT &&
            cpu->read_word(ADDR_LEVEL_TICK) != 0u &&
@@ -243,9 +249,13 @@ static void refuse(const char* name, const char* why) {
     s_watching = 0;
 }
 
-/* A guest call from the draw entry. The draw function takes no arguments
- * and this is its call boundary, so only the return address needs
- * preserving across the nested call. */
+/** @brief Calls a guest function with one argument from the draw function's entry hook.
+ *
+ * The draw function takes no arguments and this is its call boundary, so
+ * only ra is preserved across the nested call.
+ * @param cpu The guest CPU state.
+ * @param addr The guest function's address.
+ * @param a0 The argument. */
 static void guest_call(CPUState* cpu, uint32_t addr, uint32_t a0) {
     uint32_t ra = cpu->ra;
     cpu->a0 = a0;
@@ -253,7 +263,13 @@ static void guest_call(CPUState* cpu, uint32_t addr, uint32_t a0) {
     cpu->ra = ra;
 }
 
-/* The theater's call and its four stores (see the file header). */
+/** @brief Makes the Dragon Shores theater's func_80019230(k) call and its four stores for a story row.
+ *
+ * Stores g_NextLevelNum = the row's pseudo-level, loader word 0, byte
+ * 0x800698BD = 1 and D_800698F4 = k. Refuses the row when byte 0x8006B08D
+ * or 0x8006B099 is set, since either remaps k 7 or 11 to a level row.
+ * @param cpu The guest CPU state.
+ * @param r The armed row. */
 static void theater_hook(CPUState* cpu, const cutscene_t* r) {
     if (cpu->read_byte(ADDR_REMAP_K7) || cpu->read_byte(ADDR_REMAP_K11)) {
         refuse(r->name, "remap byte 0x8006B08D or 0x8006B099 set");
@@ -272,7 +288,12 @@ static void theater_hook(CPUState* cpu, const cutscene_t* r) {
                (unsigned)cpu->read_word(ADDR_NEXT_LEVEL_NUM));
 }
 
-/* The homeworld's portal record leading to the row's level, or -1. */
+/** @brief Finds the homeworld portal record whose destination byte (+66) is the level.
+ *
+ * Scans the 0x44-byte records at *(0x80066F00), their count at 0x80066FA8.
+ * @param cpu The guest CPU state.
+ * @param level The destination level.
+ * @return The first matching record index, or -1. */
 static int portal_to(CPUState* cpu, uint32_t level) {
     uint32_t table = cpu->read_word(ADDR_PORTAL_TABLE);
     int32_t  count = (int32_t)cpu->read_word(ADDR_PORTAL_COUNT);
@@ -283,7 +304,13 @@ static int portal_to(CPUState* cpu, uint32_t level) {
     return -1;
 }
 
-/* Intro: the homeworld portal's call; no store. */
+/** @brief Makes the homeworld portal's func_80019928(r) call toward a level intro row's level, with no store.
+ *
+ * Refuses the row when the level's visited byte 0x8006B084[idx] is set,
+ * since the intro plays only on the first arrival, or when no portal
+ * record leads to the level.
+ * @param cpu The guest CPU state.
+ * @param r The armed row. */
 static void intro_hook(CPUState* cpu, const cutscene_t* r) {
     if (cpu->read_byte(ADDR_VISITED + r->idx)) {
         refuse(r->name, "visited byte 0x8006B084[idx] set");
@@ -302,7 +329,15 @@ static void intro_hook(CPUState* cpu, const cutscene_t* r) {
                (unsigned)cpu->read_word(ADDR_DESTINATION));
 }
 
-/* Outro: the level's completion stores, then its exit call. */
+/** @brief Makes a level outro row's completion stores, then the level's exit call func_80019928(0).
+ *
+ * Stores byte 0x80066FF4 = 1 and, when the completion byte
+ * 0x8006B264[idx] is 0, sets it and for idx below 22 increments
+ * 0x80067108. The idx >= 22 mask test the game's completion runs under is
+ * not applied; its value is logged. Refuses the row when g_LevelIndex is
+ * not the row's.
+ * @param cpu The guest CPU state.
+ * @param r The armed row. */
 static void outro_hook(CPUState* cpu, const cutscene_t* r) {
     if (cpu->read_word(ADDR_LEVEL_INDEX) != r->idx) {
         refuse(r->name, "g_LevelIndex is not the row's");
@@ -326,8 +361,11 @@ static void outro_hook(CPUState* cpu, const cutscene_t* r) {
                (unsigned)cpu->read_word(ADDR_COMPLETE_COUNT), mask);
 }
 
-/* After a story row's release: the replay's return to Dragon Shores (the
- * level resident again with D_800681C8 4). Reads only. */
+/** @brief Logs a story row's return to Dragon Shores after its release and ends the return watch.
+ *
+ * The return is level 65 resident again with D_800681C8 4. Reads guest RAM
+ * only.
+ * @param cpu The guest CPU state. */
 static void watch_return(CPUState* cpu) {
     if (cpu->read_word(ADDR_LOADER_STATE) != LOADER_RESIDENT ||
         cpu->read_word(ADDR_NEXT_LEVEL_NUM) != THEATER_LEVEL ||

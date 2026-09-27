@@ -61,7 +61,12 @@ typedef struct {
 static prim_t s_gte[MAX_PRIMS]; static int s_gte_n;
 static uint32_t s_code_hist[256];
 
-/* Store one walked primitive into the capture buffer. */
+/** @brief Copies one walked primitive into the s_gte capture buffer.
+ *
+ * ngte_walk_prims callback for capture_prims.
+ * @param ctx Unused.
+ * @param s The decoded primitive.
+ * @return 1 to continue the walk, 0 once MAX_PRIMS primitives are held. */
 static int spyro_prim_sink(void* ctx, const ngte_prim* s) {
     (void)ctx;
     if (s_gte_n >= MAX_PRIMS) return 0;
@@ -193,11 +198,15 @@ static void spyro_compare_geometry(void) {
             100.0*hit4/total, 100.0*hit2/total, errsum/total, emax);
 }
 
-/* ---- per-vertex A/B against the routine's own projected SXY block --------
- * The projection cursor runs continuously across the parts, so the block holds
- * every vertex in stream order — the same order the native projection fills —
- * and index j maps to index j with no nearest-neighbour ambiguity and no
- * back-face noise. */
+/** @brief Compares each native projected vertex against the same index in the player routine's SXY block and logs the error.
+ *
+ * The projection cursor runs continuously across the parts, so the block at
+ * sxy_base holds every vertex in stream order, the order the native
+ * projection fills; index j is compared with index j, with no
+ * nearest-neighbour ambiguity and no back-face noise. Logs each part's flag
+ * word, the worst vertex when its error exceeds 8 px, and the share within
+ * 4 px overall and per part (body, head, tail).
+ * @param cpu The guest CPU state. */
 static void spyro_scratchpad_ab(CPUState* cpu) {
     if (s_proj_n <= 0) return;
     uint32_t block = player_part_block_base(cpu);
@@ -234,8 +243,13 @@ static void spyro_scratchpad_ab(CPUState* cpu) {
             part_tot[2]?100.0*part_hit[2]/part_tot[2]:0);
 }
 
-/* Recover a primitive vertex's stream index by exact SXY match against the
- * routine's own projected block. -1 when there is no exact match. */
+/** @brief Recovers a primitive vertex's stream index by exact screen-position match against the routine's projected SXY block.
+ *
+ * Returns the first index whose packed int16 x, y word equals the vertex's.
+ * @param cpu The guest CPU state.
+ * @param px The vertex's screen x.
+ * @param py The vertex's screen y.
+ * @return The stream index, or -1 when no entry matches exactly. */
 static int spyro_index_of(CPUState* cpu, int px, int py) {
     uint32_t want = ((uint32_t)(py & 0xFFFF) << 16) | (uint32_t)(px & 0xFFFF);
     for (int j = 0; j < s_proj_n; j++)
@@ -250,9 +264,14 @@ static int spyro_nn(float px, float py) {
     }
     return best;
 }
-/* How often would screen-distance nearest-neighbour pick a DIFFERENT vertex
- * than exact index recovery? A high rate means a face attached to the wrong
- * vertex whenever two parts overlap on screen. */
+/** @brief Logs how often screen-distance nearest-neighbour picks a different vertex than exact index recovery.
+ *
+ * For every vertex of every captured primitive, spyro_index_of gives the
+ * exact index (or a fallback count when none matches) and spyro_nn the
+ * nearest native projected vertex. A high disagreement rate means
+ * nearest-neighbour attaches a face to the wrong vertex where two parts
+ * overlap on screen.
+ * @param cpu The guest CPU state. */
 static void spyro_idx_audit(CPUState* cpu) {
     long exact = 0, disagree = 0, fallback = 0, total = 0;
     for (int i = 0; i < s_gte_n; i++) {
@@ -460,6 +479,10 @@ static void spyro_aggregate(CPUState* cpu) {
 
 /* ---- the entries the provider hands the shared hook --------------------- */
 
+/** @brief Reports whether OPENPETE_SPYRO_VERIFY enables the player-draw verification.
+ *
+ * Read once and cached; set means non-empty and not starting with '0'.
+ * @return 1 when enabled, else 0. */
 int spyro_verify_enabled(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_SPYRO_VERIFY"); v = (e && *e && *e != '0'); }

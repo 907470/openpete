@@ -93,12 +93,18 @@ static uint32_t s_cross_bg_flat;
  * func_8004F000 stops emitting. Replaces the old private s_cross_ran /
  * s_cross_canon_drawn latch + chained commit. */
 
-/* Rebuild the dome func_8004F000 just drew, from gamestate, against the ACTIVE
- * frustum. The .s culls each face by AND-ing its three vertices' outcodes
- * against the 4:3 box, so the prims it leaves in the polybuf stop at the 4:3
- * edges and a Hor+ frame showed background clear beyond them; the native
- * extraction iterates the whole 360-degree dome and rejects against the widened
- * bounds instead. Also derives the backdrop stats used behind the dome. */
+/** @brief Re-derives the faded cyclorama dome func_8004F000 draws from gamestate against the active frustum, and the backdrop colours behind it.
+ *
+ * func_8004F000 culls each face by AND-ing its three vertices' outcodes
+ * against the 4:3 box, so its prims stop at the 4:3 edges;
+ * cyclorama_native_extract_faded iterates the whole dome and rejects
+ * against the widened bounds instead. From the extracted triangles it
+ * derives the screen bbox, the overall average colour and the average of
+ * each corner quadrant (vertices within 40% of the span from a bbox corner
+ * in both axes; an empty quadrant takes the overall average). Does nothing
+ * on a speculative runahead tick, whose results the rollback would not
+ * revert.
+ * @param cpu The guest CPU state. */
 static void crossfade_extract(CPUState* cpu) {
     /* Runahead lookahead: a speculative tick crossing a level-exit trigger
      * would leave its tris in these host buffers; the rollback does not revert
@@ -147,10 +153,16 @@ static void crossfade_extract(CPUState* cpu) {
     }
 }
 
-/* Feed the dome as the backmost layer: WORLD-category, far depth (z just
- * inside the far plane) so the depth test keeps it behind the balloon moby and
- * under the HUD text, exactly the PSX draw order (backdrop first, balloon +
- * text over it). Vertex colours carry the same DPCS fade the .s applies. */
+/** @brief Feeds the extracted cross-fade dome and its backdrop grid to the native scene as the backmost world layer.
+ *
+ * The backdrop is a 3x3 opaque quad grid: the centre cell spans the dome's
+ * bbox with the four corner-quadrant colours, the outer cells extend the
+ * nearest edge or corner colour to +/-16384 x +/-4096, and s_cross_bg_flat
+ * (bit 31 set) replaces all four colours with the flat exit-level
+ * background. The grid sits at view-Z 4096 * 0.9995 / 0.0005 and the dome
+ * in front of it at 4096 * 0.999 / 0.001, both short of the far clear, so
+ * the balloon moby and HUD text draw over them as on the PSX.
+ * The dome's vertex colours carry the DPCS fade func_8004F000 applies. */
 static void crossfade_feed_native(void) {
     if (s_cross_n <= 0) return;
     openpete_native_scene_begin_frame(openpete_frame);
@@ -221,6 +233,10 @@ static void crossfade_feed_native(void) {
 }
 
 /* ---- gating + diagnostics ------------------------------------------------- */
+/** @brief Reports whether OPENPETE_TRANSITION_PROBE enables the transition hook probe log.
+ *
+ * Read once and cached; set means non-empty and not starting with '0'.
+ * @return 1 when enabled, else 0. */
 static int probe_on(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_TRANSITION_PROBE"); v = (e && *e && *e != '0'); }
@@ -232,10 +248,15 @@ static int dump_on(void) {
     return v;
 }
 
-/* One red line per (func, frame) — a multi-call frame doesn't flood, but a
- * transition that spans many frames logs a burst that brackets it. ra names the
- * caller (func_8001C694 ~0x8001C6.. = GS_ExitLevel; func_8001E24C ~0x8001E2.. =
- * GS_Balloonist). */
+/** @brief Logs one red probe line per hooked function per openpete_frame value when the probe is enabled.
+ *
+ * A transition spanning many ticks logs a burst that brackets it. The
+ * logged ra names the caller: 0x8001C6xx is GS_ExitLevel (func_8001C694),
+ * 0x8001E2xx is GS_Balloonist (func_8001E24C).
+ * @param name The hooked function's name.
+ * @param what What the function draws.
+ * @param cpu The guest CPU state.
+ * @param last The caller's last-logged openpete_frame, updated on a log. */
 static void probe_log(const char* name, const char* what, CPUState* cpu, unsigned* last) {
     if (!probe_on()) return;
     if (*last == openpete_frame) return;
@@ -245,6 +266,19 @@ static void probe_log(const char* name, const char* what, CPUState* cpu, unsigne
 }
 
 /* ---- cross-fade hook (func_8004F000): run the real renderer, capture + feed ---- */
+/** @brief Hook on func_8004F000 that runs the cross-fade renderer, records its polybuf range and feeds the re-derived dome natively.
+ *
+ * Inert (returns 0) when neither the native scene nor render paths are
+ * active, and on re-entry. A call whose ra lies outside func_8001C694 is
+ * the balloonist take-off and clears the flat exit-level backdrop. The
+ * range is recorded as RP_TRANSITION, which drives the OT-walk filter and
+ * the canon-drawn gate transition_reextract reads; an empty range reads as
+ * not drawn. With the native feed on and a non-empty range, the dome is
+ * extracted and fed; OPENPETE_TRANSITION_DUMP logs the first range's raw
+ * words and the first extraction's extent.
+ * @param cpu The guest CPU state.
+ * @param addr Unused.
+ * @return 1 when the hook ran the renderer, 0 to let normal dispatch run it. */
 static int on_8004F000_crossfade(CPUState* cpu, uint32_t addr) {
     (void)addr;
     int feed = openpete_native_scene_enabled();
@@ -314,17 +348,22 @@ static int on_8004F000_crossfade(CPUState* cpu, uint32_t addr) {
     return 1;
 }
 
-/* GS_ExitLevel screen (func_8001C694): case 0 is the green-tinted grayscale
- * FREEZE of the level being exited (4x POLY_FT4 sampling the frozen framebuffer
- * through a grayscale CLUT, tinted setRGB0(0x4C,0x80,0x40), emitted via the
- * unhooked world-OT add func_800168A0 — so native never showed it, just the
- * clear). It is the SAME effect as the pause / inventory / flight-results freeze
- * backdrop, which the native renderer already reproduces from its OWN last world
- * frame (openpete_native_scene_set_freeze_backdrop) — that path just isn't
- * triggered here. So: run the real renderer (verdict + the FT4s for PsyCross),
- * then drive the native freeze backdrop with case 0's hardcoded green tint. The
- * existing overlay carry re-applies it across sub-tick presents. Case 1 (the
- * cross-fade) calls func_8004F000, fed by its own hook above. */
+/** @brief Hook on GS_ExitLevel (func_8001C694) that sets the cross-fade backdrop and drives the native grayscale freeze.
+ *
+ * Inert (returns 0) when neither the native scene nor render paths are
+ * active, and on re-entry. Case 1 (D_GS_EXIT_MODE) is the cyclorama
+ * fade-in: before the game renderer runs, s_cross_bg_flat is set to
+ * g_Cyclorama.m_BackgroundColor * tick / 32 (tick = D_GS_EXIT_TICK, capped
+ * at 31), the clear the game draws behind the dome its nested
+ * func_8004F000 call emits. Case 0 is the green-tinted grayscale freeze of
+ * the level being exited: its POLY_FT4s go through the unhooked world-OT
+ * add func_800168A0, so after the game renderer runs the hook drives
+ * openpete_native_scene_set_freeze_backdrop with tint (0x4C, 0x80, 0x40)
+ * and a fade of tick scaled from 0..31 to 0..127, matching the game's
+ * per-tick shrinking of the grayscale CLUT load.
+ * @param cpu The guest CPU state.
+ * @param addr Unused.
+ * @return 1 when the hook ran the renderer, 0 to let normal dispatch run it. */
 static int on_8001C694(CPUState* cpu, uint32_t addr) {
     (void)addr;
     int feed = openpete_native_scene_enabled();
@@ -372,16 +411,7 @@ static int on_8001C694(CPUState* cpu, uint32_t addr) {
     return 1;
 }
 
-/* ---- sub-tick re-extract (high-FPS spine): re-derive the backdrop ---------
- * The scene is rebuilt against interpolated gamestate on every intermediate
- * present; without re-adding the backdrop it would strobe (dome on canonical
- * frames, background-clear on intermediates). Re-running the extraction (rather
- * than replaying the canonical tris) reads g_Camera's matrices live, so the dome
- * turns smoothly with the bracketed sub-tick camera — the same property the main
- * sky's re-extract has. Gated on render_path_canon_drawn(RP_TRANSITION) —
- * latched once per canonical present by the shared render_paths commit from the
- * hook's recorded polybuf interval — so the dome isn't painted over the next
- * level once the transition ends (the hook stops emitting → the mask bit drops). */
+/* Sub-tick re-extract of the cross-fade dome and backdrop; see reextract.h. */
 void transition_reextract(CPUState* cpu) {
     if (!openpete_native_scene_enabled()) return;
     if (!render_path_canon_drawn(RP_TRANSITION)) return;

@@ -78,9 +78,15 @@ void shadow_spyro_reextract(struct CPUState* cpu, int slot);
 void player_reextract(struct CPUState* cpu);
 void particle_reextract(struct CPUState* cpu);
 void tracer_reextract(struct CPUState* cpu);
-/* Level-transition / balloonist cross-fade backdrop: replays the captured
- * screen-space gouraud mesh (gated on whether func_8004F000 ran this canonical
- * present) so the gradient holds across sub-tick presents instead of strobing. */
+/** @brief Re-derives and feeds the level-transition and balloonist cross-fade dome and backdrop on a sub-tick present.
+ *
+ * Re-runs the extraction rather than replaying the canonical triangles, so
+ * the dome turns with the interpolated g_Camera. Gated on the native scene
+ * and on render_path_canon_drawn(RP_TRANSITION), latched per canonical
+ * present from the func_8004F000 hook's recorded polybuf range, so the dome
+ * stops once the transition stops emitting. OPENPETE_LOAD_CENSUS logs the
+ * replay count every 100 openpete_frame values.
+ * @param cpu The guest CPU state with the sub-tick view staged. */
 void transition_reextract(struct CPUState* cpu);
 
 #ifdef __cplusplus

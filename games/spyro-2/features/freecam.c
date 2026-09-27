@@ -19,8 +19,11 @@
 #define ADDR_DEMO_MODE  0x80067024u  /* g_DemoMode (skip_to_level.c): 1 while the attract demo drives the pad */
 #define ADDR_LEVEL_ID   0x80066F90u  /* g_NextLevelNum: the level the loader loaded (10..66) */
 
-/* Placeable while gameplay is live and the pad drives the player. No
- * fly-in camera state is identified for this game. */
+/** @brief Reports whether the freecam may place the player: gameplay is live and g_DemoMode is 0, so the pad drives the player.
+ *
+ * No fly-in camera state is identified for this game, so none is tested.
+ * @param cpu The guest CPU state.
+ * @return 1 when placeable, else 0. */
 static int player_placeable(CPUState* cpu) {
     return game_is_gameplay_live(cpu) && cpu->read_word(ADDR_DEMO_MODE) == 0u;
 }

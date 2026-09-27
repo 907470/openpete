@@ -36,10 +36,14 @@
 extern "C" {
 #endif
 
-/* Look up the provenance key for a HUD-pool moby address. Returns 1 and
- * writes *out_key when `moby` is a glyph emitted this tick whose recorded
- * m_Class still matches what the emitter would have written (the guard that
- * keeps a stale record from claiming a recycled address); 0 otherwise. */
+/** @brief Looks up the provenance key recorded for a HUD-pool glyph moby address.
+ *
+ * Succeeds when the address is a glyph recorded in the current generation
+ * and its live m_Class (+0x36) still equals the class the emitter was to
+ * write; that check keeps a stale record from claiming a recycled address.
+ * @param moby The moby's guest address.
+ * @param out_key Receives the key on success.
+ * @return 1 on a match, else 0. */
 int text_moby_id_lookup(uint32_t moby, uint32_t* out_key);
 
 #ifdef __cplusplus

@@ -57,7 +57,13 @@ typedef struct { int count; tpoint pt[MAX_PTS]; } tset;
 static tset s_sets[MAX_SETS];
 static int  s_nsets;                 /* sets captured at the last canonical frame */
 
-/* Snapshot the tracer-point gamestate before the .s drains it. */
+/** @brief Copies the tracer sets' points (world XYZ at +0/+4/+8, fade at +24) into s_sets before the game renderer drains them.
+ *
+ * Reads the set count at TRACER_COUNT and, per set, the point count and
+ * points base from TRACER_CNTTAB and TRACER_BASETAB. Sets with no points or
+ * a base outside KSEG0 are skipped; at most MAX_SETS sets of MAX_PTS points
+ * are kept.
+ * @param cpu The guest CPU state. */
 static void tracer_snapshot(CPUState* cpu) {
     s_nsets = 0;
     uint32_t nsets = cpu->read_word(TRACER_COUNT);
@@ -78,8 +84,19 @@ static void tracer_snapshot(CPUState* cpu) {
     }
 }
 
-/* func_80017B48 in float: world point -> screen (sx,sy) + true full-scale
- * view-Z. Permuted/negated axes; pure float (no GTE int16 clamp / div cap). */
+/** @brief Projects a world point to screen position and full-scale view-Z with func_80017B48's axes, in float.
+ *
+ * The camera-relative vector is (camY - Y, camZ - Z, X - camX) against the
+ * integer camera position the game loads; it is rotated by the camera
+ * matrix and divided by view-Z with no GTE int16 clamp or divide cap.
+ * @param v The projection view.
+ * @param X The point's world x.
+ * @param Y The point's world y.
+ * @param Z The point's world z.
+ * @param sx Receives the screen x, 0 when the point is not projected.
+ * @param sy Receives the screen y, 0 when the point is not projected.
+ * @param vz Receives the view-Z, written in both cases.
+ * @return 1 when view-Z exceeds 1, else 0. */
 static int tracer_project(const ngte_view* v,
                          int X, int Y, int Z,
                          double* sx, double* sy, double* vz) {
@@ -110,8 +127,18 @@ static void emit_tri(double ax, double ay, double az, uint32_t acol,
     openpete_native_scene_add_tri(&st, OPENPETE_SCENE_ACTOR, 0);  /* category ignored for blend!=0 */
 }
 
-/* Project the snapshot points (against the CURRENT camera — interpolated on
- * sub-ticks) and feed the additive ribbon with true per-vertex depth. */
+/** @brief Projects the snapshot tracer points against the current camera and feeds each set's additive ribbon to the native scene.
+ *
+ * Mirrors func_800189F8 in float. On a sub-tick re-extract the current
+ * camera is the interpolated one. Per point i below count-1 with fade
+ * below 81, the half-width ramps (625*i)<<5 over the first three points,
+ * is 0x11170 in the bulk and 0 at count-2 (quartered on level 63), and is
+ * scaled by 1 / (view-Z * screen length) perpendicular to the direction to
+ * point i+1. Colour is (150-2f, 150-4f, 150-10f) clamped at 0, with red and
+ * green swapped on level 63. From the second emitted point on, while
+ * view-Z is below 256000, two additive triangles join the previous and
+ * current corner pairs, each vertex at its own view-Z.
+ * @param cpu The guest CPU state. */
 static void tracer_build_and_feed(CPUState* cpu) {
     if (s_nsets <= 0) return;
     ngte_view view; ngte_view_build(cpu, &view);   /* one projection view per feed */
@@ -182,10 +209,16 @@ static void tracer_build_and_feed(CPUState* cpu) {
     openpete_native_scene_set_tag(0);
 }
 
-/* Dispatch hook: snapshot the tracer gamestate (before the .s drains it), run
- * the real renderer (verdict), then re-derive + feed natively. */
+/** @brief Runs the game's tracer renderer func_800189F0 inside the hook bracket.
+ *
+ * @param cpu The guest CPU state.
+ * @param addr Unused. */
 static void tracer_run_draw(CPUState* cpu, uint32_t addr) { (void)addr; func_800189F0(cpu); }
-/* Snapshot the tracer gamestate before the real renderer drains it. */
+/** @brief Bracket pre-step that snapshots the tracer points before the game renderer drains them, when the native feed is on.
+ *
+ * @param cpu The guest CPU state.
+ * @param feed Nonzero when the native feed runs this call.
+ * @param verify Unused. */
 static void tracer_pre(CPUState* cpu, int feed, int verify) {
     (void)verify;
     if (feed) tracer_snapshot(cpu);

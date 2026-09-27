@@ -82,7 +82,13 @@ static int      s_closed;      /* a drain has run since the last emit */
 #define CLS_PERIOD      327u
 #define CLS_LETTER_A    426u
 
-/* func_80017FE4's character->class mapping (draw.c). */
+/** @brief Maps a character to the m_Class func_80017FE4 gives its glyph moby.
+ *
+ * Digits and capitals map to their NUMBER and LETTER classes; '/', '?',
+ * '%', '^' and '+' to their own classes; every other character to
+ * MOBYCLASS_PERIOD.
+ * @param c The character.
+ * @return The glyph's m_Class. */
 static uint16_t glyph_class_plain(uint8_t c) {
     if (c >= '0' && c <= '9') return (uint16_t)(CLS_NUMBER_0 + (c - '0'));
     if (c >= 'A' && c <= 'Z') return (uint16_t)(CLS_LETTER_A + (c - 'A'));
@@ -96,8 +102,13 @@ static uint16_t glyph_class_plain(uint8_t c) {
     }
 }
 
-/* func_800181AC's character->class mapping (draw.c) — the spacing-aware
- * variant has its own punctuation set and falls back to the apostrophe. */
+/** @brief Maps a character to the m_Class the spacing-aware emitter func_800181AC gives its glyph moby.
+ *
+ * Digits and capitals map to their NUMBER and LETTER classes; '!', '?' and
+ * '.' to their own classes; every other character, ',' included, to
+ * MOBYCLASS_LETTER_APOSTROPHE.
+ * @param c The character.
+ * @return The glyph's m_Class. */
 static uint16_t glyph_class_spaced(uint8_t c) {
     if (c >= '0' && c <= '9') return (uint16_t)(CLS_NUMBER_0 + (c - '0'));
     if (c >= 'A' && c <= 'Z') return (uint16_t)(CLS_LETTER_A + (c - 'A'));
@@ -159,8 +170,17 @@ int text_moby_id_lookup(uint32_t moby, uint32_t* out_key) {
     return 0;
 }
 
-/* 0x50000000 namespace — distinct from the raw-vaddr (0x8xxxxxxx), HUD-pool
- * slot (0x40000000) and gem-flyout (0xA0000000) key spaces. */
+/** @brief Hashes a glyph's provenance tuple into an interpolation key in the 0x50000000 namespace.
+ *
+ * FNV-1a over the four fields, each folded in twice (the word, then its high
+ * half), masked to 28 bits and tagged 0x50000000, which keeps it distinct
+ * from the raw-vaddr (0x8xxxxxxx), HUD-pool slot (0x40000000) and
+ * gem-flyout (0xA0000000) key spaces.
+ * @param ra The emitter call's return address.
+ * @param call_ord The call's ordinal at that return address in the generation.
+ * @param glyph The glyph's index among the string's non-space characters.
+ * @param ch The character.
+ * @return The key. */
 static uint32_t text_id_key(uint32_t ra, uint32_t call_ord,
                             uint32_t glyph, uint8_t ch) {
     uint32_t h = 2166136261u;                     /* FNV-1a over the tuple */
@@ -172,8 +192,16 @@ static uint32_t text_id_key(uint32_t ra, uint32_t call_ord,
     return 0x50000000u | (h & 0x0FFFFFFFu);
 }
 
-/* Shared entry hook for both emitters. Returns 0 always: the recompiled body
- * still runs and does the actual allocation. */
+/** @brief Records the provenance key and expected m_Class of every glyph moby a text emitter call is about to allocate.
+ *
+ * Shared entry hook for func_80017FE4 and func_800181AC. Clears the table
+ * when the pool base (D_800756FC) changed or the cursor (g_HudMobys) moved
+ * back up since the previous call, counts the call's ordinal at its return
+ * address, then walks the string at a0 (at most 128 bytes) and records the
+ * j-th non-space character at cursor - (j+1) * 0x58. Reads guest RAM only.
+ * @param cpu The guest CPU state at the emitter's entry.
+ * @param spaced 1 for func_800181AC's character mapping, 0 for func_80017FE4's.
+ * @return 0, so the recompiled emitter runs and does the allocation. */
 static int text_emit_entry(CPUState* cpu, int spaced) {
     uint32_t base = cpu->read_word(HUD_POOL_BASE);
     uint32_t cur  = cpu->read_word(HUD_MOBYS_PTR);
@@ -228,9 +256,15 @@ static int on_800181AC_text(CPUState* cpu, uint32_t addr) {
     return text_emit_entry(cpu, 1);
 }
 
-/* func_80018880 (pool drain) entry: the generation's records stay valid for
- * this tick's capture and presents; a second drain without an emit means a
- * whole draw allocated no text, and the records are stale. */
+/** @brief Entry hook on the HUD pool drain func_80018880 that clears the glyph table on the second drain without an emit.
+ *
+ * The first drain after an emit marks the generation closed; its records
+ * stay valid for this tick's capture and presents. A second drain with no
+ * emit in between means a whole draw allocated no text, and the records
+ * then describe recycled pool addresses.
+ * @param cpu Unused.
+ * @param addr Unused.
+ * @return 0, so the recompiled function runs. */
 static int on_80018880_drain(CPUState* cpu, uint32_t addr) {
     (void)cpu; (void)addr;
     if (s_closed) text_id_clear();

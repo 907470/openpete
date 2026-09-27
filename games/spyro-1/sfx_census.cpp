@@ -135,14 +135,21 @@ struct EntryReader {
 int32_t rd32(const uint8_t* p) { int32_t v; std::memcpy(&v, p, 4); return v; }
 uint16_t rd16(const uint8_t* p) { uint16_t v; std::memcpy(&v, p, 2); return v; }
 
-/* Locate the sound table in a Data blob by its shape rather than by
- * walking components: the earlier components are length-prefixed but
- * the table itself is not (the game reads it with a bare header), so a
- * walk cannot land on it. Layout: [u8 table[256]][int count]
- * [SoundDefinition defs[count]] — every table byte is a def index
- * (absent = def 0, the null sample), every def address is 16-aligned
- * and inside the bank, and the table is the blob's final component.
- * Returns the offset of the 256-byte table or -1. */
+/** @brief Locates the sound table in a level's Data blob by its shape.
+ *
+ * The earlier components are length-prefixed but the table is not (the
+ * game reads it with a bare header), so a component walk cannot land on it.
+ * Layout: u8 table[256], int count, SoundDefinition defs[count] (0x14
+ * bytes each). A 4-aligned candidate matches when count is 1..255, every
+ * table byte is below count (an absent slot holds def 0, the null sample),
+ * every def's m_Addr is 16-aligned and inside the bank, every def's pitch
+ * (+10) is 0x40..0x3FFF, and the defs end less than one sector before the
+ * blob's end, since the table is the final component. The last matching
+ * offset wins.
+ * @param data The Data blob.
+ * @param bank_len The SRAM bank's length in bytes.
+ * @param count_out Receives the def count on a match; may be null.
+ * @return The offset of the 256-byte table, or -1. */
 long find_sound_table(const std::vector<uint8_t>& data, size_t bank_len,
                       int* count_out)
 {
@@ -181,7 +188,22 @@ const char* slot_label(const uint8_t* table, int defidx, char* buf, size_t cap)
     return buf;
 }
 
-/* Walk one entry (level or cutscene, disc or file) into banks. */
+/** @brief Reads one level or cutscene entry's SRAM bank and appends it, with every sample source keyed from it, to banks.
+ *
+ * An entry whose SRAM size does not exceed 0x80000 or with no Data is
+ * skipped as success. A level entry contributes its sound table's defs,
+ * each labelled by the first sfx slot naming it, and one bank per dragon
+ * speech blob (untagged pitch, since the rescue code sets it at key time).
+ * A cutscene entry has no table and contributes the cutscene def at bank
+ * start with its literal pitch; cutscenes 0 and 1 add the post-demo intro
+ * at 0x262D0, and cutscene 0 the ten titlescreen samples.
+ * @param er The entry's byte source.
+ * @param name The entry's name for sources and logs.
+ * @param cutscene True for a cutscene entry.
+ * @param cutscene_idx The cutscene's index, selecting its literal pitch.
+ * @param banks Receives the entry's banks.
+ * @param st Counts the walked entries.
+ * @return False on a read failure or a level entry with no sound table. */
 bool walk_entry(const EntryReader& er, const std::string& name, bool cutscene,
                 int cutscene_idx, std::vector<Bank>& banks, Stats& st)
 {

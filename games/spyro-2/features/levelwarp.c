@@ -94,6 +94,10 @@ static int         s_count;
 
 /* ---- the shared overlay half ------------------------------------------ */
 
+/** @brief Maps a dropdown index to its level number in the Spyro 2 level table.
+ *
+ * @param index The dropdown index.
+ * @return The level number, or -1 for an index out of range. */
 static int warp_level_id(int index) {
     size_t  n;
     const spyro2_level_t* t = spyro2_level_table(&n);
@@ -108,8 +112,13 @@ static int warp_in_flight_status(char* buf, size_t cap) {
     return 1;
 }
 
-/* The attract demo runs a level with the loader resident, so it needs
- * excluding explicitly. */
+/** @brief Picks the warp route the live guest state allows.
+ *
+ * The title route when the loader state is 0; the in-level route when
+ * gameplay is live and g_DemoMode is 0, since the attract demo runs a level
+ * with the loader resident and must be excluded explicitly; else none.
+ * @param cpu The guest CPU state.
+ * @return A LEVELWARP_ROUTE_* value. */
 static int warp_route(CPUState* cpu) {
     if (cpu->read_word(S2_LOADER_STATE) == S2_LOADER_TITLE)
         return LEVELWARP_ROUTE_TITLE;
@@ -123,10 +132,14 @@ static int warp_current_level(CPUState* cpu) {
     return (int)cpu->read_word(S2_NEXT_LEVEL_NUM);
 }
 
-/* End the level the way the attract demo's own recording running out ends
- * it, then hand the title screen to --skip-to-level. The two writes are the
- * demo-end check's own state: the flag its fade sets when the recording is
- * spent, and the demo-mode word the check is gated on. */
+/** @brief Starts the in-level warp by ending the level the way a spent attract-demo recording ends it.
+ *
+ * Writes the demo-end check's own state: the demo-mode word it is gated on
+ * (0x80067024) and the flag its fade sets when the recording is spent
+ * (0x80067178). spyro2_skip_set then hands the title screen the target, and
+ * the phase moves to WARP_LEAVING.
+ * @param cpu The guest CPU state.
+ * @param target_id The destination level number. */
 static void warp_start(CPUState* cpu, int target_id) {
     uint32_t cur = cpu->read_word(S2_NEXT_LEVEL_NUM);
 
