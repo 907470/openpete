@@ -195,6 +195,20 @@ _Static_assert(offsetof(tc_globals_ubo, rim_oxyH) % 32 == 0 &&
  * moving cameras render one tick ahead of the CPU-fed scene around them.
  * Re-extracted presents (windowed intermediates + canon-lag re-extract)
  * publish immediately: their build IS the displayed state. */
+/* Draw ranges of one state: per (arena, buffer), the element spans holding
+ * a chunk the state's sector flags select, in ascending order, adjacent
+ * spans closer than the arena's merge gap joined. Built at frame_commit
+ * from the builder's chunk registry. n < 0 means no list (a build still
+ * open, or more spans than TC_RANGE_MAX): the state draws every buffer's
+ * whole high-water range. Must stay the last member of tc_state, and `r`
+ * the last member here: tc_state_copy copies only the n spans in use. */
+#define TC_RANGE_MAX 4096
+typedef struct {
+    int      n;
+    uint16_t off[OPTC_ARENA_COUNT * TC_BUF_MAX + 1]; /* first span of (arena, buf) */
+    tc_span  r[TC_RANGE_MAX];
+} tc_ranges;
+
 typedef struct {
     tc_globals_ubo g;
     tc_sector_ubo  sec[OPTC_SLOTS];
@@ -202,7 +216,24 @@ typedef struct {
     int            valid;
     uint32_t       build_serial;      /* present_ctr at the build: ranges freed at a
                                        * later serial may still be drawn by this state */
+    tc_ranges      rl;                /* last: see tc_ranges */
 } tc_state;
+
+/* One chunk in the builder's registry: its element span in one arena
+ * buffer and the sector slot and generation its elements carry in
+ * face_flags. `uniform` is 0 when the elements disagree on either, and such
+ * a chunk is drawn by every state. */
+typedef struct {
+    uint32_t first, count;
+    uint16_t slot;
+    uint8_t  gen, uniform;
+} tc_chunk;
+
+/* Builder-owned chunk registry of one arena buffer, sorted by `first`. */
+typedef struct {
+    tc_chunk *c;
+    int       n, cap;
+} tc_chunk_list;
 
 /* Eager scene ring: one state per published scene, keyed by the scene id the
  * builder stamped it with. Sized past the scene ring so a state outlives its
@@ -254,6 +285,15 @@ static struct {
                                        * fresher camera/fog/colour-generation
                                        * set (rung flips, sub-pixel skew) */
     tc_sector_ubo *build_target;      /* where sector_set writes this build   */
+    tc_state     *build_state;        /* the state build_target belongs to    */
+    tc_chunk_list reg[OPTC_ARENA_COUNT][TC_BUF_MAX]; /* builder's chunk registry */
+    int           reg_broken;         /* a registry insert failed: no range lists */
+    /* Submission census: per selected present, the elements the draws
+     * submitted and the elements drawing each buffer's whole high-water
+     * range would have submitted (vertices; cell records times their
+     * per-instance vertices), and the draw calls issued. */
+    uint64_t      cen_presents, cen_verts, cen_verts_whole, cen_draws;
+    uint32_t      cen_nolist;         /* draws of a state with no range list  */
     int           draw_open;
     int  sel_src;      /* 0 closed, 1 scene ring, 2 live, 3 staged */          /* frame_select verdict for this present */
     uint64_t      ubo_flush_serial;   /* rhi_frame_serial of the last UBO flush
@@ -695,11 +735,39 @@ int openpete_tercache_init(rhi_device *dev)
     return 1;
 }
 
+/** @brief Return 0 when OPENPETE_TC_RANGE_DRAW=0 forces whole-range arena draws, else 1.
+ *
+ * Read once. The whole-range leg is the reference an A/B of the range
+ * draws compares against: both must produce the same image. */
+static int tc_range_draw_on(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("OPENPETE_TC_RANGE_DRAW");
+        on = !(e && *e == '0');
+    }
+    return on;
+}
+
 void openpete_tercache_shutdown(rhi_device *dev)
 {
     if (!dev) return;
     openpete_tercache_get_stats(&s_tc_final);
     s_tc_final_valid = 1;
+    {
+        const char *e = getenv("OPENPETE_TC_SUBMIT_CENSUS");
+        if (e && *e && *e != '0' && s_tc.cen_presents)
+            fprintf(stderr, "[tercache] submit census: presents=%llu "
+                    "verts_per_present=%.0f whole_range_verts_per_present=%.0f "
+                    "draws_per_present=%.1f nolist_draws=%u range_draw=%d\n",
+                    (unsigned long long)s_tc.cen_presents,
+                    (double)s_tc.cen_verts / (double)s_tc.cen_presents,
+                    (double)s_tc.cen_verts_whole / (double)s_tc.cen_presents,
+                    (double)s_tc.cen_draws / (double)s_tc.cen_presents,
+                    s_tc.cen_nolist, tc_range_draw_on());
+    }
+    for (int a = 0; a < OPTC_ARENA_COUNT; a++)
+        for (int b = 0; b < TC_BUF_MAX; b++) free(s_tc.reg[a][b].c);
     if (s_tc.hd_dummy) { rhi_destroy_texture(dev, s_tc.hd_dummy); s_tc.hd_dummy = NULL; }
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) tc_arena_free_all(dev, a);
     rhi_pipeline **const named[] = {
@@ -815,6 +883,184 @@ static void tc_request_overflow(int arena, uint32_t verts)
     atomic_fetch_or_explicit(&s_tc.ovf_req, 1u << arena, memory_order_release);
 }
 
+/* ---- chunk registry and draw ranges -------------------------------------
+ * The builder records every chunk it writes with the sector slot and
+ * generation its elements carry, so that each committed state can list the
+ * element spans its sector flags select and the draw can skip the rest of
+ * the arena. A skipped span holds only elements the vertex stage would kill
+ * for that state: a chunk whose slot is not drawn, whose generation is not
+ * the published one, or whose plain/near family is not the one the slot's
+ * NEARVAR flag picks, or a range no chunk occupies. */
+
+/** @brief Return the index of the first registry entry at or after an element index.
+ * @param l The registry list.
+ * @param first Element index.
+ * @return Insertion index in [0, l->n]. */
+static int tc_reg_lower(const tc_chunk_list *l, uint32_t first)
+{
+    int lo = 0, hi = l->n;
+    while (lo < hi) {
+        const int mid = (lo + hi) / 2;
+        if (l->c[mid].first < first) lo = mid + 1; else hi = mid;
+    }
+    return lo;
+}
+
+/** @brief Record a written chunk in its buffer's registry, replacing an entry at the same first element.
+ *
+ * On an allocation failure the registry is left unchanged and every state
+ * built afterwards draws its whole ranges (tc_ranges_build finds the
+ * registry marked incomplete).
+ * @param arena Arena index.
+ * @param buf Buffer index.
+ * @param c The chunk. */
+static void tc_reg_add(int arena, int buf, tc_chunk c)
+{
+    tc_chunk_list *l = &s_tc.reg[arena][buf];
+    const int i = tc_reg_lower(l, c.first);
+    if (i < l->n && l->c[i].first == c.first) { l->c[i] = c; return; }
+    if (l->n == l->cap) {
+        const int ncap = l->cap ? l->cap * 2 : 256;
+        tc_chunk *nc = (tc_chunk *)realloc(l->c, (size_t)ncap * sizeof(*nc));
+        if (!nc) { s_tc.reg_broken = 1; return; }
+        l->c = nc; l->cap = ncap;
+    }
+    memmove(&l->c[i + 1], &l->c[i], (size_t)(l->n - i) * sizeof(*l->c));
+    l->c[i] = c;
+    l->n++;
+}
+
+/** @brief Drop the registry entry of a freed chunk.
+ * @param arena Arena index.
+ * @param buf Buffer index.
+ * @param first The chunk's first element. */
+static void tc_reg_remove(int arena, int buf, uint32_t first)
+{
+    tc_chunk_list *l = &s_tc.reg[arena][buf];
+    const int i = tc_reg_lower(l, first);
+    if (i >= l->n || l->c[i].first != first) return;
+    memmove(&l->c[i], &l->c[i + 1], (size_t)(l->n - i - 1) * sizeof(*l->c));
+    l->n--;
+}
+
+/** @brief Empty every buffer's registry, keeping the storage. */
+static void tc_reg_clear(void)
+{
+    for (int a = 0; a < OPTC_ARENA_COUNT; a++)
+        for (int b = 0; b < TC_BUF_MAX; b++) s_tc.reg[a][b].n = 0;
+}
+
+/** @brief Build a registry entry from a chunk's face_flags words.
+ * @param first The chunk's first element.
+ * @param count Element count.
+ * @param ff First face_flags word.
+ * @param stride Bytes between consecutive face_flags words.
+ * @return The entry; uniform when every element's slot and generation equal the first's. */
+static tc_chunk tc_chunk_of(uint32_t first, int count, const uint8_t *ff, size_t stride)
+{
+    uint32_t f0;
+    memcpy(&f0, ff, sizeof f0);
+    tc_chunk c = { first, (uint32_t)count, (uint16_t)(f0 & OPTC_SLOT_DEAD),
+                   (uint8_t)((f0 >> 29) & 7u), 1 };
+    const uint32_t key = f0 & (OPTC_SLOT_DEAD | 0xE0000000u);
+    for (int i = 1; i < count && c.uniform; i++) {
+        uint32_t f;
+        memcpy(&f, ff + (size_t)i * stride, sizeof f);
+        if ((f & (OPTC_SLOT_DEAD | 0xE0000000u)) != key) c.uniform = 0;
+    }
+    return c;
+}
+
+/** @brief Return 1 when a state may draw any element of a chunk.
+ *
+ * Mirrors the vertex stage's sector-level kills: OPTC_SF_DRAWN clear, a
+ * generation other than the slot's published one, or a near-family arena
+ * (the near and near-cell arenas) under a slot without OPTC_SF_NEARVAR, or
+ * a plain-family arena under one with it.
+ * @param T The state.
+ * @param arena Arena index.
+ * @param c The chunk. */
+static int tc_chunk_selected(const tc_state *T, int arena, const tc_chunk *c)
+{
+    if (!c->uniform) return 1;
+    union { float f; uint32_t u; } w;
+    w.f = T->sec[c->slot].o[3];
+    const uint32_t sf = w.u;
+    if (!(sf & OPTC_SF_DRAWN) || ((sf >> 12) & 7u) != c->gen) return 0;
+    const int near_family = OPTC_ARENA_IS_NEAR(arena) ||
+                            (OPTC_ARENA_IS_CELL(arena) && !OPTC_ARENA_IS_CELL_ANIM(arena));
+    return near_family == ((sf & OPTC_SF_NEARVAR) != 0);
+}
+
+/** @brief Return the gap below which two selected spans of an arena are drawn as one.
+ *
+ * Joining spans draws the elements between them, which the vertex stage
+ * kills as it would in a whole-range draw; the gap trades those elements
+ * against a draw call.
+ * @param arena Arena index.
+ * @return Elements: 192 vertices, or 2 cell records. */
+static uint32_t tc_range_gap(int arena)
+{
+    return OPTC_ARENA_IS_CELL(arena) ? 2u : 192u;
+}
+
+/** @brief Append one arena buffer's selected spans to a state's range list.
+ * @param T The state.
+ * @param arena Arena index.
+ * @param buf Buffer index.
+ * @return 0, or -1 when the list is full. */
+static int tc_ranges_add_buf(tc_state *T, int arena, int buf)
+{
+    const tc_chunk_list *l = &s_tc.reg[arena][buf];
+    const uint32_t gap = tc_range_gap(arena);
+    int open = 0;
+    uint32_t lo = 0, hi = 0;
+    for (int i = 0; i < l->n; i++) {
+        const tc_chunk *c = &l->c[i];
+        if (!tc_chunk_selected(T, arena, c)) continue;
+        if (open && c->first <= hi + gap) {
+            if (c->first + c->count > hi) hi = c->first + c->count;
+            continue;
+        }
+        if (open) {
+            if (T->rl.n >= TC_RANGE_MAX) return -1;
+            T->rl.r[T->rl.n++] = (tc_span){ lo, hi - lo };
+        }
+        open = 1; lo = c->first; hi = c->first + c->count;
+    }
+    if (open) {
+        if (T->rl.n >= TC_RANGE_MAX) return -1;
+        T->rl.r[T->rl.n++] = (tc_span){ lo, hi - lo };
+    }
+    return 0;
+}
+
+/** @brief Build a committed state's range list from the chunk registry and its sector flags.
+ *
+ * Leaves the list absent (n = -1) when the registry is incomplete or the
+ * spans overflow TC_RANGE_MAX, so the state draws whole ranges.
+ * @param T The state. */
+static void tc_ranges_build(tc_state *T)
+{
+    T->rl.n = 0;
+    if (s_tc.reg_broken) { T->rl.n = -1; return; }
+    for (int a = 0; a < OPTC_ARENA_COUNT; a++)
+        for (int b = 0; b < TC_BUF_MAX; b++) {
+            T->rl.off[a * TC_BUF_MAX + b] = (uint16_t)T->rl.n;
+            if (tc_ranges_add_buf(T, a, b) != 0) { T->rl.n = -1; return; }
+        }
+    T->rl.off[OPTC_ARENA_COUNT * TC_BUF_MAX] = (uint16_t)T->rl.n;
+}
+
+/** @brief Copy a state, including only the range-list spans in use.
+ * @param dst Destination.
+ * @param src Source. */
+static void tc_state_copy(tc_state *dst, const tc_state *src)
+{
+    const int n = src->rl.n > 0 ? src->rl.n : 0;
+    memcpy(dst, src, offsetof(tc_state, rl.r) + (size_t)n * sizeof(tc_span));
+}
+
 int openpete_tercache_chunk_alloc(int arena, int vert_count, uint32_t *out_first,
                                   int *out_buf)
 {
@@ -841,6 +1087,9 @@ void openpete_tercache_chunk_write(int arena, int buf, uint32_t first,
     rhi_update_buffer_range(pr->vb, v,
                             (size_t)first * sizeof(rhi_terrain_vertex),
                             (size_t)count * sizeof(rhi_terrain_vertex));
+    if (count > 0)
+        tc_reg_add(arena, buf, tc_chunk_of(first, count, (const uint8_t *)&v[0].face_flags,
+                                           sizeof(rhi_terrain_vertex)));
 }
 
 void openpete_tercache_chunk_write_prev(int arena, int buf, uint32_t first,
@@ -873,12 +1122,16 @@ void openpete_tercache_chunk_write_cells(int arena, int buf, uint32_t first,
     if (!pr) return;
     const size_t sz = tc_elem_size(arena);
     rhi_update_buffer_range(pr->vb, recs, (size_t)first * sz, (size_t)count * sz);
+    if (count > 0)
+        tc_reg_add(arena, buf, tc_chunk_of(first, count, (const uint8_t *)recs +
+                                           offsetof(rhi_terrain_cell, face_flags), sz));
 }
 
 void openpete_tercache_chunk_free(int arena, int buf, uint32_t first, int count)
 {
     if (!s_tc.ready || arena < 0 || arena >= OPTC_ARENA_COUNT || count <= 0) return;
     tc_buf *a = &s_tc.arena[arena].buf[buf];
+    tc_reg_remove(arena, buf, first);
     /* No in-place dead-stamp: a replaced chunk keeps its bytes untouched (a
      * host write would race in-flight frames reading the arena). Presents
      * that still show the pre-rebuild state draw it via its baked chunk
@@ -1016,6 +1269,9 @@ static void tc_adopt_pending(void)
      * than drained: re-inserting those spans into an empty free list would
      * hand the allocator ranges it already owns. */
     s_tc.defer_n = 0;
+    /* The registry described the outgoing buffers. */
+    tc_reg_clear();
+    s_tc.reg_broken = 0;
     s_tc.rz_old_build = s_tc.present_ctr;
     s_tc.rz_old_svc   = atomic_load_explicit(&s_tc.svc_calls, memory_order_relaxed);
     atomic_store_explicit(&s_tc.rz_state, TC_RZ_RETIRE, memory_order_release);
@@ -1170,7 +1426,7 @@ static tc_state *tc_begin_state(uint32_t stamp, int immediate)
         return &s_tc.live;
     }
     if (s_tc.staged.valid && s_tc.staged.stamp != stamp)
-        s_tc.live = s_tc.staged;           /* promote the previous build */
+        tc_state_copy(&s_tc.live, &s_tc.staged);   /* promote the previous build */
     s_tc.staged.stamp = stamp; s_tc.staged.valid = 1; s_tc.staged.build_serial = s_tc.present_ctr;
     return &s_tc.staged;
 }
@@ -1325,7 +1581,9 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
 
     /* reset sector flags; origins are rewritten by sector_set */
     for (int i = 0; i < OPTC_SLOTS; i++) T->sec[i].o[3] = 0.0f;
+    T->rl.n = -1;                         /* no range list until the commit */
     s_tc.build_target = T->sec;
+    s_tc.build_state = T;
 }
 
 void openpete_tercache_frame_skip(uint32_t stamp, int immediate)
@@ -1339,7 +1597,9 @@ void openpete_tercache_frame_skip(uint32_t stamp, int immediate)
     tc_state *T = tc_begin_state(stamp, immediate);
     memset(&T->g, 0, sizeof(T->g));
     for (int i = 0; i < OPTC_SLOTS; i++) T->sec[i].o[3] = 0.0f;
+    T->rl.n = -1;                         /* no range list until the commit */
     s_tc.build_target = T->sec;
+    s_tc.build_state = T;
 }
 
 /* Selects the retained state whose stamp matches the composed scene. */
@@ -1360,11 +1620,11 @@ void openpete_tercache_frame_select(uint32_t present_stamp)
         for (int i = 0; i < TC_RING; i++)
             if (s_tc.ring[i].valid && s_tc.ring[i].stamp == present_stamp) { R = &s_tc.ring[i]; break; }
     if (R) {
-        s_tc.draw_open = 1; s_tc.sel = *R; s_tc.sel_src = 1;
+        s_tc.draw_open = 1; tc_state_copy(&s_tc.sel, R); s_tc.sel_src = 1;
     } else if (s_tc.ready && s_tc.live.valid && present_stamp == s_tc.live.stamp) {
-        s_tc.draw_open = 1; s_tc.sel = s_tc.live; s_tc.sel_src = 2;
+        s_tc.draw_open = 1; tc_state_copy(&s_tc.sel, &s_tc.live); s_tc.sel_src = 2;
     } else if (s_tc.ready && s_tc.staged.valid && present_stamp == s_tc.staged.stamp) {
-        s_tc.draw_open = 1; s_tc.sel = s_tc.staged; s_tc.sel_src = 3;
+        s_tc.draw_open = 1; tc_state_copy(&s_tc.sel, &s_tc.staged); s_tc.sel_src = 3;
     } else {
         s_tc.draw_open = 0; s_tc.sel_src = 0;
         if (tc_dbg() && s_tc.ready && s_tc.live.valid)
@@ -1372,6 +1632,7 @@ void openpete_tercache_frame_select(uint32_t present_stamp)
                     present_stamp, s_tc.live.stamp, s_tc.staged.valid ? s_tc.staged.stamp : 0u,
                     s_tc.staged.valid ? "" : " invalid");
     }
+    if (s_tc.draw_open) s_tc.cen_presents++;
     s_tc.ubo_flush_serial = 0;
 }
 
@@ -1398,8 +1659,11 @@ void openpete_tercache_sector_set(int slot, float ox, float oy, float oz,
 void openpete_tercache_frame_commit(void)
 {
     /* Build staging is complete; promotion happens at the next frame_begin
-     * (hook builds) and the UBO flush at the present's first draw. */
+     * (hook builds) and the UBO flush at the present's first draw. The
+     * sector flags are final, so the state's draw ranges are listed now. */
+    if (s_tc.build_state) tc_ranges_build(s_tc.build_state);
     s_tc.build_target = NULL;
+    s_tc.build_state = NULL;
 }
 
 /* ---- draw --------------------------------------------------------------- */
@@ -1452,18 +1716,41 @@ static int tc_pair_retired(int arena, const tc_pair *pr)
     return 0;
 }
 
-/** @brief Draw one buffer of an arena, whole.
+/** @brief Issue one arena draw over elements [first, first + n) of the bound buffer, tc_dup_draw times.
+ * @param cells Nonzero for a cell-record arena (instanced).
+ * @param per Vertices per cell record.
+ * @param first First element (vertex, or record instance).
+ * @param n Element count. */
+static void tc_issue(int cells, uint32_t per, uint32_t first, uint32_t n)
+{
+    for (int r = 0, rn = tc_dup_draw(); r < rn; r++) {
+        if (cells) rhi_draw_instanced(s_tc.dev, per, n, 0, first);
+        else       rhi_draw(s_tc.dev, n, first);
+    }
+    s_tc.cen_verts += (uint64_t)n * (cells ? per : 1u);
+    s_tc.cen_draws++;
+}
+
+/** @brief Draw one buffer of an arena: the selected state's spans in it, or the whole high-water range.
  *
- * Each buffer numbers its vertices from 0 and the vertex stage's only index
- * use is gl_VertexIndex % 3, which restarts at every draw, so the buffers
- * need no index translation between them. A cell arena's buffer is an
- * instance-rate record array: one instance per record, the record's cell
- * vertices per instance. Pushes @p pc, binds the pair (with its twin when it
- * has one), issues the draw tc_dup_draw times, and counts it.
+ * Each buffer numbers its vertices from 0, and gl_VertexIndex includes the
+ * draw's first vertex, so the vertex stage sees the same index in a span
+ * draw as in a whole-range draw. Every vertex chunk holds whole triangles
+ * and starts on a triangle boundary (allocations and frees are multiples
+ * of 3), so a span that starts at a chunk assembles the same triangles. A
+ * cell arena's buffer is an instance-rate record array: one instance per
+ * record, the record's cell vertices per instance, a span selected by the
+ * first instance. With a range list the draw covers the state's spans in
+ * ascending order, clamped to the buffer's range, and so emits the
+ * primitives a whole-range draw would rasterise, in the same order;
+ * without one, or with OPENPETE_TC_RANGE_DRAW=0, it covers [0, high).
+ * Pushes @p pc, binds the pair (with its twin when it has one), and counts
+ * the submission for the census.
  * @param arena Arena index.
+ * @param bi Buffer index within the arena.
  * @param b Buffer.
  * @param pc Push constants for the draw. */
-static void tc_draw_buf(int arena, const tc_buf *b, const tc_pc *pc)
+static void tc_draw_buf(int arena, int bi, const tc_buf *b, const tc_pc *pc)
 {
     /* One load of the pair for the whole draw, and the range clamped to its
      * capacity: the builder may swap the pair and reset `high` between this
@@ -1474,17 +1761,32 @@ static void tc_draw_buf(int arena, const tc_buf *b, const tc_pc *pc)
     uint32_t nverts = b->high;            /* records, on a cell arena */
     if (nverts > pr->cap) nverts = pr->cap;
     if (nverts == 0) return;
+    const int cells = OPTC_ARENA_IS_CELL(arena);
+    const uint32_t per = OPTC_ARENA_IS_CELL_ANIM(arena) ? RHI_TERRAIN_CELL_VERTS_ANIM
+                                                        : RHI_TERRAIN_CELL_VERTS_NEAR;
+    const tc_ranges *rl = &s_tc.sel.rl;
+    const int listed = rl->n >= 0 && tc_range_draw_on();
+    const int k = arena * TC_BUF_MAX + bi;
+    if (listed && rl->off[k] == rl->off[k + 1]) {
+        s_tc.cen_verts_whole += (uint64_t)nverts * (cells ? per : 1u);
+        return;                           /* nothing selected in this buffer */
+    }
     if (tc_pair_retired(arena, pr))
         atomic_fetch_add_explicit(&s_tc.draws_retired, 1u, memory_order_relaxed);
     rhi_push_constants(s_tc.dev, pc, sizeof(*pc));
     if (pr->pv) rhi_bind_vertex_buffer2(s_tc.dev, pr->vb, pr->pv);
     else        rhi_bind_vertex_buffer(s_tc.dev, pr->vb);
-    const int cells = OPTC_ARENA_IS_CELL(arena);
-    const uint32_t per = OPTC_ARENA_IS_CELL_ANIM(arena) ? RHI_TERRAIN_CELL_VERTS_ANIM
-                                                        : RHI_TERRAIN_CELL_VERTS_NEAR;
-    for (int r = 0, rn = tc_dup_draw(); r < rn; r++) {
-        if (cells) rhi_draw_instanced(s_tc.dev, per, nverts, 0, 0);
-        else       rhi_draw(s_tc.dev, nverts, 0);
+    s_tc.cen_verts_whole += (uint64_t)nverts * (cells ? per : 1u);
+    if (!listed) {
+        s_tc.cen_nolist++;
+        tc_issue(cells, per, 0, nverts);
+    } else {
+        for (int i = rl->off[k]; i < rl->off[k + 1]; i++) {
+            const uint32_t lo = rl->r[i].first;
+            if (lo >= nverts) break;
+            const uint32_t hi = lo + rl->r[i].count < nverts ? lo + rl->r[i].count : nverts;
+            tc_issue(cells, per, lo, hi - lo);
+        }
     }
     if (cells) { s_tc.cell_draws++; s_tc.cell_instances += nverts; }
     s_tc.draws_last++;
@@ -1516,13 +1818,17 @@ static void tc_pc_fill(tc_pc *pc, int pass_sel, const openpete_tercache_clip *c)
     pc->snap = s_tc_snap;
 }
 
+/** @brief Draw every buffer of one arena with the bound pipeline.
+ * @param arena Arena index.
+ * @param pass_sel Pass selector pushed to the vertex stage.
+ * @param c Clip mapping for the draw target. */
 static void tc_draw_arena(int arena, int pass_sel, const openpete_tercache_clip *c)
 {
     const tc_arena *a = &s_tc.arena[arena];
     tc_pc pc;
     tc_pc_fill(&pc, pass_sel, c);
     for (int b = 0, n = atomic_load_explicit(&a->n, memory_order_acquire); b < n; b++)
-        tc_draw_buf(arena, &a->buf[b], &pc);
+        tc_draw_buf(arena, b, &a->buf[b], &pc);
 }
 
 /** @brief Bind a variant pipeline and draw one arena with it.

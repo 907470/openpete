@@ -248,6 +248,13 @@ typedef struct {
  * @param dev Device; NULL leaves the cache disabled.
  * @return 1 when the cache is ready, 0 otherwise. */
 int  openpete_tercache_init(struct rhi_device *dev);
+/** @brief Destroy the terrain cache's device objects and zero its state, keeping the final stats.
+ *
+ * The stats are snapshotted first so a census printed after teardown
+ * reads them. With OPENPETE_TC_SUBMIT_CENSUS=1 it prints the submission
+ * census: vertices submitted per selected present beside the count
+ * whole-range draws would have submitted, and draw calls per present.
+ * @param dev The device the cache was created on; NULL is ignored. */
 void openpete_tercache_shutdown(struct rhi_device *dev);
 int  openpete_tercache_ready(void);
 
@@ -301,7 +308,17 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
  *        paired with OPTC_SF_LPGRADE in @p sflags. */
 void openpete_tercache_sector_set(int slot, float ox, float oy, float oz,
                                   uint32_t sflags, const float *grade6);
+/** @brief Close the open build: its sector flags are final, so its draw-range list is built from the chunk registry.
+ *
+ * Promotion to the live state happens at the next frame_begin; the UBO
+ * flush at the present's first draw. */
 void openpete_tercache_frame_commit(void);
+/** @brief Open a build whose state draws no retained terrain, keeping its place in the promote chain.
+ *
+ * Used for a pure-CPU fallback build: the state is stamped with zeroed
+ * globals and sector flags and no draw-range list.
+ * @param stamp Stamp of the build.
+ * @param immediate Nonzero for an immediate build. */
 void openpete_tercache_frame_skip(uint32_t stamp, int immediate);
 /** @brief Select the retained terrain state built by the scene being composed, or close the retained draws.
  *
@@ -490,7 +507,16 @@ void openpete_native_hdfold_reset(void);
  *         or an argument is out of range. */
 int  openpete_tercache_chunk_alloc(int arena, int vert_count, uint32_t *out_first,
                                    int *out_buf);
-/* Upload packed vertices at [first, first+count) of an arena buffer. */
+/** @brief Upload packed vertices at [first, first+count) of an arena buffer and record the chunk in the registry.
+ *
+ * The registry entry carries the sector slot and generation of the
+ * vertices' face_flags, which the draw-range lists select by. No-op while
+ * the cache is not ready.
+ * @param arena Arena index.
+ * @param buf Buffer index from openpete_tercache_chunk_alloc().
+ * @param first First vertex index of the chunk.
+ * @param v Vertices.
+ * @param count Vertex count. */
 void openpete_tercache_chunk_write(int arena, int buf, uint32_t first,
                                    const struct rhi_terrain_vertex *v, int count);
 /** @brief Upload a chunk's previous-tick records on an anim arena.
@@ -530,9 +556,15 @@ void openpete_tercache_chunk_write_ctx(int arena, int buf, uint32_t first,
  * @param count Record count. */
 void openpete_tercache_chunk_write_cells(int arena, int buf, uint32_t first,
                                          const void *recs, int count);
-/* Release a chunk. Its bytes stay untouched while in-flight frames may read
- * them (the per-slot generation hides a replaced chunk); the range becomes
- * reusable after the defer window, when it is stamped dead. */
+/** @brief Release a chunk and drop it from the registry.
+ *
+ * Its bytes stay untouched while in-flight frames may read them (the
+ * per-slot generation hides a replaced chunk); the range becomes reusable
+ * after the defer window, when it is stamped dead.
+ * @param arena Arena index.
+ * @param buf Buffer index from openpete_tercache_chunk_alloc().
+ * @param first First element of the chunk.
+ * @param count Element count. */
 void openpete_tercache_chunk_free(int arena, int buf, uint32_t first, int count);
 
 /* ---- overflow buffers ---------------------------------------------------
