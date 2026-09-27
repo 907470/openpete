@@ -124,20 +124,47 @@ static int mc_resolve_card_dir(char* out, size_t out_size)
     return openpete_paths_state_dir("cards", out, out_size, 1);
 }
 
+/** @brief Replace the slot's image path with the file a symbolic link at it names.
+ *
+ * The whole-image write replaces the directory entry at the path, which
+ * would turn a link into a regular file and leave its target unwritten,
+ * while the in-place frame write follows the link. Resolving the link once
+ * sends both writers to the target. A path that is not a link, or whose
+ * target does not resolve, is kept. No-op on Windows.
+ * @param slot Card slot, 0 or 1. */
+static void mc_follow_link(int slot)
+{
+#ifndef _WIN32
+    struct stat st;
+    char* real;
+    if (lstat(s_path[slot], &st) != 0 || !S_ISLNK(st.st_mode)) return;
+    real = realpath(s_path[slot], NULL);
+    if (!real) return;
+    if (strlen(real) < sizeof(s_path[slot]))
+        snprintf(s_path[slot], sizeof(s_path[slot]), "%s", real);
+    free(real);
+#else
+    (void)slot;
+#endif
+}
+
 /** @brief Write the slot's image path into s_path[slot] and return 0, or -1 when no card directory resolves.
  *
  * An explicit --card1/--card2 path is used as given; otherwise the path is
- * card<slot+1>.mcr in the directory mc_resolve_card_dir returns. */
+ * card<slot+1>.mcr in the directory mc_resolve_card_dir returns. A symbolic
+ * link at the path is resolved to its target. */
 static int mc_resolve_path(int slot)
 {
     if (s_path_override[slot][0]) {
         snprintf(s_path[slot], sizeof(s_path[slot]), "%s", s_path_override[slot]);
+        mc_follow_link(slot);
         return 0;
     }
     char dir[1024];
     if (mc_resolve_card_dir(dir, sizeof(dir)) != 0) return -1;
     snprintf(s_path[slot], sizeof(s_path[slot]), "%s%ccard%d.mcr",
              dir, MC_SEP, slot + 1);
+    mc_follow_link(slot);
     return 0;
 }
 
@@ -284,7 +311,8 @@ static int mc_write_refused(int slot)
     if (!s_refuse_warned[slot]) {
         s_refuse_warned[slot] = 1;
         OPL_ERROR_F("memcard", "card %d: save refused — %s", slot,
-                    s_mem_only[slot] ? "no card directory resolves"
+                    s_mem_only[slot] ? "no card file is usable (no card directory "
+                                       "resolves, or the file could not be read)"
                                      : "the image is a headered format loaded read-only");
     }
     return 1;
@@ -425,23 +453,40 @@ enum { MC_FILE_LOADED, MC_FILE_ABSENT, MC_FILE_UNUSABLE };
 /** @brief Read the slot's image file into s_card, classifying what the file holds.
  *
  * A raw 131072-byte image loads as is and a known headered container loads
- * read-only. Any other file (truncated, oversized, unknown header) is
- * renamed aside so that provisioning never writes over it.
+ * read-only. A file that exists but cannot be opened or read is unusable,
+ * so provisioning never replaces a card it could not read. Any other file
+ * (truncated, oversized, unknown header) is renamed aside so that
+ * provisioning never writes over it.
  * @param slot Card slot, 0 or 1.
  * @return MC_FILE_LOADED, MC_FILE_ABSENT (no file, or moved aside), or
  *         MC_FILE_UNUSABLE (a bad file that could not be moved aside). */
 static int mc_load_file(int slot)
 {
     FILE* f = fopen(s_path[slot], "rb");
-    if (!f) return MC_FILE_ABSENT;
+    if (!f) {
+        if (errno == ENOENT) return MC_FILE_ABSENT;
+        OPL_ERROR_F("memcard", "card %d: %s cannot be opened (%s); the slot runs in "
+                    "memory and saves are refused", slot, s_path[slot], strerror(errno));
+        return MC_FILE_UNUSABLE;
+    }
     long size = (fseek(f, 0, SEEK_END) == 0) ? ftell(f) : -1;
     int loaded = 0;
-    if (size == MC_CARD_SIZE && fseek(f, 0, SEEK_SET) == 0)
-        loaded = fread(s_card[slot], 1, MC_CARD_SIZE, f) == MC_CARD_SIZE;
-    else if (size > 0)
+    int read_failed = size < 0;
+    if (size == MC_CARD_SIZE) {
+        loaded = fseek(f, 0, SEEK_SET) == 0 &&
+                 fread(s_card[slot], 1, MC_CARD_SIZE, f) == MC_CARD_SIZE;
+        read_failed = !loaded;
+    } else if (size > 0) {
         loaded = mc_load_container(slot, f, size);
+        read_failed = !loaded && ferror(f);
+    }
     fclose(f);
     if (loaded) return MC_FILE_LOADED;
+    if (read_failed) {
+        OPL_ERROR_F("memcard", "card %d: %s could not be read; the slot runs in memory "
+                    "and saves are refused", slot, s_path[slot]);
+        return MC_FILE_UNUSABLE;
+    }
     return mc_set_aside(slot) == 0 ? MC_FILE_ABSENT : MC_FILE_UNUSABLE;
 }
 

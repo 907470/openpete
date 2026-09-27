@@ -15,6 +15,7 @@
   #define op_getpid() _getpid()
 #else
   #include <fcntl.h>
+  #include <sys/stat.h>
   #include <unistd.h>
   #define op_getpid() getpid()
 #endif
@@ -74,6 +75,14 @@ static int replace_target(const char* tmp, const char* path) {
     }
     return 0;
 #else
+    /* A target that exists but is not writable is refused, as MoveFileExW
+     * refuses a read-only target on Windows; a writable target's mode
+     * carries over to the replacement. */
+    struct stat st;
+    if (stat(path, &st) == 0) {
+        if (access(path, W_OK) != 0) return -1;
+        (void)chmod(tmp, st.st_mode & 07777);
+    }
     if (rename(tmp, path) != 0) return -1;
     char dir[OP_ATOMIC_PATH_MAX];
     snprintf(dir, sizeof dir, "%s", path);
