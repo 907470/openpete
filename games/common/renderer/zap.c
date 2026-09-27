@@ -172,7 +172,14 @@ static int zap_prim_sink(void* ctx, const ngte_prim* s) {
     return 1;
 }
 
-/* Walk the interval the call allocated: 8-word POLY_FT3 (tag length 7). */
+/** @brief Decodes every primitive in the polybuf interval the zap routine's call allocated into s_item.
+ *
+ * The routine emits 8-word POLY_FT3 (tag length 7); the walk admits tags up
+ * to that length, up to ZAP_MAX_PRIMS primitives, and fills the code and tag
+ * histograms. Every captured primitive starts unpaired at depth 1.
+ * @param cpu The guest CPU state.
+ * @param start The polybuf cursor before the call.
+ * @param end The polybuf cursor after the call. */
 static void zap_capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
     s_item_n = 0;
     const ngte_walk_policy pol = {
@@ -238,20 +245,26 @@ static void zap_project_point(const ngte_view* v, const uint32_t w[3],
     ngte_project_offset(v, rel, o);
 }
 
-/* The screen half-width of chain point i of n, with the head and tail world
- * points displaced by `oh` and `ot`. The routine lays the undisplaced point at
- * head + i * step (:2638-2657) and widens it in camera-relative world units,
- * before the projection, from the difference d between its two neighbours
- * (:2693-2745): a vertical offset of max(|dx|, |dy|) + min(|dx|, |dy|) / 2 and
- * a horizontal offset of |dz| along world X where |dx| < |dy| and along world
- * Y otherwise, both shifted right by four, the pair's two entries sitting at
- * the point plus and minus that vector. The neighbours are jittered points
- * (:2658-2685), so the world offset is the tick's and is held: it is built
- * from the tick's undisplaced head-to-tail vector, which the step is a fixed
- * fraction of, and only the point it is carried on is displaced. What varies
- * is the offset's projection, its view-Z and its orientation to the camera.
- * Returns the half distance between the two entries' projections, or 0 when
- * either lies behind the camera. */
+/** @brief Computes the screen half-width of chain point i of n with the head and tail world points displaced.
+ *
+ * The routine lays the undisplaced point at head + i * step (:2638-2657) and
+ * widens it in camera-relative world units, before the projection, from the
+ * difference d between its two neighbours (:2693-2745): a vertical offset
+ * of max(|dx|, |dy|) + min(|dx|, |dy|) / 2 and a horizontal offset of |dz|
+ * along world X where |dx| < |dy| and along world Y otherwise, both shifted
+ * right by four, the pair's two entries sitting at the point plus and minus
+ * that vector. The neighbours are jittered points (:2658-2685), so the world
+ * offset is the tick's and is held: it is built from the tick's undisplaced
+ * head-to-tail vector, of which the step is a fixed fraction, and only the
+ * point it is carried on is displaced. What varies is the offset's
+ * projection, its view-Z and its orientation to the camera.
+ * @param v The view to project under.
+ * @param oh The head's displacement in full world units.
+ * @param ot The tail's displacement in full world units.
+ * @param i The chain point's index, 0 at the head.
+ * @param n The segment count.
+ * @return Half the screen distance between the two entries' projections, or
+ *         0 when either lies behind the camera. */
 static double zap_half_width(const ngte_view* v, const double oh[3], const double ot[3],
                              int i, int n) {
     double d[3], p[3], o[3], q[3];
@@ -306,7 +319,12 @@ static void zap_width_scales(const ngte_view* v, const double oh[3], const doubl
     }
 }
 
-/* The midpoint of two packed screen-XY entries. */
+/** @brief Computes the midpoint of two packed screen-XY entries.
+ *
+ * @param a The first entry (x in the low signed halfword, y in the high).
+ * @param b The second entry.
+ * @param x Receives the midpoint's x.
+ * @param y Receives the midpoint's y. */
 static void zap_entry_mid(uint32_t a, uint32_t b, float* x, float* y) {
     *x = ((float)(int16_t)(a & 0xFFFFu) + (float)(int16_t)(b & 0xFFFFu)) * 0.5f;
     *y = ((float)(int16_t)(a >> 16) + (float)(int16_t)(b >> 16)) * 0.5f;
@@ -426,20 +444,29 @@ static void zap_pair_depths(CPUState* cpu, const ngte_view* v) {
 
 /* ---- feed ---------------------------------------------------------------- */
 
-/* OPENPETE_ZAP=0 suppresses this feed alone. The guest draw still runs, so
- * the A/B prices the ribbons' painted pixels from one binary. */
+/** @brief Reports whether the zap feed is enabled, latched from OPENPETE_ZAP on first call.
+ *
+ * OPENPETE_ZAP=0 suppresses this feed alone. The guest draw still runs, so
+ * an A/B prices the ribbons' painted pixels from one binary.
+ * @return 0 when OPENPETE_ZAP starts with '0', else 1. */
 static int zap_feed_enabled(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_ZAP"); v = !(e && *e && *e == '0'); }
     return v;
 }
 
-/* Where a corner sits along the ribbon: the parameter of its projection onto
- * the tick's head-to-tail screen segment, clamped to the segment. The chain
- * the routine lays down runs from the head to the tail by repeated addition of
- * one step (:2638-2657), so this parameter is that chain's own, exactly at the
- * two ends and linearly between them. A record whose two ends project onto one
- * point carries no direction and takes the head's displacement whole. */
+/** @brief Computes where a corner sits along the ribbon, as its parameter on the tick's head-to-tail screen segment.
+ *
+ * The corner is projected onto the segment from s_head_p to s_tail_p and the
+ * parameter clamped to 0..1. The chain the routine lays down runs from the
+ * head to the tail by repeated addition of one step (:2638-2657), so this
+ * parameter is that chain's own, exact at the two ends and linear between
+ * them.
+ * @param x The corner's screen x.
+ * @param y The corner's screen y.
+ * @return The parameter in 0..1; 0 when the two ends project within 1e-9
+ *         squared pixels of each other, so the corner takes the head's
+ *         displacement whole. */
 static double zap_corner_pos(float x, float y) {
     const double ax = s_head_p.sx, ay = s_head_p.sy;
     const double dx = s_tail_p.sx - ax, dy = s_tail_p.sy - ay;
@@ -585,11 +612,18 @@ static void zap_hold(void) {
     }
 }
 
-/* OPENPETE_ZAP_CENSUS=LO-HI (or a single frame): per call in that frame
- * range, the primitives the routine appended by GPU code, the pool records that
- * were live and that the reject mirror accepted, the triangles the segment walk
- * predicted, the native triangles this feeder emitted and how many primitives
- * were left unpaired. A capture whose fed count is zero measured nothing. */
+/** @brief Prints the per-call zap census for VBLs inside the OPENPETE_ZAP_CENSUS range.
+ *
+ * OPENPETE_ZAP_CENSUS=LO-HI, or a single VBL. One line per call: the
+ * polybuf interval, the primitives captured by GPU code, the live records,
+ * the records that reached the projection, whether the replay was accepted,
+ * the triangles it predicted, the native triangles fed since fed_before and
+ * the primitives left unpaired. Then one line per primitive with its three
+ * corners, colour, first UV, page and paired depth. A capture whose fed
+ * count is zero measured nothing.
+ * @param start The polybuf cursor before the call.
+ * @param end The polybuf cursor after the call.
+ * @param fed_before s_fed_tris before the call. */
 static void zap_census(uint32_t start, uint32_t end, uint32_t fed_before) {
     static env_frame_range_t s_range = ENV_FRAME_RANGE_INIT;
     if (!env_frame_range_active(&s_range, "OPENPETE_ZAP_CENSUS", openpete_frame)) return;
@@ -621,8 +655,18 @@ static const hook_bracket_desc k_bracket = {
     .path = RP_TRACER, .prof_tag = "zap.srend", .st = &s_hb,
 };
 
-/* The world draw's call is the only one in either image, so the hook takes
- * every entry (Spyro 2 draw/func_800155A0.s:34, Spyro 3 draw/func_8001E460.s:32). */
+/** @brief Hooks the zap routine: runs it once through the shared bracket, then captures, pairs, holds and feeds its primitives.
+ *
+ * The world draw's call is the only one in either image, so the hook takes
+ * every entry (Spyro 2 draw/func_800155A0.s:34, Spyro 3
+ * draw/func_8001E460.s:32). The polybuf interval the call allocated is
+ * decoded, paired to the replayed segment depths, and held for the tick's
+ * sub-tick replay; with the native scene live and RP_TRACER enabled the held
+ * set is fed unrebased. The census runs on every bracketed call.
+ * @param cpu The guest CPU state.
+ * @param addr The hooked entry address.
+ * @return 0 when the bracket declines (the ordinary dispatch runs the
+ *         routine), else hook_bracket_end's result. */
 static int on_zap_draw(CPUState* cpu, uint32_t addr) {
     uint32_t startp, endp; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_bracket, &startp, &endp, &feed, &verify))

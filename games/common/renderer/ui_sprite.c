@@ -259,7 +259,10 @@ static double psx_uv_plane_at(const psx_uv_plane* p, double x, double y, int whi
 
 
 
-/* A fed 2D triangle's vertices are the primitive's integer words. */
+/** @brief Rounds a fed 2D triangle's screen positions and texel coordinates back to the primitive's integer words.
+ *
+ * @param t The fed triangle.
+ * @param iv Receives each vertex as {x, y, u, v}, rounded by lrintf. */
 static void tri_int_verts(const openpete_scene_tri* t, int iv[3][4]) {
     for (int k = 0; k < 3; k++) {
         iv[k][0] = (int)lrintf(t->v[k].sx); iv[k][1] = (int)lrintf(t->v[k].sy);
@@ -293,7 +296,11 @@ static unsigned s_uvedge_frame = 0xFFFFFFFFu, s_uvedge_tris, s_uvedge_bad;
 
 typedef struct { double dudx, dudy, dvdx, dvdy; } tri_uv_grad_t;
 
-/* The affine u and v gradients of a fed triangle in PSX pixel units. */
+/** @brief Computes the affine u and v gradients of a fed triangle in PSX pixel units.
+ *
+ * @param t The fed triangle.
+ * @param g Receives the four gradients.
+ * @return 1 on success, 0 when the triangle's screen area is below 1e-9. */
 static int tri_uv_grad(const openpete_scene_tri* t, tri_uv_grad_t* g) {
     const openpete_scene_vert *a = &t->v[0], *b = &t->v[1], *c = &t->v[2];
     const double ex1 = (double)b->sx - a->sx, ey1 = (double)b->sy - a->sy;
@@ -325,7 +332,13 @@ static int native_texel(const openpete_scene_tri* t, const tri_uv_grad_t* g, int
     return (int)a;
 }
 
-/* Is the centre of pixel (x, y) inside the triangle (edges inclusive)? */
+/** @brief Tests whether the centre of pixel (x, y) lies inside a triangle, edges inclusive.
+ *
+ * @param t The triangle.
+ * @param x The pixel column.
+ * @param y The pixel row.
+ * @return 1 when no two edge functions disagree in sign at (x + 0.5, y + 0.5),
+ *         else 0. */
 static int tri_covers(const openpete_scene_tri* t, int x, int y) {
     const double px = x + 0.5, py = y + 0.5;
     int pos = 0, neg = 0;
@@ -343,7 +356,16 @@ static int uvedge_pixel_differs(const openpete_scene_tri* fed, const tri_uv_grad
         || native_texel(fed, g, x, y, 1) != psx_texel(s, x, y, 1);
 }
 
-/* 1 when the first or last covered pixel of any row reads another texel. */
+/** @brief Tests whether a fed triangle reads another texel than the GPU on the first or last covered pixel of any row.
+ *
+ * The GPU's texel comes from psx_uv_plane_setup's stepper over the original
+ * triangle's integer words; the native texel truncates the fed triangle's
+ * interpolated u and v at the pixel centre, as the fragment stage does.
+ * Rows run over the original's integer bounding box.
+ * @param orig The triangle as decoded from the primitive.
+ * @param fed The triangle as fed, after the texel-centre adjustment.
+ * @return 1 when any row edge differs, else 0 (also for a degenerate
+ *         triangle). */
 static int uvedge_tri_differs(const openpete_scene_tri* orig, const openpete_scene_tri* fed) {
     int iv[3][4]; psx_uv_plane s; tri_uv_grad_t g;
     tri_int_verts(orig, iv);
@@ -375,11 +397,16 @@ static void uvedge_note(const openpete_scene_tri* orig, const openpete_scene_tri
     s_uvedge_bad += (unsigned)uvedge_tri_differs(orig, fed);
 }
 
-/* A quad sampling a framebuffer window (a MoveImage'd copy of a draw buffer)
- * reads texels the native render never writes. Redirect both triangles to the
- * snapshot of the native frame that stood for the copied buffer's content; the
- * texel box becomes a pixel box in that image. Returns 0, the quad unchanged,
- * when no stored snapshot holds its texel box: the stock VRAM path. */
+/** @brief Redirects a quad that samples a framebuffer window to the stored native snapshot of that window.
+ *
+ * A quad sampling a MoveImage'd copy of a draw buffer reads texels the
+ * native render never writes. The quad's texel bounding box is looked up
+ * with openpete_fb_snapshot_find; on a hit both triangles take the
+ * snapshot's page and OPENPETE_FB_SNAPSHOT_BPP, and each UV is scaled and
+ * offset into a pixel position in that image.
+ * @param quad The quad's two triangles, rewritten in place on a hit.
+ * @return 1 when redirected, 0 with the quad unchanged when no snapshot holds
+ *         its texel box (the stock VRAM path). */
 static int quad_to_fb_snapshot(openpete_scene_tri quad[2]) {
     float su = 1.0f, sv = 1.0f, ox = 0.0f, oy = 0.0f;
     float lo_u = quad[0].v[0].u, hi_u = lo_u, lo_v = quad[0].v[0].v, hi_v = lo_v;
@@ -443,13 +470,16 @@ static int feed_hud_tex_quad(const openpete_scene_tri in[2]) {
 }
 
 /* ---- 2D prim decode + feed ----------------------------------------------- */
-/* Every 2D primitive is fed from the deferred flush (see the dispatch
- * section), which runs at the OT walk, where openpete_frame may already be the
- * next VBL. Beginning that frame would push the finished scene into the
- * history ring a VBL early and start a new scene holding only this primitive,
- * and the lagged headless compose then reads the wrong slot (the canonical
- * dump jumps a tick). Append to the live scene instead: the primitive belongs
- * to the frame that deferred it. */
+/** @brief Opens the live native scene for a 2D feed, or the current VBL's scene when none is live.
+ *
+ * A claimed primitive is fed from a batch release (the canonical capture,
+ * the frame close or the ordering-table walk), where openpete_frame may
+ * already be the next VBL, and a glyph is fed at emission. Beginning the
+ * scene of openpete_frame at a late release would push the finished scene
+ * into the history ring a VBL early and start a new scene holding only this
+ * primitive, and the lagged headless compose would read the wrong slot. The
+ * primitive is appended to the live scene instead, the one of the VBL that
+ * built it. */
 static void scene_begin_for_feed(void) {
     unsigned live = openpete_native_scene_frame();
     openpete_native_scene_begin_frame(live != 0xFFFFFFFFu ? live : openpete_frame);
@@ -596,14 +626,20 @@ static ui_untex_t ui_untex_layer(uint32_t w1, int semi_cls) {
 static float psx_x(uint32_t xy) { return (float)(int16_t)(xy & 0xFFFFu); }
 static float psx_y(uint32_t xy) { return (float)(int16_t)(xy >> 16); }
 
-/* Feed one screen-space line into a native HUD layer as a gouraud quad (the
- * scene is triangles-only, like the particle/sparkle line feeds). The GPU
- * draws a line one pixel per step of its major axis from the first endpoint's
- * pixel through the second's, both included. The quad covers that footprint:
- * the centre line between the two endpoint pixels' centres, extended half a
- * pixel past each end along the major axis and half a pixel to each side
- * along the minor axis, so a horizontal or vertical line covers exactly its
- * pixels. Colour follows the endpoint. */
+/** @brief Feeds one screen-space line into a native 2D layer as a gouraud quad.
+ *
+ * The scene is triangles only. The GPU draws a line one pixel per step of
+ * its major axis from the first endpoint's pixel through the second's, both
+ * included. The quad covers that footprint: the line between the two
+ * endpoint pixels' centres, extended half a pixel past each end along the
+ * major axis and half a pixel to each side along the minor axis, so a
+ * horizontal or vertical line covers exactly its pixels. Each end takes its
+ * endpoint's colour.
+ * @param xy0 The first endpoint's packed XY (x low, y high, signed).
+ * @param xy1 The second endpoint's packed XY.
+ * @param rgba0 The first endpoint's colour and alpha.
+ * @param rgba1 The second endpoint's colour and alpha.
+ * @param lay The layer and blend class. */
 static void feed_line_quad(uint32_t xy0, uint32_t xy1, uint32_t rgba0, uint32_t rgba1, ui_untex_t lay) {
     const float x0 = psx_x(xy0) + 0.5f, y0 = psx_y(xy0) + 0.5f;
     const float x1 = psx_x(xy1) + 0.5f, y1 = psx_y(xy1) + 0.5f;
@@ -631,10 +667,15 @@ static void feed_line_quad(uint32_t xy0, uint32_t xy1, uint32_t rgba0, uint32_t 
     s_fed_prims++;
 }
 
-/* LINE_G2 (code 0x50): the UI separator lines (the horizontal rules on a
- * results screen, gem-UI dividers) and the dialog name underline, each with a
- * per-endpoint shimmer colour. Layout: word[1]=code|rgb0, [2]=xy0,
- * [3]=pad|rgb1, [4]=xy1. XY: x=lo16,y=hi16 signed. */
+/** @brief Feeds one opaque LINE_G2 (code 0x50) into the native HUD layer.
+ *
+ * The UI separator lines (the rules on a results screen, gem-UI dividers)
+ * and the dialog name underline, each with a per-endpoint colour. Layout:
+ * word[1]=code|rgb0, [2]=xy0, [3]=pad|rgb1, [4]=xy1; XY is x=lo16, y=hi16,
+ * signed. Fed at alpha 0xFF, blend class 0.
+ * @param cpu The guest CPU state.
+ * @param p The primitive's guest address.
+ * @param w1 The primitive's word 1 (code and first colour). */
 static void feed_line_g2(CPUState* cpu, uint32_t p, uint32_t w1) {
     const uint32_t c1 = cpu->read_word(p + 0x0C);
     feed_line_quad(cpu->read_word(p + 0x08), cpu->read_word(p + 0x10),
@@ -642,20 +683,33 @@ static void feed_line_g2(CPUState* cpu, uint32_t p, uint32_t w1) {
                    (ui_untex_t){ OPENPETE_SCENE_HUD, 0, 0xFFu });
 }
 
-/* LINE_F2 (codes 0x40 opaque, 0x42 semi-transparent): one colour for both
- * endpoints, the border of Spyro 3's boss and opponent health bars. Layout:
- * word[1]=code|rgb, [2]=xy0, [3]=xy1. */
+/** @brief Feeds one LINE_F2 (flat two-point line) into a native 2D layer.
+ *
+ * One colour for both endpoints: the border of Spyro 3's boss and opponent
+ * health bars. Layout: word[1]=code|rgb, [2]=xy0, [3]=xy1. The layer and
+ * blend come from ui_untex_layer, which puts a code with bit 1 set on the
+ * panel layer at the tracked ABR; the claim test is_line_f2 admits codes
+ * 0x40 and 0x41 only, so that branch is not reached from the chokepoint.
+ * @param cpu The guest CPU state.
+ * @param p The primitive's guest address.
+ * @param w1 The primitive's word 1 (code and colour). */
 static void feed_line_f2(CPUState* cpu, uint32_t p, uint32_t w1) {
     const ui_untex_t lay = ui_untex_layer(w1, SEMI_LINE);
     const uint32_t rgba = (w1 & 0xFFFFFFu) | (lay.alpha << 24);
     feed_line_quad(cpu->read_word(p + 0x08), cpu->read_word(p + 0x0C), rgba, rgba, lay);
 }
 
-/* POLY_G3 (0x30 / 0x32) and POLY_G4 (0x38 / 0x3A): an untextured gouraud
- * triangle or quad, the fill of Spyro 3's health bars (green to red by
- * health). Layout: vertex k at word 1 + 2k, rgb in the low 24 bits (word 1's
- * top byte is the code) and xy in the next word. A quad's corners are
- * TL,TR,BL,BR, split (0,1,2) (1,3,2) as the GPU splits it. */
+/** @brief Feeds one untextured POLY_G3 or POLY_G4 (gouraud triangle or quad) into a native 2D layer.
+ *
+ * The fill of Spyro 3's health bars (green to red by health). Code bit 3
+ * selects the quad. Layout: vertex k's colour at word 1 + 2k, rgb in the low
+ * 24 bits (word 1's top byte is the code), and its xy in the next word. A
+ * quad's corners are TL, TR, BL, BR, split (0,1,2) (1,3,2) as the GPU splits
+ * it. The layer and blend come from ui_untex_layer: a code with bit 1 set
+ * goes on the panel layer at the tracked ABR.
+ * @param cpu The guest CPU state.
+ * @param p The primitive's guest address.
+ * @param w1 The primitive's word 1 (code and first colour). */
 static void feed_poly_g(CPUState* cpu, uint32_t p, uint32_t w1) {
     const ui_untex_t lay = ui_untex_layer(w1, SEMI_G);
     const int nv = (w1 >> 24) & 0x08u ? 4 : 3;
@@ -679,15 +733,20 @@ static void feed_poly_g(CPUState* cpu, uint32_t p, uint32_t w1) {
     s_fed_prims++;
 }
 
-/* Feed one screen-space SPRT (a textured sprite rectangle) into the native
- * HUD layer as two triangles. An SPRT carries no texture page of its own: the
- * page comes from the DR_MODE that heads the chain it was emitted in, which
- * the caller passes. Layout: word[1]=code|rgb, [2]=xy0 (x=lo16, y=hi16,
- * signed), [3]=u0|v0|clut (u at byte 0, v at byte 1, CLUT in the high half),
+/** @brief Feeds one screen-space SPRT (textured sprite rectangle) into the native HUD layer as two triangles.
+ *
+ * An SPRT carries no texture page: the caller passes the draw-mode word in
+ * effect, whose ABR (bits 5-6) also sets the blend of a semi-transparent
+ * SPRT. Layout: word[1]=code|rgb, [2]=xy0 (x=lo16, y=hi16, signed),
+ * [3]=u0|v0|clut (u at byte 0, v at byte 1, CLUT in the high half),
  * [4]=(h<<16)|w. Code bit 1 = semi-transparent; bit 0 = raw texture (the
- * modulation colour is ignored and the texel passes through), which the
- * renderer reproduces by feeding white. */
-/* Decode one SPRT into the scene. */
+ * modulation colour is ignored), fed as the neutral modulation 0x808080. A
+ * zero width or height feeds nothing. The quad goes through
+ * feed_hud_tex_quad and is counted in the engagement, semi-transparency and
+ * bounding-box counters.
+ * @param cpu The guest CPU state.
+ * @param prim The primitive's guest address.
+ * @param tpage The GPU draw-mode word in effect. */
 static void feed_sprt_now(CPUState* cpu, uint32_t prim, unsigned tpage) {
     uint32_t w1 = cpu->read_word(prim + 0x04);
     uint32_t xy = cpu->read_word(prim + 0x08);
@@ -804,14 +863,15 @@ static int      s_ot_ranked;          /* 2D tris the table walk ranked at the la
                                        * walk reached none of this frame's 2D) */
 static unsigned s_claim_late;         /* batches released at the frame close rather than at the
                                        * ordering-table walk (engagement counter for that hook) */
-/* 2D emissions of a frame that arrive after that frame's canonical capture has
- * released its batch. The capture is the release point on the assumption that
- * it is the frame's last 2D emission; these counters test that, per emitter.
- * Only emissions stamped with the same frame as the batch the capture released
- * count, an emission carrying a later frame belongs to the next frame and is
- * not evidence of anything. Printed once per capture under
- * OPENPETE_UISPRITE_TRACE, zeros included: a zero line is the evidence that
- * nothing of that frame follows its capture. */
+/** @brief Prints and resets the counts of 2D emissions that arrived after their VBL's canonical capture.
+ *
+ * The capture is the release point on the assumption that it follows the
+ * VBL's last 2D emission; s_post_claim, s_post_sprt and s_post_fade count
+ * chokepoint claims, glyph feeds and fade emissions stamped with the VBL of
+ * the batch the capture released (s_cap_frame). An emission stamped with a
+ * later VBL belongs to the next batch and is not counted. Under
+ * OPENPETE_UISPRITE_TRACE one line is printed per capture while s_cap_frame
+ * is set, zeros included. */
 static void post_capture_report(void) {
     static int tr = -1;
     ENV_FLAG_LATCH(tr, "OPENPETE_UISPRITE_TRACE");
@@ -881,7 +941,14 @@ static int is_ft4(CPUState* cpu, uint32_t prim) {
         && (uint8_t)(w0 >> 24) >= 9;              /* tag length >= 9 (full FT4) */
 }
 
-/* Opaque POLY_F4 (0x28) — the cutscene letterbox bars. */
+/** @brief Tests whether a primitive is an opaque POLY_F4 (code 0x28) with a full tag.
+ *
+ * The cutscene letterbox bars and menu-box backings; feed_one_claim tells
+ * them apart by width.
+ * @param cpu The guest CPU state.
+ * @param prim The primitive's guest address.
+ * @return 1 for code 0x28 with a tag length of at least 5, else 0 (also for
+ *         an address below 0x80000000). */
 static int is_f4_opaque(CPUState* cpu, uint32_t prim) {
     if (prim < 0x80000000u) return 0;
     uint32_t w0 = cpu->read_word(prim), w1 = cpu->read_word(prim + 4);
@@ -889,11 +956,16 @@ static int is_f4_opaque(CPUState* cpu, uint32_t prim) {
         && (uint8_t)(w0 >> 24) >= 5;              /* tag length >= 5 (full F4) */
 }
 
-/* Semi-transparent POLY_F4 (0x2A) — a dark panel: the pause/inventory panel,
- * the HUD shaded box, a dialog-box slab. Same code as the full-screen fade,
- * BUT the fade comes from ui_game.fade_emitter (excluded via s_in_fade, set
- * across that hook's real-function call). So a 0x2A F4 seen with s_in_fade
- * clear is a panel; with it set, it is the fade (already handled). */
+/** @brief Tests whether a primitive is a semi-transparent POLY_F4 (code 0x2A) with a full tag.
+ *
+ * A dark panel (the pause or inventory panel, the HUD shaded box, a
+ * dialog-box slab) or the full-screen fade, which share the code. The test
+ * does not tell them apart: the chokepoint claims a match only while
+ * s_in_fade is clear, since on_fade_emitter sets it across the fade
+ * emitter's own call and feeds the fade from its arguments.
+ * @param cpu The guest CPU state.
+ * @param prim The primitive's guest address.
+ * @return 1 for code 0x2A with a tag length of at least 5, else 0. */
 static int is_f4_semitrans(CPUState* cpu, uint32_t prim) {
     if (prim < 0x80000000u) return 0;
     uint32_t w0 = cpu->read_word(prim), w1 = cpu->read_word(prim + 4);
@@ -901,26 +973,36 @@ static int is_f4_semitrans(CPUState* cpu, uint32_t prim) {
         && (uint8_t)(w0 >> 24) >= 5;              /* tag length >= 5 (full F4) */
 }
 
-/* DR_MODE / DR_TPAGE (GP0 command 0xE1) — sets the GPU draw mode, incl. the
- * semi-transparency RATE (ABR) in bits 5-6 of the tpage word (getTPage packs
- * abr as ((abr&3)<<5)). A 2D box links its DR_MODE through the chokepoint
- * immediately before its 0x2A F4, so the latest DR_MODE's ABR is the blend
- * mode in effect for the next F4. The game's own GPU state is mirrored here
- * rather than a blend hardcoded. code[0] is at +4 (the tag occupies +0), so
- * the GP0 byte and the ABR live in read_word(prim+4). */
+/** @brief Tests whether a primitive is a DR_MODE or DR_TPAGE (GP0 command 0xE1).
+ *
+ * The command sets the GPU draw mode, including the semi-transparency rate
+ * (ABR) in bits 5-6 of the tpage word (getTPage packs abr as
+ * ((abr&3)<<5)). code[0] is at +4 (the tag occupies +0), so the GP0 byte
+ * and the ABR are in read_word(prim+4). feed_one_claim mirrors the word so
+ * that a later semi-transparent 2D primitive or SPRT of the batch reads the
+ * game's own draw mode.
+ * @param cpu The guest CPU state.
+ * @param prim The primitive's guest address.
+ * @return 1 when word 1's top byte is 0xE1, else 0. */
 static int is_dr_mode(CPUState* cpu, uint32_t prim) {
     if (prim < 0x80000000u) return 0;
     return (uint8_t)(cpu->read_word(prim + 4) >> 24) == 0xE1;   /* code[0] = GP0 0xE1 */
 }
 
-/* Freeze-frame overlay backdrop FT4 (pause / inventory / flight results): the
- * pause renderer desaturates the frozen frame to grayscale and re-displays it
- * as 4 full-screen POLY_FT4 sampling a VRAM scratch copy, each with a flat
- * tint and the grayscale CLUT at a fixed VRAM position. That tint+CLUT pair is
- * the unambiguous signature (the title logo is also 8bpp at tpage x=512 but
- * white-tinted with its own CLUT). The native renderer reproduces the overlay
- * from its OWN last world frame (set_freeze_backdrop) and skips feeding this
- * FT4, so the overlay shows the native render rather than the emulated VRAM. */
+/** @brief Tests whether a primitive is one of the freeze-frame backdrop POLY_FT4s.
+ *
+ * The pause, inventory and flight-results screens re-display the frozen
+ * image desaturated, as POLY_FT4s sampling a VRAM scratch copy with a flat
+ * tint and a grayscale CLUT at a fixed VRAM position. The tint and CLUT pair
+ * (ui_game.freeze_tint, freeze_clut_x, freeze_clut_y) is the signature; the
+ * title logo samples the same page but with a white tint and its own CLUT.
+ * A match is claimed as QK_FREEZE, which drives the native freeze backdrop
+ * from the native renderer's own last world image instead of feeding the
+ * quad.
+ * @param cpu The guest CPU state.
+ * @param prim The primitive's guest address.
+ * @return 1 for a full-tag POLY_FT4 (0x2C or 0x2E) with the freeze tint and
+ *         CLUT, else 0 (always 0 when ui_game.freeze_tint is 0). */
 static int is_freeze_backdrop(CPUState* cpu, uint32_t prim) {
     if (!ui_game.freeze_tint) return 0;                   /* no such quad on this game */
     if (prim < 0x80000000u) return 0;
@@ -952,13 +1034,17 @@ static void freeze_band_note(CPUState* cpu, uint32_t prim) {
     if (x1 > s_freeze_band.x1) s_freeze_band.x1 = x1;
 }
 
-/* The black LINE_F2 the pause renderer links after its freeze-backdrop FT4s,
- * across the band's full width on the band's bottom row. A quad leaves its
- * bottom row unfilled, so the FT4s stop one row short of their bottom vertices
- * and that row would show stale VRAM; the line covers it. The native backdrop
- * is the renderer's own frozen frame over the whole display rect, which fills
- * that row at every aspect, so the line has nothing to cover and is dropped
- * with the FT4s it pairs with. */
+/** @brief Tests whether a primitive is the black LINE_F2 the pause renderer links under its freeze-backdrop FT4s.
+ *
+ * The line spans the band the VBL's backdrop FT4s cover (freeze_band_note),
+ * in either direction, on the band's bottom row. A quad leaves its bottom
+ * row unfilled, so the FT4s stop one row short of their bottom vertices and
+ * the line covers that row. The native backdrop is the renderer's own
+ * frozen image over the whole display rect, which fills that row at every
+ * aspect, so the chokepoint drops the line with the FT4s it pairs with.
+ * @param cpu The guest CPU state.
+ * @param prim The primitive's guest address.
+ * @return 1 for a black LINE_F2 on the current VBL's band, else 0. */
 static int is_freeze_mask_line(CPUState* cpu, uint32_t prim) {
     if (!s_freeze_band.valid || s_freeze_band.frame != openpete_frame) return 0;
     if (!is_line_f2(cpu, prim)) return 0;
@@ -971,10 +1057,15 @@ static int is_freeze_mask_line(CPUState* cpu, uint32_t prim) {
             (xb == s_freeze_band.x0 && xa == s_freeze_band.x1));
 }
 
-/* SPRT (screen-space textured sprite, codes 0x64..0x67) — a HUD icon or digit
- * linked one primitive at a time through the chokepoint, as opposed to the
- * glyph chains that link themselves and are fed by text_sprt.c. The packet
- * carries no texture page: the page comes from the last DR_MODE linked. */
+/** @brief Tests whether a primitive is an SPRT (screen-space textured sprite, codes 0x64-0x67) with a full tag.
+ *
+ * A HUD icon or digit linked one primitive at a time through the
+ * chokepoint, as opposed to the glyph chains that link themselves and are
+ * fed by text_sprt.c. The packet carries no texture page: feed_one_claim
+ * passes the word of the last DR_MODE the batch claimed before it.
+ * @param cpu The guest CPU state.
+ * @param prim The primitive's guest address.
+ * @return 1 for codes 0x64-0x67 with a tag length of at least 4, else 0. */
 static int is_sprt(CPUState* cpu, uint32_t prim) {
     if (prim < 0x80000000u) return 0;
     uint32_t w0 = cpu->read_word(prim), w1 = cpu->read_word(prim + 4);
@@ -982,9 +1073,14 @@ static int is_sprt(CPUState* cpu, uint32_t prim) {
         && (uint8_t)(w0 >> 24) >= 4;                /* tag length >= 4 (full SPRT) */
 }
 
-/* LINE_G2 (gouraud 2-point line, code 0x50) — UI separator lines and the
- * dialog name underline. (A particle streak LINE_G goes through the particle
- * path, not the chokepoint, so there is no overlap.) */
+/** @brief Tests whether a primitive is an opaque LINE_G2 (gouraud two-point line, code 0x50) with a full tag.
+ *
+ * UI separator lines and the dialog name underline. A particle streak line
+ * is linked by the particle path, not the chokepoint, so it never reaches
+ * this test.
+ * @param cpu The guest CPU state.
+ * @param prim The primitive's guest address.
+ * @return 1 for code 0x50 with a tag length of at least 4, else 0. */
 static int is_line_g2(CPUState* cpu, uint32_t prim) {
     if (prim < 0x80000000u) return 0;
     uint32_t w0 = cpu->read_word(prim), w1 = cpu->read_word(prim + 4);
@@ -992,9 +1088,15 @@ static int is_line_g2(CPUState* cpu, uint32_t prim) {
         && (uint8_t)(w0 >> 24) >= 4;              /* tag length >= 4 (full LINE_G2) */
 }
 
-/* POLY_G3 / POLY_G4 (codes 0x30-0x33 and 0x38-0x3B; bit 3 selects the quad,
- * bit 1 semi-transparency, bit 2 texturing, which is excluded) — the gouraud
- * fill of a health bar. */
+/** @brief Tests whether a primitive is an untextured POLY_G3 or POLY_G4 with a full tag.
+ *
+ * Codes 0x30-0x33 and 0x38-0x3B: bit 3 selects the quad, bit 1
+ * semi-transparency, and bit 2 (texturing) is excluded. The gouraud fill of
+ * a health bar.
+ * @param cpu The guest CPU state.
+ * @param prim The primitive's guest address.
+ * @return 1 on a match with a tag length of at least 8 (quad) or 6
+ *         (triangle), else 0. */
 static int is_poly_g(CPUState* cpu, uint32_t prim) {
     if (prim < 0x80000000u) return 0;
     uint32_t w0 = cpu->read_word(prim), w1 = cpu->read_word(prim + 4);
@@ -1003,7 +1105,13 @@ static int is_poly_g(CPUState* cpu, uint32_t prim) {
         && (uint8_t)(w0 >> 24) >= ((code & 0x08u) ? 8 : 6);   /* full G4 / G3 tag */
 }
 
-/* LINE_F2 (flat 2-point line, codes 0x40 / 0x42) — a health bar's border. */
+/** @brief Tests whether a primitive is a LINE_F2 (flat two-point line) with a full tag.
+ *
+ * The mask 0xFE admits codes 0x40 and 0x41; the semi-transparent 0x42 does
+ * not match. A health bar's border and the freeze mask line.
+ * @param cpu The guest CPU state.
+ * @param prim The primitive's guest address.
+ * @return 1 for codes 0x40-0x41 with a tag length of at least 3, else 0. */
 static int is_line_f2(CPUState* cpu, uint32_t prim) {
     if (prim < 0x80000000u) return 0;
     uint32_t w0 = cpu->read_word(prim), w1 = cpu->read_word(prim + 4);
@@ -1042,9 +1150,14 @@ static int      s_walk_hits;                   /* tris the map ranked at the las
                                                 * the engagement counter (0 = the walk found
                                                 * none of this frame's 2D) */
 
-/* `known` is a sorted list of primitive addresses this frame's 2D was decoded
- * from; a candidate chain is scored by how many of them it contains, so the 2D
- * table is picked out of the frame's several walks rather than assumed. */
+/** @brief Binary-searches a sorted address list for one primitive address.
+ *
+ * build_ot_rank_map ranks only the addresses the scene's 2D was decoded
+ * from, and counts a chain's hits for the ring probe.
+ * @param known The primitive addresses, sorted ascending.
+ * @param kn The count of addresses.
+ * @param a The address sought.
+ * @return 1 when present, else 0. */
 static int known_has(const uint32_t* known, int kn, uint32_t a) {
     int lo = 0, hi = kn - 1;
     while (lo <= hi) { int mid = (lo + hi) / 2;
@@ -1140,9 +1253,20 @@ static int f4_spans_frame_width(CPUState* cpu, uint32_t prim) {
     return hi - lo >= UI_FRAME_W;
 }
 
-/* Feed the claimed batch: the ordering table about to be walked. Every word is
- * final here, and the entries are in link order, which is the OT walk order. */
-/* Decode one claimed primitive into the scene. */
+/** @brief Decodes one claimed 2D primitive by its claim kind and feeds it into the native scene.
+ *
+ * QK_FT4, QK_SPRT, QK_LINE_G2, QK_POLY_G and QK_LINE_F2 go to their
+ * decoders; an SPRT takes the draw-mode word last mirrored from a QK_DR_MODE
+ * claim. QK_FREEZE drives the native freeze backdrop at the FT4's tint and
+ * feeds no quad. QK_DR_MODE mirrors the ABR and draw-mode word for the
+ * claims after it. QK_F4_BAR feeds a frame-width quad as a letterbox bar on
+ * the overlay layer and a narrower one as a menu-box backing on the panel
+ * layer; QK_F4_PANEL feeds a dark panel on the panel layer at the tracked
+ * ABR.
+ * @param cpu The guest CPU state.
+ * @param prim The primitive's guest address.
+ * @param kind The claim kind (QK_*).
+ * @param aux The claim's auxiliary word; unused. */
 static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux) {
     (void)aux;
     const uint32_t w1 = cpu->read_word(prim + 4);
@@ -1192,20 +1316,23 @@ static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux)
     }
 }
 
-/* Release `n` of the claimed batch, keeping the rest for a later release. The
- * canonical capture keeps the batch's last primitive back: the game links a
- * primitive and fills it afterwards, so at the capture every primitive but the
- * one linked last is complete, and the last one still holds the previous
- * content of its polybuf slot. It is released at the frame close, which is
- * still inside the scene that built it. */
+/** @brief Feeds the first n claimed primitives into the native scene and ranks the scene's 2D by the ordering-table traversal.
+ *
+ * Each released primitive is re-summed (a changed sum counts in s_mutated),
+ * recorded for ui_sprite_ot_verify and fed through feed_one_claim, tagged
+ * with its address. Every 2D primitive address in the scene, the batch's
+ * and the glyphs fed at emission, is then ranked by build_ot_rank_map and
+ * openpete_native_scene_rank_2d. The unreleased tail moves to the front of
+ * the claim array. With no CPU, no n or the native scene off, the n claims
+ * are dropped unfed. Every caller releases the whole batch.
+ * @param n The count to release, clamped to the claimed count. */
 static void release_batch(unsigned n) {
     CPUState* cpu = s_cpu;
     if (n > s_claim_n) n = s_claim_n;
     if (!cpu || !n || !openpete_native_scene_enabled()) { s_claim_n -= n; return; }
-    /* Which primitives are released is decided in claim order: the capture keeps
-     * the last-linked one back, because that is the one the game has not filled
-     * yet. What order they are composed in is decided after the feed, by the
-     * table walk below, over every 2D tri of the frame at once. */
+    /* Which primitives are released is decided in claim order. What order
+     * they are composed in is decided after the feed, by the table walk
+     * below, over every 2D tri of the scene at once. */
     static int s_tr = -1;
     ENV_FLAG_LATCH(s_tr, "OPENPETE_UISPRITE_TRACE");
     for (unsigned i = 0; i < n; i++) {
@@ -1255,27 +1382,33 @@ static void release_batch(unsigned n) {
         fprintf(stderr, "[uispec f=%u] refused=%u\n", openpete_frame, s_claim_spec_refused);
 }
 
-/* Release everything still claimed: the ordering-table walk and the close of
- * the frame that built the batch, where nothing more can be stored into it. */
+/* Releases every claimed primitive still pending. */
 void ui_sprite_ot_draw_begin(void) { release_batch(s_claim_n); }
 
-/* The build frame's scene is about to be snapshotted and the next started: this
- * is the last moment the batch can reach the scene it belongs to. On a screen
- * whose other feeders all run after the walk this never fires with a batch
- * pending (the walk released it first); on one where a feeder of the next frame
- * runs before the walk, a menu's HUD mobys, it is the release point, and the
- * primitives' words are final by then. */
+/** @brief Releases the pending batch when the scene of the VBL that built it closes.
+ *
+ * The scene is about to be snapshotted and the next started, so this is
+ * the last point at which the batch reaches the scene it belongs to. It
+ * fires with a batch pending only when neither the canonical capture nor
+ * the ordering-table walk released it first, such as on a screen where a
+ * feeder of the next VBL (a menu's HUD mobys) runs before the walk. Each
+ * such release counts in s_claim_late.
+ * @param frame The VBL whose scene is closing. */
 static void on_scene_frame_close(unsigned frame) {
     if (s_claim_n && frame == s_claim_frame) { s_claim_late++; ui_sprite_ot_draw_begin(); }
 }
 
-/* The canonical capture of the frame that built the batch: every one of that
- * frame's stores into the primitives has run (the game fills a primitive right
- * after linking it, and a write census over the batch's polybuf range shows no
- * store landing in a later frame), and the image has not been composed yet. So
- * this is where the batch is both final and still in its own frame, the
- * release point. The frame close and the ordering-table walk stay as later
- * releases for a frame that composes no image. */
+/** @brief Releases the whole pending batch at the canonical capture of the VBL that built it.
+ *
+ * By the capture every store the game makes into the batch's primitives has
+ * run (the game fills a primitive right after linking it) and the image is
+ * not composed yet, so the batch is final and still in its own scene. The
+ * frame close and the ordering-table walk remain as later releases for a
+ * VBL that composes no image. Each release here counts in
+ * s_claim_at_capture. s_cap_frame is set from the claim count after the
+ * release, which the whole-batch release leaves at zero, so it always
+ * becomes 0xFFFFFFFF and the post-capture counters that post_capture_report
+ * prints never engage. */
 static void on_overlay_precapture(void) {
     post_capture_report();
     const unsigned built = s_claim_frame;
@@ -1287,9 +1420,7 @@ static void on_overlay_precapture(void) {
     s_cap_frame = s_claim_n ? built : 0xFFFFFFFFu;
 }
 
-/* Re-read the batch released for the ordering table now being walked: by here
- * the game has finished with every primitive in it, so any word that differs
- * from what was fed was stored after the release point. */
+/* Re-sums the primitives released since the last walk against their fed sums. */
 void ui_sprite_ot_verify(void) {
     CPUState* cpu = s_cpu;
     unsigned n = s_verify_pending;
@@ -1350,10 +1481,7 @@ static void claim_aux(CPUState* cpu, uint32_t prim, int kind, uint32_t aux) {
 }
 static void claim(CPUState* cpu, uint32_t prim, int kind) { claim_aux(cpu, prim, kind, 0u); }
 
-/* The glyph emitters link their SPRT chains with an inlined insert, so the
- * chokepoint never sees them; text_sprt hands each glyph here instead. Claimed
- * rather than fed, so the release's table walk ranks a glyph against the
- * chokepoint's primitives by the order the GPU will draw them. */
+/* Feeds one glyph SPRT at emission, tagged with its address for the release's ranking. */
 void ui_sprite_feed_sprt(CPUState* cpu, uint32_t prim, unsigned tpage) {
     if (!spyro_native_canon_capture_open()) { s_claim_spec_refused++; return; }
     if (openpete_frame == s_cap_frame) s_post_sprt++;
@@ -1364,9 +1492,7 @@ void ui_sprite_feed_sprt(CPUState* cpu, uint32_t prim, unsigned tpage) {
     openpete_native_scene_set_prim(0u);
 }
 
-/* The quad form of the same chains: a glyph emitted as one POLY_FT4 instead of
- * a DR_MODE plus an SPRT. Fed through the same decode the chokepoint's FT4
- * takes, so there is one FT4 decoder. */
+/* Feeds one glyph POLY_FT4 at emission through the chokepoint's FT4 decoder. */
 void ui_sprite_feed_ft4(CPUState* cpu, uint32_t prim) {
     if (openpete_frame == s_cap_frame) s_post_sprt++;
     if (!openpete_native_scene_enabled()) return;
@@ -1445,19 +1571,23 @@ static int on_ot_insert(CPUState* cpu, uint32_t addr) {
     return 1;
 }
 
-/* ---- full-screen fade overlay (ui_game.fade_emitter) ---------------------
- * Every transition the game tints the WHOLE frame through one emitter taking
- * (mode, r, g, b): one semi-transparent full-screen POLY_F4 whose ABR mode is
- * the fade direction — mode 2 (B-F) fades to black, mode 1 (B+F) to white.
- * PsyCross renders that F4 incorrectly (a half-screen diagonal triangle), so
- * there is no usable A/B ground truth; the native overlay is driven straight
- * from the arguments instead, which is also cleaner than reconstructing the
- * fade from the F4 plus its preceding DR_MODE. The native renderer draws a
- * full-panel quad last in the matching blend
- * (openpete_native_scene_set_fade). The fade auto-clears each frame, so it is
- * set whenever the emitter runs. Determinism-safe: the real emitter still
- * runs (the OT/F4 are built for the PsyCross reference unchanged); only its
- * arguments are READ. */
+/* ---- full-screen fade overlay (ui_game.fade_emitter) --------------------- */
+/** @brief Hooks the game's full-screen fade emitter and drives the native fade overlay from its arguments.
+ *
+ * The game tints the whole screen on every transition through one emitter
+ * taking (mode, r, g, b) in a0-a3, which links one semi-transparent
+ * full-screen POLY_F4 whose ABR is the fade direction: mode 2 (B-F) fades to
+ * black, mode 1 (B+F) to white. PsyCross renders that F4 as a half-screen
+ * diagonal triangle, so the native overlay is driven from the arguments
+ * (openpete_native_scene_set_fade) rather than from the F4 and its
+ * preceding DR_MODE. The fade clears each VBL, so it is set whenever the
+ * emitter runs. The real emitter then runs unchanged with s_in_fade set, so
+ * the chokepoint does not claim its F4 as a dark panel. Reads the
+ * arguments only; writes no PSX RAM.
+ * @param cpu The guest CPU state.
+ * @param addr The hooked entry address.
+ * @return 0 when the native scene is off or on re-entry (the ordinary
+ *         dispatch runs the emitter), 1 having run it. */
 static int on_fade_emitter(CPUState* cpu, uint32_t addr) {
     if (!openpete_native_scene_enabled()) return 0;   /* inert: normal dispatch runs it */
     if (openpete_frame == s_cap_frame) s_post_fade++;

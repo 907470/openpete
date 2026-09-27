@@ -84,49 +84,83 @@ typedef struct ui_game {
 
 extern const ui_game_t ui_game;
 
-/* Feed one 0x14-byte SPRT (a screen-space textured sprite: colour|code at
- * +0x04, x0/y0 at +0x08/+0x0A, u/v at +0x0C/+0x0D, CLUT at +0x0E, and
- * (height << 16) | width at +0x10) into the native HUD layer. `tpage` is the
- * GPU texture-page word in effect, which the SPRT packet does not carry — it
- * comes from the DR_MODE that heads the chain. */
+/** @brief Feeds one glyph SPRT into the native HUD layer at emission.
+ *
+ * The glyph emitters link their SPRT chains with an inlined insert, so the
+ * chokepoint never sees them; text_sprt hands each glyph here. The SPRT is
+ * 0x14 bytes: colour|code at +0x04, x0/y0 at +0x08/+0x0A, u/v at
+ * +0x0C/+0x0D, CLUT at +0x0E, and (height << 16) | width at +0x10. It is fed
+ * at once, tagged with its address, so the next batch release ranks it
+ * against the chokepoint's primitives by the ordering-table traversal.
+ * Refused, and counted, on a speculative tick; a no-op with the native
+ * scene off.
+ * @param cpu The guest CPU state.
+ * @param prim The SPRT's guest address.
+ * @param tpage The GPU texture-page word in effect, which the SPRT packet
+ *        does not carry; it comes from the DR_MODE that heads the chain. */
 void ui_sprite_feed_sprt(CPUState* cpu, uint32_t prim, unsigned tpage);
 
-/* Feed one 0x28-byte POLY_FT4 (a screen-space textured quad: colour|code at
- * +0x04, then four xy/uv word pairs) into the native HUD layer. Unlike an
- * SPRT the packet carries its own texture page and CLUT, so no draw mode is
- * passed. */
+/** @brief Feeds one glyph POLY_FT4 into the native HUD layer at emission.
+ *
+ * The quad form of the self-linking glyph chains: a glyph emitted as one
+ * 0x28-byte POLY_FT4 (colour|code at +0x04, then four xy/uv word pairs)
+ * instead of a DR_MODE plus an SPRT. The packet carries its own texture page
+ * and CLUT, so no draw mode is passed. Decoded by the chokepoint's FT4
+ * decoder and tagged with its address for the release's ranking. A no-op
+ * with the native scene off.
+ * @param cpu The guest CPU state.
+ * @param prim The POLY_FT4's guest address. */
 void ui_sprite_feed_ft4(CPUState* cpu, uint32_t prim);
 
-/* Primitives fed by ui_sprite_feed_sprt since boot: the engagement counter a
- * harness reads to tell "no text drew" from "text drew identically". */
+/** @brief Returns the SPRTs fed into the native HUD layer since boot.
+ *
+ * Counts both the glyph SPRTs from ui_sprite_feed_sprt and the SPRTs claimed
+ * at the chokepoint: the engagement counter a harness reads to tell "no text
+ * drew" from "text drew identically".
+ * @return The count. */
 unsigned ui_sprite_sprt_count(void);
 
-/* Arm the native freeze backdrop for a `freeze_retained` game, from the isbg
- * byte of the draw buffer whose ordering table is about to be presented. Called
- * once per canonical present, next to the clear-colour commit that reads the
- * same DRAWENV. */
+/** @brief Arms the native freeze backdrop for a freeze_retained game when the draw buffer being presented is not cleared.
+ *
+ * Reads the current draw buffer through game_layout.db and its DRAWENV isbg
+ * byte (+0x18); isbg 0 means the game keeps the last rendered image, and the
+ * backdrop is armed. Called once per canonical present, next to the
+ * clear-colour commit that reads the same DRAWENV. A no-op for a game
+ * without freeze_retained or before the draw-buffer pointer is valid.
+ * Writes no PSX RAM. */
 void ui_freeze_retain_commit(void);
-/* Presents this run on which ui_freeze_retain_commit armed the backdrop: the
- * engagement counter a capture reads to tell "retention was off" from
- * "retention was on and changed nothing". */
+/** @brief Returns the presents this run on which ui_freeze_retain_commit armed the backdrop.
+ *
+ * The engagement counter a capture reads to tell "retention was off" from
+ * "retention was on and changed nothing".
+ * @return The count. */
 unsigned ui_freeze_retain_count(void);
-/* Primitives fed through the chokepoint since boot, by class. */
+/** @brief Returns the 2D primitives fed into the native scene since boot.
+ *
+ * Counts every primitive the module fed, from batch releases and from glyph
+ * feeds at emission, including freeze-backdrop claims.
+ * @return The count. */
 unsigned ui_sprite_prim_count(void);
 
-/* Feed the 2D primitives claimed at the chokepoint into the native scene.
- * Called at the start of the ordering-table walk: a 2D primitive's words are
- * not final when it is linked (a sprite mirrors its own U coords right after
- * the insert returns; the atlas page turn skews a whole page of already-linked
- * quads a tick later), and they are final once the table is handed to the GPU.
- * The primitives linked between two walks are exactly one table's worth, so
- * this is also where the batch is complete. Inert when no game registers the
- * chokepoint. */
+/** @brief Feeds every 2D primitive still claimed at the chokepoint into the native scene.
+ *
+ * Called from the DrawOTag thunk and from the scene's frame close. A 2D
+ * primitive's words are not final when it is linked (a sprite mirrors its
+ * own U coords right after the insert returns; the atlas page turn skews a
+ * whole page of already-linked quads a tick later), and they are final once
+ * the table is handed to the GPU. The canonical capture normally releases
+ * the batch first; this call releases what it left. Inert with no claim
+ * pending, which includes every game that registers no chokepoint. */
 void ui_sprite_ot_draw_begin(void);
 
-/* Re-read the batch already released for the ordering table being walked and
- * count the primitives whose words changed since: the release happens inside
- * the frame that built them, and the walk is where the words are beyond doubt
- * final, so a nonzero count means the release point is too early. */
+/** @brief Re-reads the primitives released since the last walk and counts those whose words changed after their feed.
+ *
+ * Called from the DrawOTag thunk before ui_sprite_ot_draw_begin. The release
+ * happens inside the VBL that built the batch and the walk is where the
+ * words are final, so a nonzero stale count means the release point is too
+ * early. OPENPETE_UISPRITE_TRACE prints each stale primitive;
+ * OPENPETE_XY3_PROBE=<VBL> prints each primitive's y at link, release and
+ * walk within three VBLs of it. */
 void ui_sprite_ot_verify(void);
 
 /** @brief Return one of the most recent ordering-table bases handed to DrawOTag.
@@ -141,8 +175,11 @@ void ui_sprite_ot_verify(void);
  *         yet filled. */
 uint32_t psyq_ot_recent_base(int i);
 
-/* 2D primitives the chokepoint's decode chain claims no encoding for, since
- * boot: the engagement counter for adding a decoder. */
+/** @brief Returns the 2D primitives the chokepoint's decode chain claimed no encoding for, since boot.
+ *
+ * The engagement counter for adding a decoder. Primitives linked inside the
+ * fade emitter are not counted.
+ * @return The count. */
 unsigned ui_sprite_unclaimed_count(void);
 
 #ifdef __cplusplus
