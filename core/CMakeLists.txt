@@ -402,6 +402,25 @@ if(NOT DEFINED OPENPETE_BUILD_SHARED_RECOMP)
         set(OPENPETE_BUILD_SHARED_RECOMP 0)
     endif()
 endif()
+# The Windows VERSIONINFO resource (games/*/openpete-*.rc.in) takes the same
+# version as four integers: a `vX.Y.Z` or `vX.Y.Z-N-gSHA` describe string
+# becomes X,Y,Z,N (N = commits past the tag, 0 on the tag); a version that is
+# not in that form (a bare SHA, "unknown") becomes 0,0,0,0. The string fields
+# carry OPENPETE_BUILD_VERSION verbatim. Both are exported to the game
+# directories, which are siblings of this one.
+if(OPENPETE_BUILD_VERSION MATCHES "^v?([0-9]+)\\.([0-9]+)\\.([0-9]+)(-([0-9]+)-g)?")
+    set(_op_ver_build "${CMAKE_MATCH_5}")
+    if(_op_ver_build STREQUAL "")
+        set(_op_ver_build 0)
+    endif()
+    set(OPENPETE_VERSION_NUM
+        "${CMAKE_MATCH_1},${CMAKE_MATCH_2},${CMAKE_MATCH_3},${_op_ver_build}")
+else()
+    set(OPENPETE_VERSION_NUM "0,0,0,0")
+endif()
+set(OPENPETE_VERSION_NUM "${OPENPETE_VERSION_NUM}" PARENT_SCOPE)
+set(OPENPETE_VERSION_STR "${OPENPETE_BUILD_VERSION}" PARENT_SCOPE)
+message(STATUS "openpete: VERSIONINFO ${OPENPETE_VERSION_NUM} \"${OPENPETE_BUILD_VERSION}\"")
 target_compile_definitions(openpete_core
     PRIVATE OPENPETE_BUILD_VERSION="${OPENPETE_BUILD_VERSION}"
             OPENPETE_BUILD_TAGGED=${OPENPETE_BUILD_TAGGED}

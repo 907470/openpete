@@ -254,8 +254,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW)
     endif()
 endif()
 
-# The Win32 icon resource and VERSIONINFO (openpete-spyro1.rc.in). Version
-# is the dist versioning scheme's placeholder until real release tags exist.
+# The Win32 icon resource and VERSIONINFO (openpete-spyro1.rc.in). The
+# version (OPENPETE_VERSION_NUM / OPENPETE_VERSION_STR) comes from
+# core/CMakeLists.txt, derived from the build version the game displays.
 if(WIN32)
     set(_spyro_icon_ico ${CMAKE_CURRENT_BINARY_DIR}/openpete-spyro1.ico)
     set(_spyro_icon_rc  ${CMAKE_CURRENT_BINARY_DIR}/openpete-spyro1.rc)
@@ -270,8 +271,6 @@ if(WIN32)
         COMMAND ${_spyro_icon_ico_cmd}
         DEPENDS ${_spyro_icon_deps}
         COMMENT "Generating openpete-spyro1.ico")
-    set(OPENPETE_VERSION_NUM "0,1,0,0")
-    set(OPENPETE_VERSION_STR "0.1.0")
     configure_file(${CMAKE_CURRENT_SOURCE_DIR}/openpete-spyro1.rc.in
                    ${_spyro_icon_rc} @ONLY)
     target_sources(openpete-spyro1 PRIVATE ${_spyro_icon_ico} ${_spyro_icon_rc})
