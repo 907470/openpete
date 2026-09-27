@@ -6035,6 +6035,12 @@ static int run_host_loop(const openpete_options_t* opts) {
 #endif
     }
 
+    /* The present thread is joined before any teardown: it presents through
+     * the device the record flush below drains, writes the frame-time log
+     * and the pace log, and waits on this thread's clock, all of which the
+     * teardown closes. Stopping it hands the display back to this thread. */
+    openpete_present_thread_stop();
+
     if (bk2_active) {
         bk2_movie_free(&bk2);
         g_PsyX_Pad_InputOverride = 0xFFFF;
@@ -6261,13 +6267,10 @@ static int run_host_loop(const openpete_options_t* opts) {
         openpete_game_fiber = NULL;
     }
 
-    /* Joined before the renderer is torn down: it presents through the same
-     * device. */
-    openpete_present_thread_stop();
     openpete_present_thread_report();
-    /* After the present thread is joined: it raises trace records while it
-     * renders, and closing the stream under a live producer would flush its
-     * chunk while it is still appending to it. */
+    /* The present thread was joined after the loop: it raises trace records
+     * while it renders, and closing the stream under a live producer would
+     * flush its chunk while it is still appending to it. */
     op_prof_close();
     openpete_native_present_census_report();
     eager_report();
