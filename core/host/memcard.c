@@ -788,9 +788,15 @@ int openpete_memcard_format(int chan)
 int openpete_memcard_sync(int mode, int* out_cmds, int* out_rslt)
 {
     (void)mode;   /* sync and async both complete instantly */
+    /* libmcrd MemCardSync (SCUS-94228 0x80067628) reports a finished
+     * command once: it clears the completion flag as it returns 1, and a
+     * later call with nothing pending returns -1 and leaves the out-slots
+     * alone. */
+    if (s_mc_status != MC_SYNC_FINISHED) return MC_SYNC_NOTHING;
     if (out_cmds && s_mc_cmds != -1) *out_cmds = s_mc_cmds;
     if (out_rslt && s_mc_rslt != -1) *out_rslt = s_mc_rslt;
-    return s_mc_status;
+    s_mc_status = MC_SYNC_NOTHING;
+    return MC_SYNC_FINISHED;
 }
 
 /* --- raw frame access ----------------------------------------------------
