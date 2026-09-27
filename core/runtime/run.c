@@ -347,6 +347,26 @@ static SDL_AtomicInt g_worker_done;
  * feeder) from a busy one, and to force the process down when a quit
  * request goes unanswered. */
 static SDL_AtomicInt g_sim_heartbeat;
+/* Set by the worker when its loop has exited and teardown (recorder
+ * flush, movie finalize, joins) is running; the pump then allows the
+ * longer teardown bound between heartbeats. */
+static SDL_AtomicInt g_sim_teardown;
+
+/** @brief Report teardown progress to the pump's liveness check: one heartbeat. */
+static void sim_teardown_progress(void) { SDL_AddAtomicInt(&g_sim_heartbeat, 1); }
+
+/** @brief Stall teardown for OPENPETE_TEARDOWN_STALL_MS milliseconds with no heartbeat.
+ *
+ * A fault-injection knob for the quit watchdog: it stands in for a
+ * recorder flush that takes that long. Unset or 0 does nothing. */
+static void sim_teardown_injected_stall(void)
+{
+    const char* e = getenv("OPENPETE_TEARDOWN_STALL_MS");
+    const int ms = (e && *e) ? atoi(e) : 0;
+    if (ms <= 0) return;
+    OPL_WARN_F("host", "OPENPETE_TEARDOWN_STALL_MS: stalling teardown %d ms", ms);
+    SDL_Delay((Uint32)ms);
+}
 
 static bool openpete_handle_event(SDL_Event* ev);
 
@@ -6039,7 +6059,11 @@ static int run_host_loop(const openpete_options_t* opts) {
      * the device the record flush below drains, writes the frame-time log
      * and the pace log, and waits on this thread's clock, all of which the
      * teardown closes. Stopping it hands the display back to this thread. */
+    SDL_SetAtomicInt(&g_sim_teardown, 1);
+    sim_teardown_progress();
     openpete_present_thread_stop();
+    sim_teardown_progress();
+    sim_teardown_injected_stall();
 
     if (bk2_active) {
         bk2_movie_free(&bk2);
@@ -6050,6 +6074,7 @@ static int run_host_loop(const openpete_options_t* opts) {
     }
     if (bk2_recording) {
         bk2_record_finalize();
+        sim_teardown_progress();
     }
     /* --record: drain the native async readback ring's queued tail frames to the
      * encoder (while the Vulkan device is still alive), THEN flush the encoder +
@@ -6057,7 +6082,9 @@ static int run_host_loop(const openpete_options_t* opts) {
      * was never armed / native isn't the display). Reaching here on SIGTERM/Ctrl-C
      * still produces a playable file. */
     openpete_native_render_record_flush();
+    sim_teardown_progress();
     openpete_record_shutdown();
+    sim_teardown_progress();
     /* --screenshot-presents-start/count engagement. A sequence holding no
      * native-intermediate present exercised only the canonical leg, so it
      * supports no claim about the sub-tick path and the extent agreement it
@@ -6467,14 +6494,71 @@ static int SDLCALL openpete_sim_thread(void* unused)
     return 0;
 }
 
+/* Pump-side sim liveness. A guest-side hang (a corrupted model walk, an OT
+ * loop) leaves the worker spinning forever with the window still pumping, so
+ * the process would outlive every quit request. Silence past
+ * SIM_STALL_WARN_MS is logged with the last heartbeat. After a quit request
+ * the process is ended from the pump when the worker makes no progress for
+ * SIM_QUIT_GRACE_MS, counted from the later of the request and the last
+ * heartbeat; once the worker reports teardown the bound between heartbeats
+ * is SIM_TEARDOWN_GRACE_MS, since one recorder flush may take seconds. */
+enum { SIM_STALL_WARN_MS = 5000, SIM_QUIT_GRACE_MS = 3000, SIM_TEARDOWN_GRACE_MS = 20000 };
+typedef struct {
+    int    hb_last;          /* heartbeat at the last observed change */
+    Uint64 hb_last_ms;       /* when it changed */
+    Uint64 quit_req_ms;      /* when the quit request was first seen; 0 = none */
+    int    stall_logged;
+} sim_liveness_t;
+
+/** @brief Seed the pump's liveness state from the current heartbeat. */
+static void sim_liveness_init(sim_liveness_t* L)
+{
+    L->hb_last = SDL_GetAtomicInt(&g_sim_heartbeat);
+    L->hb_last_ms = SDL_GetTicks();
+    L->quit_req_ms = 0;
+    L->stall_logged = 0;
+}
+
+/** @brief One pump iteration of the sim liveness check: log a stall, and force exit on a quit the worker has stopped progressing on.
+ *
+ * @param L The pump's liveness state. */
+static void sim_liveness_check(sim_liveness_t* L)
+{
+    const int    hb  = SDL_GetAtomicInt(&g_sim_heartbeat);
+    const Uint64 now = SDL_GetTicks();
+    if (hb != L->hb_last) {
+        if (L->stall_logged)
+            OPL_INFO_F("host", "sim thread resumed after %llu ms",
+                       (unsigned long long)(now - L->hb_last_ms));
+        L->hb_last = hb; L->hb_last_ms = now; L->stall_logged = 0;
+    } else if (hb > 0 && !L->stall_logged && now - L->hb_last_ms >= SIM_STALL_WARN_MS) {
+        L->stall_logged = 1;
+        OPL_WARN_F("host", "sim thread has made no progress for %llu ms "
+                   "(heartbeat %d): the game is hung; closing the "
+                   "window exits", (unsigned long long)(now - L->hb_last_ms), hb);
+    }
+    if (!g_shutdown_requested) return;
+    if (!L->quit_req_ms) L->quit_req_ms = now ? now : 1;
+    const Uint64 since = L->hb_last_ms > L->quit_req_ms ? L->hb_last_ms : L->quit_req_ms;
+    const int grace = SDL_GetAtomicInt(&g_sim_teardown) ? SIM_TEARDOWN_GRACE_MS : SIM_QUIT_GRACE_MS;
+    if (now - since < (Uint64)grace) return;
+    OPL_ERROR_F("host", "sim thread made no progress for %d ms after the quit request "
+                "(heartbeat %d, request %llu ms ago%s): forcing exit", grace, hb,
+                (unsigned long long)(now - L->quit_req_ms),
+                SDL_GetAtomicInt(&g_sim_teardown) ? ", in teardown" : "");
+    openpete_log_file_sync();
+    _exit(OPENPETE_EXIT_PANIC);
+}
+
 /** @brief Run the host with main owning SDL video, the window and the event pump, and a worker thread running the host loop.
  *
  * Main runs run_host_init, seeds the input seam, releases PsyCross's GL
  * context, and starts the worker (openpete_sim_thread, 64 MiB stack). Main
  * then pumps events, publishes input, updates the cursor and mouse capture,
  * and performs fullscreen toggles the worker requests, until the worker
- * finishes. It logs a sim heartbeat silent for 5 s and forces exit when a
- * quit request goes unhonoured for 3 s. After the join it retakes the GL
+ * finishes. The sim liveness check (sim_liveness_check) logs a heartbeat
+ * silent for 5 s and forces exit when the worker makes no progress for
+ * 3 s after a quit request (20 s between teardown heartbeats). After the join it retakes the GL
  * context and shuts down the native renderer, the disc cache and PsyCross.
  * openpete_thread_split_enabled gives the reason for the split.
  * @param opts The parsed options.
@@ -6543,45 +6627,10 @@ static int run_split_threaded(const openpete_options_t* opts)
      * whatever was last published, so this period bounds input staleness.
      * SDL_WaitEventTimeout parks the thread instead of spinning, and still
      * wakes immediately when an event arrives. */
-    /* Sim liveness. A guest-side hang (a corrupted model walk, an OT loop)
-     * leaves the worker spinning forever with the window still pumping,
-     * so the process would outlive every quit request. Once the loop has
-     * started, silence past the stall bound is logged with the last
-     * heartbeat, and a quit request the worker has not honoured within
-     * the grace period ends the process from here. */
-    enum { SIM_STALL_WARN_MS = 5000, SIM_QUIT_GRACE_MS = 3000 };
-    int    hb_last = SDL_GetAtomicInt(&g_sim_heartbeat);
-    Uint64 hb_last_ms = SDL_GetTicks();
-    Uint64 quit_req_ms = 0;
-    int    stall_logged = 0;
+    sim_liveness_t live;
+    sim_liveness_init(&live);
     while (!SDL_GetAtomicInt(&g_worker_done)) {
-        {
-            const int    hb  = SDL_GetAtomicInt(&g_sim_heartbeat);
-            const Uint64 now = SDL_GetTicks();
-            if (hb != hb_last) {
-                if (stall_logged)
-                    OPL_INFO_F("host", "sim thread resumed after %llu ms",
-                               (unsigned long long)(now - hb_last_ms));
-                hb_last = hb; hb_last_ms = now; stall_logged = 0;
-            } else if (hb > 0 && !stall_logged &&
-                       now - hb_last_ms >= SIM_STALL_WARN_MS) {
-                stall_logged = 1;
-                OPL_WARN_F("host", "sim thread has made no progress for %llu ms "
-                           "(heartbeat %d): the game is hung; closing the "
-                           "window exits", (unsigned long long)(now - hb_last_ms), hb);
-            }
-            if (g_shutdown_requested) {
-                if (!quit_req_ms) quit_req_ms = now ? now : 1;
-                else if (now - quit_req_ms >= SIM_QUIT_GRACE_MS) {
-                    OPL_ERROR_F("host", "sim thread did not stop within %d ms of "
-                                "the quit request (heartbeat %d, last progress "
-                                "%llu ms ago): forcing exit", SIM_QUIT_GRACE_MS, hb,
-                                (unsigned long long)(now - hb_last_ms));
-                    openpete_log_file_sync();
-                    _exit(OPENPETE_EXIT_PANIC);
-                }
-            }
-        }
+        sim_liveness_check(&live);
         /* Four instants per iteration, so a stall on this thread can be
          * attributed rather than merely noticed. A Win32 modal resize or move
          * runs the OS's own loop inside the event pump, which is where the
