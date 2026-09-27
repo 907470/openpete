@@ -24,7 +24,12 @@
 #
 #   docker build -f docs/linux-release.Dockerfile -t openpete-linux-release .
 #   scripts/release-container.sh            # build + package inside it
-FROM debian:bullseye
+#
+# The base is pinned by digest (the debian:bullseye multi-arch index on
+# Docker Hub), so a rebuild of this image starts from the same bytes; tomli
+# is pinned for the same reason. Debian 11 is past its LTS window, and its
+# packages move to archive.debian.org.
+FROM debian:bullseye@sha256:6f519a81440354a85eb592c5f32109ab80605f6b892455983a6f618bf87fabe9
 
 # Bullseye's python 3.9 has no tomllib; the build-time fences fall back
 # to tomli, which bullseye does not package, so it comes from pip, as
@@ -48,7 +53,7 @@ https://apt.kitware.com/ubuntu/ focal main" \
          > /etc/apt/sources.list.d/kitware.list \
     && apt-get update && apt-get install -y --no-install-recommends cmake \
     && rm -rf /var/lib/apt/lists/* \
-    && pip3 install --no-cache-dir tomli mkdocs-material==9.7.6
+    && pip3 install --no-cache-dir tomli==2.0.1 mkdocs-material==9.7.6
 
 # Git refuses to describe a repo owned by another uid, and the version
 # stamp in every artifact name comes from `git describe`.

@@ -138,15 +138,10 @@ else
     BIN="$appdir/openpete-spyro1"
 fi
 
-echo "[dist-gate] glibc floor..."
-have_glibc=$(objdump -T "$BIN" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
-have_glibcxx=$(objdump -T "$BIN" | grep -o 'GLIBCXX_[0-9.]*' | sort -uV | tail -1)
-echo "[dist-gate]   requires ${have_glibc:-none} / ${have_glibcxx:-none}" \
-     "(target GLIBC_$GLIBC_MAX / GLIBCXX_$GLIBCXX_MAX)"
+echo "[dist-gate] glibc floor (every ELF in the payload)..."
 floor_ok=1
-newest() { printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1; }
-[[ -z "$have_glibc"   || $(newest "${have_glibc#GLIBC_}" "$GLIBC_MAX") == "$GLIBC_MAX" ]] || floor_ok=0
-[[ -z "$have_glibcxx" || $(newest "${have_glibcxx#GLIBCXX_}" "$GLIBCXX_MAX") == "$GLIBCXX_MAX" ]] || floor_ok=0
+GLIBC_MAX=$GLIBC_MAX GLIBCXX_MAX=$GLIBCXX_MAX scripts/check_glibc_floor.sh "$appdir" \
+    | sed "s|$appdir|<payload>/|; s|^|[dist-gate]   |" || floor_ok=0
 if [[ $floor_ok -eq 0 ]]; then
     if [[ -n "${OPENPETE_DIST_ALLOW_GLIBC_FLOOR:-}" ]]; then
         echo "[dist-gate]   WARNING: floor exceeded — this artifact will NOT" \

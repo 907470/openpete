@@ -71,7 +71,20 @@ fi
 # only the variables passed with -e.
 env_args=(-e OPENPETE_NO_COMMITS=1)
 [[ -n "${OPENPETE_DIST_VERSION:-}" ]] && env_args+=(-e "OPENPETE_DIST_VERSION=$OPENPETE_DIST_VERSION")
-"$ENGINE" run --rm -v "$PWD:/src" "${env_args[@]}" "${uidmap[@]}" "$IMAGE" bash -euo pipefail -c '
+
+# The release builds from nothing, in directories only the container uses.
+# The host tree's third_party/psxrecomp/build and build/linux-release-shared
+# are dev-box builds (a newer glibc floor, objects ninja would call up to
+# date); the private directories are mounted over those paths inside the
+# container, where package-dist.sh reads them, and emptied first.
+PRIV="build/release-container"
+rm -rf "$PRIV"
+mkdir -p "$PRIV/psxrecomp" "$PRIV/linux-release-shared" \
+         third_party/psxrecomp/build build/linux-release-shared
+mounts=(-v "$PWD:/src"
+        -v "$PWD/$PRIV/psxrecomp:/src/third_party/psxrecomp/build"
+        -v "$PWD/$PRIV/linux-release-shared:/src/build/linux-release-shared")
+"$ENGINE" run --rm "${mounts[@]}" "${env_args[@]}" "${uidmap[@]}" "$IMAGE" bash -euo pipefail -c '
     cmake -S third_party/psxrecomp/recompiler -B third_party/psxrecomp/build \
           -G Ninja -DCMAKE_BUILD_TYPE=Release
     cmake --build third_party/psxrecomp/build -j
