@@ -110,6 +110,18 @@ void* openpete_subtick_view_stage(uint32_t addr, uint32_t len);
  * @return Host pointer, or NULL for an unmapped unstaged address. */
 void* openpete_subtick_host_ptr(uint32_t addr);
 
+/** @brief Resolve a guest span of @p len bytes through the view.
+ *
+ * While the view is open and a staged span covers @p addr, returns the
+ * staged copy when that span holds all @p len bytes and NULL when it
+ * holds fewer (a partial cover would mix staged and canonical bytes past
+ * its end). Otherwise returns openpete_psx_to_host_span(), which refuses
+ * a span crossing the end of RAM or the scratchpad.
+ * @param addr Guest address of the first byte.
+ * @param len Bytes the caller reads from the returned pointer.
+ * @return Host pointer valid for @p len bytes, or NULL. */
+void* openpete_subtick_host_span(uint32_t addr, uint32_t len);
+
 /** @brief Publish producer output at a guest address through the view, span by span.
  *
  * Bytes a staged span covers land in that copy; each uncovered run is

@@ -24,7 +24,7 @@
 #include "openpete_interp.h"
 #include "openpete_interp_objs.h"
 #include "renderer/interp_regions_gen.h"
-#include "openpete_psx.h"          /* openpete_psx_to_host_ptr */
+#include "openpete_psx.h"          /* openpete_psx_to_host_span */
 #include "renderer/interp_regions.h"
 #include "renderer/reextract.h"   /* moby_native_canon_drawn_mobys */
 #include "renderer/text_moby_id.h"    /* text_moby_id_lookup */
@@ -121,6 +121,7 @@ static int credits_roll_active(void) {
     return rd32(G_GAMESTATE) == GS_CREDITS && (int32_t)rd32(G_CREDITS_STAGE) < 99;
 }
 
+/** @brief Bumps a credits letter's generation when its record enters the flying-in state, so a reused index gets a fresh key. */
 static void credits_track_generations(void) {
     if (!credits_roll_active()) {
         memset(s_credits_state, 0, sizeof(s_credits_state));
@@ -129,7 +130,7 @@ static void credits_track_generations(void) {
     uint32_t recs = rd32(G_CREDITS_RECS), cnt = rd32(G_CREDITS_COUNT);
     if (recs < 0x80000000u || cnt > CREDITS_REC_MAX) return;
     for (uint32_t k = 0; k < CREDITS_REC_MAX; k++) {
-        const uint8_t* r = (k < cnt) ? (const uint8_t*)openpete_psx_to_host_ptr(recs + k * CREDITS_REC_STRIDE) : NULL;
+        const uint8_t* r = (k < cnt) ? (const uint8_t*)openpete_psx_to_host_span(recs + k * CREDITS_REC_STRIDE, CREDITS_REC_STRIDE) : NULL;
         uint8_t st = r ? r[CREDITS_REC_STATE] : 0;
         if (st == 1u && s_credits_state[k] != 1u) s_credits_gen[k]++;
         s_credits_state[k] = st;
@@ -146,7 +147,7 @@ uint32_t game_interp_moby_key(uint32_t m) {
         if (delta != 0u && delta <= CREDITS_REC_MAX * MOBY_STRIDE &&
             (delta % MOBY_STRIDE) == 0u && credits_roll_active()) {
             uint32_t k = delta / MOBY_STRIDE - 1u;
-            const uint8_t* mh = (const uint8_t*)openpete_psx_to_host_ptr(m);
+            const uint8_t* mh = (const uint8_t*)openpete_psx_to_host_span(m, MOBY_STRIDE);
             uint16_t cls = 0; if (mh) memcpy(&cls, mh + 0x36u, 2);
             return 0x60000000u | ((uint32_t)(cls & 0x3FFu) << 16) |
                    ((uint32_t)(s_credits_gen[k] & 0x3Fu) << 10) | (k & 0x3FFu);
@@ -192,7 +193,7 @@ uint32_t game_interp_moby_key(uint32_t m) {
     {
         static int s_fly = -1;
         if (s_fly < 0) { const char* e = getenv("OPENPETE_GEM_FLYOUT_KEY"); s_fly = (e && *e) ? (*e != '0') : 1; }
-        const uint8_t* mh0 = s_fly ? (const uint8_t*)openpete_psx_to_host_ptr(m) : NULL;
+        const uint8_t* mh0 = s_fly ? (const uint8_t*)openpete_psx_to_host_span(m, MOBY_STRIDE) : NULL;
         uint16_t cls0 = 0; if (mh0) memcpy(&cls0, mh0 + 0x36, 2);
         if (mh0 && cls0 >= 0x53u && cls0 <= 0x57u) {
             uint32_t hud_active = rd32(G_TRANS_HUD);
@@ -200,9 +201,9 @@ uint32_t game_interp_moby_key(uint32_t m) {
             if (hud_active && arr >= 0x80000000u) {
                 uint8_t cr0 = mh0[0x44], cr1 = mh0[0x45], cr2 = mh0[0x46];
                 int32_t py; memcpy(&py, mh0 + 0x10u, 4);          /* m_Position.y */
-                const uint8_t* recent = (const uint8_t*)openpete_psx_to_host_ptr(G_RECENT_GEMS);
+                const uint8_t* recent = (const uint8_t*)openpete_psx_to_host_span(G_RECENT_GEMS, TRANS_GEM_MAX);
                 for (uint32_t i = 0; i < TRANS_GEM_MAX; i++) {
-                    const uint8_t* g = (const uint8_t*)openpete_psx_to_host_ptr(arr + i * 0x10u);
+                    const uint8_t* g = (const uint8_t*)openpete_psx_to_host_span(arr + i * 0x10u, 0x10u);
                     if (!g) break;
                     if (g[0x08] == 0) continue;                   /* inactive slot */
                     if (g[0x0A] != cr0 || g[0x0B] != cr1 || g[0x0C] != cr2) continue;
@@ -246,11 +247,11 @@ uint32_t game_interp_moby_key(uint32_t m) {
         if (delta != 0u &&
             delta <= HUD_POOL_MAX * MOBY_STRIDE && (delta % MOBY_STRIDE) == 0u) {
             uint32_t ord = delta / MOBY_STRIDE - 1u;   /* 0 = first entry allocated */
-            const uint8_t* mh = (const uint8_t*)openpete_psx_to_host_ptr(m);
+            const uint8_t* mh = (const uint8_t*)openpete_psx_to_host_span(m, MOBY_STRIDE);
             uint16_t cls = 0; if (mh) memcpy(&cls, mh + 0x36u, 2);
             uint32_t n = 0;
             for (uint32_t k = 0; k < ord; k++) {
-                const uint8_t* e = (const uint8_t*)openpete_psx_to_host_ptr(top - (k + 1u) * MOBY_STRIDE);
+                const uint8_t* e = (const uint8_t*)openpete_psx_to_host_span(top - (k + 1u) * MOBY_STRIDE, MOBY_STRIDE);
                 if (!e) break;
                 uint16_t c2; memcpy(&c2, e + 0x36u, 2);
                 if (c2 == cls) n++;
@@ -263,8 +264,9 @@ uint32_t game_interp_moby_key(uint32_t m) {
 
 extern unsigned openpete_frame;
 
+/** @brief Read a guest word through a bounds-checked span; 0 when it does not map. */
 static uint32_t rd32(uint32_t addr) {
-    const void* p = openpete_psx_to_host_ptr(addr);
+    const void* p = openpete_psx_to_host_span(addr, 4u);
     uint32_t v = 0;
     if (p) memcpy(&v, p, 4);
     return v;
@@ -289,7 +291,7 @@ static void spyro_interp_extra_pools(void) {
      * Always present (no sentinel) — capture all 12; inactive ones don't render. */
     for (uint32_t i = 0; i < G_HUD_COUNT; ++i) {
         uint32_t m = G_HUD_ICONS + i * MOBY_STRIDE;
-        const void* host = openpete_psx_to_host_ptr(m);
+        const void* host = openpete_psx_to_host_span(m, openpete_interp_objs_blob_bytes());
         if (host) openpete_interp_objs_capture(m, host, openpete_interp_objs_blob_bytes());
     }
 
@@ -304,7 +306,7 @@ static void spyro_interp_extra_pools(void) {
     if (ppool >= 0x80000000u) {
         for (uint32_t i = 0; i < PART_MAX; ++i) {
             uint32_t pa = ppool + i * PART_STRIDE;
-            const void* host = openpete_psx_to_host_ptr(pa);
+            const void* host = openpete_psx_to_host_span(pa, PART_STRIDE);
             if (!host) break;
             uint32_t hdr; memcpy(&hdr, host, 4);
             uint8_t sel = (uint8_t)((hdr >> PART_HDR_SEL) & 0xFFu);
@@ -328,7 +330,7 @@ static void spyro_interp_extra_pools(void) {
      * a slot dead for a tick goes unseen → evicted → fresh spawn (no pair). */
     for (uint32_t i = 0; i < 8u; ++i) {
         uint32_t sa = G_SPARKLES + i * 0x18u;
-        const void* host = openpete_psx_to_host_ptr(sa);
+        const void* host = openpete_psx_to_host_span(sa, 0x18u);
         if (!host) break;
         uint32_t w3; memcpy(&w3, (const uint8_t*)host + 0x0C, 4);
         if ((w3 & 0xFFu) == 0) continue;        /* m_Life==0 → dead slot */
@@ -343,7 +345,7 @@ static void spyro_interp_extra_pools(void) {
      * so glow_build can lerp them sub-tick (phase-only; nothing written back). */
     for (uint32_t i = 0; i < 16u; ++i) {
         uint32_t ga = D_GLOWS + i * 0x24u;
-        const void* host = openpete_psx_to_host_ptr(ga);
+        const void* host = openpete_psx_to_host_span(ga, 0x24u);
         if (!host) break;
         int32_t cnt; memcpy(&cnt, host, 4);
         if (cnt <= 0) continue;                 /* inactive slot */
@@ -359,7 +361,7 @@ static void spyro_interp_extra_pools(void) {
     for (uint32_t i = 0; i < 256u; ++i) {
         uint32_t m = rd32(G_SCRATCH + 0x2400u + i * 4u);
         if (m < 0x80000000u) break;
-        const void* host = openpete_psx_to_host_ptr(m);
+        const void* host = openpete_psx_to_host_span(m, openpete_interp_objs_blob_bytes());
         if (host) openpete_interp_objs_capture(game_interp_moby_key(m), host,
                                                openpete_interp_objs_blob_bytes());
     }
@@ -375,7 +377,7 @@ static void spyro_interp_extra_pools(void) {
         const uint32_t* drawn = NULL;
         int drawn_n = moby_native_canon_drawn_mobys(&drawn);
         for (int i = 0; i < drawn_n; ++i) {
-            const uint8_t* host = (const uint8_t*)openpete_psx_to_host_ptr(drawn[i]);
+            const uint8_t* host = (const uint8_t*)openpete_psx_to_host_span(drawn[i], openpete_interp_objs_blob_bytes());
             if (!host || host[MOBY_STATE_OFF] >= 0x80) continue;   /* dead / unmapped */
             openpete_interp_objs_capture(game_interp_moby_key(drawn[i]), host,
                                          openpete_interp_objs_blob_bytes());
@@ -391,7 +393,7 @@ static void spyro_interp_extra_pools(void) {
      * (particle-circling-stars.bk2 f1850). Capture the 0x2C-byte record when
      * ACTIVE (+0x00 gate); inactive → unseen → evicted (a re-trigger snaps). */
     {
-        const void* host = openpete_psx_to_host_ptr(D_DRAGONSTAR);
+        const void* host = openpete_psx_to_host_span(D_DRAGONSTAR, 0x2Cu);
         uint32_t gate = 0; if (host) memcpy(&gate, host, 4);
         if (gate != 0)
             openpete_interp_objs_capture(D_DRAGONSTAR, host, 0x2Cu);
@@ -402,7 +404,7 @@ static void spyro_interp_extra_pools(void) {
      * tick counter in state 5, and a sub-tick present lerps those factors
      * between this pair. Keyed by the m_State address. */
     {
-        const void* host = openpete_psx_to_host_ptr(G_DRAGON_CUTSCENE + 0x28u);
+        const void* host = openpete_psx_to_host_span(G_DRAGON_CUTSCENE + 0x28u, 0x18u);
         if (host && rd32(G_GAMESTATE) == 8u)
             openpete_interp_objs_capture(G_DRAGON_CUTSCENE + 0x28u, host, 0x18u);
     }

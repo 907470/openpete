@@ -31,20 +31,39 @@ static uint8_t g_scratch[SCRATCH_SIZE];
 uint8_t* openpete_psx_get_ram(void)     { return g_ram; }
 uint8_t* openpete_psx_get_scratch(void) { return g_scratch; }
 
-void* openpete_psx_to_host_ptr(uint32_t addr) {
-    if (addr == 0u) return NULL;
+/** @brief Resolve a guest address to a host pointer valid for @p len bytes, or NULL.
+ *
+ * The span [addr, addr + len) must lie inside one host region: main RAM
+ * (any segment), the scratchpad, or one entry of the presentation region
+ * table. A span that starts inside a region and runs past its end returns
+ * NULL rather than a pointer the caller would overrun. */
+static uint8_t* span_ptr(uint32_t addr, uint32_t len) {
     uint32_t phys = addr & 0x1FFFFFFFu;
-    if (phys < RAM_SIZE) return &g_ram[phys];
-    if (phys >= 0x1F800000u && phys < 0x1F800000u + SCRATCH_SIZE) {
-        return &g_scratch[phys - 0x1F800000u];
+    if (phys < RAM_SIZE)
+        return (len <= RAM_SIZE - phys) ? &g_ram[phys] : NULL;
+    if (phys >= 0x1F800000u && phys - 0x1F800000u < SCRATCH_SIZE) {
+        uint32_t off = phys - 0x1F800000u;
+        return (len <= SCRATCH_SIZE - off) ? &g_scratch[off] : NULL;
     }
-    /* Cold-path: consult the renderer-side region table. Empty-table
-     * fast path handled inside resolve_region. */
+    /* Cold-path: registered presentation regions (psx_region.c). Hot
+     * recompiler-emitted accesses bypass this path and are redirected via
+     * per-site psxrecomp instruction substitutions. */
     if (psx_runtime_region_count() != 0u) {
         void* host = NULL;
-        if (psx_runtime_resolve_region(addr, &host, NULL)) return host;
+        uint32_t rem = 0;
+        if (psx_runtime_resolve_region(addr, &host, &rem) && len <= rem)
+            return (uint8_t*)host;
     }
     return NULL;
+}
+
+void* openpete_psx_to_host_span(uint32_t addr, uint32_t len) {
+    if (addr == 0u) return NULL;
+    return span_ptr(addr, len);
+}
+
+void* openpete_psx_to_host_ptr(uint32_t addr) {
+    return openpete_psx_to_host_span(addr, 1u);
 }
 
 /* Inverse of openpete_psx_to_host_ptr for RAM and scratchpad pointers. */
@@ -75,30 +94,16 @@ uint32_t openpete_host_to_psx(const void* host_ptr) {
     return 0u;
 }
 
-/** @brief Map a PSX address to a host pointer for the bus callbacks; NULL when unmapped.
+/** @brief Map a PSX access of @p n bytes to a host pointer for the bus callbacks; NULL when unmapped.
  *
  * Main RAM and the scratchpad resolve under any segment (the top three
  * address bits are dropped); any other address resolves through the
- * registered presentation region table (psx_region.c). Unlike
+ * registered presentation region table (psx_region.c). An access whose
+ * last byte falls past the end of its region (an unaligned word or half
+ * at the top of RAM or the scratchpad) is unmapped. Unlike
  * openpete_psx_to_host_ptr(), address 0 maps to RAM offset 0. */
-static uint8_t* mem_ptr(uint32_t addr) {
-    /* Strip KSEG0/KSEG1/KUSEG segment bits. PSX uses unmapped segments
-     * 0x80xxxxxx (cached) and 0xA0xxxxxx (uncached) over the same RAM. */
-    uint32_t phys = addr & 0x1FFFFFFFu;
-    if (phys < RAM_SIZE) return &g_ram[phys];
-    if (phys >= 0x1F800000u && phys < 0x1F800000u + SCRATCH_SIZE) {
-        return &g_scratch[phys - 0x1F800000u];
-    }
-    /* Cold-path: registered presentation regions (psx_region.c). Hot
-     * recompiler-emitted accesses bypass this path and are redirected via
-     * per-site psxrecomp instruction substitutions. */
-    if (psx_runtime_region_count() != 0u) {
-        void* host = NULL;
-        if (psx_runtime_resolve_region(addr, &host, NULL)) {
-            return (uint8_t*)host;
-        }
-    }
-    return NULL;
+static uint8_t* mem_ptr(uint32_t addr, uint32_t n) {
+    return span_ptr(addr, n);
 }
 
 /* --- Aligned reads/writes (caller is responsible for alignment) ---------- */
@@ -129,27 +134,31 @@ static uint32_t rom_read(uint32_t addr, unsigned n) {
     }
     return v;
 }
+/** @brief Read a word from the PSX bus; an address with no four mapped bytes reads the ROM model. */
 static uint32_t read_word(uint32_t addr) {
-    uint8_t* p = mem_ptr(addr);
+    uint8_t* p = mem_ptr(addr, 4u);
     if (!p) return rom_read(addr, 4);
     uint32_t v;
     memcpy(&v, p, 4);
     return v;
 }
+/** @brief Write a word to the PSX bus; dropped unless all four bytes map. */
 static void write_word(uint32_t addr, uint32_t value) {
-    uint8_t* p = mem_ptr(addr);
+    uint8_t* p = mem_ptr(addr, 4u);
     if (!p) return;
     memcpy(p, &value, 4);
 }
+/** @brief Read a half from the PSX bus; an address with no two mapped bytes reads the ROM model. */
 static uint16_t read_half(uint32_t addr) {
-    uint8_t* p = mem_ptr(addr);
+    uint8_t* p = mem_ptr(addr, 2u);
     if (!p) return (uint16_t)rom_read(addr, 2);
     uint16_t v;
     memcpy(&v, p, 2);
     return v;
 }
+/** @brief Write a half to the PSX bus; dropped unless both bytes map. */
 static void write_half(uint32_t addr, uint16_t value) {
-    uint8_t* p = mem_ptr(addr);
+    uint8_t* p = mem_ptr(addr, 2u);
     if (!p) return;
     memcpy(p, &value, 2);
 }
@@ -161,15 +170,16 @@ static void write_half(uint32_t addr, uint16_t value) {
  * ROM window to the ROM identification model; every other address reads
  * 0. */
 static uint8_t read_byte(uint32_t addr) {
-    uint8_t* p = mem_ptr(addr);
+    uint8_t* p = mem_ptr(addr, 1u);
     if (p) return *p;
     uint8_t v;
     if (((addr & 0x1FFFFFFFu) & ~3u) == 0x1F801800u && openpete_cdrom_mmio_read8(addr & 0x1FFFFFFFu, &v)) return v;
     if (openpete_psx_bios_rom_read8(addr & 0x1FFFFFFFu, &v)) return v;
     return 0u;
 }
+/** @brief Write one byte to the PSX bus; an unmapped CD-ROM register byte goes to the controller model. */
 static void write_byte(uint32_t addr, uint8_t value) {
-    uint8_t* p = mem_ptr(addr);
+    uint8_t* p = mem_ptr(addr, 1u);
     if (p) { *p = value; return; }
     if (((addr & 0x1FFFFFFFu) & ~3u) == 0x1F801800u) (void)openpete_cdrom_mmio_write8(addr & 0x1FFFFFFFu, value);
 }
@@ -236,7 +246,7 @@ void openpete_psx_runtime_init(CPUState* cpu) {
 }
 
 void openpete_psx_load(uint32_t addr, const uint8_t* data, uint32_t size) {
-    uint8_t* p = mem_ptr(addr);
+    uint8_t* p = mem_ptr(addr, 1u);
     if (!p) {
         OPL_ERROR_F("boot", "psx_load: unmapped target addr=0x%08X size=%u", addr, size);
         return;

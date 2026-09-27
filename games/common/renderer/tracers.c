@@ -70,7 +70,7 @@
 #include "psx_runtime_internal.h"
 #include "openpete_native_render.h"
 #include "openpete_interp_objs.h"   /* the per-record prev/curr snapshots */
-#include "openpete_psx.h"           /* openpete_psx_to_host_ptr */
+#include "openpete_psx.h"           /* openpete_psx_to_host_span */
 #include "game_layout.h"
 
 #include <math.h>
@@ -307,7 +307,7 @@ static int rib_ring_point(const uint8_t* rec, uint32_t len, int age, int32_t hw[
  * @return The point count, or 0 when the routine drops the record. */
 static int rib_project_record(CPUState* cpu, const ngte_view* v, uint32_t rec,
                               const int32_t cam[3], rib_pt* pt) {
-    const uint8_t* host = (const uint8_t*)openpete_psx_to_host_ptr(rec);
+    const uint8_t* host = (const uint8_t*)openpete_psx_to_host_span(rec, TR.stride);
     if (!host) return 0;
     int32_t hw[3];
     const int count = rib_ring_point(host, TR.stride, 0, hw);

@@ -24,7 +24,7 @@
 #include "renderer/moby_rank.h"
 #include "game_layout.h"
 #include "openpete_fiber.h"          /* openpete_frame */
-#include "openpete_subtick_view.h"   /* openpete_subtick_host_ptr */
+#include "openpete_subtick_view.h"   /* openpete_subtick_host_span */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -87,13 +87,14 @@ static void cal_ot_append(cal_ot_t* T, const uint8_t* payload, unsigned bytes, i
 static int cal_walk_bucket(cal_ot_t* T, uint32_t start, uint32_t endn, int* nodes, int wb)
 {
     for (uint32_t addr = start; addr && (*nodes)++ < CAL_NODES_MAX; ) {
-        const uint8_t* host = (const uint8_t*)openpete_subtick_host_ptr(addr);
+        const uint8_t* host = (const uint8_t*)openpete_subtick_host_span(addr, 8u);
         if (!host) return 0;
         uint32_t tag;
         memcpy(&tag, host, 4);
         uint32_t plen = (tag >> 24) & 0xFF;
         int hi = host[7] & 0xE0;
-        if (plen > 0 && plen <= 16 && hi == 0x20) cal_ot_append(T, host + 4, plen * 4u, wb);
+        if (plen > 0 && plen <= 16 && hi == 0x20 && openpete_subtick_host_span(addr, 4u + plen * 4u))
+            cal_ot_append(T, host + 4, plen * 4u, wb);
         if (addr == endn) return 1;
         addr = (tag & 0x00FFFFFFu) | 0x80000000u;
     }
@@ -111,11 +112,12 @@ static int cal_walk_ot(cal_ot_t* T)
     T->n = 0;
     const uint32_t root = game_layout.moby.cal_world_ot;
     const int buckets = (int)game_layout.moby.cal_ot_buckets;
-    const uint32_t* pot = root ? (const uint32_t*)openpete_subtick_host_ptr(root) : NULL;
-    uint32_t base = pot ? *pot : 0u;
-    if (!base || (base & 3u)) return -1;
-    const uint8_t* bh = (const uint8_t*)openpete_subtick_host_ptr(base);
-    if (!bh || !openpete_subtick_host_ptr(base + (uint32_t)buckets * 8u - 4u)) return -1;
+    const uint8_t* pot = root ? (const uint8_t*)openpete_subtick_host_span(root, 4u) : NULL;
+    uint32_t base = 0u;
+    if (pot) memcpy(&base, pot, 4);
+    if (!base || (base & 3u) || buckets <= 0) return -1;
+    const uint8_t* bh = (const uint8_t*)openpete_subtick_host_span(base, (uint32_t)buckets * 8u);
+    if (!bh) return -1;
     int nodes = 0;
     for (int i = buckets - 1; i >= 0; i--) {
         uint32_t endn, start;

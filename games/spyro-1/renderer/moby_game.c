@@ -16,7 +16,7 @@
 #include "openpete_interp.h"         /* openpete_interp_present_now */
 #include "openpete_interp_objs.h"    /* the g_DragonCutscene tick pair */
 #include "openpete_subtick_view.h"   /* openpete_subtick_view_active */
-#include "openpete_psx.h"            /* openpete_psx_to_host_ptr */
+#include "openpete_psx.h"            /* openpete_psx_to_host_span */
 
 #include <stddef.h>
 #include <stdlib.h>
@@ -279,7 +279,7 @@ static int s1_departure_factors(CPUState* cpu, const uint8_t* cs, double f[3]) {
  *         m_State 5), else 0 */
 static int s1_record_row_scale(CPUState* cpu, uint32_t rec, double scale[3]) {
     if (rec != game_layout.moby.rec_base || cpu->read_word(G_GAMESTATE) != 8u) return 0;
-    const uint8_t* live = (const uint8_t*)openpete_psx_to_host_ptr(G_DRAGONCUTSCENE_STATE);
+    const uint8_t* live = (const uint8_t*)openpete_psx_to_host_span(G_DRAGONCUTSCENE_STATE, 0x18u);
     if (!live || !s1_departure_factors(cpu, live, scale)) return 0;
     if (!openpete_subtick_view_active()) return 1;
     const openpete_interp_obj_t* o = openpete_interp_objs_find(G_DRAGONCUTSCENE_STATE);

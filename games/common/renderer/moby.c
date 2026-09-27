@@ -35,7 +35,7 @@
 #include "renderer/native_gte.h"    /* shared GTE float-mirror math */
 #include "openpete_psx.h"
 #include "openpete_vstream.h"       /* frame-word field -> stream address (handles) */
-#include "openpete_subtick_view.h"            /* openpete_psx_to_host_ptr (SPEC scratch bracket) */
+#include "openpete_subtick_view.h"            /* openpete_subtick_host_span (SPEC scratch bracket) */
 #include "psx_runtime_internal.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
 #include "openpete_native_render.h"
 #include "openpete_log.h"           /* OPL_ERROR_F — ABR/blend FIXME runtime alarms */
@@ -309,6 +309,7 @@ void moby_rec_matrix(CPUState* cpu, uint32_t addr, int M[3][3]) {
 static uint8_t s_canon_spec[SPEC_SCR_MAX];
 static uint32_t s_canon_spec_epoch = 0;   /* canonical-render epoch at capture (freshness gate) */
 static int     s_canon_spec_valid = 0;
+/** @brief Copies the specular scratch window at the canonical moby hook for the sub-tick SPEC bracket. */
 static void moby_native_capture_spec_scratch(CPUState* cpu) {
     /* Runahead: a speculative fire must not stamp or overwrite the canonical
      * SPEC capture — the stamp would be the uncommitted epoch and the SPEC
@@ -316,7 +317,7 @@ static void moby_native_capture_spec_scratch(CPUState* cpu) {
      * mobys. */
     if (!spyro_native_canon_capture_open()) return;
     if (!SPEC_SCR_LEN || SPEC_SCR_LEN > SPEC_SCR_MAX) return;
-    const void* h = openpete_subtick_host_ptr(moby_game.scratch + SPEC_SCR_LO);
+    const void* h = openpete_subtick_host_span(moby_game.scratch + SPEC_SCR_LO, SPEC_SCR_LEN);
     if (h) { memcpy(s_canon_spec, h, SPEC_SCR_LEN); s_canon_spec_valid = 1;
              s_canon_spec_epoch = spyro_native_canon_epoch_stamp(); }
 }
@@ -3481,6 +3482,7 @@ typedef struct {
     int      raw, sprites, skips; /* walkdiag bookkeeping (raw = total stream faces) */
     uint8_t  align;               /* 0 = align_lo, 1 = align_hi, 2 = desync */
     uint32_t gen;                 /* resolve generation that last handed this entry out */
+    uint32_t col_span;            /* bytes of the colour table f[] indexes: max corner offset + 4 */
     wface_t* f;
 } fcache_t;
 #define FC_SLOTS 512
@@ -3560,6 +3562,15 @@ static const fcache_t* fcache_get(CPUState* cpu, uint32_t fb) {
     return V;
 }
 
+/** @brief The colour-table bytes a record's faces index, over its current and crossfade faces.
+ *
+ * @param FC The record's decoded faces.
+ * @param FCp The previous keyframe's faces for the colour crossfade, or NULL.
+ * @return The larger col_span of the two. */
+static uint32_t fcache_col_span(const fcache_t* FC, const fcache_t* FCp) {
+    return (FCp && FCp->col_span > FC->col_span) ? FCp->col_span : FC->col_span;
+}
+
 /** @brief Decode one faceblock into cache entry C through the game's face decoder.
  *
  * The stream parse is moby_game.decode_faces into the s_fc_tmp scratch (at
@@ -3590,6 +3601,12 @@ static int fcache_decode_into(CPUState* cpu, uint32_t fb, uint32_t bytecount,
     C->align = (uint8_t)st.align;
     C->gen = s_fc_gen;            /* the pass that decoded it holds it */
     C->f = arr;
+    C->col_span = 4u;
+    for (int i = 0; i < n; i++) {
+        const uint16_t c[4] = { arr[i].c0, arr[i].c1, arr[i].c2, arr[i].c3 };
+        for (int k = 0; k < 4; k++)
+            if ((uint32_t)c[k] + 4u > C->col_span) C->col_span = (uint32_t)c[k] + 4u;
+    }
     return 1;
 }
 
@@ -4003,8 +4020,10 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
         /* Resolve the colour bases to host pointers once per record; the loop
          * then reads colours directly (moby_color_at_host). Fallback = the
          * cpu->read_word path when a base doesn't map (never in practice). */
-        const uint8_t* cb_host = (const uint8_t*)openpete_subtick_host_ptr(cbase);
-        const uint8_t* fb_host = farbase ? (const uint8_t*)openpete_subtick_host_ptr(farbase) : NULL;
+        const fcache_t* FCp = s_pre_FCp[r]; float clr_a = s_pre_clra[r];
+        const uint32_t col_span = fcache_col_span(FC, FCp);
+        const uint8_t* cb_host = (const uint8_t*)openpete_subtick_host_span(cbase, col_span);
+        const uint8_t* fb_host = farbase ? (const uint8_t*)openpete_subtick_host_span(farbase, col_span) : NULL;
         int host_col = (cb_host != NULL) && (farbase == 0 || fb_host != NULL);
         /* Sub-tick COLOUR crossfade (patch-animated effects): the fade of the
          * Gnasty-blast dome/rings is per-KEYFRAME colour-index re-pointing down
@@ -4014,7 +4033,6 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
          * SAME alpha that lerps the vertex streams — endpoints are exactly the
          * two states the game drew. Only fetched when a patch list is in play
          * (prev==curr faces otherwise makes it a no-op). */
-        const fcache_t* FCp = s_pre_FCp[r]; float clr_a = s_pre_clra[r];
         t_diag->faces  += FC->raw;
         t_diag->sprite += FC->sprites;
         t_diag->skip   += FC->skips;

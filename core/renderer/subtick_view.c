@@ -454,7 +454,7 @@ void* openpete_subtick_view_stage(uint32_t addr, uint32_t len)
 
     /* Real bytes, deliberately not via the view — staging seeds from
      * canonical memory, and a span never seeds from another span. */
-    const void* live = openpete_psx_to_host_ptr(addr);
+    const void* live = openpete_psx_to_host_span(addr, len);
     if (!live) { s_stat_stage_fail++; return NULL; }
 
     if (s_span_count >= SV_MAX_SPANS || len > SV_ARENA_BYTES - s_arena_used) {
@@ -546,7 +546,7 @@ void openpete_subtick_view_peek(uint32_t addr, void* dst, uint32_t len)
                 run += step;
             }
             n = run;
-            srcp = (const uint8_t*)openpete_psx_to_host_ptr(addr);
+            srcp = (const uint8_t*)openpete_psx_to_host_span(addr, n);
         }
         if (srcp) memcpy(p, srcp, n);
         else memset(p, 0, n);
@@ -554,16 +554,23 @@ void openpete_subtick_view_peek(uint32_t addr, void* dst, uint32_t len)
     }
 }
 
-void* openpete_subtick_host_ptr(uint32_t addr)
+void* openpete_subtick_host_span(uint32_t addr, uint32_t len)
 {
     if (s_active) {
         int hit = sv_find(addr);
         if (hit >= 0) {
+            const sv_span_t* sp = &s_span[hit];
+            if (sp->len - (addr - sp->addr) < len) return NULL;
             s_stat_served++;
-            return s_arena + s_span[hit].off + (addr - s_span[hit].addr);
+            return s_arena + sp->off + (addr - sp->addr);
         }
     }
-    return openpete_psx_to_host_ptr(addr);
+    return openpete_psx_to_host_span(addr, len);
+}
+
+void* openpete_subtick_host_ptr(uint32_t addr)
+{
+    return openpete_subtick_host_span(addr, 1u);
 }
 
 /* ---- guest-RAM write guard ------------------------------------------------

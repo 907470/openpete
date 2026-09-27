@@ -216,7 +216,7 @@ void openpete_interp_capture(uint32_t tick, op_time_t tick_ns) {
     uint32_t total = curr->total_bytes;
     for (size_t r = 0; r < s_region_count; ++r) {
         const openpete_interp_region_t* reg = &s_regions[r];
-        void* host = openpete_psx_to_host_ptr(reg->psx_addr);
+        void* host = openpete_psx_to_host_span(reg->psx_addr, reg->length);
         uint32_t off = curr->region_offsets[r];
         if (host) memcpy(s_cap_scratch + off, host, reg->length);
         else      memset(s_cap_scratch + off, 0, reg->length);   /* unmapped → deterministic */
@@ -336,7 +336,7 @@ void openpete_interp_recapture_committed(void) {
      * one branch-free timeline instead of the led one. */
     for (size_t r = 0; r < s_region_count; ++r) {
         if (!s_regions[r].ra_commit) continue;
-        void* host = openpete_psx_to_host_ptr(s_regions[r].psx_addr);
+        void* host = openpete_psx_to_host_span(s_regions[r].psx_addr, s_regions[r].length);
         if (host) memcpy(curr->data + curr->region_offsets[r], host,
                          s_regions[r].length);
     }

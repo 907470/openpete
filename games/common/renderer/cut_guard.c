@@ -6,7 +6,7 @@
 #include "renderer/moby.h"          /* moby_native_canon_drawn_mobys */
 #include "renderer/moby_game.h"     /* moby_game.interp_key */
 #include "openpete_interp_objs.h"   /* g_openpete_tick_period_ns */
-#include "openpete_psx.h"           /* openpete_psx_to_host_ptr */
+#include "openpete_psx.h"           /* openpete_psx_to_host_span */
 #include "game_layout.h"
 #include "openpete_pace_log.h"
 #include "openpete_fiber.h"         /* openpete_frame */
@@ -175,7 +175,7 @@ static int cut_rec_holdable(uint32_t m, const uint8_t* mh) {
 static uint32_t cut_moby_array_head(void) {
     uint32_t arr = game_layout.moby.array_head;
     if (!game_layout.moby.array_direct) {
-        const void* hp = openpete_psx_to_host_ptr(arr);
+        const void* hp = openpete_psx_to_host_span(arr, 4u);
         arr = 0;
         if (hp) memcpy(&arr, hp, 4);
     }
@@ -197,7 +197,7 @@ static int cut_array_refusals(void) {
     int n = 0;
     uint32_t m = stride ? cut_moby_array_head() : 0;
     for (int g = 0; m && g < 4096 && (all || n == 0); g++, m += stride) {
-        const uint8_t* mh = (const uint8_t*)openpete_psx_to_host_ptr(m);
+        const uint8_t* mh = (const uint8_t*)openpete_psx_to_host_span(m, stride);
         if (!mh || mh[soff] == (uint8_t)game_layout.moby.state_term) break;
         if (mh[soff] >= 0x80) continue;          /* dormant: not drawn */
         if (cut_rec_drawn(mh) && !cut_rec_holdable(m, mh)) n++;
@@ -215,10 +215,11 @@ static int cut_drawn_set_refusals(void) {
     const uint32_t soff = game_layout.moby.state_off;
     const uint32_t* drawn = NULL;
     const int all = cut_census_on();
+    const uint32_t rec_bytes = game_layout.moby.array_stride ? game_layout.moby.array_stride : soff + 1u;
     const int cnt = moby_native_canon_drawn_mobys(&drawn);
     int n = 0;
     for (int i = 0; drawn && i < cnt && (all || n == 0); i++) {
-        const uint8_t* mh = (const uint8_t*)openpete_psx_to_host_ptr(drawn[i]);
+        const uint8_t* mh = (const uint8_t*)openpete_psx_to_host_span(drawn[i], rec_bytes);
         if (!mh || mh[soff] >= 0x80) continue;
         if (!cut_rec_holdable(drawn[i], mh)) n++;
     }

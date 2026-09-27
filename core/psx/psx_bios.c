@@ -90,15 +90,20 @@ static void invoke_guest(CPUState* cpu, uint32_t addr) {
     cpu->ra = ra; cpu->v0 = v0; cpu->v1 = v1;
 }
 
-/* A guest pointer into main RAM. The three segment mirrors all alias the
- * same 2 MB, so the physical address is the low 29 bits; anything above the
- * RAM window (scratchpad, hardware registers, BIOS) has no host backing
- * here and yields NULL. */
 #define PSX_RAM_BYTES 0x200000u
+#define MC_FRAME_BYTES 128u
 
-static void* guest_ptr(uint32_t addr) {
+/** @brief Resolve a guest buffer of @p len bytes in main RAM to a host pointer.
+ *
+ * The three segment mirrors all alias the same 2 MB, so the physical address
+ * is the low 29 bits. A buffer that starts above the RAM window (scratchpad,
+ * hardware registers, BIOS) or runs past its end has no host backing here.
+ * @param addr Guest address of the buffer.
+ * @param len Bytes the caller reads or writes.
+ * @return The host pointer, or NULL. */
+static void* guest_ptr(uint32_t addr, uint32_t len) {
     uint32_t phys = addr & 0x1FFFFFFFu;
-    if (phys >= PSX_RAM_BYTES) return NULL;
+    if (phys >= PSX_RAM_BYTES || len > PSX_RAM_BYTES - phys) return NULL;
     return openpete_psx_get_ram() + phys;
 }
 
@@ -202,7 +207,8 @@ static void mc_finish(CPUState* cpu, int port, uint32_t flags, uint32_t spec) {
  * An empty port leaves the transfer in progress, for the next vblank's
  * timeout. Otherwise a read or write copies one frame between the card and
  * guest RAM, and the command finishes with status 1 and EvSpIOE, or with
- * 0x21 and EvSpERROR when the buffer is outside main RAM or the card
+ * 0x21 and EvSpERROR when the 128-byte buffer does not lie wholly in
+ * main RAM or the card
  * access fails; an info command finishes with status 1.
  * @param cpu Guest CPU the event handlers run on.
  * @param port Port 0 or 1. */
@@ -211,10 +217,10 @@ static void mc_start(CPUState* cpu, int port) {
     if (!openpete_memcard_present(chan)) { s_mc.in_progress = 1u; return; }
     int ok = 1;
     if (s_mc.op[port] == MC_OP_READ) {
-        void* dst = guest_ptr(s_mc.buffer[port]);
+        void* dst = guest_ptr(s_mc.buffer[port], MC_FRAME_BYTES);
         ok = dst && openpete_memcard_read_frame(chan, (int)s_mc.sector[port], dst) == 0;
     } else if (s_mc.op[port] == MC_OP_WRITE) {
-        void* src = guest_ptr(s_mc.buffer[port]);
+        void* src = guest_ptr(s_mc.buffer[port], MC_FRAME_BYTES);
         ok = src && openpete_memcard_write_frame(chan, (int)s_mc.sector[port], src) == 0;
     }
     mc_finish(cpu, port, ok ? 1u : 0x21u, ok ? EV_SPEC_IOE : EV_SPEC_ERROR);

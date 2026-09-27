@@ -32,7 +32,7 @@
 #include "feature_registry.h"
 #include "psx_runtime_internal.h"   /* full CPUState (gte_ctrl, a0/a1/a2, read_word) */
 #include "openpete_psx.h"
-#include "openpete_subtick_view.h"  /* openpete_psx_to_host_ptr (present-time DRAWENV read) */
+#include "openpete_subtick_view.h"  /* openpete_subtick_host_span (present-time DRAWENV read) */
 #include "openpete_native_render.h"  /* native scene push + enabled gate */
 #include "renderer/render_paths.h"  /* --render-paths isolation */
 #include "renderer/hook_bracket.h"  /* the shared feeder hook bracket */
@@ -769,10 +769,15 @@ int cyclorama_native_extract_faded(CPUState* cpu, cyclorama_native_tri* out, int
 /* ---- present-time draw-env clear sync; documented in orchestrator.h ---- */
 void cyclorama_native_env_clear_commit(void) {
     if (!game_layout.db.cur_ptr) return;   /* no draw-buffer pair located */
-    const uint32_t curdb = *(const uint32_t*)openpete_subtick_host_ptr(game_layout.db.cur_ptr);
+    const uint8_t* curp = (const uint8_t*)openpete_subtick_host_span(game_layout.db.cur_ptr, 4u);
+    if (!curp) return;
+    uint32_t curdb;
+    memcpy(&curdb, curp, 4);
     if (curdb != game_layout.db.base && curdb != game_layout.db.base + game_layout.db.stride)
         return;   /* not a valid DB* yet */
-    const uint8_t* env = (const uint8_t*)openpete_subtick_host_ptr(curdb + game_layout.db.drawenv);
+    /* PSYQ DRAWENV through b0 @+0x1B: 0x1C bytes. */
+    const uint8_t* env = (const uint8_t*)openpete_subtick_host_span(curdb + game_layout.db.drawenv, 0x1Cu);
+    if (!env) return;
     /* PSYQ DRAWENV: isbg @+0x18, r0/g0/b0 @+0x19..0x1B */
     openpete_native_set_clear_color(env[0x18], env[0x19], env[0x1A], env[0x1B]);
 }

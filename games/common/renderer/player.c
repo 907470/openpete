@@ -1188,7 +1188,7 @@ void player_reextract_record(CPUState* cpu, int mirror) {
             two_pass = 1;
         }
         uint32_t block = two_pass ? 0u : player_part_block_base(cpu);
-        void* h = block ? openpete_subtick_host_ptr(block) : NULL;
+        void* h = block ? openpete_subtick_host_span(block, block_len) : NULL;
         if (h) {
             uint8_t live[PLAYER_REC_PART_MAX];
             memcpy(live, h, block_len);                 /* the canonical (curr) block */
@@ -1340,11 +1340,12 @@ static double dist3(const int32_t a[3], const int32_t b[3]) {
 }
 static void rec_pos(const player_model_rec_t* r, int32_t out[3]) { memcpy(out, r->spyro + PL.pos_off, 12); }
 
+/** @brief Logs the live player position and copies a feeder's registered block, for the record census. */
 static void observe(int feeder) {
     reg_init();
     feeder_obs_t* o = &s_obs[feeder];
-    const uint8_t* sp = (const uint8_t*)openpete_psx_to_host_ptr(PL.base);
-    const uint8_t* rb = s_reg[feeder].addr ? (const uint8_t*)openpete_psx_to_host_ptr(s_reg[feeder].addr) : NULL;
+    const uint8_t* sp = (const uint8_t*)openpete_psx_to_host_span(PL.base, PL.rec_len);
+    const uint8_t* rb = s_reg[feeder].addr ? (const uint8_t*)openpete_psx_to_host_span(s_reg[feeder].addr, s_reg[feeder].len) : NULL;
     if (!sp || !rb) return;
     if (o->n < REC_OBS_MAX) { memcpy(o->pos[o->n], sp + PL.pos_off, 12); o->cf[o->n] = sp[0x2B]; o->n++; }
     else o->over++;
@@ -1360,13 +1361,13 @@ int player_records_model_append(CPUState* cpu, uint32_t rp_start, uint32_t rp_en
     if (openpete_speculative) led_open();
     else { if (player_records_dbg()) observe(PLAYER_REC_MODEL); list_open(); }
     if (L->n >= PLAYER_REC_MAX) { s_cap_refused_epoch++; return -1; }
-    const uint8_t* sp  = (const uint8_t*)openpete_psx_to_host_ptr(PL.base);
+    const uint8_t* sp  = (const uint8_t*)openpete_psx_to_host_span(PL.base, PL.rec_len);
     uint32_t block = player_part_block_base(cpu);
     uint32_t colb  = player_colour_scratch(cpu);
-    const uint8_t* seg = block ? (const uint8_t*)openpete_psx_to_host_ptr(block) : NULL;
+    const uint8_t* seg = block ? (const uint8_t*)openpete_psx_to_host_span(block, PL.part_block_len) : NULL;
     if (player_game.part_record) seg = s_blk;   /* set below, from gamestate */
-    const uint8_t* fk  = colb  ? (const uint8_t*)openpete_psx_to_host_ptr(colb)  : NULL;
-    const uint8_t* sxy = PL.sxy_base ? (const uint8_t*)openpete_psx_to_host_ptr(PL.sxy_base) : NULL;
+    const uint8_t* fk  = colb  ? (const uint8_t*)openpete_psx_to_host_span(colb, PL.colour_scratch_len)  : NULL;
+    const uint8_t* sxy = PL.sxy_base ? (const uint8_t*)openpete_psx_to_host_span(PL.sxy_base, PL.sxy_len) : NULL;
     if (!sp || !seg) return -1;
     player_model_rec_t* r = &L->r[L->n];
     memset(r, 0, sizeof *r);
@@ -1412,8 +1413,8 @@ int player_records_shadow_append(CPUState* cpu) {
     if (openpete_speculative) led_open();
     else { if (player_records_dbg()) observe(PLAYER_REC_SHADOW); list_open(); }
     if (L->nsh >= PLAYER_REC_MAX) { s_cap_refused_epoch++; return -1; }
-    const uint8_t* sp = (const uint8_t*)openpete_psx_to_host_ptr(PL.base);
-    const uint8_t* sh = (const uint8_t*)openpete_psx_to_host_ptr(PL.shadow_base);
+    const uint8_t* sp = (const uint8_t*)openpete_psx_to_host_span(PL.base, PL.rec_len);
+    const uint8_t* sh = (const uint8_t*)openpete_psx_to_host_span(PL.shadow_base, PL.shadow_len);
     if (!sp || !sh) return -1;
     int m = bind_model(L, sp);
     if (m < 0) return -1;
@@ -1432,8 +1433,8 @@ int player_records_flame_append(CPUState* cpu) {
     if (openpete_speculative) led_open();
     else { if (player_records_dbg()) observe(PLAYER_REC_FLAME); list_open(); }
     if (L->nfl >= PLAYER_REC_MAX) { s_cap_refused_epoch++; return -1; }
-    const uint8_t* sp = (const uint8_t*)openpete_psx_to_host_ptr(PL.base);
-    const uint8_t* fl = (const uint8_t*)openpete_psx_to_host_ptr(PL.flame_base);
+    const uint8_t* sp = (const uint8_t*)openpete_psx_to_host_span(PL.base, PL.rec_len);
+    const uint8_t* fl = (const uint8_t*)openpete_psx_to_host_span(PL.flame_base, PL.flame_len);
     if (!sp || !fl) return -1;
     int m = bind_model(L, sp);
     if (m < 0) return -1;

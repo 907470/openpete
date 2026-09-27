@@ -1509,6 +1509,56 @@ struct op_accum_scope {
 };
 }
 
+/* ot_payload_bytes result for an entry whose data runs past its region. */
+#define OT_PAYLOAD_UNMAPPED ((size_t)-1)
+
+/** @brief Resolve one OT entry: read its P_TAG and map the tag with its length words.
+ *
+ * The entry's host pointer is valid for 4 + plen * 4 bytes, the tag and the
+ * payload words its length byte names; an entry whose words run past the
+ * end of RAM (or its presentation region) does not resolve.
+ * @param addr Guest address of the entry.
+ * @param tag Receives the P_TAG word.
+ * @return The host pointer, or NULL when the entry does not map. */
+static uint8_t* ot_entry_host(uint32_t addr, uint32_t* tag) {
+    const uint8_t* t = (const uint8_t*)openpete_psx_to_host_span(addr, 4u);
+    if (!t) return nullptr;
+    std::memcpy(tag, t, 4);
+    return (uint8_t*)openpete_psx_to_host_span(addr, 4u + ((*tag >> 24) & 0xFFu) * 4u);
+}
+
+/** @brief The payload bytes an OT entry carries after its tag.
+ *
+ * The PSX P_TAG length is 8-bit (at most 1020 bytes of payload), but a
+ * variable-length primitive such as LoadImage (code 0xA0) embeds image data
+ * after the struct, which the GPU reads by the rect's w x h. For a real
+ * primitive (plen >= 3) whose code byte (offset 7: tag at 0..3, code at
+ * 4..7 with the GP0 command in the high byte) is DR_LOAD, the payload
+ * extends to 12 bytes of code plus w * h * 2 bytes of image. An OT anchor
+ * (plen 0) carries stale bytes after its tag, which are not interpreted.
+ * @param addr Guest address of the entry.
+ * @param host The entry, valid for 4 + plen * 4 bytes.
+ * @param plen The tag's length byte.
+ * @return The payload bytes, or OT_PAYLOAD_UNMAPPED when a DR_LOAD's image
+ *         data runs past the end of the entry's region. */
+static size_t ot_payload_bytes(uint32_t addr, const uint8_t* host, uint8_t plen) {
+    const size_t words = (size_t)plen * 4u;
+    if (plen < 3 || (host[7] & 0xF0u) != 0xA0u) return words;
+    uint32_t wh;
+    std::memcpy(&wh, host + 4 + 8, 4);  /* code[2] @ offset tag(4)+code[0..1](8) */
+    const size_t needed = 12u + (size_t)(wh & 0xFFFFu) * (size_t)((wh >> 16) & 0xFFFFu) * 2u;
+    if (needed <= words) return words;
+    if (needed > OPENPETE_PSX_RAM_SIZE) return OT_PAYLOAD_UNMAPPED;
+    return openpete_psx_to_host_span(addr, (uint32_t)(4u + needed)) ? needed : OT_PAYLOAD_UNMAPPED;
+}
+
+/** @brief DrawOTag thunk: copy the guest ordering-table chain into host slots and submit it to PsyCross.
+ *
+ * Walks the chain from a0, one slot per entry (at most OT_MAX_SLOTS), each a
+ * host copy of the tag and its payload with the length field PsyCross's
+ * walker expects for the primitive code; the walk stops at the terminator,
+ * an unmapped entry, or a full scratch. Guest RAM is only read.
+ * @param cpu Guest CPU; a0 holds the first OT entry. */
 void psyq_DrawOTag(CPUState* cpu) {
     /* The OT rebuild is openpete's own work on the game fiber, so it lands
      * inside the sim-tick bracket rather than any render-side phase. */
@@ -1638,11 +1688,10 @@ void psyq_DrawOTag(CPUState* cpu) {
     while (g_ot_slot_count < (int)OT_MAX_SLOTS) {
         if (s_ot_truncate >= 0 && g_ot_slot_count >= s_ot_truncate) break;
         if (addr == 0u) break;
-        uint8_t* host = (uint8_t*)openpete_psx_to_host_ptr(addr);
+        uint32_t tag;
+        uint8_t* host = ot_entry_host(addr, &tag);
         if (!host) break;
 
-        uint32_t tag;
-        std::memcpy(&tag, host, 4);
         uint8_t  plen = (uint8_t)((tag >> 24) & 0xFFu);
         uint32_t next = tag & 0x00FFFFFFu;
 
@@ -1671,31 +1720,8 @@ void psyq_DrawOTag(CPUState* cpu) {
             }
         }
 
-        /* Payload-size estimate. The PSX P_TAG length is 8-bit (max 1020 bytes
-         * payload), but variable-length primitives like LoadImage (code 0xA0)
-         * embed image data right after the struct that doesn't necessarily
-         * fit in 8 bits — the original GPU reads it via the rect's w×h. We
-         * peek at the code byte (offset 7 in PSX layout: tag@0..3, code@4..7
-         * with the high byte being the GP0 command code) and compute extra
-         * bytes from the embedded rect when needed. */
-        /* Only extend payload for real primitives (plen > 0). OT anchor
-         * entries have plen == 0; their post-tag bytes may contain stale
-         * data left from the previous frame and must not be interpreted. */
-        size_t payload_bytes = (size_t)plen * 4u;
-        if (plen >= 3) {
-            uint8_t code_byte = host[7];
-            if ((code_byte & 0xF0u) == 0xA0u) {
-                /* DR_LOAD: code[0]=cmd, code[1]=xy, code[2]=wh; image data
-                 * follows. Need at least 12 (code) + w*h*2 bytes. */
-                uint32_t wh;
-                std::memcpy(&wh, host + 4 + 8, 4);  /* code[2] @ offset tag(4)+code[0..1](8) */
-                uint32_t w = wh & 0xFFFFu;
-                uint32_t h = (wh >> 16) & 0xFFFFu;
-                size_t img_bytes = (size_t)w * (size_t)h * 2u;
-                size_t needed    = 12u + img_bytes;
-                if (needed > payload_bytes) payload_bytes = needed;
-            }
-        }
+        const size_t payload_bytes = ot_payload_bytes(addr, host, plen);
+        if (payload_bytes == OT_PAYLOAD_UNMAPPED) break;
 
         size_t slot_size = 12u + payload_bytes;
         if (g_ot_scratch_used + slot_size > OT_SCRATCH_SZ) {

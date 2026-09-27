@@ -846,7 +846,7 @@ void flame_records_present(CPUState* cpu, int paired, int cam_cut, double alpha,
     int nfl = n > 0 ? player_records_flame_count() : 0;
     if (nfl <= 0) { player_records_present_end(); return; }
     uint8_t* flb = fl ? fl : (uint8_t*)openpete_subtick_view_stage(FL_STATE, len);
-    if (!flb) flb = (uint8_t*)openpete_psx_to_host_ptr(FL_STATE);
+    if (!flb) flb = (uint8_t*)openpete_psx_to_host_span(FL_STATE, len);
     if (!flb) { player_records_present_end(); return; }
     static uint8_t ambient[PLAYER_REC_AUX_MAX];
     memcpy(ambient, flb, len);

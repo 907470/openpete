@@ -77,9 +77,12 @@ typedef struct {
 #define GVA_LEVEL_ID   0x8007596Cu
 #define GVA_WAD_HEADER 0x8007A6D0u
 
+/** @brief Read a guest word through a bounds-checked span; 0 when it does not map. */
 static uint32_t guest_u32(uint32_t va) {
-    const uint32_t* p = (const uint32_t*)openpete_psx_to_host_ptr(va);
-    return p ? *p : 0u;
+    const uint8_t* p = (const uint8_t*)openpete_psx_to_host_span(va, 4u);
+    uint32_t v = 0u;
+    if (p) memcpy(&v, p, 4);
+    return v;
 }
 
 typedef struct {

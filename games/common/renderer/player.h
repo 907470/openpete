@@ -181,7 +181,23 @@ void player_reextract_record(struct CPUState* cpu, int mirror);
  *         PLAYER_REC_MAX records or the state block or part block has no host
  *         pointer. */
 int  player_records_model_append(struct CPUState* cpu, uint32_t rp_start, uint32_t rp_end);
+/** @brief Append the live player shadow record to the epoch's list, bound to its model record.
+ *
+ * Called from the canonical shadow hook. The shadow binds to the newest model
+ * record whose position matches the live player (bind_model), appending a
+ * pairing-only model record when none does.
+ * @param cpu Unused.
+ * @return The bound model record's index, or -1 when the game names no
+ *         shadow block, the list is full, or the player or shadow block does
+ *         not map for its length. */
 int  player_records_shadow_append(struct CPUState* cpu);
+/** @brief Append the live player flame record to the epoch's list, bound to its model record.
+ *
+ * As player_records_shadow_append, for the flame block.
+ * @param cpu Unused.
+ * @return The bound model record's index, or -1 when the game names no
+ *         flame block, the list is full, or the player or flame block does
+ *         not map for its length. */
 int  player_records_flame_append(struct CPUState* cpu);
 /** @brief Close the hooks' record epoch, once per canonical present, after the interp ring captured the tick.
  *

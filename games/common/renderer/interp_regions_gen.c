@@ -5,7 +5,7 @@
 
 #include "openpete_interp.h"
 #include "openpete_interp_objs.h"
-#include "openpete_psx.h"          /* openpete_psx_to_host_ptr */
+#include "openpete_psx.h"          /* openpete_psx_to_host_span */
 #include "game_layout.h"
 #include "renderer/env_knob.h"
 #include "renderer/tracers.h"      /* the mesh vertex lists the tick drew */
@@ -101,11 +101,12 @@ static void census_report(void) {
     (void)census_write(2, buf, n > 0 ? n : 0);
 }
 
+/** @brief Counts the bytes of each registered region that changed since the previous sample. */
 static void census_sample(void) {
     for (unsigned i = 0; i < s_count; ++i) {
-        const void* host = openpete_psx_to_host_ptr(s_regions[i].psx_addr);
-        if (!host) continue;
         uint32_t len = s_regions[i].length;
+        const void* host = openpete_psx_to_host_span(s_regions[i].psx_addr, len);
+        if (!host) continue;
         if (!s_census[i].prev) {
             s_census[i].prev = (unsigned char*)malloc(len);
             if (!s_census[i].prev) continue;
@@ -137,8 +138,9 @@ void game_interp_rows_obj_capture(openpete_interp_obj_capture_fn fn,
 
 extern unsigned openpete_frame;
 
+/** @brief Read a guest word through a bounds-checked span; 0 when it does not map. */
 static uint32_t rd32(uint32_t addr) {
-    const void* p = openpete_psx_to_host_ptr(addr);
+    const void* p = openpete_psx_to_host_span(addr, 4u);
     uint32_t v = 0;
     if (p) memcpy(&v, p, 4);
     return v;
@@ -211,7 +213,7 @@ void game_interp_moby_stash_put(uint32_t moby) {
         s_stash_len  = len;
         s_stash_n = s_stash_nblob = 0;
     }
-    const void* host = openpete_psx_to_host_ptr(moby);
+    const void* host = openpete_psx_to_host_span(moby, len);
     if (!host) return;
     memcpy(s_stash_blob + (size_t)s_stash_nblob * len, host, len);
     s_stash_ent[s_stash_n].key  = moby;
@@ -316,7 +318,7 @@ void game_interp_capture_moby_array(void) {
     const long bound = (long)openpete_interp_objs_slots() - 512;
     uint32_t m = arr;
     for (long guard = 0; guard < bound; ++guard) {
-        const void* host = openpete_psx_to_host_ptr(m);
+        const void* host = openpete_psx_to_host_span(m, stride);
         if (!host) break;
         uint8_t st = ((const uint8_t*)host)[game_layout.moby.state_off];
         if (st == (uint8_t)game_layout.moby.state_term) break;   /* end of the array */
@@ -350,7 +352,7 @@ void game_interp_capture_particle_pool(void) {
     /* The pool is walked inside the room the moby walk leaves free above its
      * own bound, so a full array can never crowd it out. */
     for (uint32_t i = 0, rec = base; i < 512u; ++i, rec += stride) {
-        const void* host = openpete_psx_to_host_ptr(rec);
+        const void* host = openpete_psx_to_host_span(rec, stride);
         if (!host) break;
         int16_t sel;
         memcpy(&sel, (const uint8_t*)host + game_layout.particles.sel_off, 2);
@@ -370,7 +372,7 @@ void game_interp_capture_glint_pool(void) {
                              ? openpete_interp_objs_blob_bytes() : stride;
     for (uint32_t s = 0; s < game_layout.glint.slots; ++s) {
         const uint32_t rec = game_layout.glint.pool + s * stride;
-        const void* host = openpete_psx_to_host_ptr(rec);
+        const void* host = openpete_psx_to_host_span(rec, stride);
         if (!host) break;
         uint32_t packed;
         memcpy(&packed, (const uint8_t*)host + game_layout.glint.packed_off, 4);
@@ -394,7 +396,7 @@ void game_interp_capture_glow_pool(void) {
                              ? openpete_interp_objs_blob_bytes() : stride;
     for (uint32_t s = 0; s < game_layout.glow.slots; ++s) {
         const uint32_t rec = game_layout.glow.pool + s * stride;
-        const void* host = openpete_psx_to_host_ptr(rec);
+        const void* host = openpete_psx_to_host_span(rec, stride);
         if (!host) break;
         uint32_t packed;
         memcpy(&packed, (const uint8_t*)host + game_layout.glow.packed_off, 4);
@@ -411,7 +413,7 @@ void game_interp_capture_zap_pool(void) {
                              ? openpete_interp_objs_blob_bytes() : stride;
     for (uint32_t s = 0; s < game_layout.zap.slots; ++s) {
         const uint32_t rec = game_layout.zap.pool + s * stride;
-        const void* host = openpete_psx_to_host_ptr(rec);
+        const void* host = openpete_psx_to_host_span(rec, stride);
         if (!host) break;
         uint32_t packed;
         memcpy(&packed, (const uint8_t*)host + game_layout.zap.packed_off, 4);
@@ -428,7 +430,7 @@ void game_interp_capture_tracer_pool(void) {
                                  ? openpete_interp_objs_blob_bytes() : stride;
         for (uint32_t s = 0; s < game_layout.tracers.slots; ++s) {
             const uint32_t rec = game_layout.tracers.ring + s * stride;
-            const void* host = openpete_psx_to_host_ptr(rec);
+            const void* host = openpete_psx_to_host_span(rec, stride);
             if (!host) break;
             uint32_t live;
             memcpy(&live, host, 4);
@@ -441,7 +443,7 @@ void game_interp_capture_tracer_pool(void) {
     for (int l = 0; l < lists; ++l) {
         for (uint32_t i = 0; i < nv[l]; ++i) {
             const uint32_t va = addr[l] + i * 12u;
-            const void* host = openpete_psx_to_host_ptr(va);
+            const void* host = openpete_psx_to_host_span(va, 12u);
             if (host) openpete_interp_objs_capture(va, host, 12u);
         }
     }
@@ -481,7 +483,7 @@ static void capture_env_anim_scroll(void) {
     for (uint32_t i = 0; i < cnt; ++i) {
         uint32_t desc = rd32(base + i * 4u);
         if (!desc) continue;
-        const void* host = openpete_psx_to_host_ptr(desc + 4u);
+        const void* host = openpete_psx_to_host_span(desc + 4u, 4u);
         if (host) openpete_interp_objs_capture(desc, host, 4u);
     }
 }

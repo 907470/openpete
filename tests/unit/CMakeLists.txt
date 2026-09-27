@@ -89,6 +89,20 @@ target_include_directories(psx_region_test PRIVATE
 set_target_properties(psx_region_test PROPERTIES C_STANDARD 99)
 add_test(NAME psx_region_test COMMAND psx_region_test)
 
+# psx_span_test — the span form of the guest-pointer resolver and the
+# width-checked bus accessors at the ends of main RAM, the scratchpad and a
+# registered region. Compiles cpu.c and psx_region.c with local stubs for
+# the CD-ROM register model, the BIOS ROM window and the logger.
+add_executable(psx_span_test
+    psx_span_test.c
+    ${CMAKE_SOURCE_DIR}/core/psx/cpu.c
+    ${CMAKE_SOURCE_DIR}/core/psx/psx_region.c)
+target_include_directories(psx_span_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include)
+set_target_properties(psx_span_test PROPERTIES C_STANDARD 11)
+add_test(NAME psx_span_test COMMAND psx_span_test)
+
 # knob_registry_test — the M-overlay knob table: module-contributed rows
 # (openpete_knob_add) landing inside their section, capacity refusal, and
 # KNOB_ACTION button rows. Compiles knob_registry.c directly and stubs the

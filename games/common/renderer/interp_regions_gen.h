@@ -126,6 +126,12 @@ void game_interp_capture_particle_pool(void);
  * position and spin phase to rebase them onto. Reached through
  * game_interp_capture_feeder_pools. Read-only against guest RAM. */
 void game_interp_capture_glint_pool(void);
+/** @brief Captures every live record of the glow pool into the interp store, keyed by slot address.
+ *
+ * The pool (game_layout.glow: pool, slots, stride, packed_off) is a fixed
+ * array outside the moby array; a slot whose packed word has lifetime byte
+ * 0 is free and skipped. Reached through game_interp_capture_feeder_pools.
+ * Read-only against guest RAM. */
 void game_interp_capture_glow_pool(void);
 
 /** @brief Snapshot one record per live slot of Zoe's zap pool, keyed by the record's PSX address.

@@ -202,10 +202,27 @@ void openpete_state_regions_register(const OpenpeteStateRegion* regions,
  * address bits are dropped); any other address resolves through the
  * registered presentation region table. PSYQ thunks use it to translate
  * pointer arguments, held in cpu->aN as PSX addresses, to host pointers
- * PsyCross can dereference.
+ * PsyCross can dereference. The pointer is valid for one byte; a host
+ * site that reads or writes more resolves through
+ * openpete_psx_to_host_span().
  * @param addr PSX virtual address; 0 is PSX NULL.
  * @return The host pointer, or NULL for 0 or an unmapped address. */
 void* openpete_psx_to_host_ptr(uint32_t addr);
+
+/** @brief Map a PSX virtual address to a host pointer valid for @p len bytes.
+ *
+ * The span [addr, addr + len) must lie inside one region: main RAM (any
+ * segment), the scratchpad, or one registered presentation region. A
+ * span that crosses the end of its region is refused, so a guest pointer
+ * near the top of RAM cannot carry a host read or write past g_ram or
+ * the scratchpad array. Every host site that reads or writes more than
+ * one byte through a guest pointer resolves it here with the width it
+ * touches.
+ * @param addr PSX virtual address; 0 is PSX NULL.
+ * @param len Bytes the caller reads or writes from the returned pointer.
+ * @return The host pointer, or NULL for 0, an unmapped address, or a span
+ *         crossing its region's end. */
+void* openpete_psx_to_host_span(uint32_t addr, uint32_t len);
 
 /** @brief Map a host pointer back to its PSX address.
  *

@@ -43,7 +43,7 @@
 #include "openpete_glitch_mark.h"
 #include "openpete_native_render.h"
 #include "openpete_psx.h"
-#include "openpete_subtick_view.h"  /* openpete_psx_to_host_ptr (sector colour host reads) */
+#include "openpete_subtick_view.h"  /* openpete_subtick_host_span (sector colour host reads) */
 #include "renderer/render_paths.h"  /* --render-paths isolation */
 #include "renderer/orchestrator.h"  /* openpete_native_interp_pos */
 #include "renderer/terrain.h"        /* this feeder's exports */
@@ -2665,6 +2665,7 @@ typedef struct {
     int nLpV, nLpF, nHpV, nHpF, flags;
     int flat;                                /* header word 1 carries the layout's flat flag */
     int nLpC, nHpC;                          /* colour-array entry counts (GPU-cache liveness hash) */
+    uint32_t lpColSpan, hpColSpan;           /* colour bytes each tier's faces index (tsc_decode_faces) */
     int nGapfill;                            /* LP faces classified HP-coverage-gap fillers */
     unsigned fillGen;                        /* openpete_fillpick_generation() at last tagging */
     int originX, originY, originZ;
@@ -2833,9 +2834,26 @@ static void tsc_decode_verts(CPUState* cpu, uint32_t verts, int nv, int flat, ts
     }
 }
 
-static void tsc_decode_faces(CPUState* cpu, uint32_t faces, int nf, int faceStride,
-                             uint32_t lqTable, uint32_t hqTable, int texTblMode,
-                             int hiDetail, tsface_t* out) {
+/** @brief Decodes a sector tier's face words into out[0..nf).
+ *
+ * HP faces (stride 16) carry byte vertex indices, four colour byte offsets
+ * in word 1, and the texture and flag fields of the game's layout; LP faces
+ * (stride 8) carry packed vertex and colour indices and no texture.
+ * @param cpu The guest CPU state, read only.
+ * @param faces Guest address of the first face.
+ * @param nf Face count.
+ * @param faceStride 16 for HP faces, 8 for LP faces.
+ * @param lqTable The LQ texture table's guest address.
+ * @param hqTable The HQ texture table's guest address.
+ * @param texTblMode 2 to take HP textures from the HQ table.
+ * @param hiDetail Nonzero to decode the near texture half.
+ * @param out Receives the faces.
+ * @return Bytes of the colour array the faces index: the largest corner
+ *         colour offset plus 4 (4 when nf is 0). */
+static uint32_t tsc_decode_faces(CPUState* cpu, uint32_t faces, int nf, int faceStride,
+                                 uint32_t lqTable, uint32_t hqTable, int texTblMode,
+                                 int hiDetail, tsface_t* out) {
+    uint32_t col_span = 4u;
     for (int f = 0; f < nf; f++) {
         tsface_t* F = &out[f];
         uint32_t w0 = rd(cpu, faces + (uint32_t)f * faceStride);
@@ -2913,7 +2931,11 @@ static void tsc_decode_faces(CPUState* cpu, uint32_t faces, int nf, int faceStri
             if (w1 & 0x4) F->mat.blend = (int)(w1 & 0x3) + 1;
         }
         F->quad = (F->i2 != F->i3);
+        const uint16_t c[4] = { F->c0, F->c1, F->c2, F->c3 };
+        for (int k = 0; k < 4; k++)
+            if ((uint32_t)c[k] + 4u > col_span) col_span = (uint32_t)c[k] + 4u;
     }
+    return col_span;
 }
 
 /* ---- LP fill-face tags (frozen, measurement-derived) -----------------------
@@ -3422,6 +3444,11 @@ static void tsc_vhash_census_flush(void) {
     s_vh_hashed = s_vh_moved = s_vh_listn = 0;
 }
 
+/** @brief Returns sector s's decoded cache entry, decoding it on a miss or a changed signature.
+ *
+ * The entry holds both tiers' vertices and faces, the colour-array bases and
+ * the bytes each tier's faces index, keyed by the sector address and its
+ * header signature words; a miss evicts the least recently used entry. */
 static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
                                 uint32_t lqTable, uint32_t hqTable,
                                 int texTblMode, int hiDetail,
@@ -3541,12 +3568,12 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
         if (C->nLpV > 0) { C->lpV = (tsvert_t*)malloc(sizeof(tsvert_t) * (size_t)C->nLpV);
                            if (C->lpV) tsc_decode_verts(cpu, lpVerts, C->nLpV, C->flat, C->lpV); }
         if (C->nLpF > 0) { C->lpF = (tsface_t*)malloc(sizeof(tsface_t) * (size_t)C->nLpF);
-                           if (C->lpF) tsc_decode_faces(cpu, C->lpFaces, C->nLpF, 8,
+                           if (C->lpF) C->lpColSpan = tsc_decode_faces(cpu, C->lpFaces, C->nLpF, 8,
                                                         lqTable, hqTable, texTblMode, hiDetail, C->lpF); }
         if (C->nHpV > 0) { C->hpV = (tsvert_t*)malloc(sizeof(tsvert_t) * (size_t)C->nHpV);
                            if (C->hpV) tsc_decode_verts(cpu, hpVerts, C->nHpV, C->flat, C->hpV); }
         if (C->nHpF > 0) { C->hpF = (tsface_t*)malloc(sizeof(tsface_t) * (size_t)C->nHpF);
-                           if (C->hpF) tsc_decode_faces(cpu, C->hpFaces, C->nHpF, 16,
+                           if (C->hpF) C->hpColSpan = tsc_decode_faces(cpu, C->hpFaces, C->nHpF, 16,
                                                         lqTable, hqTable, texTblMode, hiDetail, C->hpF); }
         C->lpg_state = 0;              /* re-decoded sector: re-derive the LP grade */
         C->fillGen = openpete_fillpick_generation();
@@ -5398,7 +5425,7 @@ static int tgpu_col_hash(const tscache_t* SC, uint32_t* out) {
     };
     for (int i = 0; i < 3; i++) {
         if (r[i].bytes <= 0) continue;
-        const uint8_t* p = (const uint8_t*)openpete_subtick_host_ptr(r[i].base);
+        const uint8_t* p = (const uint8_t*)openpete_subtick_host_span(r[i].base, (uint32_t)r[i].bytes);
         if (!p) return -1;
         for (int j = 0; j < r[i].bytes; j++) h = (h ^ p[j]) * 16777619u;
     }
@@ -6789,15 +6816,19 @@ static void tn_near_face(tn_wctx* W, CPUState* cpu, const lvert* sv, const tsfac
  * @param lpColBase The LP colour array's guest address.
  * @param nearBase The HP near colour array's guest address.
  * @param farBase The HP far colour array's guest address.
+ * @param lpSpan Bytes of the LP array the LP faces index.
+ * @param hpSpan Bytes of each HP array the HP faces index. An array that
+ *        does not map for its span resolves to NULL.
  * @param h_lp Receives the LP colours.
  * @param h_near Receives the HP near colours.
  * @param h_far Receives the HP far colours. */
 static void tn_col_ptrs(const canim_t* CA, int passLP, uint32_t lpColBase,
-                        uint32_t nearBase, uint32_t farBase, const uint8_t** h_lp,
+                        uint32_t nearBase, uint32_t farBase, uint32_t lpSpan,
+                        uint32_t hpSpan, const uint8_t** h_lp,
                         const uint8_t** h_near, const uint8_t** h_far) {
     *h_lp = *h_near = *h_far = NULL;
     if (passLP) {
-        *h_lp = CA ? (const uint8_t*)CA->mix : (const uint8_t*)openpete_subtick_host_ptr(lpColBase);
+        *h_lp = CA ? (const uint8_t*)CA->mix : (const uint8_t*)openpete_subtick_host_span(lpColBase, lpSpan);
         return;
     }
     if (CA) {
@@ -6805,8 +6836,8 @@ static void tn_col_ptrs(const canim_t* CA, int passLP, uint32_t lpColBase,
         *h_far  = (const uint8_t*)(CA->mix + CA->nLp + CA->nHp / 2u);
         return;
     }
-    *h_near = (const uint8_t*)openpete_subtick_host_ptr(nearBase);
-    *h_far  = (const uint8_t*)openpete_subtick_host_ptr(farBase);
+    *h_near = (const uint8_t*)openpete_subtick_host_span(nearBase, hpSpan);
+    *h_far  = (const uint8_t*)openpete_subtick_host_span(farBase, hpSpan);
 }
 
 /** @brief Walks one visible sector's faces into W's triangle run.
@@ -7078,7 +7109,8 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
         if (!cverts || !cfaces) continue;                  /* alloc failure: skip pass */
         /* Colour bases → host pointers (fallback: the cpu read path). */
         const uint8_t *h_lp, *h_near, *h_far;
-        tn_col_ptrs(CAm, passLP, lpColBase, nearBase, farBase, &h_lp, &h_near, &h_far);
+        tn_col_ptrs(CAm, passLP, lpColBase, nearBase, farBase,
+                    SC->lpColSpan, SC->hpColSpan, &h_lp, &h_near, &h_far);
         int host_col = passLP ? (h_lp != NULL) : (h_near != NULL && h_far != NULL);
         W->emit_noHP = passLP;     /* tag emitted tris with this pass's tier */
         W->emit_fill = passFill;   /* fill pass -> WORLD_FILL category in the feed */

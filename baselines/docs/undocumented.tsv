@@ -2,7 +2,7 @@
 # library: libclang 14
 # requirement: @brief of one sentence on one line on every function; @param per named parameter and @return on non-void for external linkage
 # written-by: hook
-# head: 8fc1faa2d2702f23e6354de2e7890ce30e84b9d2
+# head: f9d3f5f4e2c188748c722914cb0390979c74578b
 file	function	form	accepted
 core/config/config.c	decision_for	none	
 core/config/config.c	dup_str	none	
@@ -549,11 +549,6 @@ core/psx/cdrom_mmio.c	resp_set	none
 core/psx/cpu.c	do_lwr	none	
 core/psx/cpu.c	do_swl	none	
 core/psx/cpu.c	do_swr	none	
-core/psx/cpu.c	read_half	none	
-core/psx/cpu.c	read_word	none	
-core/psx/cpu.c	write_byte	none	
-core/psx/cpu.c	write_half	none	
-core/psx/cpu.c	write_word	none	
 core/psx/disc_cache.c	openpete_disc_cache_active	none	
 core/psx/disc_cache.c	range_resident	none	
 core/psx/disc_cache.c	read_chunk	none	
@@ -576,7 +571,6 @@ core/psx/psx_bios.c	bios_a0	none
 core/psx/psx_bios.c	bios_b0	none	
 core/psx/psx_bios.c	bios_census	none	
 core/psx/psx_bios.c	ev_index	none	
-core/psx/psx_bios.c	guest_ptr	none	
 core/psx/psx_bios.c	invoke_guest	none	
 core/psx/psx_bios.c	mc_finish	none	
 core/psx/psx_bios.c	mc_port	none	
@@ -1048,7 +1042,6 @@ games/common/psyq/psyq_thunks.cpp	psyq_CdReadCallback	none
 games/common/psyq/psyq_thunks.cpp	psyq_CdSync	none	
 games/common/psyq/psyq_thunks.cpp	psyq_ClearImage	none	
 games/common/psyq/psyq_thunks.cpp	psyq_DMACallback	none	
-games/common/psyq/psyq_thunks.cpp	psyq_DrawOTag	none	
 games/common/psyq/psyq_thunks.cpp	psyq_DrawSync	none	
 games/common/psyq/psyq_thunks.cpp	psyq_InitGeom	none	
 games/common/psyq/psyq_thunks.cpp	psyq_LoadImage	none	
@@ -1142,10 +1135,7 @@ games/common/renderer/interp_lerp.h	lerp16	none
 games/common/renderer/interp_lerp.h	lerp32	none	
 games/common/renderer/interp_regions_gen.c	capture_objs_common	none	
 games/common/renderer/interp_regions_gen.c	census_on	none	
-games/common/renderer/interp_regions_gen.c	census_sample	none	
-games/common/renderer/interp_regions_gen.c	game_interp_capture_glow_pool	none	
 games/common/renderer/interp_regions_gen.c	game_interp_rows_add_one	none	
-games/common/renderer/interp_regions_gen.c	rd32	none	
 games/common/renderer/interp_regions_gen.c	stash_census_differ	none	
 games/common/renderer/interp_regions_gen.c	stash_census_on	none	
 games/common/renderer/interp_regions_gen.c	stash_cmp	none	
@@ -1193,7 +1183,6 @@ games/common/renderer/moby.c	moby_clip_switch_kind	none
 games/common/renderer/moby.c	moby_face_emit	none	
 games/common/renderer/moby.c	moby_faces_for_record	none	
 games/common/renderer/moby.c	moby_mirror_thresh	none	
-games/common/renderer/moby.c	moby_native_capture_spec_scratch	none	
 games/common/renderer/moby.c	moby_precull_snapshot	none	
 games/common/renderer/moby.c	moby_prev_keyframe	none	
 games/common/renderer/moby.c	moby_rec_append_note	none	
@@ -1301,7 +1290,6 @@ games/common/renderer/player.c	dist3	none
 games/common/renderer/player.c	emit_raw	none	
 games/common/renderer/player.c	emit_swtri	none	
 games/common/renderer/player.c	lists_differ	none	
-games/common/renderer/player.c	observe	none	
 games/common/renderer/player.c	on_player_draw	none	
 games/common/renderer/player.c	plane_dist	none	
 games/common/renderer/player.c	player_apply_options	none	
@@ -1313,7 +1301,6 @@ games/common/renderer/player.c	player_flat_min	none
 games/common/renderer/player.c	player_mirror_pass	none	
 games/common/renderer/player.c	player_parts	none	
 games/common/renderer/player.c	player_records_curr	none	
-games/common/renderer/player.c	player_records_flame_append	none	
 games/common/renderer/player.c	player_records_flame_count	none	
 games/common/renderer/player.c	player_records_flame_curr	none	
 games/common/renderer/player.c	player_records_flame_note	none	
@@ -1323,7 +1310,6 @@ games/common/renderer/player.c	player_records_present_end	none
 games/common/renderer/player.c	player_records_present_note	none	
 games/common/renderer/player.c	player_records_prev	none	
 games/common/renderer/player.c	player_records_prev2	none	
-games/common/renderer/player.c	player_records_shadow_append	none	
 games/common/renderer/player.c	player_records_shadow_count	none	
 games/common/renderer/player.c	player_records_shadow_curr	none	
 games/common/renderer/player.c	player_records_shadow_note	none	
@@ -1436,9 +1422,7 @@ games/common/renderer/terrain.c	tn_eye_side	none
 games/common/renderer/terrain.c	tn_keycells_add	none	
 games/common/renderer/terrain.c	tsc_census	none	
 games/common/renderer/terrain.c	tsc_col_anim_refresh	none	
-games/common/renderer/terrain.c	tsc_decode_faces	none	
 games/common/renderer/terrain.c	tsc_decode_verts	none	
-games/common/renderer/terrain.c	tsc_get	none	
 games/common/renderer/terrain.c	tsc_lp_grade	none	
 games/common/renderer/terrain.c	tsc_scroll_refresh	none	
 games/common/renderer/terrain.c	tsc_sector_polyanim	none	
@@ -1596,7 +1580,6 @@ games/spyro-1/mods/mod_level_ops.c	spyro1_level_ops_register	none
 games/spyro-1/mods/mod_level_ops.c	spyro1_mod_level_capture_stock_counts	none	
 games/spyro-1/mods/mod_moby_ops.c	ops_level_id	none	
 games/spyro-1/mods/mod_moby_ops.c	spyro1_moby_ops_register	none	
-games/spyro-1/mods/mod_wad_overlay.c	guest_u32	none	
 games/spyro-1/mods/mod_wad_overlay.c	level_index_to_id	none	
 games/spyro-1/mods/mod_wad_overlay.c	mod_wad_setloc	none	
 games/spyro-1/mods/mod_wad_overlay.c	spyro1_mod_wad_configure	none	
@@ -1609,12 +1592,9 @@ games/spyro-1/psyq_hooks.cpp	psyq_game_mirror_resetgraph	none
 games/spyro-1/psyq_hooks.cpp	psyq_game_mirror_vsync_callback	none	
 games/spyro-1/psyq_hooks.cpp	psyq_game_music_route	none	
 games/spyro-1/psyq_hooks.cpp	spyro_current_music_track	none	
-games/spyro-1/psyq_hooks.cpp	spyro_sfx_base_pitch	none	
 games/spyro-1/psyq_hooks.cpp	spyro_sfx_canon	none	
 games/spyro-1/psyq_hooks.cpp	spyro_sfx_pack_arm	none	
 games/spyro-1/renderer/interp_regions.c	credits_roll_active	none	
-games/spyro-1/renderer/interp_regions.c	credits_track_generations	none	
-games/spyro-1/renderer/interp_regions.c	rd32	none	
 games/spyro-1/renderer/moby_game.c	s1_cutpath_actor	none	
 games/spyro-1/renderer/moby_game.c	s1_cutscene_actor	none	
 games/spyro-1/renderer/particle.c	clamp16	none	
@@ -1661,7 +1641,6 @@ games/spyro-1/renderer/portal.c	ring_depth	none
 games/spyro-1/renderer/portal.c	sky_min2	none	
 games/spyro-1/renderer/portal.c	sky_ot_push_for	none	
 games/spyro-1/renderer/portal.c	sky_otpush_enabled	none	
-games/spyro-1/renderer/reextract.c	bc_hash	none	
 games/spyro-1/renderer/reextract.c	cl_trig_q12	none	
 games/spyro-1/renderer/reextract.c	fpos_drop	none	
 games/spyro-1/renderer/reextract.c	fpos_get	none	
@@ -1672,17 +1651,12 @@ games/spyro-1/renderer/reextract.c	herm_matrix	none
 games/spyro-1/renderer/reextract.c	herm_vec3	none	
 games/spyro-1/renderer/reextract.c	hround16	none	
 games/spyro-1/renderer/reextract.c	hround32	none	
-games/spyro-1/renderer/reextract.c	scratch_bracket_enter	none	
 games/spyro-1/renderer/reextract.c	scratch_prod_fresh	none	
-games/spyro-1/renderer/reextract.c	scratch_row_capture	none	
-games/spyro-1/renderer/reextract.c	spyro_native_canon_capture_camera	none	
-games/spyro-1/renderer/reextract.c	spyro_native_canon_capture_recs	none	
 games/spyro-1/renderer/reextract.c	spyro_native_canon_epoch_fresh	none	
 games/spyro-1/renderer/reextract.c	spyro_native_canon_mobyreg_fresh	none	
 games/spyro-1/renderer/reextract.c	spyro_native_canon_shaded_fresh	none	
 games/spyro-1/renderer/reextract.c	spyro_native_prod_camera_enter	none	
 games/spyro-1/renderer/reextract.c	spyro_native_prod_camera_leave	none	
-games/spyro-1/renderer/reextract.c	spyro_record_overlay	none	
 games/spyro-1/renderer/render_decouple.c	psx_runtime_cone_widen_permoby	malformed	
 games/spyro-1/renderer/render_decouple.c	psx_runtime_cone_widen_shaded	untagged	
 games/spyro-1/renderer/render_decouple.c	psx_runtime_dist_gate_lower	malformed	
@@ -1747,11 +1721,8 @@ games/spyro-2/features/levelwarp.c	warp_in_flight_status	none
 games/spyro-2/game_extras_impl.c	game_get_disc_layout	none	
 games/spyro-2/game_extras_impl.c	game_on_overlay_init	none	
 games/spyro-2/renderer/reextract.c	cam_dbg_line	none	
-games/spyro-2/renderer/reextract.c	game_reextract_body	none	
 games/spyro-2/renderer/reextract.c	game_reextract_body_v	none	
 games/spyro-2/renderer/reextract.c	rx_scene_tris	none	
-games/spyro-2/renderer/reextract.c	spyro_native_canon_capture_camera	none	
-games/spyro-2/renderer/reextract.c	spyro_native_canon_capture_recs	none	
 games/spyro-2/renderer/reextract.c	spyro_native_canon_epoch_fresh	none	
 games/spyro-2/renderer/reextract.c	spyro_native_canon_mobyreg_fresh	none	
 games/spyro-2/renderer/reextract.c	spyro_native_canon_shaded_fresh	none	
@@ -1784,11 +1755,8 @@ games/spyro-3/game_extras_impl.c	game_get_disc_layout	none
 games/spyro-3/game_extras_impl.c	game_on_overlay_init	none	
 games/spyro-3/game_extras_impl.c	psx_override_dispatch_game	none	
 games/spyro-3/renderer/reextract.c	cam_dbg_line	none	
-games/spyro-3/renderer/reextract.c	game_reextract_body	none	
 games/spyro-3/renderer/reextract.c	game_reextract_body_v	none	
 games/spyro-3/renderer/reextract.c	rx_scene_tris	none	
-games/spyro-3/renderer/reextract.c	spyro_native_canon_capture_camera	none	
-games/spyro-3/renderer/reextract.c	spyro_native_canon_capture_recs	none	
 games/spyro-3/renderer/reextract.c	spyro_native_canon_epoch_fresh	none	
 games/spyro-3/renderer/reextract.c	spyro_native_canon_mobyreg_fresh	none	
 games/spyro-3/renderer/reextract.c	spyro_native_canon_shaded_fresh	none	

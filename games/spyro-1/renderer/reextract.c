@@ -12,7 +12,7 @@
 #include "openpete_native_render.h" /* register callback + scene API */
 #include "openpete.h"                 /* openpete_runahead_get */
 #include "openpete_psx.h"
-#include "openpete_subtick_view.h"           /* openpete_psx_to_host_ptr */
+#include "openpete_subtick_view.h"           /* openpete_psx_to_host_span */
 #include "psx_runtime_internal.h"            /* CPUState (read_word) */
 #include "renderer/render_paths.h"  /* canon-drawn mask (load-window census) */
 #include "renderer/interp_regions.h"   /* game_interp_moby_key */
@@ -171,7 +171,7 @@ static void stage_led_fixed_pool(uint32_t base, uint32_t n, uint32_t stride,
                                  uint32_t hide_off, uint32_t hide_mask) {
     for (uint32_t i = 0; i < n; i++) {
         uint32_t a = base + i * stride;
-        const uint8_t* gh = (const uint8_t*)openpete_psx_to_host_ptr(a);
+        const uint8_t* gh = (const uint8_t*)openpete_psx_to_host_span(a, stride);
         if (!gh) break;
         const openpete_interp_obj_t* o = openpete_interp_objs_find(a);
         if (o) {
@@ -273,8 +273,9 @@ static int bracket_check_enabled(void) {
     if (e < 0) { const char* s = getenv("OPENPETE_BRACKET_CHECK"); e = (s && *s && *s != '0'); }
     return e;
 }
+/** @brief FNV-1a/64 of len guest bytes at psx_addr; 0 when the span does not map. */
 static uint64_t bc_hash(uint32_t psx_addr, uint32_t len) {
-    const uint8_t* h = (const uint8_t*)openpete_psx_to_host_ptr(psx_addr);
+    const uint8_t* h = (const uint8_t*)openpete_psx_to_host_span(psx_addr, len);
     uint64_t x = 1469598103934665603ULL;   /* FNV-1a/64 */
     if (!h) return 0;
     for (uint32_t i = 0; i < len; ++i) { x ^= h[i]; x *= 1099511628211ULL; }
@@ -636,8 +637,8 @@ static void cl_apply(uint8_t* cam) {
  * @param out Receives the word.
  * @return 1 on success, 0 when va is out of range or unmapped. */
 static int cut_rd32(uint32_t va, uint32_t* out) {
-    if (va < 0x80000000u || va > 0x80200000u - 4u) return 0;
-    const uint8_t* p = (const uint8_t*)openpete_psx_to_host_ptr(va);
+    if (va < 0x80000000u || va >= 0x80200000u) return 0;
+    const uint8_t* p = (const uint8_t*)openpete_psx_to_host_span(va, 4u);
     if (!p) return 0;
     memcpy(out, p, 4);
     return 1;
@@ -880,11 +881,11 @@ static const cut_cam_desc_t* cut_desc(void) {
  * ticks; they state nothing about what was presented. The walk stops at
  * state 0xFF and skips states from 0x80. */
 static void cut_locate_mobys(void) {
-    uint8_t* base_p = (uint8_t*)openpete_psx_to_host_ptr(G_LEVELMOBYS);
+    uint8_t* base_p = (uint8_t*)openpete_psx_to_host_span(G_LEVELMOBYS, 4u);
     uint32_t m = 0; if (base_p) memcpy(&m, base_p, 4);
     if (m < 0x80000000u) return;
     for (int guard = 0; guard < 4096; guard++, m += MOBY_STRIDE) {
-        uint8_t* mh = (uint8_t*)openpete_psx_to_host_ptr(m);
+        uint8_t* mh = (uint8_t*)openpete_psx_to_host_span(m, MOBY_STRIDE);
         if (!mh || mh[MOBY_STATE] == 0xFF) break;
         if (mh[MOBY_STATE] >= 0x80) continue;
         const openpete_interp_obj_t* o = openpete_interp_objs_find(m);
@@ -913,7 +914,7 @@ static void cut_locate_mobys(void) {
 void spyro_native_canon_capture_camera(void* cpu_v, int producer) {
     (void)cpu_v;
     if (producer < 0 || producer >= SPROD_COUNT) return;
-    const uint8_t* h = (const uint8_t*)openpete_psx_to_host_ptr(G_CAMERA);
+    const uint8_t* h = (const uint8_t*)openpete_psx_to_host_span(G_CAMERA, CAM_XFORM_BYTES);
     if (!h) return;
     memcpy(s_prod_cam[producer], h, CAM_XFORM_BYTES);
     s_prod_cam_epoch[producer] = s_canon_epoch_now;
@@ -937,7 +938,7 @@ void spyro_native_prod_camera_leave(void) {
 
 void spyro_native_canon_epoch_commit(void) {
     if (cut_census_on()) { cut_locate_camera(cut_desc()); cut_locate_mobys(); }
-    const uint8_t* h = (const uint8_t*)openpete_psx_to_host_ptr(G_CAMERA);
+    const uint8_t* h = (const uint8_t*)openpete_psx_to_host_span(G_CAMERA, CAM_XFORM_BYTES);
     for (int p = 0; p < SPROD_COUNT; ++p)
         s_prod_cam_hold[p] = h && s_prod_cam_epoch[p] == s_canon_epoch_now &&
                              memcmp(s_prod_cam[p], h, CAM_XFORM_BYTES) != 0;
@@ -964,8 +965,9 @@ static scratch_region_t* scratch_row_by_base(uint32_t psx_addr) {
     return NULL;
 }
 
+/** @brief Copies a scratch registry row's live bytes into its canon buffer and stamps the producer epoch. */
 static void scratch_row_capture(scratch_region_t* r) {
-    const void* h = openpete_psx_to_host_ptr(r->psx_base);
+    const void* h = openpete_psx_to_host_span(r->psx_base, r->len);
     if (!h) return;
     memcpy(r->canon, h, r->len);
     r->captured = 1;
@@ -1019,6 +1021,7 @@ void spyro_native_canon_capture_recs(void* cpu_v) {
  * overlays the seg scratch for the Spyro feeder (called between them). */
 static int s_bracket_open = 0;   /* enter saved the live scratch this present */
 
+/** @brief Saves every scratch row's live bytes, stages each row through the view, and restores fresh producers' canon captures into it. */
 static void scratch_bracket_enter(CPUState* cpu) {
     (void)cpu;
     {   /* OPENPETE_LOAD_CENSUS: per-producer freshness at re-extract time. */
@@ -1039,7 +1042,7 @@ static void scratch_bracket_enter(CPUState* cpu) {
      * fired (a stale-skipped region is a saved-then-restored no-op). */
     for (int i = 0; i < SCRATCH_ROWS; ++i) {
         scratch_region_t* r = &s_scratch_rows[i];
-        void* h = openpete_psx_to_host_ptr(r->psx_base);
+        void* h = openpete_psx_to_host_span(r->psx_base, r->len);
         if (!h) continue;
         memcpy(r->live, h, r->len);
         r->open = 1;
@@ -1067,7 +1070,7 @@ static void scratch_bracket_enter(CPUState* cpu) {
         if (r->phase != SPHASE_ENTER || !r->open || !r->captured) continue;
         if (!scratch_prod_fresh(r->producer)) continue;
         if (r->stage) { memcpy(r->stage, r->canon, r->len); continue; }
-        void* h = openpete_psx_to_host_ptr(r->psx_base);
+        void* h = openpete_psx_to_host_span(r->psx_base, r->len);
         if (h) memcpy(h, r->canon, r->len);
     }
 }
@@ -1090,7 +1093,7 @@ static void scratch_bracket_seg_restore(CPUState* cpu) {
         if (r->phase != SPHASE_SEG_OVERLAY || !r->open || !r->captured) continue;
         if (!scratch_prod_fresh(r->producer)) continue;
         if (r->stage) { memcpy(r->stage, r->canon, r->len); continue; }
-        void* h = openpete_psx_to_host_ptr(r->psx_base);
+        void* h = openpete_psx_to_host_span(r->psx_base, r->len);
         if (h) memcpy(h, r->canon, r->len);
     }
 }
@@ -1111,7 +1114,7 @@ static void scratch_bracket_leave(CPUState* cpu) {
         if (!r->open) continue;
         r->open = 0;
         if (r->stage) { r->stage = NULL; continue; }  /* never written; nothing to undo */
-        void* h = openpete_psx_to_host_ptr(r->psx_base);
+        void* h = openpete_psx_to_host_span(r->psx_base, r->len);
         if (h) memcpy(h, r->live, r->len);
     }
 }
@@ -1144,9 +1147,10 @@ static void scratch_bracket_leave(CPUState* cpu) {
  * prev takes the shown position the same way the singleton did). */
 static double s_rec_alpha = 0.0;   /* the store's alpha this present (player_records_present_begin) */
 
+/** @brief Writes a record's bytes over addr through the staged view, else into guest memory that scratch_bracket_leave restores. */
 static void spyro_record_overlay(uint32_t addr, const uint8_t* bytes, uint32_t len) {
     uint8_t* h = (uint8_t*)openpete_subtick_view_stage(addr, len);
-    if (!h) h = (uint8_t*)openpete_psx_to_host_ptr(addr);   /* scratch_bracket_leave restores the rows */
+    if (!h) h = (uint8_t*)openpete_psx_to_host_span(addr, len);   /* scratch_bracket_leave restores the rows */
     if (h) memcpy(h, bytes, len);
 }
 
@@ -1197,14 +1201,14 @@ static void player_records_loop(CPUState* cpu, int paired, int cam_cut, int cam_
     static uint32_t s_present_serial = 0;
     player_native_set_flat_key((++s_present_serial << 1) | 1u);   /* this present's records share the flatten cap */
     uint8_t* sb = sp ? sp : (uint8_t*)openpete_subtick_view_stage(G_SPYRO, PLAYER_L.rec_len);
-    if (!sb) sb = (uint8_t*)openpete_psx_to_host_ptr(G_SPYRO);
+    if (!sb) sb = (uint8_t*)openpete_psx_to_host_span(G_SPYRO, PLAYER_L.rec_len);
     if (!sb) { player_records_present_end(); return; }
     static uint8_t ambient[PLAYER_REC_STATE_MAX];
     memcpy(ambient, sb, PLAYER_L.rec_len);
     double amb_f[3]; const int amb_f_ok = fpos_get(G_SPYRO, amb_f);
     static const int frA[3] = {0x1E,0x20,0x22}, frB[3] = {0x1F,0x21,0x23}, prog[3] = {0x24,0x25,0x26};
     uint8_t* shb = sh ? sh : (uint8_t*)openpete_subtick_view_stage(D_SPYROSHADOW, PLAYER_L.shadow_len);
-    if (!shb) shb = (uint8_t*)openpete_psx_to_host_ptr(D_SPYROSHADOW);
+    if (!shb) shb = (uint8_t*)openpete_psx_to_host_span(D_SPYROSHADOW, PLAYER_L.shadow_len);
     static uint8_t sh_ambient[PLAYER_REC_AUX_MAX];
     const int nsh = shb ? player_records_shadow_count() : 0;
     if (nsh) memcpy(sh_ambient, shb, PLAYER_L.shadow_len);
@@ -1373,7 +1377,7 @@ static int camera_cut(const openpete_interp_snapshot_t* prev,
  * on any axis. Guest memory is never written: a refused stage leaves the record
  * canonical. */
 static void dragonstar_bracket(void) {
-    const uint8_t* live = (const uint8_t*)openpete_psx_to_host_ptr(D_DRAGONSTAR);
+    const uint8_t* live = (const uint8_t*)openpete_psx_to_host_span(D_DRAGONSTAR, 0x2Cu);
     uint32_t gate = 0;
     if (live) memcpy(&gate, live, 4);
     const openpete_interp_obj_t* o = (gate != 0) ? openpete_interp_objs_find(D_DRAGONSTAR) : NULL;
@@ -1562,7 +1566,7 @@ static int particle_pools_bracket(part_save_t* save) {
     static int s_pidbg = -1;
     if (s_pidbg < 0) { const char* e = getenv("OPENPETE_PART_INTERP_DBG"); s_pidbg = (e && *e && *e != '0'); }
     static long s_pi[8]; /* 0 lerp,1 noprev,2 classchg,3 lifestall,4 far,5 lerp-moving,6 classchg-moving,7 lifestall-moving */
-    uint8_t* pbase = (uint8_t*)openpete_psx_to_host_ptr(G_PARTICLES);
+    uint8_t* pbase = (uint8_t*)openpete_psx_to_host_span(G_PARTICLES, 4u);
     uint32_t ppool = 0; if (pbase) memcpy(&ppool, pbase, 4);
     /* Under --runahead the walk reproduces the led pool the canonical
      * present composed: a slot the led capture holds shows its captured
@@ -1575,7 +1579,7 @@ static int particle_pools_bracket(part_save_t* save) {
     if (ppool >= 0x80000000u) {
         for (uint32_t i = 0; i < 320u && n < PART_SAVE_MAX; i++) {
             uint32_t pa = ppool + i * PART_STRIDE;
-            uint8_t* gh = (uint8_t*)openpete_psx_to_host_ptr(pa);
+            uint8_t* gh = (uint8_t*)openpete_psx_to_host_span(pa, PART_STRIDE);
             if (!gh) break;
             uint8_t* ph = gh;
             uint32_t hdr; memcpy(&hdr, ph, 4);
@@ -1662,7 +1666,7 @@ static void game_reextract_body(void* cpu_v) {
      * worse failure than the one being retired. */
     uint8_t* cam = (uint8_t*)openpete_subtick_view_stage(G_CAMERA, CAM_BYTES);
     const int cam_staged = (cam != NULL);
-    if (!cam) cam = (uint8_t*)openpete_psx_to_host_ptr(G_CAMERA);
+    if (!cam) cam = (uint8_t*)openpete_psx_to_host_span(G_CAMERA, CAM_BYTES);
     s_body_cam = cam;
     uint8_t  cam_saved[CAM_BYTES];
     int      cam_bracketed = 0;
@@ -1896,7 +1900,7 @@ static void game_reextract_body(void* cpu_v) {
          * same copy; a longer request would not). */
         sp = (uint8_t*)openpete_subtick_view_stage(G_SPYRO, PLAYER_L.rec_len);
         sp_staged = (sp != NULL);
-        if (!sp) sp = (uint8_t*)openpete_psx_to_host_ptr(G_SPYRO);
+        if (!sp) sp = (uint8_t*)openpete_psx_to_host_span(G_SPYRO, PLAYER_L.rec_len);
         if (sp) {
             const uint8_t* psp = prev->data + prev->region_offsets[SPYRO_REGION()];
             const uint8_t* csp = curr->data + curr->region_offsets[SPYRO_REGION()];
@@ -2006,7 +2010,7 @@ static void game_reextract_body(void* cpu_v) {
          * before activation): snap when the origin jumps far. */
         fl = (uint8_t*)openpete_subtick_view_stage(G_SPYROFLAME, FLAME_SAVE);
         fl_staged = (fl != NULL);
-        if (!fl) fl = (uint8_t*)openpete_psx_to_host_ptr(G_SPYROFLAME);
+        if (!fl) fl = (uint8_t*)openpete_psx_to_host_span(G_SPYROFLAME, FLAME_SAVE);
         if (fl) {
             const uint8_t* pfl = prev->data + prev->region_offsets[FLAME_REGION()];
             const uint8_t* cfl = curr->data + curr->region_offsets[FLAME_REGION()];
@@ -2026,7 +2030,7 @@ static void game_reextract_body(void* cpu_v) {
          * they re-derive from each moby's already-interpolated m_Position.) */
         sh = (uint8_t*)openpete_subtick_view_stage(D_SPYROSHADOW, SHADOW_SAVE);
         sh_staged = (sh != NULL);
-        if (!sh) sh = (uint8_t*)openpete_psx_to_host_ptr(D_SPYROSHADOW);
+        if (!sh) sh = (uint8_t*)openpete_psx_to_host_span(D_SPYROSHADOW, SHADOW_SAVE);
         if (sh) {
             const uint8_t* psh = prev->data + prev->region_offsets[SHADOW_REGION()];
             const uint8_t* csh = curr->data + curr->region_offsets[SHADOW_REGION()];
@@ -2057,7 +2061,7 @@ static void game_reextract_body(void* cpu_v) {
     s_cut_held_n = 0;
     {
         op_time_t now = openpete_interp_present_now();
-        uint8_t* base_p = (uint8_t*)openpete_psx_to_host_ptr(G_LEVELMOBYS);
+        uint8_t* base_p = (uint8_t*)openpete_psx_to_host_span(G_LEVELMOBYS, 4u);
         uint32_t arr = 0; if (base_p) memcpy(&arr, base_p, 4);
         /* First pass of the walk: the mobys the canonical render drew from OUTSIDE
          * g_LevelMobys (the balloonist's relocated balloon — see
@@ -2072,7 +2076,7 @@ static void game_reextract_body(void* cpu_v) {
             while (guard++ < 4096 && moby_save_n < MOBY_SAVE_MAX) {
                 uint8_t* mh;
                 if (phase == 0) {
-                    mh = (uint8_t*)openpete_psx_to_host_ptr(m);
+                    mh = (uint8_t*)openpete_psx_to_host_span(m, MOBY_STRIDE);
                     if (!mh || mh[MOBY_STATE] == 0xFF) {   /* unmapped / array sentinel */
                         arr_end = m; phase = 1; continue;
                     }
@@ -2080,7 +2084,7 @@ static void game_reextract_body(void* cpu_v) {
                     if (drawn_i >= drawn_n) break;
                     m = drawn[drawn_i++];
                     if (m >= arr && m < arr_end) continue;   /* phase 0 already had it */
-                    mh = (uint8_t*)openpete_psx_to_host_ptr(m);
+                    mh = (uint8_t*)openpete_psx_to_host_span(m, MOBY_STRIDE);
                     if (!mh) continue;
                 }
                 uint8_t st = mh[MOBY_STATE];
@@ -2233,7 +2237,7 @@ static void game_reextract_body(void* cpu_v) {
         op_time_t now = openpete_interp_present_now();
         for (uint32_t i = 0; i < G_HUD_COUNT && moby_save_n < MOBY_SAVE_MAX; i++) {
             uint32_t m = G_HUD_ICONS + i * MOBY_STRIDE;
-            uint8_t* mh = (uint8_t*)openpete_psx_to_host_ptr(m);
+            uint8_t* mh = (uint8_t*)openpete_psx_to_host_span(m, MOBY_STRIDE);
             if (!mh) continue;
             const openpete_interp_obj_t* o = openpete_interp_objs_find(m);
             if (!o || !o->have_prev) continue;
@@ -2412,12 +2416,12 @@ static void game_reextract_body(void* cpu_v) {
      * reads only s_scene). Order is irrelevant — the regions are disjoint. */
     for (int i = 0; i < moby_save_n; i++) {
         if (s_moby_save[i].staged) continue;   /* never written; nothing to undo */
-        uint8_t* mh = (uint8_t*)openpete_psx_to_host_ptr(s_moby_save[i].addr);
+        uint8_t* mh = (uint8_t*)openpete_psx_to_host_span(s_moby_save[i].addr, MOBY_STRIDE);
         if (mh) memcpy(mh, s_moby_save[i].bytes, MOBY_STRIDE);
     }
     for (int i = 0; i < part_save_n; i++) {
         if (s_part_save[i].staged) continue;   /* never written; nothing to undo */
-        uint8_t* ph = (uint8_t*)openpete_psx_to_host_ptr(s_part_save[i].addr);
+        uint8_t* ph = (uint8_t*)openpete_psx_to_host_span(s_part_save[i].addr, PART_STRIDE);
         if (ph) { memcpy(ph + PART_POS_OFF, &s_part_save[i].w1, 4);
                   memcpy(ph + 0x08u,        &s_part_save[i].w2, 4); }
     }
@@ -2455,13 +2459,13 @@ static void game_reextract_body(void* cpu_v) {
                         openpete_frame, bc_regs[i].name);
         }
         for (int i = 0; i < moby_save_n; ++i) {
-            const uint8_t* mh = (const uint8_t*)openpete_psx_to_host_ptr(s_moby_save[i].addr);
+            const uint8_t* mh = (const uint8_t*)openpete_psx_to_host_span(s_moby_save[i].addr, MOBY_STRIDE);
             if (mh && memcmp(mh, s_moby_save[i].bytes, MOBY_STRIDE) != 0)
                 fprintf(stderr, "[bracket-check f=%u] RESTORE MISMATCH moby@%08x\n",
                         openpete_frame, s_moby_save[i].addr);
         }
         for (int i = 0; i < part_save_n; ++i) {
-            const uint8_t* ph = (const uint8_t*)openpete_psx_to_host_ptr(s_part_save[i].addr);
+            const uint8_t* ph = (const uint8_t*)openpete_psx_to_host_span(s_part_save[i].addr, PART_STRIDE);
             if (ph) {
                 uint32_t w1, w2;
                 memcpy(&w1, ph + PART_POS_OFF, 4);

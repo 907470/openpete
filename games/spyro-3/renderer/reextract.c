@@ -21,7 +21,7 @@
 #include "renderer/moby.h"
 #include "renderer/player.h"
 #include "renderer/player_game.h"   /* PLAYER_PARTS_MAX */
-#include "openpete_psx.h"          /* openpete_psx_to_host_ptr */
+#include "openpete_psx.h"          /* openpete_psx_to_host_span */
 #include "openpete_interp.h"
 #include "renderer/flame.h"          /* the shared fire-breath producer */
 #include "renderer/interp_lerp.h"    /* lerp16/32, lerp_matrix, lerp_vec3 */
@@ -120,7 +120,7 @@ static const cut_cam_desc_t* cut_desc(void) {
 
 void spyro_native_canon_epoch_commit(void) {
     if (cam_dbg_on())
-        cam_dbg_line("CANON", (const uint8_t*)openpete_psx_to_host_ptr(game_layout.cam.base));
+        cam_dbg_line("CANON", (const uint8_t*)openpete_psx_to_host_span(game_layout.cam.base, CAM_OFF_POS + 12u));
 
     if (cut_census_on()) cut_locate_camera(cut_desc());
     s_epoch_ok = s_epoch_now;
@@ -182,7 +182,7 @@ void spyro_native_canon_capture_range(void* cpu_v, unsigned off, unsigned len) {
     uint32_t end = cpu->read_word(game_layout.polybuf.end);
     if (end < 0x80000000u) return;
     uint32_t base = end - game_layout.player.part_base_polybuf_off + off;
-    const void* host = openpete_psx_to_host_ptr(base);
+    const void* host = openpete_psx_to_host_span(base, len);
     if (!host) return;
     memcpy(s_range[slot].copy, host, len);
     s_range[slot].off   = off;
@@ -220,7 +220,7 @@ void spyro_native_canon_capture_recs(void* cpu) {
     uint32_t base = moby_canon_rec_base();
     uint32_t len  = moby_canon_rec_bytes();
     if (!base || !len || len > sizeof s_recs_copy) return;
-    const void* host = openpete_psx_to_host_ptr(base);
+    const void* host = openpete_psx_to_host_span(base, len);
     if (!host) return;
     memcpy(s_recs_copy, host, len);
     s_recs_base = base;
@@ -448,6 +448,7 @@ static uint32_t rx_scene_tris(void) {
         rx_line[sizeof rx_line - 1] = '\0'; \
         fprintf(stderr, "%s\n", rx_line); }
 
+/** @brief Composes one sub-tick present: brackets the camera between the tick pair, then runs every feeder's re-extract in draw order. */
 static void game_reextract_body(CPUState* cpu) {
     (void)cpu;
     double qa = 0.0;
@@ -485,7 +486,7 @@ static void game_reextract_body(CPUState* cpu) {
     if (cam_dbg_on()) {
         fprintf(stderr, "[cam-dbg f=%u RX] paired=%d bracketed=%d alpha=%.4f\n",
                 openpete_frame, paired, bracketed, alpha);
-        cam_dbg_line("RX-live", (const uint8_t*)openpete_psx_to_host_ptr(game_layout.cam.base));
+        cam_dbg_line("RX-live", (const uint8_t*)openpete_psx_to_host_span(game_layout.cam.base, CAM_OFF_POS + 12u));
         cam_dbg_line("RX-staged", cam);
         if (paired && prev && curr) {
             static int cdbg_region = -2;

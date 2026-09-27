@@ -31,7 +31,17 @@ extern "C" {
 
 extern "C" void openpete_logf(int level, const char* subsystem, const char* fmt, ...);
 
-#define PTR(a) ((void*)(openpete_psx_get_ram() + ((a) & 0x1FFFFFu)))
+/** @brief Read a little-endian guest word through a bounds-checked span.
+ *
+ * @param va Guest address of the word.
+ * @return The word, or 0 when the four bytes do not lie in RAM or the
+ *         scratchpad. */
+static uint32_t guest_word(uint32_t va) {
+    const void* p = openpete_psx_to_host_span(va, 4u);
+    uint32_t v = 0;
+    if (p) memcpy(&v, p, 4);
+    return v;
+}
 
 /* --- PSYQ prologue frames ----------------------------------------------
  *
@@ -386,13 +396,18 @@ static const char* spyro_sfx_canon(const char* name) {
  * @param max The capacity of `out`.
  * @return The number of names written. */
 static int spyro_sfx_slot_names(uint32_t spu_addr, const char** out, int max) {
-    uint32_t defs_va  = *(uint32_t*)PTR(SPYRO_SPU_SOUNDDEFS_VA);
-    uint32_t table_va = *(uint32_t*)PTR(SPYRO_SPU_SOUNDTABLE_VA);
+    uint32_t defs_va  = guest_word(SPYRO_SPU_SOUNDDEFS_VA);
+    uint32_t table_va = guest_word(SPYRO_SPU_SOUNDTABLE_VA);
     if (!defs_va || !table_va || defs_va == SPYRO_CUTSCENE_DEF_VA) return 0;
-    const uint8_t* table = (const uint8_t*)PTR(table_va);
-    const uint8_t* defs  = (const uint8_t*)PTR(defs_va);
-    int count = *(const int32_t*)PTR(table_va + 256);
-    if (!table || !defs || count <= 0 || count > 256) return 0;
+    /* 256 slot bytes, then the definition count word. */
+    const uint8_t* table = (const uint8_t*)openpete_psx_to_host_span(table_va, 256u + 4u);
+    if (!table) return 0;
+    int32_t count;
+    memcpy(&count, table + 256, 4);
+    if (count <= 0 || count > 256) return 0;
+    const uint8_t* defs = (const uint8_t*)openpete_psx_to_host_span(
+        defs_va, (uint32_t)count * SPYRO_SOUNDDEF_STRIDE);
+    if (!defs) return 0;
     int n = 0;
     for (int slot = 0; slot < SPYRO1_SFX_SLOT_COUNT && n < max; slot++) {
         uint8_t id = table[slot];
@@ -413,10 +428,11 @@ static int spyro_sfx_slot_names(uint32_t spu_addr, const char** out, int max) {
 #define SPYRO_SPU_VA            0x80075F08u /* g_Spu */
 #define SPYRO_ACTIVESOUND_OFF   0x28u
 #define SPYRO_ACTIVESOUND_SIZE  0x1Cu
+/** @brief The m_Pitch of voice's ActiveSound in g_Spu, or 0 when out of range (0 or 0x4000 and above). */
 static int spyro_sfx_base_pitch(int voice) {
     if (voice < 0 || voice >= 24) return 0;
-    uint32_t p = *(uint32_t*)PTR(SPYRO_SPU_VA + SPYRO_ACTIVESOUND_OFF +
-                                 (uint32_t)voice * SPYRO_ACTIVESOUND_SIZE + 8u);
+    uint32_t p = guest_word(SPYRO_SPU_VA + SPYRO_ACTIVESOUND_OFF +
+                            (uint32_t)voice * SPYRO_ACTIVESOUND_SIZE + 8u);
     return (p > 0 && p < 0x4000u) ? (int)p : 0;
 }
 

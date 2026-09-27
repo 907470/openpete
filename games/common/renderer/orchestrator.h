@@ -93,6 +93,11 @@ static inline int spyro_native_canon_capture_open(void) {
  * @param off The sub-range's offset into the game's render scratch block.
  * @param len The sub-range's length in bytes. */
 void spyro_native_canon_capture_range(void* cpu, unsigned off, unsigned len);
+/** @brief Captures the moby cull-record region at the canonical moby hook, while the records are live.
+ *
+ * The capture is stamped with the in-flight epoch; a region that does not
+ * map for its length captures nothing.
+ * @param cpu The guest CPU state. */
 void spyro_native_canon_capture_recs(void* cpu);
 /** @brief Captures the block where the player draw left every projected vertex's int16 screen position.
  *
@@ -111,6 +116,11 @@ void spyro_native_canon_capture_sxy(void* cpu);
  *   re-extract; enter installs the captured camera when it differs from the
  *   tick-end camera (returns 1), leave restores. */
 enum { SPYRO_PROD_MOBYREG = 0, SPYRO_PROD_SPYRO = 1, SPYRO_PROD_SHADED = 2 };
+/** @brief Records the camera transform block a producer drew under, at its hook.
+ *
+ * @param cpu Unused.
+ * @param producer SPYRO_PROD_MOBYREG, SPYRO_PROD_SPYRO or SPYRO_PROD_SHADED;
+ *        other values are ignored. */
 void spyro_native_canon_capture_camera(void* cpu, int producer);
 int  spyro_native_prod_camera_enter(int producer);
 void spyro_native_prod_camera_leave(void);
