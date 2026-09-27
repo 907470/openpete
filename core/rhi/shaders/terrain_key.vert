@@ -1,6 +1,7 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 #include "psx_viewz.glsl"
+#include "psx_key_contest.glsl"
 
 /* Terrain KEY pass vertex stage: rasterise opaque keyed terrain with depth =
  * the og OT KEY (true view-Z + 128*slots world) instead of true view-Z, into
@@ -17,11 +18,13 @@
  * out past kv ~= 3e6. Keys are FLAT per face (all three verts carry the
  * same kv), so any monotone encoding raster-interpolates exactly; the
  * (zc, W) pair uses W == the key view-Z so window depth survives the
- * hardware clipper (the scene stages' clip-invariance rule). A textured
+ * hardware clipper (the scene stages' clip-invariance rule). A PLAYER face
+ * in the actor batch carries the player band's stored value as its z
+ * instead of a view-Z and stores it unchanged (op_key_clip). A textured
  * triangle with a drain record writes its fragment depth from the key of
  * the drain sub-cell under the fragment instead (psx_key_cutout.frag). */
 
-layout(location = 0) in vec3 inPos;   /* xy = clip-space screen, z = flat key view-Z */
+layout(location = 0) in vec3 inPos;   /* xy = clip-space screen, z = flat key view-Z or player band value */
 layout(location = 1) in vec2 inUV;
 layout(location = 2) in vec4 inColor;
 layout(location = 4) in float inW;    /* TRUE per-vertex view-Z (textured cutout UV) */
@@ -49,7 +52,7 @@ void main()
 {
     float vz = op_scene_vz(inPos.z);
     float kv = vz + max(abs(inKoff) - 0.5, 0.0);   /* og key view-Z */
-    gl_Position = vec4(inPos.xy * kv, kv * kv / (kv + OP_VZ_SCALE), kv);   /* z_ndc = kv/(kv+4096) */
+    gl_Position = op_key_clip(inPos.xy, inPos.z, kv);   /* z_ndc = kv/(kv+4096), or the band value */
     float wq = AFFINE_UV ? 1.0 : max(inW, 1.0);
     vColor = inColor;
     vUV = inUV / wq;

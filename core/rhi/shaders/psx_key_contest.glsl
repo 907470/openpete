@@ -236,7 +236,11 @@ float op_key_store(float kv)
  * the band's top — so the depth test that composes the image resolves a
  * pixel both classes cover to the PLAYER, and every reader that is not
  * the aura contest filters the band out through op_akey_contest() rather
- * than decoding it as an impossibly near key. The player's faces raster
+ * than decoding it as an impossibly near key. The key feed carries a band
+ * vertex's stored value itself as its z, and the key stage writes it
+ * unchanged (op_key_clip): a band value is never clamped or encoded as a
+ * view-Z, which would store the one-world-unit floor's 2.4e-4 and read
+ * back as a real key 1. The player's faces raster
  * only where an aura could read them (the key pass clips them to the aura
  * footprint), so the actor key they displace is one no other contest
  * reaches.
@@ -257,6 +261,20 @@ bool op_pkey_is(float stored)
 float op_pkey_slot(float stored)
 {
     return floor((stored - OP_PKEY_BASE) / OP_PKEY_STEP + 0.5);
+}
+
+/* The key pass's clip position for a key-feed vertex at clip-space screen
+ * cxy. z is the feed's z: a value inside the player band is the stored band
+ * value, written as z_ndc = z at w = 1 so it reaches the image bit-exact;
+ * any other z is a view-Z, and the vertex stores its key view-Z kv as
+ * kv/(kv+4096) with w = kv, a (z, w) pair the hardware clipper
+ * interpolates without disturbing the window depth. A true view-Z inside
+ * the band's range (0, 4.2e-5] lies at the eye and would clamp to the near
+ * guard anyway. */
+vec4 op_key_clip(vec2 cxy, float z, float kv)
+{
+    if (op_pkey_is(z)) return vec4(cxy, z, 1.0);
+    return vec4(cxy * kv, kv * kv / (kv + 4096.0), kv);
 }
 
 /* The actor key image as every contest but the aura's sees it: a player
