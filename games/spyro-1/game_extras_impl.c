@@ -44,19 +44,14 @@ uint32_t game_get_pad_read_pc(void) {
     return 0x80053C68u;
 }
 
-/* Loads are instant until this game classifies its load reads: LoadLevel's
- * CDLoadAsync reads are polled from the main loop, but the titlescreen demo
- * load spins `while (g_LoadStage < 6) LoadLevel(1);` with no VSync and
- * CDLoadSync's second loop tests m_IsReading before it calls CdSync, so a
- * deferred completion at either site would never fire. The oracle golden
- * and every recorded bk2 carry this value. */
+/* 0: deferred reads never complete in the title demo load's LoadLevel spin or CDLoadSync; goldens and bk2s carry 0. */
 uint32_t game_get_load_delay_default(void) { return 0u; }
 
 /* --- Overlays / quirks / per-frame --- */
 
 int  game_on_overlay_load(uint32_t overlay_id) {
     (void)overlay_id;
-    /* TODO Phase 1b — copy overlay data into g_ram, swap dispatcher table. */
+    /* No work: no core code calls this hook. */
     return 0;
 }
 
@@ -82,7 +77,7 @@ extern unsigned openpete_frame;
 
 void game_apply_runtime_quirks(CPUState* cpu) {
     (void)cpu;
-    /* TODO Phase 1c — preamble fixes, known-bad-instruction workarounds. */
+    /* No runtime quirks. */
 }
 
 /* Terrain-reproject probe; documented at its declaration in psx_runtime_internal.h. */
@@ -136,11 +131,11 @@ void openpete_envvert_probe(void* cpu_v, uint32_t w0, uint32_t w1,
 }
 
 /* --skip-to-level: load directly into a specific level instead of the
- * normal title-screen + Press-Start + save-file-picker flow.
+ * title-screen, Press-Start and save-file-picker flow.
  *
- * Strategy: don't fight the state machine — induce the same transition
- * the title's 990-tick demo timeout takes (overlays/titlescreen.c:190),
- * but seeded so it loads our target. The natural flow is:
+ * The skip induces the transition the title's 990-tick demo timeout takes
+ * (overlays/titlescreen.c:190), seeded so it loads the target. The game's
+ * flow is:
  *   TSM_Init SubState 5 (timeout) -> m_Mode=TSM_Demo, m_State=TSS_Setup,
  *                                    m_DemoType=TSD_DemoLevel
  * TSS_Setup with TSD_DemoLevel (gamestates/update.c:636) then runs:
@@ -149,15 +144,15 @@ void openpete_envvert_probe(void* cpu_v, uint32_t w0, uint32_t w1,
  *   g_LevelId = levelId; g_NextLevelId = levelId;
  * Followed by TSS_Loading -> LoadLevel(1) loop and TSS_Active flyby.
  *
- * So we just need to (a) overwrite g_DemoLevelIds[g_DemoIndex] with our
- * target, (b) force the same TSM_Init->TSM_Demo transition the timeout
- * path takes. The state machine handles state reset, level load, and
- * flyby intro for us — exactly what a real "Start the demo" path does.
+ * The skip (a) overwrites g_DemoLevelIds[g_DemoIndex] with the target and
+ * (b) forces the TSM_Init->TSM_Demo transition the timeout path takes. The
+ * game's state machine then runs the state reset, level load and flyby
+ * intro as it does for the demo.
  *
- * Hook point: TSM_Init SubState 3 (Press-Start wait, after the title's
- * own load + intro animation finish). Triggering earlier risks racing
- * the CD-load of titlescreen data; later (SubState 4/5) means the user
- * already pressed Start or the timeout already fired. */
+ * Hook point: TSM_Init SubState 3 (Press-Start wait, after the title's own
+ * load and intro animation finish). Earlier races the CD load of the title
+ * data; at SubState 4/5 the player already pressed Start or the timeout
+ * already fired. */
 static int s_skip_to_level    = 0;
 static int s_skip_applied     = 0;
 /* Present fast-forward stop cap, set relative to arming (a boot skip arms
@@ -179,14 +174,7 @@ void game_set_skip_to_level(int level_id) {
     }
 }
 
-/* The level id/name table lives with the dev-overlay warp feature
- * (features/levelwarp.c) so the dropdown and --skip-to-level
- * resolve against exactly one list. */
-/* --skip-to-cutscene (features/credits_skip.c). `intro` starts from the
- * title through New Game and runs no level skip; the endings ride a level
- * skip to their boss level; the credits ride --skip-to-level's own target,
- * else Artisans, and the roll returns to that level. A target whose source
- * level contradicts an explicit --skip-to-level is refused. */
+/* Targets in features/credits_skip.c; `intro` runs no level skip, the credits default to Artisans (10). */
 void game_set_skip_to_cutscene(int cutscene_id) {
     if (cutscene_id <= 0) return;
     int source = spyro1_cutscene_source_level(cutscene_id);
@@ -217,6 +205,7 @@ int  game_resolve_area_arg(const char* arg, int* out_area) {
     return -1;
 }
 
+/* The table is features/levelwarp.c's, shared with the dev-overlay warp dropdown. */
 int game_resolve_level_arg(const char* arg) {
     return spyro1_level_resolve(arg);
 }
@@ -227,16 +216,21 @@ void game_on_hash_emit(uint32_t frame) {
      * timing. Spyro needs none. */
 }
 
-/* The skip's release block, every tick while a skip fast-forward or a
- * cutscene target is armed. Presents resume (openpete_skip_present_until_level
- * clears) on the playable edge: g_Gamestate reaching GS_Playing after the
- * level skip's induction (TSS_Active is not the edge: the homeworld flyby
- * after it is a title card over black for ~380 frames), or, while a cutscene
- * target is armed, that target's release predicate. The line names the
- * engagement values read back at release. A deadline 4000 VBLs after the
- * first check is the fail-safe against a never-reached edge; it logs its
- * own line. The cutscene watch runs headless too, where there is no
- * fast-forward, so a harness reads the same lines. */
+/** @brief Releases a skip's present fast-forward on the playable edge or the fail-safe deadline.
+ *
+ * Runs every tick while a skip fast-forward or a cutscene target is armed.
+ * Presents resume (openpete_skip_present_until_level clears) on the playable
+ * edge: g_Gamestate reaching GS_Playing after the level skip's induction
+ * (TSS_Active is not the edge: the homeworld flyby after it is a title card
+ * over black for about 380 VBLs), or, while a cutscene target is watched,
+ * that target's release predicate. The release line names the engagement
+ * values read back at release. A deadline openpete_skip_failsafe_vbls()
+ * (4000 by default) after the first check is the fail-safe against a
+ * never-reached edge and logs its own line. The cutscene watch runs headless
+ * too, where there is no fast-forward, so a harness reads the same lines.
+ * Either release also ends the cutscene watch.
+ * @param cpu The guest CPU state.
+ * @param frame_counter The openpete_frame counter. */
 static void skip_release_on_tick(CPUState* cpu, uint32_t frame_counter) {
     int watching = spyro1_cutscene_skip_watching();
     if (!openpete_skip_present_until_level && !watching) return;
@@ -350,20 +344,19 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
     text_moby_native_version(cpu);
 
     /* --skip-to-level: induce the title's demo-timeout transition early,
-     * pointed at our target via g_DemoLevelIds[g_DemoIndex], and clamp
-     * g_DemoMode = DEMO_MODE_NONE so the user controls Spyro instead of
-     * the AI. (TSD_DemoLevel sets g_DemoMode = PLAY at tick 384 of the
-     * flyby; that's the *only* thing that distinguishes "watch demo"
-     * from "actually play" — the same TSM_Demo + LoadLevel + flyby
-     * sequence runs when a real player picks "New Game".) Using
-     * TSD_DemoLevel (vs TSD_Level) gets us func_8001277C's free
-     * progress/lives/health reset, which a freshly-booted TSD_Level
-     * skip would otherwise miss.
+     * pointed at the target via g_DemoLevelIds[g_DemoIndex], and clamp
+     * g_DemoMode = DEMO_MODE_NONE so the pad controls Spyro instead of the
+     * demo playback. (TSD_DemoLevel sets g_DemoMode = PLAY at tick 384 of
+     * the flyby; that is the only difference between the demo and play,
+     * since the same TSM_Demo, LoadLevel and flyby sequence runs when a
+     * player picks New Game.) TSD_DemoLevel, unlike TSD_Level, runs
+     * func_8001277C's progress/lives/health reset, which a freshly booted
+     * TSD_Level skip would miss.
      *
      * Addresses (spyro-1/manifest/globals.toml):
      *   g_Gamestate         = 0x800757D8  (GS_TitleScreen = 13,
      *                                      GS_Playing = 0)
-     *   g_DemoMode          = 0x80075714  (clamp to 0 each frame)
+     *   g_DemoMode          = 0x80075714  (clamp to 0 each tick)
      *   g_DemoLevelIds      = 0x8006EE7C  (int[] in .data)
      *   g_DemoIndex         = 0x800757B8
      *   g_TitlescreenState  = 0x80078D78
@@ -422,10 +415,9 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
              * `g_DemoMode = DEMO_MODE_PLAY` on TSD_DemoLevel — leaving it
              * set means LoadLevel's stage-13 pass runs the demo-input
              * playback path (loaders.c:672). Switching DemoType to
-             * TSD_Level once Setup is done sidesteps both. Belt-and-
-             * suspenders: also clamp g_DemoMode=0 while we're still on
-             * the title-screen overlay, in case any path we missed
-             * sneaks PLAY through. */
+             * TSD_Level once Setup is done sidesteps both. g_DemoMode is
+             * also clamped to 0 while the title-screen overlay is live, so
+             * no other path can set PLAY. */
             uint32_t gs     = cpu->read_word(0x800757D8u);
             uint32_t tsm_st = cpu->read_word(0x80078D78u + 0x04u);
             if (gs == 13u /*GS_TitleScreen*/) {
@@ -446,13 +438,7 @@ void game_on_frame(CPUState* cpu, uint32_t frame_counter) {
      * RAM. Spyro needs no post-tick work. */
 }
 
-/* Each Spyro overlay's first word at 0x8007AA38 is its id (LEVEL_BALLOON
- * burns LONG(id) at +0x00). After a save-state load, the previously-active
- * overlay tracker (host-side state in dispatch_chain.c) still points at
- * whichever overlay was live BEFORE the load — re-read the marker word
- * from restored RAM and re-sync the dispatcher. Without this, calls into
- * overlay-resident vaddrs route to the wrong dispatcher and the game
- * hangs spinning on missing functions. */
+/* Each overlay's first word at 0x8007AA38 is its id (LEVEL_BALLOON burns LONG(id) at +0x00). */
 extern void spyro_set_active_overlay_by_magic(uint32_t magic);
 
 void game_on_state_loaded(CPUState* cpu) {
@@ -461,10 +447,7 @@ void game_on_state_loaded(CPUState* cpu) {
 
 }
 
-/* Gameplay-live gate for the in-memory snapshot users (savestate P3).
- * Mirrors ops_level_id's pattern: g_Gamestate == GS_Playing AND a
- * non-zero level id — g_Gamestate reads 0 during early boot too (BSS
- * zero), so the level-id check is what actually excludes boot. */
+/* g_Gamestate GS_Playing and a nonzero g_LevelId: GS_Playing is 0, which boot's BSS also reads. */
 int game_is_gameplay_live(CPUState* cpu) {
     if (cpu->read_word(0x800757D8u) != 0u) return 0; /* g_Gamestate != GS_Playing */
     return cpu->read_word(0x8007596Cu) != 0u;        /* g_LevelId */
@@ -475,8 +458,8 @@ int game_is_gameplay_live(CPUState* cpu) {
  * the per-tick runahead/rewind mem snapshots, whose speculative ticks can
  * run load/transition code (CdlSetloc moves the WAD cursor, an overlay
  * CdRead flips the dispatcher) that the rollback must undo. Bump the
- * version word when fields are added — core treats the blob as opaque,
- * so layout discipline lives HERE.
+ * version word when fields are added; core treats the blob as opaque, so
+ * the layout is defined here.
  *   v1: WAD-overlay disc cursor (mods/mod_wad_overlay.c).
  *   v2: + active-overlay magic — restoring by saved id instead of the RAM
  *       marker word survives cutscene-style loads that clobber the marker.
@@ -596,9 +579,14 @@ uint32_t psx_runtime_g_sony_image_base = 0x8006FCF4u;
 
 extern int spyro_native_dispatch(CPUState* cpu, uint32_t addr);
 
-/* See the OPENPETE_NOOP_SREND arm in psx_override_dispatch_game below. The mask
- * is latched on first use — this sits on the per-call dispatch path and getenv
- * is expensive on Windows. */
+/** @brief Reports whether OPENPETE_NOOP_SREND suppresses the handwritten renderer at a guest address.
+ *
+ * The mask is latched on first use, since this sits on the per-call dispatch
+ * path and getenv is expensive on Windows; a nonzero mask logs one warning
+ * line. The bits are listed at the OPENPETE_NOOP_SREND arm in
+ * psx_override_dispatch_game.
+ * @param addr The guest function address being entered.
+ * @return 1 when the mask suppresses that renderer, else 0. */
 static int srend_noop_hit(uint32_t addr) {
     static int s_mask = -1;
     if (s_mask < 0) {

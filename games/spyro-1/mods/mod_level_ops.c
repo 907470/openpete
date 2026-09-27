@@ -95,10 +95,15 @@ static uint32_t entry_addr(int index) {
          + WAD_LEVELENTRY_SZ * (uint32_t)index;
 }
 
-/* Donor alias: run the wrapped guest function with g_LevelId swapped to
- * the donor so its switch/branch cases key like the donor level, then
- * restore the slot id. Per-INDEX state (g_LevelIndex = 35) is computed
- * outside these functions and stays the slot's own. */
+/** @brief Runs the wrapped guest function with g_LevelId aliased to the claimed slot's donor.
+ *
+ * Installed as a mod override chain link on SetOverlayPointers and
+ * LoadLevelScene. When a slot is claimed and g_LevelId is the slot id (65),
+ * g_LevelId is swapped to the donor id around the base call so the
+ * function's switch and branch cases key like the donor level, then
+ * restored. Per-index state (g_LevelIndex 35) is computed outside these
+ * functions and stays the slot's own.
+ * @param cpu The guest CPU state. */
 static void alias_call(CPUState* cpu) {
     uint32_t id = cpu->read_word(ADDR_G_LEVELID);
     int aliased = (s_slot_donor > 0 && id == SLOT_LEVEL_ID);
@@ -178,9 +183,16 @@ static int ops_retarget_slot(CPUState* cpu, int donor_level_id) {
     return 0;
 }
 
-/* Declare a Data length on a level's guest TOC entry (0 = restore the
- * stock length read from the user's own disc TOC). Validated against a
- * live table: entry 0 must be populated. */
+/** @brief Writes the data length of a level's guest WAD TOC entry.
+ *
+ * Accepts level ids 10 to 65 whose index is in 0..35, and only once the
+ * boot TOC read has populated entry 0. A zero `len` restores the stock
+ * length read from the user's disc TOC, the donor's for the claimed slot.
+ * @param cpu The guest CPU state.
+ * @param level_id The level id.
+ * @param len The data length in bytes, or 0 for the stock length.
+ * @return 0 on success, -1 on a rejected id, an unpopulated TOC, or a
+ *     failed disc read. */
 static int ops_declare_data_len(CPUState* cpu, int level_id, uint32_t len) {
     if (level_id < 10 || level_id > SLOT_LEVEL_ID) return -1;
     int index = (level_id / 10 - 1) * 6 + level_id % 10;

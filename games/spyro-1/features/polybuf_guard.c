@@ -69,10 +69,14 @@ static int32_t  s_min_headroom = INT32_MAX;  /* closest approach while healthy *
  * doesn't look like a single blip in the log. */
 #define REPEAT_EVERY 120u
 
-/* FRESH consumer: re-read the environment every call so the dev-overlay row
- * (knob_registry.c, ENVROW_LIVE) can toggle this at runtime. Sampled once per
- * frame, so the getenv cost is irrelevant here — unlike the per-primitive
- * paths, where a getenv is a measurable Windows cliff. */
+/** @brief Reads the OPENPETE_POLYBUF_GUARD mode from the environment.
+ *
+ * Re-reads the environment on every call so the dev-overlay row
+ * (knob_registry.c, ENVROW_LIVE) toggles the guard at runtime. It is called
+ * once per BuildOrderTable entry, so the getenv cost is negligible, unlike on
+ * the per-primitive paths, where a getenv is a measurable cost on Windows.
+ * @return GUARD_OFF when unset, empty, or starting with 0, n or N;
+ *     GUARD_VERBOSE when starting with v or V; else GUARD_ON. */
 static int guard_mode(void) {
     const char* e = getenv("OPENPETE_POLYBUF_GUARD");
     if (!e || !e[0])                       return GUARD_OFF;

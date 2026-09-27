@@ -37,22 +37,31 @@ const char* game_get_id(void);                /* "spyro-1" — the [game.<id>] c
  * @return Guest function address, or 0 when the read site is unknown. */
 uint32_t    game_get_pad_read_pc(void);
 
-/* VBLs of guest time every level load waits when --load-delay is unset: the
- * game's shipped load duration. A game whose loader depends on disc reads
- * staying in flight across its main-loop frames (a checksum walk that only
- * advances while a read is pending) needs a floor here; 0 = instant. */
+/** @brief Returns the VBLs of guest time every level load waits when --load-delay is unset.
+ *
+ * openpete_run reads it once per run into openpete_cd_load_delay. A game
+ * whose loader depends on disc reads staying in flight across its main-loop
+ * iterations (a checksum walk that only advances while a read is pending)
+ * needs a floor here.
+ * @return The delay in VBLs; 0 = instant loads. */
 uint32_t    game_get_load_delay_default(void);
 
-/* --- Overlay handling (intercept point) ---
- * Called when the game issues its native overlay-load. Implementations
- * swap the active dispatcher, copy the overlay's data into g_ram, and
- * update entry-point function pointers. Return 0 on success. */
+/* --- Overlay handling --- */
+/** @brief Handles a game-issued overlay load by overlay id.
+ *
+ * No core code calls it. The Spyro 2 and 3 implementations re-point the
+ * active-overlay dispatcher at the overlay whose id word matches
+ * `overlay_id`; the Spyro 1 implementation does nothing.
+ * @param overlay_id The overlay's id word.
+ * @return 0 on success. */
 int  game_on_overlay_load(uint32_t overlay_id);
 void game_on_overlay_init(CPUState* cpu);     /* one-time, post-WadInit */
 
-/* --- Per-game runtime quirks ---
- * Called once at boot, before main(). Apply per-game patches:
- * preamble fixes, known-bad-instruction workarounds, etc. */
+/* --- Per-game runtime quirks --- */
+/** @brief Applies per-game runtime patches such as preamble fixes and known-bad-instruction workarounds.
+ *
+ * No core code calls it, and every implementation is empty.
+ * @param cpu Guest CPU state. */
 void game_apply_runtime_quirks(CPUState* cpu);
 
 /* --- Post-boot, pre-execution --- */
@@ -68,19 +77,33 @@ void game_apply_runtime_quirks(CPUState* cpu);
  * @param cpu Guest CPU state. */
 void game_on_boot(CPUState* cpu);
 
-/* --- Per-frame callbacks (rare; e.g., DMA timing hacks).
- * `game_on_frame_pre`  fires immediately BEFORE handing control to the
- *                      game fiber for a tick — use it to mutate state
- *                      that the upcoming tick will read.
- * `game_on_frame_post` fires AFTER the tick yields back, only on iters
- *                      where the frame counter advanced. */
+/* --- Per-tick callbacks --- */
+/** @brief Runs the game's per-tick host hooks immediately before the game fiber runs a tick.
+ *
+ * The host loop calls it before every tick it hands to the game fiber: the
+ * committed tick, each runahead speculative tick, and each tick a rewind
+ * re-executes from a keyframe, so its guest writes are part of the timeline.
+ * Implementations drive the skip targets, the level warp, the free camera's
+ * scripted placement and engage, and the other per-tick feature hooks; the
+ * Spyro 1 and 3 implementations also build the host-drawn text overlays.
+ * @param cpu Guest CPU state.
+ * @param frame_counter The openpete_frame counter before the tick. */
 void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter);
+/** @brief Runs after the game fiber yields back, on host-loop iterations that ran a tick.
+ *
+ * Called before the runahead speculation of the iteration. Every
+ * implementation is empty.
+ * @param cpu Guest CPU state.
+ * @param frame_counter The openpete_frame counter after the tick. */
 void game_on_frame(CPUState* cpu, uint32_t frame_counter);
 
-/* --- Hash-emit hook (diagnostic) ---
- * Fires immediately before the per-frame gameplay-state hash is
- * captured. Per-game impls can use it for ad-hoc state dumps that
- * need to be aligned with the hash log's exact timing. */
+/* --- Hash-emit hook (diagnostic) --- */
+/** @brief Runs immediately before the gameplay-state hash log captures a tick.
+ *
+ * The host loop calls it on each ticked iteration once fast boot has ended,
+ * while the gameplay hash log is open, so a game can dump state aligned
+ * with the hash log's timing. Every implementation is empty.
+ * @param frame The openpete_frame counter. */
 void game_on_hash_emit(uint32_t frame);
 
 /* --- Save-state resync hook --- */
@@ -103,7 +126,8 @@ void game_on_state_loaded(CPUState* cpu);
  * The payload is per-game host state that travels with every snapshot but
  * is not guest RAM: the shared thunk layer's latch pack, and on Spyro 1
  * also the WAD-overlay disc cursor the guest's next mod-asset read depends
- * on. The size is fixed per game build and may be 0; core writes and reads
+ * on, the active-overlay id, and the level-warp state machine. The size
+ * is fixed per game build and may be 0; core writes and reads
  * the payload as an opaque section through game_state_extra_save and
  * game_state_extra_load. The file loader calls game_state_extra_load after
  * game_on_state_loaded, the in-memory loader before it.
@@ -155,39 +179,58 @@ int game_get_player_position(int32_t* out_x, int32_t* out_y, int32_t* out_z);
 int game_get_player_pose(CPUState* cpu, int32_t* out_x, int32_t* out_y, int32_t* out_z,
                          int32_t* out_yaw, int32_t* out_level);
 
-/* --- CLI overrides forwarded by core ---
- * Called once before the run loop starts. Per-game impl decides where /
- * when to apply the value (typically from game_on_frame, since the
- * relevant globals don't exist until the game's own init has run). */
+/* --- CLI overrides forwarded by core --- */
+/** @brief Arms a skip into a level through the game's own title-screen transition.
+ *
+ * openpete_run calls it once before the run loop with --skip-to-level's
+ * value; the level warp's title route and, on Spyro 1, the mod API's level
+ * entry at the title screen call it at runtime. The implementation applies
+ * the value from its per-tick hook, since the globals it writes are set up
+ * by the game's own init.
+ * @param level_id The target level id; 0 disables the skip. */
 void game_set_skip_to_level(int level_id); /* 0 = disabled */
 
-/* Resolve a --skip-to-level argument to a level id. Accepts the game's
- * numeric ids verbatim ("11") and per-game lower_snake_case level names
- * ("stone_hill", "doctor_shemp"). Returns the level id, or -1 if the
- * name is unknown or empty (impl prints the valid names to stderr — this
- * runs in CLI-parse context; an empty arg is `--skip-to-level` with no
- * value, asking for the list). */
+/** @brief Resolves a --skip-to-level argument to a level id.
+ *
+ * Accepts the game's numeric ids ("11") and its lower_snake_case level names
+ * ("stone_hill"). Runs in CLI-parse context: on failure the implementation
+ * prints the valid names to stderr, and an empty argument (`--skip-to-level`
+ * with no value) asks for that list.
+ * @param arg The argument.
+ * @return The level id, or -1 for an unknown or empty argument. */
 int game_resolve_level_arg(const char* arg);
 
-/* --skip-to-cutscene: a target the game enters from a live level rather
- * than through the title screen (Spyro 1: credits / credits_100). Called
- * after game_set_skip_to_level, so the impl can default the level it
- * enters from when no level skip is armed. 0 = disabled. */
+/** @brief Arms a --skip-to-cutscene target.
+ *
+ * Called after game_set_skip_to_level, so the implementation can arm a level
+ * skip to the level the target is entered from when none is armed, and
+ * refuse a target whose source level contradicts an explicit level skip.
+ * @param cutscene_id The game's cutscene id; 0 or less disables it. */
 void game_set_skip_to_cutscene(int cutscene_id);
 
-/* Resolve a --skip-to-cutscene argument as game_resolve_level_arg does a
- * level: the id, or -1 with the valid names printed (an empty arg asks
- * for the list; a game without cutscene targets says so). */
+/** @brief Resolves a --skip-to-cutscene argument to a cutscene id.
+ *
+ * Follows game_resolve_level_arg: an empty argument asks for the list of
+ * valid names, and a game without cutscene targets says so.
+ * @param arg The argument.
+ * @return The cutscene id, or -1 after printing the valid names. */
 int game_resolve_cutscene_arg(const char* arg);
 
-/* --skip-to-area <level>:<area>: resolve the argument to the level id and,
- * through *out_area, the sub-area index. Returns -1 with the valid targets
- * printed for an empty, unknown or unreachable argument; a game without
- * sub-area targets says so. */
+/** @brief Resolves a --skip-to-area LEVEL:AREA argument.
+ *
+ * A game without sub-area targets prints that it has none.
+ * @param arg The argument.
+ * @param out_area Receives the sub-area index.
+ * @return The level id, or -1 after printing the valid targets for an
+ *     empty, unknown or unreachable argument. */
 int game_resolve_area_arg(const char* arg, int* out_area);
 
-/* Arm --skip-to-area: the level's skip, then the sub-area entry. Called
- * after game_set_skip_to_level and replaces its level. level 0 = disabled. */
+/** @brief Arms --skip-to-area: the level's skip, then the sub-area entry.
+ *
+ * Called after game_set_skip_to_level, and replaces its level. A game
+ * without sub-area targets ignores it.
+ * @param level_id The level id; 0 disables it.
+ * @param area The sub-area index. */
 void game_set_skip_to_area(int level_id, int area);
 
 /** @brief Validates a --cheats spec against the game's own built-in cheat codes.

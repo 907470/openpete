@@ -41,29 +41,32 @@
 static const int s_move_speed[OPENPETE_FREECAM_SPEED_STEPS] = { 25, 100, 300, 500, 800 };
 static const int s_turn_speed[OPENPETE_FREECAM_SPEED_STEPS] = { 10,  25,  35,  50,  75 };
 
-/* A level is live while g_LoadStage is negative — unambiguous, unlike
- * g_Gamestate whose Playing==0 aliases the zero-initialised boot value. */
+/** @brief Reports whether a level is live, read as g_LoadStage negative.
+ *
+ * g_LoadStage is used instead of g_Gamestate because GS_Playing (0) aliases
+ * the zero-initialised boot value.
+ * @param cpu The guest CPU state.
+ * @return 1 while g_LoadStage is negative, else 0. */
 static int spyro1_level_live(CPUState* cpu) {
     return (int32_t)cpu->read_word(ADDR_LEVEL_LOAD_STATE) < 0;
 }
 
-/* Draw every resident sector instead of following the camera's region.
+/** @brief Makes the world renderer frustum-test every resident sector instead of the camera's occlusion group.
  *
- * Spyro's "regions" are baked occlusion groups (a per-region PVS). Normally the
- * world renderer (func_800258F0, via func_8002B9CC) only frustum-tests the
- * sectors in the CURRENT group's sublist — so flying into a new area shows
- * nothing there until the camera's group switches (the pop-in). But the whole
- * level is already resident in RAM, and func_800258F0 has a "no group" arm:
- * pass m_OcclusionGroup = -1 and it frustum-tests EVERY sector. That's a real
- * game path (the title screen uses func_800258F0(-1)), and the native terrain
- * feed already handles the -1 "walk-all" case, so this needs no renderer
- * change. Result: everything in the frustum draws regardless of camera region —
- * no pop-in — while off-screen sectors are still frustum-culled.
+ * Spyro's regions are baked occlusion groups (a per-region PVS). The world
+ * renderer (func_800258F0, via func_8002B9CC) frustum-tests only the sectors
+ * in the current group's sublist, so a camera flown into a new area shows
+ * nothing there until the group switches. func_800258F0 has a no-group arm:
+ * with m_OcclusionGroup -1 it frustum-tests every sector. The title screen
+ * takes that arm (func_800258F0(-1)), and the native terrain feed handles the
+ * -1 walk-all case. Off-screen sectors stay frustum-culled.
  *
- * C0mposer's raycast-to-follow existed only for the PS1 fill-rate limit we
- * don't have; -1 supersedes it. We can safely own m_OcclusionGroup because the
- * game's own writer (the floor raycast) lives inside CameraFollowSpyro, which
- * we suppress. Runs only while engaged, so the canonical path is untouched. */
+ * Stores m_OcclusionGroup -1 and _cameraUnknownPositionVectorX 0 while a
+ * level is live. The game's own m_OcclusionGroup writer (the floor raycast)
+ * is inside CameraFollowSpyro, which the free camera suppresses. The free
+ * camera drive calls this each tick only while engaged, so the unengaged
+ * path makes no store.
+ * @param cpu The guest CPU state. */
 static void spyro1_draw_all(CPUState* cpu) {
     /* Only meaningful once a level is live. */
     if (!spyro1_level_live(cpu)) return;
@@ -80,11 +83,15 @@ static void spyro1_draw_all(CPUState* cpu) {
 extern void func_8003DFA4(CPUState* cpu);
 static void spyro1_reset_momentum(CPUState* cpu) { func_8003DFA4(cpu); }
 
-/* The player can be placed while a level is live in GS_Playing with the pad
- * driving him (g_DemoMode 0) and the camera in its ordinary follow
- * (g_Camera.m_State 0). g_Gamestate stays GS_Playing through the level
- * fly-in; m_State separates it (0x80000010/11 until the follow takes over),
- * and a placement inside the fly-in would be flown away from. */
+/** @brief Reports whether the player can be placed and the pose read back.
+ *
+ * Requires a live level, g_Gamestate GS_Playing, the pad driving the player
+ * (g_DemoMode 0), and the camera in its ordinary follow (g_Camera.m_State 0).
+ * g_Gamestate stays GS_Playing through the level fly-in; m_State separates
+ * it (0x80000010/11 until the follow takes over), and a placement inside the
+ * fly-in would be flown away from.
+ * @param cpu The guest CPU state.
+ * @return 1 when every condition holds, else 0. */
 static int spyro1_player_placeable(CPUState* cpu) {
     return spyro1_level_live(cpu) &&
            cpu->read_word(ADDR_GAMESTATE) == 0u &&
@@ -111,8 +118,15 @@ static void spyro1_place_camera(CPUState* cpu) {
     func_80034358(cpu);
 }
 
-/* "topdown": the whole-level overhead pose; "sweepN": corner N of a
- * low-altitude circuit. Both resolve against the live sector table. */
+/** @brief Resolves a named free-camera pose against the live sector table.
+ *
+ * `topdown` is the whole-level overhead pose; `sweepN` is corner N of a
+ * low-altitude circuit (N parsed by atoi, taken modulo 4).
+ * @param cpu The guest CPU state.
+ * @param name The pose name.
+ * @param v Receives {x, y, z, yaw, pitch}.
+ * @return 1 on success, 0 for an unknown name or when no sector table is
+ *     loaded. */
 static int spyro1_resolve_named_pose(CPUState* cpu, const char* name, int32_t v[5]) {
     if (strcmp(name, "topdown") == 0) return terrain_native_topdown_pose(cpu, v);
     if (strncmp(name, "sweep", 5) == 0) return terrain_native_sweep_pose(cpu, atoi(name + 5), v);

@@ -173,13 +173,23 @@ int spyro1_cutscene_skip_released(CPUState* cpu, char* eng, size_t cap) {
     return 1;
 }
 
-/* A row's hook acts once, outside runahead. */
+/** @brief Reports whether the hook for a cutscene id may act on this tick.
+ *
+ * A row's hook acts once, outside runahead: the row must be armed, not yet
+ * induced, and the tick not speculative.
+ * @param id A SPYRO1_CUTSCENE_* id.
+ * @return 1 when the hook may act, else 0. */
 static int hook_live(int id) {
     return s_row && s_row->id == id && !s_induced && !openpete_speculative;
 }
 
-/* The first live tick of the row's source level, with the delta time the
- * credits and cutscene timers tick by already set. */
+/** @brief Reports whether this is a live tick of the row's source level with the overlay delta time set.
+ *
+ * Live means g_Gamestate GS_Playing, a nonzero g_LevelId equal to `source`
+ * when `source` is positive, no attract demo, and a nonzero D_800756C4.
+ * @param cpu The guest CPU state.
+ * @param source The required level id, or -1 for any level.
+ * @return 1 when every condition holds, else 0. */
 static int first_live_tick(CPUState* cpu, int source) {
     if (cpu->read_word(ADDR_G_GAMESTATE) != GS_PLAYING) return 0;
     uint32_t level = cpu->read_word(ADDR_G_LEVELID);
@@ -222,8 +232,14 @@ static int on_gamestate_update(CPUState* cpu, uint32_t addr) {
     return credits_hook(cpu);
 }
 
-/* New Game's no-save branch (titlescreen.c, TSM_Menu sub-state 4) at the
- * Press-Start wait, plus m_SubTick 0 (see the file header). */
+/** @brief Makes New Game's no-save branch stores at the title's Press-Start wait.
+ *
+ * Reproduces titlescreen.c's TSM_Menu sub-state 4 branch: calls
+ * func_8001277C, then stores m_Mode TSM_Loading, m_State 5, m_DemoType
+ * TSD_Cutscene, g_FairyCutscene.m_HasMemoryCard 0, and m_SubTick 0 (see the
+ * file header). Acts only at g_Gamestate 13, m_Mode TSM_Init, m_SubState 3.
+ * @param cpu The guest CPU state.
+ * @return 0, so the guest GamestateDraw runs. */
 static int intro_hook(CPUState* cpu) {
     const uint32_t ts = ADDR_G_TITLESCREENSTATE;
     if (cpu->read_word(ADDR_G_GAMESTATE) != GS_TITLESCREEN ||
@@ -244,7 +260,12 @@ static int intro_hook(CPUState* cpu) {
     return 0;
 }
 
-/* The boss branch's GS_Cutscene stores (see the file header). */
+/** @brief Makes the boss branch's GS_Cutscene stores on the first live tick of the row's level.
+ *
+ * The store list per level is in the file header.
+ * @param cpu The guest CPU state.
+ * @return 1 after the stores (g_StateSwitch 1: main skips this tick's
+ *     GamestateDraw), 0 when the tick is not yet live. */
 static int ending_hook(CPUState* cpu) {
     int loot = s_row->id == SPYRO1_CUTSCENE_ENDING_LOOT;
     if (!first_live_tick(cpu, s_row->source)) return 0;

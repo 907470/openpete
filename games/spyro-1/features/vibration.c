@@ -76,7 +76,10 @@ extern int openpete_speculative;
 static int s_requested = -1;
 static int s_stamped   = -1;
 
-/* The host request is a 0..10 strength; the guest flag is a bit. */
+/** @brief Maps the host vibration strength to the guest enable flag.
+ *
+ * @param strength The host request, a 0..10 strength.
+ * @return 1 for a positive strength, else 0. */
 static int want_enabled(int strength) { return strength > 0 ? 1 : 0; }
 
 void spyro1_vibration_on_tick(CPUState* cpu)

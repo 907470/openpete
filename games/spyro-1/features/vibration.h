@@ -17,6 +17,13 @@
 
 typedef struct CPUState CPUState;
 
-/* Apply the pending preset. Call once per tick; inert (no guest writes) while
- * the preset is unset. */
+/** @brief Stamps a positive --vibration request into g_ActEnabled for one tick.
+ *
+ * Called once per tick. Makes no guest write while the request is -1 (unset)
+ * or 0 (host-side silence), and none on a speculative tick. A positive
+ * request writes g_ActEnabled 1 when the guest value differs. While the
+ * player's cursor is on the options submenu's vibration row, nothing is
+ * written, and a guest value moved away from the last stamped one drops the
+ * request to -1, handing the setting to the menu.
+ * @param cpu The guest CPU state. */
 void spyro1_vibration_on_tick(CPUState* cpu);

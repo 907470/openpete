@@ -163,8 +163,7 @@ const spyro1_level_t* spyro1_level_table(size_t* out_count) {
     return k_levels;
 }
 
-/* A numeric argument passes through unchecked: this game's warp takes the id
- * the caller names rather than indexing the table with it. */
+/* A numeric argument passes through unchecked (see levelwarp.h). */
 int spyro1_level_resolve(const char* arg) {
     const named_target_table_t levels =
         NAMED_TARGET_TABLE(k_levels, spyro1_level_t, name, id);
@@ -212,6 +211,10 @@ void spyro1_levelwarp_state_load(uint32_t phase, uint32_t target,
 
 /* ---- the shared overlay half ------------------------------------------ */
 
+/** @brief Returns the level id at a level-table index, for the shared overlay half.
+ *
+ * @param index An index into k_levels.
+ * @return The level id. */
 static int warp_level_id(int index) { return k_levels[index].id; }
 
 static int warp_in_flight(void) { return s_phase != WARP_IDLE; }
@@ -222,13 +225,17 @@ static int warp_in_flight_status(char* buf, size_t cap) {
     return 0;
 }
 
-/* Which route a click would take from this gamestate. Derived from guest
- * state ONLY — whether a warp is already queued or running is a separate
- * question, asked at the button. Pause and inventory count as "in a level"
- * for the same reason the cheats module accepts them: they are gameplay with
- * the sim paused, and the exit sequence takes over the gamestate anyway. The
- * attract demo runs GS_Playing with a level loaded, so it needs excluding
- * explicitly. */
+/** @brief Returns the route a warp click would take from the current game state.
+ *
+ * Derived from guest state only; whether a warp is already queued or
+ * running is asked at the button. Pause and inventory count as in a level:
+ * they are gameplay with the sim paused, and the exit sequence takes over
+ * g_Gamestate. The attract demo runs GS_Playing with a level loaded, so a
+ * nonzero g_DemoMode excludes it.
+ * @param cpu The guest CPU state.
+ * @return LEVELWARP_ROUTE_TITLE at GS_TitleScreen, LEVELWARP_ROUTE_LEVEL in
+ *     play, pause or inventory with a level loaded and no demo, else
+ *     LEVELWARP_ROUTE_NONE. */
 static int warp_route(CPUState* cpu) {
     uint32_t gs = cpu->read_word(ADDR_G_GAMESTATE);
     if (gs == GS_TITLESCREEN) return LEVELWARP_ROUTE_TITLE;
@@ -270,15 +277,17 @@ static void levelwarp_apply_options(const openpete_options_t* opts) {
 
 /* ---- the warp itself -------------------------------------------------- */
 
-/* Put the game into its exit-level sequence. Mirrors what the inventory
- * level-select does, minus its collectable wipe (that exists to restart a
- * speedrun clean; a dev warp wants progress kept).
+/** @brief Puts the game into its exit-level sequence and arms the warp toward a level.
  *
- * Zeroing BOTH step counters is a departure from the practice ROM, which
- * zeroes only D_800758B8: func_8002E084 sets Spyro's gliding pose at
- * D_8007568C == 16 and only while D_800758B8 == 0, so entering with a
- * mid-cycle D_8007568C silently skips the glide and Spyro exits standing.
- * Starting both at 0 makes the animation the same every time. */
+ * Makes the practice ROM's inventory level-select stores minus its
+ * collectable wipe, so progress is kept: g_Gamestate GS_ExitLevel, Spyro's
+ * m_State 0 and m_AirTime 1, and both exit-sequence counters 0. The practice
+ * ROM zeroes only D_800758B8; func_8002E084 sets Spyro's gliding pose at
+ * D_8007568C == 16 and only while D_800758B8 == 0, so a mid-cycle
+ * D_8007568C skips the glide and Spyro exits standing. Zeroing both makes
+ * the animation the same every time.
+ * @param cpu The guest CPU state.
+ * @param target_id The destination level id. */
 static void warp_arm(CPUState* cpu, int target_id) {
     cpu->write_word(ADDR_G_GAMESTATE, GS_EXITLEVEL);
     cpu->write_word(ADDR_G_SPYRO + SPYRO_M_STATE, 0u);
@@ -293,14 +302,17 @@ static void warp_arm(CPUState* cpu, int target_id) {
                (unsigned)cpu->read_word(ADDR_G_LEVELID), target_id);
 }
 
-/* Retarget the load func_8002C664 just kicked off. It pointed the transition
- * at "my homeworld, arriving out of my own portal"; we want the chosen level,
- * arriving the way a portal entry does.
+/** @brief Retargets the load func_8002C664 kicked off to the armed level, entered as a portal entry is.
  *
- * m_SphericalPreset = NULL restores the transition camera's own preset pick
- * (func_80037A20 only auto-picks when the field is NULL, and the exit
- * sequence leaves a stale non-NULL one). Homeworlds fade in rather than fly
- * in, which is what g_HasLevelTransition = 0 selects. */
+ * func_8002C664 points the transition at the current homeworld, arriving
+ * out of the current level's portal. Stores g_NextLevelId = target,
+ * g_PortalLevelId 0, g_HasLevelTransition 1 for a level and 0 for a
+ * homeworld (id divisible by 10: homeworlds fade in rather than fly in),
+ * Spyro's m_FlyingAbility 0, and g_Camera.m_SphericalPreset NULL, which
+ * restores the transition camera's own preset pick (func_80037A20
+ * auto-picks only when the field is NULL, and the exit sequence leaves a
+ * stale non-NULL one). Moves the phase to loading.
+ * @param cpu The guest CPU state. */
 static void warp_retarget(CPUState* cpu) {
     uint32_t target = s_target;
 
