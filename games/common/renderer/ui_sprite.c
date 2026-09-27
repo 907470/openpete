@@ -1405,19 +1405,19 @@ static void on_scene_frame_close(unsigned frame) {
  * not composed yet, so the batch is final and still in its own scene. The
  * frame close and the ordering-table walk remain as later releases for a
  * VBL that composes no image. Each release here counts in
- * s_claim_at_capture. s_cap_frame is set from the claim count after the
- * release, which the whole-batch release leaves at zero, so it always
- * becomes 0xFFFFFFFF and the post-capture counters that post_capture_report
- * prints never engage. */
+ * s_claim_at_capture. s_cap_frame becomes the released batch's build VBL,
+ * or 0xFFFFFFFF when no batch was pending, from the claim count read before
+ * the release zeroes it. */
 static void on_overlay_precapture(void) {
     post_capture_report();
     const unsigned built = s_claim_frame;
+    const unsigned pending = s_claim_n;
     /* The whole batch goes at the capture. Holding the last-linked primitive
      * back to the frame close reads its words a frame later, which for 2D that
      * animates (the cutscene letterbox sliding in) is the next tick's position:
      * measured, that put the bar 2 PSX rows out on every frame of the slide. */
     if (s_claim_n) { s_claim_at_capture++; release_batch(s_claim_n); }
-    s_cap_frame = s_claim_n ? built : 0xFFFFFFFFu;
+    s_cap_frame = pending ? built : 0xFFFFFFFFu;
 }
 
 /* Re-sums the primitives released since the last walk against their fed sums. */
