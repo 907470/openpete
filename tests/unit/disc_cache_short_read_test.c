@@ -46,6 +46,7 @@ void PsyX_CDFS_Init_Mem(const u_int* data, int size, int track, int sector_size)
 }
 /** @brief Pace log stub. */
 void openpete_pace_cd_miss(int64_t waited_ns, uint64_t end_offset) { (void)waited_ns; (void)end_offset; }
+void openpete_crash_thread_attach(void) {}
 /** @brief Logger stub. */
 void openpete_logf(openpete_log_level_t level, const char* subsystem, const char* fmt, ...) {
     (void)level; (void)subsystem; (void)fmt;

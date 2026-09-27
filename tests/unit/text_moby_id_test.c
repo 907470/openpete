@@ -38,6 +38,11 @@ static uint8_t  fake_read_byte(uint32_t a) { return *ram(a); }
 
 /* text_moby_id reads the live m_Class through the sub-tick view. */
 void* openpete_subtick_host_ptr(uint32_t addr) { return ram(addr); }
+/** @brief Sub-tick view span stub: the fake RAM when the span fits, else NULL. */
+void* openpete_subtick_host_span(uint32_t addr, uint32_t len) {
+    if (addr < RAM_BASE || addr - RAM_BASE >= RAM_SIZE || len > RAM_SIZE - (addr - RAM_BASE)) return NULL;
+    return s_ram + (addr - RAM_BASE);
+}
 
 #define HUD_MOBYS_PTR 0x80075710u
 #define HUD_POOL_BASE 0x800756FCu

@@ -25,6 +25,7 @@
 #include "../../core/include/openpete_osd.h"
 #include "../../core/include/openpete_overlay_anchor.h"
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -36,6 +37,14 @@ typedef struct SDL_Mutex SDL_Mutex;
 SDL_Mutex *SDL_CreateMutex(void) { return (SDL_Mutex *)(void *)&s_lock_depth; }
 void SDL_LockMutex(SDL_Mutex *m)   { (void)m; if (++s_lock_depth > s_lock_max) s_lock_max = s_lock_depth; }
 void SDL_UnlockMutex(SDL_Mutex *m) { (void)m; --s_lock_depth; }
+void SDL_DestroyMutex(SDL_Mutex *m) { (void)m; }
+/* The mutex-once slot: single-threaded here, so a plain load and store. */
+void *SDL_GetAtomicPointer(void **a) { return *a; }
+bool SDL_CompareAndSwapAtomicPointer(void **a, void *oldval, void *newval) {
+    if (*a != oldval) return false;
+    *a = newval;
+    return true;
+}
 
 /* The suppression predicates the notify path reads. */
 int openpete_speculative = 0;
