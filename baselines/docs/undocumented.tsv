@@ -2,7 +2,7 @@
 # library: libclang 14
 # requirement: @brief of one sentence on one line on every function; @param per named parameter and @return on non-void for external linkage
 # written-by: hook
-# head: 7e63d3acb5d3c52aafbd66984b7e8d1d06c80cf8
+# head: c1e5f07ef83f9108070ae6b4186ddd6be6741eea
 file	function	form	accepted
 core/config/config.c	decision_for	none	
 core/config/config.c	dup_str	none	
@@ -676,7 +676,6 @@ core/renderer/native_render.c	openpete_native_render_swapchain_images	none
 core/renderer/native_render.c	openpete_native_scene_add_tri	none	
 core/renderer/native_render.c	openpete_native_scene_apply_overlay	none	
 core/renderer/native_render.c	openpete_native_scene_build_stamp	none	
-core/renderer/native_render.c	openpete_native_scene_restore	plain	
 core/renderer/native_render.c	openpete_native_scene_ring_free	none	
 core/renderer/native_render.c	openpete_native_scene_ring_report	none	
 core/renderer/native_render.c	openpete_native_scene_set_tag	none	
@@ -722,7 +721,6 @@ core/renderer/native_render.c	scene_box_summary	none
 core/renderer/native_render.c	scene_delay_depth	none	
 core/renderer/native_render.c	scene_discrete_sig	none	
 core/renderer/native_render.c	scene_fragcoord_affine	none	
-core/renderer/native_render.c	scene_frame_at_depth	none	
 core/renderer/native_render.c	scene_hist_depth_max	none	
 core/renderer/native_render.c	scene_pos_sig_report	none	
 core/renderer/native_render.c	scene_probes	none	

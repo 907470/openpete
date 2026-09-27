@@ -719,6 +719,15 @@ static int                s_scene_hist_count = 0;  /* completed frames recorded 
  * ring slot's former contents until the next scene begins, so the frame
  * close must not push it into history. */
 static int                s_scene_moved = 0;
+/* The ring slot the moved scene went to and the scene id it carries there:
+ * until that slot is republished it still holds the scene, which the
+ * history and the live fallback read in place of a copy. */
+static int                s_scene_moved_slot = -1;
+static uint32_t           s_scene_moved_id;
+/* Per history entry: the ring slot whose scene the entry names instead of
+ * owning a run (-1 = the entry owns s_scene_hist[slot]), and that scene's id. */
+static int                s_scene_hist_alias[SCENE_HIST] = { -1, -1, -1, -1 };
+static uint32_t           s_scene_hist_alias_id[SCENE_HIST];
 static int                s_scene_delay = -2;   /* -2 uninit; >=0 = depth */
 
 /* 1 while openpete_native_render_screenshot_all composes: the -vk screenshot
@@ -1028,22 +1037,88 @@ static void (*s_scene_frame_close_cb)(unsigned frame);  /* see the frame-close s
 static void alpha_census(const scene_tri_t* scene, int scene_n);  /* blend census, defined below */
 static bool scene_has_world(const scene_tri_t* scene, int n);     /* defined below */
 static int s_scene_dropped;       /* tris refused this frame (cap hit) — capdbg */
+/** @brief Return the ring slot that still holds the scene an eager publish moved out of the accumulator, or NULL.
+ *
+ * Valid while the accumulator holds nothing appended since the publish and
+ * the slot has not been republished (its scene id is unchanged). Only the
+ * thread that publishes calls this, so the slot's triangles cannot change
+ * under the caller.
+ * @return The slot, or NULL. */
+static const scene_slot_t *scene_moved_slot(void) {
+    if (!s_scene_moved || s_scene_n != 0 || s_scene_moved_slot < 0) return NULL;
+    const scene_slot_t *sl = &s_ring[s_scene_moved_slot];
+    return sl->scene_id == s_scene_moved_id ? sl : NULL;
+}
+/** @brief Return the history slot at a delay depth, or -1 when the ring does not hold that depth.
+ *
+ * An entry that names a ring slot counts only while that slot still carries
+ * the entry's scene.
+ * @param depth Delay depth, 1 = the most recent completed scene.
+ * @return The history slot, or -1. */
+static int scene_hist_slot_at(int depth) {
+    if (depth <= 0 || depth > s_scene_hist_count || s_scene_hist_head < 0) return -1;
+    const int slot = (s_scene_hist_head - (depth - 1) + SCENE_HIST * 4) % SCENE_HIST;
+    const int a = s_scene_hist_alias[slot];
+    if (a >= 0 && s_ring[a].scene_id != s_scene_hist_alias_id[slot]) return -1;
+    return slot;
+}
+/** @brief Return the triangles of a history slot that scene_hist_slot_at returned.
+ *
+ * @param slot History slot.
+ * @return The entry's own run, or the ring slot's triangles it names. */
+static const scene_tri_t *scene_hist_tris(int slot) {
+    const int a = s_scene_hist_alias[slot];
+    return a >= 0 ? s_ring[a].tri : (const scene_tri_t*)s_scene_hist[slot].data;
+}
 /** @brief Push the completed accumulator into the history ring by exchanging storage, not copying.
  *
  * The oldest slot's run becomes the accumulator's storage, which the next
  * frame refills from triangle 0. When an eager publish took the
- * accumulator's storage (s_scene_moved) there is no completed scene to
- * push, so the ring is emptied instead: a delayed compose then falls back
- * to the live scene as it does before the ring fills. */
+ * accumulator's storage (s_scene_moved), the completed scene lives in the
+ * ring slot it went to: with nothing fed since, the entry names that slot
+ * (scene_hist_tris reads it while the slot keeps the scene id); otherwise
+ * the slot's triangles and the ones fed since are copied into the entry.
+ * A slot already republished leaves no scene to name, and the ring is
+ * emptied so a delayed compose falls back as it does before the ring fills. */
 static void scene_hist_push(void) {
-    if (s_scene_moved) {
-        s_scene_moved = 0;
-        s_scene_hist_head = -1;
-        s_scene_hist_count = 0;
-        return;
-    }
     int slot = (s_scene_hist_head + 1) % SCENE_HIST;
     (void)scene_run_fit(&s_scene_hist[slot], "scene.hist", 0);   /* initialise on first use */
+    s_scene_hist_alias[slot] = -1;
+    if (s_scene_moved) {
+        /* The completed scene is the one the publish moved to its ring slot,
+         * followed by anything fed since. With nothing fed the entry names
+         * the slot; otherwise the two parts are copied into the entry's run. */
+        s_scene_moved = 0;
+        const scene_slot_t *sl = &s_ring[s_scene_moved_slot];
+        if (sl->scene_id != s_scene_moved_id) {   /* republished: nothing to name */
+            s_scene_hist_head = -1;
+            s_scene_hist_count = 0;
+            return;
+        }
+        if (s_scene_n == 0) {
+            s_scene_hist_alias[slot] = s_scene_moved_slot;
+            s_scene_hist_alias_id[slot] = s_scene_moved_id;
+            s_scene_hist_n[slot] = sl->n;
+        } else {
+            const int want = sl->n + s_scene_n;
+            const int hn = scene_run_fit(&s_scene_hist[slot], "scene.hist", want);
+            const int a = hn < sl->n ? hn : sl->n;
+            scene_tri_t *d = (scene_tri_t*)s_scene_hist[slot].data;
+            if (a > 0) memcpy(d, sl->tri, (size_t)a * sizeof *d);
+            if (hn > a) memcpy(d + a, s_scene, (size_t)(hn - a) * sizeof *d);
+            s_scene_hist_n[slot] = hn;
+        }
+        s_scene_hist_bg[slot] = sl->bg;
+        s_scene_hist_frame[slot] = s_scene_frame;
+        s_scene_hist_fade[slot] = sl->fade;
+        s_scene_hist_freeze[slot] = sl->freeze;
+        s_scene_hist_replay[slot] = sl->replay;
+        s_scene_hist_hud_under[slot] = sl->hud_under;
+        s_scene_hist_actor_front[slot] = sl->actor_front;
+        s_scene_hist_head = slot;
+        if (s_scene_hist_count < SCENE_HIST) s_scene_hist_count++;
+        return;
+    }
     scene_run_swap(&s_scene_hist[slot], &s_scene_v);
     s_scene_hist_n[slot] = s_scene_n; s_scene_hist_bg[slot] = s_scene_bg;
     s_scene_hist_frame[slot] = s_scene_frame;
@@ -1128,6 +1203,7 @@ static uint32_t     s_scene_saved_fam[16];
 static uint32_t     s_scene_saved_bg, s_scene_saved_fade, s_scene_saved_freeze;
 static int          s_scene_saved_hud_under, s_scene_saved_actor_front, s_scene_saved_dropped;
 static int          s_scene_saved_ter_after;
+static int          s_scene_saved_moved;
 
 int openpete_native_scene_save(void) {
     if (scene_run_fit(&s_scene_saved, "scene.saved", s_scene_n) < s_scene_n) return 1;
@@ -1140,6 +1216,7 @@ int openpete_native_scene_save(void) {
     s_scene_saved_actor_front = s_scene_actor_front;
     s_scene_saved_ter_after = s_cur_ter_after;
     s_scene_saved_dropped = s_scene_dropped;
+    s_scene_saved_moved = s_scene_moved;
     return 0;
 }
 
@@ -1155,6 +1232,7 @@ void openpete_native_scene_restore(void) {
     s_scene_actor_front = s_scene_saved_actor_front;
     s_cur_ter_after = s_scene_saved_ter_after;
     s_scene_dropped = s_scene_saved_dropped;
+    s_scene_moved = s_scene_saved_moved;   /* the slot still holds the moved scene */
     s_scene_saved_n = -1;
 }
 
@@ -1165,10 +1243,14 @@ void openpete_native_scene_register_frame_close(void (*fn)(unsigned frame)) {
     s_scene_frame_close_cb = fn;
 }
 
+/** @brief Return the VBL stamp of the scene at a delay depth: the accumulator's at depth 0, a history entry's above it.
+ *
+ * @param d Delay depth.
+ * @return The stamp, or 0xFFFFFFFF when the ring does not hold that depth. */
 static unsigned scene_frame_at_depth(int d) {
     if (d <= 0) return s_scene_frame;
-    if (d > s_scene_hist_count || s_scene_hist_head < 0) return 0xFFFFFFFFu;
-    return s_scene_hist_frame[(s_scene_hist_head - (d - 1) + SCENE_HIST * 4) % SCENE_HIST];
+    const int slot = scene_hist_slot_at(d);
+    return slot < 0 ? 0xFFFFFFFFu : s_scene_hist_frame[slot];
 }
 
 static int scene_hist_depth_max(void) { return s_scene_hist_count; }
@@ -1180,11 +1262,8 @@ static int scene_hist_depth_max(void) { return s_scene_hist_count; }
  * @return Non-zero for a re-extracted scene. */
 static int scene_present_replay(void) {
     if (s_ps_slot) return s_ps_slot->replay;
-    int depth = scene_delay_depth();
-    if (depth > 0 && depth <= s_scene_hist_count && s_scene_hist_head >= 0) {
-        int slot = (s_scene_hist_head - (depth - 1) + SCENE_HIST * 4) % SCENE_HIST;
-        return s_scene_hist_replay[slot];
-    }
+    const int slot = scene_hist_slot_at(scene_delay_depth());
+    if (slot >= 0) return s_scene_hist_replay[slot];
     return s_scene_replay;
 }
 
@@ -1197,11 +1276,8 @@ static int scene_present_replay(void) {
  * @return The scene's stamp. */
 static unsigned scene_present_stamp(void) {
     if (s_ps_slot) return s_ps_slot->stamp;
-    int depth = scene_delay_depth();
-    if (depth > 0 && depth <= s_scene_hist_count && s_scene_hist_head >= 0) {
-        int slot = (s_scene_hist_head - (depth - 1) + SCENE_HIST * 4) % SCENE_HIST;
-        return s_scene_hist_frame[slot];
-    }
+    const int slot = scene_hist_slot_at(scene_delay_depth());
+    if (slot >= 0) return s_scene_hist_frame[slot];
     return s_scene_frame;
 }
 
@@ -2858,15 +2934,22 @@ static const scene_tri_t* scene_present_buf(int* out_n, uint32_t* out_bg,
         if (out_actor_front) *out_actor_front = s_ps_slot->actor_front;
         return s_ps_slot->tri;
     }
-    int depth = scene_delay_depth();
-    if (depth > 0 && depth <= s_scene_hist_count && s_scene_hist_head >= 0) {
-        int slot = (s_scene_hist_head - (depth - 1) + SCENE_HIST * 4) % SCENE_HIST;
+    const int slot = scene_hist_slot_at(scene_delay_depth());
+    if (slot >= 0) {
         *out_n = s_scene_hist_n[slot]; *out_bg = s_scene_hist_bg[slot];
         *out_fade = s_scene_hist_fade[slot];
         if (out_freeze) *out_freeze = s_scene_hist_freeze[slot];
         if (out_hud_under) *out_hud_under = s_scene_hist_hud_under[slot];
         if (out_actor_front) *out_actor_front = s_scene_hist_actor_front[slot];
-        return (const scene_tri_t*)s_scene_hist[slot].data;
+        return scene_hist_tris(slot);
+    }
+    const scene_slot_t *ms = scene_moved_slot();
+    if (ms) {   /* an eager publish moved the live scene to this slot */
+        *out_n = ms->n; *out_bg = ms->bg; *out_fade = ms->fade;
+        if (out_freeze) *out_freeze = ms->freeze;
+        if (out_hud_under) *out_hud_under = ms->hud_under;
+        if (out_actor_front) *out_actor_front = ms->actor_front;
+        return ms->tri;
     }
     *out_n = s_scene_n; *out_bg = s_scene_bg; *out_fade = s_scene_fade;
     if (out_freeze) *out_freeze = s_scene_freeze;
@@ -9094,9 +9177,8 @@ static void portal_cover_check(const scene_tri_t* sc, int n)
  * @return The VBL number, 0xFFFFFFFF before the first scene. */
 static unsigned scene_present_frame(void) {
     if (s_ps_slot) return s_ps_slot->frame;
-    int depth = scene_delay_depth();
-    if (depth > 0 && depth <= s_scene_hist_count && s_scene_hist_head >= 0)
-        return s_scene_hist_frame[(s_scene_hist_head - (depth - 1) + SCENE_HIST * 4) % SCENE_HIST];
+    const int slot = scene_hist_slot_at(scene_delay_depth());
+    if (slot >= 0) return s_scene_hist_frame[slot];
     return s_scene_frame;
 }
 
@@ -13655,6 +13737,7 @@ int openpete_native_scene_publish(int64_t target_ns, int kind, double alpha, int
     s_eager_stamp = 0;
     s_scene_n = 0;          /* the accumulator's storage went to the slot */
     s_scene_moved = 1;
+    s_scene_moved_slot = idx; s_scene_moved_id = sl->scene_id;
     SDL_LockMutex(ring_mx());
     sl->state = SS_PENDING;
     s_ring_head = idx;

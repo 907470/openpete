@@ -2011,8 +2011,7 @@ int openpete_native_render_capture_rgba(unsigned char **out, int *w, int *h);
  * rebuilt scene into the frame-history ring in place of the canonical one.
  * @return 0 on success, 1 when the save buffer could not be sized. */
 int  openpete_native_scene_save(void);
-/* Restore the scene saved by openpete_native_scene_save; no-op when nothing
- * is saved. */
+/** @brief Restore the scene openpete_native_scene_save saved, with its moved-to-ring-slot mark; no-op when nothing is saved. */
 void openpete_native_scene_restore(void);
 
 /** @brief Make the screenshot compose read the current scene instead of the lagged history slot.
