@@ -220,10 +220,13 @@ static void render_paths_feed_audit(void) {
     }
 }
 
-/* OPENPETE_RP_CENSUS=LO-HI (or a single frame): per canonical present in that
- * frame range, the canon-drawn path mask and the native scene's per-family
- * triangle counts, so a producer that fed the canonical frame can be told from
- * one that did not. Diagnostic only. */
+/** @brief Prints the canon-drawn paths and the native scene's per-family triangle counts under OPENPETE_RP_CENSUS.
+ *
+ * OPENPETE_RP_CENSUS=LO-HI, or a single value, selects an openpete_frame
+ * range, read on the first call. The per-canonical-present commit calls this
+ * after latching the canon-drawn mask, so each line separates a producer that
+ * fed the canonical scene from one that did not; a family is named by the
+ * first path of its set, or "untagged". */
 static void render_paths_census(void) {
     static env_frame_range_t s_range = ENV_FRAME_RANGE_INIT;
     if (!env_frame_range_active(&s_range, "OPENPETE_RP_CENSUS", openpete_frame)) return;
@@ -276,9 +279,7 @@ bool render_path_addr_visible(uint32_t addr) {
     return false;   /* untracked geometry: dropped while a selection is active */
 }
 
-/* The OT walk's view of the filter (psyq_game_hooks.h). Defined here rather
- * than per game: the registry above is linked into every game target, so the
- * walk's filter is armed wherever --render-paths can be parsed. */
+/* The OT walk's filter hooks (psyq_game_hooks.h), defined once for every game. */
 int psyq_game_render_paths_active(void) { return render_paths_active(); }
 
 int psyq_game_render_path_addr_visible(uint32_t addr) {
@@ -306,7 +307,12 @@ static const feature_dispatch_entry_t render_paths_dispatch[] = {
 };
 
 /* Dev-overlay adapters: the registry row lives in core, which cannot link
- * against this game module — bind the live channel at apply-options time. */
+ * against this game module, so apply-options binds the live channel. */
+/** @brief The render_paths row's getter: writes render_paths_current() into `buf`.
+ *
+ * @param k Unused.
+ * @param buf Receives the text.
+ * @param cap The capacity of `buf`. */
 static void rp_knob_get(const knob_desc_t* k, char* buf, size_t cap) {
     (void)k;
     render_paths_current(buf, cap);
@@ -318,9 +324,12 @@ static int rp_knob_set(knob_desc_t* k, const char* v) {
     return 0;
 }
 
-/* Feature module: parse --render-paths at startup + bracket the
- * presentation-only paths (above). cyclorama/spyro/moby bracket from their own
- * native modules. */
+/** @brief Parses --render-paths, syncs the native isolation background, and registers the per-canonical-present commit.
+ *
+ * Also binds the dev overlay's render_paths row; the bind fails silently in
+ * builds without that row. The module hooks no guest address: each path's
+ * own feature module records its polybuf interval.
+ * @param opts The parsed options; NULL leaves every path rendering. */
 static void render_paths_apply_options(const openpete_options_t* opts) {
     render_paths_init(opts ? opts->render_paths : NULL);
     /* In isolation, an empty native scene must show the background, not the

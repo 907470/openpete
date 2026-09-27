@@ -14,8 +14,15 @@
 extern "C" {
 #endif
 
-/* Register `body` as the game's re-extract, wrapped in a view open/close pair.
- * `body` receives the CPUState the renderer passes, as a void*. */
+/** @brief Registers `body` as the game's re-extract, wrapped in a sub-tick view open and close.
+ *
+ * Stores `body` and registers a wrapper through
+ * openpete_native_register_reextract. The wrapper calls
+ * openpete_subtick_view_begin, then `body` when it is non-NULL, then
+ * openpete_native_scene_mark_replay, then openpete_subtick_view_end. A later
+ * call replaces the stored body.
+ * @param body The game's re-extract; it receives the CPUState the renderer
+ *        passes, as a void*. */
 void game_reextract_view_install(void (*body)(void* cpu));
 
 #ifdef __cplusplus

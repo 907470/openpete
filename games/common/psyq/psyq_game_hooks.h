@@ -238,6 +238,9 @@ uint32_t psyq_game_cd_read_cb_addr(void);
  * (renderer/render_paths.c), which defines them there. They take no
  * psyq_game_provides.h entry and have no inert default, so a game cannot link
  * the registry without arming the OT filter. */
+/** @brief Reports whether a --render-paths selection is in effect; forwards render_paths_active.
+ *
+ * @return Nonzero when the OT walk filters geometry prims by path. */
 int  psyq_game_render_paths_active(void);
 int  psyq_game_render_path_addr_visible(uint32_t addr);
 

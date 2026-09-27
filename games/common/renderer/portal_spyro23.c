@@ -741,9 +741,7 @@ static void p3_lerp_preview(p3_preview* O, const p3_preview* P, const p3_preview
         }
 }
 
-/* Sub-tick re-extract: replay the tick's previews, each lerped toward the
- * record the previous tick captured for the same portal. A portal with no
- * partner there holds its own capture while the rest of the set lerps. */
+/* Sub-tick re-extract: replays the tick's previews, lerped per portal. */
 void portal_s23_reextract(CPUState* cpu, double alpha, int interp_on) {
     if (!openpete_native_scene_enabled()) return;
     if (!render_path_canon_drawn(RP_PORTAL)) return;

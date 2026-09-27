@@ -34,11 +34,24 @@ typedef struct {
     int      nraw;
 } shadow_prim;
 
-/* Decode [start, end) of the polybuf into the shared capture buffer. */
+/** @brief Decodes the polybuf range [start, end) into the shared capture buffer.
+ *
+ * Clears the buffer and its prim-code histogram, then walks every packet,
+ * polygon or not, with a 24-word tag bound, 20 raw words per packet and a
+ * 4096-packet guard. The buffer holds 4096 packets; the histogram counts the
+ * stored ones. A draw-mode mini-packet (tag length 2, code byte 0) stores
+ * with nv = 0, and consumers skip it.
+ * @param cpu The guest CPU state.
+ * @param start The first polybuf address.
+ * @param end One past the last polybuf address. */
 void                shadow_capture_prims(CPUState* cpu, uint32_t start, uint32_t end);
 int                 shadow_prim_count(void);
 const shadow_prim*  shadow_prim_at(int i);
-/* Print the capture's code histogram and the first few decoded primitives. */
+/** @brief Prints the capture's prim-code histogram and its first six primitives to stderr.
+ *
+ * Each primitive prints its raw words and its decoded vertices, and the CLUT
+ * and tpage when it is textured.
+ * @param tag The label printed on the histogram line. */
 void                shadow_dump_prims(const char* tag);
 
 /* A projected point: screen position in float plus the GTE's MAC1..MAC3
@@ -47,12 +60,38 @@ typedef struct { float sx, sy, sz; float m1, m2; } shadow_pt;
 
 int    shadow_s16(int v);
 int    shadow_rd_s16(CPUState* cpu, uint32_t addr);
-/* MVMVA(sf=1, mx=rotation, v=V0, cv=none, lm=0): IR = clamp16((R . v) >> 12). */
+/** @brief GTE MVMVA with sf=1, the rotation matrix, V0, no translation and lm=0: IR = clamp16((R·v) >> 12).
+ *
+ * The products accumulate in 64 bits and the shift is arithmetic.
+ * @param R The rotation, Q12.
+ * @param vx The vector's X.
+ * @param vy The vector's Y.
+ * @param vz The vector's Z.
+ * @param ir Receives IR1..IR3, saturated to -32768..32767. */
 void   shadow_mvmva_ir(const int R[3][3], int vx, int vy, int vz, int ir[3]);
-/* MAC1..MAC3 of the camera-relative ground anchor, the GTE's TR for the
- * corners that follow. */
+/** @brief MAC1..MAC3 of the camera-relative ground anchor, the translation the fan corners project with.
+ *
+ * Computes (C·v) / 4096 in double through ngte_mac, with no truncation and no
+ * saturation.
+ * @param C The camera matrix, Q12.
+ * @param vx The anchor's camera-relative X.
+ * @param vy The anchor's camera-relative Y.
+ * @param vz The anchor's camera-relative Z.
+ * @param TR Receives MAC1..MAC3. */
 void   shadow_ground_tr(const int C[3][3], double vx, double vy, double vz, double TR[3]);
-/* RTPS one local vertex through R and an integer TR, GTE-faithful. */
+/** @brief Projects one local vertex through R and TR with the GTE-faithful RTPS pipeline.
+ *
+ * Runs ngte_project_gte with the -1024..1023 SXY bound applied. The output
+ * keeps the screen position in float, MAC3 as sz, and MAC1 and MAC2.
+ * @param R The rotation, Q12.
+ * @param TR The translation.
+ * @param ofx Screen X offset in pixels.
+ * @param ofy Screen Y offset in pixels.
+ * @param v The view; supplies the projection distance and the divide regime.
+ * @param vx The vertex's X.
+ * @param vy The vertex's Y.
+ * @param vz The vertex's Z.
+ * @param o Receives the projected point. */
 void   shadow_project(const int R[3][3], const double TR[3], double ofx, double ofy,
                       const ngte_view* v, double vx, double vy, double vz, shadow_pt* o);
 
@@ -85,31 +124,66 @@ typedef struct {
     double    ofx, ofy, H;   /* projection registers of that view */
 } shadow_fan;
 
-/* Hand the renderer the fan's footprint data and feed, as untextured
- * subtractive SHADOW triangles under the current scene tag, the linked fan
- * triangles with their gouraud (vertex alpha 1: what the depth-tested
- * fallback pipe draws; the decal discards them) and the prism hull (vertex
- * alpha 0, black: what the decal shades; the fallback subtracts nothing). */
+/** @brief Hands the renderer the fan's footprint block and feeds the fan triangles and the prism hull.
+ *
+ * Both feeds are untextured subtractive SHADOW triangles under the current
+ * scene tag. The linked fan triangles carry their gouraud with vertex alpha
+ * 1: the depth-tested fallback pipe draws them and the decal discards them.
+ * The prism hull carries black with vertex alpha 0: the decal shades it and
+ * the fallback subtracts nothing. The hull is the screen convex hull of each
+ * fan point with the prism floor (16 world units under the fan) and roof
+ * (the caster height) above it; when any of those points lies nearer than
+ * view-Z 16 or projects 4096 or more pixels off, a full-screen cover replaces
+ * the hull. OPENPETE_SHADOW_FOOTPRINT=0 clears the block's footprint term.
+ * @param cpu Unused.
+ * @param f The fan. */
 void   shadow_fan_feed(CPUState* cpu, const shadow_fan* f);
-/* The caster height a player feeder stores beside its anchor
- * (shadow_fan.caster_up); `anchor_up` when the game has no player block. */
+/** @brief The caster height a player feeder stores beside its anchor (shadow_fan.caster_up).
+ *
+ * Reads the z word of the player position in the player state block
+ * (game_layout.player), through the same view as the shadow block: the
+ * sub-tick re-extract stages both from one record. A game with no player
+ * block gets `anchor_up`, which flattens the prism to the fan.
+ * @param cpu The guest CPU state.
+ * @param anchor_up The anchor's world height, the fallback.
+ * @return The caster's world height (game z). */
 double shadow_caster_up(CPUState* cpu, double anchor_up);
 
-/* The ordering-table slot a shadow fan triangle is inserted at. Every shadow
- * routine keys a (anchor, p1, p2) triangle the same way: the sum of the two
- * rim points' SZ plus half that sum plus the anchor's SZ, shifted into slot
- * units and less the routine's bias. The SZ values are the GTE's 16-bit
- * saturated view-Z; `shift` is 9 for the player fans (full-world view-Z) and
- * 7 for the moby shadows (quarter-world view-Z), so both land on the terrain's
- * 128-world slots. A negative slot is a triangle the routine does not link. */
+/** @brief The ordering-table slot a shadow fan triangle (anchor, p1, p2) is inserted at.
+ *
+ * Every shadow routine keys the triangle the same way: the sum of the two rim
+ * points' SZ plus half that sum plus the anchor's SZ, shifted into slot units
+ * and less the routine's bias. Each SZ is rounded and saturated to 0..0xFFFF,
+ * the GTE's 16-bit view-Z. `shift` is 9 for the player fans (full-world
+ * view-Z) and 7 for the moby shadows (quarter-world view-Z), so both land on
+ * the terrain's 128-world slots.
+ * @param sza The anchor's view-Z.
+ * @param sz1 The first rim point's view-Z.
+ * @param sz2 The second rim point's view-Z.
+ * @param shift The key-to-slot shift.
+ * @param bias The routine's bias.
+ * @return The slot; a negative slot is a triangle the routine does not link. */
 int    shadow_ot_slot(float sza, float sz1, float sz2, int shift, int bias);
 /* A slot as the scene tri's key channel (openpete_scene_tri.koff): the slot's
  * absolute key in world units plus the 0.5 sentinel; 0 (not keyed) for a
  * negative slot. */
 float  shadow_slot_koff(int slot);
 
-/* View-Z to native depth. `scale` lifts a walk's view-Z to the one shared
- * full-world scale (4 for a walk working in world/4 coordinates). */
+/** @brief Converts a shadow walk's view-Z to the native scene depth.
+ *
+ * `scale` lifts the walk's view-Z to the one full-world view-Z every feed
+ * shares: the moby-shadow walk works in world/4 coordinates and passes 4, the
+ * player fans pass 1. `bias` then multiplies the full-world view-Z. The
+ * callers pass shadow_bias_spyro or shadow_bias_moby, both 1.0 by default,
+ * for the scene depth and 1.0 for the unbiased pvz. A shadow is a decal
+ * coplanar with its ground: the moby shadows' tie-break is the subtractive
+ * pipelines' hardware depth bias (OPENPETE_SHADOW_HW_BIAS) and the player
+ * fan's occlusion is the depth-aware decal (shadow_decal.frag). Shadows draw
+ * with depth writes off, so the value never enters the opaque depth field.
+ * @param viewz The walk's view-Z (MAC3).
+ * @param scale The factor to full-world view-Z.
+ * @param bias The multiplicative view-Z bias.
+ * @return The native scene depth. */
 float  shadow_depth(float viewz, float scale, float bias);
 float  shadow_bias_spyro(void);
 float  shadow_bias_moby(void);
@@ -134,11 +208,14 @@ void   shadow_reextract(CPUState* cpu);
  * renders under; the caller stages that record's shadow state first. */
 void   shadow_player_reextract(CPUState* cpu, int slot);
 
-/* OPENPETE_SHADOW_PLAYER=0 suppresses the player's own ground shadow, whatever
- * renderer a game draws it with, leaving the moby drop-shadows alone on the
- * shadow render path: the A/B that prices the player fan's painted pixels
- * without a second binary, and what leaves a leave-one-out of the shadow path
- * holding moby shadows only. The guest draw still runs. */
+/** @brief Reports whether the player's own ground shadow feeds the native scene; OPENPETE_SHADOW_PLAYER=0 turns it off.
+ *
+ * Latched on the first call. Off, every game's player-shadow feeder returns
+ * before feeding and the moby drop-shadows stay on the shadow render path:
+ * the A/B that prices the player fan's painted pixels without a second
+ * binary, and the leave-one-out of the shadow path holding moby shadows only.
+ * The guest draw still runs.
+ * @return 1 when on, else 0. */
 int    shadow_player_feed_enabled(void);
 
 #ifdef __cplusplus

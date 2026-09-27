@@ -58,52 +58,92 @@ typedef enum {
  * @param spec comma- or space-separated path names */
 void render_paths_init(const char* spec);
 
-/* Live re-selection (dev overlay): re-parse the CSV and re-sync the native
- * renderer's isolation background. Safe mid-session — the selection only
- * gates prim submission, never game RAM. */
+/** @brief Replaces the selection from `spec` and re-syncs the native renderer's isolation background.
+ *
+ * Runs render_paths_init on `spec`, then openpete_native_set_isolation with
+ * render_paths_active(). The dev overlay's render_paths row calls it on edit.
+ * The selection gates prim submission and the native feed only and writes no
+ * guest RAM, so it may change at any point of a session.
+ * @param spec Comma- or space-separated path names; NULL or empty clears the
+ *        selection. */
 void render_paths_set(const char* spec);
 
-/* Current selection as a CSV ("(all)" when no selection is active,
- * "(none)" when a selection matched nothing). */
+/** @brief Writes the current selection into `buf` as comma-separated path names.
+ *
+ * Writes "(all)" when no selection is in effect and "(none)" when a selection
+ * matched no path; otherwise the selected names in render_path_t order.
+ * Output longer than `cap` is truncated by snprintf.
+ * @param buf Receives the NUL-terminated text.
+ * @param cap The capacity of `buf`. */
 void render_paths_current(char* buf, size_t cap);
 
-/* Is a selection in effect? false = render everything (the default; callers can
- * fast-path out). */
+/** @brief Reports whether a --render-paths selection is in effect.
+ *
+ * @return true after a non-empty spec, even one that matched no path; false
+ *         when every path renders, the default. */
 bool render_paths_active(void);
 
-/* Is this path selected? Always true when no selection is in effect. */
+/** @brief Reports whether path `p` is selected.
+ *
+ * @param p The path.
+ * @return true when no selection is in effect or `p` is selected; false for
+ *         an unselected or out-of-range path under a selection. */
 bool render_path_enabled(render_path_t p);
 
-/* Per-frame interval table. frame_reset clears it (call once per frame after the
- * OT walk consumes it); record appends one path's emitted polybuf range. */
+/** @brief Rolls the interval table into the previous bank and clears the table and the interval-less marks.
+ *
+ * A non-empty table is copied into the previous bank, which the OT-walk filter
+ * consults for the OT built on the previous render VBL; an empty table leaves
+ * the previous bank as it was. The per-canonical-present commit calls it after
+ * render_paths_canon_snapshot. */
 void render_paths_frame_reset(void);
+/** @brief Appends one path's emitted polybuf range [start, end) to the interval table.
+ *
+ * An empty range and an append past the table's 1024 entries are dropped.
+ * OPENPETE_RENDER_PATH_IVDUMP=N prints every range recorded while
+ * openpete_frame equals N.
+ * @param p The path that emitted the range.
+ * @param start The polybuf cursor before the path's dispatch.
+ * @param end The polybuf cursor after it. */
 void render_path_record(render_path_t p, uint32_t start, uint32_t end);
 
-/* Mark a path canon-drawn for this frame WITHOUT a polybuf interval. For
- * producers whose native feed isn't 1:1 with their polybuf output — e.g.
- * RenderPortals under widescreen can feed native-revealed portals the .s
- * culled (empty polybuf interval, real native content). Interval-less, so it
- * feeds only the canon-drawn mask, never the OT-walk addr filter. Cleared by
- * render_paths_frame_reset like the intervals. */
+/** @brief Marks path `p` drawn on the current canonical render without a polybuf interval.
+ *
+ * For a producer whose native feed is not one-to-one with its polybuf output:
+ * RenderPortals under widescreen feeds portals the .s culled, with an empty
+ * polybuf interval. The mark enters only the canon-drawn mask at the next
+ * render_paths_canon_snapshot, never the OT-walk address filter, and
+ * render_paths_frame_reset clears it. An out-of-range `p` is ignored.
+ * @param p The path. */
 void render_path_mark_drawn(render_path_t p);
 
-/* "Canon drawn" mask — which paths emitted geometry in the MOST RECENT canonical
- * render. render_paths_canon_snapshot() latches the current per-frame interval
- * set into this persistent mask (call once per canonical frame, right before
- * render_paths_frame_reset() clears the intervals). render_path_canon_drawn()
- * reads it. The high-FPS sub-tick spine gates each reextract feeder on this so an
- * intermediate present reproduces exactly the path set the canonical frame drew —
- * e.g. during a level transition the game stops rendering terrain, so the spine
- * must not replay stale level geometry over the cyclorama. Independent of the
- * --render-paths selection (the intervals are recorded whenever the native feed
- * is active). */
+/** @brief Latches which paths drew on the canonical render into the canon-drawn mask.
+ *
+ * The mask is the interval-less marks plus every path holding at least one
+ * interval in the current table; render_path_record drops empty ranges, so a
+ * path whose render function ran and emitted nothing reads as not drawn. The
+ * per-canonical-present commit calls it before render_paths_frame_reset. The
+ * sub-tick re-extract gates each feeder on the mask, so an intermediate
+ * present draws the path set the canonical render drew: during a level
+ * transition the game stops rendering terrain and the replay then feeds none.
+ * The mask does not depend on the --render-paths selection. */
 void render_paths_canon_snapshot(void);
+/** @brief Reports whether path `p` drew on the most recent canonical render.
+ *
+ * @param p The path.
+ * @return true when the canon-drawn mask holds `p`; false for an out-of-range path. */
 bool render_path_canon_drawn(render_path_t p);
 
-/* OT-walk filter: should a geometry prim at this PSX polybuf address be drawn?
- * True iff `addr` is inside a SELECTED path's recorded interval. Untracked
- * geometry (no interval) returns false (dropped) when a selection is active.
- * Only meaningful while render_paths_active(); callers gate on that. */
+/** @brief Reports whether the OT walk submits the geometry prim at polybuf address `addr`.
+ *
+ * Searches the current interval table, then the previous bank, since the game
+ * submits DrawOTag at the start of a VBL before that VBL's render functions
+ * record, and returns whether the path owning the first interval containing
+ * `addr` is selected. It does not test render_paths_active(); callers gate on
+ * it first.
+ * @param addr The prim's PSX address.
+ * @return true when `addr` lies in a selected path's interval; false when it
+ *         lies in an unselected path's interval or in none. */
 bool render_path_addr_visible(uint32_t addr);
 
 #ifdef __cplusplus

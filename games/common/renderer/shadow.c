@@ -62,7 +62,11 @@ static uint32_t s_code_hist[256];
 int                shadow_prim_count(void) { return s_gte_n; }
 const shadow_prim* shadow_prim_at(int i)   { return (i >= 0 && i < s_gte_n) ? &s_gte[i] : NULL; }
 
-/* Store one walked primitive into the capture buffer. */
+/** @brief Stores one walked primitive into the capture buffer.
+ *
+ * @param ctx Unused.
+ * @param s The decoded primitive.
+ * @return 1 when stored; 0 when the buffer's 4096 entries are full. */
 static int shadow_prim_sink(void* ctx, const ngte_prim* s) {
     (void)ctx;
     if (s_gte_n >= MAX_PRIMS) return 0;
@@ -81,9 +85,7 @@ static int shadow_prim_sink(void* ctx, const ngte_prim* s) {
     return 1;
 }
 
-/* Walk the polybuf [start, end) into s_gte. A draw-mode mini-packet (tag len
- * 2, code byte 0) is not a polygon: it stores with nv = 0 and consumers skip
- * it. */
+/* Walks the polybuf into s_gte; see shadow.h. */
 void shadow_capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
     OP_PROF_ACCUM_SCOPE("shadow.capture");
     s_gte_n = 0;
@@ -148,6 +150,13 @@ static void shadow_latch_list_base(CPUState* cpu) {
 }
 
 /* ---- moby-shadow dump ----------------------------------------------------- */
+/** @brief Prints the moby-shadow descriptor, the camera and the first six drawn-moby list entries, then the capture.
+ *
+ * The descriptor line decodes the tpage and its ABR from uv1's high half; each
+ * list entry prints its moby's position and packed ground word (ground
+ * height, idxB, idxA), or "bad ptr" for an entry outside main RAM. The list is
+ * read live from the latched base.
+ * @param cpu The guest CPU state. */
 static void shadow_moby_dump(CPUState* cpu) {
     const uint32_t desc = game_layout.shadow.desc;
     fprintf(stderr, "\n=== [shadow-moby-dump f=%u] ===\n", openpete_frame);
@@ -188,6 +197,10 @@ static void shadow_moby_dump(CPUState* cpu) {
  *  the SXY shape against the captured FT3 prims (the .s int16 output as the
  *  oracle).
  * =========================================================================== */
+/** @brief Saturates `v` to -32768..32767.
+ *
+ * @param v The value.
+ * @return The saturated value. */
 static int clamp16i(long v) { return v < -32768 ? -32768 : (v > 32767 ? 32767 : (int)v); }
 
 void shadow_mvmva_ir(const int R[3][3], int vx, int vy, int vz, int ir[3]) {
@@ -209,23 +222,35 @@ void shadow_project(const int R[3][3], const double TR[3], double ofx, double of
     o->m1 = (float)r.m1; o->m2 = (float)r.m2;
 }
 
-/* signed 2*area on the native FLOAT SXY == GTE NCLIP MAC0 sign, WITHOUT the GTE's
- * int16 floor. Flooring (the old lrintf) flips a near-zero-area fan's sign at grazing
- * angles, culling the whole moby drop-shadow so it pops/vanishes — same bug fixed in
- * moby_native (tri_nclip). Precise float here; the Z-buffer/decal handles the rest. */
+/** @brief Signed twice-area of a screen triangle on the float SXY, the sign of GTE NCLIP's MAC0.
+ *
+ * The GTE's integer SXY is not applied: rounding flips a near-zero-area fan's
+ * sign at grazing angles, which culls the whole moby drop-shadow.
+ * @param a The first vertex.
+ * @param b The second vertex.
+ * @param c The third vertex.
+ * @return The signed twice-area; negative is a back face. */
 static double sh_nclip(const shadow_pt* a, const shadow_pt* b, const shadow_pt* c) {
     return ngte_nclip(a->sx, a->sy, b->sx, b->sy, c->sx, c->sy, NGTE_NCLIP_FLOAT);
 }
 
-/* assemble the oriented-quad matrix R' from the two packed orientation indices.
- * idxB replaces the camera matrix's columns 1,2 with C·(0,cosB,sinB) and
- * C·(0,-sinB,cosB); idxA then replaces columns 0,1 of that result with
- * R'·(cosA,sinA,0) and R'·(-sinA,cosA,0).
+/** @brief Assembles the oriented-quad matrix R' from the two packed orientation indices.
+ *
+ * A nonzero idxB replaces the camera matrix's columns 1 and 2 with
+ * C·(0, cosB, sinB) and C·(0, -sinB, cosB); a nonzero idxA then replaces
+ * columns 0 and 1 of that result with R'·(cosA, sinA, 0) and
+ * R'·(-sinA, cosA, 0). Each product is shadow_mvmva_ir. The sine of index i
+ * is the halfword at game_layout.sin_table + i*8, its cosine 0x80 bytes on.
  *
  * game_layout.shadow.matrix_fold_a selects the idxB block's handwritten
  * variant: it discards the new column-1 X term and instead adds idxA*8 into
  * the R11/R12 word, so R12 becomes 0 (or the carry of that addition) and R11
- * is biased before the idxA rotation reads it. */
+ * is biased before the idxA rotation reads it.
+ * @param cpu The guest CPU state; supplies the sine table.
+ * @param C The camera matrix, Q12.
+ * @param idxA The A index, bits 22..27 of the ground word.
+ * @param idxB The B index, bits 16..21 of the ground word.
+ * @param Rp Receives R'. */
 static void assemble_matrix(CPUState* cpu, const int C[3][3], int idxA, int idxB, int Rp[3][3]) {
     const uint32_t sinb = game_layout.sin_table;
     memcpy(Rp, C, sizeof(int)*9);
@@ -261,8 +286,12 @@ static void assemble_matrix(CPUState* cpu, const int C[3][3], int idxA, int idxB
     }
 }
 
-/* 4096² · C⁻¹ via the adjugate: the rows the decal reconstructs a view-space
- * point's camera-relative GTE input vector with, V_j = (inv[j] · MAC) / 4096. */
+/** @brief 4096² · C⁻¹ via the adjugate: the rows the decal reconstructs a camera-relative GTE input vector with.
+ *
+ * A view-space point's input vector is V_j = (inv[j] · MAC) / 4096. A
+ * determinant within 1e-6 of zero is replaced by ±1e-6, keeping its sign.
+ * @param C The camera matrix, Q12.
+ * @param inv Receives the scaled inverse. */
 static void shadow_cam_inverse(const int C[3][3], double inv[3][3]) {
     double a = C[0][0], b = C[0][1], c = C[0][2];
     double d = C[1][0], e = C[1][1], f = C[1][2];
@@ -364,21 +393,28 @@ typedef struct { float sx[3], sy[3], sz[3]; int u[3], v[3]; uint32_t rgb;
 #define MAX_MOSH 1024
 static moshtri s_mosh[MAX_MOSH]; static int s_mosh_n;
 
-/* The GTE packs a projected point as (SY << 16) | (SX & 0xFFFF); the screen
- * extent rejections below are integer tests on that packed word, so the float
- * corners are packed back to it first. Each component is MAC0 >> 16, an
- * arithmetic shift, which rounds toward negative infinity, so the float is
- * floored and not rounded to nearest: a corner whose true X lies in (-1, 0)
- * packs as -1 with its sign bit set, and that sign bit is what the
- * left-of-column-0 rejection reads. */
+/** @brief Packs a projected point as the GTE's (SY << 16) | (SX & 0xFFFF) word.
+ *
+ * The screen-extent rejections below are integer tests on that packed word,
+ * so the float corners are packed back to it first. Each component is
+ * MAC0 >> 16, an arithmetic shift, which rounds toward negative infinity, so
+ * the float is floored and not rounded to nearest: a corner whose true X lies
+ * in (-1, 0) packs as -1 with its sign bit set, and that sign bit is what the
+ * left-of-column-0 rejection reads.
+ * @param p The point.
+ * @return The packed word. */
 static int32_t packed_sxy(const shadow_pt* p) {
     int xi = (int)floorf(p->sx), yi = (int)floorf(p->sy);
     return (int32_t)(((uint32_t)yi << 16) | ((uint32_t)xi & 0xFFFFu));
 }
 
-/* The anchor-extent rejection: the anchor alone must be on screen, tested as
- * the packed word (top-left quadrant and a 0xF00000 vertical bound) and then
- * as its X against -8 and 0x208. */
+/** @brief The anchor-extent rejection, used when the layout's cull form is not the four-corner one.
+ *
+ * The anchor alone must be on screen. Its packed word is rejected when it is
+ * at most 0 (a negative SY, or SX and SY both 0) or at least 0xF00000, and
+ * its sign-extended SX when it is at most -8 or at least 0x208.
+ * @param anchor The projected anchor.
+ * @return 1 to reject the shadow, else 0. */
 static int cull_anchor(const shadow_pt* anchor) {
     int32_t packed = packed_sxy(anchor);
     if (packed <= 0) return 1;
@@ -389,12 +425,17 @@ static int cull_anchor(const shadow_pt* anchor) {
     return 0;
 }
 
-/* The four-corner rejection: reject when every corner is above the screen,
- * when corners 1..3 are all below row 0xE4, when corners 1..3 are all left of
- * column 0, or when every corner is at or right of column 0x200. Corner 0 is
- * absent from the second and third tests and the first bound is folded into
- * the running OR: the handwritten routine keeps the constant in the register
- * it accumulates into, so those two tests answer for three corners only. */
+/** @brief The four-corner rejection of SHADOW_CULL_SPYRO3 layouts.
+ *
+ * Rejects when every corner is above the screen, when corners 1..3 are all at
+ * or below row 0xE4, when corners 1..3 are all left of column 0, or when
+ * every corner is at or right of column 0x200 and not every corner is
+ * exactly at it. Corner 0 is absent from the second and third tests and the
+ * first bound is folded into the running OR: the handwritten routine keeps
+ * the constant in the register it accumulates into, so those two tests answer
+ * for three corners only.
+ * @param c The four projected corners.
+ * @return 1 to reject the shadow, else 0. */
 static int cull_corners(const shadow_pt c[4]) {
     int32_t p[4], xs[4];
     for (int k = 0; k < 4; k++) {
@@ -412,10 +453,13 @@ static int cull_corners(const shadow_pt c[4]) {
     return 0;
 }
 
-/* OPENPETE_SHADOW_INTERP=0 suppresses the two own-motion offsets below,
- * leaving every entry at the newest tick's world pose. It is the engagement
- * leg of tests/harness/check_feeder_subtick.sh --path shadow: the harness reads the
- * whole tick step back under it. */
+/** @brief Reports whether the moby-shadow walk applies the record own-motion offsets; OPENPETE_SHADOW_INTERP=0 turns them off.
+ *
+ * Latched on the first call. Off, every entry the spine does not interpolate
+ * stays at the newest tick's world pose. It is the engagement leg of
+ * tests/harness/check_feeder_subtick.sh --path shadow: the harness reads the
+ * whole tick step back under it.
+ * @return 1 when on, else 0. */
 static int shadow_interp_on(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_SHADOW_INTERP"); v = !(e && *e && *e == '0'); }
@@ -573,26 +617,7 @@ static void shadow_moby_build(CPUState* cpu) {
     }
 }
 
-/* Shadow depth feed. Two corrections over a raw scene_viewz(MAC3):
- *
- *  (1) SCALE — scene_viewz wants ONE shared view-Z scale (full-world, what
- *      terrain feeds as m3*16 and mobys/player-shadow feed directly). The moby
- *      shadow walk works in world/4 coords (camera + moby positions >>2), so its
- *      MAC3 is 4x too small; passing `scale` (4 for moby shadows, 1 for the
- *      player shadow) restores the shared scale. Without it the moby shadow is
- *      always ~4x too near and shows THROUGH distant terrain that should occlude
- *      it.
- *
- *  (2) DECAL BIAS — a shadow is a ground decal coplanar with the terrain it falls
- *      on. The .s drew it via a painter's OT (after the ground, so it always won);
- *      a true Z-buffer instead Z-fights a coplanar pair. Both multiplicative
- *      view-Z pulls are RETIRED to 1.0 (true depth): the moby tie-break is the
- *      hardware polygon offset (OPENPETE_SHADOW_HW_BIAS, native_render.c),
- *      and the player fan's occlusion is the per-pixel DEPTH-AWARE DECAL
- *      (shadow_decal.frag; see shadow_bias_spyro below). The envs
- *      OPENPETE_SHADOW_BIAS_SPYRO / _MOBY remain for A/B only. Shadows are
- *      depth-write-off/depth-free, so none of this can perturb the opaque
- *      depth field. */
+/* View-Z to native scene depth; see shadow.h. */
 float shadow_depth(float viewz, float scale, float bias) {
     return openpete_native_scene_viewz(
         openpete_worldvz_bias(openpete_worldvz_scaled(viewz, scale), bias));
@@ -646,26 +671,31 @@ float shadow_bias_moby(void) {
 #define SHADOW_HULL_NEAR  16.0
 #define SHADOW_HULL_BOUND 4096.0
 
-/* OPENPETE_SHADOW_FOOTPRINT=0 drops the footprint term, leaving the fan's own
- * surface under the depth rule: the negative control of the term's count. */
+/** @brief Reports whether the footprint term is on; OPENPETE_SHADOW_FOOTPRINT=0 turns it off.
+ *
+ * Read on every call. Off, the decal keeps the fan's own surface under the
+ * depth rule alone: the negative control of the term's count.
+ * @return 1 when on, else 0. */
 static int shadow_footprint_on(void) {
     const char* e = getenv("OPENPETE_SHADOW_FOOTPRINT");
     return !(e && *e == '0');
 }
 
-/* The caster's world height: the player position's z in the player state
- * block, read through the same view as the shadow block (the sub-tick
- * re-extract stages both from one record, position bracketed); the anchor's
- * height when the game has no player block, which flattens the prism. */
+/* The caster's world height; see shadow.h. */
 double shadow_caster_up(CPUState* cpu, double anchor_up) {
     const uint32_t pl = game_layout.player.base;
     if (!pl) return anchor_up;
     return (double)(int32_t)cpu->read_word(pl + game_layout.player.pos_off + 8u);
 }
 
-/* Camera-relative world position (x, y, up) of a projected point, through the
- * same 4096² · C⁻¹ rows the decal reconstructs the pre-pass terrain with, so
- * both sides of the footprint test live in one frame. */
+/** @brief Camera-relative world position (x, y, up) of a projected point.
+ *
+ * Uses the same 4096² · C⁻¹ rows the decal reconstructs the pre-pass terrain
+ * with, so both sides of the footprint test share one coordinate system. The
+ * GTE input vector V maps to (V2, -V0, -V1).
+ * @param inv The rows from shadow_cam_inverse.
+ * @param p The projected point; its MAC1, MAC2 and sz are read.
+ * @param w Receives (x, y, up). */
 static void fan_wrel(const double inv[3][3], const shadow_pt* p, double w[3]) {
     const double m[3] = { p->m1, p->m2, p->sz };
     double V[3];
@@ -685,8 +715,15 @@ static int hull_cmp(const void* pa, const void* pb) {
     if (a->y != b->y) return a->y < b->y ? -1 : 1;
     return 0;
 }
-/* Andrew's monotone chain: the convex hull of p[0..n) (sorted in place) into
- * h (room for 2n points), counter-clockwise; returns the vertex count. */
+/** @brief Andrew's monotone chain: the convex hull of p[0..n) into h.
+ *
+ * Sorts `p` in place by x, then y. The lower chain is built first, then the
+ * upper; collinear points are dropped and the closing duplicate is not
+ * counted.
+ * @param p The points; reordered.
+ * @param n The point count.
+ * @param h Receives the hull; room for 2n points.
+ * @return The hull's vertex count. */
 static int convex_hull(fan_xy* p, int n, fan_xy* h) {
     qsort(p, (size_t)n, sizeof *p, hull_cmp);
     int k = 0;
@@ -701,8 +738,13 @@ static int convex_hull(fan_xy* p, int n, fan_xy* h) {
     return k > 1 ? k - 1 : k;
 }
 
-/* The screen position of a view-space point by the GTE's divide without its
- * saturation. 0 when the point cannot stand as a hull vertex. */
+/** @brief The screen position of a view-space point by the GTE's divide without its saturation.
+ *
+ * @param f The fan; supplies the projection registers ofx, ofy and H.
+ * @param m The point's MAC1..MAC3.
+ * @param o Receives the position; unwritten when the view-Z is below 16.
+ * @return 1 when the point can stand as a hull vertex; 0 when its view-Z is
+ *         below 16 or either coordinate reaches 4096 in magnitude. */
 static int hull_project(const shadow_fan* f, const double m[3], fan_xy* o) {
     if (m[2] < SHADOW_HULL_NEAR) return 0;
     o->x = f->ofx + f->H * m[0] / m[2];
@@ -710,9 +752,21 @@ static int hull_project(const shadow_fan* f, const double m[3], fan_xy* o) {
     return fabs(o->x) < SHADOW_HULL_BOUND && fabs(o->y) < SHADOW_HULL_BOUND;
 }
 
-/* The footprint block's point i (0 the anchor, 1..16 the ring) and the two
- * hull points vertically over it: the prism floor (the fan less the margin)
- * and its roof (the caster height). Returns 0 when a hull point is unusable. */
+/** @brief Fills the footprint block's point i and the three hull candidates it contributes.
+ *
+ * Point 0 is the anchor and 1..16 the ring. The block receives the screen
+ * position (floored under vertex snap), the biased and unbiased depths, and
+ * the camera-relative world position. `out` receives the screen point and
+ * the two points vertically over it: the prism floor, 16 world units under
+ * the fan, and its roof at the caster height.
+ * @param f The fan.
+ * @param inv The rows from shadow_cam_inverse.
+ * @param w0 The anchor's camera-relative world position.
+ * @param caster The caster's world height.
+ * @param i The point index.
+ * @param fp The footprint block.
+ * @param out Receives the screen point, the floor and the roof.
+ * @return 1 when both hull points project usably, else 0. */
 static int fan_point(const shadow_fan* f, const double inv[3][3], const double w0[3],
                      double caster, int i, openpete_shadow_footprint* fp, fan_xy out[3]) {
     const shadow_pt* p = i ? &f->ring[i - 1] : &f->anchor;
@@ -737,8 +791,13 @@ static int fan_point(const shadow_fan* f, const double inv[3][3], const double w
     return ok;
 }
 
-/* The linked fan triangles as the guest draws them: gouraud 0x608080 at the
- * anchor to 0 at the rim, vertex alpha 1 marking them as the fan. */
+/** @brief Feeds the linked fan triangles as the guest draws them.
+ *
+ * Each triangle k whose bit is set in tri_mask is (anchor, ring k,
+ * ring k+1), gouraud from anchor_rgb (0x608080 from both player feeders) at
+ * the anchor to 0 at the rim, with vertex alpha 1 marking it as the fan. The
+ * depth is biased by shadow_bias_spyro; pvz is unbiased.
+ * @param f The fan. */
 static void fan_feed_tris(const shadow_fan* f) {
     const float bias = shadow_bias_spyro();
     for (int k = 0; k < SHADOW_FAN_RING; k++) {
@@ -809,7 +868,14 @@ void shadow_fan_feed(CPUState* cpu, const shadow_fan* f) {
     }
 }
 
-/* feed the native moby shadows (textured FT3, blend from the tpage's ABR) */
+/** @brief Walks the drawn-moby list and feeds the native moby shadows.
+ *
+ * Each shadow is four textured FT3 fan triangles, blended by the tpage's ABR,
+ * under the moby-shadow scene tag. A triangle the game does not insert
+ * (MOBY_SHADOW_SKIP) is not fed. Depth is the world/4 MAC3 scaled by 4,
+ * biased by shadow_bias_moby; pvz is unbiased. Nothing is fed, and the scene
+ * frame is not begun, when the walk yields no triangle.
+ * @param cpu The guest CPU state. */
 static void shadow_moby_feed_native(CPUState* cpu) {
     shadow_moby_build(cpu);
     if (s_mosh_n <= 0) return;
@@ -835,10 +901,15 @@ static void shadow_moby_feed_native(CPUState* cpu) {
     openpete_native_scene_set_tag(0);
 }
 
-/* A/B: native moby-shadow tris vs the captured FT3 prims (.s int16 SXY oracle).
- * Both produce 4 tris/moby in the same fan order, so compare element-wise.
- * Reports VACUOUS when the routine emitted no textured triangle: a run with
- * nothing to compare is not a pass. */
+/** @brief Compares the native moby-shadow triangles against the captured FT3 prims, the .s int16 SXY reference.
+ *
+ * Both produce four triangles per moby in the same fan order, so they compare
+ * element-wise over the shorter list. One stderr line reports the mean and
+ * worst SXY distance, the floored-X and floored-Y agreement counts, and the
+ * colour differences. Reports VACUOUS when either side has no triangle: a run
+ * with nothing to compare is not a pass. OPENPETE_SHADOW_VERIFY_DETAIL prints
+ * the first eight triangle pairs once.
+ * @param cpu The guest CPU state. */
 static void shadow_moby_compare(CPUState* cpu) {
     shadow_moby_build(cpu);
     int ft3 = 0;
@@ -917,7 +988,11 @@ unsigned shadow_verify_frame(void) {
     return f;
 }
 
-/* Latch the list base before the draw overwrites the GTE registers. */
+/** @brief The bracket's pre-draw step: latches the drawn-moby list before the draw overwrites the GTE registers.
+ *
+ * @param cpu The guest CPU state.
+ * @param feed Unused.
+ * @param verify Unused. */
 static void shadow_pre(CPUState* cpu, int feed, int verify) {
     (void)feed; (void)verify;
     shadow_latch_list_base(cpu);

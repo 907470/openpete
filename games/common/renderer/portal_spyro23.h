@@ -49,16 +49,42 @@ typedef struct portal_game_s23_consts {
 
 extern const portal_game_s23_consts_t portal_game_s23;
 
-/* Replay the tick's captured previews on a sub-tick present; `alpha` lerps
- * the rect and pentagon edges from the previous tick when `interp_on`. */
+/** @brief Feeds the tick's captured portal previews again on a sub-tick present.
+ *
+ * Returns without feeding when the native scene is off, when the portal path
+ * did not draw on the canonical present, or when the current tick captured
+ * nothing. With `interp_on`, OPENPETE_PORTAL3_INTERP not starting with 0,
+ * `alpha` below 0.999 and a valid previous capture, each preview is lerped
+ * toward its partner on the previous tick (clip rect, world depth, IR0, far
+ * colour and the pentagon edges the two share); a preview with no partner
+ * keeps its own capture. Otherwise the capture is fed unchanged, so a present at alpha 1
+ * matches the canonical present bit for bit.
+ * @param cpu The guest CPU state.
+ * @param alpha The sub-tick alpha in [0, 1].
+ * @param interp_on Nonzero when the caller brackets the present between two ticks. */
 void portal_s23_reextract(CPUState* cpu, double alpha, int interp_on);
 
-/* True while a portal preview fed within the last couple of presents. */
+/** @brief Reports whether a portal preview emitted geometry within the last two VBLs.
+ *
+ * Compares openpete_frame, the VBL counter, against the value it held when
+ * the feeder last emitted a preview triangle.
+ * @return Nonzero when a preview emitted at most two VBLs ago, else 0. */
 int portal_s23_sky_recent(void);
 
-/* Fill out[] with the opening plane of every portal the pass previewed on the
- * current or immediately-previous tick, one entry per portal slot. Returns the
- * count (0 when no preview is active). */
+/** @brief Fills `out` with the screen-space opening of every portal in the latest capture.
+ *
+ * The latest capture counts only when it was taken at most three VBLs ago.
+ * One entry is written per portal, from its base record (leaf argument 1),
+ * and a record without a pentagon of at least three edges is skipped. The
+ * opening polygon is the preview's colour bounds clipped by each pentagon
+ * edge, shifted by the view's screen offset from (256, 120). The plane is
+ * constant-depth (a = b = 0, c = 1 / depth) at the preview's world depth,
+ * floored at 1, and carries no view-space outline (vn = 0).
+ * @param cpu Unused.
+ * @param v The view whose screen offset places the polygon.
+ * @param out Receives the planes.
+ * @param max The capacity of `out`.
+ * @return The number of planes written; 0 when no recent capture holds a preview. */
 int portal_s23_sky_planes(CPUState* cpu, const ngte_view* v, openpete_portal_skyplane* out, int max);
 
 #endif /* OPENPETE_COMMON_RENDERER_PORTAL_SPYRO23_H */
