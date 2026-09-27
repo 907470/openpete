@@ -7734,16 +7734,34 @@ int openpete_native_hdfold_on(void)
     return env && texture_pack_replacements_active();
 }
 
+static SDL_Mutex *s_hdf_mx;
+/** @brief Return the mutex guarding the fold's upload queue and shelf packer, creating it on first use.
+ *
+ * The guest thread (intern, reset) and the presenting thread (flush) both
+ * reach it first; a compare-and-swap publishes exactly one mutex and the
+ * loser destroys its own.
+ * @return The mutex. */
+static SDL_Mutex *hdf_mx(void)
+{
+    SDL_Mutex *m = (SDL_Mutex *)SDL_GetAtomicPointer((void **)&s_hdf_mx);
+    if (m) return m;
+    SDL_Mutex *n = SDL_CreateMutex();
+    if (!SDL_CompareAndSwapAtomicPointer((void **)&s_hdf_mx, NULL, n)) SDL_DestroyMutex(n);
+    return (SDL_Mutex *)SDL_GetAtomicPointer((void **)&s_hdf_mx);
+}
+
 void openpete_native_hdfold_reset(void)
 {
+    /* The presenting thread's flush reads the pending count, uploads, then
+     * subtracts what it uploaded; clearing the queue between those steps
+     * without the lock drives the count negative. */
+    SDL_LockMutex(hdf_mx());
     s_hdf_n = 0;
     s_hdf_pending_n = 0;
     s_hdf_shelf_x = s_hdf_shelf_y = s_hdf_shelf_h = 0;
+    SDL_UnlockMutex(s_hdf_mx);
 }
 
-
-static SDL_Mutex *s_hdf_mx;
-static SDL_Mutex *hdf_mx(void) { if (!s_hdf_mx) s_hdf_mx = SDL_CreateMutex(); return s_hdf_mx; }
 int openpete_native_hdfold_intern(int tpx, int tpy, int clx, int cly, int bpp,
                                   const float us[3], const float vs[3])
 {

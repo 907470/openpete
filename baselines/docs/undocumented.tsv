@@ -662,7 +662,6 @@ core/renderer/native_render.c	hd_defer_flush	none
 core/renderer/native_render.c	hd_defer_push	none	
 core/renderer/native_render.c	hd_flush_pending	none	
 core/renderer/native_render.c	hd_pending_add	none	
-core/renderer/native_render.c	hdf_mx	none	
 core/renderer/native_render.c	hdfold_flush_locked	none	
 core/renderer/native_render.c	hud_paint_cmp	none	
 core/renderer/native_render.c	native_depth_prepass	none	
