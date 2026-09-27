@@ -81,9 +81,14 @@ static uint32_t s_tag_hist[256];   /* keyed on the OT tag length (word[+0]>>24) 
 
 static int s16(int v) { return (int)(int16_t)(uint32_t)v; }
 
-/* Store one walked primitive. Tiles, lines and the sparkle quads are not
+/** @brief Appends one walked primitive to s_prim.
+ *
+ * Copies the decoded fields and the raw words. Tiles and lines are not
  * polygons: they arrive with nv = 0 and only their raw words, which the dump
- * prints and the feed decodes against the layout the dump confirmed. */
+ * prints and the A/B compares read.
+ * @param ctx Unused.
+ * @param s The walked primitive.
+ * @return 1 when stored, 0 when s_prim holds MAX_PRIMS entries. */
 static int particle_prim_sink(void* ctx, const ngte_prim* s) {
     (void)ctx;
     if (s_prim_n >= MAX_PRIMS) return 0;
@@ -279,9 +284,13 @@ static op_time_t s_phase_now = 0;   /* present clock; 0 = phase interp off
  * construction. Never above 1 (the future is unsimulated). */
 #define PART_ALPHA_MIN (-0.35)
 
-/* OPENPETE_STREAK_DBG: rate-limited log of any emitted line / fan leg
- * longer than 300 px on screen — when a streak is visible, one run with
- * this set names the family + slot instead of a debugging session. */
+/** @brief Reports whether OPENPETE_STREAK_DBG enables the long-streak log.
+ *
+ * When set, streak_log prints each emitted particle line, glow fan leg or
+ * sparkle line longer than 300 px on screen with its family and pool slot,
+ * at most five lines per openpete_frame value. The variable is read once
+ * and cached.
+ * @return 1 when the variable is set and not "0", else 0. */
 static int streak_dbg(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_STREAK_DBG"); v = (e && *e && *e != '0'); }
@@ -354,21 +363,36 @@ static int part_phase_prev(uint32_t pp, part_prev_t* out) {
     return 1;
 }
 
-/* channel lerp helpers: plain byte, wrapping byte angle (256/circle shortest
- * arc), and int16 (line endpoints). lerp_b clamps to the byte range: the
- * negative-alpha presents extrapolate BACKWARD past prev, which must not
- * push a size/colour byte channel out of range. */
+/** @brief Interpolates a byte channel from p to c at alpha a, clamped to [0, 255].
+ *
+ * A negative alpha extrapolates backward past p; the clamp keeps a size or
+ * colour byte channel in range.
+ * @param p The previous tick's byte.
+ * @param c The current tick's byte.
+ * @param a The sub-tick alpha, at least PART_ALPHA_MIN.
+ * @return The interpolated value. */
 static double lerp_b(int p, int c, double a) {
     double v = (double)p + ((double)c - (double)p) * a;
     return v < 0.0 ? 0.0 : (v > 255.0 ? 255.0 : v);
 }
+/** @brief Interpolates a byte angle (256 per circle) from p to c along the shorter arc.
+ *
+ * The result is not wrapped back into [0, 256).
+ * @param p The previous tick's angle byte.
+ * @param c The current tick's angle byte.
+ * @param a The sub-tick alpha.
+ * @return The interpolated angle. */
 static double lerp_wrap_b(int p, int c, double a) {
     int d = (c - p) & 0xFF; if (d >= 128) d -= 256;
     return (double)p + (double)d * a;
 }
 
-/* OPENPETE_PART_PHASE_DBG: per-present one-line trace of the first phase-lerped
- * particle (spin/size channels) — fractional values prove the sub-tick sweep. */
+/** @brief Reports whether OPENPETE_PART_PHASE_DBG enables the particle phase trace.
+ *
+ * When set, each particle build walk prints one line for the first
+ * phase-interpolated particle with its interpolated size and spin channels
+ * and the raw bytes. The variable is read once and cached.
+ * @return 1 when the variable is set and not "0", else 0. */
 static int part_phase_dbg(void) {
     static int s = -1;
     if (s < 0) { const char* e = getenv("OPENPETE_PART_PHASE_DBG"); s = (e && *e && *e != '0'); }
@@ -390,8 +414,15 @@ static int glow_anim_dbg(void) {
  * bounds); each build entry rebuilds it, the cull helpers read it. */
 static ngte_view s_pv;
 
-/* GTE divide-cap regime for an inline projection: SZ3 <= H/2 at the GTE's H
- * (Hc); the verdict at the display H (He) is counted alongside. */
+/** @brief Reports whether an inline projection falls in the GTE divide-cap regime.
+ *
+ * The cap applies when SZ3 <= 0 or SZ3 <= H/2 at the GTE's H (Hc). The
+ * verdict at the display H (He) is only counted in the NGTE_SITE_PART_CAP
+ * census.
+ * @param sz3 The clamped SZ3.
+ * @param Hc The canonical projection distance.
+ * @param He The display projection distance.
+ * @return 1 when the quotient is capped, else 0. */
 static int part_cap(double sz3, double Hc, double He) {
     int c = (sz3 <= 0.0 || Hc >= 2.0 * sz3);
     NGTE_LIMIT(NGTE_SITE_PART_CAP, c, sz3 <= 0.0 || He >= 2.0 * sz3);
@@ -422,8 +453,17 @@ static void proj_view(double ofx, double ofy, const ngte_view* v,
     o->sx = r.sx; o->sy = r.sy; o->m1 = r.m1; o->m2 = r.m2; o->m3 = r.m3;
 }
 
-/* the .s screen-rect reject of the projected centre (s4=0x10000 s5=0x1000000
- * s6=0x2000000), faithfully on the packed int32 (SY<<16)|(SX&0xFFFF). */
+/** @brief Applies the .s screen-rect reject to a projected particle centre.
+ *
+ * Rounds the centre and tests the packed int32 (SY << 16) | (SX & 0xFFFF)
+ * as the .s does: packed <= 0x10000 (s4) rejects at the top, packed >=
+ * 0x1000000 (s5) at the bottom. The left and right edges (the .s SX <= 0
+ * and the s6 0x2000000 test) are the running view's horizontal bounds
+ * s_pv.xlo and s_pv.xhi, which equal [0, 512] at 4:3 and widen for a wider
+ * view.
+ * @param sxf The centre's screen X.
+ * @param syf The centre's screen Y.
+ * @return 1 to cull, 0 to keep. */
 static int screen_rect_cull(double sxf, double syf) {
     int SX = (int)lrint(sxf), SY = (int)lrint(syf);
     int32_t v0  = (int32_t)(((uint32_t)(SY & 0xFFFF) << 16) | (uint32_t)(SX & 0xFFFF));
@@ -526,7 +566,13 @@ static void decode_material(CPUState* cpu, uint32_t pp, int mclass, fquad* q) {
     q->blend = stp ? ngte_abr_blend(tp.abr, NGTE_ABR_QUARTER_AS_ADD) : 0;
 }
 
-/* SZ window 128..8192 (clamped SZ3) + depth-cue LOD cull (SZ3>>5 < texsub>>8). */
+/** @brief Applies the .s SZ window and depth-cue LOD cull to a particle.
+ *
+ * Clamps MAC3 to [0, 65535] as SZ3, rejects SZ3 outside [128, 8192), and
+ * rejects when (SZ3 >> 5) < texsub_hi.
+ * @param mac3 The centre's view-space MAC3.
+ * @param texsub_hi The high byte of the record's low halfword at +0x10.
+ * @return 1 to cull, 0 to keep. */
 static int sz_and_lod_cull(double mac3, int texsub_hi) {
     int sz3 = (int)(mac3 < 0 ? 0 : (mac3 > 65535 ? 65535 : mac3));
     if (sz3 < 128 || sz3 >= 8192) return 1;
@@ -943,13 +989,19 @@ static void particle_compare(CPUState* cpu) {
     }
 }
 
-/* ---- native feed (3b.3 endpoint: float FT4 particles into the scene) -------
- * Push the native FT4 quads (sel 2/3/6) as textured tris with the data-driven
- * blend + a single representative centre depth (particles are small billboards;
- * the per-vertex z would over-separate the affine path's TR<<2). Determinism-
- * safe (display-only; the .s produced m_03 / Sparkle m_Life headless). NOTE:
- * sel 0 (tile), 1/4 (lines), 5 (affine matrix), sparkles + glow rings are not
- * yet walked, so those are absent in the native panel (TODO). */
+/* ---- native feed ------------------------------------------------------- */
+/** @brief Builds the g_Particles pool walk and feeds its quads and lines into the native scene.
+ *
+ * Lines (sel 1 world streaks, sel 4 HUD egg bursts) become two-triangle
+ * ribbons 1 px wide, gouraud along the line, untextured. Quads (sel 0
+ * tiles, sel 2, 3 and 5 billboards) become two triangles with the decoded
+ * material and blend. Each primitive takes one depth, its centre or first
+ * endpoint view-Z, because particles are small billboards. Every triangle
+ * carries its OPENPETE_TAG_PARTICLE tag. Glows and sparkles feed through
+ * their own functions. Display-only: the .s already ran and wrote every
+ * verdict byte. OPENPETE_PARTICLE_MATDBG=<n> prints each quad's material for
+ * three openpete_frame values starting at n.
+ * @param cpu The guest CPU state. */
 static void particle_feed_native(CPUState* cpu) {
     particle_build(cpu);
     if (s_fq_n <= 0 && s_pline_n <= 0) return;
@@ -1195,18 +1247,22 @@ static void glow_build(CPUState* cpu) {
     }
 }
 
-/* Feed the native glow fan tris into the scene — untextured gouraud, ADDITIVE
- * (blend 2). Display-only; the .s produced any verdict state headless.
+/** @brief Builds the glow ring fans and feeds them into the native scene as additive gouraud triangles.
  *
- * The fan carries its own ordering-table key, (MAC3 >> 7) + rec[+0x20]
- * (r_particles.s:988-990, the field is 0), and the aura rank sentinel, which
- * puts its fragments on the key contest's aura arm: the fan is ordered
- * against the bodies it overlaps by the table's own slots — the owner's
- * bucket minus m_DepthOffset (4 on Sparx; the key @8001F810..F828, the offset
- * packed @8001F464..F46C), the avatar's bucket minus sortDepth — while its
- * stored depth stays true, so terrain still decides it by geometry. One
- * stored depth cannot do both: a fan pushed behind its owner in world units
- * sinks into whatever ground the table draws under it. */
+ * Untextured, blend 2 (ABR mode 1). Display-only: the .s already ran and
+ * wrote every verdict byte.
+ *
+ * Each triangle carries koff = centre MAC3 + 0.5, the fan's ordering-table
+ * key in world units ((MAC3 >> 7) + rec[+0x20] in r_particles.s:988-990,
+ * the field being 0), and the OPENPETE_SCENE_RANK_AURA sentinel, which puts
+ * its fragments on the key contest's aura arm. The fan is ordered against
+ * the bodies it overlaps by the table's own slots (the owner's bucket minus
+ * m_DepthOffset, 4 on Sparx, the key at 8001F810..F828 and the offset
+ * packed at 8001F464..F46C; the avatar's bucket minus sortDepth) while its
+ * stored depth stays the true view-Z, so terrain still occludes it by
+ * geometry. One stored depth cannot do both: a fan pushed behind its owner
+ * in world units sinks into the ground the table draws under it.
+ * @param cpu The guest CPU state. */
 static void glow_feed_native(CPUState* cpu) {
     glow_build(cpu);
     if (s_gtri_n <= 0) return;
@@ -1324,18 +1380,23 @@ static const uint32_t k_s3_glint[6][3] = {
  * view-Z in world/4, so the threshold is 0x1000 in c.m3 units. */
 #define S3_GLINT_NEAR_M3 4096.0
 
-/* Sub-tick twinkle-PHASE interpolation (without it gem sparkles animate at
- * 29.913 Hz regardless of --render-fps). A sparkle's position is
- * static for its whole life — what steps is the ANIMATION phase: m_Life
- * (pulse scale) decremented per tick and m_0x0E (spin) advanced ~3·dt per
- * tick by the .s. The interp-objs table captures live g_Sparkles slots per
- * tick (interp_regions.c); when the re-extract pass is active
- * (s_phase_now — the shared pool-wide latch above) we lerp life + spin
- * between a slot's prev/curr snapshots at its own alpha and run the fade
- * math at FLOAT precision (fade8, scaledFade, sincos_entry_f) — the same
- * treatment moby rotation got (moby.c sincos_interp). The canonical
- * inline render (latch off) stays integer/byte-exact for the sparkle A/B
- * harness. Render-side only: sparkle RAM is never written. */
+/** @brief Walks g_Sparkles and builds each live sparkle's twinkle cross lines or style-1 star.
+ *
+ * Reads the pool after the .s ran, so a slot with m_Life > 0 is exactly a
+ * sparkle the .s drew. A cross is two lines (T0 to T3, T1 to T2) into
+ * s_sline; a style-1 sparkle (low nibble of the pad byte +0x13) nearer
+ * than S3_GLINT_NEAR_M3, or with no hue, is an 8-point star into s_sstar.
+ *
+ * A sparkle's position is static for its life; its animation phase steps
+ * per tick: m_Life (pulse scale) decrements and m_0x0E (spin) advances.
+ * While s_phase_now is set (the re-extract pass), life and spin are
+ * interpolated between the slot's interp-objs prev and curr snapshots at
+ * the slot's own alpha, and the fade math runs in float (fade8,
+ * scaledFade, ngte_sincos_f); a respawn, a moved position or a changed
+ * m_Speed snaps. With the latch clear the canonical inline build stays
+ * integer and byte-exact for the sparkle A/B. Sparkle RAM is never
+ * written.
+ * @param cpu The guest CPU state. */
 static void sparkle_build(CPUState* cpu) {
     s_sline_n = 0;
     s_sstar_n = 0;
@@ -1600,8 +1661,13 @@ static void sparkle_feed_native(CPUState* cpu) {
     openpete_native_scene_set_tag(0);
 }
 
-/* A/B native sparkle lines vs the captured LINE_F prims (code 0x40): per-vertex
- * NN over native endpoints ↔ nearest .s line endpoint (raw[2]/raw[3]). */
+/** @brief Compares the native sparkle lines against the renderer's captured LINE_F prims (code 0x40).
+ *
+ * Rebuilds the sparkles, then matches every native line endpoint to its
+ * nearest .s line endpoint (raw[2], raw[3], packed (Y << 16) | X) by
+ * Manhattan distance. Prints one [sparkle-ab] line with the line and prim
+ * counts, the mean and the worst distance.
+ * @param cpu The guest CPU state. */
 static void sparkle_compare(CPUState* cpu) {
     sparkle_build(cpu);
     int prim_line = 0; for (int p = 0; p < s_prim_n; p++) if (s_prim[p].code == 0x40) prim_line++;
@@ -1813,6 +1879,12 @@ static void dragonstar_compare(CPUState* cpu) {
 }
 
 /* ---- gating --------------------------------------------------------------- */
+/** @brief Reports whether OPENPETE_PARTICLE_VERIFY enables the particle verify mode.
+ *
+ * Verify mode captures the renderers' prims, dumps the pools and prims once
+ * and runs the native-versus-.s A/B compares. The variable is read once and
+ * cached.
+ * @return 1 when the variable is set and not "0", else 0. */
 static int verify_enabled(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_PARTICLE_VERIFY"); v = (e && *e && *e != '0'); }
@@ -1852,8 +1924,15 @@ static void particle_path_census_exit(void) {
             s_pcen_sp_ticks, s_pcen_sp_extra_ticks, s_pcen_sp_extra, s_pcen_sp_missing_ticks, s_pcen_sp_missing, s_pcen_sp_extra_first);
 }
 static void sparkle_build(CPUState* cpu);
-/* Called on the sparkle hook after the .s ran and its prims were captured
- * (s_prim[] holds them when it emitted anything). Two LINE_F (0x40) per twinkle. */
+/** @brief Counts, for one sparkle hook call, the twinkles the native walk builds beyond and short of the .s.
+ *
+ * Runs after the .s drew and its prims were captured. Rebuilds the
+ * sparkles and compares the native cross count (s_sline_n / 2; stars are
+ * not counted) with the captured LINE_F (0x40) prims / 2, accumulating the
+ * extra and missing totals, their tick counts and the first extra tick.
+ * No-op unless OPENPETE_PARTICLE_PATH_CENSUS is on.
+ * @param cpu The guest CPU state.
+ * @param captured 1 when s_prim holds this call's prims, else 0. */
 static void particle_path_census_sparkle(CPUState* cpu, int captured) {
     if (s_pcen_on != 1) return;
     sparkle_build(cpu);
@@ -1917,7 +1996,13 @@ static void particle_path_census_note(CPUState* cpu, char tag, uint32_t bytes) {
 static hook_bracket_state s_particle_hb;
 static void (*s_particle_realfn)(CPUState*);
 static void particle_run_draw(CPUState* cpu, uint32_t addr) { (void)addr; s_particle_realfn(cpu); }
-/* The pool the .s walks (g_Particles is a pointer), read before the draw. */
+/** @brief Stashes the g_Particles pool pointer before the guest particle renderer runs.
+ *
+ * g_Particles is a pointer the game swaps between two buffers, so the pool
+ * the .s walks is read here and later walks use s_part_pool.
+ * @param cpu The guest CPU state.
+ * @param feed Unused.
+ * @param verify Unused. */
 static void particle_pre(CPUState* cpu, int feed, int verify) {
     (void)feed; (void)verify;
     s_part_pool = cpu->read_word(G_PARTICLES);

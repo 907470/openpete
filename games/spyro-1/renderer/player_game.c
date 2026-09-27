@@ -38,28 +38,42 @@ void spyro_verify_run(CPUState* cpu, uint32_t startp, uint32_t endp);
 
 static void s1_run_draw(CPUState* cpu) { func_80023AC4(cpu); }
 
-/* MIPS `(v << lsh) >> rsh` (sll then arithmetic sra) reproduced exactly. */
+/** @brief Extracts a signed bit field as the MIPS sll-then-sra pair `(v << lsh) >> rsh` does.
+ *
+ * The left shift is unsigned, so it discards the high bits without
+ * overflow; the right shift is arithmetic.
+ * @param v The packed word.
+ * @param lsh The left shift.
+ * @param rsh The arithmetic right shift.
+ * @return The sign-extended field. */
 static inline int32_t sra_field(int32_t v, int lsh, int rsh) {
     return (int32_t)((uint32_t)v << lsh) >> rsh;
 }
 
-/* ---- vertex stream ------------------------------------------------------
- * One vertex of one keyframe stream, into the running accumulator, advancing
- * whichever packed cursor this vertex uses. The per-vertex correction word
- * comes from the model's own animation-vertex array and is consumed every
- * vertex. The WIDTH is per vertex, carried in a flag bit of the vertex just
- * consumed — bit 0 of the byte in the 1-byte form (.L800246C8
- * `andi $t0,$s1,0x1`), bit 14 of the halfword in the 2-byte form (.L800247F0
- * `andi $t0,$s1,0x4000`, set before the escape branch so it applies to escapes
- * too). The first vertex's width comes from the part record's flags word. A
- * fixed per-part width desyncs the prefix sum at the first switch.
+/* ---- vertex stream ------------------------------------------------------ */
+/** @brief Decodes one vertex of one keyframe stream into the running accumulator.
  *
- * X and Y deltas subtract, Z adds. The 2-byte form's sign bit is a wide escape
- * that ASSIGNS the accumulator from two halfwords instead of adding, and takes
- * no correction word into the result.
+ * Advances whichever packed cursor this vertex uses. The per-vertex
+ * correction word comes from the model's own animation-vertex array and is
+ * consumed every vertex. The width is per vertex, carried in a flag bit of
+ * the vertex just consumed: bit 0 of the byte in the 1-byte form
+ * (.L800246C8 `andi $t0,$s1,0x1`), bit 14 of the halfword in the 2-byte
+ * form (.L800247F0 `andi $t0,$s1,0x4000`, set before the escape branch so
+ * it applies to escapes too). The first vertex's width comes from the part
+ * record's flags word. A fixed per-part width desyncs the prefix sum at the
+ * first switch.
  *
- * vstream state: litp = the 1-byte cursor, shortp = the 2-byte cursor,
- * scratch_u[0] = the correction-word cursor, flag = the next vertex's width. */
+ * X and Y deltas subtract, Z adds. The 1-byte form indexes D_VERT_LUT and
+ * adds the correction word to the entry. The 2-byte form's sign bit is a
+ * wide escape that assigns the accumulator from two halfwords instead of
+ * adding, and takes no correction word into the result; otherwise the
+ * halfword's split and the correction word's split both add.
+ *
+ * Stream state: litp = the 1-byte cursor, shortp = the 2-byte cursor,
+ * scratch_u[0] = the correction-word cursor, flag = the next vertex's width.
+ * @param cpu The guest CPU state.
+ * @param s The stream state, updated in place.
+ * @param first Unused: the part record's flags word already set the opening width. */
 static void s1_vstream_next(CPUState* cpu, moby_vstream_t* s, int first) {
     (void)first;   /* the part record's flags word already said which width opens */
     int32_t corr = (int32_t)cpu->read_word(s->scratch_u[0]); s->scratch_u[0] += 4u;
@@ -90,10 +104,15 @@ static void s1_vstream_next(CPUState* cpu, moby_vstream_t* s, int first) {
     s->flag = next2;
 }
 
-/* Bits 14-23 of the flags word are the CUMULATIVE scratchpad end byte offset:
- * the projection cursor runs continuously across the parts and does not reset,
- * so a part's vertex count is the difference from the previous part's end,
- * divided by the four bytes one projected vertex occupies. */
+/** @brief Returns a part's vertex count from its flags word.
+ *
+ * Bits 14-23 of the flags word are the cumulative scratchpad end byte
+ * offset: the projection cursor runs continuously across the parts and does
+ * not reset, so a part's vertex count is the difference from the previous
+ * part's end, divided by the four bytes one projected vertex occupies.
+ * @param flags The part record's flags word.
+ * @param cursor The previous part's end offset; receives this part's end.
+ * @return The vertex count, 0 when the end offset went backward. */
 static int s1_part_vcount(uint32_t flags, int* cursor) {
     int cur_end = (int)((flags >> 14) & 0x3FFu);
     int count = (cur_end - *cursor) >> 2;
@@ -120,20 +139,29 @@ static int s1_part_vcount(uint32_t flags, int* cursor) {
  *   TR_head / TR_tail = the seam joints below.
  */
 
-/* The old A/B: read the matrices back out of the part records instead of
- * deriving them. The derived path is the default, verified byte-exact against
- * the records over the whole demo. */
+/** @brief Reports whether OPENPETE_SPYRO_SCRATCH_MAT selects the part transforms read back from the part records.
+ *
+ * When set, s1_part_xform reads each part's matrix and translation out of
+ * the records the draw built instead of deriving them from gamestate. The
+ * derived path is the default. The variable is read once and cached.
+ * @return 1 when the variable is set and not "0", else 0. */
 static int s1_scratch_mat(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_SPYRO_SCRATCH_MAT"); v = (e && *e && *e != '0'); }
     return v;
 }
 
-/* M = start . Ry.Rx.Rz from a packed euler word. A zero word gives the
- * identity (sin 0 = 0, cos 0 = 4096) so M = start, the sticky case. `part`
- * selects the sub-tick float angles the orchestrator handed in, which render
- * rotation below the 8-bit euler grid; otherwise the byte-exact table lookup
- * is used. */
+/** @brief Composes M = start * Ry * Rx * Rz from a packed euler word.
+ *
+ * A zero word gives the identity (sin 0 = 0, cos 0 = 4096), so M = start,
+ * the sticky case. When player_rot_interp holds sub-tick float angles for
+ * `part`, they replace the word's bytes and render rotation below the 8-bit
+ * euler grid; otherwise the byte-exact table lookup is used.
+ * @param cpu The guest CPU state.
+ * @param start The matrix to compose onto.
+ * @param rot The packed euler word (Z at byte 0, X at byte 1, Y at byte 2).
+ * @param out Receives the composed matrix.
+ * @param part The skeleton part index, 0 = body. */
 static void s1_compose_euler(CPUState* cpu, const int start[3][3], uint32_t rot,
                              int out[3][3], int part) {
     ngte_euler_sc e;
@@ -201,11 +229,19 @@ static int s1_part_xform(CPUState* cpu, const ngte_view* v, int part,
 
 static inline int s1_sat16(int v) { return v < -32768 ? -32768 : (v > 32767 ? 32767 : v); }
 
-/* One seam-joint field, INTPL'd between the two keyframes. Mirrors the GTE
- * INTPL pipe: result = (IR << 12 + IR0 * sat16(FC - IR)) >> 12. A single
- * keyframe is the raw field. Integer-exact, so the seam translation matches
- * the record the draw built byte for byte; a float lerp and truncate drifts by
- * up to two units at the near-plane tail tip. */
+/** @brief Extracts one seam-joint field and blends it between the two keyframes as the GTE INTPL does.
+ *
+ * Result = (IR << 12 + IR0 * sat16(FC - IR)) >> 12, with IR the field of
+ * keyframe A and FC the field of keyframe B. A single keyframe is the raw
+ * field. Integer-exact, so the seam translation matches the record the
+ * draw built byte for byte; a float lerp and truncate drifts by up to two
+ * units at the near-plane tail tip.
+ * @param jw Keyframe A's joint word.
+ * @param jwB Keyframe B's joint word.
+ * @param lsh The field's left shift before the arithmetic >> 21.
+ * @param ir0 The keyframe blend weight (12-bit fraction).
+ * @param dual 1 when two keyframes blend, 0 for keyframe A alone.
+ * @return The blended field. */
 static int s1_seam_field(int32_t jw, int32_t jwB, int lsh, int ir0, int dual) {
     int a = sra_field(jw, lsh, 21);
     if (!dual) return a;
@@ -214,17 +250,27 @@ static int s1_seam_field(int32_t jw, int32_t jwB, int lsh, int ir0, int dual) {
     return (int)((((int64_t)a << 12) + (int64_t)ir0 * diff) >> 12);
 }
 
-/* The seam joint: the body keyframe stream's words at [0x10] (head) and [0x14]
- * (tail), whose field layout matches a vertex delta (Z = >>21, X = <<11>>21,
- * Y = <<22>>21) with X and Y negated, blended by the body's own keyframe
- * weight and then transformed through the body's matrix and translation
- * (the seam RTPS at D_80024054). The stream cursor is a static frame-offset
+/** @brief Computes a head or tail part's origin from the body's seam joint.
+ *
+ * The joint is the body keyframe stream's word at [0x10] (head) or [0x14]
+ * (tail), read at cursor - 8 or cursor - 4 since the cursor sits 0x18 past
+ * the keyframe block's base. Its field layout matches a vertex delta (Z =
+ * >>21, X = <<11>>21, Y = <<22>>21) with X and Y negated; it is blended by
+ * the body's keyframe weight and transformed through the body's matrix and
+ * translation (the seam RTPS at D_80024054), in double precision, without
+ * the routine's per-component saturation. The stream cursor is a static
  * asset pointer, so reading the keyframe block through it is an asset read.
  *
- * The blend weight is the BODY record's, not the 16-level integer progress
- * byte: the sub-tick re-extract writes a fine interpolated weight into that
- * record, and reading the byte instead steps the seam in coarse increments
- * while the vertices are smooth. */
+ * The caller passes the body record's blend weight, not the 16-level
+ * integer progress byte: the sub-tick re-extract writes a fine
+ * interpolated weight into that record, and the byte would step the seam in
+ * coarse increments while the vertices are smooth.
+ * @param cpu The guest CPU state.
+ * @param parent The body's transform.
+ * @param part 1 = head, 2 = tail.
+ * @param ir0 The body's keyframe blend weight.
+ * @param dual 1 when two keyframes blend, else 0.
+ * @param out Receives the part's view-space translation; zero when the part block or the parent is absent. */
 static void s1_seam_joint(CPUState* cpu, const player_xform_t* parent,
                           int part, int ir0, int dual, double out[3]) {
     uint32_t block = player_part_block_base(cpu);
@@ -250,17 +296,28 @@ static void s1_seam_joint(CPUState* cpu, const player_xform_t* parent,
                 + (double)parent->M[i][2]*VZ) / 4096.0;
 }
 
-/* ---- face stream --------------------------------------------------------
- * All three parts stitch into one mesh with one face stream and one colour
- * table, so the walk decodes it once and the face indices slot straight into
- * the projection.
+/* ---- face stream -------------------------------------------------------- */
+/** @brief Decodes the avatar's face stream into walk faces.
  *
- * Word 0: sign < 0 = FRESH (quad-capable), >= 0 = STRIP (one triangle); bit 0
- * is the emit-rule flag; three vertex indices at ((w0 >> {20,11,2}) & 0x7FC)
- * >> 2. Word 1: three colour byte-offsets at ((w1 >> {17,8}) & 0x7FC) and
- * ((w1 << 1) & 0x7FC), and bit 0 is the semi-transparency enable. A FRESH
- * record is 0x18 bytes with the fourth index and colour in word 2 and the
- * texture triple at +0x0C; a STRIP record is 0x14 with the triple at +0x08. */
+ * All three parts stitch into one mesh with one face stream and one colour
+ * table, so the walk decodes it once and the face indices slot straight
+ * into the projection.
+ *
+ * Word 0: sign < 0 = FRESH (quad-capable), >= 0 = STRIP (one triangle);
+ * bit 0 is the emit-rule flag; three vertex indices at
+ * ((w0 >> {20,11,2}) & 0x7FC) >> 2. Word 1: three colour byte-offsets at
+ * ((w1 >> {17,8}) & 0x7FC) and ((w1 << 1) & 0x7FC), and bit 0 is the
+ * semi-transparency enable. A FRESH record is 0x18 bytes with the fourth
+ * index and colour in word 2 and the texture triple at +0x0C; a STRIP
+ * record is 0x14 with the triple at +0x08 and no fourth index (i3 =
+ * 0xFFFF, c3 = c2). The walk stops at 8192 records.
+ * @param cpu The guest CPU state.
+ * @param fb The face stream's base; its first word is the byte count and the records follow.
+ * @param bytecount The records' byte count.
+ * @param out Receives the decoded faces.
+ * @param cap The capacity of out; records past it are counted but not stored.
+ * @param st Receives the raw record count and align = 0 when the walk ended exactly at the stream end, else 2.
+ * @return The number of faces stored. */
 static int s1_decode_faces(CPUState* cpu, uint32_t fb, uint32_t bytecount,
                            moby_wface_t* out, int cap, moby_face_stats_t* st) {
     uint32_t fp = fb + 4u, end = fb + 4u + bytecount;
@@ -308,10 +365,17 @@ static int s1_decode_faces(CPUState* cpu, uint32_t fb, uint32_t bytecount,
     return n;
 }
 
-/* The one face and colour stream the whole skeleton shares: the body's own
- * animation header. When the state block's colour filter is interpolating, the
- * colours come from the pre-blend table the draw built in the render scratch
- * instead of the model's static block. */
+/** @brief Returns the face and colour streams the whole skeleton shares, from the body's animation header.
+ *
+ * The header is the model's +0x38 table entry for the body's animation
+ * index; faces are at +0x14, colours at +0x18. When the colour filter's
+ * top byte is non-zero (the filter is interpolating), the colours come from
+ * the pre-blend table the draw built in the render scratch instead of the
+ * model's static block.
+ * @param cpu The guest CPU state.
+ * @param part Unused: every part shares the body's streams.
+ * @param out Receives the face and colour stream addresses.
+ * @return 1 when the header is a KSEG0 pointer, else 0. */
 static int s1_part_faces(CPUState* cpu, int part, player_faces_t* out) {
     (void)part;
     uint32_t model = cpu->read_word(game_layout.moby.model_table) | 0x80000000u;

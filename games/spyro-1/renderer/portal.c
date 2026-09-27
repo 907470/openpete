@@ -76,9 +76,15 @@ extern void     func_80050BE0(CPUState* cpu);  /* RenderPortals (the driver)    
 extern unsigned openpete_frame;
 
 
-/* DPCS depth-cue blend: lerp an 0x00BBGGRR colour toward the fog target by t in
- * [0,1] (the blended-medium portal's cross-dissolve, func_80050240 — t=IR0/4096,
- * fog=D_800757D4). t<=0 returns the colour unchanged (the un-fogged dome/flat). */
+/** @brief Blends an 0x00BBGGRR colour toward the fog target by t, as the GTE DPCS depth cue does.
+ *
+ * The blended-medium portal's cross-dissolve (func_80050240) uses t =
+ * IR0 / 4096 and fog = D_800757D4. Each channel rounds to nearest; t above
+ * 1 clamps to 1.
+ * @param rgb The colour, 0x00BBGGRR.
+ * @param fog The fog target, 0x00BBGGRR.
+ * @param t The blend factor; t <= 0 returns the colour unchanged (the un-fogged dome or flat).
+ * @return The blended colour, 0x00BBGGRR. */
 static uint32_t blend_to_fog(uint32_t rgb, uint32_t fog, double t) {
     if (t <= 0.0) return rgb & 0xFFFFFF;
     if (t > 1.0) t = 1.0;
@@ -91,6 +97,12 @@ static uint32_t blend_to_fog(uint32_t rgb, uint32_t fog, double t) {
 }
 
 /* ---- dump gating ---------------------------------------------------- */
+/** @brief Reports whether OPENPETE_PORTAL_DUMP enables the portal leaf dump.
+ *
+ * The dump prints up to 512 leaf calls once openpete_frame reaches
+ * OPENPETE_PORTAL_FRAME (default 1750). The variable is read once and
+ * cached.
+ * @return 1 when the variable is set and not "0", else 0. */
 static int portal_dump_enabled(void) {
     static int s = -1;
     if (s < 0) { const char* v = getenv("OPENPETE_PORTAL_DUMP"); s = (v && v[0] && v[0] != '0') ? 1 : 0; }
@@ -195,6 +207,17 @@ static const portal_nudge_t k_portal_nudge[] = {
  * and are NOT defects — the flag was their own horizon moving. Confirm the
  * artifact by eye at the rows the diff fires on before adding a row here.
  * (34, 51, 55 also flagged and were not confirmed either way; left alone.) */
+/** @brief Looks up a portal's opening-polygon correction by destination levelId.
+ *
+ * OPENPETE_PORTAL_NUDGE="id:dh,dv[,sh[,sv]];..." is searched first: three
+ * fields translate only, four scale uniformly, five scale per axis. Then
+ * k_portal_nudge. With no entry the outputs are the identity (0, 0, 1, 1).
+ * @param levelId The portal's destination levelId.
+ * @param dh Receives the horizontal translation, world units, + right along the opening.
+ * @param dv Receives the vertical translation, world units, + up.
+ * @param sh Receives the horizontal scale.
+ * @param sv Receives the vertical scale.
+ * @return 1 when an environment entry matched or the table entry is not the identity, else 0. */
 static int portal_nudge_for(int levelId, double* dh, double* dv,
                             double* sh, double* sv) {
     *dh = 0.0; *dv = 0.0; *sh = 1.0; *sv = 1.0;
@@ -367,18 +390,19 @@ static void dump_portal_table(CPUState* cpu) {
     }
 }
 
-/* Resolve the flat-fill colour a leaf carries in a0 (see feed_portal_quad): the
- * FLAT leaf passes a pointer whose [0] IS the colour; BOTH dome-family leaves
- * (DOME func_8004F4BC and BLENDED func_80050240) pass the skybox struct, whose
- * m_BackgroundColor is at +0x18 — the same a0 the dome feed consumes. The
- * caller states which via a0_is_skybox — the leaf hook knows the leaf. (A
- * magnitude sniff, w0 >= 0x10000 ? colour : struct, used to discriminate; the
- * ANIMATED flat colour dips below 0x10000 at its cycle trough — blue and green
- * reach zero while red persists — and the sniff then read a0+0x18 of a STACK
- * colour pointer: junk 0x18 past the leaf's temp, a one-frame flicker to
- * whatever lived there, black to lime, at exactly the darkest cycle phase.)
- * Returns the raw 0x00BBGGRR (pre-fog); 0 if a0 isn't a RAM pointer. Shared by
- * the canonical feed and the sub-tick capture so both resolve identically. */
+/** @brief Resolves the flat-fill colour a portal leaf carries in a0.
+ *
+ * The FLAT leaf passes a pointer whose [0] is the colour; both dome-family
+ * leaves (DOME func_8004F4BC and BLENDED func_80050240) pass the skybox
+ * struct, whose m_BackgroundColor is at +0x18. The caller states which,
+ * because the leaf hook knows the leaf: the word's magnitude cannot
+ * discriminate, since the animated flat colour drops below 0x10000 at its
+ * cycle trough (blue and green reach zero). The canonical feed and the
+ * sub-tick capture both resolve through this function.
+ * @param cpu The guest CPU state.
+ * @param a0 The leaf's a0.
+ * @param a0_is_skybox 1 when a0 is a skybox struct, 0 when it points at the colour.
+ * @return The raw 0x00BBGGRR colour before fog, 0 when a0 is outside [0x80010000, 0x80200000). */
 static uint32_t portal_flat_raw_rgb(CPUState* cpu, uint32_t a0, int a0_is_skybox) {
     if (a0 < 0x80010000u || a0 >= 0x80200000u) return 0;
     return cpu->read_word(a0 + (a0_is_skybox ? 0x18u : 0u)) & 0xFFFFFF;
@@ -630,12 +654,23 @@ static double portal_outline_maxvz(CPUState* cpu, const ngte_view* v, uint32_t p
     return maxvz;
 }
 
-/* Owning portal of a leaf. The close/dome leaves pass the owning portal's skybox
- * directly (func_8004F4BC: a0=m_Skybox; the close func_8004FEA0: a0=m_Skybox+0x10)
- * → EXACT match (the screen-centre match mis-binds a large, screen-clamped portal
- * whose clip-rect centre drifts onto another portal — the f2075 "portal vanished").
- * Far/medium flat leaves carry a stack/global colour ptr with no skybox link →
- * fall back to the portal whose centroid projects nearest the clip-rect centre. */
+/** @brief Finds the portal a leaf call draws for.
+ *
+ * The close and dome leaves pass the owning portal's skybox directly
+ * (func_8004F4BC: a0 = m_Skybox; the close func_8004FEA0: a0 = m_Skybox +
+ * 0x10), matched exactly against each portal's +0x00. The screen-centre
+ * match cannot serve them: a large, screen-clamped portal's clip-rect
+ * centre drifts onto another portal. Far and medium flat leaves carry a
+ * stack or global colour pointer with no skybox link, so they take the
+ * portal whose outline centroid projects, under the canonical view,
+ * nearest the clip-rect centre. At most six portals are searched; an
+ * outline count outside [1, 16] is read as 5.
+ * @param cpu The guest CPU state.
+ * @param v The running view; the centroid match uses its canonical copy.
+ * @param a0 The leaf's a0.
+ * @param cx The clip rect's centre X.
+ * @param cy The clip rect's centre Y.
+ * @return The Portal* guest address, 0 when none matches. */
 static uint32_t owning_portal_ptr(CPUState* cpu, const ngte_view* v, uint32_t a0, double cx, double cy) {
     uint32_t n = cpu->read_word(G_PORTALCOUNT); if (n > 6) n = 6;
     /* The clip-rect centre is a screen coordinate the game produced at its own
@@ -703,8 +738,16 @@ static int portal_outline_screen(CPUState* cpu, const ngte_view* v, uint32_t p, 
     return npts;
 }
 
-/* Fit inv-vz = a*x + b*y + c over the (planar) outline — 1/w is linear in screen
- * space for a plane, so this is the portal window's depth field. 0 if degenerate. */
+/** @brief Fits 1/vz = a*x + b*y + c through three points of a planar projected outline.
+ *
+ * 1/w is linear in screen space for a plane, so the fit is the portal
+ * window's depth field. Samples the points at indices 0, n/3 and 2n/3.
+ * @param poly The projected outline.
+ * @param n The point count.
+ * @param a Receives the x coefficient.
+ * @param b Receives the y coefficient.
+ * @param c Receives the constant.
+ * @return 1 on success, 0 when the samples coincide or are collinear. */
 static int fit_invz(const ppt* poly, int n, double* a, double* b, double* c) {
     int i0 = 0, i1 = n / 3, i2 = (2 * n) / 3;
     if (i1 == i0) i1 = 1; if (i2 == i1) i2 = n - 1; if (i2 == i0) return 0;
@@ -808,9 +851,13 @@ static int portal_plane_invz(CPUState* cpu, const ngte_view* v, uint32_t p,
  * without a rebuild: an encoding affine in 1/vz resolves the inner-frame
  * z-fight this margin was inflated to overpower, so it wants a smaller pull.
  * OPENPETE_PORTAL_SKY_EPS=0 disables the forward bias entirely. */
-/* How far BEHIND the opening plane a correction band is marked, world units.
- * Only needs to exceed the depth quantum plus any authoring slop in the stone
- * it overlaps; it never applies to the opening interior. */
+/** @brief Returns how far behind the opening plane the aperture's correction band is marked, in world units.
+ *
+ * The band lies between the authored and the corrected outline. The value
+ * only needs to exceed the depth quantum plus any authoring slop in the
+ * stone it overlaps; it never applies to the opening interior. Default 24,
+ * overridden by OPENPETE_PORTAL_BAND_BACK, read once.
+ * @return The push-back in world units. */
 static double portal_band_back_vz(void) {
     static int init = 0; static double v = 24.0;
     if (!init) { const char* e = getenv("OPENPETE_PORTAL_BAND_BACK");
@@ -945,17 +992,34 @@ static void set_ot_sky_vz(const ppt* poly, int pn) {
     s_ot_vz = 128.0 * (double)B;
 }
 
-/* Native depth from the portal plane at a screen point (perspective-correct via
- * the inv-vz fit), pulled forward by the constant portal-sky depth offset. */
+/** @brief Returns the native depth of the portal plane at a screen point.
+ *
+ * Evaluates the fit_invz plane (perspective-correct), then
+ * portal_cyclorama_depth pulls it nearer by the plane-cover margin
+ * openpete_portal_plane_margin(). A non-positive 1/vz reads as vz = 1e9.
+ * @param a The fit's x coefficient.
+ * @param b The fit's y coefficient.
+ * @param c The fit's constant.
+ * @param x The screen X.
+ * @param y The screen Y.
+ * @return The scene depth. */
 static float plane_depth(double a, double b, double c, double x, double y) {
     double inv = a * x + b * y + c;
     double vz = (inv > 1e-9) ? 1.0 / inv : 1e9;
     return portal_cyclorama_depth(vz);
 }
 
-/* The same field pushed BEHIND the opening plane, matching the aperture ring's
- * construction (outline vz + PORTAL_SKY_EPS_VZ). Used for the dome's spill
- * outside the opening, where the world must win any honest contest. */
+/** @brief Returns the native depth of the portal plane at a screen point, pushed behind the plane.
+ *
+ * The push is s_sky_push_vz + portal_sky_eps_vz(), the aperture ring's
+ * construction. Serves the dome's spill outside the opening, where world
+ * geometry at or near the plane must win.
+ * @param a The fit's x coefficient.
+ * @param b The fit's y coefficient.
+ * @param c The fit's constant.
+ * @param x The screen X.
+ * @param y The screen Y.
+ * @return The scene depth. */
 static float plane_depth_back(double a, double b, double c, double x, double y) {
     double inv = a * x + b * y + c;
     double vz = (inv > 1e-9) ? 1.0 / inv : 1e9;
@@ -1148,8 +1212,13 @@ int openpete_portal_sky_planes(CPUState* cpu, const ngte_view* v, openpete_porta
  * still runs; only the scene emission is suppressed. */
 static int portal_scene_emit_enabled(void) { return render_path_enabled(RP_PORTAL); }
 
-/* Every portal tri lies on (or is constructed against) the opening plane at
- * its own per-vertex depth: its perspective W is that view-Z. */
+/** @brief Adds one portal triangle to the scene in the current portal group.
+ *
+ * Every portal triangle lies on, or is constructed against, the opening
+ * plane at its own per-vertex depth, so each vertex's perspective depth
+ * (pvz) is set to its stored depth.
+ * @param t The triangle.
+ * @param category The scene category (mask or cyclorama). */
 static void portal_add_tri(const openpete_scene_tri* t, int category) {
     openpete_scene_tri w = *t;
     for (int k = 0; k < 3; k++) w.v[k].pvz = w.v[k].z;
@@ -1396,8 +1465,16 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, int a0_is_skybox,
  * matrix from the GTE the leaf left (post-call, TR=0), sectors from the skybox
  * (count@+0x00, sector-array ptr@+0x04), gouraud faces Sutherland-Hodgman-clipped
  * to the arch rect at the portal depth. */
-/* Clip a convex polygon against one axis-aligned half-plane (axis 0=x,1=y;
- * keepGE: keep the >=val side). out holds up to n+1 verts. Interpolates colour. */
+/** @brief Clips a convex gouraud polygon against one axis-aligned half-plane.
+ *
+ * Sutherland-Hodgman, interpolating position and colour at each crossing.
+ * @param in The polygon.
+ * @param n Its vertex count.
+ * @param out Receives the clipped polygon; holds up to n + 1 vertices.
+ * @param axis 0 = x, 1 = y.
+ * @param val The plane's coordinate.
+ * @param keepGE 1 keeps the >= val side, 0 the <= val side.
+ * @return The clipped vertex count. */
 static int clip_half(const pgv* in, int n, pgv* out, int axis, float val, int keepGE) {
     int m = 0;
     for (int i = 0; i < n; i++) {
@@ -1466,54 +1543,50 @@ static void register_skyout(const ppt* poly, int pn) {
 }
 
 /* ---- stencil aperture from the opening polygon ----------------------------
- * The dome leaves are confined ONLY by the GPU scissor rect — func_80050BD0
- * zeroes D_80077EA0[0], so func_8005060C's edge clip is skipped — and the PSX
- * relies on the arch stone repainting the rect spill by OT painter order. A
- * depth buffer cannot reproduce that with ONE spill depth: pinned to the
- * FARTHEST outline point plus the margin, a portal seen at an angle has jamb
- * just OUTSIDE the opening that recedes past that depth, so the sky wins there
- * and pokes through the arch shoulder on the far side. (dream_weavers, portal
- * levelId=52: outline vz runs 8653 on the far-left edge down to 7027 on the
- * near-right, so the left jamb sits behind the behind-ring depth and the spill
- * beat it; the right jamb, nearer, occluded correctly.)
+ * The dome leaves are confined only by the GPU scissor rect (func_80050BD0
+ * zeroes D_80077EA0[0], so func_8005060C's edge clip is skipped), and the
+ * PSX relies on the arch stone repainting the rect spill by OT painter
+ * order. A depth buffer cannot reproduce that with one spill depth: pinned
+ * to the farthest outline point plus the margin, a portal seen at an angle
+ * has jamb just outside the opening that recedes past that depth, so the
+ * sky wins there and shows through the arch shoulder on the far side.
  *
- * Fix: mark the stencil aperture from the OPENING POLYGON rather than from the
- * sky footprint, so the silhouette is bounded geometrically and no depth race
- * decides it. This matches what the .s flat leaf already does — the f2439 OT
- * dump shows it fans the opening polygon, not the clip rect — so confining the
- * dome the same way finishes a partition the original half-implements rather
- * than diverging from it.
+ * The stencil aperture is therefore marked from the opening polygon, not
+ * from the sky footprint, so the silhouette is bounded geometrically and no
+ * depth race decides it. The .s flat leaf does the same: it fans the
+ * opening polygon, not the clip rect.
  *
- * The polygon is eroded inward by a constant screen-space margin, as an
- * EDGE-NORMAL offset rather than a scale about the centroid: a scale pulls in
- * proportionally to arch size and would lift the sky off the sill, which the
- * terrain OT-conformance sink depends on meeting. The mask stays depth-TESTED,
- * so anything genuinely in front of the opening — Spyro mid-entry, a moby, the
- * threshold lip — still punches it out. */
+ * The margin is an edge-normal offset, not a scale about the centroid: a
+ * scale moves the edges in proportion to arch size and would lift the sky
+ * off the sill, which the terrain OT-conformance sink depends on meeting.
+ * The mask stays depth-tested, so anything in front of the opening (Spyro
+ * mid-entry, a moby, the threshold lip) still punches it out. */
+/** @brief Reports whether the stencil aperture from the opening polygon is enabled.
+ *
+ * On unless OPENPETE_PORTAL_APERTURE starts with '0'. Read once and cached.
+ * @return 1 when enabled, else 0. */
 static int portal_aperture_enabled(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_PORTAL_APERTURE"); v = (e && e[0] == '0') ? 0 : 1; }
     return v;
 }
-/* Outward margin on the aperture, in WORLD UNITS; negative erodes inward.
+/** @brief Returns the aperture margin in world units.
  *
- * NOT screen pixels. A constant screen margin is a fixed fraction of the
- * SCREEN, not of the arch, so as an arch shrinks with distance the margin
- * becomes an ever-larger share of it — far enough away the preview grows
- * visibly bigger than the stone it is supposed to sit inside (artisans from
- * pos=(65633,8739,58123): the stone_hill arch is a few px across and the
- * preview is a blob over it). The same defect in a new place: this file's
- * whole history is geometric quantities that were expressed on screen and had
- * to be moved into world space.
+ * The margin exists because the authored outline can sit slightly inside
+ * the arch's visible opening, leaving a seam of through-hole world down the
+ * jamb. It is in world units, not screen pixels: a constant screen margin
+ * is a fixed fraction of the screen, so as an arch shrinks with distance
+ * the margin grows relative to it and the preview spreads past the stone.
+ * margin_px_per_vertex converts it per vertex at emit time (d * H / vz), so
+ * it keeps a constant relationship to the stone at every distance.
  *
- * Converted per-vertex at emit time — a world displacement perpendicular to
- * the view maps to d*H/vz screen units — so the margin tracks the arch at
- * every distance and the aperture keeps a constant relationship to the stone.
- *
- * The margin exists because the authored outline can sit slightly inside the
- * arch's visible opening, leaving a seam of through-hole world down the jamb.
- * It stays BOUNDED and the mask stays depth-TESTED, so the sky reaches at most
- * this far past the opening and only where nothing occludes it. */
+ * A positive margin emits an outward ring around the opening
+ * (emit_aperture_ring). A negative margin offsets the interior polygon by
+ * outline_offset with a negative distance, which moves it outward as well.
+ * The sky reaches at most |margin| past the opening, and the mask stays
+ * depth-tested. Default 40, overridden by OPENPETE_PORTAL_APERTURE_MARGIN,
+ * read once.
+ * @return The margin in world units. */
 static double portal_aperture_margin_world(void) {
     static int init = 0;
     static double v = 40.0;
@@ -1524,7 +1597,16 @@ static double portal_aperture_margin_world(void) {
     }
     return v;
 }
-/* Per-vertex screen offset for a world-unit margin at this outline's depths. */
+/** @brief Converts a world-unit margin to a screen offset at each outline vertex's depth.
+ *
+ * out[i] = world * H_eff / max(vz, 1): the screen length of a world
+ * displacement perpendicular to the view at that vertex.
+ * @param cpu Unused.
+ * @param v The running view (H_eff).
+ * @param poly The projected outline.
+ * @param pn The point count.
+ * @param world The margin in world units.
+ * @param out Receives pn screen offsets. */
 static void margin_px_per_vertex(CPUState* cpu, const ngte_view* v, const ppt* poly, int pn,
                                  double world, double* out) {
     (void)cpu;
@@ -1534,20 +1616,19 @@ static void margin_px_per_vertex(CPUState* cpu, const ngte_view* v, const ppt* p
         out[i] = world * H / vz;
     }
 }
-/* Arches whose GEOMETRY ANIMATES — the dragon heads, destination levelId 14
- * (artisans -> toasty) and 62/63/64 (gnorc_gnexus -> twilight_harbor /
- * gnasty_gnorc / gnastys_loot). The head stretches as it opens and the opening
- * polygon does not track the mesh, so the aperture boundary does not coincide
- * with the mouth the way it does on a static arch. A margin wide enough to
- * close authoring seams elsewhere spills preview straight past the mouth on
- * these (measured: ~3 px of overshoot all round, and sky through the apex of
- * levelId 14), so they get NO dilation at all: the aperture is exactly the
- * authored polygon. When the polygon is the only description of the opening
- * that exists, drawing it verbatim is both the most faithful choice and the
- * only one that cannot spill past a mouth it does not match.
+/** @brief Reports whether a portal's arch geometry animates.
  *
- * NOT a boss-portal rule: doctor_shemp(24), blowhard(34), metalhead(44) and
- * jacques(54) are ordinary static arches and take the normal margin. */
+ * The dragon-head arches, destination levelId 14 (artisans -> toasty) and
+ * 62/63/64 (gnorc_gnexus -> twilight_harbor / gnasty_gnorc / gnastys_loot),
+ * stretch as they open while the opening polygon does not track the mesh,
+ * so a margin wide enough to close authoring seams elsewhere spills the
+ * preview past the mouth. portal_margin_for gives them no dilation: the
+ * aperture is exactly the authored polygon. This is not a boss-portal rule:
+ * doctor_shemp (24), blowhard (34), metalhead (44) and jacques (54) are
+ * static arches and take the normal margin.
+ * @param cpu The guest CPU state.
+ * @param p The Portal* guest address; its destination levelId is at +0x1C.
+ * @return 1 for an animated arch, 0 otherwise or when p is 0. */
 static int portal_arch_animates(CPUState* cpu, uint32_t p) {
     if (!p) return 0;
     const int lid = (int32_t)cpu->read_word(p + 0x1C);
@@ -1561,12 +1642,21 @@ static double portal_margin_for(CPUState* cpu, uint32_t p) {
     return m;
 }
 
-/* Offset the outline polygon by `d` pixels along each vertex's inward angle
- * bisector (negative d pushes OUTWARD). Shared by the stencil aperture and the
- * flat background fan so both reach exactly the same extent — the fan is the
- * ONLY thing that covers the opening below the dome's horizon, so if it stops
- * at the un-offset outline while the aperture reaches past it, a band of bare
- * through-hole terrain shows between the preview and the stone. */
+/** @brief Offsets each outline vertex along its inward angle bisector.
+ *
+ * The bisector averages the two adjacent edges' normals, each oriented
+ * toward the centroid, so winding order does not matter. A negative
+ * distance pushes outward, and then a vertex never moves down: the
+ * opening's base sits on the sill, and a fill pushed below it lands inside
+ * nearer ground and breaks the junction into a staircase. The stencil
+ * aperture and the flat background fan share this offset so both reach the
+ * same extent: the fan is the only cover of the opening below the dome's
+ * horizon.
+ * @param poly The projected outline.
+ * @param pn The point count.
+ * @param d The per-vertex offset in pixels; negative is outward.
+ * @param ex Receives the offset X per vertex.
+ * @param ey Receives the offset Y per vertex. */
 static void outline_offset(const ppt* poly, int pn, const double* d, float* ex, float* ey) {
     double cx = 0.0, cy = 0.0;
     for (int i = 0; i < pn; i++) { cx += poly[i].x; cy += poly[i].y; }
@@ -1608,32 +1698,29 @@ static void outline_offset(const ppt* poly, int pn, const double* d, float* ex, 
     }
 }
 
-/* The dilation band between the outline and its outward offset, emitted as a
- * ring of quads at the BEHIND depth (farthest outline vz + PORTAL_SKY_EPS_VZ,
- * pushed back — the same construction the dome's spill uses outside it).
+/** @brief Emits the dilation band between the outline and its outward offset as a ring of quads behind the plane.
  *
- * The margin exists because some arches author the opening polygon a little
- * INSIDE the visible stone edge: clipped strictly to the outline, the sky
- * under-covers and a sliver of background shows along the jamb. But the band
- * must never carry the interior's depth: the interior sits on the opening
- * plane pulled ~24 vz units NEARER (portal_cyclorama_depth's z-fight bias), so
- * a band at that depth BEATS any stone at/near the plane and paints over the
- * jamb — measured on beast_makers' distant arch, where the outline matches the
- * stone edge exactly and every margin value ate stone (the constant backstop
- * colour replacing the jamb texels). At the behind depth the race resolves
- * itself per pixel with no distance conditioning: stone that rasters in the
- * band is nearer and wins; a true authoring gap shows background terrain far
- * behind the plane, which the ring beats and fills.
+ * Each ring vertex sits at its own outline point's view-Z plus
+ * s_sky_push_vz + portal_sky_eps_vz(), so the ring is a skirt following the
+ * opening plane, just behind it. Some arches author the opening polygon a
+ * little inside the visible stone edge, so the sky clipped strictly to the
+ * outline leaves a sliver of background along the jamb. The band must not
+ * carry the interior's depth: the interior tests at the plane pulled
+ * nearer by the plane-cover margin, where it beats any stone at or near the
+ * plane and paints over the jamb. Behind the plane the contest resolves
+ * per pixel: stone that rasters in the band is nearer and wins, and a true
+ * authoring gap shows background terrain far behind the plane, which the
+ * ring beats and fills.
  *
- * A FULL spill mask (dome pieces / rect at a behind-biased plane field, with
- * the terrain conformance widened to match) was tried as the general form and
- * REVERTED: it delegates the whole silhouette to the bucket-mirror verdict,
- * and that mirror mis-judges real faces (dream_weavers LP sec=42 face=3 —
- * mirrored mean 8337 vs sky 7808 reads covered, the .s keeps it on top), so
- * previews poked through arch stone at many angles in free camera. The
- * bounded ring keeps the contest local to the authoring-gap band where the
- * mirror is never consulted. Do not generalize again until the per-walk
- * bucket mirror is calibrated against a world-OT dump. */
+ * The ring is bounded to the band. A full spill mask would delegate the
+ * whole silhouette to the terrain bucket-mirror verdict, which misjudges
+ * real faces; the ring keeps the contest local to the band, where the
+ * mirror is never consulted. Emits nothing when RP_PORTAL is filtered out.
+ * @param poly The projected outline.
+ * @param pn The point count.
+ * @param dpx The per-vertex outward offset in pixels.
+ * @param rgba The ring colour.
+ * @param channel The scene category (mask or cyclorama). */
 static void emit_aperture_ring(const ppt* poly, int pn, const double* dpx,
                                uint32_t rgba, int channel) {
     if (!portal_scene_emit_enabled()) return;
@@ -1768,7 +1855,20 @@ static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly
     s_aperture_ok = 1;
 }
 
-/* General half-plane clip: keep points on the LEFT of a->b (CCW inside). */
+/** @brief Clips a gouraud polygon against the half-plane on one side of the line a->b.
+ *
+ * The side is the sign of the cross product (b - a) x (p - a): keepLeft
+ * keeps >= 0, the interior of an outline register_skyout oriented. Colour
+ * is interpolated at each crossing; output stops at 24 vertices.
+ * @param in The polygon.
+ * @param n Its vertex count.
+ * @param out Receives the clipped polygon, at most 24 vertices.
+ * @param ax The line start X.
+ * @param ay The line start Y.
+ * @param bx The line end X.
+ * @param by The line end Y.
+ * @param keepLeft 1 keeps the >= 0 side, 0 the <= 0 side.
+ * @return The clipped vertex count. */
 static int clip_dir(const pgv* in, int n, pgv* out,
                     float ax, float ay, float bx, float by, int keepLeft) {
     int m = 0;
@@ -1805,33 +1905,42 @@ static int band_dbg(void) {
     return s_band_dbg;
 }
 
-/* Fan-emit `poly` at PLANE depth, UNSPLIT. The dome's confinement to the
- * opening is the stencil mask alone: the mask's admission depth already
- * discriminates per pixel — the interior fan marks at plane depth, the
- * dilation ring and correction band mark at their behind-plane skirt depth,
- * so a marked pixel is either the opening proper or a genuine through-gap
+/** @brief Fan-emits a clipped dome face unsplit through fan_emit_poly.
+ *
+ * The dome's confinement to the opening is the stencil mask alone. The
+ * mask's admission depth discriminates per pixel: the interior fan marks at
+ * plane depth, the dilation ring and correction band at their behind-plane
+ * skirt depth, so a marked pixel is either the opening or a through-gap
  * (stone depth-fails the skirt and stays unmarked). Painting every marked
- * pixel at plane depth is therefore safe, and it makes the dome cover
- * exactly the pixels the mask (and the flat base fan, which shares the
- * mask's fan construction) covers. The former inside/outside geometric
- * split re-derived the outline boundary with float clips; where its raster
- * disagreed with the mask's by a pixel, the flat base showed as a rim
- * around the dome — an edge that cannot exist when there is only ONE
- * boundary rasterization. (The split's behind-plane spill depth protected
- * nothing the mask admission doesn't already: a world surface nearer than
- * the skirt never gets marked in the first place.) */
+ * pixel at plane depth is therefore safe and makes the dome cover exactly
+ * the pixels the mask and the flat base fan cover, with one boundary
+ * rasterization. A geometric inside/outside split with float clips would
+ * rasterize a second boundary, and a one-pixel disagreement shows the flat
+ * base as a rim around the dome.
+ * @param poly The face polygon.
+ * @param n Its vertex count.
+ * @param depth The constant depth when no plane is used.
+ * @param use_plane 0 = depth, 1 = the opening plane, 2 = the plane pushed behind.
+ * @param pa The plane fit's x coefficient.
+ * @param pb The plane fit's y coefficient.
+ * @param pc The plane fit's constant. */
 static void emit_split_by_outline(const pgv* poly, int n, float depth,
                                   int use_plane, double pa, double pb, double pc) {
     fan_emit_poly(poly, n, depth, use_plane, pa, pb, pc);
 }
 
-/* Clip a gouraud face to the portal CLIP RECT and fan-emit it. This is what the
- * dome leaves actually do: func_80050BD0 sets D_80077EA0[0]=0, so func_8005060C
- * skips outline clipping — the dome is confined ONLY by the GPU scissor rect
- * (D_8007AA00), and the arch SHAPE comes from the stone/floor occluding the rect
- * spill via depth, not from clipping to the opening polygon. Depth policy is the
- * two-region split above: plane inside the opening (f2945), behind-ring on the
- * spill; `depth` is the constant fallback when the plane fit is unavailable. */
+/** @brief Fan-triangulates a gouraud polygon and adds it as portal sky triangles.
+ *
+ * Each vertex's depth is chosen by use_plane, then combined with the
+ * sky_const_depth mode through sky_min2. The colour is the vertex's
+ * rounded, 255-clamped gouraud colour, or s_band_tint when set.
+ * @param v The polygon.
+ * @param n Its vertex count.
+ * @param const_depth The depth when use_plane is 0.
+ * @param use_plane 0 = const_depth, 1 = plane_depth, 2 = plane_depth_back.
+ * @param pa The plane fit's x coefficient.
+ * @param pb The plane fit's y coefficient.
+ * @param pc The plane fit's constant. */
 static void fan_emit_poly(const pgv* v, int n, float const_depth,
                           int use_plane, double pa, double pb, double pc) {
     for (int i = 1; i + 1 < n; i++) {                       /* fan-triangulate */
@@ -1856,6 +1965,24 @@ static void fan_emit_poly(const pgv* v, int n, float const_depth,
     }
 }
 
+/** @brief Clips a gouraud dome face to the portal clip rect and emits it.
+ *
+ * This is what the dome leaves do: func_80050BD0 sets D_80077EA0[0] = 0, so
+ * func_8005060C skips outline clipping and the dome is confined only by the
+ * GPU scissor rect (D_8007AA00). The opening's shape comes from the stencil
+ * aperture.
+ * @param v0 The first vertex.
+ * @param v1 The second vertex.
+ * @param v2 The third vertex.
+ * @param x0 The rect's minimum X.
+ * @param y0 The rect's minimum Y.
+ * @param x1 The rect's maximum X.
+ * @param y1 The rect's maximum Y.
+ * @param depth The constant depth when no plane is used.
+ * @param use_plane 0 = depth, 1 = the opening plane, 2 = the plane pushed behind.
+ * @param pa The plane fit's x coefficient.
+ * @param pb The plane fit's y coefficient.
+ * @param pc The plane fit's constant. */
 static void emit_clipped_gouraud(pgv v0, pgv v1, pgv v2, int x0, int y0, int x1, int y1,
                                  float depth, int use_plane, double pa, double pb, double pc) {
     pgv a[10], b[10];
@@ -2059,9 +2186,22 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t ot_b_hint,
     return 1;
 }
 
-/* Dump one leaf-renderer call: the per-portal clip rect, the colour the leaf
- * carries (a0[0] for the far/medium flat paths), the matched view-Z / depth the
- * feed assigns, and the prims it emitted to the polybuf in [start,end). */
+/** @brief Prints one portal leaf call to stderr.
+ *
+ * Prints the clip rect, the colour at a0[0] (the flat paths' colour), the
+ * OT depth, the owning portal's matched view-Z and its native depth, the
+ * polybuf byte count, and the fog colour and factor; then the owning
+ * portal's projected outline bounding box beside the rect and the view's
+ * horizontal bounds. For the dome leaves (labels beginning "F4" or "5") it
+ * adds the GTE state the leaf left, the skybox sector table, sector 0's
+ * header and first vertices, and the first ten polybuf words.
+ * @param cpu The guest CPU state.
+ * @param which The leaf's label.
+ * @param a0 The leaf's a0.
+ * @param a1 Unused.
+ * @param a2 Unused.
+ * @param start The polybuf cursor before the call.
+ * @param end The polybuf cursor after the call. */
 static void dump_leaf(CPUState* cpu, const char* which, uint32_t a0, uint32_t a1,
                       uint32_t a2, uint32_t start, uint32_t end) {
     int ry0 = (int32_t)cpu->read_word(D_CLIPRECT + 0x0) >> 16, ry1 = (int32_t)cpu->read_word(D_CLIPRECT + 0x4) >> 16;
@@ -2168,7 +2308,11 @@ static void derive_dome_matrix_at(CPUState* cpu, double yaw, double pitch, int M
 
 #include "no_lod.h"   /* openpete_no_lod: --no-lod always renders the geometric dome */
 
-/* --no-lod always-dome enabled? (kill switch OPENPETE_NOLOD_PORTAL_DOME=0) */
+/** @brief Reports whether --no-lod forces the geometric portal dome.
+ *
+ * On under openpete_no_lod unless OPENPETE_NOLOD_PORTAL_DOME starts with
+ * '0'; the variable is read once and cached.
+ * @return 1 when the dome is forced, else 0. */
 static int nolod_portal_dome_on(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_NOLOD_PORTAL_DOME"); v = !(e && *e == '0'); }
