@@ -80,7 +80,13 @@ static int spyro_prim_sink(void* ctx, const ngte_prim* s) {
     return 1;
 }
 
-/* Walk the polybuf [start, end) into s_gte. */
+/** @brief Walks the primitives the Spyro draw wrote in the polybuf range [start, end) into s_gte.
+ *
+ * At most MAX_PRIMS primitives are kept; s_code_hist counts the primitive
+ * codes.
+ * @param cpu The guest CPU state.
+ * @param start The first polybuf address of the draw's output.
+ * @param end The polybuf address past the draw's output. */
 static void capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
     OP_PROF_ACCUM_SCOPE("spyro.capture");
     s_gte_n = 0;
@@ -157,9 +163,13 @@ static void native_rebuild(CPUState* cpu) {
     s_walk_n = player_build_walk(cpu);
 }
 
-/* ---- geometry A/B: native projected vertices vs the primitive vertices ---
- * Nearest-neighbour match of each primitive vertex to the nearest native
- * vertex, prim to native so an over-decode cannot inflate the score. */
+/* ---- geometry A/B: native projected vertices vs the primitive vertices --- */
+/** @brief Matches every captured primitive vertex to its nearest native projected vertex and prints the error to stderr.
+ *
+ * The match runs from primitive to native, so native vertices with no
+ * primitive (an over-decode) cannot improve the score. Prints the share
+ * of vertices within 4 px and 2 px and the mean and maximum distance, or
+ * "no data" when either side is empty. */
 static void spyro_compare_geometry(void) {
     if (!s_proj_n || !s_gte_n) { fprintf(stderr, "[spyro-verify f=%u] no data (proj=%d prim=%d)\n",
                                          openpete_frame, s_proj_n, s_gte_n); return; }

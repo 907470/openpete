@@ -15,16 +15,23 @@
 extern "C" {
 #endif
 
-/* The sub-tick interpolated position for `key` (a camera, player or moby
- * vaddr) at double precision, un-rounded: feeders use it for their
- * camera/object-relative deltas instead of re-reading the floored RAM, so the
- * projection tracks the smooth sub-tick path. Returns 1 and fills out[3] when
- * a bracket is active for `key` this present, 0 otherwise. */
+/** @brief Returns the unrounded sub-tick interpolated position of a camera, player or moby.
+ *
+ * Feeders use it for camera- and object-relative deltas instead of the
+ * integer position in RAM, so the projection follows the sub-tick path.
+ * Outside a sub-tick re-extract (the canonical render) it reports no
+ * entry and the feeder reads RAM.
+ * @param key The object's guest address.
+ * @param out Receives the position, world units.
+ * @return 1 when a bracket holds a position for key this present, else 0. */
 int openpete_native_interp_pos(unsigned int key, double out[3]);
 
-/* Latch the in-flight canonical-render epoch as fresh and start the next;
- * called once per canonical present. Producer-freshness queries compare a
- * stored stamp against the latched epoch. */
+/** @brief Latches the in-flight canonical-render epoch as fresh and starts the next.
+ *
+ * render_paths_commit calls it once per canonical present.
+ * Producer-freshness queries compare a stored stamp against the latched
+ * epoch. The sub-tick implementations also close the player hooks' record epoch
+ * and run the cut-guard locator census when it is enabled. */
 void spyro_native_canon_epoch_commit(void);
 
 /** @brief Set the native clear colour from the DRAWENV the game will apply to the scene being presented.
@@ -51,6 +58,9 @@ void cyclorama_native_env_clear_commit(void);
  * Per-producer freshness for the three canonical moby producers, which share
  * one render-path bit (a load or pause screen runs only the third). A game
  * with no sub-tick spine reports never-fresh, so every replay is skipped. */
+/** @brief Returns the in-flight canonical-render epoch, the value a producer hook stores at capture time.
+ *
+ * @return The epoch; always 0 for a game with no sub-tick spine. */
 uint32_t spyro_native_canon_epoch_stamp(void);
 int      spyro_native_canon_epoch_fresh(uint32_t stamp);
 int      spyro_native_canon_mobyreg_fresh(void);
@@ -73,13 +83,23 @@ static inline int spyro_native_canon_capture_open(void) {
 
 /* Canonical-scratch capture, called from a canonical render hook while the
  * transient render-pass scratch is still live.
- *   _range: a sub-range of the render scratch block (offset, length).
  *   _recs:  the whole cull-record region, captured before a later pass reuses
  *           the overlapping bytes. */
+/** @brief Captures a sub-range of the render scratch block at its producer hook for sub-tick replay.
+ *
+ * Called from a canonical render hook while the transient render-pass
+ * scratch is live; the capture is stamped with the in-flight epoch.
+ * @param cpu The guest CPU state.
+ * @param off The sub-range's offset into the game's render scratch block.
+ * @param len The sub-range's length in bytes. */
 void spyro_native_canon_capture_range(void* cpu, unsigned off, unsigned len);
 void spyro_native_canon_capture_recs(void* cpu);
-/*   _sxy:   the block the player draw left every projected vertex's int16
- *           screen position in, which is also the walk's cull verdict. */
+/** @brief Captures the block where the player draw left every projected vertex's int16 screen position.
+ *
+ * The block is also the walk's cull verdict. Called from the canonical
+ * player hook; a game whose player walk does not read the block back
+ * captures nothing.
+ * @param cpu The guest CPU state. */
 void spyro_native_canon_capture_sxy(void* cpu);
 
 /* The camera a producer drew under. A feeder re-derives its geometry from the

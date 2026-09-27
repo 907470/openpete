@@ -246,21 +246,26 @@ static int portal_nudge_for(int levelId, double* dh, double* dv,
     return 0;
 }
 
-/* Read a portal's outline in WORLD space — the single site that touches
- * m_Points, so every derived quantity (the projected polygon, the plane fit,
- * the spill depth) agrees on where the opening is. `nudge` applies the
- * per-portal correction above; pass 0 for the AUTHORED outline.
+/** @brief Reads a portal's outline m_Points (+0x20, 12 bytes each) in world space, optionally corrected.
  *
- * The correction is deliberately scoped to RENDERING. Anything asking a
- * question about the MESH — which faces lie in the opening plane — reads the
- * authored outline instead, so repositioning a portal to sit correctly on its
- * arch cannot disturb geometry classification. Those are separate questions:
- * where the preview should be drawn is an art fix; what the mesh is, is not.
- *
- * The plane ITSELF is unaffected either way — dh/dv translate within the plane
- * and the scale is about in-plane axes, so a corrected outline spans the same
- * plane and the plane fit returns the same answer for both.
- * Returns the point count, 0 if the portal is unusable. */
+ * The single site that reads m_Points, so the projected polygon, the plane
+ * fit and the spill depth agree on where the opening is. The correction
+ * (portal_nudge_for, keyed on the destination levelId at +0x1C) serves
+ * rendering only; code classifying the mesh (which faces lie in the
+ * opening plane) reads the authored outline, so a corrected preview
+ * position cannot change geometry classification. The correction
+ * translates by dh, dv along the in-plane horizontal and vertical axes
+ * (vertical = world +Z projected into the plane) and scales by sh, sv
+ * about the horizontal centre and the bottom edge, so the opening's foot
+ * stays on the sill. The out-of-plane component is carried through, so a
+ * corrected outline spans the same plane as the authored one. An outline
+ * lying flat (no in-plane vertical) or degenerate in its first three
+ * points is returned uncorrected.
+ * @param cpu The guest CPU state.
+ * @param p The Portal* guest address.
+ * @param W Receives the outline points, world units.
+ * @param nudge 1 applies the per-portal correction, 0 reads the authored outline.
+ * @return The point count, 0 when the count at +0x04 is outside [3, 16]. */
 static int portal_outline_world(CPUState* cpu, uint32_t p, double W[16][3], int nudge) {
     const int npts = (int32_t)cpu->read_word(p + 0x04);
     if (npts < 3 || npts > 16) return 0;
@@ -408,9 +413,15 @@ static uint32_t portal_flat_raw_rgb(CPUState* cpu, uint32_t a0, int a0_is_skybox
     return cpu->read_word(a0 + (a0_is_skybox ? 0x18u : 0u)) & 0xFFFFFF;
 }
 
-/* Decode the GTE rotation registers (gte_ctrl[0..4], Q12) into a 3x3 — the dome
- * matrix RenderPortals' leaf left there (camera euler ⊗ the portal's animated spin
- * D_80075858 yaw / D_800758FC pitch). Snapshotted prev+curr per tick and lerped. */
+/** @brief Decodes the GTE rotation registers gte_ctrl[0..4] (Q12) into a 3x3 matrix.
+ *
+ * Read in a dome leaf, the registers hold the dome matrix RenderPortals left
+ * there: the camera rotation composed with the portal's animated spin
+ * (D_80075858 yaw, D_800758FC pitch). The capture path snapshots it as
+ * s_dome_curr each canonical tick; the dump path compares it with the
+ * derived dome matrix.
+ * @param cpu The guest CPU state.
+ * @param M Receives the matrix, Q12. */
 static void read_gte_rotmatrix(CPUState* cpu, int M[3][3]) {
     ngte_unpack_matrix(cpu->gte_ctrl[0], cpu->gte_ctrl[1], cpu->gte_ctrl[2],
                        cpu->gte_ctrl[3], cpu->gte_ctrl[4], M);
@@ -484,17 +495,23 @@ static int          s_dome_prev_valid = 0, s_dome_curr_valid = 0;
 static double       s_spin_prev[2], s_spin_curr[2];
 static int          s_spin_prev_valid = 0, s_spin_curr_valid = 0;
 
-/* Float-project a world point exactly as func_80017B48 (the routine that
- * projects the portal outline → clip rect). It uses the g_Camera+0x00 rotation
- * (TR=0) with a PERMUTED/NEGATED vertex feed: GTE V = (-(wy-cy), -(wz-cz),
- * (wx-cx)). The per-point distance >>shift it applies cancels in the MAC1/MAC3
- * ratio, so float needs no shift. Returns the full-world view-space Z (MAC3);
- * fills screen sx/sy. Camera, OFX/OFY and H from the pass view. */
-/* World coordinates are DOUBLE, not int. m_Points are authored as integers, but
- * a corrected outline lands between them, and truncating it back to whole world
- * units shifts the whole opening by up to a unit before it is ever projected.
- * That is invisible at a distance and a pixel of misplacement up close, which
- * is exactly where the opening meeting its stone is judged. */
+/** @brief Projects a world point in float as func_80017B48 projects the portal outline.
+ *
+ * func_80017B48 uses the g_Camera+0x00 rotation with TR = 0 and a permuted,
+ * negated vertex: GTE V = (-(wy - cy), -(wz - cz), wx - cx). The per-point
+ * right shift it applies cancels in the MAC1/MAC3 and MAC2/MAC3 ratios, so
+ * the float path applies none. The screen divide clamps view Z to at least
+ * 1. Coordinates are doubles because a corrected outline lies between the
+ * authored integer points; truncating it moves the opening by up to one
+ * world unit.
+ * @param cpu Unused.
+ * @param v The view supplying the camera position, rotation, OFX, OFY and H.
+ * @param wx The world X.
+ * @param wy The world Y.
+ * @param wz The world Z.
+ * @param out_sx Receives the screen X; may be NULL.
+ * @param out_sy Receives the screen Y; may be NULL.
+ * @return The view-space Z (MAC3), unclamped. */
 static double project_world(CPUState* cpu, const ngte_view* v, double wx, double wy, double wz,
                             double* out_sx, double* out_sy) {
     (void)cpu;
@@ -634,14 +651,18 @@ static int portal_game_rect(CPUState* cpu, const ngte_view* v, uint32_t p, int d
     return 1;
 }
 
-/* The depth a portal's sky should sit at: the FARTHEST of its outline points'
- * view-Z. The stone ring's pointed top curves slightly back from the centre, so
- * a centre-depth sky overdraws the top of the frame (f1845); placing it behind
- * the whole ring lets the stone occlude it into the arch shape, while it stays
- * far nearer than the through-hole background so it still shows in the opening.
- * Used by BOTH the dome path and the flat far/medium quad. -1 if all behind.
- * `nudge` picks the corrected outline (render) or the authored one (anything
- * describing the arch's own geometry). */
+/** @brief Returns the largest view Z among a portal's outline points.
+ *
+ * The arch's pointed top curves back from the opening's centre, so a sky at
+ * the centre depth overdraws the top of the frame; at the farthest outline
+ * depth the stone occludes it into the arch shape, and it stays nearer than
+ * the through-hole background. The dome path and the flat quad both use it
+ * through portal_viewz.
+ * @param cpu The guest CPU state.
+ * @param v The view to project under.
+ * @param p The Portal* guest address.
+ * @param nudge 1 for the corrected outline (rendering), 0 for the authored one (the arch's own geometry).
+ * @return The largest view Z, -1 when the outline is unusable or every point has view Z below -1. */
 static double portal_outline_maxvz(CPUState* cpu, const ngte_view* v, uint32_t p, int nudge) {
     double W[16][3];
     const int npts = portal_outline_world(cpu, p, W, nudge);
@@ -700,18 +721,33 @@ static uint32_t owning_portal_ptr(CPUState* cpu, const ngte_view* v, uint32_t a0
     return best_p;
 }
 
-/* Single fallback view-Z (farthest outline point) for when the tilted-plane path
- * can't be used (an outline point is behind the camera). */
+/** @brief Returns the constant sky view Z of the portal a leaf draws for.
+ *
+ * The farthest point of the corrected outline (portal_outline_maxvz), after
+ * resolving the portal through owning_portal_ptr. The feeders use it where
+ * the per-pixel plane depth is unavailable and for the ring depth mode.
+ * @param cpu The guest CPU state.
+ * @param v The view to project under.
+ * @param a0 The leaf's a0.
+ * @param cx The clip rect's centre X.
+ * @param cy The clip rect's centre Y.
+ * @return The view Z, -1 when no portal matches or its outline is unusable. */
 static double portal_viewz(CPUState* cpu, const ngte_view* v, uint32_t a0, double cx, double cy) {
     uint32_t p = owning_portal_ptr(cpu, v, a0, cx, cy);
     return p ? portal_outline_maxvz(cpu, v, p, 1) : -1.0;   /* render depth */
 }
 
-/* Project the portal outline (m_Points) to screen, per-point view-Z. Returns the
- * count iff >=3 points and ALL are in front (so the polygon + plane are valid). */
-/* The AUTHORED outline projected — the opening as the artists placed it,
- * before any per-portal correction. A corrected outline reaches past it into
- * the arch, and that band cannot be depth-treated like the opening interior. */
+/** @brief Projects a portal's authored outline, before any per-portal correction, to screen with per-point view Z.
+ *
+ * A corrected outline reaches past the authored one into the arch; that
+ * band is not depth-treated like the opening interior, so its inner edge
+ * is taken from this projection.
+ * @param cpu The guest CPU state.
+ * @param v The view to project under.
+ * @param p The Portal* guest address.
+ * @param poly Receives the projected points.
+ * @param maxn The capacity of poly.
+ * @return The point count, 0 when the outline is unusable, exceeds maxn, or has a point with view Z at most 1. */
 static int portal_outline_screen_raw(CPUState* cpu, const ngte_view* v, uint32_t p, ppt* poly, int maxn) {
     double W[16][3];
     const int npts = portal_outline_world(cpu, p, W, 0);
@@ -762,18 +798,23 @@ static int fit_invz(const ppt* poly, int n, double* a, double* b, double* c) {
     return 1;
 }
 
-/* The same screen-space inv-vz field, computed ANALYTICALLY from the outline's
- * WORLD points + the live camera — no projected points needed, so it stays
- * valid at close/steep range where an outline point drops behind the camera
- * and fit_invz's projected-point construction is unavailable. (The old
- * fallback collapsed the sky to ONE constant depth there: at a close, acutely
- * angled portal the floor ate the opening's near side — the f2945 failure
- * mode re-appearing in exactly the close+steep case the plane fit was built
- * for.) Mirrors project_world's GTE convention (V = (-Δy,-Δz,Δx), MAC = M·V):
- * for the view-space plane n·P = k, dividing by vz gives
- *   1/vz = ( n_x·(sx−ofx)/H + n_y·(sy−ofy)/H + n_z ) / k
- * which is the a·x + b·y + c form plane_depth consumes. Returns 0 when
- * degenerate (collinear outline points / camera on the plane). */
+/** @brief Computes the screen-space 1/vz plane of a portal's opening from its world outline and the camera.
+ *
+ * Needs no projected points, so it stays valid when an outline point is
+ * behind the camera and fit_invz cannot run; a constant sky depth there
+ * lets the floor cover the near side of a close, steeply viewed opening.
+ * Three corrected outline points (indices 0, n/3, 2n/3) are rotated with
+ * project_world's convention, V = (-dy, -dz, dx), MAC = M V. For the
+ * view-space plane n.P = k, dividing by vz gives
+ * 1/vz = (n_x (sx - ofx) / H + n_y (sy - ofy) / H + n_z) / k, the
+ * a x + b y + c form plane_depth consumes.
+ * @param cpu The guest CPU state.
+ * @param v The view supplying the camera, OFX, OFY and H.
+ * @param p The Portal* guest address.
+ * @param pa Receives the x coefficient.
+ * @param pb Receives the y coefficient.
+ * @param pc Receives the constant.
+ * @return 1 on success, 0 when the outline is unusable or collinear, the camera lies within 1e-3 of the plane, or H is below 1. */
 static int portal_plane_invz(CPUState* cpu, const ngte_view* v, uint32_t p,
                              double* pa, double* pb, double* pc) {
     int npts = (int32_t)cpu->read_word(p + 0x04);
@@ -916,23 +957,21 @@ static float portal_cyclorama_depth(double vz) {
     if (v < 1.0) v = 1.0;
     return openpete_native_scene_viewz(openpete_worldvz_full((float)v));
 }
-/* OPENPETE_PORTAL_SKY_DEPTH = ot (default) | plane | ring.
+/** @brief Returns the portal sky depth mode selected by OPENPETE_PORTAL_SKY_DEPTH.
  *
- * `ot` mirrors the .s's ACTUAL OT placement (extracted from the generated
- * C): RenderPortals computes the sky's world-OT bucket as
- *   B = (Σ outline-point SZ / npts) >> 7;  if (B >= 256) B += 64;  clamp 2047
- * (block_800515C4-80051674; SZ at world scale), and the terrain walk buckets
- * each face at (Σ 4-corner SZ) >> 7 (+ the face's (w3&0x38)>>1 sort bias) —
- * terrain SZ is world/4, so BOTH are world-scale mean-view-Z / 128: the whole
- * sky sits at the constant depth 128·B. The SKY half is validated live
- * (D_PORTAL_DEPTH == the mirrored B, incl. the +64 bump), but ot mode did
- * NOT fix the Alpine far-pillar case: by mean-depth buckets the pillar (~39)
- * sorts FARTHER than the sky (31) yet PsyCross paints it on top — so the
- * face-side model (bucket direction / which pass draws the pillar) is
- * incomplete. NOT the default until the world-OT dump (OPENPETE_OT_DUMP_
- * FRAMES) pins the actual sky-vs-pillar prim indexes.
- * `plane` (DEFAULT) = per-pixel opening-plane depth + the two-region spill
- * split; `ring` = farthest outline point (the pre-f2945 construction). */
+ * 0 (default, plane): per-pixel opening-plane depth with the two-region
+ * spill split. 1 (a value starting with 'r', ring): the farthest outline
+ * point's view Z. 2 (a value starting with 'o', ot): the sky's world-OT
+ * bucket as RenderPortals computes it, B = (sum of outline SZ / npts) >> 7,
+ * plus 64 when B >= 256, clamped to [1, 2047] (block_800515C4-80051674), at
+ * the constant depth 128 B, combined with the plane depth by sky_min2. The
+ * terrain walk buckets each face at (sum of 4 corner SZ) >> 7 plus the
+ * face's (w3 & 0x38) >> 1 sort bias, with terrain SZ at world/4, so both
+ * are world-scale mean view Z / 128. The ot mode does not reproduce every
+ * PsyCross order: in the Alpine far-pillar case the pillar's bucket (about
+ * 39) is farther than the sky's (31) and PsyCross paints the pillar on top.
+ * The variable is read once and cached.
+ * @return 0, 1 or 2. */
 static int portal_sky_depth_mode(void) {
     static int v = -1;
     if (v < 0) {
@@ -944,9 +983,11 @@ static int portal_sky_depth_mode(void) {
 }
 static double s_ring_vz = 0.0;   /* farthest outline vz of the current feed (0 = none) */
 static double s_ot_vz   = 0.0;   /* 128 · mirrored .s OT bucket (0 = none) */
-/* Finalise the feed's OT push from its resolved bucket (live D_PORTAL_DEPTH,
- * captured hint, or the outline mirror — all carry the +64 bump). Call after
- * s_ot_vz is settled and before any depth is constructed. */
+/** @brief Sets s_sky_push_vz from the feed's resolved OT depth s_ot_vz.
+ *
+ * s_ot_vz comes from live D_PORTAL_DEPTH, the captured hint, or the outline
+ * mirror, each carrying the +64 bucket bump; sky_ot_push_for maps it to the
+ * push. Called after s_ot_vz is settled and before any depth is built. */
 static void set_sky_ot_push(void) { s_sky_push_vz = sky_ot_push_for(s_ot_vz); }
 static float ring_depth(void) {
     /* +EPS (not −): the ring construction wants the sky BEHIND the outline
@@ -962,14 +1003,16 @@ static float ot_depth(void) {
      * through-hole floor, which the preview must cover). */
     return openpete_native_scene_viewz(openpete_worldvz_full((float)s_ot_vz));
 }
-/* Returns the active constant-depth mode (0 none, 1 ring, 2 ot) + *z.
- * ot mode COMBINES with the per-pixel plane: the sky z is
- * min(plane_depth, 128*B) — the plane half covers everything behind the
- * OPENING (through-hole content near or far, the PSX walk-order result at
- * close range where the dome paints over all earlier slots), the bucket
- * half caps the depth for the rect spill + far ordering, and the
- * PORTAL_GUARD redraw resurrects the DrawPrim-protected (deferred) faces
- * exactly as the PSX mask bit does. */
+/** @brief Returns the active constant sky depth mode and its depth.
+ *
+ * Ring mode applies when s_ring_vz is set, ot mode when s_ot_vz is set.
+ * The ot depth combines with the per-pixel plane in sky_min2 as
+ * min(plane depth, 128 B): the plane covers everything behind the opening,
+ * the bucket caps the depth for the rect spill and far ordering, and the
+ * PORTAL_GUARD redraw restores the faces the PSX mask bit protects from
+ * DrawPrim.
+ * @param z Receives the constant depth when the return is non-zero.
+ * @return 0 none, 1 ring, 2 ot. */
 static int sky_const_depth(float* z) {
     int m = portal_sky_depth_mode();
     if (m == 2 && s_ot_vz   > 0.0) { *z = ot_depth();   return 2; }
@@ -981,7 +1024,12 @@ static float sky_min2(float plane_z, float cz, int cmode) {
     if (cmode == 1) return cz;
     return plane_z;
 }
-/* Mirror the .s bucket from the projected outline (world-scale vz). */
+/** @brief Sets s_ot_vz to 128 times the sky's OT bucket mirrored from the projected outline.
+ *
+ * B = (mean outline view Z) >> 7, plus 64 when B >= 256, clamped to
+ * [1, 2047], as RenderPortals buckets the sky.
+ * @param poly The projected outline, world-scale view Z.
+ * @param pn The point count, at least 1. */
 static void set_ot_sky_vz(const ppt* poly, int pn) {
     double sum = 0.0;
     for (int i = 0; i < pn; i++) sum += poly[i].vz;
@@ -1203,13 +1251,13 @@ int openpete_portal_sky_planes(CPUState* cpu, const ngte_view* v, openpete_porta
     }
     return n;
 }
-/* --render-paths honours RP_PORTAL for the NATIVE feed too, not just the OT
- * walk. Without this the flag filtered portal prims out of the PsyCross leg
- * while the native leg kept drawing them, so "--render-paths terrain" still
- * showed destination-sky previews — and the previews sit exactly on top of the
- * arch geometry being inspected, which is the one thing an isolation flag
- * exists to prevent. Bookkeeping (captures, plane provider, canon-drawn marks)
- * still runs; only the scene emission is suppressed. */
+/** @brief Reports whether --render-paths enables RP_PORTAL for the native scene emission.
+ *
+ * Applies the flag to the native feed as well as the OT walk, so an
+ * isolation run without portals draws no destination-sky previews over the
+ * arch geometry. Captures, the plane provider and canon-drawn marks run
+ * regardless; only the scene emission is suppressed.
+ * @return Non-zero when portal triangles are emitted. */
 static int portal_scene_emit_enabled(void) { return render_path_enabled(RP_PORTAL); }
 
 /** @brief Adds one portal triangle to the scene in the current portal group.
@@ -1236,14 +1284,16 @@ static void portal_add_sky_tri(const openpete_scene_tri* t) {
 
 static int band_dbg(void);
 
-/* OPENPETE_PORTAL_REPR=flat|dome — emit only ONE preview representation.
+/** @brief Reports whether OPENPETE_PORTAL_REPR suppresses a preview representation.
  *
- * The flat and the dome are cross-dissolved into each other, so the blend is
- * only ever a colour blend: their FOOTPRINTS must agree pixel-for-pixel at any
- * angle and distance. Where they disagree, one representation paints a band the
- * other does not, and mid-dissolve that band reads as a rim of the outgoing
- * colour around an interior that has already moved on. Rendering each alone in
- * one flat colour turns "do they agree?" into a pixel count. */
+ * OPENPETE_PORTAL_REPR=dome (a value starting with 'd') emits only the
+ * dome, any other non-empty value only the flat fill. The flat and the
+ * dome cross-dissolve, so their footprints must agree at every angle and
+ * distance; a band one paints and the other does not shows as a rim of
+ * the outgoing colour mid-dissolve. Rendering each alone makes the
+ * footprint comparison a pixel count. The variable is read once and cached.
+ * @param is_dome Non-zero for the dome, 0 for the flat fill.
+ * @return 1 when this representation is skipped, else 0. */
 static int portal_repr_skip(int is_dome) {
     static int m = -2;
     if (m == -2) {
@@ -2320,6 +2370,9 @@ static int nolod_portal_dome_on(void) {
 }
 
 /* ---- dispatch hooks ------------------------------------------------- */
+/** @brief Reports whether the portal dump is enabled and openpete_frame has reached OPENPETE_PORTAL_FRAME.
+ *
+ * @return 1 when the leaf and portal-table dumps print, else 0. */
 static int s_want_dump_this_frame(void) {
     return portal_dump_enabled() && openpete_frame >= portal_dump_frame();
 }

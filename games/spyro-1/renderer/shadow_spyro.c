@@ -38,12 +38,19 @@
 extern void     func_80059A48(CPUState* cpu);  /* the real SPYRO-shadow renderer */
 extern unsigned openpete_frame;
 
-/* ---- spyro-shadow dump ----------------------------------------------------
- * Reproduces the model-silhouette navigation read-only (keyframe A/B vertex
- * data via g_Models[0] + g_Spyro selectors) and dumps the post-call scratchpad
- * (0x1F800000..0xA0) — the .s's working buffer: lerped silhouette (0x00..),
- * ring radii/Y (0x80/0x90), projected strip SXY/SZ (0x08..0x78). The scratch is
- * the ORACLE for deriving the native interp + ring math. */
+/* ---- spyro-shadow dump ---------------------------------------------------- */
+/** @brief Prints the Spyro shadow's inputs and the post-call scratchpad to stderr, read-only.
+ *
+ * Prints the D_SPYROSHADOW words (over-water flag +0x24, ground position
+ * +0x10..+0x18, +0x08, +0x0C, +0x1C), the g_Spyro heading (+0x0E),
+ * keyframe selectors (+0x18, +0x1E) and lerp factor (+0x24), the camera
+ * position, the keyframe A/B navigation through g_Models[0], the ring
+ * table D_8006E268, the captured prims, and the scratchpad
+ * 0x1F800000..+0xA0: the .s's working buffer, holding the lerped
+ * silhouette (from +0x00), the projected strip SXY/SZ (+0x08..+0x78) and
+ * the ring radii and Y (+0x80, +0x90). The scratchpad is the reference
+ * the native lerp and ring math were derived against.
+ * @param cpu The guest CPU state, after func_80059A48 ran. */
 static void shadow_spyro_dump(CPUState* cpu) {
     fprintf(stderr, "\n=== [shadow-spyro-dump f=%u] ===\n", openpete_frame);
     int overwater = (int)cpu->read_word(D_SPYROSHADOW + 0x24);
@@ -102,9 +109,15 @@ static void shadow_spyro_dump(CPUState* cpu) {
  *  doubling validated bit-exact against the .s scratchpad (ring[8..15], Y[0..3]).
  * =========================================================================== */
 
-/* heading matrix: rotate the camera matrix's columns 0,2 by `heading` (yaw
- * around Y) using sin D_8006CBF8 / cos D_8006CC78. Two MVMVA passes (same idiom
- * as the moby idxA block, but cols 0,2). */
+/** @brief Builds the shadow's heading matrix: the camera matrix with columns 0 and 2 rotated by the heading about Y.
+ *
+ * Column 0 = C (cos, 0, sin) and column 2 = C (-sin, 0, cos), two MVMVA
+ * passes with sin from D_8006CBF8 and cos from D_8006CC78 (D_SIN_TABLE,
+ * D_COS_TABLE); column 1 is the camera's.
+ * @param cpu The guest CPU state, for the trig tables.
+ * @param C The camera matrix, Q12.
+ * @param heading The heading, g_Spyro +0x0E, a table index.
+ * @param R Receives the heading matrix, Q12. */
 static void build_heading_matrix(CPUState* cpu, const int C[3][3], int heading, int R[3][3]) {
     int sinv = shadow_rd_s16(cpu, D_SIN_TABLE + (uint32_t)heading*2);
     int cosv = shadow_rd_s16(cpu, D_COS_TABLE + (uint32_t)heading*2);
@@ -265,10 +278,14 @@ static void shadow_spyro_build(CPUState* cpu) {
     }
 }
 
-/* feed the native Spyro shadow: the fan's footprint prism hull, subtractive
- * (ABR mode 2 -> blend=3), coloured per pixel by the footprint decal.
- * `slot`: the model record the shadow renders under (spyro_records.h), the
- * PLAYER slot of its tag. */
+/** @brief Feeds the Spyro shadow to the native scene as the fan's footprint prism hull.
+ *
+ * Builds the fan (shadow_spyro_build) and passes it to shadow_fan_feed,
+ * which draws it subtractive (ABR mode 2) and colours each pixel by the
+ * footprint decal. Returns without feeding when the player shadow feed is
+ * disabled or the fan is empty (Spyro over water).
+ * @param cpu The guest CPU state.
+ * @param slot The model record the shadow renders under (spyro_records.h), the player slot of its tag; negative reads as 0. */
 static void shadow_spyro_feed_native(CPUState* cpu, int slot) {
     if (!shadow_player_feed_enabled()) return;
     shadow_spyro_build(cpu);
@@ -279,9 +296,14 @@ static void shadow_spyro_feed_native(CPUState* cpu, int slot) {
     openpete_native_scene_set_tag(0);
 }
 
-/* A/B: native Spyro-shadow fan vs the captured G3 prims (.s int16 SXY oracle).
- * Same fan order (anchor, strip[k], strip[k+1]); compare element-wise.
- * Reports VACUOUS when the routine emitted no untextured triangle. */
+/** @brief Compares the native Spyro shadow fan with the captured G3 prims and prints the result to stderr.
+ *
+ * Both are in fan order (anchor, strip[k], strip[k+1]) and are compared
+ * element-wise against the prims' int16 SXY: mean and worst per-triangle
+ * L1 distance, triangles over 2 px, and vertex colour mismatches. Prints
+ * VACUOUS when the routine emitted no untextured triangle or the native
+ * fan is empty.
+ * @param cpu The guest CPU state. */
 static void shadow_spyro_compare(CPUState* cpu) {
     shadow_spyro_build(cpu);
     int np = shadow_prim_count();

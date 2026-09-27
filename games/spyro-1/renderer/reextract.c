@@ -27,24 +27,22 @@
 
 extern int openpete_ra_input_edge; /* runahead: led branch changed this tick */
 
-/* Runahead correction rebase (default ON; OPENPETE_RA_REBASE=0 disables):
- * on an input-edge tick the led pair jumps prediction branches — lerping
- * table-prev (old branch) → table-curr (new branch) yanks the object
- * backward. Rebasing prev at the LAST SHOWN bytes glides from where the
- * eye already is to the corrected branch over one tick; backward motion
- * never reaches the screen.
+/** @brief Reports whether the runahead correction rebase is enabled (default on; OPENPETE_RA_REBASE=0 disables).
  *
- * LED-CAMERA A/B CONFIG ONLY (OPENPETE_RA_CAM_COMMIT=0) in BOTH arms:
- * with the default committed-timeline camera the camera pair never
- * crosses a branch (a rebase would only kink it), and the Spyro arm is
- * actively harmful under analog input — the stick differs almost every
- * tick, so the edge fires continuously and the standing re-anchor
- * bunches motion into the late presents and steps backward at negative
- * alpha (visible jitter in motion). Spyro's cross-branch error at N=1-2
- * is a few units of physics; the plain led table pair absorbs it
- * invisibly, like the mobys. In the led-camera A/B the rebase remains
- * the measured snap mitigation (-36u/-88u per present raw at N=1/2 on
- * an R2 release, -20/-70 rebased). */
+ * On an input-edge tick the led pair jumps prediction branches, and a lerp
+ * from the old branch's prev to the new branch's curr moves the object
+ * backward. The rebase takes prev from the last shown bytes, so the
+ * present moves from the shown position to the corrected branch over one
+ * tick. It applies only in the led-camera configuration
+ * (OPENPETE_RA_CAM_COMMIT=0), in both the camera and the Spyro arm: with
+ * the default committed-timeline camera the camera pair never crosses a
+ * branch, and under analog input the stick changes almost every tick, so
+ * the edge fires continuously and the re-anchor bunches Spyro's motion
+ * into the late presents and steps backward at negative alpha. Measured in
+ * the led-camera configuration on a release build: -36 and -88 units per
+ * present unrebased at N=1 and N=2, -20 and -70 rebased. The variable is
+ * read once and cached.
+ * @return 1 when enabled, else 0. */
 static int ra_rebase_on(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_RA_REBASE"); v = !(e && *e == '0'); }
@@ -67,10 +65,14 @@ extern unsigned openpete_frame;
 #define MOBY_STRIDE   0x58u
 #define MOBY_STATE    0x48u
 #define MOBY_POS      0x0Cu         /* Vector3D x,y,z (int32) */
-/* Ring region indices, resolved by name from the registered table
- * (interp_regions_gen.h) — a restated index selects the wrong region's bytes as
- * soon as a row is inserted. Each accessor caches its lookup; -1 would mean the
- * game registered no such region, which Spyro 1's table always does. */
+/** @brief Resolves a ring region index by name from the registered table, caching the lookup.
+ *
+ * Indices are looked up by name (interp_regions_gen.h) because a restated
+ * index selects the wrong region's bytes once a row is inserted. Each
+ * REGION_ACCESSOR function holds its own cache, initialised to -2.
+ * @param name The region name, a registered row such as "g_Camera".
+ * @param cache The caller's cache; -2 means not yet looked up.
+ * @return The row index, -1 when no such region is registered. */
 static int region_of(const char* name, int* cache) {
     if (*cache == -2) *cache = game_interp_row_index(name);
     return *cache;
@@ -202,16 +204,22 @@ static void stage_led_fixed_pool(uint32_t base, uint32_t n, uint32_t stride,
 /* One WALL-time tick (--tick-scale aware; run.c rescales the global). */
 #define TICK_PERIOD_NS  g_openpete_tick_period_ns
 
-/* Interp denominator, capped at ONE nominal tick. The measured
- * distinct-state gap (curr_ns - prev_ns) balloons to K ticks when an object (or
- * the camera) sits byte-static for K ticks and then RESUMES: the ring only
- * "rolls" on a change, so prev_ns stays pinned K ticks back. Dividing by that
- * gap makes the resume crawl at 1/K speed for one interval, then pop the
- * remaining (1-1/K) at the next roll — a hitchy resume on camera un-parks, an
- * enemy beginning to charge, a wait-then-move platform (invisible to the
- * oracle, which is determinism-only). Interp only ever spans one tick (1-tick
- * lag, no extrapolation), so cap it: a steady object (gap == 1 tick) is
- * unchanged; a resume sweeps the full delta over one tick. */
+/** @brief Returns the interpolation denominator for a prev/curr pair, capped at one tick period.
+ *
+ * The ring rolls only on a change, so after an object or the camera holds
+ * its bytes for K ticks and then moves, curr_ns - prev_ns spans K ticks;
+ * dividing by it moves the object at 1/K speed for one interval and jumps
+ * the remaining (1 - 1/K) at the next roll. Interpolation spans one tick
+ * (one tick of lag, no extrapolation), so the cap leaves a steady object
+ * (gap of one tick) unchanged and sweeps a resume's full delta over one
+ * tick. The cap is g_openpete_tick_period_ns, which follows --tick-scale.
+ * A non-positive span returns one tick period: under deterministic
+ * capture a held state's duplicate rolls can advance past the grid point
+ * the next distinct state lands on. OPENPETE_INTERP_PERIOD_UNCAP=1
+ * returns the uncapped span, read once and cached.
+ * @param prev_ns The prev snapshot's timestamp, nanoseconds.
+ * @param curr_ns The curr snapshot's timestamp, nanoseconds.
+ * @return The denominator, nanoseconds. */
 static double interp_period_ns(op_time_t prev_ns, op_time_t curr_ns) {
     op_time_t p = curr_ns - prev_ns;
     /* Non-positive span: the pair still brackets one tick, so price it at the
@@ -233,8 +241,11 @@ static double interp_period_ns(op_time_t prev_ns, op_time_t curr_ns) {
     return (double)(p > g_openpete_tick_period_ns ? g_openpete_tick_period_ns : p);
 }
 
-/* pred1 (predicted-tangent Hermite) on by default; OPENPETE_INTERP_LINEAR=1
- * forces the old linear lerp (A/B + regression escape hatch). */
+/** @brief Reports whether the predicted-tangent Hermite interpolation (pred1) is enabled.
+ *
+ * On by default; OPENPETE_INTERP_LINEAR set to a value not starting with
+ * '0' selects the linear lerp. Read once and cached.
+ * @return 1 when pred1 is enabled, 0 for linear. */
 static int hermite_enabled(void) {
     static int e = -1;
     if (e < 0) { const char* s = getenv("OPENPETE_INTERP_LINEAR"); e = (s && *s && *s != '0') ? 0 : 1; }
@@ -253,6 +264,10 @@ static int hermite_enabled(void) {
  * gameplay RAM, logged on the same frame. Read-only, debug-gated, inert when
  * off. (Moby/particle pools are dynamic, so they're checked against their save
  * tables at the end of the present, next to their restore loops.) */
+/** @brief Reports whether OPENPETE_BRACKET_CHECK enables the bracket-integrity self-check.
+ *
+ * Read once and cached.
+ * @return 1 when enabled, else 0. */
 static int bracket_check_enabled(void) {
     static int e = -1;
     if (e < 0) { const char* s = getenv("OPENPETE_BRACKET_CHECK"); e = (s && *s && *s != '0'); }
@@ -266,16 +281,24 @@ static uint64_t bc_hash(uint32_t psx_addr, uint32_t len) {
     return x;
 }
 
-/* ---- pred1: predicted-tangent cubic Hermite ----------------------------------
- * The linear lerp above is C0: velocity is constant within each 30 Hz bracket
- * and JUMPS at every tick boundary (= the 2nd difference of the sampled path).
- * That per-boundary velocity discontinuity is the perceived judder — measured
- * at ~5.5% of camera speed median, tail >100% on sharp turns, and it survives
- * any display rate (it's a 30 Hz artifact). pred1 interpolates [prev,curr] as a
- * cubic Hermite with a CENTERED start-tangent m0 = 0.5*(curr-prev2) and a
- * backward end-tangent m1 = (curr-prev). Same 1-tick latency as linear (no
- * future sample used), and it ~halves the boundary velocity jump. Needs prev2;
- * callers fall back to lerp_* when prev2 is absent or across a cut. */
+/** @brief Interpolates one coordinate between prev and curr with the pred1 cubic Hermite, clamped to the segment.
+ *
+ * A linear lerp holds velocity constant within each tick and changes it
+ * at every tick boundary by the second difference of the sampled path;
+ * that change measured a median of 5.5% of camera speed and above 100% on
+ * sharp turns, at any display rate. pred1 uses the centred start tangent
+ * m0 = 0.5 (curr - prev2) and the backward end tangent m1 = curr - prev:
+ * the same one-tick latency as linear, with about half the boundary
+ * velocity change. The result is clamped to [min(prev, curr),
+ * max(prev, curr)]: at a path-polyline corner the centred tangent
+ * overshoots the endpoint and returns, and the clamp is exact for
+ * constant-velocity segments, where the cubic equals the lerp. Callers
+ * fall back to the lerp when prev2 is absent or across a cut.
+ * @param prev2 The sample one tick before prev.
+ * @param prev The segment start.
+ * @param curr The segment end.
+ * @param t The sub-tick phase.
+ * @return The interpolated value. */
 static double hermite1(double prev2, double prev, double curr, double t) {
     double m0 = 0.5 * (curr - prev2);   /* centered tangent at prev */
     double m1 = (curr - prev);          /* backward tangent at curr */
@@ -350,8 +373,16 @@ static void fpos_set(uint32_t key, const int32_t* prev, const int32_t* curr, dou
         s_fpos[s_fpos_n].p[i] = (double)prev[i] + ((double)curr[i] - (double)prev[i]) * t;
     s_fpos_n++;
 }
-/* pred1 (Hermite) variant of fpos_set — must match herm_vec3's math so the
- * un-rounded fractional position feeders read agrees with the RAM we wrote. */
+/** @brief Records key's fractional position as the pred1 Hermite of prev2, prev and curr, the fpos_set variant.
+ *
+ * Uses hermite1 per axis, the computation herm_vec3 writes to RAM, so the
+ * unrounded position feeders read agrees with the staged bytes. A full
+ * table (FPOS_MAX entries) drops the entry.
+ * @param key The object's guest address.
+ * @param prev2 The position one tick before prev.
+ * @param prev The prev position.
+ * @param curr The curr position.
+ * @param t The sub-tick phase. */
 static void fpos_set_h(uint32_t key, const int32_t* prev2, const int32_t* prev,
                        const int32_t* curr, double t) {
     if (s_fpos_n >= FPOS_MAX) return;
@@ -360,8 +391,13 @@ static void fpos_set_h(uint32_t key, const int32_t* prev2, const int32_t* prev,
         s_fpos[s_fpos_n].p[i] = hermite1((double)prev2[i], (double)prev[i], (double)curr[i], t);
     s_fpos_n++;
 }
-/* Per-record staging (the Spyro record loop) swaps the G_SPYRO entry per
- * record and restores the ambient one after its last record. */
+/** @brief Returns the fractional-position table index of key.
+ *
+ * With fpos_drop, fpos_get and fpos_put it lets the Spyro record loop swap
+ * the G_SPYRO entry per record and restore the ambient one after its last
+ * record.
+ * @param key The object's guest address.
+ * @return The index, -1 when key has no entry. */
 static int fpos_find(uint32_t key) {
     for (int i = 0; i < s_fpos_n; ++i) if (s_fpos[i].key == key) return i;
     return -1;
@@ -430,8 +466,16 @@ static void cl_trig_q12(double units, int32_t* c, int32_t* s) {
     *s = (int32_t)lround(4096.0 * sin(r));
 }
 
-/* view[9] Q12 row-major; proj[9] = view with row 1 scaled 320/512 (integer
- * truncation, exactly the game's C expression). */
+/** @brief Builds the camera view and projection matrices from yaw and pitch as CameraUpdateMatrices does.
+ *
+ * view = X(pitch) Y(yaw) with roll 0, in Q12 (camera.c 0x800338B8);
+ * proj is view with row 1 scaled by 320/512 in integer arithmetic, the
+ * game's expression. Host trigonometry is rounded, at most 1 LSB from the
+ * game's table.
+ * @param yaw The yaw, 4096 units per turn.
+ * @param pitch The pitch, 4096 units per turn.
+ * @param view Receives the view matrix, Q12 row-major.
+ * @param proj Receives the projection matrix, Q12 row-major. */
 static void cl_build_matrices(double yaw, double pitch, int16_t view[9], int16_t proj[9]) {
     int32_t cp, sp, cy, sy;
     cl_trig_q12(pitch, &cp, &sp);
@@ -450,13 +494,17 @@ static void cl_build_matrices(double yaw, double pitch, int16_t view[9], int16_t
     for (int c = 0; c < 3; c++) proj[3 + c] = (int16_t)((view[3 + c] * 320) / 512);
 }
 
-/* Invert cl_build_matrices numerically: grid-fit (yaw, pitch) to a live view
- * matrix (coarse→fine). Returns the summed squared element error of the best
- * fit — small (≲ a few hundred, quantisation only) when the live matrix came
- * from the game's own euler construction; large when it didn't (rolled or
- * exotically-built cutscene matrix), in which case the fitted pose is only
- * the nearest roll-free approximation (the verbatim hold covers the static
- * view either way). */
+/** @brief Fits yaw and pitch to a live view matrix by inverting cl_build_matrices on a grid.
+ *
+ * Three passes: yaw over [0, 4096] and pitch over [-992, 992] in steps of
+ * 32, then steps of 4 and 1 within 32 of the best. For a matrix from the
+ * game's own euler construction the error is quantisation only (a few
+ * hundred at most); a rolled or otherwise built cutscene matrix fits with
+ * a large error, and the pose is the nearest roll-free one.
+ * @param live The live view matrix, Q12 row-major.
+ * @param out_yaw Receives the fitted yaw.
+ * @param out_pitch Receives the fitted pitch.
+ * @return The summed squared element error of the best fit. */
 static double cl_fit_pose(const int16_t* live, double* out_yaw, double* out_pitch) {
     double by = 0.0, bp = 0.0, berr = 1e30;
     for (int pass = 0; pass < 3; pass++) {
@@ -481,8 +529,13 @@ static double cl_fit_pose(const int16_t* live, double* out_yaw, double* out_pitc
     return berr;
 }
 
-/* Replace (or add) the fractional-position table's camera entry so feeders
- * read the exact locked position instead of the bracket's lerp. */
+/** @brief Replaces or adds a fractional-position table entry, so feeders read the locked camera position instead of the bracket's lerp.
+ *
+ * A full table (FPOS_MAX entries) leaves a missing entry unadded.
+ * @param key The object's guest address, G_CAMERA from cl_apply.
+ * @param x The world X.
+ * @param y The world Y.
+ * @param z The world Z. */
 static void cl_fpos_override(uint32_t key, double x, double y, double z) {
     for (int i = 0; i < s_fpos_n; ++i)
         if (s_fpos[i].key == key) {
@@ -495,8 +548,17 @@ static void cl_fpos_override(uint32_t key, double x, double y, double z) {
     s_fpos_n++;
 }
 
-/* Per-present lock application — the camera bytes at `cam` are already
- * bracketed (saved) by the caller. */
+/** @brief Applies the render camera lock to one present's camera bytes.
+ *
+ * The caller has saved the bytes in its bracket. On the first apply
+ * without a pose it fits the pose to the live view matrix (cl_fit_pose),
+ * sets it, and latches the bytes. It integrates the freecam axes over
+ * wall time in tick units. Until the pose moves, the latched bytes are
+ * written back verbatim; after, position, m_Rotation (roll 0) and the
+ * view and projection matrices are rebuilt from the pose. The camera's
+ * fractional-position entry is set to the pose, and each changed pose is
+ * logged in the OPENPETE_CAMLOCK_POSE format.
+ * @param cam The staged g_Camera bytes, CAM_BYTES long. */
 static void cl_apply(uint8_t* cam) {
     /* First apply after an engage without a scripted pose: latch. */
     if (!openpete_camlock_pose_valid()) {
@@ -568,6 +630,11 @@ static void cl_apply(uint8_t* cam) {
  * wp[idx] and wp[idx+1]. The actors are the first `count` entries of
  * g_LevelMobys and the decoder writes their position at +0x0C; the camera
  * rides a separate full-precision 24-byte record table at +0x10. */
+/** @brief Reads a guest word through the sub-tick view.
+ *
+ * @param va The guest address, in [0x80000000, 0x801FFFFC).
+ * @param out Receives the word.
+ * @return 1 on success, 0 when va is out of range or unmapped. */
 static int cut_rd32(uint32_t va, uint32_t* out) {
     if (va < 0x80000000u || va >= 0x80200000u - 4u) return 0;
     const uint8_t* p = (const uint8_t*)openpete_psx_to_host_ptr(va);
@@ -576,12 +643,15 @@ static int cut_rd32(uint32_t va, uint32_t* out) {
     return 1;
 }
 
-/* Is this moby a cutscene path-follower right now? (g_LevelMobys[0..count)
- * while g_CutsceneLayout is live.) Used by the moby feeder to SNAP clip
- * switches for these actors: their flight clips carry large BAKED whole-body
- * translation, and a crossfade averages two spatially-distant poses on a
- * phase that can't match the path timing — a 1-2 present whole-body lurch at
- * every clip switch. Canonical does a hard switch; mirror it. */
+/** @brief Reports whether a moby is a cutscene path-follower: one of the first count entries of g_LevelMobys while g_CutsceneLayout is live.
+ *
+ * count is g_CutsceneLayout +0x0C, taken only in [1, 8]. The moby feeder
+ * switches these actors' animation clips without a crossfade, as the
+ * canonical render does: their flight clips carry large whole-body
+ * translation, and a crossfade averages two distant poses on a phase that
+ * does not match the path timing.
+ * @param m The moby's guest address.
+ * @return 1 for a path-follower, else 0. */
 int spyro_cutpath_is_actor(uint32_t m) {
     uint32_t cs, base, cnt;
     if (!cut_rd32(G_CUTSCENE, &cs) || cs < 0x80000000u || cs >= 0x80200000u) return 0;
@@ -790,19 +860,25 @@ static int moby_cut_hold(uint32_t m, const uint8_t* mh,
     return 1;
 }
 
-/* Where this game's camera fields sit, for the shared cut guard. */
+/** @brief Returns the g_Camera and g_GameState region indices and camera field offsets for the shared cut guard.
+ *
+ * The region indices resolve on the first call.
+ * @return The descriptor, static storage. */
 static const cut_cam_desc_t* cut_desc(void) {
     static cut_cam_desc_t d = { -2, -2, CAM_OFF_POS, CAM_OFF_PROJ };
     if (d.cam_region == -2) { d.cam_region = CAM_REGION(); d.gs_region = GS_REGION(); }
     return &d;
 }
 
-/* The guards run on intermediate presents, which a headless run produces only
- * where a capture asks for one. This locator evaluates the same predicate
- * against the same object snapshots once per canonical pass, so one replay
- * names the ticks at which the moby guards fire and a sub-tick capture at those
- * ticks measures what the guard shows. Locator lines carry `locate=`; they
- * report nothing about what was presented. */
+/** @brief Logs every live moby whose prev/curr pair the cut guard would treat as a cut, once per canonical pass.
+ *
+ * The guards run on intermediate presents, which a headless run produces
+ * only where a capture asks for one. The locator evaluates the guard's
+ * predicate (class change at +0x36, or a position jump above 5000 units)
+ * against the same object snapshots, so one replay names the ticks at
+ * which the moby guards fire. Lines carry `locate=` and the pair's age in
+ * ticks; they state nothing about what was presented. The walk stops at
+ * state 0xFF and skips states from 0x80. */
 static void cut_locate_mobys(void) {
     uint8_t* base_p = (uint8_t*)openpete_psx_to_host_ptr(G_LEVELMOBYS);
     uint32_t m = 0; if (base_p) memcpy(&m, base_p, 4);
@@ -878,6 +954,10 @@ static int scratch_prod_fresh(sprod_t p)   { return s_prod_epoch[p] == s_canon_e
 /* Registry engine: row lookup + capture. Captures fire at the producer hooks
  * (canonical moby/spyro/shaded render hooks, while the scratch is still live)
  * and stamp the row's producer epoch. */
+/** @brief Returns the scratch registry row whose base address is psx_addr.
+ *
+ * @param psx_addr The guest base address.
+ * @return The row, NULL when no row starts there. */
 static scratch_region_t* scratch_row_by_base(uint32_t psx_addr) {
     for (int i = 0; i < SCRATCH_ROWS; ++i)
         if (s_scratch_rows[i].psx_base == psx_addr) return &s_scratch_rows[i];
@@ -900,9 +980,7 @@ static void scratch_row_capture(scratch_region_t* r) {
     }
 }
 
-/* Capture a G_SCRATCH sub-range at its producer hook. `off`/`len` must name a
- * registry row (base match); an unmapped offset is a loud no-op — a new
- * capture site must come with a registry row, or its region never restores. */
+/* off is from G_SCRATCH and must match a registry row's base; an unmapped offset logs and captures nothing. */
 void spyro_native_canon_capture_range(void* cpu_v, unsigned off, unsigned len) {
     (void)cpu_v;
     scratch_region_t* r = scratch_row_by_base(G_SCRATCH + off);
@@ -918,7 +996,7 @@ void spyro_native_canon_capture_range(void* cpu_v, unsigned off, unsigned len) {
     scratch_row_capture(r);
 }
 
-/* Capture Spyro's projected SXY scratchpad at the canonical spyro hook. */
+/* Captures the registry row at SXY_BASE, the PSX scratchpad. */
 void spyro_native_canon_capture_sxy(void* cpu_v) {
     (void)cpu_v;
     scratch_row_capture(scratch_row_by_base(SXY_BASE));
@@ -994,11 +1072,16 @@ static void scratch_bracket_enter(CPUState* cpu) {
     }
 }
 
-/* After the moby + shadow feeders have consumed the regular records, overlay
- * the SEG_OVERLAY rows over the (now-consumed) records at 0x1900+ — the same
- * temporal reuse the .s does — so the Spyro body feeder sees its seg scratch
- * and the Fairy-Kiss pre-blend colour table (else it reads the stale records
- * bytes and Spyro's colours flicker at >30fps during a Fairy-Kiss). */
+/** @brief Overlays the captured SEG_OVERLAY scratch rows over the consumed cull records.
+ *
+ * Runs after the moby and shadow feeders have read the regular records,
+ * and writes the rows at 0x1900 onward as the .s reuses that memory, so
+ * the Spyro body feeder reads its seg scratch and the Fairy-Kiss
+ * pre-blend colour table instead of record bytes. Only rows captured by a
+ * producer that ran in the last canonical present are written, into the
+ * staged copy when one exists, else into guest memory. No-op when the
+ * bracket is not open.
+ * @param cpu Unused. */
 static void scratch_bracket_seg_restore(CPUState* cpu) {
     (void)cpu;
     if (!s_bracket_open) return;
@@ -1012,10 +1095,13 @@ static void scratch_bracket_seg_restore(CPUState* cpu) {
     }
 }
 
-/* Restore the live scratch before the game fiber resumes (determinism).
- * Symmetric with enter's unconditional save: every open row restores its
- * saved bytes. Overlapping rows all saved the same pre-state, so restore
- * order is irrelevant. */
+/** @brief Restores the live scratch saved by scratch_bracket_enter before the game fiber resumes.
+ *
+ * Every open row is closed. A staged row was never written to guest
+ * memory and needs no restore; any other row gets its saved bytes back.
+ * Overlapping rows all saved the same pre-state, so restore order does
+ * not matter. No-op when the bracket is not open.
+ * @param cpu Unused. */
 static void scratch_bracket_leave(CPUState* cpu) {
     (void)cpu;
     if (!s_bracket_open) return;
@@ -1227,9 +1313,16 @@ static void player_records_loop(CPUState* cpu, int paired, int cam_cut, int cam_
 }
 
 
-/* A cut: the two ticks are not one camera motion. Position, rotation and the
- * simulation regime each decide it; `out_gs_edge` reports the regime edge,
- * which the callers distinguish in their census. */
+/** @brief Reports whether the camera snapshots of two ticks are not one camera motion.
+ *
+ * cut_camera_reason decides from the camera position, the rotation matrix
+ * and the g_GameState regime. OPENPETE_CAMCUT_DBG logs up to four lines a
+ * second of the guard's inputs.
+ * @param prev The earlier snapshot.
+ * @param curr The later snapshot.
+ * @param pair_age The pair's age, logged only.
+ * @param out_gs_edge Receives 1 when the g_GameState regime changed, which callers count separately.
+ * @return 1 for a cut, else 0. */
 static int camera_cut(const openpete_interp_snapshot_t* prev,
                       const openpete_interp_snapshot_t* curr,
                       double pair_age, int* out_gs_edge) {
