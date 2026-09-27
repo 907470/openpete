@@ -1086,14 +1086,18 @@ void          rhi_set_slot_contest(int on);
  * @return The number of failed recompiles; 0 when all succeed or for NULL. */
 int           rhi_rebuild_pipelines(rhi_device *dev);
 
-/** @brief Name the directory where devices created afterwards persist their Vulkan pipeline cache.
+/** @brief Name the directory where devices created afterwards persist their Vulkan pipeline cache, and the function that writes the file.
  *
  * Each device loads vk-pipelines-<vendor>-<device>-<cache uuid>.bin from it
- * at creation and rewrites it at rhi_destroy when the cache grew. NULL or
- * "" keeps the cache in memory only (the default). Process-global; call
- * before rhi_create.
- * @param dir Existing directory, or NULL. */
-void          rhi_set_pipeline_cache_dir(const char *dir);
+ * at creation, offering the driver only a file whose envelope (length,
+ * digest, driverVersion) and Vulkan header match, and rewrites it through
+ * write_file at rhi_destroy when the cache changed size. A NULL or "" dir,
+ * or a NULL write_file, keeps the cache in memory only (the default).
+ * Process-global; call before rhi_create.
+ * @param dir Existing directory, or NULL.
+ * @param write_file Replaces path with n bytes in one step; returns 0 on success. */
+void          rhi_set_pipeline_cache_dir(const char *dir,
+                                         int (*write_file)(const char *path, const void *data, size_t n));
 
 /** @brief Create a pipeline from in-memory SPIR-V words (mod shaders).
  *

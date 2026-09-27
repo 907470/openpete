@@ -30,6 +30,7 @@
 #include "openpete_mods.h"   /* openpete_mods_texture_get (mod-texture runs) */
 #include "openpete_fb_snapshot.h"   /* framebuffer-window snapshot runs */
 #include "openpete_paths.h"         /* pipeline cache directory */
+#include "openpete_atomic_file.h"   /* pipeline cache write-back */
 
 #include "openpete_log.h"
 #include "openpete_time.h"   /* op_now — overlay's own sub-tick alpha (camera-independent) */
@@ -1312,7 +1313,8 @@ static int s_terrain_vis = OPENPETE_TERRAIN_VIS_FRUSTUM;
  * queued one. The mode is a vertex spec constant baked into every scene
  * pipeline, so a change cannot apply mid-frame like the knobs above — the
  * setter queues it and texmap_apply_pending() re-bakes all pipelines at the
- * next present boundary (rhi_rebuild_pipelines under a device idle). */
+ * next present boundary (rhi_rebuild_pipelines; the replaced objects are
+ * destroyed once the frames in flight that may bind them retire). */
 static int s_texmap_affine  = 0;
 static int s_notex          = 0;   /* untextured lighting view (spec-const 2) */
 static int s_notex_pending  = 0;
@@ -3591,7 +3593,8 @@ static void blend_family_create(rhi_device* dev, const rhi_pipeline_desc* base,
 static void nr_set_pipeline_cache_dir(void)
 {
     char dir[1024];
-    rhi_set_pipeline_cache_dir(openpete_paths_state_dir("cache", dir, sizeof dir, 1) == 0 ? dir : NULL);
+    rhi_set_pipeline_cache_dir(openpete_paths_state_dir("cache", dir, sizeof dir, 1) == 0 ? dir : NULL,
+                               op_atomic_write_file);
 }
 
 /** @brief Log the wireframe view's raster mode when the view is on.

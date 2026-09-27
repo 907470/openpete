@@ -326,7 +326,7 @@ struct rhi_device {
     uint32_t                 gfx_family;
     VkPipelineCache          pcache;          /* every pipeline compiles through it */
     char                     pcache_path[1152]; /* file it loads from and saves to; "" = not persisted */
-    size_t                   pcache_loaded;   /* bytes loaded, so an unchanged cache is not rewritten */
+    size_t                   pcache_loaded;   /* bytes offered to the driver, so an unchanged cache is not rewritten */
     VkQueue                  gfx_queue;
     char                     device_name[256];
     char                     driver_version[64];
@@ -701,6 +701,8 @@ struct rhi_pipeline {
     uint32_t        *vert_words, *frag_words; /* owned SPIR-V word copies   */
     size_t           vert_n, frag_n;          /* word counts                */
     struct rhi_pipeline *prev, *next;         /* device-wide rebuild registry */
+    uint64_t         swap_serial;  /* s_frame_serial when a rebuild installed the objects */
+    bool             swap_idle;    /* that rebuild ran outside a recording frame */
     VkShaderStageFlags pc_stages; /* stage visibility of the push-constant
                                    * block (FRAGMENT; terrain: VERTEX too) —
                                    * rhi_push_constants must match the range */
@@ -2476,10 +2478,37 @@ static void rhi_balloon_free(rhi_device *dev)
 }
 
 static char s_pcache_dir[1024];   /* rhi_set_pipeline_cache_dir; "" = not persisted */
+static int (*s_pcache_write)(const char *path, const void *data, size_t n);
 
-void rhi_set_pipeline_cache_dir(const char *dir)
+void rhi_set_pipeline_cache_dir(const char *dir, int (*write_file)(const char *path, const void *data, size_t n))
 {
-    snprintf(s_pcache_dir, sizeof s_pcache_dir, "%s", dir ? dir : "");
+    snprintf(s_pcache_dir, sizeof s_pcache_dir, "%s", dir && write_file ? dir : "");
+    s_pcache_write = write_file;
+}
+
+/* The persisted file is this envelope followed by vkGetPipelineCacheData's
+ * bytes. The driver treats pInitialData as trusted (it must come from
+ * vkGetPipelineCacheData), so a file is offered only when its length and
+ * FNV-1a 64 digest match what was written and it names this driverVersion:
+ * a truncated, corrupted or foreign file is never passed to the driver. */
+#define PCACHE_MAGIC "OPVKPC\0\1"
+struct pcache_envelope {
+    char     magic[8];
+    uint32_t driver_version;   /* VkPhysicalDeviceProperties::driverVersion */
+    uint32_t payload_len;      /* bytes after the envelope */
+    uint64_t digest;           /* FNV-1a 64 of those bytes */
+};
+
+/** @brief Return the FNV-1a 64-bit digest of n bytes.
+ *
+ * @param p The bytes.
+ * @param n Their count.
+ * @return The digest. */
+static uint64_t fnv1a64(const uint8_t *p, size_t n)
+{
+    uint64_t h = 0xcbf29ce484222325ull;
+    for (size_t i = 0; i < n; i++) { h ^= p[i]; h *= 0x100000001b3ull; }
+    return h;
 }
 
 /** @brief Read a whole file into a malloc'd buffer.
@@ -2500,14 +2529,47 @@ static void *read_whole_file(const char *path, size_t *out_n)
     return buf;
 }
 
-/** @brief Create the device's pipeline cache, seeded from its file when the file's header matches this device.
+/** @brief Return the pipeline-cache payload inside a persisted file when the envelope and the Vulkan header both match this device.
+ *
+ * The envelope must carry PCACHE_MAGIC, this driverVersion, the file's
+ * exact payload length and that payload's digest; the payload's
+ * VkPipelineCacheHeaderVersionOne must have headerSize in [32, length],
+ * version ONE, and this vendorID, deviceID and pipelineCacheUUID.
+ * @param data The file's bytes.
+ * @param n Their count.
+ * @param props This device's properties.
+ * @param out_n Receives the payload length, 0 when refused.
+ * @return The payload, or NULL when refused. */
+static const uint8_t *pcache_payload(const uint8_t *data, size_t n,
+                                     const VkPhysicalDeviceProperties *props, size_t *out_n)
+{
+    struct pcache_envelope env;
+    *out_n = 0;
+    if (!data || n < sizeof env + 16 + VK_UUID_SIZE) return NULL;
+    memcpy(&env, data, sizeof env);
+    const uint8_t *pl = data + sizeof env;
+    const size_t pn = n - sizeof env;
+    uint32_t hdr[4];
+    memcpy(hdr, pl, sizeof hdr);
+    if (memcmp(env.magic, PCACHE_MAGIC, sizeof env.magic) != 0 ||
+        env.driver_version != props->driverVersion || env.payload_len != pn ||
+        hdr[0] < 16 + VK_UUID_SIZE || hdr[0] > pn ||
+        hdr[1] != VK_PIPELINE_CACHE_HEADER_VERSION_ONE ||
+        hdr[2] != props->vendorID || hdr[3] != props->deviceID ||
+        memcmp(pl + 16, props->pipelineCacheUUID, VK_UUID_SIZE) != 0 ||
+        env.digest != fnv1a64(pl, pn))
+        return NULL;
+    *out_n = pn;
+    return pl;
+}
+
+/** @brief Create the device's pipeline cache, seeded from its file when pcache_payload accepts the file.
  *
  * The file is named by the device's vendor id, device id and
  * pipelineCacheUUID under the directory rhi_set_pipeline_cache_dir named, so
- * a driver update or another GPU starts a fresh file. A header naming
- * another device or driver is ignored. Without a directory the cache lives
- * for the process only. A failure leaves dev->pcache VK_NULL_HANDLE, which
- * every pipeline create accepts.
+ * a driver update or another GPU starts a fresh file. Without a directory
+ * the cache lives for the process only. A failure leaves dev->pcache
+ * VK_NULL_HANDLE, which every pipeline create accepts.
  * @param dev Device whose physical device and logical device exist. */
 static void pipeline_cache_open(rhi_device *dev)
 {
@@ -2524,60 +2586,56 @@ static void pipeline_cache_open(rhi_device *dev)
         if (n > 0 && (size_t)n + 5 < sizeof dev->pcache_path) memcpy(dev->pcache_path + n, ".bin", 5);
         else dev->pcache_path[0] = '\0';
     }
-    size_t n = 0;
+    size_t n = 0, pn = 0;
     void *data = dev->pcache_path[0] ? read_whole_file(dev->pcache_path, &n) : NULL;
-    const uint8_t *h = (const uint8_t *)data;
-    uint32_t hdr[4] = {0};
-    if (data && n >= 16 + VK_UUID_SIZE) memcpy(hdr, h, sizeof hdr);
-    const bool match = data && n >= 16 + VK_UUID_SIZE &&
-                       hdr[1] == VK_PIPELINE_CACHE_HEADER_VERSION_ONE &&
-                       hdr[2] == props.vendorID && hdr[3] == props.deviceID &&
-                       memcmp(h + 16, props.pipelineCacheUUID, VK_UUID_SIZE) == 0;
+    const uint8_t *pl = pcache_payload((const uint8_t *)data, n, &props, &pn);
     VkPipelineCacheCreateInfo ci = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
-        .initialDataSize = match ? n : 0,
-        .pInitialData = match ? data : NULL,
+        .initialDataSize = pn,
+        .pInitialData = pl,
     };
     if (vkCreatePipelineCache(dev->device, &ci, NULL, &dev->pcache) != VK_SUCCESS) {
-        ci.initialDataSize = 0; ci.pInitialData = NULL;
+        ci.initialDataSize = 0; ci.pInitialData = NULL; pn = 0;
         if (vkCreatePipelineCache(dev->device, &ci, NULL, &dev->pcache) != VK_SUCCESS)
             dev->pcache = VK_NULL_HANDLE;
     }
-    dev->pcache_loaded = match ? n : 0;
+    dev->pcache_loaded = pn;
     if (dev->pcache_path[0])
-        RHI_LOG("pipeline cache: %s (%zu bytes loaded%s)\n", dev->pcache_path,
-                dev->pcache_loaded, data && !match ? "; stale header ignored" : "");
+        RHI_LOG("pipeline cache: %s (%zu bytes offered%s)\n", dev->pcache_path,
+                pn, data && !pl ? "; file refused" : "");
     free(data);
 }
 
 /** @brief Write the pipeline cache to its file when it changed size since load, then destroy it.
  *
- * The data goes to a temporary file renamed over the target, so a reader
- * never sees a partial file and two processes saving at once leave one
- * whole file.
+ * The envelope and the cache data go through the writer
+ * rhi_set_pipeline_cache_dir installed, which replaces the file in one
+ * step.
  * @param dev Device, idle. */
 static void pipeline_cache_close(rhi_device *dev)
 {
     if (!dev->pcache) return;
     size_t n = 0;
-    void *data = NULL;
-    if (dev->pcache_path[0] &&
+    uint8_t *buf = NULL;
+    struct pcache_envelope env;
+    if (dev->pcache_path[0] && s_pcache_write &&
         vkGetPipelineCacheData(dev->device, dev->pcache, &n, NULL) == VK_SUCCESS &&
-        n > 0 && n != dev->pcache_loaded && (data = malloc(n)) != NULL &&
-        vkGetPipelineCacheData(dev->device, dev->pcache, &n, data) == VK_SUCCESS) {
-        char tmp[sizeof dev->pcache_path + 16];
-        snprintf(tmp, sizeof tmp, "%s.tmp", dev->pcache_path);
-        FILE *f = fopen(tmp, "wb");
-        bool ok = f && fwrite(data, 1, n, f) == n;
-        if (f && fclose(f) != 0) ok = false;
-#ifdef _WIN32
-        if (ok) remove(dev->pcache_path);
-#endif
-        if (ok && rename(tmp, dev->pcache_path) == 0)
+        n > 0 && n <= UINT32_MAX && n != dev->pcache_loaded &&
+        (buf = malloc(sizeof env + n)) != NULL &&
+        vkGetPipelineCacheData(dev->device, dev->pcache, &n, buf + sizeof env) == VK_SUCCESS) {
+        VkPhysicalDeviceProperties props;
+        vkGetPhysicalDeviceProperties(dev->phys, &props);
+        memcpy(env.magic, PCACHE_MAGIC, sizeof env.magic);
+        env.driver_version = props.driverVersion;
+        env.payload_len = (uint32_t)n;
+        env.digest = fnv1a64(buf + sizeof env, n);
+        memcpy(buf, &env, sizeof env);
+        if (s_pcache_write(dev->pcache_path, buf, sizeof env + n) == 0)
             RHI_LOG("pipeline cache: saved %zu bytes\n", n);
-        else { remove(tmp); RHI_LOG("pipeline cache: save to %s failed\n", dev->pcache_path); }
+        else
+            RHI_LOG("pipeline cache: save to %s failed\n", dev->pcache_path);
     }
-    free(data);
+    free(buf);
     vkDestroyPipelineCache(dev->device, dev->pcache, NULL);
     dev->pcache = VK_NULL_HANDLE;
 }
@@ -3153,6 +3211,7 @@ static bool begin_frame_impl(rhi_device *dev, bool acquire)
     census_frame();
     retired_reclaim(dev, false);
     dev->pair_used[dev->frame] = 0;   /* the slot's pair sets have retired */
+    dev->cur_layout = VK_NULL_HANDLE; /* a layout bound last frame may be retired */
     dev->frame_active = true;
     dev->draw_calls = 0;
     if (dev->gpu_timers) {
@@ -6033,6 +6092,7 @@ rhi_pipeline *rhi_create_pipeline_spv(rhi_device *dev,
 int rhi_rebuild_pipelines(rhi_device *dev)
 {
     if (!dev) return 0;
+    seam_check("rebuild_pipelines");   /* the retired list is the display owner's */
     const Uint64 t0 = SDL_GetTicksNS();
     int fails = 0, rebuilt = 0;
     for (rhi_pipeline *p = dev->pipes_head; p; p = p->next) {
@@ -6043,9 +6103,15 @@ int rhi_rebuild_pipelines(rhi_device *dev)
             continue;
         }
         /* Frames in flight may still execute the old objects: they are
-         * destroyed once those frames retire, so no device idle is needed. */
-        struct rhi_retired_pipe *r = calloc(1, sizeof(*r));
-        if (!r) { vkDeviceWaitIdle(dev->device); r = NULL; }
+         * destroyed once those frames retire, so no device idle is needed.
+         * Objects a rebuild installed outside a frame, with no frame begun
+         * since, were never recorded: they are destroyed now instead of
+         * retired, so rebuilds while no frame begins (a minimized window, a
+         * lost device) do not grow the retired list. */
+        const bool unrecorded = p->swap_idle && !dev->frame_active &&
+                                p->swap_serial == s_frame_serial;
+        struct rhi_retired_pipe *r = unrecorded ? NULL : calloc(1, sizeof(*r));
+        if (!r && !unrecorded) vkDeviceWaitIdle(dev->device);
         if (r) {
             *r = (struct rhi_retired_pipe){ dev->retired_pipes, p->pipeline, p->layout, s_frame_serial };
             dev->retired_pipes = r;
@@ -6055,6 +6121,8 @@ int rhi_rebuild_pipelines(rhi_device *dev)
         }
         p->pipeline = np;
         p->layout = nl;
+        p->swap_serial = s_frame_serial;
+        p->swap_idle = !dev->frame_active;
         rebuilt++;
     }
     RHI_LOG("rebuilt %d pipelines (%d failed) in %.1f ms\n", rebuilt, fails,
