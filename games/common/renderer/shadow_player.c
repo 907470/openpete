@@ -66,9 +66,17 @@ extern unsigned openpete_frame;
 #define PLSH_RING_N      16     /* ring points, and so triangles, per fan */
 #define PLSH_SIL_N       8      /* silhouette bytes a frame record carries */
 
-/* Rotate the camera matrix into the shadow's plane. Each non-zero byte angle
- * replaces two columns of the running matrix with one MVMVA pair, in the
- * order Y (bits 16-23), X (bits 8-15), Z (bits 0-7). */
+/** @brief Rotates the camera matrix into the shadow's plane.
+ *
+ * Each non-zero byte angle replaces two columns of the running matrix with
+ * one MVMVA pair (shadow_mvmva_ir), in the order Y (bits 16-23, columns 0
+ * and 2), X (bits 8-15, columns 1 and 2), Z (bits 0-7, columns 0 and 1). The
+ * sine of angle a is the halfword at game_layout.sin_table + a*2, its cosine
+ * 0x80 bytes on. A layout without a sine table returns C unrotated.
+ * @param cpu The guest CPU state; supplies the sine table.
+ * @param C The camera matrix, Q12.
+ * @param rot The packed byte angles of the state block's rotation word.
+ * @param R Receives the rotated matrix. */
 static void plsh_matrix(CPUState* cpu, const int C[3][3], uint32_t rot, int R[3][3]) {
     const uint32_t sinb = game_layout.sin_table;
     memcpy(R, C, sizeof(int) * 9);
@@ -99,8 +107,18 @@ static shadow_fan s_fan;
 static int     s_last_bound = -1;
 static int     s_last_drawn;
 
-/* Read the eight silhouette bytes of one animation frame. Returns 0 when the
- * animation pointer is not RAM. */
+/** @brief Reads the eight silhouette bytes at the head of one animation frame record.
+ *
+ * The animation is entry ((anim_sel >> anim_shift) & 0xFF) of the pointer
+ * table; the frame is record ((anim_sel >> frame_shift) & 0xFF), each 0x14
+ * bytes, after the animation's 0x20-byte header.
+ * @param cpu The guest CPU state.
+ * @param table The animation pointer table.
+ * @param anim_sel The avatar's packed animation-select word.
+ * @param anim_shift The shift of the animation index byte.
+ * @param frame_shift The shift of the frame index byte.
+ * @param out Receives the eight bytes.
+ * @return 1 when read; 0 when the animation pointer is outside main RAM. */
 static int plsh_frame_bytes(CPUState* cpu, uint32_t table, uint32_t anim_sel,
                             int anim_shift, int frame_shift, uint8_t out[PLSH_SIL_N]) {
     uint32_t a = cpu->read_word(table + (((anim_sel >> anim_shift) & 0xFFu) << 2));
@@ -220,10 +238,14 @@ static void shadow_player_build(CPUState* cpu) {
     }
 }
 
-/* Feed the native player shadow: the fan's footprint prism hull, subtractive
- * (ABR mode 2 -> blend 3), coloured per pixel by the footprint decal.
- * `slot`: the model record the shadow renders under, the PLAYER slot of its
- * scene tag. */
+/** @brief Rebuilds the player shadow fan and feeds it to the native scene as the footprint decal.
+ *
+ * Returns without feeding when OPENPETE_SHADOW_PLAYER=0 or the build linked
+ * no triangle. The fan's footprint prism hull draws subtractive (ABR mode 2,
+ * blend 3), coloured per pixel by the decal, under the scene tag
+ * OPENPETE_TAG_SHADOW(OPENPETE_TAG_SHADOW_PLAYER, slot).
+ * @param cpu The guest CPU state.
+ * @param slot The model record the shadow renders under; negative tags as 0. */
 static void shadow_player_feed_native(CPUState* cpu, int slot) {
     if (!shadow_player_feed_enabled()) return;
     shadow_player_build(cpu);
@@ -236,6 +258,9 @@ static void shadow_player_feed_native(CPUState* cpu, int slot) {
 }
 
 /* ---- verify --------------------------------------------------------------- */
+/** @brief Prints the shadow state block, the avatar's animation and blend terms, the camera position and the capture to stderr.
+ *
+ * @param cpu The guest CPU state. */
 static void shadow_player_dump(CPUState* cpu) {
     const uint32_t st = game_layout.shadow.player.state;
     const uint32_t pl = game_layout.player.base;
@@ -259,10 +284,17 @@ static void shadow_player_dump(CPUState* cpu) {
     fprintf(stderr, "=== end shadow-player-dump ===\n\n");
 }
 
-/* A/B: the native fan against the captured G3 prims (the .s int16 SXY oracle).
- * Same fan order, so compare element-wise. Reports VACUOUS when the routine
- * emitted no untextured triangle: the two negative-control rows read here as
- * native=0 G3=0, which is the count the row asserts, not a pass. */
+/** @brief Compares the native fan against the captured untextured triangles, the guest's int16 SXY, and prints one line.
+ *
+ * Both lists are in fan order, so the first min(native, G3) triangles
+ * compare element-wise: the mean and worst per-vertex |dx| + |dy|, the
+ * triangles over 2 px, and the vertex colour mismatches. The line also
+ * carries both screen boxes, the native depth window, the native signed
+ * twice-area sum and the tick's record-bind verdict, which separate a fan
+ * off screen from one outside the depth range. With no native or no
+ * captured triangle it prints VACUOUS instead: a negative-control row reads
+ * native=0 G3=0, which is not a pass.
+ * @param cpu The guest CPU state. */
 static void shadow_player_compare(CPUState* cpu) {
     shadow_player_build(cpu);
     int np = shadow_prim_count(), g3 = 0;
@@ -368,8 +400,7 @@ static int on_player_shadow(CPUState* cpu, uint32_t addr) {
     return hook_bracket_end(&k_bracket);
 }
 
-/* Sub-tick re-extract: one shadow record, its state block already staged by
- * the record replay, so the anchor reads the bracketed position. */
+/* Re-extracts one player shadow record at a sub-tick; see shadow.h. */
 void shadow_player_reextract(CPUState* cpu, int slot) {
     if (!hook_reextract_ready(RP_SHADOW)) return;
     shadow_player_feed_native(cpu, slot);

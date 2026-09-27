@@ -182,9 +182,14 @@ static int terrain_prim_sink(void* ctx, const ngte_prim* s) {
     return 1;
 }
 
-/* Walk the polybuf [start, end). The whole world passes through here, so the
- * guard is eight times the sample bound and the histogram and the total count
- * every primitive walked, not only the sampled ones. */
+/** @brief Walks the polybuf [start, end) into the bounded capture sample.
+ *
+ * Polygons only. The whole world passes through here, so the walk guard is
+ * eight times the sample bound, and the prim-code histogram and the total
+ * count every polygon walked, not only the sampled ones.
+ * @param cpu The guest CPU state.
+ * @param start The first polybuf address.
+ * @param end One past the last polybuf address. */
 static void capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
     OP_PROF_ACCUM_SCOPE("terrain.capture");
     s_gte_n = 0;
@@ -565,9 +570,14 @@ static int      s_fp_np;
 static double   s_fp_bx0, s_fp_by0, s_fp_bx1, s_fp_by1;   /* bbox of the point set */
 static int      s_fp_grid_cols, s_fp_grid_rows;
 
-/* Lay out this walk's pick points. Point 0 sits at the crosshair, moved by
- * OPENPETE_FILLPICK_XY="dx,dy" — offsets in [-1,1] of the visible half-frame,
- * so a scripted aim needs no knowledge of the frame width at this aspect. */
+/** @brief Lays out this walk's pick points and their bounding box.
+ *
+ * Point 0 sits at the crosshair (OFX, OFY), moved by
+ * OPENPETE_FILLPICK_XY="dx,dy", offsets in [-1, 1] of the visible half-frame
+ * (OFX wide, 112 lines high), so a scripted aim needs no knowledge of the
+ * frame width at this aspect. OPENPETE_FILLPICK_GRID="COLSxROWS" appends one
+ * point per cell centre; rows are cut so the set fits 4096 points. Every
+ * point starts with no LP and no HP hit. */
 static void fp_begin(void) {
     double hw = s_ofx, hh = 112.0;        /* visible half-extents, walk frame */
     s_fp_np = 0;
@@ -610,10 +620,22 @@ static void fp_begin(void) {
     }
 }
 
-/* Keep each point's nearest hit of one projected triangle. Perspective-correct
- * depth: 1/z interpolates linearly in screen space, so the reciprocal of the
- * barycentric-weighted reciprocals is the exact surface view-Z at the sample
- * for a planar triangle. */
+/** @brief Keeps each pick point's nearest hit of one projected triangle.
+ *
+ * A triangle with a vertex at or behind the camera plane, outside the point
+ * set's bounding box, or degenerate on screen is skipped. The depth is
+ * perspective-correct: 1/z interpolates linearly in screen space, so the
+ * reciprocal of the barycentric-weighted reciprocals is the exact surface
+ * view-Z at the sample for a planar triangle. An LP hit records the face's
+ * quad and fill-candidate flags; an HP hit records the sector and face only.
+ * @param lp 1 for a low-poly face, 0 for a high-poly face.
+ * @param sec The sector index.
+ * @param face The face index within the sector.
+ * @param quad 1 when the face is a quad.
+ * @param cand The face's fill-candidate flag.
+ * @param A The first projected vertex.
+ * @param B The second projected vertex.
+ * @param C The third projected vertex. */
 static void fp_hit_tri(int lp, int sec, int face, int quad, int cand,
                        const lvert* A, const lvert* B, const lvert* C) {
     if (A->m3 <= 1e-6 || B->m3 <= 1e-6 || C->m3 <= 1e-6) return;  /* straddles the camera plane */
@@ -648,8 +670,21 @@ static void fp_hit_tri(int lp, int sec, int face, int quad, int cand,
     }
 }
 
-/* Both strip triangles of a quad, matching the emit's (i0,i1,i2)+(i1,i2,i3)
- * triangulation so the picked region is exactly the drawn region. */
+/** @brief Tests one face's triangles against the pick points.
+ *
+ * A quad tests both strip triangles, matching the emit's (i0, i1, i2) +
+ * (i1, i2, i3) triangulation so the picked region is exactly the drawn
+ * region; a triangle tests (i0, i1, i2) only.
+ * @param lp 1 for a low-poly face, 0 for a high-poly face.
+ * @param sec The sector index.
+ * @param face The face index within the sector.
+ * @param cand The face's fill-candidate flag.
+ * @param sv The sector's projected vertices.
+ * @param i0 The first corner's vertex index.
+ * @param i1 The second corner's vertex index.
+ * @param i2 The third corner's vertex index.
+ * @param i3 The fourth corner's vertex index; read only for a quad.
+ * @param quad 1 when the face is a quad. */
 static void fp_test_face(int lp, int sec, int face, int cand, const lvert* sv,
                          int i0, int i1, int i2, int i3, int quad) {
     fp_hit_tri(lp, sec, face, quad, cand, &sv[i0], &sv[i1], &sv[i2]);
@@ -669,33 +704,28 @@ typedef struct { uint32_t rgb; float u, v; } lcorner;
 typedef struct { int textured, tpx, tpy, clx, cly, bpp, blend, clut_raw, fog_delta;
                  int texid; /* Tiledef/record id (word2 & 0x7F), -1 = untextured */ } tmat;
 
-/* Decode a terrain face's texture material + its 4 corner UVs from the
- * m_LQTexturePointer Tiledef table (§8). texByte (int8 of HP face word2):
- *   0xFF (-1)  → untextured (flat gouraud)
- *   >= 0       → textured opaque  (tile = texByte)
- *   < 0, != -1 → textured ABE     (tile = texByte & 0x7F; blend from tpage ABR)
- * Tile = lqTable + tile*16, near/max-detail half [0..7] (skip the +8 far LOD):
- *   word0 = {u8 u0, u8 v0, u16 clut}; word1 = {u8 u1, u8 v1, u16 tpage}.
- * A fixed 32×32 tile. Output u/v[] are the 4 SPATIAL corners in [TL,TR,BL,BR]
- * order: TL=(u0,v0), TR=(u1,v1), BL=(u0,v0+0x1F), BR=(u0+0x1F,v0+0x1F) — matching
- * the .s GT4 prim emit (0x800270AC). NOTE the .s reorders the last two SXY/UV
- * slots (slot2=i3, slot3=i2; stores 0x80026DD0-DC) — so the caller maps vertex
- * i0→TL, i1→TR, i3→BL, i2→BR, and uses the GPU diagonal i1-i3 (affine-faithful).
+/** @brief Decodes one 8-byte Tiledef entry into a material and the tile's four spatial corner UVs.
  *
- * hiDetail selects the LOD HALF of the 16-byte Tiledef entry: each entry stores
- * TWO 8-byte tiles — [0..7] = FAR/low-detail (typically bpp4), [8..15] = NEAR/
- * high-detail (typically bpp8). The .s picks the half per-quad by depth at
- * 0x80026F70 (see terrain_build); under --no-lod the saturated m_LodDistance
- * forces hi-detail everywhere. (The CORRECTED layout: the +8 bump is the NEAR/HQ
- * tile, not far — empirically the bpp8 medallion/detail textures live in [8..15].) */
-/* Decode one 8-byte Tiledef entry at byte address `e` → material + 4 spatial
- * corner UVs [TL,TR,BL,BR]. Shared by the per-quad LQ path (terrain_texmat) and
- * the near/HQ subdivide path (entries inside the 168-byte HQ cell record). `m`
- * must be zeroed by the caller. */
-/* A tile's four corner UVs [TL,TR,BL,BR] and material. `span` is the tile's
- * texel extent minus one: 0x1F for the 32x32 LQ and 2x2 quadrant tiles, 0x0F
- * for the 16x16 4x4-cell tiles (r_environment.s 0x8002928C: BL = word0 +
- * 0xF00, BR = word0 + 0xF0F). */
+ * The entry is word0 = {u8 u0, u8 v0, u16 clut}, word1 = {u8 u1, u8 v1,
+ * u16 tpage}. The corners, in [TL, TR, BL, BR] order, are TL = (u0, v0),
+ * TR = (u1, v1), BL = (u0, v0 + span), BR = (u0 + span, v0 + span), each
+ * wrapped to a byte, matching the GT4 prim emit (0x800270AC). On a layout
+ * whose word1 is the BR corner (terrain.tile_word1_br), TR's v is v1 - span.
+ * The material is textured, with the tpage's page, depth and CLUT, the raw
+ * CLUT halfword, and fog_delta 0 (the base row). Blend is 0 unless the face
+ * is ABE, or the layout carries ABE in tpage bit 15 and that bit is set; an
+ * ABE face takes the tpage's ABR mode. Serves the per-quad LQ path
+ * (terrain_texmat) and the near/HQ subdivide paths (entries inside the HQ
+ * cell record).
+ * @param cpu The guest CPU state.
+ * @param e The entry's byte address.
+ * @param abe 1 when the face is semi-transparent.
+ * @param m Receives the material; zeroed by the caller.
+ * @param u Receives the four corner U texels.
+ * @param v Receives the four corner V texels.
+ * @param span The tile's texel extent minus one: 0x1F for the 32x32 LQ and
+ *        2x2 quadrant tiles, 0x0F for the 16x16 4x4-cell tiles
+ *        (r_environment.s 0x8002928C: BL = word0 + 0xF00, BR = word0 + 0xF0F). */
 static void decode_tiledef_span(CPUState* cpu, uint32_t e, int abe, tmat* m,
                                 float u[4], float v[4], int span) {
     uint32_t w0 = rd(cpu, e + 0), w1 = rd(cpu, e + 4);
@@ -722,6 +752,26 @@ static void decode_tiledef(CPUState* cpu, uint32_t e, int abe, tmat* m, float u[
     decode_tiledef_span(cpu, e, abe, m, u, v, 0x1F);
 }
 
+/** @brief Decodes a terrain face's texture material and its four corner UVs from the m_LQTexturePointer Tiledef table.
+ *
+ * texByte is the int8 of the HP face's word2: -1 (0xFF) is untextured (flat
+ * gouraud, bpp 16, texid -1); otherwise the tile is texByte & 0x7F, opaque
+ * when texByte >= 0 and semi-transparent (blend from the tpage ABR) when
+ * negative. The entry is table + tile * terrain.tex_stride; each entry holds
+ * two 8-byte tiles, [0..7] far/low-detail (typically 4-bit) and [8..15]
+ * near/high-detail (typically 8-bit), and hiDetail selects the second. The
+ * game picks the half per quad by depth at 0x80026F70; under --no-lod the
+ * saturated m_LodDistance selects high detail everywhere. The game's GT4 emit
+ * stores the last two SXY/UV slots swapped (slot2 = i3, slot3 = i2;
+ * 0x80026DD0-DC), so callers map vertex i0 to TL, i1 to TR, i3 to BL and i2
+ * to BR.
+ * @param cpu The guest CPU state.
+ * @param table The Tiledef table's address.
+ * @param texByte The face's texture byte.
+ * @param hiDetail 1 selects the near/high-detail half.
+ * @param m Receives the material; texid is the tile index.
+ * @param u Receives the four corner U texels.
+ * @param v Receives the four corner V texels. */
 static void terrain_texmat(CPUState* cpu, uint32_t table, int texByte, int hiDetail,
                            tmat* m, float u[4], float v[4]) {
     memset(m, 0, sizeof(*m)); m->bpp = 16; m->texid = -1;
@@ -854,14 +904,21 @@ static void push_tri(tn_wctx* W, ngte_cvert a, ngte_cvert b, ngte_cvert c, const
  * wedge's full extent on a WSLg screenshot. */
 #define CLIP_PROJ_LIMIT 2048.0f
 
-/* Near-plane clip (Sutherland-Hodgman against the plane m3 >= zc) of a
- * camera-space triangle given as 3 cverts, then push. 0 clipped → 1 tri; 1 →
- * quad (2 tris); 2 → 1 tri; 3 → dropped. Starts at zc = s_nearz; when a
- * crossing vertex still projects beyond CLIP_PROJ_LIMIT the whole face is
- * re-clipped at a doubled zc (crossing projections shrink ~1/zc, so this
- * terminates fast; faces that end fully behind the raised plane were entirely
- * inside the invisible band). Faces that never clip are pushed on round 0 —
- * identical to the old single-plane behaviour. */
+/** @brief Near-plane clips a camera-space triangle and pushes the result.
+ *
+ * Sutherland-Hodgman against the plane m3 >= zc: 0 vertices behind gives 1
+ * triangle, 1 gives a quad (2 triangles, fanned from out[0]), 2 give 1
+ * triangle, 3 drop the face and count dbg_behind. zc starts at s_nearz; when
+ * a crossing vertex still projects beyond CLIP_PROJ_LIMIT from the screen
+ * centre, the whole face is re-clipped at a doubled zc, at most 16 times
+ * (crossing projections shrink about 1/zc, and a face that ends fully behind
+ * the raised plane lay entirely inside the invisible band). A face that never
+ * crosses is pushed on round 0. A clipped push counts dbg_clipped.
+ * @param W The walk context receiving the triangles.
+ * @param a The first vertex.
+ * @param b The second vertex.
+ * @param c The third vertex.
+ * @param m The face's material. */
 static void clip_push_tri(tn_wctx* W, ngte_cvert a, ngte_cvert b, ngte_cvert c, const tmat* m) {
     ngte_cvert in[3] = { a, b, c };
     double zc = s_nearz;
@@ -892,8 +949,17 @@ static void clip_push_tri(tn_wctx* W, ngte_cvert a, ngte_cvert b, ngte_cvert c, 
     }
 }
 
-/* Emit a triangle (sv[] index form) with near-plane clipping. Replaces the old
- * behind-drop + spike cull: near/straddling faces are clipped & rendered. */
+/** @brief Emits one triangle of a sector's projected vertices through the near-plane clip.
+ *
+ * @param W The walk context receiving the triangles.
+ * @param sv The sector's projected vertices.
+ * @param a The first vertex index.
+ * @param b The second vertex index.
+ * @param c The third vertex index.
+ * @param ka The first corner's colour and UV.
+ * @param kb The second corner's colour and UV.
+ * @param kc The third corner's colour and UV.
+ * @param m The face's material. */
 static void emit_tri(tn_wctx* W, const lvert* sv, int a, int b, int c,
                      lcorner ka, lcorner kb, lcorner kc, const tmat* m) {
     ngte_cvert A = { sv[a].m1, sv[a].m2, sv[a].m3, ka.rgb, ka.u, ka.v };
@@ -908,9 +974,14 @@ static ngte_cvert tn_cv(const lvert* p, lcorner k) {
     return c;
 }
 
-/* Camera-space midpoint of two cverts: position averaged, colour per-channel
- * averaged (UVs filled later by the caller). Mirrors the .s near-pass's
- * `(a+b)>>1` grid build (§near-HQ). */
+/** @brief Camera-space midpoint of two cverts.
+ *
+ * Position and the fx/fy terms are averaged, each colour channel is
+ * (a + b) >> 1, and UV, the screen position and the outcode flag are zeroed
+ * for the caller to fill. Mirrors the near pass's `(a+b)>>1` grid build.
+ * @param a The first vertex.
+ * @param b The second vertex.
+ * @return The midpoint. */
 static ngte_cvert cv_mid(ngte_cvert a, ngte_cvert b) {
     ngte_cvert r;
     r.osx = r.osy = 0.0f; r.oflag = 0;
@@ -962,11 +1033,21 @@ static float tn_drain_key3(const ngte_cvert* a, const ngte_cvert* b, const ngte_
                    2.0 * tn_drain_sz(c->m3, drained));
 }
 
-/* Emit a textured camera-space quad (corners TL,TR,BL,BR) with near-clipping.
- * UVs come from a decoded Tiledef (u/v in [TL,TR,BL,BR]); GPU diagonal TR-BL
- * (triangulation (TL,TR,BL)+(TR,BL,BR)) — same as the main loop. The quad is
- * one drain sub-cell and carries its own key, except under emit_keycells,
- * where the caller has set the face's least sub-cell key and its table. */
+/** @brief Emits a textured camera-space quad through the near-plane clip.
+ *
+ * UVs come from a decoded Tiledef in [TL, TR, BL, BR] order; the GPU
+ * diagonal is TR-BL, triangulated (TL, TR, BL) + (TR, BL, BR) as in the main
+ * loop. The quad is one drain sub-cell and sets emit_otkey to its own key
+ * (tn_drain_key4), except under emit_keycells, where the caller has set the
+ * face's least sub-cell key and its table.
+ * @param W The walk context receiving the triangles.
+ * @param tl The top-left corner.
+ * @param tr The top-right corner.
+ * @param bl The bottom-left corner.
+ * @param br The bottom-right corner.
+ * @param m The quad's material.
+ * @param u The four corner U texels, [TL, TR, BL, BR].
+ * @param v The four corner V texels, [TL, TR, BL, BR]. */
 static void emit_quad_cv(tn_wctx* W, ngte_cvert tl, ngte_cvert tr, ngte_cvert bl, ngte_cvert br,
                          const tmat* m, const float u[4], const float v[4]) {
     tl.u=u[0]; tl.v=v[0]; tr.u=u[1]; tr.v=v[1]; bl.u=u[2]; bl.v=v[2]; br.u=u[3]; br.v=v[3];
@@ -1236,8 +1317,18 @@ static int defer_cmp(const void* a, const void* b) {
     uint32_t x = *(const uint32_t*)a, y = *(const uint32_t*)b;
     return (x > y) - (x < y);
 }
-/* Read one 0-terminated defer queue: headers counted into *hdr, each cell's
- * face record into s_defer (and into s_defer4 for the +0x1E00 queue). */
+/** @brief Reads one 0-terminated defer queue from guest RAM.
+ *
+ * A positive entry is a header and counts into *hdr; a negative entry is a
+ * cell whose face record pointer (low two flag bits cleared) appends to
+ * s_defer, and also to s_defer4 for the +0x1E00 queue, and counts into
+ * *cell. Each list holds at most MAX_DEFER entries; the walk stops at 0,
+ * after MAX_DEFER * 2 entries, or at once for a queue address of 0.
+ * @param cpu The guest CPU state.
+ * @param p The queue's address; 0 when the game has none.
+ * @param is1e 1 for the +0x1E00 (tier 4) queue.
+ * @param hdr Incremented per header.
+ * @param cell Incremented per cell. */
 static void defer_read_queue(CPUState* cpu, uint32_t p, int is1e, int* hdr, int* cell) {
     for (int guard = 0; p && guard < MAX_DEFER * 2; guard++) {
         uint32_t e = rd(cpu, p); p += 4;
@@ -1270,27 +1361,6 @@ static int defer_find(const uint32_t* q, int n, uint32_t faceRecPtr) {
 static int is_deferred(uint32_t faceRecPtr) { return defer_find(s_defer, s_defer_n, faceRecPtr); }
 static int is_deferred4(uint32_t faceRecPtr) { return defer_find(s_defer4, s_defer4_n, faceRecPtr); }
 
-/* Near-cell classifier — replicates func_800258F0's HP-walk defer test (the
- * classifier at r_environment.s 0x80026CFC) from GAMESTATE, so it works in ALL
- * modes. (The deferred QUEUE the .s fills is per-frame .s OUTPUT — the plan's
- * core principle forbids consuming that; and under the retired recompiler-side
- * m_LodDistance saturation it was outright garbage via perturbed scratch-buffer
- * reuse. The queue is kept ONLY as a verify-path oracle to calibrate this
- * against.)
- *
- * A face is deferred to the near subdivide pass when its 4 corner depths mark it
- * foreground:
- *   depthSum < near_band && !(word3 & near_flag_excl)
- *     && (minCorner < near_corner || !(word3 & near_flag_tier2))
- * with the four terms from the game's terrain descriptor (Spyro 1 as written
- * above; a game whose classifier reads no face word-3 bits leaves the two flag
- * terms 0 and defers on depth alone).
- * Depths are the GTE SZ3 (world/4). Our m3 is world/16, so SZ3 = HQSCALE·m3
- * (HQSCALE=4: HP renders world/4, we project world/16). The .s's leading
- * "m_LodDistance - depthSum <= 0 → skip" gate never fires for a near face
- * (depthSum < 0x2000 << m_LodDistance), so it is omitted — that omission is what
- * makes this --no-lod-robust (no m_LodDistance dependency). depthSum > 0 stands in
- * for the tier-4 depthSum != 0 guard and drops behind-camera faces. */
 static double s_hqscale = -1.0;   /* SZ3 = s_hqscale * m3 (env OPENPETE_TERRAIN_HQSCALE) */
 /* The two face word-3 bits the defer classifier reads, by the role the game's
  * descriptor gives them rather than by a bit position: the hard exclusion from
@@ -1305,11 +1375,32 @@ static inline int tface_near_tier2(uint32_t w3) {
     uint32_t b = game_layout.terrain.near_flag_tier2;
     return b && (w3 & b);
 }
-/* The CANONICAL .s foreground classification (no --no-lod pin): true iff the
- * canonical walk would route this face to the near/HQ defer queues — i.e. it
- * never receives a main-OT index. Consumers that model og's OT (the authored
- * bias gate) must use THIS; the render-routing wrapper below layers the
- * --no-lod always-HQ pin on top. */
+/** @brief The game's own near-cell classification: whether its walk defers this face to the near/HQ queues.
+ *
+ * Replicates func_800258F0's HP-walk defer test (the classifier at
+ * r_environment.s 0x80026CFC) from game state, without the --no-lod
+ * always-HQ pin: a deferred face never receives a main-OT index, so
+ * consumers that model the game's OT (the authored bias gate) use this, and
+ * face_is_near layers the pin on top. The game's queue itself is read only
+ * as a verify-path oracle (terrain_read_defer). A face is deferred when
+ *   depthSum < near_band && !(word3 & near_flag_excl)
+ *     && (minCorner < near_corner || !(word3 & near_flag_tier2)),
+ * the four terms from the game's terrain descriptor; a game whose classifier
+ * reads no face word-3 bits leaves both flag terms 0 and defers on depth
+ * alone. Depths are GTE SZ3 (world/4) and m3 is world/16, so
+ * SZ3 = HQSCALE * m3, HQSCALE 4 or OPENPETE_TERRAIN_HQSCALE (latched). Each
+ * corner saturates at 0 as the GTE's unsigned SZ3 does, so a corner behind
+ * the camera adds 0 and the face still classifies near. The game's leading
+ * "m_LodDistance - depthSum <= 0 skips" gate never fires for a near face
+ * (depthSum < 0x2000, far below m_LodDistance), so it is omitted and the
+ * test does not depend on m_LodDistance. depthSum > 0 stands in for the
+ * tier-4 depthSum != 0 guard and drops faces fully behind the camera.
+ * @param z0 The first corner's m3.
+ * @param z1 The second corner's m3.
+ * @param z2 The third corner's m3.
+ * @param z3 The fourth corner's m3 (a triangle repeats its third).
+ * @param word3 The HP face record's word 3.
+ * @return 1 when the game defers the face, else 0. */
 static int face_is_near_canonical(double z0, double z1, double z2, double z3, uint32_t word3) {
     if (s_hqscale < 0.0) {
         const char* e = getenv("OPENPETE_TERRAIN_HQSCALE"); s_hqscale = (e && *e) ? atof(e) : 4.0;
@@ -1331,8 +1422,9 @@ static int face_is_near_canonical(double z0, double z1, double z2, double z3, ui
     if (mn < (double)game_layout.terrain.near_corner) return 1;   /* a corner below the tier-4 bound */
     return !tface_near_tier2(word3);                   /* else tier 2 unless the flag refuses it */
 }
-/* The always-HQ pin is in force exactly under --lod extended, on every
- * game: the extended mode's contract is the highest terrain tier at
+/** @brief Reports whether the always-HQ pin is in force: exactly under --lod extended, on every game.
+ *
+ * The extended mode's contract is the highest terrain tier at
  * every distance, so every frustum-admitted HQ-eligible face takes its
  * finest near subdivide however far it is: the 4x4 cells (a quad) or the 16
  * sub-triangles (a triangle) where the game has them, word 3
@@ -1341,7 +1433,10 @@ static int face_is_near_canonical(double z0, double z1, double z2, double z3, ui
  * tface_cells_pin), the 2x2 (a quad) otherwise. One predicate behind
  * every consumer, the walk's face_is_near and face_near_tier4 and the
  * retained cache's OPTC_GF_HQPIN bake and vertex-stage select, which must
- * agree or a cached sector draws a different tier from a walked one. */
+ * agree or a cached sector draws a different tier from a walked one. The
+ * value is openpete_no_lod, set by --lod extended on the native renderer and
+ * by the live LOD toggle.
+ * @return 1 when the pin is in force, else 0. */
 static int hq_pin_active(void) {
     return openpete_no_lod != 0;
 }
@@ -1571,10 +1666,18 @@ static int face_near_tier4(double z0, double z1, double z2, double z3, uint32_t 
         return face_is_near(z0, z1, z2, z3, word3) && !tface_near_tier2(word3);
     return face_drain_tier4(z0, z1, z2, z3, word3);
 }
-/* The drain's own tier-4 route, whatever the port draws: a canonical near
- * face with near_flag_tier2 clear and a corner SZ3 under near_corner
- * (Spyro 2 environment.s 0x80024B90-0x80024BAC, the four corner tests
- * before the second queue's append at 0x80024BE8). */
+/** @brief The drain's own tier-4 route, whatever the port draws.
+ *
+ * True for a canonical near face (face_is_near_canonical) with
+ * near_flag_tier2 clear and a corner SZ3 (hqscale * m3) under near_corner
+ * (Spyro 2 environment.s 0x80024B90-0x80024BAC, the four corner tests before
+ * the second queue's append at 0x80024BE8).
+ * @param z0 The first corner's m3.
+ * @param z1 The second corner's m3.
+ * @param z2 The third corner's m3.
+ * @param z3 The fourth corner's m3 (a triangle repeats its third).
+ * @param word3 The HP face record's word 3.
+ * @return 1 when the drain routes the face to tier 4, else 0. */
 static int face_drain_tier4(double z0, double z1, double z2, double z3, uint32_t word3) {
     if (!face_is_near_canonical(z0, z1, z2, z3, word3)) return 0;
     if (tface_near_tier2(word3)) return 0;
@@ -1586,11 +1689,17 @@ static int face_drain_tier4(double z0, double z1, double z2, double z3, uint32_t
     return mn * s < (double)game_layout.terrain.near_corner;
 }
 
-/* The node k/4 of the way from a to b (k = 0..4) by the drain's halving
- * order: the midpoint first, each quarter point the midpoint of its
- * endpoint and that midpoint (r_environment.s 0x800286BC-0x800287B4). A grid
- * row runs between the nodes the same rule puts on the left and right
- * edges, so node (r, c) = pt(pt(TL, BL, r), pt(TR, BR, r), c). */
+/** @brief The node k/4 of the way from a to b by the drain's halving order.
+ *
+ * The midpoint comes first, and each quarter point is the midpoint of its
+ * endpoint and that midpoint (cv_mid; r_environment.s
+ * 0x800286BC-0x800287B4). A grid row runs between the nodes the same rule
+ * puts on the left and right edges, so node (r, c) =
+ * pt(pt(TL, BL, r), pt(TR, BR, r), c).
+ * @param a The k = 0 end.
+ * @param b The k = 4 end.
+ * @param k The quarter index, 0..4.
+ * @return The node. */
 static ngte_cvert nc4_pt(ngte_cvert a, ngte_cvert b, int k) {
     if (k == 0) return a;
     if (k == 4) return b;
@@ -1606,12 +1715,16 @@ static void nc4_grid(ngte_cvert G[5][5], ngte_cvert TL, ngte_cvert TR,
     }
 }
 
-/* Integer vertex snap of the grid, terrain_near_emit's rule per node: a
- * corner or interior node takes the floor of its own projection; a node on
- * a face edge sits on the segment between that edge's two snapped corners
- * at the parameter of its own projection, collinear with the neighbour
- * drawing the same edge. A node, or an edge node whose edge has a corner,
- * inside the near plane gets no override. */
+/** @brief Places an edge node on the segment between its edge's two floored corner projections.
+ *
+ * The parameter is the projection of (px, py) onto the segment, clamped to
+ * [0, 1], so the node is collinear with the neighbour drawing the same edge.
+ * A corner inside the near plane leaves the node without an override.
+ * @param n The edge node; receives the screen override.
+ * @param a The edge's first corner.
+ * @param b The edge's second corner.
+ * @param px The node's own projected X.
+ * @param py The node's own projected Y. */
 static void nc4_snap_edge(ngte_cvert* n, const ngte_cvert* a, const ngte_cvert* b,
                           float px, float py) {
     if (a->m3 < s_nearz || b->m3 < s_nearz) return;
@@ -1625,6 +1738,12 @@ static void nc4_snap_edge(ngte_cvert* n, const ngte_cvert* a, const ngte_cvert* 
     if (tt < 0.0f) tt = 0.0f; else if (tt > 1.0f) tt = 1.0f;
     n->osx = ax + tt*dx; n->osy = ay + tt*dy; n->oflag = 1;
 }
+/** @brief Integer vertex snap of the 5x5 grid, terrain_near_emit's rule per node.
+ *
+ * A corner or interior node takes the floor of its own projection; a node on
+ * a face edge sits on the segment between that edge's two snapped corners
+ * (nc4_snap_edge). A node inside the near plane gets no override.
+ * @param G The grid; receives the screen overrides. */
 static void nc4_snap(ngte_cvert G[5][5]) {
     for (int i = 0; i < 25; i++) {
         int r = i / 5, c = i % 5;
@@ -1639,17 +1758,25 @@ static void nc4_snap(ngte_cvert G[5][5]) {
     }
 }
 
-/* A node's emitted screen point: its override, else its projection
- * (floored under the integer snap, as push_tri does). */
+/** @brief A node's emitted screen point: its override, else its projection.
+ *
+ * The projection is floored under the integer snap, as push_tri does.
+ * @param n The node.
+ * @param snap 1 when the integer vertex snap is active.
+ * @param sx Receives the screen X.
+ * @param sy Receives the screen Y. */
 static void nc4_scr(const ngte_cvert* n, int snap, float* sx, float* sy) {
     if (n->oflag) { *sx = n->osx; *sy = n->osy; return; }
     proj_screen(n->m1, n->m2, n->m3, sx, sy);
     if (snap) { *sx = floorf(*sx); *sy = floorf(*sy); }
 }
 
-/* The drain's off-screen flags on a node's own projection (0x80028CD8-
- * 0x80028D10): behind the eye, sy <= 0, sy >= 256, sx <= 0 or sx >= 512 on
- * the GTE's integer SXY. */
+/** @brief The drain's off-screen flag on a node's own projection (0x80028CD8-0x80028D10).
+ *
+ * Set when the node is at or behind the eye, or its floored screen point has
+ * sy <= 0, sy >= 256, sx <= 0 or sx >= 512, the GTE's integer SXY.
+ * @param n The node.
+ * @return 1 when flagged off-screen, else 0. */
 static int nc4_outcode(const ngte_cvert* n) {
     if (n->m3 <= 0.0) return 1;
     float px, py;
@@ -1658,21 +1785,23 @@ static int nc4_outcode(const ngte_cvert* n) {
     return py <= 0.0f || py >= 256.0f || px <= 0.0f || px >= 512.0f;
 }
 
-/* The drain's interior screen morph (r_environment.s 0x80028D1C-0x80028E44,
- * node table D_8006D0D8): with every face corner's SZ3 above 0x40, each
- * odd-odd node not flagged off-screen moves toward the mean of its
- * up-right and down-left neighbours, weight at = (least corner SZ3) - 0x40:
+/** @brief The drain's interior screen morph of the 5x5 grid (r_environment.s 0x80028D1C-0x80028E44, node table D_8006D0D8).
+ *
+ * With every face corner's SZ3 above 0x40, each odd-odd node not flagged
+ * off-screen moves toward the mean of its up-right and down-left neighbours,
+ * weight at = (least corner SZ3) - 0x40, capped at 256:
  * s' = ((256 - at) * s + (at / 2) * (s_ur + s_dl)) / 256. At the tier-4
  * bound (at -> 0xFF) the node lies on the TR-BL diagonal the 2x2 path splits
  * its quadrants along, so the cell grid meets the 2x2 image where a face
- * crosses between the queues. Screen only: depth and key stay the node's.
- * The game's integer at >> 1 is kept as at / 2 in full precision.
- * The morph moves a node's screen point while its UV and depth stay. Under
- * screen-affine texturing (the PSX GPU's) it matches the cell image to the 2x2
- * image's affine interpolation across the queue crossing; under
+ * crosses between the queues. The game's integer at >> 1 is kept as at / 2
+ * in full precision; under the integer snap the result is floored. The
+ * morph moves a node's screen point while its UV, depth and key stay. Under
+ * screen-affine texturing (the PSX GPU's) it matches the cell image to the
+ * 2x2 image's affine interpolation across the queue crossing; under
  * perspective-correct texturing the unmorphed node already lies at its
  * texel's projection and the moved node samples that texel at the wrong
- * screen point. The caller applies it under affine texture mapping only. */
+ * screen point, so the caller applies it under affine texture mapping only.
+ * @param G The grid; receives the moved nodes' screen overrides. */
 static void nc4_morph(ngte_cvert G[5][5]) {
     double mn = G[0][0].m3;
     if (G[0][4].m3 < mn) mn = G[0][4].m3;
@@ -1705,15 +1834,29 @@ static void nc4_morph(ngte_cvert G[5][5]) {
     }
 }
 
-/* Camera-space triple product over three cverts (tface_det3's form). */
+/** @brief Camera-space triple product a · (b × c) over three cverts, tface_det3's form.
+ *
+ * @param a The first vertex.
+ * @param b The second vertex.
+ * @param c The third vertex.
+ * @return The determinant. */
 static double cv_det3(const ngte_cvert* a, const ngte_cvert* b, const ngte_cvert* c) {
     return a->m1 * (b->m2 * c->m3 - b->m3 * c->m2)
          - a->m2 * (b->m1 * c->m3 - b->m3 * c->m1)
          + a->m3 * (b->m1 * c->m2 - b->m2 * c->m1);
 }
-/* A straddling face's cell facing: the drain NCLIPs each cell of a face
- * carrying the straddle bit over (TL,TR,BL) and then (BR,BL,TR), flip-signed,
- * and draws it when either faces (r_environment.s 0x800292EC-0x80029354). */
+/** @brief A straddling face's cell facing test (r_environment.s 0x800292EC-0x80029354).
+ *
+ * The drain tests each cell of a face carrying the straddle bit over
+ * (TL, TR, BL) and then (BR, BL, TR), flip-signed, and draws the cell when
+ * either faces. Here each test is the camera-space triple product
+ * (cv_det3): front is d >= 0, or d <= 0 when flipped.
+ * @param tl The top-left node.
+ * @param tr The top-right node.
+ * @param bl The bottom-left node.
+ * @param br The bottom-right node.
+ * @param flip 1 when the face's winding is flipped.
+ * @return 1 when either triangle faces the camera, else 0. */
 static int nc4_front(const ngte_cvert* tl, const ngte_cvert* tr,
                      const ngte_cvert* bl, const ngte_cvert* br, int flip) {
     double d1 = cv_det3(tl, tr, bl);
@@ -1722,9 +1865,17 @@ static int nc4_front(const ngte_cvert* tl, const ngte_cvert* tr,
     return flip ? (d2 <= 0.0) : (d2 >= 0.0);
 }
 
-/* The 16 cells in the drain's row-major order (D_8006CF58); cell i reads the
- * tile at hq_cells4 + i*8, its V scroll from its row's group. Keys: the
- * per-quad emit_otkey of emit_quad_cv, the cell's own corner sum. */
+/** @brief Emits the 16 cells of a tier-4 quad's grid in the drain's row-major order (D_8006CF58).
+ *
+ * Cell i reads the 16x16 tile at hqBase + hq_cells4 + i*8 with its
+ * orientation (tiledef_apply_ori) and, when the record's texture scrolls,
+ * its row's V scroll. A straddling single-sided face skips a cell that faces
+ * away (nc4_front). Each cell's key is emit_quad_cv's per-quad corner sum,
+ * unless emit_keycells holds the face's table.
+ * @param W The walk context receiving the triangles.
+ * @param cpu The guest CPU state.
+ * @param nf The near face.
+ * @param G The 5x5 node grid. */
 static void nc4_emit_cells(tn_wctx* W, CPUState* cpu, const tn_nearface* nf,
                            ngte_cvert G[5][5]) {
     int scroll = s_tanim_have && nf->texid >= 0 && nf->texid < 128 && s_tanim_act[nf->texid];
@@ -1963,8 +2114,15 @@ static const uint8_t k_nt2_node[6] = { 0, 2, 4, 9, 11, 14 };
  * reads (uv[6] of its cache record) and its V scroll. */
 typedef struct { int a, b, c, o, cell; uint32_t e; float dv; } nt_sub;
 
-/* A tier-2 sub-triangle's quadrant (0..3): the signed byte at hq_tri2_tiles
- * + selector + rot, a byte offset from hq_sub0 (0x80028408-0x8002843C). */
+/** @brief A tier-2 sub-triangle's quadrant (0..3) (0x80028408-0x8002843C).
+ *
+ * The signed byte at hq_tri2_tiles + selector + rot is a byte offset from
+ * hq_sub0 in 8-byte tiles; the quadrant is (offset >> 3) & 3. The selector
+ * is the sub-triangle table word's bits 2..3.
+ * @param cpu The guest CPU state.
+ * @param row The sub-triangle's table word.
+ * @param rot The face's rotation.
+ * @return The quadrant index. */
 static int nt2_tile(CPUState* cpu, uint32_t row, int rot) {
     uint32_t a = game_layout.terrain.hq_tri2_tiles + (row & 0x0Cu) + (uint32_t)rot;
     int8_t off = (int8_t)(rd(cpu, a & ~3u) >> ((a & 3u) * 8u));
@@ -2112,10 +2270,20 @@ static void trisplit_sum(const tn_wctx* W) {
     }
 }
 
-/* Does a triangle face take the tier-4 triangle pass? The classifier's
- * verdict over (A, B, C, C) — the triangle classifier at 0x80027168 is the
- * quad one with C counted twice — or, under OPENPETE_TERRAIN_NEARQ, the
- * face's presence in the game's filled +0x1E00 queue. */
+/** @brief Reports whether a triangle face takes the tier-4 triangle pass.
+ *
+ * The verdict is face_near_tier4 over (A, B, C, C), since the triangle
+ * classifier at 0x80027168 is the quad one with C counted twice; under
+ * OPENPETE_TERRAIN_NEARQ, with the game's +0x1E00 queue read, it is the
+ * face's presence in that queue. A layout without the tier-4 triangle
+ * cells returns 0.
+ * @param zA Corner A's m3.
+ * @param zB Corner B's m3.
+ * @param zC Corner C's m3.
+ * @param w3 The HP face record's word 3.
+ * @param rec The face record's guest address, the queue's cell key.
+ * @param hq_idx The face's HQ record index.
+ * @return 1 when the face takes the tier-4 pass, else 0. */
 static int face_tri4_routed(double zA, double zB, double zC, uint32_t w3, uint32_t rec,
                             int hq_idx) {
     if (!game_layout.terrain.hq_tri4_cells) return 0;
@@ -2308,7 +2476,14 @@ static void tsc_lp_grade(tscache_t* C) {
     }
 }
 
-/* Apply a sector's grade (or the level mean) to one 0x00BBGGRR colour word. */
+/** @brief Applies a sector's texture-pack grade, else the level mean, to one 0x00BBGGRR colour word.
+ *
+ * Each channel becomes p * c + q * 255, rounded and clamped to 0..255. A
+ * sector without a fitted grade uses the level mean when one exists, and
+ * the colour passes through unchanged otherwise.
+ * @param C The sector's decode cache entry, carrying its grade.
+ * @param rgb The authored colour.
+ * @return The graded colour. */
 static uint32_t lp_grade_apply(const tscache_t* C, uint32_t rgb) {
     const float* p; const float* q;
     if (C->lpg_state == 1) { p = C->lpg_p; q = C->lpg_q; }
@@ -2472,19 +2647,25 @@ static int tft_fill(int level, int sec, int face) {
     return terrain_game.fill_tag(level, sec, face);
 }
 
-/* Grid sweep report (OPENPETE_FILLPICK_GRID) — one shot per pose, tallying the
- * sample cells each LP face owns and how they split on cover:
- *   bare   = an LP face is the nearest terrain and NO authored HP is on the
+/** @brief Prints the grid sweep report (OPENPETE_FILLPICK_GRID): the grid samples each LP face owns and how they split on cover.
+ *
+ * It prints once per process, on the first walk with a grid armed, one
+ * [fillgrid-hdr] line and one [fillgrid] line per LP face (at most 512),
+ * with the face's effective tag. A sample (point 0, the crosshair, is not
+ * one) counts as:
+ *   bare   = an LP face is the nearest terrain and no authored HP is on the
  *            sightline. This is the fill case: at og's LOD the LP is what
  *            covers those pixels, and without a FILL tag nothing does.
- *   behind = an HP face is on the sightline but FARTHER than the LP, i.e. the
+ *   behind = an HP face is on the sightline but farther than the LP: the
  *            coarse LP is in front of cover that already exists (the
  *            punch-through class a wrong FILL tag ships).
  *   cover  = HP is nearer; the LP is hidden whatever its tag says.
- * A pose's report is a candidate list, not a verdict: the cells are samples,
- * so a face with a handful of `bare` cells along a silhouette is the sliver
- * class the frozen list rejects, while a face with a broad bare region is the
- * og-terrain-over-void class it accepts. */
+ * The report is a candidate list: the cells are samples, so a face with a
+ * handful of `bare` cells along a silhouette is the sliver class the frozen
+ * list rejects, while a face with a broad bare region is the
+ * og-terrain-over-void class it accepts.
+ * @param level The level id.
+ * @param level_name The level's name as the verdict files spell it. */
 static void fp_grid_report(int level, const char* level_name) {
     if (!s_fp_grid_cols) return;
     static int s_done;
@@ -2517,10 +2698,16 @@ static void fp_grid_report(int level, const char* level_name) {
                 acc[j].bare, acc[j].behind, acc[j].cover);
 }
 
-/* Hand this walk's crosshair winners to the host (overlay + key bindings), and
- * log every change so a scripted/headless run is a transcript. The level name
- * is the verdicts-file spelling, so a logged line is one column short of being
- * a verdicts row. */
+/** @brief Publishes this walk's crosshair winners to the host and logs every change.
+ *
+ * The host (the overlay and the inspector's key bindings) receives point 0's
+ * nearest LP face with its effective fill verdict (tft_fill) and whether an
+ * inspector session overrides it, and its nearest HP face. A [fillpick]
+ * line prints whenever the LP face, level or verdict changes, so a scripted
+ * or headless run is a transcript; the level name is the verdict files'
+ * spelling, so a logged line is one column short of a verdicts row. Then
+ * the grid report runs (fp_grid_report).
+ * @param cpu The guest CPU state; supplies the level id. */
 static void fp_publish(CPUState* cpu) {
     openpete_fillpick_hit h;
     memset(&h, 0, sizeof h);
@@ -2570,6 +2757,15 @@ static void fp_publish(CPUState* cpu) {
  * state is untouched. The table is the game's (terrain_game.lp_artfix), keyed
  * on exact (level id, sector, face). OPENPETE_TERRAIN_ARTFIX=0 restores
  * authentic. */
+/** @brief Looks up the game's authored-data colour correction for one LP face.
+ *
+ * The level id is read once per VBL. Returns 0 at once when
+ * OPENPETE_TERRAIN_ARTFIX=0 (latched).
+ * @param cpu The guest CPU state; supplies the level id.
+ * @param sec The sector index.
+ * @param face The LP face index.
+ * @param rgb Receives the corrected 0x00BBGGRR colour.
+ * @return 1 when the face is corrected, else 0. */
 static int lp_artfix_lookup(CPUState* cpu, int sec, int face, uint32_t* rgb) {
     static int s_on = -1;
     if (s_on < 0) { const char* e = getenv("OPENPETE_TERRAIN_ARTFIX");
@@ -2767,9 +2963,14 @@ static void env_anim_iter_init(env_anim_iter_t* it, CPUState* cpu, uint32_t sect
         it->blk = rd(cpu, game_layout.env_anim.block_ptr);
 }
 
-/* ENV_ANIM_LISTS: open the next located, non-empty {count, pointer} pair of
- * the four the game walks (LP and HP geometry, LP and HP colour); 0 when all
- * four are spent. */
+/** @brief ENV_ANIM_LISTS: opens the next located, non-empty {count, pointer} pair of the four the game walks.
+ *
+ * The four are LP and HP geometry, then LP and HP colour; the first two open
+ * as ENV_ANIM_KIND_VERT, the last two as ENV_ANIM_KIND_COLOUR. A pair with
+ * no layout offset, a null pointer, a zero count or a count above
+ * ENV_ANIM_COUNT_MAX is skipped.
+ * @param it The iterator.
+ * @return 1 when a list is open, 0 when all four are spent. */
 static int env_anim_lists_open(env_anim_iter_t* it) {
     const uint32_t off[4] = { game_layout.env_anim.lp_poly, game_layout.env_anim.hp_poly,
                               game_layout.env_anim.lp_col,  game_layout.env_anim.hp_col };
@@ -2787,7 +2988,14 @@ static int env_anim_lists_open(env_anim_iter_t* it) {
     return 0;
 }
 
-/* Open the next non-empty list; 0 when the registry is exhausted. */
+/** @brief Opens the iterator's next non-empty list in the game's registry form.
+ *
+ * ENV_ANIM_LISTS delegates to env_anim_lists_open. ENV_ANIM_ARENA opens the
+ * next used sub-list row of the block (indirect rows read their list offset
+ * from the header word) whose count is 1..ENV_ANIM_COUNT_MAX; an unresolved
+ * block (outside KSEG0) opens nothing.
+ * @param it The iterator.
+ * @return 1 when a list is open, 0 when the registry is exhausted. */
 static int env_anim_iter_open(env_anim_iter_t* it) {
     CPUState* cpu = it->cpu;
     if (game_layout.env_anim.form == ENV_ANIM_LISTS) return env_anim_lists_open(it);
@@ -2808,7 +3016,17 @@ static int env_anim_iter_open(env_anim_iter_t* it) {
     return 0;
 }
 
-/* Yield the next animated sector index and what the animation rewrites. */
+/** @brief Yields the next animated sector index and what the animation rewrites.
+ *
+ * ENV_ANIM_LISTS entries are descriptor pointers, the sector in the u16 at
+ * +4, and a null pointer is skipped. ENV_ANIM_ARENA entries carry the sector
+ * in the low byte; a list that skips bit-31 entries skips them, and an
+ * entry whose liveness byte has bit 0 clear is skipped. An index at or past
+ * the sector count is skipped. Every examined entry counts into `seen`.
+ * @param it The iterator.
+ * @param sector Receives the sector index.
+ * @param kind Receives the list's ENV_ANIM_KIND_*.
+ * @return 1 when an entry is yielded, 0 when the registry is exhausted. */
 static int env_anim_iter_next(env_anim_iter_t* it, uint32_t* sector, int* kind) {
     CPUState* cpu = it->cpu;
     for (;;) {
@@ -3228,8 +3446,14 @@ static uint32_t s_canim_canon_pres;   /* s_vanim_pres of the last canonical roll
 static int      s_canim_en = 1;       /* OPENPETE_TERRAIN_CANIM (re-extract only) */
 static double   s_canim_a = 1.0;      /* this build's colour alpha (1 = current words) */
 
-/* The three colour arrays of sector `s`, from its header words +0x10/+0x14
- * (the same decode tsc_get applies). */
+/** @brief Locates the three colour arrays of sector `s` from its header words +0x10 and +0x14.
+ *
+ * The LP colour array follows the LP vertices at s + 0x1C; the HP near
+ * array follows the HP vertices, and the far array follows the near one, so
+ * nHp counts both (2 * nHpC). The same decode tsc_get applies.
+ * @param cpu The guest CPU state.
+ * @param s The sector's address.
+ * @param g Receives lpBase, hpBase, nLp and nHp. */
 static void canim_geom(CPUState* cpu, uint32_t s, canim_t* g) {
     uint32_t w3 = rd(cpu, s + 0x10), w4 = rd(cpu, s + 0x14);
     g->nLp = (w3 >> 8) & 0xFFu;
@@ -3257,9 +3481,14 @@ static void canim_read(CPUState* cpu, const canim_t* A, uint32_t* out) {
     for (uint32_t k = 0; k < A->nHp; k++) out[A->nLp + k] = rd(cpu, A->hpBase + k * 4u);
 }
 
-/* Canonical build: prev = the last roll's words, cur = the words in RAM now.
- * A slot whose header geometry moved (a new level reusing the address)
- * restarts without a previous tick. */
+/** @brief Rolls one sector's colour slot on a canonical build: prev takes the last roll's words, cur the words in RAM now.
+ *
+ * A slot whose header geometry moved (a new level reusing the address) is
+ * reallocated and restarts without a previous tick. A full table, a slot
+ * already rolled this build, or a failed allocation leaves the sector
+ * without a roll.
+ * @param cpu The guest CPU state.
+ * @param s The sector's address. */
 static void canim_roll(CPUState* cpu, uint32_t s) {
     canim_t g; canim_geom(cpu, s, &g);
     canim_t* A = canim_slot(s);
@@ -3282,8 +3511,11 @@ static void canim_roll(CPUState* cpu, uint32_t s) {
     A->rollPres = s_vanim_pres;
 }
 
-/* The widest channel step of one slot's last roll, 0 without a previous tick
- * (the census's engagement figure). */
+/** @brief The widest channel step of one slot's last roll, the census's engagement figure.
+ *
+ * @param A The slot.
+ * @return The largest per-channel |cur - prev| over the slot's words; 0
+ *         without a previous tick. */
 static int canim_maxd(const canim_t* A) {
     int m = 0;
     if (!A->havePrev) return 0;
@@ -3295,8 +3527,14 @@ static int canim_maxd(const canim_t* A) {
     return m;
 }
 
-/* One colour word at `a` of the interval prev->cur, per channel, rounded to
- * nearest (terrain.vert canim_col mirrors it). a == 1 selects cur. */
+/** @brief One colour word at `a` of the interval prev to cur, per channel, rounded to nearest.
+ *
+ * terrain.vert canim_col mirrors it. The top byte is cur's; a == 1 returns
+ * cur exactly.
+ * @param p The previous tick's word.
+ * @param c The current tick's word.
+ * @param a The alpha, 0..1.
+ * @return The interpolated word. */
 static uint32_t canim_lerp(uint32_t p, uint32_t c, double a) {
     if (a == 1.0) return c;
     uint32_t out = c & 0xFF000000u;
@@ -3335,9 +3573,15 @@ static const canim_t* tsc_canim_mix(const tscache_t* SC) {
     return (A && A->havePrev && s_canim_a != 1.0) ? A : NULL;
 }
 
-/* Canonical build: roll every sector the colour sub-lists name, drop the
- * slots whose sector left them. Returns the count named; *maxd the widest
- * channel step (census only). */
+/** @brief Rolls every sector the colour sub-lists name on a canonical build and frees the slots whose sector left them.
+ *
+ * Records this build as the last canonical roll (s_canim_canon_pres).
+ * @param cpu The guest CPU state.
+ * @param sectorPtr The sector pointer table; 0 names nothing.
+ * @param sectorCnt The sector count.
+ * @param census 1 to measure the widest channel step.
+ * @param maxd Raised to the widest channel step seen (census only).
+ * @return The count of colour entries named. */
 static int canim_roll_all(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt,
                           int census, int* maxd) {
     env_anim_iter_t it;
@@ -3358,8 +3602,13 @@ static int canim_roll_all(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt,
     return named;
 }
 
-/* Every build: stamp each live slot on its decode-cache slot and, while the
- * alpha is below 1, fill its `mix` words. Returns the slots stamped. */
+/** @brief Stamps each slot of the last canonical roll on its decode-cache slot and fills its `mix` words.
+ *
+ * Runs on every build. A slot whose sector is not in the decode cache is
+ * not stamped. `mix` is filled only while the alpha is below 1 and the slot
+ * holds a previous tick.
+ * @param a This build's colour alpha.
+ * @return The slots stamped. */
 static int canim_stamp_all(double a) {
     int stamped = 0;
     for (int i = 0; i < CANIM_SLOTS; i++) {

@@ -307,20 +307,7 @@ static void shadow_cam_inverse(const int C[3][3], double inv[3][3]) {
     memcpy(inv, r, sizeof r);
 }
 
-/* Fill the depth-aware shadow decal's camera-reconstruction params — SHARED by
- * every shadow feeder. The shader recovers each terrain pixel's world height
- * from the WORLD-opaque depth pre-pass via V_j = (4096²·C⁻¹[j]·MAC) / 4096 — a
- * TRUE numerical inverse because the Spyro camera matrix is NOT orthonormal
- * (its Y row bakes a ~0.625 aspect scale; the transpose-inverse would
- * under-weight every MAC2 term 2.56×, destroying the differential normal
- * reconstruction). Every feeder calls this so the params are valid whenever ANY
- * shadow is drawn — in particular the moby shadows must have them even when the
- * player is over water and casts no silhouette shadow of his own.
- * `ground_up` is the player's plane (read unconditionally from
- * game_layout.shadow.ground_plane so the value never depends on feeder ORDER,
- * 0 when the game has no such plane); the textured moby decal ignores it and
- * takes its per-moby plane from the fan's own gl_FragCoord.z. Display-only
- * (never writes PSX RAM). */
+/* Pushes the shadow decal's camera-reconstruction parameters; see shadow.h. */
 void shadow_push_decal_params(CPUState* cpu, const ngte_view* v, const int C[3][3],
                               double ofx, double ofy, double H,
                               openpete_shadow_decal_params* out) {

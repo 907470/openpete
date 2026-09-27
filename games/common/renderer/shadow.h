@@ -95,9 +95,27 @@ void   shadow_ground_tr(const int C[3][3], double vx, double vy, double vz, doub
 void   shadow_project(const int R[3][3], const double TR[3], double ofx, double ofy,
                       const ngte_view* v, double vx, double vy, double vz, shadow_pt* o);
 
-/* Push the depth-aware shadow decal's camera-reconstruction parameters. Both
- * feeders call it so the parameters are valid whenever any shadow draws.
- * `out`, when non-NULL, also receives the pushed parameters. */
+/** @brief Pushes the depth-aware shadow decal's camera-reconstruction parameters to the native renderer.
+ *
+ * Every shadow feeder calls it, so the parameters are valid whenever any
+ * shadow draws, including moby shadows on a tick where the player casts
+ * none. The shader recovers each terrain pixel's world height from the
+ * opaque depth pre-pass via V_j = (4096²·C⁻¹[j]·MAC) / 4096, so the pushed
+ * rows are the true inverse (shadow_cam_inverse): the Spyro camera matrix is
+ * not orthonormal (its Y row carries a ~0.625 aspect scale), and the
+ * transpose would under-weight every MAC2 term 2.56 times. `ground_up` is
+ * the signed word at game_layout.shadow.ground_plane, 0 when the layout has
+ * none; the textured moby decal ignores it. The wall height, steep-normal
+ * threshold and raised-occluder terms read OPENPETE_SHADOW_WALL_HEIGHT
+ * (400), OPENPETE_SHADOW_STEEP_NY (0.5), OPENPETE_SHADOW_PLAT_EPS (150) and
+ * OPENPETE_SHADOW_PLAT_SLACK (48) on every call. Writes no PSX RAM.
+ * @param cpu The guest CPU state; supplies the ground plane word.
+ * @param v The view; supplies the camera's up coordinate.
+ * @param C The camera matrix, Q12.
+ * @param ofx The screen X offset.
+ * @param ofy The screen Y offset.
+ * @param H The projection distance.
+ * @param out When non-NULL, receives the pushed parameters. */
 void   shadow_push_decal_params(CPUState* cpu, const ngte_view* v, const int C[3][3],
                                 double ofx, double ofy, double H,
                                 openpete_shadow_decal_params* out);
@@ -164,9 +182,12 @@ double shadow_caster_up(CPUState* cpu, double anchor_up);
  * @param bias The routine's bias.
  * @return The slot; a negative slot is a triangle the routine does not link. */
 int    shadow_ot_slot(float sza, float sz1, float sz2, int shift, int bias);
-/* A slot as the scene tri's key channel (openpete_scene_tri.koff): the slot's
- * absolute key in world units plus the 0.5 sentinel; 0 (not keyed) for a
- * negative slot. */
+/** @brief Converts an ordering-table slot to the scene tri's key channel (openpete_scene_tri.koff).
+ *
+ * The value is the slot's absolute key in world units (slot * 128) plus the
+ * 0.5 sentinel; a negative slot returns 0 (not keyed).
+ * @param slot The ordering-table slot.
+ * @return The key channel value. */
 float  shadow_slot_koff(int slot);
 
 /** @brief Converts a shadow walk's view-Z to the native scene depth.
@@ -188,7 +209,11 @@ float  shadow_depth(float viewz, float scale, float bias);
 float  shadow_bias_spyro(void);
 float  shadow_bias_moby(void);
 
-/* OPENPETE_SHADOW_VERIFY: run the A/B harness and the one-shot dump. */
+/** @brief Reports whether OPENPETE_SHADOW_VERIFY selects the A/B harness and the one-shot dump.
+ *
+ * The variable is read once and latched; set, non-empty and not starting
+ * with '0' enables it.
+ * @return 1 when enabled, else 0. */
 int      shadow_verify_enabled(void);
 unsigned shadow_verify_frame(void);
 
@@ -203,9 +228,14 @@ unsigned shadow_verify_frame(void);
  * @param cpu guest state, the sub-tick view staged */
 void   shadow_reextract(CPUState* cpu);
 
-/* The same for the player's ground shadow (renderer/shadow_player.c, the leg
- * game_layout.shadow.player describes). `slot` is the model record the fan
- * renders under; the caller stages that record's shadow state first. */
+/** @brief Sub-tick re-extract of the player's ground shadow for one model record.
+ *
+ * The leg is renderer/shadow_player.c, described by game_layout.shadow.player.
+ * The caller stages the record's shadow state block first, so the anchor
+ * reads the bracketed position. Feeds only when hook_reextract_ready(RP_SHADOW)
+ * holds.
+ * @param cpu The guest CPU state, the sub-tick view staged.
+ * @param slot The model record the fan renders under. */
 void   shadow_player_reextract(CPUState* cpu, int slot);
 
 /** @brief Reports whether the player's own ground shadow feeds the native scene; OPENPETE_SHADOW_PLAYER=0 turns it off.
