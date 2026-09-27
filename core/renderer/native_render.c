@@ -5238,6 +5238,31 @@ static int moby_shadow_decal_enabled(void)
     return v;
 }
 
+/** @brief Whether OPENPETE_DEPTH_PREPASS_DEBUG is set; a debug knob, read once. */
+static int depth_prepass_debug(void) {
+    static int on = -1;
+    if (on < 0) on = getenv("OPENPETE_DEPTH_PREPASS_DEBUG") != NULL;
+    return on;
+}
+
+/** @brief The shadow decal shader mode: OPENPETE_SHADOW_DECAL_MODE when set, else dflt.
+ *
+ * A live registry row, so the value is re-read when the registry env epoch
+ * changes and never per bind.
+ * @param dflt The mode the feeder's camera parameters select.
+ * @return The mode. */
+static float shadow_decal_mode(float dflt) {
+    static unsigned seen = 0;
+    static int have = 0;
+    static float v = 0.0f;
+    if (knob_env_epoch_stale(&seen)) {
+        const char* mv = getenv("OPENPETE_SHADOW_DECAL_MODE");
+        have = (mv && *mv) ? 1 : 0;
+        v = have ? (float)atof(mv) : 0.0f;
+    }
+    return have ? v : dflt;
+}
+
 /** @brief Return whether moby occlusion culling is enabled.
  *
  * On by default; OPENPETE_MOBY_OCCLUSION=0 disables it. The variable is
@@ -5252,13 +5277,11 @@ static int occl_cull_enabled(void)
 {
     /* Re-resolved once per VBL: setenv is the live channel (dev overlay)
      * and this is called per moby per present — too hot for getenv. */
-    extern unsigned openpete_frame;
-    static int on = -1;
-    static unsigned resolved_f = ~0u;
-    if (on < 0 || resolved_f != openpete_frame) {
+    static int on = 1;
+    static unsigned seen = 0;
+    if (knob_env_epoch_stale(&seen)) {
         const char* e = getenv("OPENPETE_MOBY_OCCLUSION");
         on = !(e && *e == '0');
-        resolved_f = openpete_frame;
     }
     return on;
 }
@@ -5369,24 +5392,25 @@ static void ensure_opaque_depth(void)
     }
 }
 
-/* The shared WORLD-opaque depth PRE-PASS. Rasterizes the present scene's opaque
- * WORLD geometry (terrain / walls / props — the shadow's occluder set; actors
- * are excluded, layering handles them) depth-only into opaque_depth, ONCE per
- * present, in the FULL-EXTENT PSX mapping. Every consumer pass then samples it
- * by PSX screen coord through the recorded affine, so one raster serves
- * native_rtt, SSAA, the offscreen panel, and screenshots alike. Must record
- * before the first consumer pass (own render pass; call right after
- * rhi_begin_frame). Display-only. */
+
 /* The pre-pass far backstop's view-Z: 4096 * 0.999 / (1 - 0.999) in float,
  * the view-Z whose hyperbolic depth is 0.999. */
 #define NR_PREPASS_BACKSTOP_VZ 0x1.f381a6p+21f
+/** @brief Rasterizes the present scene's opaque WORLD geometry depth-only into opaque_depth, once per present.
+ *
+ * The occluders are terrain, walls and props (actors are excluded; layering
+ * handles them), drawn in the full-extent PSX mapping. Every consumer pass
+ * samples the result by PSX screen coordinate through the recorded affine,
+ * so one raster serves native_rtt, SSAA, the offscreen panel and
+ * screenshots. Records before the first consumer pass, in its own render
+ * pass. Display-only. */
 static void native_depth_prepass(void)
 {
     s_od_ready = 0;
     if (!s_nr.opaque_depth || !s_nr.prepass_vb || !s_nr.prepass_pipe) return;
     int scene_n; uint32_t bg_, fade_, freeze_; int hud_;
     const scene_tri_t* scene = scene_present_buf(&scene_n, &bg_, &fade_, &freeze_, &hud_, NULL);
-    if (getenv("OPENPETE_DEPTH_PREPASS_DEBUG")) {
+    if (depth_prepass_debug()) {
         static int last = -9;
         int why = scene_n <= 0 ? 1 : (freeze_ & (1u << 31)) ? 2 :
                   (!scene_has_spyro_shadow(scene, scene_n) && !occl_active()) ? 3 : 0;
@@ -5487,7 +5511,7 @@ static void native_depth_prepass(void)
     s_render_freeze_wf = prev_wf;
     rhi_update_buffer(s_nr.prepass_vb, pbuf, sizeof(rhi_vertex) * (size_t)(m > 0 ? m : 1));
 
-    if (getenv("OPENPETE_DEPTH_PREPASS_DEBUG")) {
+    if (depth_prepass_debug()) {
         static int last_m = -1;
         if (m != last_m) { last_m = m;
             extern unsigned openpete_frame;
@@ -5500,12 +5524,18 @@ static void native_depth_prepass(void)
      * surface normal — a CPU-side consistency check of the FED terrain
      * geometry against the model, with no GPU in the loop. */
     {
-        const char* pr = getenv("OPENPETE_PREPASS_RECON_DEBUG");
+        static int pr_on = -1;
+        static float pr_sx = 300.0f, pr_sy = 145.0f;
+        static unsigned pr_fmin = 0;
+        if (pr_on < 0) {   /* debug knob: read once */
+            const char* pr = getenv("OPENPETE_PREPASS_RECON_DEBUG");
+            pr_on = (pr && *pr) ? 1 : 0;
+            if (pr_on) sscanf(pr, "%f,%f,%u", &pr_sx, &pr_sy, &pr_fmin);
+        }
         static int printed = 0;
         extern unsigned openpete_frame;
-        float psx = 300.0f, psy = 145.0f; unsigned fmin = 0;
-        if (pr && *pr) sscanf(pr, "%f,%f,%u", &psx, &psy, &fmin);
-        if (pr && *pr && ps_shadow()->valid && printed < 40 &&
+        const float psx = pr_sx, psy = pr_sy; const unsigned fmin = pr_fmin;
+        if (pr_on && ps_shadow()->valid && printed < 40 &&
             openpete_frame >= fmin) {
             for (int t = 0; t < scene_n && printed < 40; t++) {
                 int b = scene[t].blend; if (b < 0 || b > 4) b = 0;
@@ -6469,8 +6499,7 @@ static void bind_player_shadow_decal(void)
     pc.ground_up = sp->ground_up;
     pc.wall_height = sp->wall_height;
     pc.steep_nup = sp->steep_nup;
-    const char* mv = getenv("OPENPETE_SHADOW_DECAL_MODE");
-    pc.mode = (mv && *mv) ? (float)atof(mv) : (sp->valid ? 1.0f : 0.0f);
+    pc.mode = shadow_decal_mode(sp->valid ? 1.0f : 0.0f);
     pc.band = shadow_decal_band();
     pc.plat_eps = sp->plat_eps;
     pc.plat_slack = sp->plat_slack;
@@ -9615,6 +9644,13 @@ static int draw_hud3d_layer(const scene_tri_t* scene, int tx_start,
     return tx_count / 3;
 }
 
+/** @brief Composes the present's scene into the bound render target, one pass per layer and bucket.
+ *
+ * Packs the scene triangles into the vertex buffer and draws the world
+ * groups, the HUD, overlay, panel, 3D-HUD, portal, sky, fill and
+ * actor-front layers and the textured buckets in their fixed order.
+ * @param full_extent 1 to map the full PSX extent (offscreen panel), 0 for the display mapping.
+ * @return true when anything was drawn. */
 static bool draw_native_scene(bool full_extent)
 {
     int scene_n; uint32_t scene_bg, scene_fade, scene_freeze; int hud_under = 0, actor_front = 0;
@@ -10513,10 +10549,7 @@ static bool draw_native_scene(bool full_extent)
                 pc.steep_nup = ps_shadow()->steep_nup;
                 /* height+steep test when the feeder supplied valid camera params,
                  * else draw-all (band). Env override shares the Spyro decal knob. */
-                float mode = ps_shadow()->valid ? 1.0f : 0.0f;
-                const char* mv = getenv("OPENPETE_SHADOW_DECAL_MODE");
-                if (mv && *mv) mode = (float)atof(mv);
-                pc.mode = mode;
+                pc.mode = shadow_decal_mode(ps_shadow()->valid ? 1.0f : 0.0f);
                 pc.band = shadow_decal_band();
                 pc.plat_eps = ps_shadow()->plat_eps;
                 pc.plat_slack = ps_shadow()->plat_slack;
@@ -11110,10 +11143,15 @@ static void texmap_apply_pending(void) {
  * carried by the ACTOR_FRONT depth-punch pass. Same re-bake shape as
  * texture-mapping. */
 static int s_moby_truescope = 1;   /* currently-baked value (pipelines start at 1) */
+/** @brief Re-bakes the pipelines when OPENPETE_MOBY_TRUESCOPE changed since the last bake; the knob is re-read when the registry env epoch changes. */
 static void truescope_apply_pending(void) {
     if (!s_nr.dev) return;
-    const char* e = getenv("OPENPETE_MOBY_TRUESCOPE");
-    int want = (e && *e) ? (*e != '0') : 1;
+    static int want = 1;
+    static unsigned seen = 0;
+    if (knob_env_epoch_stale(&seen)) {
+        const char* e = getenv("OPENPETE_MOBY_TRUESCOPE");
+        want = (e && *e) ? (*e != '0') : 1;
+    }
     if (want == s_moby_truescope) return;
     rhi_set_moby_truescope(want);
     int fails = rhi_rebuild_pipelines(s_nr.dev);

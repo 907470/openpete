@@ -48,6 +48,7 @@
 // Format notes: cyclorama.h warns m_Skybox is "strange storage", so trust the
 // dump, not the field names.
 
+#include "openpete_knobs.h"   /* knob_env_epoch_stale */
 #include "feature_registry.h"
 #include "psx_runtime_internal.h"
 #include "openpete_subtick_view.h"
@@ -207,6 +208,35 @@ static const portal_nudge_t k_portal_nudge[] = {
  * and are NOT defects — the flag was their own horizon moving. Confirm the
  * artifact by eye at the rows the diff fires on before adding a row here.
  * (34, 51, 55 also flagged and were not confirmed either way; left alone.) */
+/* OPENPETE_PORTAL_NUDGE parsed into rows; at most PORTAL_NUDGE_ENV_MAX. */
+#define PORTAL_NUDGE_ENV_MAX 32
+typedef struct { int levelId; double dh, dv, sh, sv; } portal_nudge_row_t;
+typedef struct { int n; portal_nudge_row_t row[PORTAL_NUDGE_ENV_MAX]; } portal_nudge_env_t;
+
+/** @brief OPENPETE_PORTAL_NUDGE parsed into rows, re-parsed only when the registry env epoch changes.
+ *
+ * The spelling is "id:dh,dv[,sh[,sv]];...": three fields translate only,
+ * four scale uniformly, five scale per axis; an entry with fewer than three
+ * fields is skipped.
+ * @return The parsed rows. */
+static const portal_nudge_env_t* portal_nudge_env(void) {
+    static portal_nudge_env_t E;
+    static unsigned seen = 0;
+    if (!knob_env_epoch_stale(&seen)) return &E;
+    E.n = 0;
+    const char* q = getenv("OPENPETE_PORTAL_NUDGE");
+    while (q && *q && E.n < PORTAL_NUDGE_ENV_MAX) {
+        int id = 0; double a = 0.0, b = 0.0, c = 1.0, d = 1.0;
+        const int got = sscanf(q, "%d:%lf,%lf,%lf,%lf", &id, &a, &b, &c, &d);
+        if (got >= 3)
+            E.row[E.n++] = (portal_nudge_row_t){ id, a, b, got >= 4 ? c : 1.0,
+                                                 got >= 5 ? d : (got >= 4 ? c : 1.0) };
+        while (*q && *q != ';') q++;
+        if (*q == ';') q++;
+    }
+    return &E;
+}
+
 /** @brief Looks up a portal's opening-polygon correction by destination levelId.
  *
  * OPENPETE_PORTAL_NUDGE="id:dh,dv[,sh[,sv]];..." is searched first: three
@@ -221,22 +251,12 @@ static const portal_nudge_t k_portal_nudge[] = {
 static int portal_nudge_for(int levelId, double* dh, double* dv,
                             double* sh, double* sv) {
     *dh = 0.0; *dv = 0.0; *sh = 1.0; *sv = 1.0;
-    const char* e = getenv("OPENPETE_PORTAL_NUDGE");
-    if (e && *e) {
-        const char* q = e;
-        while (*q) {
-            int id = 0; double a = 0.0, b = 0.0, c = 1.0, d = 1.0;
-            const int got = sscanf(q, "%d:%lf,%lf,%lf,%lf", &id, &a, &b, &c, &d);
-            if (got >= 3 && id == levelId) {
-                *dh = a; *dv = b;
-                if (got >= 4) *sh = c;
-                *sv = (got >= 5) ? d : *sh;      /* one scale = uniform */
-                return 1;
-            }
-            while (*q && *q != ';') q++;
-            if (*q == ';') q++;
+    const portal_nudge_env_t* E = portal_nudge_env();
+    for (int i = 0; i < E->n; i++)
+        if (E->row[i].levelId == levelId) {
+            *dh = E->row[i].dh; *dv = E->row[i].dv; *sh = E->row[i].sh; *sv = E->row[i].sv;
+            return 1;
         }
-    }
     for (size_t i = 0; i < sizeof k_portal_nudge / sizeof k_portal_nudge[0]; i++)
         if (k_portal_nudge[i].levelId == levelId) {
             *dh = k_portal_nudge[i].dh; *dv = k_portal_nudge[i].dv;
@@ -935,9 +955,15 @@ static double portal_sky_eps_vz(void) {
  * mid-entry where the near cover must win everything.
  * OPENPETE_PORTAL_SKY_OTPUSH=0 = un-pushed plane A/B. */
 static double s_sky_push_vz = 0.0;
+/** @brief Whether the far-portal sky OT push is on; a live row, re-read when the registry env epoch changes. */
 static int sky_otpush_enabled(void) {
-    const char* e = getenv("OPENPETE_PORTAL_SKY_OTPUSH");
-    return !(e && *e && atoi(e) == 0);
+    static int on = 1;
+    static unsigned seen = 0;
+    if (knob_env_epoch_stale(&seen)) {
+        const char* e = getenv("OPENPETE_PORTAL_SKY_OTPUSH");
+        on = !(e && *e && atoi(e) == 0);
+    }
+    return on;
 }
 static double sky_ot_push_for(double ot_vz) {
     return (ot_vz >= 128.0 * 320.0 && sky_otpush_enabled()) ? 128.0 * 64.0 : 0.0;

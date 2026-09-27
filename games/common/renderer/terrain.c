@@ -43,6 +43,7 @@
 #include "openpete_glitch_mark.h"
 #include "openpete_native_render.h"
 #include "openpete_psx.h"
+#include "openpete_knobs.h"          /* knob_env_epoch_stale */
 #include "openpete_subtick_view.h"  /* openpete_subtick_host_span (sector colour host reads) */
 #include "renderer/render_paths.h"  /* --render-paths isolation */
 #include "renderer/orchestrator.h"  /* openpete_native_interp_pos */
@@ -438,19 +439,30 @@ static int s_sectordump = -1;
 static int s_sd_active = 0;
 static int s_cull = -1, s_flat = -1;              /* debug toggles (env) */
 
-/* Per-VBL env resolve for the policy toggles: the dev overlay's setenv is
- * their live channel, but the walks read them per face/sector — too hot for
- * getenv. Each site keeps a parse cache and re-resolves once per VBL. */
-typedef struct { int v; unsigned f; int have; } tn_envvbl_t;
+/* Env resolve for the policy toggles: the dev overlay's setenv is their live
+ * channel, but the walks read them per face/sector — too hot for getenv. Each
+ * site keeps a parse cache and re-resolves when the registry env epoch
+ * changes (one getenv per edit). */
+typedef struct { int v; unsigned ep; } tn_envvbl_t;
+/** @brief Returns a policy toggle's value, re-reading the variable only when the registry env epoch changed.
+ *
+ * @param c The site's parse cache, zero-initialised.
+ * @param name The environment variable.
+ * @param def The value when the variable is unset or empty.
+ * @param boolean 1 to parse as a flag (anything but "0"), 0 as an integer.
+ * @return The value. */
 static int tn_env_vbl(tn_envvbl_t* c, const char* name, int def, int boolean) {
-    extern unsigned openpete_frame;
-    if (!c->have || c->f != openpete_frame) {
+    if (knob_env_epoch_stale(&c->ep)) {
         const char* e = getenv(name);
         c->v = (e && *e) ? (boolean ? (*e != '0') : atoi(e)) : def;
-        c->f = openpete_frame;
-        c->have = 1;
     }
     return c->v;
+}
+
+/** @brief Whether OPENPETE_TERRAIN_VERIFY arms the deferred-queue oracle, re-read when the registry env epoch changes. */
+static int terrain_verify_env(void) {
+    static tn_envvbl_t c;
+    return tn_env_vbl(&c, "OPENPETE_TERRAIN_VERIFY", 0, 1);
 }
 
 static void terrain_dbg_init(void) {
@@ -7949,6 +7961,7 @@ static int tocc_sector_verdict(uint32_t i, double oc1, double oc2, double oc3,
     return v;
 }
 
+/** @brief Walks the visible sectors of the current view into the terrain triangle stream and feeds the native scene. */
 static void terrain_build(CPUState* cpu, int32_t occGroup) {
     ngte_view_build(cpu, &s_view);
     /* Publish this walk's camera for the occluder grid: the depth pre-pass of
@@ -7997,7 +8010,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * feed path (the plan forbids consuming .s per-frame output for rendering). */
     int wantOracle = terrain_game.portal_sky_recent() ||   /* portal guard reads the queue */
                      s_caldbg || s_nearq > 0 ||
-                     (getenv("OPENPETE_TERRAIN_VERIFY") && *getenv("OPENPETE_TERRAIN_VERIFY") != '0');
+                     terrain_verify_env();
     terrain_dbg_init();
     /* FAITHFUL LOD (OPENPETE_TERRAIN_LOD_FAITHFUL, DEFAULT ON): mirror the .s
      * sector binning — HP list = lodThr > centreZ − radius (HP ends at the LOD
@@ -8099,7 +8112,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         const char* e = getenv("OPENPETE_TERRAIN_NEARZ");
         s_nearz = (e && *e) ? atof(e) : 1.0;
     }
-    { const char* e = getenv("OPENPETE_TERRAIN_FOGDBG"); s_fogdbg = (e && *e && *e != '0'); }
+    { static tn_envvbl_t fog_c; s_fogdbg = tn_env_vbl(&fog_c, "OPENPETE_TERRAIN_FOGDBG", 0, 1); }
     /* Far-band identity instrument (fog decode arc): one-shot full dump of
      * per-sector binning state + per-face corner records (screen xy, m3, raw
      * colour words per tier) for the offline identity JOIN against the
@@ -8216,7 +8229,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     tsc_scroll_refresh(cpu);                                           /* env-anim UV scroll (sub-tick) */
     tface_differ_refresh(cpu, hqTable, tenv_rd(cpu, game_layout.env.tex_count));
     /* OPENPETE_TERRAIN_TEXTBL: 0=auto(near→HQ,far→LQ) 1=force LQ 2=force HQ (debug) */
-    int texTblMode = 0; { const char* e=getenv("OPENPETE_TERRAIN_TEXTBL"); if(e&&*e) texTblMode=atoi(e); }
+    static tn_envvbl_t textbl_c;
+    int texTblMode = tn_env_vbl(&textbl_c, "OPENPETE_TERRAIN_TEXTBL", 0, 0);
     if (s_nearhq < 0) {      /* near/HQ subdivide pass enable (Route 2, default ON) */
         const char* e = getenv("OPENPETE_TERRAIN_NEARHQ");
         s_nearhq = (e && *e) ? (*e != '0') : 1;

@@ -3321,12 +3321,9 @@ static int run_host_loop(const openpete_options_t* opts) {
          * keyboard cache and AFTER the present has consumed the previous
          * iter's swap-interval flag — preserving the original semantics
          * the GL present path was tested under. */
-        /* See OPENPETE_FORCE_PACING note below. The bottom of the loop
-         * caches it; mirror the same gate here so the sim-due predicate
-         * follows the pacer when measurement mode is on. Re-read each
-         * iter — cheap, and getenv on Linux is a libc env-pointer lookup. */
-        const char* fp_env = getenv("OPENPETE_FORCE_PACING");
-        bool force_pacing = (fp_env && *fp_env && *fp_env != '0');
+        /* The same cached gate the bottom of the loop reads, so the
+         * sim-due predicate follows the pacer when measurement mode is on. */
+        bool force_pacing = pace_force_pacing() != 0;
         /* The turbo read here is the PREVIOUS iteration's keymap sample —
          * this peek runs before the poll below. That is what a peek is for;
          * the authoritative unlock write at the bottom of the loop re-reads
@@ -4949,7 +4946,9 @@ static int run_host_loop(const openpete_options_t* opts) {
              * works headless. Raw little-endian u16, row-major. */
             {
                 static bool s_vram_dumped = false;
-                const char *vd = getenv("OPENPETE_VRAM_DUMP");
+                static int s_vd_read = 0;
+                static const char *vd = NULL;   /* debug knob: read once */
+                if (!s_vd_read) { vd = getenv("OPENPETE_VRAM_DUMP"); s_vd_read = 1; }
                 if (vd && *vd && !s_vram_dumped) {
                     const char *vf = getenv("OPENPETE_VRAM_DUMP_FRAME");
                     int want = vf && *vf ? atoi(vf)

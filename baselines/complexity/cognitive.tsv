@@ -60,13 +60,13 @@ core/renderer/debug_render.cpp	openpete_psyx_take_screenshot_ext	30	0
 core/renderer/glitch_mark.c	dump	27	0	
 core/renderer/native_render.c	alpha_census	53	0	
 core/renderer/native_render.c	compose_variant	52	0	
-core/renderer/native_render.c	draw_native_scene	678	0	
+core/renderer/native_render.c	draw_native_scene	673	0	
 core/renderer/native_render.c	draw_osd_overlay	52	0	
 core/renderer/native_render.c	draw_tex_runs	89	0	
 core/renderer/native_render.c	draw_ut_mat_spans	48	0	
 core/renderer/native_render.c	gpu_zone_report	27	0	
 core/renderer/native_render.c	hd_flush_pending	28	0	
-core/renderer/native_render.c	native_depth_prepass	83	0	
+core/renderer/native_render.c	native_depth_prepass	87	0	
 core/renderer/native_render.c	native_postfx_run	53	0	
 core/renderer/native_render.c	native_render_screenshot_all_impl	52	0	
 core/renderer/native_render.c	native_terrain_key_pass	66	0	
@@ -100,7 +100,7 @@ core/runtime/run.c	eager_plan	73	0
 core/runtime/run.c	gameplay_hash_compute_ex	81	0	
 core/runtime/run.c	openpete_run	38	0	
 core/runtime/run.c	run_host_init	101	0	
-core/runtime/run.c	run_host_loop	1517	0	
+core/runtime/run.c	run_host_loop	1520	0	
 core/runtime/run.c	run_split_threaded	27	0	
 core/runtime/run.c	stamp_psx_pad_bindings	49	0	
 core/ui/devui.cpp	draw_custom_level_rows	26	0	
@@ -116,7 +116,7 @@ games/common/freecam_game.c	freecam_path_parse	42	0
 games/common/psyq/psyq_thunks.cpp	cd_command_host	27	0	
 games/common/psyq/psyq_thunks.cpp	format_from_mips	91	0	
 games/common/psyq/psyq_thunks.cpp	psyq_CdRead	41	0	
-games/common/psyq/psyq_thunks.cpp	psyq_CdSync	35	0	
+games/common/psyq/psyq_thunks.cpp	psyq_CdSync	38	0	
 games/common/psyq/psyq_thunks.cpp	psyq_DrawOTag	174	0	
 games/common/psyq/psyq_thunks.cpp	psyq_SpuWrite	28	0	
 games/common/renderer/cyclorama.c	compare_and_report	45	0	
@@ -176,7 +176,7 @@ games/common/renderer/terrain.c	portal_rim_classify	66	0
 games/common/renderer/terrain.c	sector_verdicts	27	0	
 games/common/renderer/terrain.c	td_scan_verts	26	0	
 games/common/renderer/terrain.c	terrain_animdbg	44	0	
-games/common/renderer/terrain.c	terrain_build	564	0	
+games/common/renderer/terrain.c	terrain_build	560	0	
 games/common/renderer/terrain.c	terrain_compare	313	0	
 games/common/renderer/terrain.c	terrain_feed_native	463	0	
 games/common/renderer/terrain.c	terrain_texrecords	26	0	
@@ -227,7 +227,6 @@ games/spyro-1/renderer/portal.c	feed_portal_quad	77	0
 games/spyro-1/renderer/portal.c	feed_revealed_portals	76	0	
 games/spyro-1/renderer/portal.c	leaf_hook	136	0	
 games/spyro-1/renderer/portal.c	openpete_portal_sky_planes	74	0	
-games/spyro-1/renderer/portal.c	portal_nudge_for	27	0	
 games/spyro-1/renderer/portal.c	portal_reextract	84	0	
 games/spyro-1/renderer/reextract.c	cl_fit_pose	26	0	
 games/spyro-1/renderer/reextract.c	game_reextract_body	352	0	

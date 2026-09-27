@@ -136,6 +136,7 @@ static sptri s_sptri[MAX_SPTRI]; static int s_sptri_n;
 /* The same fan in the footprint decal's form, fed in place of s_sptri. */
 static shadow_fan s_fan;
 
+/** @brief Builds the Spyro shadow fan from the live shadow record and pushes the footprint decal's parameters. */
 static void shadow_spyro_build(CPUState* cpu) {
     s_sptri_n = 0;
     if ((int)cpu->read_word(D_SPYROSHADOW + 0x24) > 0) return;     /* over water: no shadow */
@@ -174,7 +175,9 @@ static void shadow_spyro_build(CPUState* cpu) {
         /* OPENPETE_SHADOW_DECAL_DEBUG: validate the FULL world reconstruction
          * (all three camera columns + swizzle inverse) CPU-side against the
          * anchor's known world position — the shader runs the same formulas. */
-        if (getenv("OPENPETE_SHADOW_DECAL_DEBUG")) {
+        static int s_decal_dbg = -1;   /* debug knob: read once */
+        if (s_decal_dbg < 0) s_decal_dbg = getenv("OPENPETE_SHADOW_DECAL_DEBUG") != NULL;
+        if (s_decal_dbg) {
             /* Validate with the PUSHED inverse — the same math the shader runs. */
             shadow_pt a2; shadow_project(C, ZERO, ofx, ofy, v, avx, avy, avz, &a2);
             double vz = a2.sz;

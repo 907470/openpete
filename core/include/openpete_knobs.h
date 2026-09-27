@@ -146,6 +146,21 @@ void knob_registry_init(const struct openpete_options *opts);
  * @return The current epoch; it starts at 1. */
 unsigned knob_registry_env_epoch(void);
 
+/** @brief Whether a cache keyed on the registry env epoch must re-read its knob.
+ *
+ * The pattern for a live knob read on a hot path: keep the parsed value and
+ * the epoch it was read at in statics, and call getenv only when this
+ * returns 1. A cache seeded with 0 reads on its first call (the epoch starts
+ * at 1).
+ * @param seen The epoch the cache last read at; updated when stale.
+ * @return 1 when the knob must be re-read. */
+static inline int knob_env_epoch_stale(unsigned* seen) {
+    const unsigned ep = knob_registry_env_epoch();
+    if (*seen == ep) return 0;
+    *seen = ep;
+    return 1;
+}
+
 /** @brief Write a row's current value as a display string.
  *
  * Action rows show their get_str output, else action_label ("Apply" when

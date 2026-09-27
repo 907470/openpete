@@ -630,7 +630,6 @@ core/renderer/native_render.c	depth_transport_census_scene	none
 core/renderer/native_render.c	depth_transport_census_shot	none	
 core/renderer/native_render.c	draw_hud_flat_layer	none	
 core/renderer/native_render.c	draw_menu_overlay	none	
-core/renderer/native_render.c	draw_native_scene	none	
 core/renderer/native_render.c	ensure_ovl_ss	plain	
 core/renderer/native_render.c	ensure_terrain_key_depth	none	
 core/renderer/native_render.c	fill_material_ubo	none	
@@ -644,7 +643,6 @@ core/renderer/native_render.c	hd_defer_flush	none
 core/renderer/native_render.c	hd_defer_push	none	
 core/renderer/native_render.c	hdfold_flush_locked	none	
 core/renderer/native_render.c	hud_paint_cmp	none	
-core/renderer/native_render.c	native_depth_prepass	none	
 core/renderer/native_render.c	native_occl_downsample	none	
 core/renderer/native_render.c	native_postfx_point_active	none	
 core/renderer/native_render.c	native_terrain_key_pass	none	
@@ -761,7 +759,6 @@ core/renderer/native_render.c	texmap_apply_pending	none
 core/renderer/native_render.c	tp_flags_init	none	
 core/renderer/native_render.c	tp_fog_affine	none	
 core/renderer/native_render.c	tri_box	none	
-core/renderer/native_render.c	truescope_apply_pending	none	
 core/renderer/native_render.c	txmat_bucket_cmp	none	
 core/renderer/native_render.c	ut_tag_resolves	none	
 core/renderer/native_render.c	utdef_cmp	none	
@@ -1037,7 +1034,6 @@ games/common/psyq/psyq_thunks.cpp	psyq_CdMix	none
 games/common/psyq/psyq_thunks.cpp	psyq_CdPosToInt	none	
 games/common/psyq/psyq_thunks.cpp	psyq_CdRead	none	
 games/common/psyq/psyq_thunks.cpp	psyq_CdReadCallback	none	
-games/common/psyq/psyq_thunks.cpp	psyq_CdSync	none	
 games/common/psyq/psyq_thunks.cpp	psyq_ClearImage	none	
 games/common/psyq/psyq_thunks.cpp	psyq_DMACallback	none	
 games/common/psyq/psyq_thunks.cpp	psyq_DrawSync	none	
@@ -1385,7 +1381,6 @@ games/common/renderer/terrain.c	rim_uv_edge_dist	none
 games/common/renderer/terrain.c	td_scan_verts	none	
 games/common/renderer/terrain.c	terrain_animdbg	none	
 games/common/renderer/terrain.c	terrain_apply_options	none	
-games/common/renderer/terrain.c	terrain_build	none	
 games/common/renderer/terrain.c	terrain_color	none	
 games/common/renderer/terrain.c	terrain_dbg_init	none	
 games/common/renderer/terrain.c	terrain_dump	none	
@@ -1415,7 +1410,6 @@ games/common/renderer/terrain.c	thq_rect_of	none
 games/common/renderer/terrain.c	tn_drain_key3	none	
 games/common/renderer/terrain.c	tn_drain_key4	none	
 games/common/renderer/terrain.c	tn_drain_sz	none	
-games/common/renderer/terrain.c	tn_env_vbl	none	
 games/common/renderer/terrain.c	tn_eye_side	none	
 games/common/renderer/terrain.c	tn_keycells_add	none	
 games/common/renderer/terrain.c	tsc_census	none	
@@ -1638,7 +1632,6 @@ games/spyro-1/renderer/portal.c	portal_sky_eps_vz	none
 games/spyro-1/renderer/portal.c	ring_depth	none	
 games/spyro-1/renderer/portal.c	sky_min2	none	
 games/spyro-1/renderer/portal.c	sky_ot_push_for	none	
-games/spyro-1/renderer/portal.c	sky_otpush_enabled	none	
 games/spyro-1/renderer/reextract.c	cl_trig_q12	none	
 games/spyro-1/renderer/reextract.c	fpos_drop	none	
 games/spyro-1/renderer/reextract.c	fpos_get	none	
@@ -1667,7 +1660,6 @@ games/spyro-1/renderer/render_decouple.c	psx_runtime_part_cull_sx2	none
 games/spyro-1/renderer/render_decouple.c	psx_runtime_part_drawn_store	none	
 games/spyro-1/renderer/render_decouple.c	psx_runtime_sparkle_canon_sx	none	
 games/spyro-1/renderer/shadow_spyro.c	on_80059A48_shadow_spyro	none	
-games/spyro-1/renderer/shadow_spyro.c	shadow_spyro_build	none	
 games/spyro-1/renderer/shadow_spyro.c	shadow_spyro_reextract	none	
 games/spyro-1/renderer/shadow_spyro.c	shadow_spyro_run_draw	none	
 games/spyro-1/renderer/spyro.c	native_rebuild	none	

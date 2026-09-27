@@ -36,6 +36,7 @@
 // =verbose to also log the per-frame high-water while the buffer is healthy
 // (the graded signal: how close a level runs to the edge without tipping).
 
+#include "openpete_knobs.h"   /* knob_env_epoch_stale */
 #include "feature_registry.h"
 
 #include "openpete_fiber.h"  /* openpete_frame (VBL counter) */
@@ -71,18 +72,20 @@ static int32_t  s_min_headroom = INT32_MAX;  /* closest approach while healthy *
 
 /** @brief Reads the OPENPETE_POLYBUF_GUARD mode from the environment.
  *
- * Re-reads the environment on every call so the dev-overlay row
- * (knob_registry.c, ENVROW_LIVE) toggles the guard at runtime. It is called
- * once per BuildOrderTable entry, so the getenv cost is negligible, unlike on
- * the per-primitive paths, where a getenv is a measurable cost on Windows.
+ * Re-reads the environment when the registry env epoch changes, so the
+ * dev-overlay row (knob_registry.c, ENVROW_LIVE) toggles the guard at
+ * runtime with one getenv per edit.
  * @return GUARD_OFF when unset, empty, or starting with 0, n or N;
  *     GUARD_VERBOSE when starting with v or V; else GUARD_ON. */
 static int guard_mode(void) {
+    static int mode = GUARD_OFF;
+    static unsigned seen = 0;
+    if (!knob_env_epoch_stale(&seen)) return mode;
     const char* e = getenv("OPENPETE_POLYBUF_GUARD");
-    if (!e || !e[0])                       return GUARD_OFF;
-    if (e[0] == 'v' || e[0] == 'V')        return GUARD_VERBOSE;
-    if (e[0] == '0' || e[0] == 'n' || e[0] == 'N') return GUARD_OFF;
-    return GUARD_ON;
+    const char c = e ? e[0] : '\0';
+    mode = (c == 'v' || c == 'V') ? GUARD_VERBOSE
+         : (c == '\0' || c == '0' || c == 'n' || c == 'N') ? GUARD_OFF : GUARD_ON;
+    return mode;
 }
 
 static int on_build_order_table(CPUState* cpu, uint32_t addr) {

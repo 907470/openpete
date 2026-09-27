@@ -2645,6 +2645,9 @@ void psyq_CD_flush(CPUState* cpu)   { cpu->v0 = 0u; }
  * @param cpu Guest CPU state; v0 receives 0. */
 void psyq_CD_initvol(CPUState* cpu) { cpu->v0 = 0u; }
 
+/** @brief CdSync thunk: pumps XA and the music override, then returns PsyCross's CD command status, with an optional per-VBL spin limit.
+ *
+ * @param cpu Guest CPU state; a0 is the mode, a1 the result buffer, v0 receives the status. */
 void psyq_CdSync(CPUState* cpu) {
     int mode = (int)cpu->a0;
     /* PsyCross's CdSync writes into result[0..7] whenever g_CD_com ==
@@ -2700,9 +2703,15 @@ void psyq_CdSync(CPUState* cpu) {
      * advance. Default off; set OPENPETE_PSYQ_CDSYNC_LIMIT to a positive
      * count to enable. Useful when re-enabling init.c/completion.c
      * surfaces a CdSync-shaped hang. */
-    const char* env = std::getenv("OPENPETE_PSYQ_CDSYNC_LIMIT");
-    if (env && *env) {
-        uint32_t limit = (uint32_t)std::strtoul(env, NULL, 0);
+    static int s_cs_read = 0;
+    static uint32_t s_cs_limit = 0u;   /* debug knob: read once */
+    if (!s_cs_read) {
+        const char* env = std::getenv("OPENPETE_PSYQ_CDSYNC_LIMIT");
+        s_cs_limit = (env && *env) ? (uint32_t)std::strtoul(env, NULL, 0) : 0u;
+        s_cs_read = 1;
+    }
+    if (s_cs_limit) {
+        const uint32_t limit = s_cs_limit;
         static uint32_t cs_calls_this_frame = 0u;
         static uint32_t cs_last_frame = 0u;
         if (openpete_frame != cs_last_frame) {
