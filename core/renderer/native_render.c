@@ -422,6 +422,18 @@ static int scene_run_fit(mod_fvec *v, const char *name, int n) {
     if (mod_fvec_reserve_noted(v, (size_t)(n > 0 ? n : 0)) == 0) return n;
     return (int)v->cap < n ? (int)v->cap : n;
 }
+/** @brief Exchange the storage (data, count, capacity) of two scene-triangle runs; each keeps its census node and name.
+ *
+ * Hands a finished scene to a history slot or a ring slot without copying
+ * it: the accumulator takes the other run's buffer, whose contents it
+ * overwrites from triangle 0.
+ * @param a One run, initialised.
+ * @param b The other run, initialised. */
+static void scene_run_swap(mod_fvec *a, mod_fvec *b) {
+    unsigned char *d = a->data; a->data = b->data; b->data = d;
+    size_t c = a->count; a->count = b->count; b->count = c;
+    size_t k = a->cap; a->cap = b->cap; b->cap = k;
+}
 /** @brief Grow the accumulating scene to hold n triangles.
  *
  * @param n Triangles wanted.
@@ -703,6 +715,10 @@ static int                s_scene_hist_hud_under[SCENE_HIST]; /* flat-HUD-under-
 static int                s_scene_hist_actor_front[SCENE_HIST]; /* actors-in-front (dragon rescue) flag, per snapshot */
 static int                s_scene_hist_head = -1;  /* ring index of the most-recent completed frame */
 static int                s_scene_hist_count = 0;  /* completed frames recorded (warmup guard) */
+/* 1 after an eager publish took the accumulator's storage: s_scene holds the
+ * ring slot's former contents until the next scene begins, so the frame
+ * close must not push it into history. */
+static int                s_scene_moved = 0;
 static int                s_scene_delay = -2;   /* -2 uninit; >=0 = depth */
 
 /* 1 while openpete_native_render_screenshot_all composes: the -vk screenshot
@@ -1003,7 +1019,7 @@ void openpete_native_scene_begin(void) {
      * before it goes. A later re-extract of the same tick must not
      * overwrite the record with its own (already reordered) order. */
     if (!s_scene_replay) bw_key_order_record(s_scene, s_scene_n);
-    s_scene_replay = 1; fov_latch(); s_scene_epoch++; s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; openpete_mods_material_frame_reset(); /* S8b: per-present interned slots */ }
+    s_scene_replay = 1; s_scene_moved = 0; fov_latch(); s_scene_epoch++; s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; openpete_mods_material_frame_reset(); /* S8b: per-present interned slots */ }
 
 /* VBL stamp of the scene accumulating in s_scene; 0xFFFFFFFF before the
  * first openpete_native_scene_begin_frame. */
@@ -1012,6 +1028,34 @@ static void (*s_scene_frame_close_cb)(unsigned frame);  /* see the frame-close s
 static void alpha_census(const scene_tri_t* scene, int scene_n);  /* blend census, defined below */
 static bool scene_has_world(const scene_tri_t* scene, int n);     /* defined below */
 static int s_scene_dropped;       /* tris refused this frame (cap hit) — capdbg */
+/** @brief Push the completed accumulator into the history ring by exchanging storage, not copying.
+ *
+ * The oldest slot's run becomes the accumulator's storage, which the next
+ * frame refills from triangle 0. When an eager publish took the
+ * accumulator's storage (s_scene_moved) there is no completed scene to
+ * push, so the ring is emptied instead: a delayed compose then falls back
+ * to the live scene as it does before the ring fills. */
+static void scene_hist_push(void) {
+    if (s_scene_moved) {
+        s_scene_moved = 0;
+        s_scene_hist_head = -1;
+        s_scene_hist_count = 0;
+        return;
+    }
+    int slot = (s_scene_hist_head + 1) % SCENE_HIST;
+    (void)scene_run_fit(&s_scene_hist[slot], "scene.hist", 0);   /* initialise on first use */
+    scene_run_swap(&s_scene_hist[slot], &s_scene_v);
+    s_scene_hist_n[slot] = s_scene_n; s_scene_hist_bg[slot] = s_scene_bg;
+    s_scene_hist_frame[slot] = s_scene_frame;
+    s_scene_hist_fade[slot] = s_scene_fade;
+    s_scene_hist_freeze[slot] = s_scene_freeze;
+    s_scene_hist_replay[slot] = s_scene_replay;
+    s_scene_hist_hud_under[slot] = s_scene_hud_under;
+    s_scene_hist_actor_front[slot] = s_scene_actor_front;
+    s_scene_hist_head = slot;
+    if (s_scene_hist_count < SCENE_HIST) s_scene_hist_count++;
+}
+
 void openpete_native_scene_begin_frame(unsigned frame) {
     if (frame != s_scene_frame) {
         if (s_scene_frame != 0xFFFFFFFFu && s_scene_frame_close_cb) {
@@ -1052,20 +1096,10 @@ void openpete_native_scene_begin_frame(unsigned frame) {
                     if (s_scene[ti].blend != db) { if (w != ti) s_scene[w] = s_scene[ti]; w++; }
                 s_scene_n = w; } }
             alpha_census(s_scene, s_scene_n);  /* census the completed scene (runs even headless) */
-            int slot = (s_scene_hist_head + 1) % SCENE_HIST;
-            const int hn = scene_run_fit(&s_scene_hist[slot], "scene.hist", s_scene_n);
-            if (hn > 0) memcpy(s_scene_hist[slot].data, s_scene, (size_t)hn * sizeof(s_scene[0]));
-            s_scene_hist_n[slot] = hn; s_scene_hist_bg[slot] = s_scene_bg;
-            s_scene_hist_frame[slot] = s_scene_frame;
-            s_scene_hist_fade[slot] = s_scene_fade;
-            s_scene_hist_freeze[slot] = s_scene_freeze;
-            s_scene_hist_replay[slot] = s_scene_replay;
-            s_scene_hist_hud_under[slot] = s_scene_hud_under;
-            s_scene_hist_actor_front[slot] = s_scene_actor_front;
-            s_scene_hist_head = slot;
-            if (s_scene_hist_count < SCENE_HIST) s_scene_hist_count++;
+            scene_hist_push();
         }
         s_scene_epoch++;
+
         s_cur_seq = 0;
         s_cur_prim = 0;
         s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; s_scene_frame = frame;
@@ -13629,8 +13663,12 @@ int openpete_native_scene_publish(int64_t target_ns, int kind, double alpha, int
     if (idx < 0) { s_ring_census.refused_full++; SDL_UnlockMutex(ring_mx()); s_eager_stamp = 0; return -1; }
     scene_slot_t *sl = &s_ring[idx];
     SDL_UnlockMutex(ring_mx());   /* the slot is FREE: only this thread publishes */
-    if (!slot_grow(sl, s_scene_n)) { s_eager_stamp = 0; return -1; }
-    if (s_scene_n > 0) memcpy(sl->tri, s_scene, (size_t)s_scene_n * sizeof(scene_tri_t));
+    /* The finished scene moves into the slot by exchanging storage: the
+     * accumulator takes the slot's former run and holds no scene until the
+     * next one begins (every eager re-extract begins its scene). */
+    if (!slot_grow(sl, 0)) { s_eager_stamp = 0; return -1; }
+    scene_run_swap(&sl->tri_v, &s_scene_v);
+    sl->tri = (scene_tri_t*)sl->tri_v.data;
     sl->n = s_scene_n; sl->bg = s_scene_bg; sl->fade = s_scene_fade; sl->freeze = s_scene_freeze;
     sl->replay = s_scene_replay;
     sl->hud_under = s_scene_hud_under; sl->actor_front = s_scene_actor_front;
@@ -13660,6 +13698,8 @@ int openpete_native_scene_publish(int64_t target_ns, int kind, double alpha, int
     sl->target_ns = target_ns; sl->alpha = alpha; sl->paired = paired; sl->kind = kind;
     sl->presented_serial = 0;
     s_eager_stamp = 0;
+    s_scene_n = 0;          /* the accumulator's storage went to the slot */
+    s_scene_moved = 1;
     SDL_LockMutex(ring_mx());
     sl->state = SS_PENDING;
     s_ring_head = idx;
