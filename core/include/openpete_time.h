@@ -289,10 +289,12 @@ int  op_virtual_clock_active(void);
 
 /** @brief Initialize the clock module: the sleep margin, and on Win32 the QPC frequency and timer.
  *
- * Parses OPENPETE_PACER_SLACK_US. On Win32 it reads the QPC frequency and
- * creates a high-resolution waitable timer (Windows 10 1803 and later);
- * when that fails it requests a 1 ms system timer period with
- * timeBeginPeriod(1) for the Sleep fallback. Idempotent until
+ * Parses OPENPETE_PACER_SLACK_US. On Win32 it reads the QPC frequency,
+ * creates a high-resolution waitable timer (Windows 10 1803 and later; the
+ * Sleep fallback serves when that fails), and requests a 1 ms system timer
+ * period with timeBeginPeriod(1) on either path, since every millisecond
+ * timeout in the process (Sleep, SDL event and condition-variable waits)
+ * is otherwise quantised to 15.6 ms. Idempotent until
  * op_time_shutdown. op_now, op_sleep_until and op_pacer_slack_ns call it on
  * first use; calling it early moves that cost out of the host loop. */
 void op_time_init(void);

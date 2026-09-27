@@ -116,13 +116,14 @@ void op_time_init(void) {
         NULL, NULL,
         CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
         TIMER_ALL_ACCESS);
-    if (!s_hi_res_timer) {
-        /* Fall back to coarse Sleep path with a 1 ms period request.
-         * Document the perf hit by leaving timeEndPeriod paired in
-         * op_time_shutdown. */
-        if (timeBeginPeriod(1) == TIMERR_NOERROR) {
-            s_timeperiod_set = 1;
-        }
+    /* A 1 ms system timer period on every timer path, paired with
+     * timeEndPeriod in op_time_shutdown. The high-resolution waitable timer
+     * does not need it, but every other millisecond timeout in the process
+     * does: Sleep() on the fallback path, SDL_WaitEventTimeout in the pump
+     * loop and SDL_WaitConditionTimeout in the present thread are otherwise
+     * quantised to the default 15.6 ms period. */
+    if (timeBeginPeriod(1) == TIMERR_NOERROR) {
+        s_timeperiod_set = 1;
     }
 #endif
 
