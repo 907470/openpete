@@ -224,6 +224,23 @@ void* openpete_psx_to_host_ptr(uint32_t addr);
  *         crossing its region's end. */
 void* openpete_psx_to_host_span(uint32_t addr, uint32_t len);
 
+/** @brief Map a guest C string to a host pointer whose bytes up to its terminator lie inside one region.
+ *
+ * The scan for the NUL stops at the end of the address's region (main RAM,
+ * the scratchpad, or one registered presentation region) and after @p max
+ * bytes. A string whose first @p max bytes hold no NUL is accepted with
+ * length @p max, as a bounded reader (strncmp, a printf precision) sees it;
+ * a string whose region ends before both its NUL and @p max is refused, so
+ * a host strlen or strcmp on the result never reads past the region.
+ * @param addr PSX virtual address; 0 is PSX NULL.
+ * @param max The most bytes the caller reads; UINT32_MAX for a C string
+ *        read to its terminator.
+ * @param len_out Receives the length in bytes, the NUL excluded, when
+ *        non-NULL and the string is accepted.
+ * @return The host pointer, or NULL for 0, an unmapped address, or a
+ *         string that runs off its region's end. */
+const char* openpete_psx_to_host_str(uint32_t addr, uint32_t max, uint32_t* len_out);
+
 /** @brief Map a host pointer back to its PSX address.
  *
  * A pointer into main RAM maps to its KSEG0 address and one into the

@@ -66,6 +66,42 @@ void* openpete_psx_to_host_ptr(uint32_t addr) {
     return openpete_psx_to_host_span(addr, 1u);
 }
 
+/** @brief Resolve a guest address to its host byte and the bytes left in its region, or NULL.
+ *
+ * The region is main RAM (any segment), the scratchpad, or one entry of the
+ * presentation region table, as span_ptr() classifies it.
+ * @param addr PSX virtual address.
+ * @param room Receives the byte count from @p addr to the region's end. */
+static uint8_t* region_room(uint32_t addr, uint32_t* room) {
+    uint32_t phys = addr & 0x1FFFFFFFu;
+    if (phys < RAM_SIZE) { *room = RAM_SIZE - phys; return &g_ram[phys]; }
+    if (phys >= 0x1F800000u && phys - 0x1F800000u < SCRATCH_SIZE) {
+        uint32_t off = phys - 0x1F800000u;
+        *room = SCRATCH_SIZE - off;
+        return &g_scratch[off];
+    }
+    if (psx_runtime_region_count() != 0u) {
+        void* host = NULL;
+        uint32_t rem = 0;
+        if (psx_runtime_resolve_region(addr, &host, &rem)) { *room = rem; return (uint8_t*)host; }
+    }
+    return NULL;
+}
+
+const char* openpete_psx_to_host_str(uint32_t addr, uint32_t max, uint32_t* len_out) {
+    uint32_t room = 0;
+    const uint8_t* p = (addr == 0u) ? NULL : region_room(addr, &room);
+    if (p == NULL) return NULL;
+    const uint32_t scan = (max < room) ? max : room;
+    const uint8_t* nul = (const uint8_t*)memchr(p, 0, scan);
+    uint32_t len;
+    if (nul != NULL) len = (uint32_t)(nul - p);
+    else if (max <= room) len = max;
+    else return NULL;
+    if (len_out != NULL) *len_out = len;
+    return (const char*)p;
+}
+
 /* Inverse of openpete_psx_to_host_ptr for RAM and scratchpad pointers. */
 uint32_t openpete_host_to_psx(const void* host_ptr) {
     if (host_ptr == NULL) return 0u;

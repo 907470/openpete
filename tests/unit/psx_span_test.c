@@ -88,6 +88,40 @@ static void test_bus_accessors(void) {
     CHECK(cpu.read_byte(0x801FFFFFu) == 0xABu, "last RAM byte reads");
 }
 
+/** @brief Checks the refusal classes a PSYQ thunk argument meets: a struct past the RAM end, a word copy past it, and a string with no NUL before its region's end. */
+static void test_thunk_refusals(void) {
+    uint8_t* ram = openpete_psx_get_ram();
+    uint8_t* sp = openpete_psx_get_scratch();
+    /* A struct argument (a 20-byte DISPENV) whose last byte passes the top of RAM. */
+    CHECK(openpete_psx_to_host_span(0x801FFFECu, 20u) == ram + OPENPETE_PSX_RAM_SIZE - 20u, "struct ending at the top maps");
+    CHECK(openpete_psx_to_host_span(0x801FFFEDu, 20u) == NULL, "struct one byte past the top refused");
+    CHECK(openpete_psx_to_host_ptr(0x801FFFEDu) != NULL, "one-byte form still maps the struct's first byte");
+    /* A word copy of n words (CdGetSector, ClearImage's fill packet). */
+    const uint32_t words = 13u;
+    CHECK(openpete_psx_to_host_span(0x80200000u - 4u * words, 4u * words) != NULL, "word copy ending at the top maps");
+    CHECK(openpete_psx_to_host_span(0x80200000u - 4u * words + 4u, 4u * words) == NULL, "word copy one word past the top refused");
+    CHECK(openpete_psx_to_host_span(0x80100000u, 0x40001u * 4u) == NULL, "word count one word past RAM refused");
+    /* Strings: the NUL scan stops at the region's end. */
+    uint32_t n = 0xFFu;
+    memcpy(ram + OPENPETE_PSX_RAM_SIZE - 4u, "ab\0z", 4);
+    CHECK(openpete_psx_to_host_str(0x801FFFFCu, 0xFFFFFFFFu, &n) == (const char*)ram + OPENPETE_PSX_RAM_SIZE - 4u && n == 2u, "terminated string at the top maps with its length");
+    memcpy(ram + OPENPETE_PSX_RAM_SIZE - 4u, "abcd", 4);
+    CHECK(openpete_psx_to_host_str(0x801FFFFCu, 0xFFFFFFFFu, &n) == NULL, "string with no NUL before RAM end refused");
+    CHECK(openpete_psx_to_host_str(0x801FFFFCu, 4u, &n) != NULL && n == 4u, "bounded read of the last four bytes maps at the bound");
+    CHECK(openpete_psx_to_host_str(0x801FFFFCu, 5u, &n) == NULL, "bounded read past RAM end with no NUL refused");
+    CHECK(openpete_psx_to_host_str(0x801FFFFCu, 0u, &n) != NULL && n == 0u, "zero-byte bounded read maps");
+    memset(sp + OPENPETE_PSX_SCRATCH_SIZE - 8u, 'x', 8);
+    CHECK(openpete_psx_to_host_str(0x1F8003F8u, 0xFFFFFFFFu, NULL) == NULL, "string with no NUL before scratchpad end refused");
+    static uint8_t buf[16];
+    memset(buf, 'y', sizeof buf);
+    CHECK(psx_runtime_register_region(0x80300000u, sizeof buf, buf) == 0, "region registers");
+    CHECK(openpete_psx_to_host_str(0x80300008u, 0xFFFFFFFFu, NULL) == NULL, "string with no NUL before region end refused");
+    buf[15] = 0;
+    CHECK(openpete_psx_to_host_str(0x80300008u, 0xFFFFFFFFu, &n) == (const char*)buf + 8 && n == 7u, "string ending at the region's last byte maps");
+    psx_runtime_unregister_region(0x80300000u);
+    CHECK(openpete_psx_to_host_str(0u, 0xFFFFFFFFu, NULL) == NULL, "guest NULL string stays NULL");
+}
+
 /** @brief Runs the span and accessor checks.
  * @return 0 when every check passes. */
 int main(void) {
@@ -95,6 +129,7 @@ int main(void) {
     test_scratch_edges();
     test_region_edges();
     test_bus_accessors();
+    test_thunk_refusals();
     if (s_fail) { fprintf(stderr, "psx_span_test: %d FAILED\n", s_fail); return 1; }
     printf("psx_span_test: OK\n");
     return 0;
