@@ -74,6 +74,13 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Licence fence over the staged tree (scripts/dist_compliance.py):
+# assert_no_copyleft refuses a shipped ELF/PE carrying pcsx-redux's GTE or
+# a static FFmpeg/x264. It runs before the archive is written.
+assert_no_copyleft() {  # assert_no_copyleft <path>...
+    python3 scripts/dist_compliance.py scan "$@" \
+        || { echo "[package] licence fence refused the staged binaries" >&2; exit 1; }
+}
 sign_pe() {  # sign_pe <file> — no-op unless --sign was given
     [[ -n "$SIGN_CMD" ]] || return 0
     echo "[package] signing $(basename "$1")"
@@ -317,6 +324,7 @@ build_appimage() {  # build_appimage <stage-dir>
         cp "$lic" "$APPDIR/usr/licences/$so.txt"
     done
     echo "[package] bundled libs:" $(ls "$APPDIR/usr/lib")
+    assert_no_copyleft "$APPDIR"
 
     assert_appdir_closure "$APPDIR" "$APPDIR/usr/openpete-spyro1" \
         "$APPDIR"/usr/lib/*.so*
@@ -394,6 +402,7 @@ linux)
     fi
     [[ -n "$SIGN_CMD" ]] && echo "[package] NOTE: --sign is Windows-only" \
         "(Authenticode); ignored for linux" >&2
+    assert_no_copyleft "$STAGE"
     tar cJf "$OUT/$NAME.tar.xz" -C "$OUT" "$NAME"
     ( cd "$OUT" && sha256sum "$NAME.tar.xz" > "$NAME.tar.xz.sha256" )
     if [[ $APPIMAGE -eq 1 ]]; then build_appimage "$STAGE"; fi
@@ -446,6 +455,7 @@ windows)
     # only (see --sign notes above).
     sign_pe "$STAGE/openpete-spyro1.exe"
     sign_pe "$STAGE/recomp/tools/PSXRecomp.exe"
+    assert_no_copyleft "$STAGE"
     # Zipped from INSIDE the stage dir, so the archive has no wrapping
     # folder: Windows' "Extract All" already creates one named after the
     # zip, and a second level leaves users an install nested one deep.

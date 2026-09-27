@@ -550,6 +550,15 @@ elseif(NOT CMAKE_CROSSCOMPILING)
     target_link_libraries(openpete_core PUBLIC PkgConfig::LIBAV)
     target_compile_definitions(openpete_core PUBLIC OPENPETE_HAS_LIBAV=1)
 elseif(EXISTS "${OPENPETE_FFMPEG_MINGW_PREFIX}/lib/libavcodec.a")
+    # A distributed exe must not carry GPL x264; the dist presets set
+    # OPENPETE_DIST_PRESET, and scripts/package-dist.sh refuses the same
+    # exe by its x264/libav strings.
+    if(OPENPETE_DIST_PRESET)
+        message(FATAL_ERROR "openpete: OPENPETE_ENABLE_RECORD=ON with the static "
+            "FFmpeg at ${OPENPETE_FFMPEG_MINGW_PREFIX} links GPL x264 into the "
+            "exe, which a dist preset must not ship. Configure without "
+            "-DOPENPETE_ENABLE_RECORD=ON, or use the windows-mingw preset.")
+    endif()
     # Cross (windows-mingw): static-link the FFmpeg from setup_mingw_ffmpeg.sh.
     # pkg_check_modules ignores the cross sysroot, so isolate pkg-config to OUR
     # prefix via PKG_CONFIG_LIBDIR; --static then resolves the full dep chain
