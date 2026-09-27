@@ -44,9 +44,17 @@ static int census_on(void) {
     return v;
 }
 
-/* Walk [start, end) as a run of contiguous primitive packets. A packet's tag
- * word holds its length in the top byte, so the next packet starts
- * (len + 1) * 4 bytes on; the command byte is the top byte of word 1. */
+/** @brief Walks a primitive-buffer range as contiguous packets and feeds each glyph packet to the native UI sprite feeder.
+ *
+ * A packet's tag word holds its length in words in the top byte, so the
+ * next packet starts (len + 1) * 4 bytes on; the command byte is the top
+ * byte of word 1. A DR_MODE (0xE1) sets the texture page for the SPRTs
+ * (0x64..0x67) after it; a SPRT before any DR_MODE is skipped. A POLY_FT4
+ * (0x2C..0x2F) carries its own page. The walk stops at a zero length or a
+ * packet that overruns the range. Counts the chain and each glyph fed.
+ * @param cpu The guest CPU state.
+ * @param start The first packet's guest address.
+ * @param end The primitive cursor after the emitter ran. */
 static void feed_chain(CPUState* cpu, uint32_t start, uint32_t end) {
     unsigned tpage = 0;                 /* set by the chain's own DR_MODE */
     int have_tpage = 0;

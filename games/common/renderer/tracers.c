@@ -166,8 +166,15 @@ static int tr_prim_sink(void* ctx, const ngte_prim* s) {
     return 1;
 }
 
-/* Walk the interval the call allocated. Both routines append one 13-word
- * primitive at a time (tag length 12). */
+/** @brief Decodes the primitives a routine call appended to the polybuf into the call's item set.
+ *
+ * Both routines append one 13-word primitive at a time (tag length 12), so
+ * the walk admits tags up to 12 words and at most TR_MAX_PRIMS primitives.
+ * Each primitive becomes an unpaired item at the near-guard depth; the code
+ * and tag histograms count every packet walked.
+ * @param cpu The guest CPU state.
+ * @param start The polybuf cursor before the call.
+ * @param end The polybuf cursor after the call. */
 static void tr_capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
     s_item_n = 0;
     const ngte_walk_policy pol = {
@@ -219,10 +226,16 @@ typedef struct { int32_t oc; int32_t sz3; double m3; tr_corner c; } rib_pt;
  * corners 1 and 3 about the next one (:3125-3141). */
 typedef struct { float depth; tr_corner a, b; } rib_seg;
 
-/* The routine's own outcode word (:2488-2508): the packed screen coordinate
- * shifted left five with one bit per frame edge the point falls outside. Only
- * the low four bits are tested, and only as an AND across a record's points or
- * across a segment's two ends. */
+/** @brief Computes the ribbon routine's outcode word for a screen position (mobyfunc.s:2488-2508).
+ *
+ * The packed screen coordinate (y in the high half) is shifted left five
+ * and gains one low bit per screen edge the point falls outside: 1 for a
+ * packed word at or below zero, 2 for y at or past 240, 4 for x at or below
+ * zero, 8 for x at or past 512. Only the low four bits are tested, and only
+ * as an AND across a record's points or across a segment's two ends.
+ * @param sx The screen x.
+ * @param sy The screen y.
+ * @return The outcode word. */
 static int32_t rib_outcode(int sx, int sy) {
     const int32_t xy = (int32_t)(((uint32_t)(sy & 0xFFFF) << 16) | ((uint32_t)sx & 0xFFFFu));
     int32_t oc = (int32_t)((uint32_t)xy << 5);
@@ -237,7 +250,10 @@ static int32_t rib_outcode(int sx, int sy) {
     return oc;
 }
 
-/* SZ3 with sf = 1: MAC3 saturated into an unsigned 16-bit value. */
+/** @brief Computes the GTE SZ3 of a MAC3 value with sf = 1.
+ *
+ * @param m3 The MAC3 value.
+ * @return MAC3 floored and saturated to 0..65535. */
 static int32_t rib_sz3(double m3) {
     double z = floor(m3);
     if (z < 0.0) return 0;
@@ -245,10 +261,20 @@ static int32_t rib_sz3(double m3) {
     return (int32_t)z;
 }
 
-/* The point `age` places back from the head of a ring, decoded out of a record
- * image `rec` (guest RAM or a keyed-store blob): the packed unsigned halves
- * shifted left one as the routine loads them, which are half world units.
- * Returns 0 when the packed word holds no walkable ring. */
+/** @brief Decodes the point a given number of places back from the head of a ribbon record's ring.
+ *
+ * The record image is guest RAM or a keyed-store blob. The packed word at
+ * TR.packed_off holds the head index (byte 0) and the point count (byte 1);
+ * the point's three unsigned halves are shifted left one as the routine
+ * loads them, which gives half world units. An age past the tail is
+ * clamped to the tail.
+ * @param rec The record image.
+ * @param len The image's length in bytes.
+ * @param age Places back from the head; 0 is the head.
+ * @param hw Receives the point in half world units.
+ * @return The ring's point count, or 0 when the image is too short or the
+ *         packed word holds no walkable ring (count below 2 or above
+ *         TR.ring_n, or head not below count). */
 static int rib_ring_point(const uint8_t* rec, uint32_t len, int age, int32_t hw[3]) {
     if (len < TR.packed_off + 4u) return 0;
     uint32_t packed;
@@ -266,10 +292,19 @@ static int rib_ring_point(const uint8_t* rec, uint32_t len, int age, int32_t hw[
     return count;
 }
 
-/* Project one record's points head first, mirroring the routine's per-record
- * rejects: any point outside the camera-relative box (:2408-2437), every point
- * off one screen edge (:2496) and the head too far (:2540). Returns the point
- * count, or 0 when the routine drops the record. */
+/** @brief Projects one ribbon record's points head first, mirroring the routine's per-record rejects.
+ *
+ * The rejects are any point outside the camera-relative box (:2408-2437,
+ * counted in s_boxed), every point off one common screen edge (:2496) and
+ * the head's SZ3 at or past TR.far_sz (:2540). Each point's outcode, SZ3,
+ * MAC3 and rebase corner (keyed by the record, aged by its place from the
+ * head) are written to pt.
+ * @param cpu The guest CPU state.
+ * @param v The tick's view.
+ * @param rec The record's guest address.
+ * @param cam The camera position shifted right one, as the routine reads it.
+ * @param pt Receives the projected points, head first.
+ * @return The point count, or 0 when the routine drops the record. */
 static int rib_project_record(CPUState* cpu, const ngte_view* v, uint32_t rec,
                               const int32_t cam[3], rib_pt* pt) {
     const uint8_t* host = (const uint8_t*)openpete_psx_to_host_ptr(rec);
@@ -300,8 +335,18 @@ static int rib_project_record(CPUState* cpu, const ngte_view* v, uint32_t rec,
     return count;
 }
 
-/* Re-walk the record array and mirror the routine's rejects, appending one
- * predicted segment per segment it would have emitted. Returns the count. */
+/** @brief Re-walks the ribbon record array and predicts every segment the routine emitted, in emission order.
+ *
+ * Per live record (counted in s_live) the points are projected by
+ * rib_project_record; a consecutive pair is dropped when its two outcodes
+ * share an edge bit (:2652) or its ordering-table key is negative (:2692).
+ * Each kept segment carries its view-Z from the pair's mean MAC3 and its
+ * two rebase corners, head side first.
+ * @param cpu The guest CPU state.
+ * @param v The tick's view.
+ * @param out Receives the segments.
+ * @param cap The capacity of out; segments past it are counted, not written.
+ * @return The count of predicted segments. */
 static int rib_predict(CPUState* cpu, const ngte_view* v, rib_seg* out, int cap) {
     int n = 0;
     s_live = 0; s_boxed = 0;
@@ -354,11 +399,17 @@ static void rib_pair_depths(CPUState* cpu, const ngte_view* v) {
 
 /* ---- mesh leg: replay the emit test out of the routine's own scratchpad ---- */
 
-/* Note a vertex list the draw read, for the per-object capture. The list ends
- * at the routine's -1 terminator (:3223-3225), bounded by the scratchpad
- * table. The capture runs on every VBL and the draw once per tick, so the set
- * is replaced by the next frame that draws, not taken by the capture: a vertex
- * missing from one capture is evicted from the store and pairs as a spawn. */
+/** @brief Records a mesh vertex list the draw read, for the per-object capture.
+ *
+ * The list ends at the routine's -1 terminator (:3223-3225), bounded by the
+ * scratchpad table's SPAD_MAX_VERTS. The first note on a new VBL empties
+ * the set; a repeated address, an address outside KSEG0 RAM and a list past
+ * TR_MAX_LISTS are ignored. The capture runs on every VBL and the draw once
+ * per tick, so the set is replaced by the next VBL that draws, not consumed
+ * by the capture: a vertex missing from one capture is evicted from the
+ * store and pairs as a spawn.
+ * @param cpu The guest CPU state.
+ * @param vlist The vertex list's guest address. */
 static void msh_note_list(CPUState* cpu, uint32_t vlist) {
     if (s_list_frame != openpete_frame) { s_list_frame = openpete_frame; s_lists = 0; }
     if (vlist < 0x80000000u || vlist >= 0x80800000u) return;
@@ -380,8 +431,16 @@ int tracers_mesh_lists(uint32_t* addr, uint32_t* nverts, int max) {
     return n;
 }
 
-/* Each corner's vertex, out of the list the descriptor names: corner k is the
- * entry's index byte k (:3358-3378 store them at +0x08, +0x14, +0x20, +0x2C). */
+/** @brief Sets a mesh item's four rebase corners from the vertices its index entry names.
+ *
+ * Corner k is the entry's index byte k (:3358-3378 store them at +0x08,
+ * +0x14, +0x20, +0x2C); the vertex is the 12-byte world XYZ triple at that
+ * index of the descriptor's vertex list, keyed by its address.
+ * @param cpu The guest CPU state.
+ * @param v The tick's view.
+ * @param it The item.
+ * @param vlist The vertex list's guest address.
+ * @param off The four scratchpad offsets (index * 8) of the entry. */
 static void msh_set_corners(CPUState* cpu, const ngte_view* v, tr_item* it,
                             uint32_t vlist, const uint32_t off[4]) {
     it->src = TR_SRC_MESH;
@@ -438,8 +497,12 @@ static void msh_pair_depths(CPUState* cpu, const ngte_view* v, uint32_t desc) {
 
 /* ---- feed ---------------------------------------------------------------- */
 
-/* OPENPETE_TRACERS=0 suppresses this feed alone. The guest draws still run, so
- * the A/B prices the ribbons' painted pixels from one binary. */
+/** @brief Reports whether the tracer feed is enabled; OPENPETE_TRACERS=0 disables it.
+ *
+ * Only this feed is suppressed; the guest draws still run, so an A/B
+ * measures the ribbons' painted pixels from one binary. Latched on the
+ * first call.
+ * @return 0 when OPENPETE_TRACERS starts with '0', else 1. */
 static int tr_feed_enabled(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_TRACERS"); v = !(e && *e && *e == '0'); }
@@ -495,9 +558,12 @@ static void tr_feed_native(const tr_item* set, int n) {
     openpete_native_scene_set_tag(0);
 }
 
-/* Hold the call's primitives for the sub-tick replay and return where they
- * start in the held set. The tick's first hook clears it: nine calls
- * contribute to one canonical present. */
+/** @brief Appends the call's items to the tick's held set for the sub-tick replay.
+ *
+ * The first call on a new VBL empties the set, since several calls
+ * contribute to one canonical present; items past TR_MAX_TICK are dropped.
+ * Clears the rebase so a canonical feed emits the captured corners.
+ * @return The index of the call's first item in the held set. */
 static int tr_hold(void) {
     if (s_tick_frame != openpete_frame) { s_tick_frame = openpete_frame; s_tick_n = 0; }
     const int first = s_tick_n;
@@ -506,11 +572,16 @@ static int tr_hold(void) {
     return first;
 }
 
-/* OPENPETE_TRACER_CENSUS=LO-HI (or a single frame): per call in that frame
- * range, the primitives the routine appended by GPU code, the native triangles
- * this feeder emitted from them, how many primitives the record walk predicted,
- * and how many were left unpaired. A capture whose fed count is zero measured
- * nothing. */
+/** @brief Prints one stderr line per hook call inside the VBL range OPENPETE_TRACER_CENSUS names (LO-HI or one VBL).
+ *
+ * The line carries the polybuf interval, the primitives captured by GPU
+ * code, the native triangles fed from them, the segments the record walk
+ * predicted, the unpaired primitives, the live and boxed record counts and
+ * the held set's size. A capture whose fed count is zero measured nothing.
+ * @param leg The producer's name, "ribbon" or "mesh".
+ * @param start The polybuf cursor before the call.
+ * @param end The polybuf cursor after the call.
+ * @param fed_before s_fed_tris before the call. */
 static void tr_census(const char* leg, uint32_t start, uint32_t end, uint32_t fed_before) {
     static env_frame_range_t s_range = ENV_FRAME_RANGE_INIT;
     if (!env_frame_range_active(&s_range, "OPENPETE_TRACER_CENSUS", openpete_frame)) return;
@@ -629,10 +700,16 @@ static const openpete_interp_obj_t* tr_pair(uint32_t key, uint32_t need) {
     return o;
 }
 
-/* The corner's point in the previous tick's state, in full world units.
- * Returns 0 when there is none: a record or vertex that appeared this tick, a
- * pair spanning more than a capture interval, or a ribbon slot whose owner
- * pointer changed. */
+/** @brief Looks up a corner's point in the previous tick's keyed-store state, in full world units.
+ *
+ * A mesh corner reads its vertex's previous triple; a ribbon corner decodes
+ * the point of the same age from the record's previous image.
+ * @param it The item holding the corner.
+ * @param c The corner.
+ * @param w Receives the previous point.
+ * @return 1 when found; 0 for a record or vertex with no previous state, a
+ *         pair spanning more than TR_PAIR_STALE_NS, a ribbon slot whose
+ *         live pointer changed, or a ring that does not decode. */
 static int tr_prev_point(const tr_item* it, const tr_corner* c, int32_t w[3]) {
     if (it->src == TR_SRC_MESH) {
         const openpete_interp_obj_t* o = tr_pair(c->key, 12u);
@@ -677,17 +754,22 @@ static void tr_rebase_corner(tr_item* it, int k, const ngte_view* v, double alph
     if (m > s_reb_screenmax) s_reb_screenmax = m;
 }
 
-/* OPENPETE_TRACERS_INTERP=0 leaves the replay at the tick's screen positions,
- * the engagement leg of the sub-tick harness. */
+/** @brief Reports whether the sub-tick rebase is enabled; OPENPETE_TRACERS_INTERP=0 disables it.
+ *
+ * Disabled, the replay stays at the tick's screen positions, the
+ * engagement leg of the sub-tick harness. Latched on the first call.
+ * @return 0 when OPENPETE_TRACERS_INTERP starts with '0', else 1. */
 static int tr_interp_enabled(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_TRACERS_INTERP"); v = !(e && *e && *e == '0'); }
     return v;
 }
 
-/* OPENPETE_TRACER_REBASE_DBG=1: the rebase's verdicts per run. A run whose
- * lerped count is zero rebased nothing against a previous point and measured
- * nothing. */
+/** @brief Prints the rebase's run totals to stderr, registered with atexit under OPENPETE_TRACER_REBASE_DBG.
+ *
+ * The line carries the lerped and held corner counts per producer and the
+ * largest world step paired and screen displacement applied. A run whose
+ * lerped count is zero rebased nothing against a previous point. */
 static void tr_rebase_report(void) {
     fprintf(stderr, "[tracer-rebase] ribbon lerped=%lu held=%lu mesh lerped=%lu held=%lu "
             "worldmax=%.3f screenmax=%.3f\n",
@@ -696,9 +778,15 @@ static void tr_rebase_report(void) {
             s_reb_worldmax, s_reb_screenmax);
 }
 
-/* Rebase the held set onto the pose this present shows. The staged camera
- * resolves through the sub-tick view, so building a view here reads the
- * interpolated transform the rest of the pass draws under. */
+/** @brief Computes every held corner's sub-tick screen displacement for the pose this present shows.
+ *
+ * The staged camera resolves through the sub-tick view, so the view built
+ * here is the interpolated transform the rest of the pass draws under. At
+ * alpha 1 or above, with an empty set or with the rebase disabled, the
+ * rebase stays off and the replay emits the captured corners. The first
+ * call latches OPENPETE_TRACER_REBASE_DBG and registers tr_rebase_report.
+ * @param cpu The guest CPU state.
+ * @param alpha The present's position in the tick interval, 0..1. */
 static void tr_rebase_all(CPUState* cpu, double alpha) {
     s_reb_active = 0;
     if (alpha >= 1.0 || s_tick_n <= 0 || !tr_interp_enabled()) return;
@@ -715,12 +803,7 @@ static void tr_rebase_all(CPUState* cpu, double alpha) {
     s_reb_active = 1;
 }
 
-/* Sub-tick re-extract. The primitives are the guest's own output and are gone
- * once the polybuf is reused, so the replay re-feeds the set the canonical tick
- * captured, at the depths paired then, rebased onto the pose this present
- * shows. At alpha 1, and on a present outside a bracket, it emits the captured
- * corners verbatim and so reproduces the canonical present exactly, which is
- * what the spine's identity leg measures. */
+/* Called from each game's reextract.c on a sub-tick present. */
 void tracers_reextract(CPUState* cpu, int bracketed, double alpha) {
     if (!hook_reextract_ready(RP_TRACER)) return;
     tr_rebase_all(cpu, bracketed ? alpha : 1.0);

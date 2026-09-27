@@ -404,17 +404,21 @@ static int quad_to_fb_snapshot(openpete_scene_tri quad[2]) {
     return 1;
 }
 
-/* Add a textured 2D quad's two triangles to the HUD layer, each sampling the
- * texel the GPU samples on every pixel (tex_tri_psx_texel_centre). A quad of an ABR
- * 1-3 class that samples VRAM is fed as a pair: its STP-clear texels through
- * the opaque class, then its STP-set texels through its own class, since those
- * blend equations read no alpha and the GPU applies them to STP-set texels
- * only. Both halves precede the next primitive's triangles, so the painter
- * order of overlapping primitives holds. Every other quad (opaque, ABR 0, a
- * framebuffer-snapshot window, whose image carries no STP bit) is fed once.
- * A quad sampling a framebuffer window is first redirected to its snapshot,
- * whatever primitive it came from; its UVs are then pixel coordinates in the
- * native image and are fed unchanged. Returns 1 for a split quad. */
+/** @brief Adds a textured 2D quad's two triangles to the HUD layer, split by texel STP where the blend class needs it.
+ *
+ * A quad sampling a framebuffer window is first redirected to its snapshot
+ * (quad_to_fb_snapshot), whatever primitive it came from; its UVs are then
+ * pixel coordinates in the native image and are fed unchanged. A quad that
+ * samples VRAM has each triangle's UVs set to the texel the GPU samples on
+ * every pixel (tex_tri_psx_texel_centre). A VRAM quad of an ABR 1-3 class
+ * is fed as a pair: its STP-clear texels through the opaque class, then its
+ * STP-set texels through its own class, since those blend equations read no
+ * alpha and the GPU applies them to STP-set texels only. Both halves precede
+ * the next primitive's triangles, so the draw order of overlapping
+ * primitives holds. Every other quad (opaque, ABR 0, a framebuffer-snapshot
+ * window, whose image carries no STP bit) is fed once.
+ * @param in The quad's two triangles.
+ * @return 1 for a quad fed as an STP pair, else 0. */
 static int feed_hud_tex_quad(const openpete_scene_tri in[2]) {
     openpete_scene_tri quad[2] = { in[0], in[1] };
     const int vram = !quad_to_fb_snapshot(quad);
@@ -457,10 +461,17 @@ static void scene_begin_for_feed(void) {
  * batch appends to it; a newer live scene means the build frame's has already
  * been snapshotted and the batch would land a tick late. */
 
-/* Feed one screen-space FT4 (textured quad) prim into the native HUD overlay
- * layer. Layout (verified by the dump): word[1]=rgb|code, [2]=xy0,[3]=uv0|clut,
- * [4]=xy1,[5]=uv1|tpage,[6]=xy2,[7]=uv2,[8]=xy3,[9]=uv3. XY: x=lo16,y=hi16
- * (signed). PSX FT4 corner order TL,TR,BL,BR -> two tris (0,1,2)+(1,3,2). */
+/** @brief Feeds one screen-space POLY_FT4 (textured quad) into the native HUD layer.
+ *
+ * Layout: word[1]=rgb|code, [2]=xy0, [3]=uv0|clut, [4]=xy1, [5]=uv1|tpage,
+ * [6]=xy2, [7]=uv2, [8]=xy3, [9]=uv3; XY is x=lo16, y=hi16, signed. The
+ * PSX corner order TL, TR, BL, BR becomes the triangles (0,1,2) and
+ * (1,3,2). Code bit 1 makes it semi-transparent at the ABR of its own
+ * texture page. The quad goes through feed_hud_tex_quad and is counted in
+ * the engagement, semi-transparency and bounding-box counters.
+ * @param cpu The guest CPU state.
+ * @param p The primitive's guest address.
+ * @param w1 The primitive's word 1 (colour and command). */
 static void feed_ft4(CPUState* cpu, uint32_t p, uint32_t w1) {
     int sx[4], sy[4], u[4], v[4];
     uint32_t xyw[4], uvw[4];
@@ -500,19 +511,29 @@ static void feed_ft4(CPUState* cpu, uint32_t p, uint32_t w1) {
  * window is, and the widescreen widen mirrors about its centre column. */
 #define UI_FRAME_W 512
 
-/* Feed one screen-space untextured POLY_F4 (flat quad) into a native HUD-OT layer.
- * Three consumers:
- *   - the cutscene letterbox: two frame-width OPAQUE bars (code 0x28) ->
- *     OPENPETE_SCENE_OVERLAY (dead last, over everything), alpha 0xFF;
- *   - a menu box's backing: a narrower OPAQUE quad (code 0x28) ->
+/** @brief Feeds one screen-space untextured POLY_F4 (flat quad) into a native 2D layer.
+ *
+ * Three uses, chosen by the caller:
+ *   - the cutscene letterbox: a frame-width opaque bar (code 0x28) on
+ *     OPENPETE_SCENE_OVERLAY, drawn last over everything, alpha 0xFF,
+ *     widened for widescreen;
+ *   - a menu box's backing: a narrower opaque quad (code 0x28) on
  *     OPENPETE_SCENE_HUD_PANEL at alpha 0xFF, under the box's own tiles,
  *     frame and text;
- *   - a dark panel (pause/inventory panel, HUD shaded box, dialog-box slab):
- *     a SEMI-TRANSPARENT quad (code 0x2A) -> OPENPETE_SCENE_HUD_PANEL (under
- *     the text, over the world/backdrop), blended by the tracked ABR.
- * Layout: word[1]=code|rgb, [2]=xy0,[3]=xy1,[4]=xy2,[5]=xy3 (NO interleaved UV — F4
- * packs the 4 XY words consecutively, unlike FT4). XY: x=lo16,y=hi16 signed. Corners
- * TL,TR,BL,BR. `category`/`alpha`/`blend` select the layer + transparency. */
+ *   - a dark panel (pause or inventory panel, HUD shaded box, dialog-box
+ *     slab): a semi-transparent quad (code 0x2A) on OPENPETE_SCENE_HUD_PANEL,
+ *     under the text and over the world, blended at the tracked ABR.
+ * Layout: word[1]=code|rgb, [2]=xy0, [3]=xy1, [4]=xy2, [5]=xy3 (no UV words
+ * between them, unlike FT4); XY is x=lo16, y=hi16, signed; corners TL, TR,
+ * BL, BR.
+ * @param cpu The guest CPU state.
+ * @param p The primitive's guest address.
+ * @param w1 The primitive's word 1 (colour and command).
+ * @param category The scene layer (OPENPETE_SCENE_*).
+ * @param alpha The vertex alpha.
+ * @param blend The scene blend class.
+ * @param full_width Nonzero to widen the quad about x 256 by the widescreen
+ *        factor, with a 4-pixel edge overshoot the scene scissor clips. */
 static void feed_f4(CPUState* cpu, uint32_t p, uint32_t w1, int category, uint32_t alpha, int blend,
                     int full_width) {
     int sx[4], sy[4];
@@ -528,10 +549,10 @@ static void feed_f4(CPUState* cpu, uint32_t p, uint32_t w1, int category, uint32
      * extent — the widened bar stays continuous with the central one). No-op at 4:3
      * (F=1). Vertical bars are unchanged.
      *
-     * Over-extend each side edge a few PSX px PAST the content rect: the exact
+     * Over-extend each side edge a few PSX px past the content rect: the exact
      * widened edge lands sub-pixel-precisely on clip ±1, where the rasteriser drops
-     * a 1px sliver along the window border (the "letterbox doesn't reach the edge"
-     * report). The scene scissor clips the overshoot, so the bleed is never visible
+     * a 1px sliver along the window border, leaving the letterbox short of the
+     * edge. The scene scissor clips the overshoot, so the bleed is never visible
      * beyond the edge — it only guarantees the border column is covered. */
     if (full_width) {
         float F = openpete_native_widescreen_factor();
@@ -834,14 +855,18 @@ static unsigned s_last_tpage = 0u;    /* the whole draw-mode word of that same D
                                        * samples it through is the one the last draw mode
                                        * set. */
 
-/* Fold the words a feeder reads into one value, so the release can tell a
- * rewritten primitive from an untouched one without keeping every word. Words
- * 1..9 cover the longest encoding claimed here (POLY_FT4: the code+colour word
- * and the four xy/uv pairs). Word 0 is excluded: its low 24 bits are the
- * ordering table's link pointer, rewritten whenever another primitive is
- * linked in front of this one, which is not a change to what is drawn. Its top
- * byte, the tag length, is folded in, that is the byte the decode chain
- * reads. */
+/** @brief Folds the words a feeder reads from a primitive into one FNV-1a value.
+ *
+ * The release and the verify pass compare it against the value taken at the
+ * claim to tell a rewritten primitive from an untouched one without keeping
+ * every word. Words 1..9 cover the longest encoding claimed here (POLY_FT4:
+ * the code and colour word and the four xy/uv pairs). Of word 0 only the top
+ * byte, the tag length the decode chain reads, is folded in: its low 24 bits
+ * are the ordering table's link pointer, rewritten whenever another
+ * primitive is linked in front of this one, which changes nothing drawn.
+ * @param cpu The guest CPU state.
+ * @param prim The primitive's guest address.
+ * @return The folded value. */
 static uint32_t claim_sum(CPUState* cpu, uint32_t prim) {
     uint32_t h = 2166136261u;
     h = (h ^ (cpu->read_word(prim) >> 24)) * 16777619u;
@@ -997,11 +1022,10 @@ static int is_line_f2(CPUState* cpu, uint32_t prim) {
  * counter kept at emission can stand in for the walk. Reproduce the walk itself
  * (the game's own list, not a proxy for it).
  *
- * The table being fed is walked by the game a tick after this runs, so both of
- * the recent bases are tried and the one whose chain holds more of this frame's
- * 2D wins. Every primitive in the chain is recorded, not just the batch's, so a
- * glyph fed at emission and a quad fed from the deferred batch rank against
- * each other. */
+ * The table being fed is walked by the game a tick after this runs, so every
+ * recent base in the DrawOTag ring is walked. Every 2D primitive of the scene
+ * found in a chain is recorded, not just the batch's, so a glyph fed at
+ * emission and a quad fed from the deferred batch rank against each other. */
 #define PSYQ_OT_BASE_RING 8
 #define UI_OT_WALK_MAX 16384
 /* PSX main RAM. A tag's next pointer is 24 bits of a word the game is still
@@ -1029,11 +1053,19 @@ static int known_has(const uint32_t* known, int kn, uint32_t a) {
     return 0;
 }
 
-/* Rank over the union of every recent chain that holds any of this frame's 2D,
- * taken in DrawOTag issue order (oldest ring entry first), because the game may
- * split its 2D across more than one table and a single "best" chain then leaves
- * the others' primitives unranked. An address seen in an earlier chain keeps
- * that rank. */
+/** @brief Builds the address-to-rank map of the scene's 2D primitives from the recent ordering-table chains.
+ *
+ * Walks every recent DrawOTag base (psyq_ot_recent_base) in issue order,
+ * oldest first, following each tag's 24-bit next pointer while it names a
+ * word in main RAM, up to UI_OT_WALK_MAX steps. Each known address met is
+ * given the next rank, 1-based, on its first sighting; an address seen in an
+ * earlier chain keeps that rank. The union is taken because the game may
+ * split its 2D across more than one table, and a single best chain would
+ * leave the others' primitives unranked. The map is then sorted by address
+ * for ot_rank_of. OPENPETE_OT_RING_PROBE prints each chain's length and hits.
+ * @param cpu The guest CPU state.
+ * @param known The scene's 2D primitive addresses, sorted ascending.
+ * @param kn The count of known addresses. */
 static void build_ot_rank_map(CPUState* cpu, const uint32_t* known, int kn) {
     s_walk_n = 0;
     static int pz = -1;
@@ -1090,9 +1122,14 @@ static uint32_t ot_rank_of(uint32_t prim) {
     return 0u;   /* not in the chain: keeps its feed position under the stable sort */
 }
 
-/* Does an opaque POLY_F4 span the whole frame width? The four XY words at
- * +0x08..+0x14 hold x in the low signed halfword. A letterbox bar is authored
- * across the full 0..512 frame; a menu box's backing covers part of it. */
+/** @brief Reports whether an opaque POLY_F4 spans the full 512-pixel width of the 2D layer.
+ *
+ * The four XY words at +0x08..+0x14 hold x in the low signed halfword. A
+ * letterbox bar is authored across the full 0..512 width; a menu box's
+ * backing covers part of it.
+ * @param cpu The guest CPU state.
+ * @param prim The primitive's guest address.
+ * @return 1 when the x extent is at least UI_FRAME_W, else 0. */
 static int f4_spans_frame_width(CPUState* cpu, uint32_t prim) {
     int lo = 0x7FFF, hi = -0x8000;
     for (uint32_t k = 0; k < 4u; k++) {

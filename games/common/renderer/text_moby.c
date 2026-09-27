@@ -131,7 +131,15 @@ static int s_cache_source = 0;
 
 static int is_digit_slot(int slot) { return slot >= SLOT_DIGIT && slot < SLOT_LETTER; }
 
-/* char -> cache slot, or -1 for "advance only" (space / unsupported). */
+/** @brief Maps a character to its glyph cache slot.
+ *
+ * Letters map case-insensitively; a character in the font's punctuation
+ * list maps to its punctuation slot; '.' maps to the synthesized period
+ * when the font sets synth_period and lists no period; '-' maps to the
+ * synthesized hyphen when the font lists no hyphen.
+ * @param c The character.
+ * @return The slot, or -1 for a character that only advances (a space or an
+ *         unsupported character). */
 static int glyph_slot(char c) {
     if (c >= '0' && c <= '9') return SLOT_DIGIT + (c - '0');
     if (c >= 'A' && c <= 'Z') return SLOT_LETTER + (c - 'A');
@@ -146,8 +154,14 @@ static int glyph_slot(char c) {
     return -1;
 }
 
-/* slot -> the descriptor's glyph index (a class or a block index), or -1 for
- * a slot the game's font does not fill. */
+/** @brief Maps a glyph cache slot to the font descriptor's glyph index.
+ *
+ * The index is a moby class for GAME_FONT_CLASS_PER_GLYPH and a block index
+ * for GAME_FONT_ONE_CLASS. A punctuation slot at or past the first empty
+ * entry of the descriptor's list has none.
+ * @param slot The cache slot.
+ * @return The glyph index, or -1 for a slot the game's font does not fill
+ *         (an unused punctuation slot and the two synthesized slots). */
 static int slot_glyph_index(int slot) {
     if (slot < SLOT_LETTER) return FONT.digit_base + (slot - SLOT_DIGIT);
     if (slot < SLOT_PUNCT)  return FONT.letter_base + (slot - SLOT_LETTER);
@@ -164,11 +178,16 @@ static float glyph_natural_w(int slot) {
     return (float)(s_glyph[slot].vxmax - s_glyph[slot].vxmin);
 }
 
-/* How much room a character takes, and how far into that room its glyph sits
- * (overlay units). Everything but a digit is proportional — advance is the
- * glyph width, inset 0. A digit takes the shared tabular advance and is
- * centred in it. Both emit_string and measure_string go through here, so the
- * two can never disagree about a string's width. adv < 0 = not cached. */
+/** @brief Computes a glyph's advance and the inset of its glyph inside that advance, in overlay units.
+ *
+ * A non-digit is proportional: the advance is the glyph width and the inset
+ * 0. A digit takes the shared tabular advance (s_digit_adv) and is centred
+ * in it. emit_string and measure_string both go through here, so the two
+ * agree on a string's width. The trailing inter-glyph gap is not included.
+ * @param slot The cache slot, or -1.
+ * @param scale Overlay units per model unit.
+ * @param adv Receives the advance, or -1 when the slot is not cached.
+ * @param inset Receives the inset. */
 static void glyph_metrics(int slot, float scale, float* adv, float* inset) {
     const float w = glyph_natural_w(slot);
     if (w < 0.0f) { *adv = -1.0f; *inset = 0.0f; return; }
@@ -236,9 +255,15 @@ static void cache_one_class(CPUState* cpu, glyph_cache_t* g, int cls) {
     g->valid = 1;
 }
 
-/* GAME_FONT_ONE_CLASS: the font model's guest address, or 0 while the level
- * loaded has none. The table entry of the block-per-glyph kind is a KUSEG
- * address; word 0 is the block count. */
+/** @brief Returns the GAME_FONT_ONE_CLASS font model's guest address when it holds enough glyph blocks.
+ *
+ * The model table entry of this font kind is a KUSEG address, returned with
+ * the KSEG0 bit set; the model's word 0 is its block count.
+ * @param cpu The guest CPU state.
+ * @param need_blocks The block count the descriptor's glyph indices need.
+ * @return The model's KSEG0 address, or 0 when the entry is empty or not a
+ *         KUSEG address (the loaded level has no font) or the model holds
+ *         fewer blocks. */
 static uint32_t one_class_model(CPUState* cpu, int need_blocks) {
     uint32_t model = cpu->read_word(FONT.model_table + (uint32_t)FONT.font_class * 4u);
     if (model == 0u || model >= 0x80000000u) return 0u;
@@ -293,8 +318,13 @@ static void cache_one_block(CPUState* cpu, glyph_cache_t* g, uint32_t model, int
     g->valid = 1;
 }
 
-/* The period a font lacks: a square box standing on the digits' baseline, as
- * wide as the glyph of `synth_depth_char` and as deep. */
+/** @brief Builds the synthesized period glyph: a box standing on the digits' baseline.
+ *
+ * The box is square in X and Y with the width of the glyph of the font's
+ * synth_depth_char, and spans that glyph's Z range; the baseline is digit
+ * '0''s largest Y. Six faces with axis normals, so it takes the same
+ * lighting as a real glyph. The slot stays invalid when the depth glyph or
+ * digit '0' is not cached or the depth glyph has no width or depth. */
 static void synth_period(void) {
     glyph_cache_t* g = &s_glyph[SLOT_SYNTH_PERIOD];
     g->valid = 0;
@@ -332,15 +362,16 @@ static void synth_period(void) {
     g->valid = 1;
 }
 
-/* The hyphen a font lacks: a thin horizontal bar, half the digit cap height
- * wide and an eighth of it thick, centred at half the cap height above the
- * baseline, extruded over the digit's own depth range. Every dimension is a
- * fraction of the digit's cap height, so it scales with the font instead of
- * carrying absolute numbers.
+/** @brief Builds the synthesized hyphen glyph: a bar measured off digit '0'.
  *
- * The bar is a box, built like synth_period's, so it takes the same lighting
- * and the same extrusion as a real glyph and does not read as a flat decal
- * among them. */
+ * The bar is half digit '0''s cap height wide and an eighth of it thick
+ * (each at least 1 model unit), centred half the cap height above the
+ * baseline, and spans the digit's Z range. Every dimension is a fraction of
+ * the cap height, so it scales with the font. It is a six-faced box built
+ * like synth_period's, so it takes the same lighting and extrusion as a
+ * real glyph. Digit '0' is the reference because the snapshot is never
+ * taken without it. The slot stays invalid when digit '0' is not cached or
+ * has no height or depth. */
 static void synth_hyphen(void) {
     glyph_cache_t* g = &s_glyph[SLOT_SYNTH_HYPHEN];
     g->valid = 0;
@@ -649,8 +680,16 @@ static void emit_ctx_init(emit_ctx_t* cx, openpete_hud_vert* out, int cap) {
     cx->light_signed = 0;
 }
 
-/* base + light_add * t per channel, plus the highlight above hi_threshold. A
- * signed t (menu, OSD) darkens faces turned away from the light. */
+/** @brief Computes a lit face colour: the base plus the font's light term times N.L, plus the highlight above hi_threshold.
+ *
+ * Each channel is base + light_add * t + (t - hi_threshold) * hi_gain when
+ * t exceeds hi_threshold, clamped to 0..255. A negative t (the signed
+ * shading of the menu and the OSD) darkens faces turned away from the light.
+ * @param baseR The base red, 0..255.
+ * @param baseG The base green, 0..255.
+ * @param baseB The base blue, 0..255.
+ * @param t The N.L term, -1..1.
+ * @return The colour as 0xAABBGGRR with alpha 0xFF. */
 static uint32_t lit_colour(int baseR, int baseG, int baseB, float t) {
     const int hi = (t > FONT.hi_threshold) ? (int)((t - FONT.hi_threshold) * FONT.hi_gain) : 0;
     int R = baseR + (int)(FONT.light_add[0] * t) + hi; if (R < 0) R = 0; else if (R > 255) R = 255;
@@ -806,13 +845,7 @@ int text_moby_native_emit(const char* str,
     return emit_string(&cx, str, origin_x, origin_y, cap_h, base_rgb, -1);
 }
 
-/* Mod draw-service text rasterizer (core/mods/mod_draw.c; registered in
- * main.cpp). void* out keeps the core-facing fn type free of the
- * openpete_hud_vert dependency. The glyph cache is populated by the
- * per-tick stats-overlay driver below (unconditionally under the native
- * renderer, at every level including off), so at present time we only read
- * the snapshot: mod text appears as soon as the game has loaded the font —
- * absent before that (no bitmap fallback exists). */
+/* The per-tick builders below fill the cache; this reads the snapshot only. */
 int text_moby_native_mod_emit(const char* str, float x, float y,
                               float cap_h, unsigned rgb,
                               void* out_verts, int cap) {
@@ -1023,10 +1056,14 @@ void text_moby_native_shimmer_tick(void) {
 
 unsigned text_moby_native_shimmer_phase(void) { return s_shimmer_phase; }
 
-/* Install SpecularUpdate's rotating ellipse as this emission's light. Same
- * N·L shading as the world's shaded mobys (moby.c shaded_lit_color),
- * so every glyph's highlight sweeps as the light turns. The clock advances
- * +3 per logic frame, like the game's SpecularUpdate(3). */
+/** @brief Installs SpecularUpdate's rotating light as the emission's light, with signed shading.
+ *
+ * The light direction is (cos a * 0.968, sin a * 1.549, -0.25) normalized,
+ * a = 3 * phase / 256 turn: the ellipse of SpecularUpdate(3), which steps
+ * its angle by 3 per game tick. Signed shading darkens faces turned away
+ * from the light below the base colour.
+ * @param cx The emission context.
+ * @param phase The shimmer phase (text_moby_native_shimmer_phase). */
 static void install_specular_light(emit_ctx_t* cx, unsigned phase) {
     const unsigned sp = (phase * 3u) & 0xFFu;
     const float sth = (float)sp * (6.2831853f / 256.0f);
@@ -1038,10 +1075,16 @@ static void install_specular_light(emit_ctx_t* cx, unsigned phase) {
     cx->light_signed = 1;   /* metal contrast: shadowed faces darken below base */
 }
 
-/* OPENPETE_TEXT_GLYPH_CENSUS=2 adds the FNV-1a of published vertex buffers:
- * the menu's and the OSD's every 64th shimmer phase, and once, when the
- * snapshot is first ready, a fixed probe string through the fixed-light
- * emitter. Two builds that print the same lines emit the same vertices. */
+/** @brief Prints the FNV-1a hash of a published vertex buffer to stderr, under OPENPETE_TEXT_GLYPH_CENSUS=2 or above.
+ *
+ * The menu and the OSD call it on every shimmer phase that is a multiple of
+ * 64, and glyph_hash_probe once, with a fixed probe string through the
+ * fixed-light emitter, when the snapshot is first ready. Two builds that
+ * print the same lines emit the same vertices. The variable is latched on
+ * the first call.
+ * @param what The buffer's name in the line.
+ * @param v The vertices.
+ * @param n The vertex count. */
 static void glyph_hash_census(const char* what, const openpete_hud_vert* v, int n) {
     static int s_on = -1;
     if (s_on < 0) { const char* e = getenv("OPENPETE_TEXT_GLYPH_CENSUS"); s_on = (e && atoi(e) >= 2) ? 1 : 0; }
@@ -1154,11 +1197,16 @@ static int emit_lit_border(const emit_ctx_t* ecx,
     return n;
 }
 
-/* Advance width of `str` at `cap_h`, in overlay units — mirrors emit_string's
- * cursor accumulation exactly (per-glyph width + TXT_GAP, TXT_SPACE for spaces,
- * the two-dot colon). Used to right-align labels and centre the title so the
- * menu reads like the game's own pause menu (right-aligned labels, left-aligned
- * values, meeting at a central split). */
+/** @brief Returns a string's advance width at a cap height, in overlay units.
+ *
+ * Mirrors emit_string's cursor accumulation: glyph_metrics' advance plus
+ * TXT_GAP per glyph, TXT_SPACE for a space or an uncached character, and
+ * the scaled period's width plus TXT_GAP for a colon. The width is linear
+ * in cap_h and includes the trailing gap. Used to right-align and centre
+ * menu, readout and version text and to size OSD boxes.
+ * @param str The string, or NULL.
+ * @param cap_h The cap height, in overlay units.
+ * @return The width; 0 when the cache is not ready or str is NULL. */
 static float measure_string(const char* str, float cap_h) {
     if (!s_cache_ready || !str) return 0.0f;
     const float scale = cap_h / FONT.model_h;
@@ -1181,7 +1229,7 @@ static float measure_string(const char* str, float cap_h) {
     return cursor;
 }
 
-/* Emit the settings menu's close glyph at `v0` and anchor it by its INK.
+/** @brief Emits the settings menu's close glyph at vertex v0 and positions it by its drawn extent.
  *
  * The layout square is an advance box: it carries the trailing inter-glyph
  * gap and, for a proportional glyph, leading space the X does not fill, so
@@ -1195,7 +1243,12 @@ static float measure_string(const char* str, float cap_h) {
  * Under the pointer the X takes the same per-glyph yaw wobble the row under
  * the cursor takes. The anchor and the published rect are measured from the
  * upright glyph and the wobbled one is emitted in its place, so neither the
- * drawn position nor the hit region breathes with the animation. */
+ * drawn position nor the hit region moves with the animation.
+ * @param cx The menu's emission context.
+ * @param v0 The context's vertex count before the glyph (cx->n).
+ * @param L The menu layout (close square and panel rectangle).
+ * @param wob_phase The wobble phase while the pointer is on the glyph, else
+ *        below 0. */
 static void menu_close_anchor(emit_ctx_t* cx, int v0,
                               const openpete_menu_layout_t* L, int wob_phase) {
     emit_string(cx, "X", L->close_x, L->close_y, L->close_cap_h,
@@ -1221,10 +1274,7 @@ static void menu_close_anchor(emit_ctx_t* cx, int v0,
     openpete_menu_note_close_rect(x0 + dx, y0, x1 + dx, y1);
 }
 
-/* Build the settings-menu glyph text (title + each row's label/value) from the
- * same gold glyph mobys, with the selected row's per-glyph yaw wobble, and push
- * it to the native renderer (draw_menu_overlay draws it over the panel). Reads
- * the menu's shared layout so text lands on the panel's rows. Pure presentation. */
+/* draw_menu_overlay (native_render.c) draws the published text over the panel. */
 void text_moby_native_menu(CPUState* cpu) {
     if (!openpete_native_scene_enabled()) return;
     text_moby_native_cache(cpu);
@@ -1352,10 +1402,17 @@ void text_moby_native_menu(CPUState* cpu) {
 
 static openpete_hud_vert s_osd_buf[OSD_TXT_MAX];
 
-/* Trim `src` into `dst` until it fits `avail` at `cap_h`. Truncating is the
- * right failure for a fixed slot grid: a toast that overran its slot would
- * bleed its glyphs into the neighbouring slot's texels, which the compositor
- * then samples as part of a DIFFERENT toast. */
+/** @brief Copies a toast's text and drops trailing characters until it fits a width.
+ *
+ * Truncation keeps a toast inside its slot of the fixed grid; an overrun
+ * would put its glyphs into the neighbouring slot's texels, which the
+ * compositor samples as part of a different toast.
+ * @param src The text, or NULL for an empty string.
+ * @param cap_h The cap height, in overlay units.
+ * @param avail The width available, in overlay units.
+ * @param dst The destination.
+ * @param dstcap The destination's size in bytes; a longer text is cut to it
+ *        first. */
 static void osd_fit_text(const char* src, float cap_h, float avail,
                          char* dst, int dstcap) {
     snprintf(dst, (size_t)dstcap, "%s", src ? src : "");

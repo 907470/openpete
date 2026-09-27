@@ -22,67 +22,128 @@
 
 struct CPUState;
 
-/* Snapshot the glyph-model geometry the first time it is available: from the
- * cache file where the game keeps one, else from RAM once the font asset is
- * resident. A cheap no-op once cached; call every tick (the cache survives the
- * models being unloaded later). Reads model RAM only. */
+/** @brief Snapshots the glyph-model geometry into the glyph cache the first time it is available.
+ *
+ * A GAME_FONT_ONE_CLASS font is loaded from the cache file when one is
+ * configured and valid, else decoded from RAM once the font model is
+ * resident and every digit and letter decodes, and the snapshot is then
+ * written to the cache file. A GAME_FONT_CLASS_PER_GLYPH font is decoded
+ * once digit '0' is a loaded simple model. A no-op once the cache is ready;
+ * called every tick by the consumers below, and the cache survives the
+ * models being unloaded later. Reads model RAM only.
+ * @param cpu The guest CPU state. */
 void text_moby_native_cache(struct CPUState* cpu);
 
-/* True once the glyph cache is populated (the font has been seen at least once). */
+/** @brief Reports whether the glyph cache holds a snapshot.
+ *
+ * @return 1 once text_moby_native_cache has taken the snapshot, else 0. */
 int text_moby_native_ready(void);
 
-/* Lay out `str` as 3D text-moby glyph triangles (3 verts per tri) into `out`,
- * in window-height-fraction overlay space (origin top-left, +y down; x shares
- * the y scale so glyphs stay square at any aspect). The text's top-left sits at
- * (origin_x, origin_y) and glyph height is `cap_h` (all fractions of window
- * height). `base_rgb` is the 0xRRGGBB BASE/tint colour (the unlit back-colour);
- * a white directional light is ADDED per face on top, matching how the game
- * shades these mobys (dark base -> brighter toward the light). Supports
- * 0-9, A-Z (case-insensitive), the punctuation the game's font has, and ':'
- * faked from two period dots; a space (or any glyph not in the cache) just
- * advances. Works
- * entirely from the cache — returns 0 (nothing emitted) until ready(). */
+/** @brief Lays out a string as extruded glyph triangles, lit by the font's fixed light.
+ *
+ * Output is 3 vertices per triangle in overlay space: fractions of window
+ * height, origin top-left, +y down, x on the y scale so glyphs stay square
+ * at any aspect. Each face is base_rgb plus the font's light term times the
+ * unsigned N.L against game_layout.font's fixed light (a dark base,
+ * brighter toward the light). Draws 0-9, A-Z (case-insensitive), the font's
+ * punctuation, a synthesized '.' when the descriptor sets synth_period, a
+ * synthesized '-' when the font has none, and ':' as two scaled periods; a space or an uncached character only advances.
+ * Digits share one tabular advance. Works from the cache alone.
+ * @param str The string.
+ * @param origin_x The text's left edge.
+ * @param origin_y The text's top edge.
+ * @param cap_h The glyph height.
+ * @param base_rgb The unlit base colour, 0xRRGGBB.
+ * @param out The vertex buffer, or NULL to emit nothing.
+ * @param out_cap The buffer's capacity, in vertices; a triangle that does
+ *        not fit is dropped.
+ * @return The count of vertices written; 0 until the cache is ready. */
 int text_moby_native_emit(const char* str,
                           float origin_x, float origin_y, float cap_h,
                           unsigned base_rgb,
                           openpete_hud_vert* out, int out_cap);
 
-/* Mod draw-service rasterizer (matches openpete_mods_text_emit_fn; void*
- * out = openpete_hud_vert[]). Registered with the core in main.cpp. */
+/** @brief Rasterizes a string for the mod draw service, with the signature of openpete_mods_text_emit_fn.
+ *
+ * Forwards to text_moby_native_emit; the untyped buffer keeps the core-side
+ * function type free of openpete_hud_vert. Registered with
+ * openpete_mods_draw_set_text_fn in games/spyro-1/main.cpp. Reads the
+ * snapshot only, so mod text is absent until the game has loaded the font
+ * once; there is no bitmap fallback.
+ * @param str The string.
+ * @param x The text's left edge, in overlay units.
+ * @param y The text's top edge, in overlay units.
+ * @param cap_h The glyph height, in overlay units.
+ * @param rgb The unlit base colour, 0xRRGGBB.
+ * @param out_verts The vertex buffer, an openpete_hud_vert array.
+ * @param cap The buffer's capacity, in vertices.
+ * @return The count of vertices written; 0 until the cache is ready. */
 int text_moby_native_mod_emit(const char* str, float x, float y,
                               float cap_h, unsigned rgb,
                               void* out_verts, int cap);
 
-/* Per-frame performance-stats consumer: refreshes the cache, then (once ready)
- * builds the overlay's lines for the current level (openpete_perf_stats.h) and
- * hands them to the native renderer's overlay slot
- * (openpete_native_set_overlay_glyphs). Called from game_on_frame_pre; a no-op
- * unless the native renderer is active. */
+/** @brief Builds the performance-stats readout from the glyph models and publishes it to the native renderer.
+ *
+ * Refreshes the cache, then emits the current level's lines
+ * (openpete_perf_stats_lines), each aligned inside the region per the
+ * anchor and snapped to a whole output pixel, sets the region extent and
+ * publishes with openpete_native_set_overlay_glyphs. The region width is a
+ * per-level constant so the supersample target does not resize as the
+ * digits change; the geometry is rebuilt only when the lines or the anchor
+ * change. With the readout off or the cache not ready it publishes nothing.
+ * Called from game_on_frame_pre; a no-op unless the native scene is
+ * enabled.
+ * @param cpu The guest CPU state. */
 void text_moby_native_perf_overlay(struct CPUState* cpu);
 
-/* Per-frame settings-menu text consumer: when the in-game menu (O) is open and
- * the font is cached, builds the title + each row's label/value (selected row
- * wobbling) and hands it to openpete_native_set_menu_glyphs. No-op otherwise. */
+/** @brief Builds the settings menu's title, rows, close glyph and lit frame from the glyph models and publishes them.
+ *
+ * Refreshes the cache and, while the menu is open and the cache is ready,
+ * advances the menu's wobble tick on every second call (the game's tick
+ * rate), emits the centred title, the rows (labels right-aligned to the
+ * layout's label column, values left-aligned at the value column, action
+ * rows centred; every row shrunk to the cap at which "FULLSCREEN" fits the
+ * value column), the close glyph and the frame, all lit by the rotating
+ * specular, and publishes with openpete_native_set_menu_glyphs. The row
+ * under the cursor and the hovered close glyph take the per-glyph yaw
+ * wobble. Room for the frame is reserved, so overflowing text loses its
+ * own tail. Publishes nothing while the menu is closed; a no-op unless the
+ * native scene is enabled.
+ * @param cpu The guest CPU state. */
 void text_moby_native_menu(struct CPUState* cpu);
 
-/* Per-tick OSD consumer: builds every live toast's frame + text into the
- * renderer's fixed slot grid and publishes it with the slot table
- * (openpete_native_set_osd_glyphs). Rebuilt EVERY tick a toast is live — the
- * gold shimmer is baked into vertex colours at emit time, so cached geometry
- * would show a frozen glint. No-op with the OSD off, the ring empty, or the
- * font not yet cached. */
+/** @brief Builds every live OSD toast's text and frame into the renderer's slot grid and publishes it with the slot table.
+ *
+ * Toast i is emitted in its own slot, starting at y = i * slot height, its
+ * text trimmed to fit the slot width; a toast that fits no vertex in the
+ * buffer gets no slot row. Text and slot table are published in one
+ * openpete_native_set_osd_glyphs call. Rebuilt on every call while a toast
+ * is live, since the shimmer is baked into vertex colours at emit time.
+ * Publishes nothing with the OSD off, the ring empty or the cache not
+ * ready; a no-op unless the native scene is enabled.
+ * @param cpu The guest CPU state. */
 void text_moby_native_osd(struct CPUState* cpu);
 
-/* Build the build-version line (core/include/openpete_build_id.h) and push it
- * to the renderer. Builds once: the string is fixed at configure time. */
+/** @brief Builds the build-version line (openpete_build_version) and publishes it with its region extent.
+ *
+ * The string is fixed at configure time, so the geometry is emitted once
+ * while the line stays enabled; disabling it clears the renderer's copy
+ * and a later enable emits it again. An emission of no vertices is retried
+ * on the next call. A no-op unless the native scene is enabled.
+ * @param cpu The guest CPU state. */
 void text_moby_native_version(struct CPUState* cpu);
 
-/* The gold shimmer's phase — SpecularUpdate's travelling light, reproduced
- * host-side. Advanced once per LOGIC frame by text_moby_native_shimmer_tick
- * (call once per sim tick, before the builders); speculative and replayed
- * ticks sit it out. Shared by the settings menu and the OSD, so a toast
- * shimmers whether or not the menu happens to be open. */
+/** @brief Advances the gold shimmer's phase, SpecularUpdate's travelling light reproduced host-side.
+ *
+ * Called from game_on_frame_pre before the text builders; advances the
+ * phase on every second call, the game's once-per-tick rate for its own
+ * counter (++D_800758B8 in draw.c). Speculative and replayed
+ * ticks do not advance it. The settings menu and the OSD share the phase,
+ * so a toast shimmers whether or not the menu is open. */
 void     text_moby_native_shimmer_tick(void);
+/** @brief Returns the gold shimmer's phase.
+ *
+ * @return The phase, advanced by text_moby_native_shimmer_tick. */
 unsigned text_moby_native_shimmer_phase(void);
 
 #endif /* OPENPETE_TEXT_MOBY_NATIVE_H */
