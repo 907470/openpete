@@ -6331,7 +6331,10 @@ static int run_host_loop(const openpete_options_t* opts) {
                    (unsigned long long)s_render_slip_periods);
     }
 
-    openpete_ticker_stop();
+    /* The clock is shut down by the caller once every thread that reads it
+     * has stopped (openpete_ticker_stop in run_recomp_fiber and
+     * run_split_threaded): the split's pump keeps calling op_now until the
+     * worker is joined. */
     openpete_frame_time_log_close(&frame_time_log);
     op_functrace_dump_aggregate();   /* emit per-function aggregate into the trace */
     if (openpete_interp_enabled()) {
@@ -6556,7 +6559,9 @@ static void log_frame_on_exit(void) {
 static int run_recomp_fiber(const openpete_options_t* opts) {
     int rc = run_host_init(opts);
     if (rc != 0) return rc;
-    return run_host_loop(opts);
+    rc = run_host_loop(opts);
+    openpete_ticker_stop();   /* the loop's threads are joined; nothing reads the clock now */
+    return rc;
 }
 
 /* Worker entry: the entire host loop and the game fiber. libco fibers are
@@ -6774,6 +6779,7 @@ static int run_split_threaded(const openpete_options_t* opts)
     openpete_native_render_shutdown();
     openpete_disc_cache_shutdown();
     PsyX_Shutdown();
+    openpete_ticker_stop();   /* after the join: the pump read the clock until now */
     return s_worker_rc;
 }
 
