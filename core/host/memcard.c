@@ -788,7 +788,7 @@ int openpete_memcard_format(int chan)
 int openpete_memcard_sync(int mode, int* out_cmds, int* out_rslt)
 {
     (void)mode;   /* sync and async both complete instantly */
-    /* libmcrd MemCardSync (SCUS-94228 0x80067628) reports a finished
+    /* The game's libmcrd MemCardSync reports a finished
      * command once: it clears the completion flag as it returns 1, and a
      * later call with nothing pending returns -1 and leaves the out-slots
      * alone. */
