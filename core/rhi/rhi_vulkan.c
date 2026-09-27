@@ -289,8 +289,10 @@ static VkResult fence_result(VkResult r, const char *where)
     return r;
 }
 
-/* Two-sampler sets one frame slot may take (rhi_bind_vram_depth_pair). */
-#define RHI_PAIR_SETS_MAX 32
+/* Descriptor pools a device may create; each holds RHI_DESC_POOL_SETS sets
+ * (4096 sampler and 64 dynamic-UBO descriptors). */
+#define RHI_DESC_POOLS_MAX 16
+#define RHI_DESC_POOL_SETS 4160
 
 /* One host-visible chunk of the device upload ring (stage_acquire). */
 struct rhi_stage_chunk {
@@ -469,7 +471,10 @@ struct rhi_device {
     VkSampler             vram_sampler;
     VkSampler             linear_sampler;   /* LINEAR twin for HD replacement art */
     VkDescriptorSetLayout vram_set_layout;
-    VkDescriptorPool      desc_pool;
+    /* Descriptor pools, oldest first; desc_alloc appends one when every
+     * pool is out of memory, up to RHI_DESC_POOLS_MAX. */
+    VkDescriptorPool      desc_pools[RHI_DESC_POOLS_MAX];
+    int                   desc_pool_n;
     VkPipelineLayout      cur_layout;  /* layout of the bound pipeline */
     VkShaderStageFlags    cur_pc_stages; /* its push-constant stage flags */
 
@@ -535,10 +540,11 @@ struct rhi_device {
     struct rhi_stage_chunk *up_ring[RHI_FRAMES_IN_FLIGHT];
     uint64_t        up_serial[RHI_FRAMES_IN_FLIGHT];
     struct rhi_texture *init_head;   /* textures awaiting their initial transition */
-    VkDescriptorSet pair_sets[RHI_FRAMES_IN_FLIGHT][RHI_PAIR_SETS_MAX];
+    VkDescriptorSet *pair_sets[RHI_FRAMES_IN_FLIGHT];      /* grown by doubling */
+    uint32_t        pair_cap[RHI_FRAMES_IN_FLIGHT];   /* entries pair_sets/pair_views hold */
     uint32_t        pair_alloc[RHI_FRAMES_IN_FLIGHT]; /* sets allocated per slot */
     uint32_t        pair_used[RHI_FRAMES_IN_FLIGHT];  /* sets taken this frame   */
-    VkImageView     pair_views[RHI_FRAMES_IN_FLIGHT][RHI_PAIR_SETS_MAX][2]; /* each taken
+    VkImageView     (*pair_views[RHI_FRAMES_IN_FLIGHT])[2]; /* each taken
                                                  * set's two views: a bind of
                                                  * the same pair this frame
                                                  * rebinds it                */
@@ -680,6 +686,7 @@ struct rhi_texture {
     VkDeviceMemory  mem;
     VkImageView     view;
     VkDescriptorSet set;       /* points at (view, dev->vram_sampler) */
+    VkDescriptorPool set_pool, depth_set_pool;   /* pools set and depth_set came from */
     bool            uploadable; /* a sampled image (create_sampled_image), not a render target */
     /* Created while a frame was recording: the UNDEFINED -> SHADER_READ_ONLY
      * transition is recorded into that frame's command buffer before its
@@ -1193,6 +1200,42 @@ static VkPresentModeKHR choose_present_mode(rhi_device *dev)
     return want;
 }
 
+/** @brief Read the new swapchain's images into sc_images, refusing a swapchain with more images than the device tracks.
+ *
+ * On refusal or failure the swapchain is destroyed and the reason logged.
+ * @param dev Device whose swapchain was just created.
+ * @return true when sc_images and sc_count hold every image. */
+static bool swapchain_fetch_images(rhi_device *dev)
+{
+    dev->sc_count = 0;
+    vkGetSwapchainImagesKHR(dev->device, dev->swapchain, &dev->sc_count, NULL);
+    /* The driver may create more images than minImageCount asked for, and
+     * acquire can then return any index below its count; sc_images,
+     * render_done and images_in_flight hold RHI_MAX_SC_IMAGES. */
+    if (dev->sc_count > RHI_MAX_SC_IMAGES) {
+        RHI_LOG("create_swapchain: the driver created %u images, more than the "
+                "%d this device tracks; swapchain refused\n",
+                dev->sc_count, RHI_MAX_SC_IMAGES);
+        vkDestroySwapchainKHR(dev->device, dev->swapchain, NULL);
+        dev->swapchain = VK_NULL_HANDLE;
+        dev->sc_count = 0;
+        return false;
+    }
+    if (vkGetSwapchainImagesKHR(dev->device, dev->swapchain, &dev->sc_count,
+                                dev->sc_images) != VK_SUCCESS) {
+        RHI_LOG("create_swapchain: vkGetSwapchainImagesKHR failed\n");
+        vkDestroySwapchainKHR(dev->device, dev->swapchain, NULL);
+        dev->swapchain = VK_NULL_HANDLE;
+        dev->sc_count = 0;
+        return false;
+    }
+    return true;
+}
+
+/** @brief Create the swapchain for the window's current size, format and present mode.
+ *
+ * @param dev Windowed device.
+ * @return false when the window is minimized or any creation step fails. */
 static bool create_swapchain(rhi_device *dev)
 {
     VkSurfaceCapabilitiesKHR caps;
@@ -1245,10 +1288,7 @@ static bool create_swapchain(rhi_device *dev)
 
     dev->sc_format = pick.format;
     dev->sc_extent = extent;
-    dev->sc_count = 0;
-    vkGetSwapchainImagesKHR(dev->device, dev->swapchain, &dev->sc_count, NULL);
-    if (dev->sc_count > RHI_MAX_SC_IMAGES) dev->sc_count = RHI_MAX_SC_IMAGES;
-    vkGetSwapchainImagesKHR(dev->device, dev->swapchain, &dev->sc_count, dev->sc_images);
+    if (!swapchain_fetch_images(dev)) return false;
 
     for (uint32_t i = 0; i < RHI_MAX_SC_IMAGES; i++)
         dev->images_in_flight[i] = VK_NULL_HANDLE;
@@ -1867,6 +1907,67 @@ uint64_t rhi_gpu_results_token(const rhi_device *dev)
     return dev ? dev->gpu_results_token : 0;
 }
 
+/** @brief Create one more descriptor pool of the device's fixed per-pool sizes.
+ *
+ * @param dev Device whose pool list grows.
+ * @return false when the list is full or vkCreateDescriptorPool fails; both are logged. */
+static bool desc_pool_add(rhi_device *dev)
+{
+    if (dev->desc_pool_n >= RHI_DESC_POOLS_MAX) {
+        RHI_LOG("descriptor pools: all %d pools (%d sets each) are full; the "
+                "allocation is refused\n", RHI_DESC_POOLS_MAX, RHI_DESC_POOL_SETS);
+        return false;
+    }
+    VkDescriptorPoolSize ps[2] = {
+        { .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 4096 },
+        /* off_image sampled sets (per frame slot) + rhi_ubo pairs. */
+        { .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, .descriptorCount = 64 },
+    };
+    VkDescriptorPoolCreateInfo pi = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
+        .maxSets = RHI_DESC_POOL_SETS, .poolSizeCount = 2, .pPoolSizes = ps,
+    };
+    VkDescriptorPool pool;
+    if (vkCreateDescriptorPool(dev->device, &pi, NULL, &pool) != VK_SUCCESS) {
+        RHI_LOG("vkCreateDescriptorPool failed\n");
+        return false;
+    }
+    dev->desc_pools[dev->desc_pool_n++] = pool;
+    if (dev->desc_pool_n > 1) RHI_LOG("descriptor pools: %d in use\n", dev->desc_pool_n);
+    return true;
+}
+
+/** @brief Allocate one descriptor set of `layout`, adding a pool when every existing pool is out of memory.
+ *
+ * @param dev Device.
+ * @param layout Set layout.
+ * @param out Receives the set.
+ * @param out_pool Receives the pool it came from (for desc_free), or NULL.
+ * @return true on success; a failure is logged. */
+static bool desc_alloc(rhi_device *dev, VkDescriptorSetLayout layout,
+                       VkDescriptorSet *out, VkDescriptorPool *out_pool)
+{
+    VkDescriptorSetAllocateInfo ai = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorSetCount = 1, .pSetLayouts = &layout,
+    };
+    for (int attempt = 0; attempt < 2; attempt++) {
+        for (int i = dev->desc_pool_n - 1; i >= 0; i--) {
+            ai.descriptorPool = dev->desc_pools[i];
+            VkResult r = vkAllocateDescriptorSets(dev->device, &ai, out);
+            if (r == VK_SUCCESS) { if (out_pool) *out_pool = dev->desc_pools[i]; return true; }
+            if (r != VK_ERROR_OUT_OF_POOL_MEMORY && r != VK_ERROR_FRAGMENTED_POOL) {
+                RHI_LOG("vkAllocateDescriptorSets failed: %d\n", (int)r);
+                return false;
+            }
+        }
+        if (attempt == 0 && !desc_pool_add(dev)) break;
+    }
+    *out = VK_NULL_HANDLE;
+    return false;
+}
+
 /** @brief Create the samplers, descriptor set layouts and descriptor pool every texture and UBO binding draws from.
  *
  * The VRAM sampler is NEAREST with clamp-to-edge addressing: the PSX sampler
@@ -1881,7 +1982,7 @@ uint64_t rhi_gpu_results_token(const rhi_device *dev)
  * combined-image-samplers and 64 dynamic UBOs in at most 4160 sets, with
  * FREE_DESCRIPTOR_SET, because every rhi_texture, including each texture-pack
  * replacement, holds one set for its lifetime.
- * @param dev Device whose samplers, layouts, limits and desc_pool are written.
+ * @param dev Device whose samplers, layouts, limits and first descriptor pool are written.
  * @return true on success, false on the first failed creation. */
 static bool create_descriptor_infra(rhi_device *dev)
 {
@@ -1966,23 +2067,8 @@ static bool create_descriptor_infra(rhi_device *dev)
      * replacement image as surfaces come into view — hundreds for a level like
      * Artisans — so the old 32/48 cap exhausted the pool after ~32 textures,
      * and the failed per-frame re-allocation retries collapsed the frame rate.
-     * Sized for a large per-level pack; sets are a few hundred bytes each, so
-     * the headroom is cheap. (A growable multi-pool would remove the ceiling
-     * entirely — future work if a pack ever exceeds this.) */
-    VkDescriptorPoolSize ps[2] = {
-        { .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 4096 },
-        /* S2: off_image sampled sets (per frame slot) + rhi_ubo pairs. */
-        { .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, .descriptorCount = 64 },
-    };
-    VkDescriptorPoolCreateInfo pi = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
-        .maxSets = 4160, .poolSizeCount = 2, .pPoolSizes = ps,
-    };
-    if (vkCreateDescriptorPool(dev->device, &pi, NULL, &dev->desc_pool) != VK_SUCCESS) {
-        RHI_LOG("vkCreateDescriptorPool failed\n"); return false;
-    }
-    return true;
+     * Sized for a large per-level pack; desc_alloc adds pools past it. */
+    return desc_pool_add(dev);
 }
 
 /** @brief Allocate and begin a one-time-submit command buffer for a one-off transfer.
@@ -2430,6 +2516,20 @@ bool rhi_is_headless(const rhi_device *dev)
     return dev && dev->headless;
 }
 
+/** @brief Destroy every descriptor pool (their sets with them) and free the pair-set lists.
+ *
+ * @param dev Device, idle. */
+static void desc_pools_free(rhi_device *dev)
+{
+    for (int i = 0; i < dev->desc_pool_n; i++)
+        vkDestroyDescriptorPool(dev->device, dev->desc_pools[i], NULL);
+    dev->desc_pool_n = 0;
+    for (int i = 0; i < RHI_FRAMES_IN_FLIGHT; i++) {
+        free(dev->pair_sets[i]); dev->pair_sets[i] = NULL;
+        free(dev->pair_views[i]); dev->pair_views[i] = NULL;
+    }
+}
+
 /** @brief Destroy every chunk of the device upload ring.
  *
  * @param dev Device, idle. */
@@ -2470,7 +2570,7 @@ void rhi_destroy(rhi_device *dev)
     if (dev->rt_rp)  vkDestroyRenderPass(dev->device, dev->rt_rp, NULL);
     if (dev->rt_ds_rp) vkDestroyRenderPass(dev->device, dev->rt_ds_rp, NULL);
 
-    if (dev->desc_pool)      vkDestroyDescriptorPool(dev->device, dev->desc_pool, NULL);
+    desc_pools_free(dev);
     if (dev->vram_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->vram_set_layout, NULL);
     if (dev->ubo_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->ubo_set_layout, NULL);
     if (dev->ubo1_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->ubo1_set_layout, NULL);
@@ -3884,13 +3984,8 @@ static rhi_texture *create_sampled_image(rhi_device *dev, uint32_t width,
     t->uploadable = true;
 
     /* Allocate + point a descriptor set at (this view, the shared sampler). */
-    VkDescriptorSetAllocateInfo dsi = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        .descriptorPool = dev->desc_pool,
-        .descriptorSetCount = 1, .pSetLayouts = &dev->vram_set_layout,
-    };
-    if (vkAllocateDescriptorSets(dev->device, &dsi, &t->set) != VK_SUCCESS) {
-        RHI_LOG("vram vkAllocateDescriptorSets failed\n"); goto fail;
+    if (!desc_alloc(dev, dev->vram_set_layout, &t->set, &t->set_pool)) {
+        RHI_LOG("vram descriptor set allocation failed\n"); goto fail;
     }
     VkDescriptorImageInfo dii = {
         .sampler = dev->vram_sampler,
@@ -3967,6 +4062,17 @@ static VkImageUsageFlags rt_depth_usage(bool depth_sampleable, bool depth_readab
     return u;
 }
 
+/** @brief Create a render target: a color image of the offscreen format, a depth-stencil attachment, a framebuffer and a sampling descriptor set.
+ *
+ * A depth-sampleable target also gets a depth-aspect view and descriptor
+ * set and renders through rt_ds_rp; a depth-readable one's depth image is
+ * a transfer source.
+ * @param dev Device.
+ * @param width Width in pixels.
+ * @param height Height in pixels.
+ * @param depth_sampleable Whether the depth is sampled.
+ * @param depth_readable Whether the depth is read back.
+ * @return The target, or NULL when any step fails (partial resources are destroyed). */
 static rhi_texture *create_render_target_impl(rhi_device *dev, uint32_t width,
                                               uint32_t height, bool depth_sampleable,
                                               bool depth_readable)
@@ -4084,13 +4190,8 @@ static rhi_texture *create_render_target_impl(rhi_device *dev, uint32_t width,
         if (vkCreateImageView(dev->device, &svci, NULL, &t->rt_depth_sample_view) != VK_SUCCESS) {
             RHI_LOG("rt depth sample vkCreateImageView failed\n"); goto fail;
         }
-        VkDescriptorSetAllocateInfo ddsi = {
-            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-            .descriptorPool = dev->desc_pool, .descriptorSetCount = 1,
-            .pSetLayouts = &dev->vram_set_layout,
-        };
-        if (vkAllocateDescriptorSets(dev->device, &ddsi, &t->depth_set) != VK_SUCCESS) {
-            RHI_LOG("rt depth vkAllocateDescriptorSets failed\n"); goto fail;
+        if (!desc_alloc(dev, dev->vram_set_layout, &t->depth_set, &t->depth_set_pool)) {
+            RHI_LOG("rt depth descriptor set allocation failed\n"); goto fail;
         }
         VkDescriptorImageInfo ddii = {
             .sampler = dev->vram_sampler, .imageView = t->rt_depth_sample_view,
@@ -4105,12 +4206,8 @@ static rhi_texture *create_render_target_impl(rhi_device *dev, uint32_t width,
     }
 
     /* Descriptor set (this view + shared sampler) so it binds like any texture. */
-    VkDescriptorSetAllocateInfo dsi = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        .descriptorPool = dev->desc_pool, .descriptorSetCount = 1, .pSetLayouts = &dev->vram_set_layout,
-    };
-    if (vkAllocateDescriptorSets(dev->device, &dsi, &t->set) != VK_SUCCESS) {
-        RHI_LOG("rt vkAllocateDescriptorSets failed\n"); goto fail;
+    if (!desc_alloc(dev, dev->vram_set_layout, &t->set, &t->set_pool)) {
+        RHI_LOG("rt descriptor set allocation failed\n"); goto fail;
     }
     VkDescriptorImageInfo dii = {
         .sampler = dev->vram_sampler, .imageView = t->view,
@@ -4989,8 +5086,8 @@ void rhi_destroy_texture(rhi_device *dev, rhi_texture *tex)
         s_census.tex_live--;
         s_census.tex_dev_bytes -= tex->census_dev_bytes;
     }
-    if (tex->set)       vkFreeDescriptorSets(dev->device, dev->desc_pool, 1, &tex->set);
-    if (tex->depth_set) vkFreeDescriptorSets(dev->device, dev->desc_pool, 1, &tex->depth_set);
+    if (tex->set)       vkFreeDescriptorSets(dev->device, tex->set_pool, 1, &tex->set);
+    if (tex->depth_set) vkFreeDescriptorSets(dev->device, tex->depth_set_pool, 1, &tex->depth_set);
     if (tex->rt_depth_sample_view) vkDestroyImageView(dev->device, tex->rt_depth_sample_view, NULL);
     if (tex->init_pending)
         for (rhi_texture **pp = &dev->init_head; *pp; pp = &(*pp)->init_next)
@@ -5797,6 +5894,7 @@ struct rhi_ubo {
     uint64_t        gen_serial;  /* frame serial gen[]/bound[] belong to */
     VkDescriptorSet set;         /* 2 dynamic-UBO bindings into buf */
     VkDescriptorSet set1;        /* 1 dynamic-UBO binding (rhi_ubo_bind_at) */
+    VkDescriptorPool set_pool, set1_pool;   /* pools set and set1 came from */
     rhi_device     *dev;
 };
 
@@ -5820,13 +5918,7 @@ rhi_ubo *rhi_create_ubo(rhi_device *dev, uint32_t block_size, uint32_t blocks)
     }
     memset(u->buf->mapped, 0, total);   /* unwritten blocks read as zeros */
 
-    VkDescriptorSetAllocateInfo ai = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        .descriptorPool = dev->desc_pool,
-        .descriptorSetCount = 1,
-        .pSetLayouts = &dev->ubo_set_layout,
-    };
-    if (vkAllocateDescriptorSets(dev->device, &ai, &u->set) != VK_SUCCESS) {
+    if (!desc_alloc(dev, dev->ubo_set_layout, &u->set, &u->set_pool)) {
         RHI_LOG("rhi_create_ubo: descriptor alloc failed\n");
         rhi_destroy_buffer(dev, u->buf);
         free(u); return NULL;
@@ -5851,8 +5943,7 @@ rhi_ubo *rhi_create_ubo(rhi_device *dev, uint32_t block_size, uint32_t blocks)
     /* Second view of the same buffer through the single-binding layout, so a
      * block can also be bound at a set index outside the contract set. Its
      * absence is not fatal — rhi_ubo_bind_at simply becomes a no-op. */
-    ai.pSetLayouts = &dev->ubo1_set_layout;
-    if (vkAllocateDescriptorSets(dev->device, &ai, &u->set1) == VK_SUCCESS) {
+    if (desc_alloc(dev, dev->ubo1_set_layout, &u->set1, &u->set1_pool)) {
         VkWriteDescriptorSet w1 = {
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = u->set1,
             .dstBinding = 0, .descriptorCount = 1,
@@ -5938,8 +6029,8 @@ void rhi_ubo_bind_at(rhi_device *dev, rhi_ubo *ubo, uint32_t set, uint32_t block
 void rhi_destroy_ubo(rhi_device *dev, rhi_ubo *ubo)
 {
     if (!ubo) return;
-    if (ubo->set1) vkFreeDescriptorSets(dev->device, dev->desc_pool, 1, &ubo->set1);
-    if (ubo->set) vkFreeDescriptorSets(dev->device, dev->desc_pool, 1, &ubo->set);
+    if (ubo->set1) vkFreeDescriptorSets(dev->device, ubo->set1_pool, 1, &ubo->set1);
+    if (ubo->set) vkFreeDescriptorSets(dev->device, ubo->set_pool, 1, &ubo->set);
     rhi_destroy_buffer(dev, ubo->buf);
     free(ubo->gen); free(ubo->bound);
     free(ubo);
@@ -5967,14 +6058,7 @@ void rhi_bind_offscreen_tex(rhi_device *dev, uint32_t set)
     if (!dev || !dev->frame_active || !dev->cur_layout) return;
     uint32_t slot = dev->frame;
     if (dev->off_sampled_set[slot] == VK_NULL_HANDLE) {
-        VkDescriptorSetAllocateInfo ai = {
-            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-            .descriptorPool = dev->desc_pool,
-            .descriptorSetCount = 1,
-            .pSetLayouts = &dev->vram_set_layout,
-        };
-        if (vkAllocateDescriptorSets(dev->device, &ai,
-                                     &dev->off_sampled_set[slot]) != VK_SUCCESS) {
+        if (!desc_alloc(dev, dev->vram_set_layout, &dev->off_sampled_set[slot], NULL)) {
             RHI_LOG("off_sampled_set alloc failed\n");
             return;
         }
@@ -6184,12 +6268,34 @@ void rhi_bind_vram2(rhi_device *dev, rhi_texture *tex)
                             dev->cur_layout, 1, 1, &tex->set, 0, NULL);
 }
 
+/** @brief Append one allocated pair set to a frame slot's list, growing the list's arrays by doubling.
+ *
+ * @param dev Device.
+ * @param f Frame slot.
+ * @return false when the arrays cannot grow or the set cannot be allocated. */
+static bool pair_list_grow(rhi_device *dev, uint32_t f)
+{
+    if (dev->pair_alloc[f] == dev->pair_cap[f]) {
+        const uint32_t cap = dev->pair_cap[f] ? dev->pair_cap[f] * 2 : 32;
+        VkDescriptorSet *sets = realloc(dev->pair_sets[f], cap * sizeof(*sets));
+        if (!sets) return false;
+        dev->pair_sets[f] = sets;
+        VkImageView (*views)[2] = realloc(dev->pair_views[f], cap * sizeof(*views));
+        if (!views) return false;
+        dev->pair_views[f] = views;
+        dev->pair_cap[f] = cap;
+    }
+    if (!desc_alloc(dev, dev->pair_set_layout, &dev->pair_sets[f][dev->pair_alloc[f]], NULL))
+        return false;
+    dev->pair_alloc[f]++;
+    return true;
+}
+
 /** @brief Bind a two-sampler pair set holding views v0 (binding 0) and v1 (binding 1) at `set`.
  *
  * The frame slot reuses its set already written with the same pair of views,
- * else writes the next set of the slot's list, allocating one from desc_pool
- * when the list is exhausted. The list holds at most RHI_PAIR_SETS_MAX sets per
- * slot; a bind past that is dropped with a one-time log, and a bind whose
+ * else writes the next set of the slot's list, allocating one when the list
+ * is exhausted (pair_list_grow); the list has no fixed length. A bind whose
  * allocation fails is dropped with a log. Both views are
  * sampled through vram_sampler in SHADER_READ_ONLY_OPTIMAL layout.
  * @param dev Device whose current frame records the bind.
@@ -6206,27 +6312,9 @@ static void bind_view_pair(rhi_device *dev, VkImageView v0, VkImageView v1, uint
             return;
         }
     }
-    if (dev->pair_used[f] == dev->pair_alloc[f]) {
-        if (dev->pair_alloc[f] == RHI_PAIR_SETS_MAX) {
-            static bool s_warned;
-            if (!s_warned) {
-                RHI_LOG("pair sets: %d binds in one frame exceed the slot list; "
-                        "further binds this frame are dropped\n", RHI_PAIR_SETS_MAX);
-                s_warned = true;
-            }
-            return;
-        }
-        VkDescriptorSetAllocateInfo ai = {
-            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-            .descriptorPool = dev->desc_pool, .descriptorSetCount = 1,
-            .pSetLayouts = &dev->pair_set_layout,
-        };
-        if (vkAllocateDescriptorSets(dev->device, &ai,
-                                     &dev->pair_sets[f][dev->pair_alloc[f]]) != VK_SUCCESS) {
-            RHI_LOG("pair set vkAllocateDescriptorSets failed\n");
-            return;
-        }
-        dev->pair_alloc[f]++;
+    if (dev->pair_used[f] == dev->pair_alloc[f] && !pair_list_grow(dev, f)) {
+        RHI_LOG("pair set: allocation failed; the bind is dropped\n");
+        return;
     }
     const uint32_t slot = dev->pair_used[f]++;
     VkDescriptorSet ds = dev->pair_sets[f][slot];

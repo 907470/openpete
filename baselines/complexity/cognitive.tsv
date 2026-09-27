@@ -95,7 +95,7 @@ core/rhi/rhi_vulkan.c	pipeline_compile	34	0
 core/rhi/rhi_vulkan.c	pipeline_set_layouts	46	0	
 core/rhi/rhi_vulkan.c	rhi_create_impl	27	0	
 core/rhi/rhi_vulkan.c	rhi_cycle_readback	26	0	
-core/rhi/rhi_vulkan.c	rhi_destroy	38	0	
+core/rhi/rhi_vulkan.c	rhi_destroy	37	0	
 core/rhi/smoketest.c	main	35	0	
 core/runtime/present_thread.c	present_thread_main	113	0	
 core/runtime/run.c	eager_plan	73	0	

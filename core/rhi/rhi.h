@@ -1110,6 +1110,13 @@ rhi_pipeline *rhi_create_pipeline_spv(rhi_device *dev,
  * subsystem with uniforms of its own has to put them somewhere a mod
  * never looks. That is what this is for. */
 typedef struct rhi_ubo rhi_ubo;
+/** @brief Create a uniform block set: `blocks` blocks per frame slot and generation, with its two descriptor sets.
+ *
+ * @param dev Device.
+ * @param block_size Bytes per block, rounded up to the UBO offset alignment.
+ * @param blocks Blocks per frame slot.
+ * @return The set, or NULL when the buffer or the two-binding descriptor
+ *         set cannot be allocated (logged). */
 rhi_ubo *rhi_create_ubo(rhi_device *dev, uint32_t block_size, uint32_t blocks);
 void     rhi_ubo_write(rhi_ubo *ubo, uint32_t block, const void *data,
                        uint32_t len);
@@ -1117,6 +1124,10 @@ void     rhi_ubo_bind(rhi_device *dev, rhi_ubo *ubo, uint32_t block_a,
                       uint32_t block_b);
 void     rhi_ubo_bind_at(rhi_device *dev, rhi_ubo *ubo, uint32_t set,
                          uint32_t block);
+/** @brief Free a uniform block set's descriptor sets and buffer; NULL is ignored.
+ *
+ * @param dev Device the set was created on.
+ * @param ubo Set to destroy. */
 void     rhi_destroy_ubo(rhi_device *dev, rhi_ubo *ubo);
 
 /* ---- offscreen-as-input (the COMPOSITE postfx point) ----------------
@@ -1132,6 +1143,13 @@ void     rhi_destroy_ubo(rhi_device *dev, rhi_ubo *ubo);
  * fragment-read dependency. Does nothing outside an active frame or for NULL.
  * @param dev Device whose current frame records the barrier. */
 void rhi_offscreen_to_sampled(rhi_device *dev);
+/** @brief Bind the offscreen color image, linear-sampled, at `set` of the bound pipeline.
+ *
+ * Each frame slot keeps its own descriptor set, allocated on first use and
+ * rewritten when the offscreen image was rebuilt. Does nothing outside an
+ * active frame or without a bound pipeline.
+ * @param dev Device whose current frame records the bind.
+ * @param set Descriptor set index. */
 void rhi_bind_offscreen_tex(rhi_device *dev, uint32_t set);
 void rhi_offscreen_resume_attachment(rhi_device *dev);
 void rhi_offscreen_resume_blit_src(rhi_device *dev);
