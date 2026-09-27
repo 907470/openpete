@@ -10,9 +10,23 @@ extern "C" {
 #endif
 struct CPUState;
 
-/* Sub-tick re-extract: rebuild the terrain scene from the current gamestate
- * and the camera the orchestrator installed; `alpha` lerps the vertex banks
- * of poly-anim sectors, `interp_on` = the camera is bracketed (else snap). */
+/** @brief Rebuilds the terrain scene for a sub-tick present from the current gamestate and the camera the orchestrator installed.
+ *
+ * Extract only: the world draw (func_800258F0) is not called and no verdict
+ * is written; the walk reuses the canonical tick's occlusion group. Returns
+ * without effect when the native scene or the terrain render path is off,
+ * or when the canonical present did not draw terrain (during a level
+ * transition the game stops drawing the world and the level data in RAM is
+ * stale). Static terrain moves with the interpolated camera alone; poly-anim
+ * sectors, whose vertices the game rewrites once per tick, lerp their
+ * previous and current decoded banks at `alpha` so they move every present.
+ * OPENPETE_TERRAIN_VANIM=0 and OPENPETE_TERRAIN_TANIM=0 snap the vertex and
+ * UV-scroll animation to the current tick; OPENPETE_TERRAIN_CANIM=0 holds
+ * the environment-animation colours at the previous tick.
+ * @param cpu guest state, the sub-tick camera installed
+ * @param alpha sub-tick fraction between the previous and current tick
+ * @param interp_on 1 = the camera is bracketed; 0 snaps the vertex animation
+ *        to the current tick */
 void terrain_reextract(struct CPUState* cpu, double alpha, int interp_on);
 
 /** @brief A freecam pose that frames the whole live level from above.
@@ -46,14 +60,14 @@ int terrain_native_topdown_pose(struct CPUState* cpu, int32_t v[5]);
  * @return 1 on success, 0 when no sector table is loaded or it holds no vertex */
 int terrain_native_sweep_pose(struct CPUState* cpu, int corner, int32_t v[5]);
 
-/* The visibility table of a game whose world draw computes it in the
- * scratchpad and consumes it before returning (Spyro 3): the feeder's
- * visibility hook copies the bytes at that function's return, and this is the
- * copy. Arm it before calling the world draw, then read it after.
+/** @brief Arms the capture of the sector visibility table for the next world draw.
  *
- * terrain_visibility_capture stores the byte array at *out (nonzero = the
- * sector is visible) and returns its length, or -1 when no capture was taken
- * this draw, in which case the verdict is in RAM at game_layout.visibility. */
+ * On a game whose world draw computes the table in the scratchpad and
+ * consumes it before returning (Spyro 3), the feeder's visibility hook
+ * copies the bytes once the visibility function returns. Arming clears the
+ * previous capture; on a game with no visibility hook it arms nothing and
+ * the verdict stays in RAM at game_layout.visibility. Arm before calling the
+ * world draw, then read terrain_visibility_capture after. */
 void terrain_visibility_capture_arm(void);
 
 /** @brief Run the canonical native terrain build and feed the world draw deferred for the portal capture.
@@ -62,6 +76,11 @@ void terrain_visibility_capture_arm(void);
  * pending is a no-op. The portal draw calls it once its capture for the tick is
  * complete. */
 void terrain_native_flush_deferred(void);
+/** @brief Returns the sector visibility table captured during the last armed world draw.
+ * @param out receives the byte array (nonzero = the sector is visible); may
+ *        be NULL
+ * @return the table's length, or -1 when no capture was taken this draw, in
+ *         which case the verdict is in RAM at game_layout.visibility */
 int  terrain_visibility_capture(const uint8_t** out);
 
 #ifdef __cplusplus
