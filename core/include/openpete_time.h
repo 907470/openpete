@@ -250,19 +250,25 @@ op_time_t op_now(void);
  * Returns at once when the deadline has passed. Otherwise, when more than
  * op_pacer_slack_ns() remains, OS-sleeps until deadline - slack (a Win32
  * waitable timer with a Sleep() fallback, else clock_nanosleep on
- * CLOCK_MONOTONIC or a relative nanosleep), then spins on
+ * CLOCK_MONOTONIC or a relative nanosleep) and records how late that sleep
+ * returned into the thread's adaptive slack, then spins on
  * op_now() with cpu_relax() until the deadline; POSIX builds call
- * sched_yield() once before the spin. Under the virtual clock it never
+ * sched_yield() once before the spin. With OPENPETE_PACER_CENSUS=1 each
+ * call with time left is counted in the census op_time_shutdown prints. Under the virtual clock it never
  * blocks: it advances the virtual time to the deadline when the deadline
  * is later. Under Emscripten it yields to the browser event loop for the
  * remaining whole milliseconds, at least one turn even past the deadline.
  * @param deadline_ns Monotonic deadline in ns. */
 void op_sleep_until(op_time_t deadline_ns);
 
-/** @brief Return the margin before a deadline at which op_sleep_until stops OS-sleeping and spins.
+/** @brief Return the margin before a deadline at which the calling thread's op_sleep_until stops OS-sleeping and spins.
  *
- * 2500 us on Windows, 1500 us elsewhere, or OPENPETE_PACER_SLACK_US (in
- * microseconds, negative read as 0), parsed once by op_time_init. A larger
+ * With OPENPETE_PACER_SLACK_US set (microseconds, negative read as 0,
+ * parsed once by op_time_init) every thread uses that fixed margin.
+ * Otherwise the margin is per thread and measured: the largest of the
+ * thread's last 256 OS-sleep wake errors plus 100 us, clamped to
+ * [100 us, cap], where the cap is 2500 us on Windows and 1500 us elsewhere
+ * and is also the margin until 16 wake errors have been recorded. A larger
  * margin spends more CPU spinning and overshoots a deadline less often when
  * the OS oversleeps.
  * @return The margin in nanoseconds. */
@@ -289,12 +295,12 @@ int  op_virtual_clock_active(void);
 
 /** @brief Initialize the clock module: the sleep margin, and on Win32 the QPC frequency and timer.
  *
- * Parses OPENPETE_PACER_SLACK_US. On Win32 it reads the QPC frequency,
- * creates a high-resolution waitable timer (Windows 10 1803 and later; the
- * Sleep fallback serves when that fails), and requests a 1 ms system timer
- * period with timeBeginPeriod(1) on either path, since every millisecond
- * timeout in the process (Sleep, SDL event and condition-variable waits)
- * is otherwise quantised to 15.6 ms. Idempotent until
+ * Parses OPENPETE_PACER_SLACK_US and OPENPETE_PACER_CENSUS. On Win32 it
+ * reads the QPC frequency, creates a high-resolution waitable timer
+ * (Windows 10 1803 and later; the Sleep fallback serves when that fails),
+ * and requests a 1 ms system timer period with timeBeginPeriod(1) on either
+ * path, since every millisecond timeout in the process (Sleep, SDL event
+ * and condition-variable waits) is otherwise quantised to 15.6 ms. Idempotent until
  * op_time_shutdown. op_now, op_sleep_until and op_pacer_slack_ns call it on
  * first use; calling it early moves that cost out of the host loop. */
 void op_time_init(void);
@@ -302,7 +308,8 @@ void op_time_init(void);
 /** @brief Release the clock module's OS resources and mark it uninitialized.
  *
  * On Win32 it closes the probe timer and every per-thread waitable timer
- * and pairs timeBeginPeriod with timeEndPeriod. Idempotent. The per-thread
+ * and pairs timeBeginPeriod with timeEndPeriod. With OPENPETE_PACER_CENSUS=1
+ * it first prints the pace census line to stderr. Idempotent. The per-thread
  * timer handles are not cleared from their threads, so a later sleep on a
  * thread that slept before fails to arm its closed timer and spins the
  * whole wait. */

@@ -15,6 +15,8 @@
 
 #include "openpete_time.h"
 
+#include <stdatomic.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -40,7 +42,50 @@
  * ---------------------------------------------------------------- */
 
 static int s_initialized = 0;
+/* Margin before a deadline at which op_sleep_until stops OS-sleeping and
+ * spins. With OPENPETE_PACER_SLACK_US set it is that fixed value; otherwise
+ * it is sized per thread from the measured wake error of that thread's
+ * timer, never above OP_SLACK_CAP_NS. */
 static op_time_t s_slack_ns = 0;
+static int       s_slack_fixed = 0;
+
+/* Adaptive slack. Each OS sleep records how far past its target it woke;
+ * the slack is the largest of the last OP_WAKE_WINDOW errors plus
+ * OP_SLACK_MARGIN_NS, clamped to [OP_SLACK_FLOOR_NS, OP_SLACK_CAP_NS]. The
+ * maximum rather than a percentile: one late wake raises the slack for the
+ * next OP_WAKE_WINDOW sleeps, so a burst of scheduler contention is covered
+ * from its first late wake on. Until OP_WAKE_MIN samples exist the slack is
+ * the cap. The cap is the pre-measurement default of each
+ * platform: 2.5 ms on Win32, sized for the Sleep() fallback, and 1.5 ms on
+ * POSIX. Per thread because each Win32 thread sleeps on its own timer and
+ * the sim and present threads see different scheduler contention. */
+#define OP_WAKE_WINDOW      256
+#define OP_WAKE_MIN         16
+#define OP_SLACK_MARGIN_NS  (100 * OP_NS_PER_US)
+#define OP_SLACK_FLOOR_NS   (100 * OP_NS_PER_US)
+#if defined(_WIN32)
+#  define OP_SLACK_CAP_NS   (2500 * OP_NS_PER_US)
+#else
+#  define OP_SLACK_CAP_NS   (1500 * OP_NS_PER_US)
+#endif
+
+typedef struct {
+    op_time_t err[OP_WAKE_WINDOW]; /* OS wake error, ns, >= 0 */
+    int       n;                   /* samples recorded, saturating at the window */
+    int       next;                /* ring write index */
+    op_time_t slack;               /* current slack; 0 = not yet computed */
+} op_wake_window;
+
+static _Thread_local op_wake_window t_wake;
+
+/* Pace census (OPENPETE_PACER_CENSUS=1): process-wide counters over every
+ * op_sleep_until that had time left, printed by op_time_shutdown. Lateness
+ * is the return instant minus the deadline, bucketed at 10 us up to 5 ms. */
+#define OP_CENSUS_BUCKETS 501
+static int s_census = 0;
+static _Atomic uint64_t s_cen_calls, s_cen_os_sleeps, s_cen_spin_ns;
+static _Atomic int64_t  s_cen_spin_max, s_cen_late_max, s_cen_slack_sum;
+static _Atomic uint32_t s_cen_late_hist[OP_CENSUS_BUCKETS];
 
 #if defined(_WIN32)
 /* QPC frequency, ticks per second. */
@@ -82,24 +127,31 @@ static HANDLE thread_timer(void) {
  * mask a tiny step backwards, which is harmless for pacing. */
 static op_time_t s_last_now = 0;
 
-static op_time_t parse_slack_env_us_to_ns(void) {
+/** @brief Read OPENPETE_PACER_SLACK_US into s_slack_ns and s_slack_fixed.
+ *
+ * Set and non-empty, the value (microseconds, negative read as 0) fixes
+ * the slack for every thread; unset or empty leaves the slack adaptive with
+ * OP_SLACK_CAP_NS as its starting value. */
+static void parse_slack_env(void) {
     const char* s = getenv("OPENPETE_PACER_SLACK_US");
     if (!s || !*s) {
-#if defined(_WIN32)
-        return 2500 * OP_NS_PER_US;
-#else
-        return 1500 * OP_NS_PER_US;
-#endif
+        s_slack_fixed = 0;
+        s_slack_ns = OP_SLACK_CAP_NS;
+        return;
     }
-    /* Accept negative-as-zero just to be safe. */
     long v = strtol(s, NULL, 10);
     if (v < 0) v = 0;
-    return (op_time_t)v * OP_NS_PER_US;
+    s_slack_fixed = 1;
+    s_slack_ns = (op_time_t)v * OP_NS_PER_US;
 }
 
 void op_time_init(void) {
     if (s_initialized) return;
-    s_slack_ns = parse_slack_env_us_to_ns();
+    parse_slack_env();
+    {
+        const char* c = getenv("OPENPETE_PACER_CENSUS");
+        s_census = (c && *c && *c != '0');
+    }
 
 #if defined(_WIN32)
     LARGE_INTEGER f;
@@ -128,6 +180,95 @@ void op_time_init(void) {
 #endif
 
     s_initialized = 1;
+}
+
+/** @brief Print the pace census line: sleeps, OS sleeps, spin time and lateness percentiles.
+ *
+ * Lateness percentiles come from the 10 us histogram, so each is the upper
+ * edge of its bucket; the last bucket holds everything at or past 5 ms. */
+static void census_print(void) {
+    const uint64_t calls = atomic_load(&s_cen_calls);
+    uint64_t total = 0, run = 0;
+    for (int i = 0; i < OP_CENSUS_BUCKETS; i++) total += atomic_load(&s_cen_late_hist[i]);
+    int p50 = -1, p99 = -1, p999 = -1;
+    for (int i = 0; i < OP_CENSUS_BUCKETS && total; i++) {
+        run += atomic_load(&s_cen_late_hist[i]);
+        if (p50 < 0 && run * 100 >= total * 50) p50 = i;
+        if (p99 < 0 && run * 100 >= total * 99) p99 = i;
+        if (p999 < 0 && run * 1000 >= total * 999) p999 = i;
+    }
+    fprintf(stderr,
+            "[pacer] census: sleeps=%llu os_sleeps=%llu spin_ms=%.1f "
+            "spin_us_per_sleep=%.1f spin_max_us=%.1f slack_mean_us=%.1f "
+            "late_p50_us<=%d late_p99_us<=%d late_p999_us<=%d late_max_us=%.1f "
+            "slack=%s\n",
+            (unsigned long long)calls,
+            (unsigned long long)atomic_load(&s_cen_os_sleeps),
+            (double)atomic_load(&s_cen_spin_ns) / 1e6,
+            calls ? (double)atomic_load(&s_cen_spin_ns) / 1e3 / (double)calls : 0.0,
+            (double)atomic_load(&s_cen_spin_max) / 1e3,
+            calls ? (double)atomic_load(&s_cen_slack_sum) / 1e3 / (double)calls : 0.0,
+            (p50 + 1) * 10, (p99 + 1) * 10, (p999 + 1) * 10,
+            (double)atomic_load(&s_cen_late_max) / 1e3,
+            s_slack_fixed ? "fixed" : "adaptive");
+}
+
+/** @brief Raise an atomic maximum to v.
+ * @param m The maximum.
+ * @param v Candidate value. */
+static void census_max(_Atomic int64_t* m, int64_t v) {
+    int64_t cur = atomic_load_explicit(m, memory_order_relaxed);
+    while (v > cur &&
+           !atomic_compare_exchange_weak_explicit(m, &cur, v, memory_order_relaxed,
+                                                  memory_order_relaxed)) {}
+}
+
+/** @brief Record one op_sleep_until in the pace census.
+ * @param slack The slack the sleep used.
+ * @param os_slept 1 when the OS-sleep stage ran.
+ * @param spin Time spent in the spin stage.
+ * @param late Return instant minus the deadline. */
+static void census_record(op_time_t slack, int os_slept, op_time_t spin, op_time_t late) {
+    atomic_fetch_add_explicit(&s_cen_calls, 1, memory_order_relaxed);
+    if (os_slept) atomic_fetch_add_explicit(&s_cen_os_sleeps, 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&s_cen_spin_ns, (uint64_t)spin, memory_order_relaxed);
+    atomic_fetch_add_explicit(&s_cen_slack_sum, slack, memory_order_relaxed);
+    census_max(&s_cen_spin_max, spin);
+    census_max(&s_cen_late_max, late);
+    int64_t b = late / (10 * OP_NS_PER_US);
+    if (b < 0) b = 0;
+    if (b >= OP_CENSUS_BUCKETS) b = OP_CENSUS_BUCKETS - 1;
+    atomic_fetch_add_explicit(&s_cen_late_hist[b], 1, memory_order_relaxed);
+}
+
+/** @brief Record one OS-sleep wake error in this thread's window and recompute its slack.
+ *
+ * The slack becomes the largest error in the window plus
+ * OP_SLACK_MARGIN_NS, clamped to [OP_SLACK_FLOOR_NS, OP_SLACK_CAP_NS];
+ * below OP_WAKE_MIN samples it stays at the cap.
+ * @param err How far past its target the OS sleep returned; negative is
+ *        recorded as 0. */
+static void wake_record(op_time_t err) {
+    op_wake_window* w = &t_wake;
+    w->err[w->next] = err > 0 ? err : 0;
+    w->next = (w->next + 1) % OP_WAKE_WINDOW;
+    if (w->n < OP_WAKE_WINDOW) w->n++;
+    if (w->n < OP_WAKE_MIN) { w->slack = OP_SLACK_CAP_NS; return; }
+    op_time_t hi = 0;
+    for (int i = 0; i < w->n; i++)
+        if (w->err[i] > hi) hi = w->err[i];
+    op_time_t sl = hi + OP_SLACK_MARGIN_NS;
+    if (sl < OP_SLACK_FLOOR_NS) sl = OP_SLACK_FLOOR_NS;
+    if (sl > OP_SLACK_CAP_NS) sl = OP_SLACK_CAP_NS;
+    w->slack = sl;
+}
+
+/** @brief Return the slack the calling thread's next sleep uses.
+ * @return The fixed slack when OPENPETE_PACER_SLACK_US is set, else this
+ *         thread's adaptive slack, OP_SLACK_CAP_NS before it has one. */
+static op_time_t thread_slack(void) {
+    if (s_slack_fixed) return s_slack_ns;
+    return t_wake.slack > 0 ? t_wake.slack : OP_SLACK_CAP_NS;
 }
 
 void op_time_wake_pending_sleeps(void) {
@@ -166,6 +307,7 @@ void op_time_shutdown(void) {
         s_timeperiod_set = 0;
     }
 #endif
+    if (s_census) census_print();
     s_initialized = 0;
 }
 
@@ -186,7 +328,7 @@ int op_virtual_clock_active(void) { return s_virtual_on; }
 
 op_time_t op_pacer_slack_ns(void) {
     ensure_initialized();
-    return s_slack_ns;
+    return thread_slack();
 }
 
 /* ---------------------------------------------------------------- *
@@ -318,18 +460,22 @@ void op_sleep_until(op_time_t deadline_ns) {
     emscripten_sleep(ms > 0 ? (unsigned)ms : 0u);
     return;
 #else
-    op_time_t slack = s_slack_ns;
+    const op_time_t slack = thread_slack();
     op_time_t now = op_now();
     if (now >= deadline_ns) return;
 
-    /* Stage 1: OS-sleep until deadline - slack. */
+    /* Stage 1: OS-sleep until deadline - slack, and feed how late the OS
+     * returned into this thread's slack estimate. */
+    int os_slept = 0;
     if (deadline_ns - now > slack) {
-        op_time_t sleep_target = deadline_ns - slack;
+        const op_time_t sleep_target = deadline_ns - slack;
 #if defined(_WIN32)
         sleep_until_win(sleep_target);
 #else
         sleep_until_posix(sleep_target);
 #endif
+        os_slept = 1;
+        if (!s_slack_fixed) wake_record(op_now() - sleep_target);
     }
 
     /* Stage 2: spin until deadline. cpu_relax keeps the spin cheap on
@@ -339,8 +485,12 @@ void op_sleep_until(op_time_t deadline_ns) {
 #if !defined(_WIN32)
     sched_yield();
 #endif
-    while (op_now() < deadline_ns) {
+    const op_time_t spin0 = op_now();
+    op_time_t t = spin0;
+    while (t < deadline_ns) {
         cpu_relax();
+        t = op_now();
     }
+    if (s_census) census_record(slack, os_slept, t - spin0, t - deadline_ns);
 #endif  /* __EMSCRIPTEN__ */
 }

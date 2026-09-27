@@ -896,7 +896,6 @@ core/runtime/feature_registry.c	feature_registry_apply_options	none
 core/runtime/feature_registry.c	hook_prof_id	none	
 core/runtime/openpete_time.c	cpu_relax	plain	
 core/runtime/openpete_time.c	ensure_initialized	none	
-core/runtime/openpete_time.c	parse_slack_env_us_to_ns	none	
 core/runtime/openpete_time.c	sleep_until_posix	none	
 core/runtime/present_thread.c	compose_at_locked	none	
 core/runtime/present_thread.c	dbg_rel	none	
