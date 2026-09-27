@@ -1153,6 +1153,10 @@ static const knob_desc_t g_builtin[] = {
       KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_logfmt_names), 0, 0,
       logfmt_get, logfmt_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
+    ENVROW_LATCHED("CRASH_TEST", "Debug", "",
+        "Fault injection for the crash handler: segv (a null store) or "
+        "overflow (unbounded recursion) on the game fiber before the game's "
+        "entry runs. Read once at boot."),
     ENVROW_LIVE("WRITE_FAIL", "Debug", "",
         "Fault injection for persisted files: <substring>[:<bytes>] makes "
         "every atomic save (memory card, save state, config, mod config, "

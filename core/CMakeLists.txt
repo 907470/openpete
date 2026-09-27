@@ -619,6 +619,11 @@ if(WIN32)
     target_link_libraries(openpete_core PUBLIC winmm)
 endif()
 
+# Win32: the crash filter writes a minidump (diag/crash.c).
+if(WIN32)
+    target_link_libraries(openpete_core PUBLIC dbghelp)
+endif()
+
 # Fail the build (cheap automated check) if anyone smuggles a Spyro
 # address or Win32-only header into core/. The exit-criteria greps in
 # §5 Phase 0b live here as build-time guards.

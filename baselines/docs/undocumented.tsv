@@ -2,7 +2,7 @@
 # library: libclang 14
 # requirement: @brief of one sentence on one line on every function; @param per named parameter and @return on non-void for external linkage
 # written-by: hook
-# head: 85d4f6e3a7c380a8186ff513c61025d1f689e1b8
+# head: 8fc1faa2d2702f23e6354de2e7890ce30e84b9d2
 file	function	form	accepted
 core/config/config.c	decision_for	none	
 core/config/config.c	dup_str	none	
@@ -100,7 +100,6 @@ core/config/paths.c	dir_exists	none
 core/config/paths.c	user_data_dir	none	
 core/config/paths.c	user_openpete_dir	none	
 core/config/paths.c	user_state_dir	none	
-core/diag/crash.c	openpete_psx_set_diag_cpu	none	
 core/diag/func_trace.c	__cyg_profile_func_exit	none	
 core/diag/func_trace.c	ft_cmp_self	none	
 core/diag/func_trace.c	ft_init	none	
@@ -121,7 +120,6 @@ core/diag/log.c	stderr_is_tty	none
 core/diag/log_file.c	drop_lock	none	
 core/diag/log_file.c	openpete_log_file_close	none	
 core/diag/log_file.c	openpete_log_file_path	none	
-core/diag/log_file.c	pump_entry	none	
 core/diag/log_file.c	pump_join	none	
 core/diag/log_file.c	pump_loop	none	
 core/diag/log_file.c	pump_start	none	
@@ -232,7 +230,6 @@ core/host/texture_pack.c	texture_pack_shutdown	none
 core/host/texture_pack.c	tp_alloc	none	
 core/host/texture_pack.c	tp_cat_name	none	
 core/host/texture_pack.c	tp_census_report	none	
-core/host/texture_pack.c	tp_decode_main	none	
 core/host/texture_pack.c	tp_decode_one	none	
 core/host/texture_pack.c	tp_decode_start	none	
 core/host/texture_pack.c	tp_decode_stop	none	
@@ -566,7 +563,6 @@ core/psx/cpu.c	read_word	none
 core/psx/cpu.c	write_byte	none	
 core/psx/cpu.c	write_half	none	
 core/psx/cpu.c	write_word	none	
-core/psx/disc_cache.c	loader_main	none	
 core/psx/disc_cache.c	openpete_disc_cache_active	none	
 core/psx/disc_cache.c	range_resident	none	
 core/psx/disc_cache.c	read_chunk	none	
@@ -608,7 +604,6 @@ core/psx/vstream.c	psx_runtime_vstream_moby	malformed
 core/psx/vstream.c	unresolved	none	
 core/record/bk2_movie.c	bk2_movie_free	none	
 core/record/record.c	rec_lazy_init	none	
-core/record/record.c	rec_thread_main	none	
 core/record/rewind.c	openpete_rewind_enabled	none	
 core/record/rewind.c	rewind_on_guest_discontinuity	none	
 core/record/savestate.c	ident_fill	none	
@@ -941,13 +936,11 @@ core/runtime/present_thread.c	openpete_present_thread_report	none
 core/runtime/present_thread.c	openpete_present_thread_set_callback	none	
 core/runtime/present_thread.c	openpete_present_thread_start	none	
 core/runtime/present_thread.c	openpete_present_thread_stop	none	
-core/runtime/present_thread.c	present_thread_main	none	
 core/runtime/run.c	apply_mute_gains	none	
 core/runtime/run.c	clamp_volume	none	
 core/runtime/run.c	eager_init	none	
 core/runtime/run.c	eager_plan	none	
 core/runtime/run.c	eager_present_cb	none	
-core/runtime/run.c	game_fiber_entry	none	
 core/runtime/run.c	gameplay_hash_log_emit	none	
 core/runtime/run.c	gameplay_hash_log_emit_header	none	
 core/runtime/run.c	load_cpu_seed	none	
@@ -965,7 +958,6 @@ core/runtime/run.c	openpete_psxtrace_skip_current_to	none
 core/runtime/run.c	openpete_pump_events	none	
 core/runtime/run.c	openpete_runahead_get	none	
 core/runtime/run.c	openpete_set_music_volume	none	
-core/runtime/run.c	openpete_sim_thread	none	
 core/runtime/run.c	pace_record_present	none	
 core/runtime/run.c	position_log_emit	none	
 core/runtime/run.c	ra_pc_hash	none	
@@ -974,7 +966,6 @@ core/runtime/run.c	rumble_census_report	none
 core/runtime/run.c	synth_pad_for	none	
 core/runtime/run.c	unlock_frame_in_ranges	none	
 core/runtime/work_pool.c	wp_spawn	none	
-core/runtime/work_pool.c	wp_thread_main	none	
 core/runtime/work_pool.c	wp_work	none	
 core/ui/devui.cpp	cfg_edit_slot	none	
 core/ui/devui.cpp	cfg_seed	none	

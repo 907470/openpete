@@ -29,6 +29,7 @@
 // init warns once if --record was requested). See core/CMakeLists.txt.
 
 #include "openpete_record.h"
+#include "openpete_crash.h"
 #include "openpete_log.h"
 #include "openpete_time.h"   /* OP_VBL_HZ_DEN / OP_VBL_HZ_NUM / OP_TICK_HZ */
 
@@ -372,8 +373,10 @@ static void rec_pump_audio(void) {
  * video frame is pending. Well under the ring's ~1 s capacity. */
 #define REC_AUDIO_PUMP_MS 10
 
+/** @brief Body of the recording encoder thread: encode queued frames and drain the audio ring until the recording stops. */
 static int rec_thread_main(void* unused) {
     (void)unused;
+    openpete_crash_thread_attach();
     for (;;) {
         SDL_LockMutex(g_rec.mutex);
         /* Timed wait, not an indefinite one: the SPU fills the capture ring at

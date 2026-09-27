@@ -14,6 +14,7 @@
  * resolved id: the hash covers exactly what was uploaded, never a guessed
  * VRAM region. */
 #include "texture_pack.h"
+#include "openpete_crash.h"
 #include "openpete_discontinuity.h"
 #include "openpete_mods.h" /* asset-overlay roots */
 #include "openpete_native_vram.h"
@@ -460,8 +461,10 @@ static void tp_decode_one(int ei) {
     SDL_UnlockMutex(s_dec.mu);
 }
 
+/** @brief Body of the texture-pack decode thread: decode queued pack images until shutdown. */
 static int SDLCALL tp_decode_main(void *unused) {
     (void)unused;
+    openpete_crash_thread_attach();
     for (;;) {
         SDL_LockMutex(s_dec.mu);
         while (!s_dec.quit && tp_q_empty())

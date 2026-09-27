@@ -21,6 +21,7 @@
 // and the process would exit with the tail of stderr still in the pipe.
 
 #include "openpete_log.h"
+#include "openpete_crash.h"
 #include "openpete_paths.h"
 
 #include <errno.h>
@@ -156,8 +157,10 @@ static void pump_loop(void) {
 #if defined(_WIN32)
 static HANDLE s_pump;
 
+/** @brief Body of the log pump thread (Windows): copy the stderr pipe to the real stderr and the log file until EOF. */
 static unsigned __stdcall pump_entry(void* unused) {
     (void)unused;
+    openpete_crash_thread_attach();
     pump_loop();
     return 0;
 }
@@ -177,8 +180,10 @@ static void pump_join(void) {
 #else
 static pthread_t s_pump;
 
+/** @brief Body of the log pump thread (POSIX): block asynchronous signals, then copy the stderr pipe to the real stderr and the log file until EOF. */
 static void* pump_entry(void* unused) {
     (void)unused;
+    openpete_crash_thread_attach();
     /* Asynchronous signals go to the game's threads, whose handlers expect
      * them there; the pump only copies bytes. */
     sigset_t mask;
@@ -393,4 +398,14 @@ void openpete_log_file_sync(void) {
      * signal-safe (it uses fprintf and backtrace); without this the
      * crash dump can die in the pipe with the process. */
     op_sleep_ms(50);
+}
+
+int openpete_log_file_crash_fds(int fds[2]) {
+    if (!s_pump_live || s_real_stderr < 0 || s_log_fd < 0) {
+        fds[0] = 2;
+        return 1;
+    }
+    fds[0] = s_real_stderr;
+    fds[1] = s_log_fd;
+    return 2;
 }

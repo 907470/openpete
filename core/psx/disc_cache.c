@@ -1,5 +1,6 @@
 /* core/psx/disc_cache.c — see openpete_disc_cache.h. */
 #include "openpete_disc_cache.h"
+#include "openpete_crash.h"
 #include "openpete_log.h"
 #include "openpete_time.h"
 #include "openpete_pace_log.h"
@@ -42,8 +43,10 @@ static int read_chunk(size_t c) {
     return got == want;
 }
 
+/** @brief Body of the disc-cache loader thread: read the disc image in chunks until it is resident. */
 static int loader_main(void* arg) {
     (void)arg;
+    openpete_crash_thread_attach();
     for (;;) {
         SDL_LockMutex(s_mx);
         long c = -1;

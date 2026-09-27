@@ -40,6 +40,7 @@
  * target, as the lattice never locks.
  */
 #include "openpete_present_thread.h"
+#include "openpete_crash.h"
 
 #include "openpete.h"
 #include "openpete_time.h"
@@ -425,9 +426,11 @@ static struct {
 } s_staged;
 static int s_stage_next;
 
+/** @brief Body of the present thread: present scenes from the ring while eager production is active. */
 static int present_thread_main(void *unused)
 {
     (void)unused;
+    openpete_crash_thread_attach();
     int claimed = 0;   /* this thread has claimed the display for the current activation */
     SDL_LockMutex(s_pt.mx);
     for (;;) {

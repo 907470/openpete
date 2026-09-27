@@ -9,6 +9,7 @@
 // to the caller.
 
 #include "openpete_workpool.h"
+#include "openpete_crash.h"
 
 #include <SDL3/SDL.h>
 
@@ -37,8 +38,10 @@ static void wp_work(int worker) {
     }
 }
 
+/** @brief Body of one work-pool worker: run its share of each posted job until the pool shuts down. */
 static int SDLCALL wp_thread_main(void* p) {
     int worker = (int)(intptr_t)p;          /* 1..threads-1; 0 is the caller */
+    openpete_crash_thread_attach();
     for (;;) {
         SDL_WaitSemaphore(s_start[worker]);
         wp_work(worker);

@@ -105,6 +105,15 @@ void openpete_log_pin_stderr_tty(int is_tty);
  * async-signal-safe. */
 void openpete_log_file_sync(void);
 
+/** @brief Name the descriptors a crash report is written to directly, bypassing the stderr pipe.
+ *
+ * With the file sink active these are the original stderr and the log
+ * file; otherwise fd 2 alone. Reads two statics, so the crash handler may
+ * call it from a signal.
+ * @param fds Receives up to two descriptors.
+ * @return The number written. */
+int openpete_log_file_crash_fds(int fds[2]);
+
 /** @brief Format and write one log line to stderr when level passes the subsystem's filter.
  *
  * The level is compared against the rule whose subsystem matches exactly,

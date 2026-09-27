@@ -6,6 +6,7 @@
 // gamestate dispatcher.
 
 #include "openpete.h"
+#include "openpete_crash.h"
 #include "openpete_fiber.h"
 #include "openpete_log.h"
 #include "openpete_knobs.h"
@@ -1668,7 +1669,13 @@ static void eager_present_cb(void *ctx, int kind, double alpha, int paired)
                            openpete_frame);
 }
 
+/** @brief Body of the game fiber: dispatch the game's entry point and park the fiber for good when it returns.
+ *
+ * Applies the --test-recomp-gp override to cpu.gp first, and gives
+ * OPENPETE_CRASH_TEST its chance to fault on the fiber's stack. Sets
+ * g_game.dispatch_ok and g_game.done. */
 static void game_fiber_entry(void) {
+    openpete_crash_test();
     if (g_game.gp != 0u) {
         OPL_INFO_F("boot",
                    "game fiber: overriding cpu.gp 0x%08X -> 0x%08X "
@@ -6439,9 +6446,11 @@ static const openpete_options_t* s_worker_opts;
 static SDL_GLContext s_psyx_gl_ctx;
 static SDL_Window*   s_psyx_gl_win;
 
+/** @brief Body of the sim thread under the thread split: take the GL context and run the game loop until it exits. */
 static int SDLCALL openpete_sim_thread(void* unused)
 {
     (void)unused;
+    openpete_crash_thread_attach();
     if (s_psyx_gl_ctx && !SDL_GL_MakeCurrent(s_psyx_gl_win, s_psyx_gl_ctx))
         OPL_ERROR_F("boot", "GL context handoff to the sim thread failed: %s",
                     SDL_GetError());

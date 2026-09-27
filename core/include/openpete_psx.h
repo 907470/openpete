@@ -266,16 +266,30 @@ uint16_t openpete_psx_root_counter2(void);
 
 /* --- Crash handler ------------------------------------------------------- */
 
-/** @brief Install the process crash handler that dumps host and guest state to stderr.
+/** @brief Install the process crash handler that writes host and guest state to the original stderr and the log file.
  *
- * On POSIX it takes SIGSEGV, SIGABRT, SIGFPE, SIGILL and SIGBUS through
- * sigaction with SA_SIGINFO; the handler prints the dump, drains the log
- * mirror and re-raises under the default disposition. On Windows it sets an
- * unhandled-exception filter that prints the dump and continues the search,
- * and records the calling thread as main for the dump's thread label. The
- * guest registers come from the CPUState passed to
+ * The report bypasses the stderr pipe of the log mirror (it is written to
+ * the descriptors openpete_log_file_crash_fds names), so it reaches the
+ * log file before the process dies. On POSIX it takes SIGSEGV, SIGABRT,
+ * SIGFPE, SIGILL and SIGBUS through sigaction with SA_SIGINFO | SA_ONSTACK
+ * | SA_RESETHAND; the handler makes only async-signal-safe calls, runs on
+ * the calling thread's alternate stack (openpete_crash_thread_attach in
+ * openpete_crash.h) and
+ * re-raises under the default disposition. On Windows it sets an
+ * unhandled-exception filter that writes the report, writes a minidump
+ * (openpete-crash.dmp in the logs state directory) and continues the
+ * search, and records the calling thread as main for the thread label.
+ * The guest registers come from the CPUState passed to
  * openpete_psx_set_diag_cpu. */
 void openpete_psx_install_crash_handler(void);
+
+/** @brief Fault the calling thread when OPENPETE_CRASH_TEST asks for it, to exercise the crash path.
+ *
+ * "segv" stores through a null pointer; "overflow" recurses with a 4 KiB
+ * frame until the stack runs out. Any other value, or none, returns at
+ * once. The game fiber calls it before dispatching the game's entry, so
+ * both faults land on the fiber's stack. */
+void openpete_crash_test(void);
 
 /* --- EXE loader (BIN/CUE → bytes) ---------------------------------------- */
 
