@@ -64,10 +64,10 @@ core/renderer/native_render.c	alpha_census	53	0
 core/renderer/native_render.c	compose_variant	52	0	
 core/renderer/native_render.c	draw_native_scene	678	0	
 core/renderer/native_render.c	draw_osd_overlay	52	0	
-core/renderer/native_render.c	draw_tex_runs	99	0	
+core/renderer/native_render.c	draw_tex_runs	89	0	
 core/renderer/native_render.c	draw_ut_mat_spans	48	0	
 core/renderer/native_render.c	gpu_zone_report	27	0	
-core/renderer/native_render.c	hd_flush_pending	31	0	
+core/renderer/native_render.c	hd_flush_pending	28	0	
 core/renderer/native_render.c	native_depth_prepass	83	0	
 core/renderer/native_render.c	native_postfx_run	53	0	
 core/renderer/native_render.c	native_render_screenshot_all_impl	52	0	

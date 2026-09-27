@@ -558,6 +558,7 @@ struct rhi_device {
     /* Storage a grown ring vertex buffer replaced (rhi_vertex_buffer_reserve),
      * kept until no submitted frame can still read it. */
     struct rhi_retired_buf *retired;
+    struct rhi_texture *retired_tex;   /* rhi_destroy_texture_deferred, linked by retire_next */
 };
 
 /* One replaced buffer allocation and the frame serial current when it was
@@ -686,6 +687,8 @@ struct rhi_texture {
      * transitions it first. Linked from dev->init_head. */
     struct rhi_texture *init_next;
     bool            init_pending;
+    struct rhi_texture *retire_next;   /* dev->retired_tex link */
+    uint64_t        retire_serial;     /* frame serial at retirement */
     uint32_t        width, height;
     uint32_t        bpp;       /* bytes per pixel (2 = R16_UINT VRAM, 4 = RGBA8) */
     VkImageLayout   layout;    /* current layout, for re-upload transitions */
@@ -2738,6 +2741,12 @@ static bool ensure_swapchain(rhi_device *dev)
  * @param all true frees every entry; the caller has waited the device idle. */
 static void retired_reclaim(rhi_device *dev, bool all)
 {
+    for (rhi_texture **tp = &dev->retired_tex; *tp; ) {
+        rhi_texture *t = *tp;
+        if (!all && t->retire_serial + RHI_FRAMES_IN_FLIGHT > s_frame_serial) { tp = &t->retire_next; continue; }
+        *tp = t->retire_next;
+        rhi_destroy_texture(dev, t);
+    }
     struct rhi_retired_buf **pp = &dev->retired;
     while (*pp) {
         struct rhi_retired_buf *r = *pp;
@@ -4995,6 +5004,14 @@ void rhi_destroy_texture(rhi_device *dev, rhi_texture *tex)
     if (tex->rt_depth_image) vkDestroyImage(dev->device, tex->rt_depth_image, NULL);
     if (tex->rt_depth_mem)  vkFreeMemory(dev->device, tex->rt_depth_mem, NULL);
     free(tex);
+}
+
+void rhi_destroy_texture_deferred(rhi_device *dev, rhi_texture *tex)
+{
+    if (!tex) return;
+    tex->retire_serial = s_frame_serial;
+    tex->retire_next = dev->retired_tex;
+    dev->retired_tex = tex;
 }
 
 /* ------------------------------------------------------------------ */

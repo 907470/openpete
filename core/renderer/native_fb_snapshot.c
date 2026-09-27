@@ -7,6 +7,9 @@
 #include <string.h>
 #include <math.h>
 
+#include <SDL3/SDL_atomic.h>
+#include <SDL3/SDL_mutex.h>
+
 /* The scene a copy's pixels come from is the one the tick's primitives were fed
  * into, which the scene ring stamps with its own frame. That stamp lags the VBL
  * counter across the tick's tail: the ordering-table walk keeps feeding the
@@ -42,6 +45,25 @@ typedef struct {
 } fb_snap_t;
 
 static fb_snap_t s_slot[FB_SNAP_MAX];
+
+/* Guards every image pointer, size and key in s_slot and s_area. The guest
+ * thread is the only writer (moves, draw-env puts, stores); the presenting
+ * thread reads images through openpete_fb_snapshot_image and
+ * openpete_fb_snapshot_copy, which hold it for the read, so no image is
+ * freed while it is copied. Guest-thread reads need no lock. */
+static SDL_Mutex *s_px_mx;
+
+/** @brief Return the image mutex, creating it on first use; a compare-and-swap publishes exactly one.
+ *
+ * @return The mutex. */
+static SDL_Mutex *px_mx(void)
+{
+    SDL_Mutex *m = (SDL_Mutex *)SDL_GetAtomicPointer((void **)&s_px_mx);
+    if (m) return m;
+    SDL_Mutex *n = SDL_CreateMutex();
+    if (!SDL_CompareAndSwapAtomicPointer((void **)&s_px_mx, NULL, n)) SDL_DestroyMutex(n);
+    return (SDL_Mutex *)SDL_GetAtomicPointer((void **)&s_px_mx);
+}
 static uint64_t  s_key_next = 1;
 static unsigned  s_taken, s_resolved, s_quads, s_area_hits;
 
@@ -102,8 +124,15 @@ static int fbsnap_census(void)
 static void fb_area_screen(const fb_area_t *a, int *sx, int *sy)
 { *sx = a->x - a->ofx; *sy = a->y - a->ofy; }
 
+/** @brief Free an area's image and clear its pending flag, under the image mutex.
+ *
+ * @param a Draw area. */
 static void fb_area_drop(fb_area_t *a)
-{ free(a->px); a->px = NULL; a->pw = a->ph = 0; a->pending = 0; }
+{
+    SDL_LockMutex(px_mx());
+    free(a->px); a->px = NULL; a->pw = a->ph = 0; a->pending = 0;
+    SDL_UnlockMutex(s_px_mx);
+}
 
 void openpete_fb_snapshot_note_draw_env(int clip_x, int clip_y, int clip_w, int clip_h,
                                         int ofs_x, int ofs_y, int isbg)
@@ -255,11 +284,13 @@ static void fb_move_area_to_area(fb_area_t *from, fb_area_t *to,
         to->frame = from->frame = fb_copy_frame();
         return;
     }
-    to->pw = from->pw; to->ph = from->ph;
     const size_t n = (size_t)from->pw * (size_t)from->ph * 4u;
-    to->px = (unsigned char *)malloc(n);
-    if (to->px) { memcpy(to->px, from->px, n); to->key = s_key_next++; }
+    unsigned char *px = (unsigned char *)malloc(n);
+    if (px) memcpy(px, from->px, n);
+    SDL_LockMutex(px_mx());
+    if (px) { to->px = px; to->pw = from->pw; to->ph = from->ph; to->key = s_key_next++; }
     else { to->pw = to->ph = 0; to->pending = 1; }
+    SDL_UnlockMutex(s_px_mx);
 }
 
 int openpete_fb_snapshot_on_move(int src_x, int src_y, int w, int h,
@@ -345,9 +376,11 @@ void openpete_fb_snapshot_store_area(int idx, unsigned char *px, int pw, int ph)
 {
     if (idx < 0 || idx >= FB_AREA_MAX || !px || pw <= 0 || ph <= 0) { free(px); return; }
     fb_area_t *a = &s_area[idx];
+    SDL_LockMutex(px_mx());
     free(a->px);
     a->px = px; a->pw = pw; a->ph = ph;
     a->key = s_key_next++;
+    SDL_UnlockMutex(s_px_mx);
     if (fbsnap_census()) {
         double m = 0.0, sd = 0.0;
         fb_image_stats(px, pw, ph, &m, &sd);
@@ -379,9 +412,11 @@ void openpete_fb_snapshot_store(int idx, unsigned char *px, int pw, int ph)
     if (idx < 0 || idx >= FB_SNAP_MAX) { free(px); return; }
     if (!px || pw <= 0 || ph <= 0) { free(px); return; }
     fb_snap_t *s = &s_slot[idx];
+    SDL_LockMutex(px_mx());
     free(s->px);
     s->px = px; s->pw = pw; s->ph = ph;
     s->key = s_key_next++;
+    SDL_UnlockMutex(s_px_mx);
     s_resolved++;
     if (fbsnap_census()) {
         double m = 0.0, sd = 0.0;
@@ -505,27 +540,64 @@ int openpete_fb_snapshot_find(int tpage_x, int tpage_y, int bpp,
     return idx;
 }
 
-const unsigned char *openpete_fb_snapshot_pixels(int idx, int *pw, int *ph)
+/** @brief Resolve a snapshot index to its stored image's pixel pointer, size and key, or NULL.
+ *
+ * The caller holds the image mutex.
+ * @param idx Window slot index, or FB_SNAP_MAX plus a draw area index.
+ * @param pw Receives the width.
+ * @param ph Receives the height.
+ * @param key Receives the key.
+ * @return The pixels, or NULL when the index is out of range or holds no image. */
+static const unsigned char *fb_image_locked(int idx, int *pw, int *ph, uint64_t *key)
 {
-    if (idx >= FB_SNAP_MAX) {
+    const unsigned char *px = NULL;
+    if (idx >= FB_SNAP_MAX && idx - FB_SNAP_MAX < FB_AREA_MAX) {
         const fb_area_t *a = &s_area[idx - FB_SNAP_MAX];
-        if (idx - FB_SNAP_MAX >= FB_AREA_MAX || !a->px) return NULL;
-        if (pw) *pw = a->pw;
-        if (ph) *ph = a->ph;
-        return a->px;
+        px = a->px; *pw = a->pw; *ph = a->ph; *key = a->key;
+    } else if (idx >= 0 && idx < FB_SNAP_MAX) {
+        const fb_snap_t *s = &s_slot[idx];
+        px = s->px; *pw = s->pw; *ph = s->ph; *key = s->key;
     }
-    if (idx < 0 || !s_slot[idx].px) return NULL;
-    if (pw) *pw = s_slot[idx].pw;
-    if (ph) *ph = s_slot[idx].ph;
-    return s_slot[idx].px;
+    return px;
 }
 
-uint64_t openpete_fb_snapshot_key(int idx)
+int openpete_fb_snapshot_image(int idx, uint64_t *key, int *pw, int *ph)
 {
-    if (idx >= FB_SNAP_MAX)
-        return (idx - FB_SNAP_MAX < FB_AREA_MAX) ? s_area[idx - FB_SNAP_MAX].key : 0;
-    if (idx < 0) return 0;
-    return s_slot[idx].key;
+    int w = 0, h = 0; uint64_t k = 0;
+    SDL_LockMutex(px_mx());
+    const int has = fb_image_locked(idx, &w, &h, &k) != NULL;
+    SDL_UnlockMutex(s_px_mx);
+    if (!has) return 0;
+    if (key) *key = k;
+    if (pw) *pw = w;
+    if (ph) *ph = h;
+    return 1;
+}
+
+unsigned char *openpete_fb_snapshot_copy(int idx, uint64_t key, int *pw, int *ph)
+{
+    int w = 0, h = 0; uint64_t k = 0;
+    unsigned char *out = NULL;
+    SDL_LockMutex(px_mx());
+    const unsigned char *px = fb_image_locked(idx, &w, &h, &k);
+    if (px && k == key) {
+        const size_t n = (size_t)w * (size_t)h * 4u;
+        out = (unsigned char *)malloc(n);
+        if (out) memcpy(out, px, n);
+    }
+    SDL_UnlockMutex(s_px_mx);
+    if (out) { if (pw) *pw = w; if (ph) *ph = h; }
+    return out;
+}
+
+int openpete_fb_snapshot_key_live(uint64_t key)
+{
+    int live = 0;
+    SDL_LockMutex(px_mx());
+    for (int i = 0; i < FB_SNAP_MAX && !live; i++) live = s_slot[i].px && s_slot[i].key == key;
+    for (int i = 0; i < FB_AREA_MAX && !live; i++) live = s_area[i].px && s_area[i].key == key;
+    SDL_UnlockMutex(s_px_mx);
+    return live;
 }
 
 void openpete_fb_snapshot_counts(unsigned *taken, unsigned *resolved,

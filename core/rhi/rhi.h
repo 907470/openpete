@@ -1482,6 +1482,17 @@ void rhi_snapshot_offscreen_to_rt(rhi_device *dev, rhi_texture *dst,
  * @param tex Texture to destroy. */
 void rhi_destroy_texture(rhi_device *dev, rhi_texture *tex);
 
+/** @brief Destroy a texture once every frame that may reference it has retired.
+ *
+ * The texture joins the device's retired list stamped with the current
+ * frame serial and is destroyed at the first rhi_begin_frame
+ * RHI_FRAMES_IN_FLIGHT serials later (that slot's fence has then been
+ * waited), or at rhi_destroy. The caller stops binding it at this call.
+ * NULL is ignored.
+ * @param dev Device the texture was created on.
+ * @param tex Texture to retire. */
+void rhi_destroy_texture_deferred(rhi_device *dev, rhi_texture *tex);
+
 /** @brief Write the pixel extent a texture was created with.
  *
  * The RHI does not clamp a requested extent; callers that bound a render

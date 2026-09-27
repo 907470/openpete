@@ -174,24 +174,38 @@ int openpete_fb_snapshot_find(int tpage_x, int tpage_y, int bpp,
                               int u0, int v0, int u1, int v1,
                               float *su, float *sv, float *ox, float *oy);
 
-/** @brief Return the stored image of an index openpete_fb_snapshot_find returned.
+/** @brief Read the key and size of the image stored at an index openpete_fb_snapshot_find returned.
  *
- * Window slots and draw areas are both addressed. Any output pointer may be
- * NULL.
+ * Safe from the presenting thread while the guest thread stores or drops
+ * images: the read holds the store's mutex. The key is unique per stored
+ * image for the lifetime of the run, so a texture cache keyed on it cannot
+ * serve an earlier image. Any output pointer may be NULL.
  * @param idx Window slot index, or 4 plus a draw area index.
+ * @param key Receives the key.
  * @param pw Receives the image width.
  * @param ph Receives the image height.
- * @return The RGBA8 pixels, or NULL when the index is out of range or holds
- *         no image. */
-const unsigned char *openpete_fb_snapshot_pixels(int idx, int *pw, int *ph);
-/** @brief Return the upload key of an index openpete_fb_snapshot_find returned.
+ * @return 1 when the index holds an image, else 0 and nothing is written. */
+int openpete_fb_snapshot_image(int idx, uint64_t *key, int *pw, int *ph);
+
+/** @brief Copy the image stored at an index when it is still the image with `key`.
  *
- * The key is unique per stored image for the lifetime of the run, so a
- * texture cache keyed on it cannot serve an earlier image whose buffer was
- * freed and whose address was reused.
+ * The copy is taken under the store's mutex, so the guest thread cannot
+ * free the image mid-copy; the caller owns the result and frees it.
  * @param idx Window slot index, or 4 plus a draw area index.
- * @return The key, or 0 when the index is out of range. */
-uint64_t openpete_fb_snapshot_key(int idx);
+ * @param key Key read by openpete_fb_snapshot_image.
+ * @param pw Receives the image width.
+ * @param ph Receives the image height.
+ * @return A malloc'd RGBA8 copy, or NULL when the index holds no image, holds
+ *         a newer image than @p key, or the allocation fails. */
+unsigned char *openpete_fb_snapshot_copy(int idx, uint64_t key, int *pw, int *ph);
+
+/** @brief Return whether any window slot or draw area still holds the image with `key`.
+ *
+ * A consumer holding a GPU texture made from an image frees it once the
+ * image is replaced or dropped.
+ * @param key Image key.
+ * @return 1 when live, else 0. */
+int openpete_fb_snapshot_key_live(uint64_t key);
 
 /** @brief Read the engagement counters since boot.
  *

@@ -7031,12 +7031,24 @@ static void tex_mat_sort(const scene_tri_t* scene, int* idx, int n)
  * replaced it 1:1.) */
 
 /* ---- HD replacement GPU-texture cache ------------------------------------
- * identity hashkey -> uploaded rhi texture (linear-filtered). Slot collision
- * keeps the incumbent and falls back to SD for the newcomer (destroying an
- * in-flight texture is not frame-safe; with 512 slots and pack sizes in the
- * dozens this is theoretical). */
+ * identity hashkey -> uploaded rhi texture, open addressing with a 16-slot
+ * linear probe. Pack files and mod textures key on their pixel pointer,
+ * which their owners keep for the session, so those entries stay resident.
+ * Framebuffer-snapshot entries key on the snapshot store's per-image key
+ * and are evicted once the store no longer holds that image
+ * (hd_evict_fb_snapshots); an evicted slot becomes a tombstone so probe
+ * chains through it stay intact, and its texture is retired on the frame
+ * fence schedule (rhi_destroy_texture_deferred). A full neighbourhood keeps
+ * the incumbents and the newcomer draws stock. */
 #define HD_CACHE_SLOTS 8192   /* pack sizes reach thousands game-wide; probe-16 needs headroom */
+#define HD_KEY_TOMB UINT64_MAX   /* evicted slot: probing continues past it */
 static struct { uint64_t key; rhi_texture *tex; } s_hd_cache[HD_CACHE_SLOTS];
+/* Cache slots holding framebuffer-snapshot textures. The store holds at
+ * most 8 images at once, so live entries stay far below the bound; an
+ * insert past it is dropped and that run draws stock. */
+#define HD_FB_MAX 32
+static int s_hd_fb_slot[HD_FB_MAX];
+static int s_hd_fb_n;
 
 /* GPU uploads cannot record inside the offscreen render pass, so a first
  * sighting at draw time only QUEUES the image; hd_flush_pending() uploads at
@@ -7045,7 +7057,13 @@ static struct { uint64_t key; rhi_texture *tex; } s_hd_cache[HD_CACHE_SLOTS];
  * integer multiple of it samples NEAREST — block edges then coincide with
  * texel edges, so a dump fed straight back in renders bit-identically.
  * Anything else (arbitrary-resolution HD art) keeps LINEAR smoothing. */
-static struct { uint64_t key; const unsigned char *px; int w, h, box_w, box_h; } s_hd_pending[512];
+/* own: a copy the queue owns and frees (framebuffer snapshots, whose
+ * source image the guest thread may free before the upload); NULL for
+ * pack and mod pixels, which their owners keep for the session. */
+static struct {
+    uint64_t key; const unsigned char *px; unsigned char *own;
+    int w, h, box_w, box_h;
+} s_hd_pending[512];
 static int s_hd_pending_n = 0;
 
 static rhi_texture *hd_cache_lookup(uint64_t key)
@@ -7059,14 +7077,76 @@ static rhi_texture *hd_cache_lookup(uint64_t key)
     return NULL;
 }
 
-static void hd_pending_add(uint64_t key, const unsigned char *px, int w, int h,
-                           int box_w, int box_h)
+/** @brief Return whether a key is queued for upload.
+ *
+ * @param key Identity key.
+ * @return 1 when queued, else 0. */
+static int hd_pending_has(uint64_t key)
 {
-    if (s_hd_pending_n >= 512) return;
     for (int i = 0; i < s_hd_pending_n; i++)
-        if (s_hd_pending[i].key == key) return;
+        if (s_hd_pending[i].key == key) return 1;
+    return 0;
+}
+
+/** @brief Queue an image for upload at the next flush, unless its key is already queued or the queue is full.
+ *
+ * @param key Identity key.
+ * @param px Pixels the owner keeps alive until the upload (pack, mod), or NULL with @p own.
+ * @param own Pixels the queue takes ownership of, or NULL; freed when not queued.
+ * @param w Width.
+ * @param h Height.
+ * @param box_w Width of the texel box the image replaces, 0 for none.
+ * @param box_h Height of that box. */
+static void hd_pending_add(uint64_t key, const unsigned char *px, unsigned char *own,
+                           int w, int h, int box_w, int box_h)
+{
+    if (s_hd_pending_n >= 512 || hd_pending_has(key)) { free(own); return; }
     s_hd_pending[s_hd_pending_n++] =
-        (__typeof__(s_hd_pending[0])){ key, px, w, h, box_w, box_h };
+        (__typeof__(s_hd_pending[0])){ key, own ? own : px, own, w, h, box_w, box_h };
+}
+
+/** @brief Return the slot a key would take in the HD cache.
+ *
+ * @param key Identity key.
+ * @return The first empty or tombstone slot of the key's probe window, or
+ *         -1 when the key is already cached or the window is full. */
+static int hd_cache_insert_slot(uint64_t key)
+{
+    const uint64_t base = key * 0x9E3779B97F4A7C15ull >> 32;
+    int free_slot = -1;
+    for (int p = 0; p < 16; p++) {
+        const int c = (int)((base + (uint64_t)p) & (HD_CACHE_SLOTS - 1));
+        if (s_hd_cache[c].key == key) return -1;
+        if (s_hd_cache[c].key == HD_KEY_TOMB) { if (free_slot < 0) free_slot = c; continue; }
+        if (s_hd_cache[c].key == 0) return free_slot >= 0 ? free_slot : c;
+    }
+    return free_slot;
+}
+
+/** @brief Retire the cached textures of framebuffer-snapshot images the store no longer holds, and drop their queued uploads.
+ *
+ * Runs on the presenting thread at flush time; the texture of an evicted
+ * entry is destroyed once the frames that may still sample it retire. */
+static void hd_evict_fb_snapshots(void)
+{
+    for (int i = 0; i < s_hd_fb_n; ) {
+        const int c = s_hd_fb_slot[i];
+        if (openpete_fb_snapshot_key_live(s_hd_cache[c].key)) { i++; continue; }
+        rhi_texture *t = s_hd_cache[c].tex;
+        rhi_destroy_texture_deferred(s_nr.dev, t);
+        s_hd_cache[c].tex = NULL;
+        s_hd_cache[c].key = HD_KEY_TOMB;
+        s_hd_fb_slot[i] = s_hd_fb_slot[--s_hd_fb_n];
+    }
+    int n = 0;
+    for (int i = 0; i < s_hd_pending_n; i++) {
+        if (s_hd_pending[i].own && !openpete_fb_snapshot_key_live(s_hd_pending[i].key)) {
+            free(s_hd_pending[i].own);
+            continue;
+        }
+        s_hd_pending[n++] = s_hd_pending[i];
+    }
+    s_hd_pending_n = n;
 }
 
 /* HD replacement textures created per frame. Each entry is its own image:
@@ -7090,7 +7170,12 @@ static void hd_pending_add(uint64_t key, const unsigned char *px, int w, int h,
 
 #define HD_CREATE_PER_FRAME 12
 
-static void hd_flush_pending(void)   /* call OUTSIDE any render pass */
+/** @brief Create and upload queued HD replacement textures, at most the per-present cap, after evicting dead snapshot textures.
+ *
+ * Call outside any render pass. Entries past the cap stay queued for the
+ * next present; an owned copy is freed once staged or dropped.
+ */
+static void hd_flush_pending(void)
 {
     static int cap = -1;
     if (cap < 0) {
@@ -7098,29 +7183,28 @@ static void hd_flush_pending(void)   /* call OUTSIDE any render pass */
         const char *e = getenv("OPENPETE_HD_CREATE_CAP");
         if (e && *e) { int v = atoi(e); if (v > 0) cap = v; }
     }
+    hd_evict_fb_snapshots();
     int made = 0;
     int i = 0;
     for (; i < s_hd_pending_n; i++) {
         if (made >= cap) break;
         uint64_t key = s_hd_pending[i].key;
-        uint64_t base = key * 0x9E3779B97F4A7C15ull >> 32;
-        int idx = -1;
-        for (int p = 0; p < 16; p++) {         /* linear probe: existing or empty */
-            int c = (int)((base + (uint64_t)p) & (HD_CACHE_SLOTS - 1));
-            if (s_hd_cache[c].key == key) { idx = -1; break; }   /* already up */
-            if (s_hd_cache[c].key == 0) { idx = c; break; }
-        }
-        if (idx < 0) {                          /* already uploaded, or neighbourhood full */
+        unsigned char *own = s_hd_pending[i].own;
+        int idx = hd_cache_insert_slot(key);
+        if (idx >= 0 && own && s_hd_fb_n >= HD_FB_MAX) idx = -1;
+        if (idx < 0) {                          /* already uploaded, or no room */
             static int drops = 0;
             if (drops < 8 && hd_cache_lookup(key) == NULL)
                 fprintf(stderr, "[texpack] GPU cache insert dropped (key=%016llx, %d)\n",
                         (unsigned long long)key, ++drops);
+            free(own);
             continue;
         }
         rhi_texture *t = rhi_create_rgba8(s_nr.dev, (uint32_t)s_hd_pending[i].w,
                                           (uint32_t)s_hd_pending[i].h);
-        if (!t) continue;
+        if (!t) { free(own); continue; }
         rhi_update_rgba8(s_nr.dev, t, s_hd_pending[i].px);
+        free(own);                              /* staged: the upload copied it */
         /* Filter choice. An image that is an exact integer multiple of the
          * texel box it replaces samples NEAREST: its blocks align with texel
          * boundaries, so every screen pixel resolves to the texel the stock
@@ -7140,6 +7224,7 @@ static void hd_flush_pending(void)   /* call OUTSIDE any render pass */
         }
         s_hd_cache[idx].key = key;
         s_hd_cache[idx].tex = t;
+        if (own) s_hd_fb_slot[s_hd_fb_n++] = idx;
         made++;
     }
     /* Keep whatever the budget did not reach for the next frame. */
@@ -7152,13 +7237,23 @@ static void hd_flush_pending(void)   /* call OUTSIDE any render pass */
     }
 }
 
+static rhi_texture *s_hdf_atlas;   /* HD-fold atlas, defined with the fold below */
+
+/** @brief Destroy every HD replacement texture, the HD-fold atlas and every queued upload's owned copy.
+ *
+ * Runs at renderer shutdown with the device idle, before the device is
+ * destroyed. */
 static void hd_cache_shutdown(void)
 {
-    for (int i = 0; i < HD_CACHE_SLOTS; i++)
-        if (s_hd_cache[i].tex) {
-            rhi_destroy_texture(s_nr.dev, s_hd_cache[i].tex);
-            s_hd_cache[i].tex = NULL; s_hd_cache[i].key = 0;
-        }
+    for (int i = 0; i < HD_CACHE_SLOTS; i++) {
+        if (s_hd_cache[i].tex) rhi_destroy_texture(s_nr.dev, s_hd_cache[i].tex);
+        s_hd_cache[i].tex = NULL; s_hd_cache[i].key = 0;
+    }
+    s_hd_fb_n = 0;
+    for (int i = 0; i < s_hd_pending_n; i++) free(s_hd_pending[i].own);
+    s_hd_pending_n = 0;
+    rhi_destroy_texture(s_nr.dev, s_hdf_atlas);
+    s_hdf_atlas = NULL;
 }
 
 /* Draw a bucket's textured vert range [first_vert, first_vert+vert_count),
@@ -8116,7 +8211,7 @@ static void draw_material_pack_walk(const tex_run* r, psx_material_hd* mh,
             uint64_t key = (uint64_t)(uintptr_t)repl.pixels;
             rhi_texture* tex = hd_cache_lookup(key);
             if (!tex) {
-                hd_pending_add(key, repl.pixels, repl.w, repl.h,
+                hd_pending_add(key, repl.pixels, NULL, repl.w, repl.h,
                                repl.box_w, repl.box_h);   /* next present */
             } else {
                 want = tex;
@@ -8202,6 +8297,45 @@ static int draw_run_material(const tex_run* r, int ov_mark, int blend_class,
     return 1;
 }
 
+/** @brief Draw a framebuffer-window run through its snapshot's HD texture, queueing the texture's upload on first sight.
+ *
+ * The run's texture page carries the snapshot index and its UVs are pixel
+ * coordinates in the snapshot image, so the rect is the whole image. A
+ * snapshot not yet uploaded is queued as a copy taken under the store's
+ * lock (the guest thread may free the image before the flush) and draws
+ * nothing this present. Without an image or the HD pipe the run draws
+ * through the stock pipeline it was batched under.
+ * @param r The run.
+ * @param idx Snapshot index (the run head's tpage_x).
+ * @param hd_pipe HD pipe, or NULL.
+ * @param self Pipeline bound by the caller, restored after an HD draw. */
+static void draw_fb_snapshot_run(const tex_run* r, int idx, rhi_pipeline* hd_pipe,
+                                 rhi_pipeline* self) {
+    int sw = 0, sh = 0;
+    uint64_t key = 0;
+    if (!openpete_fb_snapshot_image(idx, &key, &sw, &sh) || !hd_pipe) {
+        rhi_push_constants(s_nr.dev, &r->m, sizeof r->m);
+        rhi_draw(s_nr.dev, (uint32_t)(r->ntri * 3), r->vert0);
+        return;
+    }
+    rhi_texture* tex = hd_cache_lookup(key);
+    if (!tex) {
+        if (!hd_pending_has(key)) {
+            unsigned char* copy = openpete_fb_snapshot_copy(idx, key, &sw, &sh);
+            if (copy) hd_pending_add(key, NULL, copy, sw, sh, 0, 0);
+        }
+        return;
+    }
+    const hd_pc pc = { 0.f, 0.f, (float)sw, (float)sh,
+                       { 1.f, 1.f, 1.f, 0.f }, { 0.f, 0.f, 0.f, 0.f } };
+    bind_scene_pipe(hd_pipe);
+    rhi_bind_vram(s_nr.dev, tex);
+    rhi_push_constants(s_nr.dev, &pc, sizeof pc);
+    rhi_draw(s_nr.dev, (uint32_t)(r->ntri * 3), r->vert0);
+    bind_scene_pipe(self);
+    rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+}
+
 /** @brief Draw one textured bucket, coalescing adjacent same-material triangles into runs.
  *
  * `pipes` is the bucket's pipe table indexed by blend class (see
@@ -8271,31 +8405,7 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
             continue;
         }
         if (s0->bpp == OPENPETE_FB_SNAPSHOT_BPP) {
-            /* Framebuffer-window run (openpete_fb_snapshot_on_move): tpage_x
-             * carries the snapshot slot and the UVs are pixel coords in its
-             * image, so the rect is the whole image. Without the HD pipe the
-             * run falls back to the stock pipeline it was batched under. */
-            int sw = 0, sh = 0;
-            const unsigned char* px = openpete_fb_snapshot_pixels(s0->tpage_x, &sw, &sh);
-            if (px && hd_pipe) {
-                const uint64_t key = openpete_fb_snapshot_key(s0->tpage_x);
-                rhi_texture* tex = hd_cache_lookup(key);
-                if (!tex) {
-                    hd_pending_add(key, px, sw, sh, 0, 0);
-                } else {
-                    const hd_pc pc = { 0.f, 0.f, (float)sw, (float)sh,
-                                       { 1.f, 1.f, 1.f, 0.f }, { 0.f, 0.f, 0.f, 0.f } };
-                    bind_scene_pipe(hd_pipe);
-                    rhi_bind_vram(s_nr.dev, tex);
-                    rhi_push_constants(s_nr.dev, &pc, sizeof pc);
-                    rhi_draw(s_nr.dev, (uint32_t)(run * 3), r.vert0);
-                    bind_scene_pipe(self);
-                    rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
-                }
-            } else {
-                rhi_push_constants(s_nr.dev, &r.m, sizeof r.m);
-                rhi_draw(s_nr.dev, (uint32_t)(run * 3), r.vert0);
-            }
+            draw_fb_snapshot_run(&r, s0->tpage_x, hd_pipe, self);
             i += run;
             continue;
         }
@@ -8312,7 +8422,7 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                 uint64_t key = (uint64_t)(uintptr_t)px;   /* stable per registration */
                 rhi_texture* tex = hd_cache_lookup(key);
                 if (!tex) {
-                    hd_pending_add(key, px, mw, mh, 0, 0);
+                    hd_pending_add(key, px, NULL, mw, mh, 0, 0);
                 } else {
                     /* Mod-registered textures are not palette-laddered, so
                      * they push the identity fog transform. */
@@ -8367,7 +8477,7 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                                 hd_pipe == s_nr.hd_cutout_pipe ? "cutout" : "hud");
                 }
                 if (!tex) {
-                    hd_pending_add(key, repl.pixels, repl.w, repl.h,
+                    hd_pending_add(key, repl.pixels, NULL, repl.w, repl.h,
                                    repl.box_w, repl.box_h);   /* next frame */
                 } else {
                     /* Shader rect = the FILE's box in page-texel coords: the

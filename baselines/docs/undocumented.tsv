@@ -626,7 +626,6 @@ core/renderer/glitch_mark.c	dump	none
 core/renderer/glitch_mark.c	name_of	none	
 core/renderer/glitch_mark.c	read_wslot	none	
 core/renderer/glitch_mark.c	write_walk_line	none	
-core/renderer/native_fb_snapshot.c	fb_area_drop	none	
 core/renderer/native_fb_snapshot.c	fb_copy_frame	none	
 core/renderer/native_fb_snapshot.c	fbsnap_census	none	
 core/renderer/native_render.c	bind_shadow_footprint	none	
@@ -656,12 +655,9 @@ core/renderer/native_render.c	freeze_leg_probe	none
 core/renderer/native_render.c	gpu_zone_report	none	
 core/renderer/native_render.c	gpuz_prof_id	none	
 core/renderer/native_render.c	hd_cache_lookup	none	
-core/renderer/native_render.c	hd_cache_shutdown	none	
 core/renderer/native_render.c	hd_defer_cmp	none	
 core/renderer/native_render.c	hd_defer_flush	none	
 core/renderer/native_render.c	hd_defer_push	none	
-core/renderer/native_render.c	hd_flush_pending	none	
-core/renderer/native_render.c	hd_pending_add	none	
 core/renderer/native_render.c	hdfold_flush_locked	none	
 core/renderer/native_render.c	hud_paint_cmp	none	
 core/renderer/native_render.c	native_depth_prepass	none	
