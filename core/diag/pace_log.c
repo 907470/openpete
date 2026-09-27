@@ -2,6 +2,7 @@
  * See openpete_pace_log.h for the format and the reasoning behind it.
  */
 
+#include "openpete_mutex_once.h"
 #include "openpete_pace_log.h"
 #include "openpete_present_thread.h"
 #include "openpete_time.h"
@@ -95,17 +96,18 @@ static void pace_flush_locked(void)
  * sim thread, and unlike the record stream they exist whether or not a log
  * file was opened -- so they get their own lock rather than borrowing the
  * writer's. Uncontended in practice: two threads, one short update each. */
-static SDL_Mutex* s_census_lock;
+static void* s_census_lock;   /* SDL_Mutex, openpete_mutex_once */
 
+/** @brief Take the census lock, creating it on first use without a creation race. */
 static void census_lock(void)
 {
-    if (!s_census_lock) s_census_lock = SDL_CreateMutex();
-    if (s_census_lock) SDL_LockMutex(s_census_lock);
+    SDL_LockMutex(openpete_mutex_once(&s_census_lock));
 }
 
+/** @brief Release the census lock. */
 static void census_unlock(void)
 {
-    if (s_census_lock) SDL_UnlockMutex(s_census_lock);
+    SDL_UnlockMutex(openpete_mutex_once(&s_census_lock));
 }
 
 static void pace_emit(const pace_rec_t* r)

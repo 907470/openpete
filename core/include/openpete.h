@@ -960,8 +960,8 @@ void openpete_request_shutdown(void);
 
 /** @brief Set the render-fps target of present pacing at runtime.
  *
- * Records the target and flags it; at the top of its next iteration the
- * host loop sets the render period to 1 s / fps divided by the tick scale,
+ * Queues the target; at the top of its next iteration the host loop takes
+ * it on its own thread, sets the render period to 1 s / fps divided by the tick scale,
  * re-anchors the sim and render deadlines to now (no catch-up burst), and
  * enables sub-tick interpolation when the render rate exceeds the VBL rate.
  * 0 selects the match-sim pacer: the render period is the VBL period and
@@ -986,6 +986,9 @@ int openpete_get_render_fps(void);
  * deadlines.
  * @param scale The factor, clamped to [0.05, 8]. */
 void   openpete_set_tick_scale(double scale);
+/** @brief Return the tick scale last requested or applied; callable from any thread.
+ *
+ * @return The factor. */
 double openpete_get_tick_scale(void);
 
 /** @brief Request a runahead depth in ticks at runtime.
@@ -998,16 +1001,23 @@ double openpete_get_tick_scale(void);
  * depth.
  * @param n Depth, clamped to 0..3; 0 disables runahead. */
 void openpete_runahead_set(int n);
+/** @brief Return the runahead depth the host loop applied; callable from any thread.
+ *
+ * @return Depth in ticks, 0 when disarmed. */
 int  openpete_runahead_get(void);
 
 /** @brief Mute or unmute host audio at runtime.
  *
- * Applies the gains --mute applies at boot: the SPU mixer mute, XA gain,
+ * The request is applied at the top of the host loop's next iteration,
+ * on its thread. It sets the gains --mute applies at boot: the SPU mixer mute, XA gain,
  * music override gain and mod one-shot sounds, all held muted while either
  * this baseline or the skip-to-level fast-forward mute is set. Leaving the
  * pause toggle re-applies the baseline to the SPU mute. Host audio only.
  * @param on Nonzero to mute. */
 void openpete_set_mute(int on);
+/** @brief Return the mute baseline last requested or applied; callable from any thread.
+ *
+ * @return 1 when muted. */
 int  openpete_get_mute(void);
 
 /* Live in-game volume-slider presets (0..10, -1 = leave the game's slider

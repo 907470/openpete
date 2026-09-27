@@ -7,6 +7,7 @@
 
 #include "openpete.h"
 #include "openpete_crash.h"
+#include "openpete_mutex_once.h"
 #include "openpete_fiber.h"
 #include "openpete_log.h"
 #include "openpete_knobs.h"
@@ -237,10 +238,14 @@ static volatile sig_atomic_t g_shutdown_requested = 0;
 /* Sets g_shutdown_requested; documented at the declaration. */
 void openpete_request_shutdown(void) { g_shutdown_requested = 1; }
 
-/* Set by the SDL event filter on a window double-click; consumed once per host
- * loop iteration to toggle native-window fullscreen. Kept as a flag so the
- * heavy SDL_SetWindowFullscreen call runs in the loop, not the filter. */
-static volatile sig_atomic_t g_native_fs_toggle_request = 0;
+/* Set by the SDL event filter on a window double-click, by
+ * openpete_native_request_fullscreen_toggle from any thread, and by the
+ * host loop on its own key edge under the thread split; consumed with an
+ * atomic exchange by the thread that owns the window, so a raise between a
+ * read and a clear is never lost and a consumed request is never raised
+ * again by an observer. Kept as a flag so the heavy SDL_SetWindowFullscreen
+ * call runs in a loop, not the filter. */
+static SDL_AtomicInt g_native_fs_toggle_request;
 
 /* Player screenshot pending (the `screenshot` binding). Raised where the
  * bindings are sampled, consumed at the capture site below in the same
@@ -250,7 +255,7 @@ static int s_screenshot_request = 0;
 /* Raises g_native_fs_toggle_request; documented at the declaration. */
 void openpete_native_request_fullscreen_toggle(void)
 {
-    g_native_fs_toggle_request = 1;
+    SDL_SetAtomicInt(&g_native_fs_toggle_request, 1);
 }
 
 /* The process's single event pump.
@@ -475,7 +480,7 @@ static bool openpete_handle_event(SDL_Event* ev) {
         !openpete_devui_wants_mouse() &&
         openpete_host_mouse_double_click_allowed()) {
         openpete_host_mouse_double_click_engaged();
-        g_native_fs_toggle_request = 1;
+        SDL_SetAtomicInt(&g_native_fs_toggle_request, 1);
     }
     if (ev->type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
         g_shutdown_requested = 1;
@@ -1935,11 +1940,39 @@ static uint64_t s_sim_slip_periods   = 0;
 static uint64_t s_render_slip_events = 0;
 static uint64_t s_render_slip_periods = 0;
 
+/* Live-knob command queue. The dev overlay and the settings menu set the
+ * render fps, tick scale, runahead depth and mute from the presenting or pump
+ * thread; the values they drive (s_render_fps, s_tick_scale, s_runahead_req,
+ * s_mute and their dirty flags) belong to the host loop. A setter records its
+ * request in s_knob_cmds under s_knob_mx and raises s_knob_pending; the host
+ * loop drains the requests at the top of its iteration (live_knob_drain), its
+ * quiescent point, so every write of those values and every mute gain change
+ * happens on one thread. s_knob_shown carries the values the getters report
+ * to other threads. */
+typedef struct {
+    int    fps, fps_set;
+    double scale; int scale_set;
+    int    ra, ra_set;
+    int    mute, mute_set;
+} live_knob_cmds_t;
+typedef struct { int fps; double scale; int mute; } live_knob_shown_t;
+static void            *s_knob_mx;           /* SDL_Mutex, openpete_mutex_once */
+static live_knob_cmds_t s_knob_cmds;         /* under s_knob_mx */
+static live_knob_shown_t s_knob_shown = { 0, 1.0, 0 };   /* under s_knob_mx */
+static SDL_AtomicInt    s_knob_pending;
+
+/** @brief Lock the live-knob queue. */
+static void knob_lock(void)   { SDL_LockMutex(openpete_mutex_once(&s_knob_mx)); }
+/** @brief Unlock the live-knob queue. */
+static void knob_unlock(void) { SDL_UnlockMutex(openpete_mutex_once(&s_knob_mx)); }
+
 void openpete_set_render_fps(int fps) {
     if (fps < 0) fps = 0;
-    if (fps == s_render_fps) return;
-    s_render_fps = fps;
-    s_render_fps_dirty = 1;   /* the host loop recomputes the period + re-anchors */
+    knob_lock();
+    s_knob_cmds.fps = fps; s_knob_cmds.fps_set = 1;
+    s_knob_shown.fps = fps;
+    knob_unlock();
+    SDL_SetAtomicInt(&s_knob_pending, 1);
 }
 
 /* Live tick-scale (dev overlay). Same dirty-flag shape as render-fps: the
@@ -1953,12 +1986,19 @@ static int    s_tick_scale_dirty = 0;
 void openpete_set_tick_scale(double scale) {
     if (scale < 0.05) scale = 0.05;
     if (scale > 8.0)  scale = 8.0;
-    if (scale == s_tick_scale) return;
-    s_tick_scale = scale;
-    s_tick_scale_dirty = 1;
+    knob_lock();
+    s_knob_cmds.scale = scale; s_knob_cmds.scale_set = 1;
+    s_knob_shown.scale = scale;
+    knob_unlock();
+    SDL_SetAtomicInt(&s_knob_pending, 1);
 }
 
-double openpete_get_tick_scale(void) { return s_tick_scale; }
+double openpete_get_tick_scale(void) {
+    knob_lock();
+    const double v = s_knob_shown.scale;
+    knob_unlock();
+    return v;
+}
 
 /* Live runahead depth (dev overlay). Same dirty-flag shape: the host loop
  * re-arms at its top-of-iteration quiescent point — speculation is fully
@@ -1967,17 +2007,18 @@ double openpete_get_tick_scale(void) { return s_tick_scale; }
  * depth after the mod-capability gate (may be forced 0). */
 static int s_runahead_req   = 0;
 static int s_runahead_dirty = 0;
-static int s_runahead_live  = 0;
+static SDL_AtomicInt s_runahead_live;   /* written by the host loop, read anywhere */
 
 void openpete_runahead_set(int n) {
     if (n < 0) n = 0;
     if (n > 3) n = 3;
-    if (n == s_runahead_req) return;
-    s_runahead_req = n;
-    s_runahead_dirty = 1;
+    knob_lock();
+    s_knob_cmds.ra = n; s_knob_cmds.ra_set = 1;
+    knob_unlock();
+    SDL_SetAtomicInt(&s_knob_pending, 1);
 }
 
-int openpete_runahead_get(void) { return s_runahead_live; }
+int openpete_runahead_get(void) { return SDL_GetAtomicInt(&s_runahead_live); }
 
 /* Live engine-level mute (dev overlay). Same three gain clamps the boot
  * apply uses; s_mute replaces opts->mute as the baseline the F7 pause
@@ -2004,8 +2045,41 @@ static void apply_mute_gains(void) {
 }
 
 void openpete_set_mute(int on) {
-    s_mute = on ? 1 : 0;
-    apply_mute_gains();
+    knob_lock();
+    s_knob_cmds.mute = on ? 1 : 0; s_knob_cmds.mute_set = 1;
+    s_knob_shown.mute = on ? 1 : 0;
+    knob_unlock();
+    SDL_SetAtomicInt(&s_knob_pending, 1);
+}
+
+/** @brief Publish the host loop's applied render fps, tick scale and mute as the values the getters report. */
+static void live_knob_publish_shown(void)
+{
+    knob_lock();
+    s_knob_shown.fps = s_render_fps;
+    s_knob_shown.scale = s_tick_scale;
+    s_knob_shown.mute = s_mute;
+    knob_unlock();
+}
+
+/** @brief Apply the queued live-knob requests on the host loop's thread, at its quiescent point.
+ *
+ * A changed render fps or tick scale raises the dirty flag the loop's
+ * re-derivation reads; a changed runahead depth raises the re-arm flag; a
+ * mute request sets the baseline and applies the gains here. Requests that
+ * match the applied value change nothing. */
+static void live_knob_drain(void)
+{
+    if (!SDL_GetAtomicInt(&s_knob_pending)) return;
+    knob_lock();
+    const live_knob_cmds_t c = s_knob_cmds;
+    memset(&s_knob_cmds, 0, sizeof s_knob_cmds);
+    SDL_SetAtomicInt(&s_knob_pending, 0);
+    knob_unlock();
+    if (c.fps_set && c.fps != s_render_fps) { s_render_fps = c.fps; s_render_fps_dirty = 1; }
+    if (c.scale_set && c.scale != s_tick_scale) { s_tick_scale = c.scale; s_tick_scale_dirty = 1; }
+    if (c.ra_set && c.ra != s_runahead_req) { s_runahead_req = c.ra; s_runahead_dirty = 1; }
+    if (c.mute_set) { s_mute = c.mute; apply_mute_gains(); }
 }
 
 /** @brief Mute audio while openpete_skip_present_until_level fast-forwards, and restore it after.
@@ -2019,7 +2093,12 @@ static void skip_mute_sync(void) {
     apply_mute_gains();
 }
 
-int openpete_get_mute(void) { return s_mute; }
+int openpete_get_mute(void) {
+    knob_lock();
+    const int v = s_knob_shown.mute;
+    knob_unlock();
+    return v;
+}
 
 /* --sfx / --music: the requested in-game slider levels, 0..10, or -1 for
  * "leave the game's own slider alone". These are a host-side REQUEST, not a
@@ -2046,7 +2125,10 @@ void openpete_set_vibration(int v) { openpete_rumble_set_strength(clamp_volume(v
 int  openpete_get_vibration(void)  { return openpete_rumble_get_strength(); }
 
 int openpete_get_render_fps(void) {
-    return s_render_fps;
+    knob_lock();
+    const int v = s_knob_shown.fps;
+    knob_unlock();
+    return v;
 }
 
 /** @brief Bring up the host side of a run: guest CPU and PSX runtime, knobs, mods, PsyCross, audio, input, windows and the native renderer.
@@ -2599,7 +2681,9 @@ static int run_host_init(const openpete_options_t* opts) {
     music_override_init();  /* logs the assets/music/ search path */
     sfx_pack_set_dir_override(opts->sfxpack_dir);
     sfx_pack_init();        /* assets/sfx/ drop-in replacement */
-    openpete_set_mute(opts->mute ? 1 : 0);
+    s_mute = opts->mute ? 1 : 0;   /* boot: this is the host loop's thread, before the loop */
+    apply_mute_gains();
+    live_knob_publish_shown();
 
     /* Host-backed memory card: apply CLI/env config before the game's
      * MemCardInit thunk fires (during the game's Initialize()). */
@@ -2821,6 +2905,29 @@ static void rumble_census_report(void) {
     }
 }
 
+/** @brief Poll the fullscreen gestures (Alt+Enter edge, the `fullscreen` binding) and route the toggle to the window's owner.
+ *
+ * SDL_SetWindowFullscreen belongs to the thread that owns the window: under
+ * the thread split this loop raises the request on its own edge and main
+ * consumes it; otherwise this loop consumes every raise (its own edge, a
+ * double-click, a request from another thread) and toggles.
+ * @param split Whether the thread split is active.
+ * @param prev_alt_enter Whether Alt+Enter was down at the previous poll.
+ * @return Whether Alt+Enter is down now. */
+static bool fullscreen_poll(bool split, bool prev_alt_enter)
+{
+    const bool alt_enter = openpete_keymap_scancode_down(SDL_SCANCODE_RETURN) &&
+                           (openpete_host_input_modstate() & SDL_KMOD_ALT) != 0;
+    const bool own_edge = (alt_enter && !prev_alt_enter) ||
+                          openpete_key_pressed(OPK_FULLSCREEN);
+    if (split) {
+        if (own_edge) SDL_SetAtomicInt(&g_native_fs_toggle_request, 1);
+    } else if (SDL_SetAtomicInt(&g_native_fs_toggle_request, 0) || own_edge) {
+        openpete_native_toggle_fullscreen();
+    }
+    return alt_enter;
+}
+
 /** @brief Run the worker half of the host: create the game fiber and drive the tick and present loop until exit.
  *
  * Split from run_host_init because SDL brings its video, gamepad and haptic
@@ -3005,6 +3112,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                    (double)op_period_ns(s_render_period) / 1e6,
                    (double)sim_period_ns / 1e6);
     }
+    live_knob_publish_shown();   /* the getters report the seeded pacer state */
 
     /* Was a deadline in force for the iteration that just ended? The loop's
      * own unlock verdict is not written until the tail, so iteration 1 has
@@ -3101,7 +3209,7 @@ static int run_host_loop(const openpete_options_t* opts) {
     int runahead_n = 0;
     openpete_state_mem_t* ra_snap = NULL;
     s_runahead_req   = (opts->runahead > 0) ? opts->runahead : 0;
-    s_runahead_live  = 0;
+    SDL_SetAtomicInt(&s_runahead_live, 0);
     s_runahead_dirty = (s_runahead_req > 0);
 
     /* Wall-clock pacing is now driven by openpete_ticker.h: each iteration
@@ -3372,6 +3480,7 @@ static int run_host_loop(const openpete_options_t* opts) {
         /* Live tick-scale change: re-derive every scaled period, then fall
          * through the render-fps dirty path below for the render period +
          * deadline re-anchor + interp-gate re-sync. */
+        live_knob_drain();
         if (s_tick_scale_dirty) {
             s_tick_scale_dirty = 0;
             tick_scale = s_tick_scale;
@@ -3449,7 +3558,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                 else
                     OPL_INFO_F("runahead", "disarmed");
             }
-            s_runahead_live = runahead_n;
+            SDL_SetAtomicInt(&s_runahead_live, runahead_n);
         }
         if (s_render_fps_dirty) {
             s_render_fps_dirty = 0;
@@ -4045,7 +4154,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                  * --mute, possibly toggled since via the dev overlay). */
                 {
                     extern int PsyX_SPUAL_SetMute(int on_off);
-                    PsyX_SPUAL_SetMute(g_paused ? 1 : (openpete_get_mute() || s_skip_mute));
+                    PsyX_SPUAL_SetMute(g_paused ? 1 : (s_mute || s_skip_mute));
                 }
                 /* A paused game is not producing actuator bytes, but the last
                  * pair it published would keep being re-issued; silence the
@@ -4229,21 +4338,7 @@ static int run_host_loop(const openpete_options_t* opts) {
              * Alt+Enter is hardcoded rather than a binding because the keymap
              * has no chord vocabulary; `fullscreen` is the rebindable single
              * key for it and ships unbound so nothing changes by default. */
-            bool alt_enter = openpete_keymap_scancode_down(SDL_SCANCODE_RETURN) &&
-                             (openpete_host_input_modstate() & SDL_KMOD_ALT) != 0;
-            if ((alt_enter && !prev_alt_enter) ||
-                openpete_key_pressed(OPK_FULLSCREEN) ||
-                g_native_fs_toggle_request) {
-                if (split) {
-                    /* SDL_SetWindowFullscreen belongs to the thread that owns
-                     * the window. Raise the request; main performs it. */
-                    g_native_fs_toggle_request = 1;
-                } else {
-                    g_native_fs_toggle_request = 0;
-                    openpete_native_toggle_fullscreen();
-                }
-            }
-            prev_alt_enter = alt_enter;
+            prev_alt_enter = fullscreen_poll(split, prev_alt_enter);
         }
 
         /* Input, as four explicit steps instead of PsyX_UpdateInput's two.
@@ -6658,8 +6753,7 @@ static int run_split_threaded(const openpete_options_t* opts)
         /* Window ops belong to this thread. The worker raises the flag (from
          * a binding or Alt+Enter) and main performs the SDL call. */
         int hp_window = 0;
-        if (g_native_fs_toggle_request) {
-            g_native_fs_toggle_request = 0;
+        if (SDL_SetAtomicInt(&g_native_fs_toggle_request, 0)) {
             hp_window = 1;
             OPL_INFO_F("native", "%s", "fullscreen toggle: main performing");
             openpete_native_toggle_fullscreen();

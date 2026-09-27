@@ -2,7 +2,7 @@
 # library: libclang 14
 # requirement: @brief of one sentence on one line on every function; @param per named parameter and @return on non-void for external linkage
 # written-by: hook
-# head: c2e012aeb3672e62bc30fcc89712f695c54cee0d
+# head: 1622bd5c87c84bd4d3596255992f2111b1a7e5bf
 file	function	form	accepted
 core/config/config.c	decision_for	none	
 core/config/config.c	dup_str	none	
@@ -128,8 +128,6 @@ core/diag/log_file.c	restore_fd2	none
 core/diag/log_file.c	strip_ansi	none	
 core/diag/log_file.c	write_all	none	
 core/diag/openpete_frame_time_log.c	now_unix_ns	none	
-core/diag/pace_log.c	census_lock	none	
-core/diag/pace_log.c	census_unlock	none	
 core/diag/pace_log.c	cpu_model	none	
 core/diag/pace_log.c	hist_bucket	none	
 core/diag/pace_log.c	openpete_pace_census_get	none	
@@ -616,7 +614,6 @@ core/renderer/native_render.c	bind_shadow_footprint	none
 core/renderer/native_render.c	box_hits_any	none	
 core/renderer/native_render.c	build_panel	none	
 core/renderer/native_render.c	bw_fam_census	none	
-core/renderer/native_render.c	bw_key_order_record	none	
 core/renderer/native_render.c	carry_census_flush	none	
 core/renderer/native_render.c	carry_census_note	none	
 core/renderer/native_render.c	carry_census_on	none	
@@ -679,18 +676,11 @@ core/renderer/native_render.c	openpete_native_render_swapchain_images	none
 core/renderer/native_render.c	openpete_native_scene_add_tri	none	
 core/renderer/native_render.c	openpete_native_scene_apply_overlay	none	
 core/renderer/native_render.c	openpete_native_scene_build_stamp	none	
-core/renderer/native_render.c	openpete_native_scene_next_target	none	
-core/renderer/native_render.c	openpete_native_scene_pick	none	
 core/renderer/native_render.c	openpete_native_scene_restore	plain	
-core/renderer/native_render.c	openpete_native_scene_retire	none	
-core/renderer/native_render.c	openpete_native_scene_ring_busy	none	
-core/renderer/native_render.c	openpete_native_scene_ring_flush	none	
 core/renderer/native_render.c	openpete_native_scene_ring_free	none	
-core/renderer/native_render.c	openpete_native_scene_ring_pending	none	
 core/renderer/native_render.c	openpete_native_scene_ring_report	none	
 core/renderer/native_render.c	openpete_native_scene_set_tag	none	
 core/renderer/native_render.c	openpete_native_scene_slot_info	none	
-core/renderer/native_render.c	openpete_native_scene_stamp_live	none	
 core/renderer/native_render.c	openpete_native_set_draw_clip	plain	
 core/renderer/native_render.c	openpete_native_set_osd_glyphs	none	
 core/renderer/native_render.c	openpete_native_set_shadow_decal_params	none	
@@ -702,7 +692,6 @@ core/renderer/native_render.c	openpete_phase_add	none
 core/renderer/native_render.c	openpete_phase_now_us	none	
 core/renderer/native_render.c	openpete_phase_set_count	none	
 core/renderer/native_render.c	openpete_phase_timers_on	none	
-core/renderer/native_render.c	osd_pub_mx	none	
 core/renderer/native_render.c	osd_slot_px	none	
 core/renderer/native_render.c	osd_ss_ready	none	
 core/renderer/native_render.c	overlay_layout_update	none	
@@ -725,9 +714,6 @@ core/renderer/native_render.c	psx_dither_append	none
 core/renderer/native_render.c	pt_cmp_u32	none	
 core/renderer/native_render.c	raster_quantize_prepend	none	
 core/renderer/native_render.c	recbuf_ensure	none	
-core/renderer/native_render.c	render_frame_common	none	
-core/renderer/native_render.c	render_scene_impl	none	
-core/renderer/native_render.c	ring_mx	none	
 core/renderer/native_render.c	scene_2d_count_fwd	none	
 core/renderer/native_render.c	scene_aura_boxes	none	
 core/renderer/native_render.c	scene_box_cfg	none	
@@ -745,7 +731,6 @@ core/renderer/native_render.c	scene_tri_key	none
 core/renderer/native_render.c	scene_vert_require_pvz	none	
 core/renderer/native_render.c	shot_write_offscreen	none	
 core/renderer/native_render.c	slot_grow	none	
-core/renderer/native_render.c	sync_vram_texture	none	
 core/renderer/native_render.c	sync_vram_texture_locked	none	
 core/renderer/native_render.c	tag_split_on	none	
 core/renderer/native_render.c	tag_tint_on	none	
@@ -763,7 +748,6 @@ core/renderer/native_render.c	ver_smoothstep	none
 core/renderer/native_render.c	ver_ss_ready	none	
 core/renderer/native_render.c	version_overlay_alpha	none	
 core/renderer/native_render.c	vram_journal_pop	none	
-core/renderer/native_render.c	vram_mx	none	
 core/renderer/native_render.c	wireframe_apply_pending	none	
 core/renderer/native_render.c	write_engine_block	none	
 core/renderer/native_terrain_cache.c	openpete_tercache_frame_globals	none	
@@ -891,9 +875,7 @@ core/runtime/run.c	gameplay_hash_log_emit_header	none
 core/runtime/run.c	load_cpu_seed	none	
 core/runtime/run.c	log_frame_on_exit	none	
 core/runtime/run.c	openpete_get_music_volume	none	
-core/runtime/run.c	openpete_get_mute	none	
 core/runtime/run.c	openpete_get_sfx_volume	none	
-core/runtime/run.c	openpete_get_tick_scale	none	
 core/runtime/run.c	openpete_get_vibration	none	
 core/runtime/run.c	openpete_on_sigint	none	
 core/runtime/run.c	openpete_presents_note_shot	none	
@@ -901,7 +883,6 @@ core/runtime/run.c	openpete_psxtrace_current_record	none
 core/runtime/run.c	openpete_psxtrace_on_anchor	none	
 core/runtime/run.c	openpete_psxtrace_skip_current_to	none	
 core/runtime/run.c	openpete_pump_events	none	
-core/runtime/run.c	openpete_runahead_get	none	
 core/runtime/run.c	openpete_set_music_volume	none	
 core/runtime/run.c	pace_record_present	none	
 core/runtime/run.c	position_log_emit	none	
@@ -962,7 +943,6 @@ core/ui/openpete_osd.c	openpete_osd_enabled	none
 core/ui/openpete_osd.c	openpete_osd_present_update	none	
 core/ui/openpete_osd.c	openpete_osd_set_anchor	none	
 core/ui/openpete_osd.c	openpete_osd_set_default_timeout_ms	none	
-core/ui/openpete_osd.c	osd_mx	none	
 core/ui/openpete_osd.c	ready_height	none	
 core/ui/overlay_anchor.c	lower_dash	none	
 games/common/features/levelwarp_ui.c	go_fire	none	

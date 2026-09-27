@@ -25,6 +25,7 @@
 #include "openpete_osd.h"
 #include "openpete_build_id.h"
 #include "openpete_knobs.h"   /* env-epoch for cached live knobs */
+#include "openpete_mutex_once.h"
 #include "openpete_devui.h"
 #include "openpete_mods.h"   /* openpete_mods_texture_get (mod-texture runs) */
 #include "openpete_fb_snapshot.h"   /* framebuffer-window snapshot runs */
@@ -448,6 +449,15 @@ static int scene_room(int n) { return scene_run_fit(&s_scene_v, "scene.tri", n) 
  * overwriting bytes a still-pending scene draws. */
 enum { SS_FREE = 0, SS_PENDING, SS_PRESENTING, SS_PRESENTED };
 #define SCENE_RING 48
+/* The blended-world emission order a game-render scene recorded
+ * (bw_key_order_record): keys in first-emission order and the terrain feed's
+ * rank among them. The compose sorts re-extracted blended blocks by it. */
+#define BW_KEY_MAX 16
+typedef struct {
+    uint32_t key[BW_KEY_MAX];      /* keys in first-emission order */
+    int      n;
+    int      ter_rank;             /* keys first emitted before the terrain feed began */
+} bw_order_t;
 typedef struct {
     scene_tri_t *tri; int n;        /* tri = tri_v's run, re-read after each growth */
     mod_fvec  tri_v;
@@ -461,6 +471,8 @@ typedef struct {
     openpete_shadow_decal_params shadow;
     openpete_shadow_footprint shadow_foot;   /* the player fan the decal re-rasterizes */
     openpete_occl_camera occl_cam;           /* camera this scene was projected from */
+    bw_order_t bw;                           /* blended-world order recorded at publish */
+    int       freeze_retained;               /* freeze-backdrop production mode at publish */
     openpete_glitch_walk_t gwalk;            /* census of the walk that built this scene */
     uint32_t  pctx_tick; float pctx_alpha; int pctx_canonical;
     openpete_mods_material_view_t matview;   /* interned material slots at publish */
@@ -473,8 +485,10 @@ typedef struct {
 } scene_slot_t;
 static scene_slot_t s_ring[SCENE_RING];
 static int          s_ring_head = -1;          /* last published */
-static SDL_Mutex   *s_ring_mx;
+static void        *s_ring_mx;   /* SDL_Mutex, openpete_mutex_once */
 static const scene_slot_t *s_ps_slot;          /* compose source: NULL = live */
+static const bw_order_t *ps_bw(void);
+static int ps_freeze_retained(void);
 static uint32_t ps_drawenv_clear(void);
 static const openpete_shadow_decal_params *ps_shadow(void);
 static const openpete_shadow_footprint *ps_shadow_foot(void);
@@ -945,36 +959,36 @@ static void fov_latch(void);
  * relative call order. */
 static int      blended_world_tri(const scene_tri_t* s);
 static unsigned bw_rank_key(const scene_tri_t* t);
-#define BW_KEY_MAX 16
-static uint32_t s_bw_key_order[BW_KEY_MAX];   /* keys in first-emission order */
-static int      s_bw_key_n;
-/* The terrain feed's place in that order: the number of recorded keys first
- * emitted before the feed began (the scene's first triangle marked ter_after or
- * tagged terrain; every key when neither occurs). */
-static int      s_bw_ter_rank;
-/** @brief Return a blended-world key's rank in the recorded first-emission order.
+/* The live record, written by the extracting thread. The terrain rank is the
+ * number of recorded keys first emitted before the feed began (the scene's
+ * first triangle marked ter_after or tagged terrain; every key when neither
+ * occurs). A published scene carries its own copy (scene_slot_t.bw), which
+ * the compose reads through ps_bw(). */
+static bw_order_t s_bw;
+/** @brief Return a blended-world key's rank in a recorded first-emission order.
  *
- * The rank is the key's position in the last game-render scene's
- * first-emission order, or s_bw_key_n for a key that scene never emitted;
- * such keys sort after every recorded key and keep their relative order.
+ * The rank is the key's position in the recording game-render scene's
+ * first-emission order, or O->n for a key that scene never emitted; such
+ * keys sort after every recorded key and keep their relative order.
+ * @param O The recorded order.
  * @param key Key from bw_rank_key.
- * @return The rank, 0 to s_bw_key_n. */
-static int bw_key_rank(uint32_t key) {
-    for (int i = 0; i < s_bw_key_n; i++) if (s_bw_key_order[i] == key) return i;
-    return s_bw_key_n;
+ * @return The rank, 0 to O->n. */
+static int bw_key_rank(const bw_order_t* O, uint32_t key) {
+    for (int i = 0; i < O->n; i++) if (O->key[i] == key) return i;
+    return O->n;
 }
+/** @brief Record a game-render scene's blended-world keys in first-emission order, and the terrain feed's rank, into s_bw. */
 static void bw_key_order_record(const scene_tri_t* sc, int n) {
-    s_bw_key_n = 0;
+    bw_order_t* O = &s_bw;
+    O->n = 0;
     int ter_rank = -1;
     for (int i = 0; i < n; i++) {
-        if (ter_rank < 0 && (sc[i].ter_after || (sc[i].tag >> 28) == 2u)) ter_rank = s_bw_key_n;
+        if (ter_rank < 0 && (sc[i].ter_after || (sc[i].tag >> 28) == 2u)) ter_rank = O->n;
         if (!blended_world_tri(&sc[i])) continue;
         const uint32_t k = bw_rank_key(&sc[i]);
-        int seen = 0;
-        for (int q = 0; q < s_bw_key_n; q++) if (s_bw_key_order[q] == k) { seen = 1; break; }
-        if (!seen && s_bw_key_n < BW_KEY_MAX) s_bw_key_order[s_bw_key_n++] = k;
+        if (bw_key_rank(O, k) == O->n && O->n < BW_KEY_MAX) O->key[O->n++] = k;
     }
-    s_bw_ter_rank = ter_rank < 0 ? s_bw_key_n : ter_rank;
+    O->ter_rank = ter_rank < 0 ? O->n : ter_rank;
 }
 
 /* 1 while the scene being accumulated is a sub-tick / lag re-extract's
@@ -4649,14 +4663,16 @@ static void vram_journal_apply(const vram_jentry_t *e)
 /* sync (guest side: drains the dirty rects, refreshes the mirror) and upload
  * (present side: records the mirror rows into the frame) may run on two
  * threads; the mirror ROWS are the payload, so the lock spans both bodies. */
-static SDL_Mutex *s_vram_mx;
-static SDL_Mutex *vram_mx(void) { if (!s_vram_mx) s_vram_mx = SDL_CreateMutex(); return s_vram_mx; }
+static void *s_vram_mx;   /* SDL_Mutex, openpete_mutex_once */
+/** @brief The VRAM mirror lock, created on first use without a creation race. */
+static SDL_Mutex *vram_mx(void) { return openpete_mutex_once(&s_vram_mx); }
 static void sync_vram_texture_locked(void);
+/** @brief Drain the dirty VRAM rects into the mirror under the VRAM lock (sync_vram_texture_locked). */
 static void sync_vram_texture(void)
 {
     SDL_LockMutex(vram_mx());
     sync_vram_texture_locked();
-    SDL_UnlockMutex(s_vram_mx);
+    SDL_UnlockMutex(vram_mx());
 }
 /* Guest-side entry for the eager producer: refresh the mirror while the
  * guest is idle so no VRAM write can land mid-drain. */
@@ -4834,7 +4850,7 @@ static void upload_synced_textures(void)
         rhi_update_rgba8(s_nr.dev, s_nr.ref_tex, s_nr.readback);
         s_ref_dirty = false;
     }
-    SDL_UnlockMutex(s_vram_mx);
+    SDL_UnlockMutex(vram_mx());
 }
 
 /** @brief Read PsyCross's finished image from its present FBO into the host readback buffer and mark it for upload.
@@ -6647,21 +6663,11 @@ static SDL_AtomicInt s_occl_suspend;             /* presents left of cut suspens
 static occl_meta_t s_occl_fifo[OCCL_FIFO_N];     /* affine+stamp queued with each copy */
 static unsigned    s_occl_fifo_head = 0, s_occl_fifo_tail = 0;
 
-/** @brief Return the mutex in slot, creating it on first use; concurrent first calls agree on one. */
-static SDL_Mutex *nr_mutex_once(void **slot)
-{
-    SDL_Mutex *m = (SDL_Mutex *)SDL_GetAtomicPointer(slot);
-    if (m) return m;
-    SDL_Mutex *fresh = SDL_CreateMutex();
-    if (SDL_CompareAndSwapAtomicPointer(slot, NULL, fresh)) return fresh;
-    SDL_DestroyMutex(fresh);
-    return (SDL_Mutex *)SDL_GetAtomicPointer(slot);
-}
 
 /** @brief Publish the presenting thread's decoded grid for the querying thread. */
 static void occl_grid_publish(void)
 {
-    SDL_Mutex *mx = nr_mutex_once(&s_occl_pub_mx);
+    SDL_Mutex *mx = openpete_mutex_once(&s_occl_pub_mx);
     SDL_LockMutex(mx);
     s_occl_pub = s_occl_dec;
     SDL_UnlockMutex(mx);
@@ -6675,7 +6681,7 @@ static const occl_grid_t *occl_grid_reader(void)
 {
     const int seq = SDL_GetAtomicInt(&s_occl_pub_seq);
     if (seq != s_occl_rd_seq) {
-        SDL_Mutex *mx = nr_mutex_once(&s_occl_pub_mx);
+        SDL_Mutex *mx = openpete_mutex_once(&s_occl_pub_mx);
         SDL_LockMutex(mx);
         s_occl_rd = s_occl_pub;
         SDL_UnlockMutex(mx);
@@ -6904,7 +6910,7 @@ int openpete_native_occl_grid_age(void)
 {
     /* Any thread (the present census asks too): read the published grid
      * under its mutex, not the querying thread's copy. */
-    SDL_Mutex *mx = nr_mutex_once(&s_occl_pub_mx);
+    SDL_Mutex *mx = openpete_mutex_once(&s_occl_pub_mx);
     SDL_LockMutex(mx);
     const int have = s_occl_pub.have;
     const unsigned stamp = s_occl_pub.stamp;
@@ -9240,7 +9246,7 @@ static void bw_draw_tercache(int c, int tercache_on) {
  * @return 0 before the feed, 1 a terrain triangle, 2 after the feed. */
 static int bw_ter_phase(const scene_tri_t* scene, int t, int replay) {
     if ((scene[t].tag >> 28) == 2u) return 1;
-    if (replay) return bw_key_rank(bw_rank_key(&scene[t])) < s_bw_ter_rank ? 0 : 2;
+    if (replay) return bw_key_rank(ps_bw(), bw_rank_key(&scene[t])) < ps_bw()->ter_rank ? 0 : 2;
     return scene[t].ter_after ? 2 : 0;
 }
 
@@ -9470,11 +9476,12 @@ static void bw_draw_order_dump(const scene_tri_t* scene, const int* idx, int n) 
  * @param idx Scene indices of the block, reordered in place.
  * @param n Block length. */
 static void bw_rank_sort(const scene_tri_t* scene, int* idx, int n) {
-    if (n <= 1 || s_bw_key_n <= 0) return;
+    const bw_order_t* O = ps_bw();
+    if (n <= 1 || O->n <= 0) return;
     int w = 0;
-    for (int r = 0; r <= s_bw_key_n; r++)
+    for (int r = 0; r <= O->n; r++)
         for (int i = 0; i < n; i++)
-            if (bw_key_rank(bw_rank_key(&scene[idx[i]])) == r) s_bw_sort_tmp[w++] = idx[i];
+            if (bw_key_rank(O, bw_rank_key(&scene[idx[i]])) == r) s_bw_sort_tmp[w++] = idx[i];
     if (w != n) return;   /* every triangle must land exactly once */
     memcpy(idx, s_bw_sort_tmp, (size_t)n * sizeof *idx);
 }
@@ -10355,7 +10362,7 @@ static bool draw_native_scene(bool full_extent)
     int freeze_first = -1;
     int frozen_ok = 0;
     (void)active_frozen_tex(&frozen_ok);
-    rhi_pipeline *freeze_pipe = s_freeze_retained ? s_nr.freeze_plain_pipe
+    rhi_pipeline *freeze_pipe = ps_freeze_retained() ? s_nr.freeze_plain_pipe
                                                  : s_nr.freeze_overlay_pipe;
     if ((scene_freeze & (1u << 31)) && frozen_ok && freeze_pipe
         && n + 6 <= s_cz_verts) {
@@ -10369,7 +10376,7 @@ static bool draw_native_scene(bool full_extent)
         uint32_t trgba = tr8 | (tg8 << 8) | (tb8 << 16) | (ta8 << 24);  /* byte order R,G,B,A */
         /* blit.frag multiplies the sample by the vertex colour, so retention
          * passes white: the frozen frame reaches the screen unaltered. */
-        if (s_freeze_retained) trgba = 0xFFFFFFFFu;
+        if (ps_freeze_retained()) trgba = 0xFFFFFFFFu;
         /* Fill the render rect (cover_rect = the --aspect display rect, fit into the
          * window). frozen_tex is captured at the MATCHING aspect — 4:3 in the default
          * /A-B path, or the Hor+ widescreen view in vk-widescreen (see compose_variant)
@@ -11293,13 +11300,49 @@ static void notex_apply_pending(void) {
  * nothing when empty (the game side caches the glyph models, so this is empty
  * only before the font has ever loaded — there is no bitmap fallback). Carries
  * the performance-stats readout; reusable for other text overlays. */
-static openpete_hud_vert s_overlay_glyph_verts[OVL_MAX_VERTS];
+/* Glyph list handoff. The stats readout, version line and settings menu
+ * lists are built on the sim thread and drawn on the presenting thread. A
+ * setter copies its list into the list's stage under s_glyph_mx and marks it
+ * changed; glyph_lists_latch, at the start of each present's compose, copies
+ * every changed stage into the arrays the draws read, under the same lock.
+ * A present therefore draws one whole list, never a count from one push
+ * with vertices from another. */
+static void *s_glyph_mx;   /* SDL_Mutex, openpete_mutex_once */
+typedef struct { openpete_hud_vert *stage; int stage_n; int changed; } glyph_stage_t;
+
+/** @brief Copy a glyph list into its stage under s_glyph_mx and mark it changed.
+ *
+ * @param st The list's stage.
+ * @param cap The list's capacity in vertices.
+ * @param verts The vertices; NULL or nverts <= 0 publishes an empty list.
+ * @param nverts The vertex count, clamped to 0..cap. */
+static void glyph_stage_push(glyph_stage_t *st, int cap, const openpete_hud_vert *verts, int nverts)
+{
+    if (nverts < 0 || !verts) nverts = 0;
+    if (nverts > cap) nverts = cap;
+    SDL_Mutex *mx = openpete_mutex_once(&s_glyph_mx);
+    SDL_LockMutex(mx);
+    if (nverts > 0) memcpy(st->stage, verts, (size_t)nverts * sizeof(verts[0]));
+    st->stage_n = nverts;
+    st->changed = 1;
+    SDL_UnlockMutex(mx);
+}
+
+/** @brief Copy a changed stage into the draw-side list; the caller holds s_glyph_mx. */
+static void glyph_stage_take(glyph_stage_t *st, openpete_hud_vert *dst, int *dst_n)
+{
+    if (!st->changed) return;
+    if (st->stage_n > 0) memcpy(dst, st->stage, (size_t)st->stage_n * sizeof(dst[0]));
+    *dst_n = st->stage_n;
+    st->changed = 0;
+}
+
+static openpete_hud_vert s_overlay_glyph_verts[OVL_MAX_VERTS];   /* draw side */
 static int               s_overlay_glyph_n = 0;
+static openpete_hud_vert s_overlay_glyph_stage_v[OVL_MAX_VERTS];
+static glyph_stage_t     s_overlay_glyph_stage = { s_overlay_glyph_stage_v, 0, 0 };
 void openpete_native_set_overlay_glyphs(const openpete_hud_vert *verts, int nverts) {
-    if (nverts < 0) nverts = 0;
-    if (nverts > OVL_MAX_VERTS) nverts = OVL_MAX_VERTS;
-    if (nverts > 0 && verts) memcpy(s_overlay_glyph_verts, verts, (size_t)nverts * sizeof(verts[0]));
-    s_overlay_glyph_n = nverts;
+    glyph_stage_push(&s_overlay_glyph_stage, OVL_MAX_VERTS, verts, nverts);
 }
 
 /* Mod draw-service overlay geometry (core/mods/mod_draw.c): rects + text
@@ -11332,8 +11375,10 @@ void openpete_native_set_mod_overlay(const openpete_hud_vert *verts, int nverts)
  * user-chosen anchor, they expire (OPENPETE_OSD_TIMEOUT_MAX_MS), and a
  * session-long one would hold a ring slot the whole time. This is bare text
  * at a fixed anchor, drawn through the shared glyph path. */
-static openpete_hud_vert s_ver_glyph_verts[VER_MAX_VERTS];
+static openpete_hud_vert s_ver_glyph_verts[VER_MAX_VERTS];   /* draw side */
 static int               s_ver_glyph_n = 0;
+static openpete_hud_vert s_ver_glyph_stage_v[VER_MAX_VERTS];
+static glyph_stage_t     s_ver_glyph_stage = { s_ver_glyph_stage_v, 0, 0 };
 /* Region extent as one packed 64-bit word, like the stats block's: the
  * builder writes it on the sim thread and the compose reads it on the present
  * thread, and a torn width/height pair would claim a different rect on the
@@ -11342,10 +11387,7 @@ static uint64_t          s_ver_extent = 0;
 
 void openpete_native_set_version_glyphs(const openpete_hud_vert *verts, int nverts,
                                         float region_w, float region_h) {
-    if (nverts < 0) nverts = 0;
-    if (nverts > VER_MAX_VERTS) nverts = VER_MAX_VERTS;
-    if (nverts > 0 && verts) memcpy(s_ver_glyph_verts, verts, (size_t)nverts * sizeof(verts[0]));
-    s_ver_glyph_n = nverts;
+    glyph_stage_push(&s_ver_glyph_stage, VER_MAX_VERTS, verts, nverts);
     if (region_w > 0.0f && region_h > 0.0f) {
         uint32_t bw, bh;
         memcpy(&bw, &region_w, sizeof bw);
@@ -11411,34 +11453,40 @@ float openpete_native_overlay_px_per_unit(void) {
 
 /* In-game menu glyph geometry (labels/values/title), pushed each frame by the
  * game-side builder. Drawn by draw_menu_overlay over the panel. */
-static openpete_hud_vert s_menu_glyph_verts[MENU_GLYPH_MAX];
+static openpete_hud_vert s_menu_glyph_verts[MENU_GLYPH_MAX];   /* draw side */
 static int               s_menu_glyph_n = 0;
+static openpete_hud_vert s_menu_glyph_stage_v[MENU_GLYPH_MAX];
+static glyph_stage_t     s_menu_glyph_stage = { s_menu_glyph_stage_v, 0, 0 };
 void openpete_native_set_menu_glyphs(const openpete_hud_vert *verts, int nverts) {
-    if (nverts < 0) nverts = 0;
-    if (nverts > MENU_GLYPH_MAX) nverts = MENU_GLYPH_MAX;
-    if (nverts > 0 && verts) memcpy(s_menu_glyph_verts, verts, (size_t)nverts * sizeof(verts[0]));
-    s_menu_glyph_n = nverts;
+    glyph_stage_push(&s_menu_glyph_stage, MENU_GLYPH_MAX, verts, nverts);
+}
+
+/** @brief Take every changed glyph list (stats readout, version line, menu) for this present's draws. */
+static void glyph_lists_latch(void)
+{
+    SDL_Mutex *mx = openpete_mutex_once(&s_glyph_mx);
+    SDL_LockMutex(mx);
+    glyph_stage_take(&s_overlay_glyph_stage, s_overlay_glyph_verts, &s_overlay_glyph_n);
+    glyph_stage_take(&s_ver_glyph_stage, s_ver_glyph_verts, &s_ver_glyph_n);
+    glyph_stage_take(&s_menu_glyph_stage, s_menu_glyph_verts, &s_menu_glyph_n);
+    SDL_UnlockMutex(mx);
 }
 
 /* ---- OSD toast geometry channel ----------------------------------------
- * The one publish in this file that is SYNCHRONIZED, and deliberately so.
- * Its siblings above are plain memcpys into file statics with the count
- * stored separately, which is survivable for them: the perf readout rebuilds
- * only when its text changes and the menu builder runs only while the menu is
- * open, so a torn push is a rare one-present artifact. The OSD re-emits on
- * every sim tick a toast is live, and its table is what the compositor
- * resolves toast ids through — a half-copied table doesn't smear a glyph, it
- * points a quad at another toast's slot. Geometry and table therefore move
- * together under one lock. */
-static SDL_Mutex        *s_osd_mx;
+ * Synchronized like the glyph lists above, with its own lock: the OSD
+ * re-emits on every sim tick a toast is live, and its table is what the
+ * compositor resolves toast ids through — a half-copied table doesn't smear
+ * a glyph, it points a quad at another toast's slot. Geometry and table
+ * therefore move together under one lock. */
+static void             *s_osd_mx;   /* SDL_Mutex, openpete_mutex_once */
 static openpete_hud_vert s_osd_glyph_verts[OSD_GLYPH_MAX];
 static int               s_osd_glyph_n = 0;
 static openpete_osd_slot_t s_osd_slots[OPENPETE_OSD_MAX];
 static int               s_osd_slot_n = 0;
 
+/** @brief The OSD publish lock, created on first use without a creation race. */
 static SDL_Mutex *osd_pub_mx(void) {
-    if (!s_osd_mx) s_osd_mx = SDL_CreateMutex();
-    return s_osd_mx;
+    return openpete_mutex_once(&s_osd_mx);
 }
 
 void openpete_native_set_osd_glyphs(const openpete_hud_vert *verts, int nverts,
@@ -13535,9 +13583,9 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref);
 static void pt_dump_maybe(int rendered, unsigned frame, uint32_t stamp, uint32_t freeze, int kind,
                           int64_t target_ns, double alpha, int paired, int ntri);
 static int  s_last_frame_presented;
+/** @brief The scene ring lock, created on first use without a creation race. */
 static SDL_Mutex *ring_mx(void) {
-    if (!s_ring_mx) s_ring_mx = SDL_CreateMutex();
-    return s_ring_mx;
+    return openpete_mutex_once(&s_ring_mx);
 }
 static void ps_apply_geometry(void) {
     const int *g = s_ps_slot ? s_ps_slot->geom : s_geom_in;
@@ -13549,6 +13597,10 @@ static uint32_t ps_drawenv_clear(void)  { return s_ps_slot ? s_ps_slot->drawenv_
 static const openpete_shadow_decal_params *ps_shadow(void) { return s_ps_slot ? &s_ps_slot->shadow : &s_shadow_decal; }
 static const openpete_shadow_footprint *ps_shadow_foot(void) { return s_ps_slot ? &s_ps_slot->shadow_foot : &s_shadow_foot; }
 static const openpete_occl_camera *ps_occl_cam(void) { return s_ps_slot ? &s_ps_slot->occl_cam : &s_occl_cam_live; }
+/** @brief The blended-world order the composed scene recorded: the slot's copy, or the live record inline. */
+static const bw_order_t *ps_bw(void) { return s_ps_slot ? &s_ps_slot->bw : &s_bw; }
+/** @brief The freeze-backdrop production mode of the composed scene: the slot's copy, or the live mode inline. */
+static int ps_freeze_retained(void) { return s_ps_slot ? s_ps_slot->freeze_retained : s_freeze_retained; }
 static unsigned ps_frame(void)          { return s_ps_slot ? s_ps_slot->frame : s_scene_frame; }
 
 /* Stamp the terrain builder tags its build with: the scene id while an eager
@@ -13574,9 +13626,9 @@ int openpete_native_scene_publish(int64_t target_ns, int kind, double alpha, int
         const int cand = (s_ring_head + i) % SCENE_RING;
         if (s_ring[cand].state == SS_FREE) { idx = cand; break; }
     }
-    if (idx < 0) { s_ring_census.refused_full++; SDL_UnlockMutex(s_ring_mx); s_eager_stamp = 0; return -1; }
+    if (idx < 0) { s_ring_census.refused_full++; SDL_UnlockMutex(ring_mx()); s_eager_stamp = 0; return -1; }
     scene_slot_t *sl = &s_ring[idx];
-    SDL_UnlockMutex(s_ring_mx);   /* the slot is FREE: only this thread publishes */
+    SDL_UnlockMutex(ring_mx());   /* the slot is FREE: only this thread publishes */
     if (!slot_grow(sl, s_scene_n)) { s_eager_stamp = 0; return -1; }
     if (s_scene_n > 0) memcpy(sl->tri, s_scene, (size_t)s_scene_n * sizeof(scene_tri_t));
     sl->n = s_scene_n; sl->bg = s_scene_bg; sl->fade = s_scene_fade; sl->freeze = s_scene_freeze;
@@ -13596,6 +13648,8 @@ int openpete_native_scene_publish(int64_t target_ns, int kind, double alpha, int
     sl->shadow = s_shadow_decal;
     sl->shadow_foot = s_shadow_foot;
     sl->occl_cam = s_occl_cam_live;
+    sl->bw = s_bw;
+    sl->freeze_retained = s_freeze_retained;
     /* The walk ran on this thread just now; the compose may run on another,
      * a tick later, so the census travels with the scene rather than being
      * read live at compose time. */
@@ -13606,11 +13660,11 @@ int openpete_native_scene_publish(int64_t target_ns, int kind, double alpha, int
     sl->target_ns = target_ns; sl->alpha = alpha; sl->paired = paired; sl->kind = kind;
     sl->presented_serial = 0;
     s_eager_stamp = 0;
-    SDL_LockMutex(s_ring_mx);
+    SDL_LockMutex(ring_mx());
     sl->state = SS_PENDING;
     s_ring_head = idx;
     s_ring_census.published++;
-    SDL_UnlockMutex(s_ring_mx);
+    SDL_UnlockMutex(ring_mx());
     return idx;
 }
 /* Earliest pending target (0 = none pending). */
@@ -13620,7 +13674,7 @@ int64_t openpete_native_scene_next_target(void) {
     for (int i = 0; i < SCENE_RING; i++)
         if (s_ring[i].state == SS_PENDING && (t == 0 || s_ring[i].target_ns < t))
             t = s_ring[i].target_ns;
-    SDL_UnlockMutex(s_ring_mx);
+    SDL_UnlockMutex(ring_mx());
     return t;
 }
 /* Pick the pending scene whose target is nearest `at`; every pending scene
@@ -13644,7 +13698,7 @@ int openpete_native_scene_pick(int64_t at) {
             }
         s_ring[best].state = SS_PRESENTING;
     }
-    SDL_UnlockMutex(s_ring_mx);
+    SDL_UnlockMutex(ring_mx());
     return best;
 }
 /* Called by the present thread right after every rhi_begin_frame: frames
@@ -13656,7 +13710,7 @@ void openpete_native_scene_retire(uint64_t begun_serial) {
         if (s_ring[i].state == SS_PRESENTED &&
             s_ring[i].presented_serial + RHI_FRAMES_IN_FLIGHT <= begun_serial)
             s_ring[i].state = SS_FREE;
-    SDL_UnlockMutex(s_ring_mx);
+    SDL_UnlockMutex(ring_mx());
 }
 /* True while any unretired scene carries this build stamp. */
 int openpete_native_scene_stamp_live(uint32_t stamp) {
@@ -13664,7 +13718,7 @@ int openpete_native_scene_stamp_live(uint32_t stamp) {
     SDL_LockMutex(ring_mx());
     for (int i = 0; i < SCENE_RING && !live; i++)
         live = s_ring[i].state != SS_FREE && s_ring[i].stamp == stamp;
-    SDL_UnlockMutex(s_ring_mx);
+    SDL_UnlockMutex(ring_mx());
     return live;
 }
 /* Drop every pending scene (guest discontinuity: savestate, rewind, level
@@ -13673,20 +13727,20 @@ void openpete_native_scene_ring_flush(void) {
     SDL_LockMutex(ring_mx());
     for (int i = 0; i < SCENE_RING; i++)
         if (s_ring[i].state == SS_PENDING) { s_ring[i].state = SS_FREE; s_ring_census.superseded++; }
-    SDL_UnlockMutex(s_ring_mx);
+    SDL_UnlockMutex(ring_mx());
 }
 int openpete_native_scene_ring_pending(void) {
     int n = 0;
     SDL_LockMutex(ring_mx());
     for (int i = 0; i < SCENE_RING; i++) n += s_ring[i].state == SS_PENDING;
-    SDL_UnlockMutex(s_ring_mx);
+    SDL_UnlockMutex(ring_mx());
     return n;
 }
 int openpete_native_scene_ring_busy(void) {
     int n = 0;
     SDL_LockMutex(ring_mx());
     for (int i = 0; i < SCENE_RING; i++) n += s_ring[i].state != SS_FREE;
-    SDL_UnlockMutex(s_ring_mx);
+    SDL_UnlockMutex(ring_mx());
     return n;
 }
 void openpete_native_scene_slot_info(int slot, int64_t *target_ns, double *alpha, int *paired, int *kind) {
@@ -13828,6 +13882,12 @@ static void pt_dump_maybe(int rendered, unsigned frame, uint32_t stamp, uint32_t
     }
 }
 
+/** @brief Compose one ring slot (or the live scene for slot -1) and present it directly or into a stage image.
+ *
+ * @param slot Ring slot, or -1 for the live accumulator.
+ * @param stage Stage image index, or -1 to present directly.
+ * @param record_pts_us Capture instant for --record.
+ * @return 1 when the render went out, 0 when it was declined. */
 static int render_scene_impl(int slot, int stage, uint64_t record_pts_us)
 {
     if (!s_nr.enabled || s_nr.headless || slot < 0 || slot >= SCENE_RING) return 0;
@@ -13861,7 +13921,7 @@ static int render_scene_impl(int slot, int stage, uint64_t record_pts_us)
     SDL_LockMutex(ring_mx());
     if (did) { sl->state = SS_PRESENTED; sl->presented_serial = after; s_ring_census.presented++; }
     else      sl->state = SS_FREE;
-    SDL_UnlockMutex(s_ring_mx);
+    SDL_UnlockMutex(ring_mx());
     return did;
 }
 
@@ -13914,10 +13974,15 @@ int openpete_native_present_stage_release(void)
 int      openpete_native_stage_count(void) { return s_nr.dev ? rhi_stage_count() : 0; }
 uint32_t openpete_native_stage_gen(void)   { return s_nr.dev ? rhi_stage_gen(s_nr.dev) : 0; }
 
+/** @brief Record one present: apply the composed scene's geometry, take the glyph lists, adopt a settled window size, and run the passes and compose.
+ *
+ * @param record_pts_us Capture instant for --record.
+ * @param have_ref Whether PsyCross produced a reference image this present; without one the estimated reference extent is used only for the native-only layout. */
 static void render_frame_common(uint64_t record_pts_us, bool have_ref)
 {
     s_last_frame_presented = 0;
     ps_apply_geometry();
+    glyph_lists_latch();
     /* Detect window-size changes WITHOUT polling SDL events (the host loop
      * owns the event queue, and stealing events would starve PsyCross input). */
     int pw = 0, ph = 0;

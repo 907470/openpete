@@ -6,6 +6,7 @@
  * decides WHEN is driven by the `now` the present thread passes in, so the
  * whole module runs on a synthetic clock in a test. */
 
+#include "openpete_mutex_once.h"
 #include "openpete_osd.h"
 #include "openpete_overlay_anchor.h"
 #include "openpete_fiber.h"   /* openpete_speculative / openpete_replaying */
@@ -54,14 +55,10 @@ typedef struct {
     uint32_t last_seq;         /* for LRU replacement when the table is full */
 } bucket_t;
 
-static SDL_Mutex *s_mx;
+static void *s_mx;   /* SDL_Mutex, openpete_mutex_once */
+/** @brief The toast lock, created on first use without a creation race: the first notify() can come from any thread. */
 static SDL_Mutex *osd_mx(void) {
-    /* Lazily created. The first notify() can come from any thread, but it
-     * cannot RACE the first one: the configuration setters run at
-     * options-apply time on the host loop, before mods or the sim thread
-     * exist, and they take the lock. */
-    if (!s_mx) s_mx = SDL_CreateMutex();
-    return s_mx;
+    return openpete_mutex_once(&s_mx);
 }
 
 static toast_t   s_ring[OPENPETE_OSD_MAX];

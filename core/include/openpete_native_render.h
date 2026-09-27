@@ -1658,8 +1658,18 @@ uint32_t openpete_native_scene_build_stamp(void);
  * @return The slot index, or -1 when no slot is free or the slot could not
  *         be sized: a refused publish, never a truncated scene. */
 int      openpete_native_scene_publish(int64_t target_ns, int kind, double alpha, int paired);
-int64_t  openpete_native_scene_next_target(void);      /* earliest pending, 0 = none */
-int      openpete_native_scene_pick(int64_t at);       /* nearest pending -> PRESENTING */
+/** @brief Return the earliest display target among the pending ring scenes.
+ *
+ * @return The target in op_now nanoseconds, or 0 when none is pending. */
+int64_t  openpete_native_scene_next_target(void);
+/** @brief Pick the pending scene whose target is nearest at; it becomes PRESENTING.
+ *
+ * Every pending scene older than the pick (by scene id) retires unpresented
+ * as superseded. Alpha binds here, at consume time: the scene shown is the
+ * animation moment nearest the flip.
+ * @param at The display instant, op_now nanoseconds.
+ * @return The picked slot, or -1 when none is pending. */
+int      openpete_native_scene_pick(int64_t at);
 int      openpete_native_render_scene(int slot, uint64_t record_pts_us);
 /** @brief Compose a ring slot into a stage image for a later present.
  *
@@ -1679,10 +1689,26 @@ int      openpete_native_present_stage_release(void);      /* give back a held a
 void     openpete_native_display_claim(void);              /* seam fence: calling thread owns the display now */
 int      openpete_native_stage_count(void);
 uint32_t openpete_native_stage_gen(void);                  /* bumps when the stages are rebuilt */
+/** @brief Free every presented scene whose frame is RHI_FRAMES_IN_FLIGHT or more behind the frame just begun.
+ *
+ * Called by the presenting thread right after each rhi_begin_frame: those
+ * frames' fences have been waited, so their scenes' GPU reads are over.
+ * @param begun_serial The serial of the frame just begun. */
 void     openpete_native_scene_retire(uint64_t begun_serial);
+/** @brief Return whether any unretired ring scene carries a terrain-cache build stamp.
+ *
+ * @param stamp The build stamp.
+ * @return 1 while a pending, presenting or presented scene holds it. */
 int      openpete_native_scene_stamp_live(uint32_t stamp);
+/** @brief Drop every pending ring scene (guest discontinuity: savestate, rewind, level load); a scene mid-present finishes. */
 void     openpete_native_scene_ring_flush(void);
+/** @brief Return the number of pending ring scenes.
+ *
+ * @return The count. */
 int      openpete_native_scene_ring_pending(void);
+/** @brief Return the number of ring slots not free (pending, presenting or presented).
+ *
+ * @return The count. */
 int      openpete_native_scene_ring_busy(void);
 void     openpete_native_scene_slot_info(int slot, int64_t *target_ns, double *alpha, int *paired, int *kind);
 void     openpete_native_scene_ring_report(void);
