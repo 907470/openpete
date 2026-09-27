@@ -78,6 +78,10 @@ ram-*.bin
 *-ram-dump*
 !*-ram-dump*.lua
 !*-ram-dump*.py
+# Hang-watchdog dumps (hang-ram.bin holds guest RAM) and numpy arrays the
+# capture analysis writes beside its images.
+hang-*.bin
+*.npy
 
 # Oracle goldens are derived from the disc and the pinned DuckStation fork
 # (games/<game>/oracle.conf); the gate captures them on first run.
