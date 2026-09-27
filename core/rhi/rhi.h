@@ -94,6 +94,11 @@ rhi_device *rhi_create_headless(const char *app_name, uint32_t width, uint32_t h
  * @return true for a headless device; false for a windowed one or NULL. */
 bool        rhi_is_headless(const rhi_device *dev);
 
+/** @brief Wait the device idle and destroy every object the RHI owns, then the device and the instance.
+ *
+ * Textures, pipelines and UBOs created by callers are destroyed by the
+ * callers first. NULL is ignored.
+ * @param dev Device to destroy. */
 void        rhi_destroy(rhi_device *dev);
 
 /** @brief Return the GPU's maximum 2D image dimension (VkPhysicalDeviceLimits.maxImageDimension2D).
@@ -1243,6 +1248,15 @@ void rhi_update_rgba8(rhi_device *dev, rhi_texture *tex, const void *pixels);
  * as rhi_update_rgba8; rects that overflow the staging slot are dropped
  * (re-queue them next frame). At most 96 rects per call. */
 typedef struct { const void *pixels; int x, y, w, h; } rhi_tex_rect_src;
+/** @brief Upload tight RGBA8 sub-rects into a texture in one barrier pair.
+ *
+ * Rects are taken in order until the next would overflow an image-sized
+ * payload or 96 rects; the rest are not uploaded. In-frame and one-shot
+ * behaviour as rhi_update_rgba8.
+ * @param dev Device.
+ * @param tex Sampled texture; NULL or a render target is ignored.
+ * @param rects Rects with their pixels.
+ * @param nrects Rect count. */
 void rhi_update_rgba8_rects(rhi_device *dev, rhi_texture *tex,
                             const rhi_tex_rect_src *rects, int nrects);
 

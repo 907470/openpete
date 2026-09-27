@@ -212,7 +212,7 @@ static struct {
     int      on;             /* -1 until the env is read */
     int64_t  tex_live;       /* create_sampled_image textures not yet destroyed */
     int64_t  tex_dev_bytes;  /* their device-local image memory */
-    int64_t  tex_host_bytes; /* their host staging (per-texture buffers and arenas) */
+    int64_t  tex_host_bytes; /* host staging held for texture uploads (the upload ring) */
     uint64_t queue_idles;    /* vkQueueWaitIdle calls */
     uint64_t pipe_builds;    /* vkCreateGraphicsPipelines calls */
     uint64_t pipe_ns;        /* wall time inside them */
@@ -291,6 +291,15 @@ static VkResult fence_result(VkResult r, const char *where)
 
 /* Two-sampler sets one frame slot may take (rhi_bind_vram_depth_pair). */
 #define RHI_PAIR_SETS_MAX 32
+
+/* One host-visible chunk of the device upload ring (stage_acquire). */
+struct rhi_stage_chunk {
+    rhi_buffer            *buf;
+    size_t                 cap, used;
+    struct rhi_stage_chunk *next;
+};
+
+static void record_pending_inits(rhi_device *dev);
 
 struct rhi_device {
     struct SDL_Window *window;
@@ -517,6 +526,15 @@ struct rhi_device {
      * slot's fence has retired (begin_frame_impl), so a set is never
      * rewritten while a recorded draw still reads it. */
     VkDescriptorSetLayout pair_set_layout;
+    /* Device-wide upload ring for in-frame texture uploads: one chunk list
+     * per frame slot, its cursors reset on the slot's first use in a new
+     * frame (the slot's fence has retired it). A request no chunk fits
+     * appends a chunk of max(RHI_UPLOAD_CHUNK, need) bytes; chunks live
+     * until rhi_destroy, so a range handed out earlier in the frame stays
+     * valid and two uploads in one frame never share bytes. */
+    struct rhi_stage_chunk *up_ring[RHI_FRAMES_IN_FLIGHT];
+    uint64_t        up_serial[RHI_FRAMES_IN_FLIGHT];
+    struct rhi_texture *init_head;   /* textures awaiting their initial transition */
     VkDescriptorSet pair_sets[RHI_FRAMES_IN_FLIGHT][RHI_PAIR_SETS_MAX];
     uint32_t        pair_alloc[RHI_FRAMES_IN_FLIGHT]; /* sets allocated per slot */
     uint32_t        pair_used[RHI_FRAMES_IN_FLIGHT];  /* sets taken this frame   */
@@ -661,22 +679,13 @@ struct rhi_texture {
     VkDeviceMemory  mem;
     VkImageView     view;
     VkDescriptorSet set;       /* points at (view, dev->vram_sampler) */
-    rhi_buffer     *staging;   /* host-visible upload buffer (NULL for render targets) */
-    /* Per-frame staging arena for IN-FRAME uploads (rhi_update_vram/rgba8
-     * called between rhi_begin_frame and the first render pass): the copy is
-     * recorded into the frame's own command buffer and executes at submit,
-     * so the payload must stay untouched until then and the previous frame
-     * may still be reading its own slot — one arena per frame in flight,
-     * created lazily on first in-frame update. Within one frame every upload
-     * to this texture takes a DISJOINT range (bump cursor, reset when the
-     * frame serial moves on): two uploads in one frame each keep their bytes,
-     * where a single reused slot let the second memcpy overwrite the first
-     * payload before the GPU copied it. A chunk that cannot hold a request
-     * is left in place and a larger one is appended; chunks are never freed
-     * mid-life, so a range recorded earlier this frame stays valid.
-     * `staging` stays the one-shot (init-time, blocking) path. */
-    struct rhi_stage_chunk *stage_arena[RHI_FRAMES_IN_FLIGHT];
-    uint64_t        stage_serial[RHI_FRAMES_IN_FLIGHT];  /* frame serial the arena's cursors belong to */
+    bool            uploadable; /* a sampled image (create_sampled_image), not a render target */
+    /* Created while a frame was recording: the UNDEFINED -> SHADER_READ_ONLY
+     * transition is recorded into that frame's command buffer before its
+     * next render pass or its end (record_pending_inits), unless an upload
+     * transitions it first. Linked from dev->init_head. */
+    struct rhi_texture *init_next;
+    bool            init_pending;
     uint32_t        width, height;
     uint32_t        bpp;       /* bytes per pixel (2 = R16_UINT VRAM, 4 = RGBA8) */
     VkImageLayout   layout;    /* current layout, for re-upload transitions */
@@ -697,7 +706,7 @@ struct rhi_texture {
     VkImageView     rt_depth_sample_view;
     VkDescriptorSet depth_set;
     bool            census;    /* counted in s_census (create_sampled_image) */
-    int64_t         census_dev_bytes, census_host_bytes;
+    int64_t         census_dev_bytes;
     bool            depth_readable; /* depth image carries TRANSFER_SRC
                                      * (rhi_read_render_target_depth) */
     rhi_depth_class depth_class; /* the depth convention of its pass (SCENE default) */
@@ -2418,6 +2427,19 @@ bool rhi_is_headless(const rhi_device *dev)
     return dev && dev->headless;
 }
 
+/** @brief Destroy every chunk of the device upload ring.
+ *
+ * @param dev Device, idle. */
+static void upload_ring_free(rhi_device *dev)
+{
+    for (int i = 0; i < RHI_FRAMES_IN_FLIGHT; i++) {
+        for (struct rhi_stage_chunk *c = dev->up_ring[i], *n; c; c = n) {
+            n = c->next; rhi_destroy_buffer(dev, c->buf); free(c);
+        }
+        dev->up_ring[i] = NULL;
+    }
+}
+
 void rhi_destroy(rhi_device *dev)
 {
     if (ring_gen_dbg())
@@ -2428,6 +2450,7 @@ void rhi_destroy(rhi_device *dev)
     if (dev->device) { vkDeviceWaitIdle(dev->device); rhi_balloon_free(dev); retired_reclaim(dev, true); }
 
     if (dev->readback_buf) { rhi_destroy_buffer(dev, dev->readback_buf); dev->readback_buf = NULL; }
+    upload_ring_free(dev);
     for (int i = 0; i < RHI_FRAMES_IN_FLIGHT; i++) {
         if (dev->readback_ring[i].staging) {
             rhi_destroy_buffer(dev, dev->readback_ring[i].staging);
@@ -2874,6 +2897,7 @@ void rhi_begin_offscreen(rhi_device *dev, float r, float g, float b, float a)
         .clearValueCount = 2,
         .pClearValues = cv,
     };
+    record_pending_inits(dev);
     vkCmdBeginRenderPass(dev->cmd[dev->frame], &rp, VK_SUBPASS_CONTENTS_INLINE);
     dev->cur_extent = dev->sc_extent;   /* render area of this (offscreen) pass */
     dev->cur_depth_clear = cv[1].depthStencil.depth;
@@ -2920,6 +2944,7 @@ void rhi_begin_offscreen_load(rhi_device *dev)
         .clearValueCount = 2,
         .pClearValues = cv,
     };
+    record_pending_inits(dev);
     vkCmdBeginRenderPass(dev->cmd[dev->frame], &rp, VK_SUBPASS_CONTENTS_INLINE);
     dev->cur_extent = dev->sc_extent;
     dev->cur_depth_clear = cv[1].depthStencil.depth;
@@ -3021,6 +3046,7 @@ void rhi_end_frame(rhi_device *dev)
     seam_check("end_frame");
     if (!dev->frame_active) return;
     VkCommandBuffer cb = dev->cmd[dev->frame];
+    record_pending_inits(dev);
     vkEndCommandBuffer(cb);
 
     /* Headless: submit the recorded work with no swapchain semaphores and no
@@ -3140,6 +3166,7 @@ void rhi_end_frame_to_stage(rhi_device *dev, int stage)
                   VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
                   VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
     dev->stage_layout[stage] = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    record_pending_inits(dev);
     vkEndCommandBuffer(cb);
     /* No swapchain image was acquired for this frame, so nothing to wait on
      * or signal: the fence alone gates the slot's reuse. */
@@ -3771,15 +3798,17 @@ void rhi_destroy_buffer(rhi_device *dev, rhi_buffer *buf)
 /* Sampled textures: the R16_UINT VRAM model + RGBA8 (frame readback)  */
 /* ------------------------------------------------------------------ */
 
-/** @brief Create a device-local sampled 2D image of `fmt` with a staging buffer and a descriptor set.
+/** @brief Create a device-local sampled 2D image of `fmt` with a descriptor set.
  *
- * The staging buffer is host-visible and holds one full image (width *
- * height * bpp bytes) for uploads. The descriptor set binds the image view
+ * No host staging is kept: in-frame uploads take the device upload ring and
+ * out-of-frame uploads a temporary buffer. The descriptor set binds the image view
  * with the shared NEAREST sampler; its layout (one combined image sampler at
  * binding 0) is format-agnostic, so it serves the VRAM (usampler2D) and the
- * RGBA8 (sampler2D) shaders alike. The image is transitioned to
- * SHADER_READ_ONLY_OPTIMAL before return, so it is sampleable before its
- * first upload.
+ * RGBA8 (sampler2D) shaders alike. Outside a frame the image is
+ * transitioned to SHADER_READ_ONLY_OPTIMAL by a one-shot submit before
+ * return; inside a frame the transition is recorded into the frame's
+ * command buffer before its next render pass, so it is sampleable before
+ * its first upload either way without draining the queue.
  * @param dev Device the image is created on.
  * @param width Width in pixels.
  * @param height Height in pixels.
@@ -3843,12 +3872,7 @@ static rhi_texture *create_sampled_image(rhi_device *dev, uint32_t width,
         RHI_LOG("vram vkCreateImageView failed\n"); goto fail;
     }
 
-    t->staging = create_host_buffer(dev, (size_t)width * height * bpp,
-                                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                    /*prefer_cached=*/false);
-    if (!t->staging) { RHI_LOG("staging alloc failed\n"); goto fail; }
-    t->census_host_bytes += (int64_t)width * height * bpp;
-    s_census.tex_host_bytes += (int64_t)width * height * bpp;
+    t->uploadable = true;
 
     /* Allocate + point a descriptor set at (this view, the shared sampler). */
     VkDescriptorSetAllocateInfo dsi = {
@@ -3873,9 +3897,17 @@ static rhi_texture *create_sampled_image(rhi_device *dev, uint32_t width,
     };
     vkUpdateDescriptorSets(dev->device, 1, &w, 0, NULL);
 
-    /* Transition to SHADER_READ_ONLY so the texture is always in a valid
-     * sampling layout, even before the first upload. */
+    /* The image must be in SHADER_READ_ONLY before any pass can sample it,
+     * upload or not. Inside a frame the transition joins the frame's
+     * command buffer (record_pending_inits); outside one it is a one-shot. */
+    if (dev->frame_active) {
+        t->init_pending = true;
+        t->init_next = dev->init_head;
+        dev->init_head = t;
+        return t;
+    }
     VkCommandBuffer cb = one_shot_begin(dev);
+    if (!cb) goto fail;
     image_barrier(cb, t->image, VK_IMAGE_LAYOUT_UNDEFINED,
                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                   0, VK_ACCESS_SHADER_READ_BIT,
@@ -4176,6 +4208,7 @@ void rhi_begin_render_target(rhi_device *dev, rhi_texture *rt,
         .renderArea = { .offset = {0, 0}, .extent = ext },
         .clearValueCount = 2, .pClearValues = cv,
     };
+    record_pending_inits(dev);
     vkCmdBeginRenderPass(dev->cmd[dev->frame], &rp, VK_SUBPASS_CONTENTS_INLINE);
     dev->cur_extent = ext;   /* render area of this (render-target) pass */
     dev->cur_depth_clear = cv[1].depthStencil.depth;
@@ -4233,36 +4266,34 @@ void rhi_clear_stencil(rhi_device *dev)
     vkCmdClearAttachments(dev->cmd[dev->frame], 1, &att, 1, &rect);
 }
 
-struct rhi_stage_chunk {
-    rhi_buffer            *buf;
-    size_t                 cap, used;
-    struct rhi_stage_chunk *next;
-};
+/* Smallest chunk the device upload ring allocates. A whole-VRAM R16
+ * upload (1024x512x2) fits one chunk; larger requests get a chunk of their
+ * own size. */
+#define RHI_UPLOAD_CHUNK ((size_t)4 << 20)
 
-/** @brief Hand out a `need`-byte range of host-visible staging for an in-frame upload to `tex`.
+/** @brief Hand out a `need`-byte range of the device upload ring for an in-frame upload.
  *
- * The range is disjoint from every range handed out for this texture in the
- * current frame. The texture keeps a chunk list per frame slot, reset on the
- * slot's first use in a new frame (the slot's fence has retired it); a
- * request no chunk fits appends a chunk of max(image size, need) bytes.
- * Offsets are 16-byte aligned (VkBufferImageCopy.bufferOffset is a multiple
- * of the texel size: 2, 4 or 16 bytes).
+ * The range is disjoint from every range handed out in the current frame.
+ * The ring keeps a chunk list per frame slot, reset on the slot's first use
+ * in a new frame (the slot's fence has retired it); a request no chunk fits
+ * appends a chunk of max(RHI_UPLOAD_CHUNK, need) bytes. Offsets are 16-byte
+ * aligned (VkBufferImageCopy.bufferOffset is a multiple of the texel size:
+ * 2, 4 or 16 bytes).
  * @param dev Device with a frame recording.
- * @param tex Texture the upload targets.
  * @param need Bytes required.
  * @param out_buf Receives the staging VkBuffer.
  * @param out_map Receives the mapped pointer to the range.
  * @param out_off Receives the range's offset within @p out_buf.
  * @return false only when a chunk could not be allocated. */
-static bool stage_acquire(rhi_device *dev, rhi_texture *tex, size_t need,
+static bool stage_acquire(rhi_device *dev, size_t need,
                           VkBuffer *out_buf, uint8_t **out_map, size_t *out_off)
 {
     const uint32_t slot = dev->frame;
-    if (tex->stage_serial[slot] != s_frame_serial) {
-        for (struct rhi_stage_chunk *c = tex->stage_arena[slot]; c; c = c->next) c->used = 0;
-        tex->stage_serial[slot] = s_frame_serial;
+    if (dev->up_serial[slot] != s_frame_serial) {
+        for (struct rhi_stage_chunk *c = dev->up_ring[slot]; c; c = c->next) c->used = 0;
+        dev->up_serial[slot] = s_frame_serial;
     }
-    struct rhi_stage_chunk *c = tex->stage_arena[slot], *last = NULL;
+    struct rhi_stage_chunk *c = dev->up_ring[slot], *last = NULL;
     for (; c; last = c, c = c->next) {
         size_t off = (c->used + 15) & ~(size_t)15;
         if (off + need <= c->cap) {
@@ -4271,68 +4302,132 @@ static bool stage_acquire(rhi_device *dev, rhi_texture *tex, size_t need,
             return true;
         }
     }
-    size_t cap = (size_t)tex->width * tex->height * tex->bpp;
-    if (cap < need) cap = need;
+    size_t cap = need > RHI_UPLOAD_CHUNK ? need : RHI_UPLOAD_CHUNK;
     struct rhi_stage_chunk *n = calloc(1, sizeof(*n));
     if (!n) return false;
     n->buf = create_host_buffer(dev, cap, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, /*prefer_cached=*/false);
     if (!n->buf || !n->buf->mapped) { if (n->buf) rhi_destroy_buffer(dev, n->buf); free(n); return false; }
     n->cap = cap; n->used = need;
-    if (tex->census) { tex->census_host_bytes += (int64_t)cap; s_census.tex_host_bytes += (int64_t)cap; }
-    if (last) last->next = n; else tex->stage_arena[slot] = n;
+    s_census.tex_host_bytes += (int64_t)cap;
+    if (last) last->next = n; else dev->up_ring[slot] = n;
     *out_buf = n->buf->buffer; *out_map = (uint8_t *)n->buf->mapped; *out_off = 0;
     return true;
 }
 
+/* Where one texture upload's bytes go and which command buffer records it. */
+typedef struct {
+    VkCommandBuffer cb;     /* the frame's, or a one-shot */
+    VkBuffer        src;    /* staging buffer */
+    uint8_t        *map;    /* mapped range start */
+    size_t          off;    /* range offset within src */
+    rhi_buffer     *temp;   /* one-shot staging, destroyed by upload_end */
+} upload_ctx;
+
+/** @brief Reserve `need` staging bytes and a command buffer for one texture upload.
+ *
+ * Inside a frame the bytes come from the device upload ring and the copy is
+ * recorded into the frame's command buffer, which must not be inside a
+ * render pass. Outside a frame a temporary host buffer and a one-shot
+ * command buffer are used; upload_end submits, drains and destroys them.
+ * @param dev Device.
+ * @param need Bytes the upload stages.
+ * @param u Receives the context.
+ * @return false when staging or the command buffer could not be allocated. */
+static bool upload_begin(rhi_device *dev, size_t need, upload_ctx *u)
+{
+    memset(u, 0, sizeof(*u));
+    if (dev->frame_active) {
+        if (!stage_acquire(dev, need, &u->src, &u->map, &u->off)) return false;
+        u->cb = dev->cmd[dev->frame];
+        return true;
+    }
+    u->temp = create_host_buffer(dev, need, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, /*prefer_cached=*/false);
+    if (!u->temp || !u->temp->mapped) {
+        if (u->temp) rhi_destroy_buffer(dev, u->temp);
+        RHI_LOG("upload: staging alloc failed (%zu bytes)\n", need);
+        return false;
+    }
+    u->src = u->temp->buffer;
+    u->map = (uint8_t *)u->temp->mapped;
+    u->cb = one_shot_begin(dev);
+    if (!u->cb) { rhi_destroy_buffer(dev, u->temp); return false; }
+    return true;
+}
+
+/** @brief Finish an upload started by upload_begin: a one-shot is submitted, drained and its staging destroyed.
+ *
+ * In-frame uploads need nothing: the frame's submit carries the copy.
+ * @param dev Device.
+ * @param u Context from upload_begin. */
+static void upload_end(rhi_device *dev, upload_ctx *u)
+{
+    if (!u->temp) return;
+    one_shot_end(dev, u->cb);
+    rhi_destroy_buffer(dev, u->temp);
+    u->temp = NULL;
+}
+
+/** @brief Record the initial UNDEFINED -> SHADER_READ_ONLY transition of every texture created during this frame that no upload has transitioned yet.
+ *
+ * Called before each render pass begins and before the frame's command
+ * buffer ends, so no pass samples an image in UNDEFINED layout.
+ * @param dev Device with a frame recording. */
+static void record_pending_inits(rhi_device *dev)
+{
+    if (!dev->init_head || !dev->frame_active) return;
+    VkCommandBuffer cb = dev->cmd[dev->frame];
+    for (rhi_texture *t = dev->init_head, *n; t; t = n) {
+        n = t->init_next;
+        if (t->layout == VK_IMAGE_LAYOUT_UNDEFINED) {
+            image_barrier(cb, t->image, VK_IMAGE_LAYOUT_UNDEFINED,
+                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                          0, VK_ACCESS_SHADER_READ_BIT,
+                          VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+            t->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        }
+        t->init_pending = false;
+        t->init_next = NULL;
+    }
+    dev->init_head = NULL;
+}
+
+/** @brief Upload a whole image to a sampled texture and leave it in SHADER_READ_ONLY.
+ *
+ * Inside a frame the copy and its barriers are recorded into the frame's
+ * command buffer, which must be before the frame's first render pass
+ * (callers upload right after rhi_begin_frame or between passes); the
+ * payload is staged in the device upload ring. Outside a frame the upload
+ * is a blocking one-shot through a temporary buffer.
+ * @param dev Device.
+ * @param tex Sampled texture; NULL or a render target is ignored.
+ * @param pixels width * height * bpp bytes. */
 static void update_image(rhi_device *dev, rhi_texture *tex, const void *pixels)
 {
-    if (!tex || !tex->staging) return;
-    const size_t bytes = (size_t)tex->width * tex->height * tex->bpp;
-
-    /* In-frame path (W2.2): a frame is being recorded, so append the upload
-     * to ITS command buffer instead of a blocking one-shot submit — the old
-     * per-present `vkQueueWaitIdle` drained the whole GPU every present and
-     * defeated the frames-in-flight design. MUST be called before the
-     * frame's first render pass (callers upload right after
-     * rhi_begin_frame). Staging is a per-frame ring slot: the previous
-     * frame's transfer may still be reading its own slot, but THIS frame's
-     * slot was fenced by rhi_begin_frame. Barriers are recorded per frame in
-     * submission order, so layout tracking stays a plain CPU variable. */
-    VkBuffer src;
-    VkCommandBuffer cb;
-    size_t src_off = 0;
-    bool one_shot = !dev->frame_active;
+    if (!tex || !tex->uploadable) return;
     if (!pixels) { RHI_LOG("update_image: NULL pixels (tex %ux%u)\n", tex->width, tex->height); return; }
-    if (one_shot) {
-        if (!tex->staging->mapped) { RHI_LOG("update_image: staging unmapped\n"); return; }
-        memcpy(tex->staging->mapped, pixels, bytes);
-        src = tex->staging->buffer;
-        cb  = one_shot_begin(dev);
-    } else {
-        uint8_t *map;
-        if (!stage_acquire(dev, tex, bytes, &src, &map, &src_off)) return;
-        memcpy(map, pixels, bytes);
-        cb  = dev->cmd[dev->frame];
-    }
-
-    image_barrier(cb, tex->image, tex->layout,
+    const size_t bytes = (size_t)tex->width * tex->height * tex->bpp;
+    upload_ctx u;
+    if (!upload_begin(dev, bytes, &u)) return;
+    memcpy(u.map, pixels, bytes);
+    image_barrier(u.cb, tex->image, tex->layout,
                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                   VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                   VK_PIPELINE_STAGE_TRANSFER_BIT);
     VkBufferImageCopy region = {
-        .bufferOffset = src_off,
+        .bufferOffset = u.off,
         .imageSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
         .imageExtent = { tex->width, tex->height, 1 },
     };
-    vkCmdCopyBufferToImage(cb, src, tex->image,
+    vkCmdCopyBufferToImage(u.cb, u.src, tex->image,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-    image_barrier(cb, tex->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+    image_barrier(u.cb, tex->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                   VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                   VK_PIPELINE_STAGE_TRANSFER_BIT,
                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-    if (one_shot) one_shot_end(dev, cb);
+    upload_end(dev, &u);
     tex->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }
 
@@ -4364,7 +4459,7 @@ static void update_vram_rects_impl(rhi_device *dev, rhi_texture *tex,
                                    const uint16_t *mirror, const uint8_t *packed,
                                    const rhi_rect *rects, int nrects)
 {
-    if (!tex || !tex->staging || nrects <= 0) return;
+    if (!tex || !tex->uploadable || nrects <= 0) return;
     /* Whole-image fallbacks need a mirror; a packed source has none and is
      * batched to fit by its caller, so an oversize packed batch is dropped. */
     if (nrects > RHI_VRAM_MAX_RECTS) { if (mirror) update_image(dev, tex, mirror); return; }
@@ -4378,19 +4473,11 @@ static void update_vram_rects_impl(rhi_device *dev, rhi_texture *tex,
     if (need == 0) return;
     if (need > cap) { if (mirror) update_image(dev, tex, mirror); return; }
 
-    VkBuffer src;
-    VkCommandBuffer cb;
-    uint8_t *map;
-    size_t src_off = 0;
-    bool one_shot = !dev->frame_active;
-    if (one_shot) {
-        map = (uint8_t *)tex->staging->mapped;
-        src = tex->staging->buffer;
-        cb  = one_shot_begin(dev);
-    } else {
-        if (!stage_acquire(dev, tex, need, &src, &map, &src_off)) return;
-        cb  = dev->cmd[dev->frame];
-    }
+    upload_ctx u;
+    if (!upload_begin(dev, need, &u)) return;
+    VkCommandBuffer cb = u.cb;
+    uint8_t *map = u.map;
+    const size_t src_off = u.off;
 
     image_barrier(cb, tex->image, tex->layout,
                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -4421,14 +4508,14 @@ static void update_vram_rects_impl(rhi_device *dev, rhi_texture *tex,
         nregions++;
         off += row * rh;
     }
-    vkCmdCopyBufferToImage(cb, src, tex->image,
+    vkCmdCopyBufferToImage(cb, u.src, tex->image,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, nregions, regions);
     image_barrier(cb, tex->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                   VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                   VK_PIPELINE_STAGE_TRANSFER_BIT,
                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-    if (one_shot) one_shot_end(dev, cb);
+    upload_end(dev, &u);
     tex->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }
 
@@ -4480,13 +4567,8 @@ void rhi_update_rgba8(rhi_device *dev, rhi_texture *tex, const void *pixels)
 void rhi_update_rgba8_rects(rhi_device *dev, rhi_texture *tex,
                             const rhi_tex_rect_src *rects, int nrects)
 {
-    if (!tex || !tex->staging || nrects <= 0) return;
+    if (!tex || !tex->uploadable || nrects <= 0) return;
     const size_t cap = (size_t)tex->width * tex->height * tex->bpp;
-
-    VkBuffer src;
-    VkCommandBuffer cb;
-    uint8_t *dst;
-    size_t src_off = 0;
     /* The batch this call uploads: rects in order until the next one would
      * overflow the image-sized bound (the caller re-queues the rest). */
     size_t need = 0; int nfit = 0, seen = 0;
@@ -4499,15 +4581,11 @@ void rhi_update_rgba8_rects(rhi_device *dev, rhi_texture *tex,
         need = at + bytes; nfit = i + 1; seen++;
     }
     if (need == 0) return;
-    bool one_shot = !dev->frame_active;
-    if (one_shot) {
-        dst = (uint8_t *)tex->staging->mapped;
-        src = tex->staging->buffer;
-        cb  = one_shot_begin(dev);
-    } else {
-        if (!stage_acquire(dev, tex, need, &src, &dst, &src_off)) return;
-        cb  = dev->cmd[dev->frame];
-    }
+    upload_ctx u;
+    if (!upload_begin(dev, need, &u)) return;
+    VkCommandBuffer cb = u.cb;
+    uint8_t *dst = u.map;
+    const size_t src_off = u.off;
 
     VkBufferImageCopy regions[96];
     int nreg = 0;
@@ -4528,14 +4606,14 @@ void rhi_update_rgba8_rects(rhi_device *dev, rhi_texture *tex,
         };
         off += bytes;
     }
-    if (nreg == 0) { if (one_shot) one_shot_end(dev, cb); return; }
+    if (nreg == 0) { upload_end(dev, &u); return; }
 
     image_barrier(cb, tex->image, tex->layout,
                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                   VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                   VK_PIPELINE_STAGE_TRANSFER_BIT);
-    vkCmdCopyBufferToImage(cb, src, tex->image,
+    vkCmdCopyBufferToImage(cb, u.src, tex->image,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                            (uint32_t)nreg, regions);
     image_barrier(cb, tex->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -4543,7 +4621,7 @@ void rhi_update_rgba8_rects(rhi_device *dev, rhi_texture *tex,
                   VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                   VK_PIPELINE_STAGE_TRANSFER_BIT,
                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-    if (one_shot) one_shot_end(dev, cb);
+    upload_end(dev, &u);
     tex->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }
 
@@ -4901,17 +4979,13 @@ void rhi_destroy_texture(rhi_device *dev, rhi_texture *tex)
     if (tex->census) {
         s_census.tex_live--;
         s_census.tex_dev_bytes -= tex->census_dev_bytes;
-        s_census.tex_host_bytes -= tex->census_host_bytes;
     }
     if (tex->set)       vkFreeDescriptorSets(dev->device, dev->desc_pool, 1, &tex->set);
     if (tex->depth_set) vkFreeDescriptorSets(dev->device, dev->desc_pool, 1, &tex->depth_set);
     if (tex->rt_depth_sample_view) vkDestroyImageView(dev->device, tex->rt_depth_sample_view, NULL);
-    if (tex->staging) rhi_destroy_buffer(dev, tex->staging);
-    for (int i = 0; i < RHI_FRAMES_IN_FLIGHT; i++) {
-        struct rhi_stage_chunk *c = tex->stage_arena[i];
-        while (c) { struct rhi_stage_chunk *n = c->next; rhi_destroy_buffer(dev, c->buf); free(c); c = n; }
-        tex->stage_arena[i] = NULL;
-    }
+    if (tex->init_pending)
+        for (rhi_texture **pp = &dev->init_head; *pp; pp = &(*pp)->init_next)
+            if (*pp == tex) { *pp = tex->init_next; break; }
     if (tex->view)    vkDestroyImageView(dev->device, tex->view, NULL);
     if (tex->image)   vkDestroyImage(dev->device, tex->image, NULL);
     if (tex->mem)     vkFreeMemory(dev->device, tex->mem, NULL);
