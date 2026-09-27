@@ -6902,8 +6902,14 @@ float openpete_native_occl_last_scan_max(void) { return s_occl_last_scan_max; }
 
 int openpete_native_occl_grid_age(void)
 {
-    const occl_grid_t *G = occl_grid_reader();
-    return G->have ? (int)((unsigned)SDL_GetAtomicInt(&s_occl_presents) - G->stamp) : -1;
+    /* Any thread (the present census asks too): read the published grid
+     * under its mutex, not the querying thread's copy. */
+    SDL_Mutex *mx = nr_mutex_once(&s_occl_pub_mx);
+    SDL_LockMutex(mx);
+    const int have = s_occl_pub.have;
+    const unsigned stamp = s_occl_pub.stamp;
+    SDL_UnlockMutex(mx);
+    return have ? (int)((unsigned)SDL_GetAtomicInt(&s_occl_presents) - stamp) : -1;
 }
 
 void openpete_native_occl_qstats(long out[OPENPETE_OCCL_Q_COUNT])
