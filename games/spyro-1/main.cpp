@@ -6,6 +6,7 @@
 
 #include <SDL3/SDL_main.h>
 #include "openpete.h"
+#include "openpete_fatal.h"
 #include "openpete_config.h"
 #include "openpete_log.h"
 #include "openpete_keymap.h"
@@ -97,6 +98,57 @@ extern void (*spyro1_progress_cb)(const char* stage, int done, int total);
 
 #include <cstdio>
 
+/** @brief Tell the player the game cannot start, then hand back the exit code.
+ *
+ * @param rc The exit code main returns.
+ * @param why What failed, as a sentence for the player.
+ * @return rc. */
+static int fatal_start(int rc, const char* why) {
+    openpete_fatal_message("OpenPete could not start", why);
+    return rc;
+}
+
+/** @brief Parse the command line and the config stack into opts, telling the player when the settings are rejected.
+ *
+ * A launch with no arguments (a double-click) can only fail on the config
+ * file or the environment, so only that case shows the message box; a
+ * launch with arguments came from a terminal, which shows the parser's
+ * message (--help also exits through the failure code). After a
+ * successful parse the box is allowed for every run that is not
+ * --headless.
+ * @param opts Receives the options.
+ * @param argc Argument count.
+ * @param argv Arguments.
+ * @return OPENPETE_EXIT_OK or the parser's exit code. */
+static int parse_options(openpete_options_t* opts, int argc, char** argv) {
+    int rc = openpete_options_parse(opts, argc, argv);
+    openpete_fatal_set_interactive(!opts->headless && argc <= 1);
+    if (rc != OPENPETE_EXIT_OK)
+        return fatal_start(rc, "A setting in openpete.toml (or an OPENPETE_ "
+                               "environment variable) was not accepted.");
+    openpete_fatal_set_interactive(!opts->headless);
+    return OPENPETE_EXIT_OK;
+}
+
+/** @brief Answer a config utility mode (--config-report, --keys-report) from the resolved stack.
+ *
+ * Mod keys are bindings too; the keys report is the audit of what an
+ * install responds to, so it registers them first.
+ * @param opts The parsed options.
+ * @return 1 when a report was written and main should exit, else 0. */
+static int report_mode(openpete_options_t* opts) {
+    if (opts->config_report) { openpete_config_report(stdout); return 1; }
+    if (!opts->keys_report) return 0;
+    openpete_mods_register_key_defaults(opts);
+    openpete_keymap_report(stdout);
+    return 1;
+}
+
+/** @brief Spyro 1 entry point: parse the options, resolve the disc and the recomp module, and run the game.
+ *
+ * @param argc Argument count.
+ * @param argv Arguments.
+ * @return The process exit code (OPENPETE_EXIT_*, or 1 on a startup failure). */
 int main(int argc, char** argv) {
     /* Reconnect stdout/stderr to the parent terminal on a GUI-subsystem
      * (distribution) Windows build; no-op elsewhere. Before any output. */
@@ -123,18 +175,9 @@ int main(int argc, char** argv) {
     openpete_config_set_game_id(game_get_id());
     openpete_config_set_disc_identity_fn(spyro1_config_disc_identity);
 
-    int rc = openpete_options_parse(&opts, argc, argv);
+    int rc = parse_options(&opts, argc, argv);
     if (rc != OPENPETE_EXIT_OK) return rc;
-
-    /* Config utility modes: the stack is resolved, so answer and exit. */
-    if (opts.config_report) { openpete_config_report(stdout); return 0; }
-    if (opts.keys_report) {
-        /* Mod keys are bindings too; the report is the audit of what an
-         * install responds to, so it registers them first. */
-        openpete_mods_register_key_defaults(&opts);
-        openpete_keymap_report(stdout);
-        return 0;
-    }
+    if (report_mode(&opts)) return 0;
 
     /* Bring the logger and its file mirror up before the recomp module is
      * attached. First boot builds that module, and a build that fails is
@@ -208,7 +251,7 @@ int main(int argc, char** argv) {
     static char library_module_path[4096];
     if (spyro1_library_resolve(&opts, library_module_path,
                                sizeof library_module_path) != 0)
-        return 1;
+        return fatal_start(1, "The game library could not be read.");
 
     if (!opts.disc_path && !opts.exe_path && !opts.headless) {
         /* Nothing to boot anywhere: first run. DROP mode. */
@@ -218,13 +261,14 @@ int main(int argc, char** argv) {
             opts.ingest_path = dropped;
             if (spyro1_library_resolve(&opts, library_module_path,
                                        sizeof library_module_path) != 0)
-                return 1;
+                return fatal_start(1, "The disc image could not be added to the game library.");
         }
     }
 
     {
         int src_rc = openpete_options_require_exe_source(&opts);
-        if (src_rc != OPENPETE_EXIT_OK) return src_rc;
+        if (src_rc != OPENPETE_EXIT_OK)
+            return fatal_start(src_rc, "No Spyro the Dragon disc image was found.");
     }
 
     /* Distribution D0/D1: the runtime reaches recompiled code only
@@ -242,7 +286,7 @@ int main(int argc, char** argv) {
      * above may have filled opts.disc_path). */
     spyro1_mod_wad_configure(opts.disc_path);
     if (spyro1_recomp_attach(module_override, opts.disc_path, allow_build) != 0)
-        return 1;
+        return fatal_start(1, "The game code built from the disc could not be loaded or built.");
 
     /* Mod compile-on-boot (openpete-mod-compile-on-boot): compile any
      * stale enabled source mods behind the splash while it is still

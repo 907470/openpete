@@ -19,6 +19,7 @@ add_library(openpete_core STATIC
     diag/log.c
     diag/log_file.c
     diag/crash.c
+    diag/fatal_message.c
     diag/pace_log.c
     diag/perf_stats.c
     diag/profile.c

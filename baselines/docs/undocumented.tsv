@@ -1618,7 +1618,6 @@ games/spyro-1/game_extras_impl.c	game_on_overlay_init	none
 games/spyro-1/game_extras_impl.c	game_state_extra_load	none	
 games/spyro-1/game_extras_impl.c	game_state_extra_save	none	
 games/spyro-1/game_extras_impl.c	psx_override_dispatch_game	none	
-games/spyro-1/main.cpp	main	none	
 games/spyro-1/main.cpp	openpete_attach_parent_console	none	
 games/spyro-1/mods/mod_level_ops.c	entry_addr	none	
 games/spyro-1/mods/mod_level_ops.c	glyph_class_for	none	

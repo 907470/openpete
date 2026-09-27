@@ -23,6 +23,7 @@
 #include "openpete_recomp_module.h"
 #include "spyro_overlay_table.h"
 #include "openpete_log.h"
+#include "openpete_paths.h"
 #include "dist/splash.h"
 
 #include <stdint.h>
@@ -33,7 +34,20 @@
 #ifdef _WIN32
 #include <windows.h>
 #define MODULE_DEFAULT_NAME "spyro1-recomp.dll"
-static void* mod_open(const char* p) { return (void*)LoadLibraryA(p); }
+#define MODULE_SEP '\\'
+/** @brief Load the recomp module at path; an absolute path resolves the module's own imports from its directory.
+ *
+ * For an absolute path, LOAD_WITH_ALTERED_SEARCH_PATH makes the loader
+ * search the module's directory for its imports instead of the working
+ * directory. The narrow path converts through the active code page, as
+ * fopen reads it. */
+static void* mod_open(const char* p) {
+    wchar_t w[4096];
+    if (!MultiByteToWideChar(CP_ACP, 0, p, -1, w, (int)(sizeof w / sizeof w[0]))) return NULL;
+    /* The altered search order is defined for absolute paths only. */
+    int absolute = (w[0] && w[1] == L':') || (w[0] == L'\\' && w[1] == L'\\');
+    return (void*)LoadLibraryExW(w, NULL, absolute ? LOAD_WITH_ALTERED_SEARCH_PATH : 0);
+}
 static void* mod_sym(void* h, const char* n) { return (void*)GetProcAddress((HMODULE)h, n); }
 static void mod_close(void* h) { FreeLibrary((HMODULE)h); }
 #else
@@ -41,6 +55,7 @@ static void mod_close(void* h) { FreeLibrary((HMODULE)h); }
 #include <unistd.h>
 #include <limits.h>
 #define MODULE_DEFAULT_NAME "spyro1-recomp.so"
+#define MODULE_SEP '/'
 static void* mod_open(const char* p) { return dlopen(p, RTLD_NOW | RTLD_LOCAL); }
 static void* mod_sym(void* h, const char* n) { return dlsym(h, n); }
 static void mod_close(void* h) { dlclose(h); }
@@ -89,26 +104,20 @@ static void* need(const char* name) {
     return s;
 }
 
-/* Default: MODULE_DEFAULT_NAME next to the executable. LoadLibraryA
- * already searches the application directory; ELF dlopen does not, so
- * build the path from /proc/self/exe. */
+/** @brief Write the default module path, MODULE_DEFAULT_NAME in the executable's directory, into buf.
+ *
+ * Absolute on every platform, so the existence check, the loader and a
+ * first-boot build all name the same file whatever the working directory.
+ * Falls back to the bare name only when the executable's directory cannot
+ * be read.
+ * @param buf Receives the path.
+ * @param n Capacity of buf. */
 static void default_module_path(char* buf, size_t n) {
-#ifdef _WIN32
-    snprintf(buf, n, "%s", MODULE_DEFAULT_NAME);
-#else
-    char exe[PATH_MAX];
-    ssize_t len = readlink("/proc/self/exe", exe, sizeof exe - 1);
-    if (len > 0) {
-        exe[len] = 0;
-        char* slash = strrchr(exe, '/');
-        if (slash) {
-            *slash = 0;
-            snprintf(buf, n, "%s/%s", exe, MODULE_DEFAULT_NAME);
-            return;
-        }
-    }
-    snprintf(buf, n, "%s", MODULE_DEFAULT_NAME);
-#endif
+    char dir[4096];
+    if (openpete_exe_dir(dir, sizeof dir) == 0)
+        snprintf(buf, n, "%s%c%s", dir, MODULE_SEP, MODULE_DEFAULT_NAME);
+    else
+        snprintf(buf, n, "%s", MODULE_DEFAULT_NAME);
 }
 
 static int file_readable(const char* p) {
