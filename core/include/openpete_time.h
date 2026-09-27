@@ -236,9 +236,11 @@ static inline op_period_t op_scaled_vbl_period(double tick_scale) {
  *
  * Under the virtual clock it returns the virtual time. Otherwise it reads
  * QueryPerformanceCounter (GetTickCount64 when QPC has no frequency) on
- * Win32, CLOCK_MONOTONIC elsewhere, and clamps to the previous return, one
- * process-wide value, so the result never decreases across calls from any
- * thread. A failed clock_gettime returns the previous value. The first
+ * Win32, CLOCK_MONOTONIC elsewhere, and clamps to the previous return. The
+ * previous return is one process-wide plain static read and written without
+ * synchronization, so the clamp orders calls on one thread only; concurrent
+ * callers race on it and are ordered only as far as the underlying clock
+ * is. A failed clock_gettime returns the previous value. The first
  * real-clock call initializes the module.
  * @return Nanoseconds since an arbitrary monotonic epoch. */
 op_time_t op_now(void);

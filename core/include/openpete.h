@@ -939,8 +939,9 @@ int openpete_options_require_exe_source(const openpete_options_t* opts);
 
 /** @brief Run the program: boot the guest and drive the host loop until exit.
  *
- * Initializes logging, the stderr log mirror and the extraction worker
- * pool, installs the crash handler, then runs the recompiled-call smoke
+ * Initializes logging and the stderr log mirror, sets the extraction worker
+ * pool's requested size (its threads spawn on first parallel use), installs
+ * the crash handler, then runs the recompiled-call smoke
  * test when one is requested. PsyCross builds dispatch the guest entry on a
  * fiber, with the host loop on a worker thread when the thread split
  * applies. Builds without PsyCross open an SDL window that only clears and

@@ -13,9 +13,11 @@
  * The primitives are the guest's own output and are gone once the polybuf is
  * reused, so the replay re-feeds the captured set: each record point's screen
  * displacement carries its primitive's corners and its depth. The replay
- * rebases only while the pass has a camera pair, and replays the set unchanged
- * across a cut or an unpaired present, where the rest of the scene snaps to
- * the tick as well. At the end of the tick's interval every term of the rebase
+ * recomputes the rebase only while the pass has a camera pair; across a cut
+ * or an unpaired present it skips the rebase and feeds the set with the
+ * displacements the last bracketed call since the capture left in place,
+ * or none when no bracketed call ran since the capture. At the end of the
+ * tick's interval every term of the rebase
  * is zero and the replay reproduces the canonical present exactly. Does
  * nothing until the particle path is ready for re-extract.
  * @param cpu Reads the staged camera, the pool snapshots and the sin/cos table.

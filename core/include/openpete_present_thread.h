@@ -31,10 +31,11 @@ void openpete_present_thread_stop(void);
  *
  * Handing over wakes the thread, which claims the display before its first
  * present. Taking it back flushes the scene ring, waits out a compose or
- * flip wait in flight, discards the staged scene, and claims the display
- * for the caller, which then releases the stage's acquired swapchain image
- * by presenting it once more; on return the present thread issues nothing
- * further. Idempotent; a no-op before the thread has started.
+ * flip wait in flight, discards the staged scene, claims the display for
+ * the calling thread, and releases the stage's acquired swapchain image by
+ * presenting it once more (openpete_native_present_stage_release); on
+ * return the present thread issues nothing further. Idempotent; a no-op
+ * before the thread has started.
  * @param on 1 to hand the display to the thread, 0 to take it back. */
 void openpete_present_thread_set_active(int on);
 int  openpete_present_thread_active(void);
