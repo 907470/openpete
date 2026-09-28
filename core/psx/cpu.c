@@ -31,12 +31,33 @@ static uint8_t g_scratch[SCRATCH_SIZE];
 uint8_t* openpete_psx_get_ram(void)     { return g_ram; }
 uint8_t* openpete_psx_get_scratch(void) { return g_scratch; }
 
+/** @brief Resolve a span through the presentation region table, or NULL.
+ *
+ * The cold half of span_ptr, kept out of line: its out-parameters are
+ * address-taken locals, which inlined into span_ptr would give every bus
+ * accessor a stack frame and a stack-protector canary on the main-RAM path.
+ * Hot recompiler-emitted accesses to these regions bypass it through
+ * per-site psxrecomp instruction substitutions.
+ * @param addr Guest address.
+ * @param len Span length in bytes.
+ * @return The host pointer when the whole span lies in one region, else NULL. */
+static __attribute__((noinline, cold)) uint8_t* span_ptr_region(uint32_t addr, uint32_t len) {
+    if (psx_runtime_region_count() == 0u) return NULL;
+    void* host = NULL;
+    uint32_t rem = 0;
+    if (psx_runtime_resolve_region(addr, &host, &rem) && len <= rem)
+        return (uint8_t*)host;
+    return NULL;
+}
+
 /** @brief Resolve a guest address to a host pointer valid for @p len bytes, or NULL.
  *
  * The span [addr, addr + len) must lie inside one host region: main RAM
  * (any segment), the scratchpad, or one entry of the presentation region
- * table. A span that starts inside a region and runs past its end returns
- * NULL rather than a pointer the caller would overrun. */
+ * table (span_ptr_region). A span that starts inside a region and runs past
+ * its end returns NULL rather than a pointer the caller would overrun. The
+ * main-RAM and scratchpad tests take no local's address, so the bus
+ * accessors that inline this need no stack frame. */
 static uint8_t* span_ptr(uint32_t addr, uint32_t len) {
     uint32_t phys = addr & 0x1FFFFFFFu;
     if (phys < RAM_SIZE)
@@ -45,16 +66,7 @@ static uint8_t* span_ptr(uint32_t addr, uint32_t len) {
         uint32_t off = phys - 0x1F800000u;
         return (len <= SCRATCH_SIZE - off) ? &g_scratch[off] : NULL;
     }
-    /* Cold-path: registered presentation regions (psx_region.c). Hot
-     * recompiler-emitted accesses bypass this path and are redirected via
-     * per-site psxrecomp instruction substitutions. */
-    if (psx_runtime_region_count() != 0u) {
-        void* host = NULL;
-        uint32_t rem = 0;
-        if (psx_runtime_resolve_region(addr, &host, &rem) && len <= rem)
-            return (uint8_t*)host;
-    }
-    return NULL;
+    return span_ptr_region(addr, len);
 }
 
 void* openpete_psx_to_host_span(uint32_t addr, uint32_t len) {
@@ -156,11 +168,12 @@ uint16_t openpete_psx_root_counter2(void) { return s_root_counter2; }
  * constant. Otherwise the value composes little-endian from the ROM
  * identification model (psx_bios.c) one byte at a time; when any byte
  * lies outside the ROM window (physical 0x1FC00000..0x1FC7FFFF) the whole
- * read is 0.
+ * read is 0. Out of line so that the address-taken byte it reads into
+ * gives no bus accessor a stack frame on the mapped path.
  * @param addr Guest address.
  * @param n Width in bytes (2 or 4).
  * @return The value, zero-extended. */
-static uint32_t rom_read(uint32_t addr, unsigned n) {
+static __attribute__((noinline, cold)) uint32_t rom_read(uint32_t addr, unsigned n) {
     uint32_t v = 0;
     if ((addr & 0x1FFFFFFFu) == ROOT_COUNTER2_COUNT) return s_root_counter2;
     for (unsigned i = 0; i < n; i++) {
@@ -198,20 +211,26 @@ static void write_half(uint32_t addr, uint16_t value) {
     if (!p) return;
     memcpy(p, &value, 2);
 }
-/** @brief Read one byte from the PSX bus.
+/** @brief Read one byte no host region maps: a CD-ROM controller register, the BIOS ROM window, or 0.
  *
- * Main RAM, the scratchpad and the region table resolve through mem_ptr().
- * An unmapped read of the CD-ROM controller's registers (0x1F801800 to
- * 0x1F801803) goes to the controller model (cdrom_mmio.c), one in the BIOS
- * ROM window to the ROM identification model; every other address reads
- * 0. */
-static uint8_t read_byte(uint32_t addr) {
-    uint8_t* p = mem_ptr(addr, 1u);
-    if (p) return *p;
+ * A read of the controller's registers (0x1F801800 to 0x1F801803) goes to
+ * the controller model (cdrom_mmio.c), one in the BIOS ROM window to the
+ * ROM identification model; every other address reads 0. Out of line so
+ * that its address-taken byte gives read_byte no stack frame on the mapped
+ * path.
+ * @param addr Guest address.
+ * @return The byte. */
+static __attribute__((noinline, cold)) uint8_t read_byte_unmapped(uint32_t addr) {
     uint8_t v;
     if (((addr & 0x1FFFFFFFu) & ~3u) == 0x1F801800u && openpete_cdrom_mmio_read8(addr & 0x1FFFFFFFu, &v)) return v;
     if (openpete_psx_bios_rom_read8(addr & 0x1FFFFFFFu, &v)) return v;
     return 0u;
+}
+/** @brief Read one byte from the PSX bus; main RAM, the scratchpad and the region table resolve through mem_ptr(), the rest through read_byte_unmapped. */
+static uint8_t read_byte(uint32_t addr) {
+    uint8_t* p = mem_ptr(addr, 1u);
+    if (p) return *p;
+    return read_byte_unmapped(addr);
 }
 /** @brief Write one byte to the PSX bus; an unmapped CD-ROM register byte goes to the controller model. */
 static void write_byte(uint32_t addr, uint8_t value) {
