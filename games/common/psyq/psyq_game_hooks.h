@@ -82,10 +82,50 @@ int psyq_game_stack_frame(psyq_frame_site_t site, psyq_game_frame_t* out);
  * default writes nothing.
  * @param cpu Guest CPU state. */
 void psyq_game_mirror_main(CPUState* cpu);
+/** @brief Write the libgpu data that PSYQ ResetGraph leaves in PSX RAM.
+ *
+ * psyq_ResetGraph calls it after PsyCross's ResetGraph and before replaying
+ * ResetGraph's stack frame. Spyro 1 writes, for modes 0, 3 and 5 (mode & 7),
+ * the environment block at 0x80074A64, libgpu's control structures and the
+ * fill-packet block at 0x80075978; the default writes nothing.
+ * @param cpu Guest CPU state.
+ * @param mode The ResetGraph mode, from a0. */
 void psyq_game_mirror_resetgraph(CPUState* cpu, int mode);
+
+/** @brief Write the VSync callback pointer where PSYQ keeps it in PSX RAM.
+ *
+ * psyq_VSyncCallback calls it after recording the handler host-side. Spyro 1
+ * stores a0 in libgpu's vtable slot at 0x800749D0; the default writes
+ * nothing.
+ * @param cpu Guest CPU state.
+ * @param cb The registered handler's guest address. */
 void psyq_game_mirror_vsync_callback(CPUState* cpu, uint32_t cb);
+
+/** @brief Write the libpad state that PSYQ PadInitDirect leaves in PSX RAM.
+ *
+ * psyq_PadInitDirect calls it after PsyCross's PadInitDirect. Spyro 1 writes
+ * libpad's pad-state dispatch table at 0x800751BC, its control block at
+ * 0x80075D18 and the per-slot bookkeeping words around them, with the two
+ * buffer addresses in their slots; the default writes nothing.
+ * @param cpu Guest CPU state.
+ * @param buf0 Guest address of the first port's pad buffer.
+ * @param buf1 Guest address of the second port's pad buffer. */
 void psyq_game_mirror_pad_init(CPUState* cpu, uint32_t buf0, uint32_t buf1);
+
+/** @brief Write the libpad state of an empty second controller slot.
+ *
+ * psyq_vbl_body calls it every VBL, since PsyCross's pad poll overwrites
+ * the slot's buffer each time. Spyro 1 rewrites the 8-byte buffer at
+ * 0x80078E50 and the word at 0x80078E9C; the default writes nothing.
+ * @param cpu Guest CPU state. */
 void psyq_game_mirror_pad_slot2(CPUState* cpu);
+
+/** @brief Write the libmcrd state that PSYQ MemCardInit leaves in PSX RAM.
+ *
+ * psyq_MemCardInit calls it after initializing the host card module. Spyro 1
+ * writes the card control struct around 0x800748F0 and the registered
+ * handler count at 0x800749E0; the default writes nothing.
+ * @param cpu Guest CPU state. */
 void psyq_game_mirror_memcard_init(CPUState* cpu);
 
 /** @brief Return the address of PSYQ's rand seed word in the library's own data.
@@ -227,6 +267,17 @@ typedef struct {
     int         track;
     const char* custom_path;
 } psyq_music_route_t;
+
+/** @brief Choose the music source for a streaming read issued under an XA mode.
+ *
+ * start_music_stream presets out to track -1 and no custom path, then calls
+ * this before its speculation check, so any guest RAM the hook writes is
+ * part of the tick. The default leaves both preset values. Spyro 1 reads
+ * m_CurrentTrack (-1 outside 0..47), resolves the level id from
+ * g_NextLevelId, or g_LevelId when that is outside 10..65, and returns the
+ * mod-mapped song path for it.
+ * @param sector The read's start LBA.
+ * @param out Receives the track index and the custom song path. */
 void psyq_game_music_route(int sector, psyq_music_route_t* out);
 
 /* Address of libcd's read-completion callback slot in PSX RAM

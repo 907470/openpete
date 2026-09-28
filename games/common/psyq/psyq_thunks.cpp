@@ -41,6 +41,7 @@ extern "C" {
  * names the two alternating tables. */
 #define PSYQ_OT_BASE_RING 8
 static uint32_t s_ot_base[PSYQ_OT_BASE_RING];
+/// @brief Record a in the ring of recent DrawOTag bases, newest first, unless it repeats the newest.
 static void ot_base_note(uint32_t a) {
     if (a == s_ot_base[0]) return;
     for (int i = PSYQ_OT_BASE_RING - 1; i > 0; i--) s_ot_base[i] = s_ot_base[i - 1];
@@ -75,6 +76,14 @@ extern "C" void PsyX_SPUAL_CaptureStats(unsigned long long* produced, unsigned l
 /* OPENPETE_AUDIO_DUMP: set by the host when the env var names a file and no
  * recorder owns the capture ring; every VSync drains the ring into it. */
 int openpete_audio_dump_armed = 0;
+/** @brief Append the SPU capture ring to the OPENPETE_AUDIO_DUMP file, once per VBL.
+ *
+ * Does nothing unless openpete_audio_dump_armed is set. The first armed call
+ * opens the file named by the variable once; a failed open is logged and the
+ * dump stays off. Frames drain in chunks of 4096 as 16-bit stereo at 44100
+ * Hz and the file is flushed on every call. The first drain logs the VBL
+ * that sample 0 belongs to (735 frames per VBL), and a rise in the ring's
+ * dropped-frame count logs an error, since a drop shifts every later sample. */
 static void audio_dump_drain(void) {
     static FILE* f = NULL;
     static int tried = 0;
@@ -215,14 +224,20 @@ static void cd_mirror_byte(uint32_t off, uint8_t v) {
     if (base == 0u) return;
     openpete_psx_get_ram()[(base + off) & 0x1FFFFFu] = v;
 }
+/// @brief Write libcd's last-status byte (block offset 0x0C).
 static void cd_mirror_status(uint8_t st)  { cd_mirror_byte(0x0Cu, st); }
 /* The reference's response to the last position query (eight bytes:
  * track, index, position, absolute position), when the golden's
  * controller sidecar carries it. */
 static uint8_t s_getlocp_ref[16];
 static int     s_getlocp_ref_valid = 0;
+/// @brief Write libcd's drive-mode byte (block offset 0x1C).
 static void cd_mirror_mode(uint8_t mode)  { cd_mirror_byte(0x1Cu, mode); }
+/// @brief Write libcd's last-command byte (block offset 0x1D).
 static void cd_mirror_com(uint8_t com)    { cd_mirror_byte(0x1Du, com); }
+/** @brief Write the four bytes of a CdlLOC as libcd's last position (block offset 0x18).
+ *
+ * @param loc Host pointer to at least 4 bytes; not NULL. */
 static void cd_mirror_pos(const u_char* loc) {
     for (uint32_t i = 0; i < 4u; i++) cd_mirror_byte(0x18u + i, loc[i]);
 }
@@ -364,6 +379,17 @@ typedef void (*native_cd_read_cb_t)(unsigned char intr, unsigned char* result);
 static native_cd_read_cb_t g_native_cd_read_cb = nullptr;
 static uint32_t g_vsync_cb       = 0;
 
+/** @brief Run the compiled guest function at cb_addr with a0 and a1 set.
+ *
+ * Saves a0..a3, ra, v0 and v1 and restores them afterwards, so the caller's
+ * registers survive the call; the callee's return value is discarded. ra is
+ * set to a sentinel, since the dispatcher runs the body to its return. A
+ * zero cb_addr does nothing, and an address with no compiled body logs a
+ * warning. OPENPETE_CB_DEBUG (read once) logs entry and exit.
+ * @param cpu Guest CPU state.
+ * @param cb_addr Guest address of the handler.
+ * @param a0 First argument.
+ * @param a1 Second argument. */
 static void invoke_psx_callback(CPUState* cpu, uint32_t cb_addr,
                                 uint32_t a0, uint32_t a1) {
     if (cb_addr == 0) return;
@@ -710,6 +736,11 @@ void psyq_ResetCallback(CPUState* cpu) {
 #define PSYQ_DMA_CHANNELS 7
 static uint32_t g_dma_cb[PSYQ_DMA_CHANNELS];
 
+/** @brief Thunk for libapi DMACallback: records the guest handler a1 for DMA channel a0.
+ *
+ * v0 is the handler the channel had, or 0 for a channel outside 0..6, which
+ * records nothing. psyq_dma_complete calls the recorded handler.
+ * @param cpu Guest CPU state. */
 void psyq_DMACallback(CPUState* cpu) {
     uint32_t ch = cpu->a0;
     uint32_t prev = 0u;
@@ -784,7 +815,9 @@ static int pad_busy(void) { return s_pad_busy_vbls != 0u; }
  * request; until then a pending request leaves the pad stable.
  * @return 1 once the first command is sent and vsyncs remain, else 0. */
 static int pad_exec(void) { return s_pad_busy_vbls != 0u && s_pad_busy_vbls != s_pad_seq_vbls; }
+/// @brief Count vbls VBLs off the running pad command sequence, stopping at 0.
 static void pad_busy_tick(uint32_t vbls) { s_pad_busy_vbls = (s_pad_busy_vbls > vbls) ? s_pad_busy_vbls - vbls : 0u; }
+/// @brief Start a pad command sequence of vbls VBLs.
 static void pad_seq_start(uint32_t vbls) { s_pad_busy_vbls = s_pad_seq_vbls = vbls; }
 /** @brief Count how many of the next `vbls` handler vsyncs write the pad buffer.
  *
@@ -832,6 +865,13 @@ static void cd_pending_complete(void) {
     s_cd_pending_done = 0;
     cd_mirror_status(openpete_cdrom_mmio_libcd_last_done_status());
 }
+/** @brief Charge the VBLs a pending libcd command still needs, then complete it.
+ *
+ * With a pending completion and an active schedule whose position is short
+ * of the completion's VBLANK, advances the schedule to it (sched_charge_to,
+ * logged under `what`); then applies the completion's status byte.
+ * @param cpu Guest CPU state.
+ * @param what Label for the charge. */
 static void cd_charge_pending(CPUState* cpu, const char* what) {
     if (!s_cd_pending_done) return;
     uint32_t done = s_cd_pending_done;
@@ -948,15 +988,24 @@ static uint32_t s_cd_data_vbl = 0, s_cd_data_rec = 0; static uint8_t s_cd_data_s
 static uint8_t* s_cd_land_buf = NULL; static uint32_t s_cd_land_cap = 0;
 static uint32_t s_cd_land_dst = 0, s_cd_land_sectors = 0, s_cd_land_next = 0;
 static uint32_t s_cd_land_vbl[CD_LAND_MAX], s_cd_land_rec[CD_LAND_MAX];
+/** @brief Copy sector k of the deferred read's host buffer into its guest destination.
+ *
+ * A destination range outside main RAM is skipped.
+ * @param k Sector index within the read, below s_cd_land_sectors. */
 static void cd_land_sector(uint32_t k) {
     uint8_t* ram = openpete_psx_get_ram();
     uint32_t phys = (s_cd_land_dst & 0x1FFFFFFFu) + k * 2048u;
     if (phys + 2048u <= 0x200000u) memcpy(ram + phys, s_cd_land_buf + k * 2048u, 2048u);
 }
+/// @brief Land every sector of the deferred read not yet landed, and end the landing.
 static void cd_land_rest(void) {
     while (s_cd_land_next < s_cd_land_sectors) cd_land_sector(s_cd_land_next++);
     s_cd_land_sectors = 0;
 }
+/** @brief Land the deferred read's next sectors whose reference data-ready interrupt has happened.
+ *
+ * @param vbls VBLANKs ahead of the current position the check applies to;
+ *        0 checks the current one. */
 static void cd_land_tick(uint32_t vbls) {
     while (s_cd_land_next < s_cd_land_sectors && cd_ref_seen(s_cd_land_rec[s_cd_land_next], s_cd_land_vbl[s_cd_land_next], vbls))
         cd_land_sector(s_cd_land_next++);
@@ -985,12 +1034,20 @@ static void cd_events_tick(uint32_t vbls) {
  * game's witness site (a poll it makes only after seeing the callback)
  * places the callback before them, and it is delivered after the call. */
 static void cd_defer_tick(CPUState* cpu, uint32_t vbls);
+/// @brief Complete the deferred read now: clear its deferral, land the remaining sectors, fire the callbacks.
 static void cd_defer_deliver(CPUState* cpu) {
     s_cd_defer_vbl = s_cd_defer_rec = 0u; s_cd_defer_clock = 0u;
     s_cd_defer_pending = 0u;
     cd_land_rest();
     cd_read_complete(cpu);
 }
+/** @brief Deliver a deferred read's completion before a call whose answer postdates it.
+ *
+ * Delivers when the schedule's current record is past the completion's, or
+ * is the same record and the row the call is answered from is at or after
+ * the completion's clock value. Nothing happens unless a completion is
+ * deferred to a reference VBLANK.
+ * @param cpu Guest CPU state. */
 static void cd_defer_before_call(CPUState* cpu) {
     if (!s_cd_defer_pending || !s_cd_defer_vbl) return;
     uint32_t cur = openpete_sched_current_record();
@@ -998,6 +1055,13 @@ static void cd_defer_before_call(CPUState* cpu) {
     if (cur > s_cd_defer_rec || (cur == s_cd_defer_rec && at && s_cd_defer_clock && s_cd_defer_clock <= at))
         cd_defer_deliver(cpu);
 }
+/** @brief Deliver a deferred read's completion after the call that shows the game has seen it.
+ *
+ * Delivers when the last CdSync poll on the schedule came from the game's
+ * witness site (psyq_game_cd_done_witness_ra) at or after the completion's
+ * clock value, in the completion's record. Nothing happens unless a
+ * completion is deferred to a reference VBLANK with a clock value.
+ * @param cpu Guest CPU state. */
 static void cd_defer_after_call(CPUState* cpu) {
     if (!s_cd_defer_pending || !s_cd_defer_vbl || !s_cd_defer_clock) return;
     if (openpete_sched_current_record() != s_cd_defer_rec) return;
@@ -1006,6 +1070,14 @@ static void cd_defer_after_call(CPUState* cpu) {
         cd_defer_deliver(cpu);
 }
 
+/** @brief Advance the deferred read by vbls VBLs and deliver its completion when due.
+ *
+ * Applies the reference's drive events first (cd_events_tick). A completion
+ * deferred to a reference VBLANK is due when the position reaches it;
+ * otherwise the owed VBL count drops by vbls and the completion is due at 0.
+ * Delivery lands the remaining sectors and fires the read callbacks.
+ * @param cpu Guest CPU state.
+ * @param vbls VBLs the position advances by; 0 checks the current one. */
 static void cd_defer_tick(CPUState* cpu, uint32_t vbls) {
     cd_events_tick(vbls);
     if (!s_cd_defer_pending) return;
@@ -1033,6 +1105,7 @@ static void cd_defer_tick(CPUState* cpu, uint32_t vbls) {
 static void put_word(uint8_t* p, uint32_t i, uint32_t v) {
     memcpy(p + 4u * i, &v, 4);
 }
+/// @brief Read word i of the latch pack at p in host byte order.
 static uint32_t get_word(const uint8_t* p, uint32_t i) {
     uint32_t v;
     memcpy(&v, p + 4u * i, 4);
@@ -1309,6 +1382,9 @@ void psyq_SetGraphDebug(CPUState* cpu) {
     psyq_mirror_stack_frame(cpu, PSYQ_FRAME_SETGRAPHDEBUG);
 }
 
+/** @brief Thunk for libgpu DrawSync: PsyCross's DrawSync(a0), then the real function's stack stores.
+ *
+ * @param cpu Guest CPU state; v0 receives the result. */
 void psyq_DrawSync(CPUState* cpu) {
     cpu->v0 = (uint32_t)DrawSync((int)cpu->a0);
     /* Real DrawSync @0x8005F764: sp -= 24; sw s0,16; sw ra,20. */
@@ -1622,6 +1698,7 @@ void psyq_SetDrawMode(CPUState* cpu) {
 namespace {
 struct op_accum_scope {
     int id; uint64_t t0;
+    /// @brief Start timing under name when a trace is open; the destructor adds the elapsed microseconds.
     explicit op_accum_scope(const char* name) : id(-1), t0(0) {
         if (op_prof_on()) { id = op_prof_intern(name); t0 = op_prof_now_us(); }
     }
@@ -2130,6 +2207,11 @@ static void gte_sync_psyx_to_cpu(CPUState* cpu) {
     }
 }
 
+/** @brief Thunk for libgte InitGeom: PsyCross's InitGeom on the GTE registers.
+ *
+ * Copies the guest GTE data and control registers into PsyCross's, runs
+ * InitGeom, and copies them back.
+ * @param cpu Guest CPU state. */
 void psyq_InitGeom(CPUState* cpu) {
     gte_sync_cpu_to_psyx(cpu);
     InitGeom();
@@ -2373,6 +2455,7 @@ static void start_music_stream(int sector) {
     PsyX_XA_Start(sector, s_xa_filter_file, s_xa_filter_chan);
 }
 
+/// @brief Log the music routing counters; registered with atexit by cd_set_mode.
 static void cd_exit_summary(void) {
     OPL_INFO_F("music", "summary: stream_starts=%u mode_rt_cleared=%u "
                "reads_rt_clear=%u spu_resyncs=%u spu_head_bound_breaks=%u",
@@ -2851,6 +2934,9 @@ void psyq_CD_getsector(CPUState* cpu) {
     cpu->v0 = (uint32_t)CdGetSector(dst, words);
 }
 
+/** @brief Thunk for libcd's internal CD_init: PsyCross's CdInit, with libcd's status byte left alone.
+ *
+ * @param cpu Guest CPU state; v0 receives the result. */
 void psyq_CD_init(CPUState* cpu) {
     cpu->v0 = (uint32_t)CdInit();
 }
@@ -2999,10 +3085,18 @@ void psyq_CdSync(CPUState* cpu) {
     cpu->v0 = (uint32_t)rc;
 }
 
+/** @brief Thunk for libcd CdLastCom: returns the last command byte.
+ *
+ * cd_command_host and psyq_CdRead record the command as issued in g_CD_com.
+ * @param cpu Guest CPU state; v0 receives the byte. */
 void psyq_CdLastCom(CPUState* cpu) {
     cpu->v0 = (uint32_t)CdLastCom();
 }
 
+/** @brief Thunk for libcd CdMix: returns 1 without applying the CD-XA mix volume.
+ *
+ * PsyCross declares CdMix and does not define it.
+ * @param cpu Guest CPU state; v0 receives 1. */
 void psyq_CdMix(CPUState* cpu) {
     /* PsyCross declares CdMix but never defines it. Spyro calls it from
      * CDInitialize() to set CD-XA mix volume; without real audio routing,
@@ -3024,6 +3118,11 @@ extern "C" void openpete_CdReadCallback(native_cd_read_cb_t cb) {
     g_native_cd_read_cb = cb;
 }
 
+/** @brief Thunk for libcd CdReadCallback: records the guest read-completion handler a0.
+ *
+ * v0 is the handler it replaced. cd_read_complete calls the recorded handler
+ * when no native handler is registered.
+ * @param cpu Guest CPU state. */
 void psyq_CdReadCallback(CPUState* cpu) {
     /* Save the recompiled cb address; our psyq_CdRead thunk fires it
      * after PsyCross finishes the (synchronous) read. */
@@ -3363,6 +3462,9 @@ void psyq_MemCardInit(CPUState* cpu) {
     psyq_mirror_stack_frame(cpu, PSYQ_FRAME_MEMCARDINIT);
 }
 
+/** @brief Thunk for libmcrd MemCardStart: calls openpete_memcard_start, which does nothing because the host card is always ready.
+ *
+ * @param cpu Guest CPU state, unused. */
 void psyq_MemCardStart(CPUState* cpu) {
     (void)cpu;
     openpete_memcard_start();
@@ -3383,6 +3485,11 @@ void psyq_MemCardExist(CPUState* cpu) {
     cpu->v0 = (uint32_t)openpete_memcard_exist((int)cpu->a0, nullptr, nullptr);
 }
 
+/** @brief Thunk for libmcrd MemCardAccept: probes the card in the port a0 names.
+ *
+ * v0 is 1 when a card is present and 0 for an empty slot; the result code
+ * reaches the game through the latch MemCardSync reads.
+ * @param cpu Guest CPU state. */
 void psyq_MemCardAccept(CPUState* cpu) {
     cpu->v0 = (uint32_t)openpete_memcard_accept((int)cpu->a0, nullptr, nullptr);
 }
@@ -3430,6 +3537,11 @@ void psyq_MemCardCreateFile(CPUState* cpu) {
     cpu->v0 = (uint32_t)openpete_memcard_create((int)cpu->a0, name, (int)cpu->a2);
 }
 
+/** @brief Thunk for libmcrd MemCardFormat: formats the card in the port a0 names.
+ *
+ * v0 is openpete_memcard_format's result: 0 on success, an error code for an
+ * empty slot or an image that did not reach the disk.
+ * @param cpu Guest CPU state. */
 void psyq_MemCardFormat(CPUState* cpu) {
     cpu->v0 = (uint32_t)openpete_memcard_format((int)cpu->a0);
 }
@@ -3581,6 +3693,7 @@ struct MipsArgs {
     CPUState* cpu;
     int       slot;        /* next slot index (0 = a0, 4 = sp+0x10, ...) */
 
+    /// @brief Return the next vararg slot: a0..a3, then the stack words from sp+0x10.
     uint32_t fetch() {
         uint32_t v;
         switch (slot) {

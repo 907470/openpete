@@ -133,7 +133,20 @@ void game_on_state_loaded(CPUState* cpu);
  * game_on_state_loaded, the in-memory loader before it.
  * @return Payload size in bytes. */
 uint32_t game_state_extra_size(void);
-void     game_state_extra_save(void* dst);            /* dst has extra_size bytes */
+
+/** @brief Write the game's host-side savestate payload.
+ *
+ * The default writes the shared thunk layer's latch pack.
+ * @param dst Receives game_state_extra_size() bytes. */
+void     game_state_extra_save(void* dst);
+
+/** @brief Restore the game's host-side state from a payload game_state_extra_save wrote.
+ *
+ * The caller passes the size stored in the savestate header. The default
+ * hands the payload to the thunk layer's latch-pack loader, which leaves
+ * state unchanged for a payload it does not recognize.
+ * @param src The payload.
+ * @param size The payload's length in bytes. */
 void     game_state_extra_load(const void* src, uint32_t size);
 
 /** @brief Whether gameplay is live and steady-state: in a level, not booting, loading or on the title.

@@ -19,6 +19,17 @@ static const char* s_seen[STUB_SEEN_CAP];
 static int s_seen_n;
 static int s_continue = -1;
 
+/** @brief Report a call to a PSYQ symbol that has no thunk, then abort.
+ *
+ * Every generated stub of an unimplemented PSYQ function calls it. Unless
+ * OPENPETE_PSYQ_STUB_CONTINUE is set and not "0" (read once), it prints the
+ * symbol, its address and ra, sp and gp, and aborts. With the variable set
+ * it logs each distinct symbol once (up to 256) as `psyq-missing:` and
+ * returns, leaving the guest to run on with the call having done nothing.
+ * @param name The symbol's name; the pointer is retained, so it must outlive
+ *        the process.
+ * @param addr The symbol's guest address.
+ * @param cpu Guest CPU state; may be NULL. */
 void psyq_stub_hit(const char* name, uint32_t addr, CPUState* cpu) {
     if (s_continue < 0) {
         const char* e = getenv("OPENPETE_PSYQ_STUB_CONTINUE");
