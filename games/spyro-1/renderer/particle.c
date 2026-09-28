@@ -1,16 +1,16 @@
 // games/spyro-1/renderer/particle.c — the PARTICLE renderer family
 // (func_800573C8 particles + func_800580F4 glows + func_800584C4 sparkles /
 // r_particles.s) re-derived from gamestate in float + its numerical A/B
-// harness. This is the LAST 3b actor and the most complex: 7 particle sprite
-// classes (FT4 billboards, dots/tiles, F2 lines), additive glow rings, and
-// twinkle sparkle quads — a mix of GPU primitive types over one polybuf.
+// harness. It covers 7 particle sprite classes (FT4 billboards, dots/tiles,
+// F2 lines), additive glow rings, and twinkle sparkle quads — a mix of GPU
+// primitive types over one polybuf.
 //
-// VERDICT-CRITICAL (see the format notes): the .s writes Particle.m_03
-// (drawn stamp, read next frame -> conditional rand() -> RNG seed) and
-// Sparkle m_Life. We NEVER reproduce those — the real .s runs headless exactly
-// once per call (behaviour-identical to normal dispatch) and we only READ pool
-// state + capture its emitted prims afterwards, so determinism holds by
-// construction. The native path only mirrors the GEOMETRY in float.
+// The .s writes Particle.m_03 (drawn stamp, read next tick -> conditional
+// rand() -> RNG seed) and Sparkle m_Life. The native path never reproduces
+// those: the real .s runs headless exactly once per call (behaviour-identical
+// to normal dispatch) and the native path only reads pool state and captures
+// the emitted prims afterwards, so determinism holds by construction. The
+// native path only mirrors the GEOMETRY in float.
 //
 // Three sub-renderers hooked, one render path each (RP_PARTICLES, RP_GLOW,
 // RP_SPARKLE): the game calls them independently — a dragon-rescue cutscene
@@ -48,15 +48,14 @@ extern void     func_800584C4(CPUState* cpu);  /* RenderSparkles   */
 extern void     func_80058864(CPUState* cpu);  /* RenderDragonStar (free-a-dragon flash) */
 extern unsigned openpete_frame;
 
-/* ---- gamestate addresses (psx.map / the format notes) --------------- */
+/* ---- gamestate addresses (psx.map) --------------------------------------- */
 
 /* ---- captured prims (ground truth) --------------------------------------- *
  * Particle FT4 quads (GPU code 0x2C/0x2E) + glow G3 rings (0x32) decode with
  * the standard PSX polygon layout (code = high byte of word[+0x04]; word[+0x00]
  * is the OT tag whose high byte is the *length*, low24 the link). Tiles (0x60),
  * lines (0x40/0x48) and the sparkle quads are NON-polygon prims: kept as raw
- * words for the dump, decoded specially in the feed once the dump confirms the
- * exact layout. */
+ * words: the dump prints them and the A/B compares read the words directly. */
 typedef struct {
     uint8_t  code;          /* GPU prim code byte (word[1]>>24)  */
     uint8_t  taglen;        /* OT tag length (word[0]>>24)       */
@@ -340,8 +339,7 @@ typedef struct { uint32_t A, B, C;      /* table-PREV words */
                                           * endpoint. NEVER live RAM: under
                                           * runahead live = committed tick ≈
                                           * table-prev, degenerating every
-                                          * channel lerp back to 30 Hz (the
-                                          * original sparkle complaint). */
+                                          * channel lerp to the tick rate. */
                  double alpha; } part_prev_t;
 /** @brief Looks up a g_Particles slot's previous-tick words for channel interpolation.
  *
@@ -1141,11 +1139,10 @@ static void particle_feed_native(CPUState* cpu) {
         fquad* q = &s_fq[i];
         openpete_native_scene_set_tag(
             OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_QUAD, q->sel, 0));
-        /* (A depth pull for the subtractive smoke was tried here and
-         * FALSIFIED: the burst point is the occluder's NEAREST
-         * surface from the camera, so true depth never blocked the puffs —
-         * the eater was the SUBTRACT-WORLD draw ORDER, fixed renderer-side
-         * by drawing that bucket after the ADD group.) */
+        /* No depth pull for the subtractive smoke: the burst point is the
+         * occluder's NEAREST surface from the camera, so true depth never
+         * blocks the puffs. The subtract-world bucket is drawn after the ADD
+         * group renderer-side, which keeps the puffs from being eaten. */
         float depth = openpete_native_scene_viewz(openpete_worldvz_full(q->cz));
         for (int s = 0; s < 2; s++) {
             openpete_scene_tri st = {0};
@@ -1411,8 +1408,9 @@ static void glow_compare(CPUState* cpu) {
  * stride 0x18) is a "twinkle cross" = TWO LINE_F prims (code 0x40, opaque white):
  * T0→T3 and T1→T2, the two diagonals. Tips (view space, VZ=0):
  *   T0=(-ec,-es) T1=(es,-ec) T2=(-es,ec) T3=(ec,es),
- *   ec=(scaledFade·cos[fade8])>>19, es=(scaledFade·sin[fade8])>>19,
- *   scaledFade=(256−fade8)·m_Fade, fade8=|m_Speed−newLife|·256/m_Speed.
+ *   ec=(scaledFade·cos[ang])>>19, es=(scaledFade·sin[ang])>>19,
+ *   ang=m_0x0E (the spin seed), scaledFade=(256−fade8)·m_Fade,
+ *   fade8=|m_Speed−newLife|·256/m_Speed.
  * They are transformed by a uniform matrix diag(a3,a3,a3), a3=max(centreMAC3,4096),
  * TR = centre·2 (the centre's view-space MAC), then projected.
  *
@@ -1455,8 +1453,8 @@ typedef struct {
 #define MAX_SSTAR 16
 static sstar s_sstar[MAX_SSTAR]; static int s_sstar_n;
 
-/* S3 gem-glint colour table, D_80066B64 in SCUS-94467 (bytes verified
- * against the ROM): per hue {centre + far-line, spike tip, ring}.
+/* S3 gem-glint colour table, D_80066B64 in SCUS-94467: per hue
+ * {centre + far-line, spike tip, ring}.
  * Packed 0xBBGGRR to match the sparkle m_Color/rgba convention. */
 #define S3G(r, g, b) ((uint32_t)(r) | ((uint32_t)(g) << 8) | ((uint32_t)(b) << 16))
 static const uint32_t k_s3_glint[6][3] = {
@@ -1525,7 +1523,7 @@ static void sparkle_build(CPUState* cpu) {
          * scales). Read post-.s m_0x0E (the value the .s used + wrote). */
         int angIdx = (int)((w3 >> 16) & 0xFF);       /* m_0x0E (spin angle) */
         /* Sub-tick phase: lerp life + spin between this slot's prev/curr
-         * interp-objs snapshots (see s_sparkle_now above). Guards: same slot
+         * interp-objs snapshots (see s_phase_now above). Guards: same slot
          * identity (position + m_Speed unchanged) and life non-increasing —
          * a respawn re-arms m_Life upward → snap, never lerp across it. */
         double lifef = (double)newLife, angf = (double)angIdx;
@@ -1878,8 +1876,8 @@ static void dragonstar_build(CPUState* cpu) {
     cc &= 0xFF;
     uint32_t color = cc | (cc<<8) | (cc<<16);
 
-    /* 16 ring points in angular order: idx = m*16; even m -> outer (>>12), odd m
-     * -> inner (>>10). spoke local = ((sin·size)>>shift, 0, (cos·size)>>shift),
+    /* 16 ring points in angular order: idx = m*16; even m -> inner (>>12), odd m
+     * -> outer (>>10). spoke local = ((sin·size)>>shift, 0, (cos·size)>>shift),
      * RTPS through the per-effect matrix + TR. COSINE_8 = SINE_8 + 0x80. */
     double rx[16], ry[16];
     for (int m = 0; m < 16; m++) {

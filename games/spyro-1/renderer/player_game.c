@@ -12,8 +12,9 @@
  *     keyframe stream;
  *   - the keyframe blend weight is 12 bits of the part record's flags word.
  *
- * Every field the walk reads is a game_layout.player field; the sites named in
- * the comments are r_pete.s, the handwritten routine at func_80023AC4.
+ * The avatar and part-record fields the walk reads are game_layout.player
+ * fields; the sites named in the comments are r_pete.s, the handwritten
+ * routine at func_80023AC4.
  */
 
 #include "renderer/player_game.h"
