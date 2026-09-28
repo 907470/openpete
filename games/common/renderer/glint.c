@@ -643,8 +643,8 @@ static double glint_extent_scale(const glint_rec* r, const ngte_proj* shown,
 
 /* OPENPETE_GLINT_REBASE_DBG=1: the rebase's verdicts per run. A run whose
  * lerped count is zero rebased nothing against a previous record and measured
- * nothing; `reuse` is the subset of the snapped whose slot was found holding a
- * different gem. */
+ * nothing; a snapped primitive had no usable previous record (none, a stale
+ * pair, or a slot that took a different gem). */
 static unsigned long s_reb_stat[3];   /* 0 lerped, 1 snapped, 2 rotated */
 
 /** @brief Print the rebase verdict counters to stderr.

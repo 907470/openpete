@@ -7,7 +7,7 @@
 // count, stride and bound comes from game_layout.glow; the walk below is one
 // body.
 //
-// STATIC ASM FINDINGS:
+// Read from the routine (asm/mobyfunc.s):
 //   * the pool is 16 records of 0x14 bytes: world XYZ at +0x00, the primitive
 //     colour at +0x0C, and a packed word at +0x10 holding the shape index, the
 //     size, a rotation phase and a signed ordering-table bias (:1928-1929,

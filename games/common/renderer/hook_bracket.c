@@ -1,6 +1,6 @@
-/* hook_bracket.c: see hook_bracket.h. The bodies here are the union of the
- * per-feeder brackets they replaced; a change to the gate order, the cursor
- * reads or the guest call moves every feeder of every game at once. */
+/* hook_bracket.c: see hook_bracket.h. Every feeder of every game runs its
+ * guest draw through these bodies; a change to the gate order, the cursor
+ * reads or the guest call moves all of them at once. */
 
 #include "renderer/hook_bracket.h"
 
