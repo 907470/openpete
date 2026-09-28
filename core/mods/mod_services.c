@@ -23,10 +23,12 @@
  * stops running the hooks that would query it. */
 static openpete_mods_bk2_status_t s_bk2_status;
 
+/* Documented at the declaration in openpete_mods.h. */
 void openpete_mods_bk2_publish(const openpete_mods_bk2_status_t* st) {
     if (st) s_bk2_status = *st;
 }
 
+/* Documented at the declaration in openpete_mods.h. */
 void openpete_mods_bk2_query(openpete_mods_bk2_status_t* out) {
     if (out) *out = s_bk2_status;
 }
@@ -127,12 +129,13 @@ int openpete_mods_register_asset_root(const char* dir, const char* owner) {
     return 0;
 }
 
+/* Documented at the declaration in openpete_mods.h. */
 int openpete_mods_asset_root_count(void) {
     return (int)mod_fvec_count(&s_roots);
 }
 
-/* The returned dir pointer is valid until the next root registers, which
- * may move the run; every caller copies it inside the call. */
+/* Documented at the declaration in openpete_mods.h. Every caller copies
+ * the returned dir inside the call. */
 const char* openpete_mods_asset_root(int i, const char** owner) {
     const asset_root_t* r;
     if (i < 0) return NULL;

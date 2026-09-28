@@ -67,13 +67,16 @@ typedef struct {
 
 static mod_fvec s_level_hooks;   /* level_hook_t */
 
+/** @brief Return the number of registered level-ready hooks. */
 static int level_hook_count(void) {
     return (int)mod_fvec_count(&s_level_hooks);
 }
+/** @brief Return level-ready hook @p i, or NULL when @p i is out of range. */
 static level_hook_t* level_hook_at(int i) {
     return (level_hook_t*)mod_fvec_at(&s_level_hooks, (size_t)i);
 }
 
+/* Documented at the declaration in openpete_mods.h. */
 void openpete_mods_set_moby_ops(const openpete_moby_ops_t* ops) {
     s_ops = ops;
 }
@@ -86,6 +89,7 @@ void openpete_mods_set_moby_ops(const openpete_moby_ops_t* ops) {
 static uint16_t s_moby_classes[OPENPETE_MOBY_CLASSES_MAX];
 static int      s_moby_class_count;
 
+/* Documented at the declaration in openpete_mods.h. */
 void openpete_mods_moby_class_census(CPUState* cpu) {
     if (!s_ops || !s_ops->classes_loaded) return;
     int n = s_ops->classes_loaded(cpu, s_moby_classes,
@@ -95,6 +99,7 @@ void openpete_mods_moby_class_census(CPUState* cpu) {
     if (n >= 0) s_moby_class_count = n;
 }
 
+/* Documented at the declaration in openpete_mods.h. */
 int openpete_mods_moby_classes(uint16_t* out, int cap) {
     if (!out || cap <= 0) return s_moby_class_count;
     int n = s_moby_class_count < cap ? s_moby_class_count : cap;
@@ -102,13 +107,18 @@ int openpete_mods_moby_classes(uint16_t* out, int cap) {
     return n;
 }
 
-/* The shared per-tick driver hook, added lazily on the FIRST
- * registration in ANY namespace (anchor = the moby ops' master-update
- * address; the game registers both ops structs at boot). */
 static void registry_tick(CPUState* cpu);
 static void level_slots_tick(CPUState* cpu);
 static void custom_tick(CPUState* cpu);
 static void counts_tick(CPUState* cpu);
+/** @brief Add the shared per-tick driver to the master-update chain once.
+ *
+ * Called by the first registration in any namespace; the anchor is the
+ * moby ops' update_hook_addr (the game registers both ops structs at
+ * boot). Later calls return at once.
+ * @param log_tag Log tag for the error line.
+ * @return 0 when the driver is hooked, -1 without moby ops or when the
+ *         chain add fails. */
 static int ensure_hooked(const char* log_tag) {
     if (s_hooked) return 0;
     if (!s_ops) {
@@ -179,14 +189,17 @@ typedef struct {
 
 static mod_fvec s_levels;   /* level_slot_t */
 
+/** @brief Return the number of registered level-slot rows. */
 static int level_slot_count(void) {
     return (int)mod_fvec_count(&s_levels);
 }
+/** @brief Return level-slot row @p i, or NULL when @p i is out of range. */
 static level_slot_t* level_slot_at(int i) {
     return (level_slot_t*)mod_fvec_at(&s_levels, (size_t)i);
 }
 static const openpete_level_ops_t* s_level_ops = NULL;
 
+/* Documented at the declaration in openpete_mods.h. */
 void openpete_mods_set_level_ops(const openpete_level_ops_t* ops) {
     s_level_ops = ops;
 }
@@ -209,10 +222,7 @@ static void level_slots_tick(CPUState* cpu) {
     }
 }
 
-/* Arm the per-tick driver from OUTSIDE this file (mod_sfx's def rows
- * apply from the level-ready point but register through mod_sfx.c —
- * without this, def rows on a mod with no other registry use would
- * never see a tick). */
+/* Documented at the declaration in openpete_mods.h. */
 int openpete_mods_registry_ensure_driver(const char* log_tag) {
     return ensure_hooked(log_tag);
 }
@@ -237,7 +247,7 @@ int openpete_mods_on_level(const char* mod_id, openpete_mod_level_fn fn,
     return 0;
 }
 
-/* Hot reload: REMOVE a mod's registry rows (it re-registers fresh). */
+/* Documented at the declaration in openpete_mods.h. */
 void openpete_mods_registry_remove_owner(const char* mod_id) {
     if (!mod_id) return;
     int w = 0;
@@ -255,13 +265,7 @@ void openpete_mods_registry_remove_owner(const char* mod_id) {
     mod_fvec_truncate(&s_level_hooks, (size_t)w);
 }
 
-/* Live toggle: gate a mod's registry rows (level slots + level hooks).
- *
- * A disabled level slot stops claiming and refuses entry. It does NOT
- * unclaim: the cloned TOC entry and the donor alias are what make the id
- * loadable at all, and the player may be standing in the level — see
- * openpete_mods_registry_owner_busy, which callers must consult before
- * applying a toggle-off. */
+/* Documented at the declaration in openpete_mods.h. */
 void openpete_mods_registry_set_owner_enabled(const char* mod_id, int on) {
     if (!mod_id) return;
     for (int i = 0; i < level_slot_count(); i++)
@@ -280,6 +284,7 @@ void openpete_mods_registry_set_owner_enabled(const char* mod_id, int on) {
         }
 }
 
+/* Documented at the declaration in openpete_mods.h. */
 int openpete_mods_level_register(const char* mod_id, const char* name,
                                  int donor_level_id, const char* log_tag) {
     if (!mod_id || !name || !name[0]) return -1;
@@ -314,6 +319,7 @@ int openpete_mods_level_register(const char* mod_id, const char* name,
     return 0;
 }
 
+/* Documented at the declaration in openpete_mods.h. */
 int openpete_mods_level_slot_id(const char* mod_id, const char* name) {
     for (int i = 0; i < level_slot_count(); i++)
         if (strcmp(level_slot_at(i)->mod_id, mod_id) == 0 &&
@@ -322,6 +328,7 @@ int openpete_mods_level_slot_id(const char* mod_id, const char* name) {
     return -1;
 }
 
+/* Documented at the declaration in openpete_mods.h. */
 int openpete_mods_level_enter(CPUState* cpu, int level_id) {
     if (!s_level_ops || !cpu || level_id <= 0) return -1;
     /* Entering a slot commits the session to a level its owner defines.
@@ -390,7 +397,9 @@ typedef struct {
 
 static mod_fvec s_customs;   /* custom_level_t */
 
+/** @brief Return the number of registered custom-level rows. */
 static int custom_count(void) { return (int)mod_fvec_count(&s_customs); }
+/** @brief Return custom-level row @p i by registration index, or NULL when out of range. */
 static custom_level_t* custom_at(int i) {
     return (custom_level_t*)mod_fvec_at(&s_customs, (size_t)i);
 }
@@ -398,11 +407,16 @@ static custom_level_t* custom_at(int i) {
  * converts with it. */
 static mod_fvec s_custom_order;   /* int */
 
+/** @brief Return element @p i of a vector of int, or 0 when @p i is out of range. */
 static int id_at(const mod_fvec* v, int i) {
     const int* p = (const int*)mod_fvec_at(v, (size_t)i);
     return p ? *p : 0;
 }
 
+/** @brief Return the registration index of the row at alphabetical position @p i.
+ *
+ * Reads s_custom_order. An out-of-range @p i returns 0, which is also a
+ * valid row index. */
 static int order_row(int i) {
     const int* p = (const int*)mod_fvec_at(&s_custom_order, (size_t)i);
     return p ? *p : 0;
@@ -529,6 +543,7 @@ static void custom_order_insert(int row, const char* name) {
     *(int*)mod_fvec_at(&s_custom_order, (size_t)at) = row;
 }
 
+/* Documented at the declaration in openpete_mods.h. */
 int openpete_mods_custom_register(const char* mod_id, const char* name,
                                   const char* stem, const char* dir,
                                   const char* donor, int replace,
@@ -581,8 +596,10 @@ int openpete_mods_custom_register(const char* mod_id, const char* name,
     return 0;
 }
 
+/* Documented at the declaration in openpete_mods.h. */
 int openpete_mods_custom_count(void) { return custom_count(); }
 
+/* Documented at the declaration in openpete_mods.h. */
 int openpete_mods_custom_info(int i, openpete_mods_custom_info_t* out) {
     if (i < 0 || i >= custom_count() || !out) return 0;
     const custom_level_t* r = custom_at(order_row(i));
@@ -801,6 +818,11 @@ static void counts_tick(CPUState* cpu) {
 }
 
 unsigned long openpete_mods_registry_counts_writes(void);
+/** @brief Return the bytes the target-total reconcile has written this session.
+ *
+ * The engagement counter for a run that has to show the reconcile
+ * executed. Not declared in a project header.
+ * @return The running byte total. */
 unsigned long openpete_mods_registry_counts_writes(void) {
     return s_counts_writes;
 }
@@ -919,6 +941,7 @@ int openpete_mods_registry_owner_busy(const char* mod_id) {
     return 0;
 }
 
+/* Documented at the declaration in openpete_mods.h. */
 int openpete_mods_read_level_data(int level_id, void* buf, uint32_t cap) {
     if (!s_level_ops || !s_level_ops->read_level_data || level_id <= 0) return -1;
     return s_level_ops->read_level_data(level_id, buf, cap);

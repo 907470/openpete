@@ -24,6 +24,7 @@
 
 static openpete_mods_sfx_canon_fn s_canon;
 
+/* Documented at the declaration in openpete_mods.h. */
 void openpete_mods_sfx_set_canon(openpete_mods_sfx_canon_fn fn) { s_canon = fn; }
 
 int openpete_mods_sfx_replace(openpete_mod_t* self, const char* name,

@@ -184,7 +184,7 @@ extern int openpete_mods_active;
 
 /* bk2 input-movie status (read-only v1 of the bk2 access service):
  * run.c publishes once per sim frame while a movie is loaded; mods
- * query via api->bk2_status to synchronize with replays. Record/replay
+ * the host reads it back through openpete_mods_bk2_query. Record/replay
  * CONTROL stays engine-owned (mid-session anchoring is TAS infra). */
 typedef struct {
     int active;      /* a movie is loaded this session               */
@@ -192,7 +192,18 @@ typedef struct {
     int frame_count; /* total frames in the movie                    */
     int overriding;  /* this tick's input actually came from it      */
 } openpete_mods_bk2_status_t;
+/** @brief Store the movie status the run loop reports for the current tick.
+ *
+ * The run loop calls it while a bk2 movie is loaded, including before the
+ * movie's input offset and past its end (overriding 0). The status is
+ * copied by value with no locking. A NULL @p st is ignored.
+ * @param st The status to store. */
 void openpete_mods_bk2_publish(const openpete_mods_bk2_status_t* st);
+/** @brief Copy out the last published movie status.
+ *
+ * Reads all zero (active 0) until a movie publishes. Host-side only; the
+ * mod API has no accessor for it.
+ * @param out Receives the status; NULL does nothing. */
 void openpete_mods_bk2_query(openpete_mods_bk2_status_t* out);
 
 /* Guest scratch arena (core/mods/mod_arena.c): session-lifetime bump
@@ -561,6 +572,18 @@ int  openpete_mods_registry_owner_busy(const char* mod_id);
  * fold it into their cache keys.
  * @return The epoch. */
 unsigned openpete_mods_toggle_epoch(void);
+/** @brief Enable or disable a mod's level slots and level-ready hooks.
+ *
+ * A disabled level slot stops claiming and refuses entry through
+ * openpete_mods_level_enter. It stays claimed: the cloned TOC entry and the
+ * donor alias make the id loadable at all, and the player may be standing
+ * in the level, so callers consult openpete_mods_registry_owner_busy before
+ * applying a disable. Enabling clears each hook's once-per-level latch, so
+ * the hook fires again for the level in progress on the next live tick.
+ * Custom-level rows are not touched: their enablement is read from
+ * openpete_mods_is_enabled when used.
+ * @param mod_id The mod id; NULL does nothing.
+ * @param on nonzero to enable, 0 to disable. */
 void openpete_mods_registry_set_owner_enabled(const char* mod_id, int on);
 
 /* Owner teardown and live enable/disable for the three subsystems that
@@ -594,6 +617,11 @@ void openpete_mods_draw_remove_owner(const char* owner_id);
  * @param owner_id the mod id; NULL does nothing.
  * @param on nonzero to enable, 0 to disable. */
 void openpete_mods_draw_set_owner_enabled(const char* owner_id, int on);
+/** @brief Remove a mod's level slots and level-ready hooks, keeping the order of the rest.
+ *
+ * The loader calls it when it strips a mod's registrations. A claimed slot
+ * id is not released, and custom-level rows are not removed.
+ * @param mod_id The mod id; NULL does nothing. */
 void openpete_mods_registry_remove_owner(const char* mod_id);
 
 /** @brief Add @p ns of self time to @p owner's tick or present accumulator.
@@ -736,6 +764,13 @@ typedef struct {
     int (*classes_loaded)(CPUState* cpu, uint16_t* out, int cap);
 } openpete_moby_ops_t;
 
+/** @brief Register the game's moby ops table.
+ *
+ * The registry keeps the pointer, so the table outlives the process. It
+ * supplies the chain anchor (update_hook_addr) the per-tick driver is
+ * added at, the level id the driver reads each tick, and the loaded-class
+ * query the census calls. Registrations made before it is set fail.
+ * @param ops The ops table; NULL clears it. */
 void openpete_mods_set_moby_ops(const openpete_moby_ops_t* ops);
 
 /* Host-side snapshot of the loaded-class set, refreshed once per tick from
@@ -743,7 +778,23 @@ void openpete_mods_set_moby_ops(const openpete_moby_ops_t* ops);
  * callable from a UI section — i.e. inside a present, where guest access is
  * refused — so the read never touches guest RAM. */
 #define OPENPETE_MOBY_CLASSES_MAX 512
+/** @brief Refresh the host-side copy of the loaded moby class set from the game ops.
+ *
+ * Reads guest RAM, so it runs at the tick boundary; the run loop calls it
+ * each tick while any mod is loaded. A -1 answer from the ops (mid-load)
+ * keeps the previous copy. Does nothing without moby ops or their
+ * classes_loaded query. Holds at most OPENPETE_MOBY_CLASSES_MAX classes.
+ * @param cpu Live game CPU. */
 void openpete_mods_moby_class_census(CPUState* cpu);
+/** @brief Copy the last censused loaded moby class set into a caller buffer.
+ *
+ * Reads the host-side copy only, so it is legal inside a present. The set
+ * is ascending; a set larger than @p cap is truncated to @p cap entries.
+ * @param out Receives the classes; NULL returns the count without copying.
+ * @param cap Capacity of @p out in entries; 0 or less returns the count
+ *        without copying.
+ * @return The number of entries copied, or the full set size when @p out
+ *         is NULL or @p cap is 0 or less. */
 int  openpete_mods_moby_classes(uint16_t* out, int cap);
 
 /* Level-slot namespace (rung 12). A registered slot is a NEW level id
@@ -793,6 +844,12 @@ typedef struct {
                             const char* stem, int on);
 } openpete_level_ops_t;
 
+/** @brief Register the game's level ops table.
+ *
+ * The registry keeps the pointer, so the table outlives the process. Level
+ * slot and custom-level registration and their per-tick driver work need
+ * it; the driver does nothing while it is unset.
+ * @param ops The ops table; NULL clears it. */
 void openpete_mods_set_level_ops(const openpete_level_ops_t* ops);
 
 /* ── Declarative custom levels ([[level]] manifest blocks) ───────────
@@ -811,6 +868,27 @@ typedef struct {
     int eggs;      /* 0..255,   -1 undeclared */
 } openpete_level_counts_t;
 
+/** @brief Register a declarative custom-level row for a mod.
+ *
+ * The donor name is resolved through the level ops and must resolve to a
+ * retail level id from 10 to 64. A missing data file does not fail the
+ * call: the row registers with files_ok 0 and a warning. The row is
+ * inserted in case-insensitive name order, its music duration is probed,
+ * and the per-tick driver is armed. Strings are truncated to fit the row:
+ * name and stem to 63 bytes, title to 39, the assets directory to 899.
+ * @param mod_id Owning mod id.
+ * @param name Row name and sort key; must be non-empty.
+ * @param stem File stem of `<dir>/levels/<stem>.WAD`; must be non-empty.
+ * @param dir The mod's assets directory.
+ * @param donor Donor level name or decimal id string; NULL reads as "".
+ * @param replace Nonzero serves the level over the donor's own entry, 0
+ *        from the shared slot.
+ * @param music WAV file name under the mod's music/, or NULL.
+ * @param title In-game title override, or NULL.
+ * @param counts Declared target totals, or NULL for none.
+ * @param log_tag Log tag for the registration lines.
+ * @return 0, or -1 on a NULL or empty required argument, an unresolved
+ *         or non-retail donor, or a failed table allocation. */
 int  openpete_mods_custom_register(const char* mod_id, const char* name,
                                    const char* stem, const char* dir,
                                    const char* donor, int replace,
@@ -826,7 +904,19 @@ typedef struct {
     int level_id;       /* enterable id right now (slot id or donor), 0 = none */
     int files_ok;       /* data file present at registration */
 } openpete_mods_custom_info_t;
+/** @brief Return the number of registered custom-level rows.
+ *
+ * @return The row count. */
 int  openpete_mods_custom_count(void);
+/** @brief Fill a descriptor for the custom level at alphabetical position @p i.
+ *
+ * Positions follow case-insensitive name order. The name and owner strings
+ * point into registry storage and stay valid until the next registration.
+ * level_id is the donor id for a replace row, the shared slot id for the
+ * slot row that currently owns it, else 0.
+ * @param i Position in name order.
+ * @param out Receives the descriptor.
+ * @return 1 when filled, 0 when @p i is out of range or @p out is NULL. */
 int  openpete_mods_custom_info(int i, openpete_mods_custom_info_t* out);
 /** @brief Queue a warp into the custom level at alphabetical position @p i.
  *
@@ -885,10 +975,47 @@ int  openpete_mods_custom_asset_path(const char* dir, const char* stem,
 const char* openpete_mods_custom_music_for(int level_id,
                                            double* dur_sec_out);
 
+/** @brief Register a level slot for a mod, cloned from a donor level.
+ *
+ * Adds a row with no slot id and arms the per-tick driver, which calls the
+ * level ops' claim_slot with the donor id each tick until it returns a
+ * nonzero id. The owner and name are truncated to 63 and 47 bytes. The
+ * donor id is not validated here.
+ * @param mod_id Owning mod id.
+ * @param name Slot name, unique per owner; must be non-empty.
+ * @param donor_level_id Level id whose TOC entry the slot clones.
+ * @param log_tag Log tag for the registration lines.
+ * @return 0, or -1 on a NULL or empty argument, without level ops, on a
+ *         duplicate owner and name, when the driver cannot be armed, or
+ *         when the table allocation fails. */
 int openpete_mods_level_register(const char* mod_id, const char* name,
                                  int donor_level_id, const char* log_tag);
+/** @brief Return the level id a registered slot claimed.
+ *
+ * @param mod_id Owning mod id; must be non-NULL.
+ * @param name Slot name; must be non-NULL.
+ * @return The id, or -1 when no row matches or the slot is not claimed
+ *         yet. */
 int openpete_mods_level_slot_id(const char* mod_id, const char* name);
+/** @brief Start a transition into a level id from live gameplay through the level ops.
+ *
+ * An id that belongs to a level slot whose owner is disabled is refused.
+ * Retail ids match no slot row and pass through. When the ops accept a
+ * slot id, the registry records the entry so
+ * openpete_mods_registry_owner_busy reports the owner busy until a live
+ * level appears.
+ * @param cpu Live game CPU; NULL returns -1.
+ * @param level_id Target level id; 0 or less returns -1.
+ * @return 0 when queued, -1 when refused, without level ops, or when the
+ *         ops report gameplay is not live. */
 int openpete_mods_level_enter(CPUState* cpu, int level_id);
+/** @brief Read a level's raw Data WAD entry from the disc through the level ops.
+ *
+ * @param level_id Level id; 0 or less returns -1.
+ * @param buf Receives the bytes; NULL probes the length.
+ * @param cap Capacity of @p buf in bytes.
+ * @return The entry's byte length, or -1 without level ops or their
+ *         read_level_data, or when the ops fail. */
 int openpete_mods_read_level_data(int level_id, void* buf, uint32_t cap);
 
 /** @brief Register a mod's level-ready hook.
@@ -907,6 +1034,13 @@ int openpete_mods_read_level_data(int level_id, void* buf, uint32_t cap);
  *         when the hook table allocation fails. */
 int openpete_mods_on_level(const char* mod_id, openpete_mod_level_fn fn,
                            const char* log_tag);
+/** @brief Add the per-tick registry driver to the master-update chain if it is absent.
+ *
+ * The driver is normally added by the first registration in any registry
+ * namespace; this arms it without registering a row.
+ * @param log_tag Log tag for the error line.
+ * @return 0 when the driver is armed, -1 without moby ops or when the
+ *         chain add fails. */
 int openpete_mods_registry_ensure_driver(const char* log_tag);
 
 /* ── SFX replacement verb (core/mods/mod_sfx.c) ────────────────────
@@ -918,6 +1052,11 @@ int openpete_mods_registry_ensure_driver(const char* log_tag);
  * NULL or identity when no alias exists. Applied to sfx_replace names
  * before they are stored. */
 typedef const char* (*openpete_mods_sfx_canon_fn)(const char* name);
+/** @brief Register the game's alias canonicaliser for sfx_replace names.
+ *
+ * openpete_mods_sfx_replace applies it to each name before the pack
+ * lookup. Stored in a plain global, set once at game boot.
+ * @param fn The canonicaliser; NULL disables the mapping. */
 void openpete_mods_sfx_set_canon(openpete_mods_sfx_canon_fn fn);
 
 /** @brief Return a mod's stable id string.
@@ -1644,7 +1783,21 @@ int openpete_mods_pending_state_op(unsigned* out_slot);
  *         fails. */
 int         openpete_mods_register_asset_root(const char* dir,
                                               const char* owner);
+/** @brief Return the number of registered asset roots.
+ *
+ * The count only grows, so a consumer detects a late-registered root by
+ * comparing it with the count it last scanned.
+ * @return The root count. */
 int         openpete_mods_asset_root_count(void);
+/** @brief Return the directory of asset root @p i and its owner.
+ *
+ * Indices run in registration order, lowest priority first. The returned
+ * path stays valid until the next root registers, which may move the
+ * table, so a caller copies it before then.
+ * @param i Root index.
+ * @param owner Receives the owning mod id, a string that lives for the
+ *        process; may be NULL.
+ * @return The directory, or NULL when @p i is out of range. */
 const char* openpete_mods_asset_root(int i, const char** owner);
 
 /** @brief Return the compile-on-boot build key of a loaded mod.
