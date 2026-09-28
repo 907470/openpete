@@ -616,8 +616,7 @@ typedef struct rhi_buffer   rhi_buffer;
 typedef struct rhi_pipeline rhi_pipeline;
 typedef struct rhi_texture  rhi_texture;
 
-/* Terrain sector-mesh vertex (the terrain GPU cache — see
- * notes/plans/openpete-terrain-gpu-cache.md). A retained world-space
+/* Terrain sector-mesh vertex (the terrain GPU cache). A retained world-space
  * vertex: the camera transform, fog, CLUT ladder and the per-face verdicts
  * (NCLIP two-half cull, near/HQ variant select, LOD handoff) all run in the
  * vertex shader, so every vertex carries its PARENT FACE's four corner
@@ -781,7 +780,7 @@ typedef struct rhi_terrain_cell_anim {
 typedef enum { RHI_BLEND_NONE, RHI_BLEND_ALPHA, RHI_BLEND_ADD, RHI_BLEND_SUBTRACT,
                RHI_BLEND_ADD_QUARTER } rhi_blend_mode;
 
-/* Stencil role of a pipeline (W2.6 — the aperture-mask investment; the depth
+/* Stencil role of a pipeline (the aperture mask; the depth
  * attachment is a combined depth+stencil format, stencil cleared to 0 at every
  * pass begin):
  *  - MARK: rasterize a mask — where the fragment passes the DEPTH test, write
@@ -789,7 +788,7 @@ typedef enum { RHI_BLEND_NONE, RHI_BLEND_ALPHA, RHI_BLEND_ADD, RHI_BLEND_SUBTRAC
  *    mask out). Pair with color_write_off for an invisible mask pass.
  *  - TEST: draw only where stencil==1 (inside the mask); stencil not written.
  *  - TEST_ZERO: draw only where stencil==0 (OUTSIDE the mask); stencil not
- *    written. The hole-fill role (W2.6-c): geometry that must paint only the
+ *    written. The hole-fill role: geometry that must paint only the
  *    pixels a prior MARK pass did NOT cover (e.g. the terrain LP backing layer
  *    filling LP↔HP T-junction seams without ever poking through the HP).
  * Reference is fixed at 1 — per-object isolation is done by rhi_clear_stencil
@@ -1389,7 +1388,7 @@ rhi_texture *rhi_create_vram(rhi_device *dev, uint32_t width, uint32_t height);
  * @param pixels Source mirror; NULL logs and uploads nothing. */
 void rhi_update_vram(rhi_device *dev, rhi_texture *tex, const uint16_t *pixels);
 
-/* Sub-rect upload (W2.4 dirty-rect path): copy only `rects` regions of the
+/* Sub-rect upload (dirty-rect path): copy only `rects` regions of the
  * CPU mirror (`mirror` is the FULL width-stride buffer) into the texture, in
  * one barrier pair + one N-region transfer. Same in-frame/one-shot semantics
  * as rhi_update_vram. Rects must be pre-clamped to the texture extent. If the
@@ -1695,7 +1694,7 @@ bool rhi_read_render_target_depth(rhi_device *dev, rhi_texture *rt, float *out,
 void rhi_snapshot_offscreen_to_rt(rhi_device *dev, rhi_texture *dst,
                                   int sx, int sy, int sw, int sh);
 
-/** @brief Destroy a texture and every Vulkan object and staging buffer it owns, immediately.
+/** @brief Destroy a texture and every Vulkan object it owns, immediately.
  *
  * The caller guarantees no submitted or recording command buffer still
  * references it. NULL is ignored.

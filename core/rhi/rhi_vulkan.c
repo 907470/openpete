@@ -357,7 +357,7 @@ struct rhi_device {
     /* Swapchain */
     VkSwapchainKHR swapchain;
     VkFormat       sc_format;
-    VkFormat       depth_format;  /* combined depth+stencil (W2.6): D32_SFLOAT_S8
+    VkFormat       depth_format;  /* combined depth+stencil: D32_SFLOAT_S8
                                    * preferred, D24_UNORM_S8 fallback — picked at
                                    * device selection (pick_depth_format). */
     /* The depth convention per rhi_depth_class, set with the format
@@ -1103,7 +1103,7 @@ static bool pick_physical_and_device(rhi_device *dev)
     };
     /* Optional features (enable only what's supported; nothing here is
      * load-bearing): depthBiasClamp lets rhi_set_depth_bias bound the decal
-     * pull (W2.5) — without it the clamp param is forced to 0 (spec
+     * pull — without it the clamp param is forced to 0 (spec
      * VUID-vkCmdSetDepthBias-depthBiasClamp-00790). */
     VkPhysicalDeviceFeatures supported;
     vkGetPhysicalDeviceFeatures(dev->phys, &supported);
@@ -1469,7 +1469,7 @@ static bool create_render_pass(rhi_device *dev)
         .finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
     };
     VkAttachmentDescription depth = {
-        .format = dev->depth_format,      /* combined depth+stencil (W2.6) */
+        .format = dev->depth_format,      /* combined depth+stencil */
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE, /* not read after the pass */
@@ -1590,7 +1590,7 @@ static bool create_rt_render_pass(rhi_device *dev)
         .finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
     };
     VkAttachmentDescription depth = {
-        .format = dev->depth_format,      /* combined depth+stencil (W2.6) */
+        .format = dev->depth_format,      /* combined depth+stencil */
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
@@ -1664,7 +1664,7 @@ static bool create_rt_ds_render_pass(rhi_device *dev)
         .finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
     };
     VkAttachmentDescription depth = {
-        .format = dev->depth_format,      /* combined depth+stencil (W2.6) */
+        .format = dev->depth_format,      /* combined depth+stencil */
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,        /* SAMPLED after the pass */
@@ -2947,7 +2947,7 @@ uint64_t rhi_frame_serial(rhi_device *dev) { (void)dev; return s_frame_serial; }
 #define RHI_STALL_REPORT_NS (12ull * 1000ull * 1000ull)
 
 /* Block time per present-path phase, accumulated for the pacing log. The
- * >=12 ms report catches catastrophes; the pacing plan needs the whole
+ * >=12 ms report catches catastrophes; the pacing analysis needs the whole
  * distribution, including the sub-millisecond FIFO wait that IS the pacing on
  * a vsynced present. Statics rather than device fields: exactly one thread
  * presents, and the consumer (the host loop) has no rhi_device handle. */
@@ -3076,12 +3076,11 @@ static int acquire_image(rhi_device *dev, VkSemaphore sem, VkFence *owner_fence)
 
         /* If a previous frame is still using this image, wait on its fence. */
         if (dev->images_in_flight[dev->image_index] != VK_NULL_HANDLE) {
-            /* Bounded, and TAGGED: this wait was previously invisible to the
-             * block-time census, so attribution that blamed the slot fence
-             * could have been under-counting it. Not skippable — acquire has
-             * already consumed img_avail by this point, and returning here
-             * would leave that semaphore signalled with nothing to wait on
-             * it. In practice it is almost always already signalled once the
+            /* Bounded, and TAGGED so the block-time census counts this wait
+             * under its own phase instead of the slot fence's. Not
+             * skippable — acquire has already consumed img_avail by this
+             * point, and returning here would leave that semaphore signalled
+             * with nothing to wait on it. In practice it is almost always already signalled once the
              * poll above has passed, so the bound is a backstop. */
             Uint64 iif_t0 = SDL_GetTicksNS();
             VkResult iw = fence_result(
@@ -4458,11 +4457,8 @@ static rhi_texture *create_render_target_impl(rhi_device *dev, uint32_t width,
         .extent = { width, height, 1 }, .mipLevels = 1, .arrayLayers = 1,
         .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
         /* TRANSFER_DST: rhi_snapshot_offscreen_to_rt blits INTO a render
-         * target (the freeze backdrop capture). Missing until 2026-07-02 —
-         * an illegal blit destination per spec, which real GPUs happened to
-         * tolerate (validation off). Suspected then FALSIFIED as the cause of
-         * the Linux level-transition hang (that's a recompiled-gameplay-code
-         * spin — see the plan doc); kept as a genuine latent-UB fix. */
+         * target (the freeze backdrop capture); a blit destination must
+         * carry the usage. */
         .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
                  VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
@@ -6048,7 +6044,7 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
         .depthWriteEnable = (desc->depth_test && !desc->depth_write_off) ? VK_TRUE : VK_FALSE,
         .depthCompareOp = cmp,
     };
-    /* Stencil roles (W2.6): MARK writes 1 where the fragment passes the depth
+    /* Stencil roles: MARK writes 1 where the fragment passes the depth
      * test (depth-fail keeps 0, so nearer world geometry punches the mask
      * out); TEST draws only where stencil==1 and never writes it. Reference is
      * a fixed 1 — per-object isolation is rhi_clear_stencil between groups. */
