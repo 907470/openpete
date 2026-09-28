@@ -11683,8 +11683,8 @@ int  openpete_native_fps_overlay_enabled(void) { return s_perf_stats != OPENPETE
 int  openpete_native_fps_value(void) { return s_fps_value; }
 
 /* Live presentation setters (in-game settings menu). Display-only: they touch
- * only s_nr (renderer state), consumed by the next native present; never
- * gameplay RAM. */
+ * only renderer state (s_nr and this file's statics), consumed by the next
+ * native present; never gameplay RAM. */
 static float  s_fov_deg;          /* 0 = default */
 static double s_fov_tan_pending;  /* tan(fov/2), 0 at the default; set live */
 static double s_fov_tan;          /* latched at scene begin */
