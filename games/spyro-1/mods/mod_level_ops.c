@@ -48,11 +48,11 @@
  * test reads the gem table; nothing in the game writes any of them, so
  * the engine is their only writer.
  *
- * g_TargetEggCounts covers the first three worlds only. The byte after
- * its last entry (0x8006F493) begins g_MemCardSaveHeader at 0x8006F494,
- * so an out-of-range egg index does not land in padding — it corrupts
- * the header the game writes to a memory card. Every egg write is gated
- * on the index having a row. */
+ * g_TargetEggCounts covers the first three worlds only (0x8006F480 to
+ * 0x8006F491). Two padding bytes follow it and g_MemCardSaveHeader begins
+ * at 0x8006F494, so an egg index of 20 or more corrupts the header the game
+ * writes to a memory card. Every egg write is gated on the index having a
+ * row. */
 #define ADDR_G_TARGETDRAGONS 0x8006F414u
 #define ADDR_G_TARGETGEMS    0x8006F438u
 #define ADDR_G_TARGETEGGS    0x8006F480u
@@ -365,9 +365,10 @@ static void leveltext_hook_install(void);
  *
  * Uppercases the name, keeps A-Z, 0-9, space and !,?.' and drops the rest
  * (at most 39 characters). The string is parked once in the guest arena
- * (the last 8 distinct titles are reused rather than reallocated) and its
- * pointer stored in g_LevelNames; the stock pointer is saved on the first
- * write per index. A title installs the portal-text glyph hook.
+ * (the first 8 distinct titles are cached and reused; any later title is
+ * allocated on every call) and its pointer stored in g_LevelNames; the
+ * stock pointer is saved on the first write per index. A title installs the
+ * portal-text glyph hook.
  * @param cpu The guest CPU state.
  * @param level_id The level id (10 to 64, or 65 for the slot).
  * @param name The title, or NULL to restore the stock name.

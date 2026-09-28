@@ -14,12 +14,13 @@
 // highest-priority ENABLED mod wins, same single priority truth as
 // every other namespace.
 //
-// Mechanism: psyq_thunks snoops CdlSetloc to track the head position,
-// psyq_CdRead calls mod_wad_apply() after the drain — the guest buffer
-// gets the override bytes before the game's loader parses them, i.e.
-// the CdRead chokepoint exactly as the plan specified. The TOC is read
-// host-side from the user's own disc image (cue -> bin, WAD at the
-// game's wad_sector), lazily on first use.
+// Mechanism: the shared psyq thunks call psyq_game_cd_setloc on CdlSetloc to
+// track the head position, and psyq_game_cd_apply_buf from psyq_CdRead after
+// the read drains (games/spyro-1/psyq_hooks.cpp forwards them to
+// mod_wad_setloc and mod_wad_apply), so the guest buffer holds the override
+// bytes before the game's loader parses them. The TOC is read host-side
+// from the user's own disc image (cue -> bin, WAD at the game's wad_sector),
+// lazily on first use.
 //
 // Live enable/disable: the winning override is resolved against the
 // current enabled set, but only ONCE PER LEVEL LOAD — see the latch in

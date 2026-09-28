@@ -171,9 +171,6 @@ int main(int argc, char** argv) {
     openpete_options_t opts;
     openpete_options_init(&opts);
     opts.display_name = game_get_display_name();
-    /* Hint for the parser's "missing --run-recomp" diagnostic. main()
-     * lives at 0x80012204 in spyro-1/build/psx.map; that's what the user
-     * almost always wants to dispatch. */
 
     /* openpete.toml scopes, registered before the parse: the config stack
      * is resolved inside openpete_options_parse and needs to know which

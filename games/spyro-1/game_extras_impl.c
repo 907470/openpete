@@ -547,7 +547,7 @@ void game_state_extra_load(const void* src, uint32_t size) {
 
 static const game_disc_layout_t k_disc_layout = {
     .wad_sector      = 37,            /* Spyro 1 stores WAD.WAD at sector 37 */
-    .wad_header_addr = 0x80100000u,   /* TODO Phase 1c — confirm against decomp */
+    .wad_header_addr = 0x80100000u,   /* unread; the guest header is g_WadHeader at 0x8007A6D0 */
 };
 
 const game_disc_layout_t* game_get_disc_layout(void) {
@@ -562,21 +562,19 @@ extern void func_80023AC4(CPUState* cpu);
 extern void openpete_trace_writes_begin(CPUState* cpu);
 extern void openpete_trace_writes_end(CPUState* cpu);
 
-/* Phase 3/4 — native-decomp dispatch table. Generated from
- * manifest/native.toml by tools/gen_dispatch.py; see
- * generated/native_dispatch.c. Each [[dispatch]] entry there names a
- * decomp C function that takes over its PSX vaddr; the generator
- * emits the cpu-stash, psyq___main bootstrap (for main), arg unpacking
- * from a0..a3/stack, and return code. To add another entry point,
- * extend native.toml and re-run scripts/regen-manifest.sh. */
-/* g_SonyImage / D_8006FCF4 base. Default == canonical PSX address; the
- * recompiler's value-keyed lui+addiu pair substitution is then identity.
- * A generic relocation primitive for any future consumer of the
- * env-renderer scratch pool (the --no-lod producer stack that motivated
- * it was deleted 2026-07-06; it always left this at canonical anyway).
- * Declared in psx_runtime.h. */
+/* Base of the g_SonyImage / D_8006FCF4 scratch pool. The recompiler rewrites
+ * a `lui 0x8007` + `addiu` pair composing an address in
+ * [0x8006FCF4, 0x80072E94) to `psx_runtime_g_sony_image_base + offset`; at
+ * the canonical value the expression equals the original address. The
+ * terrain renderer reads it (games/common/renderer/terrain.c). */
 uint32_t psx_runtime_g_sony_image_base = 0x8006FCF4u;
 
+/* Native-decomp dispatch table, generated from manifest/native.toml by
+ * tools/gen_dispatch.py into generated/native_dispatch.c. Each [[dispatch]]
+ * entry names a decomp C function that takes over its PSX vaddr; the
+ * generator emits the cpu-stash, psyq___main bootstrap (for main), arg
+ * unpacking from a0..a3/stack, and return code. A new entry point is added
+ * to native.toml and scripts/regen-manifest.sh re-run. */
 extern int spyro_native_dispatch(CPUState* cpu, uint32_t addr);
 
 /** @brief Reports whether OPENPETE_NOOP_SREND suppresses the handwritten renderer at a guest address.
@@ -605,7 +603,7 @@ static int srend_noop_hit(uint32_t addr) {
         /* Bits 16/32 take the two material EMIT passes separately: they build
          * prims and write no gameplay-readable byte (the cull passes own
          * m_WasDrawn), so suppressing them leaves every verdict in place —
-         * the "stub the moby renderer" ceiling. Bit 1 additionally takes the
+         * the "stub the moby renderer" ceiling. Bit 2 additionally takes the
          * cull passes, which the game cannot survive. */
         if (s_mask & 16) return 1;
         return (s_mask & 2) != 0;
@@ -651,11 +649,11 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
         return 1;
     }
 
-    /* Mod override chains (notes/plans/openpete-modding-framework.md).
-     * One global-flag branch when no mods are loaded (inertness gate).
-     * Runs before the native-decomp/feature arms: a mod that replaces a
-     * function replaces it, full stop; freecam (a user debug tool) still
-     * wins above so freezing behaves identically with mods loaded. */
+    /* Mod override chains. One global-flag branch when no mods are loaded
+     * (inertness gate). Runs before the native-decomp/feature arms: a mod
+     * that replaces a function replaces it, full stop; freecam (a user debug
+     * tool) still wins above so freezing behaves identically with mods
+     * loaded. */
     if (openpete_mods_active && openpete_mods_dispatch(cpu, addr)) {
         return 1;
     }
@@ -697,10 +695,9 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
         return 1;
     }
 
-    /* Widescreen dispatch arms (0x8001ED5C render bracket, 0x8007CD38
-     * titlescreen sprite, 0x800258F0 env renderer, 0x8004EBA8 cyclorama,
-     * 0x80022A2C text-moby range) moved to
-     * core/renderer/widescreen.c — handled by the registry call above. */
+    /* Widescreen and FOV are native-renderer display policies
+     * (core/renderer/native_render.c); no dispatch arm here alters the
+     * guest render path for them. */
     /* Diagnostic: trace bucket-2 (gems) cull. Walks D_8006FCF4+0x2400 list,
      * computes per-moby cube + MVMVA cone test the same way the inline
      * func_80022A2C cull does, prints which gems pass / fail. Used only
