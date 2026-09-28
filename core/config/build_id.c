@@ -2,7 +2,7 @@
  *
  * The macros are PRIVATE compile definitions of openpete_core (core/
  * CMakeLists.txt), so only a core translation unit can read them. The game
- * targets need the same strings, and these two functions are the whole
+ * targets need the same strings, and these three accessors are the whole
  * interface they get. */
 
 #include "openpete_build_id.h"

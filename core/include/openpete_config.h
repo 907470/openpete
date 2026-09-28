@@ -167,11 +167,12 @@ int openpete_config_save_knob(const char* knob_id, const char* value);
  * hand-written config and its comments survive; a file without the marker
  * is copied whole. The marker, a note and a [saved] table of every saved
  * knob with a schema row, each written as its knob's type, follow. The file
- * is written to `<path>.tmp`, the target removed, and the temporary renamed
- * over it, so a failure between the remove and the rename leaves only the
- * temporary.
- * @return 0 on success, -1 when there is no save target or a write, remove
- *         or rename fails. */
+ * is written to a temporary beside the target and renamed over it
+ * (op_atomic_file_commit), so a failed write, sync or rename leaves the
+ * previous file whole.
+ * @return 0 on success, -1 when there is no save target, the source file
+ *         cannot be buffered, the temporary cannot be opened, or the commit
+ *         fails. */
 int openpete_config_save_flush(void);
 
 /** @brief Drop every saved knob and rewrite the save target with an empty managed zone.
