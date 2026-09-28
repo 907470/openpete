@@ -10590,7 +10590,7 @@ static bool draw_native_scene(bool full_extent)
         buf[3] = tl; buf[4] = br; buf[5] = bl;
         n = 6;
     }
-    /* The scene draws in 6 LAYERED groups, in this order, so a ground-decal
+    /* The scene draws in 7 LAYERED groups, in this order, so a ground-decal
      * shadow lands OVER the terrain it falls on but UNDER the actors standing on
      * it (the PSX terrain -> shadow -> Spyro draw order). A single near-bias on
      * the shadow can't do both (it would also paint over Spyro's feet); the layer
@@ -10604,7 +10604,11 @@ static bool draw_native_scene(bool full_extent)
      *   --- HUD/overlay (depth-test off) drawn here: OVER mobys, UNDER the player ---
      *   3 PLAYER-opaque (blend 0, cat PLAYER)  Spyro — covers the near-OT HUD text
      *   4 ALPHA         (blend 1)              ABR0 semi-transparent
-     *   5 ADDITIVE      (blend 2)              ABR1 flame / glows (last)
+     *   5 ADDITIVE      (blend 2)              ABR1 flame / glows
+     *   6 QUARTER-ADD   (blend 4)              ABR3 glass (last)
+     * Groups 4 to 6 keep no plain bucket content: their triangles draw from
+     * the emission-ordered blended-world block at gi 4, except those
+     * deferred into a mod material span.
      * The HUD/overlay sits BETWEEN regular mobys and the player so the PSX's
      * near-OT-slot UI (HUD icons, "DEMO MODE", level-intro / "RESCUED <dragon>"
      * text) draws OVER mobys (e.g. the rescued dragon Nestor) yet UNDER the player
@@ -10891,14 +10895,18 @@ static bool draw_native_scene(bool full_extent)
      * Previously each textured triangle was its own vkCmdDraw + vkCmdPushConstants
      * (~3800 draws/present in a busy scene, ×~480/s = the high-FPS bottleneck);
      * material-sorting collapses that ~36× (terrain/mobys share few tpages).
-     *   buckets 0..5 = the 6 layered groups (SAME partition as the draw loop)
+     *   buckets 0..3 = layered groups WORLD, SUBTRACT, ACTOR, PLAYER (SAME
+     *                  partition as the draw loop)
+     *   buckets 4, 5, 8, 10 = empty; bucket 11 = the emission-ordered
+     *                  blended-world block (draw_blended_world)
      *   bucket  6    = HUD 2D textured backdrops (draw_hud_flat_layer)
+     *   bucket  7    = PORTAL_GUARD; bucket 9 = ACTOR_FRONT opaque faces
      *   bucket 12    = HUD3D opaque textured faces (draw_hud3d_layer)
      * Textured tris no bucket matches (HUD3D with a blend class) are dropped
      * from the block. Opaque buckets (0,2,3,9,12) are material-sorted — depth resolves visibility regardless of draw order, so it
-     * is exact. Transparent buckets (1,4,5) and HUD (6) keep submission order
-     * (additive/subtractive commute; ABR0 alpha is rare/single-layer; the flat-HUD
-     * backdrops want painter's order) and only coalesce already-adjacent runs. */
+     * is exact. Bucket 11 keeps emission order (bw_rank_sort on a replay);
+     * the other buckets (1, 6, 7) keep submission order and only coalesce
+     * already-adjacent runs. */
     NR_PROF_END();   /* cmp.build_ut */
     NR_PROF_BEGIN("cmp.build_tex");
     int tx_start = n;
@@ -12639,9 +12647,10 @@ static void draw_perf_overlay(void) {
  * Creates the glyph buffer and the composite quad, then sizes the
  * supersample target to the published region when the overlay resolve
  * pipeline exists (without it the line draws at 1x and needs no target).
- * Returns early while the line's alpha is zero or no region has been
- * published, so a run that never shows the line allocates none of them and
- * bring-up has no extra resources to unwind. It creates resources and can
+ * Returns early while the line's alpha is zero, so a run that never shows
+ * the line allocates none of them and bring-up has no extra resources to
+ * unwind; the target is sized only once a region has been published (a
+ * region of zero extent leaves it unsized). It creates resources and can
  * wait the device idle, so it runs in the per-present resource pass, outside
  * a render pass. */
 static void ensure_version_ss(void) {
@@ -13779,7 +13788,9 @@ typedef struct {   /* C mirror of op_engine_ubo — std140, offsets load-bearing
  *
  * One fill serves every consumer (the postfx chain, mod meshes, the
  * material UBO), so a field added here reaches all of them. The block
- * carries wall time, the present counter, the tick, sub-tick alpha and
+ * carries the monotonic phase-clock time in seconds, the VBL stamp of the
+ * composed scene (not a per-present count: sub-tick presents of one scene
+ * share it), the tick, sub-tick alpha and
  * canonical flag of the present slot (or of the mod present context when no
  * slot is active), the pass and window resolutions and aspect, and
  * scene_rect and scene_grid: where the canonical PSX screen maps in the
