@@ -129,7 +129,8 @@ const feature_module_t* const openpete_features[] = {
      * Overrunning the buffer walks primitives into g_WorldOT, which sits
      * immediately after it, and the OT tail-insert then dereferences primitive
      * bytes as a node pointer — arbitrary 3-byte writes. Always falls through;
-     * OPENPETE_POLYBUF_GUARD=0 silences it, =verbose logs per-frame headroom. */
+     * Off by default; OPENPETE_POLYBUF_GUARD=1 enables it, =verbose also logs
+     * per-frame headroom. */
     &polybuf_guard_module,
 };
 

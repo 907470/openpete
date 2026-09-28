@@ -461,8 +461,10 @@ static bool openpete_handle_event(SDL_Event* ev) {
     /* The mouse channel derives position, mask and the running totals from
      * the event stream (openpete_host_mouse.h); every consumer reads those. */
     openpete_host_mouse_handle_event(ev);
-    /* Dev overlay sees every event (imgui io bookkeeping; frames only run
-     * while it is open), including ones consumed below. */
+    /* Dev overlay sees every event (imgui io bookkeeping; frames run only
+     * while openpete_devui_frame_wanted: overlay open, fill-tag inspector
+     * active, or an enabled always-visible mod section), including ones
+     * consumed below. */
     openpete_devui_process_event(ev);
     /* A device arriving after the mapping databases loaded still resolves
      * against them; say which one supplied it, or that none did. */
@@ -2805,9 +2807,10 @@ static int run_host_init(const openpete_options_t* opts) {
      * CLI skip (and every later runtime warp) arms correctly. */
     openpete_skip_ffwd_windowed = opts->headless ? 0 : 1;
 
-    /* Forward CLI overrides to the per-game impl. game_on_frame applies
-     * them when the relevant in-game globals are ready. The setter itself
-     * arms the present fast-forward (openpete_skip_present_until_level). */
+    /* Forward CLI overrides to the per-game impl. game_on_frame_pre
+     * applies them when the relevant in-game globals are ready. The setter
+     * itself arms the present fast-forward
+     * (openpete_skip_present_until_level). */
     game_set_skip_to_level(opts->skip_to_level);
     game_set_skip_to_cutscene(opts->skip_to_cutscene);
     game_set_skip_to_area(opts->skip_to_area_level, opts->skip_to_area);
@@ -3962,10 +3965,10 @@ static int run_host_loop(const openpete_options_t* opts) {
                                ? " (occupied)" : " (empty)");
             }
 
-            /* Mod-requested savestate ops (api->savestate_request)
-             * execute here — the same quiescent point as the hotkeys
-             * above, with the same post-load frame re-anchor. Runs
-             * headless too (mods can rewind in headless tests). */
+            /* Mod-requested savestate ops (queued by
+             * openpete_mods_savestate_request) execute here, the same
+             * quiescent point as the hotkeys above, with the same
+             * post-load frame re-anchor. Runs headless too. */
             unsigned mod_slot = 0;
             int mod_op = openpete_mods_pending_state_op(&mod_slot);
             if (mod_op == 1) {

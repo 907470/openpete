@@ -900,36 +900,24 @@ static int portal_plane_invz(CPUState* cpu, const ngte_view* v, uint32_t p,
 /* The portal cyclorama (the gouraud dome AND the flat far/medium preview) sits on
  * the portal OPENING PLANE. The original confines it to the arch purely by OT
  * painter's order — RenderPortals paints the sky OVER everything seen through the
- * opening and UNDER the arch stone — and a depth-buffer port reproduces that with
- * the opening plane's own depth, NO forward bias.
- *
- * An earlier version pulled the cyclorama a hair toward the camera
- * (PORTAL_PLANE_FRONT_BIAS) to hide the z-fight against the thin decorative "inner
- * frame" band many arches carry at the opening plane. But on portals seen at an
- * angle that forward push made the sky poke out past the stone SIDES — it won the
- * depth test against the arch's own geometry. Sitting exactly on the opening plane
- * is the correct depth; the accepted cost is that the ~1px inner-frame edge z-fights
- * and can flicker. (The backstop push-back once noted here was retired by the
- * stencil groups' in-group painter order.) */
+ * opening and UNDER the arch stone. The native path reproduces that with the
+ * opening plane's own depth, pulled nearer only by the plane-cover margin
+ * (portal_cyclorama_depth); no forward bias is added. A forward bias would win
+ * the depth test against the arch's own geometry at an angle and show the sky
+ * past the stone sides. The ~1px inner-frame edge, a decorative band at the
+ * opening plane, z-fights with the sky and can flicker. */
 
-/* The portal sky's tie-break margin, in WORLD view-Z units, for the ring and
- * spill constructions behind the opening plane (portal_sky_eps_vz). A
- * fixed DEPTH-BUFFER offset would be distance-PROPORTIONAL in world units
- * through d = vz/(vz+4096): ~10 units at vz 1000, ~55 at vz 8000, ~450 at vz
- * 30000, which at mid/far range swallows the arch's own stone wherever its
- * surface runs within it of the opening plane (the jamb/rim seen at a grazing
- * camera angle) and lets the sky poke out past the arch sides. A WORLD-unit
- * margin keeps the same tie-break at every distance while the sliver where it
- * can beat real stone stays O(24 world units), sub-pixel at any range, and
- * still exceeds raster interpolation error by orders of magnitude at all
- * playable distances. Applied to every behind-plane construction so the paths
- * shift together and the far/medium/close distance crossfade has no
- * discontinuity. The matching terrain-side OT-conformance clamp (terrain.c)
- * pushes straddling faces back by PORTAL_CLAMP_EPS_VZ (2x this), so clamped
- * faces always lose to the sky and unclamped coincident bands always win to
- * it. 24 rather than 16 because the decorative inner band sits a few units in
- * FRONT of the opening plane, and at 16 a residual z-fight sparkled on the
- * inner edge of some arches. */
+/* The portal sky's tie-break margin, in WORLD view-Z units, pushed behind the
+ * opening plane on the ring, spill and correction-band constructions
+ * (portal_sky_eps_vz). A fixed DEPTH-BUFFER offset would be
+ * distance-PROPORTIONAL in world units through d = vz/(vz+4096): ~10 units at
+ * vz 1000, ~55 at vz 8000, ~450 at vz 30000, which at mid/far range swallows
+ * the arch's own stone wherever its surface runs within it of the opening plane
+ * (the jamb/rim seen at a grazing camera angle). A WORLD-unit margin keeps the
+ * same tie-break at every distance, and the sliver where it can beat real stone
+ * stays O(24 world units), sub-pixel at any range and above raster
+ * interpolation error. 24 rather than 16 because the decorative inner band sits
+ * a few units in FRONT of the opening plane. */
 #define PORTAL_SKY_EPS_VZ_DEFAULT 24.0
 /** @brief Returns how far behind the opening plane the aperture's correction band is marked, in world units.
  *

@@ -37,7 +37,8 @@ typedef struct {
  * a surface nobody has configured would warn on every stock boot. Their
  * devices are decoded through the shared controller merge, so an extra
  * player has working buttons with nothing bound here; these rows exist to
- * re-map that player, which the decode does not consult yet. */
+ * re-map that player: keymap_decode_slot (host_input.c) resolves each bound
+ * row for the slot and leaves an unbound row's bit to the shared merge. */
 #define KM_ROW_PAD2(sym, id, k, c, f, d, p) { id, KM_DOM_PAD2, k, c, 0u, "none", p },
 #define KM_ROW_PAD3(sym, id, k, c, f, d, p) { id, KM_DOM_PAD3, k, c, 0u, "none", p },
 #define KM_ROW_PAD4(sym, id, k, c, f, d, p) { id, KM_DOM_PAD4, k, c, 0u, "none", p },

@@ -1064,7 +1064,7 @@ static const knob_desc_t g_builtin[] = {
 
     { "rewind", "Rewind window", "Pacing", "--rewind", NULL,
       "Backspace-rewind window in seconds (0 = off). APPLYING CLEARS the "
-      "accumulated rewind history; ~2 MiB per second.",
+      "accumulated rewind history; ~3.1 MiB per second.",
       KNOB_INT, KNOB_LIVE, NULL, 0, 0, 600,
       get_stored, rewind_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 

@@ -5347,8 +5347,8 @@ static void recolor_walk_from_prims(void) {
  * offset per-moby by the camera heading (.L800226F8/.L800222C0). metalMatrix
  * (D_800770C8+0x18) is the camera rotation with z negated (MetalBuildMatrix,
  * update-side), so refl is already CAMERA-relative -> the reflection tracks the
- * camera for free. We re-derive in FLOAT (design choice): a clean spherical map,
- * HD-ready, the prim UV is a closeness/camera-tracking sanity check (not 100%).*/
+ * camera for free. The UV is re-derived in FLOAT as a clean spherical map; the
+ * game's prim UV agrees with it in camera tracking but not exactly. */
 static int   s_metalM[3][3];     /* D_800770C8+0x18, int16 1.0=4096 */
 static int   s_camHead;          /* g_Camera+0x50 (camera heading word) */
 /* s_specL[3]/s_specLlen forward-declared above build_walk_tris (highlight uses them) */

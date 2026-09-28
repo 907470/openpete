@@ -129,14 +129,6 @@ typedef struct openpete_options {
     /* Identity (filled by per-game main; rest from CLI) */
     const char* display_name;     /* window title etc. */
 
-    /* Per-game default entry point. Set to the game's `main` PSX vaddr (or
-     * whatever entry the user is expected to dispatch). When --run-recomp is
-     * omitted, the parser falls back to this value, so a populated hint makes
-     * --run-recomp optional; --run-recomp on the CLI still overrides it. If 0
-     * and --run-recomp is omitted, the parser errors with a generic message.
-     * core/ stays game-agnostic by reading this field; per-game main.cpp
-     * populates it. */
-
     /* Run-loop control */
     int frame_limit;              /* 0 = unlimited */
     int max_runtime_seconds;      /* 0 = unlimited */

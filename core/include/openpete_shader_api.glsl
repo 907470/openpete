@@ -47,7 +47,8 @@ layout(set = 3, binding = 0, std140) uniform op_engine_ubo {
     float op_time;        /* host seconds since boot                     */
     float op_alpha;       /* sub-tick phase [0,1); 0 on a canonical present */
     uint  op_tick;        /* sim tick counter                            */
-    uint  op_present;     /* monotonic present counter                   */
+    uint  op_present;     /* VBL stamp of the composed scene; repeats
+                           * across the presents of one scene           */
     uint  op_canonical;   /* 1 = canonical present, 0 = intermediate     */
     float op_aspect;      /* render aspect ratio (width / height)        */
     vec2  op_resolution;  /* current pass resolution, pixels             */

@@ -36,9 +36,9 @@ extern "C" {
 #include "psyq/psyq_game_hooks.h"
 #include "renderer/ui_game.h"   /* the 2D chokepoint's deferred feed */
 
-/* The two most recent ordering-table bases handed to DrawOTag (see the note at
- * the walk). Newest first; a repeat of the newest is ignored so the pair always
- * names the two alternating tables. */
+/* The PSYQ_OT_BASE_RING most recent distinct ordering-table bases handed to
+ * DrawOTag (see the note at the walk). Newest first; a repeat of the newest
+ * is ignored, so consecutive DrawOTag calls on one table take one slot. */
 #define PSYQ_OT_BASE_RING 8
 static uint32_t s_ot_base[PSYQ_OT_BASE_RING];
 /// @brief Record a in the ring of recent DrawOTag bases, newest first, unless it repeats the newest.
@@ -3725,18 +3725,9 @@ void psyq_strlen(CPUState* cpu) {
     cpu->v0 = s ? n : 0u;
 }
 
-/* PSYQ rand/srand: byte-identical re-implementation of the LCG at
- * 0x8006272C / 0x8006275C, including the live mutation of seed slot
- * D_80075AC0 in PSX RAM. The previous implementation routed through
- * host libc `rand()` / `srand()`, which (a) doesn't match the PSYQ
- * sequence, and (b) leaves D_80075AC0 — the gameplay-state hash's
- * `psyq_rand_seed` region — uninitialized at zero forever. Result:
- * divergent rand-call counts between presentation modes were
- * completely invisible to the determinism gate, masking real
- * render→gameplay leaks (any code path that called rand() a
- * different number of times based on render-side state would drift
- * gameplay silently). Mirroring the asm restores both correctness
- * and detectability. PSYQ formula:
+/* PSYQ rand/srand: the library's LCG, with the seed kept in the game's seed
+ * slot in PSX RAM (psyq_game_rand_seed_addr) so it is part of the
+ * gameplay-state hash and mutates exactly as the library's does:
  *     seed = seed * 0x41C64E6D + 0x3039
  *     return (seed >> 16) & 0x7FFF */
 extern "C" uint8_t* openpete_psx_get_ram(void);
@@ -3819,10 +3810,11 @@ void psyq_exit(CPUState* cpu) {
  * string (or, for sprintf, dst+fmt occupy slots 0/1). Numeric args
  * are fetched as 32-bit words; %s dereferences a PSX vaddr.
  *
- * Supported conversions: d, i, u, x, X, o, s, c, %. Flags '-' and '0',
- * a decimal width, and a '.precision' are honored. Length modifiers
- * 'l' / 'h' / 'hh' / 'll' parse but are ignored — the original PSX ABI
- * passes everything as a 32-bit slot anyway. */
+ * Supported conversions: d, i, u, x, X, o, s, c, p, %. Flags '-' and '0',
+ * a decimal width, and a '.precision' are honored; flags '+', ' ' and '#'
+ * parse but are ignored. Length modifiers h, l, z, j, t (in any repeat)
+ * parse but are ignored — the original PSX ABI passes everything as a
+ * 32-bit slot anyway. */
 
 namespace {
 

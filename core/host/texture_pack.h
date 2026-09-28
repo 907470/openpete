@@ -3,7 +3,7 @@
  * The identity core of the texture-replacement feature: every VRAM
  * upload is recorded at the native-VRAM op seam with its destination
  * rect and an XXH3-64 content hash; CLUT uploads are recorded the same way
- * and paired at draw time, hashed over the used index range only. Draw-time
+ * and paired at draw time, hashed as the full palette row. Draw-time
  * material keys ({tpage,clut,bpp} + UV box) resolve through the registry to
  * a stable identity that survives per-level VRAM repacking.
  *
@@ -87,8 +87,9 @@ void texture_pack_on_restore(void);
 
 /* Resolved identity for one draw-time material + UV box. `thash` is the
  * covering upload's content hash; `phash` the paired CLUT hash over the
- * used index range (0 for 16bpp); `box_*` the upload-relative texel box the
- * UVs address (sub-rect identity within packed pages). */
+ * full 16- or 256-entry palette row (0 for 16bpp); `box_*` the
+ * upload-relative texel box the UVs
+ * address (sub-rect identity within packed pages). */
 typedef struct {
     uint64_t thash;
     uint64_t phash;

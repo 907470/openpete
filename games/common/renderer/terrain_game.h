@@ -20,9 +20,10 @@ extern "C" {
 /* One active portal-sky opening plane, in screen space: 1/view-Z of the
  * opening plane at pixel (x, y) is a·x + b·y + c (full-world view-Z), valid
  * where the result is > 0 (the plane is in front of the camera along that
- * pixel's ray). x0..y1 is the projected-outline screen bbox, inflated — the
- * conformance clamp only considers faces touching it. When an outline point
- * projects behind the camera the bbox degenerates to full-screen. */
+ * pixel's ray). x0..y1 is the exact min/max screen bbox of the projected
+ * outline (no inflation) — the conformance clamp only considers faces
+ * touching it. When an outline point projects behind the camera the bbox
+ * degenerates to full-screen. */
 typedef struct {
     uint32_t portal;                /* owning portal record (identity/debug) */
     double   a, b, c;               /* screen-space inv-vz field of the plane */

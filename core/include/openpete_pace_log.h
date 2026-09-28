@@ -575,8 +575,9 @@ typedef struct {
 
 /** @brief Copy the current pacing census into out.
  *
- * The copy is a plain struct read with no lock, while the sim and present
- * threads update the counters under the census lock.
+ * The copy is a plain struct read with no lock. The sim and present threads
+ * update the counters concurrently, some under the census lock and some
+ * without it, so a snapshot can mix values from adjacent updates.
  * @param out Receives the snapshot; nothing happens when NULL. */
 void openpete_pace_census_get(openpete_pace_census_t* out);
 

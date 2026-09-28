@@ -4,10 +4,10 @@
  * live entry kills it (exact-rect re-upload replaces in place, keeping the
  * slot). Moves duplicate identity to the destination (translated); clears
  * kill covered entries. CLUTs are ordinary entries (their rects are CLUT
- * rows); the texture<->CLUT pairing happens at resolve time, where the used
- * index range and the trimmed palette hash are computed lazily from the live
- * native VRAM model (authoritative by construction — the draw samples that
- * same model) and cached against the registry generation.
+ * rows); the texture<->CLUT pairing happens at resolve time, where the full
+ * palette row is hashed from the live native VRAM model (authoritative by
+ * construction — the draw samples that same model) on each resolve-cache
+ * miss; results are cached against the registry generation.
  *
  * Hashing: XXH3-64 (vendored third_party/xxhash). The texture hash covers
  * the FULL upload source; sub-rect draws share it and carry their box in the
@@ -743,10 +743,9 @@ static void texture_pack_on_restore_locked(void) {
 
     /* The PsyX mirror is the authoritative post-restore content (the native
      * model refreshes lazily at the next present). Re-hash each live rect;
-     * identity survives iff the content still matches. Note: thash covers
-     * the FULL pre-clamp upload source while the rect is post-clamp, so a
-     * clamped upload re-hashes differently and dies here — a safe false
-     * negative (no wrong replacement; returns on the next real upload). */
+     * identity survives iff the content still matches. thash covers the
+     * clamped rect only (stride skips the clamped columns), so a clamped
+     * upload re-hashes equal to its thash. */
     const int vw = OPENPETE_VRAM_W;
     const int vh = (int)(bytes / ((unsigned)vw * 2u));
     int kept = 0, killed = 0;
@@ -992,8 +991,9 @@ static int texture_pack_resolve_locked(int tpage_x, int tpage_y, int clut_x, int
                          texture_pack_id *out) {
     if (!s_inited || u1 < u0 || v1 < v0) return 0;
     tp_poll_modset();
-    /* Cache key: material + box packed. Coordinates all fit their fields
-     * (VRAM is 1024x512, boxes are <=256 texels). */
+    /* Cache key: material + box XOR-folded into one word. The fields
+     * overlap, so distinct inputs can share a key; a slot hit compares the
+     * key and the generation only. */
     uint64_t key = ((uint64_t)(uint16_t)tpage_x << 48) ^ ((uint64_t)(uint16_t)tpage_y << 32) ^
                    ((uint64_t)(uint16_t)clut_x  << 16) ^  (uint64_t)(uint16_t)clut_y ^
                    ((uint64_t)(uint8_t)bpp << 56) ^

@@ -657,7 +657,10 @@ typedef struct openpete_mod_api {
      *                    end-flag 0x01); decoded and copied by the engine.
      * @param pitch       SPU units (0x1000 = 44.1 kHz), overriding the
      *                    game's pitch writes; 0 keeps the game's own pitch.
-     * @return 0, or -1 for an unknown name.
+     * @return 0, or -1 when the name is empty or 64 bytes or longer, len is
+     *         under 16 or over 1 MiB, the body does not decode, or
+     *         allocation fails. A name no game sound uses is accepted and
+     *         never plays.
      * @since api 1
      */
     int (*sfx_replace)(openpete_mod_t* self, const char* name,

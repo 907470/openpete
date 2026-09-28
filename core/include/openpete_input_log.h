@@ -6,7 +6,8 @@
  * bk2 recorder used before the lift-out — both VBLs of a gameplay tick
  * carry the tick-latched bits, preserving the tick-quantized semantics the
  * bk2 corpus was validated under). Always on; one record per VBL carries
- * every pad slot, ~28 bytes/VBL ≈ 6 MB/hour.
+ * every pad slot, sizeof(openpete_input_rec_t) = 32 bytes (4 ports of 8 bytes,
+ * padded) per VBL ≈ 6.9 MB/hour at 59.826 VBL/s.
  *
  * Consumers:
  *   - bk2_record: serializes entries [begin_idx, count) into the movie.

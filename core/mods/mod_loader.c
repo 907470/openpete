@@ -813,8 +813,8 @@ static void api_log(openpete_mod_t* self, int level, const char* fmt, ...) {
                   self ? self->log_tag : "mod:?", "%s", msg);
 }
 
-/* Region-table inverse (psx_runtime.h; declared here for the same reason
- * call_by_address is — this file does not pull the runner header in). */
+/* Region-table inverse (psx_runtime_internal.h; declared here for the same
+ * reason call_by_address is — this file does not pull the runner header in). */
 int psx_runtime_region_host_to_vaddr(const void* host, uint32_t* out_vaddr);
 
 /** @brief Translate a guest vaddr to a host pointer for a mod.
@@ -883,7 +883,7 @@ static uint32_t api_guest_addr(const void* host) {
     return 0;
 }
 
-void call_by_address(CPUState* cpu, uint32_t addr); /* psx_runtime.h */
+void call_by_address(CPUState* cpu, uint32_t addr); /* psx_runtime_internal.h */
 
 /** @brief Run the guest function at an address on the given CPU state.
  *

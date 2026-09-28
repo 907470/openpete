@@ -631,7 +631,7 @@ static uint32_t terrain_fog_blend_inner(uint32_t nearC, uint32_t farC, double m3
             farC = (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16);
         }
     }
-    if (s_fogdpcs) {                      /* GTE-exact path (proven; not yet default) */
+    if (s_fogdpcs) {                      /* GTE-exact DPCS path (default) */
         int ir0 = fogRef - (int)(m3 * s_fogscale);
         if (ir0 >= 4096) return nearC;
         if (ir0 <= 0)    return farC;
@@ -640,10 +640,8 @@ static uint32_t terrain_fog_blend_inner(uint32_t nearC, uint32_t farC, double m3
         int b = ngte_dpcs_ch((int)((farC >> 16) & 0xFF),  (int)(((nearC >> 16) & 0xFF) << 4), ir0);
         return (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16);
     }
-    /* Shipped default: the float+0.5 lerp at fogscale 1 — under-fogs vs the .s
-     * (f pins to 1 across most of the fog band) but its look co-evolved with
-     * the tier coverage below; see the header comment for why the exact decode
-     * is gated until the LP/HP handoff work lands. */
+    /* s_fogdpcs == 0: the float+0.5 lerp (OPENPETE_TERRAIN_FOGDPCS=0). It
+     * under-fogs vs the .s: f pins to 1 across most of the fog band. */
     double f = ((double)fogRef - m3 * s_fogscale) / 4096.0;
     if (f < 0.0) f = 0.0; else if (f > 1.0) f = 1.0;
     int nr = (int)(nearC & 0xFF), ng = (int)((nearC >> 8) & 0xFF), nb = (int)((nearC >> 16) & 0xFF);

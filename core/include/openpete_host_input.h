@@ -11,9 +11,10 @@
  *   producer   openpete_host_input_sample()   pump-side: reads SDL, publishes
  *   consumer   openpete_host_input_latch()    sim-side: arbitrates, stamps
  *
- * Today both run on the host loop, back to back. The split exists because the
- * pump and the sim are destined for different threads, and a snapshot is the
- * only handoff that survives that move unchanged: the consumer never reads SDL.
+ * Unsplit, both run on the host loop, back to back. Under the thread split
+ * the producer runs on the main thread's pump and the consumer on the host
+ * loop's worker thread; the snapshot is the only handoff between them, and
+ * the consumer never reads SDL.
  *
  * Decode itself is PsyX_Pad_DecodeP1 — the same merge the non-override path
  * uses — so host-decoded bits are identical to PsyCross-decoded bits by
