@@ -39,6 +39,7 @@ static int g_tty = -1;
 /* Pinned by the stderr mirror before it replaces fd 2 with a pipe. */
 void openpete_log_pin_stderr_tty(int is_tty) { g_tty = is_tty ? 1 : 0; }
 
+/** @brief Return whether stderr is a terminal, testing once and caching the answer unless it was pinned. */
 static int stderr_is_tty(void) {
     if (g_tty < 0) {
 #if defined(_WIN32)
@@ -50,6 +51,7 @@ static int stderr_is_tty(void) {
     return g_tty;
 }
 
+/** @brief Return the ANSI escape that colours a line of level l, "" for info. */
 static const char* level_color(openpete_log_level_t l) {
     switch (l) {
         case OPL_TRACE: return "\033[90m";    /* grey   */
@@ -61,6 +63,7 @@ static const char* level_color(openpete_log_level_t l) {
     return "";
 }
 
+/** @brief Return CLOCK_MONOTONIC in seconds, 0.0 when the clock read fails. */
 static double monotonic_seconds(void) {
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0.0;
@@ -69,6 +72,7 @@ static double monotonic_seconds(void) {
 
 static double g_t0 = 0.0;
 
+/** @brief Return the lowercase name of level l, or a placeholder outside the enum. */
 static const char* level_name(openpete_log_level_t l) {
     switch (l) {
         case OPL_TRACE: return "trace";
@@ -80,6 +84,9 @@ static const char* level_name(openpete_log_level_t l) {
     return "?";
 }
 
+/** @brief Parse a lowercase level name (trace, debug, info, warn, error) into out.
+ *
+ * @return 0 on a match, -1 for any other text, with out untouched. */
 static int parse_level(const char* s, openpete_log_level_t* out) {
     if (strcmp(s, "trace") == 0) { *out = OPL_TRACE; return 0; }
     if (strcmp(s, "debug") == 0) { *out = OPL_DEBUG; return 0; }
@@ -89,12 +96,20 @@ static int parse_level(const char* s, openpete_log_level_t* out) {
     return -1;
 }
 
+/** @brief Free every per-subsystem level rule and empty the rule list; the default level is untouched. */
 static void clear_rules(void) {
     level_rule_t* r = g_rules;
     while (r) { level_rule_t* n = r->next; free(r); r = n; }
     g_rules = NULL;
 }
 
+/** @brief Apply a comma-separated "subsystem:level" spec to the rule list and the default level.
+ *
+ * Segments longer than 63 bytes are truncated and subsystem names longer than
+ * 31 bytes are truncated. A segment without a colon or with an unknown level
+ * is skipped. "*" sets the default level; any other name is pushed at the
+ * head of the rule list, so a later segment for the same name wins. A NULL or
+ * empty spec changes nothing. */
 static void parse_spec(const char* spec) {
     if (!spec || !*spec) return;
     const char* p = spec;
@@ -134,6 +149,11 @@ static void parse_spec(const char* spec) {
     }
 }
 
+/** @brief Return the level filter for subsystem.
+ *
+ * The rule whose stored name equals the subsystem exactly wins, the most
+ * recently added of equal names first; otherwise the default level.
+ * @param subsystem Subsystem name, or NULL for the default. */
 static openpete_log_level_t lookup_level(const char* subsystem) {
     if (!subsystem) return g_default;
     for (level_rule_t* r = g_rules; r; r = r->next) {

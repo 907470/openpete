@@ -37,12 +37,23 @@ static double share_pct(uint64_t part, uint64_t whole)
     return whole ? 100.0 * (double)part / (double)whole : -1.0;
 }
 
+/** @brief Format "<label>: <pct>%" into buf at zero decimals, or "<label>: N/A" for a negative pct. */
 static void put_pct(char *buf, size_t cap, const char *label, double pct)
 {
     if (pct < 0.0) snprintf(buf, cap, "%s: N/A", label);
     else           snprintf(buf, cap, "%s: %.0f%%", label, pct);
 }
 
+/** @brief Rebuild the overlay text lines from the census counters accumulated since the window began.
+ *
+ * Line 0 is the present rate. From OPENPETE_PERF_DETAIL up, lines follow for
+ * the VBL rate and slip count, the late-VBL share per thousand clean VBLs
+ * with the interpolated-present share, and the gap rate with the hold time.
+ * Every rate is a delta against s_prev over the window length. A share with
+ * an empty population prints N/A.
+ * @param level Detail level.
+ * @param c Current census snapshot.
+ * @param elapsed_ns Length of the window that s_prev opens. */
 static void build_lines(int level, const openpete_pace_census_t *c,
                         op_time_t elapsed_ns)
 {

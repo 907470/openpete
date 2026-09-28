@@ -83,7 +83,17 @@ const char* openpete_log_get_spec(void);
  * @return 0 when a file sink is active (also when one already was), -1
  *         when the sink is disabled or setup failed. */
 int openpete_log_file_open(const char* spec);
+/** @brief Stop the file sink: restore fd 2, let the pump drain the pipe to EOF, join it and close the descriptors.
+ *
+ * No-op when no sink is active. Registered with atexit by
+ * openpete_log_file_open; the handoff to a rebuilt process also calls it
+ * directly. The wait for EOF assumes no child process still holds an
+ * inherited fd 2. A later openpete_log_file_open may start a new sink. */
 void openpete_log_file_close(void);
+/** @brief Return the path of the active log file.
+ *
+ * @return The path, "" when no sink is active. The string is static and
+ *         changes on the next open. */
 const char* openpete_log_file_path(void);  /* "" when inactive */
 
 /** @brief Pin whether stderr is a terminal before the log-file mirror swaps fd 2 for a pipe.

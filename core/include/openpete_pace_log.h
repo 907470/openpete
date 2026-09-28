@@ -573,6 +573,11 @@ typedef struct {
     int64_t  host_pump_events_max_ns;/* worst event pump alone: modal loops   */
 } openpete_pace_census_t;
 
+/** @brief Copy the current pacing census into out.
+ *
+ * The copy is a plain struct read with no lock, while the sim and present
+ * threads update the counters under the census lock.
+ * @param out Receives the snapshot; nothing happens when NULL. */
 void openpete_pace_census_get(openpete_pace_census_t* out);
 
 /* Upper bound (ns, exclusive) of each phase-error histogram bucket; the last

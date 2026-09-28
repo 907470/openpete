@@ -73,6 +73,7 @@ void openpete_paths_join(char* out, size_t cap, const char* dir, const char* lea
         snprintf(out, cap, "%s%c%s", dir, OPP_SEP, leaf);
 }
 
+/** @brief 1 when p names an existing directory, 0 for a file, another type, or a stat failure. */
 static int dir_exists(const char* p) {
     OPP_STAT_T st;
     if (OPP_STAT(p, &st) != 0) return 0;
@@ -180,6 +181,20 @@ static int user_base(char* out, size_t cap, int create, const char* win_var,
     return 0;
 }
 
+/** @brief Write "<user base>/openpete" for one class of data into out.
+ *
+ * The base comes from user_base with the given variable pair. With create
+ * the base and the openpete directory are made, existing ones being left as
+ * they are and mkdir failures ignored.
+ * @param out Receives the path.
+ * @param cap Size of out.
+ * @param create Nonzero to make the directories.
+ * @param win_var Windows environment variable naming the base.
+ * @param win_fallback Path under %USERPROFILE% used when win_var is unset.
+ * @param posix_var POSIX environment variable naming the base.
+ * @param posix_fallback Path under $HOME used when posix_var is unset.
+ * @return 0 on success, -1 when no base is known or the path does not fit
+ *         in cap. */
 static int user_openpete_dir(char* out, size_t cap, int create,
                              const char* win_var, const char* win_fallback,
                              const char* posix_var, const char* posix_fallback) {
@@ -198,11 +213,13 @@ static int user_openpete_dir(char* out, size_t cap, int create,
     return 0;
 }
 
+/** @brief Per-user openpete directory for state (%LOCALAPPDATA%, XDG_STATE_HOME); see user_openpete_dir. */
 static int user_state_dir(char* out, size_t cap, int create) {
     return user_openpete_dir(out, cap, create, "LOCALAPPDATA", "AppData\\Local",
                              "XDG_STATE_HOME", ".local/state");
 }
 
+/** @brief Per-user openpete directory for data (%LOCALAPPDATA%, XDG_DATA_HOME); see user_openpete_dir. */
 static int user_data_dir(char* out, size_t cap, int create) {
     return user_openpete_dir(out, cap, create, "LOCALAPPDATA", "AppData\\Local",
                              "XDG_DATA_HOME", ".local/share");

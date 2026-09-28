@@ -58,14 +58,23 @@ static SDL_ThreadID s_tid = 0;
 static uint64_t s_excluded = 0;
 static uint64_t s_pause_start = 0;
 
+/** @brief Return the virtual clock: the performance counter minus the time spent paused. */
 static NO_INSTR uint64_t ft_now(void) { return SDL_GetPerformanceCounter() - s_excluded; }
 
+/** @brief Hash a pointer to 32 bits with a 64-bit multiply-xorshift mix. */
 static NO_INSTR uint32_t ptr_hash(const void *p) {
     uint64_t x = (uint64_t)(uintptr_t)p;
     x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 33;
     return (uint32_t)x;
 }
 
+/** @brief Allocate the per-function accumulators and the pointer hash from the registered symtab.
+ *
+ * Sizes three counter arrays to the symtab, builds an open-addressed hash of
+ * function pointers to symtab indices at a power-of-two capacity of at least
+ * twice the entry count, and records the calling thread as the only thread
+ * the hooks accept. Sets s_active to 1 on success and to -1 (inert) when no
+ * symtab is registered or an allocation fails. */
 static NO_INSTR void ft_init(void) {
     s_nfuncs = s_symtab_n;
     if (s_nfuncs <= 0 || !s_symtab) { s_active = -1; return; }   /* no symtab: inert */
@@ -88,6 +97,11 @@ static NO_INSTR void ft_init(void) {
     s_active = 1;
 }
 
+/** @brief Look fn up in the pointer hash by linear probing.
+ *
+ * @param fn Function address as passed to the enter hook.
+ * @return The symtab index whose fn equals the argument, -1 when the symtab
+ *         does not list it. */
 static NO_INSTR int resolve(const void *fn) {
     uint32_t h = ptr_hash(fn) & s_hash_mask;
     for (;;) {
@@ -122,6 +136,18 @@ NO_INSTR void __cyg_profile_func_enter(void *this_fn, void *call_site) {
     s_sp++;
 }
 
+/** @brief -finstrument-functions exit hook: pop the shadow-stack frame and accrue its times.
+ *
+ * Ignored while the tracer is not active and on any thread other than the
+ * one that initialized it. An exit that pairs with an enter dropped for
+ * exceeding FT_STACK_MAX only decrements the overflow count. Otherwise the
+ * elapsed virtual time is added to the popped function's total, its total
+ * minus the time spent in callees to its self time, and its call count is
+ * incremented; the popped total is then charged to the parent frame as
+ * child time. A frame whose function was not in the symtab accrues nothing
+ * but still charges its parent.
+ * @param this_fn Unused.
+ * @param call_site Unused. */
 NO_INSTR void __cyg_profile_func_exit(void *this_fn, void *call_site) {
     (void)this_fn; (void)call_site;
     if (s_active != 1) return;
@@ -155,6 +181,7 @@ void op_functrace_resume(void) {
 /* ---- shutdown dump --------------------------------------------------------- */
 struct ft_row { int idx; uint64_t self; uint64_t total; uint64_t calls; };
 
+/** @brief qsort comparator ordering ft_row entries by descending self time. */
 static NO_INSTR int ft_cmp_self(const void *a, const void *b) {
     uint64_t x = ((const struct ft_row *)a)->self, y = ((const struct ft_row *)b)->self;
     return (x < y) - (x > y);   /* descending */

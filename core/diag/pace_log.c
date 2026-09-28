@@ -74,6 +74,10 @@ const int64_t openpete_pace_hist_edges_ns[OP_PACE_HIST_BUCKETS] = {
 
 int openpete_pace_log_active(void) { return s_fp != NULL; }
 
+/** @brief Write the buffered records to the log file and empty the buffer; the caller holds the writer lock.
+ *
+ * A short write logs an error, closes the file and disables further
+ * logging. The buffer is emptied in every case. */
 static void pace_flush_locked(void)
 {
     if (s_buf_n && s_fp) {
@@ -110,6 +114,11 @@ static void census_unlock(void)
     SDL_UnlockMutex(openpete_mutex_once(&s_census_lock));
 }
 
+/** @brief Append one record to the write buffer, flushing when it fills.
+ *
+ * Does nothing when no log file is open. The check is repeated under the
+ * writer lock because a close on another thread can clear the file between
+ * the first test and the lock. */
 static void pace_emit(const pace_rec_t* r)
 {
     if (!s_fp) return;
@@ -243,6 +252,10 @@ static void compositor_id(char* out, unsigned n)
 #endif
 }
 
+/** @brief Write the CPU model name into out: the first "model name" line of /proc/cpuinfo on Linux, else "unknown".
+ *
+ * @param out Receives the NUL-terminated name, truncated to fit.
+ * @param n Size of out. */
 static void cpu_model(char* out, unsigned n)
 {
     out[0] = '\0';
@@ -382,6 +395,11 @@ static void maybe_clocksample(int64_t caller_ns)
     pace_emit(&r);
 }
 
+/** @brief Return the phase-error histogram bucket of err_ns.
+ *
+ * The first bucket whose upper edge in openpete_pace_hist_edges_ns exceeds
+ * the error; the last bucket takes everything at or past the final edge. A
+ * negative error (started early) lands in bucket 0. */
 static unsigned hist_bucket(int64_t err_ns)
 {
     for (unsigned i = 0; i < OP_PACE_HIST_BUCKETS - 1; i++)

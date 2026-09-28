@@ -49,6 +49,7 @@ static void path_with_suffix(const char *base, const char *suffix, char *out, si
     else     snprintf(out, cap, "%s%s", base, suffix);
 }
 
+/** @brief qsort comparator ordering audit rows by descending pixel count, ties by ascending VBL. */
 static int row_cmp_px_desc(const void *a, const void *b)
 {
     const audit_row_t *x = a, *y = b;
@@ -56,6 +57,7 @@ static int row_cmp_px_desc(const void *a, const void *b)
     return x->vbl < y->vbl ? -1 : (x->vbl > y->vbl);
 }
 
+/** @brief qsort comparator ordering audit rows by ascending pixel count. */
 static int row_cmp_px_asc(const void *a, const void *b)
 {
     const audit_row_t *x = a, *y = b;
@@ -146,6 +148,12 @@ static uint32_t pct(const audit_row_t *sorted, size_t n, double p)
     return sorted[i].px;
 }
 
+/** @brief atexit report: print the per-tick pixel-difference summary and the ten worst ticks.
+ *
+ * Sorts a copy of the recorded rows ascending by differing-pixel count for
+ * the exact-tick share, the 50th and 90th percentiles and the maximum, then
+ * descending for the "[ident-audit worst]" lines (ties broken by lower VBL
+ * first). Prints nothing when no tick was recorded. */
 static void audit_report(void)
 {
     if (!s_rows_n) return;

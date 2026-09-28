@@ -16,6 +16,7 @@
 #define OFTL_VERSION 1u
 #define OFTL_REC_SIZE 32u
 
+/** @brief Return the wall-clock time in nanoseconds since the Unix epoch, 0 when the POSIX clock read fails. */
 static int64_t now_unix_ns(void) {
 #if defined(_WIN32)
     /* GetSystemTimeAsFileTime gives 100-ns ticks since 1601-01-01. */

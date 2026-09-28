@@ -97,6 +97,7 @@ static HANDLE      s_win_orig_err = NULL;
 static int         s_lock_fd     = -1;
 #endif
 
+/** @brief Write all n bytes of buf to fd, retrying short writes and EINTR; other errors drop the rest silently. */
 static void write_all(int fd, const char* buf, size_t n) {
     while (n > 0) {
         long w = (long)op_write(fd, buf, n);
@@ -113,6 +114,13 @@ static void write_all(int fd, const char* buf, size_t n) {
  * sequence can straddle a pipe buffer boundary. */
 static int s_esc = 0;  /* 0 outside, 1 saw ESC, 2 inside CSI */
 
+/** @brief Copy in[0..n) to out without ANSI CSI escape sequences and return the bytes written.
+ *
+ * The escape state persists in s_esc across calls, so a sequence split over
+ * two reads is removed whole. out holds at least n bytes.
+ * @param in Input bytes.
+ * @param n Number of input bytes.
+ * @param out Receives the filtered bytes. */
 static size_t strip_ansi(const char* in, size_t n, char* out) {
     size_t w = 0;
     for (size_t i = 0; i < n; i++) {
@@ -129,6 +137,13 @@ static size_t strip_ansi(const char* in, size_t n, char* out) {
     return w;
 }
 
+/** @brief Pump thread body: copy the stderr pipe to the real stderr and the log file until EOF.
+ *
+ * Every read goes to the real stderr unchanged. The copy written to the log
+ * file has ANSI escapes stripped and is cut off once LOG_CAP_BYTES have been
+ * written: a one-line truncation note is appended and the file receives
+ * nothing more, while the real stderr keeps receiving everything. Returns
+ * on EOF (every writer closed) or a read error other than EINTR. */
 static void pump_loop(void) {
     char buf[4096];
     char clean[4096];
@@ -165,6 +180,9 @@ static unsigned __stdcall pump_entry(void* unused) {
     return 0;
 }
 
+/** @brief Start the pump thread on _beginthreadex (Windows).
+ *
+ * @return 0 on success, -1 when the thread cannot be created. */
 static int pump_start(void) {
     uintptr_t h = _beginthreadex(NULL, 0, pump_entry, NULL, 0, NULL);
     if (h == 0) return -1;
@@ -172,6 +190,7 @@ static int pump_start(void) {
     return 0;
 }
 
+/** @brief Wait for the pump thread to exit and release its handle (Windows). */
 static void pump_join(void) {
     WaitForSingleObject(s_pump, INFINITE);
     CloseHandle(s_pump);
@@ -197,15 +216,27 @@ static void* pump_entry(void* unused) {
     return NULL;
 }
 
+/** @brief Start the pump thread on pthread_create (POSIX).
+ *
+ * @return 0 on success, -1 when the thread cannot be created. */
 static int pump_start(void) {
     return pthread_create(&s_pump, NULL, pump_entry, NULL) == 0 ? 0 : -1;
 }
 
+/** @brief Wait for the pump thread to exit (POSIX). */
 static void pump_join(void) {
     pthread_join(s_pump, NULL);
 }
 #endif
 
+/** @brief Choose the log file path: spec when given, else <state>/logs/openpete.log.
+ *
+ * The state directory is made when it does not exist.
+ * @param spec Explicit path, or NULL.
+ * @param out Receives the path.
+ * @param cap Size of out.
+ * @return 0 on success, -1 when the path does not fit in cap or the state
+ *         directory cannot be resolved. */
 static int resolve_path(const char* spec, char* out, size_t cap) {
     if (spec) {
         if (strlen(spec) >= cap) return -1;
@@ -247,6 +278,7 @@ static int take_lock(const char* path) {
 #endif
 }
 
+/** @brief Close the log lock descriptor, which releases the flock; nothing on Windows. */
 static void drop_lock(void) {
 #if !defined(_WIN32)
     if (s_lock_fd >= 0) { close(s_lock_fd); s_lock_fd = -1; }
@@ -277,6 +309,9 @@ static void reserve_std_fds(void) {
 #endif
 }
 
+/** @brief Point fd 2, and the rebound stderr descriptor when distinct, back at the original stderr.
+ *
+ * Closing the last pipe write end this way gives the pump its EOF. */
 static void restore_fd2(void) {
     op_dup2(s_real_stderr, 2);
     if (s_stderr_fd != 2) op_dup2(s_real_stderr, s_stderr_fd);

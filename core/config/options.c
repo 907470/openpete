@@ -23,6 +23,17 @@
 #include <string.h>
 #include <time.h>       /* time/localtime/strftime — default --bk2-record filename */
 
+/** @brief Fetch the token after argv[i] as the value of flag, or report it missing.
+ *
+ * Prints "openpete: missing value for <flag>" to stderr when argv[i] is the
+ * last token. The value is taken verbatim: a token that starts with '-' is
+ * accepted.
+ * @param flag The flag's spelling, for the message.
+ * @param argc Argument count.
+ * @param argv Argument vector.
+ * @param i Index of the flag in argv.
+ * @param out Receives argv[i + 1] on success; untouched on failure.
+ * @return 0 on success, -1 when no token follows. */
 static int needs_value(const char* flag, int argc, char** argv, int i, const char** out) {
     if (i + 1 >= argc) {
         fprintf(stderr, "openpete: missing value for %s\n", flag);
@@ -267,6 +278,11 @@ static int sidecar_needs_quotes(const char* a) {
     return 0;
 }
 
+/** @brief Length in bytes of a's token in the args sidecar, quotes and escapes included.
+ *
+ * Matches what sidecar_emit_token writes: strlen(a) for a bare token, else
+ * the two enclosing quotes plus one byte per character, doubled for '"' and
+ * '\'. The terminating NUL and the separator are not counted. */
 static size_t sidecar_token_len(const char* a) {
     size_t n;
     if (!sidecar_needs_quotes(a)) return strlen(a);
@@ -275,6 +291,13 @@ static size_t sidecar_token_len(const char* a) {
     return n;
 }
 
+/** @brief Write a's sidecar token at p and return the position after it.
+ *
+ * A token that needs no quotes is copied as is; any other is written
+ * double-quoted with '"' and '\' preceded by a backslash. No NUL is written
+ * and the caller has reserved sidecar_token_len(a) bytes.
+ * @param p Output cursor.
+ * @param a Token to emit. */
 static char* sidecar_emit_token(char* p, const char* a) {
     if (!sidecar_needs_quotes(a)) {
         size_t n = strlen(a);
@@ -290,6 +313,7 @@ static char* sidecar_emit_token(char* p, const char* a) {
     return p;
 }
 
+/** @brief 1 when a begins with "--bk2", which covers every recording and replay flag. */
 static int is_bk2_flag(const char* a) {
     return strncmp(a, "--bk2", 5) == 0;
 }
