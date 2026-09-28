@@ -8,11 +8,11 @@
 // Lives wherever openpete_paths puts writable data: next to the exe in a
 // portable install, $XDG_DATA_HOME/openpete/library under the user layout
 // (which is what a read-only AppImage mount forces). Resolution order at
-// boot: explicit --disc = dev path, library untouched; --ingest PATH
-// stream-hashes + copies the image in (dedup by content), then boots
-// the entry; no disc at all = scan the library and boot the single /
-// most-recently-played entry (the version-selector UI arrives with the
-// splash). After ingest the user's original file is never needed again
+// boot: --ingest PATH stream-hashes + copies the image in (dedup by
+// content), then boots the entry; else an explicit --disc or exe path = dev
+// path, library untouched; else the library is scanned and the
+// most-recently-played entry boots, or the splash version selector picks
+// among several. After ingest the user's original file is never needed again
 // — engine updates rebuild the module from the library's own copy.
 #include "openpete.h"
 #include "openpete_log.h"

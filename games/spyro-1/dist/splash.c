@@ -14,9 +14,8 @@
 //                    open their own. No relaunch either way.
 //
 // Headless/CI never see this (console path unchanged). All art is
-// original: flat colors + the in-file 5x7 bitmap font below
-// (docs/public-repo-hygiene-audit.md). Debug self-check:
-// OPENPETE_SPLASH_SHOT=<path.bmp> dumps each mode's frame.
+// original: flat colors + the in-file 5x7 bitmap font below. Debug
+// self-check: OPENPETE_SPLASH_SHOT=<path.bmp> dumps each mode's frame.
 #include "splash.h"
 
 #include "openpete_log.h"
