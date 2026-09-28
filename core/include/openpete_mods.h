@@ -1679,8 +1679,8 @@ int     openpete_mods_config_str(openpete_mod_t* self, const char* key,
  * dotted key names, keeping indentation and a trailing comment; a missing
  * key is added to its section and a missing section is appended at the end
  * of the file, which is created when absent. All edits are applied in
- * memory, then written to config.toml.tmp and renamed over the file, so
- * any failure leaves the file unchanged.
+ * memory, then written to a temporary file beside config.toml and renamed
+ * over it, so any failure leaves the file unchanged.
  * @param mod_dir the mod's directory.
  * @param log_tag the mod's log tag.
  * @param n number of edits.
