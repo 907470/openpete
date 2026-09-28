@@ -1,9 +1,11 @@
 // games/spyro-2/game_extras_impl.c, Spyro 2: Ripto's Rage!'s per-game contract.
 //
-// Identity and the address-only PSYQ hooks are generated from recomp.conf
-// (game_identity.c). Bring-up state: the overlay hooks, --skip-to-level and
-// the freecam wiring carry real values; the remaining per-tick and CLI
-// entries are stubs that core calls and that must not crash.
+// Identity is generated from recomp.conf (game_identity.c). The PSYQ address
+// hooks defined below (rand seed slot, root counter 2) are hand-written and
+// named in psyq_game_provides.h, which suppresses their inert defaults.
+// Bring-up state: the overlay hooks, --skip-to-level and the freecam wiring
+// carry real values; the remaining per-tick and CLI entries are stubs that
+// core calls and that must not crash.
 
 #include "game_extras.h"
 #include "openpete_psx.h"
