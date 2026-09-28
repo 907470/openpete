@@ -119,9 +119,19 @@ void openpete_native_scene_sig_report(int canonical);
  * @return The count, or 0 without present timing, without a swapchain, or
  *         before the device exists. */
 int openpete_native_render_present_outstanding(void);
-/* Wait up to timeout_ns for the last queued present to be displayed:
- * 1 = displayed, 0 = timed out, -1 = unsupported or nothing outstanding.
- * Presenting thread only. */
+/** @brief Wait for the last queued present to be displayed on screen.
+ *
+ * Forwards rhi_present_wait, which confirms outstanding present ids in order
+ * and is meant for millisecond-scale timeouts, never as a poll. Call only
+ * from the presenting thread: the swapchain is externally synchronized.
+ * @param timeout_ns Longest wait in nanoseconds.
+ * @param out_id Receives the id of the present confirmed displayed; may be
+ *        NULL.
+ * @param out_waited_ns Receives the time spent waiting in nanoseconds; may
+ *        be NULL.
+ * @return 1 when displayed, 0 on timeout, -1 when there is no device, no
+ *         present timing, a pending swapchain rebuild, or nothing
+ *         outstanding. */
 int openpete_native_render_present_wait(uint64_t timeout_ns, uint64_t *out_id,
                                         uint64_t *out_waited_ns);
 
@@ -131,17 +141,34 @@ int openpete_native_render_present_wait(uint64_t timeout_ns, uint64_t *out_id,
  * counts the subset that expired the acquire budget.
  * @return The cumulative count, or 0 before the device exists. */
 uint64_t openpete_native_render_acquire_sheds(void);
-/* Acquire-budget expiries and the granted swapchain depth. See
- * rhi_acquire_timeouts and rhi_swapchain_image_count. */
+/** @brief Return the number of swapchain acquires that expired their time budget.
+ *
+ * Forwards rhi_acquire_timeouts. Monotonic.
+ * @return The cumulative count, or 0 before the device exists. */
 uint64_t openpete_native_render_acquire_timeouts(void);
+/** @brief Return the swapchain image count the driver granted.
+ *
+ * Forwards rhi_swapchain_image_count.
+ * @return The image count, or 0 before the device exists. */
 uint32_t openpete_native_render_swapchain_images(void);
 
-/* Device identity for the pacing log's environment block. Each returns a
- * static string valid for the process ("unknown", or "none" for the present
- * mode, before the device exists and in PsyCross-only runs). The present
- * mode is the one granted, the only one a baseline may be keyed on. */
+/** @brief Return the GPU's device name for the pacing log's environment block.
+ *
+ * The string is owned by the device and stays valid while it exists.
+ * @return The name; "unknown" before the device exists and in
+ *         PsyCross-only runs. */
 const char* openpete_native_render_gpu_name(void);
+/** @brief Return the driver version string for the pacing log's environment block.
+ *
+ * @return The version; "unknown" before the device exists, in PsyCross-only
+ *         runs, and when the driver reports none. */
 const char* openpete_native_render_driver_version(void);
+/** @brief Return the name of the granted present mode for the pacing log's environment block.
+ *
+ * The mode is the one the driver granted, the only one a baseline may be
+ * keyed on.
+ * @return A static string such as "immediate" or "fifo"; "none" before the
+ *         device exists and in PsyCross-only runs. */
 const char* openpete_native_render_present_mode(void);
 
 /** @brief Toggle the native window between windowed and borderless-desktop fullscreen.
@@ -201,6 +228,9 @@ struct SDL_Window* openpete_native_render_window(void);
  * the overlay and menu rows. Renderer state only.
  * @param level An OPENPETE_PERF_* value. */
 void openpete_native_set_perf_stats(int level);
+/** @brief Return the performance-stats overlay level in force.
+ *
+ * @return An OPENPETE_PERF_* value. */
 int  openpete_native_perf_stats_level(void);
 
 /** @brief Turn the performance-stats overlay off, or on at the last non-off level.
@@ -352,6 +382,9 @@ int  openpete_native_get_raster_quantize(void);
  * only.
  * @param on Non-zero for on. */
 void openpete_native_set_dither(int on);
+/** @brief Return whether the PS1 15-bit colour and 4x4 dither view is on.
+ *
+ * @return 1 when on, else 0. */
 int  openpete_native_get_dither(void);
 
 /** @brief Queue the texture and colour interpolation mode: perspective-correct or PSX affine.
@@ -378,6 +411,11 @@ int  openpete_native_get_texture_mapping(void);
  * openpete_native_set_texture_mapping. Debug view, renderer state only.
  * @param on Non-zero for on. */
 void openpete_native_set_notex(int on);
+/** @brief Return whether the untextured lighting view is in effect.
+ *
+ * Reports the applied state; a value queued by openpete_native_set_notex
+ * shows after the next present boundary.
+ * @return 1 when on, else 0. */
 int  openpete_native_get_notex(void);
 
 /** @brief Queue the wireframe view on or off.
@@ -391,6 +429,11 @@ int  openpete_native_get_notex(void);
  * --wireframe or OPENPETE_WIREFRAME. Renderer state only.
  * @param on Non-zero for on. */
 void openpete_native_set_wireframe(int on);
+/** @brief Return whether the wireframe view is in effect.
+ *
+ * Reports the applied state; a value queued by openpete_native_set_wireframe
+ * shows after the next present boundary.
+ * @return 1 when on, else 0. */
 int  openpete_native_get_wireframe(void);
 
 /** @brief Select the terrain candidate set: the game's sector visibility flags, or a frustum test.
@@ -404,7 +447,9 @@ int  openpete_native_get_wireframe(void);
  * never written.
  * @param mode An openpete_terrain_visibility_t value. */
 void openpete_native_set_terrain_visibility(int mode);
-/// @brief The terrain candidate-set mode in force (an openpete_terrain_visibility_t value).
+/** @brief Return the terrain candidate-set mode in force.
+ *
+ * @return An openpete_terrain_visibility_t value. */
 int  openpete_native_get_terrain_visibility(void);
 
 /* One vertex of game-supplied FPS-overlay geometry, in a resolution-independent
@@ -438,6 +483,12 @@ void openpete_native_set_overlay_glyphs(const openpete_hud_vert *verts, int nver
  * @param w Region width.
  * @param h Region height. */
 void openpete_native_set_overlay_extent(float w, float h);
+/** @brief Read the overlay block's region rect published by openpete_native_set_overlay_extent.
+ *
+ * Both values come from one read of the published word. A value never
+ * pushed, or not positive, reads as the default region size.
+ * @param w Receives the width; may be NULL.
+ * @param h Receives the height; may be NULL. */
 void openpete_native_get_overlay_extent(float *w, float *h);
 
 /** @brief Publish the build-version line's glyph vertices and the region rect they were emitted in.
@@ -502,6 +553,9 @@ unsigned openpete_native_version_drawn(void);
  * outside the anchor range are ignored.
  * @param anchor An openpete_anchor_t value (openpete_overlay_anchor.h). */
 void openpete_native_set_perf_anchor(int anchor);
+/** @brief Return the screen anchor of the performance-stats block.
+ *
+ * @return An openpete_anchor_t value; the top left until set. */
 int  openpete_native_perf_anchor(void);
 
 /** @brief Hand the renderer the mod draw service's overlay geometry.
@@ -615,8 +669,16 @@ void openpete_native_set_isolation(bool on);
  * @param w Width in VRAM pixels.
  * @param h Height in VRAM pixels. */
 void openpete_native_set_display_rect(int x, int y, int w, int h);
-/* Record the DRAWENV clip rect, the drawn region the display rect is cropped
- * to. Called from the PutDrawEnv thunk. */
+/** @brief Record the active PSX DRAWENV clip rect, the drawn region the display rect is cropped to.
+ *
+ * Called from the PutDrawEnv thunk. A change of size is logged when the
+ * native path is enabled, and the first nonempty rect is checked once
+ * against the game layout's display constants with a warning on a
+ * mismatch; the window is not resized.
+ * @param x VRAM x.
+ * @param y VRAM y.
+ * @param w Width in VRAM pixels.
+ * @param h Height in VRAM pixels. */
 void openpete_native_set_draw_clip(int x, int y, int w, int h);
 
 /* ---- native 3D scene (Phase 2: cyclorama/sky from gamestate) --------
@@ -1259,6 +1321,13 @@ typedef struct {
 void openpete_native_set_cover_planes(const openpete_native_cover_plane *planes,
                                       int n, float margin_world);
 
+/** @brief Append one screen-space triangle to the current scene.
+ *
+ * Equivalent to openpete_native_scene_add_tri_grouped with group 0.
+ * @param tri Triangle to copy; NULL is ignored.
+ * @param category Scene layer (OPENPETE_SCENE_*); ignored for blended tris.
+ * @param carry 1 marks 2D UI the sub-tick re-extract cannot re-derive; else
+ *        0. */
 void openpete_native_scene_add_tri(const openpete_scene_tri *tri, int category, int carry);
 /** @brief Append one screen-space triangle to the current scene with a grouping id.
  *
@@ -1438,6 +1507,11 @@ void openpete_native_scene_mark_terrain_feed(void);
 #define OPENPETE_TAG_PORTAL_BLENDED  2u
 #define OPENPETE_TAG_PORTAL(kind, slot)   OPENPETE_TAG_PATH(9u, (kind), (slot))
 
+/** @brief Set the provenance tag stamped on every triangle added afterwards.
+ *
+ * The tag is sticky until the next call; 0 clears it. The top four bits
+ * select the tag family counted in the per-family census.
+ * @param tag An OPENPETE_TAG_* value, or 0. */
 void openpete_native_scene_set_tag(uint32_t tag);
 /** @brief Copy the accepted-triangle count per tag family of the scene being accumulated.
  *
@@ -1588,7 +1662,19 @@ void  openpete_native_widescreen_x_bounds(float *xlo, float *xhi);
  * projection keeps the canonical H.
  * @param deg Vertical FOV in degrees; <= 0 for the default. */
 void   openpete_native_set_fov(float deg);
-float  openpete_native_fov_deg(void);             /* 0 = default */
+/** @brief Return the vertical FOV set by openpete_native_set_fov.
+ *
+ * @return The clamped setting in degrees; 0 for the game's default. */
+float  openpete_native_fov_deg(void);
+/** @brief Return the factor that widens or narrows the canonical projection H to the FOV setting.
+ *
+ * The factor is the canonical vertical half-tangent, (visible rows / 2) /
+ * (y_row * H_canon), divided by the tangent latched at scene begin. The
+ * effective H is H_canon times the factor.
+ * @param H_canon The GTE's canonical H.
+ * @param y_row The camera matrix's Y-row scale.
+ * @return The factor; 1 at the default FOV or when H_canon or y_row is not
+ *         positive. */
 double openpete_native_fov_h_scale(double H_canon, double y_row);
 /** @brief Return the number of rows in the visible band the panel shows.
  *
@@ -1612,10 +1698,16 @@ double openpete_native_fov_horizontal_deg(double H_canon, double y_row);
  * @param H_canon The GTE's canonical H.
  * @param y_row The camera matrix's Y-row scale. */
 void  openpete_native_fov_note_canon(double H_canon, double y_row);
-/* The FOV label's angles: the vertical FOV shown (the --fov setting, or the
- * game's own at the default) and the horizontal FOV at the live Hor+ factor
- * and the pending FOV tangent. Returns 0 while no view has been noted (the
- * angles then assume H 341, Y row 0.625). */
+/** @brief Compute the FOV label's vertical and horizontal angles.
+ *
+ * The vertical angle is the --fov setting, or the game's own at the default.
+ * The horizontal angle uses the live Hor+ factor and the pending FOV
+ * tangent, not the one latched at scene begin. Both derive from the
+ * projection last recorded by openpete_native_fov_note_canon; before any is
+ * recorded they assume H 341 and Y row 0.625.
+ * @param v_deg Receives the vertical FOV in degrees; may be NULL.
+ * @param h_deg Receives the horizontal FOV in degrees; may be NULL.
+ * @return 1 when a view has been recorded, 0 when the defaults were used. */
 int   openpete_native_fov_angles(double* v_deg, double* h_deg);
 
 /** @brief Compose and present one native image to the Vulkan window on the inline path.
@@ -1659,6 +1751,10 @@ int openpete_native_render_repeat_last(void);
  * openpete_native_scene_build_stamp returns it until
  * openpete_native_scene_publish clears it. */
 void     openpete_native_scene_eager_begin(void);
+/** @brief Return the stamp the terrain builder tags its build with.
+ *
+ * @return The eager scene stamp between openpete_native_scene_eager_begin
+ *         and the scene's publish, else the VBL counter. */
 uint32_t openpete_native_scene_build_stamp(void);
 /** @brief Copy the accumulating scene and its per-present companions into a free ring slot.
  *
@@ -1688,6 +1784,14 @@ int64_t  openpete_native_scene_next_target(void);
  * @param at The display instant, op_now nanoseconds.
  * @return The picked slot, or -1 when none is pending. */
 int      openpete_native_scene_pick(int64_t at);
+/** @brief Compose a ring slot and present it to the swapchain directly.
+ *
+ * The slot's lifecycle matches openpete_native_render_scene_to_stage with no
+ * stage image.
+ * @param slot Ring slot to compose.
+ * @param record_pts_us Capture instant in op_now microseconds for --record.
+ * @return 1 when the render went out, 0 when it was declined, native render
+ *         is off or headless, or @p slot is out of range. */
 int      openpete_native_render_scene(int slot, uint64_t record_pts_us);
 /** @brief Compose a ring slot into a stage image for a later present.
  *
@@ -1701,10 +1805,36 @@ int      openpete_native_render_scene(int slot, uint64_t record_pts_us);
  * @return 1 when the render went out, 0 when it was declined, native render
  *         is off or headless, or @p slot is out of range. */
 int      openpete_native_render_scene_to_stage(int slot, int stage, uint64_t record_pts_us);
-int      openpete_native_present_stage_acquire(void);      /* hold a swapchain image for the next present */
-int      openpete_native_present_stage(int stage);         /* 1 = presented (acquires if not held) */
-int      openpete_native_present_stage_release(void);      /* give back a held acquire on display handoff */
-void     openpete_native_display_claim(void);              /* seam fence: calling thread owns the display now */
+/** @brief Hold a swapchain image for the next staged present.
+ *
+ * Blocks until the image is acquired. An image already held counts as
+ * success.
+ * @return 1 when an image is held, 0 when native render is off or headless,
+ *         there is no device, or the acquire failed. */
+int      openpete_native_present_stage_acquire(void);
+/** @brief Present a stage image to the swapchain.
+ *
+ * Acquires an image first when none is held. Blocks until the present is
+ * submitted.
+ * @param stage Stage image index, as passed to
+ *        openpete_native_render_scene_to_stage.
+ * @return 1 when presented, 0 when native render is off or headless, there
+ *         is no device, the index is out of range, or the swapchain
+ *         declined. */
+int      openpete_native_present_stage(int stage);
+/** @brief Give back a swapchain image held for a staged present that will not be submitted.
+ *
+ * Used when the display is handed back to the inline path. The image is
+ * presented with the pixels it last held, since Vulkan has no un-acquire.
+ * @return 1 when nothing was held, native render is off or headless, there
+ *         is no device, or the image was given back; 0 after device loss. */
+int      openpete_native_present_stage_release(void);
+/** @brief Make the calling thread the owner of the display.
+ *
+ * Forwards rhi_display_claim; the present thread claims as it engages and
+ * the host loop as a drain hands the display back. Does nothing before the
+ * device exists. */
+void     openpete_native_display_claim(void);
 int      openpete_native_stage_count(void);
 uint32_t openpete_native_stage_gen(void);                  /* bumps when the stages are rebuilt */
 /** @brief Free every presented scene whose frame is RHI_FRAMES_IN_FLIGHT or more behind the frame just begun.
@@ -1728,7 +1858,21 @@ int      openpete_native_scene_ring_pending(void);
  *
  * @return The count. */
 int      openpete_native_scene_ring_busy(void);
+/** @brief Read the timing and kind fields of a ring slot.
+ *
+ * Leaves every output unchanged when @p slot is out of range.
+ * @param slot Ring slot index.
+ * @param target_ns Receives the slot's display instant in op_now
+ *        nanoseconds; may be NULL.
+ * @param alpha Receives the slot's sub-tick alpha; may be NULL.
+ * @param paired Receives the slot's prev/curr pairing flag; may be NULL.
+ * @param kind Receives the slot's OP_PACE_* scene kind; may be NULL. */
 void     openpete_native_scene_slot_info(int slot, int64_t *target_ns, double *alpha, int *paired, int *kind);
+/** @brief Log the scene ring's publish census at exit.
+ *
+ * The line gives the counts published, presented, superseded before
+ * presenting, and refused for a full ring. Logs nothing when no scene was
+ * published. */
 void     openpete_native_scene_ring_report(void);
 /** @brief Log the window state and the per-present census at exit.
  *
@@ -1738,8 +1882,20 @@ void     openpete_native_scene_ring_report(void);
  * presents whose outcome or kind changed from their predecessor. The census
  * lines are omitted when no present was composed or refused at begin. */
 void     openpete_native_present_census_report(void);
-float    openpete_native_display_refresh_hz(void);   /* current swapchain's display, 0 = unknown */
-int      openpete_native_display_vsync(void);        /* FIFO present mode in effect */
+/** @brief Return the refresh rate of the display the current swapchain presents to.
+ *
+ * @return The rate in Hz; 0 when unknown or before the device exists. */
+float    openpete_native_display_refresh_hz(void);
+/** @brief Return whether the granted present mode is FIFO or FIFO relaxed.
+ *
+ * @return 1 for a vsync-paced mode; 0 for another mode, headless, or before
+ *         the device exists. */
+int      openpete_native_display_vsync(void);
+/** @brief Return the number of ring slots free for the producer to fill.
+ *
+ * The producer's back-pressure: the ring size minus
+ * openpete_native_scene_ring_busy.
+ * @return The count. */
 int      openpete_native_scene_ring_free(void);
 /** @brief Refresh the VRAM mirror from the guest's VRAM, dirty rects only.
  *
@@ -1767,7 +1923,9 @@ typedef void (*openpete_native_reextract_fn)(void* cpu);
  * staged spans instead of guest memory. NULL disables intermediates.
  * @param fn The callback, or NULL. */
 void openpete_native_register_reextract(openpete_native_reextract_fn fn);
-/// @brief The registered re-extract callback, or NULL.
+/** @brief Return the registered re-extract callback.
+ *
+ * @return The callback, or NULL when none is registered. */
 openpete_native_reextract_fn openpete_native_get_reextract(void);
 
 /// @brief Game callback run once per canonical present for render bookkeeping the game owns.
@@ -1783,7 +1941,9 @@ typedef void (*openpete_native_commit_fn)(void);
  * the PsyCross OT submission. NULL = no commit step.
  * @param fn The callback, or NULL. */
 void openpete_native_register_commit(openpete_native_commit_fn fn);
-/// @brief The registered commit callback, or NULL.
+/** @brief Return the registered commit callback.
+ *
+ * @return The callback, or NULL when none is registered. */
 openpete_native_commit_fn openpete_native_get_commit(void);
 
 /* ---- moby occlusion culling (native-side, display-only) ---------------------
@@ -1824,6 +1984,12 @@ typedef struct openpete_occl_camera {
     float M[9];     /* the game's camera matrix, rows unit-normalized, row-major */
     int   valid;
 } openpete_occl_camera;
+/** @brief Publish the camera the terrain walk now feeding the scene projects with.
+ *
+ * Called on every extract, sub-tick re-extracts included. The scene publish
+ * copies it into the ring slot so the occluder grid built from that scene's
+ * depth pre-pass carries the camera it was rasterized under.
+ * @param c Camera to copy; NULL marks the published camera invalid. */
 void openpete_native_occl_set_camera(const openpete_occl_camera *c);
 /** @brief Return 1 when every grid cell over a screen rect is nearer than vz_near: the geometry is occluded.
  *
@@ -1872,6 +2038,11 @@ enum { OPENPETE_OCCL_Q_NOGRID = 0, OPENPETE_OCCL_Q_SUSPENDED, OPENPETE_OCCL_Q_ST
        OPENPETE_OCCL_Q_TOONEAR, OPENPETE_OCCL_Q_EDGE, OPENPETE_OCCL_Q_VISIBLE,
        OPENPETE_OCCL_Q_CULLED, OPENPETE_OCCL_Q_OFFSCREEN, OPENPETE_OCCL_Q_MOVED,
        OPENPETE_OCCL_Q_COUNT };
+/** @brief Copy the occlusion query outcome census.
+ *
+ * The counts accumulate per OPENPETE_OCCL_Q_* outcome from boot and are
+ * never reset. The read takes no lock, so it is diagnostic only.
+ * @param out Receives OPENPETE_OCCL_Q_COUNT counts, indexed by outcome. */
 void openpete_native_occl_qstats(long out[OPENPETE_OCCL_Q_COUNT]);
 /** @brief The farthest grid view-Z in the rect of the last query the depth test culled.
  *
@@ -1936,6 +2107,18 @@ void     openpete_phase_set_count(int which, int n);
  * the canonical and sub-tick presents show the same 2D layer. The scene's
  * 2D is then sorted into emission order. */
 void openpete_native_scene_capture_overlay(void);
+/** @brief Re-apply the overlay carry to the scene, interpolated to the present instant.
+ *
+ * Call at the end of every re-extract, after the 3D feeders. Each carry
+ * triangle matched to a triangle of the previous carry gets its screen
+ * positions blended between the two by the overlay's own alpha; unmatched
+ * triangles are appended unblended. Appended triangles are marked re-applied
+ * so the next capture skips them. The freeze and fade words are blended
+ * with the same alpha. The overlay alpha spans one tick of the overlay
+ * capture cadence measured on the present clock and clamps to 0..1; under
+ * deterministic capture it comes from the tick grid instead. It falls back
+ * to @p alpha until the capture stamps are primed.
+ * @param alpha The camera bracket's alpha, 0 when the camera ring dedupes. */
 void openpete_native_scene_apply_overlay(double alpha);
 /** @brief Register the callback run at the top of the canonical overlay capture.
  *
