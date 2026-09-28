@@ -189,8 +189,9 @@ typedef struct moby_game {
      * can find it; `s5` is the per-model shift the walk already read. */
     void (*vstream_init)(CPUState* cpu, moby_vstream_t* s,
                          uint32_t header, uint32_t frame, int s5);
-    /* Advance to the next vertex; `first` opens the stream (the first item is
-     * always a literal). Leaves the vertex in s->VX/VY/VZ. */
+    /* Advance to the next vertex; `first` opens the stream. A codec whose first
+     * item is always a literal reads it; one whose keyframe word names the
+     * first item's form ignores it. Leaves the vertex in s->VX/VY/VZ. */
     void (*vstream_next)(CPUState* cpu, moby_vstream_t* s, int first);
     /* How many keyframes `header`'s keyframe array holds, so a consumer that
      * needs the whole animation rather than the pose being drawn can open

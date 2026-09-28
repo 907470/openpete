@@ -249,7 +249,8 @@ int s23_decode_faces(CPUState* cpu, uint32_t fb, uint32_t bytecount,
  *   mode 0 (mobydraw.s:2215-2262) — the channels are the far colour RFC/GFC/BFC
  *     (mobydraw.s:2073-2076); each vertex depth-cues from BLACK toward it at
  *     IR0 = (the vertex colour's three channels summed) << 3, so the face
- *     grades by its own luminance.
+ *     grades by its own luminance. Where mode0_ir0_from_colour_sum is 0 the
+ *     vertex colour is the source and IR0 is the per-moby value instead.
  *   mode 1 (mobydraw.s:2273-2301) — the same far colour, but one IR0 for the
  *     whole moby, bits 24-27 << 8 (mobydraw.s:2079), and each vertex depth-cues
  *     from its own colour. IR0 zero leaves the colours alone. This mode also
@@ -356,9 +357,7 @@ static void s23_env_setup_read(CPUState* cpu, uint32_t rec, s23_env_setup* E) {
      * two bytes of the record's word at +0x18, shifted right by 6, plus an
      * eighth of the global word at `env_bias_word`. Reading it back that way
      * rotates the coordinates further from the draw's than leaving it out, so
-     * one of the three terms is not what it reads as and the bias stays 0 until
-     * it is resolved; the measured gap is a constant rotation, which is what a
-     * bias is. */
+     * the bias is held at 0. */
     (void)cpu; (void)rec;
     E->bias = 0;
 }
@@ -686,7 +685,7 @@ static uint32_t s23_anim_blend_byte(CPUState* cpu, uint32_t state4) {
  * in GTE control 8 and 9 (mobydraw.s:44,46). One record is
  *
  *   +0x00  Moby*
- *   +0x04  (camX - mobyX) >> 2 in the high half, (camY - mobyY) >> 2 in the low
+ *   +0x04  (mobyX - camX) >> 2 in the high half, (camY - mobyY) >> 2 in the low
  *   +0x08  (camZ - mobyZ) >> 2 in the high half, the far-cull distance in the low
  *   +0x0C  Model + (Moby+0x3C byte 0) * 4, whose +0x14 is the geometry header
  *
@@ -1125,7 +1124,7 @@ static int32_t s23_simple_face_otk(const moby_otk_rec_t ork[2], const moby_otk_v
 /** @brief Decodes the host queue of second-kind records into triangles for the shared walk.
  *
  * Per queued record: places it (s23_simple_place), takes the LOD tier from the
- * moby's size byte against twice the depth, rotates and projects the vertex
+ * moby's LOD byte against twice the depth, rotates and projects the vertex
  * words, builds the colour table (depth-cued toward the low-poly block inside
  * the fade band), then walks the face stream, shades each face
  * (s23_simple_shade_face) and emits up to two triangles through
@@ -1210,7 +1209,7 @@ static int s23_simple_decode(CPUState* cpu) {
             s_simple_culled++; continue;
         }
 
-        /* The fade/LOD tier: the moby's size byte against twice the depth
+        /* The fade/LOD tier: the moby's LOD byte (Moby+0x4E) against twice the depth
          * (mobydraw.s:4193-4196). Its sign picks the low-poly lists. */
         const int size_term = (int)(cpu->read_byte(moby + moby_game.renderer_off)
                                     & moby_game.renderer_mask) << 10;
