@@ -6,14 +6,13 @@
 //
 //  - PSYQ's own data structures, written into PSX RAM at Spyro 1's addresses
 //    because gameplay code reads them back and those bytes must match what
-//    hardware leaves. The values were recovered by observation from emulator
-//    RAM dumps, not derived, and they are specific to PSYQ 4.0 as this game
-//    links it.
+//    hardware leaves. The values are replayed verbatim, not computed, and
+//    are specific to PSYQ 4.0 as this game links it.
 //  - The stack frame each real PSYQ function leaves behind. An empty C thunk
 //    leaves those slots at whatever was there before, which reads as a RAM
 //    difference at every call.
-//  - Couplings to Spyro 1's own features: its asset overlay, its render-path
-//    filter and moby ranking, its sound-effect name tables.
+//  - Couplings to Spyro 1's own features: its asset overlay, its music route
+//    and its sound-effect name tables.
 
 extern "C" {
 #include "psyq/psyq_game_hooks.h"
@@ -34,8 +33,9 @@ extern "C" void openpete_logf(int level, const char* subsystem, const char* fmt,
 /** @brief Read a little-endian guest word through a bounds-checked span.
  *
  * @param va Guest address of the word.
- * @return The word, or 0 when the four bytes do not lie in RAM or the
- *         scratchpad. */
+ * @return The word, or 0 when the four bytes do not lie inside one mapped
+ *         region (main RAM, the scratchpad, or a registered presentation
+ *         region). */
 static uint32_t guest_word(uint32_t va) {
     const void* p = openpete_psx_to_host_span(va, 4u);
     uint32_t v = 0;
@@ -87,12 +87,11 @@ extern "C" void psyq_game_mirror_resetgraph(CPUState* cpu, int mode) {
         cpu->write_byte(ENV + 1u, 1u);
         /* halfwords pulled from PSYQ tables at 0x80074AE4 / 0x80074AF8.
          * For NTSC (gpu_type=0) the table low-halfwords are 0x0400 and
-         * 0x0200 — confirmed by xxd of pcsx-redux's RAM dump. */
+         * 0x0200. */
         cpu->write_half(ENV + 4u, 0x0400u);
         cpu->write_half(ENV + 6u, 0x0200u);
-        /* Observed pcsx-redux: byte at ENV+8 (0x80074A6C) = 1. Source not
-         * yet localised in disassembly; matched by observation so the diff
-         * stays clean. */
+        /* Byte at ENV+8 (0x80074A6C) is 1 after ResetGraph; the libgpu
+         * store that writes it is not identified. */
         cpu->write_byte(ENV + 8u, 1u);
         /* memset(ENV+16, 0xFF, 92) -> 0x80074A74..0x80074ACF */
         for (uint32_t a = ENV + 16u; a < ENV + 16u + 92u; a += 4u) {
@@ -160,8 +159,8 @@ extern "C" void psyq_game_mirror_pad_init(CPUState* cpu, uint32_t buf0, uint32_t
      * PadStateXxx), plus per-slot bookkeeping at 0x80075C58+ and 0x80075D40+
      * (pointers to actuator buffers, byte masks, status caches). PsyCross's
      * libpad implementation tracks state host-side and never writes those
-     * PSX-side bytes, leaving 60+ EXE/data bytes zero on our side. Replay
-     * the observed values verbatim — function pointers are PSYQ code (not
+     * PSX-side bytes, so they are written here. The values are replayed
+     * verbatim — function pointers are PSYQ code (not
      * relocated), the buffer addresses come from a0/a1. */
 
     /* Pad-state dispatch table @ 0x800751BC (10 PSYQ fnptrs), then the two
@@ -227,8 +226,7 @@ extern "C" void psyq_game_mirror_memcard_init(CPUState* cpu) {
      * BIOS events and threads handlers through PSYQ's libgpu-style
      * control struct. The card-side struct lives at 0x800748F0+ and
      * shadows the same ABI as libgpu's at 0x80073924. PsyCross stubs
-     * skip the entire chain, so 15 EXE bytes remain zero on our side.
-     * Replay the observed post-init values directly. */
+     * skip the entire chain, so the post-init values are written here. */
     cpu->write_byte(0x80074904u, 0x01u);          /* "card init done" */
     cpu->write_word(0x8007490Cu, 0x8005E124u);    /* fnptr */
     cpu->write_word(0x80074924u, 0x80073924u);    /* libgpu struct backref */
@@ -256,9 +254,6 @@ extern "C" void psyq_game_cd_apply_buf(unsigned char* buf, int sectors) {
  * D_80075978). */
 extern "C" uint32_t psyq_game_libgpu_env_addr(void) { return 0x80074A64u; }
 extern "C" uint32_t psyq_game_libgpu_clear_block_addr(void) { return 0x80075978u; }
-
-/* Spyro 1 waits on VSync(0), which advances the counter directly, so its poll
- * limit is zero: the poll path advances nothing. */
 
 /* --- Music route -------------------------------------------------------- */
 

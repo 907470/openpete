@@ -48,7 +48,7 @@ static const game_interp_row_t s_spyro_interp_rows[] = {
     { "g_Spyro",  0x80078A58, 0x2A4 },
     /* g_SpyroFlame (0xD0 captured): the flame-breath struct. The ribbon is
      * rigidly attached to Spyro's mouth/head via m_Position (+0x00) and the
-     * flame-attach matrix (+0xB8), both updated at the 30 Hz tick — captured so
+     * flame-attach matrix (+0xB8), both updated at the tick rate — captured so
      * the sub-tick spine can lerp the flame POSE to track the (also-interpolated)
      * Spyro instead of snapping each tick. Read-only; rendered only while
      * breathing fire. */
@@ -57,7 +57,7 @@ static const game_interp_row_t s_spyro_interp_rows[] = {
      * anchor (m_Position @ +0x10, int32 x/y/z) is computed each tick by the
      * canonical shadow render and tracks Spyro's ground projection — captured so
      * the sub-tick spine can lerp it to follow the (interpolated) Spyro instead of
-     * stepping at 30 Hz. (Moby shadows need no capture: they re-derive from each
+     * stepping at the tick rate. (Moby shadows need no capture: they re-derive from each
      * moby's already-interpolated m_Position.) Read-only. */
     { "g_SpyroShadow", 0x8007AA10, 0x28 },
     /* g_GameState (4 bytes): which simulation regime produced the tick —
@@ -283,7 +283,7 @@ uint32_t game_interp_moby_key(uint32_t m) {
      * single tick: the tally despawns a gem as it lands in the chest, and the
      * counter text loses a digit as it counts down. An absolute ordinal
      * therefore hands the chest and every odd-valued gem a fresh key each tick,
-     * so they never have a prev to pair with and step at the 29.97 Hz sim rate
+     * so they never have a prev to pair with and step at the tick rate
      * while the gems around them (which own a source identity, above) run smooth.
      *
      * Counting only same-class predecessors makes the ordinal blind to that
@@ -340,7 +340,7 @@ static void spyro_interp_extra_pools(void) {
 
     /* Static 3D HUD icons (g_Hud.m_Mobys[12]) — stride-0x58 Mobys OUTSIDE
      * g_LevelMobys. They spin (m_Rotation @ +0x44); capture them so the sub-tick
-     * spine can lerp the spin (else it steps at 30 Hz while the rest is smooth).
+     * spine can lerp the spin (else it steps at the tick rate while the rest is smooth).
      * Always present (no sentinel) — capture all 12; inactive ones don't render. */
     for (uint32_t i = 0; i < G_HUD_COUNT; ++i) {
         uint32_t m = G_HUD_ICONS + i * MOBY_STRIDE;
@@ -371,7 +371,7 @@ static void spyro_interp_extra_pools(void) {
 
     /* g_Sparkles pool (gem/chest/statue twinkles): a FIXED Sparkle[8] array,
      * stride 0x18. A sparkle's POSITION is static for its whole life — what
-     * steps at the 29.97 Hz sim rate is the twinkle ANIMATION phase: m_Life
+     * steps at the tick rate is the twinkle ANIMATION phase: m_Life
      * (pulse scale, decremented per tick by the .s renderer) and m_0x0E (spin,
      * +~3·dt per tick). Capture live slots so the native feeder (sparkle_build,
      * particle.c) can lerp the PHASE sub-tick at float precision; without
@@ -392,7 +392,7 @@ static void spyro_interp_extra_pools(void) {
 
     /* Glow pool (D_80078800 Glow[16], stride 0x24 — Sparx aura, torch glows):
      * the ring CENTRE rides the owner moby's bracket-lerped position, but the
-     * record's own animated channels — size (+0x10, censused ramping +32/tick
+     * record's own animated channels — size (+0x10, ramping +32/tick
      * on the Sparx aura spawn), colour (+0x0C) and the position offset
      * (+0x14/18/1C) — stepped at the sim rate. Capture live slots (count>0)
      * so glow_build can lerp them sub-tick (phase-only; nothing written back). */
@@ -442,8 +442,8 @@ static void spyro_interp_extra_pools(void) {
      * per tick — +0x04 world position, +0x10 per-effect rotation SHORTMATRIX,
      * +0x24 spoke size, +0x2B colour. The feeder (dragonstar_feed_native)
      * re-reads it on every sub-tick present, so without a snapshot the stars
-     * circle at the tick rate regardless of --render-fps
-     * (particle-circling-stars.bk2 f1850). Capture the 0x2C-byte record when
+     * circle at the tick rate regardless of --render-fps.
+     * Capture the 0x2C-byte record when
      * ACTIVE (+0x00 gate); inactive → unseen → evicted (a re-trigger snaps). */
     {
         const void* host = openpete_psx_to_host_span(D_DRAGONSTAR, 0x2Cu);
