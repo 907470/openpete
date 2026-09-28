@@ -43,6 +43,9 @@ static const uint8_t s_glyph_F[7] = {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10};
 static const uint8_t s_glyph_P[7] = {0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10};
 static const uint8_t s_glyph_S[7] = {0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E};
 
+/** @brief Return the 5x7 bitmap rows for a character: a digit, ':', 'F', 'P' or 'S'.
+ *
+ * Any other character maps to the blank glyph. */
 static const uint8_t *glyph_for(char c)
 {
     if (c >= '0' && c <= '9')
@@ -75,6 +78,9 @@ static int s_initialised = 0;
 #define OPENPETE_FPS_MAX_VERT_FLOATS 8192
 static GLfloat s_verts[OPENPETE_FPS_MAX_VERT_FLOATS];
 
+/** @brief Compile one GLSL shader stage and return its handle, or 0 after logging the info log on failure.
+ *
+ * The failed shader object is deleted before returning. */
 static GLuint compile_shader(GLenum type, const char *src)
 {
     GLuint sh = glCreateShader(type);
@@ -93,6 +99,11 @@ static GLuint compile_shader(GLenum type, const char *src)
     return sh;
 }
 
+/** @brief Build the overlay's shader program, uniform locations, VAO and VBO, and set s_initialised.
+ *
+ * The vertex shader maps window pixels to NDC by u_screen; the fragment
+ * shader outputs the flat u_color. A compile or link failure logs, frees
+ * what was built, and leaves s_initialised at 0, so the next emit retries. */
 static void init_gl_resources(void)
 {
     /* Pixel-space → NDC vertex shader. u_screen = (window_w, window_h). */
@@ -231,6 +242,15 @@ static int build_text_quads(const char *text, int origin_x, int origin_y,
     return vc;
 }
 
+/** @brief Draw "FPS:<n>" at the window's top-left corner with a one-pixel shadow, after the scene renders.
+ *
+ * Installed as g_psyx_postRenderOverlay, so PsyCross calls it once per
+ * presented scene. The rate is the count of calls per 0.5-second window,
+ * rounded, and updates even when the GL path fails. GL resources are built
+ * on first use; the program, VAO, VBO, viewport and the blend, depth, cull
+ * and scissor enables are saved before drawing and restored after. Does
+ * nothing on Emscripten, where the desktop-GL function pointers are not
+ * loaded. */
 extern "C" void openpete_fps_overlay_emit(void)
 {
 #if defined(__EMSCRIPTEN__)

@@ -233,6 +233,11 @@ static SDL_AtomicInt s_wants_kb;
 static SDL_AtomicInt s_wants_text;
 static SDL_AtomicInt s_wants_mouse;
 
+/** @brief Publish imgui's keyboard, text-input and mouse capture wants for the pump's threads.
+ *
+ * Called after ImGui::Render. The keyboard and text wants are 0 while the
+ * panel is closed; the mouse want also counts while the fill-tag inspector
+ * is active. */
 static void devui_publish_io_wants(void)
 {
     const ImGuiIO &io = ImGui::GetIO();
@@ -318,6 +323,9 @@ static void format_value_token(const knob_desc_t *k, char *buf, size_t cap)
     }
 }
 
+/** @brief Report whether a knob's current value differs from its boot value.
+ *
+ * String and action rows never count as edited. */
 static bool row_edited(const knob_desc_t *k)
 {
     if (k->type == KNOB_STRING) return false;   /* strings are read-only v1 */
@@ -326,6 +334,12 @@ static bool row_edited(const knob_desc_t *k)
     return v != k->boot_num;
 }
 
+/** @brief Draw a knob row's right-click menu: reset to boot value and clipboard copies.
+ *
+ * Reset appears only for a live, settable, non-action knob and calls its
+ * setter with the boot value. The copy items appear when the knob has a CLI
+ * spelling or an environment variable name, and put "<flag> <value>" or
+ * "<var>=<value>" on the clipboard. */
 static void row_context_menu(knob_desc_t *k)
 {
     if (!ImGui::BeginPopupContextItem("##ctx")) return;
@@ -350,6 +364,9 @@ static void row_context_menu(knob_desc_t *k)
     ImGui::EndPopup();
 }
 
+/** @brief Draw the hover tooltip of the item just submitted: a knob's help and spellings.
+ *
+ * Adds a "restart to apply" line for a restart-only knob. */
 static void row_tooltip(const knob_desc_t *k)
 {
     if (!ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) return;
@@ -409,6 +426,15 @@ static void knob_row_float(knob_desc_t *k)
     if (off) ImGui::EndDisabled();
 }
 
+/** @brief Draw one knob as a table row: label, type-specific value widget, source column.
+ *
+ * The widget is disabled unless the knob is live. Bool, float and enum
+ * widgets apply through the knob's setter on each change; an int or string
+ * widget commits when it loses focus after an edit, an int clamped to the
+ * knob's range when the range is non-empty; an action row is a button that
+ * fires the setter with 1.0 and shows the getter's status text. The source
+ * column reads "edited", else the boot source, followed by restart, pinned
+ * and config-layer tags. */
 static void draw_row(knob_desc_t *k)
 {
     ImGui::TableNextRow();
@@ -613,6 +639,7 @@ static void mui_text(const char *fmt, ...)
     ImGui::TextUnformatted(buf);
 }
 
+/** @brief Draw printf-formatted text in the disabled colour, truncated to 1023 bytes. */
 static void mui_text_disabled(const char *fmt, ...)
 {
     char buf[1024];
@@ -623,11 +650,15 @@ static void mui_text_disabled(const char *fmt, ...)
     ImGui::TextDisabled("%s", buf);
 }
 
+/** @brief Draw a button and report whether it was clicked (1) or not (0). */
 static int mui_button(const char *label)
 {
     return ImGui::Button(label) ? 1 : 0;
 }
 
+/** @brief Draw a checkbox over an int and report 1 when the click changed it.
+ *
+ * A NULL v draws an unchecked box and stores nothing. */
 static int mui_checkbox(const char *label, int *v)
 {
     bool b = v && *v != 0;
@@ -638,33 +669,45 @@ static int mui_checkbox(const char *label, int *v)
     return 0;
 }
 
+/** @brief Draw an int slider over [mn, mx] and report 1 when the value changed; a NULL v draws nothing. */
 static int mui_slider_int(const char *label, int *v, int mn, int mx)
 {
     return (v && ImGui::SliderInt(label, v, mn, mx)) ? 1 : 0;
 }
 
+/** @brief Draw a float slider over [mn, mx] and report 1 when the value changed; a NULL v draws nothing. */
 static int mui_slider_float(const char *label, float *v, float mn, float mx)
 {
     return (v && ImGui::SliderFloat(label, v, mn, mx)) ? 1 : 0;
 }
 
+/** @brief Draw a combo box over the item strings and report 1 when the selection changed.
+ *
+ * A NULL idx or items draws nothing. */
 static int mui_combo(const char *label, int *idx, const char *const *items,
                      int count)
 {
     return (idx && items && ImGui::Combo(label, idx, items, count)) ? 1 : 0;
 }
 
+/** @brief Draw a text field editing buf of cap bytes in place and report 1 when the text changed.
+ *
+ * A NULL buf or a non-positive cap draws nothing. */
 static int mui_input_text(const char *label, char *buf, int cap)
 {
     if (!buf || cap <= 0) return 0;
     return ImGui::InputText(label, buf, (size_t)cap) ? 1 : 0;
 }
 
+/** @brief Draw a horizontal separator line. */
 static void mui_separator(void) { ImGui::Separator(); }
+/** @brief Place the next widget on the previous widget's line. */
 static void mui_same_line(void) { ImGui::SameLine(); }
 
+/** @brief Report 1 while the config panel is open, else 0. */
 static int mui_overlay_open(void) { return s_open ? 1 : 0; }
 
+/** @brief Show text as a tooltip while the previous widget is hovered; a NULL text shows nothing. */
 static void mui_tooltip(const char *text)
 {
     if (text && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
@@ -678,6 +721,12 @@ static const openpete_mod_ui_t s_mod_ui = {
     {},
 };
 
+/** @brief Draw the hover tooltip of a mod's row: id and version plus the state notes that apply.
+ *
+ * Notes cover a mod that writes no guest RAM, one not yet started, an asset
+ * overlay, an enabled mod that cannot be disabled while its level is
+ * active, an enabled mod with no controls, and last present's ImGui call
+ * count. */
 static void mod_row_tooltip(const openpete_mods_menu_info_t *mi)
 {
     if (!ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) return;
@@ -730,6 +779,10 @@ struct mod_cfg_edit_state {
  * valid when a later mod's panel appends its own slot. */
 static std::deque<mod_cfg_edit_state> s_cfg_edit;
 
+/** @brief Find the config edit buffer of a mod id, appending an unseeded one when none exists.
+ *
+ * The returned pointer stays valid for the session because the slots live
+ * in a deque. */
 static mod_cfg_edit_state *cfg_edit_slot(const char *id)
 {
     for (auto &e : s_cfg_edit)
@@ -742,6 +795,10 @@ static mod_cfg_edit_state *cfg_edit_slot(const char *id)
     return slot;
 }
 
+/** @brief Fill a mod's edit buffer from the schema's current values, one entry per config row.
+ *
+ * Rows the registry cannot return stay zeroed. Marks the buffer seeded with
+ * the given row count. */
 static void cfg_seed(mod_cfg_edit_state *st, int mod_index, int rows)
 {
     st->n = rows;
@@ -756,6 +813,14 @@ static void cfg_seed(mod_cfg_edit_state *st, int mod_index, int rows)
     st->seeded = true;
 }
 
+/** @brief Draw a mod's [[config]] rows over its edit buffer, with Apply and Revert once edited.
+ *
+ * The buffer is reseeded when it is new or the row count changed. Rows are
+ * grouped under separator headings by their group field; a bool, int, float
+ * or string row uses a checkbox, an int or float slider (when min < max, else
+ * a plain input), or a combo (string with an item list) or text field. Apply
+ * hands every row to openpete_mods_cfg_apply; Revert reseeds from the
+ * current values. Nothing reaches the mod before Apply. */
 static void draw_mod_config_rows(int mod_index,
                                  const openpete_mods_menu_info_t *mi)
 {
@@ -870,6 +935,10 @@ static void draw_mod_config_rows(int mod_index,
  * rides the style copy. */
 static bool s_mod_body_errored = false;
 
+/** @brief Log an ImGui error raised inside a mod's UI body and flag that the body errored.
+ *
+ * Installed as the context's error callback for the duration of the body.
+ * user_data is the mod id. */
 static void mod_body_error_cb(ImGuiContext *, void *user_data,
                               const char *msg)
 {
@@ -965,6 +1034,9 @@ static void draw_mod_section_bracketed(int mod_index, const char *mod_id,
                        "consecutive presents");
 }
 
+/** @brief Report whether a mod row passes the text filter, by matching its id or name.
+ *
+ * An inactive filter passes every row. */
 static bool mod_row_matches(const ImGuiTextFilter &f,
                             const openpete_mods_menu_info_t *mi)
 {
@@ -975,6 +1047,14 @@ static bool mod_row_matches(const ImGuiTextFilter &f,
 static bool mod_owns_custom_levels(const char *mod_id);
 static void draw_custom_level_rows(const char *mod_id);
 
+/** @brief Draw the Mods header with one row per loaded mod that passes the filter.
+ *
+ * Draws nothing when no mod passes. Each row has an enable checkbox that
+ * queues the toggle (disabled while the mod owns the level being played)
+ * and a name; an enabled mod with a UI section, config rows or custom
+ * levels gets a tree node holding its config rows, its bracketed UI body and
+ * its level rows. An active filter or the boot reveal forces the header
+ * open. */
 static void draw_mods_section(const ImGuiTextFilter &filter)
 {
     const int n = openpete_mods_count();
@@ -1135,6 +1215,13 @@ static bool row_shown(const ImGuiTextFilter &f, const knob_desc_t *k)
            (k->cli && f.PassFilter(k->cli)) || (k->env && f.PassFilter(k->env));
 }
 
+/** @brief Draw the "openpete config" window: filter, Save bar, knob sections, and the Mods section.
+ *
+ * Rows are grouped contiguously by section; a section header appears only
+ * when a row passes the filter and the live-only toggle. Sections named
+ * Debug* start collapsed, and the Mods section is drawn before the first
+ * of them, or last when none is shown. Writes the window's close state back
+ * to the open flag and clears the boot reveal. */
 static void draw_panel(void)
 {
     ImGuiIO &io = ImGui::GetIO();
@@ -1256,6 +1343,7 @@ static void draw_fillpick_crosshair(void)
     }
 }
 
+/** @brief Name a fill-tag verdict: "FILL", "NOFILL", or "clear" for any other value. */
 static const char *fp_verdict_word(int v)
 {
     return v == OPENPETE_FILLPICK_FILL   ? "FILL"
@@ -1263,6 +1351,14 @@ static const char *fp_verdict_word(int v)
                                          : "clear";
 }
 
+/** @brief Draw the fill-tag inspector window over the picked face and the session verdicts.
+ *
+ * Shows the level, sector and face under the crosshair, the current verdict
+ * and whether it is a session override, and the LP view-Z. When a
+ * high-poly face lies on the same sightline it reports whether that face is
+ * behind or in front of the LP. The FILL, NOFILL and clear buttons mark the
+ * picked face; undo removes the last session verdict; the child list shows
+ * the session's verdicts newest first. */
 static void draw_fillpick_panel(void)
 {
     ImGuiIO &io = ImGui::GetIO();

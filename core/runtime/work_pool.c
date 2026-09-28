@@ -30,6 +30,12 @@ static int            s_threads   = 0;   /* resolved count, 0 = not yet resolved
 static int            s_requested = 0;   /* configure() value, 0 = auto */
 static int            s_spawned   = 0;   /* helper threads actually created */
 
+/** @brief Pull items from the shared counter and run the job function on each until none remain.
+ *
+ * Each pull is one atomic increment of the job's next counter, so items are
+ * distributed dynamically; a worker that finds the counter at or past the
+ * item count returns. The counter keeps incrementing past the count, once
+ * per caller of this function per run. */
 static void wp_work(int worker) {
     for (;;) {
         int item = SDL_AddAtomicInt(&s_job.next, 1);
@@ -66,6 +72,13 @@ int openpete_workpool_threads(void) {
     return s_threads;
 }
 
+/** @brief Create the done semaphore and the helper threads on the first parallel run.
+ *
+ * Does nothing when the pool was already spawned or resolves to one thread.
+ * Helper w gets its own start semaphore and a thread named
+ * "openpete-extractN". When a thread fails to create, its semaphore is
+ * destroyed and the resolved count drops to w, so the pool runs with the
+ * helpers created so far; the pool counts as spawned either way. */
 static void wp_spawn(void) {
     int n = openpete_workpool_threads();
     if (s_spawned || n <= 1) return;

@@ -45,6 +45,12 @@ union SDL_Event;
  *         imgui info (headless), or a backend fails to initialise. */
 int  openpete_devui_init(struct rhi_device *dev, struct SDL_Window *win,
                          const struct openpete_options *opts);
+
+/** @brief Destroy the imgui backends and context and return the overlay to its uninitialised state.
+ *
+ * Clears the open and boot-reveal state and the stored device. No-op before
+ * init or after a previous shutdown. Must run before the render device is
+ * destroyed. */
 void openpete_devui_shutdown(void);
 
 /** @brief Report whether --devui-open or OPENPETE_DEVUI_OPEN asks for the overlay to start open.
@@ -77,9 +83,27 @@ int  openpete_devui_inject_mouse_requested(float *x, float *y);
  * @return 1 when a frame is wanted; 0 before init or otherwise. */
 int  openpete_devui_frame_wanted(void);
 
+/** @brief Report whether openpete_devui_init succeeded and shutdown has not run.
+ *
+ * @return 1 while the imgui context exists, else 0. */
 int  openpete_devui_available(void);
-int  openpete_devui_toggle(void);        /* returns new open state */
+
+/** @brief Flip the overlay between open and closed.
+ *
+ * @return The new open state, 1 for open; 0 when closed or before init, in
+ *         which case nothing changed. */
+int  openpete_devui_toggle(void);
+
+/** @brief Report whether the config panel is open.
+ *
+ * Reads the open flag, which is a plain bool with no synchronisation.
+ * @return 1 when initialised and open, else 0. */
 int  openpete_devui_is_open(void);
+
+/** @brief Close the config panel.
+ *
+ * Clears the open flag whether or not the overlay was initialised; a
+ * later frame still runs while the inspector or an always mod section is up. */
 void openpete_devui_close(void);
 
 /** @brief Queue one SDL event for imgui; call for every event, open or closed.
