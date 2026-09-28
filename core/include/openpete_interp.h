@@ -29,8 +29,7 @@
  * camera, and vice-versa) still interpolates. The two can differ by up to ~1
  * VBL on the same present; that is correct, not a bug.
  *
- * Region table is game-supplied via the weak `openpete_interp_regions`
- * symbol (parallel to `openpete_state_regions` in openpete_psx.h).
+ * Region table is game-supplied through openpete_interp_register_regions.
  * core/ holds zero game-specific addresses. */
 
 #ifndef OPENPETE_INTERP_H
@@ -47,7 +46,7 @@ extern "C" {
 
 /* Maximum total bytes captured per snapshot across all regions. Set
  * generously to cover Spyro (0x2A4) + Camera (0x110) + later mobies.
- * Two snapshots fit in ~64 KB total, which is comfortable for L1/L2. */
+ * The three ring slots take ~96 KB in total. */
 #define OPENPETE_INTERP_MAX_REGIONS         8
 #define OPENPETE_INTERP_MAX_SNAPSHOT_BYTES  (32u * 1024u)
 
@@ -88,7 +87,7 @@ void openpete_interp_register_regions(const openpete_interp_region_t* regions,
  * `data[]`. `valid` flips to 1 the first time this slot is written. */
 typedef struct {
     uint32_t  tick;                 /* openpete_frame at capture time */
-    op_time_t tick_ns;              /* op_now() at capture time */
+    op_time_t tick_ns;              /* stamp passed to capture (a grid point when deterministic) */
     uint32_t  total_bytes;
     uint8_t   valid;
     uint8_t   pad[3];

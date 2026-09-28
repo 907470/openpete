@@ -69,8 +69,8 @@ static uint8_t s_cap_scratch[OPENPETE_INTERP_MAX_SNAPSHOT_BYTES];
  * captures. A measured gap of one comes from a stretch that advanced per VBL
  * (a load, a fade) and outlives it; honouring it commits a duplicate at the
  * mid-cadence capture of ordinary 30 Hz motion, which replaces the motion pair
- * with an identity pair and, and since the distinct commits are then one VBL
- * apart it pins the measurement at one for the rest of the run. */
+ * with an identity pair; the distinct commits are then one VBL apart, which
+ * pins the measurement at one for the rest of the run. */
 #define INTERP_MIN_DISTINCT_GAP 2u
 static uint32_t s_distinct_gap = INTERP_MIN_DISTINCT_GAP;
 /* The head slot was committed as a duplicate of the slot before it, so the
@@ -289,8 +289,8 @@ void openpete_interp_capture(uint32_t tick, op_time_t tick_ns) {
     /* Deterministic capture: override the wall-clock stamp with a fixed grid
      * point (0, P, 2P, …), so consecutive distinct ticks are exactly `period`
      * apart (see the header note). The grid counts DISTINCT states only: a
-     * duplicate roll re-stamps the state it copies, consuming no grid point,
-     * so a tick's absolute stamp depends on the states that preceded it and
+     * duplicate roll is stamped one period after the state it copies and
+     * consumes no grid point, so a tick's absolute stamp depends on the states that preceded it and
      * not on how long any of them was held. Advancing the grid on duplicates
      * shifts every later tick by one period per hold, and anything keyed on
      * the absolute stamp (the animated-texture phase the present clock is
