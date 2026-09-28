@@ -80,7 +80,8 @@ void     psyq_thunk_state_save(void* dst);   /* dst has PSYQ_THUNK_STATE_BYTES *
  *
  * A field the pack's version predates is set to its idle value: the
  * streaming latch, the load-delay words, the pad countdowns, the deferred
- * read's reference position and the card driver state become 0. A
+ * read's reference position and the card driver state become 0; the
+ * CdlSetloc sector of a version-1 pack keeps its current value. A
  * version-1 mode word holds an armed bit and is widened to the drive mode it
  * stood for.
  * @param src The pack.

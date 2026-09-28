@@ -345,7 +345,10 @@ static inline uint32_t psyq_len(uint64_t n) {
  * at +0x6C, ending at +0x80. */
 #define PSYQ_LIBGPU_ENV_SIZE 0x80u
 
-/** @brief Bytes a LoadImage or StoreImage transfer moves for @p r: w * h 16-bit pixels, 0 when either side is not positive (PsyCross then moves nothing). */
+/** @brief Bytes a LoadImage or StoreImage transfer moves for @p r: w * h 16-bit pixels, 0 when either side is not positive.
+ *
+ * LoadImage then moves nothing; StoreImage's VRAM read does not guard a
+ * negative width. */
 static inline uint64_t psyq_image_bytes(const RECT16* r) {
     return (r->w > 0 && r->h > 0) ? (uint64_t)r->w * (uint64_t)r->h * 2u : 0u;
 }
@@ -1438,7 +1441,9 @@ void psyq_DrawSync(CPUState* cpu) {
  * environment block's DRAWENV. The restore words carry the same E3/E4/E5
  * payloads PutDrawEnv packs. The E1 payload is written as 0 (see the note in
  * the body). Nothing is written when the game names no environment or fill
- * block, or when either block's span runs past its region.
+ * block, or when the environment block's span runs past its region; when
+ * only the fill block's span runs past its region the clamp is written and
+ * the packet is not.
  * @param rect The guest rectangle, clamped in place.
  * @param color24 The fill colour, 0xBBGGRR. */
 static void psyq_mirror_clear_image(RECT16* rect, uint32_t color24) {
