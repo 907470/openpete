@@ -60,6 +60,11 @@ typedef struct {
 extern const feature_module_t* const openpete_features[];
 extern const size_t                  openpete_feature_count;
 
+/** @brief Hand the parsed options to every registered feature module.
+ *
+ * Calls each module's apply_options in list order; a null module or a module
+ * without the callback is skipped.
+ * @param opts The parsed options. */
 void feature_registry_apply_options(const openpete_options_t* opts);
 
 /** @brief Register the resident-overlay probe consulted for entries carrying a nonzero `overlay`.

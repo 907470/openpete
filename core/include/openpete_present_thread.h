@@ -24,7 +24,18 @@ int  openpete_present_thread_enabled(void);
  * OPENPETE_PACE_FLIP_LOG. The variable is read once per run.
  * @return 1 when the lattice is enabled, else 0. */
 int  openpete_present_thread_lattice_enabled(void);
+/** @brief Create the present thread, inactive, unless eager production is disabled.
+ *
+ * Idempotent while the thread exists. The thread issues nothing until
+ * openpete_present_thread_set_active(1).
+ * @return 1 when the thread exists, 0 when eager production is disabled or
+ *         the mutex, condition variables or thread could not be created. */
 int  openpete_present_thread_start(void);
+/** @brief Take back the display, stop the present thread and destroy its synchronisation objects.
+ *
+ * Calls openpete_present_thread_set_active(0), then signals the thread to
+ * quit and joins it. A no-op before the thread has started. The quit request
+ * is never cleared, so a thread created by a later start exits at once. */
 void openpete_present_thread_stop(void);
 
 /** @brief Hand the display to the present thread (1) or take it back (0).
@@ -38,6 +49,10 @@ void openpete_present_thread_stop(void);
  * before the thread has started.
  * @param on 1 to hand the display to the thread, 0 to take it back. */
 void openpete_present_thread_set_active(int on);
+/** @brief Report whether the present thread currently owns the display.
+ *
+ * Reads the flag without the thread's mutex.
+ * @return 1 between set_active(1) and the start of set_active(0), else 0. */
 int  openpete_present_thread_active(void);
 
 /** @brief Wake the present thread after a scene was published so it re-reads the earliest target.
@@ -48,6 +63,14 @@ void openpete_present_thread_kick(void);
 
 /* Per-present callback on the present thread (frame-time log, profiler). */
 typedef void (*openpete_present_thread_cb)(void *ctx, int kind, double alpha, int paired);
+/** @brief Register the callback the present thread calls after each scene it presents.
+ *
+ * The callback runs on the present thread once per presented scene with
+ * that scene's pace kind, alpha and pairing flag. The pointers are stored
+ * without synchronisation, so the call belongs before the thread is
+ * activated.
+ * @param cb The callback, or NULL for none.
+ * @param ctx Passed to cb unchanged. */
 void openpete_present_thread_set_callback(openpete_present_thread_cb cb, void *ctx);
 
 /** @brief Read the display's vblank lattice v(n) = base + n * period fitted from observed flips.
@@ -64,8 +87,24 @@ void openpete_present_thread_set_callback(openpete_present_thread_cb cb, void *c
  *         has started. */
 int      openpete_present_thread_lattice(int64_t *base_ns, double *period_ns);
 
+/** @brief Log the present thread's census and the scene ring's report.
+ *
+ * Reports scenes presented, refused and late, dropped and discarded staged
+ * frames, render and present costs, drains, and the lattice state when flips
+ * were observed. Silent about the thread when nothing was presented or
+ * refused. Reads the counters without the mutex, so it belongs after
+ * openpete_present_thread_stop. */
 void     openpete_present_thread_report(void);
+/** @brief Return the number of scenes the present thread has presented.
+ *
+ * @return The count, read without the thread's mutex. */
 unsigned openpete_present_thread_presents(void);
+/** @brief Return what one present costs the present thread, render plus present step, as a moving average.
+ *
+ * With vsync off this is the display's throughput ceiling: the planner
+ * spaces targets no denser than it, since closer ones would be built only to
+ * be superseded. Read without the thread's mutex.
+ * @return The average in nanoseconds, 0 before the first present. */
 int64_t  openpete_present_thread_cost_ns(void);
 
 #ifdef __cplusplus

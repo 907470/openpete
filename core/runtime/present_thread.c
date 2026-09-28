@@ -138,8 +138,17 @@ static struct {
     unsigned outliers, resets;
 } s_lat;
 
+/** @brief Convert an op_now() time to microseconds relative to the lattice origin, for the debug trace.
+ *
+ * @param t Time on the op_now() clock.
+ * @return t - s_lat.t0 in microseconds. */
 static double dbg_rel(op_time_t t) { return (double)(t - s_lat.t0) / 1000.0; }
 
+/** @brief Trace the reason for a lattice reset on stderr when the debug trace is on and a fit exists.
+ *
+ * Writes nothing when the fit is empty or PT_DBG_MAX lines have been written.
+ * @param why The reason.
+ * @param id The flip id that triggered the reset, 0 when none. */
 static void lattice_reset_why(const char *why, uint64_t id)
 {
     if (pt_dbg() && s_lat.cnt && s_dbg_n < PT_DBG_MAX) {
@@ -148,6 +157,11 @@ static void lattice_reset_why(const char *why, uint64_t id)
                 why, (unsigned long long)id, (unsigned long long)s_lat.last_id, s_lat.cnt, s_lat.period / 1000.0);
     }
 }
+/** @brief Discard the lattice fit and its lock, counting a reset when a fit existed.
+ *
+ * Empties the flip window and clears the lock, the last flip id and the
+ * outlier and clean-run counters. The next flip re-seeds the origin and
+ * period. */
 static void lattice_reset(void)
 {
     if (s_lat.cnt) s_lat.resets++;
@@ -155,6 +169,22 @@ static void lattice_reset(void)
     s_lat.run_out = s_lat.run_clean = 0;
 }
 
+/** @brief Feed one observed flip into the vblank lattice fit and update its lock state.
+ *
+ * The mutex is held. A flip id at or below the last one (ids restart on a
+ * swapchain rebuild) resets the fit. The first flip sets the origin and takes
+ * seed_period as the period (a seed of 0 or less leaves the fit empty). Later
+ * flips take the nearest lattice index. Once LAT_FIT_MIN flips are held, a
+ * flip more than a quarter period off the fit is an outlier and is dropped;
+ * LAT_OUT_RUN in a row reset the fit. An accepted flip enters a
+ * LAT_WINDOW-entry window and the base and period are refitted by least
+ * squares, the period only from LAT_FIT_MIN flips on; a period outside 1 %
+ * of seed_period resets the fit. The lattice locks at LAT_LOCK_MIN flips
+ * after LAT_CLEAN_RUN consecutive flips within an eighth of a period of the
+ * fit.
+ * @param id Flip id from the present wait.
+ * @param t Flip time on the op_now() clock.
+ * @param seed_period The display mode's refresh period in nanoseconds. */
 static void lattice_observe(uint64_t id, op_time_t t, double seed_period)
 {
     /* Ids restart at 1 on a swapchain rebuild: a new surface, a new clock. */
@@ -403,6 +433,16 @@ static op_time_t compose_guard_ns(void)
     if (g < 0) { const char *e = getenv("OPENPETE_PT_GUARD_US"); g = (e && *e) ? (op_time_t)atoll(e) * 1000 : PT_COMPOSE_GUARD_NS; }
     return g;
 }
+/** @brief Return the instant to present a scene aimed at target, a slot earlier plus the guard.
+ *
+ * The mutex is held (it reads the lattice fit). With slot <= 0 (no vsync, or
+ * the lattice disabled) the result is the target itself. Otherwise the lead
+ * is the fitted lattice period when the lattice is locked and slot when not,
+ * so a locked and an unlocked thread use the same lead; the result is
+ * target - round(period) + compose_guard_ns().
+ * @param target A display instant on the op_now() clock.
+ * @param slot The display refresh period in nanoseconds, or 0.
+ * @return The present instant on the op_now() clock. */
 static op_time_t compose_at_locked(op_time_t target, double slot)
 {
     if (slot <= 0.0) return target;                 /* not vsynced: no lattice to lead */

@@ -40,6 +40,10 @@ typedef struct {
     int32_t bpp;              /* 4, 8, or 16                                   */
 } psx_material;
 
+/** @brief Pack 5-bit r, g, b and a 1-bit stp flag into a PSX 16-bit texel.
+ *
+ * Each channel is masked to its low 5 bits: r in bits 0-4, g in bits 5-9,
+ * b in bits 10-14; the low bit of stp goes to bit 15. */
 static uint16_t bgr555(int r, int g, int b, int stp)
 {
     return (uint16_t)((r & 31) | ((g & 31) << 5) | ((b & 31) << 10) | ((stp & 1) << 15));
@@ -141,6 +145,18 @@ static void build_vram(uint16_t *vram)
             put4(vram, 128, 0, u, v, u * 16 / TS);
 }
 
+/** @brief Run the RHI smoke test: draw PSX-sampled and vertex-coloured quads until quit.
+ *
+ * Opens a resizable Vulkan window, fills a VRAM mirror with a 16bpp gradient,
+ * an 8bpp grey ramp and a 4bpp colour-bar CLUT test pattern, and each
+ * iteration draws three quads sampled through the PSX material push constant
+ * (16, 8 and 4 bpp) and one vertex-coloured reference quad into an offscreen
+ * target cleared to a cycling hue, then blits it to the swapchain. Exits on
+ * window close or Escape, or after N presented frames with `--frames N`.
+ * @param argc Argument count.
+ * @param argv Arguments; `--frames N` sets the presented-frame limit.
+ * @return 0 on a clean run, 1 when SDL, the device or the GPU resources fail
+ *         to initialise. */
 int main(int argc, char **argv)
 {
     long frame_limit = -1; /* -1 = run until quit */

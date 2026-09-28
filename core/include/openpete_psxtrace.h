@@ -438,7 +438,18 @@ int  openpete_sched_cdsync_peek(uint32_t* ra_out, uint64_t* tick_out);
  * @return 0 on success; -1 when the trace is closed, carries RAM payloads
  *         (the seek stride excludes them), or a seek fails. */
 int  openpete_psxtrace_skip_to(openpete_psxtrace_t* t, uint32_t rec);
-uint32_t openpete_psxtrace_current_record(void);          /* on the active trace (run.c) */
+/** @brief Return the record index the active trace's next advance consumes.
+ *
+ * Defined in run.c against the one trace open per run.
+ * @return The number of records consumed, or 0 when no trace is active. */
+uint32_t openpete_psxtrace_current_record(void);
+/** @brief Skip the active trace forward so its next advance reads record rec.
+ *
+ * Defined in run.c against the one trace open per run; the thunk layer calls
+ * it when a load window re-aligns the record index.
+ * @param rec Reference record index the next advance reads.
+ * @return The result of openpete_psxtrace_skip_to (0 on success, -1 on
+ *         failure), or -1 when no trace is active. */
 int      openpete_psxtrace_skip_current_to(uint32_t rec);
 /** @brief Record a schedule failure, keeping the first reason.
  *

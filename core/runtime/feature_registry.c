@@ -18,6 +18,14 @@
 static int s_hook_id[FR_PROF_MAX];
 static int s_hook_id_init = 0;
 
+/** @brief Return the profiler bucket id of module i's "hook.<name>" timer, interning it on first use.
+ *
+ * The cache holds FR_PROF_MAX entries and is initialised lazily on the
+ * thread that dispatches, so the function is not safe to call concurrently.
+ * A null name interns "hook.?".
+ * @param i Module index in openpete_features.
+ * @param name The module's name.
+ * @return The bucket id, or -1 when i is FR_PROF_MAX or more. */
 static int hook_prof_id(size_t i, const char* name) {
     if (i >= FR_PROF_MAX) return -1;
     if (!s_hook_id_init) {

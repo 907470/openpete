@@ -1032,8 +1032,20 @@ int  openpete_get_mute(void);
  * @param v Level 0..10, values above 10 read as 10; negative stores -1,
  *        which leaves the game's slider alone. */
 void openpete_set_sfx_volume(int v);
+/** @brief Return the requested in-game sound-effects slider level.
+ *
+ * @return 0..10, or -1 to leave the game's slider alone. */
 int  openpete_get_sfx_volume(void);
+/** @brief Set the requested in-game music slider level, the --music value.
+ *
+ * Stores a host-side request only; the per-game audio-volume feature writes
+ * the game's volume on its tick hook.
+ * @param v Level 0..10, values above 10 read as 10; negative stores -1,
+ *        which leaves the game's slider alone. */
 void openpete_set_music_volume(int v);
+/** @brief Return the requested in-game music slider level.
+ *
+ * @return 0..10, or -1 to leave the game's slider alone. */
 int  openpete_get_music_volume(void);
 
 /** @brief Set the requested controller-vibration strength, the --vibration value.
@@ -1044,6 +1056,10 @@ int  openpete_get_music_volume(void);
  * @param v Strength 0..10, values above 10 read as 10; negative stores -1,
  *        which leaves the game's own setting alone. */
 void openpete_set_vibration(int v);
+/** @brief Return the requested controller-vibration strength.
+ *
+ * @return The value openpete_rumble_get_strength holds: 0..10, or -1 when
+ *         unset. */
 int  openpete_get_vibration(void);
 
 #ifdef __cplusplus

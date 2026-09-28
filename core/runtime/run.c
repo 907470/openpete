@@ -189,6 +189,13 @@ int openpete_psxtrace_skip_current_to(uint32_t rec) {
     return s_psxtrace_active ? openpete_psxtrace_skip_to(s_psxtrace_active, rec) : -1;
 }
 
+/** @brief Advance the active psxtrace by one record at a guest anchor and update its terminal status.
+ *
+ * Installed as openpete_psxtrace_dispatch_hook. Does nothing without an
+ * active trace or once its status is 1 (end of file) or 3 (error). An
+ * advance error sets status 3, end of file status 1, and a hard failure
+ * with status still 0 sets status 2, which the host loop reads to exit.
+ * @param addr The anchor address, unused. */
 static void openpete_psxtrace_on_anchor(uint32_t addr) {
     (void)addr;
     if (!s_psxtrace_active) return;
@@ -421,6 +428,11 @@ static void openpete_cursor_update(bool headless)
     cursor_shown = (int)want_cursor;
 }
 
+/** @brief Drain the SDL event queue, forwarding unconsumed events to PsyCross, then apply rumble.
+ *
+ * Each event goes through openpete_handle_event, and PsyX_Sys_HandleEvent
+ * when it is not consumed. Rumble is applied here because this thread owns
+ * the SDL gamepad handles. */
 static void openpete_pump_events(void) {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
@@ -550,6 +562,10 @@ static bool openpete_handle_event(SDL_Event* ev) {
     return true;  /* everything else goes on to PsyCross */
 }
 
+/** @brief SIGINT and SIGTERM handler: request a graceful shutdown, and exit at once on a second signal.
+ *
+ * The first signal sets g_shutdown_requested; a second calls _exit(130).
+ * @param sig The signal number, unused. */
 static void openpete_on_sigint(int sig) {
     (void)sig;
     if (g_shutdown_requested) {
@@ -560,6 +576,11 @@ static void openpete_on_sigint(int sig) {
     g_shutdown_requested = 1;
 }
 
+/** @brief Test whether a frame index lies in any of the options' unlock ranges, bounds inclusive.
+ *
+ * @param opts The parsed options.
+ * @param frame The tick counter.
+ * @return 1 when inside a range, else 0. */
 static int unlock_frame_in_ranges(const openpete_options_t* opts, unsigned frame) {
     int f = (int)frame;
     for (int i = 0; i < opts->unlock_ranges_count; i++) {
@@ -570,6 +591,12 @@ static int unlock_frame_in_ranges(const openpete_options_t* opts, unsigned frame
     return 0;
 }
 
+/** @brief Append a "frame,vbl,x,y,z" row of the player position to the position log.
+ *
+ * Writes nothing when game_get_player_position reports no position.
+ * @param fp The log file.
+ * @param frame The tick counter.
+ * @param vbl The VBL counter. */
 static void position_log_emit(FILE* fp, unsigned frame, int vbl) {
     int32_t x = 0, y = 0, z = 0;
     if (game_get_player_position(&x, &y, &z) != 0) return;
@@ -754,10 +781,14 @@ static int ra_pc_on(void) {
 #define RA_PC_PENDING 8
 static struct { uint32_t target; uint64_t hash; int valid; uint8_t* led; } s_ra_pc[RA_PC_PENDING];
 static unsigned s_ra_pc_checked = 0, s_ra_pc_mismatches = 0, s_ra_pc_invalidated = 0;
+/** @brief Drop every pending runahead prediction, counting each one dropped. */
 static void ra_pc_invalidate_all(void) {
     for (int i = 0; i < RA_PC_PENDING; i++)
         if (s_ra_pc[i].valid) { s_ra_pc[i].valid = 0; s_ra_pc_invalidated++; }
 }
+/** @brief Hash guest RAM, the scratchpad and the used part of the mod arena with FNV-1a-64.
+ *
+ * @return The hash the runahead prediction check compares. */
 static uint64_t ra_pc_hash(void) {
     uint64_t h = openpete_fnv1a64_init();
     h = openpete_fnv1a64_update(h, openpete_psx_get_ram(), OPENPETE_PSX_RAM_SIZE);
@@ -768,6 +799,12 @@ static uint64_t ra_pc_hash(void) {
                                    openpete_mods_arena_used());
 }
 
+/** @brief Write the CSV header of the gameplay hash log: frame, vbl, fnv1a64 and one column per region.
+ *
+ * A region name has commas, CR and LF replaced by '_'. More than
+ * OPENPETE_HASH_LOG_MAX_REGIONS regions log an error and truncate the
+ * columns to that many.
+ * @param fp The log file. */
 static void gameplay_hash_log_emit_header(FILE* fp) {
     fputs("frame,vbl,fnv1a64", fp);
     /* One column per registered region, headed by its name. The
@@ -793,6 +830,14 @@ static void gameplay_hash_log_emit_header(FILE* fp) {
     fputc('\n', fp);
 }
 
+/** @brief Append one gameplay hash log row: frame, vbl, the total hash and each region hash in hex.
+ *
+ * The per-region array holds OPENPETE_HASH_LOG_MAX_REGIONS entries and the
+ * row carries at most that many region columns, matching the header, while
+ * gameplay_hash_compute_ex writes one entry per registered region.
+ * @param fp The log file.
+ * @param frame The tick counter.
+ * @param vbl The VBL counter. */
 static void gameplay_hash_log_emit(FILE* fp, unsigned frame, int vbl) {
     uint64_t per_region[OPENPETE_HASH_LOG_MAX_REGIONS];
     size_t n = openpete_state_region_count;
@@ -826,6 +871,15 @@ extern void openpete_psx_set_diag_cpu(CPUState* cpu);
 #define OPENPETE_CPU_SEED_MAGIC 0x31765343u   /* 'CSv1' little-endian */
 #define OPENPETE_CPU_SEED_SIZE  528u
 
+/** @brief Load a CPUState seed file into cpu: the GPRs, pc, hi, lo, cop0 and both GTE register files.
+ *
+ * The format is described above (528 bytes, magic 'CSv1'). Bytes past the
+ * 528th are ignored and no other CPUState field is touched. A failure is
+ * logged and leaves cpu unchanged.
+ * @param cpu The CPU state to fill.
+ * @param path The seed file.
+ * @return 0 on success, -1 when the file cannot be opened, is shorter than
+ *         528 bytes, or has a wrong magic. */
 static int load_cpu_seed(CPUState* cpu, const char* path) {
     FILE* fp = fopen(path, "rb");
     if (!fp) {
@@ -893,6 +947,17 @@ static int s_presents_shot_w = 0, s_presents_shot_h = 0;
 static int s_presents_mixed_warned = 0;
 static int s_presents_native_kind = 0;   /* native-offscreen intermediate captures */
 static int s_presents_written = 0;       /* captures written, all kinds */
+/** @brief Log one captured present and warn once when the sequence mixes pixel extents.
+ *
+ * Counts the capture. A capture with a nonpositive extent is not compared;
+ * the first positive extent becomes the sequence's reference and a later
+ * different one logs a single warning naming both.
+ * @param path The written file.
+ * @param kind The capture kind label.
+ * @param present_index The present's index.
+ * @param frame The tick counter.
+ * @param w Image width in pixels.
+ * @param h Image height in pixels. */
 static void openpete_presents_note_shot(const char *path, const char *kind,
                                         int present_index, unsigned frame,
                                         int w, int h)
@@ -1358,6 +1423,13 @@ static unsigned s_inline_rex = 0;
 static unsigned s_inter_shots = 0;
 static unsigned s_inter_shots_bracketed = 0;
 
+/** @brief Read the OPENPETE_EAGER_* tuning variables into s_eager, once.
+ *
+ * OPENPETE_EAGER_POLICY=greedy selects policy 1 (evenly spaced targets),
+ * else policy 0 (every level-th grid slot). OPENPETE_EAGER_LEVEL, when
+ * nonzero, disables the adaptive level ladder, and a positive value also
+ * sets the level. OPENPETE_EAGER_AFFORD pins the per-span scene budget and
+ * OPENPETE_EAGER_LAG_US (microseconds) pins the lag. Later calls do nothing. */
 static void eager_init(void)
 {
     static int inited;
@@ -1402,14 +1474,33 @@ static op_time_t eager_tail_cost(void)
         ? s_eager.cost_ema + 3 * s_eager.cost_dev : 0;
 }
 
-/* Plan the span that starts now: grid instants from `first` (the next slot
- * on the render grid) to `span_end` (the moment the next tick lands, where
- * alpha reaches 1). */
 /* Room for the canonical scene between its plan and its vblank: production
  * (~0.25 ms), compose (0.3 ms on a light scene, 1.2 ms on a 48k-prim vista)
  * and the driver's own lead to the flip (a submit 0.33 ms before a vblank
  * still made it; one 0.13 ms before did not). */
 #define EAGER_PUBLISH_LEAD_NS 2000000
+/** @brief Plan the display instants of the span that starts now and adjust the decimation level.
+ *
+ * Counts the previous span as cut when it left targets unproduced. Moves the
+ * lag (unless pinned) up to the decaying tick-time peak plus 0.3 ms at once
+ * and down only after 30 spans of headroom. Chooses the grid: on the
+ * present thread's locked lattice a whole number of refreshes per render
+ * slot with the first target on a vblank; otherwise, on a vsynced display
+ * slower than the render grid, the refresh period; the period never falls
+ * below the scene production cost, the present thread's cost, or 250 us
+ * before the cost is measured. Extends span_end by the lag and continues
+ * after the previous span's last target. Estimates how many scenes fit
+ * before prod_end (afford), raises the level at once when the slots need it
+ * or the last span was cut, and lowers it after a run of spans with a
+ * quarter margin. Stores every level-th slot (policy 0) or afford evenly
+ * spaced instants (policy 1) in s_eager.target, sets last_target and counts
+ * the span.
+ * @param now Current time on the op_now() clock.
+ * @param first The next render-grid instant not yet passed.
+ * @param period The render grid period in nanoseconds.
+ * @param span_end The instant the next tick lands (alpha reaches 1); at
+ *        least first.
+ * @param prod_end The pacer grid instant production must finish before. */
 static void eager_plan(op_time_t now, op_time_t first, op_time_t period,
                        op_time_t span_end, op_time_t prod_end)
 {
@@ -1696,6 +1787,15 @@ static void eager_on_discontinuity(void) { s_eager.n = s_eager.i = 0; s_eager.la
 static struct { openpete_frame_time_log_t *log; int64_t *start_ns, *period_ns; } s_eager_ftl;
 static void ftl_record_present(openpete_frame_time_log_t* log, int64_t start_ns,
                                int64_t period_ns, uint32_t frame);
+/** @brief Record a present made on the present thread in the frame-time log.
+ *
+ * Does nothing when no log was registered. The log start and period are read
+ * through the pointers registered at startup, and the frame is
+ * openpete_frame at the call. The arguments are unused.
+ * @param ctx Unused.
+ * @param kind Unused.
+ * @param alpha Unused.
+ * @param paired Unused. */
 static void eager_present_cb(void *ctx, int kind, double alpha, int paired)
 {
     (void)ctx; (void)kind; (void)alpha; (void)paired;
@@ -1927,6 +2027,9 @@ static int pace_shed_margin_k(void)
     return k;
 }
 
+/** @brief Record a present of the given kind in the pace log with the last alpha and its pairing flag.
+ *
+ * @param kind The pace kind, OP_PACE_CANONICAL or OP_PACE_INTERMEDIATE. */
 static void pace_record_present(uint8_t kind)
 {
     openpete_pace_record_present(kind, openpete_pace_last_alpha(),
@@ -2042,6 +2145,12 @@ static int s_mute = 0;
  * (the baseline), never replacing it. */
 static int s_skip_mute = 0;
 
+/** @brief Apply the combined mute state (baseline or skip-to-level) to every host audio path.
+ *
+ * With either s_mute or s_skip_mute set it mutes the SPU layer, forces the XA
+ * and music-override gains to 0, and mutes the mod one-shot sources (which
+ * are outside the SPU mixer); otherwise it clears the SPU mute and releases
+ * the forced gains. Host audio only. */
 static void apply_mute_gains(void) {
     extern int  PsyX_SPUAL_SetMute(int on_off);
     extern void PsyX_XA_ForceGain(float linear_gain);
@@ -2119,6 +2228,7 @@ int openpete_get_mute(void) {
 static int s_sfx_volume   = -1;
 static int s_music_volume = -1;
 
+/** @brief Clamp a slider level to 0..10, mapping every negative value to -1 (leave the setting alone). */
 static int clamp_volume(int v) {
     if (v < 0)  return -1;
     if (v > 10) return 10;
@@ -2775,6 +2885,15 @@ static int synth_pads_enabled(void) {
     return s_on;
 }
 
+/** @brief Compute the synthetic pad bits and axes for a VBL index and slot.
+ *
+ * With k = frame * 7 + slot * 1361, bits has bit (k % 16) cleared (buttons
+ * are active low) and the axes are k, k / 3, k / 7 and k / 11, each modulo
+ * 251. A pure function of its inputs.
+ * @param frame The VBL index.
+ * @param slot The pad slot.
+ * @param bits Receives the button bits.
+ * @param axes Receives the four axis bytes. */
 static void synth_pad_for(unsigned frame, int slot,
                           uint16_t* bits, unsigned char axes[4]) {
     /* Distinct per slot and per VBL, and never 0xFFFF-with-centred-sticks,
@@ -2861,6 +2980,11 @@ static openpete_action_t devui_suspend_exempt(void) {
     return openpete_devui_wants_text_input() ? OPK_ACTION_COUNT : OPK_DEVUI;
 }
 
+/** @brief Log the vibration census: PadSetAct registrations, motor commands, per-pad recorders, mod slots.
+ *
+ * Logged unconditionally because the counts are read together. A recorder
+ * line appears only for a virtual pad with a callback or a live recorder,
+ * and a mod line only for a slot that issued commands. */
 static void rumble_census_report(void) {
     /* Vibration census. Emitted unconditionally because the numbers only mean
      * something together, and every one of them is a zero in some legitimate
@@ -6556,6 +6680,7 @@ static int run_host_loop(const openpete_options_t* opts) {
 }
 #endif /* OPENPETE_HAS_PSYCROSS */
 
+/** @brief Log the last openpete_frame value at process exit (atexit handler). */
 static void log_frame_on_exit(void) {
     OPL_INFO_F("exit", "last openpete_frame=%u", openpete_frame);
 }

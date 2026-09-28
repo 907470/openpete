@@ -311,6 +311,7 @@ void op_time_shutdown(void) {
     s_initialized = 0;
 }
 
+/** @brief Run op_time_init on first use, so the clock functions work without an explicit init call. */
 static void ensure_initialized(void) {
     if (!s_initialized) op_time_init();
 }
@@ -374,6 +375,10 @@ op_time_t op_now(void) {
  * Sleep helpers                                                     *
  * ---------------------------------------------------------------- */
 
+/** @brief Issue the CPU's spin-wait hint: YieldProcessor, PAUSE or YIELD, and nothing on other targets.
+ *
+ * Used in the final spin of op_sleep_until, where it lowers the power and
+ * SMT cost of polling the clock. */
 static void cpu_relax(void) {
 #if defined(_WIN32)
     YieldProcessor();
@@ -411,6 +416,13 @@ static void sleep_until_win(op_time_t deadline_ns) {
     }
 }
 #else
+/** @brief Sleep the calling thread until an absolute op_now() time, restarting after signals.
+ *
+ * With CLOCK_MONOTONIC (the clock op_now reads) it makes an absolute
+ * clock_nanosleep and repeats on EINTR. Without it the delta from op_now is
+ * slept with nanosleep, returning at once when the time has passed. Wakes
+ * are not early-checked: op_sleep_until spins the remainder.
+ * @param deadline_ns Wake time on the op_now() clock. */
 static void sleep_until_posix(op_time_t deadline_ns) {
     struct timespec ts;
     ts.tv_sec  = (time_t)(deadline_ns / OP_NS_PER_SEC);
