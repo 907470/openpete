@@ -3369,7 +3369,7 @@ static uint32_t tsc_decode_faces(CPUState* cpu, uint32_t faces, int nf, int face
             F->tb = (int8_t)tb;
             F->tgen = (tb == -1) ? 0 : s_tgen[tb & 0x7F];
             terrain_texmat(cpu, tbl, tb, hiDetail, &F->mat, F->tu, F->tv);
-            /* Both tiledef halves are cached; the walk picks per FRAME by the
+            /* Both tiledef halves are cached; the walk picks per face by the
              * .s distance rule (t0 = key−fogRef+4096; t0<=0 → the +8 half).
              * Animated tiles re-decode when their gen bumps (tsc_refresh_anim). */
             terrain_texmat(cpu, tbl, tb, 1, &F->matN, F->tuN, F->tvN);
@@ -3969,17 +3969,13 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
     uint32_t g[5] = { rd(cpu, s + 0x04), rd(cpu, s + 0x08), rd(cpu, s + 0x0C),
                       rd(cpu, s + 0x10), rd(cpu, s + 0x14) };
     uint32_t h = (((s >> 2) * 2654435761u) >> 14) & (TSC_SLOTS - 1);
-    /* Probe window + LRU eviction. The old 2-way (h, h^1) alternating
-     * eviction thrashed: gnorc_cove freecam at the level's long axis pulls
-     * ~170 sectors into one present, and any 3+ visible sectors sharing a slot
-     * pair evicted each other EVERY present — each miss is a full re-decode +
-     * gapfill classification (ms-scale for big sectors: s148 alone burned
-     * ~5ms/present; 17-19 misses/present at the hot heading = the
-     * direction-dependent perf cliff). The window makes thrash
-     * need TSC_WINDOW+1 hot sectors in one window; LRU (stamped per
-     * terrain_build call) evicts a stale sector, never this present's
-     * working set. Probes are five-word compares — window width is noise
-     * next to one re-decode. */
+    /* Probe window + LRU eviction. A 2-way (h, h^1) alternating eviction
+     * thrashes when 3+ visible sectors share a slot pair: each miss is a full
+     * re-decode + gapfill classification (ms-scale for big sectors), repeated
+     * every present. The window makes thrash need TSC_WINDOW+1 hot sectors in
+     * one window; LRU (stamped per terrain_build call) evicts a stale sector,
+     * never this present's working set. Probes are five-word compares, so the
+     * window width is negligible next to one re-decode. */
     ENV_FLAG_LATCH(s_vh_on, "OPENPETE_TERRAIN_VHASH_CENSUS");
     uint32_t vh = 0;
     tscache_t* reuse = NULL;   /* stale decode to re-fill in place */
@@ -4031,11 +4027,10 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
             /* Never evict a slot the GPU cache validated as owned THIS
              * present: the re-resolve would free the owner's chunks and
              * republish the slot after its face walk was already skipped,
-             * so the owner vanishes for a present (the gnorc_cove
-             * water-border wedge). The incoming sector takes another slot;
-             * only when every candidate is owned (TSC_WINDOW+ owned
-             * sectors hashing into one window) does plain LRU resume, and
-             * the loser then rides tgpu_ensure's contest claim back to
+             * so the owner vanishes for a present. The incoming sector takes
+             * another slot; only when every candidate is owned (TSC_WINDOW+
+             * owned sectors hashing into one window) does plain LRU resume,
+             * and the loser then rides tgpu_ensure's contest claim back to
              * the CPU walk. */
             if (tgpu_slot_hot(idx)) {
                 if (!hot || W->lastUse < hot->lastUse) hot = W;
@@ -7628,31 +7623,16 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
         int nLpV = SC->nLpV, nLpF = SC->nLpF;
         int nHpV = SC->nHpV, nHpF = SC->nHpF;
 
-        /* Tier selection, distance-INDEPENDENT (no pop-in). HP is drawn wherever
-         * a sector HAS HP geometry (the fine layer, all distances). LP is drawn
-         * ONLY where there is no HP (the 0x4000 backdrop hills) OR where the
-         * sector FORCES it (0x8000, whose HP is a sparse near-detail overlay —
-         * stone-hill sector 79 = 3 HP vs 12 LP faces; HP-only there left the
-         * LP↔HP hole). Those LP sets are a small, fixed handful, so the LP that
-         * rides behind HP (3% LP_DEPTH_BIAS) only fills genuine gaps and isn't a
-         * broad overlay.
-         *   NB: drawing LP behind HP for EVERY sector (an earlier attempt to also
-         *   close the artisans distant-water T-junction seam) made the low-poly
-         *   LP poke THROUGH the HP on non-flat sectors at close range — the
-         *   coarse mesh bulges in front of the HP detail and the depth bias can't
-         *   hold it back. So LP stays restricted to the no-HP / force-LP sets;
-         *   the distant-water seam is left for a poke-free fix (stencil hole-fill).
-         * (Flags, confirmed vs the binning pass: 0x4000=no-HP [old noHP],
-         * 0x2000=no-LP, 0x8000=force-LP.) */
-        /* Bounding-centre view-Z through the .s BINNING matrix (g_Camera+0x14 —
-         * NOT the +0x00 projection matrix the vertex walk uses; the two differ
-         * in scale). Input to the faithful tier lists and the fill's distance
-         * gate. lodThr = m_LodDistance>>4 (the same lodDist that drives fog:
-         * ir0 = fogRef−4·m3 crosses 0 exactly at m3 = lodThr). */
-        /* Sector-level verdicts come precomputed from the prepass
-         * (sector_verdicts — ONE computation site shared with the
-         * retained-GPU claim; the .s binning/tier rules are documented
-         * there and at the historical sites below). */
+        /* Tier verdicts (drawHP, drawLP, lpFarOnly, lpGapOnly, fillLP) come from
+         * sector_verdicts, which applies the layout's flag bits (no-HP, no-LP,
+         * force-LP) and, per layout and mode, the draw's distance binning, the
+         * tier-faithful distance tests, and the LP LOD-handoff and gap-fill
+         * substitutions. */
+        /* cbin is the bounding-centre view-Z through the .s BINNING matrix
+         * (g_Camera+0x14, not the +0x00 projection matrix the vertex walk
+         * uses; the two differ in scale). lodThr = m_LodDistance>>4 (the same
+         * lodDist that drives fog: ir0 = fogRef−4·m3 crosses 0 exactly at
+         * m3 = lodThr). */
         const tn_secverd* SV = &G->verd[vi];
         double cbin = SV->cbin;
         int lodThr = fogRefBase >> 2;
@@ -7702,14 +7682,13 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                         (vis && drawHP != inHP) ? " MISMATCH" : "");
             }
         }
-        /* .s HP-list membership (lodThr > cbin − radius): the CLUT-fog ladder
-         * is only ever evaluated by the .s INSIDE this envelope — beyond it
-         * the .s draws LP, so ladder rows past it are unauthored for many
-         * tiles (artisans far water/shore: row+Δ landed on green land
-         * palettes, g1 metric 897→1681). Beyond-envelope HP (native's
-         * no-pop-in extension) keeps the base palette, which og shows is
-         * the closer stand-in for the LP look. The envelope stretches with
-         * --fog-scale (k = 4/s_fogscale; ×1 at stock, bit-identical). */
+        /* .s HP-list membership (lodThr > cbin − radius): the .s evaluates the
+         * CLUT-fog ladder only inside this envelope; beyond it the .s draws
+         * LP, so ladder rows past it are unauthored for many tiles (the row
+         * offset lands on unrelated palettes). Beyond-envelope HP (native's
+         * no-pop-in extension) keeps the base palette, the closer stand-in
+         * for the LP look. The envelope stretches with --fog-scale
+         * (k = 4/s_fogscale; ×1 at stock, bit-identical). */
         int secInLOD = SV->secInLOD;
         /* LP ride-alongs for sectors the bin leaves LP-unlisted:
          * - lpFarOnly (legacy, faithful-bin OFF only): the handoff substitutes
@@ -7726,19 +7705,18 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
         /* LP HOLE-FILL backing: an HP sector that does NOT already
          * draw its LP re-emits it as WORLD_FILL — stencil-gated in core to the
          * pixels no world geometry covered, i.e. the LP↔HP T-junction seams
-         * (the artisans distant-water gaps). Because of the stencil gate it can
-         * never poke through the HP (the failure of the draw-LP-everywhere
-         * attempt); it draws at TRUE LP depth, no tier bias.
+         * (distant-water gaps). Because of the stencil gate it can never poke
+         * through the HP; it draws at TRUE LP depth, no tier bias.
          *
          * DISTANCE GATE — the .s LP-list binning condition (func_800258F0's
          * list pre-pass; 0x80025940 is an instruction inside it):
          * LP is fed only when lodThr < centerZ + radius + 0x100 (the sector's
          * far edge crosses the LOD boundary; lodThr = m_LodDistance>>4, centerZ =
          * the projected bounding-CENTRE view-Z, radius = w1 & 0x1FFF). A NEAR
-         * sector's LP is never drawn by the PSX, and feeding it here broke the
-         * portal apertures: the near arch-hill's coarse LP bulged into the
-         * opening (stencil==0 — nothing marks inside an aperture), painted at
-         * near depth and depth-killed the portal-sky mask (gate tick 9775).
+         * sector's LP is never drawn by the PSX, and feeding it here would let
+         * a near hill's coarse LP bulge into a portal aperture (stencil==0:
+         * nothing marks inside an aperture), painted at near depth and
+         * depth-killing the portal-sky mask.
          * The seams the fill exists for sit exactly AT the LOD boundary, which
          * satisfies this condition by construction. Distance-dependence is
          * confined to sub-pixel seam slivers, so no visible pop-in. NB: reads
@@ -7754,26 +7732,20 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
          * distant-water horizon gaps, also visible through the green
          * cyclorama). The dilated re-emit grows coverage ~a pixel
          * outward but paints only stencil==0 holes — overdraw is impossible,
-         * and the old coverage quantifier's "PSX horizon sits ~1.75px above
-         * native's" top-edge deficit is recovered the same way (the sky never
-         * marks, so growing above the drawn edge is allowed). */
+         * and the PSX horizon's ~1.75px top-edge lead over native's is
+         * recovered the same way (the sky never marks, so growing above the
+         * drawn edge is allowed). */
         /* Under EXTENDED LOD (--lod extended / openpete_no_lod), skip the fill
          * for HP-bearing sectors: their HP never drops (no fog-band tier swap
          * to bridge), so any stencil-0 pixel there is genuine void/sky — and
          * the fill's fully-fogged per-face gate rides the RAW-RAM lodThr, so
          * beyond the real fog band it painted each sector's ENTIRE fogged LP
          * silhouette; where the coarse LP overhangs the HP edge that landed on
-         * sky as fog-coloured "LP terrain" fringes popping in with distance
-         * (haunted_towers top-down pose pair, yaw
-         * -1046 pitch 992: z=61079 clean vs z=63909 fringed). LP-only /
+         * sky as fog-coloured "LP terrain" fringes popping in with distance.
+         * LP-only /
          * force-LP sectors keep the fill in every mode — the far-water raster
          * slivers it exists for are pass-0 LP, not a tier handoff. */
         int fillLP = SV->fillLP;
-        /* (The v9 near-floor fill backstop is retired: its cliff_town
-         * crest-strip motivation measured as a NATIVE HP coverage deficit —
-         * the pure-HP og reference covers those sightlines — and its
-         * rim-sliver false positives were the fringe class the frozen fill
-         * tags exclude by review.) */
 
         /* ---- retained-GPU ownership (terrain sector-mesh cache) ----
          * The prepass claimed/validated this sector's chunks; the GPU renders
@@ -7846,7 +7818,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
         uint32_t faces; int nv, nf, faceStride;
         const tsvert_t* cverts; const tsface_t* cfaces;
         const float* cvF = NULL;   /* sub-tick fractional verts (poly-anim sectors only) */
-        uint32_t lpColBase = 0, nearBase = 0, farBase = 0;   /* §9/§10 colour arrays */
+        uint32_t lpColBase = 0, nearBase = 0, farBase = 0;   /* colour arrays */
         if (passLP) {
             cverts = SC->lpV; cfaces = SC->lpF; nv = nLpV; nf = nLpF;
             faces = SC->lpFaces; faceStride = 8;
@@ -7895,9 +7867,9 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
         }
 
         for (int f = 0; f < nf; f++) {
-            /* Face decode from the sector cache (indices/flags/colour offsets/
-             * texmat all static — see tsc_decode_faces; §7/§8 layout comments
-             * live there now). Per-present work starts at the projection use. */
+            /* Face decode from the sector cache (indices, flags, colour offsets
+             * and texmat are all static; see tsc_decode_faces). Per-present
+             * work starts at the projection use. */
             const tsface_t* F = &cfaces[f];
             int i0 = F->i0, i1 = F->i1, i2 = F->i2, i3 = F->i3;
             int flip = F->flip;
@@ -7917,12 +7889,12 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
             W->emit_env = (F->tgen != 0);            /* env-anim member (rewrite set) */
             /* Portal OT-conformance key: the face's .s OT bucket base — the
              * raw 4-corner view-Z sum ((Σ4 SZ)>>7 in the walk; .s tris sum
-             * the shared i2==i3 corner twice, and so does this), expressed
-             * as the full-world corner MEAN. Ambient per face so every ttri
-             * it emits (direct, near-clipped, or the 2x2 subdivide) carries
-             * the PARENT face's key — the .s verdict is per-face, and a
-             * split tri's own 3-vert mean can land on the other side of the
-             * sky's bucket (the fix4 left-edge blue triangle). */
+             * the shared i2==i3 corner twice, and so does this), in emit_otkey
+             * units (the sum of the four SZ terms, SZ = 4·m3). Ambient per
+             * face so every ttri it emits (direct, near-clipped, or the 2x2
+             * subdivide) carries the PARENT face's key — the .s verdict is
+             * per-face, and a split tri's own 3-vert sum can land on the
+             * other side of the sky's bucket. */
             W->emit_otkey = (float)((sv[i0].m3 + sv[i1].m3 + sv[i2].m3 + sv[i3].m3) * 4.0);
             /* Authored OT-slot depth offset: the .s adds a per-game base
              * plus a multiple of the face's authored bias to its OT index;
@@ -7936,8 +7908,10 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                 ? (uint16_t)((unsigned)game_layout.terrain.lp_base_slots
                              + (unsigned)game_layout.terrain.lp_bias_slots * F->otbias)
                 : (uint16_t)((unsigned)game_layout.terrain.hp_bias_slots * F->otbias);
-            /* EXCEPT any face in the .s's FOREGROUND band (corner-depth sum
-             * < 0x2000).
+            /* A face in the .s's FOREGROUND band (corner-depth sum < 0x2000) is
+             * marked emit_nearband, and its OT-slot offset is dropped unless
+             * the layout keys near/HQ faces through the ordinary insert
+             * (nearband_ot_keys).
              *
              * HP: the classifier (the sum + flag/corner terms — the exact .s
              * test from gamestate) routes those faces to the near/HQ queues,
@@ -7946,27 +7920,25 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
              * bias to offset. Foreground faces contest each other by
              * protected draw order, which raw per-pixel depth approximates;
              * a whole-face world offset instead moves a grazing face's
-             * crossing line across the floor (magic_crafters hub: one 4-slot
-             * bias flipped a ~30k px slab of near ground to the wrong face;
-             * the artisans bridge rail lost its corner poly to the deck
-             * underside). The CLASSIFIER is the right gate, not the .s's
-             * filled queue: a foreground face the .s clip-rejects before
-             * classification (extreme grazing projection — native draws it,
-             * GPU-clipped) never reaches the queue yet must not carry a bias
-             * either — og never gave it an OT key at all.
+             * crossing line across the floor. The CLASSIFIER is the right
+             * gate, not the .s's filled queue: a foreground face the .s
+             * clip-rejects before classification (extreme grazing
+             * projection — native draws it, GPU-clipped) never reaches the
+             * queue yet must not carry a bias either — og never gave it an
+             * OT key at all.
              *
-             * LP: the LP walk has no defer path, so og DOES key foreground
+             * LP: the LP walk has no defer path, so og does key foreground
              * LP (a=31 / force-LP 0x8000 / fill-tag cover — the only LP the
              * admission lets survive this near). But an 8192+-world stored
-             * offset on WALKABLE foreground LP (stone_hill's force-LP
-             * primary surfaces, the fill water planes) breaks the port's
-             * true moby/Spyro-vs-terrain occlusion exactly where it is most
-             * contested. Zero it: true depth already orders the s79-style
-             * base-under-overlay pair (the HP detail physically sits above
-             * its LP base), and exact coplanar ties are the stencil/bias
-             * machinery's job, not a world-scale push's. The flag terms are
-             * HP-record semantics, so LP tests the distance band alone
-             * (word3 = 0 makes the classifier exactly that test). */
+             * offset on walkable foreground LP (force-LP primary surfaces,
+             * the fill water planes) breaks the port's true moby/Spyro-vs-
+             * terrain occlusion exactly where it is most contested. True
+             * depth already orders a base-under-overlay pair (the HP detail
+             * physically sits above its LP base), and exact coplanar ties are
+             * the stencil/bias machinery's job, not a world-scale push's. The
+             * flag terms are HP-record semantics, so LP tests the distance
+             * band alone (word3 = 0 makes the classifier exactly that
+             * test). */
             if (face_is_near_canonical(sv[i0].m3, sv[i1].m3, sv[i2].m3,
                                        (quad ? sv[i3].m3 : sv[i2].m3),
                                        passLP ? 0u : hqW3))
@@ -7981,25 +7953,22 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
              * the same key feeds the OT bucket), t0 = key − fogRef + 4096.
              *   t0 > 0 (in/beyond the fog band): tiledef half +0, CLUT halfword
              *     += (t0>>8)<<6 — cly += Δ, a LADDER of pre-baked progressively
-             *     fogged palette rows. This is the missing half of the PSX fog
+             *     fogged palette rows. This is the palette half of the PSX fog
              *     model (the DPCS vertex blend is the other half); without it
-             *     the fog band rendered with the base (unfogged) palette — the
-             *     flat washed-out far mountains and the parked ~4% brightness.
+             *     the fog band renders with the base (unfogged) palette.
              *   t0 ≤ 0 (near): the +8 tiledef half (bpp8 near tile), Δ = 0.
              * Under --no-lod the .s suppresses both (saturated fogRef at the
              * walk's LOD loads + the no_lod_tier_bump channel) as a side effect
              * of the shared lodDist reads; natively we keep CANONICAL fog by
              * true distance — no-lod means mesh detail, not fog removal.
              * OPENPETE_TERRAIN_CLUTFOG=0 kills (A/B); force-tier debug modes
-             * (OPENPETE_TERRAIN_TEXTBL != 0) keep the old static half.
-             * ABE carve-out RESOLVED: the old
-             * "indirect animated-tiledef branch" reading of block_80027080
-             * was wrong — the 0x3E there is the PRIM CODE byte (ABE GT4),
-             * not a packet length, and the .s reads the SAME tiledef entry
-             * (masked &0x7F) and applies the SAME ladder to negative-texByte
-             * faces. Animated tiles are plain in-place entry rewrites
-             * (func_8002A6FC), now kept live by tsc_refresh_anim; the old
-             * "land palettes on water" artifact was ladder-on-STALE-entry. */
+             * (OPENPETE_TERRAIN_TEXTBL != 0) keep the static half.
+             * The 0x3E at block_80027080 is the PRIM CODE byte (ABE GT4), not
+             * a packet length: the .s reads the SAME tiledef entry (masked
+             * &0x7F) and applies the SAME ladder to negative-texByte faces.
+             * Animated tiles are plain in-place entry rewrites (func_8002A6FC),
+             * kept live by tsc_refresh_anim; a ladder applied to a stale entry
+             * lands on the wrong palettes. */
             tmat matSel;
             int dbg_half = 0, dbg_delta = 0;   /* fardbg: chosen tiledef half + ladder row */
             if (!passLP && s_clutfog && secInLOD && texTblMode == 0 && F->mat.textured) {
@@ -8007,9 +7976,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                  * --fog-scale curve (s_fogscale = 4/k; exact .s at k=1).
                  * ALWAYS four corners: .s HP tris are quads with i2==i3 and
                  * the walk sums the shared vertex TWICE. Summing only 3
-                 * under-shot Δ by ~25% on every fog-band triangle (user-
-                 * caught: confetti on the title's left mountain — .s row
-                 * 138, native row 131 = unauthored palette content). */
+                 * under-shoots Δ by ~25% on every fog-band triangle. */
                 int szsum = (int)(sv[i0].m3 * s_fogscale) + (int)(sv[i1].m3 * s_fogscale)
                           + (int)(sv[i2].m3 * s_fogscale) + (int)(sv[i3].m3 * s_fogscale);
                 int key = (szsum >> 7) << 5;
@@ -8036,13 +8003,10 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                 } else {
                     /* Clamp to the DEEPEST AUTHORED row: the ladder is exactly
                      * 16 rows (Δ 0..15). Within the fog band t0 < 4096 so the
-                     * .s only ever produces Δ ≤ 15 (title frame-1210 material
-                     * census: .s emits base+13/+15, NEVER base+16); faces whose
-                     * quantized key lands at/past saturation (straddling faces
-                     * the handoff keeps — only all-corner-beyond faces drop)
-                     * would compute Δ ≥ 16 and sample the NEIGHBOURING tile's
-                     * palette (foliage confetti on the
-                     * title mountain — 37 faces at (832,0) row 848,144). */
+                     * .s only ever produces Δ ≤ 15; faces whose quantized key
+                     * lands at/past saturation (straddling faces the handoff
+                     * keeps — only all-corner-beyond faces drop) would compute
+                     * Δ ≥ 16 and sample the NEIGHBOURING tile's palette. */
                     int delta = t0k >> 8;
                     if (delta > 15) delta = 15;
                     dbg_delta = delta;
@@ -8064,16 +8028,14 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                                  | (F->fogbias ? OPENPETE_TP_FOG_FOGBIAS : 0);
             }
             /* NCLIP back-face sign (2D cross product == GTE MAC0; flip negates it,
-             * word3 & 0x2). front = nclip > 0. The GTE saturates SX/SY to
-             * [-1024, 1023] BEFORE NCLIP — a far-offscreen corner (glancing
-             * screen-edge face) must be clamped the same way or the cross
-             * product flips sign vs the game's verdict (ice_cavern left-edge
-             * waterfall chunk / artisans corner grass, the HP-cull probe's
-             * only residuals). */
-            /* (Integer-truncating the corners first, mirroring MAC0>>16, was
-             * probed and made the residuals WORSE — the game's UNR divide ≠
-             * float division, so sub-pixel rounding chases noise. Keep floats;
-             * only the saturation window is mirrored.) */
+             * word3 & 0x2). front = nclip >= 0 for HP, > 0 for LP. The GTE
+             * saturates SX/SY to [-1024, 1023] BEFORE NCLIP — a far-offscreen
+             * corner (glancing screen-edge face) must be clamped the same way
+             * or the cross product flips sign vs the game's verdict. */
+            /* The corners are not integer-truncated first (mirroring MAC0>>16):
+             * the game's UNR divide ≠ float division, so sub-pixel rounding does
+             * not track it. Floats are kept; only the saturation window is
+             * mirrored. */
             #define GTE_SAT(v) ((v) < -1024.0f ? -1024.0 : ((v) > 1023.0f ? 1023.0 : (double)(v)))
             /* NCLIP facing, mirroring the .s HP walk exactly (block_80026C30..
              * 80026CD0; tri variant block_8002720C..80027220):
@@ -8091,17 +8053,15 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
              *    (block_80026CA8; the triple's orientation is inverted vs
              *    half 1, hence the opposite base sign).
              * The face draws when either half accepts: a twisted quad near
-             * edge-on is visible through one half only (the ice_cavern
-             * waterfall sheet s101/f15), while a genuine back-to-back wall
-             * pair (the magic_crafters room/waterfall) fails both. */
+             * edge-on is visible through one half only, while a genuine
+             * back-to-back wall pair fails both. */
             /* GTE UNR divide-overflow regime: RTPS saturates the quotient when
              * SZ3 <= H/2 (SZ = 4·m3, so m3 <= H/8) — the .s's own SXY for such
              * a corner is pinned garbage, and the saturated cross sign is
-             * chaotic noise (the toasty floor tri at m3~19: saturation
-             * collapses a 1275px span to 217px and the sign flips with a
-             * 6-yaw-unit pan while the true cross is a stable ~+380k). The .s
-             * verdict is not mirrorable there — use the TRUE facing
-             * (unsaturated float cross), which still culls genuine
+             * chaotic noise (saturation collapses a wide span to a narrow one
+             * and the sign flips with a small pan while the true cross stays
+             * stable). The .s verdict is not mirrorable there — use the TRUE
+             * facing (unsaturated float cross), which still culls genuine
              * back-to-back near wall pairs. */
             int unrOvf = 0, unrEff = 0;
             {   const int ci[4] = { i0, i1, i2, i3 };
@@ -8129,8 +8089,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                  *    half-2 verdict straight to the far-cull/admission gates
                  *    (block_80026448→80026484); the tri path adds bit7<<23 =
                  *    0x40000000 to MAC0, which dwarfs any saturated cross.
-                 * (The old EXPERIMENTAL LP cull mirrored HP's (i0,i1,i3) order
-                 * and sign — the "mixed winding" both-signs regression.) */
+                 * (LP does not use HP's (i0,i1,i3) order and sign.) */
                 double nx2 = NSAT(sv[i2].sx), ny2 = NSAT(sv[i2].sy);
                 nclip = (nx1 - nx0) * (ny2 - ny0) - (nx2 - nx0) * (ny1 - ny0);
                 front = (nclip > 0.0);
@@ -8217,10 +8176,9 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
              * >> 5 and s3 = (m_LodDistance >> 7) - 0x20, an LP face draws iff
              * slot + 8*admit >= s3; a deficit of -31..-1 falls back to
              * per-vertex "draw if ANY corner SZ3 >= (s3 - 8*admit)*8"; deeper
-             * deficits reject. LP is a FAR tier — the .s drops it NEAR (the
-             * blowhard floating-triangle class: coarse alternates the player
-             * is never meant to see up close). Applies in every mode;
-             * fill-tag faces are exempt (og-attested hole cover at any range)
+             * deficits reject. LP is a FAR tier — the .s drops it NEAR (coarse
+             * alternates the player is never meant to see up close). Applies
+             * in every mode; fill-tag faces are exempt (og-attested hole cover at any range)
              * — but only while OPENPETE_TERRAIN_GAPFILL=1, so the tag A/B
              * knob keeps its contract in original mode too.
              * OPENPETE_TERRAIN_LP_ADMIT=0 restores the legacy fog-corner-only
@@ -8285,17 +8243,17 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                 if (passLP && !passFill && lpFarOnly && beyond == 0
                     && !G->lp_admit) {
                     /* Legacy (LP_ADMIT=0) near gate for handoff-riding LP: the
-                     * fog-corner test dropped LP until a corner crossed the fog
+                     * fog-corner test drops LP until a corner crosses the fog
                      * line, but the .s's actual near cull is the authored
                      * admission above — it admits LP well INSIDE the fog band
                      * (the authored LP/HP overlap is wide), so running both
-                     * re-drops mid-band LP the game draws. Original text:
-                     * LP far-only — EXCEPT classified HP-coverage-gap fillers
-                     * (the frozen fill tags), which draw at all distances so a
-                     * sparse near HP mesh doesn't open a hole to the cyclorama
-                     * (the near-LP-gap fix; at the fog line the game itself
-                     * draws these faces the moment one corner crosses, so this
-                     * only stabilizes that verdict inward).
+                     * re-drops mid-band LP the game draws. LP far-only —
+                     * EXCEPT classified HP-coverage-gap fillers (the frozen
+                     * fill tags), which draw at all distances so a sparse near
+                     * HP mesh doesn't open a hole to the cyclorama (at the fog
+                     * line the game itself draws these faces the moment one
+                     * corner crosses, so this only stabilizes that verdict
+                     * inward).
                      * OPENPETE_TERRAIN_LPKEEP=1 keeps ALL such faces (probe);
                      * LPKEEPDBG=<frame> logs each kept face — sector/face id,
                      * world verts, screen bbox — to identify hole culprits. */
@@ -8328,25 +8286,25 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
             /* HOLE-FILL per-face far gate: only FULLY-FOGGED faces
              * (every corner at/past the exact fog saturation, ir0 = fogRef−4·m3
              * ≤ 0 — the proven decode scale, independent of the shipped
-             * s_fogscale). The T-junction seams the fill exists for are at the
-             * fully-fogged horizon; a mid-band face admitted here painted a
+             * s_fogscale), unless OPENPETE_TERRAIN_FILL_FOGSLACK widens it.
+             * The T-junction seams the fill exists for are at the
+             * fully-fogged horizon; a mid-band face admitted here paints a
              * dark 1-2px LP fringe along terrain-vs-sky silhouettes (native's
-             * float raster is a hair tighter than the PSX integer edge — gate
-             * tick 4888, peace-keepers cliffs). */
+             * float raster is a hair tighter than the PSX integer edge). */
             if (passFill) {
                 /* Transparent LP never rides the fill: it blends instead of
                  * covering, so a stencil-gated twin over the face's own raster
                  * (transparents write no stencil) would blend the same pixels
                  * TWICE. The fill exists to patch opaque raster slivers. */
                 if (F->mat.blend) continue;
-                /* Slack 1024 (face admitted when every corner is ≥75% fogged):
-                 * a strict ir0≤0 dropped the LP of sectors STRADDLING the LOD
-                 * boundary, leaving their far rows' raster gaps unfilled (the
-                 * f2730 right-edge green band); 1024 admits those while still
-                 * excluding the mid-band faces that fringed sky silhouettes
-                 * (gate tick 4888). */
+                /* Slack (OPENPETE_TERRAIN_FILL_FOGSLACK, default 0: only
+                 * fully-fogged faces; 1024 admits faces whose every corner is
+                 * ≥75% fogged). A strict ir0≤0 drops the LP of sectors
+                 * STRADDLING the LOD boundary, leaving their far rows' raster
+                 * gaps unfilled; a slack admits those while excluding the
+                 * mid-band faces that fringe sky silhouettes. */
                 static int s_fogslack = -1;
-                if (s_fogslack < 0) { const char* e = getenv("OPENPETE_TERRAIN_FILL_FOGSLACK"); s_fogslack = (e && *e) ? atoi(e) : 0;   /* v4.1: back to v1 STRICT (fully-fogged only) — see the dilation block */ }
+                if (s_fogslack < 0) { const char* e = getenv("OPENPETE_TERRAIN_FILL_FOGSLACK"); s_fogslack = (e && *e) ? atoi(e) : 0;   /* default 0: fully-fogged faces only */ }
                 int nc2 = quad ? 4 : 3, farAll = 1, fogged = 1;
                 const int cf[4] = { i0, i1, i2, i3 };
                 for (int q2 = 0; q2 < nc2 && farAll; q2++) {
@@ -8356,11 +8314,11 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                 }
                 if (!farAll) continue;
                 /* Slack-admitted (NOT fully fogged) faces pass ONLY when screen-
-                 * THIN (bbox height ≤ 3px): the class the slack exists for is
-                 * the 1px straddling water rows (f2680/f2730 dashes). An
-                 * unrestricted slack admitted mid-band LP BODIES whose coarse
+                 * THIN (bbox height ≤ OPENPETE_TERRAIN_FILL_THINPX, default 16px):
+                 * the class the slack exists for is 1px straddling water rows. An
+                 * unrestricted slack admits mid-band LP BODIES whose coarse
                  * silhouette ghosts into stencil-0 sky above terrain tops and
-                 * depth-notches neighbouring geometry (ghosting/spikes at terrain tops, gaps-2 f2770 rocks). */
+                 * depth-notches neighbouring geometry. */
                 if (!fogged) {
                     static float s_thin = -1.0f;
                     if (s_thin < 0.0f) { const char* e2 = getenv("OPENPETE_TERRAIN_FILL_THINPX"); s_thin = (e2 && *e2) ? (float)atof(e2) : 16.0f; }
@@ -8388,7 +8346,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                     if (rs < s_cal_nqsum_min) s_cal_nqsum_min = rs;
                 }
             }
-            /* Near/HQ subdivide dispatch (Route 2): if this face classifies as a
+            /* Near/HQ subdivide dispatch: if this face classifies as a
              * near foreground cell (face_is_near, replicating the .s defer test from
              * gamestate), subdivide it 2×2 and texture from the per-cell HQ record
              * (word2 & 0x7F → m_HQTexturePointer + idx*168; word2 & 0x80 → ABE)
@@ -8460,7 +8418,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
              * the front geometry: back-to-back wall pairs (a room interior
              * and the cliff/waterfall outside it) interpenetrate within a few
              * world units, so emit-all let the far side's back-face win depth
-             * and punch through (magic_crafters waterfall room). The game
+             * and punch through. The game
              * never draws those faces at all — NCLIP culls them — so cull is
              * the canonical visibility rule, not a perf knob.
              * Straddling faces (a corner behind the camera) take
@@ -8506,7 +8464,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
             if (cullable && !cfront) { W->dbg_nclip++; FARDBG_DROP("nclip"); continue; }
             /* Native per-corner colour: RGB888 + DPCS fog (HP) or flat (LP). The
              * colour index is per face corner (word1); the fog viewZ is the
-             * corner's vertex m3. (§9/§10 — retires the NN scaffold.) */
+             * corner's vertex m3. */
             uint32_t rc0, rc1, rc2, rc3;
             if (host_col) {
                 rc0 = terrain_color_h(passLP, h_lp, h_near, h_far, c0, sv[i0].vz, fogRef);
@@ -8553,9 +8511,8 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
              * (GT4) uses them directly via the .s slot reorder (i0→TL, i1→TR,
              * i3→BL, i2→BR). A TRIANGLE (GT3) carries a 2-bit UV ORIENTATION in
              * bits 8-9 of the texture word (w2): the .s GT3 emit (func_800258F0
-             * .L80027534 — `t4 & 0x300`) selects one of 4 corner rotations. Native
-             * applied only orientation 0, leaving rotated tiles 90°/180°-wrong (the
-             * Artisans bridge-junction "flap" — a tile-9 GT3 with orientation 2). */
+             * .L80027534 — `t4 & 0x300`) selects one of 4 corner rotations,
+             * applied below through triRot. */
             lcorner k0 = { rc0, tu[0], tv[0] };                  /* i0 = TL */
             lcorner k1 = { rc1, tu[1], tv[1] };                  /* i1 = TR */
             lcorner k3 = { rc3, tu[2], tv[2] };                  /* i3 = BL */
