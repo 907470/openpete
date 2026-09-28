@@ -26,7 +26,7 @@ static long           s_want;          /* chunk a reader is blocked on, -1 = non
 static size_t         s_seq;           /* next chunk in file order */
 static SDL_Mutex*     s_mx;
 static SDL_Condition* s_cv;            /* readers wait; loader broadcasts */
-static SDL_Condition* s_cv_loader;     /* loader waits for a want / abort */
+static SDL_Condition* s_cv_loader;     /* never waited on: the loader does not block */
 static int            s_abort;
 static int            s_active;
 static SDL_Thread*    s_thr;
@@ -72,7 +72,7 @@ static int read_chunk(size_t c) {
  *
  * A chunk the file now supplies whole becomes resident. Otherwise it stays
  * DC_UNREAD with its missing bytes zeroed, and an error names the image and
- * the chunk, once per chunk.
+ * the chunk, unless the previous report named the same chunk.
  * @param c Chunk index. */
 static void dc_fallback(size_t c) {
     FILE* fp = s_path ? fopen(s_path, "rb") : NULL;

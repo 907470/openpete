@@ -207,15 +207,6 @@ static void anchor_vbl_log(uint32_t hit) {
     }
 }
 
-/* Set while a presentation-only re-render is in flight (e.g. the
- * widescreen GamestateDraw bracket re-invokes func_8001ED5C with widened
- * cull for display). Each generated function body opens with
- * `if (psx_override_dispatch(cpu, ADDR)) return;`, so that re-invocation
- * re-enters this dispatch at the SAME anchor PC and would fire the oracle
- * anchor a second time per game frame — sampling the identical pre-draw
- * RAM and consuming two golden records for one real frame (a measurement
- * artifact, not a gameplay change). Suppress the anchor during the render
- * pass so exactly one record is consumed per game frame. */
 
 /** @brief Write the CPU state at a halt as a 528-byte 'CSv1' dump to the halt CPU dump path.
  *
@@ -329,7 +320,7 @@ static void openpete_halt_dump_and_exit(CPUState* cpu, uint32_t addr) {
  * (default hang-trace.bin in the logs state directory, beside the log
  * file) and guest RAM to `OPENPETE_HANG_RAM` (default hang-ram.bin there),
  * tell the player (openpete_fatal_message) and `_Exit(2)`. Format: u32
- * magic 'HANG2', then
+ * magic 'HNG2', then
  * for each ring a u32 count, a u32 head index, and count*{u32 addr, u32 ra,
  * u32 sp}: the entry ring for the tripping interval, the entry ring as it
  * stood at the previous vbl boundary, and the recent ring.

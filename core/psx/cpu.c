@@ -2,8 +2,10 @@
 //
 // Game-agnostic. Implements the small slice of the PSX bus that the
 // recompiled C touches: 2MB main RAM (KSEG0/KSEG1/KUSEG aliases),
-// 1KB scratchpad, and unaligned LWL/LWR/SWL/SWR helpers. No I/O
-// emulation here — IRQ/CD/GPU/SPU live in PsyCross.
+// 1KB scratchpad, and unaligned LWL/LWR/SWL/SWR helpers. The only I/O
+// modelled here is the CD-ROM controller registers, the BIOS ROM
+// identification bytes and root counter 2's count; IRQ/GPU/SPU live in
+// PsyCross.
 
 #include "openpete_psx.h"
 #include "openpete_cdrom_mmio.h"
@@ -20,8 +22,8 @@
 
 /* g_ram is non-static so per-game decomp builds can use linker
  * `--defsym=<game-symbol>=g_ram+<offset>` to alias native C globals to
- * fixed PSX RAM addresses. Outside that link-time
- * trick, all access still flows through `openpete_psx_get_ram()`. */
+ * fixed PSX RAM addresses. Recompiler-emitted accesses index it directly;
+ * host code reaches it through `openpete_psx_get_ram()`. */
 /* Page-aligned so the sub-tick RAM guard can mprotect it (see
  * openpete_subtick_view.h). Alignment is free here and preserves every
  * --defsym alias, which are all g_ram+offset. */
