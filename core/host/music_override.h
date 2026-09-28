@@ -60,6 +60,8 @@ int  music_override_try_start_path(const char* path, int start_sector);
  *
  * No-op while no override is active. */
 void music_override_stop(void);
+/** @brief Report whether a WAV override is currently playing.
+ * @return Nonzero from a successful start until the next stop. */
 int  music_override_is_active(void);
 
 /** @brief Refill the four-buffer AL ring with the next PCM chunks and keep the source playing.

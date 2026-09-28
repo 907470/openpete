@@ -57,13 +57,17 @@ typedef struct {
 static mod_fvec  s_srcs;      /* sp_source, index-stable within a rescan */
 static mod_fvec  s_entries;   /* sp_entry */
 
+/** @brief Return source slot i, or NULL when i is outside the table. */
 static sp_source* src_at(int i) {
     return (sp_source*)mod_fvec_at(&s_srcs, (size_t)i);
 }
+/** @brief Return entry slot i, or NULL when i is outside the table. */
 static sp_entry* entry_at(int i) {
     return (sp_entry*)mod_fvec_at(&s_entries, (size_t)i);
 }
+/** @brief Return the number of sources in the table. */
 static int src_count(void)   { return (int)mod_fvec_count(&s_srcs); }
+/** @brief Return the number of entries in the table. */
 static int entry_count(void) { return (int)mod_fvec_count(&s_entries); }
 
 /** @brief Append a zeroed source slot, creating the table on first use; return it, or NULL when the allocation fails (logged). */
@@ -354,6 +358,10 @@ static void worker_kick(void)
     SDL_BroadcastCondition(s_cv);
 }
 
+/** @brief Free an entry's decoded PCM and mark it undecoded, so it decodes again on its next match.
+ *
+ * The identity, path and the claimed flag are left as they are.
+ * @param e Entry to release. */
 static void entry_release(sp_entry* e)
 {
     if (e->pcm) SDL_free(e->pcm);
@@ -414,6 +422,13 @@ static void note_override(int si, const sp_entry* e, const char* fname)
     }
 }
 
+/** @brief Add every regular .wav-named file of source si's directory to the entry table.
+ *
+ * Files whose basename op_sfx_name_parse rejects, and non-regular files,
+ * are skipped. Each file is upserted and checked for an earlier source it
+ * overrides; the scan stops when the table cannot grow. A missing
+ * directory adds nothing. The file count is logged when nonzero.
+ * @param si Index of the source in the source table. */
 static void scan_dir(int si)
 {
     DIR* d = opendir(src_at(si)->dir);
@@ -439,6 +454,12 @@ static void scan_dir(int si)
                    added == 1 ? "" : "s", src_at(si)->dir);
 }
 
+/** @brief Append mod asset root r's `sfx` directory as a source and scan it.
+ *
+ * The source is labelled "mod <owner>" and carries the owner id, which
+ * gates its entries on the mod being enabled. Nothing is added when the
+ * root does not exist or the source table cannot grow.
+ * @param r Asset root index from openpete_mods_asset_root. */
 static void add_root_source(int r)
 {
     const char* owner = NULL;
@@ -453,6 +474,15 @@ static void add_root_source(int r)
     scan_dir(si);
 }
 
+/** @brief Rebuild the source table and refresh the entry table from the directories.
+ *
+ * Drops file entries whose file no longer stats and keeps code-registered
+ * entries. Sources are then re-added in a fixed order: the base directory
+ * (the dir override, else OPENPETE_SFXPACK_DIR, else `assets/sfx` beside
+ * the executable), the user data `assets/sfx` unless an override or the
+ * variable named the base, then one per mod asset root. Each is scanned,
+ * which keeps the PCM of unchanged files. Records the root count seen and
+ * the census file count. Caller holds s_mx once the lock exists. */
 static void rescan(void)
 {
     /* Entries whose file vanished are dropped; the rest keep their PCM.
@@ -579,6 +609,8 @@ static const int16_t* s_oneshot_pcm;
 static int            s_oneshot_count;
 static unsigned int   s_oneshot_rate;
 
+/** @brief PsyCross done hook: count a served override whose file outlasts the stock sample.
+ * @param ov The override the callback filled. */
 static void override_done(PsyX_SPUAL_SampleOverride* ov)
 {
     if (ov->rings_out) s_census.rings_out++;

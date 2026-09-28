@@ -20,6 +20,7 @@ uint32_t op_sfx_rate_for_pitch(int pitch)
     return (uint32_t)((44100ull * (unsigned)pitch + 0x800u) / 0x1000u);
 }
 
+/** @brief Return 1 when the first n characters of s are all hex digits, else 0. */
 static int hex_run(const char* s, int n)
 {
     for (int i = 0; i < n; i++)
@@ -92,12 +93,14 @@ int op_sfx_name_format(char* out, size_t cap, const char* label,
     return (n > 0 && (size_t)n < cap) ? 0 : -1;
 }
 
+/** @brief Write v to f as 4 little-endian bytes. */
 static void put_u32(FILE* f, uint32_t v)
 {
     uint8_t b[4] = { (uint8_t)v, (uint8_t)(v >> 8), (uint8_t)(v >> 16),
                      (uint8_t)(v >> 24) };
     fwrite(b, 1, 4, f);
 }
+/** @brief Write v to f as 2 little-endian bytes. */
 static void put_u16(FILE* f, uint16_t v)
 {
     uint8_t b[2] = { (uint8_t)v, (uint8_t)(v >> 8) };

@@ -29,6 +29,10 @@
 extern "C" {
 #endif
 
+/** @brief Return the XXH3-64 identity of a sample's SPU-ADPCM body.
+ * @param adpcm Bytes from the sample start through its first END-flagged block.
+ * @param len Byte count.
+ * @return The 64-bit hash that names the sample in pack file names. */
 uint64_t op_sfx_hash(const void* adpcm, size_t len);
 
 enum {

@@ -19,8 +19,26 @@ typedef struct {
     size_t   buflen;
 } openpete_sha256_ctx;
 
+/** @brief Reset a context to the SHA-256 initial state with no bytes hashed.
+ * @param c Context to initialise. */
 void openpete_sha256_init(openpete_sha256_ctx* c);
+
+/** @brief Append bytes to the running hash.
+ *
+ * Whole 64-byte blocks are compressed as they complete; the remainder is
+ * held in the context buffer. Calls may split the input at any byte.
+ * @param c Context initialised by openpete_sha256_init.
+ * @param data Input bytes.
+ * @param len Byte count. */
 void openpete_sha256_update(openpete_sha256_ctx* c, const void* data, size_t len);
+
+/** @brief Pad the message, compress the last block and write the 32-byte digest.
+ *
+ * The padding is 0x80, zeros to 56 mod 64, then the 64-bit big-endian bit
+ * length. The context is left in its padded state and must be
+ * re-initialised before reuse.
+ * @param c Context holding the hashed message.
+ * @param out Receives the digest, big-endian. */
 void openpete_sha256_final(openpete_sha256_ctx* c, uint8_t out[32]);
 
 /** @brief Write a 32-byte digest as 64 lowercase hex digits and a NUL into out.

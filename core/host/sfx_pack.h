@@ -33,7 +33,12 @@ extern "C" {
  *
  * Without the table lock the pack stays off (logged). */
 void sfx_pack_init(void);
-void sfx_pack_set_dir_override(const char* dir); /* before init */
+/** @brief Name the base sfx directory in place of OPENPETE_SFXPACK_DIR and `assets/sfx`.
+ *
+ * Also suppresses the user data directory source. Read at each rescan,
+ * so it is set before sfx_pack_init.
+ * @param dir Directory path; NULL or "" clears the override. */
+void sfx_pack_set_dir_override(const char* dir);
 
 /** @brief Make the next voice key-on play pcm instead of the sample it keyed.
  *
@@ -50,7 +55,10 @@ void sfx_pack_set_dir_override(const char* dir); /* before init */
  * @param count Sample count.
  * @param rate Playback rate in Hz. */
 void sfx_pack_arm_oneshot(const int16_t* pcm, int count, unsigned int rate);
+/** @brief Cancel a pending one-shot substitution so the next key-on plays as stock. */
 void sfx_pack_disarm_oneshot(void);
+/** @brief Report whether a one-shot substitution is armed and unspent.
+ * @return Nonzero while the arm from sfx_pack_arm_oneshot is pending. */
 int  sfx_pack_oneshot_armed(void);
 /** @brief Register a symbolic replacement from an in-memory SPU-ADPCM body (the mod API's sfx_replace).
  *
@@ -95,6 +103,8 @@ void sfx_pack_invalidate_range(uint32_t addr, uint32_t len);
  * with (its ActiveSound pitch — the def's, or the per-play override).
  * <= 0 = unknown; tagged files then cannot match. */
 typedef int (*sfx_pack_pitch_reader_fn)(int voice);
+/** @brief Install the hook that reports a voice's base pitch to the matcher.
+ * @param fn Hook; NULL leaves the pitch unknown, so tagged files never match. */
 void sfx_pack_set_pitch_reader(sfx_pack_pitch_reader_fn fn);
 
 /* Game hook for the symbolic form: the SoundTable slot names that map
@@ -102,6 +112,8 @@ void sfx_pack_set_pitch_reader(sfx_pack_pitch_reader_fn fn);
  * written (<= max). */
 typedef int (*sfx_pack_name_resolver_fn)(uint32_t addr, const char** names,
                                          int max);
+/** @brief Install the hook that maps a sample address to its SoundTable slot names.
+ * @param fn Hook; NULL leaves no slot names, so symbolic files never match by name. */
 void sfx_pack_set_name_resolver(sfx_pack_name_resolver_fn fn);
 
 typedef struct {

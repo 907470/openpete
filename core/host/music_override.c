@@ -81,6 +81,9 @@ static struct {
 
 static int16_t s_chunk[MO_CHUNK_FRAMES * 2]; /* caller-thread staging */
 
+/** @brief Set the AL source gain to the forced gain when one is set, else the linear gain.
+ *
+ * No-op until the AL source exists. */
 static void apply_gain(void)
 {
     if (!s.al_ready) return;
@@ -134,6 +137,13 @@ static int manifest_lookup(const char* dir, int track, char* rel, size_t cap)
     return hit;
 }
 
+/** @brief Load `<dir>manifest.txt` into the base-root manifest table, one malloc'd path per track.
+ *
+ * Lines parse through manifest_line; an index outside 0..MO_MAX_TRACKS-1
+ * is logged and skipped. A later line or a later call replaces the
+ * earlier path for the same index, and a failed allocation leaves the
+ * slot NULL. A missing file is silent; the entry count is logged.
+ * @param dir Base music root ending in '/'. */
 static void parse_manifest(const char* dir)
 {
     char path[sizeof(s.dir[0]) + 16];
@@ -436,6 +446,12 @@ static double note_start_time(Uint64 t0)
     return (double)d / 1e3;
 }
 
+/** @brief Create the AL source and the four-buffer ring on first use.
+ *
+ * The source is listener-relative at unit pitch, every buffer starts
+ * free, and the current gain is applied.
+ * @return 1 when the ring exists, 0 (logged) when no AL context is
+ *         current, which sends the caller to the XA path. */
 static int ensure_al(void)
 {
     if (s.al_ready) return 1;

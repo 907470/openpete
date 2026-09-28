@@ -19,6 +19,9 @@ static const uint32_t K[64] = {
 
 #define ROR(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
 
+/** @brief Compress one 64-byte big-endian message block into the context state.
+ * @param c Context whose state is updated.
+ * @param p The 64 input bytes. */
 static void block(openpete_sha256_ctx* c, const uint8_t* p) {
     uint32_t w[64];
     for (int i = 0; i < 16; i++)
