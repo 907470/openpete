@@ -360,6 +360,11 @@ typedef struct {
                       * set_key_cells value; all zero = none): each fragment
                       * keys and contests at its own sub-cell's key, through
                       * the present's drain records (drain_records_build) */
+    float kn[12];    /* the face's corners in the fold test's homogeneous screen
+                      * space, TL TR BL BR (sticky set_key_fold value); read
+                      * only when kfold */
+    int kfold;       /* 1 = the triangle's quadrant folds (psx_key_contest.glsl
+                      * op_drain_folded) and kn is set */
     int ter_after;  /* 1 = added at or after the start of this scene's terrain
                      * feed (sticky, set by openpete_native_scene_mark_terrain_feed,
                      * cleared with the scene). Places the feed in emission order
@@ -567,15 +572,35 @@ static int s_cur_host_added;
 void openpete_native_scene_set_host_added(int on) { s_cur_host_added = on ? 1 : 0; }
 static float    s_cur_kfl[3][2];
 static uint32_t s_cur_kc[8];
+static float    s_cur_kn[12];
+static int      s_cur_kfold;
 void openpete_native_scene_set_key_cells(const float fl[6], const uint32_t kc[8])
 {
     if (!fl || !kc) {
         memset(s_cur_kfl, 0, sizeof s_cur_kfl);
         memset(s_cur_kc, 0, sizeof s_cur_kc);
+        s_cur_kfold = 0;
         return;
     }
     memcpy(s_cur_kfl, fl, sizeof s_cur_kfl);
     memcpy(s_cur_kc, kc, sizeof s_cur_kc);
+}
+void openpete_native_scene_set_key_fold(const float kn[12])
+{
+    s_cur_kfold = kn != NULL;
+    if (kn) memcpy(s_cur_kn, kn, sizeof s_cur_kn);
+}
+/** @brief Stamp the sticky drain key state (set_key_cells, set_key_fold) on a scene triangle.
+ *
+ * The fold corners are copied only when the fold data is set; kfold says
+ * whether they are valid.
+ * @param t The triangle being added. */
+static void scene_stamp_key_cells(scene_tri_t* t)
+{
+    memcpy(t->kfl, s_cur_kfl, sizeof s_cur_kfl);
+    memcpy(t->kc, s_cur_kc, sizeof s_cur_kc);
+    t->kfold = s_cur_kfold;
+    if (s_cur_kfold) memcpy(t->kn, s_cur_kn, sizeof s_cur_kn);
 }
 /* Sticky terrain-feed mark (see openpete_native_scene_mark_terrain_feed). */
 static int s_cur_ter_after;
@@ -1392,8 +1417,7 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
         s_scene[s_scene_n].prim = s_cur_prim;            /* sticky (set_prim) */
         s_scene[s_scene_n].stp_sel = s_cur_stp_sel;      /* sticky (set_stp_select) */
         s_scene[s_scene_n].host_added = s_cur_host_added; /* sticky (set_host_added) */
-        memcpy(s_scene[s_scene_n].kfl, s_cur_kfl, sizeof s_cur_kfl);   /* sticky (set_key_cells) */
-        memcpy(s_scene[s_scene_n].kc, s_cur_kc, sizeof s_cur_kc);
+        scene_stamp_key_cells(&s_scene[s_scene_n]);
         s_scene[s_scene_n].ter_after = s_cur_ter_after;   /* sticky (mark_terrain_feed) */
         if (s_cur_tag && tag_tint_on()) {
             /* Coverage instrument: hash the tag to a stable tint and modulate
@@ -6330,8 +6354,9 @@ static void terrain_key_pass_record(int full_extent, int vw, int vh)
  *
  * Words 0 to 7 are the triangle's kc table. Words 8 to 13 hold the 2x3
  * float affine from (u, v) to the drain coordinate (kfl), solved from the
- * three vertices; word 14 is 1 (valid) and word 15 is 0. The layout is the
- * one op_drain_record in psx_key_contest.glsl reads.
+ * three vertices; word 14 is 1 (valid) and word 15 is 0 (drain_records_build
+ * sets it when fold data follows). The layout is the one op_drain_record in
+ * psx_key_contest.glsl reads.
  * @param t Triangle.
  * @param w Receives the 16-word record; words 8 to 15 stay 0 when no map exists.
  * @return 1 when packed with a map, 0 when the triangle is untextured or its
@@ -6360,11 +6385,52 @@ static int drain_record_pack(const scene_tri_t* t, uint32_t w[16])
     return 1;
 }
 
+/** @brief Pack the two extension records of a folded quadrant's triangle: the face's corners, then the affine map from texture coordinate to fold position.
+ *
+ * Words 0 to 11 are the corners t->kn. Words 12 to 20 hold the 3x3 float
+ * affine from (u, v) to the fold position D, the homogeneous screen point
+ * (sx pvz, sy pvz, pvz) of the fragment, solved from the three vertices:
+ * D projects to the vertex's own screen position, so the fold test
+ * (psx_key_contest.glsl op_drain_record_fold) runs on the pixel's ray. The
+ * rest is 0.
+ * @param t Triangle with a texture map (drain_record_pack returned 1).
+ * @param w Receives the 32-word extension. */
+static void drain_record_fold_pack(const scene_tri_t* t, uint32_t w[32])
+{
+    memset(w, 0, 32 * sizeof(uint32_t));
+    memcpy(w, t->kn, 12 * sizeof(float));
+    const double u0 = t->v[0].u, v0 = t->v[0].v;
+    const double du1 = t->v[1].u - u0, dv1 = t->v[1].v - v0;
+    const double du2 = t->v[2].u - u0, dv2 = t->v[2].v - v0;
+    const double det = du1 * dv2 - du2 * dv1;
+    double D[3][3];
+    for (int k = 0; k < 3; k++) {
+        const double z = t->v[k].pvz;
+        D[k][0] = (double)t->v[k].sx * z;
+        D[k][1] = (double)t->v[k].sy * z;
+        D[k][2] = z;
+    }
+    float m[9];
+    for (int c = 0; c < 3; c++) {
+        const double p0 = D[0][c];
+        const double dp1 = D[1][c] - p0, dp2 = D[2][c] - p0;
+        const double a = (dp1 * dv2 - dp2 * dv1) / det;
+        const double b = (du1 * dp2 - du2 * dp1) / det;
+        m[c * 3 + 0] = (float)a;
+        m[c * 3 + 1] = (float)b;
+        m[c * 3 + 2] = (float)(p0 - a * u0 - b * v0);
+    }
+    memcpy(w + 12, m, sizeof m);
+}
+
 /** @brief Build and upload the drain records of a scene, once per scene and frame serial.
  *
  * Runs before any render pass opens. One record is packed per triangle
  * whose kc table is set, up to DRAIN_REC_PER_ROW * DRAIN_REC_ROWS records;
- * a triangle past the capacity keeps its face's least key. s_drain.idx maps
+ * a triangle past the capacity keeps its face's least key. A triangle of a
+ * folded quadrant (kfold) takes the two records after its own for the fold
+ * data (drain_record_fold_pack) and sets word 15 of its own; without room
+ * for them it keeps the plain record. s_drain.idx maps
  * each triangle to its record or -1, and s_drain.untex counts the tables
  * dropped because the triangle had no texture map. The records upload to
  * drain_tex when any were packed and the image exists.
@@ -6385,11 +6451,17 @@ static void drain_records_build(const scene_tri_t* scene, int scene_n)
     for (int t = 0; t < scene_n; t++) {
         s_drain.idx[t] = -1;
         if (!scene[t].kc[0] || s_drain.nrec >= cap) continue;
-        if (!drain_record_pack(&scene[t], &s_drain.words[(size_t)s_drain.nrec * 16])) {
+        uint32_t* w = &s_drain.words[(size_t)s_drain.nrec * 16];
+        if (!drain_record_pack(&scene[t], w)) {
             s_drain.untex++;
             continue;
         }
         s_drain.idx[t] = s_drain.nrec++;
+        if (scene[t].kfold && s_drain.nrec + 2 <= cap) {
+            drain_record_fold_pack(&scene[t], w + 16);
+            w[15] = 1u;   /* fold data follows */
+            s_drain.nrec += 2;
+        }
     }
     if (s_drain.nrec == 0 || !s_nr.drain_tex) return;
     const int rows = (s_drain.nrec + DRAIN_REC_PER_ROW - 1) / DRAIN_REC_PER_ROW;

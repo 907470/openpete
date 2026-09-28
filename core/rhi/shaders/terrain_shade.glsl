@@ -36,6 +36,10 @@ layout(location = 6)      in vec2  vKfl;   /* drain face-local coordinate x vKq 
 layout(location = 7)      in float vKq;
 layout(location = 8) flat in uvec4 vKc0;   /* drain sub-cell key table */
 layout(location = 9) flat in uvec4 vKc1;
+layout(location = 10)     in vec3  vKd;    /* fold position D x vKq */
+layout(location = 11) flat in vec4 vKn0;   /* fold corners (psx_key_contest.glsl) */
+layout(location = 12) flat in vec4 vKn1;
+layout(location = 13) flat in vec4 vKn2;
 
 /* Prefix mirror of the vertex stage's TerrainGlobals block. Only the fields
  * this stage reads are named, but every field before them is declared so
@@ -116,12 +120,13 @@ bool ter_debug_shade(out vec4 c)
 /* The key contest (psx_key_contest.glsl), terrain subset: never ranked,
  * never an actor, true-scope on, so the actor-key arm receives the
  * never-wins sentinel. A face with a drain sub-cell table contests at the
- * key of the sub-cell under the fragment (op_drain_koff_p) and loses a
+ * key of the sub-cell under the fragment (op_drain_koff_pf) and loses a
  * fragment in a sub-cell the drain skips. */
 bool ter_key_loses()
 {
     if (abs(vKoff) <= 0.25) return false;
-    float koff = op_drain_koff_p(vKoff, vKfl / vKq, vKc0, vKc1);
+    float koff = op_drain_koff_pf(vKoff, vKfl / vKq, vKc0, vKc1, vKd / vKq, vKn0.xyz,
+                                  vec3(vKn0.w, vKn1.xy), vec3(vKn1.zw, vKn2.x), vKn2.yzw);
     if (op_drain_discards(koff)) return true;
     return op_key_loses(
         op_key_from_stored(texelFetch(u_hpkey,   ivec2(gl_FragCoord.xy), 0).r),

@@ -1304,6 +1304,17 @@ void openpete_native_scene_set_host_added(int on);
  * @param kc The face's key table. */
 void openpete_native_scene_set_key_cells(const float fl[6], const uint32_t kc[8]);
 
+/** @brief Set the fold data stamped on the world triangles added next.
+ *
+ * Sticky like set_key_cells, which clears it. Used for a triangle whose
+ * 2x2 quadrant folds (its drawn and skipped drain cells overlap on
+ * screen): a fragment whose isoline slot is skipped is keyed by the drain
+ * cell polygons over the face's corners instead (psx_key_contest.glsl
+ * op_drain_fold_delta). NULL clears it.
+ * @param kn The face's corners TL, TR, BL, BR as (OFX z + H x, OFY z + H y,
+ *        z) of their camera-space positions. */
+void openpete_native_scene_set_key_fold(const float kn[12]);
+
 /** @brief Mark the start of the terrain feed in the scene being accumulated.
  *
  * Every triangle added after the call, until the scene resets, is stamped as

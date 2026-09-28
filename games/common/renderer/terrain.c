@@ -393,6 +393,8 @@ typedef struct {
                                                     * drain inserts finer than this triangle
                                                     * (otkey is the least sub-cell key); all
                                                     * zero otherwise (psx_key_contest.glsl) */
+    float kn[12];                                  /* the face's fold-space corners (tn_fold_corner),
+                                                    * set when a quadrant of it folds */
 } ttri;
 static int s_emit_noHP = 0;     /* tier of the sector currently being emitted */
 static int s_emit_guard = 0;    /* current face is .s-DEFERRED (near band) -> portal-guard dup */
@@ -421,7 +423,7 @@ static int s_dbg_spike_tris;   /* triangles the near/HQ subdivide emitted this w
 static int s_trisplit_faces[2], s_trisplit_subs[2], s_trisplit_scull[2], s_trisplit_matdiff[2];
                                    /* tn_wctx trisplit_* sums, [0] tier 4, [1] tier 2 */
 static int s_cells4_faces[2];      /* tn_wctx cells4_faces sums */
-static int s_drain_skip[2];        /* tn_wctx drain_skip sums: [0] skipKeyed, [1] skipMasked */
+static int s_drain_skip[3];        /* tn_wctx drain_skip sums: [0] skipKeyed, [1] skipMasked, [2] foldedQuads */
 static int s_drain_skip_legacy;    /* OPENPETE_TERRAIN_DRAIN_SKIP=0: pack a skipped slot as delta 0 (A/B leg) */
 static int s_fardbg = -1, s_fardbg_done = 0, s_fardbg_active = 0;  /* OPENPETE_TERRAIN_FARDBG */
 static int s_fardbg_budget = -1;   /* OPENPETE_TERRAIN_FARDBG_N: walks still to dump */
@@ -879,6 +881,7 @@ typedef struct {
     int emit_noHP, emit_guard, emit_fill, emit_fptag, emit_sec, emit_face, emit_env;
     float emit_otkey; uint16_t emit_otslots; uint8_t emit_nearband;
     uint8_t emit_keycells; uint32_t emit_kc[8];   /* the face's drain key table */
+    uint8_t emit_fold; float emit_kn[12];         /* its folded quadrants and fold-space corners */
     /* census (summed into the s_dbg_* / s_tex_* globals after the walk) */
     int dbg_faces, dbg_oob, dbg_nclip, dbg_behind, dbg_spike, dbg_clipped;
     int dbg_satback, dbg_satemit;         /* tface_facing's verdict flips vs the projected NCLIP */
@@ -891,8 +894,9 @@ typedef struct {
      * test alone would draw as the 2x2 (routed by tface_cells_pin) */
     int cells4_faces[2];
     /* skipped drain-table slots packed this walk: [0] as delta 0 (keyed at
-     * the face minimum), [1] as the skip sentinel */
-    int drain_skip[2];
+     * the face minimum), [1] as the skip sentinel; [2] folded 2x2 quadrants
+     * of keyed quads (tn_quad_folds) */
+    int drain_skip[3];
     int tex_faces, tex_tris;
     int near_q_agree, near_c_only;
     int walk_sectors;
@@ -973,6 +977,7 @@ static void push_tri(tn_wctx* W, ngte_cvert a, ngte_cvert b, ngte_cvert c, const
     t->nearband = W->emit_nearband;
     if (W->emit_keycells) memcpy(t->kc, W->emit_kc, sizeof t->kc);
     else memset(t->kc, 0, sizeof t->kc);
+    if (W->emit_keycells && W->emit_fold) memcpy(t->kn, W->emit_kn, sizeof t->kn);
     if (m->textured) W->tex_tris++;
 }
 
@@ -2236,6 +2241,98 @@ static void tn_quad_cell_keys(const tn_nearface* nf, ngte_cvert G[5][5], tn_keyc
     }
 }
 
+/** @brief Reports whether a drawn cell of a 2x2 quadrant reaches across an isoline into a skipped cell's slot.
+ *
+ * The quadrant's column and row eye planes are tn_quad_sides' planes over
+ * its corners G[r0][c0], G[r0][c0 + 2], G[r0 + 2][c0], G[r0 + 2][c0 + 2]. A
+ * drawn cell lies inside its own slot's wedge iff all four of its nodes do
+ * (the drain draws a cell as two triangles on its nodes, each the convex
+ * hull of its corners); a node strictly on the far side of an isoline puts
+ * part of the cell in the slot across it, and the quadrant folds when that
+ * slot is a skipped cell: the isoline lookup then names the skipped slot on
+ * pixels a drawn cell covers.
+ * @param G The 5x5 node grid.
+ * @param K The face's cell keys (on[] the drawn cells).
+ * @param qd The quadrant, 0..3 (row-major).
+ * @return 1 when the quadrant folds, else 0. */
+static int tn_quad_folds(ngte_cvert G[5][5], const tn_keycells* K, int qd) {
+    const int r0 = (qd >> 1) * 2, c0 = (qd & 1) * 2;
+    ngte_cvert Q[4] = { G[r0][c0], G[r0][c0 + 2], G[r0 + 2][c0], G[r0 + 2][c0 + 2] };
+    const ngte_cvert ct = cv_mid(Q[0], Q[1]), cb = cv_mid(Q[2], Q[3]);
+    const ngte_cvert rl = cv_mid(Q[0], Q[2]), rr = cv_mid(Q[1], Q[3]);
+    double nc[3], nr[3];
+    tn_eye_normal(&ct, &cb, nc);
+    tn_eye_normal(&rl, &rr, nr);
+    double sc = tn_eye_side(nc, &Q[1]), sr = tn_eye_side(nr, &Q[2]);
+    if (sc == 0.0) sc = 1.0;
+    if (sr == 0.0) sr = 1.0;
+    const double eps = 1e-6;
+    for (int k = 0; k < 4; k++) {
+        const int lr = k >> 1, lc = k & 1;
+        if (!K->on[(r0 + lr) * 4 + c0 + lc]) continue;
+        for (int n = 0; n < 4; n++) {
+            const ngte_cvert* v = &G[r0 + lr + (n >> 1)][c0 + lc + (n & 1)];
+            const double fx = tn_eye_side(nc, v) / sc, fy = tn_eye_side(nr, v) / sr;
+            const int xc = lc ? fx < -eps : fx > eps, xr = lr ? fy < -eps : fy > eps;
+            if ((xc || xr) && !K->on[(r0 + (lr ^ xr)) * 4 + c0 + (lc ^ xc)]) return 1;
+        }
+    }
+    return 0;
+}
+
+/** @brief Returns a keyed quad's folded quadrants as a mask and counts them.
+ *
+ * @param W The walk context; drain_skip[2] counts folded quadrants.
+ * @param G The 5x5 node grid.
+ * @param K The face's cell keys.
+ * @return Bit q set when quadrant q folds (tn_quad_folds). */
+static unsigned tn_quad_fold_mask(tn_wctx* W, ngte_cvert G[5][5], const tn_keycells* K) {
+    unsigned m = 0;
+    for (int qd = 0; qd < 4; qd++) {
+        if (!tn_quad_folds(G, K, qd)) continue;
+        m |= 1u << qd;
+        W->drain_skip[2]++;
+    }
+    return m;
+}
+
+/** @brief Writes a camera-space point in the fold test's homogeneous screen space.
+ *
+ * (OFX z + H x, OFY z + H y, z): a linear map of camera space that sends a
+ * point in front of the eye to its screen position times its depth and
+ * keeps the sign of every triple product (psx_key_contest.glsl, terrain.vert
+ * fold_h).
+ * @param v The point.
+ * @param out Receives the three floats. */
+static void tn_fold_corner(const ngte_cvert* v, float out[3]) {
+    out[0] = (float)(s_ofx * v->m3 + s_H * v->m1);
+    out[1] = (float)(s_ofy * v->m3 + s_H * v->m2);
+    out[2] = (float)v->m3;
+}
+
+/** @brief Marks a keyed quad's folded quadrants in the installed key table and stores its corners for them.
+ *
+ * Sets bit 14 of table entry 2 + q for each folded quadrant q
+ * (psx_key_contest.glsl op_drain_folded), and emit_fold and emit_kn, which
+ * push_tri copies onto the face's triangles.
+ * @param W The walk context; emit_kc already packed (tn_keycells_begin).
+ * @param mask The folded quadrants (tn_quad_fold_mask).
+ * @param TL The top-left corner.
+ * @param TR The top-right corner.
+ * @param BL The bottom-left corner.
+ * @param BR The bottom-right corner. */
+static void tn_keycells_fold(tn_wctx* W, unsigned mask, const ngte_cvert* TL,
+                             const ngte_cvert* TR, const ngte_cvert* BL, const ngte_cvert* BR) {
+    W->emit_fold = (uint8_t)mask;
+    if (!mask) return;
+    for (int q = 0; q < 4; q++)
+        if (mask & (1u << q)) W->emit_kc[(2 + q) >> 1] |= 0x4000u << ((q & 1) * 16);
+    tn_fold_corner(TL, W->emit_kn);
+    tn_fold_corner(TR, W->emit_kn + 3);
+    tn_fold_corner(BL, W->emit_kn + 6);
+    tn_fold_corner(BR, W->emit_kn + 9);
+}
+
 /** @brief Emits one routed near quad face: the 4x4 cells for a tier-4 face, the 2x2 subdivide otherwise.
  *
  * The tier-4 verdict is face_near_tier4 over the corner depths, with
@@ -2264,14 +2361,20 @@ static void terrain_near_emit_face(tn_wctx* W, CPUState* cpu, const tn_nearface*
         /* The drain inserts a tier-4 face as its 16 cells: the 2x2 keys
          * each fragment by the cell containing it. */
         tn_keycells K; K.n = 0;
+        unsigned fold = 0;
         if (!nf->abe && face_drain_tier4(TL.m3, TR.m3, BR.m3, BL.m3, nf->w3)) {
             ngte_cvert G[5][5];
             nc4_grid(G, TL, TR, BL, BR);
             tn_quad_cell_keys(nf, G, &K);
+            if (K.n) fold = tn_quad_fold_mask(W, G, &K);
         }
-        if (K.n) tn_keycells_begin(W, &K, 16, 1u);
+        if (K.n) {
+            tn_keycells_begin(W, &K, 16, 1u);
+            tn_keycells_fold(W, fold, &TL, &TR, &BL, &BR);
+        }
         terrain_near_emit(W, cpu, nf->hqBase, nf->texid, nf->abe, TL, TR, BL, BR);
         W->emit_keycells = 0;
+        W->emit_fold = 0;
         return;
     }
     W->cells4_faces[0]++;
@@ -2635,6 +2738,7 @@ static void trisplit_sum(const tn_wctx* W) {
         s_cells4_faces[k] += W->cells4_faces[k];
         s_drain_skip[k] += W->drain_skip[k];
     }
+    s_drain_skip[2] += W->drain_skip[2];
 }
 
 /** @brief Reports whether a triangle face takes the tier-4 triangle pass.
@@ -9729,13 +9833,17 @@ static int portal_sky_covers(const ttri* t) {
  *
  * A triangle of a face the drain inserts finer than it keys each fragment by
  * its own sub-cell: its face-local coordinates and the face's key table ride
- * the scene triangle, sticky until the feed clears them. A triangle with no
- * table (kc[0] zero) sets nothing.
+ * the scene triangle, sticky until the feed clears them. A triangle of a
+ * folded quadrant (its table's fold bit) also sets the face's fold-space
+ * corners. A triangle with no table (kc[0] zero) sets nothing.
  * @param t The triangle. */
 static void tn_feed_key_cells(const ttri* t) {
     if (!t->kc[0]) return;
     const float fl[6] = { t->fx[0], t->fy[0], t->fx[1], t->fy[1], t->fx[2], t->fy[2] };
     openpete_native_scene_set_key_cells(fl, t->kc);
+    const unsigned q = t->kc[0] >> 30, w = q < 2 ? t->kc[1] : t->kc[2];
+    if (((t->kc[0] >> 14) & 3u) == 1u && ((w >> ((q & 1u) * 16u + 14u)) & 1u))
+        openpete_native_scene_set_key_fold(t->kn);
 }
 
 static void terrain_feed_native(CPUState* cpu) {
@@ -10480,9 +10588,9 @@ static void terrain_compare(void) {
         "  <=1px=%.0f%% <=2px=%.0f%%  onscreen(n=%d med=%.2f)\n",
         s_walk_sectors, s_tv_n, s_tri_n, cn, sum / s_tv_n, med, p90, worst,
         100.0 * within1 / s_tv_n, 100.0 * within2 / s_tv_n, nnon, med_on);
-    fprintf(stderr, "[terrain-faces] walked=%d oob=%d fullyBehind=%d nearClipped=%d nclipCulled=%d satBack=%d satEmit=%d emitted=%d  texturedFaces=%d texTris=%d hqCells=%d skipKeyed=%d skipMasked=%d\n",
+    fprintf(stderr, "[terrain-faces] walked=%d oob=%d fullyBehind=%d nearClipped=%d nclipCulled=%d satBack=%d satEmit=%d emitted=%d  texturedFaces=%d texTris=%d hqCells=%d skipKeyed=%d skipMasked=%d foldedQuads=%d\n",
         s_dbg_faces, s_dbg_oob, s_dbg_behind, s_dbg_clipped, s_dbg_nclip, s_dbg_satback, s_dbg_satemit,
-        s_tri_n, s_tex_faces, s_tex_tris, s_dbg_spike, s_drain_skip[0], s_drain_skip[1]);
+        s_tri_n, s_tex_faces, s_tex_tris, s_dbg_spike, s_drain_skip[0], s_drain_skip[1], s_drain_skip[2]);
     fprintf(stderr, "[terrain-defer] queue(oracle): +0x2000{hdr=%d cell=%d} +0x1E00{hdr=%d cell=%d} total=%d  |  classifier: near=%d (×4 subquads → %d bpp8 prims)  agreeWithQueue=%d classifierOnly=%d queueOnly=%d\n",
         s_defer_hdr2, s_defer_cell2, s_defer_hdr1e, s_defer_cell1e, s_defer_n,
         s_dbg_spike, s_dbg_spike * 4, s_near_q_agree, s_near_c_only, s_defer_n - s_near_q_agree);

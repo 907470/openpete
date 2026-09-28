@@ -19,8 +19,9 @@
  * against the position's own W (flat key => screen-affine, the PSX
  * rasteriser's own sampling; true-depth prop faces get perspective UV,
  * matching the scene draw). A triangle with a drain record writes the key
- * of the drain sub-cell under the fragment (psx_key_contest.glsl) as its
- * depth; every other face writes the rasterised depth back unchanged. */
+ * of the drain sub-cell under the fragment (psx_key_contest.glsl; a folded
+ * quadrant's skipped slot through op_drain_fold_rec) as its depth; every
+ * other face writes the rasterised depth back unchanged. */
 
 layout(set = 0, binding = 0) uniform usampler2D u_vram; /* R16_UINT 1024x512 */
 
@@ -64,6 +65,7 @@ void main()
     uvec4 t0, t1;
     vec2 p;
     float d = op_drain_record(u_drain, vDrain, uv, t0, t1, p) ? op_drain_delta(p, t0, t1, 0.0) : -1.0;
+    if (d >= OP_DRAIN_SKIP) d = op_drain_fold_rec(u_drain, vDrain, uv, t0, t1, 0.0);
     if (d >= OP_DRAIN_SKIP) discard;           /* a sub-cell the drain skips */
     gl_FragDepth = d >= 0.0 ? op_key_store(vKv + d) : gl_FragCoord.z;
     outColor = vec4(0.0);

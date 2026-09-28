@@ -75,7 +75,8 @@ float op_key_bucket(float tkey)
  * of 16 entries of 16 bits in two uvec4 (entry i in word i >> 1, halfword
  * i & 1): bits 0-13 the sub-cell's key above the face's contest key (koff),
  * in entry 0 bits 14-15 the grid (OP_DRAIN_*), in entry 1 bits 14-15 the
- * quadrant of a quad's drawn triangle. p interpolates as the triangle's
+ * quadrant of a quad's drawn triangle, in entry 2 + q bit 14 the fold flag
+ * of quad quadrant q (op_drain_folded). p interpolates as the triangle's
  * texture coordinates do (both are affine over the triangle in camera
  * space): the retained cache carries it per vertex (terrain.vert), the
  * walked scene evaluates it from the fragment's texture coordinate through
@@ -100,6 +101,14 @@ float op_key_bucket(float tkey)
  * position scaled to 1 at the quadrant's far corner: positive on the far
  * column (row) of the quadrant. The cell is table entry 4r + c.
  *
+ * The isolines partition the quadrant's screen image only while no cell
+ * crosses them there. A quadrant seen near edge-on can fold: a drawn cell
+ * reaches across an isoline's eye plane into the slot of a skipped cell,
+ * and the isoline sides name the skipped slot on pixels the drawn cell
+ * covers. Such a quadrant carries the fold flag (terrain.c tn_quad_folds,
+ * the terrain.vert mirror), and a fragment of it whose slot is skipped is
+ * located by the drain's own cell polygons instead (op_drain_fold_delta).
+ *
  * A sub-cell the drain skips (a straddler's back-facing cell, a cell whose
  * key is not positive) carries OP_DRAIN_SKIP: the game draws nothing there,
  * so a fragment of the coarser drawn mesh in that sub-cell is discarded in
@@ -115,7 +124,7 @@ float op_key_bucket(float tkey)
 /* The entry of a sub-cell the drain skips (14-bit field, all ones). */
 #define OP_DRAIN_SKIP  16383.0
 
-/* The key channel op_drain_koff / op_drain_koff_p return for a fragment in
+/* The key channel op_drain_koff / op_drain_koff_pf return for a fragment in
  * a skipped sub-cell; the caller discards it (op_drain_discards). */
 #define OP_DRAIN_DISCARD -1e30
 
@@ -187,14 +196,94 @@ float op_drain_delta(vec2 p, uvec4 t0, uvec4 t1, float margin)
  * can resolve. */
 #define OP_DRAIN_MARGIN 0.0001
 
+/* ---- folded quadrants ------------------------------------------------
+ *
+ * A fold fragment carries its position D and the face's corners TL, TR,
+ * BL, BR in one linear image of camera space, the homogeneous screen
+ * space (OFX z + H x, OFY z + H y, z): D projects to the fragment's pixel
+ * and the corners to the face's corners, and the map preserves the sign
+ * of every triple product, so a ray test there is the camera-space one.
+ * The node (r, c) of the drain's 5x5 grid is the walk's halving-order mean
+ * of the corners (terrain.c nc4_grid); the drain draws cell 4r + c as the
+ * triangles (TL, TR, BL) and (BR, BL, TR) on its nodes. */
+
+/* The drain grid's quarter point k of the segment a-b, by halving. */
+vec3 op_fold_pt(vec3 a, vec3 b, int k)
+{
+    if (k == 0) return a;
+    if (k == 4) return b;
+    precise vec3 m = (a + b) * 0.5;
+    if (k == 2) return m;
+    precise vec3 q = ((k == 1 ? a : b) + m) * 0.5;
+    return q;
+}
+
+/* Node (r, c) of the 5x5 grid over the corners (terrain.c nc4_grid). */
+vec3 op_fold_node(int r, int c, vec3 TL, vec3 TR, vec3 BL, vec3 BR)
+{
+    return op_fold_pt(op_fold_pt(TL, BL, r), op_fold_pt(TR, BR, r), c);
+}
+
+/* Whether ray D passes through triangle (a, b, c) in front of the eye:
+ * D's coordinates over a, b, c (triple-product ratios) are each at least
+ * -margin of their sum, and the sum is positive. */
+bool op_fold_ray_in(vec3 a, vec3 b, vec3 c, vec3 D, float margin)
+{
+    precise float t  = dot(a, cross(b, c));
+    if (t == 0.0) return false;
+    precise float l0 = dot(D, cross(b, c)) / t;
+    precise float l1 = dot(a, cross(D, c)) / t;
+    precise float l2 = dot(a, cross(b, D)) / t;
+    precise float s  = l0 + l1 + l2;
+    float m = margin * s;
+    return s > 0.0 && l0 >= -m && l1 >= -m && l2 >= -m;
+}
+
+/* Whether the fragment's quadrant (a quad table's quadrant bits) folds. */
+bool op_drain_folded(uvec4 t0)
+{
+    if (op_drain_grid(t0) != OP_DRAIN_QUAD) return false;
+    uint q = (t0.x >> 30) & 3u;
+    uint w = q < 2u ? t0.y : t0.z;
+    return ((w >> ((q & 1u) * 16u + 14u)) & 1u) != 0u;
+}
+
+/* The key above the face's contest key of the least drawn cell whose
+ * drain triangles contain ray D (each widened by `margin` of its
+ * coordinate sum, as op_drain_delta's margin), OP_DRAIN_SKIP when none
+ * does. */
+float op_drain_fold_delta(vec3 D, vec3 TL, vec3 TR, vec3 BL, vec3 BR,
+                          uvec4 t0, uvec4 t1, float margin)
+{
+    float d = OP_DRAIN_SKIP;
+    for (int i = 0; i < 16; i++) {
+        float e = op_drain_entry(i, t0, t1);
+        if (e >= OP_DRAIN_SKIP || e >= d) continue;
+        int r = i >> 2, c = i & 3;
+        vec3 tl = op_fold_node(r, c, TL, TR, BL, BR);
+        vec3 tr = op_fold_node(r, c + 1, TL, TR, BL, BR);
+        vec3 bl = op_fold_node(r + 1, c, TL, TR, BL, BR);
+        vec3 br = op_fold_node(r + 1, c + 1, TL, TR, BL, BR);
+        if (op_fold_ray_in(tl, tr, bl, D, margin) || op_fold_ray_in(br, bl, tr, D, margin))
+            d = e;
+    }
+    return d;
+}
+
 /* A contesting fragment's key channel: koff plus its sub-cell's key above
  * the face's contest key, OP_DRAIN_DISCARD in a skipped sub-cell. Only a
  * positive (ordering-table) key moves; a near-band contest-only key
- * (negative) and an unkeyed face (0) keep koff. */
-float op_drain_koff_p(float koff, vec2 p, uvec4 t0, uvec4 t1)
+ * (negative) and an unkeyed face (0) keep koff. The sub-cell is the one at
+ * p (op_drain_delta); where that one is skipped and the quadrant folds, the
+ * least drawn cell containing ray D (op_drain_fold_delta, the fold data D
+ * and the corners). */
+float op_drain_koff_pf(float koff, vec2 p, uvec4 t0, uvec4 t1,
+                       vec3 D, vec3 TL, vec3 TR, vec3 BL, vec3 BR)
 {
     if (koff <= 0.25) return koff;
     float d = op_drain_delta(p, t0, t1, OP_DRAIN_MARGIN);
+    if (d >= OP_DRAIN_SKIP && op_drain_folded(t0))
+        d = op_drain_fold_delta(D, TL, TR, BL, BR, t0, t1, OP_DRAIN_MARGIN);
     return d >= OP_DRAIN_SKIP ? OP_DRAIN_DISCARD : koff + d;
 }
 
@@ -203,9 +292,11 @@ float op_drain_koff_p(float koff, vec2 p, uvec4 t0, uvec4 t1)
  * `index` is four texels of the records image at row index >> 6, columns
  * 4 (index & 63) + 0..3: the table (t0, t1), then the affine map from the
  * triangle's texture coordinate to p, (ax, bx, cx, ay) and (by, cy,
- * valid, 0), p = (ax u + bx v + cx, ay u + by v + cy). A triangle whose
+ * valid, fold), p = (ax u + bx v + cx, ay u + by v + cy). A triangle whose
  * texture coordinates are collinear (an untextured face) has no map and
- * keys at the face minimum. Returns false when the fragment has no record. */
+ * keys at the face minimum. Returns false when the fragment has no record.
+ * A triangle of a folded quadrant (fold 1) is followed by records index + 1
+ * and index + 2 (op_drain_record_fold). */
 bool op_drain_record(usampler2D rec, float tag, vec2 uv,
                      out uvec4 t0, out uvec4 t1, out vec2 p)
 {
@@ -225,14 +316,63 @@ bool op_drain_record(usampler2D rec, float tag, vec2 uv,
     return true;
 }
 
-/* op_drain_koff_p for a walked triangle: its record by the vertex tag,
- * evaluated at texture coordinate uv. */
+/* Texel k (0..7) of the two records after walked record r. */
+uvec4 op_drain_ext(usampler2D rec, int r, int k)
+{
+    int n = r + 1 + (k >> 2);
+    return texelFetch(rec, ivec2((n & 63) * 4 + (k & 3), n >> 6), 0);
+}
+
+/* The fold data of a walked triangle at texture coordinate uv: the face's
+ * homogeneous-screen corners (texels 0-2 of the extension: TL.xyz TR.x,
+ * TR.yz BL.xy, BL.z BR.xyz) and the fragment's position D, the affine map
+ * from uv in texels 3-5 (Dx = e3.x u + e3.y v + e3.z, Dy = e3.w u + e4.x v
+ * + e4.y, Dz = e4.z u + e4.w v + e5.x). Returns false when the record
+ * carries none. */
+bool op_drain_record_fold(usampler2D rec, float tag, vec2 uv, out vec3 D,
+                          out vec3 TL, out vec3 TR, out vec3 BL, out vec3 BR)
+{
+    D = vec3(0.0); TL = vec3(0.0); TR = vec3(0.0); BL = vec3(0.0); BR = vec3(0.0);
+    if (tag > -0.5) return false;
+    int r = int(-tag + 0.5) - 1;
+    if ((texelFetch(rec, ivec2((r & 63) * 4 + 3, r >> 6), 0).w & 1u) == 0u) return false;
+    vec4 e0 = uintBitsToFloat(op_drain_ext(rec, r, 0));
+    vec4 e1 = uintBitsToFloat(op_drain_ext(rec, r, 1));
+    vec4 e2 = uintBitsToFloat(op_drain_ext(rec, r, 2));
+    vec4 e3 = uintBitsToFloat(op_drain_ext(rec, r, 3));
+    vec4 e4 = uintBitsToFloat(op_drain_ext(rec, r, 4));
+    vec4 e5 = uintBitsToFloat(op_drain_ext(rec, r, 5));
+    TL = e0.xyz; TR = vec3(e0.w, e1.xy); BL = vec3(e1.zw, e2.x); BR = e2.yzw;
+    precise float dx = e3.x * uv.x + e3.y * uv.y + e3.z;
+    precise float dy = e3.w * uv.x + e4.x * uv.y + e4.y;
+    precise float dz = e4.z * uv.x + e4.w * uv.y + e5.x;
+    D = vec3(dx, dy, dz);
+    return true;
+}
+
+/* op_drain_fold_delta for a walked triangle whose isoline slot is skipped:
+ * OP_DRAIN_SKIP unless its quadrant folds and its record carries the fold
+ * data. */
+float op_drain_fold_rec(usampler2D rec, float tag, vec2 uv, uvec4 t0, uvec4 t1,
+                        float margin)
+{
+    vec3 D, TL, TR, BL, BR;
+    if (!op_drain_folded(t0) || !op_drain_record_fold(rec, tag, uv, D, TL, TR, BL, BR))
+        return OP_DRAIN_SKIP;
+    return op_drain_fold_delta(D, TL, TR, BL, BR, t0, t1, margin);
+}
+
+/* op_drain_koff_pf for a walked triangle: its record by the vertex tag,
+ * evaluated at texture coordinate uv, the fold data read by
+ * op_drain_fold_rec. */
 float op_drain_koff(float koff, float tag, vec2 uv, usampler2D rec)
 {
     uvec4 t0, t1;
     vec2 p;
     if (koff <= 0.25 || !op_drain_record(rec, tag, uv, t0, t1, p)) return koff;
-    return op_drain_koff_p(koff, p, t0, t1);
+    float d = op_drain_delta(p, t0, t1, OP_DRAIN_MARGIN);
+    if (d >= OP_DRAIN_SKIP) d = op_drain_fold_rec(rec, tag, uv, t0, t1, OP_DRAIN_MARGIN);
+    return d >= OP_DRAIN_SKIP ? OP_DRAIN_DISCARD : koff + d;
 }
 
 /* The key pass's stored value for key view-Z kv (the key images' encoding,

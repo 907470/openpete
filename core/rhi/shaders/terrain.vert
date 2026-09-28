@@ -263,6 +263,10 @@ layout(location = 6)      out vec2  vKfl;   /* drain face-local coordinate x vKq
 layout(location = 7)      out float vKq;    /* vQ: p interpolates as the UV does    */
 layout(location = 8) flat out uvec4 vKc0;   /* drain sub-cell key table            */
 layout(location = 9) flat out uvec4 vKc1;   /*   (psx_key_contest.glsl)            */
+layout(location = 10)     out vec3  vKd;    /* fold position D x vKq                */
+layout(location = 11) flat out vec4 vKn0;   /* fold corners TL.xyz TR.x             */
+layout(location = 12) flat out vec4 vKn1;   /*   TR.yz BL.xy                        */
+layout(location = 13) flat out vec4 vKn2;   /*   BL.z BR.xyz                        */
 layout(location = 5) flat out uint  vHd;    /* HD-fold: entry id (bits 0-15, 0=none)
                                              * | ladder-face 1<<16 | fogbias 1<<17  */
 
@@ -535,10 +539,13 @@ void dtab_pack(inout dtab T, float keys[16], bool on[16], int slot[16], int cnt,
     T.t0.x |= grid << 14;
 }
 
+uint quad_fold_mask(dvec3 G[25], bool on[16]);
+
 /* tn_quad_cell_keys mirror: the keys of the 16 cells the drain inserts a
  * tier-4 quad as, over the grid of corners TL, TR, BL, BR; a cell whose key
  * is 0 carries none, nor, when `cull` (a straddling single-sided face), one
- * facing away over both of its triples (nc4_front). */
+ * facing away over both of its triples (nc4_front). A folded quadrant q
+ * (quad_fold_mask) sets bit 14 of entry 2 + q (tn_keycells_fold). */
 dtab quad_cells_tab(dvec3 TL, dvec3 TR, dvec3 BL, dvec3 BR, bool cull, bool flip)
 {
     dvec3 G[25];
@@ -568,6 +575,11 @@ dtab quad_cells_tab(dvec3 TL, dvec3 TR, dvec3 BL, dvec3 BR, bool cull, bool flip
         T.n++;
     }
     dtab_pack(T, keys, on, slot, 16, 1u);
+    if (T.n > 0) {
+        uint fm = quad_fold_mask(G, on);
+        for (int q = 0; q < 4; q++)
+            if ((fm & (1u << q)) != 0u) dtab_put(T, 2 + q, 0x4000u);
+    }
     return T;
 }
 
@@ -630,6 +642,48 @@ vec2 quad_side_fl(dvec3 Q0, dvec3 Q1, dvec3 Q2, dvec3 Q3, dvec3 V) {
     if (sc == 0.0lf) sc = 1.0lf;
     if (sr == 0.0lf) sr = 1.0lf;
     return vec2(float(eye_side(nc, V) / sc), float(eye_side(nr, V) / sr));
+}
+
+/* terrain.c tn_quad_folds mirror, term by term: bit q set when a drawn cell
+ * of 2x2 quadrant q has a node strictly (1e-6 of the scale) across one of
+ * the quadrant's isoline eye planes into a skipped cell's slot. G is the
+ * 5x5 node grid, on[] the drawn cells. */
+uint quad_fold_mask(dvec3 G[25], bool on[16]) {
+    uint fm = 0u;
+    for (int qd = 0; qd < 4; qd++) {
+        int r0 = (qd >> 1) * 2, c0 = (qd & 1) * 2;
+        dvec3 Q0 = G[r0 * 5 + c0], Q1 = G[r0 * 5 + c0 + 2];
+        dvec3 Q2 = G[(r0 + 2) * 5 + c0], Q3 = G[(r0 + 2) * 5 + c0 + 2];
+        precise dvec3 ct = (Q0 + Q1) * 0.5lf, cb = (Q2 + Q3) * 0.5lf;
+        precise dvec3 rl = (Q0 + Q2) * 0.5lf, rr = (Q1 + Q3) * 0.5lf;
+        dvec3 nc = eye_normal(ct, cb), nr = eye_normal(rl, rr);
+        double sc = eye_side(nc, Q1), sr = eye_side(nr, Q2);
+        if (sc == 0.0lf) sc = 1.0lf;
+        if (sr == 0.0lf) sr = 1.0lf;
+        bool f = false;
+        for (int k = 0; k < 4 && !f; k++) {
+            int lr = k >> 1, lc = k & 1;
+            if (!on[(r0 + lr) * 4 + c0 + lc]) continue;
+            for (int n = 0; n < 4 && !f; n++) {
+                dvec3 v = G[(r0 + lr + (n >> 1)) * 5 + c0 + lc + (n & 1)];
+                double fx = eye_side(nc, v) / sc, fy = eye_side(nr, v) / sr;
+                int xc = (lc != 0 ? fx < -1e-6lf : fx > 1e-6lf) ? 1 : 0;
+                int xr = (lr != 0 ? fy < -1e-6lf : fy > 1e-6lf) ? 1 : 0;
+                if ((xc | xr) != 0 && !on[(r0 + (lr ^ xr)) * 4 + c0 + (lc ^ xc)]) f = true;
+            }
+        }
+        if (f) fm |= 1u << qd;
+    }
+    return fm;
+}
+
+/* A camera-space point in the homogeneous screen space of the fold test
+ * (psx_key_contest.glsl): (OFX z + H x, OFY z + H y, z), terrain.c
+ * tn_fold_corner's terms. */
+vec3 fold_h(dvec3 m) {
+    precise double hx = g.dof_xy.x * m.z + g.dH.x * m.x;
+    precise double hy = g.dof_xy.y * m.z + g.dH.x * m.y;
+    return vec3(float(hx), float(hy), float(m.z));
 }
 
 /* GTE_SAT mirror (double of the FLOAT screen coord, like the CPU's
@@ -751,6 +805,7 @@ void kill_vert() {
     vUV = vec2(0.0); vColor = vec4(0.0); vMat = uvec2(0u);
     vKoff = 0.0; vQ = 1.0;
     vKfl = vec2(0.0); vKq = 1.0; vKc0 = uvec4(0u); vKc1 = uvec4(0u);
+    vKd = vec3(0.0); vKn0 = vec4(0.0); vKn1 = vec4(0.0); vKn2 = vec4(0.0);
 }
 
 /* ---- portal inner-rim cull (portal_rim_classify mirror) --------------------
@@ -1867,15 +1922,23 @@ void main()
     }
     vKoff = koff;
     /* The table rides only a positively keyed textured face: the key pass
-     * rasters nothing else, op_drain_koff_p moves nothing else, and the
+     * rasters nothing else, op_drain_koff_pf moves nothing else, and the
      * walked scene locates the sub-cell through the texture coordinate
      * (psx_key_contest.glsl op_drain_record), which an untextured face
-     * lacks. */
+     * lacks. A folded quadrant's triangle also carries the face's corners
+     * and its position D in the fold test's homogeneous screen space. */
+    vKn0 = vec4(0.0); vKn1 = vec4(0.0); vKn2 = vec4(0.0);
     if (koff > 0.25 && ktab.n > 0 && (mat0 & (1u << 23)) != 0u) {
         vKc0 = ktab.t0; vKc1 = ktab.t1;
         if (hqv && !is4) vKc0.x |= uint(subq) << 30;   /* the drawn quadrant */
+        uint fw = subq < 2 ? vKc0.y : vKc0.z;           /* entry 2 + subq, bit 14 */
+        if (hqv && !is4 && ((fw >> (uint(subq & 1) * 16u + 14u)) & 1u) != 0u) {
+            vec3 cTL = fold_h(m0), cTR = fold_h(m1), cBL = fold_h(m3c), cBR = fold_h(m2);
+            vKn0 = vec4(cTL, cTR.x); vKn1 = vec4(cTR.yz, cBL.xy); vKn2 = vec4(cBL.z, cBR);
+        }
     }
     else                           { vKc0 = uvec4(0u); vKc1 = uvec4(0u); }
+    vec3 kd = vec3(sscr, 1.0) * float(mo.z);
 
     /* ---- KEY pass: rasterise the flat og key as depth (terrain_key.vert
      * mirror) ----
@@ -1894,6 +1957,7 @@ void main()
         vColor = vec4(1.0);
         /* p interpolates as the UV does (psx_key_contest.glsl). */
         vKfl = mfl / wq;
+        vKd  = kd / wq;
         vKq  = 1.0 / wq;
         return;
     }
@@ -1934,5 +1998,6 @@ void main()
     vColor = col * q;
     vQ     = q;
     vKfl = mfl * q;      /* p interpolates as the UV does (psx_key_contest.glsl) */
+    vKd  = kd * q;
     vKq  = q;
 }

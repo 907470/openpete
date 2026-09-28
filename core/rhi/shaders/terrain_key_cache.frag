@@ -10,7 +10,8 @@
  * The material comes from the vMat varying (the vertex stage already ran
  * the near-tile / CLUT-ladder select), not a push constant. A face with a
  * drain sub-cell table writes the key of the sub-cell containing the
- * fragment (psx_key_contest.glsl) as its depth, as psx_key_cutout.frag and
+ * fragment (psx_key_contest.glsl; a folded quadrant's skipped slot through
+ * op_drain_fold_delta) as its depth, as psx_key_cutout.frag and
  * terrain_key.frag do on the walk; every other face writes the rasterised
  * depth back unchanged. */
 
@@ -24,6 +25,10 @@ layout(location = 6)      in vec2  vKfl;   /* face-local coordinate x vKq    */
 layout(location = 7)      in float vKq;
 layout(location = 8) flat in uvec4 vKc0;
 layout(location = 9) flat in uvec4 vKc1;
+layout(location = 10)     in vec3  vKd;    /* fold position D x vKq           */
+layout(location = 11) flat in vec4 vKn0;   /* fold corners TL.xyz TR.x        */
+layout(location = 12) flat in vec4 vKn1;   /*   TR.yz BL.xy                   */
+layout(location = 13) flat in vec4 vKn2;   /*   BL.z BR.xyz                   */
 
 layout(location = 0) out vec4 outColor;
 
@@ -58,6 +63,9 @@ void main()
         gl_FragDepth = gl_FragCoord.z;
     } else {
         float d = op_drain_delta(vKfl / vKq, vKc0, vKc1, 0.0);
+        if (d >= OP_DRAIN_SKIP && op_drain_folded(vKc0))
+            d = op_drain_fold_delta(vKd / vKq, vKn0.xyz, vec3(vKn0.w, vKn1.xy),
+                                    vec3(vKn1.zw, vKn2.x), vKn2.yzw, vKc0, vKc1, 0.0);
         if (d >= OP_DRAIN_SKIP) discard;       /* a sub-cell the drain skips */
         gl_FragDepth = op_key_store(max(vKoff - 0.5, 1.0) + d);
     }
