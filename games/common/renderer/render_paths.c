@@ -313,21 +313,10 @@ int psyq_game_render_path_addr_visible(uint32_t addr) {
     return render_path_addr_visible(addr);
 }
 
-/* ---- polybuf brackets for paths WITHOUT a native feature module ----------
- * cyclorama/spyro/moby/flame record their intervals from their own native
- * modules. The remaining presentation-only paths (terrain/shadow/particles) get a
- * thin bracket hook here so the OT filter can isolate them in PsyCross now, even
- * before they have a native renderer. Each runs the real function exactly once
- * (gameplay writes — sector visibility, m_WasDrawn — happen identically to
- * normal dispatch) and records its polybuf range; presentation is then
- * filtered by selection in psyq_DrawOTag. Only armed when a selection is in
- * effect (else zero overhead). */
-/* All per-path polybuf brackets are now retired here — each path's native
- * feature module records its own RP_* range: terrain (func_8002B9CC) →
- * terrain.c; shadow (func_80059F8C/func_80059A48) → shadow.c;
- * particles (func_800573C8/0x800580F4/0x800584C4) → particle.c;
- * cyclorama/spyro/moby/flame from their own modules. This module is now just
- * the --render-paths parser + the OT-walk filter (above). */
+/* This module holds no polybuf bracket of its own: each path's feature module
+ * records its RP_* range through render_path_record (directly, or through
+ * hook_bracket_run). This module is the --render-paths parser, the OT-walk
+ * filter above and the per-canonical-present commit below. */
 
 static const feature_dispatch_entry_t render_paths_dispatch[] = {
     { 0u, NULL },

@@ -135,8 +135,9 @@ static int s23_kf_read(CPUState* cpu, uint32_t tab, uint32_t sel, uint32_t idx, 
  * Fills the flags word (blend weight << 4, the vertex end count << 16, the
  * streams' form bits, and bit 31 for the body), the two keyframes' cursor
  * triples, and for the body the two seam words, following the layout in the
- * comment above. A missing keyframe B, or a blend byte of 0, leaves stream_b
- * as the caller zeroed it while the flags word keeps the weight.
+ * comment above. A missing keyframe B, or a looked-up blend weight of 0,
+ * leaves stream_b as the caller zeroed it while the flags word keeps the
+ * weight.
  * @param cpu Reads g_Spyro, the Animation table and the blend table.
  * @param part 0 for the body, 1 for the head.
  * @param out Receives the record; the caller zeroes it first.
@@ -380,9 +381,10 @@ static int s23_part_faces(CPUState* cpu, int part, player_faces_t* out) {
  *
  * The vertex stream is the animated moby's, with one difference: the literal
  * two-halfword form's Y field is 11 bits at bits 1-11 here
- * (spyrodraw.s:498-499) where the moby draw reads 12 bits at bits 2-11
- * (mobydraw.s:1076-1078), so a literal vertex decoded the moby way lands at
- * twice its model Y and every delta vertex after it inherits that origin.
+ * (spyrodraw.s:498-499) where the moby draw reads bits 2-11 as a sign-extended
+ * 12-bit value with bits 0-1 cleared (mobydraw.s:1076-1078), so a literal
+ * vertex decoded the moby way lands at twice its model Y and every delta
+ * vertex after it inherits that origin.
  * @param cpu Reads the stream.
  * @param s The stream state; advanced in place.
  * @param first Nonzero on the part's first vertex. */

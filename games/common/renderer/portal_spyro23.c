@@ -29,8 +29,9 @@
 // The picture is authored in the 4:3 frame; under a wider frame it and the
 // pentagon shift together by the frame's centre offset, and a full-screen
 // clip rect follows the window instead (p3_bounds_of). Sub-tick presents
-// replay the captured previews with the rect and edges lerped between the
-// previous and the current tick when the portal set matches.
+// replay the captured previews; a preview that has a partner in the previous
+// tick (same mesh and leaf argument) has its rect, edges, depth and fade terms
+// lerped between the two ticks.
 //
 // Never writes PSX RAM: the real pass and leaf run unchanged, and the feeder
 // only reads afterwards.
