@@ -308,18 +308,23 @@ struct openpete_mod {
 static int   mod_dep_count(const struct openpete_mod* m) {
     return (int)mod_fvec_count(&m->deps);
 }
+/// @brief Return the mod's dependency row at index i, or NULL when i is out of range.
 static mod_dep_t* mod_dep_at(const struct openpete_mod* m, int i) {
     return (mod_dep_t*)mod_fvec_at(&m->deps, (size_t)i);
 }
+/// @brief Count a mod's [[binding]] rows.
 static int   mod_binding_count(const struct openpete_mod* m) {
     return (int)mod_fvec_count(&m->bindings);
 }
+/// @brief Return the mod's binding row at index i, or NULL when i is out of range.
 static mod_binding_t* mod_binding_at(const struct openpete_mod* m, int i) {
     return (mod_binding_t*)mod_fvec_at(&m->bindings, (size_t)i);
 }
+/// @brief Count a mod's config rows.
 static int   mod_cfg_count(const struct openpete_mod* m) {
     return (int)mod_fvec_count(&m->cfg_rows);
 }
+/// @brief Return the mod's config row at index i, or NULL when i is out of range.
 static mod_cfg_row_t* mod_cfg_at(const struct openpete_mod* m, int i) {
     return (mod_cfg_row_t*)mod_fvec_at(&m->cfg_rows, (size_t)i);
 }
@@ -335,9 +340,11 @@ static int   mod_level_count(const struct openpete_mod* m) {
 static mod_level_row_t* mod_level_at(const struct openpete_mod* m, int i) {
     return (mod_level_row_t*)mod_fvec_at(&m->levels, (size_t)i);
 }
+/// @brief Count the enumeration items of a config row.
 static int   mod_cfg_item_count(const mod_cfg_row_t* r) {
     return (int)mod_fvec_count(&r->items);
 }
+/// @brief Return item i of a config row, or the empty string when i is out of range.
 static const char* mod_cfg_item_at(const mod_cfg_row_t* r, int i) {
     const mod_cfg_item_t* it =
         (const mod_cfg_item_t*)mod_fvec_at(&r->items, (size_t)i);
@@ -393,9 +400,11 @@ static void mod_rows_clear(struct openpete_mod* m) {
  * every later load. */
 static mod_cvec s_mods;   /* struct openpete_mod */
 
+/// @brief Return the loaded mod at index i in load order, or NULL when i is out of range.
 static struct openpete_mod* mod_at(int i) {
     return (struct openpete_mod*)mod_cvec_at(&s_mods, (size_t)i);
 }
+/// @brief Count the mods in the live table.
 static int mod_count(void) { return (int)mod_cvec_count(&s_mods); }
 
 /* Rows of the loader's working lists. Each list is a mod_fvec sized by
@@ -404,13 +413,19 @@ static int mod_count(void) { return (int)mod_cvec_count(&s_mods); }
 typedef struct { char id[MOD_ID_MAX]; } mod_id_row_t;
 typedef struct { char k[65]; } mod_key_row_t;
 
+/// @brief Return the id text of row i of an id list, which must be in range.
+///
+/// The list holds mod_id_row_t rows. An out-of-range i dereferences NULL, so
+/// every caller bounds i by the list count first.
 static char* id_row(const mod_fvec* v, int i) {
     return ((mod_id_row_t*)mod_fvec_at(v, (size_t)i))->id;
 }
+/// @brief Return row i of an int list, or 0 when i is out of range.
 static int int_row(const mod_fvec* v, int i) {
     const int* p = (const int*)mod_fvec_at(v, (size_t)i);
     return p ? *p : 0;
 }
+/// @brief Store x in row i of an int list; an out-of-range i is ignored.
 static void int_row_set(mod_fvec* v, int i, int x) {
     int* p = (int*)mod_fvec_at(v, (size_t)i);
     if (p) *p = x;
@@ -425,20 +440,23 @@ static unsigned            s_toggle_epoch; /* defined with the queue below */
  * or the --mods override that replaced it. Set by mods_discover. */
 static const char* s_order_src = "enabled.txt";
 
-/* Read the object's ABI descriptor (openpete_mod_api.h, "ABI
- * descriptor") before anything in it runs. Refused: no descriptor (an
- * object from before the layout freeze — its vtable shape is unknown),
- * a newer api than the engine's, or a larger api struct (calls would
- * index past the engine's vtable), or an api older than the layout
- * freeze (entries before the freeze point moved, so its calls would land
- * on the wrong slots). Older-but-descriptored loads from the freeze on:
- * the struct is append-only from there. The check runs on BOTH the
- * engine-compiled path (always green: the SDK stub rides the compile
- * line) and the prebuilt-object path, which compile-on-load cannot
- * rebuild and which is therefore the path this exists for. */
 /* First api whose struct layout every later api preserves. */
 #define MOD_ABI_LAYOUT_FLOOR 11u
 
+/** @brief Read a loaded object's ABI descriptor and refuse one the engine cannot host.
+ *
+ * Refused: no descriptor (an object from before the layout freeze), an api
+ * older than MOD_ABI_LAYOUT_FLOOR (entries before it moved, so its calls
+ * would land on the wrong slots), a newer api than the engine's, and a
+ * larger api struct (calls would index past the engine's table). Older
+ * descriptored objects load, since the struct is append-only from the
+ * floor. It runs on the engine-compiled path, which the SDK stub always
+ * satisfies, and on the prebuilt-object path, which compile-on-load cannot
+ * rebuild and which is the path it exists for. Each refusal logs an error.
+ * @param dl The dlopen handle.
+ * @param id Mod id for the log lines.
+ * @param path Object path for the log lines.
+ * @return 0 when loadable, -1 when refused. */
 static int mod_check_abi(void* dl, const char* id, const char* path) {
     const openpete_mod_abi_t* d =
         (const openpete_mod_abi_t*)mod_dlsym(dl, "openpete_mod_abi");
@@ -663,6 +681,17 @@ static void warn_render_bypassed(openpete_mod_t* self, uint32_t addr) {
                "visuals, or run --renderer psycross to see this path.", rn, addr);
 }
 
+/** @brief Register a mod's override at a raw guest address on the chain.
+ *
+ * Refused inside a present hook. A first success also warns once per mod
+ * that raw addresses are unstable across engine and decomp updates, and
+ * warns when the address is a PSX render function the native renderer does
+ * not rasterize.
+ * @param self The calling mod; NULL returns -1.
+ * @param addr Guest function address; 0 fails in the chain.
+ * @param fn The override; NULL fails in the chain.
+ * @return 0, or -1 for a NULL self, a present-hook call or a chain
+ *         failure. */
 static int api_override_addr(openpete_mod_t* self, uint32_t addr,
                              openpete_mod_override_fn fn) {
     if (!self) return -1;
@@ -685,6 +714,17 @@ static int api_override_addr(openpete_mod_t* self, uint32_t addr,
     return rc;
 }
 
+/** @brief Register a mod's override on a function named in the SDK symbol table.
+ *
+ * Refused inside a present hook. A legacy alias resolves to its address
+ * with a warning naming the stable spelling; a name absent from the table
+ * is an error. Warns when the target is a PSX render function the native
+ * renderer does not rasterize.
+ * @param self The calling mod; NULL returns -1.
+ * @param name Symbol name; NULL is treated as absent.
+ * @param fn The override.
+ * @return 0, or -1 for a NULL self, a present-hook call, an unknown name
+ *         or a chain failure. */
 static int api_override_name(openpete_mod_t* self, const char* name,
                              openpete_mod_override_fn fn) {
     if (!self) return -1;
@@ -713,6 +753,13 @@ static int api_override_name(openpete_mod_t* self, const char* name,
     return rc;
 }
 
+/** @brief Format a printf-style message and log it under the mod's tag.
+ *
+ * The text is formatted into a 512-byte buffer and truncated to fit. A
+ * level outside OPL_TRACE..OPL_ERROR logs as OPL_INFO, a NULL fmt logs an
+ * empty message and a NULL self logs under the tag "mod:?".
+ * @param self The calling mod, or NULL.
+ * @param level An OPL_* level. */
 static void api_log(openpete_mod_t* self, int level, const char* fmt, ...) {
     char msg[512];
     va_list ap;
@@ -796,11 +843,23 @@ static uint32_t api_guest_addr(const void* host) {
 
 void call_by_address(CPUState* cpu, uint32_t addr); /* psx_runtime.h */
 
+/** @brief Run the guest function at an address on the given CPU state.
+ *
+ * Refused inside a present hook, where it returns without running.
+ * @param cpu The guest CPU state the call runs on.
+ * @param addr Guest function address. */
 static void api_call_addr(CPUState* cpu, uint32_t addr) {
     if (purity_violation("call_addr")) return;
     call_by_address(cpu, addr);
 }
 
+/** @brief Register the mod's per-present hook.
+ *
+ * Refused inside a present hook.
+ * @param self The calling mod; NULL returns -1.
+ * @param fn The hook.
+ * @return 0, or -1 for a NULL self, a present-hook call or a registry
+ *         failure. */
 static int api_register_present_hook(openpete_mod_t* self,
                                      openpete_mod_present_fn fn) {
     if (!self) return -1;
@@ -820,6 +879,12 @@ static int api_register_present_hook(openpete_mod_t* self,
  * by openpete_mods_tick_boundary. */
 static unsigned s_current_tick;
 
+/** @brief Append one printf-style status line to the mod's Mods-panel section.
+ *
+ * The line list resets on the first call of each tick, holds 24 lines of
+ * 120 bytes, and truncates a longer line; lines past the 24th are dropped
+ * and status_trunc is set. A NULL self or fmt does nothing.
+ * @param self The calling mod. */
 static void api_ui_status(openpete_mod_t* self, const char* fmt, ...) {
     if (!self || !fmt) return;
     struct openpete_mod* m = self;
@@ -862,6 +927,12 @@ static void api_notify(openpete_mod_t* self, const char* key,
                         timeout_ms, "%s", text);
 }
 
+/** @brief Set the mod's callback for live enable and disable notifications.
+ *
+ * Replaces any earlier callback; refused inside a present hook.
+ * @param self The calling mod; NULL returns -1.
+ * @param fn The callback, or NULL to clear it.
+ * @return 0, or -1 for a NULL self or a present-hook call. */
 static int api_register_toggle_hook(openpete_mod_t* self,
                                     openpete_mod_toggle_fn fn) {
     if (!self) return -1;
@@ -909,6 +980,15 @@ static void mods_capture_disc_path(const openpete_options_t* opts) {
     s_disc_bin_state = 0;
 }
 
+/** @brief Return the booted disc's path, or its sector image when asked.
+ *
+ * A cue sheet resolves to its data image on the first request; the answer,
+ * including failure, is cached.
+ * @param self The calling mod; NULL returns NULL.
+ * @param want_bin Zero for the path the engine opened, nonzero for the
+ *        sector image behind it.
+ * @return A string owned by the loader, or NULL when no disc path was
+ *         recorded or the image cannot be resolved. */
 static const char* api_disc_path(openpete_mod_t* self, int want_bin) {
     if (!self || !s_disc_path[0]) return NULL;
     if (!want_bin) return s_disc_path;
@@ -919,6 +999,13 @@ static const char* api_disc_path(openpete_mod_t* self, int want_bin) {
     return s_disc_bin_state > 0 ? s_disc_bin : NULL;
 }
 
+/** @brief Report whether the host key with the given SDL name is held.
+ *
+ * Reads the host input snapshot rather than SDL's live keyboard array, since
+ * mods run on the game fiber, which need not be the thread that pumps events.
+ * No API table entry and no other caller reaches it.
+ * @param key_name SDL scancode name; NULL or unknown reads as not held.
+ * @return 1 when held, else 0. */
 static int api_host_key_down(const char* key_name) {
     if (!key_name) return 0;
     SDL_Scancode sc = SDL_GetScancodeFromName(key_name);
@@ -1420,6 +1507,11 @@ typedef struct {
 #define CFG_SCHED_INIT 8
 static mod_fvec s_cfg_sched;   /* cfg_apply_sched_t, parsed once at boot */
 
+/** @brief Parse OPENPETE_MODS_CFG_APPLY into the config-apply schedule.
+ *
+ * The variable holds comma-separated `tick:id:key=int` entries; a token
+ * that does not scan, or that cannot be stored, is logged and skipped.
+ * Runs once at init. */
 static void cfg_apply_schedule_parse(void) {
     char* buf = env_dup("OPENPETE_MODS_CFG_APPLY");
     if (!buf) return;
@@ -1451,6 +1543,12 @@ static void cfg_apply_schedule_parse(void) {
                    n_cfg, n_cfg == 1 ? "y" : "ies");
 }
 
+/** @brief Commit every scheduled integer config edit due at a tick.
+ *
+ * Each due entry names a mod by id and goes through openpete_mods_cfg_apply
+ * with apply set, exactly as the Mods panel's Apply does; an unknown id is
+ * logged and skipped.
+ * @param canonical_tick The tick now starting. */
 static void cfg_apply_schedule_run(unsigned canonical_tick) {
     for (size_t i = 0; i < mod_fvec_count(&s_cfg_sched); i++) {
         cfg_apply_sched_t* t = (cfg_apply_sched_t*)mod_fvec_at(&s_cfg_sched, i);
@@ -1752,6 +1850,14 @@ static int api_mouse_read(openpete_mod_t* self, openpete_mod_mouse_t* out) {
     return 0;
 }
 
+/** @brief Request or release the host mouse capture on the mod's behalf.
+ *
+ * The request is keyed to the mod's load index, so it does not disturb the
+ * camera, the harness or another mod, and mod_strip_registrations releases
+ * it.
+ * @param self The calling mod; NULL returns -1.
+ * @param on Nonzero to request capture, zero to release.
+ * @return 0, or -1 for a NULL self. */
 static int api_mouse_capture(openpete_mod_t* self, int on) {
     if (!self) return -1;
     openpete_host_mouse_request_capture(
@@ -1824,6 +1930,19 @@ static int api_pad_read(openpete_mod_t* self, uint32_t slot,
     return 0;
 }
 
+/** @brief Drive the rumble motors of pad slot 1 to 3 for the mod.
+ *
+ * Slot 0 is the game's own actuator table and is refused, with an error
+ * logged once; a slot at or above OPENPETE_MOD_PAD_SLOTS is refused with an
+ * error each call. Inside a present hook it is refused; during speculative
+ * or replayed ticks it is accepted and does nothing. The slot is recorded so
+ * mod_strip_registrations stops its motors.
+ * @param self The calling mod; NULL returns -1.
+ * @param slot Pad slot.
+ * @param small_byte Small motor strength; only the low 8 bits are used.
+ * @param large_byte Large motor strength; only the low 8 bits are used.
+ * @return 0, or -1 for a NULL self, a refused slot or a present-hook
+ *         call. */
 static int api_pad_rumble(openpete_mod_t* self, uint32_t slot,
                           uint32_t small_byte, uint32_t large_byte) {
     if (!self) return -1;
@@ -1947,6 +2066,14 @@ static int api_read_level_data(openpete_mod_t* self, int level_id,
     return openpete_mods_read_level_data(level_id, buf, cap);
 }
 
+/** @brief Set the host's texture-pack fog re-grade.
+ *
+ * Forwards to texture_pack_fog_shift_set; NULL scale or offset restores the
+ * stock fog ladder. The setting is global to the host, not per mod.
+ * @param self Unused.
+ * @param scale_rgb Per-channel multiplier of the stock colour.
+ * @param offset_rgb Per-channel offset in 0..255 units.
+ * @return 0. */
 static int api_texpack_fog_shift(openpete_mod_t* self, const float scale_rgb[3],
                                  const float offset_rgb[3]) {
     (void)self;
@@ -1968,11 +2095,32 @@ static int api_material_register(openpete_mod_t* self,
     return openpete_mods_material_register(self, sel, -1, shader, NULL);
 }
 
+/** @brief Copy the ids of the moby classes loaded for the current level.
+ *
+ * Forwards to openpete_mods_moby_classes, which reports the set the last
+ * tick-boundary census found and keeps the previous answer while a level is
+ * loading.
+ * @param self Unused.
+ * @param out Receives up to cap ids; NULL, or a cap of 0 or less, copies
+ *        nothing.
+ * @param cap Capacity of out in entries.
+ * @return The number of ids copied, or the full class count when nothing
+ *         is copied. */
 static int api_moby_classes(openpete_mod_t* self, uint16_t* out, int cap) {
     (void)self;   /* the loaded-class set is a property of the level */
     return openpete_mods_moby_classes(out, cap);
 }
 
+/** @brief Register a fragment material for a mod with a per-instance refine callback.
+ *
+ * Like api_material_register, with the mod's refine callback attached as the
+ * material's per-instance hook.
+ * @param self The calling mod.
+ * @param sel Face selector; NULL returns -1.
+ * @param shader Fragment shader handle.
+ * @param refine Per-instance callback, or NULL.
+ * @return The material handle, or -1 for a NULL selector or a failed
+ *         registration. */
 static int api_material_register_refine(openpete_mod_t* self,
                                         const openpete_mod_material_selector_t* sel,
                                         int shader,
@@ -2898,6 +3046,17 @@ static const openpete_sha256_ctx* sdk_prefix(const char* sdk_dir) {
     return &s_sdk_prefix;
 }
 
+/** @brief Hash a mod's sources and the SDK headers into the hex build key of its compiled object.
+ *
+ * The key covers every source file listed by mod_list_srcs plus the SDK
+ * prefix hash of sdk_dir, so a source or SDK header change alters it and
+ * a config-only change does not. The result is compared with the stamp
+ * beside the cached object to decide whether to recompile. An unreadable
+ * source is skipped by the hash.
+ * @param mod_dir Mod directory holding src/.
+ * @param sdk_dir SDK directory whose headers enter the prefix hash.
+ * @param key_out Receives 64 hex digits and a NUL; untouched on failure.
+ * @return 0, or -1 when the mod has no source files. */
 static int mod_compute_key(const char* mod_dir, const char* sdk_dir,
                            char key_out[65]) {
     mod_fvec srcs;
@@ -3844,6 +4003,7 @@ static int mods_scan(const char* mods_dir, mod_fvec* ids) {
     return (int)mod_fvec_count(ids);
 }
 
+/// @brief Compare two mod_id_row_t rows by id text, the qsort order for id lists.
 static int cmp_id_row(const void* a, const void* b) {
     return strcmp((const char*)a, (const char*)b);
 }
