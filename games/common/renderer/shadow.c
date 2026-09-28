@@ -48,6 +48,7 @@
 
 extern unsigned openpete_frame;
 
+/* shadow_s16 and shadow_rd_s16 are documented in shadow.h. */
 int shadow_s16(int v) { return (int)(int16_t)(uint32_t)v; }
 int shadow_rd_s16(CPUState* cpu, uint32_t addr) {
     uint32_t w = cpu->read_word(addr & ~3u);
@@ -59,6 +60,7 @@ int shadow_rd_s16(CPUState* cpu, uint32_t addr) {
 static shadow_prim s_gte[MAX_PRIMS]; static int s_gte_n;
 static uint32_t s_code_hist[256];
 
+/* shadow_prim_count and shadow_prim_at are documented in shadow.h. */
 int                shadow_prim_count(void) { return s_gte_n; }
 const shadow_prim* shadow_prim_at(int i)   { return (i >= 0 && i < s_gte_n) ? &s_gte[i] : NULL; }
 
@@ -130,6 +132,14 @@ static uint32_t s_list_base;
 static struct { uint32_t moby; uint32_t size; } s_list[SHADOW_LIST_MAX];
 static int s_list_n;
 
+/** @brief Latches the drawn-moby list base and copies the list records.
+ *
+ * The base is the GTE data register game_layout.shadow.list_reg plus the list
+ * offset, or the layout's fixed address. A register index outside 0..31 empties
+ * the list. Copies up to SHADOW_LIST_MAX 8-byte records from the base up to the
+ * end pointer at descriptor + 0x08; without a descriptor or base the copy is
+ * empty.
+ * @param cpu The guest CPU state. */
 static void shadow_latch_list_base(CPUState* cpu) {
     if (game_layout.shadow.list_source == SHADOW_LIST_GTE_DATA) {
         int r = game_layout.shadow.list_reg;
@@ -340,6 +350,10 @@ void shadow_push_decal_params(CPUState* cpu, const ngte_view* v, const int C[3][
     if (out) *out = *p;
 }
 
+/** @brief Rounds a view-Z to the nearest integer clamped to 0..0xFFFF.
+ *
+ * @param sz The view-Z.
+ * @return The clamped value. */
 static uint32_t shadow_sz16(float sz) {
     long z = lrintf(sz);
     return z < 0 ? 0u : (z > 0xFFFF ? 0xFFFFu : (uint32_t)z);
@@ -356,15 +370,22 @@ float shadow_slot_koff(int slot) {
     return slot < 0 ? 0.0f : (float)slot * 128.0f + 0.5f;
 }
 
-/* The ordering-table slot of one moby shadow triangle (anchor, p1, p2): the
- * quarter-world key >> 7 less the moby's signed depth byte less the game's
- * constant. -1 (not keyed) on a game whose layout does not mirror it. A
- * mirrored slot below zero is returned as MOBY_SHADOW_SKIP: the game does not
- * insert that triangle (the bltz after the subtraction, Spyro 1 r_shadows.s
- * 0x8005A414, Spyro 2 mobyfunc.s 0x80049E7C, Spyro 3 mobyfunc.s 0x8002E250),
- * so the feed does not draw it; the build keeps it, where the GTE A/B
- * compares four triangles per moby. */
 #define MOBY_SHADOW_SKIP (-2)
+/** @brief The ordering-table slot of one moby shadow triangle (anchor, p1, p2).
+ *
+ * The slot is the quarter-world key >> 7 less the moby's signed depth byte
+ * less the game's constant. Returns -1 (not keyed) on a game whose layout
+ * does not mirror it (moby_ot_bias 0). A mirrored slot below zero is returned
+ * as MOBY_SHADOW_SKIP: the game does not insert that triangle (the bltz after
+ * the subtraction, Spyro 1 r_shadows.s 0x8005A414, Spyro 2 mobyfunc.s
+ * 0x80049E7C, Spyro 3 mobyfunc.s 0x8002E250), so the feed does not draw it;
+ * the build keeps it, where the GTE A/B compares four triangles per moby.
+ * @param cpu The guest CPU state.
+ * @param mob The moby's address.
+ * @param anchor The projected ground anchor.
+ * @param p1 The fan triangle's second vertex.
+ * @param p2 The fan triangle's third vertex.
+ * @return The slot, -1, or MOBY_SHADOW_SKIP. */
 static int moby_shadow_slot(CPUState* cpu, uint32_t mob, const shadow_pt* anchor,
                             const shadow_pt* p1, const shadow_pt* p2) {
     const uint32_t off = game_layout.shadow.moby_ot_bias;
@@ -453,10 +474,15 @@ static int shadow_interp_on(void) {
     return v;
 }
 
-/* The world pose one drawn-moby list entry projects from: the moby's position
- * in world units and the low halfword of its packed ground word, the ground
- * height in quarter-world units (mobyfunc.s:930-933 reads all three straight
- * out of the Moby, not out of any render record).
+/* The world pose of one drawn-moby list entry; see shadow_entry_world. */
+typedef struct { double px, py, gnd; uint32_t sd; } shadow_entry_pose;
+
+/** @brief Reads the world pose one drawn-moby list entry projects from.
+ *
+ * The pose is the moby's position in world units and the low halfword of its
+ * packed ground word, the ground height in quarter-world units
+ * (mobyfunc.s:930-933 reads all three straight out of the Moby, not out of any
+ * render record).
  *
  * Those live reads are the state the newest tick left, so a present under an
  * interpolated camera would place a moving moby's shadow one whole tick ahead
@@ -473,10 +499,14 @@ static int shadow_interp_on(void) {
  * in the list record rather than in the Moby, and no per-tick copy of the list
  * exists to pair them against.
  *
- * Returns 0 when the ground halfword is zero, the game's own verdict that this
- * moby casts no shadow. */
-typedef struct { double px, py, gnd; uint32_t sd; } shadow_entry_pose;
-
+ * @param cpu The guest CPU state.
+ * @param v The projection view; supplies the camera-interpolation flag.
+ * @param mob The moby's address.
+ * @param off_pos The position's offset in the Moby.
+ * @param off_gnd The packed ground word's offset in the Moby.
+ * @param e Receives the ground word, the position and the ground height.
+ * @return 0 when the ground halfword is zero, the game's own verdict that this
+ *         moby casts no shadow, else 1. */
 static int shadow_entry_world(CPUState* cpu, const ngte_view* v, uint32_t mob,
                               uint32_t off_pos, uint32_t off_gnd,
                               shadow_entry_pose* e) {
@@ -495,6 +525,17 @@ static int shadow_entry_world(CPUState* cpu, const ngte_view* v, uint32_t mob,
     return 1;
 }
 
+/** @brief Rebuilds the moby drop-shadow triangles from the drawn-moby list.
+ *
+ * Empties s_mosh, then for each list record with a moby inside the first
+ * 8 MiB and a nonzero ground word: projects the ground anchor and the four
+ * diamond corners, rejects on the Z cull, the backface test and the
+ * layout's screen-extent form, and stores four fan triangles (anchor, c[k],
+ * c[k+1]) with the moby's grey, the shadow sprite's material and the ordering
+ * slot, up to MAX_MOSH triangles. A list in the primitive buffer's tail is
+ * walked from the copy taken at hook entry; a fixed-address list is re-read
+ * here. Pushes the decal camera parameters. Reads PSX RAM only.
+ * @param cpu The guest CPU state. */
 static void shadow_moby_build(CPUState* cpu) {
     s_mosh_n = 0;
     const uint32_t desc = game_layout.shadow.desc;
@@ -626,6 +667,7 @@ float shadow_depth(float viewz, float scale, float bias) {
  *    OPENPETE_SHADOW_HW_BIAS). The old ×0.96 multiplicative view-Z pull was
  *    distance-PROPORTIONAL, the wrong dimension for a tie-break: a
  *    10×-further shadow got a 10×-bigger world-space nudge. */
+/* shadow_bias_spyro and shadow_bias_moby are documented in shadow.h. */
 float shadow_bias_spyro(void) {
     static float b = -1.0f;
     if (b < 0.0f) { const char* e = getenv("OPENPETE_SHADOW_BIAS_SPYRO"); b = (e && *e) ? (float)atof(e) : 1.0f; }
@@ -693,9 +735,21 @@ static void fan_wrel(const double inv[3][3], const shadow_pt* p, double w[3]) {
 
 typedef struct { double x, y; } fan_xy;
 
+/** @brief The cross product of o->a and o->b.
+ *
+ * @param o The origin.
+ * @param a The first point.
+ * @param b The second point.
+ * @return The signed twice-area; positive when o, a, b turn counter-clockwise
+ *         in a y-up frame. */
 static double hull_cross(fan_xy o, fan_xy a, fan_xy b) {
     return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
 }
+/** @brief The qsort comparator ordering points by x, then y.
+ *
+ * @param pa The first fan_xy.
+ * @param pb The second fan_xy.
+ * @return -1, 0 or 1. */
 static int hull_cmp(const void* pa, const void* pb) {
     const fan_xy* a = (const fan_xy*)pa; const fan_xy* b = (const fan_xy*)pb;
     if (a->x != b->x) return a->x < b->x ? -1 : 1;
@@ -969,6 +1023,7 @@ int shadow_verify_enabled(void) {
     ENV_FLAG_LATCH(v, "OPENPETE_SHADOW_VERIFY");
     return v;
 }
+/* Documented at its declaration in shadow.h. */
 unsigned shadow_verify_frame(void) {
     static unsigned f = 0xFFFFFFFFu;
     if (f == 0xFFFFFFFFu) { const char* e = getenv("OPENPETE_SHADOW_VERIFY_FRAME"); f = e ? (unsigned)strtoul(e, NULL, 0) : 0; }
@@ -1035,6 +1090,9 @@ static feature_dispatch_entry_t shadow_dispatch[] = {
     { 0u, NULL },
 };
 
+/** @brief Binds the dispatch entry to the layout's moby-shadow draw address.
+ *
+ * @param opts Unused. */
 static void shadow_apply_options(const openpete_options_t* opts) {
     (void)opts;
     shadow_dispatch[0].addr = game_layout.shadow.hook;

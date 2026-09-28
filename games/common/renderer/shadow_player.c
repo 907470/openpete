@@ -128,6 +128,18 @@ static int plsh_frame_bytes(CPUState* cpu, uint32_t table, uint32_t anim_sel,
     return 1;
 }
 
+/** @brief Rebuilds the player shadow fan from the shadow state block.
+ *
+ * Clears s_tri and the fan mask, then returns early when the layout has no
+ * state block, the suppress byte at +0x13 is nonzero, or the animation
+ * table, its pointer or the avatar's animation frame is unavailable. Otherwise
+ * projects the ground anchor, rotates the camera matrix into the shadow's
+ * plane, interpolates the eight silhouette bytes between two frames, doubles
+ * them into 16 ring radii (scaled by three quarters when the flag at +0x00
+ * is set), projects the ring and stores a triangle for each fan slot whose
+ * ordering key is not negative. Pushes the decal camera parameters. Reads PSX
+ * RAM only.
+ * @param cpu The guest CPU state. */
 static void shadow_player_build(CPUState* cpu) {
     s_tri_n = 0;
     s_fan.tri_mask = 0;
@@ -370,6 +382,16 @@ static const hook_bracket_desc k_bracket = {
     .st = &s_hb,
 };
 
+/** @brief The player shadow draw's hook: runs the game's draw, then feeds or verifies the fan.
+ *
+ * Runs the draw once through the hook bracket and returns 0 when the bracket
+ * declines. Binds the fan to the model record the same tick's player draw
+ * appended; the fan is fed only when that record was drawn, the draw emitted
+ * prims and RP_SHADOW is selected. Under OPENPETE_SHADOW_VERIFY the first
+ * eligible tick dumps once and the first 60 compare.
+ * @param cpu The guest CPU state.
+ * @param addr The hooked draw's address.
+ * @return The bracket's end result after running the draw, else 0. */
 static int on_player_shadow(CPUState* cpu, uint32_t addr) {
     uint32_t startp, endp; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_bracket, &startp, &endp, &feed, &verify))
@@ -413,6 +435,9 @@ static feature_dispatch_entry_t shadow_player_dispatch[] = {
     { 0u, NULL },
 };
 
+/** @brief Binds the dispatch entry to the layout's player-shadow draw address.
+ *
+ * @param opts Unused. */
 static void shadow_player_apply_options(const openpete_options_t* opts) {
     (void)opts;
     shadow_player_dispatch[0].addr = game_layout.shadow.player.hook;

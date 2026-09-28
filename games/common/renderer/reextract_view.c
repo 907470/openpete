@@ -10,6 +10,11 @@
 
 static void (*s_body)(void* cpu);
 
+/** @brief The registered sub-tick re-extract: runs the game's body inside the sub-tick view.
+ *
+ * Begins the sub-tick view, runs the installed body when there is one, marks
+ * the native scene as a replay, then ends the view.
+ * @param cpu_v The guest CPU state, passed as CPUState*. */
 static void reextract_view(void* cpu_v) {
     CPUState* cpu = (CPUState*)cpu_v;
     openpete_subtick_view_begin(cpu);

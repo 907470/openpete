@@ -297,6 +297,12 @@ uint32_t psyq_game_cd_read_cb_addr(void);
  *
  * @return Nonzero when the OT walk filters geometry prims by path. */
 int  psyq_game_render_paths_active(void);
+/** @brief Reports whether the primitive at a polybuf address belongs to a selected path; forwards render_path_addr_visible.
+ *
+ * Looks the address up in the recorded intervals, then in the previous
+ * tick's bank; an address in neither counts as not visible.
+ * @param addr The primitive's guest address.
+ * @return Nonzero when the OT walk keeps the primitive. */
 int  psyq_game_render_path_addr_visible(uint32_t addr);
 
 /** @brief Re-derive the resident overlay from the id word at psyq_game_overlay_vaddr() and re-point the dispatcher if it names a different overlay.

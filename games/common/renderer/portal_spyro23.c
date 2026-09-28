@@ -84,6 +84,11 @@ static int s_leaf_calls = 0;      /* engagement: leaf hooks seen this tick */
 static unsigned s_sky_fed_frame = 0;  /* the last present a preview actually emitted */
 static uint32_t s_pass_start = 0;
 
+/** @brief Whether OPENPETE_PORTAL3_DBG selects the portal census and dump output.
+ *
+ * Latched on the first call; set, non-empty and not starting with '0' enables
+ * it.
+ * @return 1 when enabled, else 0. */
 static int p3_dbg(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_PORTAL3_DBG"); v = (e && *e && *e != '0'); }
@@ -166,6 +171,17 @@ static void p3_capture(CPUState* cpu, int arg) {
 /* ---- extraction ------------------------------------------------------ */
 typedef struct { float x, y; uint32_t rgb; } p3_v;
 
+/** @brief The signed cross product of edge a->b with the vector a->v.
+ *
+ * Computes (bx - ax) * (vy - ay) - (by - ay) * (vx - ax). A value of 0 or
+ * more is the inside of a pentagon edge; the callers reject below 0.
+ * @param ax The edge's first X.
+ * @param ay The edge's first Y.
+ * @param bx The edge's second X.
+ * @param by The edge's second Y.
+ * @param vx The tested point's X.
+ * @param vy The tested point's Y.
+ * @return The cross product; the test treats a value below 0 as outside. */
 static float p3_cross(float ax, float ay, float bx, float by, float vx, float vy) {
     return (bx - ax) * (vy - ay) - (by - ay) * (vx - ax);
 }
@@ -247,6 +263,14 @@ static int p3_edges_clear_frame(const p3_preview* p) {
     return 1;
 }
 
+/** @brief The screen bounds a preview's colours are admitted within.
+ *
+ * Starts from the captured clip rect. When the rect spans the whole 4:3 frame
+ * width and no pentagon edge cuts the frame's corners at the rect's rows, the
+ * X bounds become the visible screen-X range of the window and `widened` is
+ * set; at 4:3 the range equals the rect's, so the bounds stay the rect's own.
+ * @param p The preview.
+ * @return The bounds. */
 static p3_bounds p3_bounds_of(const p3_preview* p) {
     p3_bounds b = { (float)p->xmin, (float)p->xmax, (float)p->ymin, (float)p->ymax, 0 };
     float xlo = 0.0f, xhi = 0.0f;
@@ -260,6 +284,22 @@ static p3_bounds p3_bounds_of(const p3_preview* p) {
 
 static int s_emitted = 0;
 
+/** @brief Adds one untextured triangle of a preview to the native scene at the portal's depth.
+ *
+ * Each vertex is shifted by the recentring offset, takes `depth_world` as its
+ * view-Z (unbiased for both depth and pvz) and its colour with alpha 0xFF.
+ * The triangle is added under `category` and `group`, with no blend. Under
+ * OPENPETE_PORTAL3_DBG the first 12 portal-cyclorama triangles from
+ * p3_dbg_from print to stderr. Counts the triangle in s_emitted.
+ * @param a The first vertex.
+ * @param b The second vertex.
+ * @param c The third vertex.
+ * @param offx The screen X offset added to every vertex.
+ * @param offy The screen Y offset added to every vertex.
+ * @param depth_world The portal's depth in world units.
+ * @param category The scene category, such as OPENPETE_SCENE_PORTAL_MASK.
+ * @param tag Unused.
+ * @param group The portal's scene group. */
 static void p3_emit_tri(const p3_v* a, const p3_v* b, const p3_v* c, float offx, float offy,
                         float depth_world, int category, uint32_t tag, int group) {
     openpete_scene_tri t = {0};
@@ -303,6 +343,20 @@ typedef struct {
     uint32_t        vc, cc;
 } p3_mesh;
 
+/** @brief Clips one mesh face to the preview's pentagon and returns the polygon's vertex count.
+ *
+ * Decodes the three vertex indices from `w0` and the colour indices from `w1`
+ * (flat with one index in bits 29-20 when bit 31 is set, else three byte
+ * offsets). Drops the face when an index reaches the vertex count, when the
+ * three vertices share an outcode bit, when every vertex is outside one edge
+ * or when a clip leaves fewer than 3 vertices; each drop increments its
+ * census counter. A colour index at or past the colour count reads as black.
+ * @param p The preview; supplies the pentagon edges.
+ * @param m The projected vertices, outcodes and faded colours.
+ * @param w0 The face's first word.
+ * @param w1 The face's second word.
+ * @param poly Receives the polygon; room for 32 vertices.
+ * @return The vertex count, or 0 when the face is dropped. */
 static int p3_clip_face(const p3_preview* p, const p3_mesh* m, uint32_t w0, uint32_t w1, p3_v* poly) {
     uint32_t i0 = (w0 >> 20) & 0xFFF, i1 = (w0 >> 10) & 0x3FF, i2 = w0 & 0x3FF;
     if (i0 >= m->vc || i1 >= m->vc || i2 >= m->vc) { s_cen_idx++; return 0; }
@@ -331,6 +385,22 @@ static int p3_clip_face(const p3_preview* p, const p3_mesh* m, uint32_t w0, uint
     return n;
 }
 
+/** @brief Re-derives one captured preview in float and emits its triangles.
+ *
+ * Returns without emitting when the mesh header is outside main RAM or its
+ * vertex, colour or face count exceeds P3_MAX_VERTS, P3_MAX_COLS or 4096.
+ * Otherwise decodes the vertices (widening the backdrop quad's side edges
+ * under widened bounds) and their outcodes, fades each colour by the
+ * portal's IR0 toward its far colour and then by `sky_ir0` toward `env_far`,
+ * emits the rect footprint once per portal as the stencil mask, and emits each
+ * surviving face fan-triangulated as portal-cyclorama triangles under the
+ * portal's provenance tag. Reads PSX RAM only.
+ * @param cpu The guest CPU state.
+ * @param p The captured preview.
+ * @param vw The view; supplies the screen recentring offset.
+ * @param sky_ir0 The sky fog factor, 0 for none.
+ * @param env_far The environment far colour.
+ * @param mask_done Per-slot flags, set once the slot's mask is emitted. */
 static void p3_extract_one(CPUState* cpu, const p3_preview* p, const ngte_view* vw,
                            int sky_ir0, uint32_t env_far, int mask_done[P3_MAX_PORTALS]) {
     static float vx[P3_MAX_VERTS], vy[P3_MAX_VERTS];
@@ -432,6 +502,15 @@ static void p3_census(const p3_tick* T, const ngte_view* vw) {
     }
 }
 
+/** @brief Emits every preview of a tick into the native scene.
+ *
+ * Returns without emitting when the native scene or RP_PORTAL is off, and
+ * before opening the frame's scene when the tick holds no preview. Resets the
+ * census counters, opens the scene for the current openpete_frame, extracts each
+ * preview, and records the frame in s_sky_fed_frame when any triangle was
+ * emitted.
+ * @param cpu The guest CPU state.
+ * @param T The captured (or lerped) previews. */
 static void p3_feed(CPUState* cpu, const p3_tick* T) {
     if (!openpete_native_scene_enabled() || !render_path_enabled(RP_PORTAL)) return;
     s_emitted = 0;
@@ -636,6 +715,19 @@ static int on_portal_leaf(CPUState* cpu, uint32_t addr) {
     return 1;
 }
 
+/** @brief The portal pass's hook: rolls the tick buffers, runs the real pass, then feeds the previews.
+ *
+ * Returns 0 (the pass runs unhooked) when neither the native scene, a
+ * --render-paths selection nor OPENPETE_PORTAL3_DBG is active, and on
+ * re-entry. On a new openpete_frame the current tick becomes the previous one
+ * (valid for up to 3 frames back) and the current list is emptied. Sets
+ * s_in_pass so the leaf hook captures, dispatches the pass once, records the
+ * pass's polybuf interval under RP_PORTAL, and feeds the captured previews
+ * when the native scene is enabled. Under OPENPETE_PORTAL3_DBG prints up to 64
+ * capture reports. Writes no PSX RAM itself.
+ * @param cpu The guest CPU state.
+ * @param addr The pass's address, dispatched.
+ * @return 1 after running the pass, else 0. */
 static int on_portal_pass(CPUState* cpu, uint32_t addr) {
     int feed = openpete_native_scene_enabled();
     if (!feed && !render_paths_active() && !p3_dbg()) return 0;
@@ -768,6 +860,10 @@ void portal_s23_reextract(CPUState* cpu, double alpha, int interp_on) {
  * registers nothing and never enters this feeder. */
 static feature_dispatch_entry_t portal_dispatch[3];
 
+/** @brief Fills the dispatch table with the game's portal pass and leaf addresses.
+ *
+ * An address of 0 registers nothing; the table ends with a zero entry.
+ * @param opts Unused. */
 static void portal_apply_options(const openpete_options_t* opts) {
     (void)opts;
     const struct { uint32_t addr; feature_dispatch_fn fn; } hooks[] = {

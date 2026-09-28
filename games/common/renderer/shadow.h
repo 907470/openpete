@@ -45,7 +45,14 @@ typedef struct {
  * @param start The first polybuf address.
  * @param end One past the last polybuf address. */
 void                shadow_capture_prims(CPUState* cpu, uint32_t start, uint32_t end);
+/** @brief The number of packets in the capture buffer.
+ *
+ * @return The count, 0 to 4096. */
 int                 shadow_prim_count(void);
+/** @brief One packet of the capture buffer.
+ *
+ * @param i The index.
+ * @return The packet, or NULL when `i` is negative or not below the count. */
 const shadow_prim*  shadow_prim_at(int i);
 /** @brief Prints the capture's prim-code histogram and its first six primitives to stderr.
  *
@@ -58,7 +65,18 @@ void                shadow_dump_prims(const char* tag);
  * (sz = MAC3, the view-Z). */
 typedef struct { float sx, sy, sz; float m1, m2; } shadow_pt;
 
+/** @brief Sign-extends the low 16 bits of a value.
+ *
+ * @param v The value.
+ * @return The low halfword as a signed int. */
 int    shadow_s16(int v);
+/** @brief Reads the signed halfword at a guest address through a word read.
+ *
+ * Reads the aligned word and takes its high half when bit 1 of `addr` is
+ * set, else its low half.
+ * @param cpu The guest CPU state.
+ * @param addr The halfword's address.
+ * @return The sign-extended halfword. */
 int    shadow_rd_s16(CPUState* cpu, uint32_t addr);
 /** @brief GTE MVMVA with sf=1, the rotation matrix, V0, no translation and lm=0: IR = clamp16((R·v) >> 12).
  *
@@ -206,7 +224,17 @@ float  shadow_slot_koff(int slot);
  * @param bias The multiplicative view-Z bias.
  * @return The native scene depth. */
 float  shadow_depth(float viewz, float scale, float bias);
+/** @brief The view-Z bias of the player shadow fan, from OPENPETE_SHADOW_BIAS_SPYRO.
+ *
+ * Read until a non-negative value is seen, then latched; unset or empty reads
+ * 1.0 (no bias).
+ * @return The multiplicative bias. */
 float  shadow_bias_spyro(void);
+/** @brief The view-Z bias of the moby drop-shadows, from OPENPETE_SHADOW_BIAS_MOBY.
+ *
+ * Read until a non-negative value is seen, then latched; unset or empty reads
+ * 1.0 (no bias).
+ * @return The multiplicative bias. */
 float  shadow_bias_moby(void);
 
 /** @brief Reports whether OPENPETE_SHADOW_VERIFY selects the A/B harness and the one-shot dump.
@@ -215,6 +243,11 @@ float  shadow_bias_moby(void);
  * with '0' enables it.
  * @return 1 when enabled, else 0. */
 int      shadow_verify_enabled(void);
+/** @brief The first openpete_frame the verify dump and compare run from, from OPENPETE_SHADOW_VERIFY_FRAME.
+ *
+ * Latched on the first call; unset reads 0. The value parses in any base
+ * strtoul accepts.
+ * @return The frame. */
 unsigned shadow_verify_frame(void);
 
 /** @brief Sub-tick re-extract: rebuild the moby drop-shadows from the current gamestate, extract-only.

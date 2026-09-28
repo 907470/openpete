@@ -173,13 +173,26 @@ static const uint32_t k_tag_family_paths[16] = {
     RPM(RP_PARTICLES) | RPM(RP_GLOW) | RPM(RP_SPARKLE), RPM(RP_CYCLORAMA),
     RPM(RP_SHADOW) | RPM(RP_MOBY_SHADOW), RPM(RP_TRACER), RPM(RP_PORTAL), 0, 0, 0, 0, 0, 0
 };
+/** @brief The lowest-numbered path in a family's path set.
+ *
+ * @param m The path set, one bit per render_path_t.
+ * @return The path index, or -1 when the set is empty. */
 static int family_first_path(uint32_t m) { for (int p = 0; p < RP_COUNT; p++) if (m & RPM(p)) return p; return -1; }
+/** @brief Whether any path of a family's path set is canon-drawn.
+ *
+ * @param m The path set, one bit per render_path_t.
+ * @return true when render_path_canon_drawn holds for a member. */
 static bool family_canon_drawn(uint32_t m) { for (int p = 0; p < RP_COUNT; p++) if ((m & RPM(p)) && render_path_canon_drawn((render_path_t)p)) return true; return false; }
 static uint32_t s_feed_audit_frames[RP_COUNT];   /* frames with unmarked feed, per path */
 static uint32_t s_feed_audit_tris[RP_COUNT];     /* tris fed on those frames, per path */
 static uint32_t s_feed_audit_fed_frames[RP_COUNT]; /* frames the path fed at all (engagement) */
 static int      s_feed_audit_registered = 0;
 
+/** @brief Prints the exit summary of the feed audit to stderr.
+ *
+ * One line: the path-frames that fed at all, the path-frames that fed with no
+ * polybuf interval and no mark, and each path with a nonzero unmarked count
+ * with its triangle total. Registered with atexit by the first audited scene. */
 static void render_paths_feed_audit_census(void) {
     uint32_t fed = 0, bad = 0;
     for (int p = 0; p < RP_COUNT; p++) { fed += s_feed_audit_fed_frames[p]; bad += s_feed_audit_frames[p]; }
@@ -191,6 +204,13 @@ static void render_paths_feed_audit_census(void) {
     fprintf(stderr, "\n");
 }
 
+/** @brief Audits the canonical scene's tagged triangle families against the canon-drawn mask.
+ *
+ * Runs once per built scene. For each tag family with triangles and a path
+ * set, counts the path as fed, and when no path of the set is canon-drawn
+ * counts an unmarked frame and its triangles, printing a DEFECT line on the
+ * path's first occurrence. With OPENPETE_RENDER_PATH_FEED_ASSERT set it
+ * prints every occurrence and aborts on the first. */
 static void render_paths_feed_audit(void) {
     /* One audit per canonical scene. The commit runs on every canonical
      * present; when the game stops rendering (a level-exit freeze, a
@@ -244,6 +264,12 @@ static void render_paths_census(void) {
     fprintf(stderr, " scene=%u\n", openpete_native_scene_frame());
 }
 
+/** @brief The per-canonical-present commit: latches the canon-drawn mask and rolls the frame state.
+ *
+ * In order: latches the canon-drawn mask, prints the census, audits the feed,
+ * rolls the intervals, commits the canonical-render epoch, then syncs the
+ * native background clear and the retained freeze backdrop from the draw
+ * environment the next DrawOTag applies. */
 static void render_paths_commit(void) {
     render_paths_canon_snapshot();
     render_paths_census();
@@ -282,6 +308,7 @@ bool render_path_addr_visible(uint32_t addr) {
 /* The OT walk's filter hooks (psyq_game_hooks.h), defined once for every game. */
 int psyq_game_render_paths_active(void) { return render_paths_active(); }
 
+/* Documented at its declaration in psyq_game_hooks.h. */
 int psyq_game_render_path_addr_visible(uint32_t addr) {
     return render_path_addr_visible(addr);
 }
@@ -317,6 +344,13 @@ static void rp_knob_get(const knob_desc_t* k, char* buf, size_t cap) {
     (void)k;
     render_paths_current(buf, cap);
 }
+/** @brief The render_paths row's setter: applies the text through render_paths_set().
+ *
+ * A value starting with '(' is the getter's "(all)" or "(none)" placeholder
+ * and clears the selection.
+ * @param k Unused.
+ * @param v The new selection text, or NULL.
+ * @return 0. */
 static int rp_knob_set(knob_desc_t* k, const char* v) {
     (void)k;
     if (v && *v == '(') v = NULL;   /* "(all)" / "(none)" placeholder = clear */
