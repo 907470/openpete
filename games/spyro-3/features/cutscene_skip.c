@@ -25,10 +25,11 @@
 // - Level rows: --skip-to-level to the trigger's level, then on its first
 //   live tick (loadStage -1, game.state 0, isDemoMode clear) the constant
 //   stores the trigger's branch makes before its call, then WarpToLevel(6,
-//   id). The homeworld portal mobys (63, 65, 67), Scorch's (68) and the
-//   Super Bonus Round moby (74) store the words 0x80070534, 0x80070564,
-//   0x8006E174, 0x8006E178, 0x8006E160, D_8006C598 (the fade, 255 at the
-//   call), the half 0x8007015A (the gate value) and their seen byte; the
+//   id). The homeworld portal mobys (63, 65, 67) and Scorch's (68) store the
+//   words 0x80070534, 0x80070564, 0x8006E174, 0x8006E178, 0x8006E160,
+//   D_8006C598 (the fade, 255 at the call), then, except Scorch, the half
+//   0x8007015A (the gate value), and their seen byte; the Super Bonus Round
+//   moby (74) ORs 0x10000002 into 0x80070534 and stores its seen byte; the
 //   GoToLevel func_80053F50 branches (62, 64, 66) store the seen byte. The
 //   moby rows 77..80 and 69 store nothing on the path. Stores the triggers
 //   compute from state (the moby's own fields, Spyro's vectors, the camera)
