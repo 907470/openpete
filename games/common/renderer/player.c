@@ -12,9 +12,12 @@
 // index the whole projection.
 //
 // Determinism: the hook calls the game's own draw exactly once and only READS
-// state afterwards; nothing here writes PSX RAM. The record store copies guest
-// bytes into host copies on the game fiber; the present side hands the copies
-// to the re-extract, which stages them through the sub-tick view.
+// state afterwards; no CPU-path store to PSX RAM happens here. The one write
+// through a host pointer is the re-extract's swap of a guest part block, made
+// through openpete_subtick_host_span (the view's staged copy while a staged
+// span covers the block) and restored before the feed. The record store copies
+// guest bytes into host copies on the game fiber; the present side hands the
+// copies to the re-extract, which stages them through the sub-tick view.
 
 #include "feature_registry.h"
 #include "psx_runtime_internal.h"
@@ -594,7 +597,9 @@ static void emit_raw(const pclv v[3], const swmat* m) {
  * The positive half (plane distance >= 0) emits stock; the negative half is
  * shaded toward the far colour by plane_shade, or dropped under drop_below.
  * Each half is emitted as a fan. With the split off, or with every vertex on
- * one side, this is one emit of the triangle it was handed. The cut
+ * the positive side, this is one emit of the triangle it was handed; with
+ * every vertex on the negative side it is one emit of the shaded triangle, or
+ * none under drop_below. The cut
  * interpolates screen position, UV and colour (rounded per channel), which is
  * what the draw's three INTPL passes interpolate, and view depth besides,
  * which the draw does not carry per vertex; a cut point takes the stream index
@@ -1638,8 +1643,8 @@ static void pair_lists(rec_list_t* cur, const rec_list_t* prv) {
     const double B = PL.pair_bound;
     for (int k = 0; k < cur->n; k++) { cur->r[k].pair = -1; cur->r[k].pair2 = -1; }
     if (!prv) { s_unpaired += (unsigned)cur->n; return; }
-    /* One record each side: nothing to disambiguate, and the singleton this
-     * replaced paired the ring's prev/curr unconditionally (the camera cut
+    /* One record each side: nothing to disambiguate, so they pair
+     * unconditionally, as the ring's prev/curr do (the camera cut
      * guard, not the bound, decides a teleport there). */
     if (cur->n == 1 && prv->n == 1) { cur->r[0].pair = 0; cur->r[0].pair2 = prv->r[0].pair; return; }
     for (int k = 0; k < cur->n && k < prv->n; k++) {

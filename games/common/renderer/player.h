@@ -7,17 +7,17 @@
  * in its feature list; a game whose layout names no draw hook registers
  * nothing and the walk never runs.
  *
- * The record store below replaces what used to be a singleton over the player
- * hooks. Every canonical draw-hook call appends a record — the state bytes the
- * extractor reads, the part-transform block, the pre-blend colour table, the
- * projected-SXY block and the polybuf range — to the epoch's list. The
+ * The record store below holds one record per draw-hook call. Every canonical
+ * draw-hook call appends a record (the state bytes the extractor reads, the
+ * part-transform block, the pre-blend colour table, the projected-SXY block
+ * and the polybuf range) to the epoch's list. The
  * canonical-epoch commit closes the list into a three-deep store (curr, prev,
  * prev2) with one clock per store, pairs each record with a record of the
  * previous list (index first, position-verified within the layout's pair
  * bound; a second pass by nearest position), and appends a pairing-only record
  * when no hook observed the ring's tick-end avatar. The sub-tick re-extract
  * runs the feeder once per record, staging that record's bytes and brackets.
- * With one call per tick the k=0 iteration is the old singleton path exactly.
+ * With one call per tick only record k=0 exists.
  *
  * The auxiliary feeders (drop shadow, flame) append their own records bound to
  * the model record of the same epoch whose position equals the live one at the
@@ -101,8 +101,8 @@ void player_native_set_player_slot(int k);
  * The cap is shared by the calls of one tick or present. A key different from
  * the current one moves the current group's call count and minimum to the
  * previous group and opens an empty group; the same key is a no-op. The draw
- * hook keys by VBL count (even keys), the sub-tick replay by present serial
- * (odd keys).
+ * hook keys by VBL count (even keys); a replay that shares the cap across a
+ * present keys by present serial (odd keys).
  * @param key The group key. */
 void player_native_set_flat_key(uint32_t key);
 /** @brief Sets the per-part float byte-angles the orchestrator interpolated from the prev/curr euler snapshots.
@@ -168,7 +168,8 @@ void player_reextract(struct CPUState* cpu);
  *        restored the live word. */
 void player_reextract_record(struct CPUState* cpu, int mirror);
 
-/* ---- record store, canonical side (game fiber) ------------------------ */
+/* ---- record store, canonical side (appends on the game fiber, commit on the
+ * host loop) ------------------------------------------------------- */
 
 /** @brief Appends the draw hook call's model record to the epoch's list.
  *
