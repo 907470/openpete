@@ -167,6 +167,14 @@ static inline int thdr_flat(uint32_t w1)   { return game_layout.terrain.flat_fla
 static uint8_t s_vis_cap[TVIS_MAX];
 static int     s_vis_cap_n = -1;      /* -1 = no capture this tick: read RAM */
 static int     s_vis_arm;             /* the draw is running: the next world visibility call is captured */
+/** @brief Tests whether the game's visibility verdict marks sector i visible.
+ *
+ * Reads the captured copy (nonzero byte, index below the capture length)
+ * when a capture is held, else the byte at visibility.base + i of guest RAM
+ * (0xFF).
+ * @param cpu The guest CPU state.
+ * @param i The sector index.
+ * @return 1 when visible, else 0. */
 static int tvis_visible(CPUState* cpu, uint32_t i) {
     if (s_vis_cap_n >= 0) return i < (uint32_t)s_vis_cap_n && s_vis_cap[i] != 0;
     return cpu->read_byte(game_layout.visibility.base + i) == 0xFF;
@@ -1193,6 +1201,15 @@ static ngte_cvert cv_mid(ngte_cvert a, ngte_cvert b) {
  * hqscale * m3). The retained cache's vertex stage mirrors these three
  * functions (terrain.vert drain_sz, drain_key4, drain_key3). */
 static double tface_hqscale(void);
+/** @brief Returns one corner's depth term of a drain key.
+ *
+ * The term is hqscale * m3. Under drained it is floored, taken as 0 at or
+ * below 0, saturated at 65535 as the GTE saturates SZ3, and masked to the
+ * 12 bits the node word keeps; otherwise it is returned unrounded and
+ * unmasked.
+ * @param m3 The corner's view depth.
+ * @param drained Nonzero when the face is in the near band.
+ * @return The term. */
 static double tn_drain_sz(double m3, int drained) {
     if (!drained) return m3 * tface_hqscale();
     double sz = floor(m3 * tface_hqscale());
@@ -1200,11 +1217,26 @@ static double tn_drain_sz(double m3, int drained) {
     if (sz > 65535.0) sz = 65535.0;
     return (double)((int)sz & 0xFFF);
 }
+/** @brief Returns a quad cell's drain key, the sum of its four corner SZ terms in emit_otkey units.
+ * @param a The first corner.
+ * @param b The second corner.
+ * @param c The third corner.
+ * @param d The fourth corner.
+ * @param drained Nonzero when the face is in the near band, so each term is
+ *        saturated and masked as the drain does (tn_drain_sz).
+ * @return The key. */
 static float tn_drain_key4(const ngte_cvert* a, const ngte_cvert* b,
                            const ngte_cvert* c, const ngte_cvert* d, int drained) {
     return (float)(tn_drain_sz(a->m3, drained) + tn_drain_sz(b->m3, drained) +
                    tn_drain_sz(c->m3, drained) + tn_drain_sz(d->m3, drained));
 }
+/** @brief Returns a sub-triangle's drain key SZ A + SZ B + 2 SZ C in emit_otkey units.
+ * @param a The first corner.
+ * @param b The second corner.
+ * @param c The corner counted twice.
+ * @param drained Nonzero when the face is in the near band, so each term is
+ *        saturated and masked as the drain does (tn_drain_sz).
+ * @return The key. */
 static float tn_drain_key3(const ngte_cvert* a, const ngte_cvert* b, const ngte_cvert* c,
                            int drained) {
     return (float)(tn_drain_sz(a->m3, drained) + tn_drain_sz(b->m3, drained) +
@@ -1451,6 +1483,10 @@ static void tn_eye_normal(const ngte_cvert* a, const ngte_cvert* b, double n[3])
     n[1] = a->m3 * b->m1 - b->m3 * a->m1;
     n[2] = a->m1 * b->m2 - b->m1 * a->m2;
 }
+/** @brief Returns n . v, the signed side of an eye plane on which a camera-space point lies.
+ * @param n The plane normal, from tn_eye_normal.
+ * @param v The point, from its camera-space m1, m2, m3.
+ * @return The dot product; the plane passes through the eye. */
 static double tn_eye_side(const double n[3], const ngte_cvert* v) {
     return n[0] * v->m1 + n[1] * v->m2 + n[2] * v->m3;
 }
@@ -1691,6 +1727,12 @@ static inline int tface_near_excl(uint32_t w3) {
     uint32_t b = game_layout.terrain.near_flag_excl;
     return b && (w3 & b);
 }
+/** @brief Tests a face's word 3 for the bit that refuses the no-near-corner half of the near band.
+ *
+ * Reads the bit the layout names terrain.near_flag_tier2; a layout that sets
+ * it to 0 refuses no face.
+ * @param w3 The face's word 3.
+ * @return Nonzero when the face is refused. */
 static inline int tface_near_tier2(uint32_t w3) {
     uint32_t b = game_layout.terrain.near_flag_tier2;
     return b && (w3 & b);
@@ -1847,6 +1889,15 @@ static double tface_hqscale(void) {
 /* One tile's decoded rectangle: its four corner texels [TL,TR,BL,BR] with
  * the orientation applied, and the page/CLUT/depth it samples. */
 typedef struct { int u[4], v[4], tpx, tpy, bpp, clut; } thq_rect;
+/** @brief Decodes one Tiledef into its oriented corner texels, page, CLUT and depth.
+ *
+ * Decodes the tile with decode_tiledef_span into a zeroed material, applies
+ * tiledef_apply_ori, and truncates the corner texels to int.
+ * @param cpu The guest CPU state.
+ * @param e The Tiledef's guest address.
+ * @param span The tile's texel extent minus one: 0x1F or 0x0F.
+ * @param r Receives u and v in [TL, TR, BL, BR] order, the page (tpx, tpy),
+ *        the depth (bpp) and the CLUT word. */
 static void thq_rect_of(CPUState* cpu, uint32_t e, int span, thq_rect* r) {
     tmat m; float u[4], v[4];
     memset(&m, 0, sizeof(m)); m.bpp = 16;
@@ -1893,10 +1944,17 @@ static int thq_cell_is_quarter(const thq_rect* Q, const thq_rect* C, int i, int 
     return 1;
 }
 
-/* Is cell tile `e` a 32x32 tile? Its orientation index (tiledef_apply_ori)
- * selects the 32-texel half of D_8006D058 (+0x40), so the tile spans 32
- * texels on a quarter of its quadrant: twice the 2x2's texel density. */
 #define THQ_ORI_32 0x40u
+/** @brief Tests whether a 4x4 cell tile is a 32x32 tile.
+ *
+ * The tile's orientation index (tiledef_apply_ori) selects the 32-texel half
+ * of D_8006D058 (+0x40), so the tile spans 32 texels on a quarter of its
+ * quadrant: twice the 2x2's texel density. The index is word 1 >> 25 masked
+ * by uv_ori_mask, after word 1 has 0x1F00 subtracted on a layout whose word 1
+ * is the bottom-right corner. A layout without uv_ori_table returns 0.
+ * @param cpu The guest CPU state.
+ * @param e The cell Tiledef's guest address.
+ * @return 1 when the index is at least THQ_ORI_32, else 0. */
 static int thq_cell_hires(CPUState* cpu, uint32_t e) {
     if (!game_layout.terrain.uv_ori_table) return 0;
     uint32_t w1 = rd(cpu, e + 4);
@@ -1954,6 +2012,17 @@ static void thq_verdicts_dump(uint32_t hqTable, uint32_t texCnt) {
     for (int rec = 0; rec < 128; rec++) if (s_hq_hires[rec]) fprintf(stderr, " %d", rec);
     fprintf(stderr, "\n");
 }
+/** @brief Recomputes the always-HQ pin verdicts s_hq_differ and s_hq_hires when the HQ table or a tile generation moved.
+ *
+ * Returns at once on a layout without the 4x4 cells, and when hqTable and
+ * s_tgen_epoch equal the values of the last refresh. Otherwise every one of
+ * the 128 rows is recomputed through thq_record_verdicts; a row at or above
+ * texCnt, or every row when hqTable is 0, is cleared. A record on the live
+ * scroller list (s_tscroll_tile) compares its V bytes modulo 64. Steps
+ * s_hq_differ_gen and prints the verdicts when any row changed.
+ * @param cpu The guest CPU state.
+ * @param hqTable The HQ record table's guest address, or 0.
+ * @param texCnt The record count; values above 128 are clamped. */
 static void tface_differ_refresh(CPUState* cpu, uint32_t hqTable, uint32_t texCnt) {
     if (!game_layout.terrain.hq_cells4) return;
     if (hqTable == s_hq_differ_table && s_tgen_epoch == s_hq_differ_epoch) return;
@@ -2309,6 +2378,16 @@ static void nc4_emit_cells(tn_wctx* W, CPUState* cpu, const tn_nearface* nf,
  * cache). */
 typedef struct { float key[16]; uint8_t on[16]; uint8_t slot[16]; float kmin; int n; } tn_keycells;
 
+/** @brief Records one drain sub-cell's key, visibility and slot in a key table.
+ *
+ * Stores the three entries at index i. A drawn sub-cell also lowers kmin to
+ * its key when it is the first or the least, and counts in n. The table
+ * arrives zeroed, so n == 0 marks kmin as unset.
+ * @param K The table.
+ * @param i The cell index, 0..15.
+ * @param on Nonzero when the drain draws the sub-cell.
+ * @param key The sub-cell's key.
+ * @param slot The sub-cell's slot id, stored as a byte. */
 static void tn_keycells_add(tn_keycells* K, int i, int on, float key, int slot) {
     K->on[i] = (uint8_t)on;
     K->key[i] = key;
@@ -3009,6 +3088,16 @@ static uint32_t s_tgen[128];
 static uint32_t s_tgen_epoch = 1;     /* bumped when ANY tile gen bumps */
 static uint32_t s_lqsnap[128][4];
 static uint32_t s_lqsnap_base;
+/** @brief Bumps a tile's generation when its LQ table entry changed since the last call.
+ *
+ * Compares the first four words of each of min(texCnt, 128) entries at
+ * lqTable + t * tex_stride with a snapshot. A table that moved since the last
+ * call counts every entry as changed. A changed entry steps s_tgen[t] and
+ * s_tgen_epoch, which makes cached faces re-decode their materials. Returns
+ * at once when lqTable is 0.
+ * @param cpu The guest CPU state.
+ * @param lqTable The LQ texture table's guest address, or 0.
+ * @param texCnt The entry count. */
 static void tsc_tile_gens(CPUState* cpu, uint32_t lqTable, uint32_t texCnt) {
     if (!lqTable) return;
     if (texCnt > 128) texCnt = 128;
@@ -3102,6 +3191,15 @@ static int    s_lpg_acc_n;
 static float  s_lpg_mean[6];                 /* last walk's mean (p,q) */
 static int    s_lpg_mean_ok;
 
+/** @brief Fits a sector's texture-pack colour grade from its HP faces, once per pack generation.
+ *
+ * Returns when lpg_state is set and lpg_gen equals texture_pack_generation.
+ * Otherwise sets lpg_state to 2 (attempted, no fit) and, for each textured
+ * HP face whose texture the pack resolves and matches, fits the per-channel
+ * affine (p, q) of texture_pack_grade_fit. The mean over the fitted faces
+ * goes to lpg_p and lpg_q and lpg_state becomes 1. A sector without HP
+ * faces, or with no fitted face, stays at 2.
+ * @param C The sector's decode cache entry; updated. */
 static void tsc_lp_grade(tscache_t* C) {
     unsigned gen = texture_pack_generation();
     if (C->lpg_state && C->lpg_gen == gen) return;
@@ -3182,6 +3280,9 @@ static uint32_t s_tocc_tick;             /* serial of the last canonical walk */
  * walk rejected them off screen while this walk's own rect is on screen,
  * split by whether this walk culled them (latoff) or kept them (offadm). */
 static int s_tocc_latoff, s_tocc_offadm;
+/** @brief Prints and resets the decode-cache hit and miss counts on every 120th call under OPENPETE_TERRAIN_CACHE_DBG.
+ *
+ * The variable is latched on the first call. */
 static void tsc_census(void) {   /* OPENPETE_TERRAIN_CACHE_DBG: ~1/sec hit/miss */
     static int on = -1, n;
     ENV_FLAG_LATCH(on, "OPENPETE_TERRAIN_CACHE_DBG");
@@ -3191,6 +3292,15 @@ static void tsc_census(void) {   /* OPENPETE_TERRAIN_CACHE_DBG: ~1/sec hit/miss 
     }
 }
 
+/** @brief Unpacks nv guest vertex words into local vertex coordinates.
+ *
+ * Reads the words at verts + 4k and unpacks each with tvert_unpack; the
+ * components are truncated to int16.
+ * @param cpu The guest CPU state.
+ * @param verts The first packed word's guest address.
+ * @param nv The vertex count.
+ * @param flat The sector header's flat flag.
+ * @param out Receives nv vertices. */
 static void tsc_decode_verts(CPUState* cpu, uint32_t verts, int nv, int flat, tsvert_t* out) {
     for (int k = 0; k < nv; k++) {
         uint32_t v = rd(cpu, verts + (uint32_t)k * 4);
@@ -3534,6 +3644,21 @@ static void tsc_field_census(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorC
     }
 }
 
+/** @brief Tags a cached sector's LP faces with the floor bit and the gap-fill flag.
+ *
+ * Runs tsc_field_census first when OPENPETE_TERRAIN_FIELDCENSUS is set.
+ * Returns when the sector has no LP faces or vertices. Otherwise clears
+ * nGapfill and finds the sector's table index by scanning up to 1024 sector
+ * pointers for C->s; the index is -1 when absent and under GS_Credits, whose
+ * scenes reuse level ids. Each LP face whose four indices lie below nLpV gets
+ * floorf when its winding normal points down with |nz| >= 0.8 of its length.
+ * With an index, gapfill is tft_fill(level, index, face), or 1 with fillcand
+ * set for an untagged face while the fill inspector previews; nGapfill counts
+ * the tagged faces. A face with an index at or above nLpV keeps gapfill 0.
+ * @param cpu The guest CPU state.
+ * @param C The cached sector; its LP faces are updated.
+ * @param sectorPtr The sector pointer table's guest address.
+ * @param sectorCnt The sector count. */
 static void tsc_tag_gapfill(CPUState* cpu, tscache_t* C,
                             uint32_t sectorPtr, uint32_t sectorCnt) {
     if (getenv("OPENPETE_TERRAIN_FIELDCENSUS"))
@@ -3767,6 +3892,15 @@ static int env_anim_iter_next(env_anim_iter_t* it, uint32_t* sector, int* kind) 
     }
 }
 
+/** @brief Tests whether an env poly-anim descriptor names the sector at address s.
+ *
+ * Walks the animation registry and compares the sector-table entry of each
+ * vertex-kind entry with s; colour entries are read live and skipped.
+ * @param cpu The guest CPU state.
+ * @param s The sector's guest address.
+ * @param sectorPtr The sector pointer table's guest address.
+ * @param sectorCnt The sector count.
+ * @return 1 when a vertex-kind entry names the sector, else 0. */
 static int tsc_sector_polyanim(CPUState* cpu, uint32_t s,
                                uint32_t sectorPtr, uint32_t sectorCnt) {
     env_anim_iter_t it;
@@ -3809,6 +3943,11 @@ static int      s_vh_on = -1;
 static unsigned s_vh_frame;
 static int      s_vh_hashed, s_vh_moved, s_vh_listn;
 static uint16_t s_vh_list[32];
+/** @brief Prints and clears the vertex-hash census line under OPENPETE_TERRAIN_VHASH_CENSUS.
+ *
+ * Prints nothing when the census is off or no sector was hashed. The line
+ * carries the frame, the hashed and moved counts and up to 32 moved sector
+ * indices. */
 static void tsc_vhash_census_flush(void) {
     if (s_vh_on <= 0 || !s_vh_hashed) return;
     fprintf(stderr, "[vhash] frame=%u hashed=%d moved=%d",
@@ -4006,6 +4145,14 @@ static uint32_t s_vanim_pres;  /* per-terrain_build counter — validity stamp f
  * hundreds. 64 local units/tick splits the two by an order of magnitude each
  * way — above it, snap to cur instead of sweeping the sector across the map. */
 #define VANIM_JUMP_LOCAL 64
+/** @brief Tests whether any vertex moved more than VANIM_JUMP_LOCAL units on an axis between two banks.
+ *
+ * A step that large marks a keyframe reset, which the caller snaps rather
+ * than sweeps.
+ * @param p The previous bank.
+ * @param c The current bank.
+ * @param n The vertex count.
+ * @return 1 when some vertex jumped, else 0. */
 static int tsc_vanim_jump(const tsvert_t* p, const tsvert_t* c, int n) {
     for (int k = 0; k < n; k++) {
         if (abs((int)c[k].x - p[k].x) > VANIM_JUMP_LOCAL ||
@@ -4014,6 +4161,14 @@ static int tsc_vanim_jump(const tsvert_t* p, const tsvert_t* c, int n) {
     }
     return 0;
 }
+/** @brief Writes the linear interpolation of two vertex banks to a float array.
+ *
+ * out[3k + axis] = p + (c - p) * a per component; a is not clamped.
+ * @param p The previous bank.
+ * @param c The current bank.
+ * @param n The vertex count.
+ * @param a The interpolation alpha.
+ * @param out Receives 3 * n floats. */
 static void tsc_vanim_lerp(const tsvert_t* p, const tsvert_t* c, int n,
                            double a, float* out) {
     for (int k = 0; k < n; k++) {
@@ -4022,6 +4177,20 @@ static void tsc_vanim_lerp(const tsvert_t* p, const tsvert_t* c, int n,
         out[k*3+2] = (float)(p[k].z + ((double)c[k].z - p[k].z) * a);
     }
 }
+/** @brief Refreshes the vertex banks of every decode-cached sector that a poly-anim descriptor names.
+ *
+ * Returns when sectorPtr is 0. For each vertex-kind registry entry whose
+ * sector is in the decode cache, once per build (vrollPres, vfracPres): a
+ * canonical build copies lpV and hpV into the previous banks (allocated on
+ * the first roll), re-decodes them from RAM, and steps vertGen when the
+ * hash of the decoded words changed; a sub-tick build with a camera pair
+ * (s_vanim_on) fills the float banks lpVf and hpVf with the previous-to-
+ * current lerp at s_vanim_alpha, except for a sector where tsc_vanim_jump
+ * fires, which stays on the current bank. A failed allocation leaves the
+ * bank unfilled. Prints [vanim] lines under OPENPETE_TERRAIN_VANIMDBG.
+ * @param cpu The guest CPU state.
+ * @param sectorPtr The sector pointer table's guest address.
+ * @param sectorCnt The sector count. */
 static void tsc_vert_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt) {
     if (!sectorPtr) return;
     static int s_vdbg = -1;
@@ -4373,6 +4542,18 @@ static int canim_stamp_all(double a) {
     return stamped;
 }
 
+/** @brief Rolls the colour env-anim slots once per tick and stamps them for this build.
+ *
+ * On a canonical build (s_vanim_sub clear) the first of an openpete_frame
+ * calls canim_roll_all; later canonical builds of the same tick (a portal
+ * preview) skip the roll so prev stays the last tick. Sets s_canim_a to
+ * s_vanim_alpha on a sub-tick build with a camera pair (0 when
+ * OPENPETE_TERRAIN_CANIM disables the lerp), else 1, then calls
+ * canim_stamp_all. Prints a [canim] line under OPENPETE_TERRAIN_VANIMDBG.
+ * @param cpu The guest CPU state.
+ * @param sectorPtr The sector pointer table's guest address; 0 rolls
+ *        nothing.
+ * @param sectorCnt The sector count. */
 static void tsc_col_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt) {
     static int s_cdbg = -1;
     ENV_FLAG_LATCH(s_cdbg, "OPENPETE_TERRAIN_VANIMDBG");
@@ -4593,6 +4774,15 @@ static int tsc_scroll_desc(CPUState* cpu, uint32_t desc, int pair,
     return paired;
 }
 
+/** @brief Publishes the tile state of every UV-scroll descriptor for this build.
+ *
+ * Clears the previous build's s_tanim_* and s_tscroll_* state. When the
+ * layout locates env_anim.scroll, reads its count and list base (a base of
+ * 0, or a count of 0 or above 1024, publishes nothing) and calls
+ * tsc_scroll_desc on each nonzero descriptor. The sweep toward the previous
+ * accumulator is enabled on a sub-tick build with s_tanim_en and a positive
+ * present clock. Prints a [tanim-scan] line under OPENPETE_TERRAIN_TANIMDBG.
+ * @param cpu The guest CPU state. */
 static void tsc_scroll_refresh(CPUState* cpu) {
     static int s_tdbg = -1;
     ENV_FLAG_LATCH(s_tdbg, "OPENPETE_TERRAIN_TANIMDBG");
@@ -4706,6 +4896,20 @@ static uint32_t terrain_color_h(int noHP, const uint8_t* lp, const uint8_t* near
  * SUPERSET of the 4:3 visible set — if missing>0 the occlusion-group walk is
  * wrong (offset/format) and widescreen would gap even at 4:3. Display-only. */
 static int s_visdbg = -1;
+/** @brief Prints once, after frame 1800, how many visible sectors the candidate set misses.
+ *
+ * Marks cand[0..cn) in a local table, counts the sectors below
+ * min(sectorCnt, 1024) that tvis_visible reports visible and that are not
+ * marked, and writes one [terrain-vis] line to stderr. The first call at
+ * openpete_frame >= 1800 latches the function off; earlier calls return.
+ * Reads only.
+ * @param group The occlusion group the game's renderer received; printed.
+ * @param occCnt The occlusion group count; printed.
+ * @param cand The candidate sector indices; values of 1024 or more are
+ *        ignored.
+ * @param cn The entry count of cand.
+ * @param n The admitted sector count; printed.
+ * @param ws The wide-view flag; printed. */
 static void terrain_visdbg(CPUState* cpu, uint32_t sectorCnt, int group,
                            uint32_t occCnt, const uint16_t* cand, int cn, int n, int ws) {
     static int s_done = 0;
@@ -4818,6 +5022,26 @@ static int tvis_sphere_in(CPUState* cpu, const tvis_sphere* S, uint32_t i) {
 }
 
 static int s_vis_engage;   /* the BINCHECK window is open on this walk */
+/** @brief Fills out with the sector indices this walk draws and returns their count.
+ *
+ * At most min(sectorCnt, 1024) sectors are considered, so out holds 1024
+ * entries. The first mode that applies decides the set: OPENPETE_TERRAIN_ALLVIS
+ * admits every sector; with S set and the terrain visibility mode frustum, the
+ * sectors whose header sphere passes tvis_sphere_in; with a view wider than
+ * 4:3 (s_view.extended) and a layout whose verdict has no aspect term
+ * (env.vis_aspect_independent), the verdict path below; with a wider view
+ * otherwise, the occlusion group's 0xFF-terminated byte list (2048 bytes at
+ * most), or every sector when the group names no list; else the game's own
+ * verdict through tvis_visible. Sets s_vis_engage from
+ * OPENPETE_TERRAIN_BINCHECK and prints the admitted count on its window.
+ * Reads guest RAM only.
+ * @param cpu The guest CPU state.
+ * @param sectorCnt The level's sector count.
+ * @param out Receives the admitted sector indices.
+ * @param group The occlusion group the game's renderer received; outside
+ *        0..occ_group_count-1 names no list.
+ * @param S The sphere-test inputs, or NULL to disable the frustum mode.
+ * @return The number of indices written to out. */
 static int terrain_vislist(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, int32_t group,
                            const tvis_sphere* S) {
     if (sectorCnt > 1024) sectorCnt = 1024;
@@ -5478,6 +5702,13 @@ static int tgpu_nearvar_on(void) {
 }
 static int s_otbias_on;               /* tentative: defined (=1) at the feed */
 
+/** @brief Returns a slot's chunks to every arena and clears its baked-sector fields.
+ *
+ * For each arena with a nonzero chunk count, frees the chunk range (buffer
+ * bit (bufbit >> arena) & 1, first[arena], count[arena]) through
+ * openpete_tercache_chunk_free, then zeroes the counts, bufbit and the
+ * slot's sector s. The other slot fields are left as they are.
+ * @param T The slot. */
 static void tgpu_free_slot(tgpu_slot_t* T) {
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
         if (T->count[a] > 0)
@@ -5599,6 +5830,13 @@ static int tgpu_env_block(void) {
     return v;
 }
 
+/** @brief Packs a material's texture page, depth, blend and textured flag into vertex material word 0.
+ *
+ * Bits 0-9 tpx, 10-18 tpy, 19-20 depth code (4 bpp 0, 8 bpp 1, else 2),
+ * 21-22 blend (a blend above 3 packs as 0), 23 textured. Bits 24-31 are left
+ * clear for the caller's bucket.
+ * @param m The material.
+ * @return The packed word. */
 static uint32_t tgpu_pack_mat0(const tmat* m) {
     int blend = (m->blend > 3) ? 0 : m->blend;   /* ABR-3 "B+F/4" clamps opaque (scene rule) */
     return (uint32_t)(m->tpx & 0x3FF)
@@ -5632,6 +5870,18 @@ typedef struct { rhi_terrain_vertex* v; rhi_terrain_prev* pv;
                  int nearv; /* fill cx alongside v (near-variant chunk) */
                  uint8_t* rec;  /* cell arenas: n records of rsz bytes (v unused) */
                  size_t rsz; } tgpu_buf;
+/** @brief Appends one vertex and its side records to a retained-cache buffer, growing the buffer when full.
+ *
+ * Capacity starts at 256 vertices and doubles. The vertex array grows with
+ * the previous-tick array (when b->anim) and the near-context array (when
+ * b->nearv), which receive *p and *c beside *v. A failed reallocation
+ * leaves the raised capacity in place while a later array may be smaller,
+ * so the caller discards the buffer after a -1.
+ * @param b The buffer.
+ * @param v The vertex.
+ * @param p The previous-tick record; read only when b->anim is set.
+ * @param c The near-variant context; read only when b->nearv is set.
+ * @return 0, or -1 when a reallocation fails. */
 static int tgpu_push(tgpu_buf* b, const rhi_terrain_vertex* v,
                      const rhi_terrain_prev* p, const rhi_terrain_nearctx* c) {
     if (b->n >= b->cap) {
@@ -5674,15 +5924,35 @@ static int tgpu_push_rec(tgpu_buf* b, const void* r) {
 
 /* x4 fixed-point corner (sector-local world/16, 2 fractional bits). */
 typedef struct { int16_t x, y, z; } tgpu_p4;
+/** @brief Converts a sector-local vertex to an x4 fixed-point corner.
+ *
+ * Each coordinate is multiplied by 4 (two fractional bits) and truncated to
+ * int16.
+ * @param v The decoded vertex.
+ * @return The corner. */
 static tgpu_p4 tgpu_p4_of(const tsvert_t* v) {
     tgpu_p4 p = { (int16_t)(v->x * 4), (int16_t)(v->y * 4), (int16_t)(v->z * 4) };
     return p;
 }
+/** @brief Returns the per-axis midpoint of two x4 fixed-point corners.
+ *
+ * Each axis is (a + b) >> 1. The result is exact when the sum is even, which
+ * holds for corners from tgpu_p4_of (multiples of 4) and for midpoints of
+ * those.
+ * @param a The first corner.
+ * @param b The second corner.
+ * @return The midpoint. */
 static tgpu_p4 tgpu_p4_mid(tgpu_p4 a, tgpu_p4 b) {   /* exact: x4 sums are even */
     tgpu_p4 p = { (int16_t)((a.x + b.x) >> 1), (int16_t)((a.y + b.y) >> 1),
                   (int16_t)((a.z + b.z) >> 1) };
     return p;
 }
+/** @brief Returns the per-channel (a + b) >> 1 average of two 0x00BBGGRR colours.
+ *
+ * Matches cv_mid. Bits 24-31 of the result are 0.
+ * @param a The first colour.
+ * @param b The second colour.
+ * @return The average. */
 static uint32_t tgpu_rgb_mid(uint32_t a, uint32_t b) {   /* cv_mid's per-channel (a+b)>>1 */
     return (uint32_t)((((a & 0xFF) + (b & 0xFF)) >> 1))
          | (uint32_t)(((((a >> 8) & 0xFF) + ((b >> 8) & 0xFF)) >> 1) << 8)
@@ -5703,6 +5973,17 @@ typedef struct { tgpu_p4 p, pp; uint32_t rgb_far, rgb_near;
                  uint32_t prgb_far, prgb_near;   /* anim arenas: previous-tick colours */
                  uint8_t uf, vf, un, vn, role; } tgpu_corner_t;
 
+/** @brief Fills one retained-cache vertex from a face template and one corner.
+ *
+ * Zeroes *v, then copies the corner's position, far and near UVs and colours
+ * (alpha forced to 0xFF), and the face's material words, face_flags and four
+ * parent corners. flags16 is the face's flags16, the corner's role shifted
+ * to bit 3, bit 13 for tri2 and bit 15 for spare.
+ * @param v Receives the vertex.
+ * @param F The face template.
+ * @param k The corner.
+ * @param tri2 1 for a quad's second half or a sub-triangle.
+ * @param spare 1 for the second (spare) triangle of a near-variant twin. */
 static void tgpu_fill_vert(rhi_terrain_vertex* v, const tgpu_face_t* F,
                            const tgpu_corner_t* k, int tri2, int spare) {
     memset(v, 0, sizeof(*v));
@@ -5723,6 +6004,18 @@ static void tgpu_fill_vert(rhi_terrain_vertex* v, const tgpu_face_t* F,
     v->c3x = F->c[3].x; v->c3y = F->c[3].y; v->c3z = F->c[3].z;
 }
 
+/** @brief Appends one triangle's three vertices to a retained-cache buffer.
+ *
+ * Each vertex is built by tgpu_fill_vert with the spare bit clear. In an
+ * animated buffer (b->anim) the vertex's previous-tick record is filled from
+ * the corner's pp and prgb words and the face's pc corners.
+ * @param b The destination buffer.
+ * @param F The face template.
+ * @param a The first corner.
+ * @param c1 The second corner.
+ * @param c2 The third corner.
+ * @param tri2 1 for a quad's second half or a sub-triangle (flags16 bit 13).
+ * @return 0, or -1 when a push fails. */
 static int tgpu_emit_tri(tgpu_buf* b, const tgpu_face_t* F,
                          tgpu_corner_t a, tgpu_corner_t c1, tgpu_corner_t c2,
                          int tri2 /* second half / sub-tri (flags16 bit13) */) {
@@ -6752,6 +7045,14 @@ static void tgpu_canim_latch(tgpu_slot_t* T, const tscache_t* SC) {
     T->bakeCanim = (uint8_t)(CA != NULL);
     T->canimRoll = CA ? CA->rollPres : 0u;
 }
+/** @brief Tests whether a slot's baked colour-anim state differs from the sector's current state.
+ *
+ * The bake is stale when the sector's membership in the colour lists
+ * (tsc_canim non-NULL) differs from bakeCanim, or when its colour roll
+ * (rollPres) differs from the canimRoll that tgpu_canim_latch stored.
+ * @param T The slot.
+ * @param SC The decoded sector.
+ * @return 1 when the bake is stale, else 0. */
 static int tgpu_canim_stale(const tgpu_slot_t* T, const tscache_t* SC) {
     const canim_t* CA = tsc_canim(SC);
     if ((CA != NULL) != (T->bakeCanim != 0)) return 1;
@@ -6944,6 +7245,14 @@ static void tgpu_arena_census_at_exit(void) {
     atexit(tgpu_arena_census_line);
 }
 
+/** @brief Prints and resets the retained-cache claim counters on every 120th call under OPENPETE_TERRAIN_GPU_DBG.
+ *
+ * The variable is latched on the first call; without it the function
+ * returns. Registers the arena census line to print at exit. On the 120th
+ * call it prints one [ter-gpu] line (sector, claim-reason and rebuild
+ * counters plus the arena statistics of openpete_tercache_get_stats), the
+ * arena census line, and zeroes the counters. terrain_build calls it once
+ * per build. */
 static void tgpu_census(void) {   /* OPENPETE_TERRAIN_GPU_DBG: ~1/s */
     static int on = -1, n;
     ENV_FLAG_LATCH(on, "OPENPETE_TERRAIN_GPU_DBG");
@@ -8313,6 +8622,15 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                     drawHP, drawLP);
 }
 
+/** @brief Workpool job: walks one prepass sector into a worker's triangle stream and records the run.
+ *
+ * Sets s_pre_rec[item] to the worker, the worker's tri_n before the walk and
+ * the triangles the walk added; the count is 0 when the prepass resolved no
+ * decoded sector for the item. Writes only s_wctx[worker] and
+ * s_pre_rec[item].
+ * @param item The index into the visible-sector list.
+ * @param worker The worker id, below TN_MAX_WORKERS.
+ * @param arg The tn_wcfg of this walk. */
 static void walk_sector_job(int item, int worker, void* arg) {
     tn_wcfg* G = (tn_wcfg*)arg;
     tn_wctx* W = &s_wctx[worker];
@@ -9889,6 +10207,16 @@ static int tgpu_portal_frames(CPUState* cpu) {
     rim_frames_derive(cpu);
     return 1;
 }
+/** @brief Tests a sector's bounding sphere against the active portal rim frames.
+ *
+ * Rounds the inputs to float, scales them by 16 into world units (the radius
+ * also by s_rim_rowmax) and returns rim_sphere_cand_core of the result.
+ * @param oc1 The sphere centre's horizontal view coordinate, in local units
+ *        of 16 world units.
+ * @param oc2 The sphere centre's vertical view coordinate, likewise.
+ * @param oc3 The sphere centre's view depth, likewise.
+ * @param radius The sphere radius, likewise.
+ * @return 1 when some valid portal frame admits the sphere, else 0. */
 static int tgpu_rim_sphere_cand(double oc1, double oc2, double oc3, int radius) {
     return rim_sphere_cand_core(
         (double)(float)oc1 * 16.0, (double)(float)oc2 * 16.0,
