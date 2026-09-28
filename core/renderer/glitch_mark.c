@@ -146,9 +146,13 @@ void openpete_glitch_mark_request(const char *reason)
 static const char *const s_kind_name[] = { "canonical", "intermediate", "inline" };
 static const char *const s_shows_name[] = { "scene", "vram-fb", "psycross-ref", "clear" };
 
-/** @brief Look up a name in a string table, "?" when the index is out of range.
+/** @brief Look up a name in a string table with a fallback for a bad index.
  *
- * @return The table entry, or "?" for an index below 0 or at least @p n. */
+ * @param tab Table of names.
+ * @param n Number of entries in tab.
+ * @param i Index to look up.
+ * @return The table entry, or the string "?" for an index below 0 or at
+ *         least n. */
 static const char *name_of(const char *const *tab, int n, int i)
 { return (i >= 0 && i < n) ? tab[i] : "?"; }
 

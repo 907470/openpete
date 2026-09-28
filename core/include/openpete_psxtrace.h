@@ -215,7 +215,11 @@ void openpete_psxtrace_close(openpete_psxtrace_t* t);
  * @return 1 when a .vsync, .loads or .srand sidecar loaded and the schedule
  *         is active, else 0. */
 int  openpete_sched_open(const char* trace_path);   /* 1 when any sidecar loaded */
-/// @brief Return 1 when openpete_sched_open() loaded a schedule, else 0; a failed schedule stays active.
+/** @brief Report whether a reference schedule is loaded.
+ *
+ * Set by openpete_sched_open() and never cleared; a schedule that later
+ * failed (openpete_sched_failed) stays active.
+ * @return 1 when openpete_sched_open() loaded a schedule, else 0. */
 int  openpete_sched_active(void);
 /* The schedule tracks the reference VBLANK count openpete has reached
  * (`pos`). Each consumer returns a target; the thunk layer charges
@@ -227,7 +231,11 @@ int  openpete_sched_active(void);
  * @param stamps Stamp per record index.
  * @param count Records in stamps. */
 void     openpete_sched_set_stamps(const uint32_t* stamps, uint32_t count); /* the trace's pad2 column */
-/// @brief Return the reference VBLANK count openpete has reached, 0 until the position is known.
+/** @brief Return the reference VBLANK count openpete has reached.
+ *
+ * The position is set when the schedule opens or a consumer first meets it
+ * (openpete_sched_pos_known) and advances by openpete_sched_advance_pos.
+ * @return The position; 0 until it is known. */
 uint32_t openpete_sched_pos(void);
 
 /** @brief Advance the position by vbls reference VBLANKs.
@@ -237,7 +245,12 @@ uint32_t openpete_sched_pos(void);
  * @param vbls VBLANKs to add. */
 void     openpete_sched_advance_pos(uint32_t vbls);
 
-/// @brief Return 1 once the position has been set from the first event or an anchor stamp, else 0.
+/** @brief Report whether the position has been set.
+ *
+ * The position is set at openpete_sched_open() to the earlier of the first
+ * waited VSync's entry and the first read's issue, or by the first consumer
+ * that supplies a VBLANK when neither existed.
+ * @return 1 once the position is set, else 0. */
 int      openpete_sched_pos_known(void);
 
 /** @brief Answer a VSync(-1) query with the reference's counter for the same read of the record.
@@ -368,7 +381,11 @@ int  openpete_sched_next_srand(uint32_t* seed_out);
  * @param skip_to_rec Receives the reference record where its window ended.
  * @return 1 when a re-alignment is due, else 0. */
 int  openpete_sched_anchor_window(uint32_t record, uint32_t value, uint32_t* skip_to_rec);
-/// @brief Return 1 while openpete is inside a load window, as of the last openpete_sched_anchor_window() call.
+/** @brief Report whether openpete is inside a reference load window.
+ *
+ * The value is the one openpete_sched_anchor_window() last computed from
+ * the watched word; 0 before its first call that has load windows.
+ * @return 1 while inside a load window, else 0. */
 int  openpete_sched_in_load(void);
 /** @brief Return whether the kernel's controller and card vblank handler ran on reference VBLANK vbl.
  *
@@ -459,11 +476,12 @@ int      openpete_psxtrace_skip_current_to(uint32_t rec);
  * @param fmt printf format of the reason, followed by its arguments. */
 void openpete_sched_fail(const char* fmt, ...);
 
-/** @brief Return 1 when a schedule failure was recorded, else 0.
+/** @brief Report whether a schedule failure was recorded.
  *
  * @param reason Receives a pointer to the first failure's text, valid for
  *        the process; may be NULL. It is set whether or not a failure was
- *        recorded, and holds an empty string when none was. */
+ *        recorded, and holds an empty string when none was.
+ * @return 1 when a failure was recorded, else 0. */
 int  openpete_sched_failed(const char** reason);
 
 /** @brief Log one line of the schedule's consumption counters, with the failure reason when one was recorded.

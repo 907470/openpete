@@ -1483,10 +1483,13 @@ static void tn_eye_normal(const ngte_cvert* a, const ngte_cvert* b, double n[3])
     n[1] = a->m3 * b->m1 - b->m3 * a->m1;
     n[2] = a->m1 * b->m2 - b->m1 * a->m2;
 }
-/** @brief Returns n . v, the signed side of an eye plane on which a camera-space point lies.
+/** @brief Returns the signed side of an eye plane on which a camera-space point lies.
+ *
+ * The side is the dot product of n and the point (m1, m2, m3).
  * @param n The plane normal, from tn_eye_normal.
  * @param v The point, from its camera-space m1, m2, m3.
- * @return The dot product; the plane passes through the eye. */
+ * @return The dot product; the plane passes through the eye, so its sign
+ *         is the side and its magnitude scales with the point's distance. */
 static double tn_eye_side(const double n[3], const ngte_cvert* v) {
     return n[0] * v->m1 + n[1] * v->m2 + n[2] * v->m3;
 }

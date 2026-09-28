@@ -4,12 +4,6 @@
 # written-by: hook
 # head: 184d0f5fc4327cdd37a6e80c58a1ab88af7ceed3
 file	function	form	accepted
-core/diag/psxtrace_schedule.c	openpete_sched_active	untagged	
-core/diag/psxtrace_schedule.c	openpete_sched_failed	untagged	
-core/diag/psxtrace_schedule.c	openpete_sched_in_load	untagged	
-core/diag/psxtrace_schedule.c	openpete_sched_pos	untagged	
-core/diag/psxtrace_schedule.c	openpete_sched_pos_known	untagged	
-core/renderer/glitch_mark.c	name_of	longbrief	
 games/common/renderer/player.c	blk_get	none	
 games/common/renderer/player.c	blk_put	none	
 games/common/renderer/player.c	dist3	none	
@@ -51,7 +45,6 @@ games/common/renderer/player_game_spyro23.c	s23_part_record	none
 games/common/renderer/player_game_spyro23.c	s23_part_xform	none	
 games/common/renderer/player_game_spyro23.c	s23_plane_begin	none	
 games/common/renderer/player_game_spyro23.c	s23_seam_field	none	
-games/common/renderer/terrain.c	tn_eye_side	longbrief	
 games/spyro-1/renderer/reextract.c	cl_trig_q12	none	
 games/spyro-1/renderer/reextract.c	fpos_get	none	
 games/spyro-1/renderer/reextract.c	herm_matrix	none	
