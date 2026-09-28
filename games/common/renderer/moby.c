@@ -542,6 +542,17 @@ static void report_code_hist(void) {
             openpete_frame, hb, up ? ub : " none");
 }
 
+/** @brief Print the captured F798 prims, the first four cull records and a prim-code histogram to stderr.
+ *
+ * Each of the first four records prints its raw words, its decoded fields, its
+ * rotation matrix and the leading words of the frame, faces and colour blocks
+ * it points at (ngte_dump_words), and the loop stops at the terminator record.
+ * The first ten captured prims then print raw, followed by a histogram of the
+ * codes of all s_gte prims. The OPENPETE_MOBY_VERIFY path calls it once, on the
+ * first VBL moby_verify_vbl selects.
+ * @param cpu The guest CPU state, read only.
+ * @param start The start of the prim stream the pass wrote.
+ * @param end One past the end of that stream. */
 static void hex_dump(CPUState* cpu, uint32_t start, uint32_t end) {
     fprintf(stderr, "[moby-dump vbl=%u] F798 prims [%08X,%08X) %u bytes  OFX=%d OFY=%d H=%u\n",
             openpete_frame, start, end, end - start,
@@ -723,11 +734,16 @@ static double model_extent_compute(CPUState* cpu, uint32_t header) {
     return best > 0.0 ? sqrt(best) : -1.0;
 }
 
-/* An AnimationHeader's content signature: its first word and the first word
- * of its geometry pointer block. A header slot the game refills
- * with another clip (a level load, or a streamed animation buffer) reads a
- * different signature at the same address. */
 typedef struct { uint32_t w0, w1; } anim_sig_t;
+/** @brief The content signature of an AnimationHeader: two of its guest words.
+ *
+ * w0 is the header's first word and w1 the word at header +
+ * game_layout.moby.anim_ptr_block, the first word of its geometry pointer
+ * block. A header slot the game refills with another clip (a level load, or a
+ * streamed animation buffer) reads a different signature at the same address.
+ * @param cpu The guest CPU state, read only.
+ * @param header The AnimationHeader's PSX address.
+ * @return The signature. */
 static anim_sig_t anim_header_sig(CPUState* cpu, uint32_t header) {
     anim_sig_t g = { cpu->read_word(header),
                      cpu->read_word(header + game_layout.moby.anim_ptr_block) };
@@ -1446,11 +1462,20 @@ typedef struct { uint32_t moby; int zsf4; uint8_t dist; double tz;
                  uint32_t hdr, hdr_p; anim_sig_t sig, sig_p; } fade_ent;
 static fade_ent s_fade_snap[MAX_RECORDS], s_fade_prev[MAX_RECORDS];
 static int s_fade_snap_n, s_fade_prev_n;
+/** @brief Roll the fade tables: this tick's entries become the previous tick's and the current table empties.
+ *
+ * Copies the s_fade_snap_n current entries over s_fade_prev. on_draw_regular
+ * calls it at the start of each canonical regular pass. */
 static void fade_snap_clear(void) {
     memcpy(s_fade_prev, s_fade_snap, (size_t)s_fade_snap_n * sizeof s_fade_snap[0]);
     s_fade_prev_n = s_fade_snap_n;
     s_fade_snap_n = 0;
 }
+/** @brief The entry naming a moby in a fade table, or NULL.
+ * @param t The table.
+ * @param n The entries in `t`.
+ * @param moby The moby's PSX address.
+ * @return The entry, or NULL when none names the moby. */
 static fade_ent* fade_snap_find(fade_ent* t, int n, uint32_t moby) {
     for (int i = 0; i < n; i++) if (t[i].moby == moby) return &t[i];
     return NULL;
@@ -1534,6 +1559,13 @@ static int fade_header_intact(CPUState* cpu, fade_ent* t, int n, uint32_t moby,
     anim_sig_t now = anim_header_sig(cpu, header);
     return now.w0 == want->w0 && now.w1 == want->w1;
 }
+/** @brief The ZSF4 the canonical pass recorded for a moby, or a default when it has no entry.
+ *
+ * Reads the current tick's table only. On a miss the caller supplies the tier
+ * to draw at.
+ * @param moby The moby's PSX address.
+ * @param dflt The value returned on a miss.
+ * @return The recorded ZSF4, or `dflt`. */
 static int fade_snap_get(uint32_t moby, int dflt) {
     const fade_ent* e = fade_snap_find(s_fade_snap, s_fade_snap_n, moby);
     return e ? e->zsf4 : dflt;   /* snapshot miss: caller picks the safe tier */
@@ -1602,6 +1634,13 @@ int moby_native_canon_drawn_mobys(const uint32_t** out) {
     return (openpete_frame - s_canon_drawn_frame <= 2u) ? s_canon_drawn_n : 0;
 }
 
+/** @brief Add the moby of each live cull record to the canonical drawn set, skipping duplicates.
+ *
+ * The set is emptied when openpete_frame differs from the VBL that last
+ * harvested, so the regular pass resets it and the specular pass of the same
+ * VBL appends. A record whose moby is below KSEG0 is skipped, and the set stops
+ * at its capacity. moby_native_canon_drawn_mobys reads the set.
+ * @param nrec The number of records in s_recs[] to read. */
 static void canon_drawn_harvest(int nrec) {
     if (openpete_frame != s_canon_drawn_frame) {
         s_canon_drawn_frame = openpete_frame;
@@ -2046,6 +2085,15 @@ static int build_moby_record_fields(CPUState* cpu, uint32_t moby, moby_fields* f
 }
 
 static void moby_centre_at(CPUState* cpu, uint32_t moby, const double woff[3], double tr[3]);
+/** @brief The moby's fractional view-space centre at the present's camera, in stored-translation units.
+ *
+ * Calls moby_centre_at with no world offset, so the centre comes from the
+ * interpolated moby position when one resolves and from the RAM position
+ * otherwise. Every pass that projects a moby reads its centre through this
+ * call.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The moby's PSX address.
+ * @param tr Receives the centre. */
 static void build_moby_record_tr(CPUState* cpu, uint32_t moby, double tr[3]) {
     moby_centre_at(cpu, moby, NULL, tr);
 }
@@ -2253,6 +2301,12 @@ static int moby_is_shiny(CPUState* cpu, uint32_t moby) {
 }
 static int append_revealed_regular_inner(CPUState* cpu);
 static void moby_fields_pose_from_snapshot(CPUState* cpu, uint32_t moby, moby_fields* f);
+/** @brief Run append_revealed_regular_inner, adding its wall time to s_us_reveal while the tier census is on.
+ *
+ * The timing is taken only under OPENPETE_MOBY_TIER_DBG; otherwise the call is
+ * a direct pass-through.
+ * @param cpu The guest CPU state.
+ * @return The number of records the reveal walk admitted. */
 static int append_revealed_regular(CPUState* cpu) {
     if (!tier_dbg_on()) return append_revealed_regular_inner(cpu);
     uint64_t t0 = openpete_phase_now_us();
@@ -2999,6 +3053,36 @@ static mn_out s_gout = { s_wtri, s_wtri_fkey, s_wtri_moby, s_wtri_cls, s_wtri_ui
                          s_wtri_otk, s_wtri_isxy, 0, MAX_NTRI };
 static _Thread_local mn_out* t_out = &s_gout;
 
+/** @brief Append one float triangle to the current emit target, unless the near-plane cull drops it.
+ *
+ * The target is the thread's t_out: the global s_gout arrays for a serial walk
+ * or a worker slab for a parallel one; a full target drops the call. A triangle
+ * with any vertex at view-Z <= 0 is dropped, since the float projection divides
+ * by the raw Z and a vertex behind the camera would invert. A triangle with a
+ * vertex flagged unr (in the GTE divide-overflow regime, its screen position
+ * pinned by moby_gte_near_fixup) is dropped when its screen box exceeds 1023 x
+ * 511 px, the class the GPU discards; that drop counts into nearstraddle.
+ *
+ * A kept triangle stores its per-triangle side data from the walk's
+ * thread-local state (s_cur_ui, s_cur_front, s_cur_moby_key, s_cur_moby_dofs,
+ * s_cur_moby_cls, s_emit_fkey, s_emit_special, s_emit_otk, s_emit_tmix), a
+ * mangle flag when any vertex is unr or sat, and the integer SXY of each
+ * vertex. It then resets s_emit_otk to -1 and s_emit_tmix to 0; a dropped
+ * triangle leaves both unchanged.
+ * @param a The first projected vertex.
+ * @param b The second projected vertex.
+ * @param c The third projected vertex.
+ * @param ca The first vertex colour word.
+ * @param cb The second vertex colour word.
+ * @param cc The third vertex colour word.
+ * @param tex Nonzero for a textured triangle.
+ * @param tpx The texture page X origin.
+ * @param tpy The texture page Y origin.
+ * @param clx The CLUT X origin.
+ * @param cly The CLUT Y origin.
+ * @param bpp The texel depth in bits.
+ * @param blend The blend code, 0 for opaque, else the moby_abr_blend result of
+ *              a semi-transparent face. */
 static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
                       uint32_t ca, uint32_t cb, uint32_t cc,
                       int ua,int va,int ub,int vb,int uc,int vc,
@@ -3511,6 +3595,9 @@ static long     s_fc_ovf_used, s_fc_ovf_full;  /* engagement census */
  * Advances the generation, so every entry still carries an older one and none
  * of them is held any more, and frees every overflow entry. */
 static void fcache_pass_begin(void) { s_fc_gen++; s_fc_ovf_n = 0; }
+/** @brief Whether the open resolve pass holds a cache entry.
+ * @param C The entry.
+ * @return Nonzero when its generation is the current one. */
 static int  fcache_pinned(const fcache_t* C) { return C->gen == s_fc_gen; }
 /** @brief Take the next free overflow entry of this resolve pass.
  *
@@ -3542,6 +3629,18 @@ static fcache_t* fcache_victim(fcache_t* C, fcache_t* C2) {
 static int fcache_decode_into(CPUState* cpu, uint32_t fb, uint32_t bytecount,
                               uint32_t s1, uint32_t s2, uint32_t s3, fcache_t* C);
 
+/** @brief The decoded face array of a faceblock, from the two-way cache or freshly decoded.
+ *
+ * The key is the faceblock address, its byte count and its next three words (fb
+ * + 4, + 8, + 12), which change when the game refills the block. A hash pair of
+ * two ways is probed; a hit stamps the entry with the current resolve
+ * generation, so the open pass keeps it. A miss decodes into the victim of
+ * fcache_victim.
+ * @param cpu The guest CPU state, read only.
+ * @param fb The faceblock's PSX address.
+ * @return The entry, valid to the end of the open resolve pass, or NULL when
+ *         the byte count is 0 or above 0x10000 (a desynchronized block), no way
+ *         or overflow entry is free, or the decode fails. */
 static const fcache_t* fcache_get(CPUState* cpu, uint32_t fb) {
     uint32_t bytecount = cpu->read_word(fb);
     if (bytecount == 0 || bytecount > 0x10000u) return NULL;    /* desync, as before */
@@ -3714,6 +3813,29 @@ static fcache_t  s_fpc[FP_SLOTS];         /* patched decodes (keyed fb + frameA)
 static uint32_t  s_fpc_frame[FP_SLOTS];
 static int       s_fpc_next;
 
+/** @brief The face decode of a faceblock with a keyframe's patch list applied, cached per keyframe.
+ *
+ * The 32-slot table s_fpc is keyed by the faceblock, keyframe A and the
+ * unpatched signature words. On a miss the patch words are written into the
+ * faceblock in guest RAM (moby_frame_patch_apply), the block is decoded
+ * (fcache_decode_into), and the originals are written back in forward order
+ * before the call returns. On a sub-tick present the faceblock is first staged
+ * (moby_frame_patch_stage), so the transient runs in the view's copy of it.
+ *
+ * When staging is refused or the list applies no words, the unpatched
+ * fcache_get result is returned. The slot is taken round-robin past every entry
+ * the open resolve pass holds; when all are held the decode goes to a private
+ * overflow entry.
+ * @param cpu The guest CPU state; the patch words are written to guest RAM and
+ *            restored.
+ * @param fb The faceblock's PSX address.
+ * @param header The AnimationHeader whose high-poly faceblock the patch words
+ *               address.
+ * @param frameA Keyframe A's reference, part of the cache key.
+ * @param list The patch list's PSX address.
+ * @return The entry, valid to the end of the open resolve pass, or NULL when
+ *         the byte count is 0 or above 0x10000, the decode fails, or no
+ *         overflow entry is free. */
 static const fcache_t* fpcache_get(CPUState* cpu, uint32_t fb, uint32_t header,
                                    uint32_t frameA, uint32_t list) {
     uint32_t bytecount = cpu->read_word(fb);
@@ -3864,10 +3986,16 @@ static inline uint32_t moby_clerp(uint32_t a, uint32_t b, float t) {
 }
 static long s_clerp_recs;   /* tier-census: records colour-crossfaded this window */
 
-/* Build s_wtri[] from the independent face-stream walk. Returns triangle count.
- * No backface cull yet (the winding sign is determined from the A/B's nclip
- * split first); quads emit both sub-tris when quad-enable is set. */
 static int build_walk_tris_inner(CPUState* cpu);
+/** @brief Build s_wtri[] from the face-stream walk of the queued records and return the triangle count.
+ *
+ * Runs build_walk_tris_inner. Under OPENPETE_MOBY_TIER_DBG the wall time adds
+ * to s_us_walk_rex during a sub-tick re-extract (s_walk_in_rex) and to
+ * s_us_walk otherwise. Each face runs the dual-NCLIP emit tree of walk_records
+ * on float screen coordinates, so a backface-culled face emits nothing and a
+ * quad emits one or two triangles.
+ * @param cpu The guest CPU state.
+ * @return The triangle count, s_gout.n. */
 static int build_walk_tris(CPUState* cpu) {
     if (!tier_dbg_on()) return build_walk_tris_inner(cpu);
     uint64_t t0 = openpete_phase_now_us();
@@ -4578,6 +4706,16 @@ static void walk_parallel(CPUState* cpu, int is_spec) {
     }
 }
 
+/** @brief Walk every queued record's faces into s_wtri[], serially or across the worker pool.
+ *
+ * Refreshes the specular environment state (specular_env_load), empties s_gout
+ * and the per-worker diagnostics, and runs walk_prologue, which resolves each
+ * record's face cache and decides whether the walk may fan out. A serial walk
+ * runs walk_records over all records; otherwise walk_parallel does, and merges
+ * the worker runs in record order. Counts the choice into s_walk_serial or
+ * s_walk_par. The pass is the specular one when s_cur_mat begins with "SP".
+ * @param cpu The guest CPU state.
+ * @return The triangle count, s_gout.n. */
 static int build_walk_tris_inner(CPUState* cpu) {
     specular_env_load(cpu);   /* refresh metalMatrix + metal Tiledef (cheap; SPEC env-UV) */
     s_gout.n = 0;
@@ -4590,14 +4728,18 @@ static int build_walk_tris_inner(CPUState* cpu) {
     return s_gout.n;
 }
 
-/* A/B the walked triangles vs the captured prims (topology desync detector).
- * Build prim-triangles from s_gte (quads split), match each walked tri to a
- * prim tri by order-independent vertex coincidence (<=2px), report precision
- * (walk tris that hit a prim) + recall (prims covered) + the nclip-sign split
- * of matched-vs-unmatched walk tris (to choose the backface-cull winding). */
+/* One triangle of a captured prim: screen vertices, colours, UVs and the
+ * material words. */
 typedef struct { float x[3], y[3]; uint32_t rgb[3]; int u[3], v[3]; int tex, clut, tpage; } ptri;
 #define MAX_PTRI (MAX_PRIMS*2)
 static ptri s_ptri[MAX_PTRI]; static int s_ptri_n;
+/** @brief Split every captured prim of s_gte into triangles in s_ptri[].
+ *
+ * A prim with three or more vertices yields the triangle (0,1,2); a quad also
+ * yields (1,3,2), its vertices being stored TL, TR, BL, BR. Each triangle keeps
+ * the prim's screen positions, colours, UVs, texture flag, CLUT and texture
+ * page. A prim with fewer than three vertices is skipped, and the list stops at
+ * MAX_PTRI. */
 static void build_prim_tris(void) {
     s_ptri_n = 0;
     for (int g = 0; g < s_gte_n; g++) {
@@ -4633,20 +4775,42 @@ static double tri_match_cost(const ntri_t* w, const ptri* p) {
     }
     return bestmax;
 }
-/* Box-dump latch, one shot per producer pass. A single latch fired on the
- * first pass of the first frame and silenced every later pass, so a dump
- * keyed to a box only ever described the animated walk; the material name
- * (s_cur_mat) identifies the pass, and each name is dumped once. Returns
- * non-zero when the current pass has already dumped. */
 #define BOX_PASS_MAX 4
 static const char* s_pb_mats[BOX_PASS_MAX]; static int s_pb_nmat;
 static const char* s_wb_mats[BOX_PASS_MAX]; static int s_wb_nmat;
+/** @brief Whether the current producer pass has already dumped, recording the pass when it has not.
+ *
+ * The pass is identified by the material name pointer s_cur_mat. Each distinct
+ * pointer is remembered once, so a box dump prints once per pass (regular,
+ * specular, shaded) instead of once overall. At most BOX_PASS_MAX names are
+ * remembered; a pass past that reports not latched on every call.
+ * @param seen The remembered material names, BOX_PASS_MAX slots.
+ * @param n The count of names in `seen`, updated when a name is added.
+ * @return 1 when s_cur_mat is already in `seen`, else 0. */
 static int box_pass_latched(const char** seen, int* n) {
     for (int i = 0; i < *n; i++) if (seen[i] == s_cur_mat) return 1;
     if (*n < BOX_PASS_MAX) seen[(*n)++] = s_cur_mat;
     return 0;
 }
 
+/** @brief Match the walked triangles to the captured prims and print the topology and colour A/B to stderr.
+ *
+ * Builds the prim triangles (build_prim_tris), then assigns walk triangles to
+ * prim triangles one to one: each pair whose centroids lie within 32 px and
+ * whose tri_match_cost is at most 4 px is ranked by cost, and pairs are taken
+ * in that order, each side once. Reports precision (walk triangles matched) and
+ * recall (prim triangles covered), both over all triangles and over those whose
+ * centroid lies in the 512 x 240 display rect, the mean match distance, the
+ * nclip sign split of matched and unmatched triangles, per-vertex colour and UV
+ * agreement, walk triangles that duplicate another walk triangle, the walk
+ * shape counters of s_wdiag[0], and the per-channel colour error of the
+ * special-material faces against their prim.
+ *
+ * OPENPETE_MOBY_PRIMBOX and OPENPETE_MOBY_WALKBOX dump the prims and the walk
+ * triangles with a vertex in a screen box, once per pass (box_pass_latched).
+ * The first call also prints a few on-screen misses and uncovered prims. Reads
+ * s_gout, s_wtri and s_gte; the OPENPETE_MOBY_VERIFY path calls it after
+ * build_walk_tris or build_shaded_walk_tris. */
 static void compare_walk_vs_prims(void) {
     build_prim_tris();
     static int s_cmp_dumped = 0; int s_cmp_dump = !s_cmp_dumped; s_cmp_dumped = 1;
@@ -5081,6 +5245,11 @@ static float env_c2(void) {   /* calibration constant (temp env override) */
     if (c < -1e8f) { const char* e = getenv("OPENPETE_ENV_C2"); c = (e && *e) ? (float)atof(e) : 14.5f; }
     return c;
 }
+/** @brief The sign on the record azimuth in the environment-reflection U term, latched on first use.
+ *
+ * 1.0 by default; OPENPETE_ENV_AZSIGN overrides it. specular_env_uv multiplies
+ * s_cur_env_az by it.
+ * @return The factor. */
 static float env_azsign(void) {
     static float c = -1e9f;
     if (c < -1e8f) { const char* e = getenv("OPENPETE_ENV_AZSIGN"); c = (e && *e) ? (float)atof(e) : 1.0f; }
@@ -5241,19 +5410,32 @@ static int isect_log_on(void) {
  * n with nlen = |n|, computed once per face, and whether all of them are
  * finite. */
 typedef struct { double p[3][3]; double lo[3], hi[3]; double n[3], nlen; int fin; } isect_tri;
+/** @brief The cross product a x b.
+ * @param a The first vector.
+ * @param b The second vector.
+ * @param o Receives the product; distinct from `a` and `b`. */
 static void isect_cross(const double a[3], const double b[3], double o[3]) {
     o[0] = a[1]*b[2] - a[2]*b[1]; o[1] = a[2]*b[0] - a[0]*b[2]; o[2] = a[0]*b[1] - a[1]*b[0];
 }
+/** @brief The dot product of two 3-vectors.
+ * @param a The first vector.
+ * @param b The second vector.
+ * @return The product. */
 static double isect_dot(const double a[3], const double b[3]) {
     return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
 }
-/* A vertex's side of a plane from its distance numerator g = n.(p - q): the
- * distance g/nlen, snapped to 0 within ISECT_EPS, classes as +1 or -1 by its
- * sign, 0 when snapped, and ISECT_NAN when it is not a number (on neither side
- * and not on the plane). Away from the snap bound the class follows from g
- * alone: a relative margin far above the rounding of the division decides it,
- * and the division runs only inside the margin. */
 #define ISECT_NAN 2
+/** @brief The side class of a vertex against a plane, from its distance numerator g and the normal's length.
+ *
+ * The distance g/nlen, snapped to 0 within ISECT_EPS, classes as +1 or -1 by
+ * its sign, 0 when snapped, and ISECT_NAN when it is not a number (on neither
+ * side and not on the plane). Away from the snap bound the class follows from g
+ * alone: a relative margin far above the rounding of the division decides it,
+ * and the division runs only inside the margin.
+ * @param g The distance numerator n.(p - q).
+ * @param nlen The plane normal's length.
+ * @return +1 or -1 beyond the snap bound, 0 within it, ISECT_NAN for a NaN
+ *         distance. */
 static int isect_side_of(double g, double nlen) {
     const double a = fabs(g), e = ISECT_EPS * nlen;
     const int beyond = a > e * (1.0 + 1e-6), within = a < e * (1.0 - 1e-6);
@@ -5410,6 +5592,13 @@ static int isect_pair(const isect_tri* A, const isect_tri* B) {
     double dx = e[0]-s[0], dy = e[1]-s[1];
     return (dx*dx + dy*dy) > ISECT_TOL_PX*ISECT_TOL_PX;
 }
+/** @brief The number of vertices of one walk triangle that coincide with a vertex of another.
+ *
+ * A vertex coincides when a vertex of the other triangle has the same sx, sy
+ * and tvz, compared exactly.
+ * @param a The first triangle.
+ * @param b The second triangle.
+ * @return The count, 0 to 3. */
 static int isect_shared(const ntri_t* a, const ntri_t* b) {
     int n = 0;
     for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++)
@@ -5426,6 +5615,14 @@ static int isect_shared(const ntri_t* a, const ntri_t* b) {
 static int isect_eligible(int i) {
     return s_wtri[i].blend == 0 && s_wtri_moby[i] && s_wtri_ui[i] == 0 && !s_wtri_mangle[i];
 }
+/** @brief Build the intersection-space face of a walk triangle.
+ *
+ * The vertices are (sx, sy, ISECT_K / vz), with depth 0 where vz is not
+ * positive. The face also gets its bounding box, its plane normal (p1 - p0) x
+ * (p2 - p0) with the normal's length, and fin, set when every coordinate and
+ * the length are finite.
+ * @param i The walk triangle index.
+ * @param t Receives the face. */
 static void isect_tri_of(int i, isect_tri* t) {
     int fin = 1;
     for (int k = 0; k < 3; k++) {
@@ -5481,6 +5678,10 @@ static void isect_test(const isect_ctx* x, int a, int b) {
  * (every vertex coordinate on that axis is NaN) is widened to infinity, which
  * like NaN never separates two boxes. */
 typedef struct { double lo[3], hi[3]; int k; } isect_box;
+/** @brief Fill a sweep box from a face's bounding box, widening a NaN bound to infinity.
+ * @param t The face.
+ * @param k The face's position in its moby's face list.
+ * @param o Receives the box. */
 static void isect_box_of(const isect_tri* t, int k, isect_box* o) {
     for (int c = 0; c < 3; c++) {
         o->lo[c] = isnan(t->lo[c]) ? -INFINITY : t->lo[c];
@@ -5540,6 +5741,12 @@ static void isect_moby(const isect_tri* T, const int* idx, int n, isect_count* c
     for (int a = 0; a < n; a++) c->contested += s_wtri_contest[idx[a]];
     c->faces += n;
 }
+/** @brief Print one moby's intersection counts as an [isect] line.
+ *
+ * The class and front flag come from the moby's first walk triangle.
+ * @param mob The moby's PSX address.
+ * @param i0 The index of the moby's first walk triangle.
+ * @param c The moby's counts. */
 static void isect_log_moby(uint32_t mob, int i0, const isect_count* c) {
     fprintf(stderr, "[isect] vbl=%u mat=%s m=%08X cls=%u front=%d faces=%ld contested=%ld "
                     "pairs=%ld coplanar=%ld sharededge=%ld\n",
@@ -5772,16 +5979,42 @@ static void isg_raster(int i, isg_fn fn, void* u) {
 }
 static int s_isg_own[ISG_W * ISG_H];   /* face index + 1 of the owner */
 static int s_isg_grp[ISG_W * ISG_H];   /* max rank within the current moby */
+/** @brief Raster callback: make a face the owner of a pixel when its rank exceeds the current owner's.
+ *
+ * The owner is stored as a face index plus 1 in s_isg_own, with 0 for none.
+ * @param f The walk triangle index.
+ * @param p The pixel index, (y - ISG_Y0) * ISG_W + (x - ISG_X0).
+ * @param u Unused. */
 static void isg_own(int f, int p, void* u) {
     (void)u; int o = s_isg_own[p];
     if (!o || s_isect_rk[o - 1] < s_isect_rk[f]) s_isg_own[p] = f + 1;
 }
+/** @brief Raster callback: clear the owner and the group rank of a pixel.
+ * @param f The walk triangle index.
+ * @param p The pixel index, (y - ISG_Y0) * ISG_W + (x - ISG_X0).
+ * @param u Unused. */
 static void isg_clr(int f, int p, void* u) { (void)f; (void)u; s_isg_grp[p] = 0; s_isg_own[p] = 0; }
+/** @brief Raster callback: clear the group rank of a pixel.
+ * @param f The walk triangle index.
+ * @param p The pixel index, (y - ISG_Y0) * ISG_W + (x - ISG_X0).
+ * @param u Unused. */
 static void isg_clr_grp(int f, int p, void* u) { (void)f; (void)u; s_isg_grp[p] = 0; }
+/** @brief Raster callback: raise the group rank of a pixel to a face's rank.
+ * @param f The walk triangle index.
+ * @param p The pixel index, (y - ISG_Y0) * ISG_W + (x - ISG_X0).
+ * @param u Unused. */
 static void isg_grp(int f, int p, void* u) {
     (void)u; if (s_isg_grp[p] < s_isect_rk[f]) s_isg_grp[p] = s_isect_rk[f];
 }
 typedef struct { long px, disc, ideal, missed; } isg_stat;
+/** @brief Raster callback: count a face's pixel into the census as covered, discarded, ideal and missed.
+ *
+ * A pixel is discarded when its owner is a face of the same moby with a higher
+ * rank, and ideal when the group rank exceeds the face's; missed is ideal and
+ * not discarded.
+ * @param f The walk triangle index.
+ * @param p The pixel index, (y - ISG_Y0) * ISG_W + (x - ISG_X0).
+ * @param u The isg_stat the counts accumulate into. */
 static void isg_cnt(int f, int p, void* u) {
     isg_stat* st = (isg_stat*)u;
     st->px++;
@@ -5792,6 +6025,17 @@ static void isg_cnt(int f, int p, void* u) {
     st->ideal += ideal;
     st->missed += ideal && !applied;
 }
+/** @brief Print the rank select's per-pixel discard census for this feed as an [isect-sel] line.
+ *
+ * The ranked faces are the eligible contested faces with a positive rank.
+ * isg_raster covers each face over a 1024 x 768 pixel window at (-256, -256),
+ * pixel centres, either winding. The census first records the highest-rank
+ * owner of every pixel across all ranked faces (isg_own), then per moby records
+ * the highest rank of that moby at each pixel (isg_grp) and counts, over each
+ * face's pixels: px covered, disc where the owner is a face of the same moby
+ * with a higher rank (the discard the select applies), ideal where some face of
+ * the same moby with a higher rank covers the pixel, and missed where ideal
+ * holds and disc does not. The pixel state is cleared as each moby finishes. */
 static void isect_select_census(void) {
     static int ord[MAX_NTRI];
     int n = 0;
@@ -6998,6 +7242,14 @@ static gem_idle_ent s_gem_idle[GEM_IDLE_SLOTS];
 static long s_idle_active, s_idle_seeded;  /* census counters (OPENPETE_MOBY_TIER_DBG) */
 static long s_idle_live;                   /* collectables whose gate said "canonical animates" */
 
+/** @brief The wobble-table slot for a moby: its entry, or the first free slot of a 16-slot probe.
+ *
+ * Probing starts at (m >> 3) modulo GEM_IDLE_SLOTS. When no probed slot names
+ * the moby or is free, the moby's home slot is returned, which then evicts the
+ * entry it holds; two mobys sharing a home slot re-seed each other on every
+ * call and render frozen.
+ * @param m The moby's PSX address.
+ * @return A slot, never NULL. */
 static gem_idle_ent* gem_idle_slot(uint32_t m) {
     uint32_t h = (m >> 3) & (GEM_IDLE_SLOTS - 1u);
     for (uint32_t i = 0; i < 16u; i++) {
@@ -7009,6 +7261,19 @@ static gem_idle_ent* gem_idle_slot(uint32_t m) {
                                             * (feature no-op), never wrongly posed */
 }
 
+/** @brief The host wobble phase of a frozen collectable, in byte-angle units, at this VBL.
+ *
+ * The moby's table entry is seeded when it names another moby or class, or
+ * holds another base m_RotationTicks (props + 0x13): the seed is that byte and
+ * the current VBL. The phase is (base + VBLs since the seed) mod 256, one
+ * byte-angle per VBL where the game advances two per tick. Each seed counts
+ * into s_idle_seeded.
+ * @param cpu The guest CPU state, read only.
+ * @param m The moby's PSX address.
+ * @param cls The moby's class, stored in the entry.
+ * @param props The moby's props record address.
+ * @param t0_out Receives the seed phase, the frozen RAM byte.
+ * @return The phase, in [0, 256). */
 static double gem_idle_phase(CPUState* cpu, uint32_t m, uint32_t cls, uint32_t props, uint8_t* t0_out) {
     uint8_t ticks = cpu->read_byte(props + 0x13);      /* m_RotationTicks, frozen */
     gem_idle_ent* e = gem_idle_slot(m);
@@ -7660,33 +7925,6 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
     return n;
 }
 
-/* Native-topology shaded walk (backlog #2a) — VERIFIED, FED. Derives the shaded
- * triangle set from the face stream (func_80022A2C .L800232A8) instead of riding
- * the .s's prims: per moby, word0 packs 4 vertex indices (idx_k =
- * (w0>>{21,14,7,0})&0x1FC, >>2 = slot into this moby's projected verts).
- * tri-vs-quad = (idx2==idx3):
- *   TRI (v0,v1,v2)             kept if NCLIP1>0
- *   QUAD (v0,v1,v2)+(v1,v3,v2) kept if NCLIP1>0 || NCLIP2(v3,v1,v2)<0
- * (bit0/bit1 of word0 only select the shading MODE — gouraud vs flat — not the
- * topology, so they're ignored here.) Positions come from project_all_shaded
- * (100% A/B-verified); s_shrecs[] gives each moby's vert base + face stream.
- *
- * SLOT MAP = IDENTITY (sv[slot]). Confirmed by reading the .s's projected SXY
- * straight from PSX scratchpad 0x1F800000 on a clean shaded moby (cliff_town
- * class 0x3A, 115 verts): direct sv[slot]-vs-scratch[slot] = ~1-2px (GTE
- * truncation) for every slot, and the topology A/B hit ~90% ONSCREEN precision.
- * The earlier "permutation / 33%" reading was a phantom of the attract demo's
- * degenerate-tiny shaded mobys (6-14px, verts ~2px apart), where NN matching and
- * the direct check both break down.
- *
- * COLOUR (#2b) is now native too — shaded_lit_color() reproduces the .s's
- * directional-lighting GTE chain bit-for-bit (verified vs the +0x2A00 scratchpad:
- * flat 100%, gouraud Y-only 61-64/64, err ~0.02). word0 bit0 selects the shading
- * MODE: gouraud (per-vertex normals at model+0x10, colour-indexed by word1) vs
- * flat (one colour from word1's 3-byte face normal). word0 bit1 on a flat face
- * marks the METAL env-reflection sub-mode (block_80023720) — NOT yet derived
- * natively (same family as #1 specular reflection); rendered as basic-flat for
- * now (approximate but leak-free). The feed reads ZERO .s prim output. */
 /** @brief The bucket word of one shaded face, or -1 when the pass gives it none.
  *
  * The pass's row through moby_otk_face_bucket, with the game's face
@@ -7712,6 +7950,33 @@ static int shaded_face_otkey(const moby_otk_rec_t* rec, const proj_xy* base, int
     return moby_otk_face_bucket(rec, &f);
 }
 
+/** @brief Build s_wtri[] from the shaded pass's moby records and return the triangle count.
+ *
+ * project_all_shaded fills the projected vertices and s_shrecs[]; each record's
+ * face stream (func_80022A2C .L800232A8) is then walked. Word 0 of a face packs
+ * four vertex slots, (w0 >> {21,14,7,0}) & 0x1FC with >> 2 indexing the
+ * record's projected vertices, and a triangle has slot 2 equal to slot 3. A
+ * face with a slot at or past the vertex count is skipped. A triangle is kept
+ * when its float NCLIP is positive; a quad, (v0,v1,v2) and (v1,v3,v2), when
+ * NCLIP1 > 0 or NCLIP2(v3,v1,v2) < 0.
+ *
+ * Bit 0 of word 0 selects the shading mode. Gouraud (mode 0) reads per-vertex
+ * colours by word 1's colour fields: shaded_lit_color over the model's inline
+ * normals at model + 0x10, or the baked colour table at [model + 8] for a
+ * static-gouraud record. Flat (bit 0 set) lights once from the face normal in
+ * word 1: with bit 1 set it takes the metal tint of shaded_metal_color (mode
+ * 2), otherwise the directional light on the flat table base (mode 1). A mode 1
+ * face of a moby whose m_SpecularMetalColor >> 22 is 0 is emitted with blend 1
+ * (semi-transparent). OPENPETE_SHADED_NOHL drops the highlight term of the
+ * gouraud colours.
+ *
+ * Per record it sets the HUD tag s_cur_ui (0 actor, 1 flat HUD, 2 depth-tested
+ * HUD), the cutscene-front flag, class and OT bias. Each face's paint bucket
+ * comes from shaded_face_otkey, and its identity key is 0x80000000 | (face <<
+ * 1), bit 0 marking a quad's second half. Stops at MAX_NTRI. Reads no guest
+ * prim output.
+ * @param cpu The guest CPU state, read only.
+ * @return The triangle count, s_gout.n. */
 static int build_shaded_walk_tris(CPUState* cpu) {
     static proj_xy sv[8192]; project_all_shaded(cpu, sv, 8192);   /* fills sv[] + s_shrecs[] */
     if (s_sh_nohl < 0) { const char* e=getenv("OPENPETE_SHADED_NOHL"); s_sh_nohl = (e&&*e!='0'); }
@@ -8690,11 +8955,22 @@ static hold_t   s_hold[HOLD_MOBY_MAX];
 static int      s_hold_n, s_hold_tri_n;
 static unsigned s_hold_epoch;
 
+/** @brief The Tier-2 hold's screen-extent bound in px, 0 when the hold is off, latched on first use.
+ *
+ * OPENPETE_MOBY_HOLD_PX sets it, default 10; a negative value reads as 0.
+ * @return The bound. */
 static int hold_px_max(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_MOBY_HOLD_PX"); v = e ? atoi(e) : 10; if (v < 0) v = 0; }
     return v;
 }
+/** @brief The hold entry captured for a moby and pass this epoch, or NULL.
+ *
+ * The table is emptied when the canonical epoch changes, so every entry belongs
+ * to the current epoch.
+ * @param moby The moby's PSX address.
+ * @param spec 1 for the specular pass's capture, 0 for the regular pass's.
+ * @return The entry, or NULL. */
 static hold_t* hold_find(uint32_t moby, int spec) {
     for (int i = 0; i < s_hold_n; i++)
         if (s_hold[i].moby == moby && s_hold[i].spec == spec) return &s_hold[i];
