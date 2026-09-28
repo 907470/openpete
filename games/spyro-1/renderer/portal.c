@@ -959,12 +959,11 @@ static double portal_sky_eps_vz(void) {
         if (e && *e) v = atof(e);
         init = 1;
     }
-    /* NEGATIVE is meaningful now that the inner rim is culled: the bias used to
-     * pull the sky FORWARD to overpower the rim (and that pull is what let it
-     * beat receding jamb stone — the original poke). With the rim gone there is
-     * nothing to overpower, and sitting exactly ON the opening plane leaves the
-     * preview coplanar with whatever else the arch has there. A small push BACK
-     * makes every piece of the frame win cleanly. */
+    /* A negative value moves the constructions in front of the plane, where
+     * they win contests against coincident geometry but also against receding
+     * jamb stone. Zero leaves them coplanar with whatever else the arch has at
+     * the opening plane. A positive push back makes every piece of the frame
+     * win cleanly. */
     return v;
 }
 /* The .s inserts the sky at bucket B = (Σ outline SZ / npts) >> 7, bumped
@@ -3049,13 +3048,13 @@ void portal_reextract(CPUState* cpu, double alpha, int interp_on) {
     if (!openpete_native_scene_enabled()) return;
     if (s_pcap_n == 0) return;
     /* Don't replay a STALE capture. During a level-load transition (e.g. warping
-     * THROUGH a portal — "ENTERING STONE HILL…") the normal draw loop stops, so
-     * canonical RenderPortals (on_80050BE0) no longer runs and s_pcap freezes at
-     * the last homeworld frame (a screen-filling close portal). Replaying it paints
-     * a flat 4:3 backdrop-colour quad over everything on every intermediate present.
-     * (The main cyclorama IS still drawn during the transition by a non-RenderPortals
-     * path, so render_path_canon_drawn(RP_CYCLORAMA) is NOT a valid proxy here —
-     * proven by instrument: the stale replay kept firing with RP_CYCLORAMA true.)
+     * THROUGH a portal) the normal draw loop stops, so canonical RenderPortals
+     * (on_80050BE0) no longer runs and s_pcap freezes at the last homeworld
+     * frame (a screen-filling close portal). Replaying it paints a flat 4:3
+     * backdrop-colour quad over everything on every intermediate present.
+     * (The main cyclorama is still drawn during the transition by a
+     * non-RenderPortals path, so render_path_canon_drawn(RP_CYCLORAMA) does not
+     * signal that RenderPortals stopped.)
      * RP_PORTAL is marked (render_path_mark_drawn — interval-less, so widescreen-
      * revealed portals with no polybuf emission still count) each canonical present
      * on_80050BE0 runs+feeds, so the bit goes false the moment RenderPortals stops
@@ -3109,8 +3108,9 @@ void portal_reextract(CPUState* cpu, double alpha, int interp_on) {
     /* Save the transient inputs we overwrite; restore before returning so the
      * game fiber resumes on canonical CPU/RAM state. */
     uint32_t save_clip[4] = {0}, save_gte[5];
-    /* Same seam as the reverse-dome path above: stage once for the whole replay
-     * and every per-cap rect below lands in the view instead of guest memory. */
+    /* Stage the clip rect once for the whole replay, so every per-cap rect
+     * below lands in the view instead of guest memory; a refused stage falls
+     * back to writing D_CLIPRECT and restoring it after the loop. */
     uint8_t* clip_st = (uint8_t*)openpete_subtick_view_stage(D_CLIPRECT, 4u * 4u);
     if (!clip_st)
         for (int i = 0; i < 4; i++) save_clip[i] = cpu->read_word(D_CLIPRECT + i * 4);
