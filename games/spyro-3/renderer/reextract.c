@@ -6,8 +6,10 @@
  * for the duration of the present; guest RAM is never written.
  *
  * Provides the renderer/orchestrator.h entries: the fractional camera
- * position for the projection's floor fix, and the two per-present commits
- * (no canonical-render epoch or clear-colour sync exists on this game yet). */
+ * position for the projection's floor fix, the canonical-render epoch (commit,
+ * stamp and freshness queries), and the captures of the moby cull records and
+ * of the player's part-record and colour ranges. The per-producer camera
+ * install and the shaded-moby freshness are inert on this game. */
 #include "renderer/orchestrator.h"
 #include "renderer/terrain.h"
 #include "renderer/cyclorama.h"
@@ -149,12 +151,12 @@ int  spyro_native_canon_mobyreg_fresh(void) {
 int  spyro_native_canon_shaded_fresh(void) { return 0; }   /* no second material pass */
 /* The moby cull records live in the draw scratch this tick carved out of the
  * polybuf, and the draw passes that follow the moby draw reuse that memory
- * before any sub-tick present runs — measured: the queue's leading records read
- * back as unrelated words one VBL later. So the queue is copied at the moby
+ * before any sub-tick present runs, so the queue's leading records read back
+ * as unrelated words one VBL later. So the queue is copied at the moby
  * hook and staged back over its own address for the duration of each
  * intermediate present, which is what makes the replay read the records the
- * tick actually drew. Nothing else this game's feeders read is transient, so
- * capture_range has nothing to do. */
+ * tick actually drew. The moby hooks' capture_range requests (0x500 and 0x800
+ * bytes) exceed the range slots below and capture nothing. */
 static uint8_t  s_recs_copy[0x1000];
 static uint32_t s_recs_base;
 static uint32_t s_recs_len;

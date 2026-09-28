@@ -310,8 +310,8 @@ static struct {
     unsigned long miss_le4, miss_le16, miss_le64, miss_far;   /* unmatched: nearest distance */
     unsigned long sat_verts;              /* unmatched vertices on the SXY bound */
     unsigned long miss_onscreen;          /* unmatched vertices inside the 512x240 frame */
-    unsigned long mid_sampled, mid_hit, mid_cross, seg_same, seg_cross;
-    unsigned long miss_z_near, miss_z_mid, miss_z_far;   /* unmatched by the nearest vertex's view-Z: <0x100, <0x600, else */   /* every 8th unmatched vertex: lies on an edge midpoint of two projected vertices */
+    unsigned long mid_sampled, mid_hit, mid_cross, seg_same, seg_cross;   /* one vertex in eight, by running vertex count, is tested for lying on an edge midpoint or segment of two projected vertices */
+    unsigned long miss_z_near, miss_z_mid, miss_z_far;   /* unmatched by the nearest vertex's view-Z: <0x100, <0x600, else */
     unsigned long code_verts[64], code_matched[64];
     unsigned long sec_miss[VIS_MAX];      /* unmatched, by the nearest vertex's sector (the last level's count) */
     uint32_t sec_miss_count;              /* the sector count sec_miss[] belongs to */

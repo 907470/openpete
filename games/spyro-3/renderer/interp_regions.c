@@ -26,9 +26,9 @@ static const game_interp_row_t s_rows[] = {
     /* g_Spyro (whole struct, 0x2E8): the player avatar. It is not in the moby
      * array, so the shared moby-array capture never reaches it; position +0x00,
      * the body and head rotations +0x0C/+0x10 and the two animation words
-     * +0x14/+0x18 are what the player draw reads per tick. The drop-shadow
-     * scratch Spyro 1 captures separately has no counterpart here — the shadow
-     * derives from this record. */
+     * +0x14/+0x18 are what the player draw reads per tick. The ground
+     * shadow's state block is not an interp row: the player shadow hook
+     * copies it into the player record store. */
     { "g_Spyro", G_SPYRO, (uint32_t)sizeof(Spyro), 0 },
     /* game.state (4 bytes): which simulation regime produced the tick. A pair
      * whose two ticks came from different regimes is a discontinuity for the
