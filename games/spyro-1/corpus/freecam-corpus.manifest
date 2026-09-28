@@ -264,3 +264,6 @@ cliff_town | pos=(108752, 84992, 255090) yaw=0 pitch=992
 # Terrain vs moby: 4 px depth-encoding ties; (490,244) terrain alpha vs moby additive
 # blend order differs walk vs cache, under --lod extended.
 crystal_flight | pos=(130240, 115736, 218978) yaw=0 pitch=992
+# gnorc_gnexus ground terrain missing: some ground sectors in view do not
+# render at this pose (user report 2026-09-28); blessed pre-fix.
+gnorc_gnexus | pos=(77512, 70274, 9034) yaw=2354 pitch=205
