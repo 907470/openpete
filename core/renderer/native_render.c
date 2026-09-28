@@ -778,16 +778,17 @@ static int                s_scene_delay = -2;   /* -2 uninit; >=0 = depth */
 /* 1 while openpete_native_render_screenshot_all composes: the -vk screenshot
  * sits beside the -og PsyCross capture. */
 static int s_scene_shot_compose = 0;
-/* 1 when the shot compose may use the lagged history slot (headless — the
- * canonical feeder walk maintains the ring there). Set with s_scene_shot_compose
- * by the screenshot_all wrapper (s_nr is not yet declared at this point). */
+/* 1 under --headless while a shot compose runs. Set with s_scene_shot_compose
+ * by the screenshot_all and capture_rgba wrappers (s_nr is not yet declared at
+ * this point); scene_delay_depth does not read it, so the compose selects the
+ * same scene in every mode. */
 static int s_scene_shot_lag = 0;
 /* Intermediate (sub-tick alpha=0.5) capture: the re-extract builds the
  * interpolated scene into the CURRENT s_scene and never pushes it to the frame
- * history, so the compose must read depth 0 — the normal shot_compose delay
- * would read a lagged history slot (an empty one, since the re-extract's
- * scene_begin pushes nothing). Set only around openpete_native_render_screenshot_all
- * for an intermediate dump. */
+ * history, so the compose reads depth 0 (an OPENPETE_NATIVE_SCENE_DELAY
+ * override still wins) and the windowed live readback is skipped in favour of
+ * a recompose. Set only around openpete_native_render_screenshot_all for an
+ * intermediate dump. */
 static int s_scene_shot_nodelay = 0;
 void openpete_native_render_set_capture_nodelay(int on) { s_scene_shot_nodelay = on ? 1 : 0; }
 
@@ -15271,9 +15272,8 @@ int openpete_native_render_screenshot_all(const char *base)
     truescope_apply_pending();
     s_scene_shot_compose = 1;
     s_scene_shot_lag = s_nr.headless ? 1 : 0;
-    /* Retained terrain rides the same scene selection: the lagged canonical
-     * scene is exactly the tercache LIVE state (the staged/live promote
-     * mirrors the canonical lag). */
+    /* Retained terrain rides the same scene selection: the state whose stamp
+     * equals the composed scene's stamp (live, else staged). */
     openpete_tercache_frame_select(scene_present_stamp());
     if (scene_pos_sig_on()) scene_pos_sig_report(1);   /* the scene this dump composes */
     { static int pz = -1;

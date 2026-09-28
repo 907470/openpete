@@ -2248,9 +2248,10 @@ void openpete_native_render_record_flush(void);
  * which shows what the window showed (sub-tick scene, mods, postfx,
  * overlays). Headless, and an intermediate capture armed by
  * openpete_native_render_set_capture_nodelay, recompose the scene instead:
- * headless composes the lagged canonical scene so -vk shows the same game
- * tick as the -og capture. Psycross mode, which has no native scene, writes
- * the readback and stops. The reference (-og) is captured by the caller.
+ * headless composes the newest tick's canonical scene, which the -og
+ * capture, deferred one present, also shows. Psycross mode, which has no
+ * native scene, writes the readback and stops. The reference (-og) is
+ * captured by the caller.
  * Applies a pending truescope change first, since headless never runs
  * openpete_native_render_frame. Restores the live layout afterwards.
  * @param base Output path before the -vk suffix.
@@ -2285,9 +2286,10 @@ void openpete_native_scene_restore(void);
  *
  * For an intermediate (sub-tick) capture: the re-extract builds the
  * interpolated scene into the current scene and never pushes it to the
- * history ring, so the normal shot-compose delay would read an empty history
- * slot. While on, the compose also skips the live readback and recomposes.
- * Set on before the dump and off after; the canonical dump leaves it off.
+ * history ring, so the compose reads ring depth 0 (the current scene; an
+ * OPENPETE_NATIVE_SCENE_DELAY override still wins). While on, the compose
+ * also skips the live readback and recomposes. Set on before the dump and
+ * off after; the canonical dump leaves it off.
  * @param on Nonzero to compose the current scene. */
 void openpete_native_render_set_capture_nodelay(int on);
 
@@ -2316,11 +2318,11 @@ void openpete_native_render_snapshot_fb_window(void);
 
 /** @brief Log the run's engagement summaries and tear down the device and window.
  *
- * Always logs the scene box summary, the pipeline depth report and the
- * sub-tick view engagement. When native render is enabled it then waits the
- * device idle and destroys the imgui backend, the terrain cache, the mod
- * postfx and material objects, every target, buffer and pipeline, the
- * device and the window. Safe to call unconditionally. */
+ * Always logs the scene box summary and the sub-tick view engagement; the
+ * pipeline depth report needs a device. When native render is enabled it
+ * then waits the device idle and destroys the imgui backend, the terrain
+ * cache, the mod postfx and material objects, every target, buffer and
+ * pipeline, the device and the window. Safe to call unconditionally. */
 void openpete_native_render_shutdown(void);
 
 #ifdef __cplusplus
