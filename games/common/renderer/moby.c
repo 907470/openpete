@@ -4236,11 +4236,11 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
           /* Regular-walk twin of the shaded HUD3D promotion: a UI-range moby
            * that is a real 3D MODEL self-occludes and needs its own Z pass —
            * the flat HUD layer's per-tri painter can't sort interpenetrating
-           * faces (the level-transition fly-in Spyro showed his teeth through
-           * the back of his head). Promote by PROJECTED view-Z extent of this
+           * faces (a fly-in body model shows its interior through its far
+           * side). Promote by PROJECTED view-Z extent of this
            * record's verts (full-world units; a text glyph spans a few units,
            * a body model hundreds). Thin glyphs stay flat HUD, under the
-           * player, like the shaded walk's falsified-promotion note demands. */
+           * player, as in the shaded walk. */
           if (s_cur_ui == 1 && R->proj_n > 1) {
               float lo = 1e30f, hi = -1e30f;
               for (int pv = 0; pv < R->proj_n; pv++) {
@@ -4328,8 +4328,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
              *   t6a>=0 && t6b<=0 -> skip the whole face
              *   t6a<0  && t6b>0  -> .L80020158:        0x38 QUAD (v0,v1,v2)+(v1,v3,v2)
              *   t6a<0  && t6b<=0 -> .L800203F4 (+8=v0): single 0x30 TRI (v0,v1,v2)
-             * (Measured: walkQ matches the .s's primQ=49/frame on the Insomniac sign,
-             * recall 64%->99%. The earlier inverted map drew one half of every quad.)
+             * (The inverted map draws one half of every quad.)
              * STRIPS (.L8002031C) are single triangles, keep if NCLIP>0. */
             proj_xy* p3 = (i3 < vcount) ? &s_proj[base+i3] : NULL;
             /* Backface NCLIP on the precise FLOAT screen coords (NOT the GTE's floored
@@ -4414,11 +4413,10 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
             }
             /* v3 (4th-vertex) gouraud colour: its index is the HIGH field of the
              * fp+8 word ((v4w>>9)&0x7FC), the sibling of the SXY index in the low
-             * field. Previously approximated as c2, which forced every quad's 2nd
-             * tri (v1,v3,v2) and every (v3,v1,v2) tri to colours (c1,c2,c2)/(c2,..)
-             * — a broken gouraud gradient that rendered as hard facets on ~all
-             * quad faces (51/face-stream here). Reading the real colour restores
-             * the smooth per-vertex shading. (c3 computed with c0-c2 above.) */
+             * field. Substituting c2 would force every quad's 2nd
+             * tri (v1,v3,v2) and every (v3,v1,v2) tri to colours (c1,c2,c2)/(c2,..),
+             * a broken gouraud gradient that renders as hard facets on quad
+             * faces. (c3 computed with c0-c2 above.) */
 
             /* Tiledef material from the cache (locals: the spec env path below
              * overwrites UV/tpage for reflective faces). */
@@ -4445,10 +4443,8 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
              * prim's UV word — word bits 22-30 ARE the CLUT y, so the row is
              * biased by IR0>>9 = 0..7 down an 8-row fogged-CLUT ladder; same
              * mechanism as the terrain CLUT-row texel fog). Without it the walk
-             * sampled the base (unfogged) row at every tier — distant HP mobys
-             * rendered full-bright texels over correctly-faded vertex colours
-             * (the ram's white blowout at the LP boundary, verified +6 rows at
-             * ir0=3512 vs the captured .s prims). Per-record and view-dependent,
+             * samples the base (unfogged) row at every tier: distant HP mobys
+             * get full-bright texels over faded vertex colours. Per-record and view-dependent,
              * so applied here at emit — never baked into the Tier-1 face cache. */
             int cly_fog = moby_face_fog_row(&fd, fcc);
             uint8_t tmix = moby_face_fog_mix(&fd, fcc);
@@ -4464,8 +4460,8 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
              * Tiledef texture + per-vertex colour. This per-face gate is
              * load-bearing: a metal moby's sombrero/eyes are regular textured
              * faces and must NOT be env-mapped -- only its at&4 strip faces
-             * reflect. (The earlier gate env-mapped EVERY textured face of a
-             * metal moby -> sombrero went shiny-green with the wrong texture.) */
+             * reflect. (Env-mapping every textured face of a metal moby would
+             * replace the ordinary texture of its sombrero and eyes.) */
             proj_xy hlq[4];   /* hl decal copies (vz-nudged); see below */
             if (moby_game.spec_light && (s_cur_mat[0]=='S' || R->spec_solo) && F->hl) {
               /* The .s draws these SPECIAL faces (env reflection / diffuse
@@ -4522,10 +4518,10 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                  * light contribution scaled by the spec coefficient (byte2) and the
                  * facing. BK carries the per-moby TINT, so a flamed metal chest
                  * (mscol -> red) reddens ("gets hot but doesn't break"); the cold
-                 * chest's BK is gray -> silver. Using the gray *base* colour missed
-                 * this. BK channels (the .s packing @80021E38): RBK=(ms>>10)&0xFF,
+                 * chest's BK is gray -> silver. The gray *base* colour does not
+                 * carry the tint. BK channels (the .s packing @80021E38): RBK=(ms>>10)&0xFF,
                  * GBK=(ms>>4)&0xFF, BBK=(ms<<2)&0xFF; spec = byte2 = (ms>>16)&0xFF.
-                 * facing add fitted to the prims: ~ -1.19 * spec * NL (gray), NL =
+                 * facing add: ~ -1.19 * spec * NL (gray), NL =
                  * view face-normal . spec-light (D_800770C8+0xC). */
                 uint32_t ms=R->mscol;
                 int RBK=(int)((ms>>10)&0xFFu), GBK=(int)((ms>>4)&0xFFu), BBK=(int)((ms<<2)&0xFFu);
@@ -7984,7 +7980,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
         int count = cpu->read_byte(model + 0x0u) & 0xFF;
         uint32_t faces = cpu->read_word(model + 0xCu); if (faces<0x80000000u) faces|=0x80000000u;  /* shaded face stream */
         int fcount = cpu->read_byte(model + 0x1u) & 0xFF;   /* face count: base model+0xC, count model+0x1, stride 8 */
-        /* STATIC-GOURAUD colour mode (.s block_800230EC..80023268, held-egg fix):
+        /* STATIC-GOURAUD colour mode (.s block_800230EC..80023268):
          * after the vertex loop the .s compares (vbase<<1>>1) against
          * raw_g_Models_entry + 0x10. Equal (entry stored WITHOUT bit31 and verts
          * inline at model+0x10) → it SKIPS the per-vertex lighting pre-pass and
@@ -7992,8 +7988,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
          * delay slot at 0x800230FC. Mode-0 face colour fields are then BYTE
          * OFFSETS into that table (0x00BBGGRR words, emitted verbatim). bit31
          * SET in the entry makes the compare fail → lit-gouraud (+0x2A00 path).
-         * (The egg thief's egg, cls 0x22, is the first static-gouraud moby met:
-         * lit-gouraud painted it uniform gray.) */
+         * (Lit-gouraud on a static-gouraud model paints it uniform gray.) */
         uint32_t ctab = 0; int ctab_len = 0;
         if (!(mraw & 0x80000000u) && (vraw & 0x7FFFFFFFu) == ((mraw & 0x7FFFFFFFu) + 0x10u)) {
             uint32_t craw = cpu->read_word(model + 0x8u);
@@ -8090,8 +8085,8 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
              * (block_80022B40..80022D18): IR=((cam.y-my)>>2,(cam.z-mz)>>2,(mx-cam.x)>>2)
              * loaded as (IR1,IR2,IR3); MAC=(PM·IR)>>12; TR=MAC<<1; then an optional
              * GPF perspective scale by m_DrawScale (moby+0x57). NOT the naive
-             * PM·(pos-cam) — that swizzle/scale mismatch sank 3D mobys (gems)
-             * below ground (verified: gem v0 nnPrim 35-130px -> 0.1px). */
+             * PM·(pos-cam) — that swizzle/scale mismatch sinks 3D mobys (gems)
+             * below ground. */
             /* Delta as ÷4.0 (not >>2) so shaded mobys (gems/props) track the smooth
              * sub-tick camera instead of stepping in 4-world-unit chunks — same fix
              * as the regular path + terrain. TR is fractional; scale unchanged.
@@ -8132,15 +8127,15 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             TR[0]=t1*2.0; TR[1]=t2*2.0; TR[2]=t3*2.0;
             uint8_t p57=cpu->read_byte(m + game_layout.moby.size_off);
             /* Draw-scale (p57): apply to the FRACTIONAL TR directly — no int16 round.
-             * (The earlier int16 truncation here re-quantized the just-fractional TR
+             * (An int16 truncation here would re-quantize the fractional TR
              * back to a ~1-unit grid for draw-scaled shaded mobys, undoing the ÷4.0
-             * delta fix for exactly those props. The GTE's IR16 saturation only
+             * delta. The GTE's IR16 saturation only
              * matters for off-screen/huge TR, which project()'s sat flag culls.) */
             if (p57){ for(int i=0;i<3;i++){ TR[i]=(double)p57 * TR[i] / 32.0; } }
             mofx=ofx; mofy=ofy;
             /* TR here = trueViewZ/2 (D=(pos-cam)>>2 then MAC<<1), or x p57/32 with
              * draw-scale: scale the fed depth back to full-world so shaded mobys
-             * (gems) sort vs terrain/Spyro. p57=0 -> x2 (probe: ratio exactly 2.0);
+             * (gems) sort vs terrain/Spyro. p57=0 -> x2;
              * p57!=0 -> x64/p57. Sign-preserving (near cull intact); depth-only. */
             vz_scale = p57 ? 64.0 / (double)p57 : 2.0;
         }
@@ -8178,9 +8173,9 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             int VZ=((int32_t)(w<<24))>>23, VX=((int32_t)(w<<16))>>23, VY=((int32_t)(w<<8))>>23;
             if (VZ<vzmin) vzmin=VZ; if (VZ>vzmax) vzmax=VZ;
             double sx,sy; int sat;
-            /* TRUE per-vertex view-Z (project returns mac3). The old code threw this
-             * away and stamped the moby-constant TR[2] on every vertex, collapsing
-             * within-moby depth so the Z-buffer couldn't separate a moby's faces
+            /* TRUE per-vertex view-Z (project returns mac3). Stamping the
+             * moby-constant TR[2] on every vertex would collapse within-moby
+             * depth so the Z-buffer couldn't separate a moby's faces
              * (interior/back faces would punch through the front). Per-vertex Z is
              * what the real Z-buffer needs. */
             double vzz = project(M,TR,(double)VX,(double)VY,(double)VZ, mofx,mofy,rv, &sx,&sy,&sat);
@@ -9090,7 +9085,7 @@ static int occl_record_decide(CPUState* cpu, uint32_t moby) {
          * Own-motion allowance: the 256-u/tick model floor OR the moby's MEASURED
          * screen motion ×1.5, whichever is larger — fast movers (birds ~750 u/tick)
          * beat the model by 3× and could stay culled ≤3 presents while emerging
-         * from cover (found by the OCCL_VERIFY audit, magic-crafters f2154). */
+         * from cover. */
         float vzm = e->vz_min < 512.0f ? 512.0f : e->vz_min;
         own = 102400.0f * (float)s_view.s / vzm;
         if (e->mot * 1.5f > own) own = e->mot * 1.5f;
@@ -9153,7 +9148,8 @@ static void occl_leg_census_report(void) {
  * the query on the bounds that extraction just produced. A fresh verdict of
  * visible means the cached bounds would have culled a moby the depth test
  * would not fully erase: a would-be single-present flicker. The census prints
- * once per second beside the OPENPETE_MOBY_OCCL_DBG line. The moby still
+ * once per second inside the OPENPETE_MOBY_OCCL_DBG summary, so it appears only
+ * while that variable is also set. The moby still
  * draws in verify mode (the verdict is overridden), so a live run with verify
  * on is also the zero-flicker reference.
  *
