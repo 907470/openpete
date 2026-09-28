@@ -82,6 +82,23 @@ static int tracer_project(const ngte_view* v,
     return 1;
 }
 
+/** @brief Adds one untextured additive gouraud triangle to the native scene.
+ *
+ * Vertices are screen-space position plus view-Z; each vertex colour is the
+ * given 0xBBGGRR value with alpha forced to 0xFF, and the per-vertex view-Z
+ * equals the depth. The blend mode is 2 (ABR mode 1, additive).
+ * @param ax Vertex a screen x.
+ * @param ay Vertex a screen y.
+ * @param az Vertex a scene view-Z.
+ * @param acol Vertex a colour, 0xBBGGRR.
+ * @param bx Vertex b screen x.
+ * @param by Vertex b screen y.
+ * @param bz Vertex b scene view-Z.
+ * @param bcol Vertex b colour, 0xBBGGRR.
+ * @param cx Vertex c screen x.
+ * @param cy Vertex c screen y.
+ * @param cz Vertex c scene view-Z.
+ * @param ccol Vertex c colour, 0xBBGGRR. */
 static void emit_tri(double ax, double ay, double az, uint32_t acol,
                      double bx, double by, double bz, uint32_t bcol,
                      double cx, double cy, double cz, uint32_t ccol) {
@@ -205,6 +222,17 @@ static const hook_bracket_desc k_tracer_bracket = {
     .st = &s_tracer_hb,
 };
 
+/** @brief Entry hook for func_800189F0 that snapshots the tracer points and feeds the native ribbon.
+ *
+ * Runs the real renderer inside the hook bracket, whose pre-step takes the
+ * snapshot when the native feed is on and which records the polybuf range
+ * the renderer drew. When the bracket reports a feed, the snapshot holds
+ * sets and the tracer path is enabled, the ribbon is built from the
+ * snapshot and added to the native scene.
+ * @param cpu The guest CPU state at the renderer's entry.
+ * @param addr The hooked address.
+ * @return 0 when the bracket declines and the ordinary dispatch runs the
+ *         function; 1 when the bracket ran it. */
 static int on_800189F0_tracer(CPUState* cpu, uint32_t addr) {
     uint32_t pb0, pb1; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_tracer_bracket, &pb0, &pb1, &feed, &verify))
@@ -214,7 +242,6 @@ static int on_800189F0_tracer(CPUState* cpu, uint32_t addr) {
     return hook_bracket_end(&k_tracer_bracket);
 }
 
-/* Sub-tick re-extract: replay the snapshot against the interpolated camera. */
 void tracer_reextract(CPUState* cpu) {
     if (!hook_reextract_ready(RP_TRACER)) return;
     tracer_build_and_feed(cpu);

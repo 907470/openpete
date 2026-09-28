@@ -120,11 +120,21 @@ static uint16_t glyph_class_spaced(uint8_t c) {
     }
 }
 
+/** @brief Empties the glyph table and the per-callsite ordinals.
+ *
+ * The table is zeroed only when it holds an entry; the ordinal list is
+ * always reset. */
 static void text_id_clear(void) {
     if (s_used) { memset(s_tbl, 0, sizeof(s_tbl)); s_used = 0; }
     s_ncalls = 0;
 }
 
+/** @brief Hashes a glyph moby address to its first probe index in the table.
+ *
+ * Multiplicative hash (2654435761) of the address, taking bits 13 and up so
+ * the 0x58 stride does not leave the index bits repeating.
+ * @param moby PSX virtual address of the glyph moby.
+ * @return Slot index in [0, TEXT_ID_SLOTS). */
 static uint32_t text_id_slot(uint32_t moby) {
     /* Pool addresses are stride-0x58 apart; fold the whole word so the low
      * bits of the index aren't just the stride's low bits repeating. */
@@ -132,6 +142,14 @@ static uint32_t text_id_slot(uint32_t moby) {
     return (h >> 13) & (TEXT_ID_SLOTS - 1u);
 }
 
+/** @brief Stores a glyph's key and expected class in the open-addressed table.
+ *
+ * Linear probing from the hashed slot; an existing entry for the same moby is
+ * overwritten. Once half the slots are used the call is a no-op, so an
+ * overflowing layout leaves the extra glyphs without an entry.
+ * @param moby PSX virtual address of the glyph moby, nonzero.
+ * @param key Provenance key from text_id_key.
+ * @param cls m_Class the emitter will write to the moby. */
 static void text_id_insert(uint32_t moby, uint32_t key, uint16_t cls) {
     if (s_used >= TEXT_ID_SLOTS / 2u) return;     /* keep the probe short */
     uint32_t i = text_id_slot(moby);
@@ -246,11 +264,21 @@ static int text_emit_entry(CPUState* cpu, int spaced) {
     return 0;
 }
 
+/** @brief Entry hook for func_80017FE4 that records its glyphs with the plain class mapping.
+ *
+ * @param cpu The guest CPU state at the emitter's entry.
+ * @param addr Unused.
+ * @return 0, so the recompiled emitter runs. */
 static int on_80017FE4_text(CPUState* cpu, uint32_t addr) {
     (void)addr;
     return text_emit_entry(cpu, 0);
 }
 
+/** @brief Entry hook for func_800181AC that records its glyphs with the spacing-aware class mapping.
+ *
+ * @param cpu The guest CPU state at the emitter's entry.
+ * @param addr Unused.
+ * @return 0, so the recompiled emitter runs. */
 static int on_800181AC_text(CPUState* cpu, uint32_t addr) {
     (void)addr;
     return text_emit_entry(cpu, 1);

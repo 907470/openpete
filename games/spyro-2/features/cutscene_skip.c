@@ -169,6 +169,10 @@ static const cutscene_t k_cutscenes[] = {
     LEVEL_PAIR("metropolis",      52, 62u, 26u, 50u, 34u),
 };
 
+/** @brief Finds the cutscene table row with the given id.
+ *
+ * @param id The row id, a story cutscene's k or a level row's id.
+ * @return The first row with that id, or NULL. */
 static const cutscene_t* row_of(int id) {
     for (size_t i = 0; i < sizeof(k_cutscenes) / sizeof(k_cutscenes[0]); i++)
         if (k_cutscenes[i].id == id) return &k_cutscenes[i];
@@ -243,6 +247,10 @@ static int source_live(CPUState* cpu, uint32_t level) {
            cpu->read_word(ADDR_DEMO_MODE) == 0u;
 }
 
+/** @brief Logs a refusal of the armed row and drops the arm and the watch.
+ *
+ * @param name The row's name.
+ * @param why The reason, logged verbatim. */
 static void refuse(const char* name, const char* why) {
     OPL_INFO_F("skip-to-cutscene", "%s: refused, %s", name, why);
     s_row = NULL;
@@ -382,6 +390,15 @@ static void (*const k_hooks[])(CPUState*, const cutscene_t*) = {
     [ROUTE_OUTRO]   = outro_hook,
 };
 
+/** @brief Draw-entry hook that runs the armed row's call once on the source level's first live tick.
+ *
+ * Does nothing when no row is armed or on a speculative tick. Until the
+ * hook has called, a tick passing source_live runs the row's route hook;
+ * after a story row's release, each tick checks for the return to Dragon
+ * Shores.
+ * @param cpu The guest CPU state at the draw function's entry.
+ * @param addr Unused.
+ * @return 0, so the draw runs. */
 static int on_draw(CPUState* cpu, uint32_t addr) {
     (void)addr;
     if (!s_row || openpete_speculative) return 0;

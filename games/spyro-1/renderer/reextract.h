@@ -77,6 +77,11 @@ void shadow_reextract(struct CPUState* cpu);
 void shadow_spyro_reextract(struct CPUState* cpu, int slot);
 void player_reextract(struct CPUState* cpu);
 void particle_reextract(struct CPUState* cpu);
+/** @brief Sub-tick re-extract that replays the tracer snapshot against the current camera.
+ *
+ * Does nothing unless the tracer path was drawn on the canonical tick, so a
+ * tick with no tracer does not replay a stale ribbon.
+ * @param cpu The guest CPU state. */
 void tracer_reextract(struct CPUState* cpu);
 /** @brief Re-derives and feeds the level-transition and balloonist cross-fade dome and backdrop on a sub-tick present.
  *

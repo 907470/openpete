@@ -32,6 +32,13 @@ bool   g_trace_active = false;
 unsigned g_call_idx = 0;
 CPUState* g_trace_cpu = nullptr;
 
+/** @brief Logging replacement for the guest CPU's write_word during a traced call.
+ *
+ * While a trace is active and the file and CPU are set, appends one CSV row
+ * of openpete_frame, call index, address, value and the guest registers t9,
+ * at and t8; then forwards the write to the saved original write_word.
+ * @param addr Guest address of the word.
+ * @param value The word written. */
 void trace_write_word(uint32_t addr, uint32_t value) {
     if (g_trace_active && g_trace_fp && g_trace_cpu) {
         /* Log addr/value plus the two destination-base registers so we can
@@ -45,6 +52,11 @@ void trace_write_word(uint32_t addr, uint32_t value) {
     if (g_orig_write_word) g_orig_write_word(addr, value);
 }
 
+/** @brief Parses OPENPETE_WRITE_TRACE_FRAMES into the frame window on the first call.
+ *
+ * Accepts "A-B" (inclusive, B >= A) or a single "A". An unset, empty or
+ * unparsable value leaves the window disabled (lo = hi = -1). Later calls
+ * return without reading the environment. */
 void init_window_once() {
     if (g_trace_lo != -2) return;
     const char* env = std::getenv("OPENPETE_WRITE_TRACE_FRAMES");
@@ -59,12 +71,20 @@ void init_window_once() {
     }
 }
 
+/** @brief Tells whether the current openpete_frame lies inside the trace window.
+ *
+ * @return True when the window is enabled and lo <= frame <= hi. */
 bool in_window() {
     if (g_trace_lo < 0) return false;
     int f = (int)openpete_frame;
     return f >= g_trace_lo && f <= g_trace_hi;
 }
 
+/** @brief Opens the trace CSV on the first call and writes its header row.
+ *
+ * The path is OPENPETE_WRITE_TRACE_PATH, or /tmp/write-trace.csv when unset
+ * or empty. The file is truncated; a failed open leaves the trace file null
+ * and is retried on the next call. */
 void open_file_once() {
     if (g_trace_fp) return;
     const char* path = std::getenv("OPENPETE_WRITE_TRACE_PATH");
@@ -77,6 +97,13 @@ void open_file_once() {
 
 } /* namespace */
 
+/** @brief Starts logging the traced function's write_word calls inside the trace window.
+ *
+ * Reads the window from the environment on the first call, opens the CSV,
+ * saves cpu->write_word, installs the logging wrapper and increments the
+ * call index. Does nothing outside the window or when the file cannot be
+ * opened. Must not be called again before openpete_trace_writes_end.
+ * @param cpu The guest CPU state whose write_word is wrapped. */
 extern "C" void openpete_trace_writes_begin(CPUState* cpu) {
     init_window_once();
     if (!in_window()) return;
@@ -89,6 +116,9 @@ extern "C" void openpete_trace_writes_begin(CPUState* cpu) {
     ++g_call_idx;
 }
 
+/** @brief Restores cpu->write_word and flushes the trace file when a trace is active.
+ *
+ * @param cpu The guest CPU state passed to openpete_trace_writes_begin. */
 extern "C" void openpete_trace_writes_end(CPUState* cpu) {
     if (!g_trace_active) return;
     cpu->write_word = g_orig_write_word;

@@ -62,8 +62,24 @@ void cyclorama_native_env_clear_commit(void);
  *
  * @return The epoch; always 0 for a game with no sub-tick spine. */
 uint32_t spyro_native_canon_epoch_stamp(void);
+/** @brief Reports whether a capture stamp belongs to the last closed canonical render.
+ *
+ * @param stamp A value from spyro_native_canon_epoch_stamp taken at capture.
+ * @return 1 when stamp equals the last closed epoch; always 0 for a game
+ *         with no sub-tick spine. */
 int      spyro_native_canon_epoch_fresh(uint32_t stamp);
+/** @brief Reports whether the moby cull-record capture may be replayed on the present in flight.
+ *
+ * Spyro 1 tests that its moby-record producer stamped the last closed
+ * epoch. Spyro 2 tests that the record queue is staged over its own address
+ * for the present. Spyro 3 requires both.
+ * @return 1 when the capture is replayable, else 0. */
 int      spyro_native_canon_mobyreg_fresh(void);
+/** @brief Reports whether the shaded-moby producer's capture is from the last closed canonical render.
+ *
+ * Spyro 1 tests its shaded producer's epoch against the last closed epoch.
+ * Spyro 2 and 3 have no second material pass and return 0.
+ * @return 1 when fresh, else 0. */
 int      spyro_native_canon_shaded_fresh(void);
 
 /* Whether a canonical latch may be written at the producer hook running now.
@@ -122,7 +138,16 @@ enum { SPYRO_PROD_MOBYREG = 0, SPYRO_PROD_SPYRO = 1, SPYRO_PROD_SHADED = 2 };
  * @param producer SPYRO_PROD_MOBYREG, SPYRO_PROD_SPYRO or SPYRO_PROD_SHADED;
  *        other values are ignored. */
 void spyro_native_canon_capture_camera(void* cpu, int producer);
+/** @brief Installs a producer's captured camera over the re-extract's camera when the producer drew under another.
+ *
+ * Spyro 1 installs it when the capture is from the last closed epoch and
+ * differed from the tick-end camera, and no bracket is already open.
+ * Spyro 2 and 3 install nothing.
+ * @param producer SPYRO_PROD_MOBYREG, SPYRO_PROD_SPYRO or SPYRO_PROD_SHADED.
+ * @return 1 when a camera was installed and spyro_native_prod_camera_leave
+ *         must follow, else 0. */
 int  spyro_native_prod_camera_enter(int producer);
+/** @brief Restores the camera spyro_native_prod_camera_enter replaced, or does nothing when none was installed. */
 void spyro_native_prod_camera_leave(void);
 
 /** @brief Registers the game's interp region table and per-object capture with the interp ring.

@@ -242,6 +242,10 @@ static int probe_on(void) {
     if (v < 0) { const char* e = getenv("OPENPETE_TRANSITION_PROBE"); v = (e && *e && *e != '0'); }
     return v;
 }
+/** @brief Reports whether OPENPETE_TRANSITION_DUMP enables the cross-fade prim dump.
+ *
+ * Read once and cached; set means non-empty and not starting with '0'.
+ * @return 1 when enabled, else 0. */
 static int dump_on(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_TRANSITION_DUMP"); v = (e && *e && *e != '0'); }
@@ -427,6 +431,9 @@ void transition_reextract(CPUState* cpu) {
     }
 }
 
+/** @brief Feature-module option hook of the transition path; it reads no option.
+ *
+ * @param opts Unused. */
 static void transition_native_apply_options(const openpete_options_t* opts) {
     (void)opts;
 }

@@ -104,8 +104,17 @@ static int warp_level_id(int index) {
     return (index >= 0 && (size_t)index < n) ? t[index].number : -1;
 }
 
+/** @brief Reports whether a warp this module started has not finished.
+ *
+ * @return 1 while the phase is not WARP_IDLE, else 0. */
 static int warp_in_flight(void) { return s_phase != WARP_IDLE; }
 
+/** @brief Writes the overlay status text of an in-flight warp.
+ *
+ * @param buf Receives "loading..." when a warp is in flight; untouched
+ *        otherwise.
+ * @param cap Size of buf in bytes.
+ * @return 1 when a warp is in flight, else 0. */
 static int warp_in_flight_status(char* buf, size_t cap) {
     if (s_phase == WARP_IDLE) return 0;
     snprintf(buf, cap, "loading...");
@@ -128,6 +137,10 @@ static int warp_route(CPUState* cpu) {
     return LEVELWARP_ROUTE_NONE;
 }
 
+/** @brief Reads the level number the loader holds, which the dropdown follows.
+ *
+ * @param cpu The guest CPU state.
+ * @return g_NextLevelNum (0x80066F90) as read; never -1. */
 static int warp_current_level(CPUState* cpu) {
     return (int)cpu->read_word(S2_NEXT_LEVEL_NUM);
 }
@@ -158,6 +171,12 @@ static void warp_start(CPUState* cpu, int target_id) {
  * rather than initialised. */
 static levelwarp_ui_desc_t s_ui;
 
+/** @brief Feature-module option hook that resets the warp state and registers the overlay half.
+ *
+ * Fills the dropdown strings from the Spyro 2 level table, at most 64
+ * entries, and the descriptor's callbacks, then registers it with the
+ * shared overlay module.
+ * @param opts Unused. */
 static void levelwarp_apply_options(const openpete_options_t* opts) {
     size_t  n, i;
     const spyro2_level_t* t = spyro2_level_table(&n);

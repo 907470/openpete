@@ -78,9 +78,8 @@ int openpete_native_interp_pos(unsigned int key, double out[3]) {
 /* The canonical-render epoch (renderer/orchestrator.h): every canonical
  * present closes one, and a producer that ran inside the one just closed is
  * fresh, so a sub-tick pass replays only what the canonical present drew. The
- * terrain feeder re-derives from the camera and stamps nothing, so no producer
- * reports fresh yet; the counter runs anyway so a feeder added later gets a
- * correct epoch from its first tick. */
+ * player and moby record captures stamp the epoch in flight; the terrain
+ * feeder re-derives from the camera and stamps nothing. */
 static uint32_t s_epoch_now = 1;   /* the stamp captures take (present in flight) */
 static uint32_t s_epoch_ok;        /* the stamp a capture must carry to be fresh */
 /* The stamp the moby cull's record capture took, so a tick that ran no moby
@@ -107,6 +106,14 @@ static int cam_dbg_on(void) {
     ENV_FLAG_LATCH(v, "OPENPETE_CAM_DBG");
     return v;
 }
+/** @brief Prints one OPENPETE_CAM_DBG line of a camera transform block to stderr.
+ *
+ * Prints the position (+0x28, three words), the view matrix (+0x14, nine
+ * shorts) and the first short of the sky matrix (+0x00), or "(null)" for a
+ * null block.
+ * @param tag Label for the line.
+ * @param c A camera transform block of at least CAM_OFF_POS + 12 bytes, or
+ *        NULL. */
 static void cam_dbg_line(const char* tag, const uint8_t* c) {
     if (!c) { fprintf(stderr, "[cam-dbg f=%u %s] (null)\n", openpete_frame, tag); return; }
     const int16_t* m = (const int16_t*)(c + CAM_OFF_VIEW);
@@ -421,6 +428,9 @@ static int rx_census_on(void) {
     static env_frame_range_t s_range = ENV_FRAME_RANGE_INIT;
     return env_frame_range_active(&s_range, "OPENPETE_RX_CENSUS", openpete_frame);
 }
+/** @brief Counts the triangles currently in the native scene across all tag families.
+ *
+ * @return The sum of the 16 family counts. */
 static uint32_t rx_scene_tris(void) {
     uint32_t n[16], t = 0;
     openpete_native_scene_tag_family_counts(n);
@@ -563,6 +573,9 @@ static void game_reextract_body(CPUState* cpu) {
     s_fpos_active = 0;
 }
 
+/** @brief Adapts game_reextract_body to the void-pointer signature the view installer takes.
+ *
+ * @param cpu_v The CPUState pointer the renderer passes. */
 static void game_reextract_body_v(void* cpu_v) {
     game_reextract_body((CPUState*)cpu_v);
 }

@@ -93,6 +93,16 @@ struct Stats {
     int entries = 0, sources = 0, dumped = 0, dup = 0, no_end = 0, failed = 0;
 };
 
+/** @brief Reads a byte range of the disc's WAD into a buffer.
+ *
+ * The WAD starts at kWadSector; the range is read sector by sector, with the
+ * offset's within-sector skew applied to the first sector only. The buffer
+ * is resized to len and zero-filled before the read.
+ * @param r The open disc.
+ * @param wad_off Byte offset from the start of the WAD.
+ * @param len Byte count.
+ * @param out Receives the bytes; its contents are unspecified on failure.
+ * @return False when a sector read fails. */
 bool read_span(PS1::ISOReader& r, uint32_t wad_off, uint32_t len,
                std::vector<uint8_t>& out)
 {
@@ -122,6 +132,15 @@ struct EntryReader {
     uint32_t        base = 0;
     const std::vector<uint8_t>* file = nullptr;
 
+    /** @brief Reads a byte range of the entry.
+     *
+     * A file-backed entry is bounds-checked against the file size; a disc
+     * entry reads through read_span at base + off.
+     * @param off Byte offset from the start of the entry.
+     * @param len Byte count.
+     * @param out Receives the bytes.
+     * @return False when the range lies outside the file or a disc read
+     *         fails. */
     bool read(uint32_t off, uint32_t len, std::vector<uint8_t>& out) const {
         if (file) {
             if ((uint64_t)off + len > file->size()) return false;
@@ -132,7 +151,15 @@ struct EntryReader {
     }
 };
 
+/** @brief Reads a native-endian int32 from unaligned bytes.
+ *
+ * @param p At least 4 readable bytes.
+ * @return The value. */
 int32_t rd32(const uint8_t* p) { int32_t v; std::memcpy(&v, p, 4); return v; }
+/** @brief Reads a native-endian uint16 from unaligned bytes.
+ *
+ * @param p At least 2 readable bytes.
+ * @return The value. */
 uint16_t rd16(const uint8_t* p) { uint16_t v; std::memcpy(&v, p, 2); return v; }
 
 /** @brief Locates the sound table in a level's Data blob by its shape.
@@ -177,6 +204,16 @@ long find_sound_table(const std::vector<uint8_t>& data, size_t bank_len,
     return best;
 }
 
+/** @brief Names a sound definition by the first sfx slot that maps to it.
+ *
+ * Scans the 256-byte slot table for defidx and formats the matching
+ * spyro1_sfx_slot_names entry; a definition no slot names is labelled
+ * "def<defidx>".
+ * @param table The level's 256-byte slot-to-definition table.
+ * @param defidx The definition index.
+ * @param buf Receives the label, truncated to cap.
+ * @param cap Size of buf in bytes.
+ * @return buf. */
 const char* slot_label(const uint8_t* table, int defidx, char* buf, size_t cap)
 {
     for (int s = 0; s < 256; s++)
@@ -318,6 +355,17 @@ bool walk_entry(const EntryReader& er, const std::string& name, bool cutscene,
 struct Seen { std::string file; };
 using SeenKey = std::pair<uint64_t, int>; /* (hash, base pitch) */
 
+/** @brief Writes one WAV per distinct sample of the banks and one index line per source.
+ *
+ * A source is skipped and counted (failed or no_end) when its offset lies
+ * beyond the bank or no END flag is found. Files are keyed by (content hash,
+ * base pitch): the first source seen writes the WAV, later ones reuse its
+ * name and count as duplicates. Every kept source adds one index line.
+ * @param banks The banks and their sources.
+ * @param out Directory the WAVs are written to.
+ * @param index The open index.txt stream.
+ * @param seen Hash-and-pitch to file name, shared across calls.
+ * @param st Counters updated per source. */
 void dump_banks(const std::vector<Bank>& banks, const std::filesystem::path& out,
                 std::ofstream& index, std::map<SeenKey, Seen>& seen, Stats& st)
 {
@@ -382,6 +430,12 @@ void dump_banks(const std::vector<Bank>& banks, const std::filesystem::path& out
     }
 }
 
+/** @brief Opens the disc image, falling back to a sibling .bin, .img or .iso.
+ *
+ * @param reader The reader to open.
+ * @param cue_path The disc path as given.
+ * @return True when the reader opened either the path or an existing
+ *         sibling with one of the fallback extensions. */
 bool open_disc(PS1::ISOReader& reader, const char* cue_path)
 {
     if (reader.Open(cue_path)) return true;
@@ -396,6 +450,18 @@ bool open_disc(PS1::ISOReader& reader, const char* cue_path)
 
 } // namespace
 
+/** @brief Writes the sfx pack census, a WAV per distinct sample plus index.txt, to a directory.
+ *
+ * Walks the disc's level and cutscene WAD entries (when cue_path is set)
+ * and each comma-separated file of extra_wads as one level entry, then
+ * decodes every sample source into out_dir. Logs the counters at the end.
+ * @param cue_path Disc path; null or empty skips the disc.
+ * @param out_dir Output directory, created when missing.
+ * @param extra_wads Comma-separated custom-level Data file paths; null or
+ *        empty for none.
+ * @return 0 when every source dumped; 2 when any source failed or lacked an
+ *         END flag, or no entry was walked; -1 when out_dir is null, no
+ *         input was given, or the disc cannot be opened or read. */
 extern "C" int spyro1_dump_sfx_pack(const char* cue_path, const char* out_dir,
                                     const char* extra_wads)
 {

@@ -7,6 +7,11 @@
 #include "skip_to_level.h"            /* level id -> name */
 #include <stdio.h>
 
+/** @brief Writes a level's name from the Spyro 2 level table, or "level<N>" for an unlisted id.
+ *
+ * @param level The level number.
+ * @param out Receives the name, truncated to cap.
+ * @param cap Size of out in bytes. */
 static void s2_level_name(int level, char* out, size_t cap) {
     size_t nlv = 0;
     const spyro2_level_t* lv = spyro2_level_table(&nlv);
