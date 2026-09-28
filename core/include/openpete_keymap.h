@@ -527,8 +527,9 @@ int openpete_keymap_set_mod_default(const char* mod_id, const char* name,
 /** @brief Record a mod's live enabled state on every binding it registered.
  *
  * A disabled mod's bindings leave the mouse:left scan behind the
- * double-click fullscreen gate; the scan is recomputed on every call. The
- * bindings stay stored and readable through openpete_keymap_mod_binding.
+ * double-click fullscreen gate; the scan is recomputed on every call that
+ * carries a mod id. The bindings stay stored and readable through
+ * openpete_keymap_mod_binding.
  * @param mod_id the mod's id; NULL does nothing.
  * @param on nonzero for enabled. */
 void openpete_keymap_set_mod_enabled(const char* mod_id, int on);
