@@ -1700,12 +1700,13 @@ void psyq_SetDrawMode(CPUState* cpu) {
      * its tag length stays stale and the mode word lands in the wrong place.
      * The OT walk then sees a garbage-length node, and when the stale code
      * byte happens to be 0x_1 it mis-runs as DR_MOVE → out-of-bounds VRAM
-     * copy (the Dream Weavers crash). g4/poly prims are unaffected because
-     * the game builds those with inline setXY/setRGB/setcode macros (correct
-     * PSX layout); only the *function* call SetDrawMode was layout-wrong.
+     * copy. g4/poly prims are unaffected because the game builds those with
+     * inline setXY/setRGB/setcode macros (correct PSX layout); only the
+     * *function* call SetDrawMode is layout-wrong.
      *
-     * Fix: run SetDrawMode into a host-local extended DR_MODE, then write the
-     * computed length + code words back in native PSX 4-byte-tag layout. Only
+     * So SetDrawMode runs into a host-local extended DR_MODE, and the
+     * computed length + code words are written back in native PSX 4-byte-tag
+     * layout. Only
      * the tag's len byte is touched; the addr/next 24 bits are set later by
      * the game's addPrim (recompiled inline → already PSX layout). */
     const uint32_t tw_addr = cpu->read_word(cpu->sp + 0x10);
@@ -1869,12 +1870,10 @@ void psyq_DrawOTag(CPUState* cpu) {
                    s_calls, cpu->a0, cpu->ra);
     }
 
-    /* Per-OT primitive-code histogram. Indexed by (code & 0xF0) >> 4 so
-     * we can see at a glance whether the chain contains polys (0x20/0x30),
-     * lines (0x40/0x50), sprites/tiles (0x60/0x70), DR_LOAD (0xA0),
-     * draw-env (0xE0), or unknown. Also tracks the last frame DrawOTag
-     * fired in, so we can confirm whether the cutscene main loop keeps
-     * issuing draws past the early-boot window. Dumped every 60 frames. */
+    /* Per-OT primitive-code histogram, indexed by (code & 0xF0) >> 4: polys
+     * (0x20/0x30), lines (0x40/0x50), sprites and tiles (0x60/0x70), DR_LOAD
+     * (0xA0), draw-env (0xE0). Logged and reset once openpete_frame has
+     * advanced 60 since the last log. */
     /* Drawing primitives (codes 0x20-0x7F: polygons, lines, sprites) emitted
      * by THIS walk. Attribute commands (0xE0) and the terminator do not
      * count. A game that draws its loading screen emits exactly one -- the
@@ -1895,25 +1894,25 @@ void psyq_DrawOTag(CPUState* cpu) {
 
     /* The ordering table this walk starts from. The 2D feeder needs the same
      * traversal to rank its primitives, and it runs a tick before the walk of
-     * the table it is feeding, so the two most recent bases are kept: the
-     * tables alternate, and the one not used by the newest walk is the one the
-     * pending batch was linked into. The feeder picks between them by walking
-     * each and taking whichever chain actually holds its primitives. */
+     * the table it is feeding, so the last PSYQ_OT_BASE_RING bases are kept,
+     * newest first. The tables alternate, and the pending batch is linked
+     * into one the newest walk did not use. The feeder walks every kept base
+     * and ranks its primitives by first sighting across the chains. */
     uint32_t addr = cpu->a0;
     ot_base_note(addr);
-    /* Root-cause probe (OPENPETE_OT_GARBAGE_TRACE=1, inert otherwise): the OT
-     * walk can derail into non-OT memory on dense frames (Dream Weavers moving
-     * forward), where a stray tag whose code byte is 0x_1 is misparsed as
-     * DR_MOVE and SEGVs the unbounded VRAM copy. Log any tag whose plen exceeds
-     * the largest real Spyro primitive (POLY_GT4 = 12 longs) together with the
-     * link that led here, so we can see where the chain jumps. */
+    /* Probe (OPENPETE_OT_GARBAGE_TRACE=1, inert otherwise): a chain that
+     * derails into non-OT memory yields a stray tag whose code byte 0x_1 is
+     * misparsed as DR_MOVE, an unbounded VRAM copy. Logs, up to 80 times, any
+     * tag whose plen exceeds 32 (the largest real primitive, POLY_GT4, is 12
+     * longs) with the link that led to it, which shows where the chain
+     * jumps. */
     static int s_otg_trace = -1;
     if (s_otg_trace < 0) {
         const char* e = getenv("OPENPETE_OT_GARBAGE_TRACE");
         s_otg_trace = (e && *e && *e != '0') ? 1 : 0;
     }
     static int s_otg_logs = 0;
-    /* OPENPETE_OT_TRUNCATE=N (portal a4 forensics, inert otherwise): stop
+    /* OPENPETE_OT_TRUNCATE=N (inert otherwise): stop
      * submitting the OT chain after N slots, keeping exactly OT-dump slots
      * 0..N-1 (the dump's slot column is g_ot_slot_count-1, so the indices
      * line up 1:1 with OPENPETE_OT_DUMP_FRAMES rows). Lets an -og capture
@@ -2056,13 +2055,9 @@ void psyq_DrawOTag(CPUState* cpu) {
                      * codes (subtypes 1..6). Anything else (subtype-0,
                      * uninitialized 0xFF padding, etc.) terminates the walk.
                      *
-                     * Earlier this branch dropped 0xE0 prims as anchors,
-                     * which silently lost any DR_TPAGE/DR_MODE the game
-                     * injects mid-frame to switch texture pages. Spyro's
-                     * cutscene OT chains don't currently exercise this (the
-                     * Ex column of psyq_DrawOTag's histogram stays at 0
-                     * through LoadCutscene), but other game states do, so
-                     * leaving env codes intact is the right default. */
+                     * The 0xE0 packets are kept rather than dropped as
+                     * anchors: dropping them would lose any DR_TPAGE/DR_MODE
+                     * the game injects mid-frame to switch texture pages. */
                     uint32_t env_count = 0u;
                     uint32_t scan_max  = (uint32_t)plen;
                     if (scan_max > 16u) scan_max = 16u;
@@ -2083,10 +2078,9 @@ void psyq_DrawOTag(CPUState* cpu) {
 
         bool is_known_prim = (expected_longs != 0u);
         uint16_t lenField  = is_known_prim ? expected_longs : 0u;
-        /* PGXP per-primitive index disabled. A content-keyed
-         * (sx,sy)→index map was tried and failed: same-pixel vertex
-         * collisions caused flicker. A per-address PGXP memory would
-         * supply the index. */
+        /* No PGXP per-primitive index is supplied; 0xFFFF marks none. A
+         * content-keyed (sx,sy)->index map collides for vertices at the same
+         * pixel, so an index needs a per-vertex PGXP memory. */
         uint16_t pgxpField = 0xFFFFu;
         std::memcpy(out + 8,  &lenField,  2);
         std::memcpy(out + 10, &pgxpField, 2);
@@ -2146,10 +2140,8 @@ void psyq_DrawOTag(CPUState* cpu) {
     }
 
     /* Walk the host-side chain in non-singlePrimitive mode and let PsyCross
-     * batch splits across slots. The earlier DrawPrim-per-slot path forced
-     * `g_DrawPrimMode=1` on every slot which fragmented vertex batches and
-     * (empirically) prevented any geometry from reaching pixels even though
-     * the chain contained tens of thousands of valid POLY_G3/POLY_GT4 prims.
+     * batch splits across slots; a DrawPrim per slot would force
+     * `g_DrawPrimMode=1` on every slot and fragment the vertex batches.
      *
      * Each slot's `len` field is the primitive's PSX-side P_TAG length, which
      * matches the primLength returned by ProcessGouraudPoly/ProcessFlatPoly,
@@ -3095,8 +3087,7 @@ void psyq_CdSync(CPUState* cpu) {
      * only catches recomp dispatches; a fully-native spin via this host
      * thunk → host C goes undetected. Per-frame counter resets on frame
      * advance. Default off; set OPENPETE_PSYQ_CDSYNC_LIMIT to a positive
-     * count to enable. Useful when re-enabling init.c/completion.c
-     * surfaces a CdSync-shaped hang. */
+     * count to enable. */
     static int s_cs_read = 0;
     static uint32_t s_cs_limit = 0u;   /* debug knob: read once */
     if (!s_cs_read) {
@@ -3163,7 +3154,8 @@ void psyq_CdSync(CPUState* cpu) {
         result[6] = abs.second;
         result[7] = abs.sector;
     }
-    /* Don't log every CdSync — busy-loops would flood. Sample every 1024. */
+    /* Don't log every CdSync — busy-loops would flood. Sample every 2^22
+     * calls. */
     static uint32_t calls = 0;
     if ((++calls & 0x3FFFFFu) == 1u) {
         OPL_INFO_F("thunks",
@@ -3673,9 +3665,9 @@ void psyq_MemCardFormat(CPUState* cpu) {
  * @param cpu Guest CPU state. */
 void psyq_MemCardSync(CPUState* cpu) {
     /* mode 0 = Sync, 1 = Async; host I/O completes instantly so both report
-     * Finished once an op has run, NothingRegistered (-1) before. Pre-read
-     * the guest out-slots so a field the module leaves unset round-trips
-     * unchanged (matches the original stub's "only overwrite when set"). */
+     * Finished once per op that has run, and NothingRegistered (-1) when none
+     * is pending. Pre-read the guest out-slots so a field the module leaves
+     * unset round-trips unchanged. */
     /* A refused out-slot is skipped like an absent one. */
     int* cmds_out = (int*)SPAN_OPT(cpu->a1, sizeof(int));
     int* rslt_out = (int*)SPAN_OPT(cpu->a2, sizeof(int));
