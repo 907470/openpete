@@ -14,10 +14,9 @@
  * bricked boot. Registration is entry/tick context (file IO — refused
  * in present hooks).
  *
- * The later tiers' entry points (postfx_*,
- * material_register) live here as refusing stubs until their engine
- * plumbing lands — the API struct slots exist from the same version
- * bump so the ABI never moves again.
+ * The postfx pass registry and the material-selector tier (registration,
+ * per-present slot interning, draw-time resolve, the retained-terrain
+ * bucket queries) are implemented below the shader service in this file.
  */
 
 #include "openpete_mods.h"
@@ -117,7 +116,9 @@ typedef struct {
 } mod_shader_t;
 
 /* Chunked: a handle is an index into this table and the renderer reads
- * an entry's SPIR-V under REG_RD while a registration appends. */
+ * an entry's SPIR-V under the registry read lock; entries never move, so a
+ * registration made by the compose thread itself (which skips the write
+ * lock) cannot invalidate a pointer the compose holds. */
 static mod_cvec s_shaders;   /* mod_shader_t */
 
 /** @brief Return the number of slots in the shader table, live or swept. */
@@ -564,9 +565,8 @@ int openpete_mods_shader_watch_key(const char* mod_dir, char key_out[65]) {
 }
 
 /* ------------------------------------------------------------------ */
-/* later-tier stubs: the ABI slots exist from api v2; each logs once
- * and refuses until its engine plumbing lands (postfx: S3/S4,
- * pipelines: S7, materials: S8 in plans/openpete-mod-shaders.md). */
+/* STUB_ONCE logs one warning per use site that a mod API entry is not
+ * available in this engine build. No entry point in this file uses it. */
 
 #define STUB_ONCE(what)                                                     \
     do {                                                                    \
@@ -1364,8 +1364,9 @@ static int material_moby_winner(int cls) {
 
 /* Level id for level-scoped selector keys. The mods layer cannot read it
  * itself — the symbol is game-specific — so the game pushes it while it
- * renders. Draw-time resolve is the only consumer, and -1 (nothing has
- * pushed yet) makes every level key inert rather than wrongly matching. */
+ * renders. Draw-time resolve and the terrain bucket queries
+ * (terrain_sel_usable) consume it, and -1 (nothing has pushed yet) makes
+ * every level key inert rather than wrongly matching. */
 static int s_cur_level = -1;
 /** @brief Record the level for level-scoped selectors and bump the terrain epoch when it changes. */
 static void openpete_mods_set_level_locked(int level_id) {
@@ -1409,9 +1410,10 @@ void openpete_mods_material_frame_reset(void) {
 int  openpete_mods_material_slot_count(void) { return s_mat_slot_n; }
 
 /* Per-scene snapshot of the interned per-instance slots (see the ring in
- * native_render.c). `cap` is the caller's slot capacity; returns the count
- * copied (1 + interned). Bytes are packed at OPENPETE_MATERIAL_UNIFORMS_MAX
- * stride so the compose can index them the same way as the live table. */
+ * native_render.c): slots 1 up to the live count, the static slot of every
+ * material index, and the terrain bucket list. Each slot's bytes sit in a
+ * fixed OPENPETE_MATERIAL_UNIFORMS_MAX array, so the compose indexes them
+ * the same way as the live table. */
 void openpete_mods_material_view_capture(openpete_mods_material_view_t* out) {
     out->slot_n = s_mat_slot_n;
     for (int i = 1; i < s_mat_slot_n; i++) {
