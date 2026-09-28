@@ -1416,7 +1416,7 @@ static bool create_swapchain(rhi_device *dev)
      * extra half period is the margin. The cap keeps an expiry from becoming
      * a sim slip; the floor covers an absurdly high reported refresh.
      *
-     * Only load-bearing under FIFO — a non-blocking mode never waits — but a
+     * Only load-bearing under FIFO (a non-blocking mode never waits), but a
      * mode change recreates the swapchain, so this re-runs either way. */
     {
         float hz = 0.0f;
@@ -4902,7 +4902,7 @@ void rhi_update_vram(rhi_device *dev, rhi_texture *tex, const uint16_t *pixels)
  * upload and a packed source uploads nothing. In-frame and one-shot paths
  * as in update_image; the texture ends in SHADER_READ_ONLY.
  * @param dev Device.
- * @param tex Texture; NULL or one without staging is ignored.
+ * @param tex Texture; NULL or a render target is ignored.
  * @param mirror Full-stride source, or NULL when @p packed is given.
  * @param packed Packed source, or NULL when @p mirror is given.
  * @param rects Rects, pre-clamped to the texture extent.

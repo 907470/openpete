@@ -7,7 +7,7 @@
  * A minimal, opaque-handle GPU abstraction sized to exactly what the
  * native Spyro renderer needs, so Vulkan (the first backend) can later be
  * joined by Metal / WebGPU without touching renderer code. It grows
- * function-by-function as renderer milestones require; it is deliberately
+ * function-by-function as the renderer requires; it is deliberately
  * NOT a general render graph.
  *
  * Milestone 1a surface (this file): device + swapchain + a single
@@ -403,12 +403,14 @@ void rhi_notify_resize(rhi_device *dev);
  * @param dev Device, or NULL (ignored). */
 void rhi_notify_resize_immediate(rhi_device *dev);
 
-/** @brief Register the handler called on VK_ERROR_DEVICE_LOST from a swapchain acquire or present.
+/** @brief Register the handler called when the device is lost.
  *
- * rhi_signal_device_lost logs the loss and the last GPU zone begun, then
- * calls the handler; it runs on every device-lost result, not once. It lets
- * the owning layer request a clean shutdown while the RHI stays free of
- * core-runtime symbols. The handler is global, not per device.
+ * A loss is a VK_ERROR_DEVICE_LOST from a fence wait, swapchain acquire,
+ * present or stage release, or a failed queue submit. rhi_signal_device_lost
+ * logs the loss and the last GPU zone begun, then calls the handler once;
+ * later reports are ignored. It lets the owning layer request a clean
+ * shutdown while the RHI stays free of core-runtime symbols. The handler is
+ * global, not per device.
  * @param fn Handler, or NULL to clear it. */
 void rhi_set_device_lost_handler(void (*fn)(void));
 
@@ -577,7 +579,7 @@ bool rhi_cycle_readback(rhi_device *dev, uint64_t tag, void *out, size_t out_byt
 bool rhi_drain_readback(rhi_device *dev, void *out, size_t out_bytes,
                         int *out_w, int *out_h, uint64_t *out_tag);
 
-/* ---- buffers, pipelines, draws (milestone 1b) --------------------- */
+/* ---- buffers, pipelines, draws ------------------------------------ */
 
 /* Native vertex format — one fixed layout for all renderer geometry, so a
  * single vertex buffer format feeds every pipeline. 1b.1 used position +
@@ -1361,7 +1363,7 @@ void rhi_blit_rt_to_offscreen(rhi_device *dev, rhi_texture *src);
  * @param src Source render target, in SHADER_READ. */
 void rhi_blit_rt_to_rt(rhi_device *dev, rhi_texture *dst, rhi_texture *src);
 
-/* ---- the native-res PSX VRAM model (milestone 1b.2) -------------- */
+/* ---- the native-res PSX VRAM model -------------------------------- */
 
 /** @brief Create the R16_UINT image that mirrors PSX VRAM one uint per pixel.
  *
@@ -1379,12 +1381,12 @@ rhi_texture *rhi_create_vram(rhi_device *dev, uint32_t width, uint32_t height);
  *
  * Upload semantics, shared with rhi_update_rgba8: while a frame is recording
  * (after rhi_begin_frame) the copy is appended to that frame's command buffer
- * through the texture's per-frame staging arena (stage_acquire), with no GPU
- * stall; the call then precedes the frame's first render pass. Outside a
- * frame it uses a blocking one-shot submit through the texture's own staging
- * buffer. The texture ends in SHADER_READ_ONLY.
+ * through the device upload ring (stage_acquire), with no GPU stall; the
+ * call then precedes the frame's first render pass. Outside a frame it uses
+ * a blocking one-shot submit through a temporary staging buffer. The texture
+ * ends in SHADER_READ_ONLY.
  * @param dev Device.
- * @param tex VRAM texture; NULL or one without staging is ignored.
+ * @param tex VRAM texture; NULL or a render target is ignored.
  * @param pixels Source mirror; NULL logs and uploads nothing. */
 void rhi_update_vram(rhi_device *dev, rhi_texture *tex, const uint16_t *pixels);
 
@@ -1451,7 +1453,7 @@ rhi_texture *rhi_create_u32x4(rhi_device *dev, uint32_t width, uint32_t height);
  *
  * Upload semantics are rhi_update_vram's.
  * @param dev Device.
- * @param tex Texture; NULL or one without staging is ignored.
+ * @param tex Texture; NULL or a render target is ignored.
  * @param pixels width * height * 4 bytes; NULL logs and uploads nothing. */
 void rhi_update_rgba8(rhi_device *dev, rhi_texture *tex, const void *pixels);
 
