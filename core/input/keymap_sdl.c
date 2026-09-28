@@ -6,10 +6,10 @@
  * for the report, and reading whether a source is held — lives here and
  * is installed through the two seams at boot.
  *
- * Gamepad reads use the first CONNECTED pad rather than a slot index:
+ * Unqualified gamepad reads use slot 0 of the published input snapshot:
  * host actions (the freecam toggle, menu nav) are player-1 affordances,
  * and PsyCross already owns the slot->controller assignment for the PSX
- * pads themselves. */
+ * pads themselves. "padN:" sources read slot N-1 through the slot pair. */
 
 #include "openpete_keymap.h"
 
@@ -39,18 +39,34 @@ static int km_sdl_key_down(int scancode) {
     return openpete_host_input_key_down(scancode);
 }
 
+/** @brief Read a player-1 pad button (slot 0) from the published input snapshot.
+ *
+ * @param button an SDL_GamepadButton; out of range reads 0. */
 static int km_sdl_pad_button(int button) {
     return openpete_host_input_pad_button(button);
 }
 
+/** @brief Read a player-1 pad axis (slot 0) from the published input snapshot.
+ *
+ * @param axis an SDL_GamepadAxis; out of range reads 0.
+ * @return the axis value, -32768..32767; 0 when no pad is in the slot. */
 static int km_sdl_pad_axis(int axis) {
     return openpete_host_input_pad_axis(axis);
 }
 
+/** @brief Read a pad button of a host pad slot from the published input snapshot.
+ *
+ * @param slot the pad slot, 0-based; out of range reads 0.
+ * @param button an SDL_GamepadButton; out of range reads 0. */
 static int km_sdl_pad_button_slot(int slot, int button) {
     return openpete_host_input_pad_button_slot(slot, button);
 }
 
+/** @brief Read a pad axis of a host pad slot from the published input snapshot.
+ *
+ * @param slot the pad slot, 0-based; out of range reads 0.
+ * @param axis an SDL_GamepadAxis; out of range reads 0.
+ * @return the axis value, -32768..32767; 0 when no pad is in the slot. */
 static int km_sdl_pad_axis_slot(int slot, int axis) {
     return openpete_host_input_pad_axis_slot(slot, axis);
 }
@@ -65,14 +81,20 @@ static int km_sdl_mouse_button(int code) {
     return openpete_host_input_mouse_button(code);
 }
 
+/** @brief Return the running mouse motion total of an axis from the mouse channel.
+ *
+ * @param axis KM_MOUSE_X or KM_MOUSE_Y.
+ * @return the total in counts. */
 static long long km_sdl_mouse_motion_total(int axis) {
     return (long long)openpete_host_mouse_motion_total(axis);
 }
 
+/** @brief Return the running wheel total from the mouse channel, in 1/OPENPETE_MOUSE_WHEEL_UNIT notch, up positive. */
 static long long km_sdl_mouse_wheel_total(void) {
     return (long long)openpete_host_mouse_wheel_total();
 }
 
+/** @brief Return the mouse channel's current owner as an OPENPETE_MOUSE_OWNED_* value. */
 static int km_sdl_mouse_owned(void) {
     return openpete_host_mouse_owned();
 }
@@ -109,6 +131,15 @@ g_axis_aliases[] = {
     { "r2", SDL_GAMEPAD_AXIS_RIGHT_TRIGGER },
 };
 
+/** @brief Resolve a binding name to an SDL scancode, gamepad button or gamepad axis code.
+ *
+ * Gamepad names try the positional and PlayStation aliases (g_button_aliases,
+ * g_axis_aliases) case-insensitively before SDL's own names; keyboard names
+ * use SDL_GetScancodeFromName.
+ * @param kind KM_SRC_KEY, KM_SRC_PADBTN or KM_SRC_PADAXIS; any other kind
+ *        gives -1.
+ * @param name the token name; NULL or empty gives -1.
+ * @return the code, or -1 when the name is unknown. */
 static int km_sdl_name_to_code(int kind, const char* name) {
     if (!name || !*name) return -1;
     switch (kind) {
@@ -134,6 +165,14 @@ static int km_sdl_name_to_code(int kind, const char* name) {
     }
 }
 
+/** @brief Return the report name of a source code.
+ *
+ * The four face buttons report their positional names ("south", "east",
+ * "west", "north"); other buttons, axes and scancodes report SDL's name.
+ * @param kind KM_SRC_KEY, KM_SRC_PADBTN or KM_SRC_PADAXIS.
+ * @param code the SDL code.
+ * @return the name, or NULL for another kind or a code SDL has no string
+ *         for. */
 static const char* km_sdl_code_to_name(int kind, int code) {
     switch (kind) {
     case KM_SRC_KEY:     return SDL_GetScancodeName((SDL_Scancode)code);

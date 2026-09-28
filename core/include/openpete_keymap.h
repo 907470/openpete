@@ -332,6 +332,13 @@ typedef const char* (*openpete_keymap_code_to_name_fn)(int kind, int code);
  * the scancode SDL calls "A" on AZERTY), or NULL. Report-only garnish. */
 typedef const char* (*openpete_keymap_key_label_fn)(int scancode);
 
+/** @brief Install the name lookups the token parser and the report use.
+ *
+ * A NULL to_code makes every token fail to parse; a NULL to_name prints
+ * every source as "?" in the report; a NULL label omits the layout label.
+ * @param to_code turns a token name into a code.
+ * @param to_name turns a code into a name for the report.
+ * @param label gives the layout label of a scancode. */
 void openpete_keymap_set_lookup(openpete_keymap_name_to_code_fn to_code,
                                 openpete_keymap_code_to_name_fn to_name,
                                 openpete_keymap_key_label_fn label);
@@ -366,6 +373,11 @@ typedef struct {
     int       (*mouse_owned)(void);
 } openpete_keymap_input_fns;
 
+/** @brief Install the reads the resolver evaluates bindings with.
+ *
+ * The struct is copied. A NULL member reads as not held, no motion, or
+ * unowned.
+ * @param fns the reads, or NULL to clear all of them. */
 void openpete_keymap_set_input(const openpete_keymap_input_fns* fns);
 
 /* ---- resolving against a caller's own snapshot ----------------------- */
@@ -549,7 +561,13 @@ int openpete_keymap_resolve(void);
  * SDL events are pumped and before any openpete_key_pressed. */
 void openpete_keymap_poll(void);
 
-int   openpete_key_down(openpete_action_t a);     /* level: held now */
+/** @brief Return whether an action was held at the last openpete_keymap_poll.
+ *
+ * The level is the sample the poll took, not a live read, so every caller in
+ * one host-loop iteration sees the same value.
+ * @param a the action; out of range reads 0.
+ * @return 1 when held, 0 otherwise. */
+int   openpete_key_down(openpete_action_t a);
 /** @brief Return whether an action was pressed this poll.
  *
  * Pressed is the held-and-not-previously-held edge or at least one wheel
@@ -569,7 +587,16 @@ int   openpete_key_edge(openpete_action_t a);
  * @param a the action; out of range reads 0.
  * @return the notch count. */
 int   openpete_key_pulses(openpete_action_t a);
-float openpete_key_axis(openpete_action_t a);     /* [-1, 1], deadzoned */
+/** @brief Return an action's analog level, read live rather than at the last poll.
+ *
+ * The first bound source that is active wins. A pad axis inside the
+ * deadzone (8000 of 32767) is inactive; outside it the value is the throw
+ * scaled to [-1, 1]. A held key, pad button or mouse button source reads 1.
+ * Mouse motion sources are ignored (see openpete_key_delta). Player-1
+ * sources read the installed seams, and "padN:" sources their slot.
+ * @param a the action; out of range reads 0.
+ * @return the level in [-1, 1], 0 when no source is active. */
+float openpete_key_axis(openpete_action_t a);
 /** @brief Return an action's mouse motion since the previous poll.
  *
  * Signed counts summed over the action's mouse:x and mouse:y sources,

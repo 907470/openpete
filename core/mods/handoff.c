@@ -58,6 +58,13 @@ void openpete_handoff_request(void) {
     s_requested = 1;
 }
 
+/** @brief Format the handoff checkpoint path, "handoff.state" in the states directory.
+ *
+ * The states directory comes from openpete_state_resolve_dir; its status is
+ * ignored and the buffer starts as ".", so a failed resolve leaves that
+ * default unless the call wrote into the buffer before failing.
+ * @param out receives the path.
+ * @param cap capacity of out in bytes. */
 static void handoff_path(char* out, size_t cap) {
     char dir[1024] = ".";
     (void)openpete_state_resolve_dir(dir, sizeof dir);

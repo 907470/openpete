@@ -108,6 +108,11 @@ void openpete_keymap_consume_key(int scancode) {
         g_consumed[g_consumed_n++] = (short)scancode;
 }
 
+/** @brief Return whether a scancode is on the consumed list.
+ *
+ * The list holds keys whose current press the event filter already acted on
+ * (openpete_keymap_consume_key); km_read_key reads them as not held until
+ * they are released. */
 static int km_key_consumed(int scancode) {
     for (int i = 0; i < g_consumed_n; i++)
         if (g_consumed[i] == (short)scancode) return 1;
@@ -147,6 +152,13 @@ g_mouse_names[] = {
     { "y",          KM_SRC_MOUSEAXIS, KM_MOUSE_Y },
 };
 
+/** @brief Return the config name of a mouse source code, for reports.
+ *
+ * Searches g_mouse_names for the (kind, code) pair.
+ * @param kind KM_SRC_MOUSEBTN or KM_SRC_MOUSEAXIS.
+ * @param code the KM_MOUSE_* code.
+ * @return the name without the "mouse:" prefix or a leading '-', or NULL
+ *         when the pair has no entry. */
 static const char* km_mouse_name(int kind, int code) {
     for (size_t i = 0; i < sizeof g_mouse_names / sizeof g_mouse_names[0]; i++)
         if (g_mouse_names[i].kind == kind && g_mouse_names[i].code == code)
@@ -154,6 +166,7 @@ static const char* km_mouse_name(int kind, int code) {
     return NULL;
 }
 
+/** @brief Return whether a source kind is a mouse button or a mouse axis. */
 static int km_is_mouse_kind(int kind) {
     return kind == KM_SRC_MOUSEBTN || kind == KM_SRC_MOUSEAXIS;
 }
@@ -161,6 +174,7 @@ static int km_is_mouse_kind(int kind) {
 static int km_find(const char* domain, const char* action);
 static int km_streq_ci(const char* a, const char* b);
 
+/** @brief Compare two strings for equality, ignoring ASCII letter case. */
 static int km_streq_ci(const char* a, const char* b) {
     for (; *a && *b; a++, b++) {
         int ca = (*a >= 'A' && *a <= 'Z') ? *a + 32 : *a;
@@ -170,6 +184,7 @@ static int km_streq_ci(const char* a, const char* b) {
     return *a == *b;
 }
 
+/** @brief Strip leading and trailing spaces and tabs from a string in place. */
 static void km_trim(char* s) {
     char* p = s;
     while (*p == ' ' || *p == '\t') p++;
@@ -521,6 +536,13 @@ static int km_edit_distance(const char* a, const char* b) {
     return prev[lb];
 }
 
+/** @brief Return the action id in a domain closest to a mistyped one.
+ *
+ * Scans the registry rows of the domain and keeps the first row at the
+ * smallest km_edit_distance; a distance of 4 or more is not a typo.
+ * @param dom a KM_DOM_* value.
+ * @param action the id as written.
+ * @return the registry's id string, or NULL when no id is within 3 edits. */
 static const char* km_did_you_mean(int dom, const char* action) {
     const char* best = NULL;
     int best_d = 4;   /* anything further away is not a typo */
@@ -636,6 +658,14 @@ static int km_overlap_is_intentional(int a, int b, const char** why) {
     return 0;
 }
 
+/** @brief Return whether two sources contest the same input.
+ *
+ * Kind and code must match, and pad axes must also share a polarity. The
+ * device is not compared, so "pad:south" and "pad2:south" read as the same
+ * input.
+ * @param a first source.
+ * @param b second source.
+ * @return 1 when they contest, 0 otherwise. */
 static int km_src_same(const km_source_t* a, const km_source_t* b) {
     if (a->kind != b->kind || a->code != b->code) return 0;
     /* Opposite polarities of one axis are the two HALVES of a stick's
@@ -672,6 +702,14 @@ typedef struct {
 static km_mod_bind_t* g_modbind;
 static int g_modbind_n, g_modbind_cap;
 
+/** @brief Return the stored mod binding for (mod_id, name).
+ *
+ * Both names are compared in full against the stored copies, which
+ * km_modbind_add truncates to 39 and 23 characters.
+ * @param mod_id the mod's id.
+ * @param name the binding name.
+ * @return a pointer into g_modbind, valid until the next km_modbind_add, or
+ *         NULL when no entry matches. */
 static km_mod_bind_t* km_modbind_find(const char* mod_id, const char* name) {
     for (int i = 0; i < g_modbind_n; i++)
         if (!strcmp(g_modbind[i].mod, mod_id) && !strcmp(g_modbind[i].name, name))
@@ -679,6 +717,14 @@ static km_mod_bind_t* km_modbind_find(const char* mod_id, const char* name) {
     return NULL;
 }
 
+/** @brief Append an enabled, zeroed mod binding for (mod_id, name).
+ *
+ * The table starts at 32 entries and doubles. The id and name are copied
+ * truncated to the stored field sizes (39 and 23 characters). No duplicate
+ * check is made; km_set_mod calls km_modbind_find first.
+ * @param mod_id the mod's id.
+ * @param name the binding name.
+ * @return the new entry, or NULL when the table cannot grow. */
 static km_mod_bind_t* km_modbind_add(const char* mod_id, const char* name) {
     if (g_modbind_n == g_modbind_cap) {
         int cap = g_modbind_cap ? g_modbind_cap * 2 : 32;
@@ -700,6 +746,11 @@ static km_mod_bind_t* km_modbind_add(const char* mod_id, const char* name) {
  * mouse:left-bound action cannot also flip the window. */
 static _Atomic int g_left_bound;
 
+/** @brief Rescan the host and enabled mod bindings for mouse:left and publish the result.
+ *
+ * Host bindings count whether or not their action is live; a mod binding
+ * counts only while its mod is enabled. Stores the flag read by
+ * openpete_keymap_mouse_left_bound. */
 static void km_recompute_left_bound(void) {
     int found = 0;
     for (int i = 0; i < OPK_ACTION_COUNT && !found; i++)
@@ -848,6 +899,10 @@ typedef struct {
 
 static const km_resolve_t KM_RESOLVE_LIVE = { NULL, 0, 0, 0 };
 
+/** @brief Return the current mouse owner from the input seam.
+ *
+ * @return an OPENPETE_MOUSE_OWNED_* value, OPENPETE_MOUSE_OWNED_NONE when
+ *         no mouse_owned read is installed. */
 static int km_mouse_owned(void) {
     return s_in.mouse_owned ? s_in.mouse_owned() : OPENPETE_MOUSE_OWNED_NONE;
 }
@@ -865,6 +920,14 @@ static int km_mouse_neutral(int owned, int menu_exempt) {
     return 0;
 }
 
+/** @brief Read a mouse button source's level.
+ *
+ * Reads 0 under a caller-supplied reader, for a wheel pulse source (no
+ * level), and while the current mouse owner neutralises the action
+ * (km_mouse_neutral); otherwise the mouse_button seam.
+ * @param c the resolution context.
+ * @param s a KM_SRC_MOUSEBTN source.
+ * @return 1 when held, 0 otherwise. */
 static int km_read_mouse_btn(const km_resolve_t* c, const km_source_t* s) {
     /* A pad reader resolves the replayable pad decode; the mouse never
      * routes into it. A pulse source has no level. */
@@ -874,10 +937,19 @@ static int km_read_mouse_btn(const km_resolve_t* c, const km_source_t* s) {
     return s_in.mouse_button ? s_in.mouse_button(s->code) : 0;
 }
 
+/** @brief Return the pad slot a source reads: its device minus one, else the context's default slot. */
 static int km_src_slot(const km_resolve_t* c, const km_source_t* s) {
     return s->device ? s->device - 1 : c->default_slot;
 }
 
+/** @brief Read a keyboard source's level under a resolution context.
+ *
+ * Reads 0 while the keyboard is suspended (unless the action is exempt) and
+ * while the scancode is on the consumed list; otherwise the caller's reader
+ * when set, else the key_down seam.
+ * @param c the resolution context.
+ * @param code the SDL scancode.
+ * @return 1 when held, 0 otherwise. */
 static int km_read_key(const km_resolve_t* c, int code) {
     if (g_suspend_kbd && !c->kbd_exempt) return 0;
     /* The event filter already acted on this press. */
@@ -886,6 +958,13 @@ static int km_read_key(const km_resolve_t* c, int code) {
     return s_in.key_down ? s_in.key_down(code) : 0;
 }
 
+/** @brief Read a pad button source's level from the caller's reader or the live seams.
+ *
+ * Slot 0 reads the pad_button seam; a higher slot reads pad_button_slot and
+ * reads 0 when that seam is not installed.
+ * @param c the resolution context.
+ * @param s a KM_SRC_PADBTN source.
+ * @return 1 when held, 0 otherwise. */
 static int km_read_btn(const km_resolve_t* c, const km_source_t* s) {
     const int slot = km_src_slot(c, s);
     if (c->rd)
@@ -922,6 +1001,12 @@ static int km_src_axis_raw(const km_resolve_t* c, const km_source_t* s) {
     return v * (s->invert < 0 ? -1 : 1);
 }
 
+/** @brief Return whether a single binding source is held.
+ *
+ * A pad axis is held past KM_AXIS_PRESS of full throw; a mouse motion source
+ * has no level and reads 0.
+ * @param c the resolution context.
+ * @param s the source. */
 static int km_src_down(const km_resolve_t* c, const km_source_t* s) {
     switch (s->kind) {
     case KM_SRC_KEY:
@@ -938,10 +1023,17 @@ static int km_src_down(const km_resolve_t* c, const km_source_t* s) {
     }
 }
 
+/** @brief Return whether an action keeps the mouse while the settings menu owns it (OPK_MENU, OPK_MENU_CLOSE). */
 static int km_menu_exempt(openpete_action_t a) {
     return a == OPK_MENU || a == OPK_MENU_CLOSE;
 }
 
+/** @brief Return whether any source of an action is held under a resolution context.
+ *
+ * Derives the menu and keyboard exemptions from the action itself.
+ * @param c the resolution context; copied, not modified.
+ * @param a the action; out of range reads 0.
+ * @return 1 when any source is held, 0 otherwise. */
 static int km_action_down(const km_resolve_t* c, openpete_action_t a) {
     if ((unsigned)a >= OPK_ACTION_COUNT) return 0;
     const km_binding_t* b = &g_bind[a];
@@ -953,6 +1045,15 @@ static int km_action_down(const km_resolve_t* c, openpete_action_t a) {
     return 0;
 }
 
+/** @brief Return an action's level in [-1, 1] from its first active source.
+ *
+ * Sources are tried in binding order. A pad axis past KM_AXIS_DEAD returns
+ * its throw over 32767, clamped, and any other held source returns 1. The
+ * first active source wins; values are not summed. Mouse motion sources are
+ * skipped.
+ * @param c the resolution context.
+ * @param a the action; out of range reads 0.
+ * @return the level, 0 when no source is active. */
 static float km_action_axis(const km_resolve_t* c, openpete_action_t a) {
     if ((unsigned)a >= OPK_ACTION_COUNT) return 0.0f;
     const km_binding_t* b = &g_bind[a];
@@ -1019,6 +1120,7 @@ int openpete_keymap_action_bound(openpete_action_t a) {
 static long long g_wheel_last;
 static long long g_motion_last[KM_MOUSE_AXIS_COUNT];
 
+/** @brief Divide a wheel total by OPENPETE_MOUSE_WHEEL_UNIT, rounding toward negative infinity. */
 static long long km_floordiv_unit(long long v) {
     const long long u = OPENPETE_MOUSE_WHEEL_UNIT;
     return v >= 0 ? v / u : -((-v + u - 1) / u);
@@ -1136,6 +1238,16 @@ static int s_report_requested;
 void openpete_keymap_request_report(void) { s_report_requested = 1; }
 int  openpete_keymap_report_requested(void) { return s_report_requested; }
 
+/** @brief Format a binding's sources as a comma-separated list for the report.
+ *
+ * A key shows the layout label in brackets when it differs from the
+ * positional name; a pad source shows its "padN:" prefix and a '-' for an
+ * inverted axis; a name the lookup cannot give prints as "?". An unbound
+ * binding prints "-". Output longer than the buffer is truncated and no
+ * further piece is written.
+ * @param b the binding.
+ * @param out receives the text, always NUL-terminated.
+ * @param cap capacity of out in bytes; must be at least 1. */
 static void km_format_binding(const km_binding_t* b, char* out, size_t cap) {
     out[0] = '\0';
     size_t used = 0;
