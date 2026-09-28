@@ -638,6 +638,16 @@ double nsat(float v, bool unr_ovf) {
     return v < -1024.0 ? -1024.0lf : (v > 1023.0 ? 1023.0lf : double(v));
 }
 
+/* terrain.c tface_gte_flagged mirror, one corner: the .s vertex flag 0x10
+ * (GTE FLAG bit 31 read for SZ3 < 0x600): SZ3 saturated at 0, SX2/SY2
+ * saturated, or the UNR divide overflow (m3 < H_canon / 8). */
+bool gte_flag(double mz, vec2 p) {
+    if (mz <= 0.0lf) return true;
+    if (mz >= 384.0lf) return false;
+    if (p.x < -1024.0 || p.x > 1023.0 || p.y < -1024.0 || p.y > 1023.0) return true;
+    return mz < g.dspare.x / 8.0lf;
+}
+
 /* ngte_dpcs_ch mirror (GTE-exact DPCS fog, one channel; pure int math). */
 int dpcs_ch(int c8, int fc12, int ir0) {
     int mac = c8 << 16;
@@ -1276,20 +1286,24 @@ void main()
 
     /* ---- face_is_near: flat-vs-HQ variant select (HP quads only).
      * The CPU gate is (straddle ? front3d : front). `front` is NCLIP on the
-     * PROJECTED corners, which is meaningless once a corner sits behind the
-     * camera; the .s skips the face NCLIP for such a face and its near
-     * drain NCLIPs every sub-quad over the same two triples, so a straddling
-     * HP face's facing is the camera-space triple product over those
-     * triples (front3d, the walk's tface_det3 mirror), used here and at the
-     * back-face cull below. LP straddlers keep the waiver. Plain chunks
-     * never straddle (such sectors take the near variant or the CPU walk),
-     * so there `front` alone is the mirror. ---- */
+     * PROJECTED corners, which is not the .s verdict for a straddler: an HP
+     * face with a corner carrying the .s vertex flag 0x10 (terrain.c
+     * tface_gte_flagged: m3 <= 0, or m3 < 0x600/4 with SX/SY outside
+     * [-1024, 1023] or m3 in the UNR divide-overflow regime) skips the face
+     * NCLIP, and its near drain NCLIPs every sub-quad over the same two
+     * triples, so its facing is the camera-space triple product over those
+     * triples (front3d, the walk's tface_det3 mirror). An LP straddler (a
+     * corner at or behind the eye) keeps the waiver. Behind-eye corners
+     * occur only on near chunks; the flag applies to plain chunks too. ---- */
 #ifdef TERRAIN_NEAR
-    bool straddle = m0.z <= 0.0lf || m1.z <= 0.0lf ||
-                    m2.z <= 0.0lf || m3c.z <= 0.0lf;
+    bool behind = m0.z <= 0.0lf || m1.z <= 0.0lf ||
+                  m2.z <= 0.0lf || m3c.z <= 0.0lf;
 #else
-    const bool straddle = false;
+    const bool behind = false;
 #endif
+    bool straddle = lp ? behind
+                       : (gte_flag(m0.z, p0f) || gte_flag(m1.z, p1f) ||
+                          gte_flag(m2.z, p2f) || (quad && gte_flag(m3c.z, p3f)));
     bool front3d = true;
     if (!lp && straddle) {
         precise double d1 = det3d(m0, m1, quad ? m3c : m2);
@@ -1391,7 +1405,13 @@ void main()
      * the cull in the walk; fill is emit-all by design) ---- */
     if (!near && !fillPass) {
         bool cullable = lp ? ((gf & GF_CULLLP) != 0) : ((gf & GF_CULLHP) != 0);
-        bool facing = straddle ? (lp || front3d) : (front || front2);
+        /* An HP straddler with a corner in front of the eye that the
+         * classifier does not queue for the near drain is emitted whole with
+         * no NCLIP (.L80026DB8, tri .L80027310). */
+        double zq = quad ? m3c.z : m2.z;
+        bool whole = !near_canonical(m0.z, m1.z, m2.z, zq, ff & FF_W3_40, ff & FF_W3_80)
+                  && (m0.z > 0.0lf || m1.z > 0.0lf || m2.z > 0.0lf || zq > 0.0lf);
+        bool facing = straddle ? (lp || front3d || whole) : (front || front2);
         if (cullable && !facing) { kill_vert(); return; }
     }
 

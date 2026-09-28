@@ -416,6 +416,7 @@ static mod_fvec s_tri_v;
 static int s_tri_n;
 
 static int s_dbg_faces, s_dbg_oob, s_dbg_nclip, s_dbg_behind, s_dbg_spike;  /* diagnostics */
+static int s_dbg_satback, s_dbg_satemit;   /* flagged HP faces the cull drops / keeps against the projected NCLIP */
 static int s_dbg_spike_tris;   /* triangles the near/HQ subdivide emitted this walk */
 static int s_trisplit_faces[2], s_trisplit_subs[2], s_trisplit_scull[2], s_trisplit_matdiff[2];
                                    /* tn_wctx trisplit_* sums, [0] tier 4, [1] tier 2 */
@@ -878,6 +879,7 @@ typedef struct {
     uint8_t emit_keycells; uint32_t emit_kc[8];   /* the face's drain key table */
     /* census (summed into the s_dbg_* / s_tex_* globals after the walk) */
     int dbg_faces, dbg_oob, dbg_nclip, dbg_behind, dbg_spike, dbg_clipped;
+    int dbg_satback, dbg_satemit;         /* tface_facing's verdict flips vs the projected NCLIP */
     int dbg_spike_tris;                  /* triangles emitted by the near/HQ subdivide */
     /* split triangles, [0] tier 4 and [1] tier 2: faces, sub-triangles drawn,
      * sub-triangles a straddler's facing culled, sub-triangles whose formed
@@ -1246,13 +1248,24 @@ static int tface_front3d(const lvert* sv, int i0, int i1, int i2, int i3,
     return flip ? (d2 <= 0.0) : (d2 >= 0.0);
 }
 
+static int face_is_near_canonical(double z0, double z1, double z2, double z3, uint32_t word3);
+
 /** @brief Computes a face's two facing verdicts: the near/HQ subdivide gate and the back-face cull.
  *
  * *near_front gates the near/HQ subdivide (half 1 of the projected NCLIP,
  * like the .s classifier's input); *cull_front gates the back-face cull
- * (either half). A straddling face has no usable projected NCLIP: HP takes
- * tface_front3d for both, LP (whose straddlers the .s path has not been
- * traced for) waives the facing test and sets both to 1.
+ * (either half). A straddling face (an HP corner carrying the .s vertex flag
+ * 0x10, tface_gte_flagged; an LP corner at or behind the eye) has no usable
+ * projected NCLIP. HP takes tface_front3d for the near gate. Its cull
+ * follows the .s path after the skipped face NCLIPs: a face the classifier
+ * queues for the near drain (face_is_near_canonical, the tests at
+ * 0x80026CFC-0x80026D34, tri 0x80027254-0x80027284) takes tface_front3d, the
+ * drain's sub-quad NCLIP; any other face with a corner in front of the eye
+ * is emitted whole with no NCLIP at .L80026DB8 (tri .L80027310), so its cull
+ * verdict is 1. A face wholly at or behind the eye sums to depth 0, which the
+ * near branch drops (beqz at 0x80026D70), and keeps tface_front3d. LP (whose
+ * straddlers the .s path has not been traced for) waives the facing test
+ * and sets both to 1.
  * @param sv The sector's projected vertices.
  * @param i0 The first corner's vertex index.
  * @param i1 The second corner's vertex index.
@@ -1262,17 +1275,31 @@ static int tface_front3d(const lvert* sv, int i0, int i1, int i2, int i3,
  * @param flip 1 when the face's NCLIP sign is flipped.
  * @param dside 1 when the face is double-sided.
  * @param hp 1 for a high-poly face, 0 for a low-poly face.
- * @param straddle 1 when a corner is at or behind the eye.
+ * @param straddle 1 when the face is a straddler (tface_straddle).
+ * @param w3 The HP face record's word 3, read by the drain classifier.
  * @param front The projected NCLIP verdict of the first half.
  * @param front2 The projected NCLIP verdict of the second half.
  * @param near_front Receives the near/HQ subdivide verdict.
- * @param cull_front Receives the back-face cull verdict. */
-static void tface_facing(const lvert* sv, int i0, int i1, int i2, int i3,
-                         int quad, int flip, int dside, int hp, int straddle,
-                         int front, int front2, int* near_front, int* cull_front) {
-    if (!straddle) { *near_front = front; *cull_front = front || front2; return; }
-    *near_front = *cull_front =
-        hp ? tface_front3d(sv, i0, i1, i2, i3, quad, flip, dside) : 1;
+ * @param cull_front Receives the back-face cull verdict.
+ * @return For an HP straddler with every corner in front of the eye, bit 0
+ *         when the projected NCLIP passes it and the cull verdict drops it,
+ *         bit 1 when the projected NCLIP drops it and the cull verdict
+ *         passes it; 0 otherwise. */
+static int tface_facing(const lvert* sv, int i0, int i1, int i2, int i3,
+                        int quad, int flip, int dside, int hp, int straddle, uint32_t w3,
+                        int front, int front2, int* near_front, int* cull_front) {
+    if (!straddle) { *near_front = front; *cull_front = front || front2; return 0; }
+    if (!hp) { *near_front = *cull_front = 1; return 0; }
+    const int f3 = tface_front3d(sv, i0, i1, i2, i3, quad, flip, dside);
+    const int i3q = quad ? i3 : i2;
+    const int drained = face_is_near_canonical(sv[i0].m3, sv[i1].m3, sv[i2].m3, sv[i3q].m3, w3);
+    const int behind = sv[i0].m3 <= 0.0 || sv[i1].m3 <= 0.0 || sv[i2].m3 <= 0.0 || sv[i3q].m3 <= 0.0;
+    const int seen = sv[i0].m3 > 0.0 || sv[i1].m3 > 0.0 || sv[i2].m3 > 0.0 || sv[i3q].m3 > 0.0;
+    *near_front = f3;
+    *cull_front = f3 || (!drained && seen);
+    const int projected = front || front2;
+    if (behind || projected == *cull_front) return 0;
+    return projected ? 1 : 2;
 }
 
 /** @brief Decodes quadrant i's tile of a near face's HQ record with orientation and UV scroll applied.
@@ -6852,6 +6879,54 @@ static void tn_col_ptrs(const canim_t* CA, int passLP, uint32_t lpColBase,
     *h_far  = (const uint8_t*)openpete_subtick_host_span(farBase, hpSpan);
 }
 
+/** @brief Tests whether any corner of a face carries the .s HP walk's vertex flag 0x10.
+ *
+ * The walk reads GTE FLAG after each vertex's RTPS when SZ3 < 0x600 and adds
+ * flag 0x10 when bit 31 is set (r_environment.s 0x80026A8C-0x80026AA4); a
+ * vertex with SZ3 >= 0x600 takes .L80026AF8, which never sets it. Bit 31 ORs
+ * FLAG bits 30-23 and 18-13, of which the terrain walk reaches three: SX2 or
+ * SY2 saturation outside [-1024, 1023] (bits 14, 13), the UNR divide
+ * overflow (bit 17, SZ3 <= H/2, so m3 below H_canon / 8, the GTE's own H)
+ * and SZ3 saturation at 0 (bit 18, m3 <= 0). SZ3 is 4 * m3, so the SZ3 bound
+ * is m3 < 0x600 / 4. The face ORs its corners' flags (0x80026BE0-0x80026C04).
+ * @param sv The sector's projected vertices.
+ * @param i0 The first corner's vertex index.
+ * @param i1 The second corner's vertex index.
+ * @param i2 The third corner's vertex index.
+ * @param i3 The fourth corner's vertex index; read only for a quad.
+ * @param quad 1 when the face is a quad.
+ * @return 1 when a corner is flagged, else 0. */
+static int tface_gte_flagged(const lvert* sv, int i0, int i1, int i2, int i3, int quad) {
+    const int ci[4] = { i0, i1, i2, i3 };
+    const int nc = quad ? 4 : 3;
+    for (int k = 0; k < nc; k++) {
+        const lvert* V = &sv[ci[k]];
+        if (V->m3 <= 0.0) return 1;
+        if (V->m3 >= 0x600 / 4.0) continue;
+        if (V->sx < -1024.0f || V->sx > 1023.0f || V->sy < -1024.0f || V->sy > 1023.0f) return 1;
+        if (V->m3 < s_view.H_canon / 8.0) return 1;
+    }
+    return 0;
+}
+
+/** @brief Tests whether a face is a straddler, whose facing tface_facing decides off the projected NCLIP.
+ *
+ * An HP face straddles when a corner carries the .s vertex flag 0x10
+ * (tface_gte_flagged): the .s skips both face NCLIPs for it (bgtz at
+ * 0x80026C5C). An LP face straddles when a corner is at or behind the eye.
+ * @param sv The sector's projected vertices.
+ * @param i0 The first corner's vertex index.
+ * @param i1 The second corner's vertex index.
+ * @param i2 The third corner's vertex index.
+ * @param i3 The fourth corner's vertex index; read by the HP test only for a quad.
+ * @param quad 1 when the face is a quad.
+ * @param hp 1 for a high-poly face, 0 for a low-poly face.
+ * @return 1 when the face straddles, else 0. */
+static int tface_straddle(const lvert* sv, int i0, int i1, int i2, int i3, int quad, int hp) {
+    if (hp) return tface_gte_flagged(sv, i0, i1, i2, i3, quad);
+    return sv[i0].m3 <= 0.0 || sv[i1].m3 <= 0.0 || sv[i2].m3 <= 0.0 || sv[i3].m3 <= 0.0;
+}
+
 /** @brief Walks one visible sector's faces into W's triangle run.
  *
  * Reads the sector's precomputed verdicts (drawHP, drawLP, the fill and
@@ -7669,15 +7744,17 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
             W->emit_guard = (faceStride == 16 && s_defer_n > 0 &&
                             is_deferred(faces + (uint32_t)f * 16u));
             /* `front` is NCLIP on the PROJECTED corners — meaningless when a
-             * corner sits behind the camera (proj_screen mirrors it), so a
-             * straddling foreground cell flunked it ~half the time and fell to
-             * the LQ tier. tface_facing decides a straddler's facing on its
-             * camera-space corners instead (see there). */
-            int straddle = (sv[i0].m3 <= 0.0 || sv[i1].m3 <= 0.0 ||
-                            sv[i2].m3 <= 0.0 || sv[i3].m3 <= 0.0);
+             * corner sits behind the camera (proj_screen mirrors it) and not
+             * the .s verdict when a corner carries the GTE vertex flag (the
+             * .s skips the face NCLIP there). tface_facing decides a
+             * straddler's facing on its camera-space corners instead (see
+             * there). */
+            int straddle = tface_straddle(sv, i0, i1, i2, i3, quad, faceStride == 16);
             int near_front, cfront;
-            tface_facing(sv, i0, i1, i2, i3, quad, flip, F->dside, faceStride == 16,
-                         straddle, front, front2, &near_front, &cfront);
+            const int satv = tface_facing(sv, i0, i1, i2, i3, quad, flip, F->dside,
+                                          faceStride == 16, straddle, F->w3, front, front2,
+                                          &near_front, &cfront);
+            W->dbg_satback += satv & 1; W->dbg_satemit += satv >> 1;
             int near = (faceStride == 16 && s_nearhq && hqTable && near_front &&
                         tn_face_near(sv, F, faces + (uint32_t)f * 16u));
             {   /* OPENPETE_TERRAIN_NEARDBG: census of STRADDLING foreground quads
@@ -7990,6 +8067,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     s_tocc_latoff = s_tocc_offadm = 0;
     s_tv_n = 0; s_tri_n = 0; s_cv_n = 0; s_walk_sectors = 0;
     s_dbg_faces = s_dbg_oob = s_dbg_nclip = s_dbg_behind = s_dbg_spike = s_dbg_clipped = 0;
+    s_dbg_satback = s_dbg_satemit = 0;
     s_dbg_spike_tris = 0;
     trisplit_reset(s_trisplit_faces, s_trisplit_subs, s_trisplit_scull, s_trisplit_matdiff);
     memset(s_cells4_faces, 0, sizeof(s_cells4_faces));
@@ -8455,6 +8533,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         W->tri_n = 0;
         W->dbg_faces = W->dbg_oob = W->dbg_nclip = W->dbg_behind = 0;
         W->dbg_spike = W->dbg_clipped = 0;
+        W->dbg_satback = W->dbg_satemit = 0;
         W->dbg_spike_tris = 0;
         trisplit_reset(W->trisplit_faces, W->trisplit_subs, W->trisplit_scull, W->trisplit_matdiff);
         memset(W->cells4_faces, 0, sizeof(W->cells4_faces));
@@ -8768,6 +8847,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         s_dbg_faces += W->dbg_faces; s_dbg_oob += W->dbg_oob;
         s_dbg_nclip += W->dbg_nclip; s_dbg_behind += W->dbg_behind;
         s_dbg_spike += W->dbg_spike; s_dbg_clipped += W->dbg_clipped;
+        s_dbg_satback += W->dbg_satback; s_dbg_satemit += W->dbg_satemit;
         s_dbg_spike_tris += W->dbg_spike_tris;
         trisplit_sum(W);
         s_tex_faces += W->tex_faces; s_tex_tris += W->tex_tris;
@@ -10367,8 +10447,9 @@ static void terrain_compare(void) {
         "  <=1px=%.0f%% <=2px=%.0f%%  onscreen(n=%d med=%.2f)\n",
         s_walk_sectors, s_tv_n, s_tri_n, cn, sum / s_tv_n, med, p90, worst,
         100.0 * within1 / s_tv_n, 100.0 * within2 / s_tv_n, nnon, med_on);
-    fprintf(stderr, "[terrain-faces] walked=%d oob=%d fullyBehind=%d nearClipped=%d nclipCulled=%d emitted=%d  texturedFaces=%d texTris=%d hqCells=%d\n",
-        s_dbg_faces, s_dbg_oob, s_dbg_behind, s_dbg_clipped, s_dbg_nclip, s_tri_n, s_tex_faces, s_tex_tris, s_dbg_spike);
+    fprintf(stderr, "[terrain-faces] walked=%d oob=%d fullyBehind=%d nearClipped=%d nclipCulled=%d satBack=%d satEmit=%d emitted=%d  texturedFaces=%d texTris=%d hqCells=%d\n",
+        s_dbg_faces, s_dbg_oob, s_dbg_behind, s_dbg_clipped, s_dbg_nclip, s_dbg_satback, s_dbg_satemit,
+        s_tri_n, s_tex_faces, s_tex_tris, s_dbg_spike);
     fprintf(stderr, "[terrain-defer] queue(oracle): +0x2000{hdr=%d cell=%d} +0x1E00{hdr=%d cell=%d} total=%d  |  classifier: near=%d (×4 subquads → %d bpp8 prims)  agreeWithQueue=%d classifierOnly=%d queueOnly=%d\n",
         s_defer_hdr2, s_defer_cell2, s_defer_hdr1e, s_defer_cell1e, s_defer_n,
         s_dbg_spike, s_dbg_spike * 4, s_near_q_agree, s_near_c_only, s_defer_n - s_near_q_agree);
