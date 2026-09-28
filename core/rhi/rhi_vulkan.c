@@ -30,37 +30,34 @@
 #include "rhi_gpu_audit.h" /* must follow volk.h: redirects the vk* globals */
 #include "rhi_memtype.h"
 
-/* Acquire budget, and the back-off after one expires.
+/* Acquire budget, and the back-off after one expiry.
  *
- * The budget has two bounds. It stays well under the pacer's slip threshold
- * (4 sim periods, ~67 ms), or every expiry is reported as a sim slip. It also
- * exceeds one display refresh period: under FIFO, presenting at any rate below
- * the refresh makes the next image available at the next repaint, and a
- * budget shorter than that expires on nearly every present. Each expiry opens
- * the back-off below, which suppresses the next present, so a budget shorter
- * than one refresh period drops most presents while the pacing log still
- * counts them as made.
+ * The budget has two bounds. It must stay well under the pacer's slip
+ * threshold (4 sim periods, ~67 ms), or every expiry becomes a reported sim
+ * slip. It must also exceed one display refresh period: under FIFO,
+ * presenting at any rate below the refresh means the next image becomes
+ * available at the next repaint, and a budget shorter than that expires on
+ * nearly every present. Each expiry opens the back-off below, which
+ * suppresses the next present, so a budget under one refresh period shows
+ * almost no images while the present counter keeps advancing.
  *
  * The budget is therefore derived from the refresh at swapchain creation
- * (create_swapchain: 1.5 refresh periods, clamped to
- * RHI_ACQUIRE_BUDGET_MIN_NS..RHI_ACQUIRE_BUDGET_MAX_NS). RHI_ACQUIRE_TIMEOUT_NS
- * is the budget when the refresh is unknown, and it must remain >= one period
- * of the slowest display expected.
+ * (dev->acquire_budget_ns) rather than fixed.
  *
- * The back-off stops a sustained stall (a live resize holds images for as
- * long as the window edge is dragged) from costing the budget on every
- * iteration and throttling the sim. After one expiry, presents are skipped
- * outright for a short window with no blocking, so the sim runs at full
- * speed and presentation resumes once images flow again. */
+ * The back-off is what stops a sustained stall (a live resize holds images
+ * for as long as the user drags) from costing the budget on every iteration
+ * and throttling the sim. After one expiry, presents are skipped outright
+ * for a short window with no blocking, so the sim runs at full speed and
+ * presentation resumes once images flow again. */
 /* Used only when the refresh cannot be read: assume the slowest display
- * expected (60 Hz) rather than a fast one, because a budget guessed too short
- * expires, backs off, and reports presents that never reached the screen. */
+ * expected (60 Hz) rather than a fast one, because a budget shorter than the
+ * refresh period expires, backs off, and reports presents that never reached
+ * the screen. */
 #ifndef RHI_ACQUIRE_TIMEOUT_NS
 #define RHI_ACQUIRE_TIMEOUT_NS  (25ull * 1000ull * 1000ull)   /* ~1.5 x 60 Hz */
 #endif
-/* Floor for the derived budget. A refresh so high that 1.5 periods is under
- * this is not the case worth optimising; the value only has to exceed the
- * driver's own acquire latency. */
+/* Floor for the derived budget: only has to exceed the driver's own acquire
+ * latency. */
 #ifndef RHI_ACQUIRE_BUDGET_MIN_NS
 #define RHI_ACQUIRE_BUDGET_MIN_NS (4ull * 1000ull * 1000ull)   /* 4 ms */
 #endif
@@ -69,40 +66,40 @@
 #ifndef RHI_RESIZE_SETTLE_NS
 #define RHI_RESIZE_SETTLE_NS    (150ull * 1000ull * 1000ull)  /* 150 ms */
 #endif
-/* RHI_IMAGE_FENCE_TIMEOUT_NS, below, is a backstop only: by the time the wait
- * runs the slot poll has already passed, so the fence is normally signalled.
- * Bounding it keeps a driver hiccup from parking the sim thread
- * indefinitely, the same reasoning as the acquire timeout. */
-/* RHI_BLOCKING_FENCE_TIMEOUT_NS, below, bounds the waits a dedicated present
- * thread makes. Long enough for a swapchain rebuild plus the slowest display's
- * refresh (a 60 Hz panel under FIFO with the queue full is ~50 ms of
- * legitimate waiting); short enough that a dead compositor returns control. */
-/* Stage images and present-step slots in the staged-present ring. */
+/* Number of stage images in the staged-present ring. */
 #ifndef RHI_STAGE_RING
 #define RHI_STAGE_RING 3
 #endif
+/* Bound for the waits a dedicated present thread makes on a slot fence. Long
+ * enough for a swapchain rebuild plus the slowest display's refresh (a 60 Hz
+ * panel under FIFO with the queue full is ~50 ms of legitimate waiting);
+ * short enough that a dead compositor returns control. */
 #ifndef RHI_BLOCKING_FENCE_TIMEOUT_NS
 #define RHI_BLOCKING_FENCE_TIMEOUT_NS (500ull * 1000ull * 1000ull)
 #endif
+/* Bound on the wait for the fence of the submission that last used an
+ * acquired swapchain image. By then the slot poll has passed, so the fence is
+ * normally signalled; the bound keeps a driver hiccup from parking the
+ * presenting thread indefinitely. */
 #ifndef RHI_IMAGE_FENCE_TIMEOUT_NS
 #define RHI_IMAGE_FENCE_TIMEOUT_NS (32ull * 1000ull * 1000ull)   /* 32 ms */
 #endif
-/* RHI_ACQUIRE_BACKOFF_NS, below, is the present-suppression window after an
- * expiry. It must not sit near a multiple of the present period (33.4 ms): a
- * window there suppresses exactly every other present in a stable alternating
- * pattern instead of decaying. One VBL is short enough to recover within a
- * tick and long enough to break a stall loop. */
 /* Hard cap on the derived budget: an expiry must never be able to become a
  * reported sim slip (the pacer clamps at 4 sim periods, ~67 ms). */
 #ifndef RHI_ACQUIRE_BUDGET_MAX_NS
 #define RHI_ACQUIRE_BUDGET_MAX_NS (40ull * 1000ull * 1000ull)  /* 40 ms */
 #endif
-/* Shortest wait that counts as having OBSERVED a flip. Below this the frame
- * was already on screen and the return time is when we asked, not when the
- * display changed. */
+/* Shortest wait that counts as having observed a flip. Below this the image
+ * was already on screen and the return time is when the wait was asked, not
+ * when the display changed. */
 #ifndef RHI_FLIP_OBSERVED_NS
 #define RHI_FLIP_OBSERVED_NS    (20ull * 1000ull)              /* 20 us */
 #endif
+/* Back-off after an expiry, and the interval between swapchain rebuild
+ * attempts. It must not sit near a multiple of the present period (33.4 ms):
+ * a window there suppresses every other present in a stable alternating
+ * pattern instead of decaying. One VBL is short enough to recover within a
+ * tick and long enough to break a stall loop. */
 #ifndef RHI_ACQUIRE_BACKOFF_NS
 #define RHI_ACQUIRE_BACKOFF_NS  (16ull * 1000ull * 1000ull)   /* ~1 VBL */
 #endif
@@ -125,20 +122,16 @@
 #define RHI_BALLOON_SPEC_CAP   512
 #define RHI_BALLOON_MAX_BLOCKS 1024
 
-/* Handler invoked on an unrecoverable VK_ERROR_DEVICE_LOST (registered by the
- * core layer, which owns the shutdown flag) instead of spinning failed frames
- * forever. A callback keeps openpete_rhi free of core-runtime symbols — the
- * link goes core -> rhi, not back. */
 /* The runtime half of the display-seam fence (the build-time half is
  * scripts/fences/seam_guard.py). The display's frame/present/swapchain
  * state is externally synchronised and owned by exactly one thread at a
  * time; ownership moves only through rhi_display_claim, called by the
- * owner-to-be at each handoff. Every entry point below verifies the
+ * owner-to-be at each handoff. The frame begin and end, staged-present,
+ * present-wait, ring-growth and pipeline-rebuild entry points verify the
  * calling thread. A violation logs (first few in full, then counted) so a
  * shipped build never dies for it; OPENPETE_SEAM_GUARD_FATAL=1 aborts at
- * the first, which is what the stress harnesses run with — a fault caught
- * here names the interleaving that a driver would otherwise turn into a
- * silent process kill minutes later. */
+ * the first, which names the interleaving that a driver would otherwise turn
+ * into a silent process kill minutes later. */
 static SDL_ThreadID s_display_owner;
 static unsigned     s_seam_violations;
 void rhi_display_claim(rhi_device *dev)
@@ -167,6 +160,10 @@ static void seam_check(const char *where)
 }
 unsigned rhi_seam_violations(void) { return s_seam_violations; }
 
+/* Handler invoked on an unrecoverable VK_ERROR_DEVICE_LOST (registered by the
+ * core layer, which owns the shutdown flag) instead of spinning failed frames
+ * forever. A callback keeps openpete_rhi free of core-runtime symbols: the
+ * link goes core -> rhi, not back. */
 static void (*s_device_lost_cb)(void) = NULL;
 void rhi_set_device_lost_handler(void (*fn)(void)) { s_device_lost_cb = fn; }
 static const char *s_last_gpu_zone;   /* set by rhi_gpu_zone_begin */
@@ -1407,17 +1404,17 @@ static bool create_swapchain(rhi_device *dev)
     for (uint32_t i = 0; i < RHI_MAX_SC_IMAGES; i++)
         dev->images_in_flight[i] = VK_NULL_HANDLE;
 
-    /* Budget = 1.5 refresh periods, clamped to RHI_ACQUIRE_BUDGET_MIN_NS..
-     * RHI_ACQUIRE_BUDGET_MAX_NS; RHI_ACQUIRE_TIMEOUT_NS when the refresh is
-     * unknown.
+    /* Budget = 1.5 refresh periods, clamped to [RHI_ACQUIRE_BUDGET_MIN_NS,
+     * RHI_ACQUIRE_BUDGET_MAX_NS] and RHI_ACQUIRE_TIMEOUT_NS when the refresh
+     * is unknown.
      *
-     * Presenting below the refresh rate means the image arrives at a repaint
-     * boundary, so a budget of exactly one period expires on any jitter; the
-     * extra half period is the margin. The cap keeps an expiry from becoming
-     * a sim slip; the floor covers an absurdly high reported refresh.
+     * More than one period: presenting below the refresh rate means the image
+     * arrives at a repaint boundary, and a budget of exactly one period
+     * expires on any jitter at all. The cap keeps an expiry from becoming a
+     * sim slip; the floor covers an absurd reported refresh.
      *
-     * Only load-bearing under FIFO (a non-blocking mode never waits), but a
-     * mode change recreates the swapchain, so this re-runs either way. */
+     * Only load-bearing under FIFO, since a non-blocking mode never waits, but
+     * a mode change recreates the swapchain, so this re-runs either way. */
     {
         float hz = 0.0f;
         if (dev->window) {
@@ -1426,11 +1423,11 @@ static bool create_swapchain(rhi_device *dev)
             if (dm) hz = dm->refresh_rate;
         }
         dev->refresh_hz = hz;
-        /* One period is what the display owes the acquire; the half is jitter
-         * margin. Scaling with the refresh matters in both directions: a
-         * 60 Hz display needs 25 ms or the wait expires constantly, and a
-         * 480 Hz display gets the 4 ms floor (1.5 periods is 3.1 ms), so a
-         * genuine stall is abandoned sooner on a faster display. */
+        /* One period is what the display owes the present; the half period is
+         * jitter margin. Scaling with the refresh rather than flooring at a
+         * fixed value keeps both ends correct: a 60 Hz display gets 25 ms,
+         * and a 480 Hz display gets 4 ms, so a genuine stall is abandoned
+         * sooner where waiting costs the most. */
         Uint64 budget = (hz > 1.0f) ? (Uint64)(1.5f * 1e9f / hz)
                                     : RHI_ACQUIRE_TIMEOUT_NS;
         if (budget < RHI_ACQUIRE_BUDGET_MIN_NS) budget = RHI_ACQUIRE_BUDGET_MIN_NS;
@@ -3075,13 +3072,11 @@ static int acquire_image(rhi_device *dev, VkSemaphore sem, VkFence *owner_fence)
 
         /* If a previous frame is still using this image, wait on its fence. */
         if (dev->images_in_flight[dev->image_index] != VK_NULL_HANDLE) {
-            /* Bounded, and tagged (RHI_BLOCK_IMAGE_FENCE) so the block-time
-             * census counts it apart from the slot fence. Not skippable —
+            /* Bounded, and counted in RHI_BLOCK_IMAGE_FENCE. Not skippable:
              * acquire has already consumed img_avail by this point, and
-             * returning here would leave that semaphore signalled with
-             * nothing to wait on it. In practice it is almost always already
-             * signalled once the poll above has passed, so the bound is a
-             * backstop. */
+             * returning here would leave that semaphore signalled with nothing
+             * to wait on it. It is almost always already signalled once the
+             * slot poll has passed, so the bound is a backstop. */
             Uint64 iif_t0 = SDL_GetTicksNS();
             VkResult iw = fence_result(
                 vkWaitForFences(dev->device, 1, &dev->images_in_flight[dev->image_index],
@@ -3164,13 +3159,15 @@ static bool ensure_swapchain(rhi_device *dev)
     return true;
 }
 
-/** @brief Free the replaced buffer allocations no submitted frame can still read.
+/** @brief Free retired pipelines, textures and buffers no submitted frame reads.
  *
  * A frame RHI_FRAMES_IN_FLIGHT serials back has had its fence waited by the
- * time the current serial began, so an allocation replaced at serial R is
- * freed once s_frame_serial reaches R + RHI_FRAMES_IN_FLIGHT. Each freed
- * entry is unmapped, its memory freed and its buffer destroyed.
- * @param dev Device whose retired list is walked.
+ * time the current serial began, so an entry retired at serial R is freed
+ * once s_frame_serial reaches R + RHI_FRAMES_IN_FLIGHT. A retired pipeline
+ * loses its pipeline and layout, a retired texture goes through
+ * rhi_destroy_texture, and a retired buffer is unmapped, its memory freed
+ * and its buffer destroyed.
+ * @param dev Device whose retired lists are walked.
  * @param all true frees every entry; the caller has waited the device idle. */
 static void retired_reclaim(rhi_device *dev, bool all)
 {
@@ -3217,24 +3214,24 @@ static bool begin_frame_impl(rhi_device *dev, bool acquire)
     if (!ensure_swapchain(dev)) return false;
 
     {
-        /* Do not BLOCK on the slot's previous submission — poll it.
+        /* Do not block on the slot's previous submission on the inline path;
+         * poll it.
          *
          * Under FIFO this fence retires at the display's consumption rate, so
          * waiting on it is waiting for a vblank. Whichever thread presents is
-         * then paced by the monitor, and that thread also runs the sim, which
-         * would tie the sim clock to the display refresh.
+         * then paced by the monitor, and when that thread also runs the sim the
+         * sim clock follows the display.
          *
-         * Skipping is safe HERE specifically: this sits before
-         * vkAcquireNextImageKHR, so nothing has been consumed and no
-         * semaphore is left pending. Every caller tolerates a false return, as
-         * it does for a timed-out acquire.
+         * Skipping is safe here: this sits before vkAcquireNextImageKHR, so
+         * nothing has been consumed and no semaphore is left pending. Every
+         * caller tolerates a false return.
          *
          * Headless keeps the blocking wait: there is no display to pace it,
          * and its readback path depends on the slot having retired.
          *
-         * The queue self-paces to exactly the display rate either way; the
-         * difference is whether the excess is absorbed by shedding a present
-         * or by stalling the game. */
+         * The queue self-paces to the display rate either way; the difference
+         * is whether the excess is absorbed by shedding a present or by
+         * stalling the caller. */
         Uint64 t0 = SDL_GetTicksNS();
         if (dev->headless) {
             if (fence_result(vkWaitForFences(dev->device, 1, &dev->in_flight[dev->frame],
@@ -3243,10 +3240,10 @@ static bool begin_frame_impl(rhi_device *dev, bool acquire)
         } else if (dev->present_blocking) {
             /* A dedicated present thread is paced by the display by design:
              * waiting here costs the sim nothing. Bounded so a dead
-             * compositor still returns control — and the bound is honoured:
+             * compositor still returns control, and the bound is honoured:
              * proceeding past a timed-out wait resets a fence and re-records
-             * a command buffer the GPU is still executing, which is a
-             * device loss a few submits later. */
+             * a command buffer the GPU is still executing, which is a device
+             * loss a few submits later. */
             VkResult fw = fence_result(vkWaitForFences(dev->device, 1, &dev->in_flight[dev->frame],
                                                        VK_TRUE, RHI_BLOCKING_FENCE_TIMEOUT_NS),
                                        "fence wait");
@@ -3284,9 +3281,8 @@ static bool begin_frame_impl(rhi_device *dev, bool acquire)
         /* Bounded, not UINT64_MAX. Under FIFO this normally returns within a
          * vblank, but Windows stops handing out images for the whole of a live
          * resize (the modal loop inside DefWindowProc). An unbounded wait here
-         * parks whichever thread presents — and that thread also runs the sim,
-         * so the game froze for as long as the user held the window edge.
-         * Timing out lets the caller skip the present and keep ticking. */
+         * parks whichever thread presents, and that thread may also run the
+         * sim. Timing out lets the caller skip the present and keep ticking. */
         if (acquire &&
             !acquire_image(dev, dev->img_avail[dev->frame], &dev->in_flight[dev->frame])) return false;
     }
@@ -3299,14 +3295,13 @@ static bool begin_frame_impl(rhi_device *dev, bool acquire)
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     };
     vkBeginCommandBuffer(cb, &bi);
-    /* The frame serial counts frames that actually began — slot fence
+    /* The frame serial counts frames that actually began: slot fence
      * retired, image acquired, command buffer recording. Scene retirement
      * relies on "a frame RHI_FRAMES_IN_FLIGHT serials back has had its fence
-     * waited": counting refused begins would let a refusal burst advance the
-     * serial without ever observing the oldest slot's fence, retiring scenes
-     * and freeing arena ranges a still-executing submission reads. Every
-     * counted begin is followed by its submit, so slot alternation is exact
-     * and the guarantee holds. */
+     * waited"; counting refused begins could advance the serial without
+     * observing the oldest slot's fence and free arena ranges a
+     * still-executing submission reads. Every counted begin is followed by
+     * its submit, so slot alternation is exact and the promise holds. */
     s_frame_serial++;
     census_frame();
     retired_reclaim(dev, false);
@@ -4451,9 +4446,9 @@ static rhi_texture *create_render_target_impl(rhi_device *dev, uint32_t width,
         .imageType = VK_IMAGE_TYPE_2D, .format = RHI_RT_FORMAT,
         .extent = { width, height, 1 }, .mipLevels = 1, .arrayLayers = 1,
         .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
-        /* TRANSFER_DST: rhi_snapshot_offscreen_to_rt blits INTO a render
-         * target (the freeze backdrop capture), and a blit destination
-         * requires the usage bit. */
+        /* TRANSFER_DST: rhi_snapshot_offscreen_to_rt blits into a render
+         * target (the freeze backdrop capture), and a blit destination needs
+         * the usage bit. */
         .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
                  VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
