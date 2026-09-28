@@ -27,14 +27,18 @@
 // walk: per visible sector it
 // decodes 11/11/10 verts → float RTPS projection, walks HP (16B) / LP (8B) faces
 // into tris, and computes per-vertex RGB888 + DPCS depth-cue fog from the sector
-// colour arrays (terrain_color). The result is fed to the native scene
-// (untextured gouraud) and numerically A/B'd vs the captured .s prims (geometry +
-// colour). Textures (m_LQTexturePointer) + ABE are the next increment.
+// colour arrays (terrain_color). Each face takes its Tiledef material and
+// corner UVs (m_LQTexturePointer, or the HQ record for a near face) and ABE
+// blend, and a near face takes the near/HQ subdivide. The result is fed to
+// the native scene; under OPENPETE_TERRAIN_VERIFY it is also numerically
+// compared with the captured .s prims (geometry + colour).
 //
-// Determinism: display-only. It never writes PSX RAM (it READS gamestate + the
-// captured polybuf). func_8002B9CC/func_800258F0 keep running canonical-4:3 as
-// the verdict producer; the native path will read g_Camera/g_Environment
-// read-only and cull a wide frustum host-side. See the doc §0/§6.
+// Determinism: display-only. The walk reads gamestate and the captured
+// polybuf and writes no PSX RAM, except the OPENPETE_ENV_LODDIST measurement
+// bracket, which stores m_LodDistance for the duration of the world draw and
+// restores it. func_8002B9CC/func_800258F0 keep running canonical-4:3 as the
+// verdict producer; the native path reads g_Camera/g_Environment read-only
+// and culls a wide frustum host-side.
 //
 // Gated by OPENPETE_TERRAIN_VERIFY (dump/A/B) or a native renderer mode (feed).
 
@@ -225,9 +229,10 @@ static int terrain_prim_sink(void* ctx, const ngte_prim* s) {
 
 /** @brief Walks the polybuf [start, end) into the bounded capture sample.
  *
- * Polygons only. The whole world passes through here, so the walk guard is
- * eight times the sample bound, and the prim-code histogram and the total
- * count every polygon walked, not only the sampled ones.
+ * Only polygons enter the sample. The whole world passes through here, so
+ * the walk guard is eight times the sample bound, and the prim-code
+ * histogram and the total count every packet walked (polygon or not), not
+ * only the sampled ones.
  * @param cpu The guest CPU state.
  * @param start The first polybuf address.
  * @param end One past the last polybuf address. */
@@ -543,9 +548,7 @@ static void build_captured_colors(void) {
  * the per-vertex DPCS depth-cue fog. The HP colour block is TWO 4B-stride
  * arrays [near0..][far0..]; `idx` is the pre-×4 byte offset from face word1.
  *
- * The .s decode (generated C block_80026DF0-80026E6C), PROVEN against the
- * title-vista captured prims (fog A/B: implied-ir0 regression
- * over 546 matched fog-band verts fits residual 0, MAD 26):
+ * The .s decode (generated C block_80026DF0-80026E6C):
  *   ir0 = fogRef - SZ,  SZ = 4·m3 (native V is world/16; the .s HP walk feeds
  *                                  world/4, so the .s SZ3 = 4× our m3);
  *   ir0 >= 4096 -> NEAR colour raw (block_80026FB4);
@@ -553,22 +556,17 @@ static void build_captured_colors(void) {
  *   else GTE DPCS (cmd 0x10): seed RGBC = FAR word ($s0[idx]), far-colour regs
  *   = NEAR word 12-bit-expanded ($t7[idx]) -> out = far + ir0·(near-far) with
  *   the GTE's truncating >>12 >>4 per channel (ngte_dpcs_ch).
- * The old claim "scale 1 validated, ×4 25-67%" is RETRACTED (it predates the
- * exact decode; the float+0.5 lerp at scale 1 pins f=1 across the fog band).
  *
- * SHIPPED DEFAULT: the EXACT decode. The old
- * "exact worsens the vista (9.0→13.0)" park was a two-error cancellation:
- * PSX terrain fog is TWO channels — the DPCS vertex blend here AND a
- * per-face CLUT-ROW ladder of pre-baked progressively-fogged palettes
- * (see the .s texture-fog select at the face loop) — and native had
- * neither; the under-fogged lerp partially compensated for the missing
- * palette fog. With both channels implemented the exact decode is strictly
- * closer (identity join: 100% within ±4 at EVERY band; the lerp is Δ67-112
- * off in deep fog). OPENPETE_TERRAIN_FOGDPCS=0 restores the lerp (A/B);
- * OPENPETE_TERRAIN_LOD_HANDOFF=0 restores HP-everywhere beyond fog saturation (A/B).
+ * DEFAULT: the EXACT decode. PSX terrain fog is TWO channels: the DPCS vertex
+ * blend here AND a per-face CLUT-ROW ladder of pre-baked progressively-fogged
+ * palettes (see the .s texture-fog select at the face loop). The exact decode
+ * is paired with the ladder (s_clutfog); the DPCS blend alone leaves textured
+ * faces under-fogged. OPENPETE_TERRAIN_FOGDPCS=0 restores the float lerp
+ * (A/B); OPENPETE_TERRAIN_LOD_HANDOFF=0 restores HP-everywhere beyond fog
+ * saturation (A/B).
  * Colour words are 0x00BBGGRR (R=byte0), matching the captured prim RGB. LP
- * faces are NEVER fogged in the .s (raw working palette at all distances —
- * identity-join-proven); noHP=1 keeps that. */
+ * faces are NEVER fogged in the .s (raw working palette at all distances);
+ * noHP=1 keeps that. */
 static double s_fogscale = -1.0;    /* SZ = fogscale·m3; shipped default 1.0 (see above) */
 static int s_fogdpcs = -1;          /* OPENPETE_TERRAIN_FOGDPCS: GTE-exact DPCS blend */
 static int s_lod_handoff = -1;      /* OPENPETE_TERRAIN_LOD_HANDOFF: HP->LP swap beyond fog saturation, default on */
@@ -1073,8 +1071,8 @@ static void push_tri(tn_wctx* W, ngte_cvert a, ngte_cvert b, ngte_cvert c, const
  * centre. A face straddling the eye plane clipped at s_nearz (16 world units)
  * puts its crossing verts essentially AT the eye — they project 20k+ px
  * offscreen, and rasterizers (llvmpipe AND hardware) drop the resulting sliver
- * even though its on-screen wedge is large (peace_keepers ridge tri s113/f10:
- * the terrain popped out whenever the camera crossed its plane). Everything
+ * even though its on-screen wedge is large (the face disappears while the
+ * camera is on its plane). Everything
  * beyond this bound is far outside any visible frame (±~600 PSX px at 32:9),
  * so re-clipping until crossing verts land inside it trims only invisible
  * geometry: the wedge's bounding EDGES are the projections of the same 3D
@@ -1274,12 +1272,11 @@ static void emit_quad_cv(tn_wctx* W, ngte_cvert tl, ngte_cvert tr, ngte_cvert bl
  * TL,TR,BL,BR quadrant) uses the 8-byte Tiledef at `hqBase + i*8` (the .s does
  * `t6 += 8` per sub-quad), with the 4 spatial corner UVs (u0,v0)/(u1,v1)/
  * (u0,v0+0x1F)/(u0+0x1F,v0+0x1F) = [TL,TR,BL,BR] (the .s t1/t2/t1+0x1F00/
- * t1+0x1F1F). These are the bpp8 hi-detail tiles (the central-platform
- * medallion). `abe` = faceWord2 & 0x80 (the .s `s0 & 0x80` semi-transparent
- * gate). Colour is bilinear (no DPCS fog on near cells); the corner cverts carry
- * the original quad's raw NEAR colours. (The minority per-cell detail-bit finer
- * subdivision — the D_8006CF98 pattern path — is NOT replicated here; the 2×2 is
- * the dominant geometry and fixes the medallion's affine warp.) */
+ * t1+0x1F1F). These are the bpp8 hi-detail tiles. `abe` = faceWord2 & 0x80
+ * (the .s `s0 & 0x80` semi-transparent gate). Colour is bilinear (no DPCS fog
+ * on near cells); the corner cverts carry the original quad's raw NEAR
+ * colours. The +0x1E00 queue's finer 4x4 cells and split triangles are the
+ * tier-4 paths (terrain_near_emit_face, terrain_near_emit_tri). */
 /** @brief Applies a Tiledef's rotation or flip to its decoded corner UVs.
  *
  * Mirrors func_800276A0 block_80027EA8. The Tiledef carries an orientation
@@ -1747,7 +1744,8 @@ static inline int tface_near_tier2(uint32_t w3) {
  * always-HQ pin: a deferred face never receives a main-OT index, so
  * consumers that model the game's OT (the authored bias gate) use this, and
  * face_is_near layers the pin on top. The game's queue itself is read only
- * as a verify-path oracle (terrain_read_defer). A face is deferred when
+ * as an oracle, when the verify, calibration or OPENPETE_TERRAIN_NEARQ paths
+ * or the portal guard ask for it (terrain_read_defer). A face is deferred when
  *   depthSum < near_band && !(word3 & near_flag_excl)
  *     && (minCorner < near_corner || !(word3 & near_flag_tier2)),
  * the four terms from the game's terrain descriptor; a game whose classifier
@@ -1773,10 +1771,9 @@ static int face_is_near_canonical(double z0, double z1, double z2, double z3, ui
     double s = s_hqscale;
     /* Per-corner SATURATION at 0 mirrors the GTE: SZ3 is an unsigned clamped
      * register, so a corner behind the camera contributes 0 to the .s's
-     * depthSum — the face still classifies NEAR (it is the closest thing on
-     * screen). Native's raw float m3 goes NEGATIVE there and used to drag the
-     * sum ≤ 0 → "behind camera" → the closest ground/wall cells fell back to
-     * the LQ tier exactly when the camera pressed against them. */
+     * depthSum and the face still classifies NEAR (it is the closest thing on
+     * screen). The native float m3 is negative there; summing it raw would
+     * drive the sum to <= 0 and classify the face "behind camera". */
     double sz0 = z0 > 0.0 ? z0*s : 0.0, sz1 = z1 > 0.0 ? z1*s : 0.0;
     double sz2 = z2 > 0.0 ? z2*s : 0.0, sz3 = z3 > 0.0 ? z3*s : 0.0;
     double sum = sz0 + sz1 + sz2 + sz3;
@@ -3039,14 +3036,14 @@ static int face_tri4_routed(double zA, double zB, double zC, uint32_t w3, uint32
 /* ---- sector decode cache (terrain Tier 1, mirrors the moby faceblock cache) --
  * A sector's geometry is STATIC world-space level data: packed vertex words,
  * face words (indices/colour offsets/flags) and each HP face's LQ Tiledef never
- * change while the level is loaded — yet the build re-read and re-unpacked all
- * of it through cpu->read_word per sector PER PRESENT. Decode once per sector
- * (key: sector vaddr + a 5-word header signature, so a level load re-decodes;
- * 2-way probe — the 1-way moby map thrashed on ~80 hot entries) and iterate
- * the decoded arrays; only projection, NCLIP, near-classification, fog and the
+ * change while the level is loaded, so re-reading and re-unpacking all of it
+ * through cpu->read_word per sector per present repeats unchanged work.
+ * Decode once per sector (key: sector vaddr + a 5-word header signature, so a
+ * level load re-decodes; TSC_WINDOW-slot linear probe) and iterate the
+ * decoded arrays; only projection, NCLIP, near-classification, fog and the
  * near/HQ subdivide stay per-present. Colour arrays additionally resolve to
- * host pointers once per sector pass. Display-only; behaviour is byte-identical
- * to the inline parse (verified by the headless same-frame screenshot diff). */
+ * host pointers once per sector pass. Display-only; the output is
+ * byte-identical to parsing the words inline. */
 typedef struct { int16_t x, y, z; } tsvert_t;      /* unpacked local vertex */
 typedef struct {
     uint8_t  i0, i1, i2, i3, quad, flip;
@@ -3071,7 +3068,7 @@ typedef struct {
     tmat matN; float tuN[4], tvN[4];               /* tiledef half +8 (near tile, .s t0<=0 branch) */
 } tsface_t;
 
-/* Env texture animation liveness (the artisans waterfall fix): the game's
+/* Env texture animation liveness: the game's
  * env-anim (Spyro 1 func_8002A6FC, Spyro 3 func_80020E74) animates textures by
  * rewriting the LQ tiledef TABLE ENTRIES in place each keyframe advance — loop
  * 1 copies whole entries from an animation bank (texture-descriptor swap),
@@ -3085,8 +3082,8 @@ typedef struct {
  * counter per tile, bumped when the 16-byte entry content changes (checked
  * once per present); cached faces re-decode their texmat on gen mismatch.
  * Sector verts/colours are NOT anim-rewritten storage (colour anim goes
- * through the live-read colour arrays; verified by OPENPETE_TERRAIN_ANIMDBG
- * in artisans: only lq/hq tile 23 churns, secV/secC never). */
+ * through the live-read colour arrays; OPENPETE_TERRAIN_ANIMDBG reports which
+ * tiles and sector vertex or colour words change between ticks). */
 static uint32_t s_tgen[128];
 static uint32_t s_tgen_epoch = 1;     /* bumped when ANY tile gen bumps */
 static uint32_t s_lqsnap[128][4];
@@ -4121,14 +4118,14 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
     return C;
 }
 
-/* Geometry (vertex) env-anim liveness — the artisans lowering-wall fix.
+/* Geometry (vertex) env-anim liveness.
  * func_8002A6FC's poly-anim handlers (blocks 8002AA18 LP / 8002ABB8 HP) advance
  * a keyframe per descriptor and stamp it into sector+0x18/+0x1A; the .s Phase-1
  * walk then GTE-INTPL blends the descriptor's keyframe vertex banks and rewrites
  * the sector's packed vertex words IN PLACE (block_80025C08..80025D10) every
  * canonical tick while the animation runs. The cache signature only covers
- * header words +0x04..+0x14, so cached verts froze at whatever pose the sector
- * was first decoded in (user repro: moving-terrain.bk2, the Sunny Flight wall).
+ * header words +0x04..+0x14, so cached verts would stay at whatever pose the
+ * sector was first decoded in.
  * Mirror the game's own registry instead of hashing vertex RAM: any sector named
  * by an LP/HP poly-anim descriptor (u16 sector index at desc+4) gets its cached
  * verts re-decoded once per canonical tick (rolling the old decode into a prev
@@ -4576,8 +4573,7 @@ static void tsc_col_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t sec
                 stamped, maxd);
 }
 
-/* Texture (UV-scroll) env-anim sub-tick interpolation — the artisans waterfall
- * judder. The scrolling-texture list (`game_layout.env_anim.scroll`: Spyro 1's
+/* Texture (UV-scroll) env-anim sub-tick interpolation. The scrolling-texture list (`game_layout.env_anim.scroll`: Spyro 1's
  * g_EnvironmentAnimations +0x08/+0x0C walked by func_8002A6FC, Spyro 3's
  * 0x8006E350 +0x08/+0x0C walked by func_80020E74) keeps a scroller's ENTIRE
  * animation state in a 7-bit accumulator at desc+6: on a keyframe advance it
