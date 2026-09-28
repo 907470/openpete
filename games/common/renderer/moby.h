@@ -97,19 +97,7 @@ double moby_native_view_widen(void);
  * is the moby's own position words; a caller in another convention maps the
  * components itself. Returns 0 with out[] zeroed when there is no usable pair,
  * including a stale one, where a multi-tick gap is a discontinuity rather than
- * motion. Returns 1 with a zero out[] for a moby static in the world.
- *
- * moby_record_halfword_offset does the same for the unsigned 16-bit field at
- * byte offset `off` inside the captured record, for a caller whose own
- * convention is not the position words: *out is (prev - curr) * (1 - t).
- * Returns 0 with *out zeroed when there is no usable pair, when `off` lies
- * past the captured blob, or when either state reads 0, which every such
- * field uses as its absent value and which would otherwise sweep the object
- * toward an origin it never held.
- *
- * moby_record_euler_at_present fills *e with the moby's three euler axes at the
- * present's phase. Returns 0 and leaves *e untouched when the caller must use
- * the byte-exact table lookup instead. */
+ * motion. Returns 1 with a zero out[] for a moby static in the world. */
 /** @brief The moby's world-position offset at the present's phase t, (prev - curr) * (1 - t) in world units.
  *
  * Its axis order is the moby's own position words; a caller in another
@@ -120,7 +108,34 @@ double moby_native_view_widen(void);
  *         where a multi-tick gap is a discontinuity rather than motion; 1
  *         otherwise, with a zero out[] for a moby static in the world. */
 int moby_record_world_offset(uint32_t moby, double out[3]);
+/** @brief The (prev - curr) * (1 - t) offset of one captured unsigned 16-bit moby field at the present's phase t.
+ *
+ * For a caller whose own convention is not the position words. The field is
+ * read at byte offset off inside the object's captured record.
+ * @param moby The Moby address.
+ * @param off The field's byte offset inside the captured record.
+ * @param out Receives the offset; zeroed when 0 is returned.
+ * @return 0 when there is no usable prev/curr pair (as for
+ *         moby_record_world_offset), when off lies past the captured blob, or
+ *         when either state reads 0, which every such field uses as its
+ *         absent value and which would otherwise sweep the object toward an
+ *         origin it never held; 1 otherwise. */
 int moby_record_halfword_offset(uint32_t moby, uint32_t off, double* out);
+/** @brief The moby's three euler axes at the present's phase, as GTE sin/cos pairs.
+ *
+ * Each axis is interpolated by the shortest arc between the object's prev and
+ * curr byte angles and sampled out of the in-RAM sine table by linear
+ * interpolation, so a rotation that steps one byte per tick sweeps instead.
+ * Z is byte +0 of the angle word, X +1 and Y +2; its high byte is an overlay
+ * flag and no axis. A facing reversal (moby_mirror_hold) holds the previous
+ * tick's angles until the hold expires, then takes this tick's.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @param e Receives the sin/cos pairs; left untouched when 0 is returned.
+ * @return 0 when the caller must use the byte-exact table lookup: rotation
+ *         interp is off (every canonical render), there is no pair, the pair
+ *         has no distinct prev, or the two states hold different classes,
+ *         where a reused slot would lerp across two objects; 1 otherwise. */
 int moby_record_euler_at_present(struct CPUState* cpu, uint32_t moby,
                                  ngte_euler_sc* e);
 
@@ -276,28 +291,8 @@ int moby_reveal_candidates(struct CPUState* cpu, moby_reveal_kind_t kind);
 
 /* ---- decode pieces shared with the player feeder -----------------------
  * The avatar draw and the moby draw are different routines, but they encode a
- * face the same way and run the same emit tree, so these four live here once.
- *
- * moby_abr_blend maps a texture page's semi-transparency mode to the
- * renderer's blend id: ABR 0 average, 1 additive, 2 subtractive, 3
- * quarter-additive.
- *
- * moby_tiledef_decode fills one face record's texture fields from the three
- * texture words {u0|v0<<8|clut<<16}, {u1|v1<<8|tpage<<16},
- * {u2|v2<<8|u3<<16|v3<<24}. A tpage colour-depth field of 3 is reserved on the
- * hardware and marks a replaced texture instead: the record takes depth 32 and
- * carries the texture id where the page x would go.
- *
- * moby_face_emit is the dual-NCLIP tree. A FRESH (quad-capable) face runs
- * NCLIP1 on (v0,v1,v2) and NCLIP2 on (v3,v1,v2) and emits, by the sign pair,
- * the triangle (v3,v1,v2), nothing, the quad (v0,v1,v2)+(v1,v3,v2), or the
- * triangle (v0,v1,v2); a STRIP face is one triangle kept on NCLIP1's sign. The
- * face's own bit0 changes both rules, and the two draws differ in how: with
- * `bit0_unconditional` the bit skips the test outright (a pre-marked quad, a
- * strip of either winding), and without it the bit negates the two NCLIP signs
- * before the same tests, which differs from the first only on a zero-area
- * face. Returns the triangle count and fills order[e] with the three
- * face-vertex slots (0..3) of triangle e. */
+ * face the same way and run the same emit tree, so these four live here
+ * once. */
 /** @brief The signed doubled area of a screen-space triangle, the GTE NCLIP analog on float coordinates rather than the GTE's floored int16.
  *
  * (b - a) x (c - a), the sign convention NCLIP uses; the caller reads the
@@ -310,8 +305,51 @@ int moby_reveal_candidates(struct CPUState* cpu, moby_reveal_kind_t kind);
  * @param cy Vertex c's screen Y.
  * @return The signed doubled area. */
 double moby_tri_nclip(float ax, float ay, float bx, float by, float cx, float cy);
+/** @brief Map a texture page's semi-transparency mode to the renderer's blend id.
+ *
+ * ABR 0 is average (id 1), 1 additive (2), 2 subtractive (3) and 3
+ * quarter-additive (4), the hardware's own table.
+ * @param abr The mode; only its low two bits count.
+ * @return The blend id, 1..4. Opaque (0) is the caller's, from its own
+ *         semi-transparency bit. */
 int    moby_abr_blend(int abr);
+/** @brief Fill one face record's texture fields from its three texture words.
+ *
+ * The words are {u0|v0<<8|clut<<16}, {u1|v1<<8|tpage<<16} and
+ * {u2|v2<<8|u3<<16|v3<<24}. A tpage colour-depth field of 3 is reserved on the
+ * hardware and marks a replaced texture instead: the record takes depth 32 and
+ * carries the texture id, the CLUT half read as a signed 16-bit value, where
+ * the page x would go.
+ * @param td0 The first texture word.
+ * @param td1 The second.
+ * @param td2 The third.
+ * @param F Receives the u/v pairs, blend mode, page, depth and CLUT fields. */
 void   moby_tiledef_decode(uint32_t td0, uint32_t td1, uint32_t td2, moby_wface_t* F);
+/** @brief Decide from two NCLIP areas which triangles of a face draw, and in which vertex order.
+ *
+ * A fresh (quad-capable) face tests NCLIP1 on (v0,v1,v2) and NCLIP2 on
+ * (v3,v1,v2) and emits, by the sign pair, the triangle (v3,v1,v2), nothing,
+ * the quad (v0,v1,v2)+(v1,v3,v2), or the triangle (v0,v1,v2). Without
+ * have_v3 the quad and the (v3,v1,v2) triangle degrade to nothing and the
+ * triangle (v0,v1,v2). A strip face is one triangle (v0,v1,v2) kept on
+ * NCLIP1's sign.
+ *
+ * The face's own bit0 changes both rules, and the two draws differ in how.
+ * With bit0_unconditional the bit skips the test outright: a pre-marked quad
+ * is emitted whole (a triangle without have_v3) and a strip triangle is kept
+ * of either winding. Without it the bit replaces NCLIP1 by -|NCLIP1| and NCLIP2
+ * by |NCLIP2| before the same tests, which differs from the first only on a
+ * zero-area face; a strip triangle is then kept unless NCLIP1 is 0.
+ * @param fresh Nonzero for a quad-capable face, 0 for a strip face.
+ * @param bit0 The face's bit0.
+ * @param bit0_unconditional Nonzero when bit0 skips the test.
+ * @param ncl1 NCLIP of (v0,v1,v2).
+ * @param ncl2 NCLIP of (v3,v1,v2); unused for a strip face.
+ * @param have_v3 Nonzero when the face has a fourth vertex; unused for a strip
+ *        face.
+ * @param order Receives the three face-vertex slots (0..3) of triangle e in
+ *        order[e].
+ * @return The triangle count, 0..2. */
 int    moby_face_emit(int fresh, int bit0, int bit0_unconditional,
                       double ncl1, double ncl2, int have_v3, int order[2][3]);
 

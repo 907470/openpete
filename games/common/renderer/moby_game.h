@@ -409,6 +409,12 @@ extern const moby_game_t moby_game;
  * @param addr The guest address of the word.
  * @return The word. */
 uint32_t moby_rec_word(CPUState* cpu, uint32_t addr);
+/** @brief Read a cull record's packed rotation matrix, each word through moby_rec_word.
+ *
+ * Unpacks five words at addr..addr+16 with ngte_unpack_matrix.
+ * @param cpu The guest CPU state, read only.
+ * @param addr The guest address of the matrix inside the record.
+ * @param M Receives the matrix, Q12. */
 void     moby_rec_matrix(CPUState* cpu, uint32_t addr, int M[3][3]);
 
 /* The part of an animated cull record that carries no game-specific encoding,

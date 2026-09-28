@@ -180,11 +180,20 @@ static int      s_rec_append_moby_n;
  * cannot answer for the next. */
 static unsigned s_rec_append_gen;
 
+/** @brief Add a moby to this tick's appended-record set; a full set drops it.
+ *
+ * The set holds REC_APPEND_MOBYS entries. A moby past that is not marked, and
+ * its records keep the verdict the walk gives a record the cull wrote.
+ * @param moby The Moby address whose record a reveal appended. */
 static void moby_rec_append_note(uint32_t moby) {
     if (s_rec_append_moby_n < REC_APPEND_MOBYS)
         s_rec_append_moby[s_rec_append_moby_n++] = moby;
 }
 
+/** @brief Whether a moby is in the appended-record set, by linear scan.
+ *
+ * @param moby The Moby address.
+ * @return 1 when a reveal appended a record for the moby this tick, else 0. */
 static int moby_rec_appended_moby(uint32_t moby) {
     for (int i = 0; i < s_rec_append_moby_n; i++)
         if (s_rec_append_moby[i] == moby) return 1;
@@ -209,6 +218,14 @@ static int moby_walk_tri_host_added(uint32_t moby) {
     return last_hit;
 }
 
+/** @brief Copy the cull's record list and its terminator word into s_rec_snap.
+ *
+ * Reads records from moby_rec_base, game_layout.moby.rec_stride bytes apart,
+ * until a record whose first word is 0 or the copy's capacity (REC_SNAP_RECS
+ * records, REC_SNAP_WORDS words). The terminator is copied only when the
+ * loop reached it. An unusable stride (0 or not a multiple of 4) or a base
+ * below KSEG0 leaves no copy, and moby_rec_word then reads guest memory.
+ * @param cpu The guest CPU state, read only. */
 static void moby_rec_snapshot(CPUState* cpu) {
     s_rec_snap_words = 0;
     const uint32_t stride = game_layout.moby.rec_stride;
@@ -355,7 +372,9 @@ static ngte_view s_view_shd;
  * record. Rebuilt with their source views. */
 static ngte_view s_view_canon;
 static ngte_view s_view_shd_canon;
+/** @brief Build s_view from the guest camera and derive its canonical twin s_view_canon. */
 static void moby_view_build(CPUState* cpu)     { ngte_view_build(cpu, &s_view);     ngte_view_canon(&s_view,     &s_view_canon); }
+/** @brief Build s_view_shd from the guest camera and derive its canonical twin s_view_shd_canon. */
 static void moby_view_shd_build(CPUState* cpu) { ngte_view_build(cpu, &s_view_shd); ngte_view_canon(&s_view_shd, &s_view_shd_canon); }
 /** @brief The regular-walk view a record projects through.
  *
@@ -712,6 +731,14 @@ typedef struct { uint32_t header, sig1, sig2; float ext; } mext_t;
 static mext_t s_mext[MEXT_SLOTS];
 static long s_mext_hit, s_mext_miss;      /* engagement census */
 
+/** @brief Measure the largest vertex distance from the model origin over the live keyframes of an AnimationHeader.
+ *
+ * Decodes every vertex of every keyframe (at most 256) through the game's
+ * vertex stream, in the decode's rotated-vertex units.
+ * @param cpu The guest CPU state, read only.
+ * @param header The AnimationHeader's PSX address.
+ * @return The distance, or -1.0 when the game names no keyframe count, a
+ *         count or vertex count is 0, or no keyframe is live. */
 static double model_extent_compute(CPUState* cpu, uint32_t header) {
     int nf = moby_game.anim_frame_count(cpu, header);
     if (nf < 1) return -1.0;
@@ -750,6 +777,16 @@ static anim_sig_t anim_header_sig(CPUState* cpu, uint32_t header) {
     return g;
 }
 
+/** @brief The cached vertex extent of an AnimationHeader, measured on a miss.
+ *
+ * The cache is direct-mapped on header >> 4 and a hit needs the address and
+ * both signature words (anim_header_sig) to match. A failed measurement is
+ * cached as well.
+ * @param cpu The guest CPU state, read only.
+ * @param header The AnimationHeader's PSX address; one below KSEG0 is
+ *        refused.
+ * @return The extent as model_extent_compute returns it, or -1.0 for a game
+ *         without moby_game.anim_frame_count or a header below KSEG0. */
 static double model_extent(CPUState* cpu, uint32_t header) {
     if (!moby_game.anim_frame_count || header < 0x80000000u) return -1.0;
     anim_sig_t g = anim_header_sig(cpu, header);
@@ -2681,6 +2718,13 @@ static uint8_t  s_precull_drawn[PRECULL_SLOTS];
 static uint32_t s_precull_head;
 static uint32_t s_precull_n;
 
+/** @brief Save the drawn-verdict byte of every moby in the array, in slot order, before the cull rewrites it.
+ *
+ * Walks from the array head to the 0xFF state sentinel, at most
+ * PRECULL_SLOTS slots. Does nothing, leaving an empty snapshot, for a game
+ * without moby_game.cull_view_admits or without a usable array head or
+ * stride.
+ * @param cpu The guest CPU state, read only. */
 static void moby_precull_snapshot(CPUState* cpu) {
     s_precull_n = 0;
     if (!moby_game.cull_view_admits) return;
@@ -2790,6 +2834,11 @@ static void moby_reveal_extended(CPUState* cpu, uint32_t m, moby_reveal_kind_t k
     else c->declined[why]++;
 }
 
+/** @brief Print one [moby-reveal] line with a candidate walk's census to stderr.
+ *
+ * @param c The walk's tallies.
+ * @param kind The model kind the walk covered.
+ * @param widen The view widening printed with the widened-view counts. */
 static void moby_reveal_census_print(const moby_reveal_census_t* c, moby_reveal_kind_t kind,
                                      double widen) {
     fprintf(stderr, "[moby-reveal vbl=%u] kind=%s live=%ld canon=%ld occluded=%ld added=%d "
@@ -3164,6 +3213,13 @@ static const int MOBY_IDENT_Q12[3][3] = { {4096,0,0}, {0,4096,0}, {0,0,4096} };
 static int    s_cur_screen;
 static double s_cur_screen_ofx, s_cur_screen_ofy;
 
+/** @brief The view the current second-kind record projects through, with its projection origin.
+ *
+ * @param ofx Receives the origin X in PSX pixels: the record's own screen
+ *        origin when it names one, else the view's.
+ * @param ofy Receives the origin Y likewise.
+ * @return The canonical view for a record that names a screen origin, else
+ *         the view moby_record_view gives the current moby. */
 static const ngte_view* moby_simple_view(double* ofx, double* ofy) {
     const ngte_view* view = s_cur_screen ? &s_view_canon
                                          : moby_record_view(s_cur_moby_key);
@@ -3900,6 +3956,12 @@ static const fcache_t* moby_faces_for(CPUState* cpu, uint32_t rec, uint32_t mode
     }
     return fcache_get(cpu, fb);
 }
+/** @brief The face decode for a cull record, from the record's own faceblock, header, keyframe and tier.
+ *
+ * @param cpu The guest CPU state; a patched decode writes and restores the
+ *        faceblock.
+ * @param R The record.
+ * @return The decode, or NULL when the faceblock does not decode. */
 static const fcache_t* moby_faces_for_record(CPUState* cpu, const rec_meta* R) {
     return moby_faces_for(cpu, R->addr, R->model_held, R->faceblock,
                           R->header, R->frameA, R->zsf4);
@@ -5792,11 +5854,22 @@ static void isect_census(void) {
  * does not receive rank 0. OPENPETE_MOBY_RANK_NEGCTL=1 reverses the order:
  * the negative control that proves a pixel A/B of the rank measures it. */
 typedef struct { int bk, i; } nrank_e;
+/** @brief qsort comparator over nrank_e: bucket descending, then walk index ascending. */
 static int nrank_cmp(const void* a, const void* b) {
     const nrank_e *x = (const nrank_e*)a, *y = (const nrank_e*)b;
     if (x->bk != y->bk) return x->bk > y->bk ? -1 : 1;   /* far buckets paint first */
     return x->i < y->i ? -1 : x->i > y->i;
 }
+/** @brief Write s_nrank for one moby's walk triangles i0..i1-1 from their ordering-table keys.
+ *
+ * A triangle with a negative key or the second-triangle flag (MOBY_OTK_Q2)
+ * stays out of the sort and starts at rank 0. The rest rank 1..n in paint
+ * order, far bucket first, ties in walk order. A second-triangle face of a
+ * quad prim then takes the rank of the triangle before it, so both halves of
+ * a prim share one; the first triangle of the run is never copied.
+ * @param i0 The first walk triangle of the moby.
+ * @param i1 One past its last.
+ * @param neg Nonzero reverses the rank order. */
 static void native_rank_moby(int i0, int i1, int neg) {
     static nrank_e E[MAX_NTRI];
     int n = 0;
@@ -5955,6 +6028,15 @@ static int s_isect_rk[MAX_NTRI];
 #define ISG_W 1024
 #define ISG_H 768
 typedef void (*isg_fn)(int face, int px, void* u);
+/** @brief Call fn for each pixel centre a walk triangle covers, either winding, inside the census window.
+ *
+ * The scan box is the triangle's bounds clamped to the ISG_W x ISG_H window at
+ * (ISG_X0, ISG_Y0). A pixel centre on an edge counts as covered. A triangle
+ * of area below 1e-9 calls nothing.
+ * @param i The walk triangle index into s_wtri.
+ * @param fn Called with i, the pixel index (y - ISG_Y0) * ISG_W + (x - ISG_X0)
+ *        and u.
+ * @param u Passed to fn unchanged. */
 static void isg_raster(int i, isg_fn fn, void* u) {
     const ntri_t* w = &s_wtri[i];
     double x0 = w->v[0].sx, y0 = w->v[0].sy, x1 = w->v[1].sx, y1 = w->v[1].sy,
@@ -6436,6 +6518,14 @@ static void compare_and_report(int nrec) {
  * start. */
 static unsigned s_verify_lo = 2000u, s_verify_hi = 2012u;
 static int      s_verify_sparse = 1;
+/** @brief Whether OPENPETE_MOBY_VERIFY turns the verify probe on, parsed once together with its VBL window.
+ *
+ * Unset, empty or starting with 0 is off. A value `1` or one that does not
+ * start with a number selects the default window of 13 VBLs starting at
+ * OPENPETE_MOBY_VERIFY_FRAME (default 2000) plus the every-200-VBL sample.
+ * `<lo>` or `<lo>-<hi>` selects that window alone; a `<hi>` below `<lo>`
+ * becomes `<lo>`.
+ * @return Nonzero when the probe is on. */
 static int moby_verify_enabled(void) {
     static int s = -1;
     if (s >= 0) return s;
@@ -6759,6 +6849,16 @@ static int on_cull(CPUState* cpu, uint32_t addr) {
     return 1;
 }
 
+/** @brief The regular-pass hook: run the game's regular moby draw and feed its records to the native scene.
+ *
+ * Clears the per-moby fade snapshot first. Where the game reveals records
+ * the cull skipped, builds the pass view, drops last tick's appended records
+ * and appends this tick's (moby_reveal_candidates) before the pass walks the
+ * copy. Reads the drawn-verdict bytes and writes none.
+ * @param addr The hooked address, unused.
+ * @return 1 when the hook ran the pass; 0 when no consumer is active
+ *         (verify, native scene, render paths) or on re-entry, leaving the
+ *         ordinary dispatch to run it. */
 static int on_draw_regular(CPUState* cpu, uint32_t addr) {
     (void)addr;
     if (!moby_verify_enabled() && !openpete_native_scene_enabled() && !render_paths_active()) return 0;
@@ -6936,6 +7036,12 @@ static int mat3_inverse(const int M[3][3], double out[3][3]) {
  * sub-tick interval holds instead of interpolating. 0 disables the hold. */
 #define MOBY_MIRROR_HOLD_DEFAULT 0x40
 
+/** @brief The facing-reversal hold threshold in byte angle units, read once.
+ *
+ * OPENPETE_MOBY_MIRROR_HOLD parsed with strtol base 0 when set and nonempty,
+ * else MOBY_MIRROR_HOLD_DEFAULT. moby_mirror_hold treats 0 and any negative
+ * value as the hold disabled.
+ * @return The threshold. */
 static int moby_mirror_thresh(void) {
     static int s = -1;
     if (s < 0) { const char* e = getenv("OPENPETE_MOBY_MIRROR_HOLD");
@@ -7069,16 +7175,6 @@ static double lerp_byte_angle(int prev_b, int curr_b, double t) {
     return (double)prev_b + (double)d * t;
 }
 
-/* The moby's three euler bytes at this present's phase, as GTE sin/cos pairs:
- * each axis shortest-arc interpolated between the object's prev and curr
- * snapshots and sampled out of the in-RAM table by linear interpolation, so a
- * rotation that steps one byte per tick sweeps instead. Z is +0, X is +1 and Y
- * is +2 of the angle word; its high byte is an overlay flag and no axis.
- *
- * Returns 0 and leaves *e untouched when the caller must fall back to the
- * byte-exact table lookup: rotation interp off (every canonical render), no
- * pair, a pair with no distinct prev, or a slot whose two states hold different
- * classes — a reused slot would lerp across two objects. */
 int moby_record_euler_at_present(CPUState* cpu, uint32_t moby, ngte_euler_sc* e) {
     if (!s_rot_now) return 0;
     const openpete_interp_obj_t* o = openpete_interp_objs_find(moby_interp_key(moby));
@@ -8248,6 +8344,15 @@ static const hook_bracket_desc k_shaded_bracket = {
     .st = &s_shaded_hb,
 };
 
+/** @brief The shaded-pass hook: run the game's shaded moby draw, then feed its gems, props, HUD icons and text natively.
+ *
+ * Under hook_bracket_run. With the native scene live it builds the shaded
+ * walk, marks the moby path drawn when the walk made triangles, pushes the
+ * scene, snapshots the shaded list for the sub-tick spine when a capture is
+ * open, and sets the HUD and actor-front flags. With verify on it compares
+ * the walk against the pass's own prims for the first few reports.
+ * @param addr The hooked address, passed to the bracket.
+ * @return 1 when the hook ran the pass; 0 when the bracket declined. */
 static int on_draw_shaded(CPUState* cpu, uint32_t addr) {
     uint32_t startp, endp; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_shaded_bracket, &startp, &endp, &feed, &verify))
@@ -8316,6 +8421,11 @@ int moby_native_simple_fresh(void) {
     return moby_game.simple_replay && s_canon_simple_valid &&
            spyro_native_canon_epoch_fresh(s_canon_simple_epoch);
 }
+/** @brief Run the provider's second-kind draw pass and stamp the canonical epoch its queue belongs to.
+ *
+ * The queue's validity flag and epoch stamp are set only on a
+ * non-speculative run. The pass's triangle count goes to s_simple_ntri.
+ * @param addr The hooked address, unused. */
 static void moby_run_draw_simple(CPUState* cpu, uint32_t addr) {
     (void)addr;
     s_simple_ntri = moby_game.simple_pass(cpu);
@@ -8325,6 +8435,10 @@ static void moby_run_draw_simple(CPUState* cpu, uint32_t addr) {
         s_canon_simple_epoch = spyro_native_canon_epoch_stamp();
     }
 }
+/** @brief Bracket pre-hook of the second-kind pass: name the material, build the pass view and empty the walk output.
+ *
+ * @param feed Unused.
+ * @param verify Unused. */
 static void moby_simple_pre(CPUState* cpu, int feed, int verify) {
     (void)feed; (void)verify;
     s_cur_mat = "SIM";
@@ -8363,36 +8477,6 @@ static int on_draw_simple(CPUState* cpu, uint32_t addr) {
     return hook_bracket_end(&k_simple_bracket);
 }
 
-/* Compute the PREV rendered keyframe pose for a moby — the second input to the
- * two-pass sub-tick SHAPE lerp in reextract_record_pass. Returns MOBY_PREV_LERP
- * (and fills prev + alpha) when the moby has a lerpable prev snapshot;
- * MOBY_PREV_HOLD (prev + alpha filled) when the two clips have no vertex
- * correspondence, so the pass shows the prev pose whole until alpha 1;
- * MOBY_PREV_SNAP when it should show the curr pose from alpha 0: interp off,
- * spawn / no prev interval, a cutscene path-follower's clip switch, a clip
- * switch whose previous header no longer holds the content a canonical pass
- * drew it with (fade_header_intact), or a hold past its tick period
- * (moby_hold_expired).
- * The pose is the one the cull drew from
- * the prev snapshot's animation state bytes (moby_pose_derive, the rule the
- * live pose takes too), so on a tick where the moby blends into another
- * animation or into keyframe 0 the prev pose is that blend, keyframe B out of
- * the next animation's own table. Uses the SAME per-object clock (s_rot_now)
- * and distinct-roll alpha as the moby rotation interp, so
- * shape/rotation/position all interpolate on one timeline.
- *
- * Clip switches (prev m_Animation != curr) ARE crossfaded when the two animations
- * share the same vertex COUNT — a moby model's animations deform one shared mesh, so
- * an equal count means vertex i is the same physical vertex in both keyframe tables,
- * and a model-space lerp prev→curr stays on-model (the fixed-topology argument that
- * makes Spyro's cross-clip lerp safe, applied per moby). When the counts differ the
- * meshes genuinely differ, and the pass HOLDS the prev pose whole — its own
- * header, vertex count, face list and keyframe patch list — for every present
- * below alpha 1 and within one tick period of the current stamp, reaching the
- * curr pose at alpha 1, where every other channel reaches its canonical value
- * for this tick. prev->header is the previous clip's
- * header so the decoder can use its own ShortShift (the two clips' s5 may
- * differ; the decoded coords are real model-space either way). */
 /* What the sub-tick pass may do with a clip switch, shared by the pass and the
  * census so both read one rule. CROSS: the two clips deform one shared mesh
  * (equal vertex count), so vertex i is the same physical vertex in both and a
@@ -8406,6 +8490,18 @@ typedef enum { MOBY_CLIP_CROSS = 0, MOBY_CLIP_CUTPATH, MOBY_CLIP_COUNTSW } moby_
  * trace, which the sub-tick harness bins on. */
 enum { MOBY_PREV_SNAP = 0, MOBY_PREV_LERP = 1, MOBY_PREV_HOLD = 2 };
 
+/** @brief Classify a clip switch as cross-fadable, cutscene path-follower or vertex-count change.
+ *
+ * A moby moby_game.cutpath_actor names is CUTPATH whatever the counts. Else
+ * equal vertex counts (anim_vcount_hi of each header) are CROSS and unequal
+ * ones COUNTSW.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @param header_prev The previous pose's AnimationHeader.
+ * @param header_curr The current pose's AnimationHeader.
+ * @param count_p Receives the previous header's vertex count.
+ * @param count_c Receives the current header's vertex count.
+ * @return The kind. */
 static moby_clip_t moby_clip_switch_kind(CPUState* cpu, uint32_t moby,
                                          uint32_t header_prev, uint32_t header_curr,
                                          int* count_p, int* count_c) {
@@ -8538,6 +8634,31 @@ static int moby_hold_schedule(const openpete_interp_obj_t* o, int verdict, doubl
     return MOBY_PREV_HOLD;
 }
 
+/** @brief The previous rendered keyframe pose of a moby, and how the sub-tick shape lerp may use it.
+ *
+ * The pose is the one the cull drew from the previous snapshot's animation
+ * state bytes (moby_pose_derive), so a tick that blends into another
+ * animation gives that blend. The alpha comes from the same per-object clock
+ * (s_rot_now) as the rotation interp, so shape, rotation and position share
+ * one timeline.
+ *
+ * MOBY_PREV_SNAP: show the current pose from alpha 0. It is returned with
+ * *prev and *alpha not written for interp off, a game that cannot name the
+ * previous keyframe, no distinct prev snapshot, a slot that changed class, or
+ * a model or pose that does not derive; with both written for a clip switch
+ * whose previous header no longer holds the content a canonical pass drew it
+ * with (fade_header_intact), a cutscene path-follower's switch, or a hold
+ * past its tick period (moby_hold_expired). MOBY_PREV_LERP: a lerp between
+ * the two poses, including a clip switch between clips of equal vertex
+ * count, which deform one shared mesh. MOBY_PREV_HOLD: show the previous
+ * pose whole until alpha 1, for a clip switch between clips of different
+ * vertex count and for a facing reversal (moby_mirror_hold).
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @param header_curr The current pose's AnimationHeader.
+ * @param prev Receives the previous pose.
+ * @param alpha Receives the pair's phase.
+ * @return MOBY_PREV_SNAP, MOBY_PREV_LERP or MOBY_PREV_HOLD. */
 static int moby_prev_keyframe(CPUState* cpu, uint32_t moby, uint32_t header_curr,
                               moby_pose_t* prev, double* alpha) {
     if (!s_rot_now) return 0;                                  /* interp off → snap */
@@ -8619,6 +8740,10 @@ static float s_occl_pan_px = 0.0f;             /* px/tick pan allowance (orchest
 
 void moby_native_set_occl_pan(float px_per_tick) { s_occl_pan_px = px_per_tick; }
 
+/** @brief The occlusion cache slot of a moby: a multiplicative hash of the address, direct mapped.
+ *
+ * @param moby The Moby address.
+ * @return An index below OCCL_HASH_N. */
 static unsigned occl_slot(uint32_t moby) {
     return ((moby >> 3) * 2654435761u >> 16) & (OCCL_HASH_N - 1);
 }
@@ -8658,6 +8783,21 @@ static int hold_project_origin(CPUState* cpu, const double tr[3], double* sx, do
  * OCCL_ANCHOR_MAX_VBL so no rect survives a scene indefinitely. */
 #define OCCL_ANCHOR_MAX_VBL 64u
 
+/** @brief Rebuild a cached record's screen rect and nearest view-Z from the current camera, without decoding.
+ *
+ * Refuses (0) an entry with no usable anchor (radius, TR.z or view-Z not
+ * positive), an anchor older than OCCL_ANCHOR_MAX_VBL VBLs, a moby whose
+ * class changed since the anchor, and an origin nearer than
+ * hold_project_origin accepts. Writes nothing to the cache or guest memory.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @param e The cache entry holding the anchor.
+ * @param x0 Receives the rect's left edge, PSX screen px.
+ * @param y0 Receives the top edge.
+ * @param x1 Receives the right edge.
+ * @param y1 Receives the bottom edge.
+ * @param vz Receives the nearest view-Z, biased toward the camera.
+ * @return 1 with the outputs written, else 0. */
 static int occl_refresh_bounds(CPUState* cpu, uint32_t moby, const occl_rect_t* e,
                                float* x0, float* y0, float* x1, float* y1, float* vz) {
     if (e->arad <= 0.0f || e->atrz <= 1.0f || e->vz_min <= 0.0f) return 0;
@@ -8831,12 +8971,25 @@ static int occl_query_at(float x0, float y0, float x1, float y1, float vzmin,
                                       vzmin - vzs, &qcam);
 }
 static occl_rect_t s_ver_snap;   /* the entry the cull judged, for the report */
+/** @brief Audit-mode entry for a record the cull judged hidden: count it and keep the cache entry that judged it.
+ *
+ * @param moby The Moby address.
+ * @return 1 when the audit is on and the caller must extract the moby anyway,
+ *         else 0. */
 static int occl_verify_begin(uint32_t moby) {
     if (!occl_verify_on()) return 0;
     s_ver_would++;
     s_ver_snap = s_occl_cache[occl_slot(moby)];
     return 1;
 }
+/** @brief Audit-mode exit: re-query the fresh bounds of an extracted record the cull judged hidden and report a visible verdict.
+ *
+ * A fresh rect outside the visible extent is reported as zeropx, any other
+ * as a wrong verdict and counted in s_ver_wrong. Nothing is reported when
+ * the fresh query culls too.
+ * @param moby The Moby address.
+ * @param p The record's projected verts.
+ * @param n Their count; 0 or less returns without a report. */
 static void occl_verify_end(uint32_t moby, const proj_xy* p, int n) {
     if (n <= 0) return;                 /* no verts projected → nothing drawable */
     float x0, y0, x1, y1, vz;
@@ -8879,6 +9032,19 @@ static void occl_proj_bounds(const proj_xy* p, int n, float* px0, float* py0,
     *px0 = x0; *py0 = y0; *px1 = x1; *py1 = y1; *pvz = vzm;
 }
 
+/** @brief Store a record's projected bounds in its cache slot, with the measured motion and the refresh anchor.
+ *
+ * Motion is the rect-centre step and the view-Z step per VBL against the same
+ * moby's previous entry, 0 on a first sighting or slot collision. The anchor
+ * (origin projection, TR.z, radius, class) is rewritten here only; it is
+ * left unusable (radius 0) when the header is below KSEG0, tr is NULL, or
+ * TR.z is too near to project.
+ * @param cpu The guest CPU state, read only.
+ * @param moby The Moby address.
+ * @param p The record's projected verts.
+ * @param n Their count; 0 or less changes nothing.
+ * @param tr The record's view-space translation, or NULL.
+ * @param header The AnimationHeader whose radius byte bounds the model. */
 static void occl_cache_update(CPUState* cpu, uint32_t moby, const proj_xy* p, int n,
                               const double tr[3], uint32_t header) {
     if (n <= 0) return;
@@ -9838,6 +10004,10 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
     return nm;
 }
 
+/** @brief Whether OPENPETE_LOAD_CENSUS is set to a nonzero value, read once.
+ *
+ * Makes moby_reextract_body log a skipped pass and its per-present feed line.
+ * @return Nonzero when on. */
 static int moby_census_on(void) {
     static int s = -1;
     if (s < 0) { const char* e = getenv("OPENPETE_LOAD_CENSUS"); s = (e && *e && *e != '0'); }
@@ -9850,6 +10020,16 @@ void moby_reextract(CPUState* cpu) {
     moby_reextract_body(cpu);
     s_in_reextract = 0;
 }
+/** @brief Replay each canonical moby pass still fresh under this present's cameras, then push the scene.
+ *
+ * Does nothing without the native scene or when the moby path was not
+ * canon-drawn. The regular, specular, second-kind and shaded replays each run
+ * only while their own producer ran in the last canonical present; the
+ * specular replay swaps its captured scratch in through the sub-tick view and
+ * restores the regular scratch after. Also sets the HUD and actor-front
+ * flags and prints the occlusion, feed and clip-switch census lines their
+ * OPENPETE_* variables enable.
+ * @param cpu The guest CPU state. */
 static void moby_reextract_body(CPUState* cpu) {
     if (!openpete_native_scene_enabled()) return;
     /* Only replay mobys the canonical frame actually drew. During a level
@@ -10009,6 +10189,14 @@ static void moby_reextract_body(CPUState* cpu) {
  * this feeder. */
 static feature_dispatch_entry_t moby_dispatch[6];
 
+/** @brief The feature module's option hook: fill moby_dispatch with the cull and draw hooks the game layout allows.
+ *
+ * Entries for a pass whose layout address is 0 are left out, so the table is
+ * compacted. Without all four decoder slots (vstream_init, vstream_next,
+ * decode_faces, read_record) only the second-kind pass registers, and only
+ * when moby_game.simple_pass is set; a note prints to stderr when
+ * OPENPETE_MOBY_CENSUS is set. The table ends on an address of 0.
+ * @param opts Unused. */
 static void moby_apply_options(const openpete_options_t* opts) {
     (void)opts;
     /* No decoder slots means the geometry would be read with another game's
