@@ -550,12 +550,6 @@ static void scene_begin_for_feed(void) {
     openpete_native_scene_begin_frame(live != 0xFFFFFFFFu ? live : openpete_frame);
 }
 
-/* The scene a claimed batch belongs to: the one its build frame opened, which
- * is the scene the 3D feeders of the same ordering table filled. At the walk it
- * is still the live scene (the next frame's feeders have not run yet), so the
- * batch appends to it; a newer live scene means the build frame's has already
- * been snapshotted and the batch would land a tick late. */
-
 /** @brief Feeds one screen-space POLY_FT4 (textured quad) into the native HUD layer.
  *
  * Layout: word[1]=rgb|code, [2]=xy0, [3]=uv0|clut, [4]=xy1, [5]=uv1|tpage,
@@ -932,12 +926,15 @@ static void unclaimed_note(CPUState* cpu, uint32_t prim) {
  * ordering table holding them is handed to the GPU.
  *
  * So the chokepoint claims each primitive (records its address and kind) and
- * the whole batch is fed at the OT walk, in link order. The primitives linked
- * between two DrawOTag calls are exactly one ordering table's worth, and the
- * second call is the one that draws them, so `ui_sprite_ot_draw_begin` is both
- * the point where every word is final and the point where the batch is
- * complete. Feeding in link order keeps the native layering equal to the OT
- * walk order. The chokepoint is the clean 2D-vs-3D discriminator (the 3D
+ * the batch is fed at its release, in link order. The release is the
+ * canonical capture of the VBL that built the batch (on_overlay_precapture),
+ * else the scene's frame close (on_scene_frame_close), else the OT walk
+ * (`ui_sprite_ot_draw_begin`), whichever comes first; ui_sprite_ot_verify
+ * re-reads the released primitives at the walk to count words that changed
+ * after their release. The primitives linked between two DrawOTag calls are
+ * one ordering table's worth. Feeding in link order and then ranking every 2D
+ * triangle by the table traversal (build_ot_rank_map) keeps the native
+ * layering equal to the OT walk order. The chokepoint is the clean 2D-vs-3D discriminator (the 3D
  * renderers inline the insert). */
 enum { QK_FT4 = 0, QK_FREEZE, QK_DR_MODE, QK_F4_BAR, QK_F4_PANEL, QK_LINE_G2, QK_SPRT, QK_POLY_G, QK_LINE_F2 };
 typedef struct { uint32_t addr; uint32_t sum; uint32_t seq; uint32_t aux; uint32_t xy_link; uint32_t xy_rel; uint8_t kind; } ui_claim_t;
@@ -947,7 +944,7 @@ typedef struct { uint32_t addr; uint32_t sum; uint32_t seq; uint32_t aux; uint32
  * counted rather than silently dropped. */
 #define UI_CLAIM_MAX 2048
 static ui_claim_t s_claim[UI_CLAIM_MAX];
-static unsigned s_claim_n;            /* claimed, awaiting the OT walk */
+static unsigned s_claim_n;            /* claimed, awaiting release */
 static unsigned s_claim_frame;        /* openpete_frame the batch's first claim was made in */
 static unsigned s_claim_lost;         /* claims dropped on overflow (engagement: 0) */
 static int      s_ot_ranked;          /* 2D tris the table walk ranked at the last release: the
@@ -1167,7 +1164,8 @@ static int is_freeze_mask_line(CPUState* cpu, uint32_t prim) {
  * A HUD icon or digit linked one primitive at a time through the
  * chokepoint, as opposed to the glyph chains that link themselves and are
  * fed by text_sprt.c. The packet carries no texture page: feed_one_claim
- * passes the word of the last DR_MODE the batch claimed before it.
+ * passes the word of the last DR_MODE it mirrored, which may come from an
+ * earlier batch when none precedes the SPRT in its own.
  * @param cpu The guest CPU state.
  * @param prim The primitive's guest address.
  * @return 1 for codes 0x64-0x67 with a tag length of at least 4, else 0. */
@@ -1532,8 +1530,8 @@ static void on_overlay_precapture(void) {
     const unsigned pending = s_claim_n;
     /* The whole batch goes at the capture. Holding the last-linked primitive
      * back to the frame close reads its words a frame later, which for 2D that
-     * animates (the cutscene letterbox sliding in) is the next tick's position:
-     * measured, that put the bar 2 PSX rows out on every frame of the slide. */
+     * animates (the cutscene letterbox sliding in) is the next tick's position,
+     * which puts the bar 2 PSX rows out on every tick of the slide. */
     if (s_claim_n) { s_claim_at_capture++; release_batch(s_claim_n); }
     s_cap_frame = pending ? built : 0xFFFFFFFFu;
 }
@@ -1578,11 +1576,11 @@ static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux)
  * @param aux An extra word stored with the claim. */
 static void claim_aux(CPUState* cpu, uint32_t prim, int kind, uint32_t aux) {
     /* A claim is a canonical latch: it records an address whose words are read
-     * back at the ordering-table walk. A speculative tick's link is rolled back
+     * back at the batch release. A speculative tick's link is rolled back
      * with the rest of guest RAM, so a claim made there names a slot that holds
      * another tick's bytes by the time the batch is released, and the deferred
      * read decodes them as a primitive. The committed tick's link is the one
-     * the walk can read. */
+     * the release can read. */
     if (!spyro_native_canon_capture_open()) { s_claim_spec_refused++; return; }
     if (openpete_frame == s_cap_frame) s_post_claim++;
     /* A batch never spans frames: the tail the capture kept back belongs to the
@@ -1594,7 +1592,7 @@ static void claim_aux(CPUState* cpu, uint32_t prim, int kind, uint32_t aux) {
         s_claim_frame = openpete_frame;
         /* Open this frame's scene now, where a 3D feeder of the same ordering
          * table opens it, so the batch has a scene of its own build frame to be
-         * appended to at the walk. On a screen with no 3D feeder (a menu, the
+         * appended to at its release. On a screen with no 3D feeder (a menu, the
          * atlas) nothing else would open it, and the batch would land in the
          * walk's newer scene, one drawn tick after the world it belongs to. */
         openpete_native_scene_begin_frame(openpete_frame);
@@ -1673,8 +1671,8 @@ static int on_ot_insert(CPUState* cpu, uint32_t addr) {
     if (openpete_frame != s_unclaimed_frame) { unclaimed_flush_tick(); s_unclaimed_frame = openpete_frame; }
 
     if (feed) {
-        /* Claimed here, fed at the OT walk, the primitive's words are not
-         * final yet (see the dispatch header). */
+        /* Claimed here, fed at the batch release: the primitive's words are
+         * not final yet (see the dispatch header). */
         if (is_freeze_backdrop(cpu, prim)) { freeze_band_note(cpu, prim); claim(cpu, prim, QK_FREEZE); }
         else if (is_freeze_mask_line(cpu, prim)) s_freeze_mask_dropped++;   /* see is_freeze_mask_line */
         else if (is_ft4(cpu, prim))        claim(cpu, prim, QK_FT4);
