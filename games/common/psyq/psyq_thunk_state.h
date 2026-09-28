@@ -66,7 +66,15 @@ extern "C" {
  *         not know. */
 uint32_t psyq_thunk_state_bytes_for(uint32_t ver);
 
+/** @brief Return the byte length of a pack this layer writes.
+ *
+ * @return PSYQ_THUNK_STATE_BYTES. */
 uint32_t psyq_thunk_state_size(void);
+/** @brief Write the latches to `dst` as a pack of the current pack_ver.
+ *
+ * The layout is the one in this file's header comment; the card driver state
+ * is included.
+ * @param dst Buffer of at least PSYQ_THUNK_STATE_BYTES bytes. */
 void     psyq_thunk_state_save(void* dst);   /* dst has PSYQ_THUNK_STATE_BYTES */
 /** @brief Restore the latches from a pack of any known pack_ver.
  *

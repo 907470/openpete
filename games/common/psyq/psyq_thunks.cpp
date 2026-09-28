@@ -424,6 +424,13 @@ static void psyq_pump_pad_card_intr(CPUState* cpu) {
 /* Defined below, with the libgpu thunks it is mostly used by. */
 static void psyq_mirror_stack_frame(CPUState* cpu, psyq_frame_site_t site);
 
+/** @brief Thunk for libgcc __main: writes the guest RAM and stack effects of the real constructor runner.
+ *
+ * The real __main at 0x8005B988 sets the initialized flag at 0x800730BC,
+ * walks an empty constructor list and stores ra in its own stack frame; the
+ * game mirror and the stack-frame mirror reproduce those bytes so a RAM diff
+ * against a reference run agrees from the first instruction of Initialize.
+ * @param cpu Guest CPU state. */
 void psyq___main(CPUState* cpu) {
     /* libgcc constructor-runner. Real PSYQ __main at 0x8005B988:
      *   - load *(0x800730BC) — "already initialized" flag
@@ -458,6 +465,15 @@ static void cd_events_tick(uint32_t vbls);
 static int s_cd_at_anchor = 0;           /* inside the anchor hook, before the record's hash */
 static uint32_t s_pad_buf0 = 0;          /* the first port's pad buffer (PadInitDirect) */
 
+/** @brief Thunk for libetc VSync: returns the VBL counter, waiting first when a0 is not negative.
+ *
+ * A0 below 0 only reads the counter. A0 of 0 waits one VBL and any other
+ * value waits that many. Each waited VBL runs psyq_vbl_body (the VSync
+ * callback, the pad and card interrupt, the pad mirror and the CD ticks) and
+ * yields once. Under an active schedule the wait charges VBLs up to the
+ * reference's return instead, and the returned counter is the reference's
+ * value at that call site.
+ * @param cpu Guest CPU state; a0 is the mode, v0 receives the counter. */
 void psyq_VSync(CPUState* cpu) {
     /* libetc semantics:
      *   mode  < 0 : query — return current vbl counter, no wait
@@ -698,6 +714,12 @@ static void sched_charge_registration(CPUState* cpu) {
     if (openpete_sched_registration(cpu->ra, &target)) sched_charge_to(cpu, target, "callback registration");
 }
 
+/** @brief Thunk for libetc VSyncCallback: records the guest VSync callback address a0 for psyq_VSync to invoke.
+ *
+ * Charges the VBLs the schedule holds for the registration site first. The
+ * callback is called once per VBL body from psyq_VSync; no host timer fires
+ * it. v0 is 0.
+ * @param cpu Guest CPU state; a0 is the callback address, 0 to clear. */
 void psyq_VSyncCallback(CPUState* cpu) {
     /* Save the cb address; psyq_VSync invokes it once per call (there is
      * no real 60Hz timer — VSync()'s thunk fires it when the compiled main
@@ -709,6 +731,10 @@ void psyq_VSyncCallback(CPUState* cpu) {
     psyq_game_mirror_vsync_callback(cpu, cpu->a0);
 }
 
+/** @brief Thunk for libetc StopCallback: calls PsyCross's StopCallback and returns its result in v0.
+ *
+ * The callback addresses the thunks recorded stay registered.
+ * @param cpu Guest CPU state. */
 void psyq_StopCallback(CPUState* cpu) {
     cpu->v0 = (uint32_t)StopCallback();
 }
@@ -1370,12 +1396,22 @@ void psyq_ResetGraph(CPUState* cpu) {
     psyq_mirror_stack_frame(cpu, PSYQ_FRAME_RESETGRAPH);
 }
 
+/** @brief Thunk for libgpu SetDispMask: PsyCross's SetDispMask(a0), then the real function's stack stores.
+ *
+ * A0 of 0 blanks the display and any other value enables it. The stack
+ * stores are those of the real function at 0x8005F6C8.
+ * @param cpu Guest CPU state. */
 void psyq_SetDispMask(CPUState* cpu) {
     SetDispMask((int)cpu->a0);
     /* Real SetDispMask @0x8005F6C8: sp -= 32; sw s0,16; sw s1,20; sw ra,24. */
     psyq_mirror_stack_frame(cpu, PSYQ_FRAME_SETDISPMASK);
 }
 
+/** @brief Thunk for libgpu SetGraphDebug: PsyCross's SetGraphDebug(a0) result in v0, then the real function's stack stores.
+ *
+ * PsyCross's SetGraphDebug does nothing and returns 0. The stack stores are
+ * those of the real function at 0x8005F53C.
+ * @param cpu Guest CPU state. */
 void psyq_SetGraphDebug(CPUState* cpu) {
     cpu->v0 = (uint32_t)SetGraphDebug((int)cpu->a0);
     /* Real SetGraphDebug @0x8005F53C: sp -= 24; sw s0,16; sw ra,20. */
@@ -1702,6 +1738,7 @@ struct op_accum_scope {
     explicit op_accum_scope(const char* name) : id(-1), t0(0) {
         if (op_prof_on()) { id = op_prof_intern(name); t0 = op_prof_now_us(); }
     }
+    /// @brief Add the microseconds since construction to the trace entry, when a trace was open at construction.
     ~op_accum_scope() { if (id >= 0) op_prof_accum(id, op_prof_now_us() - t0); }
 };
 }
@@ -2218,6 +2255,12 @@ void psyq_InitGeom(CPUState* cpu) {
     gte_sync_psyx_to_cpu(cpu);
 }
 
+/** @brief Thunk for libgte SetGeomOffset: sets the GTE screen offset OFX and OFY to a0 and a1.
+ *
+ * Copies the guest GTE registers into PsyCross's, runs SetGeomOffset and
+ * copies them back. The widescreen and FOV overrides are applied at
+ * projection time in the GTE, not here.
+ * @param cpu Guest CPU state. */
 void psyq_SetGeomOffset(CPUState* cpu) {
     gte_sync_cpu_to_psyx(cpu);
     SetGeomOffset((int)cpu->a0, (int)cpu->a1);
@@ -2229,6 +2272,12 @@ void psyq_SetGeomOffset(CPUState* cpu) {
      * inline CTC2 stores. The thunk itself just forwards the args. */
 }
 
+/** @brief Thunk for libgte SetGeomScreen: sets the GTE projection distance H to a0.
+ *
+ * Copies the guest GTE registers into PsyCross's, runs SetGeomScreen and
+ * copies them back. The FOV override is applied at projection time in the
+ * GTE, not here.
+ * @param cpu Guest CPU state. */
 void psyq_SetGeomScreen(CPUState* cpu) {
     gte_sync_cpu_to_psyx(cpu);
     SetGeomScreen((int)cpu->a0);
@@ -2335,30 +2384,60 @@ static void psyq_libpad_mirror_canonical_slot2(CPUState* cpu) {
     psyq_game_mirror_pad_slot2(cpu);
 }
 
+/** @brief Thunk for libpad PadStartCom: calls PsyCross's PadStartCom.
+ *
+ * @param cpu Guest CPU state, unused. */
 void psyq_PadStartCom(CPUState* cpu) {
     (void)cpu;
     PadStartCom();
 }
 
+/** @brief Thunk for libpad PadStopCom: calls PsyCross's PadStopCom.
+ *
+ * @param cpu Guest CPU state, unused. */
 void psyq_PadStopCom(CPUState* cpu) {
     (void)cpu;
     PadStopCom();
 }
 
+/** @brief Thunk for libpad PadGetState: the state of the pad on port a0, in v0.
+ *
+ * PsyCross answers PadStateStable for a connected pad and PadStateDiscon
+ * otherwise. A stable pad reports PadStateExecCmd while a pad command
+ * sequence (PadSetMainMode) is past its first VBL.
+ * @param cpu Guest CPU state; a0 is the port, v0 receives the state. */
 void psyq_PadGetState(CPUState* cpu) {
     int st = PadGetState((int)cpu->a0);
     if (st == PadStateStable && pad_exec()) st = PadStateExecCmd;
     cpu->v0 = (uint32_t)st;
 }
 
+/** @brief Thunk for libpad PadInfoMode: PsyCross's PadInfoMode(a0, a1, a2) result in v0.
+ *
+ * The answer describes a connected analog controller: id 7 and an id table
+ * of 4 and 7; an empty slot answers 0.
+ * @param cpu Guest CPU state; a0 is the port, a1 the term, a2 the table
+ *     offset. */
 void psyq_PadInfoMode(CPUState* cpu) {
     cpu->v0 = (uint32_t)PadInfoMode((int)cpu->a0, (int)cpu->a1, (int)cpu->a2);
 }
 
+/** @brief Thunk for libpad PadInfoAct: PsyCross's PadInfoAct(a0, a1, a2) result in v0.
+ *
+ * The answer describes the two actuators of a connected controller; an empty
+ * slot answers 0.
+ * @param cpu Guest CPU state; a0 is the port, a1 the actuator number, a2 the
+ *     term. */
 void psyq_PadInfoAct(CPUState* cpu) {
     cpu->v0 = (uint32_t)PadInfoAct((int)cpu->a0, (int)cpu->a1, (int)cpu->a2);
 }
 
+/** @brief Thunk for libpad PadSetMainMode: starts a pad command sequence and returns 1, or returns 0 while one runs.
+ *
+ * The arguments are ignored: the pad already presents analog mode. The
+ * sequence lasts PAD_MAINMODE_VBLS VBLs and is what PadGetState reports as
+ * PadStateExecCmd.
+ * @param cpu Guest CPU state; v0 receives 1 when accepted, else 0. */
 void psyq_PadSetMainMode(CPUState* cpu) {
     /* The pad is already in analog mode (PsyCross presents id 0x73); the
      * request is accepted when no sequence is running and refused
@@ -3169,12 +3248,16 @@ extern "C" void PsyX_SPUAL_StopOrphans(void);
  */
 static uint32_t s_spu_xfer_addr; /* SpuSetTransferStartAddr, advanced by SpuWrite */
 
+/** @brief Thunk for libspu SpuInit: PsyCross's SpuInit, then registers the game's sound tables.
+ *
+ * @param cpu Guest CPU state, unused. */
 void psyq_SpuInit(CPUState* cpu) {
     (void)cpu;
     SpuInit();
     psyq_game_sfx_arm();
 }
 
+/** @brief Set the XA streaming gain and the music override gain to the CD volume times the SPU main volume. */
 static void spyro_apply_music_gain(void) {
     const float g = s_cdVolume * s_spuMainVolume;
     PsyX_XA_SetVolume(g);
@@ -3228,6 +3311,11 @@ static int sfx_key_log_on(void) {
     if (s_log < 0) { const char* e = getenv("OPENPETE_SFX_END_LOG"); s_log = (e && *e && *e != '0'); }
     return s_log;
 }
+/** @brief Log one stderr line per voice in `attr` when OPENPETE_SFX_END_LOG is on and `attr` writes a start address.
+ *
+ * Each line gives openpete_frame, the voice, the address, the pitch and the
+ * sample's slot name, or `-` when no slot owns the address.
+ * @param attr A mapped guest voice attribute record, not NULL. */
 static void sfx_key_log_attr(const SpuVoiceAttr* attr) {
     if (!sfx_key_log_on() || !(attr->mask & SPU_VOICE_WDSA)) return;
     const char* names[1];
@@ -3254,6 +3342,10 @@ void psyq_SpuSetVoiceAttr(CPUState* cpu) {
     SpuSetVoiceAttr((SpuVoiceAttr*)attr);
 }
 
+/** @brief Thunk for libspu SpuSetVoiceVolume: sets the left and right volume of voice a0 to a1 and a2.
+ *
+ * The volumes are taken as signed 16-bit values.
+ * @param cpu Guest CPU state. */
 void psyq_SpuSetVoiceVolume(CPUState* cpu) {
     SpuSetVoiceVolume((int)cpu->a0,
                       (short)cpu->a1, (short)cpu->a2);
@@ -3271,6 +3363,11 @@ void psyq_SpuGetVoiceVolume(CPUState* cpu) {
                       (short*)SPAN_OPT(cpu->a2, sizeof(short)));
 }
 
+/** @brief Thunk for libspu SpuSetKey: keys on or off the voices in mask a1, by a0 (SPU_ON or SPU_OFF).
+ *
+ * Under OPENPETE_SFX_END_LOG a line with openpete_frame, the VBL count, a0,
+ * the mask and ra is written to stderr.
+ * @param cpu Guest CPU state. */
 void psyq_SpuSetKey(CPUState* cpu) {
     SpuSetKey((int)cpu->a0, (unsigned int)cpu->a1);
     if (sfx_key_log_on())
@@ -3404,15 +3501,27 @@ void psyq_SpuWrite(CPUState* cpu) {
     s_spu_xfer_addr += len;
 }
 
+/** @brief Thunk for libspu SpuSetTransferMode: PsyCross's SpuSetTransferMode(a0), the normalized mode in v0.
+ *
+ * PsyCross maps 0 to 0 and every other mode to 1.
+ * @param cpu Guest CPU state; v0 receives the mode. */
 void psyq_SpuSetTransferMode(CPUState* cpu) {
     cpu->v0 = (uint32_t)SpuSetTransferMode((int)cpu->a0);
 }
 
+/** @brief Thunk for libspu SpuSetTransferStartAddr: sets the SPU RAM transfer address to a0.
+ *
+ * Also records a0 as the address the next SpuWrite uploads to. v0 is
+ * PsyCross's return.
+ * @param cpu Guest CPU state. */
 void psyq_SpuSetTransferStartAddr(CPUState* cpu) {
     s_spu_xfer_addr = (unsigned int)cpu->a0;
     cpu->v0 = SpuSetTransferStartAddr((unsigned int)cpu->a0);
 }
 
+/** @brief Thunk for libspu SpuIsTransferCompleted: PsyCross's SpuIsTransferCompleted(a0) result in v0.
+ *
+ * @param cpu Guest CPU state; a0 is the wait flag. */
 void psyq_SpuIsTransferCompleted(CPUState* cpu) {
     cpu->v0 = (uint32_t)SpuIsTransferCompleted((int)cpu->a0);
 }
@@ -3470,6 +3579,9 @@ void psyq_MemCardStart(CPUState* cpu) {
     openpete_memcard_start();
 }
 
+/** @brief Thunk for libmcrd MemCardStop: calls openpete_memcard_stop, which clears the host card's pending command, result and status.
+ *
+ * @param cpu Guest CPU state, unused. */
 void psyq_MemCardStop(CPUState* cpu) {
     (void)cpu;
     openpete_memcard_stop();
@@ -3633,6 +3745,11 @@ extern "C" uint8_t* openpete_psx_get_ram(void);
  * kernel's exception-vector area. */
 static uint32_t psyq_seed_host;
 
+/** @brief Read the rand seed word from guest RAM, or from host state when the game has no seed slot.
+ *
+ * The slot is the address psyq_game_rand_seed_addr names, masked into main
+ * RAM and read as four little-endian bytes.
+ * @return The seed. */
 static inline uint32_t psyq_seed_load(void) {
     uint32_t addr = psyq_game_rand_seed_addr();
     if (!addr) return psyq_seed_host;
@@ -3643,6 +3760,11 @@ static inline uint32_t psyq_seed_load(void) {
          | ((uint32_t)ram[off + 2] << 16)
          | ((uint32_t)ram[off + 3] << 24);
 }
+/** @brief Write the rand seed word to guest RAM, or to host state when the game has no seed slot.
+ *
+ * The slot is the address psyq_game_rand_seed_addr names, masked into main
+ * RAM and written as four little-endian bytes.
+ * @param v The new seed. */
 static inline void psyq_seed_store(uint32_t v) {
     uint32_t addr = psyq_game_rand_seed_addr();
     if (!addr) { psyq_seed_host = v; return; }
@@ -3653,6 +3775,11 @@ static inline void psyq_seed_store(uint32_t v) {
     ram[off + 2] = (uint8_t)((v >> 16) & 0xFF);
     ram[off + 3] = (uint8_t)((v >> 24) & 0xFF);
 }
+/** @brief Thunk for libc rand: advances the seed by the PSYQ LCG and returns 15 bits of it in v0.
+ *
+ * The seed becomes seed * 0x41C64E6D + 0x3039 (mod 2^32) and v0 is
+ * (seed >> 16) & 0x7FFF, as in the real function at 0x8006272C.
+ * @param cpu Guest CPU state; v0 receives the value. */
 void psyq_rand(CPUState* cpu) {
     uint32_t seed = psyq_seed_load();
     seed = seed * 0x41C64E6Du + 0x3039u;
@@ -3660,6 +3787,12 @@ void psyq_rand(CPUState* cpu) {
     cpu->v0 = (seed >> 16) & 0x7FFFu;
 }
 
+/** @brief Thunk for libc srand: stores a0 as the rand seed.
+ *
+ * Under an active schedule the reference's next srand seed replaces a0, and
+ * a difference is logged. Does not set v0.
+ * @param cpu Guest CPU state; a0 is the seed, and is overwritten with the
+ *     reference's seed when the schedule supplies one. */
 void psyq_srand(CPUState* cpu) {
     uint32_t seed;
     if (openpete_sched_active() && openpete_sched_next_srand(&seed)) {
@@ -3672,6 +3805,9 @@ void psyq_srand(CPUState* cpu) {
     psyq_seed_store(cpu->a0);
 }
 
+/** @brief Thunk for libc exit: logs the call and ends the host process with status a0.
+ *
+ * @param cpu Guest CPU state; a0 is the exit status. */
 void psyq_exit(CPUState* cpu) {
     OPL_INFO_F("thunks", "exit(%u) from compiled code", cpu->a0);
     exit((int)cpu->a0);
