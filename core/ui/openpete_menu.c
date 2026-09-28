@@ -6,8 +6,9 @@
 // openpete_no_lod_set). It never writes gameplay-readable state. The one
 // deliberate exception is FREECAM: the debug free camera (the F key) is an
 // opt-in gameplay-state divergence by design (openpete_freecam.h); the row is
-// just a second front-end for the same toggle. The draw half
-// (panel/border/glyphs) lands in a later step; this file is state + apply.
+// just a second front-end for the same toggle. This file is state + apply; the
+// panel is drawn by the native renderer and the row glyphs by the text-moby
+// builder, both reading the layout and row strings defined here.
 
 #include "openpete_menu.h"
 #include "openpete.h"                /* openpete_options_t, openpete_set_render_fps */
@@ -67,9 +68,10 @@ static const char* const ROW_OSD_KEY[ROW_COUNT] = {
  * out the progress since their last save. Moving the cursor disarms. */
 static int s_quit_armed;
 
-/* SETTINGS is an action row, not a value: left/right pick what pressing it
- * will do, and the press does it. Persisting is explicit — closing the menu
- * must never rewrite the user's config file behind them. */
+/* SETTINGS is an action row, not a value: each left/right step picks SAVE or
+ * CLEAR SAVED and applies it at once (openpete_menu_adjust). Persisting is
+ * explicit — closing the menu must never rewrite the user's config file
+ * behind them. */
 enum { SAVE_IDLE, SAVE_DO, SAVE_CLEAR };
 static int s_save_idx;      /* SAVE_* */
 static int s_save_result;   /* 0 none, >0 saved n, -1 failed, -2 cleared */
@@ -783,8 +785,9 @@ void openpete_menu_adjust(int dx) {
     case ROW_FOG:      s_fog_idx    = wrap_idx(s_fog_idx    + step, 2);           break;
     case ROW_FREECAM:  s_freecam_idx = wrap_idx(s_freecam_idx + step, 2);         break;
     case ROW_SAVE:
-        /* Cycling only chooses which action the next apply performs; it
-         * writes nothing. Any move also clears a stale result string. */
+        /* The step picks the action and the apply_row below performs it, so
+         * one step saves or clears. Any move also clears the previous result
+         * string. */
         s_save_idx    = wrap_idx(s_save_idx + step, 3);
         s_save_result = 0;
         break;
@@ -819,15 +822,16 @@ void openpete_menu_activate(void) {
     if (s_quit_armed < 2) s_quit_armed++;   /* first press arms, second fires */
     apply_row(s_cursor);
     log_state("activate");
-    /* SETTINGS announces what its press DID (SAVED n / CLEARED / FAILED).
-     * EXIT deliberately does not: arming already changes the row's own label
-     * to REALLY EXIT?, and a toast repeating it adds nothing to a two-press
-     * confirmation the player is looking straight at. */
+    /* Only EXIT passes the centred-row check above, so the SETTINGS test
+     * below never holds; SETTINGS announces its result through
+     * openpete_menu_adjust. EXIT deliberately raises no toast: arming already
+     * changes the row's own label to REALLY EXIT?. */
     if (s_cursor == ROW_SAVE) notify_row(s_cursor);
 }
 
 void openpete_menu_tick(void) { s_tick++; }
 
 void openpete_menu_draw(void) {
-    /* Panel + gold border + 3D glyph rows land in the draw step. */
+    /* Intentionally empty: the native renderer draws the panel and the
+     * text-moby builder draws the glyph rows. */
 }
