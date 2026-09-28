@@ -5649,8 +5649,9 @@ static float shadow_decal_mode(float dflt) {
 /** @brief Return whether moby occlusion culling is enabled.
  *
  * On by default; OPENPETE_MOBY_OCCLUSION=0 disables it. The variable is
- * re-read once per openpete_frame, since setenv from the developer overlay
- * is the live channel and the function runs per moby per present.
+ * re-read when the registry env epoch changes (knob_env_epoch_stale), since
+ * a live registry row writing the environment is the live channel and the
+ * function runs per moby per present.
  * Display-only: culling skips only the native re-extraction and drawing of
  * mobys whose screen rectangle lies behind nearer WORLD-opaque depth; the
  * canonical cull pass and every gameplay-readable byte it writes are
@@ -5658,8 +5659,9 @@ static float shadow_decal_mode(float dflt) {
  * @return 1 when enabled, else 0. */
 static int occl_cull_enabled(void)
 {
-    /* Re-resolved once per VBL: setenv is the live channel (dev overlay)
-     * and this is called per moby per present — too hot for getenv. */
+    /* Re-resolved when the registry env epoch moves: a live row's env write
+     * is the live channel (dev overlay) and this is called per moby per
+     * present — too hot for getenv. */
     static int on = 1;
     static unsigned seen = 0;
     if (knob_env_epoch_stale(&seen)) {
@@ -7151,7 +7153,7 @@ typedef struct {
 static occl_grid_t   s_occl_dec;                 /* presenting thread only */
 static occl_grid_t   s_occl_pub;                 /* under s_occl_pub_mx */
 static occl_grid_t   s_occl_rd;                  /* querying thread only */
-static void *s_occl_pub_mx;                   /* SDL_Mutex, created by nr_mutex_once */
+static void *s_occl_pub_mx;                   /* SDL_Mutex, openpete_mutex_once */
 static SDL_AtomicInt s_occl_pub_seq;             /* bumped per publish */
 static int           s_occl_rd_seq;              /* querying thread: sequence copied */
 static SDL_AtomicInt s_occl_presents;            /* live present counter */
