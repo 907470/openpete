@@ -69,14 +69,29 @@
 #include <direct.h>
 #define MOD_DL_EXT ".dll"
 #define mod_mkdir(p) _mkdir(p)
+/** @brief Load a mod's shared object with LoadLibraryA.
+ *
+ * @param path Path of the .dll.
+ * @return The module handle, or NULL on failure; mod_dlerror describes it. */
 static void* mod_dlopen(const char* path) {
     return (void*)LoadLibraryA(path);
 }
+/** @brief Look up an exported symbol in a loaded mod object with GetProcAddress.
+ *
+ * The function pointer converts to void* through a union.
+ * @param h Handle from mod_dlopen.
+ * @param name Exported symbol name.
+ * @return The symbol address, or NULL when the object does not export it. */
 static void* mod_dlsym(void* h, const char* name) {
     union { FARPROC fp; void* p; } u;
     u.fp = GetProcAddress((HMODULE)h, name);
     return u.p;
 }
+/** @brief Describe the last LoadLibrary/GetProcAddress failure.
+ *
+ * Formats GetLastError() into a static buffer, so the text is overwritten
+ * by the next call and the function is not thread-safe.
+ * @return The message, never NULL. */
 static const char* mod_dlerror(void) {
     static char buf[64];
     snprintf(buf, sizeof buf, "LoadLibrary/GetProcAddress error %lu",
@@ -88,10 +103,22 @@ static const char* mod_dlerror(void) {
 #include <unistd.h> /* rmdir */
 #define MOD_DL_EXT ".so"
 #define mod_mkdir(p) mkdir((p), 0755)
+/** @brief Load a mod's shared object with dlopen, binding every symbol now and keeping them local.
+ *
+ * @param path Path of the .so.
+ * @return The handle, or NULL on failure; mod_dlerror describes it. */
 static void* mod_dlopen(const char* path) {
     return dlopen(path, RTLD_NOW | RTLD_LOCAL);
 }
+/** @brief Look up an exported symbol in a loaded mod object with dlsym.
+ *
+ * @param h Handle from mod_dlopen.
+ * @param name Exported symbol name.
+ * @return The symbol address, or NULL when the object does not export it. */
 static void* mod_dlsym(void* h, const char* name) { return dlsym(h, name); }
+/** @brief Return dlerror()'s text for the last failed dlopen or dlsym on this thread.
+ *
+ * @return The libc-owned message, or NULL when no error is pending. */
 static const char* mod_dlerror(void) { return dlerror(); }
 #endif
 
@@ -328,15 +355,19 @@ static int   mod_cfg_count(const struct openpete_mod* m) {
 static mod_cfg_row_t* mod_cfg_at(const struct openpete_mod* m, int i) {
     return (mod_cfg_row_t*)mod_fvec_at(&m->cfg_rows, (size_t)i);
 }
+/** @brief Count a mod's declarative [[material]] rows. */
 static int   mod_mat_count(const struct openpete_mod* m) {
     return (int)mod_fvec_count(&m->mat_rows);
 }
+/** @brief Return row i of a mod's material table, or NULL at or past the count. */
 static mod_material_row_t* mod_mat_at(const struct openpete_mod* m, int i) {
     return (mod_material_row_t*)mod_fvec_at(&m->mat_rows, (size_t)i);
 }
+/** @brief Count a mod's [[level]] rows. */
 static int   mod_level_count(const struct openpete_mod* m) {
     return (int)mod_fvec_count(&m->levels);
 }
+/** @brief Return row i of a mod's level table, or NULL at or past the count. */
 static mod_level_row_t* mod_level_at(const struct openpete_mod* m, int i) {
     return (mod_level_row_t*)mod_fvec_at(&m->levels, (size_t)i);
 }
@@ -430,6 +461,10 @@ static void int_row_set(mod_fvec* v, int i, int x) {
     int* p = (int*)mod_fvec_at(v, (size_t)i);
     if (p) *p = x;
 }
+/** @brief Return row i of the pending-mod table, or NULL at or past the count.
+ *
+ * The load-order callers index only below their own row count and
+ * dereference the result without a check. */
 static struct openpete_mod* pend_at(const mod_fvec* v, int i) {
     return (struct openpete_mod*)mod_fvec_at(v, (size_t)i);
 }
@@ -669,6 +704,13 @@ static const char* psx_render_fn_name(uint32_t addr) {
     return NULL;
 }
 
+/** @brief Warn that an override targets a PSX render function the native renderer never rasterizes.
+ *
+ * Fires on every registration at such an address, and only when
+ * s_native_hides_psx is set (pure vk windowed). The warning names the
+ * function and the alternatives; the registration itself is not refused.
+ * @param self The registering mod; its log tag labels the line.
+ * @param addr Guest address of the override target. */
 static void warn_render_bypassed(openpete_mod_t* self, uint32_t addr) {
     if (!s_native_hides_psx) return;
     const char* rn = psx_render_fn_name(addr);
@@ -1460,6 +1502,14 @@ static char* env_dup(const char* name) {
     return d;
 }
 
+/** @brief Parse OPENPETE_MODS_TOGGLE into the toggle schedule.
+ *
+ * The variable is a comma-separated list of tick:id:0|1 tokens, each
+ * appended to s_toggle_sched, with the id read up to 63 characters and any
+ * nonzero flag stored as 1. A token that does not parse, or one whose row
+ * cannot be allocated, logs one error naming the token and is skipped. An
+ * unset or empty variable does nothing. Called once from
+ * openpete_mods_init. */
 static void toggle_parse_env(void) {
     char* buf = env_dup("OPENPETE_MODS_TOGGLE");
     if (!buf) return;
@@ -2765,6 +2815,11 @@ static void parse_materials(toml_table_t* root, struct openpete_mod* mod,
 static mod_fixed s_census_deps, s_census_bindings, s_census_cfg_rows,
                  s_census_cfg_items, s_census_mat_rows, s_census_levels;
 
+/** @brief Record a parsed mod's row-table sizes in the process-wide census counters.
+ *
+ * Notes the count and capacity of the dependency, binding, config,
+ * material and level tables, and the widest choice list of any config
+ * row. The counters are armed on the first call. */
 static void mod_rows_census(const struct openpete_mod* mod) {
     static int armed;
     if (!armed) {
@@ -2798,6 +2853,17 @@ static void mod_rows_census(const struct openpete_mod* mod) {
     }
 }
 
+/** @brief Parse <mod_dir>/mod.toml into a mod record.
+ *
+ * Reads the [mod] header, then the dependency, binding, config, level and
+ * material tables, and records their sizes in the census. A failure after
+ * the header can leave rows already pushed into @p mod; the caller
+ * releases them with mod_rows_free.
+ * @param mod_dir Mod directory.
+ * @param mod Zeroed record to fill.
+ * @return 0 on success, -1 when mod.toml does not open (silently), does
+ *         not parse, has no [mod] table, or has an invalid or too-new
+ *         header. */
 static int parse_manifest(const char* mod_dir, struct openpete_mod* mod) {
     char path[MOD_PATH_MAX];
     snprintf(path, sizeof path, "%s/mod.toml", mod_dir);
@@ -2922,14 +2988,23 @@ static const char* mods_cc_identity(void) {
     return s_identity;
 }
 
-/* Enumerate + sort src/*.c. Returns the count, 0 if src/ has no .c
- * files, or -1 if there is no src/ directory at all (quiet — callers
- * decide whether that's binary-only, assets-only, or an error). */
 /* Census only: the list is freed as soon as it has been used, so a
  * named vec would be gone from the list by the exit report. One
  * process-global counter carries the population's high-water. */
 static mod_fixed s_census_srcs;
 
+/** @brief List <mod_dir>/src/*.c into a vec of mod_src_t, sorted by path.
+ *
+ * Non-recursive; the sort makes the build key independent of directory
+ * order. A row that cannot be allocated ends the listing early with the
+ * rows gathered so far. The result is quiet when src/ is absent, since the
+ * callers decide whether that is a binary-only mod, an assets-only mod, or
+ * an error.
+ * @param mod_dir Mod directory.
+ * @param out Vec to fill; initialised only when src/ opens, so the caller
+ *        passes a zeroed vec and releases it with mod_fvec_free.
+ * @return The number of sources, 0 when src/ holds no .c file, or -1 when
+ *         there is no src/ directory. */
 static int mod_list_srcs(const char* mod_dir, mod_fvec* out) {
     char src_dir[MOD_PATH_MAX];
     snprintf(src_dir, sizeof src_dir, "%s/src", mod_dir);
@@ -2959,6 +3034,11 @@ static int mod_list_srcs(const char* mod_dir, mod_fvec* out) {
     return (int)n;
 }
 
+/** @brief Return the path of source row i of a mod_list_srcs vec.
+ *
+ * @param v Vec filled by mod_list_srcs.
+ * @param i Row index below the count; not range-checked.
+ * @return The path, stored in the row. */
 static const char* src_path(const mod_fvec* v, int i) {
     return ((const mod_src_t*)mod_fvec_at(v, (size_t)i))->path;
 }
@@ -3023,6 +3103,14 @@ static void sdk_prefix_recheck(const char* sdk_dir) {
         s_sdk_prefix_ok = 0;
 }
 
+/** @brief Return the SHA-256 state that every mod's build key starts from.
+ *
+ * Hashes the API version, the compiler identity, then each file of
+ * sdk_inputs in order; an absent file contributes nothing. The state is
+ * cached per SDK directory until sdk_prefix_recheck drops it, and callers
+ * copy it before feeding a mod's sources.
+ * @param sdk_dir The staged SDK directory.
+ * @return The cached state, owned by the function; not thread-safe. */
 static const openpete_sha256_ctx* sdk_prefix(const char* sdk_dir) {
     if (s_sdk_prefix_ok && strcmp(s_sdk_prefix_dir, sdk_dir) == 0)
         return &s_sdk_prefix;
@@ -3095,11 +3183,20 @@ static int config_compute_key(const char* mod_dir, char key_out[65]) {
     return 0;
 }
 
+/** @brief Format the path of a mod's build-key stamp, <mod_dir>/.build/<id>.hash.
+ *
+ * @param out Output buffer; the path is truncated to @p cap.
+ * @param cap Size of @p out. */
 static void mod_stamp_path(const char* mod_dir, const char* id,
                            char* out, size_t cap) {
     snprintf(out, cap, "%s/.build/%s.hash", mod_dir, id);
 }
 
+/** @brief Read a mod's stored build key from its stamp file.
+ *
+ * Reads at most 64 bytes and drops one trailing newline.
+ * @param stamped Output buffer of 65 bytes, always NUL-terminated; empty
+ *        when the stamp file does not open. */
 static void mod_read_stamp(const char* mod_dir, const char* id,
                            char stamped[65]) {
     stamped[0] = '\0';
@@ -3561,12 +3658,28 @@ typedef struct {
     const char*          mods_dir;
 } topo_ctx_t;
 
+/** @brief Find the pending row whose id equals a dependency id.
+ *
+ * @return The row index, or -1 when no pending mod has the id. */
 static int topo_find(const topo_ctx_t* c, const char* id) {
     for (int j = 0; j < c->n_pending; j++)
         if (strcmp(pend_at(c->pending, j)->id, id) == 0) return j;
     return -1;
 }
 
+/** @brief Depth-first visit of pending mod i that appends it to the load order after its dependencies.
+ *
+ * Colours rows in c->state: a row met while GRAY closes a cycle, a
+ * dependency id absent from the pending set is a missing dependency, and
+ * a failed dependency fails its dependents; each marks the row TS_FAILED
+ * and logs one error naming the cause. A row that finishes is marked
+ * TS_BLACK and its index is pushed onto c->topo, so dependencies precede
+ * dependents in enabled order. A failed topo push returns -1 with the row
+ * already BLACK.
+ * @param c Sort context.
+ * @param i Pending row index.
+ * @return 0 when the row is loadable (or already visited), -1 when it
+ *         failed. */
 static int topo_visit(topo_ctx_t* c, int i) { /* 0 = ok, -1 = failed */
     if (int_row(&c->state, i) == TS_BLACK)  return 0;
     if (int_row(&c->state, i) == TS_FAILED) return -1;
@@ -3817,6 +3930,9 @@ typedef struct {
                              * load-all row) */
 } mod_ref_t;
 
+/** @brief Return row i of a mod_ref_t vec, or NULL at or past the count.
+ *
+ * Callers index below their own count and dereference without a check. */
 static mod_ref_t* ref_at(const mod_fvec* v, int i) {
     return (mod_ref_t*)mod_fvec_at(v, (size_t)i);
 }
@@ -4234,6 +4350,12 @@ static int mods_discover(const openpete_options_t* opts,
     return n_out;
 }
 
+/** @brief Write the staged SDK directory, <exe dir>/sdk, into @p out.
+ *
+ * Falls back to ./sdk when SDL reports no base path. The path is
+ * truncated to @p cap.
+ * @param out Output buffer.
+ * @param cap Size of @p out. */
 static void mods_sdk_dir(char* out, size_t cap) {
     const char* base = SDL_GetBasePath();
     snprintf(out, cap, "%ssdk", base ? base : "./");
@@ -4255,6 +4377,11 @@ static int mods_sdk_present(const char* sdk_dir) {
     return stat(p, &st) == 0 && S_ISREG(st.st_mode);
 }
 
+/** @brief Log once per process that this build ships without the mod SDK.
+ *
+ * States that source mods are not compiled and that a prebuilt object
+ * still loads. Later calls do nothing.
+ * @param sdk_dir The SDK path the probe looked in, named in the line. */
 static void mods_sdk_missing_notice(const char* sdk_dir) {
     static int s_said = 0;
     if (s_said) return;
@@ -4276,6 +4403,15 @@ struct mods_prepare_ctx {
     openpete_mods_progress_fn progress;
 };
 
+/** @brief Compile every stale mod of a prepare context, reporting progress.
+ *
+ * Runs as one task, on a worker thread when the caller supplies a runner.
+ * Calls the progress callback with "COMPILING MODS" before each compile
+ * and once more with the full count. A failed compile is logged by
+ * mod_compile and left for openpete_mods_init to report; it does not stop
+ * the loop.
+ * @param ud The struct mods_prepare_ctx to work through.
+ * @return 0 always. */
 static int mods_prepare_task(void* ud) {
     struct mods_prepare_ctx* c = (struct mods_prepare_ctx*)ud;
     for (int i = 0; i < c->n_stale; i++) {

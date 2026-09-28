@@ -62,6 +62,15 @@ typedef struct {
                          * warns so mods migrate to the stable name. */
 } openpete_sdk_symbol_t;
 
+/** @brief Register the generated name-to-address table that override names resolve against.
+ *
+ * Stores the pointer without copying, so the table must outlive the mod
+ * loader. The name lookup binary-searches it, so rows must be sorted by
+ * strcmp on name; the address-to-name lookup scans it linearly. Later
+ * calls replace the table, and a NULL table makes every lookup fail. The
+ * game's main calls it once before openpete_run().
+ * @param table First row, or NULL.
+ * @param count Number of rows. */
 void openpete_mods_set_symbol_table(const openpete_sdk_symbol_t* table,
                                     size_t count);
 
@@ -339,7 +348,17 @@ void openpete_mod_sound_set_mute(int on);
  *
  * @return The row count of the loaded mod table. */
 int         openpete_mods_count(void);
+/** @brief Return the id of loaded mod i.
+ *
+ * The string lives in the loader's mod table for the session.
+ * @param i Index into the loaded mod table, 0 <= i < openpete_mods_count().
+ * @return The id, or NULL for an index out of range. */
 const char* openpete_mods_id(int i);
+/** @brief Report whether the loaded mod with an id is currently enabled.
+ *
+ * Reads the live-toggle flag by a linear scan of the mod table by id.
+ * @param id Mod id, non-NULL.
+ * @return 1 when enabled, 0 when disabled or when no loaded mod has the id. */
 int         openpete_mods_is_enabled(const char* id);
 
 /* Per-mod row for the dev overlay's Mods panel. Strings are loader-
@@ -366,6 +385,14 @@ typedef struct {
                            * made; 0 = the mod does not use ImGui,
                            * or its section has not drawn yet */
 } openpete_mods_menu_info_t;
+/** @brief Fill the Mods panel row for loaded mod i.
+ *
+ * The name falls back to the id when the manifest gives none, has_ui is
+ * set for a UI body or a live ui_status block, has_cfg is the number of
+ * [[config]] rows, and sim_mutative is the effective verdict.
+ * @param i Index into the loaded mod table.
+ * @param out Row to fill; its strings point into the mod table.
+ * @return 1 when filled, 0 for an index out of range or a NULL @p out. */
 int openpete_mods_menu_info(int i, openpete_mods_menu_info_t* out);
 
 /* ── Config schema ([[config]] rows in mod.toml) ─────────────────────
@@ -398,7 +425,24 @@ typedef struct {
     const char* sval;
 } openpete_mods_cfg_edit_t;
 
+/** @brief Return the number of [[config]] rows loaded mod mod_index declares.
+ *
+ * @param mod_index Index into the loaded mod table.
+ * @return The row count, 0 for an index out of range. */
 int openpete_mods_cfg_row_count(int mod_index);
+/** @brief Fill a config row with its schema and current effective value.
+ *
+ * The value comes from the mod's config getters (config.toml, else the
+ * schema default) into ival for bool and int rows, fval for float rows,
+ * and sval for string rows; the other value fields are 0 or "". The label
+ * falls back to the key. The combo choices in items and the string in sval
+ * live in buffers the function reuses, so they stay valid only until the
+ * next call, and a string longer than 127 bytes is truncated. Not safe to
+ * call from two threads.
+ * @param mod_index Index into the loaded mod table.
+ * @param row Row index, 0 <= row < openpete_mods_cfg_row_count().
+ * @param out Row to fill.
+ * @return 1 when filled, 0 for an index out of range or a NULL @p out. */
 int openpete_mods_cfg_row(int mod_index, int row,
                           openpete_mods_cfg_row_t* out);
 /** @brief Write config edits into a mod's config.toml and queue its reload for the next tick boundary.
@@ -416,14 +460,17 @@ int openpete_mods_cfg_row(int mod_index, int row,
 int openpete_mods_cfg_apply(int mod_index, int n,
                             const openpete_mods_cfg_edit_t* edits);
 
-/* Run mod i's registered UI section with the overlay's widget vtable.
- * Sets the render-purity guard (openpete_mods_in_present) around the
- * callback. No-op for mods without a registration / disabled mods.
- *
- * Draws the mod's ui_status block, then its body — unless the section is
- * flagged OPENPETE_MOD_UI_ALWAYS, whose body belongs to the always pass
- * below and would otherwise run twice per present. */
 struct openpete_mod_ui;
+/** @brief Draw mod i's ui_status lines and run its UI section body with the overlay's widget table.
+ *
+ * Draws the status lines first, then the body under the render-purity
+ * guard (openpete_mods_in_present), unless the section is flagged
+ * OPENPETE_MOD_UI_ALWAYS: that body belongs to the always pass below and
+ * would otherwise run twice per present. A mod without a body draws its
+ * status lines only.
+ * @param i Index into the loaded mod table.
+ * @param ui The overlay's widget vtable. A NULL table, a disabled mod, or
+ *        an index out of range draws nothing. */
 void openpete_mods_ui_draw(int i, const struct openpete_mod_ui* ui);
 
 /** @brief Run a mod's UI body in the always pass when its section is flagged OPENPETE_MOD_UI_ALWAYS.
@@ -461,6 +508,17 @@ int openpete_mods_ui_always_count(void);
  * @return 0, or -1 for an index out of range. */
 int openpete_mods_ui_refuse_section(int i, const char* why);
 
+/** @brief Queue enabling or disabling a mod, applied at the next tick boundary.
+ *
+ * Copies the id into the request queue, truncated to the loader's id
+ * width, and treats any nonzero @p on as 1. Nothing is validated here: an
+ * id that names no loaded mod is logged as an error when the queue drains,
+ * and a disable that would strand the player in the mod's level stays
+ * queued until the player leaves it. The queue has no lock.
+ * @param id Mod id.
+ * @param on Nonzero to enable, 0 to disable.
+ * @return 0 when queued, -1 for a NULL or empty id or a failed queue
+ *         allocation. */
 int  openpete_mods_set_mod_enabled(const char* id, int on);
 /** @brief Apply the queued mod state changes at a canonical tick boundary.
  *
