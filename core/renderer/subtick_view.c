@@ -5,10 +5,12 @@
  * order of a thousand spans (one per live record). A scan over that per read
  * is not viable, so spans are indexed by 32-byte block.
  *
- * Every staged span is at least SV_BLOCK bytes and spans never overlap, so a
- * block maps to at most one span and an open-addressed table keyed on
- * addr >> 5 answers in O(1). Staging inserts one entry per block a span
- * covers; a span of 0x58 bytes costs 2-3 entries.
+ * Spans are indexed by an open-addressed table keyed on addr >> 5 that holds
+ * one entry per (block, span) pair, so a lookup probes one chain. Spans may
+ * be shorter than a block and may overlap, so a block can carry several
+ * entries; a lookup coverage-tests each and the latest staged span wins.
+ * Staging inserts one entry per block a span covers; a span of 0x58 bytes
+ * costs 2-3 entries.
  */
 
 #include "openpete_subtick_view.h"
@@ -32,9 +34,8 @@ typedef struct {
     uint32_t off;     /* offset into s_arena */
 } sv_span_t;
 
-/* Block index. Power of two, open addressed, linear probe. Sized so the load
- * factor stays under ~0.35 at the worst staged set (every pool record live),
- * because a full table degrades to a scan of exactly the kind this replaces. */
+/* Block index: open addressed, linear probe, one entry per 32-byte block a
+ * span covers. */
 #define SV_BLOCK       32u
 #define SV_BLOCK_SHIFT 5u
 /* Entries are per (block, span) pair and duplicates are kept, so a dense pool

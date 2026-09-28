@@ -70,11 +70,11 @@ typedef struct {
     uint8_t* prev;
     uint8_t* curr;
     uint8_t* prev2;
-    /* Wall-clock (op_now) when curr/prev were last ROLLED — i.e. when each
-     * DISTINCT state was captured (unchanged ticks dedupe and do NOT update
-     * these). A consumer interpolates with alpha = (now - curr_ns)/period,
-     * clamped, where `period` is (curr_ns - prev_ns) CAPPED AT ONE NOMINAL TICK
-     * (W0.6): a steady object interpolates over its one-tick interval, and one
+    /* Tick stamp (openpete_interp_tick_stamp) when curr/prev were last ROLLED
+     * — i.e. when each DISTINCT state was captured (unchanged ticks dedupe
+     * and do NOT update these). A consumer interpolates with alpha = (now - curr_ns)/period,
+     * clamped, where `period` is (curr_ns - prev_ns) CAPPED AT ONE NOMINAL TICK:
+     * a steady object interpolates over its one-tick interval, and one
      * that resumes after a long static stretch sweeps the full delta over one
      * tick instead of crawling 1/K then popping (prev_ns is pinned K ticks back).
      * Clamps to curr once the object stops (curr_ns goes stale). The per-object

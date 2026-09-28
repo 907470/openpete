@@ -27,8 +27,8 @@ int openpete_screenshot_save_png(SDL_Renderer* renderer, const char* path);
  * Each `{n}` becomes @p frame and each `{p}` becomes @p present in decimal;
  * every other character is copied. Output longer than @p out_sz is
  * truncated and always NUL-terminated. A NULL template yields an empty
- * string. A `{` as the template's last character reads one byte past the
- * terminator.
+ * string. A `{` that does not open a complete `{n}` or `{p}` is copied
+ * as is; the scan never reads past the terminator.
  * @param tmpl Template, such as the --screenshot-output value.
  * @param frame VBL number substituted for `{n}`.
  * @param present Present index substituted for `{p}`; callers capturing one

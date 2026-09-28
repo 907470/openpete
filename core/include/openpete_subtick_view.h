@@ -23,15 +23,15 @@
  * makes — whether through cpu->read_word() or openpete_subtick_host_ptr() —
  * resolves against staged bytes where a span covers the address and against
  * real memory everywhere else. The feeder sees the value the presenter wants
- * it to see, and guest memory is never touched.
+ * it to see, and staged bytes never reach guest memory.
  *
  * Swapping the callbacks is sound because the game fiber is PARKED for the
  * whole of an intermediate present: no guest code can observe them. It is
  * what makes this a ~zero-call-site change rather than an edit to the ~950
  * places feeders read guest memory.
  *
- * The view is READ-ONLY with respect to guest memory: staging copies bytes
- * out, never back.
+ * Staging copies bytes out of guest memory, never back. A CPU store during
+ * the view that no staged span covers is counted and still performed.
  *
  * NOT a replacement for openpete_psx_to_host_ptr(). Recompiled guest code
  * must keep resolving against real memory — only the display-side feeders

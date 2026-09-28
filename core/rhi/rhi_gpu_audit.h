@@ -12,8 +12,8 @@
  *
  * Every Vulkan entry point that mutates device, queue, command-buffer or
  * memory state is redirected through op_gpu_audit_hit() while the guest fiber
- * owns the thread. Query-only calls and one-shot instance/device creation are
- * left alone. Outside guest execution g_openpete_guest_running is 0, so the
+ * owns the thread, as are vkGetFenceStatus and vkGetQueryPoolResults. Other
+ * query-only calls and one-shot instance/device creation are left alone. Outside guest execution g_openpete_guest_running is 0, so the
  * render path pays one never-taken branch per call.
  *
  * A macro here expands to a comma expression whose second operand is the same
