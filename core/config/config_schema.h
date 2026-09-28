@@ -16,9 +16,9 @@
  * Kept a separate translation unit from knob_registry.c deliberately:
  * the registry's rows carry function pointers into the renderer and the
  * game modules, so it cannot be linked into a standalone resolver test.
- * knob_registry_init cross-checks the two tables at boot, so a knob that
- * gains a spelling in one and not the other is reported rather than
- * silently mis-resolved.
+ * tests/unit/knob_registry_test.c cross-checks the two tables, so a knob
+ * that gains a spelling in one and not the other fails the test rather than
+ * being silently mis-resolved.
  */
 
 #include <stddef.h>
