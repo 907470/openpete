@@ -1279,8 +1279,9 @@ static void hot_reload_poll(void) {
  * divergent mod that already ran this session has already diverged it;
  * the session tag is the loaded set, not the instantaneous one.
  *
- * Drivers: the future mod menu; and OPENPETE_MODS_TOGGLE=
- * "tick:id:0|1[,...]" (a canonical-tick schedule) for CI/dev. */
+ * Drivers: the dev overlay's Mods panel and the pause menu's mod row; and
+ * OPENPETE_MODS_TOGGLE="tick:id:0|1[,...]" (a canonical-tick schedule)
+ * for CI/dev. */
 
 
 typedef struct {
