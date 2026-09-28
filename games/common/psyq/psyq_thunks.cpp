@@ -798,9 +798,11 @@ static void psyq_dma_complete(CPUState* cpu, uint32_t ch) {
  * it in flight for many VBLs and the game waits, polling its own bookkeeping
  * from the main loop. openpete_cd_load_delay is the number of VBLs of guest
  * time every level load spends in that wait, the same on every machine: the
- * bytes still land at once, and what is deferred is the completion the game
- * waits for (the read callback, libcd's post-read status and the channel-3
- * DMA handler), fired from the VBL body once the owed count has elapsed.
+ * bytes still land at the read's issue unless the reference's per-sector
+ * timing paces them (cd_land_sector), and what is deferred is the completion
+ * the game waits for (the read callback, libcd's post-read status and the
+ * channel-3 DMA handler), fired from the VBL body once the owed count has
+ * elapsed.
  *
  * The budget opens at the first read of a load (psyq_game_cd_read_in_load
  * turning 1) and each read of the load takes up to the game's per-read cap
@@ -808,8 +810,11 @@ static void psyq_dma_complete(CPUState* cpu, uint32_t ch) {
  * instant. A second read issued while one is deferred (the game's retry
  * after its own timeout) completes the deferred one first, in order.
  *
- * All of it is guest-timed state and travels in the latch pack: a rolled-back
- * speculative tick must not leave a completion owed on an abandoned branch. */
+ * The countdown, budget and pad state below is guest-timed and travels in the
+ * latch pack: a rolled-back speculative tick must not leave a completion owed
+ * on an abandoned branch. The sector-landing, first-data-response and
+ * pending-command state (s_cd_land_*, s_cd_data_*, s_cd_pending_*) is not in
+ * the pack. */
 static uint32_t s_cd_defer_owed    = 0;  /* VBLs until the deferred read completes (fixed load delay) */
 static uint32_t s_cd_defer_pending = 0;  /* 1 while a completion is deferred */
 static uint32_t s_cd_defer_rec = 0, s_cd_defer_vbl = 0; /* the reference's completion, when scheduled */
@@ -2591,9 +2596,8 @@ static int cd_command_host(u_char com, u_char* param) {
             s_cd_pending_rec  = openpete_cdrom_mmio_libcd_last_done_rec();
         } else cd_mirror_status(cd_live_status());
     }
-    /* libcd keeps the position a positional command carries: measured for
-     * CdlSetloc and a CdlReadS with a parameter; the other three take the
-     * same parameter. */
+    /* libcd keeps the CdlLOC parameter of a positional command: CdlReadS,
+     * CdlReadN, CdlSeekL and CdlSeekP here, CdlSetloc below. */
     if (param && (com == CdlReadS || com == CdlReadN || com == CdlSeekL ||
                   com == CdlSeekP))
         cd_mirror_pos(param);
@@ -2792,14 +2796,14 @@ void psyq_CdControlF(CPUState* cpu) {
     cpu->v0 = (uint32_t)CdControlF(com, param);
 }
 
-/* Active-overlay tracker (defined in dispatch_chain.c). Each overlay's
+/* Active-overlay tracker (spyro_overlay_table.h). Each overlay's
  * `LEVEL_BALLOON(id, …)` (overlays.ld) burns the overlay-id as the first
- * word at +0x00. After CdRead settles bytes at 0x8007AA38 we read that
- * word and update the dispatch state. Cutscene-style loads to the same
+ * word at +0x00 of the game's overlay load address
+ * (psyq_game_overlay_vaddr). After a CdRead settles bytes there, the word is
+ * read and the dispatch state updated. Cutscene-style loads to the same
  * vaddr write LevelHeader / VRAM bytes whose first word is never one of
- * our overlay IDs, so they leave the tracker alone — but they DO clobber
- * the overlay's bytes, so an actual fix for the data corruption still
- * needs to keep the overlay's bytes coherent (separate task). */
+ * the overlay IDs, so they leave the tracker alone, but they overwrite the
+ * resident overlay's bytes. */
 #include "spyro_overlay_table.h"
 
 /** @brief Copy the guest bytes a read of @p sectors sectors at @p dst will overwrite, for the sector-paced landing.
@@ -2982,8 +2986,8 @@ void psyq_overlay_resync_from_ram(void) {
  * is a status poll that never completes rather than a crash. They map onto
  * PsyCross's equivalents, which complete synchronously.
  *
- * The names come from the SDK's own export tables, recovered by signature
- * match; a decomp that splats the PSYQ text without symbols has none of them.
+ * The names are those of the SDK's own export tables; a decomp that splats
+ * the PSYQ text without symbols has none of them.
  */
 /** @brief Thunk for libcd's internal CD_sync: PsyCross's CdSync, with a scratch buffer standing in for a NULL result pointer.
  *
@@ -3901,7 +3905,7 @@ const char* format_str_arg(uint32_t addr, int precision, size_t* n_out) {
 size_t format_from_mips(char* dst, size_t cap, const char* fmt, MipsArgs& args) {
     size_t pos = 0;
     if (cap == 0) return 0;
-    /* Reserve one byte for NUL — emit() guards against pos >= cap-1 below. */
+    /* Reserve one byte for NUL — put() guards against pos >= cap-1 below. */
     size_t writable = cap - 1u;
     auto put = [&](char c) {
         if (pos < writable) dst[pos] = c;
