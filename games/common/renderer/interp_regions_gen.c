@@ -104,7 +104,7 @@ static void census_report(void) {
     (void)census_write(2, buf, n > 0 ? n : 0);
 }
 
-/** @brief Counts the bytes of each registered region that changed since the previous sample. */
+/** @brief Sample each registered region: count the tick and whether its bytes differ from the previous sample. */
 static void census_sample(void) {
     for (unsigned i = 0; i < s_count; ++i) {
         uint32_t len = s_regions[i].length;
@@ -343,7 +343,7 @@ void game_interp_capture_moby_array(void) {
         if (!host) break;
         uint8_t st = ((const uint8_t*)host)[game_layout.moby.state_off];
         if (st == (uint8_t)game_layout.moby.state_term) break;   /* end of the array */
-        if (st < 0x80) {                                         /* the rest are dormant */
+        if (st < 0x80) {                                         /* 0x80 and above: dormant, skipped */
             const void* src = stash_source(&sw, m, host, blob);
             openpete_interp_objs_capture(m, src, blob);
             if (s_ctc >= 0) {
@@ -516,7 +516,8 @@ static void (*s_extra_pools)(void);
  * Between openpete_interp_objs_begin_tick and end_tick it captures the moby
  * array, the game's extra feeder pools when registered, and the scrolling
  * env-anim descriptors. With OPENPETE_INTERP_OBJDBG set it prints the keyed
- * table's population every 120 VBLs. Reads guest RAM only. */
+ * table's population when openpete_frame is a multiple of 120. Reads guest RAM
+ * only. */
 static void capture_objs_common(void) {
     openpete_interp_objs_begin_tick();
     game_interp_capture_moby_array();
@@ -524,7 +525,8 @@ static void capture_objs_common(void) {
     capture_env_anim_scroll();
     openpete_interp_objs_end_tick();
 
-    /* OPENPETE_INTERP_OBJDBG=1: the keyed table's population every 120 ticks.
+    /* OPENPETE_INTERP_OBJDBG=1: the keyed table's population when openpete_frame
+     * is a multiple of 120.
      * A spawned/despawned pair that never settles is a key that is not stable
      * across ticks, which shows on screen as objects snapping at the tick rate. */
     static int dbg = -1;
