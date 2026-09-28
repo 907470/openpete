@@ -2781,7 +2781,7 @@ static int carry_pair_all(const carry_key_map_t* m,
  * included, so a present that carried no 2D reads as no engagement rather than
  * as clean. */
 typedef struct {
-    int      lerped;        /* carried tris whose position the pairing moved */
+    int      lerped;        /* carried tris paired with a previous entry, moved or not */
     int      far_both;      /* of those, > 2 px from both brackets */
     int      uv_mismatch;   /* pairs whose first-vertex UV region differs */
     int      crossed;       /* pairs whose partner is another entry's predecessor */
@@ -2864,7 +2864,7 @@ static int carry_nearer_twin(const scene_tri_t* prev, int prev_n,
     return 0;
 }
 
-/** @brief Add one moved carry pair to the census counters and track the worst pair.
+/** @brief Add one paired carry entry to the census and track the worst pair.
  *
  * A pair is far_both when the applied triangle lies more than 2 px from both
  * brackets, uv_mismatch when both are textured and their first vertices'
@@ -10106,12 +10106,11 @@ static void bw_draw_order_dump(const scene_tri_t* scene, const int* idx, int n) 
 #define s_bw_sort_tmp ((int *)s_cz_bwsort.data)
 /** @brief Reorder a re-extract's blended-world block into the recorded emission order.
  *
- * Stable per key: each triangle keeps its position inside its own key's
- * run, so only whole producer runs move, and a block already in recorded
- * order comes back unchanged, which passes the game render's own block
- * (the block the order was recorded from) through untouched. Keys the
- * record lacks go last. No effect for fewer than two triangles or an empty
- * record.
+ * Stable per key: triangles of one key keep their relative order and are
+ * gathered into one run, in the recorded key order. A block whose keys are
+ * each contiguous and already in recorded order comes back unchanged; a key
+ * emitted in more than one burst is merged into one. Keys the record lacks
+ * go last. No effect for fewer than two triangles or an empty record.
  * @param scene Scene triangles.
  * @param idx Scene indices of the block, reordered in place.
  * @param n Block length. */
