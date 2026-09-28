@@ -771,6 +771,16 @@ debug_cb(VkDebugUtilsMessageSeverityFlagBitsEXT sev,
     return VK_FALSE;
 }
 
+/** @brief Return the index of the first memory type in `type_bits` that has all of `props`.
+ *
+ * Scans the device's memory types in index order, so the lowest matching index
+ * wins; a type must be set in @p type_bits and carry every flag of @p props
+ * (extra flags are allowed).
+ * @param phys Physical device whose memory types are searched.
+ * @param type_bits memoryTypeBits mask of a VkMemoryRequirements.
+ * @param props Property flags the type must include.
+ * @return The memory-type index, or UINT32_MAX when none matches; callers
+ *         compare against UINT32_MAX. */
 static uint32_t find_memtype(VkPhysicalDevice phys, uint32_t type_bits,
                              VkMemoryPropertyFlags props)
 {
@@ -785,6 +795,13 @@ static uint32_t find_memtype(VkPhysicalDevice phys, uint32_t type_bits,
     return UINT32_MAX;
 }
 
+/** @brief Return whether the Vulkan loader lists the instance layer `name`.
+ *
+ * Enumerates the instance layers into a temporary array and compares names
+ * exactly.
+ * @param name Layer name, such as VK_LAYER_KHRONOS_validation.
+ * @return true when the layer is listed; false when it is not or the loader
+ *         reports no layers. */
 static bool layer_available(const char *name)
 {
     uint32_t n = 0;
@@ -929,6 +946,11 @@ static VkFormat pick_depth_format(VkPhysicalDevice phys)
     return VK_FORMAT_D32_SFLOAT_S8_UINT;  /* unreachable per spec */
 }
 
+/** @brief Return a log name for a depth attachment format.
+ *
+ * @param f Format chosen by pick_depth_format.
+ * @return "D32_SFLOAT_S8_UINT" or "D24_UNORM_S8_UINT"; "other" for any
+ *         other format. The string is static. */
 static const char *depth_format_name(VkFormat f)
 {
     return f == VK_FORMAT_D32_SFLOAT_S8_UINT ? "D32_SFLOAT_S8_UINT"
@@ -964,6 +986,27 @@ static void depth_convention_init(rhi_device *dev)
     RHI_LOG("depth format %s\n", depth_format_name(dev->depth_format));
 }
 
+/** @brief Choose the physical device and queue family and create the logical device and its graphics queue.
+ *
+ * A device qualifies with a graphics queue family that can also present to
+ * dev->surface (headless: graphics alone). Qualifying devices are ranked
+ * discrete, integrated, virtual, other, then CPU (a software rasterizer); the
+ * first of the highest rank wins, and its name, decoded driver version and
+ * software flag are recorded in dev. The depth format and depth convention
+ * follow from the chosen device (pick_depth_format, depth_convention_init).
+ *
+ * Optional device features are enabled only where supported and recorded as
+ * dev->has_depth_bias_clamp, has_shader_float64 and has_fill_non_solid.
+ * VK_KHR_present_id and VK_KHR_present_wait are enabled, with the swapchain
+ * extension, only on a windowed device that has both and whose
+ * OPENPETE_PRESENT_TIMING, OPENPETE_PACE_FLIP_LOG or OPENPETE_EAGER_LATTICE
+ * asks for them (OPENPETE_PRESENT_TIMING=0 declines); dev->has_present_timing
+ * records the outcome. A headless device enables no extension.
+ * @param dev Device whose instance, headless flag and surface are read and
+ *            whose phys, gfx_family, device, gfx_queue, depth and feature
+ *            fields are written.
+ * @return false when no physical device exists, none qualifies, or
+ *         vkCreateDevice fails (each logged); true otherwise. */
 static bool pick_physical_and_device(rhi_device *dev)
 {
     uint32_t n = 0;
@@ -1150,6 +1193,16 @@ static bool pick_physical_and_device(rhi_device *dev)
     return true;
 }
 
+/** @brief Return the swapchain extent for the surface capabilities.
+ *
+ * The surface's currentExtent is used unless its width is UINT32_MAX (the
+ * surface leaves the size to the application); then the window's size in
+ * pixels is clamped to the surface's minimum and maximum image extent. A
+ * window that reports a zero size yields a zero extent when the minimum is
+ * zero, which create_swapchain treats as minimized.
+ * @param dev Device whose window is measured.
+ * @param caps Surface capabilities of dev->phys and dev->surface.
+ * @return The extent in pixels. */
 static VkExtent2D choose_extent(rhi_device *dev, const VkSurfaceCapabilitiesKHR *caps)
 {
     if (caps->currentExtent.width != UINT32_MAX) return caps->currentExtent;
@@ -1784,6 +1837,20 @@ static bool create_offscreen(rhi_device *dev)
     return true;
 }
 
+/** @brief Create the command pool, the per-slot command buffers, semaphores and fences, and the staged-present set.
+ *
+ * The pool allows per-buffer reset. Per frame slot (RHI_FRAMES_IN_FLIGHT) it
+ * makes a command buffer, an image-available semaphore and an in-flight fence
+ * created signaled. Per swapchain image (dev->sc_count, so it runs after the
+ * swapchain exists; zero when headless) it makes a render-done semaphore. Per
+ * stage slot (RHI_STAGE_RING) it makes the present step's command buffer,
+ * acquire semaphore and fence (signaled). A failed semaphore or fence
+ * creation is only logged, leaving a null handle.
+ * @param dev Device whose gfx_family and sc_count are read and whose pool,
+ *            cmd, img_avail, in_flight, render_done, pcmd, pimg_avail and
+ *            pfence are written.
+ * @return false when the pool or a command-buffer allocation fails; true
+ *         otherwise. */
 static bool create_sync_and_commands(rhi_device *dev)
 {
     VkCommandPoolCreateInfo pci = {
@@ -2196,6 +2263,13 @@ static void one_shot_end(rhi_device *dev, VkCommandBuffer cb)
     vkFreeCommandBuffers(dev->device, dev->pool, 1, &cb);
 }
 
+/** @brief Destroy the stage images and their memory and invalidate stage-image users.
+ *
+ * Resets each stage layout to UNDEFINED and increments dev->stage_gen, which
+ * rhi_stage_gen returns and a held staged-present acquire (pacquired_gen)
+ * compares to learn the ring was rebuilt. Slots already null are skipped. The
+ * caller guarantees no submitted work uses the images.
+ * @param dev Device owning the stage ring. */
 static void destroy_stages(rhi_device *dev)
 {
     for (int i = 0; i < RHI_STAGE_RING; i++) {
@@ -2245,6 +2319,12 @@ static bool create_stages(rhi_device *dev)
     return true;
 }
 
+/** @brief Destroy everything sized to the swapchain: stages, the offscreen color and depth targets and framebuffer, render-done semaphores and the swapchain.
+ *
+ * Each handle is nulled after destruction, so a repeat call (after a partial
+ * failure in recreate) is harmless. The caller guarantees the device is idle.
+ * The sc_images array is not cleared; those images belong to the swapchain.
+ * @param dev Device whose swapchain-sized objects are destroyed. */
 static void destroy_swapchain_resources(rhi_device *dev)
 {
     destroy_stages(dev);
@@ -2264,6 +2344,18 @@ static void destroy_swapchain_resources(rhi_device *dev)
     if (dev->swapchain) { vkDestroySwapchainKHR(dev->device, dev->swapchain, NULL); dev->swapchain = VK_NULL_HANDLE; }
 }
 
+/** @brief Rebuild the swapchain and every object sized to it, restarting the acquire and present synchronization.
+ *
+ * Waits for the device to go idle, resets the present-id counters, replaces
+ * every acquire semaphore and slot fence (a binary semaphore left signaled
+ * cannot be reused, and a fence left unsignaled would stall its next wait),
+ * clears the staged-present acquire flag, destroys the swapchain-sized
+ * resources, and creates the swapchain, offscreen targets, stage images and
+ * render-done semaphores. dev->needs_recreate is cleared only on success.
+ * @param dev Windowed device.
+ * @return false when the swapchain (a minimized window gives a zero extent),
+ *         offscreen targets or stage images cannot be created; the caller
+ *         retries because needs_recreate stays set. */
 static bool recreate(rhi_device *dev)
 {
     vkDeviceWaitIdle(dev->device);
@@ -3310,6 +3402,18 @@ void rhi_end_offscreen(rhi_device *dev)
     vkCmdEndRenderPass(dev->cmd[dev->frame]);
 }
 
+/** @brief Record a single-image layout transition with an execution and memory barrier into `cb`.
+ *
+ * The barrier covers the first mip level and array layer of the color aspect
+ * and transfers no queue-family ownership.
+ * @param cb Command buffer in the recording state.
+ * @param img Image to transition.
+ * @param from Layout the image is in.
+ * @param to Layout the image moves to.
+ * @param src_access Accesses that must complete before the barrier.
+ * @param dst_access Accesses that wait for the barrier.
+ * @param src_stage Pipeline stages of the earlier accesses.
+ * @param dst_stage Pipeline stages of the later accesses. */
 static void image_barrier(VkCommandBuffer cb, VkImage img,
                           VkImageLayout from, VkImageLayout to,
                           VkAccessFlags src_access, VkAccessFlags dst_access,
@@ -5404,6 +5508,16 @@ static const void *find_embedded_shader(const char *filename, size_t *out_size)
     return NULL;
 }
 
+/** @brief Create the shader module for a .spv filename from OPENPETE_SHADER_DIR or the embedded blobs.
+ *
+ * When OPENPETE_SHADER_DIR is set and holds a readable, non-empty
+ * <dir>/<filename>, that file is compiled and no fallback follows a
+ * compile failure. A missing or unreadable file logs and falls through to the
+ * SPIR-V embedded in the binary (find_embedded_shader).
+ * @param dev Device the module is created on.
+ * @param filename .spv name from the pipeline desc.
+ * @return The module, or VK_NULL_HANDLE when no source exists or creation
+ *         fails (logged). */
 static VkShaderModule load_shader_module(rhi_device *dev, const char *filename)
 {
     /* Dev/modding override: OPENPETE_SHADER_DIR=<dir> loads loose .spv from
@@ -5528,6 +5642,14 @@ static bool pipeline_wire(const rhi_pipeline_desc *desc)
     return desc->depth_test && (!desc->color_write_off || desc->depth_overwrite);
 }
 
+/** @brief Return the polygon mode a pipeline is created with.
+ *
+ * LINE when pipeline_wire selects the pipeline for the wireframe view and the
+ * device supports fillModeNonSolid; FILL otherwise, so the view degrades to
+ * filled faces without the feature.
+ * @param dev Device whose has_fill_non_solid is read.
+ * @param desc Pipeline description.
+ * @return VK_POLYGON_MODE_LINE or VK_POLYGON_MODE_FILL. */
 static VkPolygonMode pipeline_polygon_mode(const rhi_device *dev,
                                            const rhi_pipeline_desc *desc)
 {

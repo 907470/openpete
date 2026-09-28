@@ -212,6 +212,11 @@ bool  rhi_present_is_vsync(const rhi_device *dev);
  * @param b Clear blue, linear 0..1.
  * @param a Clear alpha, 0..1. */
 void rhi_begin_offscreen(rhi_device *dev, float r, float g, float b, float a);
+/** @brief End the offscreen pass begun by rhi_begin_offscreen or rhi_begin_offscreen_load.
+ *
+ * The pass's final layout leaves off_image in TRANSFER_SRC_OPTIMAL, ready for
+ * the swapchain blit and readbacks. Does nothing outside an active frame.
+ * @param dev Device whose current frame records the end. */
 void rhi_end_offscreen(rhi_device *dev);
 /** @brief Re-begin the offscreen pass loading off_image's existing contents instead of clearing them.
  *
@@ -977,6 +982,14 @@ void        rhi_update_buffer(rhi_buffer *buf, const void *data, size_t bytes);
  * @param offset Byte offset within the slot.
  * @param bytes Byte count. */
 void        rhi_update_buffer_range(rhi_buffer *buf, const void *data, size_t offset, size_t bytes);
+/** @brief Unmap and free a buffer, its memory and its handle.
+ *
+ * Destroys immediately, so the caller guarantees no submitted frame still
+ * reads the buffer (after rhi_wait_idle, or when it was never drawn). Every
+ * buffer the RHI creates is host-mapped, and the memory is unmapped before it
+ * is freed.
+ * @param dev Device that created the buffer.
+ * @param buf Buffer to destroy, or NULL (ignored). */
 void        rhi_destroy_buffer(rhi_device *dev, rhi_buffer *buf);
 /** @brief Grow a ring vertex buffer so each frame slot holds at least `bytes`, keeping the handle.
  *
@@ -999,7 +1012,24 @@ bool        rhi_vertex_buffer_reserve(rhi_device *dev, rhi_buffer *buf, size_t b
  *         NULL. */
 size_t      rhi_vertex_buffer_slot_bytes(const rhi_buffer *buf);
 
+/** @brief Create a graphics pipeline from a description, its shaders named by .spv filename.
+ *
+ * The pipeline keeps a copy of the desc and the shader names, is compiled
+ * against the device's depth convention and the specialization constants set
+ * at this call, and is registered so rhi_rebuild_pipelines can recompile it.
+ * Shaders load from OPENPETE_SHADER_DIR when set, else from the embedded
+ * blobs.
+ * @param dev Device the pipeline is created on.
+ * @param desc Pipeline description, copied.
+ * @return The pipeline, or NULL on allocation failure or when a shader or the
+ *         pipeline cannot be created (logged). */
 rhi_pipeline *rhi_create_pipeline(rhi_device *dev, const rhi_pipeline_desc *desc);
+/** @brief Unlink a pipeline from the rebuild registry and free its Vulkan objects and copies.
+ *
+ * Destroys immediately, so the caller guarantees no submitted frame still
+ * uses the pipeline (after rhi_wait_idle or during setup failure).
+ * @param dev Device that created the pipeline.
+ * @param pipe Pipeline to destroy, or NULL (ignored). */
 void          rhi_destroy_pipeline(rhi_device *dev, rhi_pipeline *pipe);
 
 /** @brief Return whether the SCENE depth convention is reversed on this device.
@@ -1020,7 +1050,19 @@ bool          rhi_depth_reversed(const rhi_device *dev);
  * @param dev Device, or NULL.
  * @return D32_SFLOAT_S8_UINT or D24_UNORM_S8_UINT; 0 for NULL. */
 int           rhi_depth_format(const rhi_device *dev);
+/** @brief Return how many depth-tested pipeline compiles used a VkCompareOp.
+ *
+ * Counts every pipeline_compile with depth testing on, including rebuilds,
+ * under the compare op it selected: ALWAYS for a depth_overwrite pipeline,
+ * else its depth class's compare op.
+ * @param dev Device, or NULL.
+ * @param compare_op VkCompareOp value, 0..7.
+ * @return The count; 0 for NULL or a value outside 0..7. */
 unsigned      rhi_depth_pipelines_by_compare(const rhi_device *dev, int compare_op);
+/** @brief Log the depth format, both depth classes' compare op and clear value, and the per-compare pipeline counts.
+ *
+ * The counts cover the LESS_OR_EQUAL, GREATER_OR_EQUAL and ALWAYS compare ops.
+ * @param dev Device, or NULL (nothing is logged). */
 void          rhi_depth_report(const rhi_device *dev);
 
 /** @brief Select PSX-affine UV and colour interpolation (vertex specialization constant 1).
@@ -1352,6 +1394,14 @@ rhi_texture *rhi_create_render_target(rhi_device *dev, uint32_t width, uint32_t 
  * @param a Clear alpha. */
 void rhi_begin_render_target(rhi_device *dev, rhi_texture *rt,
                              float r, float g, float b, float a);
+/** @brief End the pass begun by rhi_begin_render_target and mark the color image shader-readable.
+ *
+ * The target's render pass finishes with the color image in
+ * SHADER_READ_ONLY_OPTIMAL, and the texture's tracked layout is updated to
+ * match. Does nothing outside an active frame or for a texture that is not a
+ * render target.
+ * @param dev Device whose current frame records the end.
+ * @param rt Render target whose pass ends. */
 void rhi_end_render_target(rhi_device *dev, rhi_texture *rt);
 
 /** @brief Create a render target whose depth attachment is also sampleable.
@@ -1557,6 +1607,13 @@ void rhi_texture_extent(const rhi_texture *tex, int *w, int *h);
  * @param dev Device whose current frame records the bind.
  * @param pipe Pipeline to bind. */
 void rhi_bind_pipeline(rhi_device *dev, rhi_pipeline *pipe);
+/** @brief Bind a vertex buffer at binding 0 of the current frame's command buffer.
+ *
+ * A ring buffer binds at the current frame's slot and generation; a
+ * single-instance buffer binds at offset 0. Does nothing outside an active
+ * frame.
+ * @param dev Device whose current frame records the bind.
+ * @param buf Vertex buffer; must not be NULL inside a frame. */
 void rhi_bind_vertex_buffer(rhi_device *dev, rhi_buffer *buf);
 /** @brief Bind two vertex buffers at bindings 0 and 1 (terrain_anim pipelines: current vertices and their previous twin).
  *
@@ -1651,6 +1708,13 @@ void rhi_set_depth_bias(rhi_device *dev, float constant, float clamp, float slop
  * @param data Source bytes.
  * @param size Byte count; must match the pipeline desc's push_const_size. */
 void rhi_push_constants(rhi_device *dev, const void *data, uint32_t size);
+/** @brief Record a non-indexed draw of one instance.
+ *
+ * Counts as one draw call in rhi_draw_calls. Does nothing outside an active
+ * frame.
+ * @param dev Device whose current frame records the draw.
+ * @param vertex_count Number of vertices.
+ * @param first_vertex Index of the first vertex. */
 void rhi_draw(rhi_device *dev, uint32_t vertex_count, uint32_t first_vertex);
 /** @brief Record an instanced draw.
  *
@@ -1697,11 +1761,27 @@ uint32_t rhi_draw_calls(rhi_device *dev);
  * support (one boot log line either way). */
 #define RHI_GPU_ZONES_MAX 128
 typedef struct { const char *name; double us; double start_us; int depth; } rhi_gpu_zone_result;
+/** @brief Return whether GPU pass timestamp zones are active on the device.
+ *
+ * @param dev Device, or NULL.
+ * @return Nonzero when OPENPETE_GPU_TIMERS enabled the zones and the queue
+ *         supports timestamps; 0 for NULL or when off. */
 int  rhi_gpu_timers_on(const rhi_device *dev);
 void rhi_gpu_zone_begin(rhi_device *dev, const char *name);
 void rhi_gpu_zone_end(rhi_device *dev);
 int  rhi_gpu_zone_results(rhi_device *dev, rhi_gpu_zone_result *out, int cap);
+/** @brief Tag the current frame slot's GPU zones with a caller id.
+ *
+ * The tag comes back from rhi_gpu_results_token when that slot's zones are
+ * harvested. Does nothing when timers are off or outside an active frame.
+ * @param dev Device, or NULL.
+ * @param token Caller id to associate with the frame. */
 void rhi_gpu_frame_token(rhi_device *dev, uint64_t token);
+/** @brief Return the token tagged on the frame whose zones rhi_gpu_zone_results last harvested.
+ *
+ * @param dev Device, or NULL.
+ * @return The rhi_gpu_frame_token value of that frame; 0 for NULL or before
+ *         any harvest. */
 uint64_t rhi_gpu_results_token(const rhi_device *dev);
 
 /* ---- dev-UI (imgui) integration seam -------------------------------------
@@ -1742,6 +1822,11 @@ typedef struct {
  * @return true when filled; false for NULL arguments or a headless device
  *         (no window, so the dev UI never initializes). */
 bool  rhi_get_imgui_info(rhi_device *dev, rhi_imgui_info *out);
+/** @brief Return the command buffer recording the current frame.
+ *
+ * @param dev Device, or NULL.
+ * @return The VkCommandBuffer as an opaque pointer; NULL for NULL or outside
+ *         an active frame. */
 void *rhi_current_command_buffer(rhi_device *dev);
 
 #endif /* OPENPETE_RHI_H */
