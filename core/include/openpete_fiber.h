@@ -73,7 +73,7 @@ extern unsigned openpete_frame;
  * points while the sim itself stayed deterministic.) */
 extern unsigned openpete_canon_tick;
 
-extern unsigned openpete_primitives_drawn;  /* per-frame; cleared on each yield */
+extern unsigned openpete_primitives_drawn;  /* per-frame; cleared by the host loop after each simulated tick */
 extern int      openpete_present_pending;   /* set by DrawOTag thunk; consumed by host loop */
 
 /* 1 while the host is running SPECULATIVE guest ticks that will be rolled

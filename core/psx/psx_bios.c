@@ -385,7 +385,8 @@ static int bios_a0(CPUState* cpu, uint32_t fn) {
  * InitCARD2, StartCARD2, StopCARD2, _new_card, ChangeClearPAD, GetC0Table,
  * GetB0Table, _card_write, _card_read, _get_errno, _get_error, _card_chan,
  * _card_status and _card_wait over the card driver state. WaitEvent
- * returns at once because every command completes within its call.
+ * returns at once with the latch cleared: the gate cannot suspend the guest,
+ * and a queued card command completes in a later vblank step.
  * @param cpu Guest CPU; the argument registers are read and v0 receives the
  *        result.
  * @param fn Function number.
@@ -423,7 +424,7 @@ static int bios_b0(CPUState* cpu, uint32_t fn) {
         cpu->v0 = 1u;
         return 1;
     }
-    case 0x0A: {    /* WaitEvent(ev) — everything completes within its call */
+    case 0x0A: {    /* WaitEvent(ev): returns at once, latch cleared */
         int i = ev_index(cpu->a0);
         if (i >= 0) s_ev[i].delivered = 0;
         cpu->v0 = 1u;

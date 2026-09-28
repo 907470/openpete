@@ -37,8 +37,9 @@ typedef struct {
     bk2_frame_t* p2_frames;
     int          players;        /* 2 when any frame decoded a second port, else 0 */
     int          frame_count;
-    int          first_input_frame; /* index of first frame with any button down,
-                                      * or frame_count if the movie has no input */
+    int          first_input_frame; /* index of first frame with any button down
+                                      * or stick off-centre, or frame_count if
+                                      * the movie has no input */
     int          load_delay;        /* Header.txt "LoadDelay N": the VBLs every
                                       * level load waited when the movie was
                                       * recorded; 0 when the header has no line */

@@ -22,7 +22,8 @@
  * letter BizHawk picked for each button.
  *
  * The output bitfield uses the same convention as PsyCross's keyboard
- * reader (third_party/PsyCross/src/pad/PsyX_pad.cpp:364): start at 0xFFFF,
+ * reader (PsyX_Pad_UpdateKeyboardInput in
+ * third_party/PsyCross/src/pad/PsyX_pad.cpp): start at 0xFFFF,
  * AND off the bit for each pressed button.
  */
 #include "bk2_movie.h"
@@ -109,8 +110,8 @@ static int bk2_decode_port(const char* seg, size_t seg_len, bk2_frame_t* out) {
  * The line is "|seg0|seg1|seg2|", scanned within its length without a NUL.
  * Segment 0 is the system bus and is skipped; segment 1 is player 1 and
  * segment 2, when the movie declares one, is player 2. Both outputs are
- * reset to neutral first; a malformed player 2 segment leaves @p p2
- * neutral.
+ * reset to neutral first; a malformed player 2 segment leaves @p p2 with
+ * its buttons released and the axes decoded before the fault.
  * @param line Line text, CR stripped.
  * @param line_len Length of @p line.
  * @param p1 Receives player 1's frame.

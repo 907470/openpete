@@ -41,7 +41,7 @@ int  bk2_record_begin(const char* path, const char* args_sidecar);
  * logged only when the bits differ from the previous call's. No effect
  * when recording is not active.
  * @param bits Player 1 pad bitfield (1 released, 0 pressed).
- * @param log_idx Input log index input_log_append returned; the line shows
+ * @param log_idx Input log index input_log_append_staged returned; the line shows
  *        it relative to the movie's first entry. */
 void bk2_record_note(uint16_t bits, int log_idx);
 
