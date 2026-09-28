@@ -1597,8 +1597,8 @@ static void cfg_apply_schedule_parse(void) {
 /** @brief Commit every scheduled integer config edit due at a tick.
  *
  * Each due entry names a mod by id and goes through openpete_mods_cfg_apply
- * with apply set, exactly as the Mods panel's Apply does; an unknown id is
- * logged and skipped.
+ * as a one-edit integer set, the path the Mods panel's Apply takes; an
+ * unknown id is logged and skipped.
  * @param canonical_tick The tick now starting. */
 static void cfg_apply_schedule_run(unsigned canonical_tick) {
     for (size_t i = 0; i < mod_fvec_count(&s_cfg_sched); i++) {
