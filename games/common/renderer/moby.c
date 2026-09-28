@@ -700,9 +700,23 @@ static int moby_pose_derive(CPUState* cpu, uint32_t model, const uint8_t st[5], 
     return 1;
 }
 
+/** @brief Open a vertex stream on a keyframe through the game's decoder slot.
+ *
+ * Calls moby_game.vstream_init, which must be set.
+ * @param cpu The guest CPU state.
+ * @param s Receives the stream state.
+ * @param header The AnimationHeader.
+ * @param frame The keyframe.
+ * @param s5 The game's scale argument for the decode. */
 static void vstream_init(CPUState* cpu, vstream* s, uint32_t header, uint32_t frame, int s5) {
     moby_game.vstream_init(cpu, s, header, frame, s5);
 }
+/** @brief Decode the next vertex of a stream through the game's decoder slot.
+ *
+ * Calls moby_game.vstream_next, which must be set.
+ * @param cpu The guest CPU state.
+ * @param s The stream state, advanced in place.
+ * @param first Nonzero for the stream's first vertex. */
 static void vstream_next(CPUState* cpu, vstream* s, int first) {
     moby_game.vstream_next(cpu, s, first);
 }
@@ -913,6 +927,10 @@ static int moby_prev_streams(CPUState* cpu, const moby_pose_t* prev, vstream* A,
 enum { RT_RTPS = 0, RT_KEY, RT_ISECT, RT_RANK, RT_N };
 static uint64_t s_rt_cyc[RT_N];
 static long     s_rt_cnt[RT_N];
+/** @brief Whether OPENPETE_MOBY_RANK_TIME=1 enables the paint-key cost instrument.
+ *
+ * Read from the environment on the first call and latched.
+ * @return 1 when the variable begins with '1', else 0. */
 static int rank_time_on(void) {
     static int s = -1;
     if (s < 0) { const char* e = getenv("OPENPETE_MOBY_RANK_TIME"); s = e && *e == '1'; }
@@ -920,13 +938,29 @@ static int rank_time_on(void) {
 }
 #if defined(__x86_64__) || defined(__i386__)
 #include <x86intrin.h>
+/** @brief The TSC, or 0 while the paint-key cost instrument is off.
+ *
+ * @return The TSC value; 0 doubles as the "not sampling" start value rt_add
+ *         ignores. */
 static inline uint64_t rt_now(void) { return rank_time_on() ? __rdtsc() : 0; }
 #else
+/** @brief The TSC stand-in on a target without one: always 0.
+ *
+ * @return 0, so every rt_add on this target is a no-op. */
 static inline uint64_t rt_now(void) { return 0; }
 #endif
 /* A per-vertex or per-face sample above 300000 cycles (about 0.1 ms) is a
  * descheduling, not work: it is dropped and counted. */
 static long s_rt_drop;
+/** @brief Add the TSC cycles since t0 to a paint-key stage's accumulator.
+ *
+ * Does nothing when t0 is 0. A sample of n > 0 items that spans more than
+ * 300000 cycles is dropped and counted in s_rt_drop. Otherwise the cycles and
+ * n are added atomically, so the walk's workers call it concurrently.
+ * @param slot The stage, RT_RTPS to RT_RANK.
+ * @param t0 The rt_now value at the start of the sample.
+ * @param n The items sampled; 0 for a stage timed as a whole, which is never
+ *          dropped. */
 static inline void rt_add(int slot, uint64_t t0, long n) {
     if (!t0) return;
     uint64_t d = rt_now() - t0;
@@ -934,15 +968,28 @@ static inline void rt_add(int slot, uint64_t t0, long n) {
     __atomic_fetch_add(&s_rt_cyc[slot], d, __ATOMIC_RELAXED);
     __atomic_fetch_add(&s_rt_cnt[slot], n, __ATOMIC_RELAXED);
 }
-/* Thread CPU time of the single-threaded stages, which excludes the time the
- * thread spent descheduled. */
 #include <time.h>
+/** @brief The calling thread's CPU time in nanoseconds, 0 with the cost instrument off.
+ *
+ * Excludes the time the thread spent descheduled, which the single-threaded
+ * stages use to separate work from preemption.
+ * @return The CPU time, or 0. */
 static uint64_t rt_cpu_ns(void) {
     if (!rank_time_on()) return 0;
     struct timespec ts; clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
     return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
 }
 static double s_rt_cpu_us[RT_N];
+/** @brief Print one feed pass's paint-key stage costs to stderr, then clear them.
+ *
+ * Does nothing while the instrument is off. Cycles convert to microseconds by
+ * the TSC rate measured between the first call and this one against
+ * openpete_phase_now_us; until 100 ms have elapsed the rate is 3 GHz. The
+ * line carries the per-stage times and counts, the CPU times of the
+ * intersection and rank stages, and the dropped-sample count; the
+ * accumulators are zeroed afterwards.
+ * @param mat The pass's material tag.
+ * @param ntri The pass's triangle count. */
 static void rt_report(const char* mat, int ntri) {
     if (!rank_time_on()) return;
     static uint64_t c0; static uint64_t u0;
@@ -1731,6 +1778,11 @@ static long s_shband_cull;   /* SHADED-walk mobys skipped by the .s 3-axis dista
                               * cull mirror (block_80022B40..90 — the distant-gem hide) */
 static long s_tier_mirror_ok, s_tier_mirror_bad;
 static long s_hold_replayed;   /* Tier-2 hold: moby replays served per census window */
+/** @brief Whether the tier census and extraction timers are on (OPENPETE_MOBY_TIER_DBG).
+ *
+ * Read on the first call and latched.
+ * @return 1 when the variable is set to a value not starting with '0',
+ *         else 0. */
 static int tier_dbg_on(void) {
     static int s = -1;
     if (s < 0) { const char* e = getenv("OPENPETE_MOBY_TIER_DBG"); s = (e && *e && *e != '0') ? 1 : 0; }
@@ -1781,10 +1833,16 @@ static uint32_t moby_trace_target(void) {
     return t;
 }
 
-/* Project EVERY live record's vertices into s_proj[] (native float decode +
- * RTPS+TR). Shared by the verify A/B and the scene feed. Returns record count. */
 static int s_max_blend;   /* max keyframe-blend factor (rec.w0 IR0) across this frame's records */
 static int project_all_records_inner(CPUState* cpu);
+/** @brief Project every live record's vertices into s_proj, timed under the tier census.
+ *
+ * Shared by the verify A/B and the scene feed. The projection is
+ * project_all_records_inner's native float decode with RTPS and TR. While
+ * OPENPETE_MOBY_TIER_DBG is on the call's microseconds are added to
+ * s_us_proj and s_us_calls is incremented.
+ * @param cpu The guest CPU state.
+ * @return The record count. */
 static int project_all_records(CPUState* cpu) {
     if (!tier_dbg_on()) return project_all_records_inner(cpu);
     uint64_t t0 = openpete_phase_now_us();
@@ -1825,11 +1883,22 @@ static unsigned s_cen_bit4_vbl, s_cen_at;
 #define CEN_MATS 12
 static uint32_t s_cen_mat[CEN_MATS];
 static long     s_cen_mat_n[CEN_MATS];
+/** @brief Whether the special-face census is on (OPENPETE_MOBY_SPECIAL_CENSUS).
+ *
+ * Read on the first call and latched.
+ * @return 1 when the variable is set to a value not starting with '0',
+ *         else 0. */
 static int special_census_on(void) {
     static int s = -1;
     if (s < 0) { const char* e = getenv("OPENPETE_MOBY_SPECIAL_CENSUS"); s = (e && *e && *e != '0'); }
     return s;
 }
+/** @brief Print the special-face census line to stderr and restart the screen box.
+ *
+ * The line carries the face totals, the first moby and VBL per material mode
+ * and for the bit-4 flag, the distinct material words seen, and the screen
+ * box of the bit-5 faces since the last report.
+ * Clears the box count. */
 static void special_census_report(void) {
     fprintf(stderr, "[moby-special vbl=%u] faces=%ld bit5=%ld(mat0=%ld) bit4=%ld(m=%08X vbl=%u) modes",
             openpete_frame, s_cen_faces, s_cen_bit5, s_cen_mat0, s_cen_bit4,
@@ -1847,6 +1916,20 @@ static void special_census_report(void) {
     fprintf(stderr, "\n");
     s_cen_box_n = 0;
 }
+/** @brief Count one walked face into the special-face census.
+ *
+ * Does nothing while the census is off. A face with F->hl == 1 (bit 5)
+ * extends the screen box by its unsaturated vertices, and is counted under
+ * material mode (mscol >> 28) & 7 (0 when mscol is 0), the first moby key
+ * and VBL of that mode, and the distinct material words. A face with
+ * F->hl == 2 (bit 4) is counted with the first moby key and VBL seen. The
+ * report prints once every 200 VBLs.
+ * @param F The face.
+ * @param mscol The record's material word (m_SpecularMetalColor).
+ * @param key The moby key the census reports.
+ * @param p0 The first projected vertex, or NULL.
+ * @param p1 The second.
+ * @param p2 The third. */
 static void special_census_face(const moby_wface_t* F, uint32_t mscol, uint32_t key,
                                 const proj_xy* p0, const proj_xy* p1, const proj_xy* p2) {
     if (!special_census_on()) return;
@@ -2249,6 +2332,10 @@ static void moby_build_validate(CPUState* cpu) {
  * get m_WasDrawn set, so the .s +0x200 range hysteresis needs a host mirror;
  * membership = revealed on the previous builder call). */
 static uint32_t s_rev_prev[MAX_RECORDS]; static int s_rev_prev_n;
+/** @brief Whether moby m was in the previous builder call's reveal set.
+ *
+ * @param m The moby's PSX address.
+ * @return 1 when s_rev_prev holds m, else 0. */
 static int reveal_prev_has(uint32_t m) {
     for (int i = 0; i < s_rev_prev_n; i++) if (s_rev_prev[i] == m) return 1;
     return 0;
@@ -4573,32 +4660,16 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
 }
 
 
-/* Serial prologue: resolve every record's face sets, and decide whether this
- * present's walk may fan out at all.
- *
- * The face walk writes guest RAM. A keyframe that carries a patch list has its
- * high-poly faceblock patched in place, decoded and restored — mirroring what
- * the .s does before rendering each record, which is how effect models animate
- * STRUCTURE per keyframe (the Gnasty-blast dome shrinks and fades entirely
- * through it). What makes it legal is that patch -> decode -> restore is
- * synchronous, so nothing can observe the transient; per-record parallelism
- * destroys exactly that property, and the buffer holding the originals is one
- * shared array, so a torn restore writes WRONG words back and the corruption is
- * permanent and guest-visible.
- *
- * Resolving here disposes of that, and of the two cache hazards with it — an
- * eviction frees a face array a concurrent reader may still hold, and the
- * 32-slot patched-decode ring inserts round-robin, so a later insertion can
- * clobber a pointer already handed out. All three reduce to one rule: fan out
- * only when the prologue inserted into NEITHER cache. In steady state neither
- * ever misses (tens of thousands of hits against zero, and sixteen patched
- * decodes a second against eighty thousand hits), so this costs a serial walk
- * on the rare present that loads a new face set, and nothing otherwise.
- *
- * Returns 1 when the walk must stay serial. */
 /* Engagement census: walks that fanned out against walks that stayed serial. */
 static long s_walk_par, s_walk_serial;
 
+/** @brief Whether a walk instrument that needs a serial walk is on.
+ *
+ * True when OPENPETE_MOBY_CLASSDBG, OPENPETE_MOBY_FADEDBG or
+ * OPENPETE_MOBY_CLERP_DBG is set; latched on the first call. Their censuses
+ * and dumps are whole-walk statics with serial semantics, and several latch
+ * mid-walk.
+ * @return 1 when one is set, else 0. */
 static int walk_dbg_env(void) {
     /* Any active walk instrument forces serial: their censuses and dumps are
      * whole-walk statics with serial semantics, and several latch mid-walk. */
@@ -4609,6 +4680,31 @@ static int walk_dbg_env(void) {
     return v;
 }
 
+/** @brief Resolve every record's face sets and decide whether the walk may fan out.
+ *
+ * The face walk writes guest RAM: a keyframe with a patch list has its
+ * high-poly faceblock patched in place, decoded and restored, which is how
+ * effect models animate structure per keyframe. The patch, decode and
+ * restore are synchronous so nothing observes the transient; per-record
+ * parallelism would break that, since the buffer holding the originals is one
+ * shared array and a torn restore writes wrong words back to the guest.
+ *
+ * Resolving every record here, in one pass under fcache_pass_begin, also
+ * removes the two cache hazards: an eviction frees a face array a concurrent
+ * reader may hold, and the 32-slot patched-decode ring inserts round-robin,
+ * so a later insertion can clobber a pointer already handed out. The walk
+ * fans out only when the prologue inserted into neither cache; otherwise it
+ * stays serial for that present.
+ *
+ * The walk also stays serial for the first call (so lazy getenv latches
+ * resolve on one thread), under OPENPETE_MOBY_WALK_SERIAL, below
+ * OPENPETE_MOBY_FANOUT_MIN faces (default MN_FANOUT_MIN_FACES, where the
+ * dispatch cost exceeds the saving), with one worker or fewer than two
+ * records, and while a walk instrument is on (walk_dbg_env).
+ * @param cpu The guest CPU state.
+ * @param is_spec Nonzero for the specular pass, which skips mobys the regular
+ *        pass already fed.
+ * @return 1 when the walk must stay serial, 0 when it may fan out. */
 static int walk_prologue(CPUState* cpu, int is_spec) {
     long fc_miss0 = s_fc_miss, fp_miss0 = s_fp_miss;
     long faces = 0;
@@ -4685,6 +4781,12 @@ static int walk_prologue(CPUState* cpu, int is_spec) {
  * global capacity. */
 static mn_out s_wout[MN_MAX_WORKERS];
 
+/** @brief Allocate the first nw workers' emit slabs on first use.
+ *
+ * A slab that already has its triangle array is taken as complete. Each new
+ * slab holds MAX_NTRI entries of every parallel array.
+ * @param nw The worker count.
+ * @return 1 when every slab exists, 0 when an allocation failed. */
 static int walk_slabs_ready(int nw) {
     for (int w = 0; w < nw; w++) {
         mn_out* O = &s_wout[w];
@@ -4709,6 +4811,14 @@ static int walk_slabs_ready(int nw) {
 
 typedef struct { CPUState* cpu; int is_spec; } mn_job;
 
+/** @brief Work-pool job: walk one record into the worker's slab and note its run.
+ *
+ * Points the thread's t_out and t_diag at the worker's slab and diagnostics,
+ * runs walk_records for the record, and stores the worker, the slab offset
+ * and the emitted count in s_pre_rec[item].
+ * @param item The record index.
+ * @param worker The pool worker, 0 for the calling thread.
+ * @param arg The mn_job. */
 static void walk_record_job(int item, int worker, void* arg) {
     mn_job* J = (mn_job*)arg;
     mn_out* O = &s_wout[worker];
@@ -4721,6 +4831,16 @@ static void walk_record_job(int item, int worker, void* arg) {
     s_pre_rec[item].count  = O->n - start;
 }
 
+/** @brief Walk every record across the worker pool and merge the runs in record order.
+ *
+ * Falls back to a serial walk when a slab cannot be allocated. Otherwise
+ * empties the slabs, runs walk_record_job per record, and copies each
+ * record's run into the s_wtri arrays in record order, truncating at
+ * MAX_NTRI, so the stream matches the serial walk. Sums the per-worker
+ * diagnostics into worker 0's. With OPENPETE_MOBY_TIER_DBG on, the dispatch
+ * and merge microseconds go to s_us_fanout and s_us_merge.
+ * @param cpu The guest CPU state.
+ * @param is_spec Nonzero for the specular pass. */
 static void walk_parallel(CPUState* cpu, int is_spec) {
     int nw = openpete_workpool_threads();
     if (nw > MN_MAX_WORKERS) nw = MN_MAX_WORKERS;
@@ -5284,11 +5404,11 @@ static void specular_env_refl(float ex, float ey, float ez, float r[3]) {
     r[2] = (s_metalM[2][0]*ex + s_metalM[2][1]*ey + s_metalM[2][2]*ez) / 4096.0f;
 }
 
-/* CALIBRATION (falsify-before-ship): for the metal/env textured walk faces,
- * dump refl + several candidate spherical mappings alongside the captured prim
- * U/V/tpage so the exact axis/scale/origin can be read off real data before the
- * final mapping is wired in. Mirrors recolor's NN walk->prim match. */
 #define PI_F 3.14159265358979f
+/** @brief Wrap x into [0, 128).
+ *
+ * @param x The value, finite.
+ * @return x modulo 128, non-negative. */
 static float wrap128(float x) { x = fmodf(x, 128.0f); return x < 0 ? x + 128.0f : x; }
 /** @brief The constant texel term of the environment-reflection U coordinate, latched on first use.
  *
@@ -5317,6 +5437,19 @@ static float env_azsign(void) {
     if (c < -1e8f) { const char* e = getenv("OPENPETE_ENV_AZSIGN"); c = (e && *e) ? (float)atof(e) : 1.0f; }
     return c;
 }
+/** @brief The environment-reflection texel of a vertex, as the specular pass computes it.
+ *
+ * Reflects the offset (specular_env_refl), then u follows env_c2, the
+ * reflection azimuth plus env_azsign times the record's view azimuth
+ * (s_cur_env_az), and the camera heading (s_camHead / 32), modulo 128; v is
+ * 64 plus the elevation scaled to 128 per half turn, 0 elevation when the
+ * reflection is shorter than 0.001. The .s builds the same terms at
+ * .L800226F8 from the octant-table atan of the record's view position.
+ * @param ex The rotated vertex offset X.
+ * @param ey The rotated vertex offset Y.
+ * @param ez The rotated vertex offset Z.
+ * @param pu Receives U, clamped to [0, 255].
+ * @param pv Receives V, clamped to [0, 255]. */
 static void specular_env_uv(float ex, float ey, float ez, int* pu, int* pv) {
     float r[3]; specular_env_refl(ex, ey, ez, r);
     float len = sqrtf(r[0]*r[0] + r[1]*r[1] + r[2]*r[2]);
@@ -5335,6 +5468,15 @@ static void specular_env_uv(float ex, float ey, float ez, int* pu, int* pv) {
     if (v < 0) v = 0; if (v > 255) v = 255;
     *pu = u; *pv = v;
 }
+/** @brief Print the metal faces' native environment UV beside their matched prim's UV.
+ *
+ * Refreshes the environment state and the captured prims, prints the metal
+ * matrix, camera heading and record material words, then for up to 16
+ * textured walk triangles matched to a captured prim (centroids within 32 px,
+ * tri_match_cost at 8 px or less) prints each vertex's reflection vector, its
+ * native (u, v), the nearest prim vertex's (u, v) and the difference, followed
+ * by the mean and maximum errors. Prints to stderr; reads guest memory only.
+ * @param cpu The guest CPU state, read only. */
 static void specular_env_calibrate(CPUState* cpu) {
     specular_env_load(cpu);
     build_prim_tris();
@@ -5936,6 +6078,10 @@ static uint32_t s_rc_gen;              /* last generation handed out */
 static double   s_rc_alpha = 1.0;      /* the present's alpha (moby_native_set_verdict_alpha) */
 static long     s_rc_hit, s_rc_miss;   /* engagement counters (sub-tick lookups) */
 static int      s_rc_prev_used;        /* the last apply read the T-1 table */
+/** @brief Whether the sub-tick rank carry is on (OPENPETE_MOBY_RANK_CARRY).
+ *
+ * Read on the first call and latched.
+ * @return 0 when the variable begins with '0', else 1. */
 static int rank_carry_on(void) {
     static int s = -1;
     if (s < 0) { const char* e = getenv("OPENPETE_MOBY_RANK_CARRY"); s = !(e && *e == '0'); }
@@ -5943,6 +6089,11 @@ static int rank_carry_on(void) {
 }
 /* An unbracketed present shows the latest tick, so it takes alpha 1. */
 void moby_native_set_verdict_alpha(double alpha, int bracketed) { s_rc_alpha = bracketed ? alpha : 1.0; }
+/** @brief Hash a moby address and face key to a carry-table slot.
+ *
+ * @param m The moby's PSX address.
+ * @param k The face key.
+ * @return A slot in [0, RC_SIZE). */
 static uint32_t rc_hash(uint32_t m, uint32_t k) {
     return ((m * 2654435761u) ^ (k * 2246822519u)) >> (32 - RC_BITS);
 }
@@ -5967,6 +6118,13 @@ static rc_tab* rank_carry_table_for(uint32_t ep) {
     t->gen = s_rc_gen; t->n = 0; t->epoch = ep; t->valid = 1;
     return t;
 }
+/** @brief Store this canonical feed's face ranks in the current epoch's carry table.
+ *
+ * Does nothing unless the canonical capture is open. For each s_gout
+ * triangle with a positive s_nrank and a nonzero moby it inserts or replaces
+ * the entry keyed by (moby, face key) with the rank and the contest flag,
+ * probing linearly from rc_hash. Once the table holds three quarters of
+ * RC_SIZE keys every remaining triangle is skipped, replacements included. */
 static void rank_carry_store(void) {
     if (!spyro_native_canon_capture_open()) return;
     rc_tab* t = rank_carry_table_for(spyro_native_canon_epoch_stamp());
@@ -5980,6 +6138,14 @@ static void rank_carry_store(void) {
         t->e[h] = (rc_ent){ s_wtri_moby[i], s_wtri_fkey[i], s_nrank[i], t->gen, s_wtri_contest[i] };
     }
 }
+/** @brief Look up a face's carry entry in one table.
+ *
+ * Probes linearly from rc_hash and stops at the first slot whose generation
+ * is not the table's, so entries of an earlier epoch never match.
+ * @param t The table.
+ * @param moby The moby's PSX address.
+ * @param fkey The face key.
+ * @return The entry, or NULL. */
 static const rc_ent* rank_carry_find(const rc_tab* t, uint32_t moby, uint32_t fkey) {
     uint32_t h = rc_hash(moby, fkey);
     for (; t->e[h].gen == t->gen; h = (h + 1) & (RC_SIZE - 1))
@@ -6003,6 +6169,13 @@ static const rc_tab* rank_carry_endpoint(void) {
     s_rc_prev_used = 1;
     return (prev->valid && prev->epoch + 1u == latest->epoch) ? prev : NULL;
 }
+/** @brief Give this present's triangles the ranks and contest flags of its carry table.
+ *
+ * Each s_gout triangle takes the entry of its (moby, face key) from
+ * rank_carry_endpoint's table into s_nrank and s_wtri_contest, and 0 for both
+ * when there is no table, no moby, or no entry. Counts triangles with a
+ * positive rank into s_rc_hit and the others into s_rc_miss, and empties the
+ * intersection pair list (s_ip_n). */
 static void rank_carry_apply(void) {
     const rc_tab* t = rank_carry_endpoint();
     for (int i = 0; i < s_gout.n; i++) {
@@ -6153,6 +6326,13 @@ static void moby_rank_calibrate(void) {
     moby_rank_cal_run(&in);
 }
 
+/** @brief Charge one rank stage's cycles and thread CPU time to slot.
+ *
+ * Adds the TSC cycles since t0 with count 0 (rt_add), and, when c0 is
+ * nonzero, the thread CPU microseconds since c0 to s_rt_cpu_us[slot].
+ * @param slot The stage, RT_ISECT or RT_RANK.
+ * @param t0 The rt_now value at the stage start; 0 when the instrument is off.
+ * @param c0 The rt_cpu_ns value at the stage start; 0 skips the CPU time. */
 static void rank_stage_time(int slot, uint64_t t0, uint64_t c0) {
     rt_add(slot, t0, 0);
     if (c0) s_rt_cpu_us[slot] += (double)(rt_cpu_ns() - c0) / 1000.0;
@@ -6883,6 +7063,15 @@ static int on_draw_regular(CPUState* cpu, uint32_t addr) {
     s_in = 0;
     return 1;
 }
+/** @brief The specular-pass hook: run the game's specular draw and feed the native scene.
+ *
+ * Runs moby_native_pass under material tag "SPEC" over the record queue the
+ * regular pass walked.
+ * @param cpu The guest CPU state.
+ * @param addr The hooked address, unused.
+ * @return 1 when the hook ran the pass; 0 when no consumer is active
+ *         (verify, native scene, render paths) or on re-entry, leaving the
+ *         ordinary dispatch to run it. */
 static int on_draw_specular(CPUState* cpu, uint32_t addr) {
     (void)addr;
     if (!moby_verify_enabled() && !openpete_native_scene_enabled() && !render_paths_active()) return 0;
@@ -6957,22 +7146,6 @@ static void shaded_dump(CPUState* cpu, uint32_t start, uint32_t end) {
     }
 }
 
-/* SHADED geometry A/B. Decode the moby's verts (3 signed bytes x2: byte0=Z,
- * byte1=X, byte2=Y per .L80023010) from model[+0x4] (count=model[+0x0]) and
- * project with the per-moby R+TR. The attract demo has exactly ONE shaded moby,
- * so the GTE R+TR left after func_80022A2C ARE that moby's (RTPS doesn't modify
- * them and the face loop doesn't touch them) -- read them post-hoc to validate
- * the signed-byte decode + projection independent of the (harder) R-rebuild.
- * Set-matches the decoded verts vs the captured shaded prims, like the regular
- * vertex A/B. */
-
-/* Compose the moby's full euler rotation onto `start`, mirroring func_80022A2C's
- * matrix build (block_80022DBC..80022F34): out = start·Ry·Rx·Rz, applied in that
- * order. The per-axis rotation columns come straight from the .s's MVMVA inputs
- * (Y@80022DE4, X@80022E90, Z@80022F40); the sin/cos table values go in verbatim
- * (sin may be negative). VERIFIED bit-exact vs the live RT registers: base·Ry =
- * gte_ctrl[0..4] for a billboard moby (cliff_town cls 0x3A). Euler indices:
- * Y=(rot>>15)&0x1FE, X=(rot&0xFF00)>>7, Z=(rot&0xFF)<<1 (rot=m_Rotation@+0x44). */
 /* Sub-tick moby rotation interpolation state (set by moby_native_set_rot_interp,
  * declared in moby.h). s_rot_now is the present's
  * openpete_interp_present_now() timestamp, captured once when enabled so every moby composed this present uses
@@ -7381,6 +7554,20 @@ static double gem_idle_phase(CPUState* cpu, uint32_t m, uint32_t cls, uint32_t p
     return fmod((double)e->base_ticks + (double)(openpete_frame - e->t0_frame), 256.0);
 }
 
+/** @brief Compose a moby's euler rotation onto a matrix as start * Ry * Rx * Rz.
+ *
+ * Mirrors func_80022A2C's matrix build (block_80022DBC..80022F34). The
+ * angles come from, in order: the idle wobble of a frozen collectable (a
+ * non-billboard moby of class 14 or 83 to 87 that gem_idle_frozen accepts),
+ * computed as a delta around the RAM angles; the present's interpolated
+ * angles (moby_record_euler_at_present); the canonical table lookup of the
+ * m_Rotation word at angle_off (Y = (rot >> 15) & 0x1FE, X = (rot & 0xFF00)
+ * >> 7, Z = (rot & 0xFF) << 1 as table indices). The sin and cos table values
+ * enter unmodified.
+ * @param cpu The guest CPU state, read only.
+ * @param start The matrix to rotate, 12-bit fixed point.
+ * @param moby The moby's PSX address, which keys its prev and curr snapshots.
+ * @param out Receives the composed matrix. */
 static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t moby, int out[3][3]) {
     ngte_euler_sc e;
     int composed = 0;
@@ -7445,6 +7632,18 @@ static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t 
     ngte_compose_euler(start, &e, out);
 }
 
+/** @brief Compare the shaded mobys' native projection with the shaded pass's prims.
+ *
+ * Decodes every moby of the Moby* list (3 signed bytes per vertex, doubled:
+ * byte 0 Z, byte 1 X, byte 2 Y, .L80023010, from model + 4 with the count at
+ * model + 0), projects with the canonical view, then set-matches the
+ * projected vertices against the captured shaded prim vertices. A 3D moby
+ * uses R = ProjMatrix * Ry (rotation axis 0 only) and TR = ProjMatrix *
+ * (pos - cam); a billboard (bit 7 of the render radius) uses the fixed
+ * matrix, TR = (0, 0, z >> 1) and its position as the screen offset. Keeps
+ * at most 8192 vertices. Prints the counts, the centroid offset and the share
+ * of unsaturated prim vertices within 4 px. Reads guest memory only.
+ * @param cpu The guest CPU state, read only. */
 static void shaded_verify(CPUState* cpu) {
     /* The +0x2400 list holds MULTIPLE live shaded mobys -- project EVERY one
      * (each with its own R = ProjMatrix . Ry(m_Rotation axis0) and TR =
@@ -7528,12 +7727,21 @@ static void shaded_verify(CPUState* cpu) {
  * Light dir is read fresh per frame (s_shL); base colour per moby. */
 static int s_shL[3];   /* int16-truncated directional-light dir (D_800770C8+0/4/8) */
 
+/** @brief Clamp a value to the GTE IR range.
+ *
+ * @param v The value.
+ * @param lm Nonzero raises the floor from -0x8000 to 0.
+ * @return v clamped to [floor, 0x7FFF]. */
 static int32_t sat_ir_lm(int64_t v, int lm) {   /* mirrors GTEState::saturate_ir */
     int32_t mn = lm ? 0 : -0x8000;
     if (v < mn) return mn;
     if (v > 0x7FFF) return 0x7FFF;
     return (int32_t)v;
 }
+/** @brief Clamp a value to a colour byte.
+ *
+ * @param v The value.
+ * @return v clamped to [0, 255]. */
 static int32_t sat_col8(int64_t v) {            /* mirrors GTEState::saturate_color */
     if (v < 0) return 0;
     if (v > 255) return 255;
@@ -7676,6 +7884,21 @@ static void shaded_int_tr(const int PM[3][3], const int32_t cam[3], const int32_
  * TR = (0, 0, Z >> 1) and its screen position as the offset (r_moby.s
  * 4155-4166); a 3D moby loads shaded_int_tr. */
 typedef struct { moby_otk_rec_t rec; int tr[3]; double ofx, ofy; } shaded_otk_t;
+/** @brief Build one shaded moby's paint key, integer translation and screen offset.
+ *
+ * A billboard takes TR = (0, 0, pos z >> 1) and its position as the screen
+ * offset; a 3D moby takes shaded_int_tr from its draw-scale byte and keeps the
+ * given offset. The row is moby_game.shaded_otkey_row while the key is wanted,
+ * else MOBY_OTK_NONE.
+ * @param cpu The guest CPU state, read only.
+ * @param m The moby's PSX address.
+ * @param billboard Nonzero for a billboard moby.
+ * @param PM The view rotation.
+ * @param cam The camera position.
+ * @param pos The moby position.
+ * @param ofx The view's screen offset X for a 3D moby.
+ * @param ofy The view's screen offset Y.
+ * @param o Receives the record, translation and offset. */
 static void shaded_otk_record(CPUState* cpu, uint32_t m, int billboard, const int PM[3][3],
                               const int32_t cam[3], const int32_t pos[3], double ofx,
                               double ofy, shaded_otk_t* o) {
@@ -8453,6 +8676,17 @@ static const hook_bracket_desc k_simple_bracket = {
     .pre = moby_simple_pre, .st = &s_simple_hb,
 };
 
+/** @brief The second-kind hook: run the game's second model-kind draw and feed the scene.
+ *
+ * Brackets moby_run_draw_simple with k_simple_bracket. On the feed path, a
+ * pass that emitted triangles into an empty polybuf interval still marks
+ * RP_MOBY drawn, then the triangles are pushed to the scene. On the verify
+ * path, up to 120 reports capture the pass's prims and compare the walk
+ * against them.
+ * @param cpu The guest CPU state.
+ * @param addr The hooked address.
+ * @return 0 when the game has no second-kind pass or the bracket declines,
+ *         leaving the ordinary dispatch to run it; 1 after the pass ran. */
 static int on_draw_simple(CPUState* cpu, uint32_t addr) {
     if (!moby_game.simple_pass) return 0;
     uint32_t start, end; int feed, verify;
