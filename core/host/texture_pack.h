@@ -75,9 +75,9 @@ void texture_pack_on_clear(int x, int y, int w, int h);
  * live entries may describe pre-restore uploads. Each live entry's rect is
  * re-hashed from a PsyX VRAM snapshot: matching content keeps its
  * identity, and a mismatch or a rect outside VRAM is killed, so no wrong
- * replacement is served; the asset returns on its next upload. The hash
- * of an upload whose rect was clamped covers the pre-clamp source, so
- * such an entry fails the re-hash and is killed. When the snapshot cannot
+ * replacement is served; the asset returns on its next upload. The upload
+ * hash covers the clamped rect only (w halfwords of each of h rows), so a
+ * clamped upload re-hashes equal. When the snapshot cannot
  * be taken every live entry is killed. Bumps the registry generation when
  * any entry dies; a no-op before texture_pack_init, which registers it
  * with the openpete_discontinuity broadcast. */
