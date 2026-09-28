@@ -233,6 +233,16 @@ int openpete_knob_add(const knob_desc_t *row);
  * @param h Default window height in pixels. */
 void openpete_knob_default_window_set(int w, int h);
 
+/** @brief Attach string accessors to the registry row `id`.
+ *
+ * A non-NULL `get_str` replaces the row's getter; a non-NULL `set_str` replaces
+ * its setter and marks the row KNOB_LIVE. Lets a game module own the value
+ * behind a row the registry builds.
+ * @param id Row id to bind.
+ * @param get_str Display getter, or NULL to keep the current one.
+ * @param set_str Setter, or NULL to keep the current one.
+ * @return 0 when the row exists, -1 when no row has that id (the row is
+ *   compiled out). */
 int openpete_knob_bind_str(const char *id,
                            void (*get_str)(const struct knob_desc *k,
                                            char *buf, size_t cap),

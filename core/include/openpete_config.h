@@ -85,6 +85,12 @@ void openpete_config_set_game_id(const char* id);
 typedef int (*openpete_disc_identity_fn)(const char* disc_path,
                                          char* serial, size_t serial_cap,
                                          char* sha, size_t sha_cap);
+/** @brief Register the hook that names the booting disc image's serial and hash.
+ *
+ * Applies to the next openpete_config_apply; the hook is described at
+ * openpete_disc_identity_fn. Without one no [disc.*] scope is read.
+ * openpete_config_reset_for_test clears it.
+ * @param fn The hook, or NULL to clear it. */
 void openpete_config_set_disc_identity_fn(openpete_disc_identity_fn fn);
 
 /* ---- diagnostics --------------------------------------------------- */

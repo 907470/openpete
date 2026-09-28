@@ -56,6 +56,11 @@ typedef struct {
     int flag_valueless;
 } cfg_knob_t;
 
+/** @brief The schema table.
+ *
+ * @param count Receives the number of rows; may be NULL.
+ * @return The static row array, indexed by the values cfg_schema_find_* return.
+ */
 const cfg_knob_t *cfg_schema(size_t *count);
 
 /** @brief Index of the schema row whose id is `id`.

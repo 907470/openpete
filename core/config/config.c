@@ -201,6 +201,10 @@ static int toml_scalar_to_string(toml_raw_t raw, char *out, size_t cap,
     return -1;
 }
 
+/** @brief Whether `v` is an accepted spelling of enum knob `k`.
+ *
+ * Returns 1 for a knob that is not CFG_ENUM or has no vocabulary, else 1 only
+ * when `v` equals a vocabulary entry exactly (case-sensitive). */
 static int enum_ok(const cfg_knob_t *k, const char *v) {
     if (k->type != CFG_ENUM || !k->vocab) return 1;
     for (int i = 0; k->vocab[i]; i++)
@@ -208,6 +212,10 @@ static int enum_ok(const cfg_knob_t *k, const char *v) {
     return 0;
 }
 
+/** @brief Write the vocabulary of `k` into `out` as `a|b|c`.
+ *
+ * Writes an empty string for a knob without a vocabulary. The text is truncated
+ * to `cap` - 1 characters; `cap` must be at least 1. */
 static void enum_vocab_str(const cfg_knob_t *k, char *out, size_t cap) {
     out[0] = '\0';
     if (!k->vocab) return;
@@ -280,6 +288,7 @@ static const cfg_renamed_t g_renamed[] = {
     { "show_fps", "perf_stats", "fps", "off" },
 };
 
+/** @brief The g_renamed row whose old key is `key`, or NULL. */
 static const cfg_renamed_t *renamed_for(const char *key) {
     for (size_t i = 0; i < sizeof g_renamed / sizeof g_renamed[0]; i++)
         if (!strcmp(g_renamed[i].old_key, key)) return &g_renamed[i];
@@ -563,6 +572,15 @@ static int harvest_keys_domain(const toml_table_t *tab, const char *domain,
     return 0;
 }
 
+/** @brief Record the bindings of a [keys] table: the pad, pad2, pad3, pad4 and host domains and the [keys.mod.<id>] tables.
+ *
+ * Each binding is handed to the keymap at rank RANK(tier, file, SP_BASE), since
+ * [keys] has no [env] or [args] twin. A domain binding goes through
+ * openpete_keymap_set, which validates it; a [keys.mod.<id>] binding goes
+ * through openpete_keymap_set_mod by name without validation, because mods are
+ * discovered after the config is read. A binding value must be a scalar. Any
+ * other sub-table of `keys` is an error naming the accepted set. Errors print
+ * to stderr with `where`. Returns 0, or -1 on the first error. */
 static int harvest_keys(const toml_table_t *keys, int tier, int file,
                         const char *origin, const char *where) {
     /* Keys have no [env]/[args] twin, so the spelling sub-sort never
@@ -658,6 +676,12 @@ static int harvest_scope(const toml_table_t *tab, int tier, int file,
 
 static toml_table_t *s_doc[2];
 
+/** @brief Parse config file number `file` into s_doc and apply its `portable` directive.
+ *
+ * A file that cannot be opened is the normal absent case. On success marks the
+ * file present and, when the file carries a boolean top-level `portable`, sets
+ * the path layout with openpete_paths_set_portable. Returns 1 when loaded, 0
+ * when absent, -1 after printing the parse error to stderr. */
 static int load_toml(int file) {
     const char *path = s_file_path[file];
     FILE *f = fopen(path, "r");
@@ -705,6 +729,11 @@ static int harvest_global(int file) {
     return 0;
 }
 
+/** @brief Harvest the [<ns>.<name>] scope table of file `file` at `tier`.
+ *
+ * The contribution origin is `<origin_prefix>.<name>`. Returns 0 when the file
+ * is not loaded, `name` is NULL or empty, or the table is absent; otherwise the
+ * result of harvest_scope (0, or -1 on the first error). */
 static int harvest_named(int file, const char *ns, const char *name,
                          int tier, const char *origin_prefix) {
     toml_table_t *doc = s_doc[file];
@@ -909,6 +938,9 @@ static int portable_setenv_soft(const char *k, const char *v) {
 #endif
 }
 
+/** @brief Copy `s` into a new malloc block, or return NULL when the allocation fails.
+ *
+ * The copy is never freed: emitted tokens live for the process. */
 static char *dup_str(const char *s) {
     size_t n = strlen(s) + 1;
     char *d = (char *)malloc(n);
@@ -916,6 +948,12 @@ static char *dup_str(const char *s) {
     return d;                              /* retained for process lifetime */
 }
 
+/** @brief Append one spliced argv token, remembering its origin label.
+ *
+ * Copies `tok` with dup_str and stores `origin` beside it for
+ * openpete_config_token_source. Once CFG_MAX_TOKENS tokens exist, or when the
+ * copy fails, the token is dropped (the limit case prints to stderr) and
+ * nothing reports the loss to the caller. */
 static void emit_token(const char *tok, const char *origin) {
     if (s_token_n >= CFG_MAX_TOKENS) {
         fprintf(stderr, "openpete: config: too many flags to splice (max %d)\n",
@@ -928,6 +966,9 @@ static void emit_token(const char *tok, const char *origin) {
     s_tokens[s_token_n++] = d;
 }
 
+/** @brief The decision record of schema knob `knob`, created zeroed on first use.
+ *
+ * Returns NULL when the table already holds every slot of s_decision. */
 static decision_t *decision_for(int knob) {
     for (int i = 0; i < s_decision_n; i++)
         if (s_decision[i].knob == knob) return &s_decision[i];
@@ -976,6 +1017,15 @@ static int mutex_blocked(const contrib_t *c) {
     return 0;
 }
 
+/** @brief Store the winning contribution `win` as its knob's decision record.
+ *
+ * Does nothing for a contribution without a schema knob. Copies the value and
+ * origin, marks the record pinned when `win` ranks at the real-environment tier
+ * or above (keeping the spelling: `$VAR` for an env winner, else the key), and
+ * appends `origin(value)` of every lower-ranked contribution of the same
+ * setting to the shadow list while 32 bytes of room remain, counting each in
+ * `shadowed`. A second winner of equal rank overwrites the value and origin,
+ * and appends the same lower contributions again. */
 static void record_decision(const contrib_t *win) {
     if (win->knob < 0) return;
     decision_t *d = decision_for(win->knob);

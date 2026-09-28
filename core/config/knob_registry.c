@@ -44,6 +44,10 @@ static const openpete_options_t *g_opts;
 /** @brief Numeric getter that returns the row's stored value. */
 static double get_stored(const knob_desc_t *k) { return k->stored_num; }
 
+/** @brief Index of the entry of `vals[0..n)` nearest to `v`.
+ *
+ * The first entry wins a tie. Returns 0 when `n` is 0 or less, or when `v` is
+ * NaN. */
 static int nearest_enum_idx(const float *vals, int n, float v) {
     int best = 0;
     float bd = 1e30f;
@@ -71,6 +75,7 @@ static int nearest_enum_idx(const float *vals, int n, float v) {
 static double fullscreen_get(const knob_desc_t *k) {
     (void)k; return openpete_native_fullscreen_active() ? 1.0 : 0.0;
 }
+/** @brief Queue a fullscreen toggle when `v` differs from the window's current state; the window's thread applies it, so the state reads unchanged until then. */
 static int fullscreen_set(knob_desc_t *k, double v) {
     (void)k;
     if ((v != 0.0) != (openpete_native_fullscreen_active() != 0))
@@ -92,6 +97,10 @@ static double aspect_get(const knob_desc_t *k) {
     if (wh <= 0.0f) return 0;
     return nearest_enum_idx(k_aspect_vals + 1, 5, wh) + 1;
 }
+/** @brief Set the renderer aspect ratio to entry `v` of k_aspect_vals (entry 0 is auto).
+ *
+ * Stores the index in the row. Returns -1, changing nothing, when the truncated
+ * index is outside the table; else 0. */
 static int aspect_set(knob_desc_t *k, double v) {
     int i = (int)v;
     if (i < 0 || i >= (int)(sizeof(k_aspect_vals)/sizeof(k_aspect_vals[0]))) return -1;
@@ -163,6 +172,7 @@ static int perfpos_set(knob_desc_t *k, double v) {
     return 0;
 }
 
+/** @brief 1 when the on-screen notifications are enabled, else 0; the stored value until the native renderer is up. */
 static double osd_get(const knob_desc_t *k) {
     KNOB_LIVE_OR_STORED(k);
     return openpete_osd_enabled() ? 1.0 : 0.0;
@@ -251,10 +261,12 @@ static double rquant_get(const knob_desc_t *k) {
     KNOB_LIVE_OR_STORED(k);
     return openpete_native_get_raster_quantize();
 }
+/** @brief The resolved worker-thread count of the extraction work pool, with auto expanded. */
 static double exthreads_get(const knob_desc_t *k) {
     (void)k;
     return openpete_workpool_threads();   /* resolved count (auto expanded) */
 }
+/** @brief 1 when the disc cache is active, else 0. */
 static double disccache_get(const knob_desc_t *k) {
     (void)k;
     return openpete_disc_cache_active() ? 1 : 0;
@@ -263,6 +275,7 @@ static double disccache_get(const knob_desc_t *k) {
  * than through openpete_fiber.h, whose SDL atomics the unit test does not
  * link. */
 extern int openpete_cd_load_delay;
+/** @brief The resolved level-load delay, read from openpete_cd_load_delay. */
 static double loaddelay_get(const knob_desc_t *k) {
     (void)k;
     return openpete_cd_load_delay;
@@ -285,6 +298,7 @@ static double notex_get(const knob_desc_t *k) {
     (void)k;
     return openpete_native_get_notex();
 }
+/** @brief Set the renderer's untextured-lighting flag from `v` (nonzero is on); the renderer applies it at the next present. */
 static int notex_set(knob_desc_t *k, double v) {
     (void)k;
     openpete_native_set_notex(v != 0.0);
@@ -312,6 +326,7 @@ static double dither_get(const knob_desc_t *k) {
     KNOB_LIVE_OR_STORED(k);
     return openpete_native_get_dither();
 }
+/** @brief Set the renderer's dither flag from `v` (nonzero is on). */
 static int dither_set(knob_desc_t *k, double v) {
     (void)k;
     openpete_native_set_dither(v != 0.0);
@@ -330,16 +345,24 @@ static int tervis_set(knob_desc_t *k, double v) {
                                                     : OPENPETE_TERRAIN_VIS_GAME);
     return 0;
 }
+/** @brief 1 when the extended level-of-detail mode is on (openpete_no_lod), else 0. */
 static double lod_get(const knob_desc_t *k) { (void)k; return openpete_no_lod ? 1.0 : 0.0; }
+/** @brief Switch level-of-detail mode: nonzero is extended, zero original.
+ *
+ * Passes no fog scale, so the fog scale follows the mode unless fog was set
+ * explicitly. */
 static int lod_set(knob_desc_t *k, double v) {
     (void)k;
     openpete_no_lod_set(v != 0.0, -1.0f);   /* fog follows the mode unless touched */
     return 0;
 }
 
+/** @brief 1 when fog is enabled, else 0. */
 static double fog_get(const knob_desc_t *k) { (void)k; return openpete_fog_enabled() ? 1.0 : 0.0; }
+/** @brief Enable or disable fog from `v` (nonzero is on). */
 static int fog_set(knob_desc_t *k, double v) { (void)k; openpete_fog_set(v != 0.0); return 0; }
 
+/** @brief The fog-distance multiplier, read from openpete_fog_scale. */
 static double fogscale_get(const knob_desc_t *k) { (void)k; return openpete_fog_scale; }
 /** @brief Set the fog-distance multiplier from the fog-scale row; a non-finite value is refused. */
 static int fogscale_set(knob_desc_t *k, double v) {
@@ -398,6 +421,7 @@ static int runahead_set(knob_desc_t *k, double v) {
     return 0;
 }
 
+/** @brief The native field of view in degrees; 0 selects the game's own. */
 static double fov_get(const knob_desc_t *k) { (void)k; return (double)openpete_native_fov_deg(); }
 /** @brief Set the native field of view from the fov row: 0 (the game's own) or [30, 120] degrees; anything else, NaN included, is refused. */
 static int fov_set(knob_desc_t *k, double v) {
@@ -418,6 +442,7 @@ static int rewind_set(knob_desc_t *k, double v) {
 
 /** @brief 1 when host audio is muted, else 0. */
 static double mute_get(const knob_desc_t *k) { (void)k; return openpete_get_mute() ? 1.0 : 0.0; }
+/** @brief Mute or unmute host audio from `v` (nonzero mutes). */
 static int mute_set(knob_desc_t *k, double v) { (void)k; openpete_set_mute(v != 0.0); return 0; }
 
 /** @brief The requested in-game SFX slider preset.
@@ -427,20 +452,28 @@ static int mute_set(knob_desc_t *k, double v) { (void)k; openpete_set_mute(v != 
  * although the value ends up in gameplay-readable RAM. */
 static double sfxvol_get(const knob_desc_t *k) { (void)k; return (double)openpete_get_sfx_volume(); }
 static int sfxvol_set(knob_desc_t *k, double v) { (void)k; openpete_set_sfx_volume((int)v); return 0; }
+/** @brief The requested music volume, read from the runtime. */
 static double musicvol_get(const knob_desc_t *k) { (void)k; return (double)openpete_get_music_volume(); }
+/** @brief Request music volume `v`, truncated to int; the runtime clamps it. */
 static int musicvol_set(knob_desc_t *k, double v) { (void)k; openpete_set_music_volume((int)v); return 0; }
 
 /* ---- Input ---- */
 
 /** @brief The freecam mouse sensitivity. */
 static double mousesens_get(const knob_desc_t *k) { (void)k; return (double)openpete_freecam_mouse_sensitivity(); }
+/** @brief Set the freecam mouse sensitivity to `v`.
+ *
+ * Returns -1, changing nothing, unless `v` lies in [0, 100] (NaN fails); else
+ * stores it in the row and returns 0. */
 static int mousesens_set(knob_desc_t *k, double v) {
     if (!(v >= 0.0) || v > 100.0) return -1;
     openpete_freecam_set_mouse_sensitivity((float)v);
     k->stored_num = v;
     return 0;
 }
+/** @brief 1 when host mouse input is enabled, else 0. */
 static double mouse_get(const knob_desc_t *k) { (void)k; return openpete_host_mouse_enabled() ? 1.0 : 0.0; }
+/** @brief Enable or disable host mouse input from `v` (nonzero enables). */
 static int mouse_set(knob_desc_t *k, double v) { (void)k; openpete_host_mouse_set_enabled(v != 0.0); return 0; }
 /** @brief The host rumble strength.
  *
@@ -511,18 +544,24 @@ static void renderpaths_get_str(const knob_desc_t *k, char *buf, size_t cap) {
     snprintf(buf, cap, "%s", v ? v : "(all)");
 }
 
+/** @brief Write the active log level spec into `buf`, or "(default: info)" when the spec is empty. */
 static void loglevel_get_str(const knob_desc_t *k, char *buf, size_t cap) {
     (void)k;
     const char *v = openpete_log_get_spec();
     snprintf(buf, cap, "%s", (v && *v) ? v : "(default: info)");
 }
 
+/** @brief Write the log file path into `buf`, or "(no log file)" when none is open. */
 static void logfile_get_str(const knob_desc_t *k, char *buf, size_t cap) {
     (void)k;
     const char *v = openpete_log_file_path();
     snprintf(buf, cap, "%s", (v && *v) ? v : "(no log file)");
 }
 
+/** @brief Apply `v` as the log level spec.
+ *
+ * A value starting with `(` is the display placeholder and clears the spec, as
+ * does NULL. Always returns 0. */
 static int loglevel_set_str(knob_desc_t *k, const char *v) {
     (void)k;
     if (v && *v == '(') v = "";   /* "(default: info)" placeholder = clear */
@@ -531,9 +570,11 @@ static int loglevel_set_str(knob_desc_t *k, const char *v) {
 }
 
 static const char *const k_logfmt_names[] = { "plain", "json" };
+/** @brief The active log format as its k_logfmt_names index. */
 static double logfmt_get(const knob_desc_t *k) {
     (void)k; return (double)openpete_log_get_format();
 }
+/** @brief Select the log format: `v` of 1 is JSON, any other value is plain. */
 static int logfmt_set(knob_desc_t *k, double v) {
     (void)k;
     openpete_log_set_format((int)v == 1 ? OPENPETE_LOG_JSON : OPENPETE_LOG_PLAIN);
@@ -581,6 +622,10 @@ static int portable_setenv(const char *name, const char *val) {
     return rc;
 }
 
+/** @brief Write the row's env var value into `buf`.
+ *
+ * An unset variable shows as "(unset - <default>)" when the row has a non-empty
+ * default string, else "(unset)". */
 static void env_get_str(const knob_desc_t *k, char *buf, size_t cap) {
     const char *v = k->env ? getenv(k->env) : NULL;
     if (v)
@@ -591,6 +636,11 @@ static void env_get_str(const knob_desc_t *k, char *buf, size_t cap) {
         snprintf(buf, cap, "(unset)");
 }
 
+/** @brief Set the row's env var to `v`, through portable_setenv.
+ *
+ * Returns -1 for a row with no env var. A value starting with "(unset" (the
+ * display placeholder), an empty value and NULL unset the variable. Otherwise
+ * returns the portable_setenv result. */
 static int env_set_str(knob_desc_t *k, const char *v) {
     if (!k->env) return -1;
     /* Editing back to the "(unset...)" placeholder (or clearing) unsets. */
@@ -622,6 +672,7 @@ static void skiparea_get_str(const knob_desc_t *k, char *buf, size_t cap) {
         snprintf(buf, cap, "(none)");
 }
 
+/** @brief Write the parsed --cheats string into `buf`, or "(none)" when options are unbound or it is empty. */
 static void cheats_get_str(const knob_desc_t *k, char *buf, size_t cap) {
     (void)k;
     snprintf(buf, cap, "%s",
@@ -629,7 +680,9 @@ static void cheats_get_str(const knob_desc_t *k, char *buf, size_t cap) {
                                                              : "(none)");
 }
 
+/** @brief 1 when the freecam is active, else 0. */
 static double freecam_get(const knob_desc_t *k) { (void)k; return openpete_freecam_active() ? 1.0 : 0.0; }
+/** @brief Toggle the freecam when `v` differs from its current state. */
 static int freecam_set(knob_desc_t *k, double v) {
     (void)k;
     if ((v != 0.0) != (openpete_freecam_active() != 0))
@@ -637,21 +690,30 @@ static int freecam_set(knob_desc_t *k, double v) {
     return 0;
 }
 
+/** @brief 1 when the fill-tag picker is active, else 0. */
 static double fillpick_get(const knob_desc_t *k) { (void)k; return openpete_fillpick_active() ? 1.0 : 0.0; }
+/** @brief Activate or deactivate the fill-tag picker from `v` (nonzero activates). */
 static int fillpick_set(knob_desc_t *k, double v) {
     (void)k;
     openpete_fillpick_set_active(v != 0.0);
     return 0;
 }
 
+/** @brief 1 when the fill-tag picker preview is on, else 0. */
 static double fillpick_prev_get(const knob_desc_t *k) { (void)k; return openpete_fillpick_preview() ? 1.0 : 0.0; }
+/** @brief Turn the fill-tag picker preview on or off from `v` (nonzero is on). */
 static int fillpick_prev_set(knob_desc_t *k, double v) {
     (void)k;
     openpete_fillpick_set_preview(v != 0.0);
     return 0;
 }
 
+/** @brief 1 when the camera lock is active, else 0. */
 static double camlock_get(const knob_desc_t *k) { (void)k; return openpete_camlock_active() ? 1.0 : 0.0; }
+/** @brief Toggle the camera lock when `v` differs from its current state.
+ *
+ * Engaging the lock while the freecam is active first toggles the freecam off,
+ * because both drive the fly axes. */
 static int camlock_set(knob_desc_t *k, double v) {
     (void)k;
     if ((v != 0.0) != (openpete_camlock_active() != 0)) {
