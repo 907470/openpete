@@ -63,11 +63,24 @@ enum { UICLS_FT4 = 0, UICLS_BAR, UICLS_PANEL, UICLS_LINE, UICLS_SPRT, UICLS_FADE
 static const char* const kUiClsName[UICLS_N] = { "ft4", "bar", "panel", "line", "sprt", "fade", "polyg" };
 static struct { float x0, y0, x1, y1; unsigned n; } s_bbox[UICLS_N];
 static unsigned s_cls_n[UICLS_N];        /* fed per class since boot (always counted) */
+/** @brief Returns the VBL named by OPENPETE_UISPRITE_BBOX, or -1 when it is unset or empty.
+ *
+ * Latched on the first call. A non-numeric value parses as VBL 0.
+ * @return The bounding-box capture VBL, or -1 for none. */
 static long bbox_vbl(void) {
     static long v = -2;
     if (v == -2) { const char* e = getenv("OPENPETE_UISPRITE_BBOX"); v = (e && *e) ? atol(e) : -1; }
     return v;
 }
+/** @brief Counts one fed 2D primitive of a class and grows that class's box at the capture VBL.
+ *
+ * s_cls_n always counts. The box and its count accumulate only while
+ * openpete_frame equals bbox_vbl().
+ * @param cls A UICLS_* class.
+ * @param x0 The left edge, in PSX pixels.
+ * @param y0 The top edge, in PSX pixels.
+ * @param x1 The right edge, in PSX pixels.
+ * @param y1 The bottom edge, in PSX pixels. */
 static void bbox_note(int cls, float x0, float y0, float x1, float y1) {
     s_cls_n[cls]++;
     if ((long)openpete_frame != bbox_vbl()) return;
@@ -79,6 +92,10 @@ static void bbox_note(int cls, float x0, float y0, float x1, float y1) {
            if (y1 > s_bbox[cls].y1) s_bbox[cls].y1 = y1; }
     s_bbox[cls].n++;
 }
+/** @brief Prints one bounding-box line per class on the first call after the capture VBL.
+ *
+ * A no-op when OPENPETE_UISPRITE_BBOX is unset or the VBL has not passed;
+ * it prints once per boot. */
 static void bbox_report(void) {
     if (bbox_vbl() < 0) return;
     static long done = -1;
@@ -103,6 +120,11 @@ static unsigned s_semi[SEMI_N][4];        /* since boot */
 static unsigned s_semi_tick[SEMI_N][4];   /* the tick s_semi_frame */
 static unsigned s_semi_frame = 0xFFFFFFFFu;
 static unsigned s_split_tick;             /* split primitives in the tick s_semi_frame */
+/** @brief Prints the finished tick's UI-SEMI census line, then clears the per-tick counters.
+ *
+ * The line prints only under OPENPETE_UISPRITE_CENSUS and after a tick has
+ * been counted; the per-tick counters and the split count clear in every
+ * case. */
 static void semi_flush_tick(void) {
     static int cen = -1;
     ENV_FLAG_LATCH(cen, "OPENPETE_UISPRITE_CENSUS");
@@ -116,6 +138,13 @@ static void semi_flush_tick(void) {
     memset(s_semi_tick, 0, sizeof(s_semi_tick));
     s_split_tick = 0;
 }
+/** @brief Counts one semi-transparent 2D primitive fed, by class and ABR.
+ *
+ * The first note of a later tick flushes the previous tick's census line.
+ * @param cls A SEMI_* class.
+ * @param abr The draw-mode ABR; only its low two bits are used.
+ * @param split Nonzero when the textured primitive was fed as an STP-clear
+ *        and STP-set pair. */
 static void semi_note(int cls, unsigned abr, int split) {
     if (openpete_frame != s_semi_frame) { semi_flush_tick(); s_semi_frame = openpete_frame; }
     s_semi[cls][abr & 3u]++; s_semi_tick[cls][abr & 3u]++;
@@ -133,6 +162,11 @@ static void semi_note(int cls, unsigned abr, int split) {
  * fragment alpha carries that (0.5 for an STP texel, 1.0 otherwise); at ABR
  * 1-3 the primitive is split by texel STP (feed_hud_tex_quad). */
 typedef struct { int blend; uint32_t alpha; } ui_blend_t;
+/** @brief Returns the native blend class and vertex alpha of a 2D primitive.
+ *
+ * @param semi Nonzero for a semi-transparent primitive.
+ * @param abr The draw-mode ABR; only its low two bits are used.
+ * @return Class 0 at alpha 0xFF when opaque, else the class of the ABR. */
 static ui_blend_t ui_blend(int semi, unsigned abr) {
     static const ui_blend_t kAbr[4] = { { 1, 0x80u }, { 2, 0xFFu }, { 3, 0xFFu }, { 4, 0xFFu } };
     if (!semi) return (ui_blend_t){ 0, 0xFFu };
@@ -275,6 +309,12 @@ static void tri_int_verts(const openpete_scene_tri* t, int iv[3][4]) {
  * the GPU's texel under the float error of the interpolation. */
 #define UI_TEXEL_GUARD (1.0 / 8192.0)
 
+/** @brief Rewrites a textured triangle's vertex u and v so the fragment stage reads the GPU's texel per pixel.
+ *
+ * Builds the GPU stepper from the triangle's rounded integer words and
+ * sets each vertex to the plane value at (sx - 0.5, sy - 0.5) plus
+ * UI_TEXEL_GUARD. A triangle of zero screen area is left unchanged.
+ * @param t The triangle, rewritten in place. */
 static void tex_tri_psx_texel_centre(openpete_scene_tri* t) {
     int iv[3][4]; psx_uv_plane s;
     tri_int_verts(t, iv);
@@ -325,6 +365,16 @@ static int psx_texel(const psx_uv_plane* p, int x, int y, int which_v) {
     return (int)floor(psx_uv_plane_at(p, (double)x, (double)y, which_v)) & 0xFF;
 }
 
+/** @brief Returns the texel coordinate the fragment stage reads at a pixel of a fed triangle.
+ *
+ * Interpolates u or v from vertex 0 with the gradients at the pixel centre
+ * (x + 0.5, y + 0.5) and truncates toward zero.
+ * @param t The fed triangle.
+ * @param g The triangle's gradients from tri_uv_grad.
+ * @param x The pixel column.
+ * @param y The pixel row.
+ * @param which_v Nonzero for v, zero for u.
+ * @return The truncated texel coordinate. */
 static int native_texel(const openpete_scene_tri* t, const tri_uv_grad_t* g, int x, int y, int which_v) {
     const double px = x + 0.5 - t->v[0].sx, py = y + 0.5 - t->v[0].sy;
     const double a = which_v ? t->v[0].v + g->dvdx * px + g->dvdy * py
@@ -350,6 +400,14 @@ static int tri_covers(const openpete_scene_tri* t, int x, int y) {
     return !(pos && neg);
 }
 
+/** @brief Tests whether the native and GPU texels differ at one pixel.
+ *
+ * @param fed The fed triangle.
+ * @param g The fed triangle's gradients.
+ * @param s The GPU stepper of the original triangle.
+ * @param x The pixel column.
+ * @param y The pixel row.
+ * @return Nonzero when u or v differs. */
 static int uvedge_pixel_differs(const openpete_scene_tri* fed, const tri_uv_grad_t* g,
                                 const psx_uv_plane* s, int x, int y) {
     return native_texel(fed, g, x, y, 0) != psx_texel(s, x, y, 0)
@@ -384,6 +442,13 @@ static int uvedge_tri_differs(const openpete_scene_tri* orig, const openpete_sce
     return 0;
 }
 
+/** @brief Adds one fed textured triangle to the per-tick UI-UVEDGE census.
+ *
+ * Active under OPENPETE_UISPRITE_CENSUS. The first note of a later tick
+ * prints the previous tick's line; each note counts the triangle and
+ * whether uvedge_tri_differs reports a row-edge texel difference.
+ * @param orig The triangle as decoded from the primitive.
+ * @param fed The triangle as fed. */
 static void uvedge_note(const openpete_scene_tri* orig, const openpete_scene_tri* fed) {
     static int cen = -1;
     ENV_FLAG_LATCH(cen, "OPENPETE_UISPRITE_CENSUS");
@@ -616,6 +681,15 @@ static void feed_f4(CPUState* cpu, uint32_t p, uint32_t w1, int category, uint32
  * bit 1) blends at the ABR of the draw mode linked before it, on the panel
  * layer, as a dark panel's F4 does. */
 typedef struct { int category; int blend; uint32_t alpha; } ui_untex_t;
+/** @brief Returns the layer, blend class and alpha of an untextured 2D primitive.
+ *
+ * A semi-transparent primitive is counted through semi_note at the
+ * tracked ABR s_last_abr.
+ * @param w1 The primitive's second word; bits 24-31 hold the command byte.
+ * @param semi_cls The SEMI_* class counted when the primitive is
+ *        semi-transparent.
+ * @return HUD at class 0 when opaque, else HUD_PANEL at the ui_blend
+ *         result. */
 static ui_untex_t ui_untex_layer(uint32_t w1, int semi_cls) {
     if (!((w1 >> 24) & 0x2u)) return (ui_untex_t){ OPENPETE_SCENE_HUD, 0, 0xFFu };
     semi_note(semi_cls, (unsigned)s_last_abr, 0);
@@ -623,7 +697,15 @@ static ui_untex_t ui_untex_layer(uint32_t w1, int semi_cls) {
     return (ui_untex_t){ OPENPETE_SCENE_HUD_PANEL, b.blend, b.alpha };
 }
 
+/** @brief Returns the signed x in the low halfword of a packed PSX XY word.
+ *
+ * @param xy The packed word.
+ * @return The x coordinate. */
 static float psx_x(uint32_t xy) { return (float)(int16_t)(xy & 0xFFFFu); }
+/** @brief Returns the signed y in the high halfword of a packed PSX XY word.
+ *
+ * @param xy The packed word.
+ * @return The y coordinate. */
 static float psx_y(uint32_t xy) { return (float)(int16_t)(xy >> 16); }
 
 /** @brief Feeds one screen-space line into a native 2D layer as a gouraud quad.
@@ -810,6 +892,10 @@ static unsigned s_unclaimed_frame = 0xFFFFFFFFu;
 unsigned ui_sprite_unclaimed_count(void) {
     unsigned n = 0; for (int c = 0; c < 256; c++) n += s_unclaimed[c]; return n;
 }
+/** @brief Prints the finished tick's UI-UNCLAIMED census line and clears the per-tick histogram.
+ *
+ * Active under OPENPETE_UISPRITE_CENSUS and after a tick has been counted;
+ * a tick with no unclaimed primitive prints nothing. */
 static void unclaimed_flush_tick(void) {
     static int cen = -1;
     ENV_FLAG_LATCH(cen, "OPENPETE_UISPRITE_CENSUS");
@@ -824,6 +910,12 @@ static void unclaimed_flush_tick(void) {
         fprintf(stderr, "[census f=%u UI-UNCLAIMED]%s\n", s_unclaimed_frame, line);
     memset(s_unclaimed_tick, 0, sizeof(s_unclaimed_tick));
 }
+/** @brief Counts a linked primitive whose GP0 command byte no decoder claims.
+ *
+ * Reads the command byte from the high byte of the primitive's second
+ * word. An address below 0x80000000 is ignored.
+ * @param cpu The guest CPU state.
+ * @param prim The primitive's guest address. */
 static void unclaimed_note(CPUState* cpu, uint32_t prim) {
     if (prim < 0x80000000u) return;
     unsigned code = (unsigned)((cpu->read_word(prim + 4) >> 24) & 0xFFu);
@@ -934,6 +1026,12 @@ static uint32_t claim_sum(CPUState* cpu, uint32_t prim) {
     return h;
 }
 
+/** @brief Tests whether a primitive is a POLY_FT4 (code 0x2C or 0x2E) with a full tag.
+ *
+ * @param cpu The guest CPU state.
+ * @param prim The primitive's guest address.
+ * @return 1 for code 0x2C or 0x2E with a tag length of at least 9, else 0
+ *         (also for an address below 0x80000000). */
 static int is_ft4(CPUState* cpu, uint32_t prim) {
     if (prim < 0x80000000u) return 0;
     uint32_t w0 = cpu->read_word(prim), w1 = cpu->read_word(prim + 4);
@@ -1022,6 +1120,13 @@ static int is_line_f2(CPUState* cpu, uint32_t prim);
 static struct { unsigned frame; int valid; int x0, x1, y; } s_freeze_band;
 static unsigned s_freeze_mask_dropped;   /* engagement count, UI-SPRITE census */
 
+/** @brief Extends the current VBL's freeze-backdrop band with one FT4's horizontal extent.
+ *
+ * The first quad of a VBL sets the band to its vertex 0 x, vertex 3 x and
+ * vertex 3 y; later quads only widen x0 and x1, and y keeps the first
+ * quad's value.
+ * @param cpu The guest CPU state.
+ * @param prim The POLY_FT4's guest address. */
 static void freeze_band_note(CPUState* cpu, uint32_t prim) {
     const uint32_t xy0 = cpu->read_word(prim + 0x08), xy3 = cpu->read_word(prim + 0x20);
     const int x0 = (int16_t)xy0, x1 = (int16_t)xy3, y = (int16_t)(xy3 >> 16);
@@ -1141,6 +1246,10 @@ static int is_line_f2(CPUState* cpu, uint32_t prim) {
  * word inside RAM may be followed. */
 #define UI_RAM_LO 0x80000000u
 #define UI_RAM_HI 0x801FFFFCu
+/** @brief Tests whether an address is a word-aligned address inside main RAM.
+ *
+ * @param a The guest address.
+ * @return 1 for 0x80000000..0x801FFFFC at a multiple of 4, else 0. */
 static int ui_ram_word(uint32_t a) { return a >= UI_RAM_LO && a <= UI_RAM_HI && !(a & 3u); }
 
 static uint32_t s_walk_addr[UI_OT_WALK_MAX];   /* sorted by address */
@@ -1217,6 +1326,10 @@ static void build_ot_rank_map(CPUState* cpu, const uint32_t* known, int kn) {
     if (pz) fprintf(stderr, "[otring f=%u] union=%d of known=%d\n", openpete_frame, s_walk_n, kn);
 }
 
+/** @brief Looks up a primitive's traversal rank in the ordering-table map without counting a hit.
+ *
+ * @param prim The primitive's guest address.
+ * @return The 1-based rank, or 0 when the address is not in the map. */
 static uint32_t ot_rank_of_quiet(uint32_t prim) {
     int lo = 0, hi = s_walk_n - 1;
     while (lo <= hi) { int mid = (lo + hi) / 2;
@@ -1225,6 +1338,11 @@ static uint32_t ot_rank_of_quiet(uint32_t prim) {
     return 0u;
 }
 
+/** @brief Looks up a primitive's traversal rank in the ordering-table map and counts the hit in s_walk_hits.
+ *
+ * Passed to openpete_native_scene_rank_2d.
+ * @param prim The primitive's guest address.
+ * @return The 1-based rank, or 0 when the address is not in the map. */
 static uint32_t ot_rank_of(uint32_t prim) {
     int lo = 0, hi = s_walk_n - 1;
     while (lo <= hi) {
@@ -1447,6 +1565,17 @@ void ui_sprite_ot_verify(void) {
 
 static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux);
 
+/** @brief Records a 2D primitive's address, kind and link-time words in the batch fed at the ordering-table walk.
+ *
+ * Refused (counted in s_claim_spec_refused) unless the canonical capture is
+ * open. A claim in a later frame first releases the earlier frame's
+ * batch; the first claim of a batch opens the frame's scene. A claim past
+ * UI_CLAIM_MAX is counted in s_claim_lost and dropped. The record keeps a
+ * checksum of the primitive's words and its xy0 word as linked.
+ * @param cpu The guest CPU state.
+ * @param prim The primitive's guest address.
+ * @param kind A QK_* kind.
+ * @param aux An extra word stored with the claim. */
 static void claim_aux(CPUState* cpu, uint32_t prim, int kind, uint32_t aux) {
     /* A claim is a canonical latch: it records an address whose words are read
      * back at the ordering-table walk. A speculative tick's link is rolled back
@@ -1479,6 +1608,7 @@ static void claim_aux(CPUState* cpu, uint32_t prim, int kind, uint32_t aux) {
     s_claim[s_claim_n].kind = (uint8_t)kind;
     s_claim_n++;
 }
+/// @brief Claims a primitive with a zero auxiliary word.
 static void claim(CPUState* cpu, uint32_t prim, int kind) { claim_aux(cpu, prim, kind, 0u); }
 
 /* Feeds one glyph SPRT at emission, tagged with its address for the release's ranking. */
@@ -1502,6 +1632,20 @@ void ui_sprite_feed_ft4(CPUState* cpu, uint32_t prim) {
     openpete_native_scene_set_prim(0u);
 }
 
+/** @brief Hooks the game's 2D ordering-table insert: claims the primitive being linked, then runs the real insert.
+ *
+ * Inert (returns 0) while the native scene is off and on re-entry from its
+ * own dispatch. The first call registers the frame-close and overlay
+ * precapture callbacks and names the UI atlas for the texture pack. The
+ * primitive at a0 is classified in order: freeze backdrop FT4 (also
+ * widens the freeze band), freeze mask line (counted, not claimed), FT4,
+ * draw mode, opaque F4 bar, semi-transparent F4 panel (not inside the fade
+ * emitter), SPRT, LINE_G2, POLY_G, LINE_F2; anything else is counted as
+ * unclaimed. The real insert then runs unchanged, so the reference link is
+ * intact. Reads guest RAM only; writes none.
+ * @param cpu The guest CPU state; a0 is the primitive pointer.
+ * @param addr The hooked entry address.
+ * @return 0 when the ordinary dispatch runs the insert, 1 having run it. */
 static int on_ot_insert(CPUState* cpu, uint32_t addr) {
     int feed = openpete_native_scene_enabled();
     if (!feed) return 0;                        /* inert: normal dispatch runs it */
@@ -1652,10 +1796,18 @@ void ui_freeze_retain_commit(void) {
     s_freeze_retain_n++;
 }
 
+/// @brief Prints the retained-backdrop present count at exit.
 static void ui_freeze_retain_census(void) {
     fprintf(stderr, "ui-freeze: retained-backdrop presents=%u\n", s_freeze_retain_n);
 }
 
+/** @brief Binds the module's dispatch table to the game's ui_game hook addresses and arms the retained freeze.
+ *
+ * When ui_game.freeze_retained is set, turns on the scene's retained
+ * freeze mode and registers the exit census. The named ot_insert,
+ * ot_insert_slot and fade_emitter addresses are packed to the front of
+ * the table and a zero address ends it.
+ * @param opts The options; unused. */
 static void ui_sprite_apply_options(const openpete_options_t* opts) {
     (void)opts;
     if (ui_game.freeze_retained) {

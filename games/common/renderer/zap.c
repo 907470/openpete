@@ -161,6 +161,11 @@ static zap_held  s_tick[ZAP_MAX_PRIMS];
 static int      s_tick_n;
 static unsigned s_tick_frame = ~0u;
 
+/** @brief Stores one decoded primitive in s_item as an unpaired item at the near-guard depth 1.
+ *
+ * @param ctx Unused.
+ * @param s The decoded primitive.
+ * @return 1 when stored, 0 when s_item holds ZAP_MAX_PRIMS items. */
 static int zap_prim_sink(void* ctx, const ngte_prim* s) {
     (void)ctx;
     if (s_item_n >= ZAP_MAX_PRIMS) return 0;
@@ -555,6 +560,15 @@ static void zap_rebase_xy(float* x, float* y, double* pos) {
 static double s_hw_sum;
 static int    s_hw_n;
 
+/** @brief Adds one widened corner's distance from its chain point to the fed half-width mean.
+ *
+ * The distance is measured perpendicular to the head-to-tail line the feed
+ * drew, with the chain point rebased like the corner. A corner without a
+ * pivot, or a ribbon of zero length, adds nothing.
+ * @param cx The fed corner's screen x.
+ * @param cy The fed corner's screen y.
+ * @param pv The triangle's corner pivots.
+ * @param k The corner index, 0 to 2. */
 static void zap_width_note(float cx, float cy, const zap_pivot* pv, int k) {
     if (!pv->ok[k]) return;
     float mx = pv->x[k], my = pv->y[k];
@@ -567,6 +581,14 @@ static void zap_width_note(float cx, float cy, const zap_pivot* pv, int k) {
     s_hw_n++;
 }
 
+/** @brief Feeds one held ribbon primitive to the native scene as one or two world triangles.
+ *
+ * The corners are widened and rebased first. The depth is the held pairing
+ * depth, or with the rebase active the view-Z blended between the head and
+ * tail at the mean position of the corners. A quad splits into corners
+ * {0,1,2} and {1,3,2}; a triangle feeds once. A primitive that is neither
+ * is skipped.
+ * @param h The held primitive with its depth and pivots. */
 static void zap_add_prim(const zap_held* h) {
     static const int split[2][3] = { {0, 1, 2}, {1, 3, 2} };
     const ngte_prim* p = &h->p;
@@ -621,6 +643,12 @@ static void zap_add_prim(const zap_held* h) {
     }
 }
 
+/** @brief Feeds a held set of ribbon primitives to the native scene under the tracer tag.
+ *
+ * A no-op when OPENPETE_ZAP is 0 or n is not positive. Opens the frame's
+ * scene and resets the fed half-width accumulators first.
+ * @param set The held primitives.
+ * @param n The count of primitives. */
 static void zap_feed_set(const zap_held* set, int n) {
     if (!zap_feed_enabled()) return;
     if (n <= 0) return;
@@ -878,6 +906,7 @@ static feature_dispatch_entry_t zap_dispatch[] = {
     { 0u, NULL },
 };
 
+/// @brief Binds the module's dispatch entry to the layout's zap draw address.
 static void zap_apply_options(const openpete_options_t* opts) {
     (void)opts;
     zap_dispatch[0].addr = game_layout.zap.hook;

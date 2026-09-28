@@ -18,6 +18,11 @@
 #include "gameplay_state_regions.gen.h"
 #endif
 
+/** @brief Registers the game's generated gameplay-state region table with the core.
+ *
+ * Passes the generated table, its count and its table hash to
+ * openpete_state_regions_register. A game without a manifest registers a
+ * count of 0. Called from game main before openpete_run(). */
 void game_state_regions_register(void) {
     openpete_state_regions_register(openpete_state_regions_table,
                                     OPENPETE_STATE_REGION_COUNT,

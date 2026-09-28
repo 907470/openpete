@@ -4,6 +4,17 @@
 
 #include "psx_runtime_internal.h"
 
+/** @brief Re-feeds the tick's held ribbon primitives for a sub-tick present, rebased onto the present's pose.
+ *
+ * A no-op unless the tracer path's re-extract is ready. When the tick's
+ * zap call ran under the hook bracket the ribbon ends are re-projected
+ * and every corner is moved by the blended displacement; otherwise the
+ * captured corners and paired depths feed verbatim. The primitives are
+ * the guest's output held from the canonical tick; nothing is read from
+ * the polybuf and no PSX RAM is written.
+ * @param cpu The guest CPU state.
+ * @param bracketed Nonzero when the tick's call ran under the bracket.
+ * @param alpha The present's sub-tick position, used when bracketed. */
 void zap_reextract(CPUState* cpu, int bracketed, double alpha);
 
 #endif

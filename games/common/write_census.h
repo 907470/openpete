@@ -34,6 +34,9 @@ extern "C" {
  * leaves the hooks untouched.
  * @param cpu The guest CPU state whose store hooks are wrapped. */
 void write_census_install(CPUState* cpu);
+/** @brief Reports whether the census wrappers are installed.
+ *
+ * @return Nonzero after write_census_install wrapped the store hooks. */
 int  write_census_active(void);
 /** @brief Records a dispatch entry address as the entry column of subsequent rows.
  *
@@ -53,6 +56,11 @@ void write_census_set_phase(int phase);
  * @param addr The guest address.
  * @param value The word to store. */
 void write_census_orig_word(uint32_t addr, uint32_t value);
+/** @brief Stores a halfword through the store hook saved at installation, producing no census row.
+ *
+ * A no-op when the census is not installed.
+ * @param addr The guest address.
+ * @param value The halfword to store. */
 void write_census_orig_half(uint32_t addr, uint16_t value);
 
 #ifdef __cplusplus

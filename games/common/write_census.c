@@ -26,12 +26,25 @@ static void (*s_orig_swl)(uint32_t, uint32_t)        = NULL;
 static void (*s_orig_swr)(uint32_t, uint32_t)        = NULL;
 static CPUState* s_cpu = NULL;
 
+/** @brief Tests whether a store overlaps any census range.
+ *
+ * @param addr The first byte's guest address.
+ * @param size The store width in bytes.
+ * @return 1 when [addr, addr + size - 1] meets a range, else 0. */
 static int in_range(uint32_t addr, unsigned size) {
     for (int i = 0; i < s_nranges; ++i)
         if (addr + size - 1u >= s_ranges[i].lo && addr <= s_ranges[i].hi) return 1;
     return 0;
 }
 
+/** @brief Appends one CSV row for a store that lands in a census range.
+ *
+ * Skipped when the output is closed or the store is out of range. The row
+ * carries the VBL, phase sequence, address, size, value, guest ra, last
+ * dispatch entry, phase and active overlay name ("none" when no overlay).
+ * @param addr The first byte's guest address.
+ * @param size The store width in bytes.
+ * @param value The stored value. */
 static void row(uint32_t addr, unsigned size, uint32_t value) {
     if (!s_out || !in_range(addr, size)) return;
     uint32_t magic = spyro_get_active_overlay_magic();
@@ -42,8 +55,11 @@ static void row(uint32_t addr, unsigned size, uint32_t value) {
     s_rows++;
 }
 
+/// @brief Store hook that logs a word store, then performs it through the saved hook.
 static void wc_write_word(uint32_t a, uint32_t v) { row(a, 4, v); s_orig_write_word(a, v); }
+/// @brief Store hook that logs a halfword store, then performs it through the saved hook.
 static void wc_write_half(uint32_t a, uint16_t v) { row(a, 2, v); s_orig_write_half(a, v); }
+/// @brief Store hook that logs a byte store, then performs it through the saved hook.
 static void wc_write_byte(uint32_t a, uint8_t v)  { row(a, 1, v); s_orig_write_byte(a, v); }
 /** @brief Logs an swl store as a row on the aligned word containing its address, then performs it.
  *
@@ -52,8 +68,10 @@ static void wc_write_byte(uint32_t a, uint8_t v)  { row(a, 1, v); s_orig_write_b
  * @param a The unaligned guest address.
  * @param v The register value. */
 static void wc_swl(uint32_t a, uint32_t v) { row(a & ~3u, 4, v); s_orig_swl(a, v); }
+/// @brief Store hook that logs an swr store like wc_swl, then performs it through the saved hook.
 static void wc_swr(uint32_t a, uint32_t v) { row(a & ~3u, 4, v); s_orig_swr(a, v); }
 
+/// @brief Flushes and closes the census CSV and prints the row and phase-mark counts; exit handler.
 static void census_close(void) {
     if (!s_out) return;
     fflush(s_out);
