@@ -117,7 +117,7 @@ typedef struct { uint8_t arena, buf; uint32_t first, count, stamp; } tc_defer;
 /* std140 globals block (mirrors terrain.vert TerrainGlobals). Camera /
  * projection / fog scalars are DOUBLE — the vertex stage re-runs the CPU
  * walk's double GTE chain bit-for-bit. C natural layout == std140 here
- * (vec4 x3 = 48 B, then four 16 B-aligned dvec2, then ivec4 at 112). */
+ * (vec4 x3 = 48 B, then six 16 B-aligned dvec2, then ivec4 at 144). */
 typedef struct {
     float mrow0[4];    /* M[0][0..2], pad */
     float mrow1[4];    /* M[1][0..2], pad */
@@ -126,12 +126,12 @@ typedef struct {
     double dcam_zf[2]; /* camz, fogscale  */
     double dof_xy[2];  /* ofx, ofy        */
     double dH[2];      /* H, poly-anim alpha */
-    double dnear[2];   /* near-plane view-Z (clip mirror), reserved */
+    double dnear[2];   /* x: near-plane view-Z (near-stage clip); y unused */
     double dspare[2];  /* x: H_canon (limit-regime mirrors); y: env-anim colour alpha */
     int32_t fog[4];    /* fogRefBase, gflags, cullRefS2, 0 */
     float sdv[128][4]; /* per-tile scroll V offsets (lq, hqA, hqB, 0) */
     /* Portal inner-rim cull frames (portal_rim_classify mirror; all fp64).
-     * Offset here is 2176 = 32-aligned, so the dvec4 run below keeps
+     * Offset here is 2208 = 32-aligned, so the dvec4 run below keeps
      * C natural layout == std140 (dvec4 base alignment 32, dvec2 array
      * stride 16 == double[2]). rim_cnt.x = plane count (0 = test off). */
     int32_t rim_cnt[4];
@@ -269,8 +269,9 @@ static struct {
      * sectors' set (clip-fan stage) and the poly-anim sectors' set (lerp
      * stage), indexed by TC_CP_*. */
     rhi_pipeline *pipe_cn[TC_CP_N], *pipe_ca[TC_CP_N];
-    uint32_t      cell_draws;         /* instanced cell draws (census)        */
-    uint64_t      cell_instances;     /* record instances they covered        */
+    uint32_t      cell_draws;         /* cell-arena buffer draws (census)     */
+    uint64_t      cell_instances;     /* records in those buffers' high-water
+                                       * ranges                               */
     rhi_texture  *hd_dummy;           /* 1x1 stand-in for the set-4 atlas     */
     tc_state      staged;             /* canonical build awaiting its present */
     tc_state      live;               /* what presents render                 */

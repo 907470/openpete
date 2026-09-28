@@ -648,8 +648,10 @@ void openpete_tercache_chunk_free(int arena, int buf, uint32_t first, int count)
  * present_service destroys once both drain floors have passed. Adopting
  * resets every arena's counters, so a caller holding chunk records frees
  * them before the adopting frame_begin; openpete_tercache_resize_ready()
- * reports that moment. A second request before the first completes only
- * replaces the stored level. No-op while the cache is not ready.
+ * reports that moment. A second request before the device-owning thread
+ * takes the first only replaces the stored level; one made after it starts
+ * a second replacement, which runs once the first has retired. No-op while
+ * the cache is not ready.
  * @param level_id Level the replacement buffers are sized for. */
 void openpete_tercache_request_resize(int level_id);
 /** @brief Report whether a fulfilled replacement pair awaits adoption.
@@ -749,8 +751,9 @@ typedef struct {
     /* Draws that bound a buffer pair already on the retire list. A
      * destroyed-while-drawn detector: the invariant is 0. */
     uint32_t draws_retired;
-    /* Instanced cell-record draws issued and the record instances they
-     * covered, summed over the session. */
+    /* Cell-arena buffer draws issued (one per buffer per pass, however many
+     * spans it splits into) and the records in those buffers' high-water
+     * ranges, summed over the session. */
     uint32_t cell_draws;
     uint64_t cell_instances;
 } openpete_tercache_stats_t;
