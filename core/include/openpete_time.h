@@ -1,7 +1,6 @@
 /* openpete_time.h — high-resolution monotonic clock + hybrid waiter.
  *
- * Phase 0 of notes/plans/openpete-frame-pacing.md. Leaf module: no SDL,
- * no openpete dependencies. The pacer (ticker.c, run.c dual-pacer) builds
+ * Leaf module: no SDL, no openpete dependencies. The pacer (ticker.c, run.c dual-pacer) builds
  * on this. The point of the abstraction is that *every* time source in
  * openpete that cares about wall-clock pacing routes through here, so the
  * platform-specific knobs (Win32 waitable timer, Linux clock_nanosleep,
@@ -16,7 +15,7 @@
  *   op_pacer_slack_ns()           current safety margin (env-overridable)
  *
  * Determinism note: this module changes the *timing* of co_switches, not
- * their count or order. See the plan's "Determinism contract" section.
+ * their count or order.
  */
 
 #ifndef OPENPETE_TIME_H

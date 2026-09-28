@@ -2,18 +2,12 @@
 //
 // Each feature (Hor+ widescreen, internal-resolution upscale, FPS unlock,
 // …) provides a `feature_module_t` and gets listed in the per-game
-// `feature_list.inc`. The registry walks that list at boot to apply
+// `feature_list.c`. The registry walks that list at boot to apply
 // command-line options and at every translated-function entry to
 // dispatch per-vaddr overrides.
 //
-// Per-vertex GTE hooks do NOT go through a vtable here — they're
-// `static inline` in per-feature headers (`<feature>_gte_inline.h`)
-// included directly from third_party/psxrecomp/runner/src/gte.cpp.
-// Indirect calls in the per-vertex hot path would regress determinism-
-// test runtime; inlines compile to byte-identical asm vs the open-coded
-// state today.
-//
-// See notes/plans/openpete-feature-modules.md.
+// Per-vertex GTE hooks do NOT go through a vtable here: an indirect call in
+// the per-vertex hot path costs more than the hook's inline body.
 
 #ifndef OPENPETE_FEATURE_REGISTRY_H
 #define OPENPETE_FEATURE_REGISTRY_H
@@ -53,10 +47,10 @@ typedef struct {
     const feature_dispatch_entry_t*   dispatch_table;  /* nullable; addr=0 terminates */
 } feature_module_t;
 
-/* Per-game feature list. Defined in games/<game>/features/feature_list.c
- * (which #includes feature_list.inc). The pointer array form lets us
- * add/remove features by editing one file without touching the registry
- * core. */
+/* Per-game feature list. Defined in games/<game>/feature_list.c, or in
+ * games/common/feature_list_none.c for a game with no modules. The pointer
+ * array form lets us add/remove features by editing one file without
+ * touching the registry core. */
 extern const feature_module_t* const openpete_features[];
 extern const size_t                  openpete_feature_count;
 

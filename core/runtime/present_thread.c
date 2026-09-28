@@ -318,10 +318,10 @@ static void wait_until_locked(op_time_t t)
         /* A condvar timeout is a coarse timer (a millisecond or more of
          * oversleep on Windows), so it covers only the bulk, and only when
          * there is bulk: with less than 4 ms left the whole wait goes to the
-         * hybrid sleep, which lands within tens of microseconds. Measured
-         * before this split: ~10 % of presents 1.8 ms late, each followed by
-         * one immediately -- the display saw pairs where the grid had two
-         * slots. */
+         * hybrid sleep, which lands within tens of microseconds. A condvar
+         * wait through the last 4 ms put ~10 % of presents 1.8 ms late, each
+         * followed by one immediately -- the display saw pairs where the
+         * grid had two slots. */
         if (left > 4000000) {
             SDL_WaitConditionTimeout(s_pt.cv, s_pt.mx, (Sint32)((left - 3000000) / 1000000));
             /* re-evaluate: a kick may have published an earlier target */
@@ -435,7 +435,8 @@ static op_time_t compose_guard_ns(void)
 }
 /** @brief Return the instant to present a scene aimed at target, a slot earlier plus the guard.
  *
- * The mutex is held (it reads the lattice fit). With slot <= 0 (no vsync, or
+ * Runs on the present thread, the only writer of the lattice fit, so it
+ * reads the fit with or without the mutex held. With slot <= 0 (no vsync, or
  * the lattice disabled) the result is the target itself. Otherwise the lead
  * is the fitted lattice period when the lattice is locked and slot when not,
  * so a locked and an unlocked thread use the same lead; the result is
@@ -450,7 +451,7 @@ static op_time_t compose_at_locked(op_time_t target, double slot)
      * guard. Unlocked, the target is some unknown phase of a refresh, and
      * a frame ready a slot early still takes the first vblank after it --
      * one per refresh, which is what the lattice is fitted from. A shorter
-     * lead there (0.8 ms was tried) is not enough for a heavy scene's
+     * lead there (0.8 ms) is not enough for a heavy scene's
      * compose, every frame then misses, and the lattice never locks. */
     const double period = s_lat.locked ? s_lat.period : slot;
     return target - (op_time_t)(period + 0.5) + compose_guard_ns();

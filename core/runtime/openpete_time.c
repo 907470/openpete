@@ -1,6 +1,5 @@
 /* openpete_time.c — high-resolution monotonic clock + hybrid waiter.
- * See openpete_time.h for API contract. Phase 0 of
- * notes/plans/openpete-frame-pacing.md. */
+ * See openpete_time.h for API contract. */
 
 /* Need Vista+ headers for GetTickCount64 + CreateWaitableTimerExW
  * declarations. MinGW-w64's <_mingw.h> pins _WIN32_WINNT on first
@@ -122,9 +121,10 @@ static HANDLE thread_timer(void) {
 /* Monotonicity guard. clock_gettime is monotonic by definition, but
  * QueryPerformanceCounter can — extremely rarely — go backwards by a few
  * ticks across cores in pathological cases. Keep the prior return and
- * clamp. Thread-local would be more correct, but openpete's pacer is
- * single-threaded and the worst this does in multi-threaded callers is
- * mask a tiny step backwards, which is harmless for pacing. */
+ * clamp. The variable is shared without synchronization by every thread
+ * that calls op_now (sim, present, host loop): the clamp orders calls on one
+ * thread, and across threads it can pass a step backwards of at most the
+ * clock's own skew, which is harmless for pacing. */
 static op_time_t s_last_now = 0;
 
 /** @brief Read OPENPETE_PACER_SLACK_US into s_slack_ns and s_slack_fixed.
@@ -398,8 +398,8 @@ static void sleep_until_win(op_time_t deadline_ns) {
     op_time_t delay_ns = deadline_ns - now;
     HANDLE tm = thread_timer();
     if (tm) {
-        /* SetWaitableTimerEx with negative due time = relative, in 100 ns
-         * units. Capped at INT64_MAX/2 to be safe. */
+        /* SetWaitableTimer with negative due time = relative, in 100 ns
+         * units. A delay under 100 ns returns at once. */
         LARGE_INTEGER due;
         int64_t hundreds = delay_ns / 100;
         if (hundreds < 1) return;
