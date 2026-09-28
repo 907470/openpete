@@ -6,8 +6,9 @@
  * gates) lives in core/input/host_rumble.c. This is the guest half: the
  * game's options menu carries a VIBRATION row backed by one enable flag, and
  * the flag is what decides whether the game bothers to write actuator bytes at
- * all. Presetting it is what lets a launch start with rumble off (or back on)
- * without a trip through the menu.
+ * all. A positive --vibration presets it on, so a launch starts with rumble
+ * enabled without a trip through the menu; --vibration 0 silences the motors
+ * host-side and writes no guest word.
  *
  * Same contract as the --sfx / --music slider presets: stamped at a tick
  * boundary, re-stamped over the clobbers the game does on its own, and

@@ -1,7 +1,7 @@
 // games/spyro-1/features/freecam.c — Spyro 1 descriptor for the debug free
 // camera (F). The drive, path and teleport bodies are shared
-// (games/common/freecam_game.c); this file holds the addresses and the three
-// game hooks.
+// (games/common/freecam_game.c); this file holds the addresses and the game
+// hooks.
 
 #include "freecam_game.h"
 #include "renderer/reextract.h"   /* terrain_native_topdown_pose / _sweep_pose */

@@ -243,7 +243,7 @@ static int SDLCALL woah_load_main(void* unused) {
     return 0;
 }
 
-/** @brief Starts the woah decode on a detached worker thread, once per session.
+/** @brief Starts the woah decode on a detached worker thread, once per process.
  *
  * Called each tick the title screen is resident; the title sequence runs
  * for seconds before substate 3 takes the combo. Does nothing without a disc
