@@ -229,15 +229,13 @@ static double interp_period_ns(op_time_t prev_ns, op_time_t curr_ns) {
      * measures a span at or below zero, and dividing by it turns the sub-tick
      * phase into a backward extrapolation of a forward motion. */
     if (p <= 0) return (double)g_openpete_tick_period_ns;
-    /* OPENPETE_INTERP_PERIOD_UNCAP=1: diagnostic only — restore the pre-cap
-     * behaviour (sweep across the full distinct-roll interval) to attribute
-     * cadence regressions on slow-rolling objects. */
+    /* OPENPETE_INTERP_PERIOD_UNCAP=1: diagnostic only; returns the uncapped
+     * span, so the sweep covers the full distinct-roll interval. */
     static int s_uncap = -1;
     if (s_uncap < 0) { const char* e = getenv("OPENPETE_INTERP_PERIOD_UNCAP"); s_uncap = (e && *e && *e != '0'); }
     if (s_uncap) return (double)p;
-    /* Cap at one WALL-time tick (g_openpete_tick_period_ns, --tick-scale
-     * aware) — the hardcoded NTSC constant made every sweep run
-     * 1/tick_scale× too fast under slow-motion and pin at the clamp. */
+    /* Cap at one wall-time tick (g_openpete_tick_period_ns, --tick-scale
+     * aware), so a sweep spans one scaled tick. */
     return (double)(p > g_openpete_tick_period_ns ? g_openpete_tick_period_ns : p);
 }
 
@@ -1553,11 +1551,8 @@ static int particle_slot_lerp(uint32_t pa, const uint8_t* gh, uint8_t* ph,
     memcpy(&cw1, o->curr + PART_POS_OFF, 4); memcpy(&cw2, o->curr + 0x08u, 4);
     int pX = (int16_t)(pw1 & 0xFFFF), pY = (int16_t)(pw1 >> 16), pZ = (int16_t)(pw2 & 0xFFFF);
     int cX = (int16_t)(cw1 & 0xFFFF), cY = (int16_t)(cw1 >> 16), cZ = (int16_t)(cw2 & 0xFFFF);
-    /* Positions are world/4 (int16) — the identity + teleport guards
-     * below are in world/4 too. History of the ceiling: 8000 (32000
-     * full-world, streaked visibly) → 1250 (matched the moby guards,
-     * still far above screen scale) → 300 (particle-physics scale;
-     * see the ceiling comment below). */
+    /* Positions are world/4 (int16); the identity and teleport guards
+     * below are in world/4 too. */
     double dX = cX - pX, dY = cY - pY, dZ = cZ - pZ;
     /* IDENTITY guard (slot reuse). The interp-objs table is keyed by slot
      * ADDRESS, so a slot a NEW particle respawns into within one tick — a
@@ -1567,29 +1562,26 @@ static int particle_slot_lerp(uint32_t pa, const uint8_t* gh, uint8_t* ph,
      * below only catches FAR reuses; a burst clustered near its emitter
      * reuses well within it. Detect identity from the particle header word:
      * m_Class (byte0) + sel/type (byte1) is the stable type, and m_Life
-     * (byte2) is an age counter that INCREMENTS every tick for a CONTINUING
-     * particle (measured across the run: outside spawn bursts 100% of
-     * have_prev particles have life strictly increasing; reuse — type change,
-     * life reset, or life held — appears only inside bursts). So lerp only a
-     * genuinely continuing particle; otherwise snap (present curr, no streak). */
+     * (byte2) is an age counter that increments each tick for a continuing
+     * particle and restarts when the slot is reused. A type change or a life
+     * decrease snaps (present curr, no streak); equal life is lerped, see
+     * below. */
     {
         int moving = (dX*dX + dY*dY + dZ*dZ > 4.0);
         uint32_t ph2, ch2; memcpy(&ph2, o->prev, 4); memcpy(&ch2, o->curr, 4);
         if ((ph2 & 0xFFFFu) != (ch2 & 0xFFFFu)) { pi[2]++; if (moving) pi[6]++; return 0; } /* m_Class/sel changed → reuse */
         uint8_t plife = (uint8_t)(ph2 >> 16), clife = (uint8_t)(ch2 >> 16);
         /* Life DECREASED → reset → slot reuse: snap. Life EQUAL is
-         * ambiguous: burst reuse (rare same-life coincidence) vs a
-         * PERSISTENT particle whose life byte stalls — the circling
-         * damage stars: 245-300 moving particles/s snapped here
-         * during the effect, stepping the orbit at the tick rate.
-         * Lerp stalled-life particles only within a
-         * TIGHT radius (300 world/4 per tick — orbiting stars move
-         * ~50-100; burst reuses jump farther or reset life). */
+         * ambiguous: a burst reuse with the same life, or a persistent
+         * particle whose life byte stalls (the circling damage stars).
+         * Snapping the latter steps its orbit at the tick rate, so equal
+         * life is lerped under the 300 world/4 per tick ceiling below:
+         * orbiting stars move ~50-100 per tick, burst reuses jump farther
+         * or reset life. */
         if (clife < plife) { pi[3]++; if (moving) pi[7]++; return 0; }
         pi[0]++; if (moving) pi[5]++;
     }
-    /* Teleport/reuse ceiling at particle-physics scale (was 1250
-     * == 5000 full-world, stalled-life class already at 300):
+    /* Teleport/reuse ceiling at particle-physics scale:
      * under runahead the pair can span two prediction BRANCHES,
      * whose pool churn differs — slot reuse across branches can
      * pass the class + life-increase tests (no same-timeline
