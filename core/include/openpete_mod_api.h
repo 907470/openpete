@@ -1043,50 +1043,134 @@ typedef struct openpete_mod_abi {
  * an odd address or a 32-bit access off a 4-byte boundary is a bus error
  * on the PSX and is not something the game's data does.
  * @{ */
+
+/** @brief Read an unsigned 32-bit value from guest address va.
+ *
+ * Returns 0 when api->guest(va) is NULL. Only the first byte of va is
+ * validated by guest() (a span of 1), so a 32-bit access starting in the last 3
+ * bytes of a region extends past its end.
+ * @param api the mod API table.
+ * @param va guest virtual address.
+ * @return the value, or 0 for an unmapped address. */
 static inline uint32_t op_read_u32(const openpete_mod_api_t* api, uint32_t va) {
     void* p = api->guest(va);
     return p ? *(uint32_t*)p : 0u;
 }
+/** @brief Write an unsigned 32-bit value to guest address va.
+ *
+ * Drops the write when api->guest(va) is NULL. Only the first byte of va is
+ * validated by guest() (a span of 1), so a 32-bit access starting in the last 3
+ * bytes of a region extends past its end.
+ * @param api the mod API table.
+ * @param va guest virtual address.
+ * @param v the value. */
 static inline void op_write_u32(const openpete_mod_api_t* api, uint32_t va,
                                 uint32_t v) {
     void* p = api->guest(va);
     if (p) *(uint32_t*)p = v;
 }
+/** @brief Read a signed 32-bit value from guest address va.
+ *
+ * The unsigned read of the same width reinterpreted as signed.
+ * @param api the mod API table.
+ * @param va guest virtual address.
+ * @return the value, or 0 for an unmapped address. */
 static inline int32_t op_read_s32(const openpete_mod_api_t* api, uint32_t va) {
     return (int32_t)op_read_u32(api, va);
 }
+/** @brief Write a signed 32-bit value to guest address va.
+ *
+ * The value is reinterpreted as unsigned and written by the unsigned write
+ * of the same width.
+ * @param api the mod API table.
+ * @param va guest virtual address.
+ * @param v the value. */
 static inline void op_write_s32(const openpete_mod_api_t* api, uint32_t va,
                                 int32_t v) {
     op_write_u32(api, va, (uint32_t)v);
 }
+/** @brief Read an unsigned 16-bit value from guest address va.
+ *
+ * Returns 0 when api->guest(va) is NULL. Only the first byte of va is
+ * validated by guest() (a span of 1), so a 16-bit access starting at the last
+ * byte of a region extends past its end.
+ * @param api the mod API table.
+ * @param va guest virtual address.
+ * @return the value, or 0 for an unmapped address. */
 static inline uint16_t op_read_u16(const openpete_mod_api_t* api, uint32_t va) {
     void* p = api->guest(va);
     return p ? *(uint16_t*)p : 0u;
 }
+/** @brief Write an unsigned 16-bit value to guest address va.
+ *
+ * Drops the write when api->guest(va) is NULL. Only the first byte of va is
+ * validated by guest() (a span of 1), so a 16-bit access starting at the last
+ * byte of a region extends past its end.
+ * @param api the mod API table.
+ * @param va guest virtual address.
+ * @param v the value. */
 static inline void op_write_u16(const openpete_mod_api_t* api, uint32_t va,
                                 uint16_t v) {
     void* p = api->guest(va);
     if (p) *(uint16_t*)p = v;
 }
+/** @brief Read a signed 16-bit value from guest address va.
+ *
+ * The unsigned read of the same width reinterpreted as signed.
+ * @param api the mod API table.
+ * @param va guest virtual address.
+ * @return the value, or 0 for an unmapped address. */
 static inline int16_t op_read_s16(const openpete_mod_api_t* api, uint32_t va) {
     return (int16_t)op_read_u16(api, va);
 }
+/** @brief Write a signed 16-bit value to guest address va.
+ *
+ * The value is reinterpreted as unsigned and written by the unsigned write
+ * of the same width.
+ * @param api the mod API table.
+ * @param va guest virtual address.
+ * @param v the value. */
 static inline void op_write_s16(const openpete_mod_api_t* api, uint32_t va,
                                 int16_t v) {
     op_write_u16(api, va, (uint16_t)v);
 }
+/** @brief Read an unsigned 8-bit value from guest address va.
+ *
+ * Returns 0 when api->guest(va) is NULL.
+ * @param api the mod API table.
+ * @param va guest virtual address.
+ * @return the value, or 0 for an unmapped address. */
 static inline uint8_t op_read_u8(const openpete_mod_api_t* api, uint32_t va) {
     void* p = api->guest(va);
     return p ? *(uint8_t*)p : 0u;
 }
+/** @brief Write an unsigned 8-bit value to guest address va.
+ *
+ * Drops the write when api->guest(va) is NULL.
+ * @param api the mod API table.
+ * @param va guest virtual address.
+ * @param v the value. */
 static inline void op_write_u8(const openpete_mod_api_t* api, uint32_t va,
                                uint8_t v) {
     void* p = api->guest(va);
     if (p) *(uint8_t*)p = v;
 }
+/** @brief Read a signed 8-bit value from guest address va.
+ *
+ * The unsigned read of the same width reinterpreted as signed.
+ * @param api the mod API table.
+ * @param va guest virtual address.
+ * @return the value, or 0 for an unmapped address. */
 static inline int8_t op_read_s8(const openpete_mod_api_t* api, uint32_t va) {
     return (int8_t)op_read_u8(api, va);
 }
+/** @brief Write a signed 8-bit value to guest address va.
+ *
+ * The value is reinterpreted as unsigned and written by the unsigned write
+ * of the same width.
+ * @param api the mod API table.
+ * @param va guest virtual address.
+ * @param v the value. */
 static inline void op_write_s8(const openpete_mod_api_t* api, uint32_t va,
                                int8_t v) {
     op_write_u8(api, va, (uint8_t)v);

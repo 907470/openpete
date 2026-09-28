@@ -104,6 +104,13 @@ typedef struct {
     op_time_t acc;     /* accrued remainder numerator, 0 <= acc < den */
 } op_deadline_t;
 
+/** @brief Return the greatest common divisor of a and b, or 1 when it is 0.
+ *
+ * Euclid's algorithm on the values as given; negative operands are not
+ * normalized.
+ * @param a first operand.
+ * @param b second operand.
+ * @return the divisor, at least 1 for non-negative operands. */
 static inline op_time_t op_gcd(op_time_t a, op_time_t b) {
     while (b) { const op_time_t t = a % b; a = b; b = t; }
     return a ? a : 1;
@@ -184,6 +191,12 @@ static inline op_time_t op_period_ns(op_period_t p) {
     return p.whole + (p.rem * 2 >= p.den ? 1 : 0);
 }
 
+/** @brief Return a period's rate in Hz as a double.
+ *
+ * Computes 1e9 / (whole + rem/den) in floating point, for logs and display;
+ * not for stepping deadlines.
+ * @param p the period, nonzero.
+ * @return the rate in Hz. */
 static inline double op_period_hz(op_period_t p) {
     return (double)OP_NS_PER_SEC * (double)p.den
          / ((double)p.whole * (double)p.den + (double)p.rem);

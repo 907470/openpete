@@ -386,6 +386,13 @@ int texture_pack_grade_fit(const texture_pack_id *id, const texture_pack_repl *r
  * mod asset root registered so far. Called from
  * openpete_vram_install_ops. */
 void texture_pack_init(void);
+/** @brief Stop the decode worker, free decoded pixels and empty the registry.
+ *
+ * Dumps through texture_pack_debug_dump when OPENPETE_TEXPACK_DUMP_REGISTRY
+ * is set. Joins the decode worker, frees every entry's pixels, clears the
+ * pack table and the registry, and clears the initialized state so a later
+ * texture_pack_init rescans. Takes no registry lock: the caller ensures no
+ * thread is resolving or matching. */
 void texture_pack_shutdown(void);
 
 /** @brief Print one line per live registry entry, then a live/slot/generation summary, to stderr.

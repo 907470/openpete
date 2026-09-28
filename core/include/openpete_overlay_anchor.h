@@ -56,9 +56,19 @@ int openpete_anchor_parse(const char *s);
 static inline int openpete_anchor_is_bottom(int a) {
     return a >= OPENPETE_ANCHOR_BOTTOM_LEFT;
 }
+/** @brief Return nonzero when anchor a sits on the right edge.
+ *
+ * True for TOP_RIGHT and BOTTOM_RIGHT.
+ * @param a an openpete_anchor_t value.
+ * @return nonzero for a right anchor. */
 static inline int openpete_anchor_is_right(int a) {
     return a == OPENPETE_ANCHOR_TOP_RIGHT || a == OPENPETE_ANCHOR_BOTTOM_RIGHT;
 }
+/** @brief Return nonzero when anchor a is horizontally centred.
+ *
+ * True for TOP_CENTER and BOTTOM_CENTER.
+ * @param a an openpete_anchor_t value.
+ * @return nonzero for a centre anchor. */
 static inline int openpete_anchor_is_center(int a) {
     return a == OPENPETE_ANCHOR_TOP_CENTER || a == OPENPETE_ANCHOR_BOTTOM_CENTER;
 }

@@ -35,6 +35,10 @@
  * which may run on a present thread. One recursive mutex around every
  * public entry that touches them; uncontended except at upload time. */
 static SDL_Mutex *s_reg_mx;
+/** @brief Return the registry mutex, creating it on first use.
+ *
+ * The lazy creation is not synchronized: two threads making the first call
+ * concurrently can each create a mutex. */
 static SDL_Mutex *reg_mx(void) { if (!s_reg_mx) s_reg_mx = SDL_CreateMutex(); return s_reg_mx; }
 
 #define XXH_INLINE_ALL
@@ -109,9 +113,11 @@ typedef struct {
  * mod source appends on the sim thread, and a block never moves. */
 static mod_cvec s_pack;   /* tp_pack_entry */
 
+/** @brief Return pack entry i, or NULL when i is outside [0, pack_count()). */
 static tp_pack_entry* pack_at(int i) {
     return (tp_pack_entry*)mod_cvec_at(&s_pack, (size_t)i);
 }
+/** @brief Return the number of entries in the pack table. */
 static int pack_count(void) { return (int)mod_cvec_count(&s_pack); }
 
 /** @brief Append a pack entry and return it, or return NULL and log to stderr when the allocation fails.
@@ -144,9 +150,11 @@ typedef struct {
  * source's dir while a late root appends. */
 static mod_cvec s_srcs;   /* tp_source */
 
+/** @brief Return pack source i, or NULL when i is outside [0, src_count()). */
 static tp_source* src_at(int i) {
     return (tp_source*)mod_cvec_at(&s_srcs, (size_t)i);
 }
+/** @brief Return the number of pack sources. */
 static int src_count(void) { return (int)mod_cvec_count(&s_srcs); }
 
 /** @brief Append a pack source and return it, or return NULL and log to stderr when the allocation fails.
@@ -415,6 +423,9 @@ static struct {
     int            budget_logged;
 } s_dec;
 
+/** @brief Return nonzero when the decode ring holds no entry.
+ *
+ * The caller holds s_dec.mu. */
 static int tp_q_empty(void) { return s_dec.head == s_dec.tail; }
 
 /** @brief Push pack entry ei onto the decode ring, at the head when front is set; refuse it when the ring is full.
@@ -435,6 +446,14 @@ static int tp_q_push(int ei, int front) {
     return 1;
 }
 
+/** @brief Decode pack entry ei's PNG to RGBA8 and publish it as READY.
+ *
+ * Reads `<source dir>/<name>` (with `.png` appended for a symbolic entry)
+ * through stb_image. A failed load sets load_failed and the FAILED state.
+ * On success it stores w, h and px, issues a release barrier, then sets
+ * READY, so a reader that sees READY sees all three, and adds the decoded
+ * byte count to s_dec.resident and one to pf_done. Runs on the decode worker,
+ * or on the requesting thread when no worker could start. */
 static void tp_decode_one(int ei) {
     tp_pack_entry *e = pack_at(ei);
     char path[704];
@@ -513,6 +532,11 @@ static int SDLCALL tp_decode_main(void *unused) {
     }
 }
 
+/** @brief Start the decode worker thread if it is not running.
+ *
+ * Creates the worker's mutex and condition variable on first use and clears
+ * the quit flag. Leaves s_dec.th NULL when creation fails, which makes
+ * tp_decode_request decode inline. */
 static void tp_decode_start(void) {
     if (s_dec.th) return;
     if (!s_dec.mu) s_dec.mu = SDL_CreateMutex();
@@ -535,6 +559,12 @@ static void tp_decode_quiesce(void) {
     SDL_UnlockMutex(s_dec.mu);
 }
 
+/** @brief Stop the decode worker, discarding queued entries, and join it.
+ *
+ * Sets quit, empties the ring and wakes the worker; a decode in flight
+ * finishes first. Entries dropped from the ring keep their QUEUED state, and
+ * s_dec.resident and pf_outstanding are not reset. A no-op when no worker
+ * runs. */
 static void tp_decode_stop(void) {
     if (!s_dec.th) return;
     SDL_LockMutex(s_dec.mu);
@@ -611,6 +641,16 @@ static void tp_decode_prefetch_all(void) {
                 n, n == 1 ? "" : "s");
 }
 
+/** @brief Rebuild the replacement pack index from every source directory.
+ *
+ * Quiesces the decode worker, clears the pack table and source table, then
+ * scans the base directory (--texpack-dir, else OPENPETE_TEXPACK_DIR, else
+ * `<exe dir>/assets/textures`), the user pack directory when neither override
+ * is set and it differs from the base, and every mod asset root registered
+ * so far. Decoded pixels of the cleared entries are not freed here; the
+ * caller must have none. Sets s_repl_active from the pack count and starts
+ * the prefetch. Returns early, leaving the pack inactive, when the exe base
+ * path is unavailable or the base source cannot be added. */
 static void tp_repl_scan(void)
 {
     /* The worker indexes s_pack; this rebuilds it. */
@@ -678,6 +718,12 @@ void texture_pack_init(void)
     tp_repl_scan();
 }
 
+/** @brief Body of texture_pack_on_restore; the caller holds the registry lock.
+ *
+ * Snapshots the PsyX VRAM mirror and re-hashes every live entry's rect
+ * against its upload hash; a mismatch or an out-of-VRAM rect kills the
+ * entry. A failed snapshot kills every live entry. Bumps s_gen when any
+ * entry died and logs the counts to stderr. */
 static void texture_pack_on_restore_locked(void) {
     if (!s_inited) return;
     unsigned bytes = PsyX_VRAM_GetSize();
@@ -747,12 +793,19 @@ int texture_pack_replacements_active(void)
     return s_repl_active;
 }
 
+/** @brief Return nonzero when live registry entry e intersects the rect (x, y, w, h). */
 static int tp_overlap(const tp_entry *e, int x, int y, int w, int h)
 {
     return e->alive && x < e->x + e->w && e->x < x + w &&
                        y < e->y + e->h && e->y < y + h;
 }
 
+/** @brief Return a registry slot: the first dead one, else a fresh one, else slot 0.
+ *
+ * A fresh slot extends the high-water mark s_ent_n up to TP_MAX_ENTRIES.
+ * With the pool full it returns &s_ent[0] whether or not that entry is
+ * alive, so the caller overwrites a live identity, and logs once to
+ * stderr. The returned slot is not initialized. */
 static tp_entry *tp_alloc(void)
 {
     for (int i = 0; i < s_ent_n; i++) if (!s_ent[i].alive) return &s_ent[i];
@@ -764,6 +817,14 @@ static tp_entry *tp_alloc(void)
     return &s_ent[0];
 }
 
+/** @brief Body of texture_pack_on_load; the caller holds the registry lock.
+ *
+ * Ignores an empty rect or a NULL source. Bumps s_gen. An entry the rect
+ * overlaps dies unless its rect is identical, in which case it is reused in
+ * place; otherwise a slot comes from tp_alloc. Hashes the source rows
+ * (through src_stride) with XXH3-64 into thash, then binds the entry to an
+ * annotation on the same rect: an armed annotation takes this hash, and an
+ * annotation whose hash equals it names the entry. */
 static void texture_pack_on_load_locked(int x, int y, int w, int h,
                           const uint16_t *src, int src_stride) {
     if (w <= 0 || h <= 0 || !src) return;
@@ -807,6 +868,13 @@ void texture_pack_on_load(int x, int y, int w, int h,
                           const uint16_t *src, int src_stride) { SDL_LockMutex(reg_mx()); texture_pack_on_load_locked(x, y, w, h, src, src_stride); SDL_UnlockMutex(s_reg_mx); }
 
 
+/** @brief Body of texture_pack_on_move; the caller holds the registry lock.
+ *
+ * Ignores an empty rect. Bumps s_gen. Entries overlapping the destination
+ * die, then each live entry contained in the source rect is copied to the
+ * translated position in a slot from tp_alloc. The walk stops at the entry
+ * count taken before the copies, but a copy placed in a reused dead slot
+ * below that count is walked as well. */
 static void texture_pack_on_move_locked(int src_x, int src_y, int w, int h,
                           int dst_x, int dst_y) {
     if (w <= 0 || h <= 0) return;
@@ -833,6 +901,10 @@ void texture_pack_on_move(int src_x, int src_y, int w, int h,
                           int dst_x, int dst_y) { SDL_LockMutex(reg_mx()); texture_pack_on_move_locked(src_x, src_y, w, h, dst_x, dst_y); SDL_UnlockMutex(s_reg_mx); }
 
 
+/** @brief Body of texture_pack_on_clear; the caller holds the registry lock.
+ *
+ * Ignores an empty rect. Bumps s_gen and kills every entry the rect
+ * overlaps. */
 static void texture_pack_on_clear_locked(int x, int y, int w, int h) {
     if (w <= 0 || h <= 0) return;
     s_gen++;
@@ -842,6 +914,12 @@ static void texture_pack_on_clear_locked(int x, int y, int w, int h) {
 void texture_pack_on_clear(int x, int y, int w, int h) { SDL_LockMutex(reg_mx()); texture_pack_on_clear_locked(x, y, w, h); SDL_UnlockMutex(s_reg_mx); }
 
 
+/** @brief Body of texture_pack_annotate; the caller holds the registry lock.
+ *
+ * Appends an annotation (dropped silently at TP_MAX_ANNOT) that keeps the
+ * name pointer. Every live entry with exactly this rect supplies the hash
+ * and takes the name; with none live the annotation stays armed for the
+ * next upload on the rect. Logs which case applied to stderr. */
 static void texture_pack_annotate_locked(int x, int y, int w, int h, const char *name) {
     if (s_annot_n >= TP_MAX_ANNOT) return;
     tp_annot *a = &s_annot[s_annot_n++];
@@ -901,6 +979,14 @@ static uint64_t tp_clut_hash(int bpp, int clut_x, int clut_y)
     return XXH3_64bits(clut, (bpp == 8 ? 256 : 16) * 2);
 }
 
+/** @brief Body of texture_pack_resolve; the caller holds the registry lock.
+ *
+ * Returns 0 before init or for an inverted box. Otherwise it looks up a
+ * direct-mapped cache slot keyed on the packed material and box, valid for
+ * the current s_gen, including negative results. On a miss it maps the box
+ * to VRAM halfword columns by bpp, finds a live entry containing them
+ * (tp_cover), and fills out from that entry's hash, the CLUT hash and the
+ * box relative to the upload origin. */
 static int texture_pack_resolve_locked(int tpage_x, int tpage_y, int clut_x, int clut_y,
                          int bpp, int u0, int v0, int u1, int v1,
                          texture_pack_id *out) {
@@ -1047,6 +1133,11 @@ static int texture_pack_match_locked(const texture_pack_id *id, texture_pack_rep
 int texture_pack_match(const texture_pack_id *id, texture_pack_repl *out) { SDL_LockMutex(reg_mx()); int r_ = texture_pack_match_locked(id, out); SDL_UnlockMutex(s_reg_mx); return r_; }
 
 
+/** @brief Body of texture_pack_overlaps; the caller holds the registry lock.
+ *
+ * Returns 0 for a NULL id or an inactive pack. Otherwise it returns 1 when
+ * an enabled symbolic file has the id's asset name, or an enabled hash file
+ * matches thash, bpp and phash with a box that intersects the id's box. */
 static int texture_pack_overlaps_locked(const texture_pack_id *id) {
     if (!id) return 0;
     tp_poll_modset(); /* a late root / toggle can activate the pack */
@@ -1133,6 +1224,20 @@ typedef struct {
 #define TP_FIT_SLOTS 512
 static tp_fit_slot s_fit[TP_FIT_SLOTS];
 
+/** @brief Return the 16-bit VRAM word a texel (u, v) of a texture page samples.
+ *
+ * 16bpp reads the page word directly; 8bpp and 4bpp unpack the index from
+ * the page word and read the CLUT entry at (clut_x + index, clut_y). Page
+ * row and column wrap at 512 and 1024. The CLUT address is not wrapped.
+ * @param vr VRAM model, OPENPETE_VRAM_W halfwords per row.
+ * @param tpage_x Page origin X in halfwords.
+ * @param tpage_y Page origin Y.
+ * @param clut_x CLUT X in halfwords.
+ * @param clut_y CLUT row.
+ * @param bpp 4, 8 or 16.
+ * @param u Texel X within the page.
+ * @param v Texel Y within the page.
+ * @return The texel's 15-bit colour word. */
 static uint16_t tp_vram_texel(const uint16_t *vr, int tpage_x, int tpage_y,
                               int clut_x, int clut_y, int bpp, int u, int v)
 {
@@ -1241,6 +1346,9 @@ static tp_census_ent *s_census;
 static int s_census_on = -1;
 static int s_census_full;
 
+/** @brief Return the name of scene category c, or a placeholder outside the table.
+ *
+ * The placeholder is the string "?". */
 static const char *tp_cat_name(int c)
 {
     static const char *n[] = { "WORLD", "ACTOR", "HUD", "PLAYER", "OVERLAY",
@@ -1265,6 +1373,13 @@ static uint64_t tp_box_key(const tp_census_ent *e)
                                             (e->bw << 26) ^ e->bh ^ e->bpp) << 1);
 }
 
+/** @brief Print the category-census summary to stderr; registered with atexit.
+ *
+ * Reports the identity count, per-category identity and draw counts, the
+ * identities drawn under more than one category or tag (first 20 listed),
+ * and the CLUT fan-out: distinct palettes per texel box, with the first 20
+ * boxes that have more than one. Does nothing when the census table was
+ * never allocated. */
 static void tp_census_report(void)
 {
     if (!s_census) return;

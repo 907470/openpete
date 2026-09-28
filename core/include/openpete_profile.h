@@ -186,8 +186,18 @@ void op_prof_func(int name_id, uint32_t addr, uint64_t calls,
  * Usage: OP_PROF_SCOPE("compose.qsort"); at the top of a block; the span ends
  * when the block exits. The name is interned once (function-static cache). */
 #if defined(__GNUC__) || defined(__clang__)
+/** @brief Cleanup handler of OP_PROF_SCOPE: close the span when it was opened.
+ *
+ * Runs when the scope's block exits, through the cleanup attribute.
+ * @param began Points to the scope's flag, nonzero once op_prof_begin ran. */
 static inline void op_prof__scope_cleanup(int* began) { if (*began) op_prof_end(); }
 typedef struct { int name_id; uint64_t t0_us; } op_prof_accum_guard;
+/** @brief Cleanup handler of OP_PROF_ACCUM_SCOPE: add the elapsed time to the scope's bucket.
+ *
+ * Runs when the scope's block exits, through the cleanup attribute. Adds
+ * the microseconds since g->t0_us to bucket g->name_id with op_prof_accum;
+ * a negative name_id, the value while the profiler is off, adds nothing.
+ * @param g Points to the scope's guard. */
 static inline void op_prof__accum_cleanup(op_prof_accum_guard* g) {
     if (g->name_id >= 0) op_prof_accum(g->name_id, op_prof_now_us() - g->t0_us);
 }
