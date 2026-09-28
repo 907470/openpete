@@ -12398,12 +12398,6 @@ int openpete_native_perf_anchor(void) { return s_perf_anchor; }
 static openpete_anchor_ledger_t s_anchor_ledger;
 static float s_perf_ox, s_perf_oy;   /* the perf block's placed top-left */
 
-/* Resolve where every anchored chrome block sits THIS present. Runs once, in
- * the per-present resource pass before ensure_ovl_ss, so the composite quads
- * are built against the placement they will actually be drawn at. Claim order
- * is the policy: the persistent perf block first, then the OSD's toasts, so a
- * shared corner pushes the transient thing out of the way of the permanent
- * one rather than the reverse. */
 /** @brief Round an overlay-space length or offset to a whole output pixel.
  *
  * Overlay-space values are in units of the window height, so the value is
