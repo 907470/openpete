@@ -6107,7 +6107,7 @@ static int tgpu_emit_face_tri(tgpu_buf* buf, int arena, int ab, int with_var,
 /** @brief Hashes a sector's live colour arrays with FNV-1a, the liveness test for its baked colours.
  *
  * Covers the LP colours and the HP near and far colours, read through
- * openpete_subtick_host_ptr.
+ * openpete_subtick_host_span.
  * @param SC The decoded sector.
  * @param out Receives the hash.
  * @return 0, or -1 when a range has no host mapping (the caller claims the
@@ -7195,7 +7195,7 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
 /** @brief Formats one per-arena census column in OPTC_ARENA_* order.
  *
  * Writes "n0,n1,..." or, with den, "n0/d0,n1/d1,..."; output that would
- * overflow is cut at the last whole entry.
+ * overflow is truncated to cap - 1 bytes, possibly inside an entry.
  * @param out Receives the NUL-terminated column.
  * @param cap The capacity of out in bytes.
  * @param num The per-arena numerators.
