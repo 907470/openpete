@@ -91,6 +91,10 @@ static const struct { const char* label; float wh; } s_aspect[] = {
 #define FOV_MAX 120
 #define FOV_STEP 5
 #define N_FOV (1 + (FOV_MAX - FOV_MIN) / FOV_STEP)
+/** @brief Map an FOV ladder index to the vertical field of view in degrees.
+ *
+ * @param idx The ladder index; index 0 or below selects the game's projection.
+ * @return 0 for the game's projection, else FOV_MIN + (idx - 1) * FOV_STEP. */
 static float fov_val(int idx) { return idx <= 0 ? 0.0f : (float)(FOV_MIN + (idx - 1) * FOV_STEP); }
 
 /* Ladder stops at OPENPETE_SSAA_MAX — 8X/16X ask for more render-target VRAM
@@ -200,6 +204,14 @@ static int pixel_idx_from_live(void) {
     return nearest_idx(s_pix_vals, N_PIX, openpete_native_get_raster_quantize());
 }
 
+/** @brief Fill the FPS row's ladder from the monitor refresh rate.
+ *
+ * The ladder is 30, 60, then every multiple of 60 below the refresh, then the
+ * refresh itself when it is above 60 and not already the last entry, then the
+ * FPS_UNLIMITED sentinel. A refresh below 60 is treated as 60. Entries stop at
+ * the capacity of s_fps_vals, so the sentinel is dropped when the array is
+ * full. Sets s_fps_count.
+ * @param refresh The monitor refresh in Hz. */
 static void build_fps_list(int refresh) {
     const int cap = (int)(sizeof(s_fps_vals) / sizeof(s_fps_vals[0]));
     if (refresh < 60) refresh = 60;   /* sane floor / unknown */
@@ -306,6 +318,9 @@ static void notify_row(int row) {
     else                 openpete_osd_notify("host", kb, 0, "%s", label);
 }
 
+/** @brief Log the cursor row's label and value under the "menu" channel.
+ *
+ * @param what The event name printed before the row, such as "opened". */
 static void log_state(const char* what) {
     char vb[16];
     OPL_INFO_F("menu", "%s: [%s] = %s", what,
@@ -456,6 +471,10 @@ static uint64_t s_m_press[OPENPETE_MOUSE_BUTTONS];
 static int64_t  s_m_wheel;
 static float    s_m_px = -1.0f, s_m_py = -1.0f;
 
+/** @brief Set the press, wheel, and position markers to the current mouse state.
+ *
+ * Presses and wheel motion that happened before the call are then not counted
+ * by the next openpete_menu_mouse_poll, and a pointer at rest is not a move. */
 static void menu_mouse_snap(void) {
     for (int b = 0; b < OPENPETE_MOUSE_BUTTONS; b++)
         s_m_press[b] = openpete_host_mouse_press_total(b);
@@ -467,6 +486,11 @@ static void menu_mouse_snap(void) {
     s_m_px = st.px; s_m_py = st.py;
 }
 
+/** @brief Convert a wheel total to whole notches, truncating toward zero.
+ *
+ * A notch is OPENPETE_MOUSE_WHEEL_UNIT wheel units.
+ * @param total The signed wheel total.
+ * @return The notch count, negative for a negative total. */
 static int64_t wheel_notches(int64_t total) {
     const int64_t u = OPENPETE_MOUSE_WHEEL_UNIT;
     return total >= 0 ? total / u : -((-total + u - 1) / u);

@@ -53,10 +53,33 @@ extern "C" {
  * back on. While off, openpete_osd_notify posts nothing.
  * @param on Non-zero enables. */
 void     openpete_osd_set_enabled(int on);
+
+/** @brief Report whether notifications are on.
+ *
+ * @return 1 when on, else 0. */
 int      openpete_osd_enabled(void);
-void     openpete_osd_set_anchor(int anchor);       /* openpete_anchor_t */
+
+/** @brief Set the screen corner the toast stack anchors to.
+ *
+ * @param anchor An openpete_anchor_t value; a value outside
+ *        [0, OPENPETE_ANCHOR_COUNT) leaves the anchor unchanged. */
+void     openpete_osd_set_anchor(int anchor);
+
+/** @brief Read the anchor the toast stack uses.
+ *
+ * @return An openpete_anchor_t value. */
 int      openpete_osd_anchor(void);
+
+/** @brief Set the hold a toast takes when its notify call passes no timeout.
+ *
+ * A value above OPENPETE_OSD_TIMEOUT_MAX_MS is clamped to it; 0 leaves the
+ * default unchanged.
+ * @param ms The hold in milliseconds. */
 void     openpete_osd_set_default_timeout_ms(uint32_t ms);
+
+/** @brief Read the hold a toast takes when its notify call passes no timeout.
+ *
+ * @return The hold in milliseconds; 3000 until set. */
 uint32_t openpete_osd_default_timeout_ms(void);
 
 /* ---- posting ------------------------------------------------------------ */
@@ -110,24 +133,29 @@ typedef struct {
     float    y;       /* eased stack offset from the anchor edge, overlay u */
 } openpete_osd_view_t;
 
-/* Advance the state machine to `now` and report what to draw.
- *
- * `ready` lists the toast ids the CURRENT published geometry actually covers,
- * with the on-screen height of each box (overlay units) — the heights are what
- * the stack glide eases over. A toast whose id is absent has no geometry yet:
- * it is skipped entirely (drawing a slot that holds another toast's glyphs is
- * the failure this list exists to prevent) and its timer does not start. A
- * toast's ttl therefore begins on its first present WITH GEOMETRY, not at
- * notify() — an early toast, posted before the glyph font has ever cached, is
- * late, never lost.
- *
- * Expired toasts are retired here. Returns the number of views written, in the
- * same oldest-first order, and only for ids present in `ready`. */
 typedef struct {
     uint32_t id;
     float    box_h;
 } openpete_osd_ready_t;
 
+/** @brief Advance the toast state machine to a clock reading and report what to draw.
+ *
+ * The ready list names the toast ids the current published geometry covers,
+ * with the on-screen height of each box in overlay units; the heights are what
+ * the stack glide eases over. A toast whose id is absent has no geometry yet:
+ * it is skipped, so a slot holding another toast's glyphs is never drawn, and
+ * its timer does not start. A toast's hold therefore begins at its first
+ * present with geometry, not at openpete_osd_notify. Also refills the
+ * rate-limit buckets and retires expired toasts. A first call, or a clock
+ * reading not after the previous one, advances no rate-based state.
+ * @param now The present clock reading.
+ * @param ready The toast ids with geometry.
+ * @param n_ready The length of @p ready.
+ * @param out Receives one view per drawn toast, oldest first, only for ids
+ *        present in @p ready.
+ * @param cap Capacity of @p out.
+ * @return The count of views written; 0 when @p out is NULL or @p cap is 0 or
+ *         less. */
 int openpete_osd_present_update(op_time_t now,
                                 const openpete_osd_ready_t *ready, int n_ready,
                                 openpete_osd_view_t *out, int cap);

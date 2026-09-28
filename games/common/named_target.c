@@ -6,11 +6,21 @@
 #include <stdlib.h>
 #include <string.h>
 
+/** @brief Read the name field of a table entry.
+ *
+ * @param t The table.
+ * @param i The entry index, below t->count.
+ * @return The entry's name string. */
 static const char* nt_name(const named_target_table_t* t, size_t i) {
     const char* e = (const char*)t->base + i * t->stride;
     return *(const char* const*)(const void*)(e + t->name_off);
 }
 
+/** @brief Read the id field of a table entry.
+ *
+ * @param t The table.
+ * @param i The entry index, below t->count.
+ * @return The entry's id. */
 static int nt_id(const named_target_table_t* t, size_t i) {
     const char* e = (const char*)t->base + i * t->stride;
     return *(const int*)(const void*)(e + t->id_off);
@@ -23,6 +33,11 @@ void named_target_print(const char* kind, const named_target_table_t* tbl) {
         fprintf(stderr, "  %-18s (%d)\n", nt_name(tbl, i), nt_id(tbl, i));
 }
 
+/** @brief Find a name's id in a table by exact string match.
+ *
+ * @param t The table; NULL is an empty table.
+ * @param norm The normalised name.
+ * @return The id of the first entry with that name; -1 when none matches. */
 static int nt_lookup(const named_target_table_t* t, const char* norm) {
     size_t i;
     if (!t) return -1;
@@ -31,6 +46,11 @@ static int nt_lookup(const named_target_table_t* t, const char* norm) {
     return -1;
 }
 
+/** @brief Report whether a table holds an id.
+ *
+ * @param t The table.
+ * @param id The id.
+ * @return 1 when an entry carries the id, else 0. */
 static int nt_has_id(const named_target_table_t* t, int id) {
     size_t i;
     for (i = 0; i < t->count; i++)

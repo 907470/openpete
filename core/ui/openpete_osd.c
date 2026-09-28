@@ -266,6 +266,12 @@ static float smoothstep(float x) {
     return x * x * (3.0f - 2.0f * x);
 }
 
+/** @brief Look up a toast's box height in the ready list.
+ *
+ * @param r The ready list.
+ * @param n The length of @p r.
+ * @param id The toast id.
+ * @return The box height in overlay units; -1 when the id is absent. */
 static float ready_height(const openpete_osd_ready_t *r, int n, uint32_t id) {
     for (int i = 0; i < n; i++) if (r[i].id == id) return r[i].box_h;
     return -1.0f;   /* no geometry published for this toast yet */

@@ -14,6 +14,11 @@ const char *const openpete_anchor_names[OPENPETE_ANCHOR_COUNT] = {
     "bottom-left", "bottom-center", "bottom-right",
 };
 
+/** @brief Fold a character to the spelling of an anchor name.
+ *
+ * @param c The character.
+ * @return c lower-cased when it is an ASCII capital, with an underscore
+ *         replaced by a hyphen. */
 static char lower_dash(char c) {
     if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
     return (c == '_') ? '-' : c;

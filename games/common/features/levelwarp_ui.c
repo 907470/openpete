@@ -31,6 +31,10 @@ static int s_pending     = 0;
 static int s_pending_id  = 0;
 static int s_route       = LEVELWARP_ROUTE_NONE;
 
+/** @brief Find a level id's index in the descriptor's level table.
+ *
+ * @param id The level id.
+ * @return The table index; -1 when the id is not in the table. */
 static int level_index_for_id(int id) {
     int i;
     for (i = 0; i < s_desc->count; i++)
@@ -46,6 +50,11 @@ static int level_index_for_id(int id) {
  * @return The index into the descriptor's level table. */
 static double sel_get(const knob_desc_t* k) { (void)k; return (double)s_sel; }
 
+/** @brief Select a dropdown entry and stop the dropdown following the player's level.
+ *
+ * @param k The row; unused.
+ * @param v The index into the descriptor's level table.
+ * @return 0 when applied; -1 when the index is outside the table. */
 static int sel_set(knob_desc_t* k, double v) {
     int idx = (int)v;
     (void)k;
@@ -66,11 +75,24 @@ static int warp_busy(void) {
     return s_pending || (s_desc->in_flight && s_desc->in_flight());
 }
 
+/** @brief Gate the Jump button on a usable route and no warp in progress.
+ *
+ * @param k The row; unused.
+ * @return 1 when the cached route is not none and no warp is queued or in
+ *         flight, else 0. */
 static double go_ready(const knob_desc_t* k) {
     (void)k;
     return (s_route != LEVELWARP_ROUTE_NONE && !warp_busy()) ? 1.0 : 0.0;
 }
 
+/** @brief Queue a warp to the selected level when the Jump button is pressed.
+ *
+ * Snapshots the selected level id, since the dropdown can move before the tick
+ * drains the queue.
+ * @param k The row; unused.
+ * @param v The press value; unused.
+ * @return 0 when queued; -1 when the route is none or a warp is queued or in
+ *         flight. */
 static int go_fire(knob_desc_t* k, double v) {
     (void)k;
     (void)v;
@@ -80,6 +102,14 @@ static int go_fire(knob_desc_t* k, double v) {
     return 0;
 }
 
+/** @brief Write the status text shown beside the Jump button.
+ *
+ * Reads queued while a click waits; else the descriptor's in-flight status
+ * when it supplies one; else a note for the title route, an empty string for
+ * the level route, freecam active, or not in a level.
+ * @param k The row; unused.
+ * @param buf Receives the text.
+ * @param cap Size of @p buf in bytes. */
 static void go_status(const knob_desc_t* k, char* buf, size_t cap) {
     (void)k;
     if (s_pending)                              snprintf(buf, cap, "queued");
@@ -91,6 +121,7 @@ static void go_status(const knob_desc_t* k, char* buf, size_t cap) {
     else                                        snprintf(buf, cap, "not in a level");
 }
 
+/** @brief Add the dropdown and Jump rows to the dev overlay's Gameplay section. */
 static void register_rows(void) {
     knob_desc_t row;
 
@@ -141,6 +172,12 @@ static int s_test_id    = 0;
 
 extern unsigned openpete_frame;
 
+/** @brief Arm the scripted warp from OPENPETE_LEVELWARP_TEST.
+ *
+ * The variable reads <vbl>:<level>. The level text after the colon is
+ * resolved through the callback, truncated to 31 bytes; an unset or malformed
+ * variable, or a level that resolves negative, leaves the trigger disarmed.
+ * @param resolve The level-argument resolver. */
 static void test_trigger_init(int (*resolve)(const char* arg)) {
     const char* spec = getenv("OPENPETE_LEVELWARP_TEST");
     const char* colon;
@@ -160,6 +197,9 @@ static void test_trigger_init(int (*resolve)(const char* arg)) {
                s_test_id, s_test_frame);
 }
 
+/** @brief Queue the scripted warp once the frame counter reaches its trigger.
+ *
+ * Fires once, then disarms. */
 static void test_trigger_tick(void) {
     if (s_test_frame < 0 || (int)openpete_frame < s_test_frame) return;
     s_test_frame = -1;

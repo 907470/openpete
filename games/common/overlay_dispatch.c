@@ -74,6 +74,10 @@ int psx_dispatch_from_jalr = 0;
 static FILE* s_census = NULL;
 static int   s_census_checked = 0;
 
+/** @brief Open the dispatch census file on the first dispatch.
+ *
+ * Opens the path in OPENPETE_DISPATCH_CENSUS for writing; an unset or empty
+ * variable, or a failed open, leaves the census off. Runs once. */
 static void census_open(void) {
     const char* path;
     s_census_checked = 1;
@@ -82,6 +86,17 @@ static void census_open(void) {
     s_census = fopen(path, "w");
 }
 
+/** @brief Append one census line for a dispatch into the overlay window.
+ *
+ * Classifies the call as host for a link register of 0xDEADBEEF, jalr when
+ * the recompiled code flagged the site, jal when the instruction two words
+ * before the link register is a jal whose target is the address, else jr.
+ * Writes nothing for an address outside the overlay window.
+ * @param cpu The guest CPU state, read for the jal check.
+ * @param addr The dispatch target.
+ * @param ra The link register captured before the callee ran.
+ * @param from_jalr Non-zero when a jalr site preceded the dispatch.
+ * @param resolved Non-zero when a dispatcher ran the target. */
 static void census_record(CPUState* cpu, uint32_t addr, uint32_t ra,
                           int from_jalr, int resolved) {
     const char* cls;
@@ -104,6 +119,17 @@ static void census_record(CPUState* cpu, uint32_t addr, uint32_t ra,
             resolved ? "resolved" : "missed");
 }
 
+/** @brief Run the compiled function at a guest address.
+ *
+ * Tries the main executable's dispatcher first, then the resident overlay's.
+ * A dispatch into the overlay window first calls the registered resync hook,
+ * because the overlay tracker can name the outgoing overlay, whose table can
+ * resolve the address to the wrong function. Captures and clears
+ * psx_dispatch_from_jalr and the link register before the callee runs, and
+ * appends a census line when the census is open.
+ * @param cpu The guest CPU state.
+ * @param addr The guest address to run.
+ * @return 1 when a dispatcher ran the address, else 0. */
 int psx_dispatch_compiled(CPUState* cpu, uint32_t addr) {
     /* The class and the link register are read before the callee runs: the
      * callee's own jalr sites rewrite both. */

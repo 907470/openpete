@@ -66,9 +66,18 @@ static int32_t angle_wrap(int32_t v) {
     if (D->angle_bits == 12) return ((v + 0x800) & 0xFFF) - 0x800;
     return (int32_t)(int16_t)(uint16_t)(uint32_t)v;
 }
+/** @brief Read a stored angle from guest RAM as a wrapped signed value.
+ *
+ * @param cpu The guest CPU state.
+ * @param addr The address of the 16-bit angle.
+ * @return The angle after angle_wrap. */
 static int32_t angle_read(CPUState* cpu, uint32_t addr) {
     return angle_wrap((int32_t)(uint32_t)cpu->read_half(addr));
 }
+/** @brief Encode an angle in the game's stored form.
+ *
+ * @param v The angle in stored units.
+ * @return The low 12 bits for a 12-bit game, else the low 16 bits. */
 static uint16_t angle_stored(int32_t v) {
     if (D->angle_bits == 12) return (uint16_t)(v & 0xFFF);
     return (uint16_t)(int16_t)v;
@@ -82,6 +91,11 @@ static struct {
     unsigned gen_seen;
 } s_pose;
 
+/** @brief Load the host pose from the game's camera bytes.
+ *
+ * Reads position, yaw and pitch from game_layout.cam and records the current
+ * engage generation.
+ * @param cpu The guest CPU state. */
 static void pose_seed(CPUState* cpu) {
     s_pose.x     = (int32_t)cpu->read_word(game_layout.cam.position + 0u);
     s_pose.y     = (int32_t)cpu->read_word(game_layout.cam.position + 4u);
@@ -92,11 +106,19 @@ static void pose_seed(CPUState* cpu) {
     s_pose.gen_seen = openpete_freecam_engage_generation();
 }
 
+/** @brief Seed the host pose when it is unseeded or the freecam engaged again since the seed.
+ *
+ * @param cpu The guest CPU state. */
 static void pose_seed_if_needed(CPUState* cpu) {
     if (!s_pose.seeded || s_pose.gen_seen != openpete_freecam_engage_generation())
         pose_seed(cpu);
 }
 
+/** @brief Write the host pose into the game's camera bytes.
+ *
+ * Wraps yaw and pitch to the game's angle width first, then stores position
+ * as words and the two angles as halfwords under game_layout.cam.
+ * @param cpu The guest CPU state. */
 static void pose_stamp(CPUState* cpu) {
     s_pose.yaw   = angle_wrap(s_pose.yaw);
     s_pose.pitch = angle_wrap(s_pose.pitch);
@@ -107,6 +129,12 @@ static void pose_stamp(CPUState* cpu) {
     cpu->write_half(game_layout.cam.rotation + 2u, angle_stored(s_pose.pitch));
 }
 
+/** @brief Report whether a level is running.
+ *
+ * Uses the game's own predicate when its descriptor has one, else
+ * game_is_gameplay_live.
+ * @param cpu The guest CPU state.
+ * @return Non-zero while a level is live. */
 static int level_live(CPUState* cpu) {
     return D->level_live ? D->level_live(cpu) : game_is_gameplay_live(cpu);
 }
@@ -592,6 +620,11 @@ static void freecam_teleport_player_to_camera(CPUState* cpu) {
     OPL_INFO_F("freecam", "teleported player to (%d, %d, %d)", s_pose.x, s_pose.y, s_pose.z);
 }
 
+/** @brief Report whether the player object can be moved.
+ *
+ * Uses the game's own predicate when its descriptor has one, else level_live.
+ * @param cpu The guest CPU state.
+ * @return Non-zero when a placement can apply. */
 static int player_placeable(CPUState* cpu) {
     return D->player_placeable ? D->player_placeable(cpu) : level_live(cpu);
 }
@@ -602,6 +635,11 @@ static int player_placeable(CPUState* cpu) {
  * gated on the ordinary follow would never fire under it. */
 static int s_player_pose_pending = -1;   /* -1: env not read yet */
 
+/** @brief Report whether OPENPETE_PLAYER_POSE is set and not yet applied.
+ *
+ * Reads the variable on the first call and caches the result until
+ * freecam_player_pose_maybe_apply clears it.
+ * @return 1 while a placement is waiting, else 0. */
 static int player_pose_pending(void) {
     if (s_player_pose_pending < 0) {
         const char* pose = getenv("OPENPETE_PLAYER_POSE");
@@ -687,6 +725,11 @@ void freecam_maybe_autoengage(CPUState* cpu) {
     }
 }
 
+/** @brief Report whether a function entry is on the descriptor's extra freeze list.
+ *
+ * @param addr The function's guest address.
+ * @return 1 when the zero-terminated extra_freeze list holds the address,
+ *         else 0. */
 static int in_extra_freeze(uint32_t addr) {
     if (!D->extra_freeze) return 0;
     for (const uint32_t* p = D->extra_freeze; *p; ++p)

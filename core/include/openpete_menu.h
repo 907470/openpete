@@ -75,6 +75,15 @@ typedef struct {
     float close_x, close_y, close_cap_h;   /* top-left corner, side */
 } openpete_menu_layout_t;
 
+/** @brief Fill the menu layout in overlay space.
+ *
+ * The panel is a full-height sidebar. Row y positions start below the title
+ * and advance at a fixed pitch. The EXIT row is instead anchored to the panel
+ * bottom, using the cap height the text builder last published through
+ * openpete_menu_note_row_cap, or row_cap_h before that. The close square sits
+ * at the panel's top right. The row count is the menu's row count capped at
+ * the capacity of row_y.
+ * @param out The layout to fill; a null pointer is ignored. */
 void openpete_menu_get_layout(openpete_menu_layout_t* out);
 
 /** @brief Publish the bounding box, in overlay units, of the close glyph's emitted ink.
@@ -113,8 +122,27 @@ int openpete_menu_close_hovered(void);
  *
  * @return The constant string "SETTINGS". */
 const char* openpete_menu_title(void);
+/** @brief Name a row's label text.
+ *
+ * The EXIT row reads REALLY EXIT? while armed.
+ * @param row The row index.
+ * @return A static string; the empty string for a row outside the menu. */
 const char* openpete_menu_row_label(int row);
+
+/** @brief Spell a row's current value.
+ *
+ * Reads live renderer state for DISPLAY, FOV and the mod rows and the row's
+ * stored selection for the others; EXIT is empty.
+ * @param row The row index.
+ * @param buf Scratch space for a formatted value.
+ * @param buflen Size of @p buf in bytes.
+ * @return A static string or @p buf; the empty string for a row outside the
+ *         menu. */
 const char* openpete_menu_row_value(int row, char* buf, int buflen);
+
+/** @brief Read the phase that drives the glyph wobble.
+ *
+ * @return The count of openpete_menu_tick calls. */
 unsigned    openpete_menu_wobble_phase(void);
 
 /** @brief Report whether a row is the centred action row with no value column.
