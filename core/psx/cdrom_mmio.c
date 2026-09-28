@@ -175,10 +175,12 @@ static const struct { uint8_t cmd; uint32_t int2_delay; } k_second_response[] = 
 /** @brief Queue a command's interrupts from the model's table.
  *
  * Queues an INT3 due one VBL later whose first byte is the motor-on status;
- * GetTN, GetTD (track 1 at 150 sectors, else the lead-out from the disc's
- * sector count, minute and second in BCD) and the Test sub-functions 0x05
- * and 0x20 append their bytes. A command in k_second_response also queues
- * an INT2 after its measured delay; GetID's carries the SCEA license bytes.
+ * GetTN and GetTD (track 1 at 150 sectors, else the lead-out from the
+ * disc's sector count, minute and second in BCD) append their bytes. Test
+ * sub-function 0x05 answers 0x82, 0, 0 and 0x20 answers the four bytes
+ * 0x94, 0x09, 0x19, 0xC0, neither with the motor-on status. A command in
+ * k_second_response also queues an INT2 after its measured delay; GetID's
+ * carries the SCEA license bytes.
  * @param cmd Command byte. */
 static void issue_default(uint8_t cmd) {
     uint8_t r[CD_RESP]; uint32_t n = 0;
