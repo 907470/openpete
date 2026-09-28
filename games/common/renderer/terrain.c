@@ -8769,7 +8769,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     s_cal_qn = 0; s_cal_qsum_max = 0; s_cal_qmin_max = 0; s_cal_nqsum_min = 1e18;
     /* The render decision uses face_is_near (gamestate); the deferred QUEUE is read
      * ONLY as a verify oracle / for the NEARQ debug path — never in the shipping
-     * feed path (the plan forbids consuming .s per-frame output for rendering). */
+     * feed path, which does not consume the .s's per-frame output. */
     int wantOracle = terrain_game.portal_sky_recent() ||   /* portal guard reads the queue */
                      s_caldbg || s_nearq > 0 ||
                      terrain_verify_env();
@@ -8785,8 +8785,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * boundary by construction. The behavioural content is the near-sector
      * LP exclusion the per-face admission alone cannot see: an a=31
      * (admit-to-camera) face in a fully-near sector is culled by the .s at
-     * the sector level. (The 2026-06 "pop-in" rejection of mirrored lists
-     * predated the exact fog + exact per-face model.) Forced OFF under
+     * the sector level. Forced OFF under
      * --no-lod: HP-everywhere IS that mode's intent. NB the bin uses the raw
      * lodThr — under a user-stretched --fog-scale the per-face tests ride the
      * curve and this doesn't; stock is exact. =0 restores admission-only. */
@@ -8802,10 +8801,10 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         s_fogscale = (e && *e) ? atof(e) : 1.0;
     }
     if (s_fogdpcs < 0) {
-        /* DEFAULT ON: the exact decode is
-         * proven per-corner at every band, and the old vista regression it
-         * was blamed for was actually the MISSING CLUT-row fog (s_clutfog)
-         * that the under-fogged lerp partially compensated. Ship both. */
+        /* DEFAULT ON: the exact decode is per-corner exact at every band. It
+         * pairs with the CLUT-row fog (s_clutfog); without that row fog the
+         * under-fogged lerp partly compensates and the exact decode alone
+         * over-brightens vistas. */
         const char* e = getenv("OPENPETE_TERRAIN_FOGDPCS");
         s_fogdpcs = (e && *e) ? (*e != '0') : 1;
     }
@@ -8815,17 +8814,14 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * s_fogscale = 4/k: k=1 → the exact PSX curve (SZ = 4·m3); k=100 →
      * saturation ~100x farther, i.e. fog effectively off — extended LOD
      * already draws the far detail, so the default stops fogging it away.
-     * (k=4 is the old no-lod default, numerically the old lerp curve
-     * fogscale 1; still selectable via --fog-scale 4.) The exact math, the
+     * (k=4 gives s_fogscale 1, the lerp curve's scale.) The exact math, the
      * palette ladder and the saturation handoff all ride the stretched curve.
      * Re-resolved EVERY walk, not latched at boot: the settings-menu
      * draw-distance toggle (openpete_no_lod_set) flips openpete_fog_scale
-     * live, and the LP/HP fog-saturation handoff below rides s_fogscale —
-     * the boot-latched value froze the handoff at the boot mode's distance,
-     * so toggling no-lod ON mid-level kept substituting the untextured LP
-     * tier at stock fog range until the camera walked each sector out of
-     * the fully-fogged band (distant LP "snapping"
-     * to HP on approach). OPENPETE_TERRAIN_FOGSCALE force-overrides (debug). */
+     * live, and the LP/HP fog-saturation handoff below rides s_fogscale, so
+     * a boot-latched value would keep the handoff at the boot mode's
+     * saturation distance after a toggle. OPENPETE_TERRAIN_FOGSCALE
+     * force-overrides (debug). */
     {
         static int s_fs_env = -1;
         if (s_fs_env < 0) s_fs_env = getenv("OPENPETE_TERRAIN_FOGSCALE") ? 1 : 0;
@@ -8841,11 +8837,9 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * DEFAULT ON: beyond saturation the .s
      * picture IS the LP tier (raw palette — identity-join-proven), and any HP
      * content native paints there is invented (the artisans far-water green
-     * stripe once the CLUT ladder landed). The swap happens strictly inside
-     * fully-fogged pixels, so there is no visible pop-in — which is why this
-     * stays on under --no-lod too (no-lod removes MESH pop-in; fog saturation
-     * is the one place a tier swap is invisible by construction). The
-     * "recovered only ~0.9/4.0" verdict predates exact verts + the ladder.
+     * stripe under the CLUT ladder). The swap happens strictly inside
+     * fully-fogged pixels, so there is no visible pop-in. It is disabled
+     * for the walk under --no-lod (see lod_handoff below).
      * OPENPETE_TERRAIN_LOD_HANDOFF=0 restores HP-everywhere (A/B). */
     {
         static tn_envvbl_t hc, gc;
@@ -8858,17 +8852,13 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     }
     /* Effective handoff for THIS walk. Under --no-lod the near/far LOD handoff
      * must NOT run: it keys off the RAW-RAM lodDist (--lod extended is pure
-     * host-side policy — the openpete_no_lod global; the old recompiler-side
-     * read-site saturation is retired and RAM stays 0x8000), so it
-     * keeps dropping HP at the real fog-saturation band (m3 >= fogRef) and opens
+     * host-side policy — the openpete_no_lod global; RAM keeps the authored
+     * 0x8000), so it keeps dropping HP at the real fog-saturation band (m3 >= fogRef) and opens
      * the HP/LP seam the from-above freecam view exposes (an LP-only far sector
      * abutting an HP near sector, neither reaching the boundary). --lod extended
      * means HP everywhere it exists; the poke-free holefill bridges the residual
      * sector-boundary seam. Original LOD keeps the handoff verbatim — this local
-     * equals s_lod_handoff there, so that path stays byte-for-byte unchanged.
-     * (This overrides the "stays on under --no-lod" note above; the fully-fogged
-     * tier-swap that note protects is verified against the green-stripe regression
-     * at the fogged horizon under --no-lod, not just the seam view.) */
+     * equals s_lod_handoff there, so that path stays byte-for-byte unchanged. */
     int lod_handoff = s_lod_handoff && !openpete_no_lod;
     if (s_nearz < 0.0) {     /* near plane in world/16 view-Z (env-tunable) */
         const char* e = getenv("OPENPETE_TERRAIN_NEARZ");
@@ -8943,7 +8933,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * camera-driven — is TRULY continuous, not just stepped at the 1-world-unit
      * lerp32 grid. Falls back to the (floored) RAM at the 30 Hz lockstep. */
     double camx = s_view.cam[0] / 16.0, camy = s_view.cam[1] / 16.0, camz = s_view.cam[2] / 16.0;
-    int fogRefBase = (int32_t)tenv_lod_dist(cpu) >> 2;  /* §10 */
+    int fogRefBase = (int32_t)tenv_lod_dist(cpu) >> 2;
     /* Publish this walk's fog-ladder ramp for the CONTINUOUS pack-fog model
      * (HD-replaced draws only; see texture_pack_fog_ladder_set): the .s row
      * select is Δ = (key − fogRef + 4096) >> 8 with key ≈ face-mean
@@ -8985,7 +8975,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     /* .s LP far cull threshold, slot units (r_environment.s:637-642: the walk
      * precomputes s2 = m_CullingDistance >> 7 once, before the sector loop). */
     int cullRefS2 = (int32_t)tenv_rd(cpu, game_layout.env.cull_dist) >> 7;
-    uint32_t lqTable = tenv_rd(cpu, game_layout.env.lq_tex);  /* HP-walk per-quad Tiledef (§8) */
+    uint32_t lqTable = tenv_rd(cpu, game_layout.env.lq_tex);  /* HP-walk per-quad Tiledef */
     uint32_t hqTable = tenv_rd(cpu, game_layout.env.hq_tex);  /* near/detail Tiledef (bpp8 tiles) */
     tsc_tile_gens(cpu, lqTable, tenv_rd(cpu, game_layout.env.tex_count));  /* env-anim liveness */
     tsc_scroll_refresh(cpu);                                           /* env-anim UV scroll (sub-tick) */
@@ -9032,8 +9022,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     /* OPENPETE_TERRAIN_TIMERS=1: per-SECTOR walk-cost census (~1/s). Attributes
      * the terrain feeder's µs to individual sectors (accounted at the top of
      * the NEXT iteration so every exit path of the huge loop body is covered)
-     * and names the top offenders — built for the gnorc_cove freecam
-     * direction-dependent perf hunt. Inert unless the env is set. */
+     * and names the top offenders. Inert unless the env is set. */
     static int tt_on = -1;
     ENV_FLAG_LATCH(tt_on, "OPENPETE_TERRAIN_TIMERS");
     static uint32_t tt_us[1024], tt_tris[1024];      /* window-accumulated per sector */
@@ -9267,9 +9256,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          * GPU depth-tests it away, but the CPU still paid to extract, sort and
          * upload it. Under --lod extended the game's distance cull is defeated,
          * so fully-occluded distant sectors (everything behind a wall) still get
-         * walked — measured ~22k tris vs ~2.7k against a beast_makers wall, a
-         * pixel-identical frame at ~172 vs ~453 fps (4:3; the ultrawide win is
-         * larger). Reuse the moby occlusion grid (built from the WORLD-opaque
+         * walked. Reuse the moby occlusion grid (built from the WORLD-opaque
          * terrain depth pre-pass, frames-lagged like the moby query): cull a
          * sector only when EVERY grid cell over its (inflated) bbox is nearer
          * than the sector's NEAREST point — partial occlusion keeps it, so no
@@ -9278,8 +9265,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          * bound of this walk's, so this is a pure conservative skip.
          * Display-only: the canonical PSX render that writes gameplay channels
          * is a separate pass, untouched (and the native feed is inert headless,
-         * so the oracle/determinism gates are unaffected). Bit-identical off vs
-         * on, verified at 4:3 and 21:9. OPENPETE_TERRAIN_OCCL=0 disables (A/B). */
+         * so the oracle/determinism gates are unaffected). The drawn image is
+         * identical with the cull off. OPENPETE_TERRAIN_OCCL=0 disables (A/B). */
         static tn_envvbl_t tocc_c;
         int s_tocc = tn_env_vbl(&tocc_c, "OPENPETE_TERRAIN_OCCL", 1, 1);
         /* The fill-tag inspector must see every sector the frustum keeps: a
@@ -9337,13 +9324,13 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          * skips the face loop. Claim reasons, in test order:
          *  - near: the bounding sphere may reach the near plane; the CPU
          *    walk near-clips, the GPU path guarantees m3 > 0 instead.
-         *  - portal: the sector may carry a feed-time portal drop — a rim
-         *    broadphase candidate (inner-rim cull) or a blended-face sector
-         *    over an active outline (transparent-cover drop). Opaque
-         *    plane-cover needs no claim (per-pixel in core).
-         *  - anim: vert-anim sectors lerp fractional banks per present.
-         *  - fill: WORLD_FILL twins are screen-dilated in the feed.
-         *  - (the pack-aware LP regrade no longer claims: the bake carries
+         *  - portal: a portal is recent and either the planes are gone
+         *    (claim everything) or the rim frames are unavailable and the
+         *    sector's projected bbox meets an opening's outline. With the
+         *    frames derived the vertex stage runs the rim cull and the
+         *    transparent-cover drop, so nothing claims. Opaque plane-cover
+         *    needs no claim (per-pixel in core).
+         *  - (the pack-aware LP regrade does not claim: the bake carries
          *    raw colours and the per-sector grade affine rides the sector
          *    params — lp_grade_apply is mirrored in the vertex stage under
          *    OPTC_SF_LPGRADE, own fit and level mean alike.)
@@ -9452,7 +9439,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          * mismatch falls the whole present back to the serial fused walk,
          * whose per-sector re-resolve is the legacy (thrash-but-correct)
          * behaviour. Rare: needs 9+ visible sectors in one 8-way window
-         * (the gnorc_cove-class layouts). */
+         * (dense sector layouts). */
         int tsc_evicted = 0;
         for (int vi = 0; vi < nvis; vi++)
             if (s_pre_SC[vi] && s_pre_SC[vi]->s != s_pre_sec[vi]) { tsc_evicted = 1; break; }
@@ -10133,8 +10120,9 @@ static int rim_sec_cand(int sec) {
 
 /** @brief Tests whether a view-space bounding sphere can contain an inner-rim candidate of any active portal.
  *
- * Shared by the feed broadphase (rim_sector_cands) and the retained-GPU
- * portal claim so the two verdicts cannot drift. The radius is inflated by
+ * Called by the feed broadphase (rim_sector_cands) and by
+ * tgpu_rim_sphere_cand, the retained-GPU claim's wrapper over the same test.
+ * The radius is inflated by
  * 5% plus 64 units, plus about 4 px of screen-snap reconstruction error at
  * the sphere's far view-Z. The sphere is a candidate for a portal when it
  * reaches within RIM_CAND_WINDOW of the opening plane and within
@@ -11826,8 +11814,7 @@ int terrain_native_topdown_pose(CPUState* cpu, int32_t v[5]) {
     double pz = acc.need * 1.02;
     /* Ceiling: past view-Z ~32767 (world/16) the .s's 16-bit frustum stage
      * rejects every sector, the visibility verdict goes empty and the native walk —
-     * whose 4:3 candidate set IS that verdict — draws nothing (stone_hill
-     * proved it at 553651 world). Clamp under it; a level too wide to fit
+     * whose 4:3 candidate set IS that verdict — draws nothing. Clamp under it; a level too wide to fit
      * from there gets cropped edges rather than a blank frame. */
     if (pz > 30000.0) {
         fprintf(stderr, "[terrain] topdown pose height clamped (%d -> 30000 world/16): "
