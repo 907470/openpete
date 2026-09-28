@@ -38,6 +38,10 @@ typedef struct {
 static psx_region_t s_regions[MAX_REGIONS];
 static uint32_t     s_region_count = 0;
 
+/** @brief Strip the KSEG segment bits from a PSX address.
+ *
+ * @param addr Virtual address.
+ * @return The physical address, addr masked to 29 bits. */
 static uint32_t to_phys(uint32_t addr) { return addr & 0x1FFFFFFFu; }
 
 /** @brief Test whether the half-open ranges [a_lo, a_lo+a_sz) and [b_lo, b_lo+b_sz) intersect.

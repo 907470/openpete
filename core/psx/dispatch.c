@@ -82,6 +82,15 @@ struct miss_entry { uint32_t addr; uint32_t hits; };
 static struct miss_entry s_miss[MISS_TABLE_SIZE];
 static int s_miss_overflow = 0;
 
+/** @brief Count a dispatch to an uncovered address and log it on a rate limit.
+ *
+ * Keeps a 64-entry table of missed addresses with hit counts. The first
+ * hit and every hit whose count is a power of two log a warning carrying
+ * the caller's ra and sp. An address that finds no free entry is not
+ * counted, and the first such overflow logs one suppression warning.
+ * @param addr Guest address that no translation or BIOS handler covers.
+ * @param ra Return address register of the caller, for the log line.
+ * @param sp Stack pointer register of the caller, for the log line. */
 static void note_miss(uint32_t addr, uint32_t ra, uint32_t sp) {
     int empty = -1;
     for (int i = 0; i < MISS_TABLE_SIZE; i++) {
@@ -174,6 +183,14 @@ void      (*openpete_psxtrace_dispatch_hook)(uint32_t addr) = NULL;
  * each trace record. */
 static FILE* s_anchor_vbl_log = NULL;
 static int   s_anchor_vbl_log_checked = 0;
+/** @brief Append one `hit vbl` line to the anchor VBL log when it is enabled.
+ *
+ * Opens the file named by OPENPETE_ANCHOR_VBL_LOG on the first call, writes
+ * a `# hit vbl` header, and then one line per call with the anchor hit
+ * count and the current openpete_vbl. Each line is flushed because the halt
+ * path exits without flushing stdio. Does nothing when the variable is
+ * unset, empty, or the open fails.
+ * @param hit Anchor hit count to record. */
 static void anchor_vbl_log(uint32_t hit) {
     if (!s_anchor_vbl_log_checked) {
         s_anchor_vbl_log_checked = 1;
@@ -257,6 +274,15 @@ static void openpete_halt_dump_cpu(CPUState* cpu, uint32_t pc_at_halt) {
                pc_at_halt, cpu->gp, cpu->sp, cpu->ra);
 }
 
+/** @brief Dump guest RAM (and the CPU state) at a halt address and exit with code 0.
+ *
+ * Writes the 2 MB guest RAM to the halt dump path (`./ram.bin` when none is
+ * set), then the CPU dump through openpete_halt_dump_cpu when a CPU state is
+ * given, syncs the log file, and leaves through _Exit(0) to skip the host
+ * fiber teardown, which can hang under headless GL. An open or short-write
+ * failure is logged and the exit still happens.
+ * @param cpu CPU state to dump; may be NULL to skip the CPU dump.
+ * @param addr Guest address of the halt, written into the log and CPU dump. */
 static void openpete_halt_dump_and_exit(CPUState* cpu, uint32_t addr) {
     openpete_halt_done = 1;
     const char* path = openpete_halt_dump_path

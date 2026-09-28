@@ -193,14 +193,31 @@ int  openpete_memcard_sync(int mode, int* out_cmds, int* out_rslt);
  * @param chan Slot as 0 or 1, or the raw port encoding 0x00 or 0x10.
  * @return 1 when present, 0 when empty. */
 int  openpete_memcard_present(int chan);
-/* The BIOS card gate's vblank step (core/psx/psx_bios.c): a command
- * to an empty port signals EvSpTIMOUT from here when its timeout ends. */
 struct CPUState;
+/** @brief Run one vblank interrupt of the BIOS card driver.
+ *
+ * Does nothing until StartCARD2 has hooked the step. Follows OpenBIOS
+ * firstStageCardAction: a step that finds a transfer in progress finishes
+ * it with status 0x11 and EvSpTIMOUT; otherwise it flips the port it serves
+ * and starts that port's pending command. A vblank the trace schedule marks
+ * unserved is skipped; a transfer in progress is still aborted on an
+ * unserved vblank when the following vblank is served. A command to an
+ * empty port therefore signals its timeout from here.
+ * @param cpu Guest CPU the event handlers run on. */
 void openpete_psx_bios_vbl(struct CPUState* cpu);
 /* The card driver's state, for the savestate's thunk latch pack: a flag
  * word and the two ports' pending command (sector, buffer, device id). */
 #define PSX_BIOS_CARD_STATE_WORDS 7u
+/** @brief Pack the card driver's state into words.
+ *
+ * Word 0 packs the started, flip and in-progress bits, each port's status,
+ * bu flag and pending op, and the last finished port; words 1..3 and 4..6
+ * hold the sector, buffer and device id of port 0 and port 1.
+ * @param w Receives PSX_BIOS_CARD_STATE_WORDS words. */
 void openpete_psx_bios_card_state_get(uint32_t w[PSX_BIOS_CARD_STATE_WORDS]);
+/** @brief Restore the card driver's state from words packed by openpete_psx_bios_card_state_get.
+ *
+ * @param w PSX_BIOS_CARD_STATE_WORDS words. */
 void openpete_psx_bios_card_state_set(const uint32_t w[PSX_BIOS_CARD_STATE_WORDS]);
 /** @brief Read one byte of the BIOS ROM window (physical 0x1FC00000..0x1FC7FFFF).
  *
@@ -232,6 +249,9 @@ int      openpete_psx_bios_rom_read8(uint32_t phys, uint8_t* out);
  * (idempotent on RAM that already carries the words).
  * @param ram Host pointer to guest RAM. */
 void     openpete_psx_bios_seed_ram(uint8_t* ram);
+/** @brief Return the number of BIOS ROM window reads served so far.
+ *
+ * @return The count of openpete_psx_bios_rom_read8 calls that fell in the window. */
 uint32_t openpete_psx_bios_rom_reads(void);
 /** @brief Copy one 128-byte frame of the card in chan to a host buffer.
  *

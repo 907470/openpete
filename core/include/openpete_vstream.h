@@ -95,6 +95,9 @@ typedef struct {
     uint64_t unresolved;
     uint32_t first_unresolved; /* field value of the first miss */
 } openpete_vstream_census_t;
+/** @brief Copy the resolution counters into a caller-provided struct.
+ *
+ * @param out Receives the counters; nothing happens when NULL. */
 void openpete_vstream_census(openpete_vstream_census_t* out);
 
 #ifdef __cplusplus

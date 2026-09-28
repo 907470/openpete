@@ -54,6 +54,15 @@ static struct bios_event s_ev[EV_MAX];
 static uint32_t s_seen[BIOS_SEEN_MAX];
 static int s_census = -1;
 
+/** @brief Log a BIOS call according to the OPENPETE_BIOS_CENSUS mode.
+ *
+ * The mode is read once on the first call: 0 (unset, empty or starting with
+ * 0) logs nothing, 2 logs every call, any other value logs the first call
+ * of each distinct (table, function) pair, up to 128 pairs, with the
+ * argument registers and ra.
+ * @param cpu Guest CPU whose a0..a3 and ra are logged.
+ * @param table BIOS table address, 0xA0, 0xB0 or 0xC0.
+ * @param fn Function number. */
 static void bios_census(CPUState* cpu, uint32_t table, uint32_t fn) {
     if (s_census < 0) {
         const char* e = getenv("OPENPETE_BIOS_CENSUS");
@@ -78,6 +87,13 @@ static void bios_census(CPUState* cpu, uint32_t table, uint32_t fn) {
     }
 }
 
+/** @brief Run a guest event handler through the recomp dispatch and restore the argument registers.
+ *
+ * Calls the function at addr with ra set to 0xDEADBEEF, then restores a0..a3,
+ * ra, v0 and v1 to their values on entry. Other registers are left as the
+ * handler set them. A handler with no compiled body logs a warning.
+ * @param cpu Guest CPU the handler runs on.
+ * @param addr Handler address; 0 does nothing. */
 static void invoke_guest(CPUState* cpu, uint32_t addr) {
     if (!addr) return;
     uint32_t a0 = cpu->a0, a1 = cpu->a1, a2 = cpu->a2, a3 = cpu->a3;
@@ -107,6 +123,11 @@ static void* guest_ptr(uint32_t addr, uint32_t len) {
     return openpete_psx_get_ram() + phys;
 }
 
+/** @brief Map an event handle to its slot in the event table.
+ *
+ * @param handle Handle as OpenEvent returned it (EV_HANDLE_BASE | slot).
+ * @return The slot index, or -1 when the handle has another base, names a
+ *         slot beyond the table, or names a slot that is not open. */
 static int ev_index(uint32_t handle) {
     if ((handle & 0xFFFF0000u) != EV_HANDLE_BASE) return -1;
     uint32_t i = handle & 0xFFFFu;
@@ -161,6 +182,12 @@ static struct {
 } s_mc;
 static uint32_t s_mc_last_port = 0u;
 
+/** @brief Return the card port a device id addresses.
+ *
+ * The id divided by 16 with truncation toward zero, low bit, so 0x00 is
+ * port 0 and 0x10 is port 1.
+ * @param device_id Device id as the game passed it.
+ * @return 0 or 1. */
 static int mc_port(uint32_t device_id) {
     int32_t d = (int32_t)device_id;
     return ((d >= 0 ? d : d + 15) >> 4) & 1;
@@ -193,6 +220,15 @@ static uint32_t mc_queue(uint32_t device_id, uint32_t op, uint32_t sector, uint3
     return 1u;
 }
 
+/** @brief Complete the command on a port and signal its event.
+ *
+ * Clears the in-progress state and the port's pending command, stores the
+ * status, and delivers spec on the bu class first when the command came
+ * through the bu layer and then on HwCARD.
+ * @param cpu Guest CPU the event handlers run on.
+ * @param port Port 0 or 1.
+ * @param flags New _card_status value of the port.
+ * @param spec Event spec to deliver. */
 static void mc_finish(CPUState* cpu, int port, uint32_t flags, uint32_t spec) {
     s_mc.in_progress = 0u;
     s_mc.op[port] = MC_OP_NONE;
@@ -320,6 +356,13 @@ int openpete_psx_bios_rom_read8(uint32_t phys, uint8_t* out) {
 }
 uint32_t openpete_psx_bios_rom_reads(void) { return s_rom_reads; }
 
+/** @brief Handle a call through the A0 table: FlushCache, _bu_init, _card_info and _card_load.
+ *
+ * FlushCache and _bu_init return 0. _card_info and _card_load queue an
+ * info command through the bu layer and return whether it was queued.
+ * @param cpu Guest CPU; a0 carries the device id and v0 receives the result.
+ * @param fn Function number.
+ * @return 1 when the function is implemented, 0 otherwise. */
 static int bios_a0(CPUState* cpu, uint32_t fn) {
     switch (fn) {
     case 0x44:      /* FlushCache */
@@ -335,6 +378,18 @@ static int bios_a0(CPUState* cpu, uint32_t fn) {
     }
 }
 
+/** @brief Handle a call through the B0 table: the event services and the card driver services.
+ *
+ * Implements OpenEvent, CloseEvent, WaitEvent, TestEvent, EnableEvent,
+ * DisableEvent, DeliverEvent and UnDeliverEvent over the event table, and
+ * InitCARD2, StartCARD2, StopCARD2, _new_card, ChangeClearPAD, GetC0Table,
+ * GetB0Table, _card_write, _card_read, _get_errno, _get_error, _card_chan,
+ * _card_status and _card_wait over the card driver state. WaitEvent
+ * returns at once because every command completes within its call.
+ * @param cpu Guest CPU; the argument registers are read and v0 receives the
+ *        result.
+ * @param fn Function number.
+ * @return 1 when the function is implemented, 0 otherwise. */
 static int bios_b0(CPUState* cpu, uint32_t fn) {
     switch (fn) {
     case 0x07:      /* DeliverEvent(class, spec) */

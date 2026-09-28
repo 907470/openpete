@@ -54,6 +54,11 @@ typedef struct {
  *         log, or the log holds no frames, with the reason logged. */
 int  bk2_movie_load(const char* path, bk2_movie_t* out);
 
+/** @brief Free a movie's frame arrays and zero the struct.
+ *
+ * Releases the P1 and P2 frame arrays; the struct itself is not freed.
+ * @param m Movie loaded by bk2_movie_load or bk2_movie_parse_log; NULL does
+ *        nothing. */
 void bk2_movie_free(bk2_movie_t* m);
 
 /** @brief Parse an extracted "Input Log.txt" blob into a movie.

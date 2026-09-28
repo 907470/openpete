@@ -37,6 +37,11 @@ bool ext_is(const std::filesystem::path& p, const char* lower) {
     return e == lower;
 }
 
+/** @brief Test whether a path names a regular file.
+ *
+ * A path that cannot be examined counts as absent.
+ * @param p Path.
+ * @return true when the path is an existing regular file. */
 bool file_exists(const std::filesystem::path& p) {
     std::error_code ec;
     return std::filesystem::is_regular_file(p, ec);
@@ -86,6 +91,11 @@ std::filesystem::path lone_sibling_bin(const std::filesystem::path& cue) {
     return found;
 }
 
+/** @brief Append a path to a comma-separated candidate list.
+ *
+ * An empty path is skipped.
+ * @param tried List to extend.
+ * @param p Path to append. */
 void append_tried(std::string& tried, const std::filesystem::path& p) {
     if (p.empty()) return;
     if (!tried.empty()) tried += ", ";
@@ -261,6 +271,15 @@ extern "C" int openpete_psx_read_disc_serial(const char* image_path,
     return out[0] ? 0 : -1;
 }
 
+/** @brief Read a whole host file into a malloc'd buffer.
+ *
+ * Used for the --exe-path route, which loads a PSX EXE straight from the
+ * host file system. An open failure, an empty or unreadable file, an
+ * allocation failure and a short read each return NULL, the first, second
+ * and fourth with an error logged.
+ * @param path Host file path.
+ * @param out_size Receives the byte count on success.
+ * @return The bytes, freed by the caller with free(); NULL on failure. */
 extern "C" uint8_t* openpete_psx_read_file(const char* path, size_t* out_size) {
     if (!path) return nullptr;
     std::ifstream f(path, std::ios::binary | std::ios::ate);

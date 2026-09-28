@@ -15,6 +15,11 @@ static int s_head     = 0;   /* next slot to write */
 static unsigned s_next_due = 0;  /* frame at/after which the next kf fires */
 static int s_registered = 0;
 
+/** @brief Invalidate every keyframe when a savestate load replaces the timeline.
+ *
+ * Registered with openpete_on_guest_discontinuity by the first enabling
+ * openpete_rewind_configure. The keyframes and the input-log suffix they
+ * anchor describe the replaced timeline. */
 static void rewind_on_guest_discontinuity(void) {
     /* A real savestate load replaced the timeline; every keyframe (and
      * the input-log suffix they anchor) describes the OLD one. */

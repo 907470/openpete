@@ -46,6 +46,10 @@ typedef struct {
  * leaves rewind disabled.
  * @param window_seconds Window length; 0 or less disables rewind. */
 void openpete_rewind_configure(int window_seconds);
+/** @brief Report whether a rewind ring is allocated.
+ *
+ * @return Nonzero after a successful openpete_rewind_configure with a
+ *         positive window, 0 otherwise. */
 int  openpete_rewind_enabled(void);
 
 /** @brief Capture a keyframe when one is due, or clear the ring when gameplay is not live.

@@ -425,6 +425,20 @@ static int rec_thread_main(void* unused) {
 
 static void rec_teardown(void);  /* fwd */
 
+/** @brief Build the encoder, muxer, scaler, ring and encoder thread on the first captured image.
+ *
+ * Floors the size to even dimensions, opens the output context, the video
+ * encoder (constant frame rate at a multiple of the NTSC tick rate when
+ * cfr_mult is set, else microsecond timestamps), the optional audio stream
+ * and the file, and writes the container header. Then allocates the RGBA
+ * conversion frame, the ring slots and the lock, and starts the encoder
+ * thread. A failure logs and returns -1 with partial state left for
+ * rec_teardown; audio setup failure is not a failure.
+ * @param native_w Captured width in pixels.
+ * @param native_h Captured height in pixels.
+ * @param top_down Nonzero when source rows run top to bottom.
+ * @param first_pts_us Timestamp of the first image in microseconds.
+ * @return 0 when armed, -1 on failure. */
 static int rec_lazy_init(int native_w, int native_h, int top_down, uint64_t first_pts_us) {
     g_rec.native_w = native_w;
     g_rec.native_h = native_h;

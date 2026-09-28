@@ -12,6 +12,12 @@ static uint32_t s_table[VSTREAM_HANDLE_MAX]; /* index -> vaddr; [0] unused */
 static openpete_vstream_census_t s_census;
 static int s_fatal = -1;
 
+/** @brief Record a frame-word field below the handle bound that no handle backs.
+ *
+ * Counts the miss in the census; the first one logs an error and keeps the
+ * field value. Aborts the process when OPENPETE_VSTREAM_FATAL is set to a
+ * value not starting with 0, read once on the first call.
+ * @param masked The 21-bit field value that has no table entry. */
 static void unresolved(uint32_t masked) {
     if (s_census.unresolved++ == 0) {
         s_census.first_unresolved = masked;

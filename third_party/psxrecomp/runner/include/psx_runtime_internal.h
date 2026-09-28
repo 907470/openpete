@@ -32,15 +32,26 @@ extern "C" {
 
 /** @brief Initialise a CPUState and install the memory callbacks.
  *
- * Call before running any recompiled function. */
+ * Call before running any recompiled function. The openpete runtime
+ * forwards to openpete_psx_runtime_init, which zeroes the CPU state, main
+ * RAM and the scratchpad.
+ * @param cpu CPU state to reset and wire to the memory callbacks. */
 void psx_runtime_init(CPUState* cpu);
 
-/** @brief Copy bytes into PSX RAM at a virtual address. */
+/** @brief Copy bytes into PSX RAM at a virtual address.
+ *
+ * The openpete runtime forwards to openpete_psx_load, which clamps the copy
+ * to the end of main RAM and logs an unmapped target.
+ * @param addr Destination PSX address.
+ * @param data Source bytes.
+ * @param size Byte count. */
 void psx_runtime_load(uint32_t addr, const uint8_t* data, uint32_t size);
 
 /** @brief Log every hardware register access to mmio_trace.log.
  *
- * Call with @p enable = 1 after psx_runtime_init(). */
+ * Call with @p enable = 1 after psx_runtime_init(). The openpete runtime
+ * defines this as an empty function and traces nothing.
+ * @param enable Nonzero to enable tracing. */
 void psx_mmio_trace_enable(int enable);
 
 /** @brief Install the fatal-fault handlers that dump the guest CPU state.
@@ -52,16 +63,34 @@ void psx_install_crash_handler(void);
 
 /** @brief Dispatch a call by address: BIOS calls and jump-register targets.
  *
- * An unknown address is logged, never fatal. */
+ * Tries the registered recomp module's dispatch, then the BIOS service
+ * handler (0xA0, 0xB0, 0xC0). An unknown address is logged through a
+ * rate-limited miss table, never fatal: v0 and v1 are zeroed so the caller
+ * sees a function that returned 0, and the game fiber yields to the host
+ * without advancing the tick counter so a stubbed main loop still reaches
+ * the frame-limit and runtime checks.
+ * @param cpu CPU state of the caller.
+ * @param addr Guest address to call. */
 void call_by_address(CPUState* cpu, uint32_t addr);
 
 /**
  * @brief Override gate emitted at the top of every recompiled function.
- * @return 1 when the call was intercepted and the body is skipped.
- */
+ *
+ * In the openpete runtime it runs, in order: the hang watchdog (a ring of
+ * recent entries and an exit with code 2 once OPENPETE_HANG_THRESHOLD
+ * entries pass with no VBL), the pad-read probe, the halt-at-PC dump, the
+ * oracle anchor hooks, and then the game's psx_override_dispatch_game when
+ * the game defines one.
+ * @param cpu CPU state of the function being entered.
+ * @param addr Guest address of the function being entered.
+ * @return 1 when the call was intercepted and the body is skipped. */
 int psx_override_dispatch(CPUState* cpu, uint32_t addr);
 
-/** @brief SYSCALL instruction handler. */
+/** @brief SYSCALL instruction handler.
+ *
+ * The openpete runtime logs a warning and ignores the call.
+ * @param cpu CPU state of the caller.
+ * @param code The 20-bit code field of the instruction. */
 void psx_syscall(CPUState* cpu, uint32_t code);
 
 /** @brief GTE coprocessor command. */
@@ -84,12 +113,19 @@ void     gte_write_data(CPUState* cpu, uint8_t reg, uint32_t val);
 void     gte_write_ctrl(CPUState* cpu, uint8_t reg, uint32_t val);
 /** @} */
 
-/** @brief Direct access to PSX RAM (2 MB). */
+/** @brief Direct access to PSX RAM (2 MB).
+ *
+ * @return The array, indexed by physical address. */
 uint8_t* psx_get_ram(void);
-/** @brief Direct access to the scratchpad (1 KB). */
+/** @brief Direct access to the scratchpad (1 KB).
+ *
+ * @return The array. */
 uint8_t* psx_get_scratch(void);
 
-/** @brief Frame-gated GP1 display command tracker, called from the GP1 write path. */
+/** @brief Frame-gated GP1 display command tracker, called from the GP1 write path.
+ *
+ * The openpete runtime defines this as an empty function.
+ * @param cmd The GP1 command word. */
 void diag_track_gp1(uint32_t cmd);
 
 /**
@@ -151,16 +187,29 @@ int32_t psx_runtime_cone_widen_permoby(int32_t mac1_abs, int32_t a2,
 int32_t psx_runtime_cone_widen_shaded(int32_t mac1_abs, int32_t mac3);
 /** @} */
 
-/**
- * @name Moby vertex-stream field hooks
- * ReplaceCall hooks substituting the `srl rd, rt, 11|10` of the game's
- * field-decode idiom. The source register holds the frame word << 11; the
- * hook undoes the shift and resolves the 21-bit field through the
- * stream-handle table. Stock values pass through bit-identical.
- * @{ */
+/* Moby vertex-stream field hooks: ReplaceCall hooks substituting the
+ * `srl rd, rt, 11|10` of the game's field-decode idiom. The source register
+ * holds the frame word << 11; the hook undoes the shift and resolves the
+ * 21-bit field through the stream-handle table. Stock values pass through
+ * bit-identical. */
+/** @brief Resolve a shifted moby frame word to the stream address the `srl rd, rt, 11` yields.
+ *
+ * Shifts @p rt right by 11 and resolves the field through
+ * openpete_vstream_addr without halving: a field at or above the handle
+ * bound returns unchanged, a bound handle returns its vaddr, an unbound
+ * handle below the bound returns 0.
+ * @param rt Source register of the substituted shift (frame word << 11).
+ * @return The stream address. */
 uint32_t psx_runtime_vstream_moby(uint32_t rt);
+/** @brief Resolve a shifted moby frame word to the stream address the `srl rd, rt, 10` yields.
+ *
+ * Shifts @p rt right by 11 and resolves the field through
+ * openpete_vstream_addr with halving: a field at or above the handle bound
+ * returns doubled, a bound handle returns its vaddr, an unbound handle
+ * below the bound returns 0.
+ * @param rt Source register of the substituted shift (frame word << 11).
+ * @return The stream address. */
 uint32_t psx_runtime_vstream_halved(uint32_t rt);
-/** @} */
 
 /**
  * @name Flag-gated store hooks
@@ -273,7 +322,11 @@ int      psx_runtime_register_region(uint32_t psx_base,
                                      uint32_t size,
                                      void*    host_buffer);
 
-/** @brief Unregister by base; no-op when nothing matches. */
+/** @brief Unregister by base; no-op when nothing matches.
+ *
+ * The base is compared as a physical address, so KSEG0 and KSEG1 spellings
+ * of the same base match.
+ * @param psx_base Base address the region was registered with. */
 void     psx_runtime_unregister_region(uint32_t psx_base);
 
 /**
@@ -302,11 +355,17 @@ int      psx_runtime_region_host_to_vaddr(const void* host,
  *
  * Debug builds additionally assert the address is not inside a
  * registered region, marking the call site as one that only ever sees
- * canonical RAM.
+ * canonical RAM. The guard exists only in a build defining
+ * OPENPETE_DEBUG_REGION_GUARD; it prints the offending address and calls
+ * abort().
+ * @param addr A PSX address.
+ * @return The address masked to the 2 MB main RAM offset.
  */
 uint32_t psx_runtime_canonicalize(uint32_t addr);
 
-/** @brief Number of registered regions; zero lets cold-path resolvers skip the region check. */
+/** @brief Number of registered regions; zero lets cold-path resolvers skip the region check.
+ *
+ * @return The count of regions currently registered. */
 uint32_t psx_runtime_region_count(void);
 /** @} */
 
