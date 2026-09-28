@@ -44,7 +44,9 @@ static void wp_work(int worker) {
     }
 }
 
-/** @brief Body of one work-pool worker: run its share of each posted job until the pool shuts down. */
+/** @brief Body of one work-pool helper thread: run its share of each posted job, forever.
+ *
+ * The loop has no exit; helpers are never joined and end with the process. */
 static int SDLCALL wp_thread_main(void* p) {
     int worker = (int)(intptr_t)p;          /* 1..threads-1; 0 is the caller */
     openpete_crash_thread_attach();
@@ -161,8 +163,7 @@ void openpete_workpool_run(int nitems, openpete_work_fn fn, void* arg) {
      * to wait for every helper it signalled to come back, and a helper with no
      * item left still costs its full wake latency before it can post done — so
      * signalling more helpers than there is work for buys nothing and sets the
-     * run's floor at the slowest of them. A 2-item job used to wake seven
-     * threads to do one item between them. */
+     * run's floor at the slowest of them. */
     int wake = nitems < n ? nitems : n;
     s_job.fn = fn; s_job.arg = arg; s_job.nitems = nitems;
     SDL_SetAtomicInt(&s_job.next, 0);

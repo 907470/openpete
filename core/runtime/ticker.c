@@ -6,13 +6,9 @@
 // QPC spin) lands within microseconds of the target. See the pacer at
 // the bottom of the host loop in run.c.
 //
-// A dedicated VBL-rate ticker thread used to sleep to those deadlines
-// and broadcast a condvar for the host loop to wait on. The host loop
-// never adopted it — it paces inline instead — so the thread spun
-// (op_sleep_until's spin tail, ~15% of a core) and signalled a condvar
-// with no waiter, while its own "slip" warnings reported starvation of
-// that thread rather than anything about sim pacing. It is gone; the
-// pacer's real slip-clamp in run.c is the authoritative signal.
+// No pacing thread exists: the host loop sleeps inline, and the pacer's
+// slip clamp in run.c is the signal for pacing slips. What is left here is
+// the clock's init/teardown pair and the fast-forward flag.
 //
 // Determinism contract: pacing changes the *timing* of host-loop
 // iterations, never the count or order of game-fiber co_switches.

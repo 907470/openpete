@@ -6,9 +6,8 @@
  * carrying each knob's help text and flag spellings, a Save bar that writes
  * the session's edits into the config file's managed [saved] block, and a
  * right-click context menu (reset to boot / copy as CLI flag / copy as env
- * line — the copy items predate the Save bar and remain the way to move a
- * setting to ANOTHER machine, or across the WSL→Windows boundary env vars
- * don't cross).
+ * line — the copy items move a setting to ANOTHER machine, or across the
+ * WSL→Windows boundary env vars don't cross).
  *
  * Rendering: records into the offscreen pass (off_rp) at the live-present
  * compose point, after the SSAA resolve — so the panel is always at 1x window
@@ -947,10 +946,9 @@ static void mod_body_error_cb(ImGuiContext *, void *user_data,
                 "%s", (const char *)user_data, msg ? msg : "");
 }
 
-/* Consecutive presents whose body errored, per pass and mod index. Indices
- * are fixed for the session (the loader loads its whole set at boot); an
- * index past the array is simply not counted, so the loader's own cap does
- * not have to be mirrored here.
+/* Consecutive presents whose body errored, per pass and mod index. The
+ * vector grows to the highest mod index drawn, so a mod loaded after boot is
+ * counted like any other.
  *
  * Per pass, because the two passes run in the same present and only one of
  * them runs a given mod's body: for an always section the node pass draws

@@ -2,10 +2,8 @@
 //
 // The host loop paces itself: it steps phase-locked absolute integer-ns
 // deadlines and sleeps to them with op_sleep_until (see the pacer at the
-// bottom of the host loop in run.c). There is no pacing thread — a
-// deadline-signalling ticker thread existed once, but nothing ever
-// consumed its condvar, so it was retired. What remains here is the
-// clock's init/teardown pair plus the fast-forward flag.
+// bottom of the host loop in run.c). There is no pacing thread. This
+// header holds the clock's init/teardown pair and the fast-forward flag.
 //
 // `openpete_vbl` is NOT driven from here. It is advanced synchronously
 // by psyq_VSync(0) — exactly one increment per game-fiber yield —

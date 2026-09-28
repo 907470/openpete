@@ -13,7 +13,8 @@
  *
  * Input contract (run.c owns the wiring):
  *  - every SDL event is forwarded via openpete_devui_process_event (cheap io
- *    bookkeeping; imgui frames only run while the overlay is open);
+ *    bookkeeping; imgui frames run only while the overlay is open, the
+ *    fill-tag inspector is active, or a mod's always section is enabled);
  *  - while wants_keyboard() the host hotkey block and the keyboard->pad path
  *    must be gated off so typed text never steers the game, except that the
  *    overlay's own toggle action stays readable unless wants_text_input();

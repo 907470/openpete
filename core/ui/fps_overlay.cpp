@@ -73,8 +73,9 @@ static GLuint s_vao = 0;
 static GLuint s_vbo = 0;
 static int s_initialised = 0;
 
-/* Worst case per call: 7 chars × 35 lit cells × 2 (shadow + text) × 6 verts
- * × 2 floats = 5880 floats. Round up. */
+/* Worst case for one pass: the 15 characters of the text buffer × 35 lit
+ * cells × 6 verts × 2 floats = 6300 floats. The shadow and text passes each
+ * rebuild the array from its start. Round up. */
 #define OPENPETE_FPS_MAX_VERT_FLOATS 8192
 static GLfloat s_verts[OPENPETE_FPS_MAX_VERT_FLOATS];
 
