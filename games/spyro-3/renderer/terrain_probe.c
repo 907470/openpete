@@ -47,6 +47,14 @@ extern void func_80022378(CPUState* cpu);   /* the world draw */
 static int    s_mode = -1;      /* 0 off, 1 summary, 2 per tick */
 static double s_tol  = 1.5;
 
+/** @brief Returns the probe mode, reading the environment on the first call.
+ *
+ * OPENPETE_TERRAIN_PROBE is parsed with atoi: unset or empty is 0 (off), 1
+ * prints a summary at exit, 2 also prints one line per tick.
+ * OPENPETE_TERRAIN_PROBE_TOL, when set, is parsed with atof into the match
+ * tolerance in pixels. The mode is cached once it is non-negative.
+ *
+ * @return The mode. */
 static int probe_mode(void) {
     if (s_mode < 0) {
         const char* e = getenv("OPENPETE_TERRAIN_PROBE");
@@ -78,12 +86,34 @@ static pvert_t s_pv[PV_MAX];
 static int     s_pv_n;
 static int     s_grid[GRID_N];
 
+/** @brief Empties the projected-vertex store and its screen grid. */
 static void pv_reset(void) { s_pv_n = 0; for (int i = 0; i < GRID_N; i++) s_grid[i] = -1; }
+/** @brief Maps a screen point to its cell in the 8-pixel grid.
+ *
+ * The grid spans [-1024, 1024) on both axes, 256 cells each way.
+ *
+ * @param sx The screen X.
+ * @param sy The screen Y.
+ * @return The cell index, row-major, or -1 when the point is outside the grid. */
 static int  pv_cell(double sx, double sy) {
     int cx = (int)floor((sx + 1024.0) / 8.0), cy = (int)floor((sy + 1024.0) / 8.0);
     if (cx < 0 || cy < 0 || cx >= GRID_W || cy >= GRID_W) return -1;
     return cy * GRID_W + cx;
 }
+/** @brief Stores one projected sector vertex in the grid.
+ *
+ * The vertex is dropped when the store holds PV_MAX vertices or the point is
+ * outside the grid.
+ *
+ * @param sx The screen X.
+ * @param sy The screen Y.
+ * @param z The view depth.
+ * @param hp 1 for a vertex of the sector's HP list, 0 for LP.
+ * @param s1z 1 for a vertex decoded with the Spyro 1 Z packing (the control),
+ *     else 0.
+ * @param sec The sector index.
+ * @param fl 0 for a sector without the flat flag, 1 for a flat sector with the
+ *     plain Z packing, 2 with the flat Z packing. */
 static void pv_add(double sx, double sy, double z, int hp, int s1z, uint32_t sec, int fl) {
     if (s_pv_n >= PV_MAX) return;
     int c = pv_cell(sx, sy); if (c < 0) return;
@@ -91,14 +121,26 @@ static void pv_add(double sx, double sy, double z, int hp, int s1z, uint32_t sec
     v->sx = (float)sx; v->sy = (float)sy; v->hp = (uint8_t)hp; v->s1z = (uint8_t)s1z; v->fl = (uint8_t)fl; v->sec = (uint16_t)sec; v->z = (float)z;
     v->next = s_grid[c]; s_grid[c] = s_pv_n++;
 }
-/* Nearest projected vertex within tol; bits: 1 = an S3-packed vertex matched,
- * 2 = it was HP, 4 = it was LP, 8 = an S1-packed (control) vertex matched,
- * 16 = the match was a flat sector's vertex under the plain packing,
- * 32 = a flat sector's vertex under the flat packing matched (bit 1 is never
- * set by one of those, so the headline match rate is unchanged).
- * *near receives the nearest S3-packed vertex distance within the searched
- * cells (up to `reach` cells each way), or a large value. */
 static double s_near_x, s_near_y;   /* the nearest vertex of the last pv_match */
+/** @brief Matches an emitted screen point against the projected sector vertices.
+ *
+ * Searches the grid cells within `reach` cells of the point and reports which
+ * vertex kinds lie within tol. The nearest vertex is tracked over the S3-packed
+ * and flat-sector plain-packed vertices only, and its screen position is left
+ * in s_near_x and s_near_y.
+ * @param sx The point's screen X.
+ * @param sy The point's screen Y.
+ * @param tol The match tolerance in pixels.
+ * @param reach The search radius in grid cells.
+ * @param near Receives the distance to the nearest such vertex within the
+ *     searched cells, or sqrt(1e9) when none was seen.
+ * @param near_sec Receives that vertex's sector, or -1.
+ * @param near_z Receives that vertex's view depth, or 0.
+ * @return Bits: 1 = an S3-packed vertex matched, 2 = it was HP, 4 = it was
+ *     LP, 8 = an S1-packed (control) vertex matched, 16 = a flat sector's
+ *     vertex under the plain packing matched, 32 = a flat sector's vertex
+ *     under the flat packing matched (bit 1 is never set by one of those, so
+ *     the headline match rate is unchanged). */
 static int pv_match(double sx, double sy, double tol, int reach, double* near, int* near_sec, double* near_z) {
     int cx = (int)floor((sx + 1024.0) / 8.0), cy = (int)floor((sy + 1024.0) / 8.0);
     int r = 0; double best = 1e9; *near_sec = -1; *near_z = 0.0; s_near_x = s_near_y = 0.0;
@@ -159,13 +201,30 @@ typedef struct { float sx, sy; int next; } evert_t;
 static evert_t s_ev[PV_MAX];
 static int     s_ev_n;
 static int     s_egrid[GRID_N];
+/** @brief Empties the emitted-vertex store and its screen grid. */
 static void ev_reset(void) { s_ev_n = 0; for (int i = 0; i < GRID_N; i++) s_egrid[i] = -1; }
+/** @brief Stores one emitted polygon vertex in the grid.
+ *
+ * The vertex is dropped when the store holds PV_MAX vertices or the point is
+ * outside the grid.
+ *
+ * @param sx The screen X.
+ * @param sy The screen Y. */
 static void ev_add(double sx, double sy) {
     if (s_ev_n >= PV_MAX) return;
     int c = pv_cell(sx, sy); if (c < 0) return;
     s_ev[s_ev_n].sx = (float)sx; s_ev[s_ev_n].sy = (float)sy;
     s_ev[s_ev_n].next = s_egrid[c]; s_egrid[c] = s_ev_n++;
 }
+/** @brief Tests whether an emitted vertex lies within a tolerance of a point.
+ *
+ * Only the 3x3 grid cells around the point are searched, so a tolerance above
+ * the 8-pixel cell size can miss a vertex that lies within it.
+ *
+ * @param sx The screen X.
+ * @param sy The screen Y.
+ * @param tol The distance in pixels.
+ * @return 1 when a vertex lies within tol, else 0. */
 static int ev_near(double sx, double sy, double tol) {
     int cx = (int)floor((sx + 1024.0) / 8.0), cy = (int)floor((sy + 1024.0) / 8.0);
     for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
@@ -182,6 +241,15 @@ static int ev_near(double sx, double sy, double tol) {
 /* ---- the draw's projection --------------------------------------------- */
 typedef struct { int M[3][3]; double ofx, ofy, H; int32_t cx4, cy4, cz4; } view_t;
 
+/** @brief Captures the world draw's projection state from guest memory and the GTE registers.
+ *
+ * Reads the rotation from the five packed words at the camera projection matrix
+ * (a 3x3 of int16), the screen offset OFX and OFY (GTE control 24 and 25, 16.16
+ * fixed point), the distance H (control 26, low 16 bits) and the camera
+ * position shifted right by 2.
+ *
+ * @param cpu The guest CPU state.
+ * @param v Receives the captured state. */
 static void view_read(CPUState* cpu, view_t* v) {
     uint32_t w[5];
     for (int i = 0; i < 5; i++) w[i] = cpu->read_word(game_layout.cam.proj_matrix + 4u * (uint32_t)i);
@@ -261,6 +329,11 @@ static struct {
     int printed;
 } S;
 
+/** @brief Prints the probe's accumulated statistics to stderr, once.
+ *
+ * Does nothing when the mode is 0 or the report already printed. It prints a
+ * VACUOUS line and stops when no tick, no polygon or no visible sector was
+ * seen. on_world_draw registers it with atexit on first use. */
 static void probe_report(void) {
     if (S.printed || probe_mode() == 0) return;
     S.printed = 1;
@@ -484,6 +557,11 @@ static feature_dispatch_entry_t probe_dispatch[] = {
     { 0u, NULL },
 };
 
+/** @brief Binds the probe's dispatch entry to the layout's world-draw address.
+ *
+ * The address is the layout's, so the entry cannot be a static initializer.
+ *
+ * @param opts Unused. */
 static void probe_apply_options(const openpete_options_t* opts) {
     (void)opts;
     probe_dispatch[0].addr = game_layout.hooks.world_draw;

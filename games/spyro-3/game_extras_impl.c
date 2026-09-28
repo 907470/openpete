@@ -213,6 +213,17 @@ static void checksum_verdict(CPUState* cpu) {
     s_last_state = state;
 }
 
+/** @brief Runs the Spyro 3 intercepts at the entry of every recompiled function.
+ *
+ * In order: the free camera's freeze test, which ends the function at once
+ * while it drives the camera in place of func_8001204C or suppresses the player
+ * update func_8003E83C; the level-load checksum log at func_8002CA50; the write
+ * census's entry note; then the feature modules' dispatch tables. Called from
+ * psx_override_dispatch, which the generated bodies call before their own code.
+ *
+ * @param cpu The guest CPU state.
+ * @param addr The entry address of the function being dispatched.
+ * @return 1 when the recompiled body must return at once, else 0. */
 int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
     /* Debug free camera (F): while engaged and gameplay is live, drive the
      * camera in place of func_8001204C and suppress it and the player update

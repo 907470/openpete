@@ -36,6 +36,13 @@ int s3_transition_enqueue(const s3_transition_request_t* req) {
 
 int s3_transition_pending(void) { return s_pending; }
 
+/** @brief Writes one request store into guest memory.
+ *
+ * A size of 1 or 2 writes a byte or half word; any other size writes a word.
+ * With or_mask nonzero the value is ORed into the current contents first.
+ *
+ * @param cpu The guest CPU state.
+ * @param s The store to make. */
 static void store(CPUState* cpu, const s3_transition_store_t* s) {
     uint32_t v = s->value;
     if (s->size == 1u) {
@@ -67,6 +74,17 @@ static void call_guest(CPUState* cpu, uint32_t fn, uint32_t a0, uint32_t a1) {
     cpu->ra = ra;
 }
 
+/** @brief Drains the pending transition request at the entry of Draw func_8001E638.
+ *
+ * Does nothing when no request waits, when its entry is not
+ * S3_TRANSITION_AT_DRAW, or on a speculative tick. Otherwise it dequeues the
+ * request and re-reads its route: a closed route logs and runs the dropped
+ * callback. An open route runs the pre-calls, makes the stores, calls the
+ * function with a0 and a1, logs, and runs the called callback.
+ *
+ * @param cpu The guest CPU state.
+ * @param addr The hooked address, unused.
+ * @return 0 always; the stock Draw body runs after the hook. */
 static int on_draw(CPUState* cpu, uint32_t addr) {
     size_t i;
     s3_transition_request_t r;

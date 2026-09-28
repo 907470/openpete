@@ -7,6 +7,14 @@
 #include "skip_to_level.h"           /* level id -> name */
 #include <stdio.h>
 
+/** @brief Writes a level's name into a buffer, or "level<N>" when the level table lacks it.
+ *
+ * Installed as the terrain_game level_name hook. The name is the table's
+ * --skip-to-level spelling.
+ *
+ * @param level The level number.
+ * @param out Receives the NUL-terminated name, truncated to cap.
+ * @param cap The size of out in bytes. */
 static void s3_level_name(int level, char* out, size_t cap) {
     size_t nlv = 0;
     const spyro3_level_t* lv = spyro3_level_table(&nlv);

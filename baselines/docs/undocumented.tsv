@@ -2,7 +2,7 @@
 # library: libclang 14
 # requirement: @brief of one sentence on one line on every function; @param per named parameter and @return on non-void for external linkage
 # written-by: hook
-# head: 9ac6f8483e7f62ef3f65c5d19386a2559add7970
+# head: 184d0f5fc4327cdd37a6e80c58a1ab88af7ceed3
 file	function	form	accepted
 core/diag/psxtrace_schedule.c	openpete_sched_active	untagged	
 core/diag/psxtrace_schedule.c	openpete_sched_failed	untagged	
@@ -172,42 +172,3 @@ games/spyro-1/renderer/spyro.c	spyro_walk_eval	none
 games/spyro-1/renderer/terrain_game.c	s1_fill_tag	none	
 games/spyro-1/renderer/terrain_game.c	s1_level_name	none	
 games/spyro-1/renderer/terrain_game.c	s1_lp_artfix	none	
-games/spyro-3/features/cutscene_skip.c	cut_called	none	
-games/spyro-3/features/cutscene_skip.c	cut_dropped	none	
-games/spyro-3/features/cutscene_skip.c	cut_enqueue	none	
-games/spyro-3/features/cutscene_skip.c	cut_route	none	
-games/spyro-3/features/cutscene_skip.c	row_of	none	
-games/spyro-3/features/levelwarp.c	levelwarp_apply_options	none	
-games/spyro-3/features/levelwarp.c	warp_called	none	
-games/spyro-3/features/levelwarp.c	warp_current_level	none	
-games/spyro-3/features/levelwarp.c	warp_dropped	none	
-games/spyro-3/features/levelwarp.c	warp_in_flight	none	
-games/spyro-3/features/levelwarp.c	warp_in_flight_status	none	
-games/spyro-3/features/levelwarp.c	warp_route_level	none	
-games/spyro-3/features/skip_to_area.c	area_called	none	
-games/spyro-3/features/skip_to_area.c	area_count	none	
-games/spyro-3/features/skip_to_area.c	area_dropped	none	
-games/spyro-3/features/skip_to_area.c	area_enqueue	none	
-games/spyro-3/features/skip_to_area.c	area_route	none	
-games/spyro-3/features/skip_to_area.c	level_name	none	
-games/spyro-3/features/skip_to_area.c	parse_index	none	
-games/spyro-3/features/skip_to_area.c	print_targets	none	
-games/spyro-3/features/transition_call.c	on_draw	none	
-games/spyro-3/features/transition_call.c	store	none	
-games/spyro-3/game_extras_impl.c	psx_override_dispatch_game	none	
-games/spyro-3/renderer/reextract.c	cam_dbg_line	none	
-games/spyro-3/renderer/reextract.c	game_reextract_body_v	none	
-games/spyro-3/renderer/reextract.c	rx_scene_tris	none	
-games/spyro-3/renderer/terrain_game.c	s3_level_name	none	
-games/spyro-3/renderer/terrain_probe.c	ev_add	none	
-games/spyro-3/renderer/terrain_probe.c	ev_near	none	
-games/spyro-3/renderer/terrain_probe.c	ev_reset	none	
-games/spyro-3/renderer/terrain_probe.c	probe_apply_options	none	
-games/spyro-3/renderer/terrain_probe.c	probe_mode	none	
-games/spyro-3/renderer/terrain_probe.c	probe_report	none	
-games/spyro-3/renderer/terrain_probe.c	pv_add	none	
-games/spyro-3/renderer/terrain_probe.c	pv_cell	none	
-games/spyro-3/renderer/terrain_probe.c	pv_match	none	
-games/spyro-3/renderer/terrain_probe.c	pv_reset	none	
-games/spyro-3/renderer/terrain_probe.c	view_read	none	
-games/spyro-3/skip_to_level.c	target_finish	none	

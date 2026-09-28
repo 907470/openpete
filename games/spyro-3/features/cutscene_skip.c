@@ -145,6 +145,10 @@ static const cutscene_t k_cutscenes[] = {
 };
 #define CUTSCENE_COUNT (sizeof(k_cutscenes) / sizeof(k_cutscenes[0]))
 
+/** @brief Finds the cutscene row with a given WarpToLevel id.
+ *
+ * @param id The cutscene id (61..80; 72 has no row).
+ * @return The row of k_cutscenes, or NULL when no row has that id. */
 static const cutscene_t* row_of(int id) {
     size_t i;
     for (i = 0; i < CUTSCENE_COUNT; i++)
@@ -248,11 +252,39 @@ static int preconditions(CPUState* cpu) {
     return 1;
 }
 
+/** @brief Tells the transition drain whether the armed cutscene route still applies.
+ *
+ * Passed as the request's route callback. The drain calls it at Draw's entry,
+ * after the tick's Update; a 0 drops the request and runs cut_dropped. It is
+ * route_tick and preconditions on the current guest state.
+ *
+ * @param cpu The guest CPU state.
+ * @return 1 to make the WarpToLevel call, else 0. */
 static int cut_route(CPUState* cpu) { return route_tick(cpu) && preconditions(cpu); }
 
+/** @brief Moves the module to CUT_CALLED after the drain has made the WarpToLevel call.
+ *
+ * Passed as the request's called callback. Later ticks then log each cutscene
+ * index the chain plays and test for the release.
+ *
+ * @param cpu Unused. */
 static void cut_called(CPUState* cpu)  { (void)cpu; s_phase = CUT_CALLED; }
+/** @brief Returns the module to CUT_ARMED when the drain dropped the request.
+ *
+ * Passed as the request's dropped callback. The route closed between the
+ * enqueue and the drain, so spyro3_cutscene_on_tick tests the route again on
+ * later ticks and enqueues again.
+ *
+ * @param cpu Unused. */
 static void cut_dropped(CPUState* cpu) { (void)cpu; s_phase = CUT_ARMED; }
 
+/** @brief Queues WarpToLevel(6, id) of the armed route through the transition queue.
+ *
+ * The request carries the route row's constant stores, and for id 61 the guest
+ * calls k_pre_61 (the card teardown, then New Game's commit), which the drain
+ * makes before the stores. The phase becomes CUT_QUEUED when the queue accepts
+ * the request; when a request is already pending the phase stays CUT_ARMED and
+ * the next tick tries again. Enqueueing writes no guest memory. */
 static void cut_enqueue(void) {
     s3_transition_request_t req = {
         .tag      = "skip-to-cutscene",

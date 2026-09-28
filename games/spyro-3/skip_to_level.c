@@ -179,6 +179,9 @@ static int target_released(CPUState* cpu, char* eng, size_t cap) {
     return s_phase == SKIP_PICKED && spyro3_skip_gameplay_live(cpu);
 }
 
+/** @brief Ends the armed --skip-to-area and --skip-to-cutscene watches.
+ *
+ * Each module's finish runs only while its watch is armed. */
 static void target_finish(void) {
     if (spyro3_area_watching()) spyro3_area_finish();
     if (spyro3_cutscene_watching()) spyro3_cutscene_finish();

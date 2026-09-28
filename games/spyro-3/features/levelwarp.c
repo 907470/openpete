@@ -88,8 +88,19 @@ static int warp_level_id(int index) {
     return (index >= 0 && (size_t)index < n) ? t[index].number : -1;
 }
 
+/** @brief Reports whether a warp this module started has not finished.
+ *
+ * The shared overlay half reads it to gate the Jump button and the dropdown's
+ * auto-follow.
+ *
+ * @return 1 while the phase is not WARP_IDLE, else 0. */
 static int warp_in_flight(void) { return s_phase != WARP_IDLE; }
 
+/** @brief Writes the in-flight status text for the overlay while a warp runs.
+ *
+ * @param buf Receives "loading..."; untouched when no warp is in flight.
+ * @param cap The size of buf in bytes.
+ * @return 1 when buf was written, 0 when no warp is in flight. */
 static int warp_in_flight_status(char* buf, size_t cap) {
     if (s_phase == WARP_IDLE) return 0;
     snprintf(buf, cap, "loading...");
@@ -112,20 +123,44 @@ static int warp_route(CPUState* cpu) {
     return LEVELWARP_ROUTE_NONE;
 }
 
+/** @brief Reads the guest's currentLevel word 0x8006C5BC.
+ *
+ * The dropdown follows it until the user picks a level. It never reports -1.
+ *
+ * @param cpu The guest CPU state.
+ * @return The level number the game holds. */
 static int warp_current_level(CPUState* cpu) {
     return (int)cpu->read_word(S3_CURRENT_LEVEL);
 }
 
+/** @brief Tells the transition drain whether the in-level warp route is still open.
+ *
+ * Passed as the request's route callback. The drain calls it at Draw's entry,
+ * after the tick's Update; a 0 drops the request and runs warp_dropped.
+ *
+ * @param cpu The guest CPU state.
+ * @return 1 when warp_route reports LEVELWARP_ROUTE_LEVEL, else 0. */
 static int warp_route_level(CPUState* cpu) {
     return warp_route(cpu) == LEVELWARP_ROUTE_LEVEL;
 }
 
+/** @brief Moves the warp to WARP_LEAVING and restarts its tick count after the drain made the call.
+ *
+ * Passed as the request's called callback.
+ *
+ * @param cpu Unused. */
 static void warp_called(CPUState* cpu) {
     (void)cpu;
     s_phase = WARP_LEAVING;
     s_ticks = 0;
 }
 
+/** @brief Resets the warp to WARP_IDLE when the drain dropped the request.
+ *
+ * Passed as the request's dropped callback. The target and the tick count are
+ * cleared.
+ *
+ * @param cpu Unused. */
 static void warp_dropped(CPUState* cpu) {
     (void)cpu;
     s_phase  = WARP_IDLE;
@@ -174,6 +209,13 @@ static void warp_start(CPUState* cpu, int target_id) {
  * rather than initialised. */
 static levelwarp_ui_desc_t s_ui;
 
+/** @brief Resets the warp state, copies the level display strings and registers the overlay rows.
+ *
+ * The display array holds at most 64 entries, so a longer level table is
+ * truncated in the dropdown. The descriptor s_ui is filled here, since the
+ * level count is known only at run time, then handed to levelwarp_ui_register.
+ *
+ * @param opts Unused. */
 static void levelwarp_apply_options(const openpete_options_t* opts) {
     size_t  n, i;
     const spyro3_level_t* t = spyro3_level_table(&n);

@@ -64,6 +64,10 @@ static const area_level_t k_area_levels[] = {
 };
 #define AREA_LEVEL_COUNT (sizeof(k_area_levels) / sizeof(k_area_levels[0]))
 
+/** @brief Returns a level's name from the level table, for messages.
+ *
+ * @param number The level number.
+ * @return The table's name string, or "?" when the table has no such level. */
 static const char* level_name(int number) {
     size_t n, i;
     const spyro3_level_t* t = spyro3_level_table(&n);
@@ -72,6 +76,10 @@ static const char* level_name(int number) {
     return "?";
 }
 
+/** @brief Prints every valid --skip-to-area target to stderr.
+ *
+ * One line per level in k_area_levels: the number, the name and the area
+ * indices 1 up to the area count minus one. */
 static void print_targets(void) {
     size_t i;
     fprintf(stderr, "valid --skip-to-area <level>:<area> targets (the level "
@@ -85,6 +93,11 @@ static void print_targets(void) {
     }
 }
 
+/** @brief Returns the number of areas of a level.
+ *
+ * @param level The level number.
+ * @return The count from k_area_levels, or 1 (area 0 only) for a level not
+ *     listed. */
 static int area_count(int level) {
     size_t i;
     for (i = 0; i < AREA_LEVEL_COUNT; i++)
@@ -92,6 +105,14 @@ static int area_count(int level) {
     return 1;
 }
 
+/** @brief Parses a non-negative decimal area index.
+ *
+ * The string must be non-empty and all decimal digits. The value is atoi's,
+ * with no range check, so a digit string beyond int range converts as atoi
+ * converts it.
+ *
+ * @param s The NUL-terminated text after the colon of the argument.
+ * @return The value, or -1 for an empty or non-digit string. */
 static int parse_index(const char* s) {
     const char* p = s;
     if (!*p) return -1;
@@ -162,6 +183,16 @@ int spyro3_area_released(CPUState* cpu, char* eng, size_t cap) {
     return 1;
 }
 
+/** @brief Tells the transition drain whether the target level is live in area 0.
+ *
+ * Passed as the request's route callback, and tested by spyro3_area_on_tick
+ * before it enqueues. It requires gameplay live (game.state 0, loadStage -1),
+ * isDemoMode 0, the area word 0x8006C5C8 0 and currentLevel equal to the
+ * target. The drain calls it at Draw's entry, after the tick's Update; a 0
+ * drops the request and runs area_dropped.
+ *
+ * @param cpu The guest CPU state.
+ * @return 1 to make the EnterSubArea call, else 0. */
 static int area_route(CPUState* cpu) {
     return spyro3_skip_gameplay_live(cpu) &&
            cpu->read_word(S3_IS_DEMO_MODE) == 0u &&
@@ -169,7 +200,18 @@ static int area_route(CPUState* cpu) {
            cpu->read_word(S3_CURRENT_LEVEL) == (uint32_t)s_level;
 }
 
+/** @brief Moves the module to AREA_CALLED after the drain has made the EnterSubArea call.
+ *
+ * Passed as the request's called callback.
+ *
+ * @param cpu Unused. */
 static void area_called(CPUState* cpu)  { (void)cpu; s_phase = AREA_CALLED; }
+/** @brief Returns the module to AREA_ARMED when the drain dropped the request.
+ *
+ * Passed as the request's dropped callback. spyro3_area_on_tick then enqueues
+ * again once the route holds.
+ *
+ * @param cpu Unused. */
 static void area_dropped(CPUState* cpu) { (void)cpu; s_phase = AREA_ARMED; }
 
 /** @brief Finds the paired moby of the area-0 portal leading to a sub-area.
@@ -196,6 +238,15 @@ static uint32_t find_portal_pair(CPUState* cpu, int area) {
     return 0u;
 }
 
+/** @brief Queues EnterSubArea(area, paired portal moby) for the armed target through the transition queue.
+ *
+ * The second argument is find_portal_pair's result, and the request carries no
+ * store. With no portal found the module logs a warning and goes to AREA_IDLE,
+ * staying in area 0. The phase becomes AREA_QUEUED when the queue accepts the
+ * request; when a request is already pending the phase stays AREA_ARMED and the
+ * next tick tries again.
+ *
+ * @param cpu The guest CPU state. */
 static void area_enqueue(CPUState* cpu) {
     s3_transition_request_t req = {
         .tag     = "skip-to-area",

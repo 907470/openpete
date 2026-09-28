@@ -93,6 +93,14 @@ static int cam_dbg_on(void) {
     if (v < 0) { const char* e = getenv("OPENPETE_CAM_DBG"); v = (e && *e && *e != '0'); }
     return v;
 }
+/** @brief Prints one camera-transform trace line to stderr.
+ *
+ * The line holds the frame, the tag, the position words at +0x28, the nine
+ * view-matrix shorts at +0x14 and the first sky-matrix short at +0x00. A NULL
+ * block prints "(null)" in place of the values.
+ *
+ * @param tag The label printed on the line.
+ * @param c The camera block base, or NULL. */
 static void cam_dbg_line(const char* tag, const uint8_t* c) {
     if (!c) { fprintf(stderr, "[cam-dbg f=%u %s] (null)\n", openpete_frame, tag); return; }
     const int16_t* m = (const int16_t*)(c + CAM_OFF_VIEW);
@@ -417,6 +425,12 @@ static int rx_census_on(void) {
     static env_frame_range_t s_range = ENV_FRAME_RANGE_INIT;
     return env_frame_range_active(&s_range, "OPENPETE_RX_CENSUS", openpete_frame);
 }
+/** @brief Counts the triangles the scene being accumulated has accepted so far.
+ *
+ * Sums the 16 tag-family counts; the census takes differences of it around each
+ * producer.
+ *
+ * @return The triangle count. */
 static uint32_t rx_scene_tris(void) {
     uint32_t n[16], t = 0;
     openpete_native_scene_tag_family_counts(n);
@@ -562,6 +576,9 @@ static void game_reextract_body(CPUState* cpu) {
     s_fpos_active = 0;
 }
 
+/** @brief Adapts game_reextract_body to the void-pointer callback the shared view installs.
+ *
+ * @param cpu_v The guest CPUState, passed as void*. */
 static void game_reextract_body_v(void* cpu_v) {
     game_reextract_body((CPUState*)cpu_v);
 }
