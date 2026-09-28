@@ -302,9 +302,10 @@ static void shadow_spyro_feed_native(CPUState* cpu, int slot) {
 /** @brief Compares the native Spyro shadow fan with the captured G3 prims and prints the result to stderr.
  *
  * Both are in fan order (anchor, strip[k], strip[k+1]) and are compared
- * element-wise against the prims' int16 SXY: mean and worst per-triangle
- * L1 distance, triangles over 2 px, and vertex colour mismatches. Prints
- * VACUOUS when the routine emitted no untextured triangle or the native
+ * element-wise against the prims' int16 SXY: mean and worst per-vertex L1
+ * distance, triangles with a vertex over 2 px, and vertex colour
+ * mismatches. Prints VACUOUS when the routine emitted no untextured
+ * triangle or the native
  * fan is empty.
  * @param cpu The guest CPU state. */
 static void shadow_spyro_compare(CPUState* cpu) {

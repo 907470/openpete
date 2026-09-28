@@ -88,10 +88,9 @@ static int      s_cross_have_bg;
 static uint32_t s_cross_bg_flat;
 
 /* Staleness gate: the hook records its emitted polybuf interval as
- * RP_TRANSITION (liveness unification); the sub-tick reextract gates on
+ * RP_TRANSITION; the sub-tick reextract gates on
  * render_path_canon_drawn(RP_TRANSITION), which drops the moment
- * func_8004F000 stops emitting. Replaces the old private s_cross_ran /
- * s_cross_canon_drawn latch + chained commit. */
+ * func_8004F000 stops emitting. */
 
 /** @brief Re-derives the faded cyclorama dome func_8004F000 draws from gamestate against the active frustum, and the backdrop colours behind it.
  *

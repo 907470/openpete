@@ -437,10 +437,11 @@ static void spyro_matrix_compare(CPUState* cpu) {
 }
 
 /* ---- full-run aggregate -------------------------------------------------
- * Cheap per-tick (O(verts)) per-index match against the routine's own block,
- * accumulated across the whole run so a multi-level demo gets one verdict
- * without tens of thousands of log lines or the quadratic nearest-neighbour
- * cost. */
+ * Per-tick per-index match against the routine's own block (O(verts), no
+ * nearest-neighbour search), plus the walk and matrix evaluations, accumulated
+ * across the whole run so a multi-level demo gets one verdict without tens of
+ * thousands of log lines. The walk evaluation recovers each primitive vertex's
+ * index by linear scan. */
 static struct {
     long frames, bad_frames;
     double worst_match; unsigned worst_frame; int worst_part;

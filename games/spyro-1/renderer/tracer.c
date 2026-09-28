@@ -19,7 +19,8 @@
 //     V = (camY-Y, camZ-Z, X-camX); MAC = camRot * V / 4096; viewZ = MAC3;
 //     SX = OFX + MAC1*H/MAC3, SY = OFY + MAC2*H/MAC3   (pure float, no GTE clamp)
 //   per point i (fade f, skipped when f>=81):
-//     width   = (625*i)<<5   (>>2 if g_LevelId==63)
+//     width   = (625*i)<<5 for i<3, 0 at i==count-2, else 0x11170
+//               (>>2 if g_LevelId==63)
 //     dir     = next point screen delta (dx,dy); len = hypot(dx,dy)
 //     perp    = (dy,-dx) * width / (viewZ*len)        (perspective ribbon)
 //     corners = P +/- perp ; colour = (150-2f, 150-4f, 150-10f) clamped,
@@ -152,7 +153,7 @@ static void tracer_build_and_feed(CPUState* cpu) {
             double sx, sy, vz;
             if (!tracer_project(v, ts->pt[i].x, ts->pt[i].y, ts->pt[i].z, &sx, &sy, &vz))
                 continue;
-            /* screen direction to the neighbouring point (next; backward at the end) */
+            /* screen direction to the next point (i < count-1, so it exists) */
             int j = (i + 1 < ts->count) ? i + 1 : i - 1;
             double dx = 0.0, dy = 0.0;
             if (j >= 0) {
