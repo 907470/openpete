@@ -106,8 +106,8 @@ static int manifest_line(const char* line, int* idx, char* rel, size_t cap)
 /** @brief Read `<dir>/music/manifest.txt` and report whether any line maps `track`.
  *
  * The file is read on every call, not cached, because the set of mod roots
- * changes with the enabled mods; load_track calls it once per mod root
- * when a track's cache entry is unloaded. Each line parses into a local
+ * changes with the enabled mods; probe_mod_roots calls it once per enabled
+ * mod root on every track start that reaches it. Each line parses into a local
  * buffer that is copied to `rel` only when its index is `track`, so the
  * last matching line wins and `rel` is untouched on a miss.
  * @param dir Mod asset root, without the `music/` suffix.
