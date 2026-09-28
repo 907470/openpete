@@ -24,9 +24,11 @@
 // extraction on the same records, compare positions + colours + UV +
 // tpage/clut per vertex. Headless, numerical. Gated by OPENPETE_MOBY_VERIFY.
 //
-// Determinism: never writes PSX RAM. When active it calls the real render
+// Determinism: leaves PSX RAM unchanged. When active it calls the real render
 // function exactly once (behaviour-identical to the normal dispatch
-// fall-through) and only READS the records + polybuf afterwards.
+// fall-through) and afterwards only READS the records + polybuf, except the
+// keyframe faceblock patch mirror, which writes patch words into a faceblock
+// and restores the originals within one decode (moby_frame_patch_apply).
 
 #include "feature_registry.h"
 #include "renderer/orchestrator.h"  /* the canonical-render epoch + producer-camera brackets */
@@ -493,14 +495,13 @@ static void capture_gte(CPUState* cpu, uint32_t start, uint32_t end) {
             for (int i = 0; i < t->nraw; i++) t->raw[i] = cpu->read_word(p + (uint32_t)i*4);
             /* GT3 (0x34, 10w) / GT4 (0x3C, 13w): per-vertex blocks of
              * {rgb|code, xy, uv|clut-or-tpage}. xy0 @ word[2], xy1 @ [5],
-             * xy2 @ [8], xy3 @ [11]. (Confirmed by the hex dump.) */
+             * xy2 @ [8], xy3 @ [11]. */
             /* General PSX polygon decode by command bits (bit4=gouraud,
              * bit3=quad, bit2=textured). Handles every moby variant uniformly:
              * GT3/GT4 (0x34/0x3C), G3/G4 (0x30/0x38), FT3/FT4 (0x24/0x2C, incl.
              * the +0x02 semi-transparent 0x26/0x2E), F3/F4. Layout: word[1] =
              * rgb0|code, then per vertex {rgb if gouraud&&k>0}{xy}{uv if tex};
-             * clut rides v0's uv-word hi, tpage rides v1's. Bit-identical to the
-             * old hardcoded GT3/GT4 path, so the verified match is preserved. */
+             * clut rides v0's uv-word hi, tpage rides v1's. */
             if ((code & 0xE0) == 0x20) {
                 int gouraud = (code & 0x10) != 0;
                 int quad    = (code & 0x08) != 0;
@@ -525,10 +526,9 @@ static void capture_gte(CPUState* cpu, uint32_t start, uint32_t end) {
             s_code_hist[code & 0xFF]++;
             if (t->nv == 0) {
                 s_uncoded_hist[code & 0xFF]++;  /* not fed = missing polys */
-                /* Loud-once per unknown code (extends the ABR-FIXME discipline:
-                 * silent until it matters, loud when it does). Silent-skip is only
-                 * OK for explicitly-culled geometry — never for "didn't recognize
-                 * this". Was VERIFY-census-only (report_code_hist). */
+                /* Warn once per unknown code: skipping is only correct for
+                 * explicitly culled geometry, never for a code the decoder
+                 * does not recognize. */
                 static uint8_t s_uncoded_warned[256];
                 if (!s_uncoded_warned[code & 0xFF]) {
                     s_uncoded_warned[code & 0xFF] = 1;
@@ -2176,7 +2176,7 @@ static int build_moby_record_fields(CPUState* cpu, uint32_t moby, moby_fields* f
     f->mscol = cpu->read_word(moby + moby_game.spec_colour_off);                 /* m_SpecularMetalColor */
     f->metal = (int)((f->mscol >> 24) & 0xFFu);
     /* M = ProjMatrix . Ry . Rx . Rz(m_Rotation) — the SAME euler compose the shaded
-     * path uses (verified bit-exact there), from the moby angle bytes. */
+     * path uses, from the moby angle bytes. */
     int PM[3][3]; memcpy(PM, s_view.cam_M, sizeof PM);
     shaded_compose_euler(cpu, PM, moby, f->M);
     /* TR = ProjMatrix . swizzled (cam-moby)>>2  (the cull's centre MVMVA: IR1=(cy-my)>>2,
@@ -2187,8 +2187,8 @@ static int build_moby_record_fields(CPUState* cpu, uint32_t moby, moby_fields* f
     int32_t Vy=(cy-my)>>2, Vz=(cz-mz)>>2, Vx=(mx-cx)>>2;
     /* 64-bit accumulate: the products reach 4096*|V|, so an int32 sum wraps once
      * a component passes ~175 K view units (~700 K world) and the wrapped view-Z
-     * reads as behind-camera. Unreachable while a distance ceiling culled first;
-     * reachable now that extended LOD has none. Identical to the 32-bit form
+     * reads as behind-camera. Reachable under extended LOD, which has no
+     * distance ceiling. Identical to the 32-bit form
      * everywhere it did not overflow, and closer to the GTE, whose MAC
      * accumulator is 44-bit. */
     for (int i=0;i<3;i++) {
@@ -2384,7 +2384,7 @@ static int moby_run_once_hidden(CPUState* cpu, uint32_t m, unsigned cls) {
 }
 
 /* Append host-built records for mobys the canonical 4:3 cull skipped but that
- * the retired producer widenings WOULD have drawn. Dedups against the .s queue
+ * the extended view or the --no-lod range draws. Dedups against the .s queue
  * set. Extends s_recs[]/s_proj[]; build_walk_tris then walks the union.
  * Inert at 4:3 without --no-lod. */
 static uint32_t s_specq_moby[MAX_RECORDS]; static int s_specq_n;   /* last SPEC-pass moby set */
@@ -2451,19 +2451,16 @@ static int append_revealed_regular_inner(CPUState* cpu) {
      * whose cull writes a gameplay-readable verdict needs, since nothing the
      * host widens may reach that cull. */
     if (!moby_game.host_reveal) return 0;
-    /* Two reveal modes, composable — each mirrors a retired game-side
-     * producer widening, so admission is deliberately liveness-BLIND
-     * (the .s cull never tested liveness; the canonical PSX draws
-     * out-of-update-disk mobys STALE-POSED all the time — drawing is
-     * camera-cull, animation is Spyro's update disk. The live-only v1
-     * of this reveal culled every static prop/chest/idle enemy at the
-     * 4:3 boundary):
+    /* Two reveal modes, composable. Admission is deliberately
+     * liveness-BLIND: the .s cull never tested liveness, and the canonical
+     * PSX draws out-of-update-disk mobys stale-posed all the time (drawing
+     * is camera-cull, animation is Spyro's update disk), so a live-only
+     * test would drop every static prop, chest and idle enemy at the 4:3
+     * boundary.
      *  - EXTENDED VIEW (Hor+ or a wider FOV): off-4:3 mobys the canonical
-     *    4:3 X-cone skipped (parity with the retired cone widening).
-     *  - --no-lod (native display policy; the game-side producer stack
-     *    is PsyCross-only now): mobys BEYOND the canonical draw range —
-     *    parity with the retired m_Distance saturation. Ceiling = the
-     *    same 0x7F<<8 view-Z the saturated compare admitted. */
+     *    4:3 X-cone skipped.
+     *  - --no-lod (native display policy): mobys BEYOND the canonical draw
+     *    range, with no distance ceiling (t4e below). */
     int nl = openpete_no_lod;
     if (!s_view.extended && !nl) return 0;              /* canonical view, LOD faithful — nothing to reveal */
     /* While the rescue cutscene owns the draw it renders its own actor set and
@@ -2483,8 +2480,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
     /* OPENPETE_REVEAL_DBG=frame — reveal-admission forensics: dumps every
      * builder candidate near the window edge (cls/state/rad/rz/sx/bok) on
      * the target frame, so a missing edge moby can be attributed to its
-     * skip gate without a rebuild (named the cls-0xDF radius-margin tree
-     * and the box-vs-radial range mismatch). */
+     * skip gate without a rebuild. */
     static unsigned s_rdbg = 0xFFFFFFFFu;
     if (s_rdbg == 0xFFFFFFFFu) { const char* e = getenv("OPENPETE_REVEAL_DBG");
                                  s_rdbg = e ? (unsigned)strtoul(e, NULL, 0) : 0xFFFFFFFEu; }
@@ -2516,19 +2512,17 @@ static int append_revealed_regular_inner(CPUState* cpu) {
          * 4:3 — the native walk draws the whole queue), WITH the per-face
          * specular treatment the REG walk lacks. Revealing them here too drew
          * a second coplanar copy without env/highlight faces that z-fought the
-         * SPEC copy (the cliff-town armored gnorc's shield rendered teal).
+         * SPEC copy.
          * The live +0x1600 queue is CLOBBERED at REG-render time (the scratch
          * is reused mid-frame; the spec cull rebuilds it later), so test the
          * snapshot taken at the last SPEC pass — 1 tick stale at worst. The
          * VERDICT is deferred below to the admit_canon gate: on the tick a
          * spec-queued moby crosses OUT of canonical draw range, the stale
          * snapshot still lists it while this tick's spec queue (canonical
-         * cull ⊆ canonical range) provably does not — trusting the snapshot
-         * there fed the moby from NEITHER pass for exactly one frame (the
-         * boundary-crossing flicker; drift-harness
-         * trace: IN-QUEUE @f, skip=SPEC-dedup @f+1, REVEALED @f+2). While
-         * the moby is still canonically in range (admit_canon) the snapshot
-         * stays trusted — the z-fight protection is unchanged there. */
+         * cull ⊆ canonical range) does not, so trusting the snapshot there
+         * would feed the moby from neither pass for one tick. While the moby
+         * is still canonically in range (admit_canon) the snapshot is
+         * trusted, which keeps the coplanar-copy protection. */
         int in_spec_snap = 0;
         for (int k = 0; k < s_specq_n; k++) if (s_specq_moby[k] == m) { in_spec_snap = 1; break; }
         moby_fields f;
@@ -2555,9 +2549,8 @@ static int append_revealed_regular_inner(CPUState* cpu) {
         double rr = (double)((int)cpu->read_byte(f.header + game_layout.moby.anim_radius) << 4);
         if (rz + rr <= 0.0) { TRC("skip=behind-cam rz=%.0f rr=%.0f", rz, rr); m += game_layout.moby.array_stride; continue; }  /* behind camera (.s: MAC3 + r <= 0) */
         /* Distance admission = the .s cull's EXACT 3-axis box test (F158
-         * @8001F1F8..F260; the earlier radial view-Z mirror was strictly
-         * narrower and dropped far-off-axis mobys the .s draws — the
-         * "culled outside 4:3" tree):
+         * @8001F1F8..F260; a radial view-Z test would be strictly narrower
+         * and drop far-off-axis mobys the .s draws):
          *   t4 = (m_RenderRadius << 8) + (m_WasDrawn & 1 ? 0x200 : 0)
          *   admit iff every axis: -t4 < (moby[i]-cam[i])>>2 < t4
          * FULL byte (bit7 included, exactly like the lhu path); dist==0
@@ -2566,9 +2559,9 @@ static int append_revealed_regular_inner(CPUState* cpu) {
          * m_WasDrawn; host-revealed mobys never get the byte set, so
          * membership in the LAST reveal set stands in for it (same
          * pop-flicker damping the .s got from the widened render's byte).
-         * --no-lod: the retired game-side hook saturated the LOW 7 bits to
-         * 0x7F when nonzero (bit7 + sentinel preserved) — mirror that on
-         * the effective threshold. */
+         * --no-lod: a byte with nonzero low 7 bits has no ceiling on the
+         * effective threshold (t4e below); bit 7 and the zero sentinel keep
+         * their canonical meaning. */
         uint8_t rad_byte = cpu->read_byte(m + moby_game.render_radius_off);
         /* Hysteresis, split per consumer. The .s cull widens by 0x200 keyed
          * ONLY on the moby's live m_WasDrawn bit, so the canonical mirror
@@ -2577,9 +2570,9 @@ static int append_revealed_regular_inner(CPUState* cpu) {
          * boundary moby inside the band (t4, t4+0x200) with m_WasDrawn clear
          * was revealed (hyst 0), which set reveal_prev, which widened t4c,
          * which flipped admit_canon true, which ceded it to a .s queue that
-         * never admits it — one dark frame, reveal_prev cleared, repeat.
-         * Period-2 strobe at exactly the --lod original cull distance (the
-         * artisans tower flag). reveal_prev stands in for the
+         * never admits it — one dark tick, reveal_prev cleared, repeat: a
+         * period-2 strobe at the --lod original cull distance. reveal_prev
+         * stands in for the
          * byte only on the reveal's OWN threshold t4e (host-revealed mobys
          * never get m_WasDrawn set; t4e is where the .s's pop-damping needs
          * a mirror — the widescreen edge / --no-lod ceiling). */
@@ -2666,14 +2659,14 @@ static int append_revealed_regular_inner(CPUState* cpu) {
         int rmd   = (int)(cpu->read_byte(m + moby_game.renderer_off) & moby_game.renderer_mask);
         int rzsf4 = (int)(int16_t)(uint16_t)((((uint32_t)rmd << 8)
                     - (uint32_t)f.TR_raw[2]) & 0xFFFFu);
-        /* --no-lod parity with the game-side zsf4-store hook: neutralize the
-         * distance term for records that are near-band at zero distance */
+        /* --no-lod: neutralize the distance term for records that are
+         * near-band at zero distance */
         if (openpete_no_lod && (rmd << 8) >= 1024) rzsf4 = rmd << 8;
         else if (openpete_no_lod) {
             /* Sub-near (effect-authored fade) records keep the distance term —
              * but the .s holds the verdict in an int16, which WRAPS once view-Z
              * passes 32767. Canonically unreachable (nothing is drawn that far),
-             * yet live now that the reveal has no distance ceiling: a wrapped
+             * but reachable because the reveal has no distance ceiling: a wrapped
              * verdict re-enters the 0 < ZSF4 < 1024 fog band and re-fades a moby
              * that is unambiguously far-tier, cycling every 65536 view units.
              * Saturate instead. */
@@ -2776,8 +2769,8 @@ int moby_reveal_anim_fields(CPUState* cpu, uint32_t moby, moby_anim_fields_t* f)
     /* The cull's own centre MVMVA over the quarter-world camera delta: IR1 is
      * the Y delta, IR2 the Z, IR3 the X, MAC = (PM . IR) >> 12. Accumulated at
      * 64 bits, since the products reach 4096*|V| and an int32 sum wraps once a
-     * component passes ~175 K view units — unreachable while a distance
-     * ceiling culled first, reachable now that extended LOD has none. */
+     * component passes ~175 K view units — reachable under extended LOD,
+     * which has no distance ceiling. */
     const int32_t cx = (int32_t)s_view.cam_ram[0],
                   cy = (int32_t)s_view.cam_ram[1],
                   cz = (int32_t)s_view.cam_ram[2];
@@ -3691,15 +3684,14 @@ static uint8_t moby_face_fog_mix(const moby_fade_t* fd, const int* fcc) {
  * Everything the walk parses OUT OF THE FACE STREAM is static per faceblock:
  * vertex/colour indices, flags, Tiledef UV/tpage/CLUT/ABR. Only the projected
  * vertices, the colour VALUES and the view-dependent spec env-UV/highlight
- * change per present. The walk used to re-parse every face word through
- * cpu->read_word on EVERY pass (canonical + per-present re-extract + SPEC) —
- * the dominant half of extraction (baseline census at the --no-lod attract
- * vista: walk 3847us/s vs proj 1484us/s). Decode once per faceblock and
- * iterate the decoded array; keyed by vaddr + bytecount + a 3-word content
+ * change per present. Re-parsing every face word through cpu->read_word on
+ * every pass (canonical, per-present re-extract, SPEC) would be the dominant
+ * cost of extraction, so the walk decodes once per faceblock and iterates the
+ * decoded array; keyed by vaddr + bytecount + a 3-word content
  * signature so a level load (same vaddr, new model data) re-decodes. Slot
  * collision = evict + re-decode (never lies). Display-only: reads static
  * model RAM; the per-present half (NCLIP emit tree, colours, env, blend map)
- * is byte-identical to the previous inline parse. */
+ * stays outside the cache. */
 /* One decoded face: renderer/moby_game.h owns the layout, since the game's
  * face decoder fills it. */
 typedef moby_wface_t wface_t;
@@ -3715,7 +3707,7 @@ typedef struct {
 #define FC_SLOTS 512
 static fcache_t s_fcache[FC_SLOTS];
 static long s_fc_hit, s_fc_miss;      /* tier-census counters */
-static wface_t s_fc_tmp[8192];        /* decode scratch (guard cap matches the old walk) */
+static wface_t s_fc_tmp[8192];        /* decode scratch, sized to the decoder's face cap */
 
 /* ---- resolve generation -------------------------------------------------
  * The record prologue hands out an fcache_t* per record and the walk reads
@@ -3786,10 +3778,10 @@ static int fcache_decode_into(CPUState* cpu, uint32_t fb, uint32_t bytecount,
  *         or overflow entry is free, or the decode fails. */
 static const fcache_t* fcache_get(CPUState* cpu, uint32_t fb) {
     uint32_t bytecount = cpu->read_word(fb);
-    if (bytecount == 0 || bytecount > 0x10000u) return NULL;    /* desync, as before */
+    if (bytecount == 0 || bytecount > 0x10000u) return NULL;    /* desynchronized block */
     uint32_t s1 = cpu->read_word(fb + 4u), s2 = cpu->read_word(fb + 8u), s3 = cpu->read_word(fb + 12u);
-    /* 2-way probe: a scene holds ~80+ hot faceblocks, so a 1-way map collides
-     * (~60 evict/re-decode per second measured); the second slot absorbs pairs. */
+    /* 2-way probe: a scene holds ~80+ hot faceblocks, so a 1-way map
+     * collides and evicts; the second slot absorbs pairs. */
     uint32_t h = (((fb >> 2) * 2654435761u) >> 14) & (FC_SLOTS - 1);
     fcache_t* C = &s_fcache[h];
     if (C->f && C->fb == fb && C->bytecount == bytecount
@@ -6611,8 +6603,8 @@ static void compare_and_report(int nrec) {
             gv_n++;
             /* Nearest native vert INCLUDING saturated ones, so a prim vert maps
              * to its true native vert even when the GTE divide/IR clamp made the
-             * two diverge; we then bin those out (sanctioned, exactly as the
-             * cyclorama harness did) rather than score them as decode failures.
+             * two diverge; those are binned out as expected divergence rather
+             * than scored as decode failures.
              * Near mobys (small view-Z, H>=2*SZ3) hit this a lot. */
             double best = 1e18, best2 = 1e18; int bn_sat = 1, bn_rec = 0; float bnx=0, bny=0, bnx2=0, bny2=0;
             for (int i = 0; i < s_proj_n; i++) {
@@ -6632,7 +6624,7 @@ static void compare_and_report(int nrec) {
                 if (fabs(floor((double)bnx) - gx) <= 1.0 && fabs(floor((double)bny) - gy) <= 1.0)
                     floor_ok++;
                 /* NN-ambiguity (jitter proxy): 2nd-nearest within 1px of nearest
-                 * -> NN can flip frame-to-frame (the scaffold jitter; 3a.2b fixes). */
+                 * -> the nearest match can flip between passes. */
                 if (best2 < 1e17 && sqrt(best2) - dist < 1.0) {
                     ambig++;
                     double jx = bnx2 - bnx, jy = bny2 - bny, jump = sqrt(jx*jx + jy*jy);
