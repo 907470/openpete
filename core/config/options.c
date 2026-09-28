@@ -47,8 +47,8 @@ static int needs_value(const char* flag, int argc, char** argv, int i, const cha
  *
  * The whole value must parse (strtod with an end-pointer check) and be
  * finite, so "nan", "inf" and "9O" are refused rather than reaching a
- * clamp that NaN would pass through. An in-range miss is clamped with a
- * message naming the flag.
+ * clamp that NaN would pass through. A value outside [lo, hi] is clamped
+ * with a message naming the flag.
  * @param flag The flag's spelling, for the messages.
  * @param v The value text.
  * @param lo Lower bound.
@@ -157,8 +157,9 @@ static int tokenize_sidecar_args(char* buf, char** tokens, int max_tokens) {
  * when spliced, with *out_argc and *out_argv holding the new argv (heap
  * memory kept for the process lifetime, since the tokens point into a buffer
  * that outlives opts); 0 when the file is absent or holds no tokens, and the
- * caller keeps argv; -1 on an error, logged, for which the caller returns
- * OPENPETE_EXIT_SETUP_ERROR.
+ * caller keeps argv; -1 on an error, for which the caller returns
+ * OPENPETE_EXIT_SETUP_ERROR (an oversized file, a short read and a tokenize
+ * failure print a message; a seek or allocation failure does not).
  * @param path The args file.
  * @param label Names the source in messages.
  * @param argc Argument count.
@@ -1471,7 +1472,7 @@ static int parse_flag_chain(openpete_options_t* opts, int argc, char** argv,
         } else if (strcmp(a, "--bk2-record") == 0) {
             /* Optional PATH: consume the next token only when it isn't
              * another flag. With no path, the default
-             * "<exe_dir>/bk2/<timestamp>.bk2" is resolved after the loop. */
+             * "<bk2 data dir>/<timestamp>.bk2" is resolved after the loop. */
             notes->bk2_record_requested = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') {
                 opts->bk2_record_path = argv[i + 1]; i++;

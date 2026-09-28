@@ -672,7 +672,7 @@ typedef struct openpete_options {
      * long as core/runtime/run.c reaches its cleanup block.
      *
      * When --bk2-record is passed with no path, openpete_options_parse
-     * resolves a default here: "<exe_dir>/bk2/<timestamp>.bk2" (and
+     * resolves a default here: "<bk2 data dir>/<timestamp>.bk2" (and
      * mkdir -p's that directory). Heap-owned in that case (leaked for
      * program lifetime); otherwise it points at the CLI token. */
     const char* bk2_record_path;

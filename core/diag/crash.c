@@ -5,8 +5,9 @@
 // (WriteFile on Windows) straight to the original stderr and the log file,
 // bypassing the stderr pipe the log mirror drains: a process dying from a
 // crash does not wait for the pump thread. On POSIX the handler calls only
-// async-signal-safe functions after install (write, sigaction, raise), plus
-// lock-free reads of the guest symbol table and the mod override frame
+// write, read (the stack-word probe), raise, backtrace and
+// backtrace_symbols_fd (libgcc is loaded at install), plus lock-free reads
+// of the guest symbol table and the mod override frame
 // stack; it runs on a per-thread alternate stack (sigaltstack) so a stack
 // overflow, on a thread or on the game fiber the thread hosts, still gets a
 // report. Recompiled code runs on a libco fiber, so the host RIP from the
@@ -228,7 +229,7 @@ static const char* sig_name(int sig) {
  * address is in the fiber's guard page), the host RIP/RSP/RBP and the
  * mapped words at RSP, the guest registers with their symbols, the mod
  * whose override chain was executing, and last the host backtrace
- * (backtrace_symbols_fd, preloaded at install), which is skipped on a
+ * (backtrace and backtrace_symbols_fd; libgcc is loaded at install), which is skipped on a
  * stack overflow because it walks the exhausted stack. Only
  * async-signal-safe calls and lock-free table reads are made.
  * @param sig Signal number.
