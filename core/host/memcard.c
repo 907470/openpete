@@ -505,9 +505,10 @@ static int mc_load_file(int slot)
  * A loaded image runs the modset tag check. A provisioned image is
  * formatted, or zeroed under --card-unformatted, and written to the file at
  * once, which tags it under the active modset. When no image path
- * resolves, or a bad file cannot be moved aside, the slot gets a formatted
- * in-memory card whose writes are refused, so a save reports a card error
- * to the game instead of being lost at exit.
+ * resolves, or a bad file cannot be moved aside, the slot gets an in-memory
+ * card, formatted or zeroed under --card-unformatted, whose writes are
+ * refused, so a save reports a card error to the game instead of being lost
+ * at exit.
  * @param slot Card slot, 0 or 1. */
 static void mc_ensure_loaded(int slot)
 {
