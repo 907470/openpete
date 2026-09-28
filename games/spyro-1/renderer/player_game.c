@@ -36,6 +36,11 @@ void spyro_verify_run(CPUState* cpu, uint32_t startp, uint32_t endp);
 
 #define PL (game_layout.player)
 
+/** @brief Runs the game's own player renderer, func_80023AC4.
+ *
+ * The walk brackets the polybuf cursor around the call and reads back what
+ * the routine leaves; the routine's output is never replaced.
+ * @param cpu The guest CPU state. */
 static void s1_run_draw(CPUState* cpu) { func_80023AC4(cpu); }
 
 /** @brief Extracts a signed bit field as the MIPS sll-then-sra pair `(v << lsh) >> rsh` does.
@@ -176,6 +181,21 @@ static void s1_compose_euler(CPUState* cpu, const int start[3][3], uint32_t rot,
     ngte_compose_euler(start, &e, out);
 }
 
+/** @brief Derives one skeleton part's model-to-view transform from gamestate.
+ *
+ * Part 0 (the body) takes M = PM * Ry * Rx * Rz from the body euler word and
+ * TR = PM * (camY - sy, camZ - sz, sx - camX) / 4096, using the interpolated
+ * camera and avatar position when the view carries them. A later part takes
+ * its own euler composed onto the parent's matrix, or the parent's matrix
+ * when its euler word is zero, and leaves TR zero: the seam joint supplies
+ * the origin. With OPENPETE_SPYRO_SCRATCH_MAT set, the matrix and
+ * translation are read from the part records the draw built instead.
+ * @param cpu The guest CPU state.
+ * @param v The view the transform is expressed in.
+ * @param part The part index, 0 = body.
+ * @param parent Part 0's transform, NULL when part is 0.
+ * @param out Receives the transform; zeroed first, present set on success.
+ * @return 1 when the part exists in this pose, 0 otherwise. */
 static int s1_part_xform(CPUState* cpu, const ngte_view* v, int part,
                          const player_xform_t* parent, player_xform_t* out) {
     memset(out, 0, sizeof *out);
@@ -227,6 +247,7 @@ static int s1_part_xform(CPUState* cpu, const ngte_view* v, int part,
     return 1;
 }
 
+/** @brief Saturates an int to the signed 16-bit range [-32768, 32767]. */
 static inline int s1_sat16(int v) { return v < -32768 ? -32768 : (v > 32767 ? 32767 : v); }
 
 /** @brief Extracts one seam-joint field and blends it between the two keyframes as the GTE INTPL does.

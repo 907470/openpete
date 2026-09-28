@@ -217,6 +217,14 @@ static int s1_model_is_animated(CPUState* cpu, uint32_t model) {
 #define G_DRAGONCUTSCENE_STATE      0x80077058u
 #define G_GAMESTATE                 0x800757D8u
 
+/** @brief Reports whether a moby is one of the three mobys func_8001CFDC draws in the dragon cutscene.
+ *
+ * Compares mob against g_DragonCutscene's m_RescuedDragonMoby, m_CutsceneDragon
+ * and m_CutsceneSpyro words. The moby feeder routes a match to the front
+ * pass; the caller has already rejected addresses below KSEG0.
+ * @param cpu The guest CPU state.
+ * @param mob The moby's guest address.
+ * @return 1 when mob equals one of the three words, else 0. */
 static int s1_cutscene_actor(CPUState* cpu, uint32_t mob) {
     return mob == cpu->read_word(G_DRAGONCUTSCENE_RESCUED) ||
            mob == cpu->read_word(G_DRAGONCUTSCENE_CUTDRAGON) ||
@@ -294,6 +302,12 @@ static int s1_record_row_scale(CPUState* cpu, uint32_t rec, double scale[3]) {
 }
 
 extern int spyro_cutpath_is_actor(uint32_t m);
+/** @brief Reports whether a moby is a cutscene path-follower, through spyro_cutpath_is_actor.
+ *
+ * The moby feeder switches such a moby's animation clips without a
+ * crossfade.
+ * @param m The moby's guest address.
+ * @return 1 for a path-follower, else 0. */
 static int s1_cutpath_actor(uint32_t m) { return spyro_cutpath_is_actor(m); }
 extern int spyro_moby_cut_held(uint32_t moby);
 

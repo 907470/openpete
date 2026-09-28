@@ -109,6 +109,11 @@ static int portal_dump_enabled(void) {
     if (s < 0) { const char* v = getenv("OPENPETE_PORTAL_DUMP"); s = (v && v[0] && v[0] != '0') ? 1 : 0; }
     return s;
 }
+/** @brief Returns the openpete_frame at which the portal dump starts.
+ *
+ * Parsed from OPENPETE_PORTAL_FRAME with atoi, 1750 when unset. The
+ * variable is read once and cached.
+ * @return The first openpete_frame value the dump prints at. */
 static unsigned portal_dump_frame(void) {
     static unsigned f = 0; static int init = 0;
     if (!init) { const char* v = getenv("OPENPETE_PORTAL_FRAME"); f = v ? (unsigned)atoi(v) : 1750u; init = 1; }
@@ -125,10 +130,6 @@ typedef struct { float x, y; double vz; } ppt; /* projected portal-outline point
 /* Owning portal of a leaf: skybox-pointer match (dome/close), else screen-centre
  * match (far/medium flat). Returns the Portal* or 0. */
 static uint32_t owning_portal_ptr(CPUState* cpu, const ngte_view* v, uint32_t a0, double cx, double cy);
-/* Project a portal's outline (m_Points) to screen with per-point view-Z. Returns
- * the count (>=3) iff every point is in front of the camera, else 0 (the portal
- * is a tilted planar window — its sky is depth-interpolated across this polygon
- * instead of drawn flat, so the stone frame occludes it correctly at an angle). */
 static int    portal_outline_screen(CPUState* cpu, const ngte_view* v, uint32_t p, ppt* poly, int maxn);
 
 /* Per-portal opening-polygon correction, in world units, along the opening
@@ -346,6 +347,15 @@ static int portal_outline_world(CPUState* cpu, uint32_t p, double W[16][3], int 
     return npts;
 }
 
+/** @brief Prints the RenderPortals state and every portal record to stderr.
+ *
+ * Prints g_PortalCount, the spin yaw and pitch, then for up to six portals:
+ * the skybox, destination levelId, outline point count (flagged OVER-CAP
+ * outside [3, 16]), background colour, and the centroid's screen position
+ * and view Z. For an outline of 3 to 16 points it also prints the world
+ * centroid, plane normal and radius, and, when the centroid is in front of
+ * the camera, each projected point under s_view.
+ * @param cpu The guest CPU state. */
 static void dump_portal_table(CPUState* cpu) {
     uint32_t n = cpu->read_word(G_PORTALCOUNT);
     fprintf(stderr, "[portal-dump f=%u] RenderPortals: g_PortalCount=%u yaw=%d pitch=%d\n",
@@ -781,6 +791,21 @@ static int portal_outline_screen_raw(CPUState* cpu, const ngte_view* v, uint32_t
     return npts;
 }
 
+/** @brief Projects a portal's corrected outline (m_Points) to screen with per-point view Z.
+ *
+ * Reads the outline through portal_outline_world with the per-portal
+ * correction applied. A portal whose points are all in front of the camera
+ * is a tilted planar window: its sky is depth-interpolated across this
+ * polygon instead of drawn flat, so the stone frame occludes it correctly
+ * at an angle.
+ * @param cpu The guest CPU state.
+ * @param v The view to project under.
+ * @param p The Portal* guest address.
+ * @param poly Receives the projected points.
+ * @param maxn The capacity of poly.
+ * @return The point count, at least 3, when every point has view Z above 1;
+ *         0 when the outline is unusable, exceeds maxn, or has a point at or
+ *         behind that. */
 static int portal_outline_screen(CPUState* cpu, const ngte_view* v, uint32_t p, ppt* poly, int maxn) {
     double W[16][3];
     const int npts = portal_outline_world(cpu, p, W, 1);
@@ -908,10 +933,6 @@ static int portal_plane_invz(CPUState* cpu, const ngte_view* v, uint32_t p,
  * edge of some arches (seen live) — the decorative band evidently sits a
  * few units in FRONT of the opening plane, not exactly on it. */
 #define PORTAL_SKY_EPS_VZ_DEFAULT 24.0
-/* Runtime-tunable so the margin can be re-calibrated against the depth encoding
- * without a rebuild: an encoding affine in 1/vz resolves the inner-frame
- * z-fight this margin was inflated to overpower, so it wants a smaller pull.
- * OPENPETE_PORTAL_SKY_EPS=0 disables the forward bias entirely. */
 /** @brief Returns how far behind the opening plane the aperture's correction band is marked, in world units.
  *
  * The band lies between the authored and the corrected outline. The value
@@ -925,6 +946,13 @@ static double portal_band_back_vz(void) {
                  if (e && *e) v = atof(e); init = 1; }
     return v;
 }
+/** @brief Returns the push-back that places the ring and spill sky constructions behind the opening plane, in world units.
+ *
+ * Default PORTAL_SKY_EPS_VZ_DEFAULT, overridden by OPENPETE_PORTAL_SKY_EPS
+ * and read once; 0 applies no push. The margin is tunable so it can be
+ * recalibrated against the depth encoding without a rebuild. A negative
+ * value moves the constructions in front of the plane.
+ * @return The push-back in world units. */
 static double portal_sky_eps_vz(void) {
     static int init = 0;
     static double v = PORTAL_SKY_EPS_VZ_DEFAULT;
@@ -965,9 +993,21 @@ static int sky_otpush_enabled(void) {
     }
     return on;
 }
+/** @brief Returns the world-unit push a sky construction takes for an OT depth.
+ *
+ * 128 * 64 (the 64-slot bucket bump, in world units) when ot_vz is at least
+ * 128 * 320 and OPENPETE_PORTAL_SKY_OTPUSH is not 0, else 0.
+ * @param ot_vz 128 times the mirrored RenderPortals OT bucket.
+ * @return The push in world units. */
 static double sky_ot_push_for(double ot_vz) {
     return (ot_vz >= 128.0 * 320.0 && sky_otpush_enabled()) ? 128.0 * 64.0 : 0.0;
 }
+/** @brief Converts a portal plane's view Z to the scene depth the mask and preview colours test at.
+ *
+ * Subtracts openpete_portal_plane_margin() from vz, floors the result at 1,
+ * and maps it through openpete_worldvz_full and openpete_native_scene_viewz.
+ * @param vz The plane's world-scale view Z.
+ * @return The scene depth. */
 static float portal_cyclorama_depth(double vz) {
     /* Plane-cover rule: the aperture mask and preview colours TEST at
      * plane − M, covering everything at or behind it inside the footprint.
@@ -1015,12 +1055,23 @@ static double s_ot_vz   = 0.0;   /* 128 · mirrored .s OT bucket (0 = none) */
  * mirror, each carrying the +64 bucket bump; sky_ot_push_for maps it to the
  * push. Called after s_ot_vz is settled and before any depth is built. */
 static void set_sky_ot_push(void) { s_sky_push_vz = sky_ot_push_for(s_ot_vz); }
+/** @brief Returns the scene depth of the ring sky mode: the farthest outline point pushed behind.
+ *
+ * The depth is s_ring_vz + s_sky_push_vz + portal_sky_eps_vz() in world
+ * units, mapped through openpete_worldvz_full and
+ * openpete_native_scene_viewz.
+ * @return The scene depth. */
 static float ring_depth(void) {
     /* +EPS (not −): the ring construction wants the sky BEHIND the outline
      * it was measured from — the same margin, opposite direction. */
     return openpete_native_scene_viewz(
                openpete_worldvz_full((float)(s_ring_vz + s_sky_push_vz + portal_sky_eps_vz())));
 }
+/** @brief Returns the scene depth of the ot sky mode: 128 times the mirrored OT bucket.
+ *
+ * Maps s_ot_vz through openpete_worldvz_full and
+ * openpete_native_scene_viewz.
+ * @return The scene depth. */
 static float ot_depth(void) {
     /* 128 * the mirrored .s OT bucket — the literal PSX OT placement. The
      * near-band terrain that would need extra protection here is handled
@@ -1045,6 +1096,13 @@ static int sky_const_depth(float* z) {
     if (m == 1 && s_ring_vz > 0.0) { *z = ring_depth(); return 1; }
     return 0;
 }
+/** @brief Combines the opening-plane depth with the constant sky depth by mode.
+ *
+ * @param plane_z The per-pixel plane depth.
+ * @param cz The constant depth from sky_const_depth.
+ * @param cmode The mode sky_const_depth returned.
+ * @return The smaller of plane_z and cz for mode 2, cz for mode 1, else
+ *         plane_z. */
 static float sky_min2(float plane_z, float cz, int cmode) {
     if (cmode == 2) return plane_z < cz ? plane_z : cz;
     if (cmode == 1) return cz;
@@ -1299,6 +1357,13 @@ static void portal_add_tri(const openpete_scene_tri* t, int category) {
     openpete_native_scene_add_tri_grouped(&w, category, 0, s_portal_group);
 }
 
+/** @brief Adds one sky triangle to the portal cyclorama, and to the mask when no aperture is marked.
+ *
+ * Does nothing unless RP_PORTAL is enabled. The triangle carries the
+ * OPENPETE_TAG_PORTAL tag of s_portal_kind. With s_aperture_ok clear, the
+ * triangle's footprint is also its mask and is added to
+ * OPENPETE_SCENE_PORTAL_MASK first.
+ * @param t The triangle, with depth in each vertex's z. */
 static void portal_add_sky_tri(const openpete_scene_tri* t) {
     if (!portal_scene_emit_enabled()) return;
     openpete_native_scene_set_tag(OPENPETE_TAG_PORTAL(s_portal_kind, 0));
@@ -1712,6 +1777,14 @@ static int portal_arch_animates(CPUState* cpu, uint32_t p) {
     return lid == 14 || lid == 62 || lid == 63 || lid == 64;
 }
 #define PORTAL_ANIM_ARCH_MARGIN_WORLD 0.0
+/** @brief Returns the aperture dilation margin for a portal, in world units.
+ *
+ * The global margin from portal_aperture_margin_world, except that a
+ * positive margin is replaced by PORTAL_ANIM_ARCH_MARGIN_WORLD (0) for an
+ * animated arch. A negative margin applies to every portal.
+ * @param cpu The guest CPU state.
+ * @param p The Portal* guest address; 0 takes the global margin.
+ * @return The margin in world units. */
 static double portal_margin_for(CPUState* cpu, uint32_t p) {
     const double m = portal_aperture_margin_world();
     if (m > PORTAL_ANIM_ARCH_MARGIN_WORLD && portal_arch_animates(cpu, p))
@@ -1995,6 +2068,11 @@ static void fan_emit_poly(const pgv* v, int n, float const_depth,
 /* TEMP band census: 0=off, else tint each band producer a flat colour. */
 static int s_band_dbg = -1;
 static uint32_t s_band_tint = 0;   /* nonzero overrides fan_emit_poly's gouraud */
+/** @brief Reports whether OPENPETE_PORTAL_BAND_DBG tints the aperture flat fan and ring.
+ *
+ * When set, the interior fan draws in blue and the ring in red. The
+ * variable is read once and cached.
+ * @return 1 when the variable is set and not "0", else 0. */
 static int band_dbg(void) {
     if (s_band_dbg < 0) { const char* e = getenv("OPENPETE_PORTAL_BAND_DBG"); s_band_dbg = (e && *e && *e != '0'); }
     return s_band_dbg;
@@ -2107,6 +2185,28 @@ static void emit_clipped_gouraud(pgv v0, pgv v1, pgv v2, int x0, int y0, int x1,
  * emit the collected array BACKWARDS (.s-last first, .s-first on top). */
 typedef struct { pgv a, b, c; double key; } dome_face;
 
+/** @brief Feeds a destination-sky dome into the scene as gouraud sky triangles.
+ *
+ * Reads the clip rect from D_CLIPRECT and the dome rotation from GTE
+ * control registers 0 to 4, which the leaf left loaded. Settles the OT depth
+ * s_ot_vz and the sky push, then takes the opening's depth from the owning
+ * portal's outline plane fit or its analytic plane, or a constant depth
+ * when neither exists. The clip rect is widened to the outline's bounding
+ * box, the aperture is emitted, and up to 1024 sectors are walked (the
+ * sector cull is skipped in an extended view). A face with a vertex at or
+ * behind the near plane is dropped; colours are blended toward fog_rgb by
+ * fog_t. Faces are emitted in walk order, clipped to the rect. Reads
+ * gamestate only.
+ * @param cpu The guest CPU state.
+ * @param skybox The Skybox* guest address; sector count at +0x00, sector
+ *     table at +0x04.
+ * @param ot_b_hint The captured OT bucket for a replay, used when canonical
+ *     is 0; 0 derives it from the outline.
+ * @param canonical 1 to read the bucket from D_PORTAL_DEPTH.
+ * @param fog_rgb The fog target colour, 0xBBGGRR.
+ * @param fog_t The fog blend factor, 0 for none.
+ * @return 1 after emitting, 0 when OPENPETE_PORTAL_REPR suppresses the dome
+ *         or the clip rect is empty. */
 static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t ot_b_hint,
                             int canonical, uint32_t fog_rgb, double fog_t) {
     if (portal_repr_skip(1)) return 0;
@@ -2666,8 +2766,23 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
     return 1;
 }
 
+/** @brief Dispatch hook for func_8004FEA0, the flat-colour leaf (far preview, close backstop).
+ *
+ * @param cpu The guest CPU state.
+ * @param a The hooked address (unused).
+ * @return The leaf_hook verdict. */
 static int on_8004FEA0(CPUState* cpu, uint32_t a) { (void)a; return leaf_hook(cpu, "FEA0(close)",     func_8004FEA0, PORTAL_FLAT);    }
+/** @brief Dispatch hook for func_80050240, the dome leaf fogged toward D_800757D4.
+ *
+ * @param cpu The guest CPU state.
+ * @param a The hooked address (unused).
+ * @return The leaf_hook verdict. */
 static int on_80050240(CPUState* cpu, uint32_t a) { (void)a; return leaf_hook(cpu, "50240(blended)",  func_80050240, PORTAL_BLENDED); }
+/** @brief Dispatch hook for func_8004F4BC, the unfogged gouraud dome leaf.
+ *
+ * @param cpu The guest CPU state.
+ * @param a The hooked address (unused).
+ * @return The leaf_hook verdict. */
 static int on_8004F4BC(CPUState* cpu, uint32_t a) { (void)a; return leaf_hook(cpu, "F4BC(secondary)", func_8004F4BC, PORTAL_DOME);    }
 
 /** @brief Draw the destination-sky previews of the portals RenderPortals culled but the view shows.
@@ -2898,6 +3013,9 @@ static int on_80050BE0(CPUState* cpu, uint32_t a) {
     return 1;
 }
 
+/** @brief Module option hook; the portal feed reads no option, so it does nothing.
+ *
+ * @param opts The parsed options (unused). */
 static void portal_native_apply_options(const openpete_options_t* opts) {
     (void)opts;
 }

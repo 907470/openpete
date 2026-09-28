@@ -76,6 +76,15 @@ void portal_reextract(struct CPUState* cpu, double alpha, int interp_on);
 void shadow_reextract(struct CPUState* cpu);
 void shadow_spyro_reextract(struct CPUState* cpu, int slot);
 void player_reextract(struct CPUState* cpu);
+/** @brief Replays the particle, glow, sparkle and star feeds for a sub-tick present.
+ *
+ * Returns when the native scene is off or no feeder's path is enabled and
+ * canon-drawn. Each pool feeds only when its own renderer drew on the
+ * canonical tick; the star follows the particle path. Extract-only: the
+ * .s does not run and no verdict byte is written. Latches s_phase_now to the
+ * present clock around the pool feeds so the channel interpolation is on,
+ * and clears it afterwards so the inline hook feeds stay integer-exact.
+ * @param cpu The guest CPU state. */
 void particle_reextract(struct CPUState* cpu);
 /** @brief Sub-tick re-extract that replays the tracer snapshot against the current camera.
  *

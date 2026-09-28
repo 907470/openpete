@@ -79,6 +79,9 @@ static uint32_t s_part_pool;
 static uint32_t s_code_hist[256];  /* keyed on the GPU code byte (word[+4]>>24) */
 static uint32_t s_tag_hist[256];   /* keyed on the OT tag length (word[+0]>>24) */
 
+/** @brief Sign-extends the low 16 bits of an int.
+ *
+ * No function calls it. */
 static int s16(int v) { return (int)(int16_t)(uint32_t)v; }
 
 /** @brief Appends one walked primitive to s_prim.
@@ -180,6 +183,16 @@ static void dump_pools(CPUState* cpu) {
             (int)cpu->gte_ctrl[27], (int)cpu->gte_ctrl[28]);
 }
 
+/** @brief Prints the captured polybuf range and the decoded primitives to stderr.
+ *
+ * Verify-mode diagnostic, run once per renderer. Prints the range and size
+ * with the s_prim count, up to 40 rows of four raw polybuf words, the code
+ * and tag-length histograms, and the first eight s_prim entries with their
+ * raw words and, for polygons, the decoded vertices, UVs, CLUT and tpage.
+ * @param cpu The guest CPU state.
+ * @param tag The renderer label printed in the header and footer.
+ * @param start The first polybuf byte the renderer wrote.
+ * @param end One past the last polybuf byte the renderer wrote. */
 static void dump_prims(CPUState* cpu, const char* tag, uint32_t start, uint32_t end) {
     fprintf(stderr, "\n=== [%s-dump f=%u] polybuf [%08X,%08X) %u bytes, %d prims ===\n",
             tag, openpete_frame, start, end, end - start, s_prim_n);
@@ -214,29 +227,22 @@ static void dump_prims(CPUState* cpu, const char* tag, uint32_t start, uint32_t 
     fprintf(stderr, "=== end %s-dump ===\n\n", tag);
 }
 
-/* ---- native float walk (3b.3) — WORK IN PROGRESS, verify-only ------------- *
- * Re-derive particle geometry from gamestate in float. NOT YET fed to the scene
- * (no native particle rendering) and NOT YET A/B-validated — this is the probe
- * that will become the walk. It runs only under OPENPETE_PARTICLE_VERIFY (an
- * A/B diagnostic) and is inert in the feed/oracle paths, so determinism is
- * unaffected.
- *
- * ESTABLISHED so far (see the format notes "Native walk progress"):
+/* ---- native float walk ------------------------------------------------- *
+ * particle_build re-derives the geometry of the g_Particles pool from
+ * gamestate in float. particle_feed_native feeds its quads and lines to the
+ * native scene; under OPENPETE_PARTICLE_VERIFY, particle_compare checks them
+ * against the prims the .s emitted. Pool layout and the emitters covered:
  *   - g_Particles (0x80075824) is a POINTER to the buffer (deref before walking).
  *   - dispatch class = the HIGH byte of the lh header (m_Type/"sel"); the LOW
- *     byte is m_Class (texture/clut index). The doc had these swapped.
+ *     byte is m_Class (texture/clut index).
  *   - position layout: X=lo16(+0x04), Y=hi16(+0x04), Z=lo16(+0x08), all in
  *     world/4 units; camera-relative VX=X-camX/4, VY=camY/4-Y, VZ=camZ/4-Z.
- *     Confirmed by sel=2/3 particles decoding to small near-camera offsets.
- *   - the FT4 (code 0x2C) prims in the demo come from sel=2 + sel=3 (affine /
- *     GPF-rect billboards), NOT sel=0 — so a clean ordered A/B needs ALL FT4
- *     emitters (0/2/3) implemented before the prim sequence aligns. TODO.
- *
- * Stage 1 below = the FT4 emitters present in the attract demo: sel 3
- * (block_80057A74, depth-cued screen rect), sel 2 (block_80057C08, affine
- * sin/cos billboard) + the sel>=6 fall-through rotated billboard
- * (block_800574F8). sel 0 (TILE), sel 1/4 (lines), sel 5 (affine matrix),
- * glows + sparkles still TODO. */
+ *   - sel 0 is a 1-px tile (block_80057F98), sel 1 and 4 are gouraud lines
+ *     (block_80057E7C, block_80057954), sel 2 is an affine sin/cos billboard
+ *     (block_80057C08), sel 3 a depth-cued screen rect (block_80057A74), sel 5
+ *     an affine HUD burst (block_80057750), and sel >= 6 the rotated billboard
+ *     (block_800574F8).
+ * Glows and sparkles have their own build, feed and compare functions below. */
 /* WORLD particles project through proj2 with camera-relative coords shifted >>2
  * (world/4), so their view-Z (cz) is 1/4 the shared full-world scale that
  * scene_viewz + the terrain/actor depths use. Scale cz up by 4 at the build
@@ -246,10 +252,20 @@ static void dump_prims(CPUState* cpu, const char* tag, uint32_t start, uint32_t 
  * touched. cz is feed-only (culls use the raw view-Z), so scaling it is safe. */
 #define PART_VZ_WORLD4 4.0f
 
+/** @brief Reads a signed halfword from guest memory through the word reader.
+ *
+ * @param cpu The guest CPU state.
+ * @param addr The halfword's guest address; bit 1 selects the high half of
+ *     the aligned word.
+ * @return The sign-extended value. */
 static int rd_s16(CPUState* cpu, uint32_t addr) {
     uint32_t w = cpu->read_word(addr & ~3u);
     return (int)(int16_t)((addr & 2u) ? (w >> 16) : (w & 0xFFFF));
 }
+/** @brief Clamps a value to the signed 16-bit range [-32768, 32767].
+ *
+ * Models the int16 saturation the GTE applies to a MAC value before the
+ * perspective multiply. */
 static double clamp16(double v) { return v < -32768.0 ? -32768.0 : (v > 32767.0 ? 32767.0 : v); }
 
 /* ---- sub-tick CHANNEL-PHASE interpolation (pool-wide) ---------------------- *
@@ -296,6 +312,16 @@ static int streak_dbg(void) {
     if (v < 0) { const char* e = getenv("OPENPETE_STREAK_DBG"); v = (e && *e && *e != '0'); }
     return v;
 }
+/** @brief Logs a screen-space segment longer than 300 px to stderr.
+ *
+ * Prints the family, pool slot address and endpoints, at most five lines
+ * per openpete_frame value. Callers gate it on streak_dbg.
+ * @param fam The emitter family label.
+ * @param slot The pool slot's guest address.
+ * @param ax The first endpoint's screen X.
+ * @param ay The first endpoint's screen Y.
+ * @param bx The second endpoint's screen X.
+ * @param by The second endpoint's screen Y. */
 static void streak_log(const char* fam, uint32_t slot,
                        double ax, double ay, double bx, double by) {
     double dx = bx - ax, dy = by - ay;
@@ -307,11 +333,8 @@ static void streak_log(const char* fam, uint32_t slot,
             openpete_frame, fam, slot, ax, ay, bx, by);
 }
 
-/* Guarded prev-state lookup for a g_Particles slot. Returns 1 + fills prev
- * words A/B/C + the slot's own alpha iff the SAME identity guards the position
- * bracket applies all pass (reextract.c pool loop) — a slot whose
- * position SNAPPED (spawn / reuse / teleport) must not lerp its other channels,
- * or spin/size would sweep across two different particles. */
+/* The prev and curr interp-obj words A/B/C (+0x04, +0x08, +0x0C) of a
+ * g_Particles slot and the slot's sub-tick alpha. */
 typedef struct { uint32_t A, B, C;      /* table-PREV words */
                  uint32_t cA, cB, cC;   /* table-CURR words — the forward
                                           * endpoint. NEVER live RAM: under
@@ -320,6 +343,21 @@ typedef struct { uint32_t A, B, C;      /* table-PREV words */
                                           * channel lerp back to 30 Hz (the
                                           * original sparkle complaint). */
                  double alpha; } part_prev_t;
+/** @brief Looks up a g_Particles slot's previous-tick words for channel interpolation.
+ *
+ * Passes only when the same identity guards the position bracket applies
+ * (reextract.c pool loop) hold: a slot whose position snapped (spawn, reuse,
+ * teleport) must not lerp its other channels, or spin and size would sweep
+ * across two different particles. Fails when the re-extract phase clock
+ * s_phase_now is 0, the slot has no previous snapshot, m_Class or sel
+ * changed, the life byte dropped, the base position moved more than 300
+ * world/4 units, or the snapshot interval is not positive. The interval is
+ * capped at one tick period, and alpha is (s_phase_now - curr_ns) /
+ * interval clamped to [PART_ALPHA_MIN, 1].
+ * @param pp The slot's guest address.
+ * @param out Receives the prev words A, B, C, the curr words cA, cB, cC and
+ *     the alpha; unwritten on failure.
+ * @return 1 when the channels may be interpolated, else 0. */
 static int part_phase_prev(uint32_t pp, part_prev_t* out) {
     if (!s_phase_now) return 0;
     const openpete_interp_obj_t* o = openpete_interp_objs_find(pp);
@@ -432,12 +470,20 @@ static int part_cap(double sz3, double Hc, double He) {
 /* RTPS one view-space vertex (TR=0) through R -> screen + the view-space MAC */
 typedef struct { double sx, sy, m1, m2, m3; } projres;
 
-/* Perspective-project a VIEW-SPACE point (X,Y,Z) directly — sel 4/5 (HUD
- * particles) store view-space coords and feed them to the GTE as the TR with the
- * vertex = (0,0,0), so MAC=(X,Y,Z) and SX=OFX+X*H/Z (the camera matrix is
- * multiplied by V=0, so it drops out). No swizzle. */
 static void proj_view(double ofx, double ofy, const ngte_view* v,
                       double X, double Y, double Z, projres* o);
+/** @brief Projects a camera-relative vertex through rotation R, as RTPS with TR = 0 does.
+ *
+ * Runs ngte_project_gte without the +-1024 SXY saturation, so the widened
+ * view sees the true X.
+ * @param R The camera rotation, Q12.
+ * @param ofx The screen X offset in pixels.
+ * @param ofy The screen Y offset in pixels.
+ * @param v The view.
+ * @param vx The vertex's GTE-space X.
+ * @param vy The vertex's GTE-space Y.
+ * @param vz The vertex's GTE-space Z.
+ * @param o Receives the screen position and MAC1..MAC3. */
 static void proj2(const int R[3][3], double ofx, double ofy, const ngte_view* v,
                   double vx, double vy, double vz, projres* o) {
     ngte_proj r;   /* shared pipeline, NO ±1024 SXY saturation — float,
@@ -446,6 +492,19 @@ static void proj2(const int R[3][3], double ofx, double ofy, const ngte_view* v,
     o->sx = r.sx; o->sy = r.sy; o->m1 = r.m1; o->m2 = r.m2; o->m3 = r.m3;
 }
 
+/** @brief Projects a view-space point directly, without the camera rotation.
+ *
+ * Sel 4 and 5 particles (HUD bursts) store view-space coordinates that the
+ * game loads as the GTE translation with vertex (0, 0, 0), so MAC = (X, Y,
+ * Z) and SX = OFX + X * H / Z. Runs ngte_screen_gte without the SXY
+ * saturation.
+ * @param ofx The screen X offset in pixels.
+ * @param ofy The screen Y offset in pixels.
+ * @param v The view.
+ * @param X The view-space X.
+ * @param Y The view-space Y.
+ * @param Z The view-space Z.
+ * @param o Receives the screen position and the MACs. */
 static void proj_view(double ofx, double ofy, const ngte_view* v,
                       double X, double Y, double Z, projres* o) {
     ngte_proj r;   /* view-space point: MAC=(X,Y,Z), divide-only */
@@ -580,6 +639,18 @@ static int sz_and_lod_cull(double mac3, int texsub_hi) {
     return 0;
 }
 
+/** @brief Rebuilds s_fq and s_pline from the g_Particles pool the .s walked.
+ *
+ * Walks up to 320 records of s_part_pool, 0x20 bytes each, stopping at a
+ * sel byte 0xFF and skipping records with bit 7 set. Each sel is projected
+ * in float under the running view s_pv with the .s cull tests of its
+ * emitter (screen rect, SZ window, depth-cue LOD, four-corner clip) and
+ * appended as a quad (sel 0, 2, 3, 5 and >= 6) or a line (sel 1, 4), until
+ * MAX_FQUAD or MAX_PLINE. World-class centre depths are scaled by
+ * PART_VZ_WORLD4. While s_phase_now is set, spin, size, half-extent and
+ * far-endpoint channels are interpolated between the slot's snapshots.
+ * Reads gamestate only.
+ * @param cpu The guest CPU state. */
 static void particle_build(CPUState* cpu) {
     s_fq_n = 0; s_pline_n = 0; s_ppdbg_done = 0;
     ngte_view_build(cpu, &s_pv);
@@ -877,6 +948,15 @@ static void particle_build(CPUState* cpu) {
     }
 }
 
+/** @brief Compares the native particle quads and lines against the captured .s prims.
+ *
+ * Rebuilds the pool, then prints one [part-ab] line: the FT4 quads (sel
+ * other than 0) against the code 0x2C and 0x2E prims in order and by
+ * nearest centroid, the sel 0 tiles against the LINE_F (0x40) prims by
+ * vertex 0 and covered-pixel footprint, and the sel 1 lines against the
+ * LINE_G (0x50) prims by endpoint. OPENPETE_PARTICLE_DEBUG adds the per-sel
+ * counts and the first quad pairs.
+ * @param cpu The guest CPU state. */
 static void particle_compare(CPUState* cpu) {
     particle_build(cpu);
     int ft4 = 0; for (int p = 0; p < s_prim_n; p++) if (s_prim[p].code == 0x2C || s_prim[p].code == 0x2E) ft4++;
@@ -1108,6 +1188,17 @@ typedef struct {
 #define MAX_GTRI 4096
 static gtri s_gtri[MAX_GTRI]; static int s_gtri_n;
 
+/** @brief Rebuilds s_gtri from the D_80078800 glow records.
+ *
+ * Each record with a positive ring count, an owner MobyPos and a ring
+ * template is projected from raw world coordinates plus its offset. Records
+ * behind the camera or with a non-positive OT depth index are skipped. The
+ * ring is at most 64 template points scaled by size * 4096 / MAC3, with the
+ * scale capped at 4096 as the GTE IR0 saturates, and each consecutive ring
+ * pair becomes one fan triangle (centre in the glow colour, ring vertices
+ * black). While s_phase_now is set, size, colour and offset are interpolated
+ * between the slot's snapshots when owner, template and count match.
+ * @param cpu The guest CPU state. */
 static void glow_build(CPUState* cpu) {
     s_gtri_n = 0;
     ngte_view_build(cpu, &s_pv);
@@ -1560,11 +1651,6 @@ static void sparkle_build(CPUState* cpu) {
     }
 }
 
-/* Feed each sparkle line as a thin (1px-perp) opaque quad — the scene is
- * triangles-only, so LINE_F becomes a 2-tri ribbon along the centerline.
- * Style-1 stars feed as an 8-tri fan (centre + consecutive outline
- * pairs), ADDITIVE, white-hot core fading to m_Color at the rim. */
-
 /* OT source-body pull. The PSX links a moby's whole model into ONE OT
  * bucket at its centre depth and the sparkle renderer appends into that
  * same bucket AFTER the mobys (tail-append idiom at 0x80058508 ff.), so a
@@ -1581,6 +1667,16 @@ static void sparkle_build(CPUState* cpu) {
  * invisible in practice. */
 #define SPARKLE_OT_PULL 1024.0f
 
+/** @brief Builds the sparkles and feeds them into the native scene.
+ *
+ * The scene holds triangles only. Each style-1 star becomes an 8-triangle
+ * additive fan from a core to the alternating tip and waist outline points:
+ * the core is the S3 glint colour word 0 or, for a plain star, m_Color
+ * doubled and clamped, and the rim is the hue's word 1 and word 2 or
+ * m_Color. Each cross line becomes a 1 px opaque two-triangle ribbon in
+ * m_Color. Depth is the view-Z pulled forward by SPARKLE_OT_PULL.
+ * Display-only: the .s already ran and wrote every verdict byte.
+ * @param cpu The guest CPU state. */
 static void sparkle_feed_native(CPUState* cpu) {
     sparkle_build(cpu);
     if (s_sline_n <= 0 && s_sstar_n <= 0) return;
@@ -1890,6 +1986,11 @@ static int verify_enabled(void) {
     if (v < 0) { const char* e = getenv("OPENPETE_PARTICLE_VERIFY"); v = (e && *e && *e != '0'); }
     return v;
 }
+/** @brief Returns the openpete_frame at which the verify dumps and compares start.
+ *
+ * Parsed from OPENPETE_PARTICLE_VERIFY_FRAME with strtoul base 0, 0 when
+ * unset. The variable is read once and cached.
+ * @return The first openpete_frame value the verify output prints at. */
 static unsigned verify_frame(void) {
     static unsigned f = 0xFFFFFFFFu;
     if (f == 0xFFFFFFFFu) { const char* e = getenv("OPENPETE_PARTICLE_VERIFY_FRAME"); f = e ? (unsigned)strtoul(e, NULL, 0) : 0; }
@@ -1914,6 +2015,11 @@ static uint32_t s_pcen_ticks, s_pcen_active[3], s_pcen_ran[3], s_pcen_exposed[3]
 /* Sparkle walk vs .s on the canonical hook: twinkles the native walk emits
  * beyond what the .s drew (extra) and short of it (missing), per tick. */
 static uint32_t s_pcen_sp_ticks, s_pcen_sp_extra_ticks, s_pcen_sp_extra, s_pcen_sp_missing_ticks, s_pcen_sp_missing, s_pcen_sp_extra_first;
+/** @brief Prints the path census totals to stderr at exit.
+ *
+ * Registered with atexit by particle_path_census_note. Prints the tick
+ * count, the glow, sparkle and star active, ran, exposed and first-exposed
+ * tick counts, and the sparkle-walk extra and missing totals. */
 static void particle_path_census_exit(void) {
     fprintf(stderr, "particle path census: ticks=%u glow: active=%u ran=%u exposed=%u first=%u | "
             "sparkle: active=%u ran=%u exposed=%u first=%u | star: active=%u ran=%u exposed=%u first=%u | "
@@ -1943,6 +2049,14 @@ static void particle_path_census_sparkle(CPUState* cpu, int captured) {
     if (native > prims) { if (s_pcen_sp_extra_ticks++ == 0) s_pcen_sp_extra_first = openpete_frame; s_pcen_sp_extra += (uint32_t)(native - prims); }
     if (native < prims) { s_pcen_sp_missing_ticks++; s_pcen_sp_missing += (uint32_t)(prims - native); }
 }
+/** @brief Closes the census record of the previous tick into the totals.
+ *
+ * Does nothing before the first record. Counts the tick, then per pool
+ * (glow, sparkle, star) counts it active when the pool held records and ran
+ * when its renderer was called. It counts the pool exposed, and records the
+ * first exposed tick, when the pool was active, its renderer drew no bytes
+ * and its gate drew: any renderer for glow and sparkle, the particle
+ * renderer or the star for the star. */
 static void particle_path_census_flush(void) {
     pcen_tick_t* t = &s_pcen;
     if (t->frame == 0) return;
@@ -1963,6 +2077,18 @@ static void particle_path_census_flush(void) {
         }
     }
 }
+/** @brief Records one renderer call in the current tick's census record.
+ *
+ * On first use reads OPENPETE_PARTICLE_PATH_CENSUS and, when on, registers
+ * the exit print. When openpete_frame differs from the record's, flushes
+ * the previous record, clears it and samples the pools: any glow slot with
+ * a non-zero first word, any sparkle with a non-zero life byte, and the
+ * D_DRAGONSTAR gate word. Then counts the call and its polybuf bytes under
+ * the renderer.
+ * @param cpu The guest CPU state.
+ * @param tag 'p' particles, 'g' glows, 's' sparkles, any other value the
+ *     star.
+ * @param bytes The polybuf bytes the renderer emitted. */
 static void particle_path_census_note(CPUState* cpu, char tag, uint32_t bytes) {
     if (s_pcen_on < 0) {
         const char* e = getenv("OPENPETE_PARTICLE_PATH_CENSUS");
@@ -1988,13 +2114,14 @@ static void particle_path_census_note(CPUState* cpu, char tag, uint32_t bytes) {
     }
 }
 
-/* Shared hook body: run the real renderer once, capture its prims, record the
- * renderer's polybuf range on its own path, (dump in verify mode). `tag`
- * selects the dump label + which gamestate pools to print. */
 /* The three particle renderers share one latch: they are separate guest
  * entries, so the descriptor is built per call around the caller's own draw. */
 static hook_bracket_state s_particle_hb;
 static void (*s_particle_realfn)(CPUState*);
+/** @brief Runs the guest particle renderer chosen by on_particle_renderer as the bracket's draw.
+ *
+ * @param cpu The guest CPU state.
+ * @param addr The hooked address (unused). */
 static void particle_run_draw(CPUState* cpu, uint32_t addr) { (void)addr; s_particle_realfn(cpu); }
 /** @brief Stashes the g_Particles pool pointer before the guest particle renderer runs.
  *
@@ -2008,6 +2135,24 @@ static void particle_pre(CPUState* cpu, int feed, int verify) {
     s_part_pool = cpu->read_word(G_PARTICLES);
 }
 
+/** @brief Hooks one guest particle renderer: runs it once, captures its prims and feeds the native scene.
+ *
+ * Brackets realfn with hook_bracket_run on the shared latch, stashes the
+ * pool pointer before the draw, and notes the call in the path census.
+ * With the feed or verify gate on and bytes emitted, captures the polybuf
+ * range into s_prim; with the feed on and the render path enabled, feeds the
+ * pool's native geometry by tag. In verify mode it also traces the first 30
+ * calls of each renderer, dumps once per renderer from verify_frame on (the
+ * pools too when dump_pools_too is set), and runs the matching A/B compare
+ * up to 2000 times.
+ * @param cpu The guest CPU state.
+ * @param realfn The guest renderer.
+ * @param tag "particles", "glows" or "sparkles"; the first letter selects
+ *     the feed, compare and census slot.
+ * @param path The render path the drawn interval is recorded under.
+ * @param dump_pools_too 1 to print the pools with the first dump.
+ * @return 0 when the bracket declines and the ordinary dispatch must run the
+ *         renderer, 1 after the renderer ran here. */
 static int on_particle_renderer(CPUState* cpu, void (*realfn)(CPUState*), const char* tag,
                                 render_path_t path, int dump_pools_too) {
     const hook_bracket_desc desc = {
@@ -2067,8 +2212,23 @@ static int on_particle_renderer(CPUState* cpu, void (*realfn)(CPUState*), const 
     return hook_bracket_end(&desc);
 }
 
+/** @brief Dispatch hook for func_800573C8, the particle renderer.
+ *
+ * @param cpu The guest CPU state.
+ * @param addr The hooked address (unused).
+ * @return The on_particle_renderer verdict. */
 static int on_800573C8_particles(CPUState* cpu, uint32_t addr) { (void)addr; return on_particle_renderer(cpu, func_800573C8, "particles", RP_PARTICLES, 1); }
+/** @brief Dispatch hook for func_800580F4, the glow renderer.
+ *
+ * @param cpu The guest CPU state.
+ * @param addr The hooked address (unused).
+ * @return The on_particle_renderer verdict. */
 static int on_800580F4_glows(CPUState* cpu, uint32_t addr)     { (void)addr; return on_particle_renderer(cpu, func_800580F4, "glows", RP_GLOW, 0); }
+/** @brief Dispatch hook for func_800584C4, the sparkle renderer.
+ *
+ * @param cpu The guest CPU state.
+ * @param addr The hooked address (unused).
+ * @return The on_particle_renderer verdict. */
 static int on_800584C4_sparkles(CPUState* cpu, uint32_t addr)  { (void)addr; return on_particle_renderer(cpu, func_800584C4, "sparkles", RP_SPARKLE, 0); }
 
 /** @brief Runs the guest dragon-rescue star renderer (func_80058864) as the hook bracket's draw.
@@ -2093,6 +2253,16 @@ static const hook_bracket_desc k_dragonstar_bracket = {
     .st = &s_dragonstar_hb, .flags = HB_NO_RENDER_PATHS,
 };
 
+/** @brief Dispatch hook for func_80058864: runs the star renderer once, captures its prims and feeds the float star.
+ *
+ * Brackets dragonstar_run_draw without --render-paths isolation. Notes the
+ * call in the path census as the star, captures the polybuf range when the
+ * feed or verify gate is on, and after the feed marks RP_PARTICLES drawn
+ * when the star emitted triangles. In verify mode dumps the prims once from
+ * verify_frame on and runs dragonstar_compare up to 2000 times.
+ * @param cpu The guest CPU state.
+ * @param addr The hooked address.
+ * @return 0 when the bracket declines, 1 after the renderer ran here. */
 static int on_80058864_dragonstar(CPUState* cpu, uint32_t addr) {
     uint32_t startp, endp; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_dragonstar_bracket, &startp, &endp, &feed, &verify))
