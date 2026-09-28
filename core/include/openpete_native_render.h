@@ -1788,7 +1788,10 @@ void     openpete_native_scene_eager_begin(void);
  * @return The eager scene stamp between openpete_native_scene_eager_begin
  *         and the scene's publish, else the VBL counter. */
 uint32_t openpete_native_scene_build_stamp(void);
-/** @brief Copy the accumulating scene and its per-present companions into a free ring slot.
+/** @brief Move the accumulating scene into a free ring slot and copy its per-present companions.
+ *
+ * The triangle storage is exchanged with the slot's, so the accumulator
+ * holds no triangles afterwards.
  *
  * Any free slot serves, not only the one after the last publish: slot
  * position carries no meaning, since the pick orders by scene id and retire

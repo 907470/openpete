@@ -1683,13 +1683,14 @@ void openpete_native_scene_set_actor_front(int front) { s_scene_actor_front = fr
  * and the re-extract's scene_begin() wipes them — so without carrying them they
  * vanish on every re-extracted present (which, since the canonical present now
  * also routes through the re-extract for the 1-tick lag, means they vanish
- * outright). They're screen-space and tick-constant, so capture them from the
- * live scene before the rebuild and re-apply them after. Categories that the
+ * outright). They're screen-space and tick-constant, so they are copied into
+ * an accumulation buffer as they are fed (s_overlay_accum), committed as the
+ * carry on the canonical present and re-applied after the rebuild. Categories that the
  * 3D feeders re-produce (HUD/HUD3D billboards, PLAYER near-OT text) are NOT
  * carried by category — they'd double. The 2D-UI HUD SPRITES/LINES (title logo,
  * "PRESS START", HUD glyph text, UI separators) live in OPENPETE_SCENE_HUD too,
  * but the 3D feeders never re-derive THEM, so they carry by an explicit per-tri
- * flag (set_carry, stamped by add_tri) that the moby near-OT billboards leave 0.
+ * flag (the add_tri carry argument) that the moby near-OT billboards leave 0.
  * (OVERLAY_CARRY_MAX + the feed-time accumulation buffer live up by s_scene.) */
 static scene_tri_t s_overlay_carry[OVERLAY_CARRY_MAX];      /* curr (latest canonical capture) */
 static int                s_overlay_carry_n;
@@ -1709,7 +1710,7 @@ static uint32_t           s_overlay_prev_freeze;
  * blink toggling the count, a glyph swap — is discrete anyway). */
 static scene_tri_t s_overlay_prev[OVERLAY_CARRY_MAX];
 static int                s_overlay_prev_n;
-/* Wall-clock timestamps of the two most-recent CANONICAL overlay captures, so
+/* Tick-grid timestamps (openpete_interp_tick_stamp) of the two most-recent CANONICAL overlay captures, so
  * apply_overlay computes the position/fade interpolation alpha from the OVERLAY's
  * OWN cadence — NOT the camera-bracket alpha, which the re-extract leaves at 0
  * whenever the camera+Spyro ring dedupes (a STATIC camera: the title screen, a
