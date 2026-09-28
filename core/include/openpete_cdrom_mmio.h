@@ -93,6 +93,12 @@ int      openpete_cdrom_mmio_libcd_last_irq(uint32_t idx, uint32_t* rec, uint32_
  * @return PsyCross's g_cdNumFrames, floored at 0. */
 uint32_t openpete_cdrom_mmio_disc_sectors(void);
 
+/** @brief Log the controller's exit counters.
+ *
+ * Prints nothing when the game issued no command and no library query was
+ * answered. Otherwise reports commands (replayed from the reference, answered
+ * from the table), register reads (replayed, answered by the model, the
+ * reference's unmade) and library queries (answered, unmade). */
 void openpete_cdrom_mmio_summary(void);
 
 #ifdef __cplusplus

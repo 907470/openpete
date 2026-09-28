@@ -260,6 +260,11 @@ static uint32_t do_lwl(uint32_t addr, uint32_t rt) {
     uint32_t mask    = 0xFFFFFFFFu << shift;
     return (rt & ~mask) | (word << shift);
 }
+/** @brief Execute LWR: merge the low-order bytes of an unaligned word into @p rt.
+ *
+ * The bytes from @p addr up to the aligned word's end replace the low
+ * bytes of @p rt, shifted down by (addr & 3) * 8; the rest of @p rt stays.
+ * @return The merged register value. */
 static uint32_t do_lwr(uint32_t addr, uint32_t rt) {
     uint32_t aligned = addr & ~3u;
     uint32_t word    = read_word(aligned);
@@ -267,6 +272,11 @@ static uint32_t do_lwr(uint32_t addr, uint32_t rt) {
     uint32_t mask    = 0xFFFFFFFFu >> shift;
     return (rt & ~mask) | (word >> shift);
 }
+/** @brief Execute SWL: store the high-order bytes of @p rt up to @p addr's byte.
+ *
+ * Reads the aligned word, replaces its bytes from the word start through
+ * @p addr with the top bytes of @p rt (shifted down by (3 - (addr & 3)) * 8),
+ * and writes it back through write_word. */
 static void do_swl(uint32_t addr, uint32_t rt) {
     uint32_t aligned = addr & ~3u;
     uint32_t existing = read_word(aligned);
@@ -274,6 +284,11 @@ static void do_swl(uint32_t addr, uint32_t rt) {
     uint32_t mask    = 0xFFFFFFFFu >> shift;
     write_word(aligned, (existing & ~mask) | (rt >> shift));
 }
+/** @brief Execute SWR: store the low-order bytes of @p rt from @p addr's byte.
+ *
+ * Reads the aligned word, replaces its bytes from @p addr through the word
+ * end with @p rt shifted up by (addr & 3) * 8, and writes it back through
+ * write_word. */
 static void do_swr(uint32_t addr, uint32_t rt) {
     uint32_t aligned = addr & ~3u;
     uint32_t existing = read_word(aligned);

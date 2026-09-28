@@ -112,6 +112,10 @@ void mod_cvec_init(mod_cvec* v, size_t elem_size, size_t block_elems,
 
 /**
  * @brief Append one zeroed element.
+ *
+ * Adds a block of 2^block_shift elements when the count reaches the
+ * allocated blocks; the count is raised only after the element is zeroed.
+ * @param v Table.
  * @return Address of the new element, stable for the life of the table,
  *         or NULL on allocation failure or on an uninitialized table.
  */
@@ -119,11 +123,17 @@ void* mod_cvec_push(mod_cvec* v);
 
 /**
  * @brief Address of element @p i.
+ * @param v Table.
+ * @param i Element index.
  * @return NULL when @p i is at or past the count.
  */
 void* mod_cvec_at(const mod_cvec* v, size_t i);
 
-/** @brief Number of elements. */
+/**
+ * @brief Number of elements.
+ * @param v Table.
+ * @return The count.
+ */
 size_t mod_cvec_count(const mod_cvec* v);
 
 /**
@@ -131,13 +141,21 @@ size_t mod_cvec_count(const mod_cvec* v);
  *
  * The order of the remaining elements is preserved and every element above @p i
  * changes index. Out-of-range is a no-op.
+ * @param v Table.
+ * @param i Element index.
  */
 void mod_cvec_remove_at(mod_cvec* v, size_t i);
 
-/** @brief Drop every element, keeping the blocks for the next fill. */
+/**
+ * @brief Drop every element, keeping the blocks for the next fill.
+ * @param v Table.
+ */
 void mod_cvec_clear(mod_cvec* v);
 
-/** @brief Release the blocks, unlink the census node and zero the table. */
+/**
+ * @brief Release the blocks, unlink the census node and zero the table.
+ * @param v Table.
+ */
 void mod_cvec_free(mod_cvec* v);
 
 /**
@@ -153,6 +171,9 @@ void mod_fvec_init(mod_fvec* v, size_t elem_size, size_t init_cap,
 
 /**
  * @brief Append one zeroed element.
+ *
+ * Grows the run by doubling from the initial capacity when it is full.
+ * @param v Table.
  * @return Address of the new element, invalidated by the next growth, or
  *         NULL on allocation failure or on an uninitialized table.
  */
@@ -160,21 +181,34 @@ void* mod_fvec_push(mod_fvec* v);
 
 /**
  * @brief Address of element @p i.
+ * @param v Table.
+ * @param i Element index.
  * @return NULL when @p i is at or past the count.
  */
 void* mod_fvec_at(const mod_fvec* v, size_t i);
 
-/** @brief Number of elements. */
+/**
+ * @brief Number of elements.
+ * @param v Table.
+ * @return The count.
+ */
 size_t mod_fvec_count(const mod_fvec* v);
 
 /**
  * @brief Base address of the contiguous run, for qsort, memcpy and hash consumers.
+ * @param v Table.
  * @return NULL while nothing is allocated.
  */
 void* mod_fvec_data(const mod_fvec* v);
 
 /**
  * @brief Grow the capacity to at least @p n elements without changing the count.
+ *
+ * Doubles from the current capacity (the initial capacity when none is
+ * allocated) and zeroes the added slots. Returns -1 for an uninitialized
+ * table.
+ * @param v Table.
+ * @param n Elements the run must hold.
  * @return 0 on success, -1 on allocation failure.
  */
 int mod_fvec_reserve(mod_fvec* v, size_t n);
@@ -186,6 +220,8 @@ int mod_fvec_reserve(mod_fvec* v, size_t n);
  * raises the peak. A growth to a capacity above the table's former fixed
  * capacity (`was`), and each allocation failure at a request size larger than
  * any refused before, is logged under the census name.
+ * @param v Table.
+ * @param n Elements the run must hold.
  * @return 0 on success, -1 on allocation failure; the run and its
  *         capacity are then unchanged, and the caller fills what fits.
  */
@@ -196,6 +232,8 @@ int mod_fvec_reserve_noted(mod_fvec* v, size_t n);
  *
  * The order of the remaining elements is preserved and every element above @p i
  * changes index. Out-of-range is a no-op.
+ * @param v Table.
+ * @param i Element index.
  */
 void mod_fvec_remove_at(mod_fvec* v, size_t i);
 
@@ -203,6 +241,8 @@ void mod_fvec_remove_at(mod_fvec* v, size_t i);
  * @brief Set the count to @p n, zeroing any elements this adds.
  *
  * For a slot table whose size is a function of another table.
+ * @param v Table.
+ * @param n New count.
  * @return 0 on success, -1 on allocation failure (the count is unchanged).
  */
 int mod_fvec_resize(mod_fvec* v, size_t n);
@@ -212,13 +252,21 @@ int mod_fvec_resize(mod_fvec* v, size_t n);
  *
  * For the compact-in-place idiom: the caller copies the survivors down to
  * [0, n) and calls this to drop the tail. A count at or below @p n is left alone.
+ * @param v Table.
+ * @param n New count upper bound.
  */
 void mod_fvec_truncate(mod_fvec* v, size_t n);
 
-/** @brief Drop every element, keeping the capacity for the next fill. */
+/**
+ * @brief Drop every element, keeping the capacity for the next fill.
+ * @param v Table.
+ */
 void mod_fvec_clear(mod_fvec* v);
 
-/** @brief Release the run, unlink the census node and zero the table. */
+/**
+ * @brief Release the run, unlink the census node and zero the table.
+ * @param v Table.
+ */
 void mod_fvec_free(mod_fvec* v);
 
 /**
@@ -247,7 +295,11 @@ typedef struct mod_fixed {
  */
 void mod_fixed_init(mod_fixed* t, const char* name, unsigned long was,
                     size_t storage);
-/** @brief Publish the table's live element count, tracking its high-water. */
+/**
+ * @brief Publish the table's live element count, tracking its high-water.
+ * @param t     The table; NULL is ignored.
+ * @param count Live element count.
+ */
 void mod_fixed_set(mod_fixed* t, size_t count);
 /**
  * @brief Publish a count and storage for a table that is not one object.
@@ -256,7 +308,10 @@ void mod_fixed_set(mod_fixed* t, size_t count);
  * live in the copies, because a copy duplicates the node while the list
  * still points at the original. One process-global counter stands for
  * the whole population instead, so `peak` is the largest any one mod
- * reached and `count` is the most recent.
+ * reached and `count` is the most recent. `storage` only rises.
+ * @param t       The table; NULL is ignored.
+ * @param count   Live element count, as mod_fixed_set.
+ * @param storage Elements the storage holds; kept when below the recorded one.
  */
 void mod_fixed_note(mod_fixed* t, size_t count, size_t storage);
 

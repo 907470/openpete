@@ -16,14 +16,25 @@ static mod_vec_node_t* s_census_head;
 static int s_census_armed;
 static char s_census_lock;
 
+/** @brief Take the census list's spin lock. */
 static void census_lock(void) {
     while (__atomic_test_and_set(&s_census_lock, __ATOMIC_ACQUIRE)) { }
 }
 
+/** @brief Release the census list's spin lock. */
 static void census_unlock(void) {
     __atomic_clear(&s_census_lock, __ATOMIC_RELEASE);
 }
 
+/** @brief Fill a census node and link it into the census list when named.
+ *
+ * An unnamed table (NULL @p name) is filled but not linked, so the list and
+ * the exit report never see it.
+ * @param n    Node embedded in the table.
+ * @param vec  Owning table.
+ * @param name Census name, or NULL.
+ * @param was  Former fixed capacity.
+ * @param kind MOD_VEC_FVEC, MOD_VEC_CVEC or MOD_VEC_FIXED. */
 static void census_link(mod_vec_node_t* n, const void* vec, const char* name,
                         unsigned long was, int kind) {
     n->vec = vec;
@@ -40,6 +51,10 @@ static void census_link(mod_vec_node_t* n, const void* vec, const char* name,
     census_unlock();
 }
 
+/** @brief Remove a node from the census list when it is linked.
+ *
+ * Clears the node's link state so a second call is a no-op.
+ * @param n Node embedded in the table. */
 static void census_unlink(mod_vec_node_t* n) {
     mod_vec_node_t** p = &s_census_head;
     if (!n->linked) return;
@@ -110,6 +125,12 @@ static int cvec_add_block(mod_cvec* v) {
     return 0;
 }
 
+/** @brief Address of element @p i through the block index.
+ *
+ * Block @p i >> block_shift, offset @p i masked to the block size; the
+ * block must already be allocated.
+ * @param v Table.
+ * @param i Element index below the allocated capacity. */
 static unsigned char* cvec_slot(const mod_cvec* v, size_t i) {
     size_t b = i >> v->block_shift;
     size_t o = i & (((size_t)1 << v->block_shift) - 1);
@@ -252,6 +273,12 @@ void mod_fvec_free(mod_fvec* v) {
     memset(v, 0, sizeof *v);
 }
 
+/** @brief Report whether the census output is enabled.
+ *
+ * True when OPENPETE_MOD_TABLE_CENSUS is set to a non-empty value other
+ * than "0".
+ *
+ * @return 1 when enabled, else 0. */
 static int census_enabled(void) {
     const char* e = getenv("OPENPETE_MOD_TABLE_CENSUS");
     return e && *e && strcmp(e, "0") != 0;
@@ -279,6 +306,12 @@ static FILE* census_open(int* needs_close) {
     return f;
 }
 
+/** @brief Print one census line for a linked table.
+ *
+ * Count, peak and storage come from the table the node's kind names; grew
+ * is 0 for a fixed table.
+ * @param out Output stream.
+ * @param n   Linked node. */
 static void census_row(FILE* out, const mod_vec_node_t* n) {
     size_t count, peak, storage;
     unsigned long grew;

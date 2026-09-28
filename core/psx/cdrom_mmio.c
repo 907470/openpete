@@ -112,11 +112,19 @@ int openpete_cdrom_mmio_open(const char* trace_path) {
     return 1;
 }
 
+/** @brief Load the response FIFO and rewind its read position.
+ *
+ * @param b Response bytes.
+ * @param n Byte count; clamped to the FIFO size. */
 static void resp_set(const uint8_t* b, uint32_t n) {
     if (n > CD_FIFO) n = CD_FIFO;
     memcpy(s_resp, b, n); s_resp_n = n; s_resp_head = 0;
 }
 
+/** @brief Set the flag register to a queued interrupt's INT number and load its response.
+ *
+ * The caller removes the entry from the queue.
+ * @param p Queue entry. */
 static void raise_irq(const cd_pending_t* p) {
     s_irq_flag = p->irq;
     resp_set(p->resp, p->n);
@@ -134,6 +142,13 @@ static void queue_service(void) {
     s_queue_n--;
 }
 
+/** @brief Append an interrupt due at a VBL count to the queue.
+ *
+ * A full queue drops it with a warning. The response is truncated to 16 bytes.
+ * @param due  VBL count from which the interrupt may be raised.
+ * @param irq  INT number.
+ * @param resp Response bytes.
+ * @param n    Response length. */
 static void queue_push(uint32_t due, uint8_t irq, const uint8_t* resp, uint32_t n) {
     if (s_queue_n == CD_QUEUE) { OPL_WARN_F("cdrom", "interrupt queue full; dropping INT%u", irq); return; }
     cd_pending_t* p = &s_queue[s_queue_n++];
@@ -157,6 +172,14 @@ static const struct { uint8_t cmd; uint32_t int2_delay; } k_second_response[] = 
     { 0x07,  2 },   /* MotorOn */
 };
 
+/** @brief Queue a command's interrupts from the model's table.
+ *
+ * Queues an INT3 due one VBL later whose first byte is the motor-on status;
+ * GetTN, GetTD (track 1 at 150 sectors, else the lead-out from the disc's
+ * sector count, minute and second in BCD) and the Test sub-functions 0x05
+ * and 0x20 append their bytes. A command in k_second_response also queues
+ * an INT2 after its measured delay; GetID's carries the SCEA license bytes.
+ * @param cmd Command byte. */
 static void issue_default(uint8_t cmd) {
     uint8_t r[CD_RESP]; uint32_t n = 0;
     r[n++] = CD_STAT_MOTOR_ON;
@@ -186,6 +209,14 @@ static void issue_default(uint8_t cmd) {
     s_defaulted++;
 }
 
+/** @brief Consume the reference's next game-issued command row and queue its interrupts.
+ *
+ * Skips rows issued below the raw-site minimum or from a ROM address. A
+ * command beyond the last row, or one whose byte differs from the row's,
+ * reports a scheduling failure and returns 0. Each interrupt row is queued
+ * at the current VBL count plus its VBL offset from the command, plus one.
+ * @param cmd Command byte the game wrote.
+ * @return 1 when a matching row was consumed, else 0. */
 static int issue_replay(uint8_t cmd) {
     /* The game's own sites lie in main RAM at or above the minimum; the
      * BIOS's boot commands (ROM addresses) and libcd's are skipped. */
@@ -207,6 +238,13 @@ static int issue_replay(uint8_t cmd) {
     return 1;
 }
 
+/** @brief Handle a command byte written to the command register.
+ *
+ * Counts it, answers it from the reference's rows when replay is active and
+ * the scheduler is running (else from the table), clears the parameter FIFO
+ * and raises the queue's head when it is due. Logs the command when
+ * OPENPETE_CDROM_LOG is set.
+ * @param cmd Command byte. */
 static void issue(uint8_t cmd) {
     s_commands++;
     s_last_cmd = cmd;

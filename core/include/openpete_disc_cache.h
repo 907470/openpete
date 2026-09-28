@@ -30,6 +30,10 @@ extern "C" {
  *         than 0x7FFFFFFF bytes) or allocated, and the caller falls back
  *         to PsyX_CDFS_Init. */
 int  openpete_disc_cache_attach(const char* bin_path);
+/** @brief Report whether an image is attached as PsyCross's memory image.
+ *
+ * Stays 1 after openpete_disc_cache_shutdown, since PsyCross keeps the buffer.
+ * @return 1 after a successful attach, else 0. */
 int  openpete_disc_cache_active(void);
 /** @brief Stop the loader, join its thread, and remove the miss wait.
  *
