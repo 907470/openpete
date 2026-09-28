@@ -105,6 +105,16 @@ static void capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
 
 static const char* k_part_name[3] = { "body", "head", "tail" };
 
+/** @brief Prints the player draw's inputs and the captured primitive code histogram to stderr.
+ *
+ * Prints the GTE offset and screen distance, the g_Spyro words and per-part
+ * animation indices, the model header, each part's animation header and
+ * part record, and the histogram of captured primitive codes. A part whose
+ * animation header pointer is outside 0x80000000..0x807FFFFF is reported
+ * and skipped.
+ * @param cpu The guest CPU state, after the player draw ran.
+ * @param startp The first polybuf address of the draw's output.
+ * @param endp The polybuf address past the draw's output. */
 static void spyro_dump(CPUState* cpu, uint32_t startp, uint32_t endp) {
     fprintf(stderr, "\n[spyro-dump f=%u] prims [%08X,%08X) %u bytes  OFX=%d OFY=%d H=%u\n",
             openpete_frame, startp, endp, endp - startp,
@@ -156,12 +166,19 @@ static int   s_proj_n, s_walk_n;
 static float s_px[2048], s_py[2048], s_pz[2048];
 static int   s_psat[2048], s_ppart[2048];
 
+/** @brief Copies the shared feeder's projected vertices into s_px, s_py, s_pz, s_psat and s_ppart.
+ *
+ * Clamps s_proj_n to the 2048 entries those arrays hold. */
 static void snap_projection(void) {
     if (s_proj_n > 2048) s_proj_n = 2048;
     for (int i = 0; i < s_proj_n; i++)
         player_proj_vert(i, &s_px[i], &s_py[i], &s_pz[i], &s_psat[i], &s_ppart[i]);
 }
 
+/** @brief Re-runs the shared feeder's projection and face walk and snapshots the projected vertices.
+ *
+ * Sets s_proj_n and s_walk_n from player_project_all and player_build_walk.
+ * @param cpu The guest CPU state. */
 static void native_rebuild(CPUState* cpu) {
     s_proj_n = player_project_all(cpu);
     snap_projection();
@@ -256,6 +273,11 @@ static int spyro_index_of(CPUState* cpu, int px, int py) {
         if (cpu->read_word(PL.sxy_base + (uint32_t)j * 4) == want) return j;
     return -1;
 }
+/** @brief Returns the index of the native projected vertex nearest to a screen position.
+ *
+ * @param px The screen x.
+ * @param py The screen y.
+ * @return The index into s_px and s_py, or -1 when s_proj_n is 0. */
 static int spyro_nn(float px, float py) {
     int best = -1; float bd = 1e18f;
     for (int j = 0; j < s_proj_n; j++) {
@@ -300,6 +322,17 @@ static void spyro_idx_audit(CPUState* cpu) {
  * int16 screen position, which makes index recovery ambiguous there. */
 typedef struct { int walk, expected, cnt_ok, n, pos_ok, rgb_ok, uv_ok, first_bad; } walk_stats;
 #define MAX_EXP 8192
+/** @brief Compares the native face walk with the captured primitives, triangle by triangle.
+ *
+ * Expands each captured primitive of 3 or 4 vertices to triangles (a quad
+ * splits as 0,1,2 and 1,3,2), recovering vertex indices with
+ * spyro_index_of, and compares the first min(walk, expected) triangles with
+ * the walk's: position by floored screen coordinates, vertex colour, and
+ * UV. Fills the counts and the index of the first triangle whose colour or
+ * UV differs. Reads only.
+ * @param cpu The guest CPU state.
+ * @param st Receives the statistics; zeroed with cnt_ok 1 and first_bad -1
+ *        when there are no captured primitives or projected vertices. */
 static void spyro_walk_eval(CPUState* cpu, walk_stats* st) {
     memset(st, 0, sizeof(*st)); st->first_bad = -1; st->cnt_ok = 1;
     if (s_gte_n <= 0 || s_proj_n <= 0) return;
@@ -340,6 +373,9 @@ static void spyro_walk_eval(CPUState* cpu, walk_stats* st) {
     }
     st->walk = s_walk_n; st->expected = en; st->n = n; st->cnt_ok = (s_walk_n == en);
 }
+/** @brief Logs spyro_walk_eval's result to stderr as the spyro-walk verdict line.
+ *
+ * @param cpu The guest CPU state. */
 static void spyro_walk_compare(CPUState* cpu) {
     walk_stats st; spyro_walk_eval(cpu, &st);
     fprintf(stderr, "[spyro-walk f=%u] walk=%d expected=%d (prims=%d) %s pos=%.1f%% rgb=%.1f%% uv=%.1f%%  first_bad=%d\n",
@@ -352,6 +388,15 @@ static void spyro_walk_compare(CPUState* cpu) {
  * the three translation words. A part with no matrix of its own inherits the
  * root's, so it is compared against the root record's matrix. */
 typedef struct { int part_n; int m_max[3]; int tr_max[3]; int worst_m, worst_tr; } mat_stats;
+/** @brief Measures the derived per-part matrix and translation against the routine's records.
+ *
+ * Projects all vertices, then for each active part takes the largest
+ * absolute difference over the nine matrix elements and the three
+ * translation words. A part without its own matrix is compared with the
+ * root part's. Stops at the first part whose flag word is 0 or that has no
+ * derived transform.
+ * @param cpu The guest CPU state.
+ * @param ms Receives the statistics; zeroed when the part block is absent. */
 static void spyro_matrix_eval(CPUState* cpu, mat_stats* ms) {
     memset(ms, 0, sizeof *ms);
     uint32_t block = player_part_block_base(cpu);
@@ -378,6 +423,11 @@ static void spyro_matrix_eval(CPUState* cpu, mat_stats* ms) {
         if (tmax > ms->worst_tr) ms->worst_tr = tmax;
     }
 }
+/** @brief Logs spyro_matrix_eval's result to stderr as the spyro-mat verdict line.
+ *
+ * The verdict is MATCH when the worst matrix and translation differences are
+ * both at most 2.
+ * @param cpu The guest CPU state. */
 static void spyro_matrix_compare(CPUState* cpu) {
     mat_stats ms; spyro_matrix_eval(cpu, &ms);
     fprintf(stderr, "[spyro-mat f=%u] parts=%d  Mmax(b/h/t)=%d/%d/%d  TRmax(b/h/t)=%d/%d/%d  => %s\n",
@@ -400,6 +450,7 @@ static struct {
     long mat_bad; int mat_worst_m, mat_worst_tr; unsigned mat_worst_frame;
 } s_agg = { 0, 0, 100.0, 0, -1, 0.0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
+/** @brief Prints the run-wide geometry, walk and matrix verdicts from s_agg to stderr. */
 static void spyro_agg_final(void) {
     fprintf(stderr, "[spyro-agg FINAL] frames=%ld imperfect=%ld (%.2f%%)  worst=%.1f%% (part %d @f%u)  maxerr=%.1fpx @f%u  => %s\n",
             s_agg.frames, s_agg.bad_frames,
@@ -417,6 +468,16 @@ static void spyro_agg_final(void) {
             (s_agg.mat_bad==0) ? "PASS (M+TR derived from gamestate match the records, all frames)" : "MATRIX RESIDUAL");
 }
 
+/** @brief Folds one draw's geometry, walk and matrix results into the run-wide s_agg tally.
+ *
+ * Registers spyro_agg_final with atexit on first call. Compares every
+ * native projected vertex with the routine's SXY block by index and counts
+ * the frame imperfect when any part has a vertex over 4 px away. Counts
+ * walk mismatches, matrix mismatches (over 2) and draws with a nonzero
+ * emit-mode selector, which the direct-only walk does not decode. Logs the
+ * worst vertex when its error exceeds 8 px, and a summary every 2000th
+ * draw.
+ * @param cpu The guest CPU state. */
 static void spyro_aggregate(CPUState* cpu) {
     static int s_reg = 0;
     if (!s_reg) { s_reg = 1; atexit(spyro_agg_final); }
@@ -488,12 +549,26 @@ int spyro_verify_enabled(void) {
     if (v < 0) { const char* e = getenv("OPENPETE_SPYRO_VERIFY"); v = (e && *e && *e != '0'); }
     return v;
 }
+/** @brief Returns the first tick OPENPETE_SPYRO_VERIFY_FRAME allows verification on, 0 when unset.
+ *
+ * Read once and cached. The value is parsed by strtoul with base 0. */
 static unsigned spyro_verify_frame(void) {
     static unsigned f = 0xFFFFFFFFu;
     if (f == 0xFFFFFFFFu) { const char* e = getenv("OPENPETE_SPYRO_VERIFY_FRAME"); f = e ? (unsigned)strtoul(e, NULL, 0) : 0; }
     return f;
 }
 
+/** @brief Verifies the native player decode against the primitives the player draw just emitted.
+ *
+ * The shared player hook's verify entry, called after the routine ran while
+ * its scratch is live. Returns without action before the frame that
+ * spyro_verify_frame gives, or when the polybuf interval is empty.
+ * Otherwise captures the primitives, rebuilds the native projection and
+ * walk, dumps once, runs the per-draw comparisons for the first 200 draws,
+ * and folds every draw into the run-wide aggregate. Reads PSX RAM only.
+ * @param cpu The guest CPU state.
+ * @param startp The first polybuf address of the draw's output.
+ * @param endp The polybuf address past the draw's output. */
 void spyro_verify_run(CPUState* cpu, uint32_t startp, uint32_t endp) {
     static int s_dumped = 0, s_reports = 0;
     if (openpete_frame < spyro_verify_frame() || endp <= startp) return;

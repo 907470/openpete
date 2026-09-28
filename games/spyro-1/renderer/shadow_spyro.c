@@ -342,6 +342,10 @@ static void shadow_spyro_compare(CPUState* cpu) {
             openpete_frame, s_sptri_n, g3, n, nv?sum/nv:0, worst, over2, n, cbad);
 }
 
+/** @brief Runs the guest Spyro shadow renderer func_80059A48; the hook bracket's draw callback.
+ *
+ * @param cpu The guest CPU state.
+ * @param addr Unused. */
 static void shadow_spyro_run_draw(CPUState* cpu, uint32_t addr) { (void)addr; func_80059A48(cpu); }
 
 static hook_bracket_state s_shadow_spyro_hb;
@@ -351,6 +355,19 @@ static const hook_bracket_desc k_shadow_spyro_bracket = {
     .st = &s_shadow_spyro_hb,
 };
 
+/** @brief Dispatch hook for func_80059A48: runs the guest shadow draw once, then feeds or verifies.
+ *
+ * The draw goes through hook_bracket_run, which runs it exactly once and
+ * records the polybuf interval it emitted. When that interval is non-empty
+ * the shadow record is appended for the sub-tick replay and the prims are
+ * captured; the native fan is fed when the scene is live and RP_SHADOW is
+ * enabled. Under the verify latch, past shadow_verify_frame, it dumps once
+ * and compares the fan with the captured prims for up to 60 calls. It only
+ * reads PSX RAM after the draw.
+ * @param cpu The guest CPU state.
+ * @param addr The hooked entry address, 0x80059A48.
+ * @return 0 when the bracket declined and the ordinary dispatch runs the
+ *         draw; 1 when the hook ran it. */
 static int on_80059A48_shadow_spyro(CPUState* cpu, uint32_t addr) {
     uint32_t startp, endp; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_shadow_spyro_bracket, &startp, &endp, &feed, &verify))
@@ -372,9 +389,7 @@ static int on_80059A48_shadow_spyro(CPUState* cpu, uint32_t addr) {
     return hook_bracket_end(&k_shadow_spyro_bracket);
 }
 
-/* The Spyro drop-shadow of one shadow record: the record loop in
- * reextract.c calls this once per record with that record's
- * g_Spyro fields and anchor staged. Same gates as the moby shadows. */
+/* Documented at its declaration in reextract.h. */
 void shadow_spyro_reextract(CPUState* cpu, int slot) {
     if (!hook_reextract_ready(RP_SHADOW)) return;
     shadow_spyro_feed_native(cpu, slot);

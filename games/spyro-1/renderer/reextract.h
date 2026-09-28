@@ -74,6 +74,16 @@ void portal_reextract(struct CPUState* cpu, double alpha, int interp_on);
 /* terrain_reextract, terrain_native_topdown_pose, terrain_native_sweep_pose:
  * renderer/terrain.h (the shared feeder). */
 void shadow_reextract(struct CPUState* cpu);
+/** @brief Feeds the Spyro silhouette shadow of one shadow record for a sub-tick present.
+ *
+ * The record loop of the sub-tick re-extract calls it once per record with
+ * that record's g_Spyro fields and ground anchor staged. Behind the same
+ * gate as the moby shadows (hook_reextract_ready for RP_SHADOW); draws
+ * nothing when the gate is closed, the player shadow feed is disabled, or
+ * Spyro is over water. Extract-only: no PSX RAM store.
+ * @param cpu The guest CPU state, the record's fields staged.
+ * @param slot The model record index the shadow renders under; negative
+ *        reads as 0. */
 void shadow_spyro_reextract(struct CPUState* cpu, int slot);
 void player_reextract(struct CPUState* cpu);
 /** @brief Replays the particle, glow, sparkle and star feeds for a sub-tick present.

@@ -320,9 +320,31 @@ static double hermite1(double prev2, double prev, double curr, double t) {
     double hi = prev < curr ? curr : prev;
     return y < lo ? lo : (y > hi ? hi : y);
 }
+/** @brief Rounds v half away from zero and narrows it to int16_t.
+ *
+ * The caller keeps v inside the int16_t range: hermite1 clamps to the
+ * segment between two int16_t samples.
+ * @param v The value to round. */
 static int16_t hround16(double v) { return (int16_t)(v >= 0.0 ? v + 0.5 : v - 0.5); }
+/** @brief Rounds v half away from zero and narrows it to int32_t.
+ *
+ * The caller keeps v inside the int32_t range: hermite1 clamps to the
+ * segment between two int32_t samples.
+ * @param v The value to round. */
 static int32_t hround32(double v) { return (int32_t)(v >= 0.0 ? v + 0.5 : v - 0.5); }
 
+/** @brief Writes the hermite1 interpolation of nine int16 matrix entries at a byte offset into live.
+ *
+ * Reads nine consecutive int16_t at off in each of the three snapshot
+ * buffers, interpolates entry by entry with hermite1, rounds with
+ * hround16, and stores the result at off in live. The offset must be
+ * int16-aligned in all four buffers.
+ * @param live Receives the interpolated entries.
+ * @param prev2 The snapshot before prev.
+ * @param prev The segment start snapshot.
+ * @param curr The segment end snapshot.
+ * @param off Byte offset of the nine entries in each buffer.
+ * @param t The sub-tick phase between prev and curr. */
 static void herm_matrix(uint8_t* live, const uint8_t* prev2, const uint8_t* prev,
                         const uint8_t* curr, uint32_t off, double t) {
     const int16_t* p2 = (const int16_t*)(prev2 + off);
@@ -331,6 +353,18 @@ static void herm_matrix(uint8_t* live, const uint8_t* prev2, const uint8_t* prev
     int16_t*       pl = (int16_t*)(live + off);
     for (int i = 0; i < 9; ++i) pl[i] = hround16(hermite1(p2[i], pp[i], pc[i], t));
 }
+/** @brief Writes the hermite1 interpolation of an int32 x, y, z triple at a byte offset into live.
+ *
+ * Reads three consecutive int32_t at off in each of the three snapshot
+ * buffers, interpolates per axis with hermite1, rounds with hround32, and
+ * stores the result at off in live. The offset must be int32-aligned in
+ * all four buffers.
+ * @param live Receives the interpolated position.
+ * @param prev2 The snapshot before prev.
+ * @param prev The segment start snapshot.
+ * @param curr The segment end snapshot.
+ * @param off Byte offset of the triple in each buffer.
+ * @param t The sub-tick phase between prev and curr. */
 static void herm_vec3(uint8_t* live, const uint8_t* prev2, const uint8_t* prev,
                       const uint8_t* curr, uint32_t off, double t) {
     const int32_t* p2 = (const int32_t*)(prev2 + off);
@@ -460,6 +494,11 @@ static void fpos_drop(uint32_t key) {
     fpos_index_clear();
     for (int k = 0; k < s_fpos_n; ++k) fpos_index(s_fpos[k].key, k);
 }
+/** @brief Copies key's first fractional-position entry into out.
+ *
+ * @param key The object's guest address.
+ * @param out Receives the x, y, z position; unchanged when key has no entry.
+ * @return 1 when key has an entry, else 0. */
 static int fpos_get(uint32_t key, double out[3]) {
     int i = fpos_find(key);
     if (i < 0) return 0;
@@ -513,6 +552,11 @@ int openpete_native_interp_pos(unsigned int key, double out[3]) {
 static uint8_t s_cl_hold[CAM_BYTES];   /* latched camera bytes (verbatim hold) */
 static int     s_cl_have_hold = 0;
 
+/** @brief Computes the Q12 cosine and sine of an angle given in 4096-per-turn units.
+ *
+ * @param units The angle, 4096 units per turn.
+ * @param c Receives the rounded Q12 cosine.
+ * @param s Receives the rounded Q12 sine. */
 static void cl_trig_q12(double units, int32_t* c, int32_t* s) {
     double r = units * (2.0 * M_PI / 4096.0);
     *c = (int32_t)lround(4096.0 * cos(r));
@@ -995,6 +1039,11 @@ uint32_t spyro_native_canon_epoch_stamp(void) { return s_canon_epoch_now; }
 int spyro_native_canon_epoch_fresh(uint32_t stamp) { return stamp == s_canon_epoch_ok; }
 int spyro_native_canon_mobyreg_fresh(void) { return s_prod_epoch[SPROD_MOBYREG] == s_canon_epoch_ok; }
 int spyro_native_canon_shaded_fresh(void)  { return s_prod_epoch[SPROD_SHADED]  == s_canon_epoch_ok; }
+/** @brief Reports whether producer p captured during the last closed canonical render.
+ *
+ * Compares the producer's last-capture stamp with the last closed epoch,
+ * the test spyro_native_canon_mobyreg_fresh and
+ * spyro_native_canon_shaded_fresh apply to their own producers. */
 static int scratch_prod_fresh(sprod_t p)   { return s_prod_epoch[p] == s_canon_epoch_ok; }
 
 /* Registry engine: row lookup + capture. Captures fire at the producer hooks

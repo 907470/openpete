@@ -162,30 +162,54 @@ extern uint8_t psx_runtime_native_cone_pass;
  */
 extern uint8_t psx_runtime_native_dist_pass;
 
-/**
- * @name Distance-cull hooks
+/*
+ * Distance-cull hooks.
  * Append-call hooks emitted after the canonical box-cull add/sub at the
  * distance-cull PCs, receiving the destination-register comparand. Each
  * clears psx_runtime_native_dist_pass when the box cull rejects.
- * @{ */
-/** @brief Lower bound: cull if `v - delta <= 0`. */
+ */
+/** @brief Clears psx_runtime_native_dist_pass when a box-cull lower-bound value is not positive.
+ *
+ * Appended after the add of each lower-bound test of the regular, specular
+ * and shaded moby passes; the asm culls the moby when the value is at most
+ * zero.
+ * @param v The destination register of the add. */
 void psx_runtime_dist_gate_lower(int32_t v);
-/** @brief Upper bound and post-MVMVA projected Z: cull if `v + delta >= 0`. */
+/** @brief Clears psx_runtime_native_dist_pass when a box-cull upper-bound value is not negative.
+ *
+ * Appended after the sub of each upper-bound test and after the post-MVMVA
+ * projected-Z cull of the three moby passes; the asm culls the moby when the
+ * value is at least zero.
+ * @param v The destination register of the sub. */
 void psx_runtime_dist_gate_upper(int32_t v);
-/** @} */
 
-/**
- * @name Moby cone-X cull hooks
+/*
+ * Moby cone-X cull hooks.
  * ReplaceCall hooks at the m_WasDrawn cone-compute sites. Record the
  * canonical 4:3 verdict in psx_runtime_native_cone_pass and return the
  * canonical comparand.
- * @{ */
-/** @brief Regular and specular paths. */
+ */
+/** @brief Records the regular and specular moby cone-X verdict and returns mac1_abs - a2.
+ *
+ * Stores whether 4 * (mac1_abs - a2) - 3 * (mac3 + a3) is negative in
+ * psx_runtime_native_cone_pass. The returned comparand is the asm's own
+ * `|MAC1| - radius`; the generated code applies the remaining shifts.
+ * @param mac1_abs The absolute value of MAC1.
+ * @param a2 The moby's x radius.
+ * @param mac3 The MAC3 term.
+ * @param a3 The bias added to mac3.
+ * @return mac1_abs - a2. */
 int32_t psx_runtime_cone_widen_permoby(int32_t mac1_abs, int32_t a2,
                                        int32_t mac3, int32_t a3);
-/** @brief The fixed-102/77 shaded path. */
+/** @brief Records the shaded moby cone-X verdict and returns mac1_abs - 102.
+ *
+ * Stores whether 4 * (mac1_abs - 102) - 3 * (mac3 + 77) is negative in
+ * psx_runtime_native_cone_pass. The constants 102 and 77 are the shaded
+ * pass's fixed x radius and bias; mac3 is gte_data[27].
+ * @param mac1_abs The absolute value of MAC1.
+ * @param mac3 The MAC3 term.
+ * @return mac1_abs - 102. */
 int32_t psx_runtime_cone_widen_shaded(int32_t mac1_abs, int32_t mac3);
-/** @} */
 
 /* Moby vertex-stream field hooks: ReplaceCall hooks substituting the
  * `srl rd, rt, 11|10` of the game's field-decode idiom. The source register
@@ -211,25 +235,73 @@ uint32_t psx_runtime_vstream_moby(uint32_t rt);
  * @return The stream address. */
 uint32_t psx_runtime_vstream_halved(uint32_t rt);
 
-/**
- * @name Flag-gated store hooks
+/*
+ * Flag-gated store hooks.
  * Emitted as `hook(cpu, ea, val);` in place of the original sb.
- * @{ */
+ */
+/** @brief Stores the m_WasDrawn iteration-start byte and resets both moby verdict flags to pass.
+ *
+ * Sets psx_runtime_native_cone_pass and psx_runtime_native_dist_pass to 1, so
+ * a billboard or extended-radius moby that bypasses the cone test does not
+ * inherit the previous moby's verdict.
+ * @param cpu The guest CPU state.
+ * @param addr The guest address of the m_WasDrawn byte.
+ * @param val The value stored, truncated to a byte. */
 void psx_runtime_mwasdrawn_clear_store(CPUState* cpu, uint32_t addr, uint32_t val);
+/** @brief Stores the m_WasDrawn byte only when both canonical cull verdicts passed.
+ *
+ * The byte is gameplay-readable, so the store happens only when
+ * psx_runtime_native_cone_pass and psx_runtime_native_dist_pass are both
+ * nonzero.
+ * @param cpu The guest CPU state.
+ * @param addr The guest address of the m_WasDrawn byte.
+ * @param val The value stored, truncated to a byte. */
 void psx_runtime_mwasdrawn_store(CPUState* cpu, uint32_t addr, uint32_t val);
+/** @brief Stores the particle drawn flag (m_03) only when the canonical screen cull passed.
+ *
+ * The store happens only when psx_runtime_native_part_pass is nonzero.
+ * @param cpu The guest CPU state.
+ * @param addr The guest address of the flag byte.
+ * @param val The value stored, truncated to a byte. */
 void psx_runtime_part_drawn_store(CPUState* cpu, uint32_t addr, uint32_t val);
-/** @} */
 
-/**
- * @name Particle and sparkle canonical-SX cull hooks
+/*
+ * Particle and sparkle canonical-SX cull hooks.
  * Set psx_runtime_native_part_pass from the canonical SX side channel and
  * return the canonical SX.
- * @{ */
+ */
+/** @brief Records the canonical 0 < SX < 512 particle verdict from the sx1 channel and returns a - b.
+ *
+ * For particle classes that read the screen X between two RTPS operations.
+ * Stores whether openpete_canonical_sx1_q16 >> 16 lies strictly between 0
+ * and 512 in psx_runtime_native_part_pass.
+ * @param a The minuend.
+ * @param b The subtrahend.
+ * @return a - b. */
 int32_t psx_runtime_part_cull_sx1(int32_t a, int32_t b);
+/** @brief Records the canonical 0 < SX < 512 particle verdict from the sx2 channel and returns a - b.
+ *
+ * For particle classes with a single RTPS. Same verdict as
+ * psx_runtime_part_cull_sx1, read from openpete_canonical_sx2_q16.
+ * @param a The minuend.
+ * @param b The subtrahend.
+ * @return a - b. */
 int32_t psx_runtime_part_cull_sx2(int32_t a, int32_t b);
+/** @brief Records the canonical particle verdict of a 4-vertex strip and returns v << 16.
+ *
+ * Stores in psx_runtime_native_part_pass whether any of the canonical SX
+ * values openpete_canonical_sx0_q16, sx1_q16 and sx2_q16 (each >> 16; FIFO
+ * vertices 1, 2 and 3) lies strictly between 0 and 512.
+ * @param v The register value the asm shifts left by 16.
+ * @return v << 16. */
 int32_t psx_runtime_part_cull_4vert(int32_t v);
+/** @brief Returns the canonical screen X as the value the sparkle render-cull clip tests.
+ *
+ * Substitutes $a1 (the sll of $a3 by 16) so the left and right kill verdict
+ * uses openpete_canonical_sx2_q16 and the g_Sparkles allocation stays
+ * identical across aspects.
+ * @return (openpete_canonical_sx2_q16 >> 16) << 16. */
 int32_t psx_runtime_sparkle_canon_sx(void);
-/** @} */
 
 /**
  * @brief Per-iteration flag for the particle renderer, the screen-space

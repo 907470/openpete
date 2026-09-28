@@ -23,6 +23,15 @@
  * classifier patched per newly discovered misprediction. */
 #include "renderer/terrain_fill_tags.h"
 
+/** @brief Reports whether (level, sec, face) is in the frozen LP fill-face table.
+ *
+ * Binary-searches k_terrain_fill_tags, which is sorted ascending on the key
+ * level << 20 | sec << 8 | face. The key gives face 8 bits, so a face of 256
+ * or more shares a key with a face of the next sector.
+ * @param level The level id.
+ * @param sec The sector index.
+ * @param face The LP face index within the sector.
+ * @return 1 when the face is a fill face, else 0. */
 static int s1_fill_tag(int level, int sec, int face) {
     int lo = 0, hi = (int)(sizeof(k_terrain_fill_tags)/sizeof(k_terrain_fill_tags[0])) - 1;
     long q = ((long)level << 20) | ((long)sec << 8) | face;
@@ -36,6 +45,14 @@ static int s1_fill_tag(int level, int sec, int face) {
     return 0;
 }
 
+/** @brief Writes the level's name as the fill-tag verdict files spell it.
+ *
+ * Looks level up in spyro1_level_table and copies its name; a level absent
+ * from the table gets "level<id>". Truncates to cap, which snprintf
+ * terminates.
+ * @param level The level id.
+ * @param out Receives the NUL-terminated name.
+ * @param cap The size of out in bytes; must be at least 1. */
 static void s1_level_name(int level, char* out, size_t cap) {
     size_t nlv = 0;
     const spyro1_level_t* lv = spyro1_level_table(&nlv);
@@ -58,6 +75,14 @@ static const lp_artfix_t k_lp_artfix[] = {
     { 11, 205, 4, 0xFF7F60u }, { 11, 205, 5, 0xFF7F60u },
     { 11, 205, 6, 0xFF7F60u }, { 11, 205, 7, 0xFF7F60u },
 };
+/** @brief Looks up the authored-data colour correction for (level, sec, face) in k_lp_artfix.
+ *
+ * @param level The level id.
+ * @param sec The sector index.
+ * @param face The LP face index within the sector.
+ * @param rgb Receives the corrected 0x00BBGGRR colour; unchanged when the
+ *        face has no correction.
+ * @return 1 when the face is corrected, else 0. */
 static int s1_lp_artfix(int level, int sec, int face, uint32_t* rgb) {
     for (size_t k = 0; k < sizeof(k_lp_artfix)/sizeof(k_lp_artfix[0]); k++)
         if (k_lp_artfix[k].level == level && k_lp_artfix[k].sec == sec
