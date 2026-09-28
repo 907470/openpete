@@ -40,6 +40,9 @@ union SDL_Event;
  * the pump thread and, through openpete_input_lock_active, by any consumer.
  * @param on nonzero to lock. */
 void openpete_input_lock_set(int on);
+/** @brief Return whether the input lock is on.
+ *
+ * @return 1 when on, else 0. */
 int  openpete_input_lock_active(void);
 
 /** @brief Return whether the lock discards an event; pump thread, first call on every dequeued event.

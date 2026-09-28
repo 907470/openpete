@@ -105,6 +105,9 @@ typedef struct {
  *        when the native renderer has none (headless keeps a hidden SDL
  *        window). */
 void openpete_host_mouse_init(struct SDL_Window* fallback_window);
+/** @brief Return whether openpete_host_mouse_init has run.
+ *
+ * @return 1 after the first init call, else 0. */
 int  openpete_host_mouse_initialised(void);
 /** @brief Return 1 when an OPENPETE_MOUSE_INJECT script loaded at least one line.
  *
@@ -137,6 +140,11 @@ void openpete_host_mouse_handle_event(const union SDL_Event* ev);
  * thread.
  * @param on nonzero turns real mouse input on. */
 void openpete_host_mouse_set_enabled(int on);
+/** @brief Return the mouse switch's own value.
+ *
+ * The input lock does not change it; openpete_host_mouse_accepting combines the
+ * two.
+ * @return 1 when the switch is on, else 0. */
 int  openpete_host_mouse_enabled(void);
 /** @brief Return whether real mouse input is taken: the switch is on and the input lock is off.
  *
@@ -152,6 +160,9 @@ int  openpete_host_mouse_accepting(void);
  * when the state or any total changed during the previous iteration. Does
  * nothing before openpete_host_mouse_init. */
 void openpete_host_mouse_pump_iteration(void);
+/** @brief Return how many pump iterations openpete_host_mouse_pump_iteration has counted.
+ *
+ * @return the count since boot; 0 before the mouse channel is initialised. */
 unsigned openpete_host_mouse_pump_iterations(void);
 
 /** @brief Copy the producer's event-derived mouse state, for the host input snapshot publish.
@@ -177,7 +188,16 @@ void openpete_host_mouse_apply_capture(void);
  * @param button_index OPENPETE_MOUSE_BTN_*.
  * @return the count, or 0 for an out-of-range index. */
 uint64_t openpete_host_mouse_press_total(int button_index);
+/** @brief Return the running relative-motion count on one axis since boot.
+ *
+ * Whole counts only: the fractional remainder of SDL's float motion is carried
+ * into later events.
+ * @param axis 0 for x, 1 for y.
+ * @return the signed count, or 0 for any other axis. */
 int64_t  openpete_host_mouse_motion_total(int axis);   /* 0 = x, 1 = y; counts */
+/** @brief Return the running wheel travel since boot in 1/256 notch units.
+ *
+ * @return the signed total, up positive. */
 int64_t  openpete_host_mouse_wheel_total(void);        /* 1/256 notch, up positive */
 
 /* ---- ownership and capture --------------------------------------------*/
@@ -189,8 +209,25 @@ int64_t  openpete_host_mouse_wheel_total(void);        /* 1/256 notch, up positi
  * @return OPENPETE_MOUSE_OWNED_DEVUI, OPENPETE_MOUSE_OWNED_MENU, or
  *         OPENPETE_MOUSE_OWNED_NONE. */
 int  openpete_host_mouse_owned(void);
+/** @brief Set or clear one owner's capture request bit.
+ *
+ * The request set grows to hold the owner id and is guarded by a mutex created
+ * on first use. Capture is applied later by openpete_host_mouse_apply_capture,
+ * and only while every other condition allows it. A negative owner is ignored,
+ * and a failed allocation leaves the request unrecorded.
+ * @param owner an OPENPETE_MOUSE_CAP_* id, or OPENPETE_MOUSE_CAP_MOD0 plus a
+ *        mod's load index.
+ * @param on nonzero to request capture, zero to withdraw the request. */
 void openpete_host_mouse_request_capture(int owner, int on);
+/** @brief Return whether any owner has a capture request set.
+ *
+ * @return 1 when at least one owner bit is set, else 0. */
 int  openpete_host_mouse_capture_requested(void);   /* any owner bit set */
+/** @brief Return whether SDL relative mode is applied to the mouse window.
+ *
+ * The value is what openpete_host_mouse_apply_capture last decided, 0 before
+ * its first application.
+ * @return 1 when capture is applied, else 0. */
 int  openpete_host_mouse_captured(void);            /* applied state */
 
 /* ---- the menu request flag ------------------------------------------- */
@@ -203,6 +240,11 @@ int  openpete_host_mouse_captured(void);            /* applied state */
  * before consumption replaces an earlier one.
  * @param open nonzero requests open, zero requests closed. */
 void openpete_host_mouse_request_menu(int open);
+/** @brief Take and clear a pending O menu request.
+ *
+ * @param open receives 1 for an open request and 0 for a close request when one
+ *        was pending; NULL is ignored.
+ * @return 1 when a request was pending, else 0. */
 int  openpete_host_mouse_take_menu_request(int* open);
 
 /** @brief Take and clear the screenshot request the `shot` inject verb raises.
@@ -222,7 +264,14 @@ int  openpete_host_mouse_take_screenshot_request(void);
  * click the dev overlay wants. Pump thread.
  * @return 1 when allowed, else 0. */
 int      openpete_host_mouse_double_click_allowed(void);
+/** @brief Count one left double-click that toggled fullscreen.
+ *
+ * Called by the consumer that toggles fullscreen. Logs the running count under
+ * OPENPETE_MOUSE_PROBE. */
 void     openpete_host_mouse_double_click_engaged(void);
+/** @brief Return how many double-click fullscreen toggles have been counted.
+ *
+ * @return the count since boot. */
 unsigned openpete_host_mouse_double_click_count(void);
 
 /* ---- probe ----------------------------------------------------------- */
@@ -234,6 +283,12 @@ unsigned openpete_host_mouse_double_click_count(void);
  * variable is read at openpete_host_mouse_init; before that this returns 0.
  * @return 1 when the probe is on, else 0. */
 int  openpete_host_mouse_probe(void);
+/** @brief Log one consumer gesture line when OPENPETE_MOUSE_PROBE is on.
+ *
+ * The printf-style message is truncated to 255 characters and logged as
+ * `<consumer>: <message>`. Does nothing with the probe off.
+ * @param consumer the consumer's name; NULL logs as ?.
+ * @param fmt printf format for the message. */
 void openpete_host_mouse_probe_log(const char* consumer, const char* fmt, ...);
 
 #ifdef __cplusplus

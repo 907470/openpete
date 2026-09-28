@@ -122,8 +122,24 @@ void openpete_host_input_publish_sdl(void);
  *        leaves. */
 void openpete_host_input_inject_key(int scancode, int down, int raw);
 
+/** @brief Return whether a keyboard key is held in the published SDL snapshot.
+ *
+ * Injected keys are included; the input lock blanks the physical keyboard.
+ * @param scancode SDL scancode.
+ * @return 1 when held, 0 when released or the scancode is outside 1 ..
+ *        SDL_SCANCODE_COUNT - 1. */
 int      openpete_host_input_key_down(int scancode);
+/** @brief Return whether a gamepad button is held on pad slot 0 in the published snapshot.
+ *
+ * @param button SDL_GamepadButton index.
+ * @return 1 when held, 0 when released, out of range, or slot 0 has no
+ *         device. */
 int      openpete_host_input_pad_button(int button);
+/** @brief Return a gamepad axis value on pad slot 0 in the published snapshot.
+ *
+ * @param axis SDL_GamepadAxis index.
+ * @return the raw SDL axis value, or 0 when out of range or slot 0 has no
+ *        device. */
 int      openpete_host_input_pad_axis(int axis);
 
 /* The same reads, addressed by pad slot. Slot 0 is what the unqualified forms
@@ -138,8 +154,26 @@ int      openpete_host_input_pad_axis(int axis);
  * @return 1 when held, 0 when released, out of range, or the slot has no
  *         device. */
 int      openpete_host_input_pad_button_slot(int slot, int button);
+/** @brief Return a gamepad axis value on a pad slot in the published snapshot.
+ *
+ * @param slot pad slot, 0 .. OPENPETE_PAD_SLOTS - 1.
+ * @param axis SDL_GamepadAxis index.
+ * @return the raw SDL axis value, or 0 when an argument is out of range or the
+ *        slot has no device. */
 int      openpete_host_input_pad_axis_slot(int slot, int axis);
+/** @brief Return whether a pad slot had a gamepad when the snapshot was published.
+ *
+ * A connected pad holding nothing reads 1, which separates it from an empty
+ * slot. Physical gamepads are absent from the snapshot while the input lock is
+ * on.
+ * @param slot pad slot, 0 .. OPENPETE_PAD_SLOTS - 1.
+ * @return 1 when a device drove the slot, 0 when none did or the slot is out of
+ *        range. */
 int      openpete_host_input_pad_connected(int slot);
+/** @brief Return the SDL keyboard modifier mask of the published snapshot.
+ *
+ * The mask is SDL_GetModState at the publish, or 0 while the input lock is on.
+ * @return the SDL_Keymod bit mask. */
 unsigned openpete_host_input_modstate(void);
 
 /* The mouse half of the same snapshot. `button_index` is
@@ -151,6 +185,10 @@ unsigned openpete_host_input_modstate(void);
  * publish.
  * @param out receives the state; NULL is ignored. */
 void     openpete_host_input_mouse(openpete_mouse_state_t* out);
+/** @brief Return whether a mouse button is held in the published snapshot.
+ *
+ * @param button_index OPENPETE_MOUSE_BTN_*.
+ * @return 1 when held, 0 when released or out of range. */
 int      openpete_host_input_mouse_button(int button_index);
 
 /** @brief Copy slot 0 of the last published pad snapshot.
@@ -285,8 +323,27 @@ int openpete_host_input_pulse_hold_us(void);
  * @param pad virtual pad index, 0 .. OPENPETE_PAD_SLOTS - 1.
  * @return the callback count, or 0 for an out-of-range index. */
 int  openpete_host_input_vpad_rumble_calls(int pad);
+/** @brief Return how many non-zero Rumble callbacks one virtual pad received after its self-probe.
+ *
+ * Zeroed with the call count after the attach-time self-probe.
+ * @param pad virtual pad index, 0 .. OPENPETE_PAD_SLOTS - 1.
+ * @return the callback count, or 0 for an out-of-range index. */
 int  openpete_host_input_vpad_rumble_nonzero(int pad);
+/** @brief Return whether one virtual pad's recorder received the attach-time self-probe pair.
+ *
+ * The flag latches when the Rumble callback sees the probe pair and is not
+ * cleared afterwards; a zero here means the recorder is not wired and every
+ * other count from that pad is void.
+ * @param pad virtual pad index, 0 .. OPENPETE_PAD_SLOTS - 1.
+ * @return 1 when the probe arrived, else 0 (also for an out-of-range index). */
 int  openpete_host_input_vpad_rumble_live(int pad);
+/** @brief Report the motor pair of the last Rumble callback one virtual pad received.
+ *
+ * Zero until a callback arrives after the self-probe. An out-of-range pad
+ * reports 0, 0.
+ * @param pad virtual pad index, 0 .. OPENPETE_PAD_SLOTS - 1.
+ * @param low receives the large-motor value; NULL is ignored.
+ * @param high receives the small-motor value; NULL is ignored. */
 void openpete_host_input_vpad_rumble_last(int pad, unsigned* low, unsigned* high);
 /** @brief Return how many OPENPETE_INPUT_VGAMEPAD virtual pads are open.
  *

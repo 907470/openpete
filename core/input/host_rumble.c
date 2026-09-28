@@ -205,6 +205,10 @@ void openpete_rumble_sample(void)
  * unchanged pair never reaches the driver, it only pushes the expiry out. */
 #define RUMBLE_DURATION_MS 1000u
 
+/** @brief Send one motor pair to player one's pad with the RUMBLE_DURATION_MS expiry and record it.
+ *
+ * Does nothing while no pad holds slot 0. Otherwise counts one command and
+ * stores the pair as the last one driven. */
 static void rumble_drive(uint16_t low, uint16_t high)
 {
     SDL_Gamepad* gp = (SDL_Gamepad*)PsyX_Pad_GetGamepad(0);

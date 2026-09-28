@@ -74,6 +74,11 @@ static _Atomic int s_enabled = 1;
  * switch on must move nothing with it off. */
 static int s_inj_raw;
 
+/** @brief Return the device id stamped on injected events.
+ *
+ * INJECT_MOUSE_ID normally, so the switch and the input lock can tell an
+ * injected event from a physical one; 0 under OPENPETE_MOUSE_INJECT_RAW, which
+ * makes injected events look physical. */
 static SDL_MouseID inj_mouse_id(void)
 {
     return s_inj_raw ? (SDL_MouseID)0 : INJECT_MOUSE_ID;
@@ -97,6 +102,10 @@ typedef struct {
 static inj_line_t* s_inj;
 static int         s_inj_n, s_inj_next;
 
+/** @brief Map an injection-script button name to its SDL_BUTTON_* value.
+ *
+ * The names are left, middle, right, x1 and x2.
+ * @return the SDL button number, or 0 for an unknown name. */
 static int inj_button(const char* s)
 {
     if (!strcmp(s, "left"))   return SDL_BUTTON_LEFT;
@@ -107,6 +116,18 @@ static int inj_button(const char* s)
     return 0;
 }
 
+/** @brief Parse an OPENPETE_MOUSE_INJECT script into the s_inj line list.
+ *
+ * A line is `<when> <verb> [args]`; text from `#` to the end of the line is a
+ * comment. `<when>` is a pump iteration or `<n>ms`. The verbs are move x y, rel
+ * dx dy, down|up|click2 button, wheel notches, menu 0|1, capture 0|1, shot, and
+ * keydown|keyup with an SDL scancode name. A line with a bad time, verb, arity
+ * or button name is logged and skipped. An unreadable file is logged and loads
+ * nothing. Growth stops at the first failed allocation, keeping the lines
+ * already read. Lines are read into a 256-byte buffer, so a longer line is
+ * split.
+ *
+ * Logs the loaded line count. */
 static void inj_load(const char* path)
 {
     FILE* f = fopen(path, "r");
@@ -209,12 +230,25 @@ static void inj_push_key(int scancode, int down)
     SDL_PushEvent(&ev);
 }
 
+/** @brief Return the window that capture and injected events address.
+ *
+ * The native renderer's window when it has one, else the fallback window given
+ * to openpete_host_mouse_init.
+ * @return the window, or NULL when neither exists. */
 static SDL_Window* mouse_window(void)
 {
     SDL_Window* w = openpete_native_render_window();
     return w ? w : s_fallback_window;
 }
 
+/** @brief Push an SDL mouse-motion event that carries the injection device id.
+ *
+ * The event addresses the mouse window (or window 0 when there is none) and
+ * reports the channel's current button mask.
+ * @param x pointer x in window points.
+ * @param y pointer y in window points.
+ * @param xrel relative x motion.
+ * @param yrel relative y motion. */
 static void inj_push_motion(float x, float y, float xrel, float yrel)
 {
     SDL_Event ev;
@@ -229,6 +263,11 @@ static void inj_push_motion(float x, float y, float xrel, float yrel)
     SDL_PushEvent(&ev);
 }
 
+/** @brief Push an SDL mouse-button event that carries the injection device id.
+ *
+ * @param button SDL_BUTTON_* value.
+ * @param down nonzero for a press, zero for a release.
+ * @param clicks the event's click count. */
 static void inj_push_button(int button, int down, int clicks)
 {
     SDL_Event ev;
@@ -244,6 +283,10 @@ static void inj_push_button(int button, int down, int clicks)
     SDL_PushEvent(&ev);
 }
 
+/** @brief Push an SDL vertical mouse-wheel event that carries the injection device id.
+ *
+ * The wheel direction is SDL_MOUSEWHEEL_NORMAL.
+ * @param notches vertical travel in notches. */
 static void inj_push_wheel(float notches)
 {
     SDL_Event ev;
@@ -366,6 +409,11 @@ static void refresh_window_size(Uint32 window_id)
     }
 }
 
+/** @brief Add relative pointer motion to the motion totals, carrying the sub-count remainder.
+ *
+ * Adds the previous remainder, truncates toward zero to whole counts, adds
+ * those atomically to the x and y totals and keeps the fraction in s_rem_x and
+ * s_rem_y. Pump thread only. */
 static void add_motion(float xrel, float yrel)
 {
     float fx = xrel + s_rem_x, fy = yrel + s_rem_y;

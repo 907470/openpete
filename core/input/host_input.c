@@ -86,6 +86,11 @@ static unsigned                s_latched_seq;
  * replays identically across runs). It is a diagnostic, never a play path. */
 static int s_synth = -1;
 
+/** @brief Return whether the synthetic pad source is enabled.
+ *
+ * Reads OPENPETE_INPUT_SYNTH on first use (set, non-empty and not starting with
+ * 0 enables it), caches the result and logs once when enabled. Called from
+ * openpete_host_input_sample on the pump thread. */
 static int synth_on(void)
 {
     if (s_synth < 0) {
@@ -333,6 +338,15 @@ static vpad_rumble_rec_t s_vpad_rumble[OPENPETE_PAD_SLOTS];
 #define VPAD_PROBE_LOW   0x4000u
 #define VPAD_PROBE_HIGH  0x4000u
 
+/** @brief SDL virtual-joystick Rumble callback: record one motor command against its pad's counters.
+ *
+ * userdata carries the pad index; an index outside 0 .. OPENPETE_PAD_SLOTS - 1
+ * is ignored. Increments calls, increments nonzero when either motor value is
+ * non-zero, stores high << 16 | low as last, and sets probe_seen when the pair
+ * equals the self-probe pair. The counters are atomic, so the thread SDL calls
+ * from does not matter.
+ * @param userdata the pad index, stored as an integer in the pointer.
+ * @return true, so SDL treats the command as accepted. */
 static bool SDLCALL vpad_rumble_cb(void* userdata, Uint16 low, Uint16 high)
 {
     int v = (int)(intptr_t)userdata;
@@ -347,6 +361,7 @@ static bool SDLCALL vpad_rumble_cb(void* userdata, Uint16 low, Uint16 high)
     return true;
 }
 
+/** @brief Return whether a virtual pad index addresses a recorder. */
 static int vpad_index_ok(int pad)
 {
     return pad >= 0 && pad < OPENPETE_PAD_SLOTS;
@@ -385,6 +400,18 @@ int openpete_host_input_vpad_count(void)
 
 static void vpad_selfprobe(int v, SDL_JoystickID id);
 
+/** @brief Attach the harness's virtual gamepads once, after SDL's gamepad subsystem is up.
+ *
+ * OPENPETE_INPUT_VGAMEPAD, resolved on first call, gives the pad count: unset
+ * or 0 is none, a bare 1 is one pad, a larger integer is that many, clamped to
+ * OPENPETE_PAD_SLOTS. Each pad is a virtual gamepad joystick whose Rumble
+ * callback is vpad_rumble_cb with the pad index as userdata. Does nothing while
+ * SDL_INIT_GAMEPAD is not initialised (the next call retries), once pad 0
+ * exists, or when the count is 0. A failed attach or open of pad 0 disables the
+ * source; a failure on a later pad stops the loop and keeps the pads already
+ * open. Logs a warning when SDL does not expose pad 0 as a gamepad, then runs
+ * vpad_selfprobe on every open pad. Called from openpete_host_input_sample on
+ * the pump thread. */
 static void vgamepad_maybe_attach(void)
 {
     if (s_vpad_state < 0) {
@@ -617,6 +644,9 @@ static struct {
 } s_map_file[MAP_FILES_MAX];
 static int s_map_file_n;
 
+/** @brief Return whether path names an existing regular file.
+ *
+ * Uses SDL_GetPathInfo; a directory or a missing path is false. */
 static bool map_file_exists(const char* path)
 {
     SDL_PathInfo info;
@@ -834,18 +864,6 @@ static SDL_Gamepad* host_first_gamepad(void)
     return found;
 }
 
-/* Which physical gamepad drives each pad slot.
- *
- * Slot 0 stays exactly what it has always been — the binding layer's first
- * pad — so player 1 is unaffected by the existence of the other slots. Slots
- * 1-3 take the remaining connected gamepads in enumeration order, skipping
- * both slot 0's device and the one PsyCross tracks as its own P1: player 1 is
- * decoded through PsyCross while these slots are decoded here, and a device
- * appearing in both would drive two players at once.
- *
- * Enumeration order is the default assignment. It is stable for a fixed set
- * of devices but not across a replug, which is what the GUID table overrides.
- * `out[i]` is NULL for an unfilled slot. */
 /* Gamepads openpete opened for slots 1-3.
  *
  * SDL_GetGamepadFromID resolves only devices somebody has already OPENED as a
@@ -917,6 +935,18 @@ static void host_owned_prune(const SDL_JoystickID* ids, int n)
     }
 }
 
+/** @brief Fill out with the gamepad handle that drives each pad slot.
+ *
+ * Slot 0 is host_first_gamepad, the first already-open gamepad, so player 1
+ * does not depend on the other slots. Slots 1 .. OPENPETE_PAD_SLOTS - 1 take
+ * the remaining enumerated gamepads in SDL enumeration order, skipping slot 0's
+ * device, the handle PsyCross tracks as its own player 1 (decoded through
+ * PsyCross, and a device in both would drive two players) and any handle
+ * already assigned. A device with no open handle is opened into the owned table
+ * by host_gamepad_for_id, and owned handles whose device has left are closed
+ * first. When SDL_GetGamepads fails only slot 0 is filled. The order is stable
+ * for a fixed device set but not across a replug.
+ * @param out receives one handle per slot; NULL marks an unfilled slot. */
 static void host_slot_gamepads(SDL_Gamepad* out[OPENPETE_PAD_SLOTS])
 {
     for (int i = 0; i < OPENPETE_PAD_SLOTS; i++) out[i] = NULL;
@@ -1006,6 +1036,13 @@ void openpete_host_input_publish_sdl(void)
     SDL_SetAtomicInt(&s_sdl_state_cur, next);
 }
 
+/** @brief Return the published SDL snapshot buffer for reading.
+ *
+ * Loads the current-buffer index, then issues an acquire barrier that pairs
+ * with the release barrier in openpete_host_input_publish_sdl. The pointer
+ * addresses one of two buffers; the producer overwrites it two publishes later,
+ * so a caller reads it briefly and calls again for a later sample.
+ * @return the buffer, never NULL. */
 static const host_sdl_state_t* host_sdl_read(void)
 {
     const host_sdl_state_t* r = &s_sdl_state[SDL_GetAtomicInt(&s_sdl_state_cur)];
@@ -1146,10 +1183,20 @@ static int kmr_key(void* ctx, int scancode)
 {
     (void)ctx; return openpete_host_input_key_down(scancode);
 }
+/** @brief Keymap reader: return whether a gamepad button is held on a slot in the SDL snapshot.
+ *
+ * @param ctx unused.
+ * @param button SDL_GamepadButton index. */
 static int kmr_btn(void* ctx, int slot, int button)
 {
     (void)ctx; return openpete_host_input_pad_button_slot(slot, button);
 }
+/** @brief Keymap reader: return a gamepad axis value on a slot in the SDL snapshot.
+ *
+ * @param ctx unused.
+ * @param axis SDL_GamepadAxis index.
+ * @return the raw SDL axis value, or 0 when the slot has no device or an
+ *        argument is out of range. */
 static int kmr_axis(void* ctx, int slot, int axis)
 {
     (void)ctx; return openpete_host_input_pad_axis_slot(slot, axis);

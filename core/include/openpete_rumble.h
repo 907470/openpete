@@ -165,6 +165,12 @@ void openpete_rumble_mod_clear(int slot);
  * @param slot 1 .. OPENPETE_PAD_SLOTS - 1.
  * @return the count, or 0 for any other slot. */
 unsigned openpete_rumble_mod_commands(int slot);
+/** @brief Report the motor pair last published for a mod-driven slot.
+ *
+ * Zero for a slot no mod has driven and after openpete_rumble_mod_clear.
+ * @param slot 1 .. OPENPETE_PAD_SLOTS - 1; any other slot reports zero.
+ * @param low receives the large-motor value; NULL is ignored.
+ * @param high receives the small-motor value; NULL is ignored. */
 void     openpete_rumble_mod_pair(int slot, uint16_t* low, uint16_t* high);
 
 /** @brief Set the host vibration strength that scales every motor pair (--vibration).
@@ -174,6 +180,9 @@ void     openpete_rumble_mod_pair(int slot, uint16_t* low, uint16_t* high);
  * openpete_rumble_get_strength returns -1.
  * @param strength 0..10, or -1 for unset. */
 void openpete_rumble_set_strength(int strength);
+/** @brief Return the host vibration strength.
+ *
+ * @return 0..10, or -1 before openpete_rumble_set_strength has been called. */
 int  openpete_rumble_get_strength(void);
 
 /** @brief Set the host pause gate: motors are silent while it is set and resume on release without the game changing value.
@@ -192,6 +201,11 @@ void openpete_rumble_set_paused(int paused);
  *
  * @return the call count since start. */
 unsigned openpete_rumble_register_calls(void);
+/** @brief Return how many openpete_rumble_register calls carried a non-zero actuator byte.
+ *
+ * Only calls with a non-NULL table and a positive length are scanned, over the
+ * whole length given.
+ * @return the count since start. */
 unsigned openpete_rumble_register_nonzero(void);
 
 /* SDL rumble calls issued for player one's pad, and the last pair driven. */
@@ -201,6 +215,11 @@ unsigned openpete_rumble_register_nonzero(void);
  * slot 0.
  * @return the command count since start. */
 unsigned openpete_rumble_commands(void);
+/** @brief Report the motor pair openpete_rumble_apply last drove on player one's pad.
+ *
+ * Zero before any drive and after openpete_rumble_stop.
+ * @param low receives the large-motor value; NULL is ignored.
+ * @param high receives the small-motor value; NULL is ignored. */
 void     openpete_rumble_last_pair(uint16_t* low, uint16_t* high);
 
 #endif /* OPENPETE_RUMBLE_H */
