@@ -515,7 +515,11 @@ void openpete_native_set_version_glyphs(const openpete_hud_vert *verts, int nver
  * way. Live-settable.
  * @param on Non-zero to show the release build's line. */
 void openpete_native_set_version_osd(int on);
-/// @brief The --version-osd value in force (default 1).
+/** @brief Return the --version-osd value in force.
+ *
+ * The value starts at 1 and governs only the tagged release build's line;
+ * see openpete_native_set_version_osd.
+ * @return 1 when the release build's line shows, else 0. */
 int  openpete_native_version_osd(void);
 
 /** @brief Return 1 when this build draws a version line.
@@ -625,6 +629,20 @@ typedef struct {
     float    box_h;
 } openpete_osd_slot_t;
 
+/** @brief Publish the OSD toast glyph triangles and the toast-to-slot table together.
+ *
+ * Both lists are copied under the OSD publish mutex and the present reads
+ * them under the same mutex, so it never pairs one push's vertices with
+ * another push's table. nverts is clamped to [0, 24576] (the renderer's
+ * glyph capacity) and nslots to [0, OPENPETE_OSD_MAX]; the stored counts
+ * replace the previous ones, so 0 empties a list. A NULL array with a
+ * positive count keeps the previous contents under the new count.
+ * @param verts Glyph triangles in target-local overlay space, three
+ *              vertices per triangle; may be NULL when nverts is 0.
+ * @param nverts Vertex count.
+ * @param slots Toast-to-slot table keyed by toast id; may be NULL when
+ *              nslots is 0.
+ * @param nslots Table entry count. */
 void openpete_native_set_osd_glyphs(const openpete_hud_vert *verts, int nverts,
                                     const openpete_osd_slot_t *slots, int nslots);
 
@@ -1131,6 +1149,13 @@ typedef struct {
     float plat_slack;
     int   valid;
 } openpete_shadow_decal_params;
+/** @brief Store the camera reconstruction parameters the shadow decal reads.
+ *
+ * Copies *p into the live block; NULL clears its valid field, which draws
+ * the fan unmasked. Each scene publish snapshots the block into its ring
+ * slot and a compose of that slot reads the snapshot; a compose of the
+ * delayed history or the live accumulator reads the live block.
+ * @param p Parameters from the game, or NULL to invalidate. */
 void openpete_native_set_shadow_decal_params(const openpete_shadow_decal_params *p);
 
 /* The player ground-shadow fan in the form the footprint decal reads
@@ -1153,6 +1178,13 @@ typedef struct {
     float scr[OPENPETE_SHADOW_FAN_POINTS][4];
     float wrel[OPENPETE_SHADOW_FAN_POINTS][4];
 } openpete_shadow_footprint;
+/** @brief Store the player shadow fan's footprint block for the footprint decal.
+ *
+ * Copies *f into the live block. Each scene publish snapshots the block
+ * into its ring slot and a compose of that slot reads the snapshot; a
+ * compose of the delayed history or the live accumulator reads the live
+ * block.
+ * @param f Footprint block; NULL leaves the stored block unchanged. */
 void openpete_native_set_shadow_footprint(const openpete_shadow_footprint *f);
 
 /** @brief Begin a sub-tick or lag re-extract's rebuild of the native scene.
@@ -1835,8 +1867,17 @@ int      openpete_native_present_stage_release(void);
  * the host loop as a drain hands the display back. Does nothing before the
  * device exists. */
 void     openpete_native_display_claim(void);
+/** @brief Return the number of stage images a staged present can target.
+ *
+ * Valid stage indices are 0 to one less than the count.
+ * @return The RHI stage image count, or 0 when there is no device. */
 int      openpete_native_stage_count(void);
-uint32_t openpete_native_stage_gen(void);                  /* bumps when the stages are rebuilt */
+/** @brief Return the stage image generation, which changes when the stage images are rebuilt.
+ *
+ * A staged frame records the generation it was rendered under and the
+ * present thread discards it when the value differs at present time.
+ * @return The device's stage generation, or 0 when there is no device. */
+uint32_t openpete_native_stage_gen(void);
 /** @brief Free every presented scene whose frame is RHI_FRAMES_IN_FLIGHT or more behind the frame just begun.
  *
  * Called by the presenting thread right after each rhi_begin_frame: those
@@ -2080,9 +2121,31 @@ enum {
     OPPT_COUNT
 };
 enum { OPPC_MOBYS = 0, OPPC_TRIS, OPPC_DRAWS, OPPC_CULLED, OPPC_COUNT };
+/** @brief Return whether the per-phase microsecond measurements are wanted.
+ *
+ * Call sites gate their clock reads on it.
+ * @return 1 when OPENPETE_PHASE_TIMERS requests the report or a perf trace
+ *         is open, else 0. */
 int      openpete_phase_timers_on(void);
+/** @brief Return a monotonic time in microseconds for phase measurements.
+ *
+ * Derived from the SDL performance counter; only differences between two
+ * calls are meaningful.
+ * @return Microseconds on the performance counter's timebase. */
 uint64_t openpete_phase_now_us(void);
+/** @brief Add microseconds to a phase's total for the present being built.
+ *
+ * The total is a 32-bit accumulator, so @p us is truncated to 32 bits. When
+ * a perf trace is open the value is also recorded as a span of the phase.
+ * @param phase OPPT_* phase index; an out-of-range index is ignored.
+ * @param us Elapsed microseconds to add. */
 void     openpete_phase_add(int phase, uint64_t us);
+/** @brief Set a census count for the present being built.
+ *
+ * Replaces the count of the present in progress. When a perf trace is open
+ * the value is also recorded as a count of the census.
+ * @param which OPPC_* count index; an out-of-range index is ignored.
+ * @param n The count. */
 void     openpete_phase_set_count(int which, int n);
 
 /* 2D-overlay carry for the sub-tick re-extract: the fade + cutscene-letterbox +

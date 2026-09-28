@@ -660,6 +660,11 @@ static int tag_split_dev(void) {
 typedef struct { int armed; float x0, y0, x1, y1; unsigned fa, fb;
                  unsigned presents, tested, covering; } scene_box_cfg_t;
 static scene_box_cfg_t s_box;
+/** @brief Return the OPENPETE_SCENE_BOXDBG box instrument state, parsing the variable on the first call.
+ *
+ * The value is x0,y0,x1,y1,fA,fB; the armed or rejected spec is logged
+ * once. The struct also holds the instrument's running counters.
+ * @return The state, never NULL; armed is 0 when the variable is unset or malformed. */
 static const scene_box_cfg_t *scene_box_cfg(void) {
     static int parsed = 0;
     if (parsed) return &s_box;
@@ -1823,6 +1828,10 @@ static void seq_sort_scene_2d(scene_tri_t* sc, int n) {
     }
 }
 
+/** @brief Count the scene's 2D faces: HUD, HUD panel and overlay categories plus carried overlay copies.
+ * @param sc Scene triangles.
+ * @param n Triangle count.
+ * @return Number of 2D faces. */
 int scene_2d_count_fwd(const scene_tri_t* sc, int n) {
     int c = 0;
     for (int t = 0; t < n; t++)
@@ -5469,10 +5478,12 @@ static void tercache_clip_params(openpete_tercache_clip *out)
 
 /* Camera reconstruction params from the game (openpete_native_render.h); the
  * shadow feeder refreshes them every extract (incl. the sub-tick re-extract, so
- * they track the interpolated camera). Not snapshotted into scene history: a
- * 1-present staleness moves the reconstruction by the camera's per-present
- * delta (a few world units), far under the wall_height threshold. */
+ * they track the interpolated camera). Each ring slot snapshots them at
+ * publish; the delayed history does not, so a compose of it reads the live
+ * copy: a 1-present staleness moves the reconstruction by the camera's
+ * per-present delta (a few world units), far under the wall_height threshold. */
 static openpete_shadow_decal_params s_shadow_decal;
+/* Documented at the declaration. */
 void openpete_native_set_shadow_decal_params(const openpete_shadow_decal_params *p)
 {
     if (p) s_shadow_decal = *p; else s_shadow_decal.valid = 0;
@@ -5483,6 +5494,7 @@ void openpete_native_set_shadow_decal_params(const openpete_shadow_decal_params 
  * feed writes it in the same call, so a scene never pairs its hull with
  * another extraction's fan. Snapshotted into each scene slot. */
 static openpete_shadow_footprint s_shadow_foot;
+/* Documented at the declaration. */
 void openpete_native_set_shadow_footprint(const openpete_shadow_footprint *f)
 {
     if (f) s_shadow_foot = *f;
@@ -6067,6 +6079,16 @@ static key_box_t tri_box(const scene_tri_t* t)
     return b;
 }
 
+/** @brief Collect the screen boxes of the scene's keyed additive glow fans.
+ *
+ * A face counts when it is additive (blend 2), keyed (koff above 0.25) and
+ * ranked no farther than OPENPETE_SCENE_RANK_AURA. Once KEY_AURA_BOX_MAX
+ * boxes are held, each further box widens the last one to the union, so
+ * the table stays a superset of the fans.
+ * @param scene Scene triangles.
+ * @param scene_n Triangle count.
+ * @param out Receives up to KEY_AURA_BOX_MAX boxes.
+ * @return Number of boxes written. */
 static int scene_aura_boxes(const scene_tri_t* scene, int scene_n, key_box_t* out)
 {
     int n = 0;
@@ -6132,6 +6154,12 @@ static int key_batch_admits(const scene_tri_t* t, int prop_class,
 #define NR_PKEY_STEP 0.00000001f
 #define NR_PKEY_MAX_SLOT 4095.0f
 
+/** @brief Map a player ordering slot plus one to its depth in the player key band.
+ *
+ * The slot is pkey - 1 clamped to [0, NR_PKEY_MAX_SLOT]; the depth is
+ * NR_PKEY_BASE + slot * NR_PKEY_STEP.
+ * @param pkey Scene triangle player key, slot + 1 (0 means none).
+ * @return Clip-space depth of the slot in the key image. */
 static float pack_player_key_z(float pkey)
 {
     float slot = pkey - 1.0f;                  /* the +1 that makes 0 "none" */
@@ -6140,6 +6168,17 @@ static float pack_player_key_z(float pkey)
     return NR_PKEY_BASE + slot * NR_PKEY_STEP;
 }
 
+/** @brief Write one keyed scene face's three vertices for a key batch.
+ *
+ * Each vertex carries the clip position, the true view-Z in w, the UV when
+ * textured (else 0), opaque black colour, koff 0.5 and the drain record
+ * fields from rv_drain. The depth is the per-vertex view-Z for the prop
+ * class; otherwise it is one flat value per face, the player band depth
+ * when the face has a player key (pkey above 0.25), else koff - 0.5.
+ * @param T Scene triangle.
+ * @param prop_class Batch class, 0 to 2; 1 selects true per-vertex depth.
+ * @param tex Non-zero to carry the UVs.
+ * @param out Receives three vertices. */
 static void pack_key_vert(const scene_tri_t* T, int prop_class, int tex,
                           rhi_vertex* out)
 {
@@ -6276,6 +6315,21 @@ static void pack_rank_vert(const scene_tri_t* T, int tex, rhi_vertex* out)
     }
 }
 
+/** @brief Pack the rank batch: ranked opaque moby faces, untextured prefix first, then textured material runs.
+ *
+ * A face is packed when it is opaque (blend 0) and ranked (rank at least
+ * 0.5); vertices come from pack_rank_vert. The layout, the material runs
+ * and the trailing sentinel span (bpp -1) on span table overflow follow
+ * pack_terrain_key_batch, and output stops at the compose vertex capacity.
+ * The full-extent mapping is set for the pack and restored after.
+ * @param scene Scene triangles.
+ * @param scene_n Triangle count.
+ * @param full_extent Non-zero to map in the full-extent PSX space.
+ * @param out Output vertices.
+ * @param out_untex Receives the untextured prefix length in vertices.
+ * @param spans Receives the textured runs, capacity KEYTEX_MAX_SPANS.
+ * @param nspans Receives the run count.
+ * @return Vertices written. */
 static int pack_moby_rank_batch(const scene_tri_t* scene, int scene_n,
                                 int full_extent, rhi_vertex* out,
                                 int* out_untex, keytex_span_t* spans, int* nspans)
@@ -9353,6 +9407,19 @@ void openpete_native_set_cover_planes(const openpete_native_cover_plane *planes,
     s_cvp_n = n;
     s_cvp_m = margin_world;
 }
+/** @brief Verify the portal plane-cover rule on one composed scene and log a census per opening.
+ *
+ * Runs only when OPENPETE_PORTAL_COVER_CHECK equals this scene's VBL and
+ * openings were published. For each opening of at least 3 points, every
+ * pixel centre inside the polygon (even-odd) is tested. The plane's
+ * view-Z, less the margin and at least 1, is the limit. The nearest opaque
+ * WORLD, ACTOR, ACTOR_FRONT or WORLD_FILL face beyond the limit must be
+ * beaten by a PORTAL_CYCLORAMA face; a pixel is counted as empty, front,
+ * preview-covered or a violation (VIOL). A blended face beyond the limit
+ * counts as TVIOL. Prints one [pcover] line per opening. The scene is only
+ * read, and the check stops when the candidate list cannot be reserved.
+ * @param sc Composed scene triangles.
+ * @param n Triangle count. */
 static void portal_cover_check(const scene_tri_t* sc, int n)
 {
     static long chk = -2;
@@ -11863,6 +11930,7 @@ static SDL_Mutex *osd_pub_mx(void) {
     return openpete_mutex_once(&s_osd_mx);
 }
 
+/* Documented at the declaration. */
 void openpete_native_set_osd_glyphs(const openpete_hud_vert *verts, int nverts,
                                     const openpete_osd_slot_t *slots, int nslots) {
     if (nverts < 0) nverts = 0;
@@ -11879,6 +11947,13 @@ void openpete_native_set_osd_glyphs(const openpete_hud_vert *verts, int nverts,
     SDL_UnlockMutex(osd_pub_mx());
 }
 
+/** @brief Read the OSD slot size in pixels that ensure_osd_ss published.
+ *
+ * Both halves come from one 64-bit read, so a concurrent republish cannot
+ * pair a new width with a stale height. Zero in both until the grid has
+ * been allocated.
+ * @param w Receives the slot width in pixels; may be NULL.
+ * @param h Receives the slot height in pixels; may be NULL. */
 static void osd_slot_px(int *w, int *h) {
     const uint64_t v = s_nr.osd_slot_px;   /* one read: both halves from one publish */
     if (w) *w = (int)(uint32_t)v;
@@ -12076,6 +12151,12 @@ static bool ovl_ss_ready(void) {
 static uint64_t s_ovl_extent =
     ((uint64_t)0) ;   /* 0 = never pushed; the OVL_REGION_* fallback applies */
 
+/** @brief Extract one float half of the packed overlay extent word.
+ *
+ * @param v Packed word: width bits in the low 32, height bits in the high 32; 0 means never pushed.
+ * @param hi Non-zero selects the height half, zero the width half.
+ * @param fallback Returned when v is 0 or the half is not above 0.
+ * @return The selected extent in window-height units, or @p fallback. */
 static float ovl_ext_unpack(uint64_t v, int hi, float fallback) {
     if (v == 0) return fallback;
     uint32_t bits = (uint32_t)(hi ? (v >> 32) : v);
@@ -12104,7 +12185,9 @@ void openpete_native_get_overlay_extent(float *w, float *h) {
  * that was allocated and the quad that samples it, which is the same torn-pair
  * failure one field down. */
 static float s_perf_rw = OVL_REGION_W, s_perf_rh = OVL_REGION_H;
+/** @brief Return the perf overlay region width latched for this present, in window-height units. */
 static float ovl_region_w(void) { return s_perf_rw; }
+/** @brief Return the perf overlay region height latched for this present, in window-height units. */
 static float ovl_region_h(void) { return s_perf_rh; }
 
 /* Where the user wants the perf block. Live-settable (--perf-position, the
@@ -12184,6 +12267,17 @@ static int version_overlay_alpha(void) {
     return a8;
 }
 
+/** @brief Latch this present's overlay extents and place the stats block and the version line on the anchor ledger.
+ *
+ * Reads the published perf extent once into s_perf_rw and s_perf_rh, so the
+ * supersample target, the composite quad and the projection agree for the
+ * present, and snaps it to whole output pixels. Resets the anchor ledger to
+ * the usable x range of the overlay aspect. When the stats overlay draws it
+ * claims its anchor with margin 0 and snaps the placement to whole pixels.
+ * It then resolves the version line's alpha (s_ver_alpha8) and, when
+ * non-zero, claims the bottom-left anchor for it with margin 0 and snaps
+ * that placement, before the toasts stack against what is left. Runs at the
+ * top of the per-present resource pass. */
 static void overlay_layout_update(void) {
     const float ph = (s_nr.win_h > 0) ? (float)s_nr.win_h : 0.0f;
     openpete_native_get_overlay_extent(&s_perf_rw, &s_perf_rh);
@@ -12651,6 +12745,11 @@ static void draw_menu_overlay(void) {
 static unsigned s_osd_composited = 0;
 unsigned openpete_native_osd_composited(void) { return s_osd_composited; }
 
+/** @brief Return whether every resource the OSD toast composite needs exists.
+ *
+ * Requires the overlay resolve pipe, the quad and panel vertex buffers and
+ * the osd_ss slot grid.
+ * @return true when all four are present. */
 static bool osd_ss_ready(void) {
     return s_nr.ovl_resolve_pipe && s_nr.osd_quad_vb && s_nr.osd_panel_vb &&
            s_nr.osd_ss;
@@ -13016,6 +13115,10 @@ static struct {
  * present is known to have gone out. -1 = no compose ran. */
 static int s_pc_cur = -1;
 
+/** @brief Return whether OPENPETE_PRESENT_TRACE requests the per-present census.
+ *
+ * The variable is read on the first call and the result kept.
+ * @return 1 when the variable is set to a value other than empty or 0. */
 static int pc_trace_on(void)
 {
     static int on = -1;
@@ -13407,6 +13510,10 @@ void openpete_phase_set_count(int which, int n) {
     }
 }
 
+/** @brief qsort comparator ordering two uint32_t values ascending.
+ * @param a Pointer to the first value.
+ * @param b Pointer to the second value.
+ * @return Negative, zero or positive as *a is below, equal to or above *b. */
 static int pt_cmp_u32(const void* a, const void* b) {
     uint32_t x = *(const uint32_t*)a, y = *(const uint32_t*)b;
     return (x > y) - (x < y);
@@ -13581,6 +13688,14 @@ static uint32_t s_pfx_stamp;
 static rhi_texture* s_pfx_prev;
 static int s_pfx_prev_w, s_pfx_prev_h;
 
+/** @brief Return the pair of ping-pong render targets of one size, creating it when absent.
+ *
+ * The pool holds two sizes, in practice the window and the reference
+ * dump; a third size evicts the least recently used pair after a device
+ * wait-idle. A partly created pair is destroyed.
+ * @param w Target width in pixels.
+ * @param h Target height in pixels.
+ * @return The two targets, owned by the pool, or NULL when one cannot be created. */
 static rhi_texture** pfx_pings(int w, int h) {
     int victim = 0;
     for (int i = 0; i < 2; i++) {
@@ -13638,6 +13753,17 @@ static struct {                                /* std140 mirror of rq_params */
     float od_ax, od_bx, od_ay, od_by;          /* PSX screen -> opaque_depth ALLOC uv */
 } s_rq_params;
 
+/** @brief Write the engine's raster-quantize pass into a postfx chain.
+ *
+ * Emits nothing unless @p point is the SCENE point and --raster-quantize is
+ * above 0. The pipeline is built on first use; a failed build is logged
+ * and stored as the failure marker, which makes the executor skip the
+ * pass. The uniforms carry the multiplier and the affine that maps the
+ * PSX screen into the opaque depth pre-pass allocation, with the valid
+ * flag clear when that pre-pass did not render this present.
+ * @param point Chain point; 1 is the SCENE point.
+ * @param pass Receives the pass at index 0.
+ * @return Number of passes written, 0 or 1. */
 static int raster_quantize_prepend(int point, openpete_postfx_pass_t* pass)
 {
     if (point != 1 /* OP_POSTFX_SCENE */ || s_raster_mult <= 0) return 0;
@@ -13686,6 +13812,15 @@ static int raster_quantize_prepend(int point, openpete_postfx_pass_t* pass)
  * shared engine UBO (op_scene_rect/op_scene_grid). */
 static void* s_dither_pipe;                    /* rhi_pipeline* / PFX_PIPE_FAILED */
 
+/** @brief Write the engine's PS1 dither pass into a postfx chain.
+ *
+ * Emits nothing unless @p point is the SCENE point and --dither is on. The
+ * pipeline is built on first use; a failed build is logged and stored as
+ * the failure marker, which makes the executor skip the pass. The pass has
+ * no custom uniforms.
+ * @param point Chain point; 1 is the SCENE point.
+ * @param pass Receives the pass at index 0.
+ * @return Number of passes written, 0 or 1. */
 static int psx_dither_append(int point, openpete_postfx_pass_t* pass)
 {
     if (point != 1 /* OP_POSTFX_SCENE */ || !s_dither) return 0;
@@ -13968,6 +14103,12 @@ openpete_native_commit_fn openpete_native_get_commit(void) { return s_commit_cb;
  * shutdown. Shared by the per-present cycle and the shutdown drain. */
 static unsigned char *s_recbuf = NULL;
 static size_t         s_reccap = 0;
+/** @brief Return the --record host buffer, grown to at least a size.
+ *
+ * The buffer only grows, and a growth failure leaves the old buffer in
+ * place. s_reccap holds the capacity after the call.
+ * @param need Required capacity in bytes.
+ * @return The buffer, or NULL when need is 0 or the growth failed. */
 static unsigned char *recbuf_ensure(size_t need)
 {
     if (need == 0) return NULL;
@@ -14006,20 +14147,29 @@ static int  s_last_frame_presented;
 static SDL_Mutex *ring_mx(void) {
     return openpete_mutex_once(&s_ring_mx);
 }
+/** @brief Load the display and clip rectangles of the scene being composed into s_nr.
+ *
+ * Takes the ring slot's snapshot when a slot is being composed, else the
+ * live guest-side rectangles. */
 static void ps_apply_geometry(void) {
     const int *g = s_ps_slot ? s_ps_slot->geom : s_geom_in;
     s_nr.disp_x = g[0]; s_nr.disp_y = g[1]; s_nr.disp_w = g[2]; s_nr.disp_h = g[3];
     s_nr.clip_x = g[4]; s_nr.clip_y = g[5]; s_nr.clip_w = g[6]; s_nr.clip_h = g[7];
 
 }
+/** @brief The draw-environment clear colour of the composed scene: the slot's copy, or the live value inline. */
 static uint32_t ps_drawenv_clear(void)  { return s_ps_slot ? s_ps_slot->drawenv_clear : s_drawenv_clear; }
+/** @brief The shadow decal parameters of the composed scene: the slot's snapshot, or the live block inline. */
 static const openpete_shadow_decal_params *ps_shadow(void) { return s_ps_slot ? &s_ps_slot->shadow : &s_shadow_decal; }
+/** @brief The player shadow fan footprint of the composed scene: the slot's snapshot, or the live block inline. */
 static const openpete_shadow_footprint *ps_shadow_foot(void) { return s_ps_slot ? &s_ps_slot->shadow_foot : &s_shadow_foot; }
+/** @brief The camera the composed scene was projected from: the slot's snapshot, or the live occlusion camera inline. */
 static const openpete_occl_camera *ps_occl_cam(void) { return s_ps_slot ? &s_ps_slot->occl_cam : &s_occl_cam_live; }
 /** @brief The blended-world order the composed scene recorded: the slot's copy, or the live record inline. */
 static const bw_order_t *ps_bw(void) { return s_ps_slot ? &s_ps_slot->bw : &s_bw; }
 /** @brief The freeze-backdrop production mode of the composed scene: the slot's copy, or the live mode inline. */
 static int ps_freeze_retained(void) { return s_ps_slot ? s_ps_slot->freeze_retained : s_freeze_retained; }
+/** @brief The VBL at which the composed scene was extracted: the slot's, or the live scene's inline. */
 static unsigned ps_frame(void)          { return s_ps_slot ? s_ps_slot->frame : s_scene_frame; }
 
 /* Stamp the terrain builder tags its build with: the scene id while an eager
