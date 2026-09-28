@@ -164,7 +164,8 @@ extern "C" void psyq_game_mirror_pad_init(CPUState* cpu, uint32_t buf0, uint32_t
      * the observed values verbatim — function pointers are PSYQ code (not
      * relocated), the buffer addresses come from a0/a1. */
 
-    /* Pad-state dispatch table @ 0x800751BC (10 PSYQ fnptrs). */
+    /* Pad-state dispatch table @ 0x800751BC (10 PSYQ fnptrs), then the two
+     * words at 0x800751F0/0x800751F4. */
     static const struct { uint32_t off; uint32_t val; } pad_dispatch[] = {
         {0x800751BCu, 0x8006B1D8u},
         {0x800751C0u, 0x8006B170u},
@@ -261,13 +262,15 @@ extern "C" uint32_t psyq_game_libgpu_clear_block_addr(void) { return 0x80075978u
 
 /* --- Music route -------------------------------------------------------- */
 
-/* g_CdMusic.m_CurrentTrack (first field), psx.map 0x800774B0. The
- * CdlSetfilter args cannot identify a music track (file is always 1; chan is
- * only track-within-XA-file), so read the game's own index. Every play path
- * writes m_CurrentTrack before issuing CdlReadS (music.c:28, music.c:51-68,
- * loaders.c:776). */
 #define SPYRO_MUSIC_TRACKS 48
 
+/** @brief Reads the game's current music track index from g_CdMusic.m_CurrentTrack (0x800774B0).
+ *
+ * The CdlSetfilter args cannot identify a music track (file is always 1;
+ * chan is only track-within-XA-file), so the game's own index is read.
+ * Every play path writes m_CurrentTrack before issuing CdlReadS (music.c:28,
+ * music.c:51-68, loaders.c:776).
+ * @return The track (0 to 47), or -1 when the word is out of range. */
 static int spyro_current_music_track(void) {
     int32_t track = 0;
     memcpy(&track, openpete_psx_get_ram() + 0x774B0, sizeof(track));
@@ -367,6 +370,10 @@ static const struct { const char* alias; uint8_t slot; } k_sfx_aliases[] = {
     {"menu_cursor", 0x2D},  {"menu_confirm", 0x2E},
     {"pickup_ding", 0x2F},
 };
+/** @brief Maps a mod-facing sound alias to the sound slot name the sfx pack resolves.
+ *
+ * @param name A sound name from a mod; not NULL.
+ * @return The slot name for an alias in k_sfx_aliases, else name itself. */
 static const char* spyro_sfx_canon(const char* name) {
     for (const auto& a : k_sfx_aliases)
         if (strcmp(a.alias, name) == 0) return spyro1_sfx_slot_names[a.slot];
@@ -436,6 +443,9 @@ static int spyro_sfx_base_pitch(int voice) {
     return (p > 0 && p < 0x4000u) ? (int)p : 0;
 }
 
+/** @brief Installs the pitch reader and slot-name resolver in the sfx pack, once.
+ *
+ * Later calls return without effect. */
 static void spyro_sfx_pack_arm(void) {
     static int s_armed = 0;
     if (s_armed) return;

@@ -117,6 +117,10 @@ static uint32_t rd32(uint32_t addr);
 static uint8_t s_credits_state[CREDITS_REC_MAX];
 static uint8_t s_credits_gen[CREDITS_REC_MAX];
 
+/** @brief Reports whether the credits letter roll is running.
+ *
+ * @return Nonzero when g_Gamestate is GS_Credits and g_CreditsStage is below
+ *     99 (the letter roll, before the final stage). */
 static int credits_roll_active(void) {
     return rd32(G_GAMESTATE) == GS_CREDITS && (int32_t)rd32(G_CREDITS_STAGE) < 99;
 }

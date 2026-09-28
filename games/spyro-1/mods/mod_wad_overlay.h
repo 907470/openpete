@@ -11,7 +11,19 @@
 extern "C" {
 #endif
 
+/** @brief Records the disc path the WAD TOC is read from and arms a lazy parse.
+ *
+ * Ignored for a NULL or empty path, and when the same path is already
+ * parsed. Otherwise the overlay goes pending; the TOC is read on the first
+ * mod_wad_apply or spyro1_mod_wad_read_level_data after a mod asset root
+ * exists.
+ * @param disc_path The .cue or .bin path of the user's disc. */
 void spyro1_mod_wad_configure(const char* disc_path);
+/** @brief Records the disc head sector a CdlSetloc positioned.
+ *
+ * Logs the sector when OPENPETE_WADMOD_TRACE is set. The next mod_wad_apply
+ * starts its read at this sector.
+ * @param sector The absolute disc sector. */
 void mod_wad_setloc(uint32_t sector);
 /** @brief Serves override bytes into a just-completed CdRead's guest buffer and advances the tracked head.
  *

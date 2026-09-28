@@ -217,8 +217,18 @@ void spyro1_levelwarp_state_load(uint32_t phase, uint32_t target,
  * @return The level id. */
 static int warp_level_id(int index) { return k_levels[index].id; }
 
+/** @brief Reports whether a warp is armed or loading.
+ *
+ * @return Nonzero when the warp phase is not idle. */
 static int warp_in_flight(void) { return s_phase != WARP_IDLE; }
 
+/** @brief Writes the overlay status text for a running warp phase.
+ *
+ * Writes "exiting level..." while armed and "loading..." while loading;
+ * writes nothing when idle.
+ * @param buf Destination for the text.
+ * @param cap Size of buf in bytes.
+ * @return 1 when text was written, 0 when the warp is idle. */
 static int warp_in_flight_status(char* buf, size_t cap) {
     if (s_phase == WARP_ARMED)   { snprintf(buf, cap, "exiting level..."); return 1; }
     if (s_phase == WARP_LOADING) { snprintf(buf, cap, "loading...");       return 1; }
@@ -246,6 +256,10 @@ static int warp_route(CPUState* cpu) {
     return LEVELWARP_ROUTE_NONE;
 }
 
+/** @brief Reads the id of the level the guest currently has loaded.
+ *
+ * @param cpu The guest CPU state.
+ * @return g_LevelId as an int. */
 static int warp_current_level(CPUState* cpu) {
     return (int)cpu->read_word(ADDR_G_LEVELID);
 }
@@ -265,6 +279,11 @@ static const levelwarp_ui_desc_t k_ui = {
     .in_flight_status  = warp_in_flight_status,
 };
 
+/** @brief Resets the warp state and registers the level dropdown with the overlay.
+ *
+ * Fills the display-name array in table order and hands the overlay
+ * descriptor to the shared warp UI.
+ * @param opts Unused. */
 static void levelwarp_apply_options(const openpete_options_t* opts) {
     size_t i;
     (void)opts;
@@ -328,6 +347,11 @@ static void warp_retarget(CPUState* cpu) {
                (unsigned)target);
 }
 
+/** @brief Cancels the warp in progress and returns the phase to idle.
+ *
+ * Logs the reason and clears the phase, target and tick count; no guest
+ * word is written.
+ * @param why Short reason text for the log line. */
 static void warp_abort(const char* why) {
     OPL_INFO_F("levelwarp", "aborted (%s)", why);
     s_phase  = WARP_IDLE;

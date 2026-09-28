@@ -151,6 +151,11 @@ static int read_sector(uint32_t sector, uint8_t* out) {
     return fread(out, 1, SEC_DATA, s_bin) == SEC_DATA ? 0 : -1;
 }
 
+/** @brief Maps a WAD TOC index to its logical level id.
+ *
+ * @param idx The TOC index (0 to 35).
+ * @return (idx / 6 + 1) * 10 + idx % 6, such as 10 for index 0 and 65 for
+ *     index 35. */
 static int level_index_to_id(int idx) {
     return (idx / 6 + 1) * 10 + idx % 6;
 }
@@ -238,6 +243,15 @@ static int wad_find_override(int id, const char* kind, uint32_t want_len,
     return -1;
 }
 
+/** @brief Parses the disc's WAD TOC into the per-level segment table, once the overlay is pending.
+ *
+ * Does nothing unless configured and pending, and stays pending while no
+ * mod asset root exists. Otherwise opens the disc image, detects raw or
+ * cooked sectors from the sync pattern, reads the header sector at the
+ * game's wad_sector, and records the sector range and byte length of each
+ * of 36 levels' data and overlay entries whose offsets are sector aligned.
+ * Ends ready (state 2) with a logged entry and override-file count, or
+ * failed (state -1) with a warning; a failed parse is not retried. */
 static void wad_init(void) {
     if (s_state != 1) return;
 

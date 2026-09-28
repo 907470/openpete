@@ -71,6 +71,12 @@
  * the DONOR's music instead. */
 #define ADDR_LEVEL_TRACK_TAB 0x8006EF9Cu
 
+/** @brief Copies a donor level's XA track number into the custom slot's row of the track table.
+ *
+ * Reads the word at D_8006EF9C + 4 * donor_index and stores it at the slot's
+ * row (index 35), so the slot plays the donor's music.
+ * @param cpu The guest CPU state.
+ * @param donor_index The donor's level index (0 to 34). */
 static void inherit_donor_music(CPUState* cpu, int donor_index) {
     cpu->write_word(ADDR_LEVEL_TRACK_TAB + 4u * SLOT_INDEX,
                     cpu->read_word(ADDR_LEVEL_TRACK_TAB +
@@ -90,6 +96,10 @@ void openpete_mods_base(CPUState* cpu);
 static int s_slot_donor = 0; /* donor level id; 0 = slot unclaimed */
 static int s_hooks_installed = 0;
 
+/** @brief Returns the guest address of a level's 16-byte entry in the WAD TOC.
+ *
+ * The TOC is g_WadHeader (0x8007A6D0) + 72, stride 16.
+ * @param index The level index. */
 static uint32_t entry_addr(int index) {
     return ADDR_G_WADHEADER + WAD_LEVELENTRY_OFF
          + WAD_LEVELENTRY_SZ * (uint32_t)index;
@@ -112,6 +122,16 @@ static void alias_call(CPUState* cpu) {
     if (aliased) cpu->write_word(ADDR_G_LEVELID, id);
 }
 
+/** @brief Claims the free level slot (index 35, id 65) for a donor level and installs the alias hooks.
+ *
+ * Copies the donor's 16-byte WAD TOC entry over the slot's, copies the
+ * donor's XA track, and on the first claim chains alias_call onto
+ * SetOverlayPointers and LoadLevelScene. Refuses until the boot TOC read
+ * has filled entry 0, and while the slot is already claimed.
+ * @param cpu The guest CPU state.
+ * @param donor_level_id The donor's level id, 10 to 64.
+ * @return The claimed level id (65), or 0 when the id is out of range, the
+ *     slot is taken, the TOC is not loaded, or a hook install failed. */
 static int ops_claim_slot(CPUState* cpu, int donor_level_id) {
     if (donor_level_id < 10 || donor_level_id > 64) return 0;
     if (s_slot_donor) return 0; /* v1 capacity: exactly one free slot */
@@ -137,6 +157,17 @@ static int ops_claim_slot(CPUState* cpu, int donor_level_id) {
     return SLOT_LEVEL_ID;
 }
 
+/** @brief Starts a transition into a level from live gameplay, or hands off to the title-screen skip route.
+ *
+ * At the title screen (g_Gamestate 13) it calls game_set_skip_to_level. In
+ * non-demo gameplay (g_Gamestate 0, g_DemoMode 0) it stores the
+ * level-select cheat's words: g_NextLevelId = level_id, g_PortalLevelId 0,
+ * g_HasLevelTransition 0, g_LoadStage 1, then g_Gamestate 1
+ * (GS_LevelTransition). Any other state is refused so a load in progress is
+ * not restarted.
+ * @param cpu The guest CPU state.
+ * @param level_id The destination level id; not range-checked.
+ * @return 0 when queued, -1 when not in gameplay or in the attract demo. */
 static int ops_enter_level(CPUState* cpu, int level_id) {
     uint32_t gs = cpu->read_word(ADDR_G_GAMESTATE);
     /* Title screen: the --skip-to-level machinery owns this route (same
@@ -164,6 +195,12 @@ static int ops_enter_level(CPUState* cpu, int level_id) {
     return 0;
 }
 
+/** @brief Reads a level's stock data entry from the disc image through the WAD overlay reader.
+ *
+ * @param level_id The level id.
+ * @param buf Destination, or NULL to return only the length.
+ * @param cap Capacity of buf in bytes.
+ * @return The byte length, or -1 on failure. */
 static int ops_read_level_data(int level_id, void* buf, uint32_t cap) {
     return spyro1_mod_wad_read_level_data(level_id, buf, cap);
 }
@@ -219,6 +256,10 @@ static int ops_declare_data_len(CPUState* cpu, int level_id, uint32_t len) {
 }
 
 int spyro1_level_resolve(const char* arg); /* levelwarp.c */
+/** @brief Resolves a level name or numeric string to a level id for the mod registry.
+ *
+ * @param name A lower_snake level name, an alias or a decimal id.
+ * @return The level id, or -1 when name is NULL, empty or unknown. */
 static int ops_resolve_name(const char* name) {
     return name && name[0] ? spyro1_level_resolve(name) : -1;
 }
@@ -231,6 +272,13 @@ static int ops_resolve_name(const char* name) {
  * window (real low guest RAM, savestate-carried). */
 #define ADDR_G_LEVELNAMES 0x8006F7F0u
 
+/** @brief Maps a level id to its index in the per-level guest tables.
+ *
+ * Id 65 maps to the free slot index 35; ids 10 to 64 map to
+ * (id / 10 - 1) * 6 + id % 10, without checking that the units digit is 0
+ * to 5.
+ * @param level_id The level id.
+ * @return The index, or -1 for any other id. */
 static int level_index_of(int level_id) {
     if (level_id == SLOT_LEVEL_ID) return SLOT_INDEX;
     if (level_id < 10 || level_id > 64) return -1;
@@ -247,6 +295,11 @@ static uint16_t s_stock_gems[COUNT_TABLE_ROWS];
 static uint8_t  s_stock_eggs[EGG_TABLE_ROWS];
 static int      s_stock_captured;
 
+/** @brief Snapshots the shipped dragon, gem and egg target tables before any guest code runs.
+ *
+ * Copies 36 dragon bytes, 36 gem halfwords and 18 egg bytes into host
+ * arrays that ops_set_level_counts restores from, and marks them captured.
+ * @param cpu The guest CPU state. */
 void spyro1_mod_level_capture_stock_counts(CPUState* cpu) {
     for (int i = 0; i < COUNT_TABLE_ROWS; i++) {
         s_stock_dragons[i] =
@@ -308,6 +361,18 @@ static int ops_set_level_counts(CPUState* cpu, int level_id,
 static uint8_t s_name_override[37]; /* indices our titles occupy */
 static void leveltext_hook_install(void);
 
+/** @brief Shows a custom title for a level in the guest name table, or restores the stock name.
+ *
+ * Uppercases the name, keeps A-Z, 0-9, space and !,?.' and drops the rest
+ * (at most 39 characters). The string is parked once in the guest arena
+ * (the last 8 distinct titles are reused rather than reallocated) and its
+ * pointer stored in g_LevelNames; the stock pointer is saved on the first
+ * write per index. A title installs the portal-text glyph hook.
+ * @param cpu The guest CPU state.
+ * @param level_id The level id (10 to 64, or 65 for the slot).
+ * @param name The title, or NULL to restore the stock name.
+ * @return 0 on success, -1 for an unknown id, a title empty after
+ *     cleaning, or an arena allocation failure. */
 static int ops_set_level_name(CPUState* cpu, int level_id,
                               const char* name) {
     static uint32_t s_stock[37];
@@ -397,12 +462,28 @@ static int ops_set_level_name(CPUState* cpu, int level_id,
 #define PORTAL_M_SKYBOX    0u
 #define PORTAL_M_LEVELID   28u
 
+/** @brief Maps a title character to the moby class of its glyph model, for digits and the period.
+ *
+ * @param c A character of a level title.
+ * @return CLASS_DIGIT_0 + digit for '0' to '9', CLASS_PERIOD for '.',
+ *     else 0. */
 static int glyph_class_for(char c) {
     if (c >= '0' && c <= '9') return CLASS_DIGIT_0 + (c - '0');
     if (c == '.') return CLASS_PERIOD;
     return 0;
 }
 
+/** @brief Rebrands the portal-name apostrophe mobys of an installed title to digit and period glyphs.
+ *
+ * Mod override chain link on func_8003C358 (the portal name arc; a0 = parent
+ * moby, a1 nonzero for a name). After the base call, for a level index whose
+ * title ops_set_level_name replaced, each apostrophe moby the arc spawned
+ * for that parent whose character is a digit or period is moved to an
+ * unused letter class: the glyph model is copied into that class's g_Models
+ * row and the moby's class is set to it, with the apostrophe's +256 z lift
+ * undone. Letters used by the level's portal names and by earlier claims
+ * are skipped; claims reset when g_LevelId changes.
+ * @param cpu The guest CPU state, carrying the call's arguments. */
 static void leveltext_hook(CPUState* cpu) {
     uint32_t parent  = cpu->a0;
     uint32_t is_name = cpu->a1;
@@ -518,6 +599,9 @@ static void leveltext_hook(CPUState* cpu) {
                    s_claim_n == 1 ? "" : "s");
 }
 
+/** @brief Chains leveltext_hook onto func_8003C358 once.
+ *
+ * A failed chain add is retried on the next call. */
 static void leveltext_hook_install(void) {
     static int s_installed = 0;
     if (s_installed) return;
@@ -550,6 +634,17 @@ typedef struct {
     uint32_t bgword;
 } sky_park_t;
 
+/** @brief Loads a custom level's cyclorama payload into the guest arena and returns its parked record.
+ *
+ * Reads <dir>/<stem> from the mod, walks the level data header past five
+ * components to the cyclorama, copies its payload to an immutable guest
+ * arena block, and rewrites the payload-relative sector pointers to
+ * absolute guest addresses. At most 8 stems are cached, by stem; a failure
+ * is cached too, so it is not retried.
+ * @param dir The mod directory.
+ * @param stem The custom level's file stem.
+ * @return The parked record, or NULL when the file is missing or malformed,
+ *     the arena allocation fails, or the cache is full. */
 static const sky_park_t* sky_park_get(const char* dir, const char* stem) {
     static sky_park_t s_parks[8];
     static int s_n = 0;
@@ -609,6 +704,20 @@ static const sky_park_t* sky_park_get(const char* dir, const char* stem) {
 static void replace_transition_sky(CPUState* cpu, int donor_id,
                                    const char* dir, const char* stem);
 
+/** @brief Points the donor level's homeworld portal preview at a custom level's sky, or restores it.
+ *
+ * Per-tick driver. While on, it also runs replace_transition_sky, finds the
+ * portal whose level id is the donor, saves that portal's sector count,
+ * sector pointer and background word once, and stores the parked
+ * cyclorama's values. When off it restores the saved values. Patch state
+ * resets when g_LevelId changes (the portals are rebuilt on load). No
+ * portal is patched or restored while g_PortalCount exceeds 6.
+ * @param cpu The guest CPU state.
+ * @param donor_id The replaced retail level's id.
+ * @param dir The mod directory.
+ * @param stem The custom level's file stem.
+ * @param on Nonzero to patch, zero to restore.
+ * @return 0, or -1 when the sky payload cannot be parked. */
 static int ops_replace_sky_tick(CPUState* cpu, int donor_id,
                                 const char* dir, const char* stem,
                                 int on) {
@@ -664,19 +773,24 @@ static int ops_replace_sky_tick(CPUState* cpu, int donor_id,
     return 0;
 }
 
-/* Portal-ENTRY transition sky. Load stage 0 of a portal entry Memcpy's
- * the portal's RAW baked blob into scratch and points g_Cyclorama at
- * the blob's TAIL copy of the preview (bg word / count / inline ptr
- * array) — a second, unpatched copy of the STOCK sky that fills the
- * screen for the ~1 s transition. Patching the blob's inline pointers
- * is unsafe (stage 0 rebases them assuming they point inside the
- * blob), so instead re-point g_Cyclorama at the arena copy every tick
- * while transitioning into the donor. Idempotent; once the loaded
- * (custom) level's own cyclorama takes over the writes are
- * content-identical. */
 #define ADDR_G_CYCLORAMA     0x80078A40u
 #define ADDR_ENTERED_PORTAL  0x8007576Cu /* D_8007576C: portal idx, -1 = none */
 
+/** @brief Re-points g_Cyclorama at the custom sky while a portal entry transitions into the donor level.
+ *
+ * Load stage 0 of a portal entry Memcpy's the portal's raw baked blob into
+ * scratch and points g_Cyclorama at the blob's tail copy of the preview
+ * (bg word, count, inline pointer array), a second unpatched copy of the
+ * stock sky that fills the screen for about a second. Patching the blob's
+ * inline pointers is unsafe (stage 0 rebases them assuming they point
+ * inside the blob), so the parked copy is stored into g_Cyclorama every
+ * tick instead. Acts only in g_Gamestate 1 with g_NextLevelId == donor_id
+ * and a portal entry (D_8007576C >= 0); once the loaded level's own
+ * cyclorama takes over, the writes are content-identical.
+ * @param cpu The guest CPU state.
+ * @param donor_id The replaced retail level's id.
+ * @param dir The mod directory.
+ * @param stem The custom level's file stem. */
 static void replace_transition_sky(CPUState* cpu, int donor_id,
                                    const char* dir, const char* stem) {
     if (cpu->read_word(ADDR_G_GAMESTATE) != 1u) return; /* transition? */
@@ -707,6 +821,7 @@ static const openpete_level_ops_t s_spyro1_level_ops = {
     .replace_sky_tick = ops_replace_sky_tick,
 };
 
+/** @brief Registers Spyro 1's level ops with the mod registry. */
 void spyro1_level_ops_register(void) {
     openpete_mods_set_level_ops(&s_spyro1_level_ops);
 }

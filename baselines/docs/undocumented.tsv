@@ -2,7 +2,7 @@
 # library: libclang 14
 # requirement: @brief of one sentence on one line on every function; @param per named parameter and @return on non-void for external linkage
 # written-by: hook
-# head: eec5da465458613638d7dbd0d4a4be78f01ccede
+# head: 43c3327edb260c4198aa2e126243e2e0d6335bee
 file	function	form	accepted
 core/diag/psxtrace_schedule.c	openpete_sched_active	untagged	
 core/diag/psxtrace_schedule.c	openpete_sched_failed	untagged	
@@ -91,43 +91,6 @@ games/common/renderer/player_game_spyro23.c	s23_part_xform	none
 games/common/renderer/player_game_spyro23.c	s23_plane_begin	none	
 games/common/renderer/player_game_spyro23.c	s23_seam_field	none	
 games/common/renderer/terrain.c	tn_eye_side	longbrief	
-games/spyro-1/features/levelwarp.c	levelwarp_apply_options	none	
-games/spyro-1/features/levelwarp.c	warp_abort	none	
-games/spyro-1/features/levelwarp.c	warp_current_level	none	
-games/spyro-1/features/levelwarp.c	warp_in_flight	none	
-games/spyro-1/features/levelwarp.c	warp_in_flight_status	none	
-games/spyro-1/features/polybuf_guard.c	on_build_order_table	none	
-games/spyro-1/game_extras_impl.c	game_get_disc_layout	none	
-games/spyro-1/game_extras_impl.c	game_on_overlay_init	none	
-games/spyro-1/game_extras_impl.c	psx_override_dispatch_game	none	
-games/spyro-1/main.cpp	openpete_attach_parent_console	none	
-games/spyro-1/mods/mod_level_ops.c	entry_addr	none	
-games/spyro-1/mods/mod_level_ops.c	glyph_class_for	none	
-games/spyro-1/mods/mod_level_ops.c	inherit_donor_music	none	
-games/spyro-1/mods/mod_level_ops.c	level_index_of	none	
-games/spyro-1/mods/mod_level_ops.c	leveltext_hook	none	
-games/spyro-1/mods/mod_level_ops.c	leveltext_hook_install	none	
-games/spyro-1/mods/mod_level_ops.c	ops_claim_slot	none	
-games/spyro-1/mods/mod_level_ops.c	ops_enter_level	none	
-games/spyro-1/mods/mod_level_ops.c	ops_read_level_data	none	
-games/spyro-1/mods/mod_level_ops.c	ops_replace_sky_tick	none	
-games/spyro-1/mods/mod_level_ops.c	ops_resolve_name	none	
-games/spyro-1/mods/mod_level_ops.c	ops_set_level_name	none	
-games/spyro-1/mods/mod_level_ops.c	replace_transition_sky	none	
-games/spyro-1/mods/mod_level_ops.c	sky_park_get	none	
-games/spyro-1/mods/mod_level_ops.c	spyro1_level_ops_register	none	
-games/spyro-1/mods/mod_level_ops.c	spyro1_mod_level_capture_stock_counts	none	
-games/spyro-1/mods/mod_moby_ops.c	ops_level_id	none	
-games/spyro-1/mods/mod_moby_ops.c	spyro1_moby_ops_register	none	
-games/spyro-1/mods/mod_wad_overlay.c	level_index_to_id	none	
-games/spyro-1/mods/mod_wad_overlay.c	mod_wad_setloc	none	
-games/spyro-1/mods/mod_wad_overlay.c	spyro1_mod_wad_configure	none	
-games/spyro-1/mods/mod_wad_overlay.c	wad_init	none	
-games/spyro-1/native_dispatch_stub.c	spyro_native_dispatch	none	
-games/spyro-1/psyq_hooks.cpp	spyro_current_music_track	none	
-games/spyro-1/psyq_hooks.cpp	spyro_sfx_canon	none	
-games/spyro-1/psyq_hooks.cpp	spyro_sfx_pack_arm	none	
-games/spyro-1/renderer/interp_regions.c	credits_roll_active	none	
 games/spyro-1/renderer/moby_game.c	s1_cutpath_actor	none	
 games/spyro-1/renderer/moby_game.c	s1_cutscene_actor	none	
 games/spyro-1/renderer/particle.c	clamp16	none	
@@ -245,8 +208,6 @@ games/spyro-2/features/levelwarp.c	levelwarp_apply_options	none
 games/spyro-2/features/levelwarp.c	warp_current_level	none	
 games/spyro-2/features/levelwarp.c	warp_in_flight	none	
 games/spyro-2/features/levelwarp.c	warp_in_flight_status	none	
-games/spyro-2/game_extras_impl.c	game_get_disc_layout	none	
-games/spyro-2/game_extras_impl.c	game_on_overlay_init	none	
 games/spyro-2/renderer/reextract.c	cam_dbg_line	none	
 games/spyro-2/renderer/reextract.c	game_reextract_body_v	none	
 games/spyro-2/renderer/reextract.c	rx_scene_tris	none	
@@ -278,8 +239,6 @@ games/spyro-3/features/skip_to_area.c	parse_index	none
 games/spyro-3/features/skip_to_area.c	print_targets	none	
 games/spyro-3/features/transition_call.c	on_draw	none	
 games/spyro-3/features/transition_call.c	store	none	
-games/spyro-3/game_extras_impl.c	game_get_disc_layout	none	
-games/spyro-3/game_extras_impl.c	game_on_overlay_init	none	
 games/spyro-3/game_extras_impl.c	psx_override_dispatch_game	none	
 games/spyro-3/renderer/reextract.c	cam_dbg_line	none	
 games/spyro-3/renderer/reextract.c	game_reextract_body_v	none	

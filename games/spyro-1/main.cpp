@@ -53,6 +53,11 @@ static void reconnect_std(DWORD which, FILE* stream) {
     if (fd != target) { _dup2(fd, target); _close(fd); }
     setvbuf(stream, NULL, _IONBF, 0);
 }
+/** @brief Attaches the process to its parent console and rebinds stdout, stderr and stdin to the OS handles.
+ *
+ * Windows build: AttachConsole failure (parent has no console, or stdio is a
+ * pipe or file) is ignored; each stream is then wired by reconnect_std to
+ * whatever its standard handle refers to. */
 static void openpete_attach_parent_console(void) {
     AttachConsole(ATTACH_PARENT_PROCESS);   /* ok if it fails (pipe/file) */
     reconnect_std(STD_OUTPUT_HANDLE, stdout);
@@ -60,6 +65,7 @@ static void openpete_attach_parent_console(void) {
     reconnect_std(STD_INPUT_HANDLE,  stdin);
 }
 #else
+/** @brief Does nothing on a non-Windows build, where stdio is already connected. */
 static void openpete_attach_parent_console(void) {}
 #endif
 

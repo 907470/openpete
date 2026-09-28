@@ -6,6 +6,13 @@
 
 #include <stdint.h>
 
+/** @brief Declines every address, so each guest function runs its recompiled code.
+ *
+ * Stands in for the generated native-decomp dispatch when the build skips
+ * the decomp.
+ * @param cpu Unused.
+ * @param addr Unused.
+ * @return 0. */
 int spyro_native_dispatch(CPUState* cpu, uint32_t addr) {
     (void)cpu;
     (void)addr;

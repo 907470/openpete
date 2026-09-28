@@ -55,7 +55,11 @@ uint32_t    game_get_load_delay_default(void);
  * @param overlay_id The overlay's id word.
  * @return 0 on success. */
 int  game_on_overlay_load(uint32_t overlay_id);
-void game_on_overlay_init(CPUState* cpu);     /* one-time, post-WadInit */
+/** @brief Placeholder for one-time per-game setup after WadInit; every implementation is empty.
+ *
+ * No core or game code calls it.
+ * @param cpu Guest CPU state. */
+void game_on_overlay_init(CPUState* cpu);
 
 /* --- Per-game runtime quirks --- */
 /** @brief Applies per-game runtime patches such as preamble fixes and known-bad-instruction workarounds.
@@ -266,6 +270,11 @@ typedef struct {
     uint32_t wad_sector;       /* sector 37 for Spyro 1 */
     uint32_t wad_header_addr;  /* PSX address where header gets loaded */
 } game_disc_layout_t;
+/** @brief Returns where the game's WAD lives on the disc, or NULL for a game without a WAD overlay.
+ *
+ * The Spyro 1 layout is a static object; the Spyro 2 and 3 implementations
+ * return NULL.
+ * @return Pointer to the layout, valid for the process lifetime, or NULL. */
 const game_disc_layout_t* game_get_disc_layout(void);
 
 #ifdef __cplusplus

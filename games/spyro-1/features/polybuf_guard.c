@@ -88,6 +88,19 @@ static int guard_mode(void) {
     return mode;
 }
 
+/** @brief Samples the polygon buffer cursor at BuildOrderTable and logs overflow past its end, edge-triggered.
+ *
+ * Feature dispatch hook on 0x80016784; reads guest RAM only and always
+ * returns 0 so the original runs. Does nothing while OPENPETE_POLYBUF_GUARD
+ * is off, or while the cursor or end word is 0 (buffers not set up).
+ * Tracks headroom as end - cursor: on the first overflow it logs the
+ * measured relationship to g_WorldOT (an error when the cursor has reached
+ * the OT, else a warning) with level and camera position, re-logs every 120
+ * openpete_frame counts while overflowed, and logs a summary on recovery;
+ * in verbose mode it also logs the headroom of every healthy sample.
+ * @param cpu The guest CPU state.
+ * @param addr Unused.
+ * @return 0. */
 static int on_build_order_table(CPUState* cpu, uint32_t addr) {
     (void)addr;
     const int mode = guard_mode();

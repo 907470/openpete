@@ -21,6 +21,10 @@
 
 #include "psx_runtime_internal.h" /* CPUState */
 
+/** @brief Returns the current level id, or 0 outside gameplay.
+ *
+ * @param cpu The guest CPU state.
+ * @return g_LevelId when g_Gamestate is GS_Playing, else 0. */
 static int ops_level_id(CPUState* cpu) {
     if (cpu->read_word(ADDR_G_GAMESTATE) != 0u) return 0; /* GS_Playing */
     return (int)cpu->read_word(ADDR_G_LEVELID);
@@ -51,6 +55,7 @@ static const openpete_moby_ops_t s_spyro1_moby_ops = {
     .classes_loaded   = ops_classes_loaded,
 };
 
+/** @brief Registers Spyro 1's moby ops with the mod registry. */
 void spyro1_moby_ops_register(void) {
     openpete_mods_set_moby_ops(&s_spyro1_moby_ops);
 }

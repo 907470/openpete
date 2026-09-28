@@ -57,7 +57,7 @@ int  game_on_overlay_load(uint32_t overlay_id) {
 
 void game_on_overlay_init(CPUState* cpu) {
     (void)cpu;
-    /* TODO Phase 1b — runs once after WadInit. */
+    /* No work: no code calls this hook. */
 }
 
 /* mods/mod_level_ops.c — same private-decl pattern main.cpp uses. */
@@ -628,6 +628,20 @@ static int srend_noop_hit(uint32_t addr) {
     }
 }
 
+/** @brief Runs Spyro 1's per-function-entry overrides in priority order and reports whether one handled the call.
+ *
+ * Called from the dispatcher on every translated-function entry, after the
+ * PSX-trace hooks. Order: debug free-camera freeze, mod override chains,
+ * the generated native-decomp dispatch, the feature registry,
+ * OPENPETE_NOOP_SREND renderer suppression, then two diagnostics: the
+ * OPENPETE_GEM_TRACE gem-cull dump at func_80022A2C (openpete_frame 2999
+ * and 3000, falls through to the original), and a write-trace bracket
+ * around every entry to func_80023AC4 (Spyro's renderer), which runs the
+ * function itself.
+ * @param cpu Guest CPU state.
+ * @param addr Guest address of the function being entered.
+ * @return 1 when the call was handled or replaced and the original must not
+ *     run, else 0. */
 int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
     /* Debug free camera (F): while engaged, drive the camera in place of
      * CameraFollowSpyro (on this game fiber) and suppress it + UpdateSpyro so
