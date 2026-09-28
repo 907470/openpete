@@ -108,11 +108,12 @@ void openpete_log_pin_stderr_tty(int is_tty);
 /** @brief Flush stderr and wait 50 ms for the pump thread to copy it into the log file.
  *
  * No-op when no file sink is active. Called immediately before the
- * process terminates without the normal shutdown (the crash handler, the
- * halt-at-PC and hang-watchdog exits, the forced exit after a quit grace
- * timeout), where text still in the stderr pipe would be lost with the
- * process. The wait is a fixed sleep, not a drain handshake. Not
- * async-signal-safe. */
+ * process terminates without the normal shutdown (the halt-at-PC and
+ * hang-watchdog exits, the forced exit after a quit grace timeout), where
+ * text still in the stderr pipe would be lost with the process. The crash
+ * handler does not call it; it writes its report through
+ * openpete_log_file_crash_fds. The wait is a fixed sleep, not a drain
+ * handshake. Not async-signal-safe. */
 void openpete_log_file_sync(void);
 
 /** @brief Name the descriptors a crash report is written to directly, bypassing the stderr pipe.
@@ -135,8 +136,9 @@ int openpete_log_file_crash_fds(int fds[2]);
  * monotonic seconds since the first openpete_log_init. stderr is flushed
  * after every line.
  * @param level Severity of the message.
- * @param subsystem Subsystem name the filter and the line carry; NULL uses
- *        the default level and prints "-" (plain) or "" (JSON).
+ * @param subsystem Subsystem name the filter and the line carry; NULL is
+ *        filtered as the empty name (the default level unless a rule names
+ *        the empty subsystem) and prints "-" (plain) or "" (JSON).
  * @param fmt printf-style format of the message. */
 void openpete_logf(openpete_log_level_t level, const char* subsystem,
                    const char* fmt, ...);

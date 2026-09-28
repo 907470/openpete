@@ -429,9 +429,9 @@ void openpete_log_file_sync(void) {
     if (!s_pump_live) return;
     fflush(stderr);
     /* Give the pump a moment to drain what the caller just wrote. Called
-     * from the crash handler, which is already past the point of being
-     * signal-safe (it uses fprintf and backtrace); without this the
-     * crash dump can die in the pipe with the process. */
+     * from the exits that skip the normal shutdown (halt-at-PC, the hang
+     * watchdog, the forced exit after a quit timeout); without this the
+     * text still in the pipe dies with the process. */
     op_sleep_ms(50);
 }
 

@@ -140,7 +140,7 @@ void openpete_ident_audit_present(void *cpu, unsigned vbl, unsigned tick,
     free(canon); free(ident);
 }
 
-/** @brief Return the nearest-rank percentile p, in [0, 1], of the px counts in rows sorted ascending, 0 when n is 0. */
+/** @brief Return the px count at index round(p * (n - 1)) of rows sorted ascending, p in [0, 1], 0 when n is 0. */
 static uint32_t pct(const audit_row_t *sorted, size_t n, double p)
 {
     if (!n) return 0;
