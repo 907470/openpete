@@ -11,12 +11,14 @@
 //
 // Two producers, one capture:
 //
-//   * the point-ring ribbon (asm/mobyfunc.s:2940-3181). Walks a 0x20-slot array
-//     of 0x6C-byte records, each holding a 16-entry circular buffer of packed
-//     unsigned XYZ halves plus a head index, a point count and a signed width
-//     byte at +0x64 and a colour-plus-command word at +0x68. It RTPS-projects
-//     every live point of a record into the scratchpad, then walks consecutive
-//     pairs and appends one 13-word POLY_GT4 per segment: the two projected
+//   * the point-ring ribbon (asm/mobyfunc.s:2940-3181, Spyro 3 offsets). Walks
+//     a 0x20-slot array of records (Spyro 3: 0x6C bytes; Spyro 2: 0x30 bytes),
+//     each holding a circular buffer of packed unsigned XYZ halves (Spyro 3:
+//     16 entries; Spyro 2: 6) plus a head index, a point count, a signed width
+//     byte and a colour-plus-command word (Spyro 3: at +0x64 and
+//     +0x68). It RTPS-projects every live point of a record into the
+//     scratchpad, then walks consecutive pairs and appends one 13-word
+//     POLY_GT4 per segment: the two projected
 //     points each expanded by the record's half-width, which tapers linearly to
 //     zero along the ribbon, and DPCS-faded from the record's colour. The width
 //     rides in the high half of a packed screen coordinate while it is positive
@@ -888,7 +890,8 @@ static void tr_rebase_report(void) {
  * here is the interpolated transform the rest of the pass draws under. At
  * alpha 1 or above, with an empty set or with the rebase disabled, the
  * rebase stays off and the replay emits the captured corners. The first
- * call latches OPENPETE_TRACER_REBASE_DBG and registers tr_rebase_report.
+ * call past those conditions latches OPENPETE_TRACER_REBASE_DBG and
+ * registers tr_rebase_report.
  * @param cpu The guest CPU state.
  * @param alpha The present's position in the tick interval, 0..1. */
 static void tr_rebase_all(CPUState* cpu, double alpha) {

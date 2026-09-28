@@ -232,8 +232,9 @@ static void glyph_set_xrange(glyph_cache_t* g) {
 /** @brief Decodes the simple model of one moby class into a glyph cache entry, for GAME_FONT_CLASS_PER_GLYPH.
  *
  * Each vertex is 3 bytes: Z, X and Y are its bytes 0, 1 and 2, sign-extended
- * and doubled. Each face is 8 bytes: four 7-bit vertex indices in word 0 and
- * a signed-byte normal (x byte 2, y byte 1, z byte 3) in word 1. The entry
+ * and doubled; X and Y also take the top bit of the byte below as bit 0.
+ * Each face is 8 bytes: four 7-bit vertex indices in word 0 and a
+ * signed-byte normal (x byte 2, y byte 1, z byte 3) in word 1. The entry
  * stays invalid when the class has no model, the model's word 0 is not
  * negative (not a simple model, or its data not yet loaded), or its vertex or
  * face count is out of range.
@@ -699,12 +700,12 @@ int text_moby_native_ready(void) { return s_cache_ready; }
 /* ---- emit (works purely from the cache) --------------------------------- */
 
 /* Emission state, per call rather than per file. Every emitter — the stats
- * overlay and settings menu on the sim thread, the mod draw service on the
- * present thread, the OSD every tick a toast is live — writes through one of
- * these, so two threads emitting at once cannot tear each other's output
- * cursor, glyph scratch or light direction. (A torn out/cap pair defeats
- * push_tri's bounds check and writes past the caller's buffer; a light
- * overwritten mid-string tears the shimmer across the glyphs.) */
+ * overlay and settings menu, the mod draw service at scene production, the
+ * OSD every tick a toast is live — writes through one of these, so no two
+ * emissions share an output cursor, glyph scratch or light direction. (A
+ * torn out/cap pair would defeat push_tri's bounds check and write past the
+ * caller's buffer; a light overwritten mid-string would tear the shimmer
+ * across the glyphs.) */
 typedef struct {
     openpete_hud_vert* out;    /* caller's buffer                      */
     int   cap;                 /* its capacity, in verts               */
@@ -1050,9 +1051,8 @@ void text_moby_native_perf_overlay(CPUState* cpu) {
  * tick would spend the glyph builder's whole cost for identical geometry on
  * the thread that owns the tick deadline.
  *
- * The game's HUD font has no hyphen model, so the separators of an untagged
- * describe string ("v0.3.0-12-gabc1234") come out as spaces. The digits and
- * the commit hash, which are what identifies the build, are unaffected. */
+ * The separators of an untagged describe string ("v0.3.0-12-gabc1234") are
+ * drawn with the synthesized hyphen bar when the font has no hyphen model. */
 #define VER_CAP_H     PERF_CAP_H
 #define VER_ORIGIN_X  PERF_ORIGIN_X
 #define VER_ORIGIN_Y  PERF_ORIGIN_Y
@@ -1106,11 +1106,9 @@ void text_moby_native_version(CPUState* cpu) {
  * sit it out: those are rolled back or re-executed, and letting them advance
  * makes the shimmer sprint through a rewind.
  *
- * One cosmetic consequence, priced rather than assumed: the wobble and the
- * specular used to share one phase that only ran while the menu was open, so
- * the glint sat at the same offset on every open. It now free-runs, so each
- * open starts at a different offset. Imperceptible, and the alternative is a
- * frozen glint on every toast. */
+ * The phase free-runs, independent of the menu's wobble tick, so each menu
+ * open starts the glint at a different offset; tying it to the menu would
+ * freeze the glint on every toast. */
 static unsigned s_shimmer_phase = 0;
 
 void text_moby_native_shimmer_tick(void) {
@@ -1144,7 +1142,8 @@ static void install_specular_light(emit_ctx_t* cx, unsigned phase) {
  *
  * The menu and the OSD call it on every shimmer phase that is a multiple of
  * 64, and glyph_hash_probe once, with a fixed probe string through the
- * fixed-light emitter, when the snapshot is first ready. Two builds that
+ * fixed-light emitter, on the first menu build after the snapshot is ready.
+ * Two builds that
  * print the same lines emit the same vertices. The variable is latched on
  * the first call.
  * @param what The buffer's name in the line.
@@ -1162,8 +1161,9 @@ static void glyph_hash_census(const char* what, const openpete_hud_vert* v, int 
 }
 /** @brief Emits a fixed probe string through the fixed-light emitter and prints its vertex hash, once.
  *
- * Runs on the first call after the glyph snapshot is ready and does nothing
- * on later calls or before that. The print is gated by glyph_hash_census. */
+ * Called by the menu builder while the menu is open; runs on the first call
+ * after the glyph snapshot is ready and does nothing on later calls or before
+ * that. The print is gated by glyph_hash_census. */
 static void glyph_hash_probe(void) {
     static int s_done = 0;
     static openpete_hud_vert s_probe[32768];
