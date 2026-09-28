@@ -621,6 +621,12 @@ void openpete_native_scene_set_fog_delta(int delta) {
 /* Armed by the mod material-selector registry; see tag_split_on. */
 void openpete_native_set_tag_split(int on) { s_tag_split_ext = on ? 1 : 0; }
 
+/** @brief Return whether provenance-tag batch splitting is armed.
+ *
+ * The first call reads OPENPETE_TAG_SPLIT and OPENPETE_TAG_TINT into their
+ * caches. The result is the cached variable ORed with the flag set by
+ * openpete_native_set_tag_split, which is read live. The lazy initialisation is
+ * not synchronised. */
 static int tag_split_on(void) {
     if (s_tag_split_env < 0) {
         const char* e = getenv("OPENPETE_TAG_SPLIT");
@@ -631,6 +637,9 @@ static int tag_split_on(void) {
     return s_tag_split_env || s_tag_split_ext;
 }
 
+/** @brief Return whether OPENPETE_TAG_TINT requests recolouring triangles by provenance tag.
+ *
+ * The variable is parsed by tag_split_on, which this calls first. */
 static int tag_tint_on(void) {
     (void)tag_split_on();          /* lazy env init lives there */
     return s_tag_tint > 0;
@@ -699,6 +708,11 @@ static void scene_box_note_inactive(const char *why) {
     if (scene_box_armed())
         fprintf(stderr, "[sbox] INACTIVE: %s; tested=0 covering=0\n", why);
 }
+/** @brief Print the box instrument's run totals on stderr when it is armed.
+ *
+ * Called at native renderer shutdown. The line reports presents inside the VBL
+ * window, triangles tested and triangles covering the box, and marks the run
+ * VACUOUS when no present was composed in the window. */
 static void scene_box_summary(void) {
     if (scene_box_armed())
         fprintf(stderr, "[sbox] total presents_in_window=%u tested=%u covering=%u%s\n",
@@ -785,6 +799,15 @@ static unsigned s_fbsnap_want_frame;
 static unsigned scene_frame_at_depth(int d);
 static int scene_hist_depth_max(void);
 
+/** @brief Return the completed-scene ring depth the present composes: 0 is the live scene.
+ *
+ * A pending framebuffer-window resolve wins: the depth is the one whose stamp
+ * equals s_fbsnap_want_frame (0 when the ring holds no such scene). Otherwise
+ * OPENPETE_NATIVE_SCENE_DELAY, read once, forces a depth clamped to
+ * 0..SCENE_HIST-1 in every mode. With no override the depth is 0, both for a
+ * sub-tick capture (s_scene_shot_nodelay) and for the screenshot and live
+ * composes.
+ * @return Ring depth, 0 to SCENE_HIST-1. */
 static int scene_delay_depth(void) {
     /* A framebuffer window holds what the game drew on the frame it copied, and
      * the present that resolves it runs a frame later: reach back through the
@@ -882,6 +905,14 @@ static int s_scene_actor_front = 0;
  * as counts shift and an order-sensitive hash would report that as a change.
  */
 #define SIG_TBL 4096u
+/** @brief Hash a triangle's discrete material fields into one nonzero key.
+ *
+ * Folds tag, texture page, CLUT, bit depth, blend, prop, group, fog row,
+ * category and the textured flag with a multiplier of 31. Position, UV and
+ * colour are excluded. 0 is remapped to 1 because scene_discrete_sig uses 0 as
+ * its empty-slot marker.
+ * @param t The triangle.
+ * @return The key, never 0. */
 static uint64_t scene_tri_key(const scene_tri_t *t)
 {
     uint64_t k = (uint64_t)(uint32_t)t->tag;
@@ -899,6 +930,17 @@ static uint64_t scene_tri_key(const scene_tri_t *t)
     return k ? k : 1;      /* 0 marks an empty slot */
 }
 
+/** @brief Compute the material-set and triangle-multiset signatures of the composed scene.
+ *
+ * The set hash XORs one mixed term per distinct scene_tri_key, found through a
+ * 4096-slot open-addressing table that is cleared on each call. The count hash
+ * sums a mixed term over every triangle, so it depends on multiplicity but not
+ * on order. Once the table holds SIG_TBL distinct keys a further new key is
+ * neither inserted nor counted. The table is static, so the function is not
+ * reentrant.
+ * @param set_h Receives the distinct-key hash.
+ * @param cnt_h Receives the all-triangle hash.
+ * @param distinct Receives the number of distinct keys counted. */
 static void scene_discrete_sig(uint64_t *set_h, uint64_t *cnt_h, int *distinct)
 {
     static uint64_t tbl[SIG_TBL];
@@ -918,6 +960,9 @@ static void scene_discrete_sig(uint64_t *set_h, uint64_t *cnt_h, int *distinct)
     *set_h = sh; *cnt_h = ch; *distinct = dn;
 }
 
+/** @brief Return whether OPENPETE_SCENE_SIG requests the scene signature census.
+ *
+ * Read once and cached; unset, empty or 0 is off. */
 static int scene_sig_on(void)
 {
     static int on = -1;
@@ -942,6 +987,14 @@ static int scene_pos_sig_on(void)
     if (on < 0) { const char *e = getenv("OPENPETE_SCENE_POS_SIG"); on = (e && *e && *e != '0'); }
     return on;
 }
+/** @brief Print the per-category screen-position census of the composed scene on stderr.
+ *
+ * One [scene-pos] line for the current VBL: for each of the 14 draw categories
+ * an order-independent sum of a hash of every vertex's sx and sy float bits,
+ * and the triangle count, then the same pair for the particle HUD bursts (tag
+ * path 5, selectors 4 and 5). A category above 13 accumulates in a bucket
+ * the line does not print.
+ * @param canonical Nonzero labels the line CANON, zero labels it inter. */
 static void scene_pos_sig_report(int canonical)
 {
     enum { NCAT = 16 };
@@ -1284,6 +1337,10 @@ static unsigned scene_frame_at_depth(int d) {
     return slot < 0 ? 0xFFFFFFFFu : s_scene_hist_frame[slot];
 }
 
+/** @brief Return the deepest scene-ring delay depth currently held.
+ *
+ * The count of completed scenes recorded, saturating at SCENE_HIST, so a depth
+ * above it has no slot (scene_hist_slot_at). */
 static int scene_hist_depth_max(void) { return s_scene_hist_count; }
 
 /** @brief Return whether the scene scene_present_buf returns was built by a re-extract rather than by the game's render.
@@ -1379,6 +1436,14 @@ static int category_snaps_vertices(int category) {
  * view-Z, so its W is the depth's own view-Z. */
 static unsigned s_pvz_missing = 0;
 unsigned openpete_native_scene_pvz_missing(void) { return s_pvz_missing; }
+/** @brief Repair vertices that arrive without a true view-Z and count them.
+ *
+ * For each of the three vertices with pvz not above 0, increments
+ * s_pvz_missing, logs the first occurrence per category with the current tag on
+ * stderr, and sets pvz to the vertex's ordering z. The category is reduced
+ * modulo 32 for the once-per-category record.
+ * @param v The triangle's three vertices; pvz is rewritten in place.
+ * @param category Draw category, used only for the log record. */
 static void scene_vert_require_pvz(openpete_scene_vert v[3], int category)
 {
     static uint32_t s_named = 0;
@@ -4895,6 +4960,9 @@ static vram_jentry_t s_vj[VRAM_JOURNAL];
 static int  s_vj_head = 0, s_vj_n = 0;    /* ring: oldest at head */
 static bool s_ref_dirty = false;          /* readback refreshed; upload pending */
 
+/** @brief Free the oldest VRAM journal entry's texel buffer and drop the entry from the ring.
+ *
+ * The caller holds the VRAM lock and guarantees the ring is not empty. */
 static void vram_journal_pop(void)
 {
     vram_jentry_t *e = &s_vj[s_vj_head];
@@ -4930,6 +4998,15 @@ static void sync_vram_texture(void)
 /* Guest-side entry for the eager producer: refresh the mirror while the
  * guest is idle so no VRAM write can land mid-drain. */
 void openpete_native_vram_sync(void) { if (s_nr.enabled && !s_nr.headless) sync_vram_texture(); }
+/** @brief Refresh the VRAM mirror from PsyCross's VRAM and journal the dirty regions.
+ *
+ * Runs the OPENPETE_VRAM_CENSUS, OPENPETE_VRAM_VERIFY and OPENPETE_VRAM_PEEK
+ * instruments first. Returns when no region is dirty. A full journal ring pops
+ * its oldest entry and forces a full refresh. A full refresh reads the whole of
+ * VRAM into the mirror and journals a full entry. Otherwise each dirty rect is
+ * read into the mirror and its texels are copied, 4-byte aligned, into one
+ * malloc'd buffer owned by the entry; a failed allocation degrades the entry to
+ * a full upload. The caller holds the VRAM mutex. */
 static void sync_vram_texture_locked(void)
 {
     /* OPENPETE_VRAM_CENSUS: per-300-present dirty-traffic summary. */
@@ -5435,6 +5512,14 @@ static inline void pack_scene_tri(rhi_vertex *o, const scene_tri_t *st)
  * that attribute disagreed with the fragment's own position (clipped slivers),
  * and the decal then read a neighbour's surface normal. */
 typedef struct { float fax, fbx, fay, fby; } scene_fc_affine;
+/** @brief Fill o with the map from gl_FragCoord to PSX screen coordinates for this pass.
+ *
+ * Probes scene_to_clip at (0,0) and (1,1) for the clip units per screen pixel
+ * and the origin, and reads the pass extent from rhi_pass_extent. A zero probe
+ * delta counts as 1 and a zero extent as 1 pixel, which yields a finite but
+ * meaningless map.
+ * @param o Receives fax, fbx, fay, fby such that screen x = fax * fragx + fbx
+ *        and screen y = fay * fragy + fby. */
 static void scene_fragcoord_affine(scene_fc_affine *o)
 {
     float cx0, cy0, cx1, cy1;
@@ -6067,6 +6152,8 @@ static void tex_mat_sort(const scene_tri_t* scene, int* idx, int n);
 #define KEY_AURA_BOX_MAX 64
 typedef struct { float x0, y0, x1, y1; } key_box_t;
 
+/** @brief Return the screen-space bounding box of a triangle.
+ * @param t The triangle. */
 static key_box_t tri_box(const scene_tri_t* t)
 {
     key_box_t b = { t->v[0].sx, t->v[0].sy, t->v[0].sx, t->v[0].sy };
@@ -7496,6 +7583,15 @@ static int hud_paint_cmp(const void* pa, const void* pb) {
 }
 
 static const scene_tri_t* s_txsort_scene;   /* qsort context (set per call) */
+/** @brief Order two scene triangle indices by material for qsort.
+ *
+ * Compares tpage_y, tpage_x, clut_y, clut_x and bpp in that priority, then the
+ * provenance tag while tag_split_on holds. The tag term must match the run
+ * break in draw_tex_runs. Ties compare equal. Reads the scene through
+ * s_txsort_scene.
+ * @param pa Pointer to an int scene index.
+ * @param pb Pointer to an int scene index.
+ * @return Negative, zero or positive as a sorts before, with or after b. */
 static int tex_mat_cmp(const void* pa, const void* pb) {
     const scene_tri_t* a = &s_txsort_scene[*(const int*)pa];
     const scene_tri_t* b = &s_txsort_scene[*(const int*)pb];
@@ -7529,6 +7625,12 @@ static txmat_bucket_t s_txmat_b[TXMAT_BUCKETS];
 #define s_txmat_of  ((uint16_t *)s_cz_txof.data)    /* tri -> bucket slot */
 #define s_txmat_out ((int *)s_cz_txout.data)        /* scatter target */
 
+/** @brief Order two material-bucket slots by key, then tag, for qsort.
+ *
+ * Reads the buckets through s_txmat_b.
+ * @param pa Pointer to a uint16_t bucket slot.
+ * @param pb Pointer to a uint16_t bucket slot.
+ * @return Negative, zero or positive as a sorts before, with or after b. */
 static int txmat_bucket_cmp(const void* pa, const void* pb) {
     const txmat_bucket_t* a = &s_txmat_b[*(const uint16_t*)pa];
     const txmat_bucket_t* b = &s_txmat_b[*(const uint16_t*)pb];
@@ -7537,6 +7639,19 @@ static int txmat_bucket_cmp(const void* pa, const void* pb) {
     return 0;
 }
 
+/** @brief Reorder scene indices so triangles of one material are contiguous, in material-key order.
+ *
+ * Interns each triangle's material (packed tpage_y, tpage_x, clut_y, clut_x,
+ * bpp, plus the tag while tag_split_on holds) into a 1024-bucket open-
+ * addressing table, sorts the distinct materials by key, then scatters the
+ * indices, stable within a material. The packed key gives the same grouping and
+ * order as tex_mat_cmp for fields within VRAM extents. When the table reaches
+ * TXMAT_BUCKETS - 1 materials it falls back to qsort with tex_mat_cmp. Uses
+ * static tables and the scratch runs s_cz_txof and s_cz_txout, so it is not
+ * reentrant.
+ * @param scene Scene triangles.
+ * @param idx Scene indices, reordered in place.
+ * @param n Number of indices; at most 1 does nothing. */
 static void tex_mat_sort(const scene_tri_t* scene, int* idx, int n)
 {
     if (n <= 1) return;
@@ -7899,6 +8014,19 @@ static void tp_dump_scale(int category, int *sx, int *sy)
  * own detail rather than flattening it to a constant. */
 typedef struct { float a[3], b[3]; } tp_fog_xform;
 
+/** @brief Fit the per-channel linear transform between a CLUT row and its fogged row.
+ *
+ * Least-squares fit of out = a * in + b over the 5-bit channels of the entries
+ * that are not the 0x0000 sentinel, in the base row against the row at (base_y
+ * + delta) & 0x1FF. A base row with no spread gives an offset-only transform.
+ * The output is the identity when VRAM is unavailable, delta is outside
+ * 1..TP_FOG_DELTA_MAX, clut_x or base_y is out of range, or the row would run
+ * past the VRAM width.
+ * @param clut_x CLUT x in VRAM.
+ * @param base_y CLUT row of the unfogged palette, 0 to 511.
+ * @param delta Fog rung, the row offset of the fogged palette.
+ * @param bpp 8 reads 256 entries, any other value 16.
+ * @param out Receives a[c] and b[c] per RGB channel; b is in 0..1 colour units. */
 static void tp_fog_affine(int clut_x, int base_y, int delta, int bpp,
                           tp_fog_xform *out)
 {
@@ -7961,6 +8089,12 @@ static uint32_t ut_mask_tag(uint32_t tag) {
 }
 
 static const scene_tri_t* s_utsort_scene;
+/** @brief Order two deferred untextured scene indices by masked tag, then by index, for qsort.
+ *
+ * Reads tags through s_utsort_scene.
+ * @param a Pointer to an int scene index.
+ * @param b Pointer to an int scene index.
+ * @return Negative, zero or positive as a sorts before, with or after b. */
 static int utdef_cmp(const void* a, const void* b) {
     int x = *(const int*)a, y = *(const int*)b;
     uint32_t tx = ut_mask_tag(s_utsort_scene[x].tag);
@@ -7971,6 +8105,12 @@ static int utdef_cmp(const void* a, const void* b) {
 
 /* Per-flush memo of "does this (masked) tag resolve to a material". */
 static uint32_t s_utmemo_tag[32]; static int8_t s_utmemo_hit[32]; static int s_utmemo_n;
+/** @brief Return whether a triangle tag resolves to a registered mod material.
+ *
+ * Asks openpete_mods_material_resolve for the masked tag and memoises the
+ * answer in a 32-entry table; once the table is full further tags are resolved
+ * each time. The table is reset by the flush that owns it.
+ * @param tag Scene tag. */
 static int ut_tag_resolves(uint32_t tag) {
     uint32_t mt = ut_mask_tag(tag);
     for (int i = 0; i < s_utmemo_n; i++)
@@ -8203,6 +8343,11 @@ static void hd_defer_flush(rhi_pipeline *hd_pipe, rhi_pipeline *self)
 /* Texpack instrument gates, shared by the SD walk and the material-override
  * walk (lazy env reads). */
 static int s_tp_resolve_log = -1, s_tp_dump_on, s_tp_census_on;
+/** @brief Read the texture-pack instrument environment variables on the first call.
+ *
+ * Sets the resolve-log, dump and category-census gates from the presence of
+ * OPENPETE_TEXPACK_RESOLVE_LOG, OPENPETE_TEXPACK_DUMP_DIR and
+ * OPENPETE_TEXPACK_CATCENSUS. Later calls do nothing. */
 static void tp_flags_init(void)
 {
     if (s_tp_resolve_log >= 0) return;
@@ -8628,6 +8773,9 @@ typedef struct {
     psx_material m;
 } tex_run;
 
+/** @brief Return the scene triangle at position t of a textured draw run.
+ * @param r The run.
+ * @param t Position within the run, 0 to ntri-1. */
 static const scene_tri_t* tex_run_tri(const tex_run* r, int t) {
     return &r->scene[s_txscene[r->tri0 + t]];
 }
@@ -9581,6 +9729,17 @@ static const char *const k_tag_path_name[16] = {
     "untagged", "moby", "terrain", "player", "flame", "particle", "sky", "shadow",
     "tracer", "portal", "p10", "p11", "p12", "p13", "p14", "p15" };
 
+/** @brief Log one triangle the box instrument found overlapping its box on stderr.
+ *
+ * One [sbox] line: index in the composed list, category, blend, texture state,
+ * texture page and CLUT, bit depth, provenance tag with its decoded owner,
+ * ordering fields (mordinal, rank, koff, seq, prim) and the three vertices
+ * (screen x, y, z, colour). The owner decode reads tag bits 31:28 as the path;
+ * a terrain tag (path 2) prints sector, LP tier, env-anim bit and texture
+ * record, any other path its name from k_tag_path_name with id and slot.
+ * @param f VBL the scene was extracted at.
+ * @param idx Triangle index in the composed list.
+ * @param T The triangle. */
 static void scene_box_log_tri(unsigned f, int idx, const scene_tri_t *T) {
     const uint32_t tag = T->tag, path = tag >> 28;
     char who[96];
@@ -10041,6 +10200,16 @@ static void blend_order_dump(const scene_tri_t* sc, int n) {
             bw_draw_ranges(sc, n, 1), bw_draw_ranges(sc, n, 0));
 }
 
+/** @brief Run the per-present scene instruments over the composed scene.
+ *
+ * Every instrument is off unless its environment variable is set.
+ * OPENPETE_SCENECAT_TINT=<category>[,<rrggbb>] rewrites every triangle of that
+ * category in place to untextured with the colour, swapping the given rrggbb
+ * into the vertex colour order. OPENPETE_SCENEDUMP=<vbl> dumps every triangle
+ * once, at the first present at or after that VBL. Then the blend-order dump,
+ * the blended-world census, the portal cover check and the box instrument run.
+ * @param sc Composed scene triangles; the tint instrument writes to them.
+ * @param n Triangle count. */
 static void scene_probes(scene_tri_t* sc, int n)
 {
     /* OPENPETE_SCENECAT_TINT=<category>[,<rgb hex>] — recolour every
@@ -11653,6 +11822,12 @@ void openpete_native_set_texture_mapping(int affine) {
 
 int openpete_native_get_texture_mapping(void) { return s_texmap_affine; }
 
+/** @brief Apply a queued texture-mapping mode change by rebuilding the pipelines.
+ *
+ * Runs between frames. No effect when the requested mode equals the current one
+ * or there is no device. Sets the affine-UV mode in the rhi and rebuilds; a
+ * rebuild that fails for some pipelines is logged and the mode is still
+ * recorded as changed. */
 static void texmap_apply_pending(void) {
     if (s_texmap_pending == s_texmap_affine || !s_nr.dev) return;
     rhi_set_affine_uv(s_texmap_pending);
@@ -11709,6 +11884,12 @@ void openpete_native_set_wireframe(int on) {
 
 int openpete_native_get_wireframe(void) { return s_wireframe; }
 
+/** @brief Apply a queued wireframe change by rebuilding the pipelines.
+ *
+ * Runs between frames. No effect when the requested mode equals the current one
+ * or there is no device. Logs the change and the rhi wireframe report; a
+ * rebuild that fails for some pipelines is logged and the mode is still
+ * recorded as changed. */
 static void wireframe_apply_pending(void) {
     if (s_wireframe_pending == s_wireframe || !s_nr.dev) return;
     rhi_set_wireframe(s_wireframe_pending);
@@ -12240,12 +12421,22 @@ static op_time_t s_ver_birth = 0;
 static int   s_ver_alpha8 = 0;
 static float s_ver_ox, s_ver_oy;
 
+/** @brief Return the smoothstep 3x^2 - 2x^3 of x clamped to 0..1. */
 static float ver_smoothstep(float x) {
     if (x <= 0.0f) return 0.0f;
     if (x >= 1.0f) return 1.0f;
     return x * x * (3.0f - 2.0f * x);
 }
 
+/** @brief Return the version line's opacity for this present, 0 to 255.
+ *
+ * 0 while the line is disabled, has fewer than 3 glyph vertices, the window has
+ * no size, or a recording without the stats override is active. The dwell clock
+ * starts at the first present with geometry (s_ver_birth) and is reset if the
+ * present clock goes backwards. An untagged build (openpete_build_tagged) stays
+ * at 255; a tagged build holds 255 for VER_HOLD_NS then fades to 0 over
+ * VER_FADE_NS along a smoothstep.
+ * @return Alpha, 0 to 255. */
 static int version_overlay_alpha(void) {
     if (!openpete_native_version_line_enabled() || s_ver_glyph_n < 3) return 0;
     if (s_nr.win_w <= 0 || s_nr.win_h <= 0) return 0;
@@ -12467,6 +12658,7 @@ static void ensure_version_ss(void) {
                           vw, vh, "version line");
 }
 
+/** @brief Return whether the version line's supersample resources all exist. */
 static bool ver_ss_ready(void) {
     return s_nr.ovl_resolve_pipe && s_nr.ver_quad_vb && s_nr.ver_ss && s_nr.version_vb;
 }
@@ -13628,6 +13820,13 @@ static void fill_engine_block(pfx_engine_ubo_t* eng, int w, int h)
     eng->scene_grid[1] = s_nr.disp_h > 0 ? (float)s_nr.disp_h : 240.0f;
     eng->scene_grid[2] = s_nr.clip_h > 0 ? (float)s_nr.clip_h : 224.0f;
 }
+/** @brief Write the engine uniform block into block blk of a UBO.
+ *
+ * Fills a pfx_engine_ubo_t with fill_engine_block and writes it whole.
+ * @param u Destination UBO.
+ * @param blk Block index.
+ * @param w Pass width, 0 for the swapchain width.
+ * @param h Pass height, 0 for the swapchain height. */
 static void write_engine_block(rhi_ubo* u, int blk, int w, int h)
 {
     pfx_engine_ubo_t eng;
@@ -14182,6 +14381,13 @@ uint32_t openpete_native_scene_build_stamp(void) {
 void openpete_native_scene_eager_begin(void) {
     s_eager_stamp = OPTC_STAMP_SCENE_BIT | (s_scene_id_next & ~OPTC_STAMP_SCENE_BIT);
 }
+/** @brief Make a ring slot's triangle run hold n triangles and refresh the slot's pointer.
+ *
+ * Initialises the run on first use; publish calls it with 0 to guarantee an
+ * initialised run before the storage swap.
+ * @param sl The ring slot.
+ * @param n Triangles wanted.
+ * @return 1 when the run holds n triangles, else 0. */
 static int slot_grow(scene_slot_t *sl, int n) {
     const int held = scene_run_fit(&sl->tri_v, "scene.ring", n);
     sl->tri = (scene_tri_t*)sl->tri_v.data;
@@ -15256,6 +15462,12 @@ static int shot_write_offscreen_ext(const char *path, const char *what,
     return rc;
 }
 
+/** @brief Write the offscreen image to a PNG with alpha forced opaque, discarding the dimensions.
+ *
+ * Wrapper over shot_write_offscreen_ext with no dimension outputs.
+ * @param path Output PNG path.
+ * @param what Label for the log line.
+ * @return 0 on success, nonzero on failure. */
 static int shot_write_offscreen(const char *path, const char *what)
 {
     return shot_write_offscreen_ext(path, what, NULL, NULL);
