@@ -748,7 +748,7 @@ static uint32_t           s_scene_bg;  /* panel-0 background fill (rgba); 0 = no
  * scene by an integer DEPTH: keep a ring of recent completed frames and present
  * the one `depth` frames back. Depth is 0 (the live frame) unless
  * OPENPETE_NATIVE_SCENE_DELAY=<n> forces an explicit integer depth. */
-#define SCENE_HIST 4   /* ring of completed-frame snapshots; supports delay depth 0..3 */
+#define SCENE_HIST 4   /* ring of completed-frame snapshots: history depths 1..4 beside the live depth 0 */
 static mod_fvec           s_scene_hist[SCENE_HIST];   /* completed-frame ring (scene_tri_t) */
 static int                s_scene_hist_n[SCENE_HIST];
 static unsigned           s_scene_hist_frame[SCENE_HIST]; /* completed frame's stamp */
@@ -808,7 +808,8 @@ static int scene_hist_depth_max(void);
  * 0..SCENE_HIST-1 in every mode. With no override the depth is 0, both for a
  * sub-tick capture (s_scene_shot_nodelay) and for the screenshot and live
  * composes.
- * @return Ring depth, 0 to SCENE_HIST-1. */
+ * @return Ring depth, 0 to SCENE_HIST-1; a framebuffer-window resolve may
+ *         return up to SCENE_HIST. */
 static int scene_delay_depth(void) {
     /* A framebuffer window holds what the game drew on the frame it copied, and
      * the present that resolves it runs a frame later: reach back through the
@@ -14678,9 +14679,12 @@ static void pt_dump_maybe(int rendered, unsigned frame, uint32_t stamp, uint32_t
     }
 }
 
-/** @brief Compose one ring slot (or the live scene for slot -1) and present it directly or into a stage image.
+/** @brief Compose one ring slot and present it directly or into a stage image.
  *
- * @param slot Ring slot, or -1 for the live accumulator.
+ * Declines without touching the slot when native rendering is off or
+ * headless or @p slot is outside the ring. Otherwise the slot ends PRESENTED
+ * when the render went out and FREE when it did not.
+ * @param slot Ring slot; a value outside 0..SCENE_RING-1 is declined.
  * @param stage Stage image index, or -1 to present directly.
  * @param record_pts_us Capture instant for --record.
  * @return 1 when the render went out, 0 when it was declined. */
@@ -14818,9 +14822,10 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
     }
 
 
-    /* Rolling 0.5s FPS window for the overlay. Counts actual presents on
-     * whichever thread makes them (inline, or the present thread under
-     * eager production), so it reflects the true on-screen present rate. */
+    /* Rolling 0.5s FPS window for the overlay. Counts every entry into this
+     * function on whichever thread makes it (inline, or the present thread
+     * under eager production), including a present begin_frame refuses below
+     * and a render into a stage image. */
     {
         uint64_t now = SDL_GetPerformanceCounter(), freq = SDL_GetPerformanceFrequency(); /* clock-guard: wall */ /* FPS window */
         if (s_fps_win_start == 0) s_fps_win_start = now;
