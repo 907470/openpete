@@ -152,6 +152,13 @@ static int      s_last_predicted;   /* segments the record walk predicted */
 static int      s_live;             /* records holding a live pointer */
 static int      s_boxed;            /* of those, records the box test dropped */
 
+/** @brief Stores one decoded primitive as an unpaired item in the call's item set.
+ *
+ * The item starts at depth 1 with no source and zeroed corners and
+ * displacements.
+ * @param ctx Unused.
+ * @param s The primitive.
+ * @return 1 when stored, 0 when the set holds TR_MAX_PRIMS items. */
 static int tr_prim_sink(void* ctx, const ngte_prim* s) {
     (void)ctx;
     if (s_item_n >= TR_MAX_PRIMS) return 0;
@@ -199,11 +206,27 @@ static void tr_capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
  * (:3152-3154), which is 256 in full world units. */
 #define TR_NEAR_M3 256.0
 
+/** @brief Projects a world point to the screen under a view, in full world units.
+ *
+ * The camera-relative offset is (x - cx, cy - y, cz - z), the vector both
+ * routines load as (VZ0, VX0, VY0).
+ * @param v The view.
+ * @param p The world point.
+ * @param o Receives the projection. */
 static void tr_project_world(const ngte_view* v, const double p[3], ngte_proj* o) {
     const double vo[3] = { p[0] - v->cam[0], v->cam[1] - p[1], v->cam[2] - p[2] };
     ngte_project_offset(v, vo, o);
 }
 
+/** @brief Fills a corner's source record and its screen position under the tick's view.
+ *
+ * Sets ok when the point's view-Z is at or past TR_NEAR_M3.
+ * @param c The corner, written.
+ * @param v The tick's view.
+ * @param key The previous-state key: the ribbon record or the vertex address.
+ * @param age The ribbon point's place counted back from the head; 0 for a mesh
+ *        vertex.
+ * @param w The point in full world units. */
 static void tr_corner_set(tr_corner* c, const ngte_view* v, uint32_t key, int age,
                           const int32_t w[3]) {
     c->key = key;
@@ -382,6 +405,15 @@ static int rib_predict(CPUState* cpu, const ngte_view* v, rib_seg* out, int cap)
     return n;
 }
 
+/** @brief Pairs the captured ribbon primitives with the record walk's predicted segments.
+ *
+ * Runs rib_predict and records its count in s_last_predicted. When the count
+ * equals the captured primitive count, each item takes its segment's depth,
+ * marks itself paired and takes the ribbon source with its corners 0 and 2
+ * from the head-side point and 1 and 3 from the next. On a mismatch every
+ * item stays unpaired at the near-guard depth.
+ * @param cpu The guest CPU state.
+ * @param v The tick's view. */
 static void rib_pair_depths(CPUState* cpu, const ngte_view* v) {
     static rib_seg pred[TR_MAX_PRIMS];
     const int n = rib_predict(cpu, v, pred, TR_MAX_PRIMS);
@@ -455,6 +487,20 @@ static void msh_set_corners(CPUState* cpu, const ngte_view* v, tr_item* it,
     }
 }
 
+/** @brief Pairs the captured mesh primitives with the entries the routine emitted, in order.
+ *
+ * Replays the routine's emit test over the descriptor's index list against
+ * the scratchpad table it left: an entry is skipped on a common outcode edge
+ * or a key outside 0..0x7FF, otherwise the next item takes the depth from
+ * the entry's summed SZ and the descriptor's shift and is marked paired. When
+ * the vertex list is a valid KSEG0 RAM address the list is noted and each
+ * paired item gets its four vertex corners. The walk ends at the -1
+ * terminator or when every item is paired, and returns with the remaining
+ * items unpaired on an index outside the scratchpad table or an index list
+ * outside KSEG0 RAM.
+ * @param cpu The guest CPU state.
+ * @param v The tick's view.
+ * @param desc The mesh descriptor's guest address. */
 static void msh_pair_depths(CPUState* cpu, const ngte_view* v, uint32_t desc) {
     const uint32_t ilist = cpu->read_word(desc + MSH_INDICES);
     if (ilist < 0x80000000u || ilist >= 0x80800000u) return;
@@ -514,6 +560,13 @@ static int tr_feed_enabled(void) {
  * the captured corners verbatim. */
 static int s_reb_active;
 
+/** @brief Feeds one item to the native scene as two world triangles.
+ *
+ * A quad is split into (0,1,2) and (1,3,2); a triangle repeats its last
+ * corner. Every vertex takes the item's single depth. While the rebase is
+ * active each corner is moved by its screen displacement. Only 3 and 4
+ * vertex primitives are fed. Counts the triangles fed.
+ * @param it The item. */
 static void tr_add_prim(const tr_item* it) {
     static const int split[2][3] = { {0, 1, 2}, {1, 3, 2} };
     const ngte_prim* p = &it->p;
@@ -549,6 +602,11 @@ static void tr_add_prim(const tr_item* it) {
     }
 }
 
+/** @brief Feeds a set of items to the native scene under the tracer tag.
+ *
+ * Does nothing when OPENPETE_TRACERS disables the feed or the set is empty.
+ * @param set The items.
+ * @param n The item count. */
 static void tr_feed_native(const tr_item* set, int n) {
     if (!tr_feed_enabled()) return;
     if (n <= 0) return;
@@ -607,6 +665,12 @@ static hook_bracket_state s_hb_msh;
 /* The mesh leg's descriptor argument, read before the guest draw runs: the
  * routine spills and reuses every saved register, so a0 is gone afterwards. */
 static uint32_t s_msh_desc;
+/** @brief Hook-bracket pre step of the mesh leg: saves the descriptor argument in a0.
+ *
+ * The routine reuses a0, so the value is read before the guest draw runs.
+ * @param cpu The guest CPU state.
+ * @param feed Unused.
+ * @param verify Unused. */
 static void msh_pre(CPUState* cpu, int feed, int verify) {
     (void)feed; (void)verify;
     s_msh_desc = cpu->a0;
@@ -615,6 +679,16 @@ static const hook_bracket_desc k_msh = {
     .path = RP_TRACER, .prof_tag = "tracer3.srend", .pre = msh_pre, .st = &s_hb_msh,
 };
 
+/** @brief Dispatch hook of the ribbon routine: brackets the guest draw and feeds its primitives.
+ *
+ * After the draw, decodes the appended primitives, pairs them with the
+ * predicted segments, holds them for the sub-tick replay and, when the
+ * bracket asks for a feed and the tracer path is enabled, feeds them to the
+ * native scene. Reads guest RAM only.
+ * @param cpu The guest CPU state.
+ * @param addr The routine's guest address.
+ * @return 0 when the bracket declines the call, else the bracket's end
+ *         result. */
 static int on_ribbon(CPUState* cpu, uint32_t addr) {
     uint32_t startp, endp; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_rib, &startp, &endp, &feed, &verify))
@@ -635,6 +709,15 @@ static int on_ribbon(CPUState* cpu, uint32_t addr) {
     return hook_bracket_end(&k_rib);
 }
 
+/** @brief Dispatch hook of the mesh routine: brackets the guest draw and feeds its primitives.
+ *
+ * As on_ribbon, with the depths and corners paired from the descriptor read
+ * before the draw (s_msh_desc); a call that appended no primitives does no
+ * capture.
+ * @param cpu The guest CPU state.
+ * @param addr The routine's guest address.
+ * @return 0 when the bracket declines the call, else the bracket's end
+ *         result. */
 static int on_mesh(CPUState* cpu, uint32_t addr) {
     uint32_t startp, endp; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_msh, &startp, &endp, &feed, &verify))
@@ -692,6 +775,14 @@ static unsigned long s_reb_stat[3][2]; /* corners per TR_SRC_*: 0 lerped, 1 held
 static double        s_reb_worldmax;  /* the largest per-tick world step paired */
 static double        s_reb_screenmax; /* the largest screen displacement applied */
 
+/** @brief Looks up a keyed-store record that holds a usable previous and current state.
+ *
+ * Refuses a record with no previous state, timestamps that are not
+ * increasing, a blob shorter than need, or a pair spanning more than
+ * TR_PAIR_STALE_NS.
+ * @param key The record's key.
+ * @param need The minimum blob length in bytes.
+ * @return The record, or NULL when refused. */
 static const openpete_interp_obj_t* tr_pair(uint32_t key, uint32_t need) {
     const openpete_interp_obj_t* o = openpete_interp_objs_find(key);
     if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return NULL;
@@ -725,6 +816,19 @@ static int tr_prev_point(const tr_item* it, const tr_corner* c, int32_t w[3]) {
     return 1;
 }
 
+/** @brief Computes one corner's sub-tick screen displacement.
+ *
+ * The shown point is the tick's point moved toward its previous point by
+ * (1 - alpha); a previous point farther than TR_REUSE_CEILING is not used
+ * and the point stays at the tick's. The displacement is the screen
+ * position of the shown point under the view minus the corner's screen
+ * position under the tick's camera. It is zero for a corner with no key or
+ * whose tick point was behind the near floor, and for a shown point behind
+ * the near floor. Updates the rebase statistics.
+ * @param it The item, its dx and dy written.
+ * @param k The corner index, 0..3.
+ * @param v The present's view.
+ * @param alpha The present's position in the tick interval. */
 static void tr_rebase_corner(tr_item* it, int k, const ngte_view* v, double alpha) {
     const tr_corner* c = &it->c[k];
     it->dx[k] = 0.0f;
@@ -820,6 +924,9 @@ static feature_dispatch_entry_t tracers_dispatch[] = {
     { 0u, NULL },
 };
 
+/** @brief Binds the two dispatch rows to the layout's ribbon and mesh hook addresses.
+ *
+ * @param opts Unused. */
 static void tracers_apply_options(const openpete_options_t* opts) {
     (void)opts;
     tracers_dispatch[0].addr = game_layout.tracers.ribbon_hook;

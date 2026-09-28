@@ -38,6 +38,11 @@
  * reads to tell "no text drew" from "text drew identically". */
 static unsigned s_chains, s_glyphs;
 
+/** @brief Reports whether the text chain census is enabled by OPENPETE_TEXT_SPRT_CENSUS.
+ *
+ * Latched on the first call.
+ * @return 1 when the variable is set to a non-empty value not starting with
+ *         '0', else 0. */
 static int census_on(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_TEXT_SPRT_CENSUS"); v = (e && *e && *e != '0'); }
@@ -81,6 +86,17 @@ static void feed_chain(CPUState* cpu, uint32_t start, uint32_t end) {
     s_chains++;
 }
 
+/** @brief Dispatch hook for a glyph chain emitter: runs it, then feeds the chain it left in the primitive buffer.
+ *
+ * Inert (returns 0, so the normal dispatch runs the emitter) while the native
+ * scene is disabled and on re-entry from its own dispatch. Otherwise reads the
+ * polybuf cursor, dispatches the real emitter, reads the cursor again and
+ * walks the advanced range with feed_chain. Reads guest RAM only. Prints a
+ * census line at most once per 100 openpete_frame values under
+ * OPENPETE_TEXT_SPRT_CENSUS.
+ * @param cpu The guest CPU state.
+ * @param addr The emitter's guest address.
+ * @return 1 when the emitter ran here, 0 to leave dispatch to the caller. */
 static int on_text_emitter(CPUState* cpu, uint32_t addr) {
     if (!openpete_native_scene_enabled()) return 0;   /* inert: normal dispatch runs it */
     static int s_in = 0;
@@ -118,6 +134,12 @@ static feature_dispatch_entry_t text_sprt_dispatch[] = {
     { 0u, NULL, 0u },
 };
 
+/** @brief Fills the dispatch table from the game's SPRT chain emitter list.
+ *
+ * Each of the first three ui_game.sprt_chain_emitter entries that is
+ * non-zero becomes a table row with its overlay id; the table is then
+ * terminated.
+ * @param opts Unused. */
 static void text_sprt_apply_options(const openpete_options_t* opts) {
     (void)opts;
     int n = 0;

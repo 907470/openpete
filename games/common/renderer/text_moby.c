@@ -67,6 +67,12 @@
  * that curve's inverse 4096 * d / (1 - d). */
 #define TXT_DEPTH_MID 0.5f
 #define TXT_DEPTH_K   0.0016f
+/** @brief Converts a normalised depth d to a view-Z on the hyperbolic depth curve.
+ *
+ * Returns OPENPETE_DEPTH_VIEWZ_SCALE * d / (1 - d), the inverse of
+ * d = vz / (vz + OPENPETE_DEPTH_VIEWZ_SCALE).
+ * @param d The depth, below 1.
+ * @return The view-Z. */
 static float txt_depth_vz(float d)
 {
     return OPENPETE_DEPTH_VIEWZ_SCALE * d / (1.0f - d);
@@ -129,6 +135,10 @@ static int s_digit_adv = 0;
 /* Where the snapshot came from: 0 none, 1 guest RAM, 2 the cache file. */
 static int s_cache_source = 0;
 
+/** @brief Reports whether a glyph cache slot holds a digit '0'-'9'.
+ *
+ * @param slot The cache slot.
+ * @return 1 for SLOT_DIGIT..SLOT_LETTER-1, else 0. */
 static int is_digit_slot(int slot) { return slot >= SLOT_DIGIT && slot < SLOT_LETTER; }
 
 /** @brief Maps a character to its glyph cache slot.
@@ -173,6 +183,11 @@ static int slot_glyph_index(int slot) {
     return -1;
 }
 
+/** @brief Returns a cached glyph's width in model units.
+ *
+ * The width is the span of the glyph's vertex X range (vxmax - vxmin).
+ * @param slot The cache slot; any int is accepted.
+ * @return The width, or -1 when the slot is out of range or not cached. */
 static float glyph_natural_w(int slot) {
     if (slot < 0 || slot >= NGLYPH || !s_glyph[slot].valid) return -1.0f;
     return (float)(s_glyph[slot].vxmax - s_glyph[slot].vxmin);
@@ -200,6 +215,11 @@ static void glyph_metrics(int slot, float scale, float* adv, float* inset) {
     }
 }
 
+/** @brief Recomputes a glyph's vxmin and vxmax from its vertices.
+ *
+ * Scans the first vcount entries of vx. With vcount 0 the range is left
+ * inverted (vxmin 1<<30, vxmax -(1<<30)).
+ * @param g The glyph cache entry, updated in place. */
 static void glyph_set_xrange(glyph_cache_t* g) {
     int vxmin = 1 << 30, vxmax = -(1 << 30);
     for (int i = 0; i < g->vcount; i++) {
@@ -461,6 +481,14 @@ static void cache_finish(int source) {
 #define FONT_FILE_HDR     44
 #define FONT_FILE_MAX     (FONT_FILE_HDR + NGLYPH * (3 + TXT_MAX_GLYPH_V * 6 + TXT_MAX_GLYPH_F * 10))
 
+/** @brief Resolves the font cache file path once and returns it.
+ *
+ * Only the GAME_FONT_ONE_CLASS form uses a file. OPENPETE_FONT_CACHE names
+ * the path, and the value "0" disables the file. Unset, a windowed run
+ * (openpete_skip_ffwd_windowed) uses font-<game id>.bin in the state
+ * directory's cache subdirectory, and other runs use no file. The result is
+ * latched on the first call.
+ * @return The path in static storage, or NULL when no file is used. */
 static const char* font_file_path(void) {
     static char s_path[1024];
     static int  s_resolved = 0;
@@ -481,16 +509,43 @@ static const char* font_file_path(void) {
     return s_path[0] ? s_path : NULL;
 }
 
+/** @brief Stores a 16-bit value little-endian and advances the cursor by 2.
+ *
+ * @param p The write cursor.
+ * @param v The value; the low 16 bits are stored. */
 static void put16(uint8_t** p, int v) { (*p)[0] = (uint8_t)v; (*p)[1] = (uint8_t)(v >> 8); *p += 2; }
+/** @brief Stores a 32-bit value little-endian and advances the cursor by 4.
+ *
+ * @param p The write cursor.
+ * @param v The value. */
 static void put32(uint8_t** p, uint32_t v) { for (int i = 0; i < 4; i++) (*p)[i] = (uint8_t)(v >> (8 * i)); *p += 4; }
+/** @brief Loads a signed little-endian 16-bit value and advances the cursor by 2.
+ *
+ * @param p The read cursor.
+ * @return The value, sign-extended. */
 static int  get16(const uint8_t** p) { int v = (int16_t)((*p)[0] | ((*p)[1] << 8)); *p += 2; return v; }
+/** @brief Loads an unsigned little-endian 32-bit value and advances the cursor by 4.
+ *
+ * @param p The read cursor.
+ * @return The value. */
 static uint32_t get32(const uint8_t** p) { uint32_t v = 0; for (int i = 0; i < 4; i++) v |= (uint32_t)(*p)[i] << (8 * i); *p += 4; return v; }
 
+/** @brief Writes the disc's boot-file name into the font cache file's 16-byte disc field.
+ *
+ * The name (game_get_exe_filename) is truncated to 15 characters and the
+ * remainder is zero-filled, so the field compares with memcmp.
+ * @param out Receives 16 bytes. */
 static void font_file_disc_id(char out[16]) {
     memset(out, 0, 16);
     snprintf(out, 16, "%s", game_get_exe_filename());
 }
 
+/** @brief Writes the glyph cache to the font cache file.
+ *
+ * Serializes every slot after the 44-byte header (layout above), hashes the
+ * payload with FNV-1a, and writes the file. A short write removes the file.
+ * A missing path or an open failure writes nothing; failures are logged and
+ * not reported to the caller. */
 static void font_file_save(void) {
     const char* path = font_file_path();
     if (!path) return;
@@ -698,6 +753,16 @@ static uint32_t lit_colour(int baseR, int baseG, int baseB, float t) {
     return (uint32_t)R | ((uint32_t)G << 8) | ((uint32_t)B << 16) | 0xFF000000u;
 }
 
+/** @brief Appends one flat-coloured triangle of the current glyph's vertices to the emission buffer.
+ *
+ * Vertices are taken from the context's per-glyph arrays (gx, gy, gz). A
+ * triangle that does not fit in the remaining capacity is counted in
+ * cx->dropped and not written. Nothing is written when cx->out is NULL.
+ * @param cx The emission context.
+ * @param a The first vertex index into the per-glyph arrays.
+ * @param b The second vertex index.
+ * @param c The third vertex index.
+ * @param rgba The colour of all three vertices. */
 static void push_tri(emit_ctx_t* cx, int a, int b, int c, uint32_t rgba) {
     if (!cx->out) return;
     if (cx->n + 3 > cx->cap) { cx->dropped++; return; }
@@ -1095,6 +1160,10 @@ static void glyph_hash_census(const char* what, const openpete_hud_vert* v, int 
     fprintf(stderr, "[text-glyph-hash] %s shimmer=%u n=%d fnv=%016llx\n",
             what, text_moby_native_shimmer_phase(), n, (unsigned long long)h);
 }
+/** @brief Emits a fixed probe string through the fixed-light emitter and prints its vertex hash, once.
+ *
+ * Runs on the first call after the glyph snapshot is ready and does nothing
+ * on later calls or before that. The print is gated by glyph_hash_census. */
 static void glyph_hash_probe(void) {
     static int s_done = 0;
     static openpete_hud_vert s_probe[32768];
@@ -1134,6 +1203,14 @@ static openpete_hud_vert s_menu_buf[MENU_TXT_MAX];
 #define MENU_BORDER_SAMP 12       /* perimeter samples per edge (smooth glint) */
 #define MENU_BORDER_VERTS (4 * MENU_BORDER_SAMP * 6)  /* two tris per sample step */
 
+/** @brief Computes the lit colour of a border vertex from its outward normal.
+ *
+ * The term N.L uses N = (nx, ny, 0) against the context's light, clamped to
+ * -1..1, and shades the gold border base through lit_colour.
+ * @param cx The emission context supplying the light.
+ * @param nx The normal's X component.
+ * @param ny The normal's Y component.
+ * @return The colour as 0xAABBGGRR. */
 static uint32_t border_lit(const emit_ctx_t* cx, float nx, float ny) {
     float t = nx * cx->light[0] + ny * cx->light[1];   /* N·L, N=(nx,ny,0) unit; signed like the glyphs */
     if (t >  1.0f) t =  1.0f; else if (t < -1.0f) t = -1.0f;
