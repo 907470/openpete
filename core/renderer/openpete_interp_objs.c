@@ -20,6 +20,11 @@
  * ±half a tick per present). Falls back to op_now() if unset (unit harnesses
  * that drive the objs table without the run loop). */
 op_time_t g_openpete_tick_stamp = 0;
+/** @brief Return the timestamp that marks the current tick's snapshot.
+ *
+ * The PLL-smoothed VBL stamp g_openpete_tick_stamp when set, else the wall
+ * clock (unit harnesses that drive the table without the run loop).
+ * @return The stamp in nanoseconds. */
 static op_time_t objs_tick_stamp(void) {
     return g_openpete_tick_stamp ? g_openpete_tick_stamp : op_now(); /* clock-guard: wall */ /* unit harnesses only */
 }
@@ -54,6 +59,12 @@ static int s_stat_tracked, s_stat_paired, s_stat_spawned, s_stat_despawned;
 
 static openpete_interp_obj_capture_fn s_capture_cb = NULL;
 
+/** @brief Point each entry's prev, curr and prev2 at its three consecutive blobs.
+ *
+ * Entry i owns the 3 * BLOB bytes at offset i * 3 * BLOB of @p blob, in the
+ * order prev, curr, prev2. No bytes are written.
+ * @param tab Table of SLOTS entries.
+ * @param blob Flat allocation of SLOTS * 3 * BLOB bytes. */
 static void bind_blobs(openpete_interp_obj_t* tab, uint8_t* blob) {
     for (uint32_t i = 0; i < SLOTS; ++i) {
         uint8_t* b = blob + (size_t)i * 3u * BLOB;
@@ -90,6 +101,12 @@ static void entry_move(openpete_interp_obj_t* dst, const openpete_interp_obj_t* 
     memcpy(p2, src->prev2, BLOB);
 }
 
+/** @brief Allocate the object table, the survivor buffer and their blobs.
+ *
+ * Zero-filled, blob pointers bound, entry count reset. A no-op once the
+ * table exists. On a failed allocation every partial block is freed and the
+ * table stays unallocated.
+ * @return 1 when the table exists, 0 on allocation failure. */
 static int objs_alloc(void) {
     if (s_tab) return 1;
     size_t blobs = (size_t)SLOTS * 3u * BLOB;
@@ -108,6 +125,11 @@ static int objs_alloc(void) {
     return 1;
 }
 
+/** @brief Round up to a power of two, saturating at 2^30.
+ *
+ * @param v Requested count.
+ * @return The smallest power of two not below @p v, at least 1 and at most
+ *         0x40000000. */
 static uint32_t round_pow2(uint32_t v) {
     uint32_t p = 1u;
     while (p < v && p < 0x40000000u) p <<= 1;

@@ -60,15 +60,54 @@ void openpete_vram_install_ops(void);
  * @param h Height in rows.
  * @param src Source texels, @p w per row. */
 void openpete_vram_load (int x, int y, int w, int h, const uint16_t* src);
+/** @brief Copy a rect within the VRAM model (the PSYQ MoveImage op).
+ *
+ * Replicates PsyCross's GR_CopyVRAM(NULL, sx, sy, w, h, dx, dy): the source
+ * origin is masked to the VRAM size and the size clamped at the right and
+ * bottom edges first, then the destination is masked and clamps the size
+ * again, so an edge rect shrinks to the smaller fit. Rows copy top-down with
+ * memmove per row; two rects that overlap across rows are not copied as a
+ * snapshot. The effective rect is logged for the verify census, passed to
+ * the texture-pack registry, and recorded by the framebuffer snapshot when
+ * it is a copy out of a display buffer. A non-positive size is ignored.
+ * @param src_x Source X in texels.
+ * @param src_y Source Y in rows.
+ * @param w Width in texels.
+ * @param h Height in rows.
+ * @param dst_x Destination X in texels.
+ * @param dst_y Destination Y in rows. */
 void openpete_vram_move (int src_x, int src_y, int w, int h, int dst_x, int dst_y);
+/** @brief Fill a rect of the VRAM model with one colour (the PSYQ ClearImage op).
+ *
+ * Replicates PsyCross's GR_ClearVRAM: the origin is not masked (a negative
+ * origin trims the rect, an origin past the right or bottom edge is
+ * ignored) and the size is clamped at the edges. The texel is
+ * r | g << 5 | b << 11 with the channels unmasked, the packing PsyCross
+ * uses rather than the hardware's b << 10. The rect is logged for the
+ * verify census and passed to the texture-pack registry.
+ * @param x Left edge in texels.
+ * @param y Top edge in rows.
+ * @param w Width in texels.
+ * @param h Height in rows.
+ * @param r Red channel.
+ * @param g Green channel.
+ * @param b Blue channel. */
 void openpete_vram_clear(int x, int y, int w, int h,
                          uint8_t r, uint8_t g, uint8_t b);
 
-/* Verify-census support: effective (post-mask/clamp) rects written by the
- * ops since the last drain. Returns the count copied to out (up to max);
- * *overflowed is set if the internal list overflowed since the last drain
- * (census must then skip exact-match accounting for the window). */
 typedef struct { int x, y, w, h; } openpete_vram_op_rect;
+/** @brief Copy out and reset the log of rects the VRAM ops wrote (verify census).
+ *
+ * Each rect is the effective (post-mask, post-clamp) extent of one load,
+ * move or clear since the last drain. The log holds 64 entries; further ops
+ * are counted only as overflow. The log is reset whether or not every entry
+ * fit in `max`.
+ * @param out Destination for up to `max` rects.
+ * @param max Capacity of `out` in entries; must not be negative.
+ * @param overflowed Out: set to 1 when ops were dropped or did not fit in
+ *        `max`, else 0; NULL is ignored. The census must then skip
+ *        exact-match accounting for the window.
+ * @return The number of rects copied. */
 int openpete_vram_drain_op_rects(openpete_vram_op_rect* out, int max, int* overflowed);
 
 #ifdef __cplusplus

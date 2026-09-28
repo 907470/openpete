@@ -51,10 +51,14 @@ typedef struct {
 } sv_idx_t;
 
 static sv_idx_t s_idx[SV_IDX_SLOTS];
-/* Generation stamp instead of clearing 16K slots per present. Starts at 1 so
- * the zero-initialised table reads as stale on the first present. */
+/* Generation stamp instead of clearing SV_IDX_SLOTS slots per present. Starts
+ * at 1 so the zero-initialised table reads as stale on the first present. */
 static uint32_t s_gen = 1;
 
+/** @brief Map a block number to its home slot in the block index.
+ *
+ * @param block Block number, addr >> SV_BLOCK_SHIFT.
+ * @return Slot index in [0, SV_IDX_SLOTS). */
 static uint32_t sv_hash(uint32_t block)
 {
     /* Knuth multiplicative; block numbers are dense and highly correlated
@@ -160,6 +164,11 @@ static struct { uint32_t addr; uint32_t hits; } s_wset[SV_WSET_MAX];
 static uint32_t s_wset_n;
 static uint32_t s_wset_overflow;
 
+/** @brief Count a guest store that reached guest memory in the run-wide address set.
+ *
+ * Bumps the hit count of @p addr when it is in the set, adds it while fewer
+ * than SV_WSET_MAX addresses are held, else counts an overflow.
+ * @param addr Guest address stored to. */
 static void sv_wset_note(uint32_t addr)
 {
     for (uint32_t i = 0; i < s_wset_n; i++)
@@ -256,6 +265,10 @@ static int sv_staged_store(uint32_t addr, uint32_t n, const void* src)
     return 1;
 }
 
+/** @brief CPU word-load callback: serve from a covering staged span, else the displaced callback.
+ *
+ * @param addr Guest address.
+ * @return The loaded word. */
 static uint32_t sv_read_word(uint32_t addr)
 {
     uint32_t v;
@@ -263,6 +276,10 @@ static uint32_t sv_read_word(uint32_t addr)
     return s_orig_read_word(addr);
 }
 
+/** @brief CPU halfword-load callback: serve from a covering staged span, else the displaced callback.
+ *
+ * @param addr Guest address.
+ * @return The loaded halfword. */
 static uint16_t sv_read_half(uint32_t addr)
 {
     uint16_t v;
@@ -270,6 +287,10 @@ static uint16_t sv_read_half(uint32_t addr)
     return s_orig_read_half(addr);
 }
 
+/** @brief CPU byte-load callback: serve from a covering staged span, else the displaced callback.
+ *
+ * @param addr Guest address.
+ * @return The loaded byte. */
 static uint8_t sv_read_byte(uint32_t addr)
 {
     uint8_t v;
@@ -290,24 +311,56 @@ static void sv_write_half(uint32_t addr, uint16_t v)
 { if (sv_staged_store(addr, 2, &v)) return;
   s_stat_writes++; sv_wset_note(addr); s_orig_write_half(addr, v); }
 
+/** @brief CPU byte-store callback: absorbed by a covering staged span, else counted and performed.
+ *
+ * @param addr Guest address.
+ * @param v Byte to store. */
 static void sv_write_byte(uint32_t addr, uint8_t v)
 { if (sv_staged_store(addr, 1, &v)) return;
   s_stat_writes++; sv_wset_note(addr); s_orig_write_byte(addr, v); }
 
+/** @brief CPU swl callback: counts the store and performs it through the displaced callback.
+ *
+ * Never absorbed by a staged span.
+ * @param addr Guest address.
+ * @param v Register value. */
 static void sv_swl(uint32_t addr, uint32_t v)
 { s_stat_writes++; sv_wset_note(addr); s_orig_swl(addr, v); }
 
+/** @brief CPU swr callback: counts the store and performs it through the displaced callback.
+ *
+ * Never absorbed by a staged span.
+ * @param addr Guest address.
+ * @param v Register value. */
 static void sv_swr(uint32_t addr, uint32_t v)
 { s_stat_writes++; sv_wset_note(addr); s_orig_swr(addr, v); }
 
+/** @brief CPU lwl callback: counts a load that lands in a staged span and reads through the displaced callback.
+ *
+ * The result is the canonical merge; staging does not serve it.
+ * @param addr Guest address.
+ * @param rt Destination register's current value.
+ * @return The merged register value. */
 static uint32_t sv_lwl(uint32_t addr, uint32_t rt)
 { if (s_active && sv_find(addr) >= 0) s_stat_unaligned_reads++;
   return s_orig_lwl(addr, rt); }
 
+/** @brief CPU lwr callback: counts a load that lands in a staged span and reads through the displaced callback.
+ *
+ * The result is the canonical merge; staging does not serve it.
+ * @param addr Guest address.
+ * @param rt Destination register's current value.
+ * @return The merged register value. */
 static uint32_t sv_lwr(uint32_t addr, uint32_t rt)
 { if (s_active && sv_find(addr) >= 0) s_stat_unaligned_reads++;
   return s_orig_lwr(addr, rt); }
 
+/** @brief CPU word-store callback: absorbed by a covering staged span, else counted, traced and performed.
+ *
+ * With OPENPETE_SUBTICK_WRITE_TRACE set, the first 16 stores that reach
+ * guest memory in a present are logged.
+ * @param addr Guest address.
+ * @param value Word to store. */
 static void sv_write_word(uint32_t addr, uint32_t value)
 {
     /* A staged span is the value this present publishes, so a write into one
@@ -399,6 +452,14 @@ void openpete_subtick_view_stats(uint32_t* out_spans, uint32_t* out_served,
 uint32_t openpete_subtick_view_staged_writes(void) { return s_stat_writes_staged; }
 uint32_t openpete_subtick_view_poke_drops(void)    { return s_stat_poke_dropped; }
 
+/** @brief Find the staged span covering a guest address.
+ *
+ * Probes the block index from the address's block until a slot of another
+ * generation, coverage-testing every entry of that block, since a span need
+ * not cover the whole of its first or last block. When several spans cover
+ * the address the highest index wins.
+ * @param addr Guest address.
+ * @return Index into s_span, or -1 when no span covers @p addr. */
 static int sv_find(uint32_t addr)
 {
     if (!s_span_count) return -1;
@@ -607,6 +668,9 @@ static int  s_guard_armed;
 static uint32_t s_guard_hits;
 static struct sigaction s_prev_segv;
 
+/** @brief Make guest RAM writable again and disarm the guard.
+ *
+ * Also the segv handler's way of letting a faulting store proceed. */
 static void sv_guard_unprotect(void)
 {
     uint8_t* ram = openpete_psx_get_ram();
@@ -614,6 +678,15 @@ static void sv_guard_unprotect(void)
     s_guard_armed = 0;
 }
 
+/** @brief SIGSEGV handler of the RAM guard: log a write to guest RAM, unprotect it, and resume.
+ *
+ * A fault inside guest RAM while the guard is armed counts a hit, logs the
+ * guest address, and unprotects RAM for the rest of the present so the store
+ * completes; that is why one hit is reported per present. Any other fault
+ * chains to the previously installed handler, or exits with status 139.
+ * @param sig Signal number.
+ * @param si Signal info; si_addr is the faulting address.
+ * @param uc Signal context, passed on when chaining. */
 static void sv_segv(int sig, siginfo_t* si, void* uc)
 {
     uint8_t* ram = openpete_psx_get_ram();
@@ -635,6 +708,10 @@ static void sv_segv(int sig, siginfo_t* si, void* uc)
     else                                   _exit(139);
 }
 
+/** @brief Arm the RAM guard for a present: map guest RAM read-only.
+ *
+ * On the first call reads OPENPETE_SUBTICK_RAM_GUARD and, when set, installs
+ * sv_segv for SIGSEGV. Does nothing while the guard is disabled. */
 static void sv_guard_begin(void)
 {
     if (s_guard < 0) {
@@ -656,14 +733,29 @@ static void sv_guard_begin(void)
         s_guard_armed = 1;
 }
 
+/** @brief Disarm the RAM guard at the end of a present: restore write access to guest RAM.
+ *
+ * Does nothing when the guard is disabled or a fault already unprotected
+ * RAM. */
 static void sv_guard_end(void)
 {
     if (s_guard > 0 && s_guard_armed) sv_guard_unprotect();
 }
 
+/** @brief Return the count of guest-RAM writes the RAM guard caught.
+ *
+ * One per present at most, since the first fault unprotects RAM for the
+ * rest of that present; the count is never reset. Always 0 without
+ * OPENPETE_SUBTICK_RAM_GUARD.
+ * @return Lifetime guard-hit count. */
 uint32_t openpete_subtick_view_guard_hits(void) { return s_guard_hits; }
 #else
+/** @brief Guard stub for platforms without mprotect: does nothing. */
 static void sv_guard_begin(void) {}
+/** @brief Guard stub for platforms without mprotect: does nothing. */
 static void sv_guard_end(void)   {}
+/** @brief Return 0: the RAM guard does not exist on this platform.
+ *
+ * @return 0. */
 uint32_t openpete_subtick_view_guard_hits(void) { return 0; }
 #endif

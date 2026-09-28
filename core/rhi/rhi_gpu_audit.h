@@ -39,7 +39,12 @@ extern int g_openpete_guest_running;
  * 32 names). Takes no lock.
  * @param fn Name of the Vulkan entry point, from the OP_GPU_AUDIT stringization. */
 void op_gpu_audit_hit(const char *fn);
-void op_gpu_audit_bind_thread(void);   /* call once from the thread that runs the guest */
+/** @brief Bind the audit to the calling thread as the guest thread.
+ *
+ * The run loop calls it on the thread that runs the guest fiber, before every
+ * switch into the guest; the stored id is overwritten each time. Until the
+ * first call every thread counts as the guest thread. */
+void op_gpu_audit_bind_thread(void);
 
 /** @brief Record one host write into persistently-mapped device memory made during guest execution.
  *
@@ -50,7 +55,13 @@ void op_gpu_audit_bind_thread(void);   /* call once from the thread that runs th
  * op_gpu_audit_map_writes() and op_gpu_audit_map_bytes().
  * @param bytes Number of bytes written. */
 void op_gpu_audit_map_write(size_t bytes);
+/** @brief Return the number of mapped-memory writes recorded on the guest thread.
+ *
+ * @return The running write count since process start. */
 unsigned op_gpu_audit_map_writes(void);
+/** @brief Return the bytes of mapped-memory writes recorded on the guest thread.
+ *
+ * @return The running byte total since process start. */
 unsigned long long op_gpu_audit_map_bytes(void);
 
 /** @brief Return the number of Vulkan calls recorded on the guest thread during guest execution.

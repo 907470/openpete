@@ -14,6 +14,10 @@ int g_openpete_guest_running = 0;
  * only calls from the guest's own thread count. */
 static SDL_ThreadID s_guest_tid;
 void op_gpu_audit_bind_thread(void) { s_guest_tid = SDL_GetCurrentThreadID(); }
+/** @brief Report whether the calling thread is the bound guest thread.
+ *
+ * @return 1 when no thread is bound yet or the caller is the bound one, else
+ *         0. */
 static int on_guest_thread(void) { return !s_guest_tid || SDL_GetCurrentThreadID() == s_guest_tid; }
 
 #define OP_GPU_AUDIT_MAX_NAMES 32

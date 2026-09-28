@@ -445,6 +445,12 @@ static uint64_t tc_pair_bytes(int arena, uint32_t cap)
     return (uint64_t)cap * stride;
 }
 
+/** @brief Destroy a buffer pair's device buffers and free the pair.
+ *
+ * Device-owning thread only. The caller must know no in-flight draw still
+ * reads the buffers (see tc_arena_free_all).
+ * @param dev Device the buffers were created on.
+ * @param pr Pair to free; NULL is ignored. */
 static void tc_pair_free(rhi_device *dev, tc_pair *pr)
 {
     if (!pr) return;
@@ -522,8 +528,6 @@ static int s_tc_snap;
 int openpete_tercache_ready(void) { return s_tc.ready; }
 int openpete_tercache_frame_open(void) { return s_tc.draw_open; }
 int openpete_tercache_frame_source(void) { return s_tc.sel_src; }
-/* Diagnostic: flag census of the selected state (drawn / HP / LP / near-variant)
- * and a 3-bit generation histogram over its drawn sectors. */
 void openpete_tercache_frame_slots(char *out, int cap)
 {
     int off = 0;
@@ -1165,10 +1169,6 @@ void openpete_tercache_set_level(int level_id)
 
 uint32_t openpete_tercache_alloc_epoch(void) { return s_tc.alloc_epoch; }
 
-/* Builder thread. 1 while a fulfilled pair is waiting for the adoption that
- * the next frame_begin performs. The adoption zeroes every arena's
- * bookkeeping, so a caller holding chunk records must free them while this
- * reads 1 and before that frame_begin. */
 int openpete_tercache_resize_ready(void)
 {
     return s_tc.ready &&
@@ -1806,6 +1806,14 @@ static uint32_t tc_arena_high(int arena)
     return h;
 }
 
+/** @brief Fill a terrain push-constant block from a clip mapping.
+ *
+ * Zeroes the block, copies the clip mapping's extents, band and freeze
+ * factor, and stamps the material pass (s_tc_mat_pass) and the vertex
+ * precision snap latched for this present (s_tc_snap).
+ * @param pc Out: the block to fill.
+ * @param pass_sel Pass selector.
+ * @param c Clip mapping; must not be NULL. */
 static void tc_pc_fill(tc_pc *pc, int pass_sel, const openpete_tercache_clip *c)
 {
     memset(pc, 0, sizeof(*pc));

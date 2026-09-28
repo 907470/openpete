@@ -310,6 +310,12 @@ void openpete_interp_capture(uint32_t tick, op_time_t tick_ns) {
     slot->valid = 1;
 }
 
+/** @brief Report whether the ra_commit region path is enabled by the environment.
+ *
+ * OPENPETE_RA_CAM_COMMIT enables it unless set to a value starting with
+ * '0'; unset and empty count as enabled. The environment is read once, on
+ * the first call, and latched.
+ * @return 1 when enabled, else 0. */
 static int ra_commit_env_on(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_RA_CAM_COMMIT"); v = !(e && *e == '0'); }

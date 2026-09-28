@@ -31,6 +31,12 @@ static openpete_vram_op_rect s_op_rects[NV_MAX_OP_RECTS];
 static int s_op_n = 0;
 static int s_op_overflow = 0;
 
+/** @brief Append one written rect to the op-rect log, or flag overflow when the log is full.
+ *
+ * @param x Left edge in texels.
+ * @param y Top edge in rows.
+ * @param w Width in texels.
+ * @param h Height in rows. */
 static void op_log(int x, int y, int w, int h)
 {
     if (s_op_n >= NV_MAX_OP_RECTS) { s_op_overflow = 1; return; }
@@ -55,11 +61,22 @@ int openpete_vram_drain_op_rects(openpete_vram_op_rect* out, int max, int* overf
  * atlas packing, CLUT placement, per-level repack, hash stability across
  * runs). FNV-1a here is census-only; the registry uses XXH3. */
 extern unsigned openpete_frame;
+/** @brief Report whether OPENPETE_TEXPACK_CENSUS is set to a non-empty value.
+ *
+ * The environment is read once, on the first call, and latched.
+ * @return 1 when the census is on, else 0. */
 static int tp_census_on(void) {
     static int s = -1;
     if (s < 0) { const char* e = getenv("OPENPETE_TEXPACK_CENSUS"); s = (e && *e) ? 1 : 0; }
     return s;
 }
+/** @brief Hash a texel rect with 64-bit FNV-1a over the 16-bit texels.
+ *
+ * @param p First texel of the rect.
+ * @param w Row width in texels.
+ * @param h Row count.
+ * @param stride Texels from one row start to the next.
+ * @return The hash of the w x h texels, row by row. */
 static uint64_t tp_fnv1a(const uint16_t* p, int w, int h, int stride) {
     uint64_t hv = 1469598103934665603ull;
     for (int i = 0; i < h; i++, p += stride)
@@ -171,8 +188,25 @@ void openpete_vram_clear(int x, int y, int w, int h,
  * @param src Source texels, @p w per row. */
 static void nv_load(int x, int y, int w, int h, const unsigned short* src)
 { openpete_vram_load(x, y, w, h, (const uint16_t*)src); }
+/** @brief PsyCross move callback: forwards to openpete_vram_move.
+ *
+ * @param sx Source X in texels.
+ * @param sy Source Y in rows.
+ * @param w Width in texels.
+ * @param h Height in rows.
+ * @param dx Destination X in texels.
+ * @param dy Destination Y in rows. */
 static void nv_move(int sx, int sy, int w, int h, int dx, int dy)
 { openpete_vram_move(sx, sy, w, h, dx, dy); }
+/** @brief PsyCross clear callback: forwards to openpete_vram_clear.
+ *
+ * @param x Left edge in texels.
+ * @param y Top edge in rows.
+ * @param w Width in texels.
+ * @param h Height in rows.
+ * @param r Red channel.
+ * @param g Green channel.
+ * @param b Blue channel. */
 static void nv_clear(int x, int y, int w, int h,
                      unsigned char r, unsigned char g, unsigned char b)
 { openpete_vram_clear(x, y, w, h, r, g, b); }

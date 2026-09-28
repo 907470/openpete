@@ -256,6 +256,12 @@ int  openpete_tercache_init(struct rhi_device *dev);
  * whole-range draws would have submitted, and draw calls per present.
  * @param dev The device the cache was created on; NULL is ignored. */
 void openpete_tercache_shutdown(struct rhi_device *dev);
+/** @brief Report whether the terrain cache came up and is usable.
+ *
+ * Set by openpete_tercache_init(), cleared by openpete_tercache_shutdown()
+ * and by a frame_begin that finds no uniform buffer. The flag is a plain
+ * int read without synchronisation.
+ * @return 1 when the cache is ready, 0 otherwise. */
 int  openpete_tercache_ready(void);
 
 /* Per-build protocol (driven by the terrain feeder). The sub-tick spine
@@ -347,9 +353,44 @@ int  openpete_tercache_frame_open(void);
  *         are closed or the state is empty (a frame_skip state, the feeder
  *         having cut out for that scene); -1 when the cache is not ready. */
 int  openpete_tercache_frame_content(void);
-int  openpete_tercache_frame_source(void);   /* 0 closed, 1 scene ring, 2 live, 3 staged, 4 live-by-age */
+/** @brief Report which retained state the last openpete_tercache_frame_select() chose.
+ *
+ * @return 0 when the draws are closed, 1 for the scene-ring state, 2 for the
+ *         live state, 3 for the staged state. */
+int  openpete_tercache_frame_source(void);
+/** @brief Count the selected state's drawn sectors by flag and by generation.
+ *
+ * Diagnostic. Walks the OPTC_SLOTS slots of the selected state; a slot with
+ * OPTC_SF_DRAWN set counts once in `drawn` and once more in each of `hp`,
+ * `lp` and `nearvar` for its OPTC_SF_DRAWHP, OPTC_SF_DRAWLP and
+ * OPTC_SF_NEARVAR bits. Bits 12..14 of the slot flags index `gens`. All
+ * outputs are zeroed first and stay zero while the draws are closed.
+ * @param drawn Out: sectors with OPTC_SF_DRAWN.
+ * @param hp Out: drawn sectors with OPTC_SF_DRAWHP.
+ * @param lp Out: drawn sectors with OPTC_SF_DRAWLP.
+ * @param nearvar Out: drawn sectors with OPTC_SF_NEARVAR.
+ * @param gens Out: 8-entry histogram of the 3-bit generation over the drawn
+ *        sectors. */
 void openpete_tercache_frame_stats(int *drawn, int *hp, int *lp, int *nearvar, int gens[8]);
+/** @brief Format the selected state's globals block as one text line.
+ *
+ * Diagnostic. Prints camera xy and z, the ofx/ofy offset, H, the near
+ * plane, the fog and flag words, the cull reference, the first and third
+ * matrix rows, and the rim and coverage plane counts. Reads the selected
+ * state whether or not the draws are open, so a closed present reports the
+ * last selection. The text is truncated to fit.
+ * @param out Destination buffer.
+ * @param cap Size of `out` in bytes; must be at least 1. */
 void openpete_tercache_frame_globals(char *out, int cap);
+/** @brief Format the selected state's drawn sector slots as text.
+ *
+ * Diagnostic. Writes from index 0 of `out` (a caller appending to a line
+ * passes the tail of its buffer) one " slot:flags" pair per slot with
+ * OPTC_SF_DRAWN set, the flags as the low 12 bits in hex, and stops when
+ * fewer than 25 bytes remain. Leaves an empty string when no slot is
+ * drawn. Reads the selected state whether or not the draws are open.
+ * @param out Destination buffer.
+ * @param cap Size of `out` in bytes; must be at least 1. */
 void openpete_tercache_frame_slots(char *out, int cap);
 
 /** @brief Return 1 when the terrain feeder may route unclaimed sectors through the GPU cache.
@@ -611,6 +652,12 @@ void openpete_tercache_chunk_free(int arena, int buf, uint32_t first, int count)
  * replaces the stored level. No-op while the cache is not ready.
  * @param level_id Level the replacement buffers are sized for. */
 void openpete_tercache_request_resize(int level_id);
+/** @brief Report whether a fulfilled replacement pair awaits adoption.
+ *
+ * Builder thread. The adoption performed by the next frame_begin zeroes
+ * every arena's bookkeeping, so a caller holding chunk records frees them
+ * while this reads 1 and before that frame_begin.
+ * @return 1 when the cache is ready and a fulfilled pair is waiting, else 0. */
 int  openpete_tercache_resize_ready(void);
 /** @brief Store the level the arenas are being filled for.
  *
@@ -707,6 +754,14 @@ typedef struct {
     uint32_t cell_draws;
     uint64_t cell_instances;
 } openpete_tercache_stats_t;
+/** @brief Fill a snapshot of the cache's arena, draw and engagement counters.
+ *
+ * Sums each arena's buffers. After openpete_tercache_shutdown() it returns
+ * the snapshot taken there, so a census printed at exit still reads the
+ * final values; on a cache that never came up and was never shut down it
+ * returns zeros. The counters are read without a lock, so a call from
+ * another thread than the builder can be one update stale.
+ * @param out Destination; NULL is ignored. */
 void openpete_tercache_get_stats(openpete_tercache_stats_t *out);
 
 #endif /* OPENPETE_TERRAIN_CACHE_H */
