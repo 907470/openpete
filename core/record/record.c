@@ -11,7 +11,7 @@
 //   [host fiber / GL thread]            [encoder thread]
 //   -------------------------           ------------------
 //   capture_frame(pts_us):              loop:
-//     GR_ReadPresentSceneRGBA  ---ring--> sws RGBA->yuv420p (flip via -stride)
+//     GR_PresentPBO_Map (async) --ring--> sws RGBA->pixfmt (flip via -stride)
 //     -> preallocated slot                avcodec_send_frame (pts = us - start)
 //     publish + signal                    drain receive_packet
 //                                         av_interleaved_write_frame
@@ -79,7 +79,8 @@ extern void PsyX_SPUAL_CaptureResetStats(void);
 
 /* Preallocated frame ring. 32 slots at internal-res RGBA (~40 MB at
  * 640x480-equivalent; more at ultrawide) absorbs encoder jitter without
- * stalling the game thread. Full ring => drop (game stays real-time). */
+ * stalling the game thread. Full ring => drop under VFR (game stays
+ * real-time); under CFR the producer waits for a free slot. */
 #define REC_RING_SLOTS 32
 
 static struct {
@@ -108,7 +109,8 @@ static struct {
     /* Locked dimensions. native_{w,h} is the present-FBO size we read each
      * frame; {w,h} is the encoder geometry, the native size floored to even
      * (yuv420p chroma subsampling requires even width/height, and widened
-     * ultrawide widths come out odd). The bottom-left w x h sub-rectangle is
+     * ultrawide widths come out odd). The w x h sub-rectangle anchored at
+     * the bottom-left (bottom-up source) or top-left (top-down source) is
      * encoded; at most one row/column is dropped. */
     int          native_w, native_h;
     int          w, h;
@@ -125,7 +127,7 @@ static struct {
     AVFrame*         frame;
     AVPacket*        pkt;
 
-    /* Frame ring (RGBA, bottom-up). */
+    /* Frame ring (RGBA, native_w x native_h, rows in src_top_down order). */
     uint8_t*     slots[REC_RING_SLOTS];
     uint64_t     pts_us[REC_RING_SLOTS];
     int          write_idx;
@@ -430,10 +432,11 @@ static void rec_teardown(void);  /* fwd */
  * Floors the size to even dimensions, opens the output context, the video
  * encoder (constant frame rate at a multiple of the NTSC tick rate when
  * cfr_mult is set, else microsecond timestamps), the optional audio stream
- * and the file, and writes the container header. Then allocates the RGBA
- * conversion frame, the ring slots and the lock, and starts the encoder
- * thread. A failure logs and returns -1 with partial state left for
- * rec_teardown; audio setup failure is not a failure.
+ * and the file, and writes the container header. Then creates the
+ * RGBA-to-encoder-format scaler, allocates the encoder-format frame, the
+ * ring slots and the lock, and starts the encoder thread. A failure logs
+ * and returns -1 with partial state left for rec_teardown; audio setup
+ * failure is not a failure.
  * @param native_w Captured width in pixels.
  * @param native_h Captured height in pixels.
  * @param top_down Nonzero when source rows run top to bottom.

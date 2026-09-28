@@ -19,7 +19,7 @@
 //   uint32_t  cd_state_bytes   — PsyCross CD head-position globals
 //   uint32_t  game_extra_bytes — opaque per-game host blob (game_extras)
 //   uint32_t  modset_tag_bytes — enabled-modset tag string (no NUL)
-//   uint32_t  arena_bytes      — low-park arena ledger
+//   uint32_t  arena_bytes      — mod arena section (ledger rows + used bytes)
 //   uint32_t  reserved[3]   = 0 (DRAWENV/DISPENV later)
 //   uint8_t   cpu_regs[cpu_bytes]
 //   uint8_t   ram[ram_bytes]
@@ -46,7 +46,7 @@
 // not survive a save/load roundtrip.
 //
 // Identity gating (v3): ident = sha256("stateabi:<N>|cg:<codegen_stamp>|
-// rom:<rom_sha256>") hex-truncated to 31 chars. This covers what actually
+// rom:<rom_sha256>") hex-truncated to 30 chars. This covers what actually
 // varies between installations — the recomp module (boot-compiled per
 // machine under the distribution model) and the ROM — and pins the state
 // LAYOUT via the curated OPENPETE_STATE_ABI number (bump it whenever any
@@ -149,7 +149,7 @@ typedef struct {
     uint32_t cd_state_bytes;
     uint32_t game_extra_bytes;
     uint32_t modset_tag_bytes;
-    uint32_t arena_bytes;      /* low-park arena ledger */
+    uint32_t arena_bytes;      /* mod arena section: ledger rows + used bytes */
     uint32_t reserved[3];
 } openpete_state_header_t;
 
@@ -541,13 +541,8 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
         return -1;
     }
 
-    /* Read everything into temp buffers first so a short read doesn't
-     * leave RAM half-overwritten and the game fiber wedged. The fiber
-     * buffer in particular MUST be atomic — a partial fiber-memory write
-     * corrupts saved sp + register slots and the next co_switch will
-     * crash. */
     /* Read into temp buffers first so a short read doesn't leave any
-     * region half-overwritten and the game fiber wedged. */
+     * region half-overwritten. */
     uint8_t  cpu_buf[CPU_REG_BYTES];
     uint8_t* ram_buf    = (uint8_t*)malloc(OPENPETE_PSX_RAM_SIZE);
     uint8_t* vram_buf   = (uint8_t*)malloc(hdr.vram_bytes);
