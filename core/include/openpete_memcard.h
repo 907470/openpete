@@ -79,8 +79,19 @@ void openpete_memcard_startup_check(void);
  * set by the configuration setters are kept. */
 void openpete_memcard_init(void);
 
-void openpete_memcard_start(void);   /* arm comms (no-op; always ready) */
-void openpete_memcard_stop(void);    /* disarm + clear the sync latch    */
+/** @brief Serve libmcrd MemCardStart; a no-op, since the host card is always ready.
+ *
+ * Called from the psyq_MemCardStart thunk. Leaves the sync latch and the
+ * slot state unchanged. */
+void openpete_memcard_start(void);
+
+/** @brief Serve libmcrd MemCardStop by clearing the sync latch.
+ *
+ * Called from the psyq_MemCardStop thunk. The latched command and result
+ * reset to -1 and the sync status to nothing pending, so a later
+ * MemCardSync reports nothing until the next command latches. Presence,
+ * paths, card images and new-card flags are kept. */
+void openpete_memcard_stop(void);
 
 /** @brief Probe the card in chan for libmcrd MemCardExist.
  *

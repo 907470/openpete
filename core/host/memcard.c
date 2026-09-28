@@ -168,6 +168,7 @@ static int mc_resolve_path(int slot)
     return 0;
 }
 
+/// @brief Return the XOR of the first 127 bytes of a 128-byte card frame, the value its last byte holds.
 static uint8_t mc_frame_checksum(const uint8_t* frame)
 {
     uint8_t x = 0;
@@ -198,6 +199,7 @@ static void mc_format_image(uint8_t* card)
     }
 }
 
+/// @brief Return nonzero when the slot's loaded image starts with the "MC" header signature.
 static int mc_is_formatted(int slot)
 {
     return s_card[slot][0] == 'M' && s_card[slot][1] == 'C';
@@ -210,6 +212,10 @@ static void mc_modset_sidecar_path(int slot, char* out, size_t cap) {
     snprintf(out, cap, "%s.modset", s_path[slot]);
 }
 
+/** @brief Load the slot's modset sidecar into s_ms_tag, leaving the tag empty when the file is absent.
+ *
+ * Reads at most 1023 bytes and strips trailing newline, carriage return and
+ * space characters. */
 static void mc_modset_read_sidecar(int slot) {
     char p[1300];
     mc_modset_sidecar_path(slot, p, sizeof p);
@@ -240,12 +246,16 @@ static void mc_modset_write_sidecar(int slot, const char* tag) {
     snprintf(s_ms_tag[slot], sizeof s_ms_tag[slot], "%s", tag);
 }
 
-/* At card open: compare the sidecar tag against the running modset.
- * Mismatch WARNS and continues — progress is never blocked; the tag
- * only changes through the explicit --adopt-saves flow (or the
- * birth-tagging of a card that has no vanilla progress recorded). */
 static int s_ms_checked[2];
 
+/** @brief Compare the slot's sidecar tag against the running modset tag, once per slot per process.
+ *
+ * A mismatch warns and continues, so progress is never blocked. The tag
+ * changes here only under --adopt-saves, which rewrites the sidecar with
+ * the running tag. A card tagged with the running tag, or untagged with no
+ * mods active, is silent. The first call reads the sidecar, so s_ms_tag
+ * holds the file's tag afterwards.
+ * @param slot Card slot, 0 or 1. */
 static void mc_modset_check_open(int slot) {
     if (s_ms_checked[slot]) return; /* once per session per slot */
     s_ms_checked[slot] = 1;
@@ -531,11 +541,17 @@ static void mc_ensure_loaded(int slot)
                    s_unformatted ? "unformatted" : "formatted", slot, s_path[slot]);
 }
 
-static uint8_t* mc_dir_frame(int slot, int block)   /* block 1..15 */
+/** @brief Return the slot's directory frame for data block block, sector block of the image.
+ *
+ * The pointer aims into s_card and is not range-checked; block is 1 to 15.
+ * @param slot Card slot, 0 or 1.
+ * @param block Data block number, 1 to 15. */
+static uint8_t* mc_dir_frame(int slot, int block)
 {
     return &s_card[slot][block * MC_SECTOR_SIZE];
 }
 
+/// @brief Return the little-endian u32 state word at the start of a directory frame.
 static uint32_t mc_frame_state(const uint8_t* de)
 {
     return (uint32_t)de[0] | ((uint32_t)de[1] << 8) |
@@ -575,6 +591,11 @@ static int mc_verdict(int slot)
     return MC_ERR_NONE;
 }
 
+/** @brief Record a finished command and its result for the game's MemCardSync poll.
+ *
+ * Host I/O completes inside the call, so the status is always finished.
+ * @param cmds Command code, one of the MC_FUNC values.
+ * @param rslt Result code, an MC_ERR value. */
 static void mc_latch(int cmds, int rslt)
 {
     s_mc_cmds   = cmds;
@@ -661,6 +682,15 @@ static int mc_chan_slot(int chan)
     return (chan & 0x0F) ? (chan & 1) : ((chan >> 4) & 1);
 }
 
+/** @brief Probe the card in port chan for command func and latch the result.
+ *
+ * The slot is bit 4 of chan, the libmcrd port encoding. The result comes
+ * from mc_verdict and is latched with func.
+ * @param chan Raw PSX port, 0x00 for slot 0 or 0x10 for slot 1.
+ * @param func MC_FUNC_EXIST or MC_FUNC_ACCEPT.
+ * @param out_cmds Receives func; may be NULL.
+ * @param out_rslt Receives the result code; may be NULL.
+ * @return 0 when the slot holds no card, else 1. */
 static int mc_probe(int chan, int func, int* out_cmds, int* out_rslt)
 {
     int slot = (chan >> 4) & 1;

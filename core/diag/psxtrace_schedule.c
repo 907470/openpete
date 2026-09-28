@@ -69,6 +69,14 @@ void openpete_sched_fail(const char* fmt, ...) {
     OPL_ERROR_F("psxtrace", "schedule: %s", s_fail_reason);
 }
 
+/** @brief Read the sidecar `<trace><ext>` whole into a NUL-terminated heap buffer and check its magic prefix.
+ *
+ * A missing or unreadable file returns NULL silently; a file whose text
+ * does not start with magic logs an error and returns NULL.
+ * @param trace Path of the golden trace.
+ * @param ext Sidecar suffix, such as ".vsync".
+ * @param magic Required first bytes of the file.
+ * @return The buffer, which the caller frees, or NULL. */
 static char* read_sidecar(const char* trace, const char* ext, const char* magic) {
     char path[4096];
     snprintf(path, sizeof(path), "%s%s", trace, ext);
@@ -89,6 +97,13 @@ static char* read_sidecar(const char* trace, const char* ext, const char* magic)
     return buf;
 }
 
+/** @brief Load the `.vsync` sidecar into s_vs and count its waited rows, queries and registrations.
+ *
+ * Rows starting with `#` or `p` are skipped, as are rows with fewer than
+ * eight fields. The first query row fixes the counter offset, its return
+ * VBLANK minus the counter it returned.
+ * @param trace Path of the golden trace.
+ * @return 1 when the sidecar was read, else 0. */
 static int load_vsync(const char* trace) {
     char* buf = read_sidecar(trace, ".vsync", "psxtrace-vsync");
     if (!buf) return 0;
@@ -117,6 +132,12 @@ static int load_vsync(const char* trace) {
     return 1;
 }
 
+/** @brief Load the `.loads` sidecar into s_rd, one row per CdRead with its issue and completion.
+ *
+ * A row whose completion record column is `-` is a read with no completion
+ * callback. Rows with fewer than ten fields are skipped.
+ * @param trace Path of the golden trace.
+ * @return 1 when the sidecar was read, else 0. */
 static int load_reads(const char* trace) {
     char* buf = read_sidecar(trace, ".loads", "psxtrace-loads");
     if (!buf) return 0;
@@ -141,6 +162,10 @@ static int load_reads(const char* trace) {
     return 1;
 }
 
+/** @brief Load the `.srand` sidecar into s_seed, the reference's srand seeds in call order.
+ *
+ * @param trace Path of the golden trace.
+ * @return 1 when the sidecar was read, else 0. */
 static int load_seeds(const char* trace) {
     char* buf = read_sidecar(trace, ".srand", "psxtrace-srand");
     if (!buf) return 0;
@@ -179,6 +204,16 @@ static int      s_in_load = 0, s_in_load_known = 0;
 static uint32_t s_records_skipped = 0, s_windows_seen = 0, s_load_waits = 0;
 extern int psyq_game_load_window_active(uint32_t value) __attribute__((weak));
 
+/** @brief Load the `.watch` sidecar into s_win, the record ranges during which the loader was active.
+ *
+ * Each row is a store to the watched word. The store's new value is
+ * classified by the game's psyq_game_load_window_active predicate one row
+ * later, as the next row's old value, so a window opens or closes at the
+ * previous row's record. A window still open at the end keeps a leave
+ * record of 0xFFFFFFFF and is not counted in s_win_n.
+ * @param trace Path of the golden trace.
+ * @return 1 when the sidecar was read and the game supplies the predicate,
+ *         else 0. */
 static int load_watch(const char* trace) {
     char* buf = read_sidecar(trace, ".watch", "psxtrace-watch");
     if (!buf) return 0;
@@ -219,6 +254,9 @@ static int load_watch(const char* trace) {
 typedef struct { uint8_t* bits; uint32_t n, first, served, skipped; } vbl_set_t;
 static vbl_set_t s_sio0, s_padcmd;
 
+/** @brief Add reference VBLANK vbl to the bitmap set, growing it by doubling from 4096 bits.
+ *
+ * Tracks the lowest member in first. New bits start cleared. */
 static void vbl_set_add(vbl_set_t* v, uint32_t vbl) {
     if (vbl >= v->n) {
         uint32_t n = v->n ? v->n : 4096u;
@@ -243,6 +281,11 @@ static int vbl_set_has(vbl_set_t* v, uint32_t vbl, int* known) {
     return has;
 }
 
+/** @brief Load the `.padcmd` sidecar into s_padcmd, the vblanks the controller accepted a command on.
+ *
+ * The set's range is trimmed to the last vblank listed.
+ * @param trace Path of the golden trace.
+ * @return 1 when the set holds a range, else 0. */
 static int load_padcmd(const char* trace) {
     char* buf = read_sidecar(trace, ".padcmd", "psxtrace-padcmd");
     if (!buf) return 0;
@@ -259,6 +302,12 @@ static int load_padcmd(const char* trace) {
     return s_padcmd.n != 0;
 }
 
+/** @brief Load the `.sio0` sidecar into s_sio0, the vblanks the controller and card handler ran on.
+ *
+ * A row names a first vblank and a run length n; every vblank of the run
+ * is added. The set's range is trimmed to the last vblank listed.
+ * @param trace Path of the golden trace.
+ * @return 1 when the set holds a range, else 0. */
 static int load_sio0(const char* trace) {
     char* buf = read_sidecar(trace, ".sio0", "psxtrace-sio0");
     if (!buf) return 0;
@@ -293,6 +342,11 @@ uint64_t openpete_sched_read_done_tick(void) { return s_read_done_tick; }
 static sched_cdsync_t* s_cs = NULL; static uint32_t s_cs_n = 0, s_cs_next = 0, s_cs_left = 0;
 static uint32_t s_cs_answered = 0, s_cs_unmade = 0, s_cs_charged = 0;
 
+/** @brief Load the `.cdsync` sidecar into s_cs, one row per run of equal CdSync polls.
+ *
+ * Rows that do not parse as eight fields are skipped.
+ * @param trace Path of the golden trace.
+ * @return 1 when at least one row loaded, else 0. */
 static int load_cdsync(const char* trace) {
     char* buf = read_sidecar(trace, ".cdsync", "psxtrace-cdsync");
     if (!buf) return 0;
@@ -466,10 +520,12 @@ int openpete_sched_next_vsync(int mode, uint32_t* target_out) {
     return 1;
 }
 
-/* The reference record index the next anchor hit produces: openpete's
- * hit count plus the offset the load-window re-alignments accumulated. */
 uint32_t openpete_sched_current_record(void) { return sched_cur_rec(); }
 
+/** @brief Return the reference record index the next anchor hit produces.
+ *
+ * Anchor hits from the target hit on count from record 0; the load-window
+ * re-alignment offset is added and the result is floored at 0. */
 static uint32_t sched_cur_rec(void) {
     extern uint32_t openpete_psxtrace_anchor_hits;
     extern uint32_t openpete_psxtrace_anchor_hit_target;
@@ -549,6 +605,13 @@ int32_t openpete_sched_counter(void) {
 }
 
 static uint32_t s_query_ra = 0;
+/** @brief Write one query line to the schedule log for the first 400 queries and for hits in the OPENPETE_SCHED_LOG_REC range.
+ *
+ * The range is read once as `lo:hi` anchor hit numbers, hi exclusive. The
+ * caller must have opened s_log.
+ * @param how Label of the answer source: row, extra or pos.
+ * @param counter The counter returned.
+ * @param target The VBLANK the position is charged to. */
 static void query_log(const char* how, int32_t counter, uint32_t target) {
     extern uint32_t openpete_psxtrace_anchor_hits;
     static long lo = -1, hi = -1;

@@ -90,9 +90,11 @@ static int s_warned_threads_full = 0;
 /* ---- little-endian packers ------------------------------------------------- */
 /// @brief Store v at p as two little-endian bytes.
 static inline void le_u16(uint8_t* p, uint16_t v) { p[0]=(uint8_t)v; p[1]=(uint8_t)(v>>8); }
+/// @brief Store v at p as four little-endian bytes.
 static inline void le_u32(uint8_t* p, uint32_t v) {
     p[0]=(uint8_t)v; p[1]=(uint8_t)(v>>8); p[2]=(uint8_t)(v>>16); p[3]=(uint8_t)(v>>24);
 }
+/// @brief Store v at p as eight little-endian bytes, low word first.
 static inline void le_u64(uint8_t* p, uint64_t v) {
     le_u32(p, (uint32_t)v); le_u32(p+4, (uint32_t)(v>>32));
 }
@@ -153,6 +155,11 @@ static void chunk_flush(struct opp_tls* t) {
     t->len = 0;
 }
 
+/** @brief Append n bytes to the thread's chunk, flushing first when they do not fit.
+ *
+ * The record is dropped when it still does not fit after the flush, which
+ * happens only when n exceeds OPP_CHUNK_CAP; the record writers here pass
+ * OPP_REC_SIZE bytes. */
 static void chunk_put(struct opp_tls* t, const void* p, size_t n) {
     if (t->len + n > OPP_CHUNK_CAP) chunk_flush(t);
     if (t->len + n > OPP_CHUNK_CAP) return;
@@ -262,6 +269,12 @@ void op_prof_begin(int name_id) {
     t->sp++;
 }
 
+/** @brief Append one span record to the thread's chunk.
+ *
+ * The record carries the depth byte, the name id truncated to 16 bits, the
+ * start time, the duration truncated to 32 bits, aux, and the thread index
+ * at OPP_REC_TID, and counts toward the thread's spans since the last flush
+ * marker. */
 static void emit_span(struct opp_tls* t, int depth, int name_id,
                       uint64_t t0_us, uint32_t dur_us, uint32_t aux) {
     uint8_t r[OPP_REC_SIZE];

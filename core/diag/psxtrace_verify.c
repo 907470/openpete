@@ -29,6 +29,9 @@ extern uint64_t gameplay_hash_compute_ex(uint64_t* out_per_region);
                                   PSXTRACE_FLAG_TABLE_HASH | PSXTRACE_FLAG_SCM_HASH | \
                                   PSXTRACE_FLAG_VBL_STAMP)
 
+/** @brief Read four bytes from fp as a little-endian u32 into *out.
+ *
+ * @return 0 on success; -1 on a short read, leaving *out unchanged. */
 static int read_u32_le(FILE* fp, uint32_t* out) {
     uint8_t b[4];
     if (fread(b, 1, 4, fp) != 4) return -1;
@@ -39,6 +42,9 @@ static int read_u32_le(FILE* fp, uint32_t* out) {
     return 0;
 }
 
+/** @brief Read eight bytes from fp as a little-endian u64 into *out, low word first.
+ *
+ * @return 0 on success; -1 on a short read, leaving *out unchanged. */
 static int read_u64_le(FILE* fp, uint64_t* out) {
     uint32_t lo = 0, hi = 0;
     if (read_u32_le(fp, &lo) || read_u32_le(fp, &hi)) return -1;

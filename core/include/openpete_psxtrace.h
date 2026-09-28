@@ -142,6 +142,26 @@ typedef struct {
     int terminal_status;
 } openpete_psxtrace_t;
 
+/** @brief Open a reference trace, validate its header against the registered region table, and prime the verifier.
+ *
+ * Zeroes t, then reads OPENPETE_PSXTRACE_HEAL_WINDOW (ticks, default 600)
+ * and OPENPETE_PSXTRACE_VBL_POLICY (`exact` or `log`; any other value
+ * fails). The header must carry the PSXTRACE magic, version 2, the PSX RAM
+ * size, no unknown flag bits, and a region count that is nonzero, within
+ * OPENPETE_PSXTRACE_MAX_REGIONS and equal to the registered table's. The
+ * region names must equal the table's row for row, and the header must
+ * carry a table hash equal to the registered one. The flagged header
+ * blocks (table hash, build id) are read after the names. Opens the
+ * CD-ROM MMIO sidecar and the schedule sidecars beside the trace; when a
+ * schedule loads and the trace carries VBL stamps, the delta compare is
+ * exact unless the policy is `log`. The first record's pc becomes
+ * inferred_anchor_pc, and in a hash-only trace with stamps every record's
+ * stamp is read ahead and handed to the schedule. The file position is left
+ * at the first record. A failure logs its reason, closes the file and frees
+ * the RAM buffer; the schedule and CD-ROM MMIO sidecars stay loaded.
+ * @param t Verifier state to fill; path is borrowed, not copied.
+ * @param path Path of the golden trace.
+ * @return 0 on success; -1 on any open, header or table mismatch. */
 int openpete_psxtrace_open(openpete_psxtrace_t* t, const char* path);
 
 /** @brief Read the next reference record and compare openpete's region hashes against it.
@@ -174,6 +194,12 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t);
  * @param t Trace opened by openpete_psxtrace_open(). */
 void openpete_psxtrace_finalize(openpete_psxtrace_t* t);
 
+/** @brief Close the trace file and free the RAM payload buffer and the VBL stamp array.
+ *
+ * The pointers are cleared, so a second call is harmless. The schedule
+ * holds the stamp array by pointer and is not told; it stays active with
+ * a dangling array until the process ends.
+ * @param t Trace opened by openpete_psxtrace_open(). */
 void openpete_psxtrace_close(openpete_psxtrace_t* t);
 
 /** @brief Load the reference's schedule from the sidecars beside a golden and activate it.
@@ -189,6 +215,7 @@ void openpete_psxtrace_close(openpete_psxtrace_t* t);
  * @return 1 when a .vsync, .loads or .srand sidecar loaded and the schedule
  *         is active, else 0. */
 int  openpete_sched_open(const char* trace_path);   /* 1 when any sidecar loaded */
+/// @brief Return 1 when openpete_sched_open() loaded a schedule, else 0; a failed schedule stays active.
 int  openpete_sched_active(void);
 /* The schedule tracks the reference VBLANK count openpete has reached
  * (`pos`). Each consumer returns a target; the thunk layer charges
@@ -200,13 +227,67 @@ int  openpete_sched_active(void);
  * @param stamps Stamp per record index.
  * @param count Records in stamps. */
 void     openpete_sched_set_stamps(const uint32_t* stamps, uint32_t count); /* the trace's pad2 column */
+/// @brief Return the reference VBLANK count openpete has reached, 0 until the position is known.
 uint32_t openpete_sched_pos(void);
+
+/** @brief Advance the position by vbls reference VBLANKs.
+ *
+ * Called by the thunk layer after it runs the VBLs a consumer charged. The
+ * position moves whether or not it was known.
+ * @param vbls VBLANKs to add. */
 void     openpete_sched_advance_pos(uint32_t vbls);
+
+/// @brief Return 1 once the position has been set from the first event or an anchor stamp, else 0.
 int      openpete_sched_pos_known(void);
-int32_t  openpete_sched_query(uint32_t ra, uint32_t* target_out); /* the reference's answer to the VSync(-1) call from site ra; -1 = unknown */
-int32_t  openpete_sched_counter(void);   /* the counter at the position (a waited call's return value) */
-int      openpete_sched_registration(uint32_t ra, uint32_t* target_out); /* a callback registration's VBLANK, when behind it */
-uint32_t openpete_sched_current_record(void); /* the reference record index the next anchor hit produces */
+
+/** @brief Answer a VSync(-1) query with the reference's counter for the same read of the record.
+ *
+ * The answer is the next query row of the current record from call site ra
+ * (any site when the sidecar has none); rows before it, whether of an
+ * earlier record, behind the position, from another site or from a
+ * registration, count as reads openpete did not make, and a waited row
+ * ends the search. A row covers a run of equal queries. When the row's
+ * VBLANK, its counter plus the capture's constant offset, lies ahead of
+ * the position, target_out is that VBLANK and the caller charges up to
+ * it. Otherwise, and before the first anchor hit under
+ * OPENPETE_SCHED_BOOT_OWN, inside a load window, after a failure, or when
+ * no row answers, the answer is the position's counter and target_out is
+ * the position.
+ * @param ra Call site of the query.
+ * @param target_out Receives the reference VBLANK to charge the position
+ *        to.
+ * @return The counter, or -1 when the schedule is inactive, the position
+ *         is unknown, or the sidecar carries no counter. */
+int32_t  openpete_sched_query(uint32_t ra, uint32_t* target_out);
+
+/** @brief Return the game-visible counter at the position.
+ *
+ * The counter is the reference VBLANK count minus the capture's constant
+ * offset, the value a waited VSync returns.
+ * @return The counter, or -1 when the schedule is inactive, the position is
+ *         unknown, or the sidecar carries no counter. */
+int32_t  openpete_sched_counter(void);
+
+/** @brief Charge the VBLs before a callback registration to the reference's VBLANK for it.
+ *
+ * Matches the next registration row of the current record or an earlier
+ * one, from call site ra when the sidecar records sites, and marks it
+ * consumed. Rows before it stay for their own consumers.
+ * @param ra Call site of the registration.
+ * @param target_out Receives the registration's VBLANK.
+ * @return 1 with target_out set when the row's VBLANK lies ahead of the
+ *         position; 0 when the schedule is inactive, failed or without a
+ *         position, inside a load window, past the trace's last record,
+ *         when no row of the record matches, or when the position is not
+ *         behind the row. */
+int      openpete_sched_registration(uint32_t ra, uint32_t* target_out);
+
+/** @brief Return the reference record index the next anchor hit produces.
+ *
+ * Anchor hits from the target hit on count from record 0; the load-window
+ * re-alignment offset is added and the result is floored at 0.
+ * @return The record index. */
+uint32_t openpete_sched_current_record(void);
 /** @brief Answer a waited VSync call with the reference VBLANK it returns at.
  *
  * The answer is the return VBLANK of the next waited row of the current
@@ -264,6 +345,13 @@ int  openpete_sched_anchor_target(uint32_t record, uint32_t* target_out);
  *        when its completion is deferred.
  * @return 1 with every output set, else 0. */
 int  openpete_sched_read(int sectors, uint32_t dst, uint32_t* issue_vbl_out, uint32_t* done_vbl_out, uint32_t* done_rec_out, int* sync_out);
+/** @brief Answer an srand call with the reference's next seed.
+ *
+ * Seeds are consumed in order from the `.srand` sidecar. A call past the
+ * last seed records a schedule failure.
+ * @param seed_out Receives the seed.
+ * @return 1 with seed_out set; 0 when the schedule is inactive, no `.srand`
+ *         sidecar loaded, or the seeds are exhausted. */
 int  openpete_sched_next_srand(uint32_t* seed_out);
 /** @brief Track the load window at an anchor hit and report a record re-alignment when openpete leaves one.
  *
@@ -280,6 +368,7 @@ int  openpete_sched_next_srand(uint32_t* seed_out);
  * @param skip_to_rec Receives the reference record where its window ended.
  * @return 1 when a re-alignment is due, else 0. */
 int  openpete_sched_anchor_window(uint32_t record, uint32_t value, uint32_t* skip_to_rec);
+/// @brief Return 1 while openpete is inside a load window, as of the last openpete_sched_anchor_window() call.
 int  openpete_sched_in_load(void);
 /** @brief Return whether the kernel's controller and card vblank handler ran on reference VBLANK vbl.
  *
@@ -351,8 +440,26 @@ int  openpete_sched_cdsync_peek(uint32_t* ra_out, uint64_t* tick_out);
 int  openpete_psxtrace_skip_to(openpete_psxtrace_t* t, uint32_t rec);
 uint32_t openpete_psxtrace_current_record(void);          /* on the active trace (run.c) */
 int      openpete_psxtrace_skip_current_to(uint32_t rec);
+/** @brief Record a schedule failure, keeping the first reason.
+ *
+ * Formats the reason into a 256-byte buffer, truncating, and logs it as an
+ * error. Later calls are ignored. Once failed, the consumers answer as they
+ * would past the trace.
+ * @param fmt printf format of the reason, followed by its arguments. */
 void openpete_sched_fail(const char* fmt, ...);
+
+/** @brief Return 1 when a schedule failure was recorded, else 0.
+ *
+ * @param reason Receives a pointer to the first failure's text, valid for
+ *        the process; may be NULL. It is set whether or not a failure was
+ *        recorded, and holds an empty string when none was. */
 int  openpete_sched_failed(const char** reason);
+
+/** @brief Log one line of the schedule's consumption counters, with the failure reason when one was recorded.
+ *
+ * Covers waited rows, reads, seeds, queries, registrations, long frames,
+ * boot waits, load windows, controller handler vblanks and CdSync polls.
+ * Does nothing when the schedule is inactive. */
 void openpete_sched_summary(void);
 
 #ifdef __cplusplus

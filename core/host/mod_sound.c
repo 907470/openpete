@@ -46,6 +46,10 @@ static ALuint      s_sources[SND_SOURCES];
 static int         s_inited = 0; /* 0 = not yet, 1 = ok, -1 = AL dead */
 static int         s_muted  = 0;
 
+/** @brief Create the source pool on first use and return the init state, 1 when usable or -1 when AL is dead.
+ *
+ * The result is latched in s_inited, so a failed generation is not retried
+ * and the warning logs once. Sources are made listener-relative. */
 static int snd_init(void) {
     if (s_inited) return s_inited;
     alGetError();
@@ -107,6 +111,10 @@ static ALuint snd_cache_upload(const char* key, const int16_t* pcm,
     return buf;
 }
 
+/** @brief Return the AL buffer for the WAV at path, loading and caching it on first use, or 0 on failure.
+ *
+ * The decoded samples are freed once AL holds its copy. A load failure is
+ * logged by the loader and an upload failure by snd_cache_upload. */
 static ALuint snd_buffer_for(const char* path) {
     ALuint cached = snd_cache_find(path);
     if (cached) return cached;
