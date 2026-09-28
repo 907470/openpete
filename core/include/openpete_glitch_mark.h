@@ -7,7 +7,8 @@
  *
  * A one-present artifact lasts 2 to 20 ms on a 480 Hz display and is gone
  * before anything can be started to catch it. The ring runs always, costs
- * one struct store per present and per walk, and the mark writes out what
+ * one struct store per present and two per walk (the ring slot and the held
+ * last-walk copy), and the mark writes out what
  * is already in it, so the capture is taken AFTER the artifact was seen.
  *
  * Two rings, because the two clocks differ. A present record is one trip
