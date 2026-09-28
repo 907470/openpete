@@ -136,11 +136,22 @@ static int32_t s_head[CAL_HASH_SIZE];
 static int32_t s_next[CAL_OT_MAX * 4];
 static int32_t s_prim[CAL_OT_MAX * 4];
 
+/** @brief Hashes an integer screen point to an index of s_head.
+ *
+ * @param x The screen X.
+ * @param y The screen Y.
+ * @return An index below CAL_HASH_SIZE. */
 static uint32_t cal_hash(int x, int y)
 {
     return (((uint32_t)x * 73856093u) ^ ((uint32_t)y * 19349663u)) & (CAL_HASH_SIZE - 1);
 }
 
+/** @brief Builds the hash chains of every vertex of every prim of the table.
+ *
+ * Clears s_head, then chains one edge per vertex through s_next, with s_prim
+ * naming the vertex's prim. The table holds at most CAL_OT_MAX prims of four
+ * vertices, which is the edge arrays' size.
+ * @param T The table. */
 static void cal_index(const cal_ot_t* T)
 {
     memset(s_head, -1, sizeof s_head);
@@ -152,6 +163,13 @@ static void cal_index(const cal_ot_t* T)
         }
 }
 
+/** @brief Whether prim `p` has a vertex exactly at (x, y).
+ *
+ * @param T The table.
+ * @param p The prim.
+ * @param x The screen X.
+ * @param y The screen Y.
+ * @return 1 when it does, 0 otherwise. */
 static int cal_prim_has(const cal_ot_t* T, int p, int x, int y)
 {
     for (int k = 0; k < T->nv[p]; k++)
@@ -242,6 +260,15 @@ static void cal_print_face(const moby_rank_cal_in_t* in, int f)
     fputc(']', stderr);
 }
 
+/** @brief Tallies one triangle pair and, at level 2, prints a disagreeing pair to stderr.
+ *
+ * Nothing is counted when cal_pair does not compare the pair. A disagreement
+ * is printed only when OPENPETE_MOBY_RANK_CAL is 2 or more.
+ * @param in The feed pass.
+ * @param a The first triangle.
+ * @param b The second triangle.
+ * @param t Accumulates the compared and agreeing counts.
+ * @param kind The pair class named in the printed line. */
 static void cal_tally_pair(const moby_rank_cal_in_t* in, int a, int b, cal_tally* t,
                            const char* kind)
 {

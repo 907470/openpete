@@ -336,10 +336,19 @@ static int s23_lzcr(uint32_t v) {
     return n;
 }
 
-/* The Moby's own rotation matrix and the azimuth bias, resolved once per
- * record rather than per face. */
+/* The per-record environment-map setup, resolved once per record rather than
+ * per face. The walk supplies the rotated corner positions, so it holds the
+ * azimuth bias alone. */
 typedef struct { int bias; } s23_env_setup;
 
+/** @brief Resolves a record's environment-map setup: the azimuth bias, always 0.
+ *
+ * The draw's mode-1 azimuth carries a per-record bias (mobydraw.s:2100-2112)
+ * that this decode does not reproduce, so `bias` is 0 and no guest memory is
+ * read.
+ * @param cpu Unused.
+ * @param rec Unused: the cull record's address.
+ * @param E Receives the setup. */
 static void s23_env_setup_read(CPUState* cpu, uint32_t rec, s23_env_setup* E) {
     /* The azimuth carries a per-record bias the setup leaves in GTE control 17
      * (mobydraw.s:2100-2112): the record's view-space depth, which its own
@@ -441,6 +450,27 @@ static int s23_mode0_ir0_sum(void) {
     return s >= 0 ? s : moby_game_s23.mode0_ir0_from_colour_sum;
 }
 
+/** @brief Applies the special material's treatment to one triangle's vertex colours and texture.
+ *
+ * The special_face hook of the animated kind. A face whose flag field selects
+ * the other dispatcher (`hl` 2, bit 4) or a material whose mode (bits 28-30 of
+ * `mat`, 0 for a zero word) exceeds 2 is left to the ordinary emit. Mode 0
+ * depth-cues each vertex colour toward the material's far colour; mode 1 does
+ * the same at one IR0 for the moby and also names a substitute texture page,
+ * CLUT and generated environment coordinates in `tex`; mode 2 replaces all
+ * four colours with one sheen colour computed from the face normal.
+ * @param cpu The guest CPU state, read only.
+ * @param mat The record's material word.
+ * @param M The model-to-view matrix, Q12; mode 2 rotates the face normal by it.
+ * @param moby Unused.
+ * @param rec The cull record's address, passed to the environment setup.
+ * @param F The face; `hl` must be 1, and n1..n3 are the normal mode 2 reads.
+ * @param c The four vertex colours, rewritten in place.
+ * @param ev The four corners' model-to-view rotated positions, read by mode 1.
+ * @param textured Unused: every treatment keeps the face's textured flag.
+ * @param tex Receives mode 1's substitute page, CLUT and coordinates; the walk
+ *        zeroes it before the call.
+ * @return 0 when the face is left alone, else 1 plus the mode applied. */
 static int s23_special_face(CPUState* cpu, uint32_t mat, const int M[3][3],
                            uint32_t moby, uint32_t rec, const moby_wface_t* F,
                            uint32_t c[4], const float ev[4][3], int* textured,
@@ -761,6 +791,12 @@ extern unsigned openpete_frame;
 #define S23_FLAT_SCRATCH 0x1F8003F0u
 static uint32_t s_flat_entry[4];
 
+/** @brief Copies the cull's second-kind queue into the host queue s_simple_q.
+ *
+ * Reads records from draw scratch + 0x1C00 (the base the cull left in GTE data
+ * 2), stride 0x10, until a zero first word or S23_SIMPLE_RECS records, and
+ * sign-extends each record's packed halves into s_simple_d and s_simple_far.
+ * Sets s_simple_qn to the count. Writes no guest memory. */
 static void s23_simple_capture(CPUState* cpu) {
     s_simple_qn = 0;
     /* The cull left the draw scratch base in GTE data 2 (mobydraw.s:35,3893)
@@ -823,6 +859,15 @@ static uint32_t s23_simple_flat_colour(const int R[3][3], uint32_t w1,
     return (uint32_t)out;
 }
 
+/** @brief The signed doubled area of the screen triangle (a, b, c), the GTE's NCLIP value.
+ *
+ * (b - a) x (c - a) over the float screen points, without rounding them to the
+ * GTE's integer grid. The draw keeps a standard triangle on a positive value.
+ * @param s The screen points, X then Y; at least max(a, b, c) + 1 rows.
+ * @param a The row of the first vertex.
+ * @param b The row of the second vertex.
+ * @param c The row of the third vertex.
+ * @return The signed doubled area. */
 static double s23_nclip(const float s[3][2], int a, int b, int c) {
     return (double)(s[b][0]-s[a][0]) * (double)(s[c][1]-s[a][1])
          - (double)(s[c][0]-s[a][0]) * (double)(s[b][1]-s[a][1]);
@@ -944,8 +989,7 @@ static int s23_simple_shade_face(const int R[3][3], uint32_t f1, int tri,
  * for the screen-space kind — the projection origin the record names. The two
  * kinds part at one branch on the record (mobydraw.s:3915) and rejoin at the
  * shared vertex and face walk (mobydraw.s:4036), so everything between them is
- * here and nothing else in the decode differs. Returns 0 when the record draws
- * nothing. */
+ * here and nothing else in the decode differs. */
 typedef struct {
     double   TR[3];     /* the GTE translation, world/2 (mobydraw.s:4039-4041) */
     int      R[3][3];   /* the matrix installed before the per-moby rotations */
@@ -954,6 +998,28 @@ typedef struct {
     double   ofx, ofy;  /* its projection origin, PSX px */
 } s23_place;
 
+/** @brief Places one queued second-kind record and reports whether it draws.
+ *
+ * Fills the translation, matrix, geometry header and, for the screen-space
+ * kind, the projection origin.
+ *
+ * The far-cull distance's bit 15 sorts the record into the screen-space kind,
+ * which takes its depth and screen offsets from the record itself (dropped at
+ * a non-positive depth) and skips the camera transform and the range and
+ * bounding-box tests. The other kind transforms the record's camera-relative
+ * deltas by the camera matrix and is dropped past its far distance (unless
+ * extended LOD is on) or when the header's four bounding-box bytes fail the
+ * draw's frustum tests. Either kind is dropped when the geometry header at
+ * slot + 0x14 is not a KSEG0 pointer. `pl->screen` is written before any
+ * return.
+ * @param r The index into the host queue.
+ * @param Rcam The camera matrix, Q12.
+ * @param dcam The camera-position change since the tick in the record's
+ *        quarter-world units, per axis (X, Y, Z); zero on a canonical decode.
+ * @param dmob The moby's displacement over the present's fraction of the tick,
+ *        in world units; zero on a canonical decode.
+ * @param pl Receives the placement; valid only on a return of 1.
+ * @return 1 when the record draws, 0 when it draws nothing. */
 static int s23_simple_place(CPUState* cpu, int r, const int Rcam[3][3],
                             const double dcam[3], const double dmob[3],
                             s23_place* pl) {
@@ -1056,6 +1122,20 @@ static int32_t s23_simple_face_otk(const moby_otk_rec_t ork[2], const moby_otk_v
     return moby_otk_face_bucket(&ork[flat], &f);
 }
 
+/** @brief Decodes the host queue of second-kind records into triangles for the shared walk.
+ *
+ * Per queued record: places it (s23_simple_place), takes the LOD tier from the
+ * moby's size byte against twice the depth, rotates and projects the vertex
+ * words, builds the colour table (depth-cued toward the low-poly block inside
+ * the fade band), then walks the face stream, shades each face
+ * (s23_simple_shade_face) and emits up to two triangles through
+ * moby_simple_tri with the face's paint-key bucket. A sub-tick present, which
+ * has a staged tick camera, re-bases each record by the camera change and
+ * applies the moby's own displacement and interpolated rotation; a canonical
+ * decode takes the cull's values as they stand. Reads guest memory, writes
+ * none, and updates the pass counters; it uses static scratch arrays and is not
+ * reentrant.
+ * @return The number of triangles emitted. */
 static int s23_simple_decode(CPUState* cpu) {
     int Rcam[3][3];
     ngte_read_matrix(cpu, game_layout.cam.base, Rcam);   /* mobydraw.s:3898-3908 */

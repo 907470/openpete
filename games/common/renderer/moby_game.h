@@ -61,6 +61,13 @@ static inline uint32_t moby_vs_read_word(CPUState* cpu, const moby_vstream_t* s,
     }
     return cpu->read_word(va);
 }
+/** @brief Read one guest halfword through a vstream's host alias.
+ *
+ * Same window test as moby_vs_read_word; the value is zero-extended.
+ * @param cpu The guest CPU state, read only.
+ * @param s The stream, whose alias bounds the direct read.
+ * @param va The guest address.
+ * @return The unsigned halfword. */
 static inline uint32_t moby_vs_read_half(CPUState* cpu, const moby_vstream_t* s, uint32_t va) {
     if (s->base && va >= s->base_va && va - s->base_va + 2u <= s->len) {
         uint16_t h; memcpy(&h, s->base + (va - s->base_va), 2); return h;

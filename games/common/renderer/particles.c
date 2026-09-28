@@ -119,6 +119,12 @@ static uint32_t s_code_hist[256];
 static uint32_t s_tag_hist[256];
 static uint32_t s_fed_tris;      /* native triangles the last feed emitted */
 
+/** @brief The ngte_prim_sink that appends a captured primitive to s_item.
+ *
+ * The new item is unpaired: depth 1 (the near guard), class -1, no record and
+ * an inactive rebase with scale 1.
+ * @param s The decoded primitive.
+ * @return 1 when stored, 0 when s_item holds PART_MAX_PRIMS. */
 static int part_prim_sink(void* ctx, const ngte_prim* s) {
     (void)ctx;
     if (s_item_n >= PART_MAX_PRIMS) return 0;
@@ -401,16 +407,19 @@ static int part_corner_rot(CPUState* cpu, double tick_ang, double show_ang,
 static unsigned long s_reb_stat[4][16];   /* 0 lerped, 1 snapped, 2 rotated, 3 reused */
 static int s_reb_dbg;   /* 2 = one line per rebased primitive */
 
-/* The scale carrying a primitive's corner offsets from the extent the tick
- * built to the extent this present shows. The routine builds a billboard's
- * half-extents as (size * sine) >> 10 in view space and divides all four
- * corners by the record point's own view-Z (partsdraw.s:488-4904 loads the
- * size byte and the sine pair into IR1..IR3, :4930-4934 shifts the products
- * right by 10, and :49C4 projects the four corners against one translation),
- * so the screen extent is proportional to the size byte and inversely
- * proportional to that view-Z. Both terms move inside a tick and the captured
- * corners carry neither: the scale is their ratio between the shown state and
- * the tick's.
+#define PART_SCALE_MIN 0.25
+#define PART_SCALE_MAX 4.0
+
+/** @brief The scale carrying a primitive's corner offsets from the tick's extent to the shown extent.
+ *
+ * The routine builds a billboard's half-extents as (size * sine) >> 10 in view
+ * space and divides all four corners by the record point's own view-Z
+ * (partsdraw.s:523-525 loads the size byte and the sine pair into IR0..IR2,
+ * :529 multiplies them, :539-540 shifts the products right by 10 and :576
+ * projects the four corners against one translation), so the screen extent is
+ * proportional to the size byte and inversely proportional to that view-Z.
+ * Both terms move inside a tick and the captured corners carry neither: the
+ * scale is their ratio between the shown state and the tick's.
  *
  * A two-point class's two endpoints are two record points, each translated by
  * its own displacement, so it has no offsets about a single point and holds
@@ -420,13 +429,17 @@ static int s_reb_dbg;   /* 2 = one line per rebased primitive */
  * view-Z is the projection of the tick's own inputs through the same
  * arithmetic, so both ratios are exactly one and the corners are untouched.
  *
- * The band is the discontinuity guard the displacement gets from
- * PART_REUSE_CEILING: a view-Z that moved a particle's extent by more than a
- * factor of four inside one tick is a camera cut or a slot reuse, where
- * holding the tick's extent is what every other term of the rebase does. */
-#define PART_SCALE_MIN 0.25
-#define PART_SCALE_MAX 4.0
-
+ * The band [PART_SCALE_MIN, PART_SCALE_MAX] is the discontinuity guard the
+ * displacement gets from PART_REUSE_CEILING: a view-Z that moved a particle's
+ * extent by more than a factor of four inside one tick is a camera cut or a
+ * slot reuse, where holding the tick's extent is what every other term of the
+ * rebase does.
+ * @param it The captured primitive; supplies the tick's view-Z and size byte.
+ * @param shown The projection of the record point the present shows; `m3` is
+ *        its view-Z.
+ * @param size_delta The shown size byte minus the tick's.
+ * @return The scale; 1.0 for a two-point class, a non-positive view-Z, a zero
+ *         tick size under a nonzero delta, or a scale outside the band. */
 static double part_extent_scale(const part_item* it, const ngte_proj* shown,
                                 double size_delta) {
     if (it->cls == PART_TWO_POINT_CLASS) return 1.0;
@@ -441,6 +454,21 @@ static double part_extent_scale(const part_item* it, const ngte_proj* shown,
     return scl;
 }
 
+/** @brief Fills s_reb[i] with the rebase of captured primitive i onto the pose this present shows.
+ *
+ * A primitive with no record (the fixed front bucket, or unpaired) gets an
+ * inactive rebase. Otherwise the record's displaced point (part_record_pair)
+ * is projected under `v`, and its screen displacement from the tick's own
+ * projection and its depth are stored; a two-point class does the same for its
+ * second point. A lerped pair of the rotating class also gets the corner
+ * rotation, and every such primitive the extent scale. A pair that is not
+ * lerped holds the tick's record position, so only the camera's motion
+ * displaces it. Adds to the s_reb_stat verdict counts, and at
+ * OPENPETE_PART_REBASE_DBG 2 or more prints one line.
+ * @param cpu Reads the sin/cos table.
+ * @param v The view under the staged camera.
+ * @param alpha The present's phase between the two ticks.
+ * @param i The index into s_item. */
 static void part_rebase_item(CPUState* cpu, const ngte_view* v, double alpha, int i) {
     part_item* it = &s_item[i];
     part_rebase* r = &s_reb[i];
@@ -483,6 +511,10 @@ static void part_rebase_item(CPUState* cpu, const ngte_view* v, double alpha, in
     r->scl = part_extent_scale(it, &o, size_delta);
 }
 
+/** @brief Prints a view's camera, offsets, H, scale and matrix row to stderr.
+ *
+ * @param tag The label printed in the line.
+ * @param v The view. */
 static void part_view_dbg(const char* tag, const ngte_view* v) {
     fprintf(stderr, "[part-view f=%u %s] cam=(%.2f,%.2f,%.2f) ram=(%.2f,%.2f,%.2f) "
                     "interp=%d of=(%.3f,%.3f) H=%.2f/%.2f s=%.4f F=%.4f M0=(%d,%d,%d)\n",
@@ -492,6 +524,9 @@ static void part_view_dbg(const char* tag, const ngte_view* v) {
             v->cam_M[0][0], v->cam_M[0][1], v->cam_M[0][2]);
 }
 
+/** @brief Prints the per-class rebase verdict counts to stderr; registered to run at exit.
+ *
+ * A class with no lerped and no snapped primitive is omitted. */
 static void part_rebase_report(void) {
     fprintf(stderr, "[part-rebase]");
     for (int c = 0; c < 16; c++)
@@ -555,6 +590,20 @@ static void part_rebase_xy(const part_item* it, const part_rebase* r, int second
     *y += second ? r->dy2 : r->dy;
 }
 
+/** @brief Feeds a screen-space quad to the native scene as two triangles at one depth.
+ *
+ * The triangles are (0,1,2) and (1,3,2) in the world layer, every vertex at
+ * `depth` with constant W and full alpha. Each adds to s_fed_tris.
+ * @param x The corners' screen X, PSX pixels.
+ * @param y The corners' screen Y, PSX pixels.
+ * @param u The corners' texture U.
+ * @param vv The corners' texture V.
+ * @param rgb The corners' 24-bit colours.
+ * @param depth The scene depth.
+ * @param tp The texture page and CLUT; read only when `textured`, and NULL is
+ *        allowed otherwise.
+ * @param textured 1 to sample the texture page.
+ * @param blend The renderer blend code, 0 for opaque. */
 static void part_add_quad(const float x[4], const float y[4], const float u[4],
                           const float vv[4], const uint32_t rgb[4], float depth,
                           const ngte_tpage* tp, int textured, int blend) {
@@ -617,6 +666,15 @@ static void part_feed_line(const part_item* it, const part_rebase* r,
     part_add_quad(qx, qy, zu, zu, cc, depth, NULL, 0, stp ? 1 : 0);
 }
 
+/** @brief Feeds every captured primitive to the native scene: polygons as quads, lines as thin quads.
+ *
+ * Does nothing when the feed is suppressed or the captured set is empty.
+ * Begins the scene at openpete_frame and takes each primitive's depth from its
+ * rebase when active, else from its pairing. A textured polygon's blend comes
+ * from its ABR when semi-transparent (rate 3 drawn additive), an untextured
+ * one's is 1 when semi-transparent; corners pass through the rebase. A code in
+ * the 0x40 or 0x50 line ranges goes to part_feed_line; any other code is
+ * ignored. Clears the scene tag on exit. */
 static void part_feed_native(void) {
     if (!part_feed_enabled()) return;
     if (s_item_n <= 0) return;
@@ -785,6 +843,18 @@ static const hook_bracket_desc k_bracket = {
     .st = &s_hb,
 };
 
+/** @brief The particle draw hook: runs the guest draw once, then captures and feeds its primitives.
+ *
+ * Through hook_bracket_run the guest routine runs unchanged and reports the
+ * polybuf interval it appended. When the interval is not empty the primitives
+ * are captured, the tick's view is built, each primitive is paired with the
+ * pool record that appended it (part_pair_depths), the census lines print, and
+ * the native scene is fed when it is live and RP_PARTICLES is enabled. Guest
+ * memory is read after the draw, never written.
+ * @param cpu The guest CPU state.
+ * @param addr The hooked entry address.
+ * @return 0 when the bracket declines and the ordinary dispatch must run the
+ *         draw, else 1: the draw has run. */
 static int on_particles_draw(CPUState* cpu, uint32_t addr) {
     uint32_t startp, endp; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_bracket, &startp, &endp, &feed, &verify))
@@ -811,6 +881,9 @@ static feature_dispatch_entry_t particles_dispatch[] = {
     { 0u, NULL },
 };
 
+/** @brief Binds the dispatch table's hook address to the layout's particle draw site.
+ *
+ * @param opts Unused. */
 static void particles_apply_options(const openpete_options_t* opts) {
     (void)opts;
     particles_dispatch[0].addr = game_layout.particles.hook;

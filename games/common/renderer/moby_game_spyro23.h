@@ -48,6 +48,14 @@ typedef struct moby_game_s23_consts {
 
 extern const moby_game_s23_consts_t moby_game_s23;
 
+/** @brief Advances the vertex stream by one vertex under the moby draw's literal Y decode.
+ *
+ * Calls s23_vstream_next_lit with `y_lit_halved` 0. It is the vstream_next
+ * hook of the moby provider.
+ * @param cpu The guest CPU state, read only.
+ * @param s The stream state s23_vstream_init opened; advanced in place.
+ * @param first Unused: the keyframe word already named the first item's
+ *        form. */
 void s23_vstream_next(CPUState* cpu, moby_vstream_t* s, int first);
 /** @brief Advances the vertex stream by one vertex, with the literal form's Y decode selectable.
  *
@@ -61,6 +69,19 @@ void s23_vstream_next(CPUState* cpu, moby_vstream_t* s, int first);
  * @param first Unused: the keyframe word already named the first item's form.
  * @param y_lit_halved 1 for the player draw's literal Y decode, 0 for the moby draw's. */
 void s23_vstream_next_lit(CPUState* cpu, moby_vstream_t* s, int first, int y_lit_halved);
+/** @brief Decodes a face stream with the moby draw's own record sizing.
+ *
+ * s23_decode_faces_stride with no fixed stride and the texture words read only
+ * for a record whose word 1 is negative: two words per untextured record, five
+ * per textured one (mobydraw.s:1536). It is the decode_faces hook of the moby
+ * provider.
+ * @param cpu The guest CPU state, read only.
+ * @param fb The faceblock; the records start at fb + 4.
+ * @param bytecount The stream's length in bytes after the leading word.
+ * @param out Receives up to `cap` faces.
+ * @param cap The capacity of `out`.
+ * @param st Receives the raw record count and the alignment verdict.
+ * @return The number of faces decoded, at most `cap`. */
 int  s23_decode_faces(CPUState* cpu, uint32_t fb, uint32_t bytecount,
                      moby_wface_t* out, int cap, moby_face_stats_t* st);
 /** @brief Decodes a face stream into walk faces, with the record stride and the textured rule selectable.

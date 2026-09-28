@@ -60,14 +60,27 @@ typedef struct {
     int    extended;      /* view wider than the canonical 4:3 frame */
 } ngte_view;
 
+/** @brief Builds the projection view from the CPU state and the display policy.
+ *
+ * Reads the camera matrix at game_layout.cam.base, the staged camera position
+ * (the sub-tick interpolated one when the interp spine supplies it, else the
+ * RAM value), the GTE screen offsets and H (control registers 24-26), the
+ * --fov scale and the Hor+ factor with its screen-X bounds. The first call
+ * latches OPENPETE_FOV_CENSUS. Writes no guest memory.
+ * @param cpu The guest CPU state, read only.
+ * @param v Receives the view. */
 void ngte_view_build(CPUState* cpu, ngte_view* v);
 
-/* The view's camera in the form the occlusion grid compares: position in
- * full-world units and the camera matrix with each row scaled to unit length.
- * The game's matrix is Q12 and not exactly orthonormal, so the rows are
- * normalized here; the grid's bound is then a plain nine-element dot product
- * against the grid camera's matrix. */
 struct openpete_occl_camera;
+/** @brief Converts a view's camera into the form the occlusion grid compares.
+ *
+ * The position is in full-world units and the camera matrix has each row
+ * scaled to unit length (a row shorter than 1e-6 is left unscaled). The game's
+ * matrix is Q12 and not exactly orthonormal, so the rows are normalized here;
+ * the grid's bound is then a plain nine-element dot product against the grid
+ * camera's matrix.
+ * @param v The view; supplies `cam` and `cam_M`.
+ * @param c Receives the position, the row-major matrix and valid = 1. */
 void ngte_occl_camera(const ngte_view* v, struct openpete_occl_camera* c);
 
 /* Engagement census of the --fov policy (OPENPETE_FOV_CENSUS=1 arms it and
@@ -348,9 +361,16 @@ void ngte_project_offset(const ngte_view* v, const double off[3], ngte_proj* o);
 int ngte_table_rot(CPUState* cpu, double from_ang, double to_ang,
                    double* rc, double* rs);
 
-/* Byte-exact table lookups for a packed euler word (Z=byte0, X=byte1,
- * Y=byte2; m_Rotation@+0x44). rot==0 gives sin 0 / cos 4096 on every axis. */
 typedef struct { int sy, cy, sx, cx, sz, cz; } ngte_euler_sc;
+/** @brief Looks up the table sine and cosine of each axis of a packed euler word.
+ *
+ * The word packs Z in byte 0, X in byte 1 and Y in byte 2 (m_Rotation@+0x44).
+ * Each axis reads its sine at game_layout.sin_table + 2 * angle and its cosine
+ * 0x80 bytes on, as sign-extended halfwords. rot == 0 gives sin 0 / cos 4096 on
+ * every axis, as does a game whose table is not located.
+ * @param cpu Reads the game's sin/cos table.
+ * @param rot The packed euler word.
+ * @param e Receives the three axes' sine and cosine. */
 void ngte_euler_sincos(CPUState* cpu, uint32_t rot, ngte_euler_sc* e);
 
 /** @brief out = start·Ry·Rx·Rz in Q12, the order the game's MVMVA sequence applies.
@@ -400,6 +420,19 @@ typedef struct {
  * what a feeder that never sees the escape expects. */
 #define NGTE_TP_REPLACED_ID 0x1u
 
+/** @brief Decodes a texture-page word and a CLUT word into origins, colour depth and blend rate.
+ *
+ * `tp` bits 0-3 are the page X in 64-texel columns, bit 4 the page Y in
+ * 256-line halves, bits 5-6 the semi-transparency rate ABR and bits 7-8 the
+ * colour depth (0 is 4 bpp, 1 is 8 bpp, otherwise 16 bpp). `clut` bits 0-5 are
+ * the CLUT X in 16-entry columns and bits 6-14 its Y in lines. The ABR is
+ * reported raw; the caller owns its blend-enable predicate and turns the rate
+ * into a blend code with ngte_abr_blend. With NGTE_TP_REPLACED_ID and depth 3
+ * the result is the replaced-texture escape described at that flag.
+ * @param tp The texture-page bitfield.
+ * @param clut The CLUT bitfield.
+ * @param flags NGTE_TP_* bits, 0 for none.
+ * @param out Receives the decode; every field is written. */
 void ngte_decode_tpage(unsigned tp, unsigned clut, unsigned flags, ngte_tpage* out);
 
 /* ABR to the renderer's blend code: 1 = (B+F)/2, 2 = B+F, 3 = B-F,
@@ -411,6 +444,14 @@ typedef enum {
     NGTE_ABR_QUARTER_AS_ADD = 1
 } ngte_abr_policy;
 
+/** @brief Maps a raw semi-transparency rate to the renderer's blend code.
+ *
+ * Rates 0, 1 and 2 give codes 1 ((B+F)/2), 2 (B+F) and 3 (B-F); rate 3 gives
+ * code 4 (B+F/4), or code 2 under NGTE_ABR_QUARTER_AS_ADD. Blend code 0
+ * (opaque) is the caller's, from its own blend-enable bit.
+ * @param abr The raw rate; only the low two bits are read.
+ * @param policy How rate 3 maps.
+ * @return The blend code, 1 to 4. */
 int ngte_abr_blend(int abr, ngte_abr_policy policy);
 
 /* ---- screen-space backface test ----------------------------------------
@@ -424,6 +465,18 @@ typedef enum {
     NGTE_NCLIP_SXY_GRID = 1
 } ngte_nclip_mode;
 
+/** @brief The signed doubled area of a screen triangle, the sign of the GTE's NCLIP value.
+ *
+ * ax * (by - cy) + bx * (cy - ay) + cx * (ay - by), with each coordinate first
+ * rounded to the integer SXY grid under NGTE_NCLIP_SXY_GRID.
+ * @param ax The first vertex X.
+ * @param ay The first vertex Y.
+ * @param bx The second vertex X.
+ * @param by The second vertex Y.
+ * @param cx The third vertex X.
+ * @param cy The third vertex Y.
+ * @param mode Whether to round to the SXY grid first.
+ * @return The signed doubled area. */
 double ngte_nclip(double ax, double ay, double bx, double by,
                   double cx, double cy, ngte_nclip_mode mode);
 
@@ -461,8 +514,10 @@ typedef struct {
     int      u[4], v[4];
     int      clut, tpage;
     int      textured, gouraud, quad, stp;
-    uint32_t raw[NGTE_PRIM_RAW_MAX];  /* words past nraw read zero */
-    int      nraw;          /* raw words carried, capped by raw_words_max */
+    uint32_t raw[NGTE_PRIM_RAW_MAX];  /* the packet's words, tag included; words
+                                       * past the packet read zero */
+    int      nraw;          /* raw words the policy asks the sink to use,
+                             * capped by raw_words_max */
 } ngte_prim;
 
 /* Stores one primitive. Returns nonzero when it was stored: a sink whose
@@ -482,6 +537,23 @@ typedef struct {
                               * the ones the sink stored */
 } ngte_walk_policy;
 
+/** @brief Walks the polybuf interval [start, end) primitive by primitive, decoding each for a sink.
+ *
+ * Each step advances (tag length + 1) * 4 bytes. The walk ends at `end`, after
+ * pol->guard primitives, or at a tag longer than pol->tag_len_max. A primitive
+ * whose tag length is zero is stepped by the length its polygon code implies,
+ * and a zero-length tag on a non-polygon code ends the walk. A polygon (code
+ * 0x20-0x3F) is decoded into vertex count, positions, 24-bit colours, UVs,
+ * CLUT, tpage and flags; any other code carries only its code, tag length and
+ * raw words, and is withheld from the sink when pol->polygons_only. The
+ * histograms and total count every walked primitive under pol->count_all,
+ * else only the ones the sink stored. Reads guest memory, writes none.
+ * @param cpu The guest CPU state, read only.
+ * @param start Guest address of the first primitive.
+ * @param end Guest address one past the interval.
+ * @param pol The walk's bounds and counters.
+ * @param sink Called once per primitive; a nonzero return means it stored it.
+ * @param ctx Passed to the sink unchanged. */
 void ngte_walk_prims(CPUState* cpu, uint32_t start, uint32_t end,
                      const ngte_walk_policy* pol, ngte_prim_sink sink, void* ctx);
 

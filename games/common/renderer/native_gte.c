@@ -15,6 +15,7 @@
 
 ngte_census_t ngte_census;
 int ngte_census_on;
+/** @brief Prints the --fov census counters to stderr; registered to run at exit. */
 static void ngte_census_print(void) {
     static const char* site[NGTE_SITE_N] = { "raw_sat", "gte_sat", "part_cap", "moby_near", "terrain_unr" };
     fprintf(stderr, "[fov-census]");
@@ -25,6 +26,10 @@ static void ngte_census_print(void) {
             ngte_census.sxy_bound, ngte_census.bb_untagged, ngte_census.reveal_admitted,
             ngte_census.reveal_spec_solo);
 }
+/** @brief Latches OPENPETE_FOV_CENSUS on the first call.
+ *
+ * When the variable is set and not '0', ngte_census_on becomes 1 and
+ * ngte_census_print is registered to run at exit. */
 static void ngte_census_arm(void) {
     static int armed = 0;
     if (armed) return;
@@ -280,6 +285,10 @@ int ngte_table_rot(CPUState* cpu, double from_ang, double to_ang,
     return 1;
 }
 
+/** @brief Rounds a double to the nearest integer, halves away from zero.
+ *
+ * @param x The value.
+ * @return The rounded value. */
 static int ngte_rnd_i(double x) { return (int)(x >= 0.0 ? x + 0.5 : x - 0.5); }
 
 void ngte_sincos_interp(CPUState* cpu, double fb, int* s_out, int* c_out) {

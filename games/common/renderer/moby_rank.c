@@ -215,6 +215,16 @@ typedef struct {
     int back;
 } otk_prim_t;
 
+/** @brief Fills a prim descriptor from a face.
+ *
+ * `v3` selects the triangle (v3,v1,v2), whose first vertex is the face's
+ * fourth; otherwise the prim starts at v0. A quad prim carries all four
+ * vertices.
+ * @param p Receives the prim.
+ * @param f The face.
+ * @param quad 1 for the whole quad, 0 for a triangle.
+ * @param v3 1 for the triangle (v3,v1,v2).
+ * @param back 1 for a back face. */
 static void otk_prim(otk_prim_t* p, const moby_otk_face_t* f, int quad, int v3, int back)
 {
     p->v3 = v3;
@@ -243,6 +253,16 @@ static int otk_dual_front(const moby_otk_face_t* f, long n1, long n2, otk_prim_t
     return 0;
 }
 
+/** @brief The DUAL rule: the prim a face draws as, never a back face.
+ *
+ * A triangle draws on n1 > 0, or n1 != 0 under the winding flag. A quad takes
+ * NCLIP(v3,v1,v2) as the second value; under the winding flag a positive n1
+ * and a negative second value are negated. otk_dual_front then picks the prim.
+ * @param r Unused.
+ * @param f The face.
+ * @param n1 The NCLIP of (v0,v1,v2).
+ * @param p Receives the prim.
+ * @return 1 when a prim is chosen, 0 when the draw drops the face. */
 static int otk_choose_dual(const moby_otk_rec_t* r, const moby_otk_face_t* f, long n1,
                            otk_prim_t* p)
 {
@@ -260,6 +280,14 @@ static int otk_choose_dual(const moby_otk_rec_t* r, const moby_otk_face_t* f, lo
     return otk_dual_front(f, n1, n2, p);
 }
 
+/** @brief The DUAL_FLAG_WHOLE rule: DUAL, except a quad with the winding flag draws whole.
+ *
+ * The whole quad is chosen with no NCLIP test.
+ * @param r The record, passed to otk_choose_dual.
+ * @param f The face.
+ * @param n1 The NCLIP of (v0,v1,v2).
+ * @param p Receives the prim.
+ * @return 1 when a prim is chosen, 0 when the draw drops the face. */
 static int otk_choose_dual_flag_whole(const moby_otk_rec_t* r, const moby_otk_face_t* f,
                                       long n1, otk_prim_t* p)
 {
@@ -268,6 +296,16 @@ static int otk_choose_dual_flag_whole(const moby_otk_rec_t* r, const moby_otk_fa
     return 1;
 }
 
+/** @brief The WHOLE rule: the face draws whole, as a back face when its first NCLIP is negative.
+ *
+ * While the record's TRZ is below the face's near limit the face always draws.
+ * Past it a triangle draws on n1 > 0, and a quad on n1 > 0 or, as a back face,
+ * on a negative NCLIP(v3,v1,v2).
+ * @param r The record; supplies TRZ.
+ * @param f The face; supplies the near limit.
+ * @param n1 The NCLIP of (v0,v1,v2).
+ * @param p Receives the prim.
+ * @return 1 when a prim is chosen, 0 when the draw drops the face. */
 static int otk_choose_whole(const moby_otk_rec_t* r, const moby_otk_face_t* f, long n1,
                             otk_prim_t* p)
 {
@@ -280,6 +318,17 @@ static int otk_choose_whole(const moby_otk_rec_t* r, const moby_otk_face_t* f, l
     return 1;
 }
 
+/** @brief The FLAT rule: two-sided faces whose back side draws only near the camera.
+ *
+ * A triangle draws on n1 != 0, a back face when n1 is negative. A quad takes
+ * DUAL's front prims and otherwise, on a negative second NCLIP, draws whole as
+ * a back face. A back face is kept only while the record's TRZ is below the
+ * face's near limit.
+ * @param r The record; supplies TRZ.
+ * @param f The face; supplies the near limit.
+ * @param n1 The NCLIP of (v0,v1,v2).
+ * @param p Receives the prim.
+ * @return 1 when a prim is chosen, 0 when the draw drops the face. */
 static int otk_choose_flat(const moby_otk_rec_t* r, const moby_otk_face_t* f, long n1,
                            otk_prim_t* p)
 {
@@ -296,6 +345,20 @@ static int otk_choose_flat(const moby_otk_rec_t* r, const moby_otk_face_t* f, lo
     return !p->back || r->trz < f->near_limit;
 }
 
+/** @brief The bucket word of a chosen prim under a row's key arithmetic.
+ *
+ * k is the sum over the prim's vertices of (weight * SZ) >> 1, less the
+ * record's base, plus the row's back_pre on a back face the face marks with
+ * back_adds; the prim is dropped when k < 0 (k <= 0 under OTK_DROP_NONPOS).
+ * The face bias times bias_mul enters before the shift (OTK_BIAS_PRE, dropped
+ * when k goes negative) or after it (OTK_BIAS_POST); the bucket is k shifted
+ * right by the record's shift, dropped when negative, plus back_post on a back
+ * face. MOBY_OTK_QUAD and MOBY_OTK_V3 are set from the prim.
+ * @param s The row.
+ * @param r The record's base and shift.
+ * @param f The face; supplies the bias and back_adds.
+ * @param p The prim chosen for the face.
+ * @return The bucket word, or -1 when the draw drops the prim. */
 static int otk_key(const otk_spec_t* s, const moby_otk_rec_t* r, const moby_otk_face_t* f,
                    const otk_prim_t* p)
 {
