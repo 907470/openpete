@@ -44,8 +44,9 @@ typedef struct {
  * integer screen points are exactly the vertices of one game prim that prim's
  * paint position, and compares the native order with it over same-moby pairs
  * of such triangles: the intersecting pairs, the pairs of two contested
- * triangles, and all pairs. Prints one `[rank-cal]` line to stderr, and a
- * `[rank-cal-dis]` line per disagreeing pair at level 2.
+ * triangles, and all pairs. Prints one `[rank-cal]` line to stderr, and at
+ * level 2 a `[rank-cal-dis]` line per disagreeing intersecting or contested
+ * pair (a disagreeing pair outside those two sets is only counted).
  * @param in The feed pass's walk triangles. */
 void moby_rank_cal_run(const moby_rank_cal_in_t* in);
 

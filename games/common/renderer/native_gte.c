@@ -1,7 +1,6 @@
-// games/common/renderer/native_gte.c — see native_gte.h. Bodies are the
-// byte-exact union of the per-feeder copies this module replaced;
-// any change here moves EVERY feeder and must re-pass the bit-exact
-// visual gate.
+// games/common/renderer/native_gte.c — see native_gte.h. The one
+// implementation of the GTE mirror math shared by every native feeder; a
+// change here moves every feeder.
 
 #include "renderer/native_gte.h"
 #include "game_layout.h"           /* cam.base, sin_table */

@@ -21,7 +21,9 @@
 // makes the pairing the routine's own invariant rather than a match on
 // geometry. Class `fixed_layer_class` and up link at a fixed front bucket
 // (partsdraw.s:202) and stamp nothing, so those primitives take the near
-// depth that bucket means and are paired by class alone.
+// depth that bucket means and are paired by class alone. Line numbers cite the
+// Spyro 3 asm/partsdraw.s; the Spyro 2 routine is the same code two lines
+// lower.
 //
 // Determinism: never writes PSX RAM. The guest draw runs exactly once through
 // the shared bracket and keeps its own verdicts, including the stamp bytes and
@@ -67,8 +69,8 @@ extern unsigned openpete_frame;
 
 /* The class a two-point record draws as: the routine projects a second record
  * point for it and the primitive's two endpoints are those two projections
- * (partsdraw.s:636-652 reads +0xC for the second X/Y and the high half of +0x8
- * for its Z, then stores the two screen points at polybuf +0x8 and +0x10).
+ * (partsdraw.s:650-659 reads the high half of +0x8 for the second X and +0xC
+ * for its Y and Z, then stores the two screen points at polybuf +0x8 and +0x10).
  * Every other paired class carries one record point.
  *
  * `PART_ROT_CLASS` is the class whose corner extents are a rotation of a fixed
@@ -267,7 +269,7 @@ static void part_pair_depths(CPUState* cpu, const ngte_view* v) {
     /* A polybuf that filled mid-pool ends the routine early, so fewer
      * primitives than stamped records is normal; the loop above simply stops
      * at the last captured primitive. Any primitive the loop could not reach
-     * keeps depth 0, the nearest value, which is the fixed bucket's meaning. */
+     * keeps the depth 1.0 (the near guard) that part_prim_sink gave it. */
 }
 
 /** @brief Whether the native particle feed runs; OPENPETE_PARTICLES starting with '0' suppresses it alone.
@@ -372,9 +374,9 @@ static int part_record_pair(const part_item* it, double alpha, double off[3],
     while (da < -128.0) da += 256.0;
     *prev_ang = ca + da * rest;
     /* The size byte the corner extents are built from is byte 2 of the same
-     * word (partsdraw.s:488-489 and :488C-4490 take (w1 >> 16) & 0xFF straight
-     * into IR1 before the sine pair), so the extent this present shows is the
-     * tick's size plus this much. */
+     * word (partsdraw.s:495-496 takes (w1 >> 16) & 0xFF and :521 loads it into
+     * IR0 ahead of the sine pair in IR1 and IR2), so the extent this present
+     * shows is the tick's size plus this much. */
     *size_delta = ((double)((pw[1] >> 16) & 0xFFu) - (double)((cw[1] >> 16) & 0xFFu)) * rest;
     return PART_PAIR_LERP;
 }
@@ -414,8 +416,8 @@ static int s_reb_dbg;   /* 2 = one line per rebased primitive */
  *
  * The routine builds a billboard's half-extents as (size * sine) >> 10 in view
  * space and divides all four corners by the record point's own view-Z
- * (partsdraw.s:523-525 loads the size byte and the sine pair into IR0..IR2,
- * :529 multiplies them, :539-540 shifts the products right by 10 and :576
+ * (partsdraw.s:521-523 loads the size byte and the sine pair into IR0..IR2,
+ * :527 multiplies them, :537-538 shifts the products right by 10 and :574
  * projects the four corners against one translation), so the screen extent is
  * proportional to the size byte and inversely proportional to that view-Z.
  * Both terms move inside a tick and the captured corners carry neither: the

@@ -13,10 +13,11 @@
  * rank) is identified with a game prim by its integer screen points (the
  * draw's RTPS mirror, moby_otk_rtps): the game prim must have the vertex
  * count of the prim the native key chose (MOBY_OTK_QUAD), its vertices must
- * be exactly the native triangles' points, and it must be the only such prim.
- * A native triangle outside the prim the key chose (MOBY_OTK_FOREIGN), or a
- * triangle of a quad whose other half the float emission culled (three of the
- * quad's four points), is not identified. Prims
+ * include every one of the native triangles' distinct points (three or four),
+ * and it must be the only such prim. A lone triangle of a quad whose other
+ * half the float emission culled carries three of the quad's four points and
+ * is identified with the quad by those three. A native triangle outside the
+ * prim the key chose (MOBY_OTK_FOREIGN) is not identified. Prims
  * with no such match (the draw culled the face or chose another prim of it,
  * two prims share the points) are left out of the comparison. */
 
