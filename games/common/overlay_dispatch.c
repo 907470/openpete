@@ -67,10 +67,10 @@ int psx_dispatch_from_jalr = 0;
  *   <resident overlay name> <target> <ra> <class> <resolved|missed>
  * where class is `jalr` (a computed call), `jal` (the EXE calling an overlay
  * function by constant), `host` (a BIOS event or PSYQ callback thunk, which
- * dispatch with ra = 0xDEADBEEF) or `jr` (anything else). The window is the
- * shared overlay vaddr range from the registry's first entry's dispatcher
- * table: every overlay of a game loads at one address, and the table lists
- * the base and the largest extent. */
+ * dispatch with ra = 0xDEADBEEF) or `jr` (anything else). The window is
+ * [spyro_overlay_window_lo, spyro_overlay_window_hi): every overlay of a game
+ * loads at one address, and the range runs from that base over the largest
+ * overlay's extent. */
 static FILE* s_census = NULL;
 static int   s_census_checked = 0;
 
