@@ -120,6 +120,11 @@ static const cutscene_t k_cutscenes[] = {
     { "full_credits", SPYRO1_CUTSCENE_CREDITS_FULL, -1, 0u },
 };
 
+/** @brief Finds the k_cutscenes row for a cutscene id.
+ *
+ * Rows that share an id (credits_100 and full_credits) resolve to the first.
+ * @param id A SPYRO1_CUTSCENE_* id.
+ * @return The row, or NULL when no row has the id. */
 static const cutscene_t* row_of(int id) {
     for (size_t i = 0; i < sizeof(k_cutscenes) / sizeof(k_cutscenes[0]); i++)
         if (k_cutscenes[i].id == id) return &k_cutscenes[i];
@@ -150,6 +155,7 @@ void spyro1_cutscene_skip_arm(int id) {
 int  spyro1_cutscene_skip_watching(void) { return s_watching; }
 void spyro1_cutscene_skip_finish(void)   { s_watching = 0; }
 
+/** @brief Reports whether a row is the short or the full credits target. */
 static int row_is_credits(const cutscene_t* r) {
     return r->id == SPYRO1_CUTSCENE_CREDITS ||
            r->id == SPYRO1_CUTSCENE_CREDITS_FULL;
@@ -203,6 +209,14 @@ static int first_live_tick(CPUState* cpu, int source) {
     return cpu->read_word(ADDR_D_800756C4) != 0u;
 }
 
+/** @brief Starts the credits roll from the current level through InitCreditsSequence.
+ *
+ * Marks the row induced and stores g_LevelId to D_80075818, the level the
+ * roll returns to. For the full roll it also stores 10 to g_CreditsSequence.
+ * It then calls InitCreditsSequence (0x8002D228) with a0 = 1 for the full
+ * roll and 0 for the short one, preserving cpu->ra across the nested call.
+ * @param cpu The guest CPU state.
+ * @return 0, so the tick's GamestateUpdate runs on. */
 static int credits_hook(CPUState* cpu) {
     int full = s_row->id == SPYRO1_CUTSCENE_CREDITS_FULL;
     uint32_t level = cpu->read_word(ADDR_G_LEVELID);
@@ -223,6 +237,13 @@ static int credits_hook(CPUState* cpu) {
     return 0;
 }
 
+/** @brief GamestateUpdate hook: starts the armed credits skip on the first live tick.
+ *
+ * Acts only when a credits row is armed and not yet induced, outside
+ * runahead, and first_live_tick holds for any level; then runs credits_hook.
+ * @param cpu The guest CPU state.
+ * @param addr The hooked address (unused).
+ * @return 0, so the guest GamestateUpdate always runs. */
 static int on_gamestate_update(CPUState* cpu, uint32_t addr) {
     (void)addr;
     if (!(hook_live(SPYRO1_CUTSCENE_CREDITS) ||
@@ -290,6 +311,15 @@ static int ending_hook(CPUState* cpu) {
     return 1;
 }
 
+/** @brief GamestateDraw hook: runs the armed row's intro or ending hook.
+ *
+ * The intro row runs intro_hook and the ending and ending_loot rows run
+ * ending_hook, each only while hook_live holds. Other rows and ticks pass
+ * through.
+ * @param cpu The guest CPU state.
+ * @param addr The hooked address (unused).
+ * @return The hook's result: 1 skips the guest GamestateDraw (an ending
+ *         entry), else 0. */
 static int on_gamestate_draw(CPUState* cpu, uint32_t addr) {
     (void)addr;
     if (hook_live(SPYRO1_CUTSCENE_INTRO)) return intro_hook(cpu);

@@ -88,6 +88,13 @@ static uint32_t sfx_derived(int level) {
     return (raw * 0x1000u) / 0x3FFFu;   /* g_Spu.m_SoundVolume */
 }
 
+/** @brief Writes the SFX slider and its derived g_Spu fields as the options menu would.
+ *
+ * Stores the level to D_80075754, unk_0x320 = level * 0x3FFF / 10 and
+ * m_SoundVolume = unk_0x320 * 0x1000 / 0x3FFF, the values sfx_derived
+ * computes.
+ * @param cpu The guest CPU state.
+ * @param level The slider level, 0 to 10. */
 static void sfx_stamp(CPUState* cpu, int level) {
     uint32_t raw = (uint32_t)((level * 0x3FFF) / 10);
     cpu->write_word(ADDR_SFX_SLIDER,    (uint32_t)level);
@@ -95,10 +102,17 @@ static void sfx_stamp(CPUState* cpu, int level) {
     cpu->write_word(ADDR_SPU_SOUND_VOL, (raw * 0x1000u) / 0x3FFFu);
 }
 
+/** @brief Computes g_Spu.m_MusicVolume for a music slider level, level << 11. */
 static uint32_t music_derived(int level) {
     return (uint32_t)level << 11;       /* g_Spu.m_MusicVolume */
 }
 
+/** @brief Writes the music slider and its derived g_Spu fields as the options menu would.
+ *
+ * Stores the level to D_80075748, m_MusicVolume = level << 11, and that
+ * volume into both halves of m_CommonAttr.cd.volume.
+ * @param cpu The guest CPU state.
+ * @param level The slider level, 0 to 10. */
 static void music_stamp(CPUState* cpu, int level) {
     uint32_t vol = (uint32_t)level << 11;
     cpu->write_word(ADDR_MUSIC_SLIDER,  (uint32_t)level);
@@ -129,6 +143,18 @@ static vol_channel_t s_music = {
     openpete_get_music_volume, openpete_set_music_volume, -1, -1,
 };
 
+/** @brief Serves one volume channel's request for this tick: restamps on drift or yields to the player.
+ *
+ * A request that differs from the one being served restarts the channel with
+ * nothing stamped, and a negative request does nothing more. While the sound
+ * options are open no guest write is made; if a level was stamped and the
+ * slider no longer holds it, the player moved it, and the request is dropped
+ * (the channel's request and the host request are set to -1). Otherwise the
+ * level is stamped only when the slider or its derived word differs from
+ * the level's values.
+ * @param cpu The guest CPU state.
+ * @param ch The channel, whose requested and stamped fields are updated.
+ * @param menu_open Nonzero while the sound-options submenu is open. */
 static void channel_tick(CPUState* cpu, vol_channel_t* ch, int menu_open) {
     int want = ch->get_request();
 

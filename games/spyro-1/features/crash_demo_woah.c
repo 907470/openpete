@@ -113,6 +113,7 @@ static unsigned s_arm_ticks;       /* ticks the pending substitution has waited 
  * key-on never comes, so a stale arm cannot land on an unrelated sound. */
 #define ARM_EXPIRY_TICKS 30u
 
+/** @brief Loads a 32-bit word from an unaligned byte pointer in host byte order. */
 static uint32_t rd32(const uint8_t* p) {
     uint32_t v;
     memcpy(&v, p, 4);
@@ -204,6 +205,16 @@ static uint32_t      s_pcm_frames;
 static SDL_AtomicInt s_ready;   /* 0 = pending/absent, 1 = s_pcm usable */
 static SDL_Thread*   s_loader;
 
+/** @brief Worker thread: loads the demo NSF, finds the woah entry and decodes it.
+ *
+ * Reads WOAH_NSF from s_disc_path, locates the sound with find_woah, decodes
+ * it with adpcm_to_pcm, stores s_pcm and s_pcm_frames, and sets s_ready to 1
+ * last so the tick thread sees both. A failed disc read (logged by the
+ * loader), a missing entry (warned) or an empty decode (warned) leaves s_ready
+ * at 0. The NSF buffer is freed on every path; the PCM buffer is kept for the
+ * session.
+ * @param unused Unused.
+ * @return 0. */
 static int SDLCALL woah_load_main(void* unused) {
     (void)unused;
     size_t nsf_len = 0;
@@ -281,6 +292,14 @@ static int on_kill_sounds_and_music(CPUState* cpu, uint32_t addr) {
     return 1;
 }
 
+/** @brief Swallows CrashDemoLaunch(), first restoring the g_CdMusic.m_Flags that on_kill_sounds_and_music spoofed.
+ *
+ * The function is reached only from the cheat branch. It is skipped because
+ * its shutdown sequence (SetDispMask, PadStopCom, callback clears) assumes
+ * LoadExec never returns.
+ * @param cpu The guest CPU state.
+ * @param addr The hooked address (unused).
+ * @return 1, always skipping the guest function. */
 static int on_crash_demo_launch(CPUState* cpu, uint32_t addr) {
     (void)addr;
     if (s_flags_spoofed) {
@@ -334,6 +353,11 @@ void spyro1_crash_woah_on_tick(CPUState* cpu) {
         sfx_pack_disarm_oneshot();
 }
 
+/** @brief Copies opts->disc_path into s_disc_path, the image the woah loader reads.
+ *
+ * The path is truncated to the buffer. With no disc path the buffer stays
+ * empty and woah_load_start never starts the loader.
+ * @param opts The options, or NULL. */
 static void crash_demo_woah_apply_options(const openpete_options_t* opts) {
     if (opts && opts->disc_path)
         snprintf(s_disc_path, sizeof s_disc_path, "%s", opts->disc_path);

@@ -66,6 +66,13 @@ const char* spyro1_splash_wait_for_disc(void);
  * @return The picked index, -1 on quit, when the splash is not open or when
  *         count is not positive, or -2 when a file was dropped. */
 int spyro1_splash_select(const char* const* labels, int count);
+
+/** @brief Returns the disc image path from the last file drop or file-dialog choice.
+ *
+ * The buffer belongs to the splash and is overwritten by the next drop or
+ * choice; it is empty before the first. spyro1_splash_select returns -2 after
+ * a drop, and spyro1_splash_wait_for_disc returns the same buffer.
+ * @return The path, never NULL. */
 const char* spyro1_splash_dropped_path(void);
 
 /** @brief Reports a progress update: renders the stage line and bar, or stores it for the task runner.
@@ -80,14 +87,22 @@ const char* spyro1_splash_dropped_path(void);
  * @param total The total units, or 0 for no bar. */
 void spyro1_splash_progress(const char* stage, int done, int total);
 
-/* Run a blocking pipeline stage (ingest copy, first-boot module build)
- * on a worker thread while the UI thread keeps pumping + rendering the
- * splash — a Windows title-bar drag traps the pumping thread in the OS
- * modal move loop, and must not stall the compile. Blocks until fn
- * returns; returns fn's return value. Falls back to calling fn directly
- * when the splash UI is disabled (headless/console) or thread creation
- * fails. Not reentrant: don't call from inside a task. */
 typedef int (*spyro1_task_fn)(void* userdata);
+/** @brief Runs a blocking pipeline stage on a worker thread while the UI thread renders the splash.
+ *
+ * Serves the ingest copy and the first-boot module build: a Windows
+ * title-bar drag traps the pumping thread in the OS modal move loop, so the
+ * stage must not run there. Blocks until fn returns. While fn runs, the UI
+ * thread polls and swallows events and redraws the last progress reported
+ * through spyro1_splash_progress every 16 ms, and from an SDL event watch on
+ * window expose and move events. The window opens on the first progress
+ * report when it is not open and stays unopened when no display is
+ * available. fn runs inline when the splash UI is disabled, the lock cannot
+ * be created or the thread cannot be started. Not reentrant: do not call it
+ * from inside a task.
+ * @param fn The stage to run.
+ * @param userdata Passed to fn.
+ * @return fn's return value. */
 int spyro1_splash_run_task(spyro1_task_fn fn, void* userdata);
 
 #ifdef __cplusplus

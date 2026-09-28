@@ -48,12 +48,26 @@ constexpr size_t kLevelEntryOff  = 72;
 constexpr size_t kCreditsOff     = 648;
 constexpr int    kLevelSlots     = 36;   // last is empty
 
+/** @brief Reads the {offset, length} pair at a byte offset of the WAD header.
+ *
+ * The pair is copied in host byte order; a little-endian host is assumed.
+ * @param hdr The WAD header sector.
+ * @param off The byte offset of the pair; the caller keeps off + 8 inside
+ *        hdr.
+ * @return The pair. */
 OffsetLength read_entry(const uint8_t* hdr, size_t off) {
     OffsetLength e;
     std::memcpy(&e, hdr + off, sizeof e);   // little-endian host assumed
     return e;
 }
 
+/** @brief Opens a disc image, falling back to the .bin files beside the cue.
+ *
+ * Tries cue_path first. When that fails, tries each .bin or .BIN file in the
+ * cue's directory in directory order and stops at the first that opens.
+ * @param reader Receives the opened image.
+ * @param cue_path The .cue path.
+ * @return true when an image opened, else false. */
 bool open_disc(PS1::ISOReader& reader, const char* cue_path) {
     if (reader.Open(cue_path)) return true;
     /* Same fallback as exe_loader.cpp: the CUE's FILE line sometimes
@@ -69,6 +83,16 @@ bool open_disc(PS1::ISOReader& reader, const char* cue_path) {
     return false;
 }
 
+/** @brief Writes one WAD entry's bytes to a file.
+ *
+ * Reads ceil(length / 2048) sectors from disc LBA 37 + offset / 2048 and
+ * writes exactly length bytes. A length of 0 or less fails silently; a
+ * negative or non-sector-aligned offset and a failed sector read are logged.
+ * @param reader The opened disc.
+ * @param e The entry: byte offset into WAD.WAD and byte length.
+ * @param out The output file, created or truncated.
+ * @return true when every sector read and the file write succeed, else
+ *         false. */
 bool carve(PS1::ISOReader& reader, const OffsetLength& e,
            const std::filesystem::path& out) {
     if (e.length <= 0) return false;
@@ -95,6 +119,21 @@ bool carve(PS1::ISOReader& reader, const OffsetLength& e,
 
 }  // namespace
 
+/** @brief Extracts PSX.EXE and every WAD code overlay of a disc into a directory.
+ *
+ * Creates out_dir and writes PSX.EXE (loaded through
+ * openpete_psx_load_exe_from_disc under the game's executable name). Then
+ * reads the WAD header at disc LBA 37 and carves each entry with a positive
+ * length to <name>.ovl: level_10..15, level_20..25 through level_60..65 (the
+ * overlay half of the 36 level entries, at header offset 72 + 16 * slot),
+ * titlescreen (offset 16) and credits (offset 648). A failed carve is logged
+ * and the remaining entries still run. A summary line reports the carved
+ * count against the expected count.
+ * @param cue_path The disc's .cue path.
+ * @param out_dir The output directory.
+ * @return 0 when PSX.EXE and every non-empty overlay were written; -1 for a
+ *         NULL argument, an unreadable executable, disc or WAD header, or any
+ *         failed carve. */
 extern "C" int spyro1_extract_recomp_inputs(const char* cue_path,
                                             const char* out_dir) {
     if (!cue_path || !out_dir) {

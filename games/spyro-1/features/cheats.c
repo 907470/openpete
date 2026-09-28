@@ -122,6 +122,7 @@ static uint32_t s_pending = 0;
 static uint32_t s_applied = 0;
 static int      s_live    = 0;
 
+/** @brief Prints the valid --cheats names with their help lines to stderr. */
 static void print_valid_names(void) {
     fprintf(stderr, "valid --cheats names:\n");
     for (size_t i = 0; i < CHEAT_COUNT; i++)
@@ -203,6 +204,12 @@ static const cheat_def_t* def_for_row(const knob_desc_t* k) {
  * @return 1.0 while gameplay is live, else 0.0. */
 static double row_ready(const knob_desc_t* k) { (void)k; return s_live ? 1.0 : 0.0; }
 
+/** @brief Queues a cheat row's cheat for the next tick.
+ *
+ * Sets the cheat's bit in s_pending; the tick hook makes the guest writes.
+ * @param k The row.
+ * @param v Unused.
+ * @return 0, or -1 when the row matches no cheat. */
 static int row_fire(knob_desc_t* k, double v) {
     const cheat_def_t* d = def_for_row(k);
     (void)v;
@@ -211,6 +218,13 @@ static int row_fire(knob_desc_t* k, double v) {
     return 0;
 }
 
+/** @brief Fills a cheat row's status text: queued, not in a level, applied, or empty.
+ *
+ * Tested in that order: the cheat's pending bit, then gameplay not live, then
+ * its applied bit. An unknown row gives empty text.
+ * @param k The row.
+ * @param buf Receives the text.
+ * @param cap The capacity of buf. */
 static void row_status(const knob_desc_t* k, char* buf, size_t cap) {
     const cheat_def_t* d = def_for_row(k);
     if (!d)                        snprintf(buf, cap, "%s", "");
@@ -220,6 +234,11 @@ static void row_status(const knob_desc_t* k, char* buf, size_t cap) {
     else                           snprintf(buf, cap, "%s", "");
 }
 
+/** @brief Registers one dev-overlay action button per cheat in the Gameplay section.
+ *
+ * Each row is a live KNOB_ACTION labelled "Apply" whose enabled state is
+ * row_ready, whose action is row_fire and whose status text is row_status.
+ * A failed registration is ignored. */
 static void register_rows(void) {
     for (size_t i = 0; i < CHEAT_COUNT; i++) {
         knob_desc_t row = {0};
@@ -237,6 +256,12 @@ static void register_rows(void) {
     }
 }
 
+/** @brief Resets the cheat state, registers the overlay rows and arms the --cheats selection.
+ *
+ * Clears the mask, the pending and applied sets and arms the first session.
+ * A NULL or empty opts->cheats, or a spec that parse_spec rejects (the mask
+ * stays 0), arms nothing; each armed cheat is logged.
+ * @param opts The options, or NULL. */
 static void cheats_apply_options(const openpete_options_t* opts) {
     s_mask    = 0;
     s_armed   = 1;
@@ -254,6 +279,13 @@ static void cheats_apply_options(const openpete_options_t* opts) {
                        k_cheats[i].name, k_cheats[i].help);
 }
 
+/** @brief Makes the guest writes of the cheats in a mask and logs each.
+ *
+ * 99_lives stores 99 to g_SpyroLifeCount. unlock_all_levels stores 1 to
+ * g_VisitedFlags[0..31] and 2 to D_800758D0[0..5], CheatApplyEffect's loop
+ * bounds.
+ * @param cpu The guest CPU state.
+ * @param mask The CHEAT_* bits to apply. */
 static void cheats_apply(CPUState* cpu, uint32_t mask) {
     if (mask & CHEAT_99_LIVES) {
         cpu->write_word(ADDR_G_SPYROLIFECOUNT, 99u);

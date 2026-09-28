@@ -61,6 +61,12 @@ namespace {
 constexpr const char* kRetailSha =
     "fc866b2a02e010a6658f8af2de28bb3001eb33513e5924af014e35643c6dee37";
 
+/** @brief Returns the directory holding the running executable.
+ *
+ * Reads /proc/self/exe on Linux and GetModuleFileNameA on Windows (with
+ * backslashes turned to '/') and strips the file name.
+ * @return The directory, or "." when the path cannot be read or does not fit
+ *         the buffer. */
 std::string exe_dir() {
 #ifdef _WIN32
     char exe[4096];
@@ -117,6 +123,19 @@ fs::path locate_bin(const fs::path& given) {
     return {};
 }
 
+/** @brief Copies a file while computing its SHA-256.
+ *
+ * Reads src in 1 MiB chunks, writing each to dst (created or truncated) and
+ * feeding it to the hash. When spyro1_progress_cb is set and the source size
+ * is known, it is called with the "COPYING DISC TO YOUR LIBRARY" stage and
+ * MiB counts once per 64 MiB copied. The hash is finalized after a read
+ * failure too, so it covers only the bytes read.
+ * @param src The file to read.
+ * @param dst The file to create or truncate.
+ * @param sha_hex Receives 64 hex digits and a NUL; untouched when either file
+ *        fails to open.
+ * @return true when both files opened and dst's stream state is good after
+ *         the last write, else false. */
 bool stream_hash_copy(const fs::path& src, const fs::path& dst, char sha_hex[65]) {
     std::ifstream in(src, std::ios::binary);
     if (!in) return false;
@@ -143,6 +162,15 @@ bool stream_hash_copy(const fs::path& src, const fs::path& dst, char sha_hex[65]
     return out.good();
 }
 
+/** @brief Writes an entry's meta.toml with its label, source, hash and last-played time.
+ *
+ * Truncates the file. String values are written between double quotes
+ * without escaping; write errors are not reported.
+ * @param entry The library entry's directory.
+ * @param label The display name.
+ * @param source The file name the image was ingested from.
+ * @param sha The disc's SHA-256 in hex.
+ * @param last_played The last boot time in seconds since the Unix epoch. */
 void write_meta(const fs::path& entry, const std::string& label,
                 const std::string& source, const std::string& sha,
                 long long last_played) {
@@ -161,6 +189,15 @@ struct Meta {
     long long last_played = 0;
 };
 
+/** @brief Loads a library entry's meta.toml into a Meta.
+ *
+ * Recognizes the lines label, source, sha256 (`key = "value"`, the value
+ * taken as the text after the opening quote minus the last character) and
+ * last_played (parsed with atoll). Other lines are ignored, and a field with
+ * no line keeps its default.
+ * @param entry The library entry's directory.
+ * @param m Receives the fields; dir is set once meta.toml has opened.
+ * @return true when meta.toml opened, else false. */
 bool read_meta(const fs::path& entry, Meta& m) {
     std::ifstream f(entry / "meta.toml");
     if (!f) return false;
@@ -179,6 +216,7 @@ bool read_meta(const fs::path& entry, Meta& m) {
     return true;
 }
 
+/** @brief Rewrites an entry's meta.toml with last_played set to the current time. */
 void touch_last_played(const Meta& m) {
     write_meta(m.dir, m.label, m.source, m.sha, (long long)time(nullptr));
 }
@@ -195,12 +233,23 @@ void write_cue(const fs::path& entry) {
          "    INDEX 01 00:00:00\n";
 }
 
-/* Boot a library entry: point the runtime at the entry's cue and (for
- * shared linkage) at its stamp-keyed module path. Static storage for
- * the strings opts point into. */
+/* Static storage for the strings the options point into. */
 char s_disc_path[4096];
 char s_module_path[4096];
 
+/** @brief Points the options at a library entry's cue and module path and stamps the entry played.
+ *
+ * Copies the entry's disc.cue path into static storage and sets
+ * opts->disc_path to it. When module_path_out is given, writes the entry's
+ * modules/<codegen-stamp>/spyro1-recomp.dll (Windows) or .so path and
+ * creates that directory; when spyro1_recomp_codegen_stamp reports no stamp
+ * (a static build) it writes an empty string instead. Then rewrites the
+ * entry's meta.toml with the current time and logs the entry.
+ * @param opts Receives disc_path.
+ * @param m The entry to boot.
+ * @param module_path_out Receives the module path, or NULL for none.
+ * @param module_path_cap The capacity of module_path_out.
+ * @return 0. */
 int boot_entry(openpete_options_t* opts, Meta& m,
                char* module_path_out, size_t module_path_cap) {
     std::snprintf(s_disc_path, sizeof s_disc_path, "%s",
@@ -300,6 +349,34 @@ extern "C" int spyro1_config_disc_identity(const char* disc_path,
     return (serial && serial[0]) || (sha && sha[0]) ? 0 : -1;
 }
 
+/** @brief Resolves the disc and recompiled-module path of this boot through the disc library.
+ *
+ * Three cases, in order:
+ *
+ *   - opts->ingest_path set: locates the .bin, copies it with
+ *     stream_hash_copy on the splash worker task into
+ *     library/ingest-tmp-<pid>/ (pid 0 on Windows), and renames that to
+ *     library/<first 16 hex digits of the SHA-256>/. An image already in the
+ *     library keeps its entry and the temporary copy is removed. A new entry
+ *     gets disc.cue and meta.toml, labelled "Spyro the Dragon (NTSC-U)" for
+ *     the retail hash and by file name otherwise. The entry then boots.
+ *   - opts->disc_path or opts->exe_path set: nothing changes and 0 returns,
+ *     leaving the library untouched.
+ *   - otherwise the library is scanned. No entries returns 0 for the caller
+ *     to report the missing disc. The most recently played entry is picked;
+ *     with several entries and the splash UI enabled the version selector
+ *     picks instead, and a disc dropped on it re-enters this function as an
+ *     ingest. The pick boots.
+ *
+ * Booting sets opts->disc_path and the module path and updates the entry's
+ * last_played (boot_entry).
+ * @param opts The options; disc_path is set on boot and ingest_path may be
+ *        set from a splash drop.
+ * @param module_path_out Receives the module path, empty when there is none;
+ *        NULL for none.
+ * @param module_path_cap The capacity of module_path_out.
+ * @return 0 on a boot, a bypass or an empty library; -1 on an ingest failure,
+ *         an unreadable entry, or when the user quits the selector. */
 extern "C" int spyro1_library_resolve(openpete_options_t* opts,
                                       char* module_path_out,
                                       size_t module_path_cap) {

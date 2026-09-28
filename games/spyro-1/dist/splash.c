@@ -83,6 +83,13 @@ static const glyph_t FONT[] = {
     {'>', {0x08,0x04,0x02,0x01,0x02,0x04,0x08}},
 };
 
+/** @brief Returns the 5x7 bitmap rows of a character.
+ *
+ * Lowercase letters map to their uppercase glyphs. Each of the 7 rows holds 5
+ * bits with the most significant bit leftmost.
+ * @param c The character.
+ * @return The 7 row bytes, or NULL for a space or a character the font
+ *         lacks. */
 static const unsigned char* glyph_rows(char c) {
     if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
     for (size_t i = 0; i < sizeof(FONT) / sizeof(FONT[0]); i++)
@@ -110,6 +117,15 @@ static int           s_req_w, s_req_h;  /* --window override (0 = default) */
 /* The screens below were authored in a 640x360 band; centre it. */
 #define YOFF ((SPLASH_H - 360) / 2)
 
+/** @brief Draws a string in the 5x7 font as filled rectangles on the splash renderer.
+ *
+ * Each glyph advances 6 * scale pixels (5 columns and a 1-column gap), and a
+ * character without a glyph leaves an empty cell. Coordinates are in the
+ * 640x448 logical space.
+ * @param x The left edge.
+ * @param y The top edge.
+ * @param scale The size in pixels of one font dot.
+ * @param s The text. */
 static void draw_text(float x, float y, int scale, const char* s,
                       Uint8 r, Uint8 g, Uint8 b) {
     SDL_SetRenderDrawColor(s_ren, r, g, b, 255);
@@ -127,12 +143,23 @@ static void draw_text(float x, float y, int scale, const char* s,
     }
 }
 
+/** @brief Draws a string in the 5x7 font horizontally centred in the logical width.
+ *
+ * The width is 6 * scale per character minus the trailing gap.
+ * @param y The top edge in logical pixels.
+ * @param scale The size in pixels of one font dot.
+ * @param s The text. */
 static void draw_text_centered(float y, int scale, const char* s,
                                Uint8 r, Uint8 g, Uint8 b) {
     float w = (float)(6 * scale * (int)strlen(s) - scale);
     draw_text((SPLASH_W - w) / 2.0f, y, scale, s, r, g, b);
 }
 
+/** @brief Saves the rendered frame to <OPENPETE_SPLASH_SHOT>.<tag>.bmp when that variable is set.
+ *
+ * Reads the renderer's pixels before the present; a failed read writes
+ * nothing.
+ * @param tag The mode name used in the file name. */
 static void maybe_shot(const char* tag) {
     const char* base = getenv("OPENPETE_SPLASH_SHOT");
     if (!base) return;
@@ -145,6 +172,7 @@ static void maybe_shot(const char* tag) {
     }
 }
 
+/** @brief Clears the splash to its background and draws the two title lines. */
 static void frame_begin(void) {
     SDL_SetRenderDrawColor(s_ren, 24, 16, 40, 255);   /* deep purple */
     SDL_RenderClear(s_ren);
@@ -152,6 +180,9 @@ static void frame_begin(void) {
     draw_text_centered(72 + YOFF, 2, "SPYRO THE DRAGON PC PORT", 150, 130, 190);
 }
 
+/** @brief Saves the frame when the shot variable is set (maybe_shot) and presents it.
+ *
+ * @param tag The mode name for the saved file. */
 static void frame_end(const char* tag) {
     maybe_shot(tag);
     SDL_RenderPresent(s_ren);
@@ -167,6 +198,7 @@ void spyro1_splash_set_window_size(int w, int h) {
 
 static SDL_Gamepad* s_pad;
 
+/** @brief Opens the first connected gamepad unless one is already open. */
 static void open_first_gamepad(void) {
     if (s_pad) return;
     int n = 0;
@@ -201,6 +233,14 @@ int spyro1_splash_open(void) {
  * during event pumping). */
 static int  s_dialog_pending;
 static int  s_dialog_got;
+/** @brief SDL file-dialog callback: stores the chosen path in s_drop_path and flags it.
+ *
+ * Clears s_dialog_pending. A selection copies the first path (truncated to
+ * the buffer) and sets s_dialog_got; a cancel or an error leaves s_dialog_got
+ * at 0. The flags are plain ints, read by the UI thread's loops.
+ * @param userdata Unused.
+ * @param files A NULL-terminated list of chosen paths, or NULL on an error.
+ * @param filter Unused. */
 static void SDLCALL on_file_chosen(void* userdata, const char* const* files,
                                    int filter) {
     (void)userdata; (void)filter;
@@ -211,6 +251,11 @@ static void SDLCALL on_file_chosen(void* userdata, const char* const* files,
     }
 }
 
+/** @brief Shows the native open-file dialog for a .cue or .bin image unless one is open.
+ *
+ * Sets s_dialog_pending and clears s_dialog_got; the result arrives through
+ * on_file_chosen. The dialog is single-selection and parented to the splash
+ * window. */
 static void open_file_dialog(void) {
     if (s_dialog_pending) return;
     static const SDL_DialogFileFilter filters[] = {
@@ -330,6 +375,12 @@ void spyro1_splash_progress(const char* stage, int done, int total) {
 
 typedef struct { spyro1_task_fn fn; void* ud; int rc; } task_ctx_t;
 
+/** @brief Worker thread entry: runs the task function, stores its result and signals completion.
+ *
+ * Stores the function's return value in the context, then sets s_task_done
+ * under s_task_lock.
+ * @param p The task_ctx_t of the running task.
+ * @return 0. */
 static int SDLCALL task_main(void* p) {
     task_ctx_t* t = (task_ctx_t*)p;
     t->rc = t->fn(t->ud);
@@ -339,6 +390,16 @@ static int SDLCALL task_main(void* p) {
     return 0;
 }
 
+/** @brief SDL event watch that redraws the progress screen on window expose and move events.
+ *
+ * Runs synchronously on the thread that pushes the event, which inside the
+ * Windows modal move loop is the UI thread. It redraws only while a task is
+ * active, the window and renderer exist, the calling thread is the UI thread
+ * and the worker has reported progress, using a snapshot of the stage and
+ * counts taken under s_task_lock.
+ * @param ud Unused.
+ * @param e The event.
+ * @return true always. */
 static bool SDLCALL task_event_watch(void* ud, SDL_Event* e) {
     (void)ud;
     /* Keep the progress frame alive from INSIDE the Windows modal

@@ -74,13 +74,15 @@ static void spyro1_draw_all(CPUState* cpu) {
     cpu->write_word(ADDR_CAMERA_UNK_POS_VEC_X, 0u);
 }
 
-/* func_8003DFA4 is what the game itself calls to "reset all velocity/momentum"
- * (pete.c, on charge damage) — it nulls m_TrueVelocity, m_TrueSpeed,
- * m_Acceleration and, crucially, m_Physics.m_SpeedAngle.m_Speed. That last one
- * is the root of the momentum chain (m_Speed drives m_Acceleration, which
- * drives m_Velocity), so clearing only the vectors would let the old speed
- * regenerate on the next tick. */
 extern void func_8003DFA4(CPUState* cpu);
+/** @brief Zeroes the player's velocity, acceleration and speed through the game's own reset.
+ *
+ * func_8003DFA4 is the routine pete.c calls to reset all momentum: it nulls
+ * m_TrueVelocity, m_TrueSpeed, m_Acceleration and
+ * m_Physics.m_SpeedAngle.m_Speed. The last is the root of the momentum chain
+ * (m_Speed drives m_Acceleration, which drives the velocity), so clearing
+ * only the vectors would let the old speed regenerate on the next tick.
+ * @param cpu The guest CPU state. */
 static void spyro1_reset_momentum(CPUState* cpu) { func_8003DFA4(cpu); }
 
 /** @brief Reports whether the player can be placed and the pose read back.
@@ -99,13 +101,18 @@ static int spyro1_player_placeable(CPUState* cpu) {
            cpu->read_word(G_CAMERA + 0x58u) == 0u;
 }
 
-/* The loader's own camera setup for a spawn without a fly-in (loaders.c,
- * LoadLevelScene): preset D_80078668 = D_8006C934 at radius 1536, focus on
- * the player, ordinary follow state, focus rotation = the player's facing,
- * then func_80034358 applies the preset and snaps m_Position to the offset
- * from the focus. Without it the follow converges from wherever the camera
- * stood, a sweep of a hundred-plus ticks across the level. */
 extern void func_80034358(CPUState* cpu);
+/** @brief Places the camera behind the player as the loader does for a spawn without a fly-in.
+ *
+ * Reproduces LoadLevelScene's camera setup (loaders.c): copies the 0x18-byte
+ * preset D_8006C934 to D_80078668 with radius 1536, stores g_Camera m_Focus
+ * = &g_Spyro.m_Position, m_State 0, unk_0xC0 0, m_SphericalPreset = the
+ * preset and m_FocusRotation = g_Spyro.m_SpeedAngle.m_RotZ, then calls
+ * func_80034358, which applies the preset and snaps m_Position to the
+ * preset's offset from the focus. Without it the follow converges from
+ * wherever the camera stood, sweeping across the level for a hundred-plus
+ * ticks.
+ * @param cpu The guest CPU state. */
 static void spyro1_place_camera(CPUState* cpu) {
     for (uint32_t o = 0; o < 0x18u; o += 4u)
         cpu->write_word(ADDR_CAM_PRESET_PLACED + o, cpu->read_word(ADDR_CAM_PRESET_DEFAULT + o));
