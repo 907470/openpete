@@ -12,7 +12,8 @@
 // (shadow_fan_feed), which also shadows the terrain under the ring between the
 // fan and the caster.
 //
-// STATIC ASM FINDINGS (asm/mobyfunc.s:622-884, asm/stdutil.s:func_8004EA90):
+// Structure of the game's routine (asm/mobyfunc.s:622-884,
+// asm/stdutil.s:func_8004EA90):
 //   * the anchor is the camera-relative shadow position swizzled into the
 //     GTE's IR vector as (camY - shY, camZ - shZ, shX - camX) and rotated by
 //     the camera matrix; its MAC1..3 become the TR every ring point projects

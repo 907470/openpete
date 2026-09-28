@@ -11,7 +11,7 @@
 // shadow sprite's tpage word, which is level data, so the blend is read per
 // level rather than assumed.
 //
-// STATIC ASM/recompiled-C FINDINGS:
+// Structure of the game's shadow routine:
 //   * the descriptor's list terminator is at +0x08, after the two UV words.
 //   * the shadow is 4 separate FT3 tris fanned from the ground anchor (not
 //     one quad); word 1 of the 8-byte drawn-moby list record is the shadow
@@ -556,11 +556,10 @@ static void shadow_moby_build(CPUState* cpu) {
      * Identical params to the player feeder's (same camera; ground_up read from
      * the layout), so feeder order is irrelevant. Display-only. */
     shadow_push_decal_params(cpu, v, C, ofx, ofy, H, NULL);
-    /* Camera at FRACTIONAL /4 (not >>2): the moby BODY got the ÷4.0 delta fix but
-     * its drop-shadow still floored cam+pos to /4 integers, so the shadow stepped
-     * in 4-world-unit chunks under camera motion. Carry the low 2 bits. Sub-tick
-     * floor fix: prefer the FRACTIONAL interpolated camera (un-rounded) so the
-     * shadow tracks the smooth camera below the 1-world-unit lerp32 grid too. */
+    /* The camera is taken in world/4 units as a fraction (not >>2), keeping the
+     * low 2 bits: a floored /4 integer would step the shadow in 4-world-unit
+     * chunks under camera motion. The view's interpolated camera is used
+     * un-rounded, so the shadow also tracks it below the 1-world-unit grid. */
     double cam0 = v->cam[0] / 4.0, cam1 = v->cam[1] / 4.0, cam2 = v->cam[2] / 4.0;
     /* FT3 material (constant across the fan): UV0=uv0, UV1=uv1, UV2=uv0+0x1F00 */
     int u0=(int)(uv0&0xFF), v0t=(int)((uv0>>8)&0xFF);
@@ -650,23 +649,18 @@ float shadow_depth(float viewz, float scale, float bias) {
     return openpete_native_scene_viewz(
         openpete_worldvz_bias(openpete_worldvz_scaled(viewz, scale), bias));
 }
-/* Both view-Z pulls are RETIRED to 1.0 defaults (true depth); the envs remain
- * for A/B against the old behaviour:
- *  - PLAYER shadow: was ×0.70 — it compensated real NON-COPLANARITY (bumps
- *    genuinely poking above the flat fan plane), but the distance-proportional
- *    pull also beat WALLS in front of the shadow (dark-hollow f2700: Spyro
- *    occluded by the wall, his shadow painted ON it). Occlusion is now owned
- *    per-pixel by the DEPTH-AWARE DECAL (shadow_decal.frag + the WORLD-opaque
- *    depth pre-pass, native_render.c): terrain standing above the shadow's
- *    ground plane by more than OPENPETE_SHADOW_WALL_HEIGHT (default 400) is
- *    rejected (a wall), everything else keeps the fan (bumps/slopes drape).
- *    The fan feeds TRUE depth; its pipe is depth-test OFF.
- *  - MOBY shadows: small + distant — a textbook coplanar-decal tie-break,
- *    handled by the HARDWARE slope-scaled depth bias on the
- *    subtractive pipelines (native_render.c shadow_hw_bias,
- *    OPENPETE_SHADOW_HW_BIAS). The old ×0.96 multiplicative view-Z pull was
- *    distance-PROPORTIONAL, the wrong dimension for a tie-break: a
- *    10×-further shadow got a 10×-bigger world-space nudge. */
+/* Both view-Z biases default to 1.0 (true depth); the env vars scale them.
+ *  - Player shadow: terrain standing above the fan's ground plane by more than
+ *    OPENPETE_SHADOW_WALL_HEIGHT (default 400) is rejected per pixel by the
+ *    depth-aware decal (shadow_decal.frag with the world-opaque depth pre-pass,
+ *    native_render.c); everything else keeps the fan, so bumps and slopes
+ *    drape. The fan feeds true depth and its pipe has the depth test off.
+ *  - Moby shadows: small, distant coplanar decals; the tie-break is the
+ *    hardware slope-scaled depth bias on the subtractive pipelines
+ *    (native_render.c shadow_hw_bias, OPENPETE_SHADOW_HW_BIAS). A
+ *    multiplicative view-Z bias grows with distance, the wrong dimension for a
+ *    tie-break: a shadow ten times farther would get a ten times larger
+ *    world-space offset. */
 /* shadow_bias_spyro and shadow_bias_moby are documented in shadow.h. */
 float shadow_bias_spyro(void) {
     static float b = -1.0f;

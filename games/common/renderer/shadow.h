@@ -24,7 +24,7 @@ extern "C" {
 typedef struct {
     uint8_t  code;          /* GPU prim code byte (word[1] >> 24) */
     uint8_t  len;           /* OT tag length (word[0] >> 24) */
-    int      nv;            /* 3 or 4 */
+    int      nv;            /* 0, 3 or 4 */
     float    x[4], y[4];
     uint32_t rgb[4];
     int      u[4], v[4];
