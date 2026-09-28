@@ -1433,14 +1433,15 @@ static tc_state *tc_begin_state(uint32_t stamp, int immediate)
 
 /** @brief Overwrite a released range's elements with the dead slot before the range becomes reusable.
  *
- * Every draw walks the whole arena and selects per element by 3-bit
- * generation, so a released range that lingers unreused (the allocator can
- * go elsewhere for many builds) still rasterises whenever a later state's
- * generation aliases its own mod 8; a sector that rebuilds every build
- * (animated vertex lighting) then z-fights its current chunk with an older
- * copy. frame_begin calls this after the defer window guarantees no
- * in-flight frame reads these bytes, the one race-free moment (stamping at
- * free time races the frames still reading them). Each element is zeroed
+ * Every draw covers a whole buffer or spans joined across small gaps, and
+ * selects per element by 3-bit generation, so a released range that lingers
+ * unreused (the allocator can go elsewhere for many builds) still
+ * rasterises whenever a later state's generation aliases its own mod 8; a
+ * sector that rebuilds every build (animated vertex lighting) then z-fights
+ * its current chunk with an older copy. frame_begin calls this after the
+ * defer window guarantees no in-flight frame reads these bytes, the one
+ * race-free moment (stamping at free time races the frames still reading
+ * them). Each element is zeroed
  * with OPTC_SLOT_DEAD in face_flags; that slot is never published with
  * OPTC_SF_DRAWN, so the element is never drawn again. A vertex and a cell
  * record both carry face_flags, at their own offsets. Only the main buffer
@@ -1865,10 +1866,9 @@ static void tc_draw_anim(rhi_pipeline *p, int arena, int pass_sel,
  * bucket's faces (pc.mat_pass). The stock pass runs first with mat_pass 0,
  * dropping every claimed face.
  *
- * Only the OPAQUE colour slots take part. Blended terrain would have its
- * painter order changed by the stock/material split, which is unresolved —
- * so a sector with a blended material face claims back to the CPU walk
- * instead, and the blend arenas draw unfiltered. */
+ * The world, fill, alpha, add and subtract colour slots take part, the blend
+ * arenas included: each runs its stock pass filtered to mat_pass 0, then one
+ * pass per live bucket. The depth prepass and key slots draw every face. */
 
 /** @brief Bind one bucket's terrain material pipeline for a vertex variant and colour slot, or the stock pipeline.
  *
