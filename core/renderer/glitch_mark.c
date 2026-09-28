@@ -146,6 +146,9 @@ void openpete_glitch_mark_request(const char *reason)
 static const char *const s_kind_name[] = { "canonical", "intermediate", "inline" };
 static const char *const s_shows_name[] = { "scene", "vram-fb", "psycross-ref", "clear" };
 
+/** @brief Look up a name in a string table, "?" when the index is out of range.
+ *
+ * @return The table entry, or "?" for an index below 0 or at least @p n. */
 static const char *name_of(const char *const *tab, int n, int i)
 { return (i >= 0 && i < n) ? tab[i] : "?"; }
 
@@ -194,6 +197,10 @@ static void mark_dir(char *out, size_t cap)
     snprintf(out, cap, ".");
 }
 
+/** @brief Write one walk census as a single text line to the mark file.
+ *
+ * The line is "<tag> ord=... tick=... sub=... sectors=... tris=...
+ * nearFaces=... nearTris=... occl=...". */
 static void write_walk_line(FILE *fp, const openpete_glitch_walk_t *w, const char *tag)
 {
     fprintf(fp, "%s ord=%u tick=%u sub=%d sectors=%d tris=%d nearFaces=%d "
@@ -221,6 +228,12 @@ static int read_pslot(gm_pslot *sl, openpete_glitch_present_t *out)
     return 0;
 }
 
+/** @brief Copy one walk-ring slot, retrying while its writer holds it.
+ *
+ * A read is whole when the slot's seq is even and unchanged across the
+ * copy; up to eight tries are made.
+ * @return 1 when the record was read whole, 0 otherwise (the output is
+ *         then undefined). */
 static int read_wslot(gm_wslot *sl, openpete_glitch_walk_t *out)
 {
     for (int i = 0; i < 8; i++) {
@@ -233,6 +246,20 @@ static int read_wslot(gm_wslot *sl, openpete_glitch_walk_t *out)
     return 0;
 }
 
+/** @brief Write the mark file from the two rings and announce it.
+ *
+ * Copies both rings into heap snapshots before any file IO, then writes
+ * "glitch-mark-<present total, else walk total>.txt" into the mark
+ * directory: a header line, the live presents oldest first, the live walks
+ * oldest first, and the counts of records lost. A record is lost when its
+ * slot was unreadable or holds a different serial or ordinal than the
+ * position expects; it is written as "P lost" or "W lost". On success it
+ * copies the path to @p path_out, logs, and posts an OSD notice naming the
+ * file.
+ * @param path_out Receives the file path.
+ * @param path_cap Capacity of @p path_out.
+ * @return 1 when the file was written; 0 when the snapshot allocation or
+ *         the file open failed, after a logged warning. */
 static int dump(char *path_out, size_t path_cap)
 {
     const uint32_t pn = atomic_load_explicit(&s_pres_n, memory_order_acquire);

@@ -56,7 +56,19 @@ typedef struct openpete_fillpick_hit {
  * Spyro 1 level is live.
  * @return 1 when engaged, else 0. */
 int  openpete_fillpick_active(void);
+
+/** @brief Flip the engaged state of the inspector.
+ *
+ * Equivalent to openpete_fillpick_set_active on the negated state. */
 void openpete_fillpick_toggle(void);
+
+/** @brief Engage or disengage the inspector.
+ *
+ * A change clears the stored hit, logs the new state and bumps the
+ * generation counter (preview draws only while engaged); setting the
+ * state it already has does nothing. Held session verdicts survive a
+ * disengage.
+ * @param on Nonzero to engage. */
 void openpete_fillpick_set_active(int on);
 
 /** @brief Report whether preview is in effect: the preview mode is on and the inspector is engaged.
@@ -66,6 +78,13 @@ void openpete_fillpick_set_active(int on);
  * the face that would cover the hole is not drawn until it is tagged.
  * @return 1 when preview is on and the inspector is engaged, else 0. */
 int  openpete_fillpick_preview(void);
+
+/** @brief Turn the preview mode on or off.
+ *
+ * The mode is kept while the inspector is disengaged and takes effect on
+ * the next engage. A change bumps the generation counter and logs; setting
+ * the mode it already has does nothing.
+ * @param on Nonzero for preview. */
 void openpete_fillpick_set_preview(int on);
 
 /** @brief Return the generation counter the terrain feeder's cached sector fill tags key on.
@@ -83,7 +102,13 @@ unsigned openpete_fillpick_generation(void);
  * crosshair. Engaging or disengaging the inspector clears the stored hit.
  * @param h Pick to copy, or NULL. */
 void openpete_fillpick_publish(const openpete_fillpick_hit* h);
-int  openpete_fillpick_get(openpete_fillpick_hit* out);   /* 1 = a face is picked */
+
+/** @brief Copy out the stored crosshair pick.
+ * @param out Receives the pick (all zero when none is stored); may be
+ *        NULL.
+ * @return 1 when a face is picked (the stored hit's valid field), else
+ *         0. */
+int  openpete_fillpick_get(openpete_fillpick_hit* out);
 
 /** @brief Return the in-memory verdict override recorded for an LP face.
  *
@@ -122,6 +147,19 @@ void openpete_fillpick_undo(void);
  * count - 1 in record order.
  * @return Record count, at most 1024. */
 int  openpete_fillpick_count(void);
+
+/** @brief Read one session record by position in the record order.
+ *
+ * Any output pointer may be NULL. The name pointer refers to the record's
+ * storage and is valid until the next mark or undo.
+ * @param idx Position, 0 for the oldest record.
+ * @param level Receives g_LevelId.
+ * @param level_name Receives the verdicts-file spelling of the level.
+ * @param sec Receives the LP sector index.
+ * @param face Receives the LP face index.
+ * @param verdict Receives OPENPETE_FILLPICK_FILL, OPENPETE_FILLPICK_NOFILL
+ *        or OPENPETE_FILLPICK_NONE for a cleared record.
+ * @return 1 when @p idx is in range, else 0 with no output written. */
 int  openpete_fillpick_entry(int idx, int* level, const char** level_name,
                              int* sec, int* face, int* verdict);
 

@@ -25,6 +25,13 @@ static u_long  s_ot[2];
 static DRAWENV s_drawenv;
 static int     s_initialised = 0;
 
+/** @brief Build the debug triangle primitive and its draw environment once.
+ *
+ * Fills a flat red-orange POLY_F3 inside the 512x240 viewport and a
+ * DRAWENV with a dark teal background clear, so a black screenshot means
+ * nothing rendered and a teal one without the triangle means it was
+ * clipped. Later calls
+ * return at once; openpete_debug_triangle_emit calls it on first use. */
 extern "C" void openpete_debug_triangle_init(void) {
     if (s_initialised) return;
     s_initialised = 1;
@@ -157,6 +164,11 @@ extern "C" void openpete_psyx_take_screenshot_ext(const char* path,
     if (out_h) *out_h = h;
 }
 
+/** @brief Save the PsyCross scene to a PNG or BMP file, discarding the image size.
+ *
+ * Calls openpete_psyx_take_screenshot_ext with no size outputs.
+ * @param path Output path, PNG or BMP by extension; NULL writes
+ *        SCREENSHOT.BMP. */
 extern "C" void openpete_psyx_take_screenshot(const char* path) {
     openpete_psyx_take_screenshot_ext(path, nullptr, nullptr);
 }
@@ -168,6 +180,13 @@ extern "C" int openpete_write_png_rgba(const char* path, const void* pixels,
     return stbi_write_png(path, w, h, 4, pixels, w * 4) ? 0 : 1;
 }
 
+/** @brief Submit the debug triangle for the current scene through PsyCross.
+ *
+ * Puts the private draw environment, so the clip rect and clear colour
+ * are known whatever the game set, then draws a one-primitive ordering
+ * table built by hand (head, triangle, terminator) with DrawOTag. The
+ * links are rebuilt every call, since PsyCross's ClearOTag would
+ * overwrite the terminator. */
 extern "C" void openpete_debug_triangle_emit(void) {
     if (!s_initialised) openpete_debug_triangle_init();
 

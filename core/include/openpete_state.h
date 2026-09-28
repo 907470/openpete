@@ -93,10 +93,53 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
  * load(quiet=0): user-visible restore — full resync semantics (interp
  * flush via the discontinuity broadcast, overlay re-sync, AL stops). */
 typedef struct openpete_state_mem openpete_state_mem_t;
+
+/** @brief Allocate an empty in-memory snapshot.
+ *
+ * Sizes the buffers for guest RAM, the SPU mirror, the CD transport, the
+ * game-extra blob and VRAM; the mod arena copy is allocated by the first
+ * save. The snapshot is not valid until a save succeeds.
+ * @return The snapshot, or NULL when calloc or any buffer allocation fails
+ *         (nothing is leaked then). */
 openpete_state_mem_t* openpete_state_mem_new(void);
+
+/** @brief Free an in-memory snapshot and its buffers.
+ * @param m Snapshot from openpete_state_mem_new; NULL is ignored. */
 void openpete_state_mem_free(openpete_state_mem_t* m);
+
+/** @brief Capture the running state into an in-memory snapshot.
+ *
+ * Copies the register prefix, RAM, scratchpad, the SPU mirror, the CD
+ * cursors and queue, the game-extra blob, VRAM, the used prefix of the mod
+ * arena and the guest-visible VBL counter. The arena copy buffer only
+ * grows. A failed SPU, VRAM or arena-growth step returns -1 partway: the
+ * buffers already copied stay overwritten and the snapshot's valid flag
+ * is left as it was, so a snapshot that was valid stays valid over a
+ * mixed capture.
+ * @param m Snapshot to overwrite; NULL returns -1.
+ * @param cpu Guest CPU state whose register prefix is copied.
+ * @param frame openpete_frame value recorded with the snapshot.
+ * @return 0 on success; -1 on a NULL snapshot or a failed step. */
 int  openpete_state_mem_save(openpete_state_mem_t* m, const CPUState* cpu,
                              unsigned frame);
+
+/** @brief Restore the running state from an in-memory snapshot.
+ *
+ * Refuses, restoring nothing, when the snapshot is NULL or was never
+ * saved, or when the run follows the reference schedule. Otherwise
+ * restores the register prefix, RAM, scratchpad, SPU mirror, CD cursors
+ * and queue, the game-extra blob, VRAM (by row delta), the mod arena and
+ * the VBL counter, in that order. A failed SPU restore returns -1 after
+ * the registers, RAM and scratchpad were already replaced. With @p quiet
+ * clear it then runs the game's post-load resync and broadcasts the guest
+ * discontinuity.
+ * @param m Snapshot to restore from.
+ * @param cpu Guest CPU state whose register prefix is overwritten.
+ * @param out_frame Receives the snapshot's frame; may be NULL.
+ * @param quiet Nonzero for a speculative rollback: no resync, no
+ *        discontinuity broadcast, and the SPU restore does not stop
+ *        OpenAL voices.
+ * @return 0 on success; -1 on refusal or a failed SPU restore. */
 int  openpete_state_mem_load(const openpete_state_mem_t* m, CPUState* cpu,
                              unsigned* out_frame, int quiet);
 

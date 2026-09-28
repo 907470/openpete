@@ -75,6 +75,10 @@ int openpete_fillpick_get(openpete_fillpick_hit* out) {
     return s_hit.valid;
 }
 
+/** @brief Find the session record for a face by a linear scan of the entry table.
+ *
+ * Cleared records are found too.
+ * @return The record, or NULL when the face has none. */
 static fp_entry* fp_find(int level, int sec, int face) {
     for (int i = 0; i < s_ent_n; i++)
         if (s_ent[i].level == level && s_ent[i].sec == sec && s_ent[i].face == face)
@@ -97,6 +101,11 @@ const char* openpete_fillpick_session_path(void) {
     return s_path;
 }
 
+/** @brief Name a verdict as the session file and the log spell it.
+ *
+ * Any value other than OPENPETE_FILLPICK_FILL and OPENPETE_FILLPICK_NOFILL,
+ * including OPENPETE_FILLPICK_NONE, reads "CLEAR".
+ * @return "FILL", "NOFILL" or "CLEAR". */
 static const char* fp_word(int verdict) {
     return verdict == OPENPETE_FILLPICK_FILL   ? "FILL"
          : verdict == OPENPETE_FILLPICK_NOFILL ? "NOFILL"

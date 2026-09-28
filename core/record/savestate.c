@@ -171,6 +171,17 @@ typedef struct {
  * comfortable range and gives us a precise errno when a chunk fails. */
 #define IO_CHUNK (64u * 1024u)
 
+/** @brief Write a buffer to a state file in IO_CHUNK pieces.
+ *
+ * Stops at the first short write and logs the file path, the section name,
+ * the byte offset within the section, the sizes and errno. A zero-length
+ * buffer writes nothing and succeeds; the buffer is not read then.
+ * @param fp Open destination file.
+ * @param path File path, for the log line.
+ * @param what Section name, for the log line.
+ * @param buf Bytes to write.
+ * @param n Byte count.
+ * @return 0 when all bytes were written, -1 on a short write. */
 static int write_section(FILE* fp, const char* path, const char* what,
                          const void* buf, size_t n) {
     const uint8_t* p = (const uint8_t*)buf;
@@ -189,6 +200,18 @@ static int write_section(FILE* fp, const char* path, const char* what,
     return 0;
 }
 
+/** @brief Read a state file section into a buffer in IO_CHUNK pieces.
+ *
+ * Stops at the first short read and logs the file path, the section name,
+ * the byte offset within the section, the sizes and errno; the buffer then
+ * holds a partial section. A zero-length read succeeds without touching
+ * the buffer.
+ * @param fp Open source file.
+ * @param path File path, for the log line.
+ * @param what Section name, for the log line.
+ * @param buf Receives the bytes.
+ * @param n Byte count.
+ * @return 0 when all bytes were read, -1 on a short read. */
 static int read_section(FILE* fp, const char* path, const char* what,
                         void* buf, size_t n) {
     uint8_t* p = (uint8_t*)buf;
@@ -207,6 +230,15 @@ static int read_section(FILE* fp, const char* path, const char* what,
     return 0;
 }
 
+/** @brief Fill the 32-byte state identity field from the state ABI, the codegen stamp and the ROM hash.
+ *
+ * Hashes the string "stateabi:<ABI>|cg:<codegen_stamp>|rom:<rom_sha256>"
+ * with SHA-256, where a missing recomp module or a missing stamp reads as
+ * "?". The field holds the first 15 digest bytes as 30 lowercase hex
+ * characters, then zero bytes to 32. A source string longer than the
+ * 512-byte buffer is hashed as its first 512 bytes, the last being the
+ * terminating NUL. Both the save header and the load check use it.
+ * @param out Receives OPENPETE_STATE_HASH_LEN bytes. */
 static void ident_fill(char out[OPENPETE_STATE_HASH_LEN]) {
     const openpete_recomp_module* m = openpete_recomp_module_get();
     char src[512];
@@ -246,6 +278,15 @@ static int resolve_state_dir(char* out, size_t out_size) {
     return openpete_paths_state_dir("states", out, out_size, 1);
 }
 
+/** @brief Build the path of a slot's state file, "<states dir>/slot<N>.state".
+ *
+ * The separator is a backslash on Windows and a slash elsewhere. Logs the
+ * reason on failure.
+ * @param slot Slot number, below OPENPETE_STATE_NUM_SLOTS.
+ * @param out Receives the path.
+ * @param out_size Capacity of @p out.
+ * @return 0 on success, -1 on an out-of-range slot, an unresolved states
+ *         directory or a path that does not fit. */
 static int slot_path(unsigned slot, char* out, size_t out_size) {
     if (slot >= OPENPETE_STATE_NUM_SLOTS) {
         OPL_ERROR_F("savestate", "slot %u out of range (0..%u)",

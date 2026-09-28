@@ -18,6 +18,10 @@
 extern unsigned openpete_frame;
 extern unsigned openpete_native_scene_frame(void);
 
+/** @brief Return the frame stamp a copy taken now belongs to.
+ *
+ * The scene ring's open scene frame when one is open, else
+ * openpete_frame (the ring reports 0xFFFFFFFF when no scene is open). */
 static unsigned fb_copy_frame(void)
 {
     const unsigned live = openpete_native_scene_frame();
@@ -109,6 +113,12 @@ static void fb_image_stats(const unsigned char *px, int pw, int ph,
     *spread = v > 0.0 ? sqrt(v) : 0.0;
 }
 
+/** @brief Report whether the snapshot census is on, reading OPENPETE_FBSNAP_CENSUS once.
+ *
+ * On when the variable is set to a non-empty value other than "0"; the
+ * result is latched at the first call. The census logs each draw
+ * environment, area image and window image to stderr.
+ * @return 1 when on, else 0. */
 static int fbsnap_census(void)
 {
     static int s = -1;
