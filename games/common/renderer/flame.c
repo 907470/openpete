@@ -16,8 +16,10 @@
 // stride, amplitude and bias comes from game_layout.flame; the walk below is
 // one body.
 //
-// Determinism: never writes PSX RAM. Calls the real renderer exactly once
-// (behaviour-identical to normal dispatch) and only READS state afterwards.
+// Determinism: the hook calls the real renderer exactly once (behaviour-
+// identical to normal dispatch) and only READS PSX RAM afterwards. The
+// present-time flame_records_present overwrites a staged copy of the flame
+// span, or the span in PSX RAM itself when staging is refused, and restores it.
 // Gated by OPENPETE_FLAME_VERIFY (dump/A/B) or a native renderer mode
 // (--renderer vk; scene feed); inert fall-through otherwise.
 
@@ -50,9 +52,9 @@ extern unsigned openpete_frame;
  * the STATIC cross-section spine (one 8-byte record per counter step); this frac
  * slides each cross-section between record[p] and record[p+8] so the ribbon
  * animates BELOW the keyframe grid (matching the avatar's keyframe-lerp
- * smoothness) instead of stepping one record at a time. Set by the spine
- * orchestrator before each sub-tick re-extract; 0 on the canonical render
- * (exact keyframes). */
+ * smoothness) instead of stepping one record at a time. Set by
+ * flame_records_present before each per-record re-extract; 0 on the canonical
+ * render (exact keyframes). */
 static double s_flame_subframe = 0.0;
 void flame_native_set_subframe(double frac) {
     s_flame_subframe = (frac < 0.0) ? 0.0 : (frac > 1.0 ? 1.0 : frac);
@@ -892,7 +894,7 @@ int flame_bracket(uint8_t* fl, const uint8_t* pfl, const uint8_t* cfl,
      * animates below the keyframe grid — as smooth as the avatar's anim
      * lerp, not stepping one record at a time. SNAP on a large jump —
      * the flame periodically reseeds (the counter wraps 30→0), and
-     * lerping across that collapses the ribbon through zero. |Δ|≤8
+     * lerping across that collapses the ribbon through zero. |Δ|<8
      * separates the continuous advance/retract (g_DeltaTime 2..4) from
      * the wrap (~30). The advance is the same for every (non-snapped)
      * strand (all += g_DeltaTime from an integer prev), so the frac is

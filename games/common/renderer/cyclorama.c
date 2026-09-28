@@ -485,8 +485,8 @@ static int onscreen(const cyc_vert* v) {
  * Off-screen or saturated vertices are counted separately. Pairing is
  * quadratic in the triangle counts. */
 static void compare_and_report(void) {
-    /* Match gte->native by centroid, breaking ties toward an exact colour
-     * match (avoids mispairing among the few extra boundary tris). */
+    /* Match gte->native greedily by the summed per-vertex distance; the
+     * nearest unused native triangle wins. */
     static int used[MAX_TRIS];
     memset(used, 0, sizeof(int) * (s_native_n > 0 ? s_native_n : 1));
     int matched = 0, color_exact = 0, fg_disagree = 0;
@@ -498,10 +498,10 @@ static void compare_and_report(void) {
     int off_n = 0;
     double worst = -1.0; float wnx=0,wny=0,wgx=0,wgy=0;
     for (int g = 0; g < s_gte_n; g++) {
-        /* Score candidates by per-vertex distance sum (my tri vertex order
-         * matches the asm's emit order o0->xy0,o1->xy1,o2->xy2, so v[k]<->v[k]).
-         * This disambiguates colour-identical neighbour tris that a centroid
-         * match would mispair. */
+        /* Score candidates by per-vertex distance sum (the native vertex order
+         * matches the asm's emit order o0->xy0,o1->xy1,o2->xy2, so v[k]<->v[k]),
+         * which separates neighbouring triangles a centroid match would
+         * mispair. */
         int best = -1; float bestd = 1e18f;
         for (int n = 0; n < s_native_n; n++) {
             if (used[n]) continue;

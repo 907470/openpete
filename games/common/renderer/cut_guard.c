@@ -170,7 +170,7 @@ static int cut_rec_holdable(uint32_t m, const uint8_t* mh) {
  *
  * game_layout.moby.array_head is the array itself when array_direct is set,
  * else the address of the pointer variable that holds it, which is read.
- * @return The address, or 0 when it is not a KSEG0 pointer (the game names no
+ * @return The address, or 0 when it is below 0x80000000 (the game names no
  *         array, or the pointer is unset). */
 static uint32_t cut_moby_array_head(void) {
     uint32_t arr = game_layout.moby.array_head;

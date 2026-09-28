@@ -64,7 +64,8 @@ int flame_bracket(uint8_t* fl, const uint8_t* pfl, const uint8_t* cfl,
  * previous list's flame record of the paired model when that model lerps,
  * and runs flame_reextract under the record's model slot with the record's
  * sub-keyframe slide. The walk reads no avatar field, so the model bytes
- * are not restaged. The staged span is a host view copy: the ambient bytes
+ * are not restaged. The staged span is a host view copy (the guest span itself when staging
+ * is refused): the ambient bytes
  * are restored and the slide reset to 0 at the end.
  * @param cpu     guest state
  * @param paired  1 when the interp ring paired this present
