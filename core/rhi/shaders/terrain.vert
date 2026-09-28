@@ -524,13 +524,14 @@ int drain_sub_slot(int a, int b, int c, int h) {
 }
 
 /* Pack keys[] (on[] the sub-cells the drain inserts, slot[] their entries)
- * over their least key, a skipped sub-cell at 0; grid in entry 0's top
- * bits (terrain.c tn_keycells_pack). */
+ * over their least key, clamped to 0x3FFE, a skipped sub-cell as the
+ * sentinel 0x3FFF (OP_DRAIN_SKIP); grid in entry 0's top bits (terrain.c
+ * tn_keycells_pack). */
 void dtab_pack(inout dtab T, float keys[16], bool on[16], int slot[16], int cnt, uint grid) {
     T.t0 = uvec4(0u); T.t1 = uvec4(0u);
     if (T.n == 0) return;
     for (int i = 0; i < cnt; i++)
-        if (on[i]) dtab_put(T, slot[i], uint(keys[i] - T.kmin));
+        dtab_put(T, slot[i], on[i] ? min(uint(keys[i] - T.kmin), 0x3FFEu) : 0x3FFFu);
     T.t0.x |= grid << 14;
 }
 

@@ -100,14 +100,29 @@ float op_key_bucket(float tkey)
  * position scaled to 1 at the quadrant's far corner: positive on the far
  * column (row) of the quadrant. The cell is table entry 4r + c.
  *
- * A sub-cell the drain skips carries 0, the face's minimum. The keys come
- * from the drain's own sums (terrain.c tn_quad_cell_keys and
+ * A sub-cell the drain skips (a straddler's back-facing cell, a cell whose
+ * key is not positive) carries OP_DRAIN_SKIP: the game draws nothing there,
+ * so a fragment of the coarser drawn mesh in that sub-cell is discarded in
+ * the key and the colour passes. A real entry is at most 0x3FFE. The keys
+ * come from the drain's own sums (terrain.c tn_quad_cell_keys and
  * tn_tri_cell_keys on the walk, the terrain.vert mirrors on the retained
  * cache); these functions only locate the entry. */
 #define OP_DRAIN_NONE  0u
 #define OP_DRAIN_QUAD  1u   /* 4x4 cells                    */
 #define OP_DRAIN_TRI4  2u   /* 16 sub-triangles, cell 1     */
 #define OP_DRAIN_TRI2  3u   /* 4 sub-triangles, cell 2      */
+
+/* The entry of a sub-cell the drain skips (14-bit field, all ones). */
+#define OP_DRAIN_SKIP  16383.0
+
+/* The key channel op_drain_koff / op_drain_koff_p return for a fragment in
+ * a skipped sub-cell; the caller discards it (op_drain_discards). */
+#define OP_DRAIN_DISCARD -1e30
+
+bool op_drain_discards(float koff)
+{
+    return koff < -1e29;
+}
 
 uint op_drain_grid(uvec4 t0)
 {
@@ -143,23 +158,27 @@ float op_drain_entry(int slot, uvec4 t0, uvec4 t1)
 }
 
 /* The key of the sub-cell at p above the face's contest key; 0 for a face
- * without a table. The rasters of the colour and the key passes
- * interpolate p through different clip-space W, so on a pixel whose centre
- * lies on a sub-cell border the two can pick adjacent sub-cells. The key
- * pass writes the exact sub-cell (margin 0); the colour pass contests at
- * the least key within `margin` of p, so a fragment never contests at a
- * key above the one its own key raster wrote there. */
+ * without a table, OP_DRAIN_SKIP when the sub-cell at p is skipped. The
+ * rasters of the colour and the key passes interpolate p through different
+ * clip-space W, so on a pixel whose centre lies on a sub-cell border the
+ * two can pick adjacent sub-cells. The key pass writes the exact sub-cell
+ * (margin 0); the colour pass contests at the least key of the drawn
+ * sub-cells within `margin` of p, so a fragment never contests at a key
+ * above the one its own key raster wrote there. */
 float op_drain_delta(vec2 p, uvec4 t0, uvec4 t1, float margin)
 {
     uint grid = op_drain_grid(t0);
     if (grid == OP_DRAIN_NONE) return 0.0;
     uint q = (t0.x >> 30) & 3u;
-    if (margin <= 0.0) return op_drain_entry(op_drain_slot(p, grid, q), t0, t1);
-    float d = op_drain_entry(op_drain_slot(p + vec2(-margin, -margin), grid, q), t0, t1);
-    d = min(d, op_drain_entry(op_drain_slot(p + vec2( margin, -margin), grid, q), t0, t1));
-    d = min(d, op_drain_entry(op_drain_slot(p + vec2(-margin,  margin), grid, q), t0, t1));
-    d = min(d, op_drain_entry(op_drain_slot(p + vec2( margin,  margin), grid, q), t0, t1));
-    return d;
+    float e = op_drain_entry(op_drain_slot(p, grid, q), t0, t1);
+    if (margin <= 0.0 || e >= OP_DRAIN_SKIP) return e;
+    float d = OP_DRAIN_SKIP;
+    for (int k = 0; k < 4; k++) {
+        vec2 o = vec2((k & 1) != 0 ? margin : -margin, k >= 2 ? margin : -margin);
+        float n = op_drain_entry(op_drain_slot(p + o, grid, q), t0, t1);
+        if (n < OP_DRAIN_SKIP) d = min(d, n);
+    }
+    return d < OP_DRAIN_SKIP ? d : e;
 }
 
 /* The colour pass's border margin in p's units (quarter edges on a
@@ -169,11 +188,14 @@ float op_drain_delta(vec2 p, uvec4 t0, uvec4 t1, float margin)
 #define OP_DRAIN_MARGIN 0.0001
 
 /* A contesting fragment's key channel: koff plus its sub-cell's key above
- * the face's contest key. Only a positive (ordering-table) key moves; a
- * near-band contest-only key (negative) and an unkeyed face (0) keep koff. */
+ * the face's contest key, OP_DRAIN_DISCARD in a skipped sub-cell. Only a
+ * positive (ordering-table) key moves; a near-band contest-only key
+ * (negative) and an unkeyed face (0) keep koff. */
 float op_drain_koff_p(float koff, vec2 p, uvec4 t0, uvec4 t1)
 {
-    return koff > 0.25 ? koff + op_drain_delta(p, t0, t1, OP_DRAIN_MARGIN) : koff;
+    if (koff <= 0.25) return koff;
+    float d = op_drain_delta(p, t0, t1, OP_DRAIN_MARGIN);
+    return d >= OP_DRAIN_SKIP ? OP_DRAIN_DISCARD : koff + d;
 }
 
 /* A walked triangle's drain record. The scene vertex's rank ordinal (tag)
@@ -210,7 +232,7 @@ float op_drain_koff(float koff, float tag, vec2 uv, usampler2D rec)
     uvec4 t0, t1;
     vec2 p;
     if (koff <= 0.25 || !op_drain_record(rec, tag, uv, t0, t1, p)) return koff;
-    return koff + op_drain_delta(p, t0, t1, OP_DRAIN_MARGIN);
+    return op_drain_koff_p(koff, p, t0, t1);
 }
 
 /* The key pass's stored value for key view-Z kv (the key images' encoding,

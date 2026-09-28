@@ -421,6 +421,8 @@ static int s_dbg_spike_tris;   /* triangles the near/HQ subdivide emitted this w
 static int s_trisplit_faces[2], s_trisplit_subs[2], s_trisplit_scull[2], s_trisplit_matdiff[2];
                                    /* tn_wctx trisplit_* sums, [0] tier 4, [1] tier 2 */
 static int s_cells4_faces[2];      /* tn_wctx cells4_faces sums */
+static int s_drain_skip[2];        /* tn_wctx drain_skip sums: [0] skipKeyed, [1] skipMasked */
+static int s_drain_skip_legacy;    /* OPENPETE_TERRAIN_DRAIN_SKIP=0: pack a skipped slot as delta 0 (A/B leg) */
 static int s_fardbg = -1, s_fardbg_done = 0, s_fardbg_active = 0;  /* OPENPETE_TERRAIN_FARDBG */
 static int s_fardbg_budget = -1;   /* OPENPETE_TERRAIN_FARDBG_N: walks still to dump */
 static int s_fardbg_lean = -1;     /* OPENPETE_TERRAIN_FARDBG_LEAN: skip the per-prim/per-tri lines */
@@ -888,6 +890,9 @@ typedef struct {
     /* quads drawn as the 4x4 cells: [0] all, [1] those the drain's distance
      * test alone would draw as the 2x2 (routed by tface_cells_pin) */
     int cells4_faces[2];
+    /* skipped drain-table slots packed this walk: [0] as delta 0 (keyed at
+     * the face minimum), [1] as the skip sentinel */
+    int drain_skip[2];
     int tex_faces, tex_tris;
     int near_q_agree, near_c_only;
     int walk_sectors;
@@ -2143,21 +2148,45 @@ static void tn_keycells_add(tn_keycells* K, int i, int on, float key, int slot) 
     K->n++;
 }
 
+/* A drain-table entry the drain draws nothing at. A real entry is a key
+ * sum of at most four 12-bit SZ terms above the least one (<= 0x3FFC) and
+ * is clamped to 0x3FFE, so the 14-bit field never holds this value for a
+ * drawn sub-cell. */
+#define TN_DRAIN_SKIP 0x3FFFu
+
+/** @brief Reads OPENPETE_TERRAIN_DRAIN_SKIP for the walk about to run.
+ *
+ * "0" selects the legacy packing, a skipped sub-cell keyed at the face's
+ * least key and drawn; any other value or none selects the sentinel.
+ * @return 1 for the legacy packing, else 0. */
+static int tn_drain_skip_legacy(void) {
+    const char* e = getenv("OPENPETE_TERRAIN_DRAIN_SKIP");
+    return e && e[0] == '0';
+}
+
 /** @brief Packs a face's sub-cell keys into the 16-halfword key table.
  *
  * Layout per psx_key_contest.glsl: halfword slot[i] of drain sub-cell i holds
- * its key above the least one in 14 bits (a skipped sub-cell holds 0, the
- * face's least key); bits 14..15 of halfword 0 hold the grid (1 quad cells,
- * 2 tier-4 sub-triangles, 3 tier-2).
+ * its key above the least one in 14 bits, clamped to 0x3FFE; a sub-cell the
+ * drain skips holds TN_DRAIN_SKIP, which the key and colour passes discard
+ * (0, the face's least key, under OPENPETE_TERRAIN_DRAIN_SKIP=0); bits
+ * 14..15 of halfword 0 hold the grid (1 quad cells, 2 tier-4 sub-triangles,
+ * 3 tier-2).
  * @param K The face's sub-cell keys.
  * @param cnt The sub-cell count.
  * @param grid The grid code.
- * @param out Receives the table, two halfwords per word. */
-static void tn_keycells_pack(const tn_keycells* K, int cnt, uint32_t grid, uint32_t out[8]) {
+ * @param out Receives the table, two halfwords per word.
+ * @param skip Counts the skipped sub-cells: [0] packed as 0, [1] as the sentinel. */
+static void tn_keycells_pack(const tn_keycells* K, int cnt, uint32_t grid, uint32_t out[8],
+                             int skip[2]) {
     memset(out, 0, 8 * sizeof(uint32_t));
     for (int i = 0; i < cnt; i++) {
-        if (!K->on[i]) continue;
-        const uint32_t d = (uint32_t)(K->key[i] - K->kmin) & 0x3FFFu;
+        const float dk = K->key[i] - K->kmin;
+        uint32_t d = dk < (float)(TN_DRAIN_SKIP - 1u) ? (uint32_t)dk : TN_DRAIN_SKIP - 1u;
+        if (!K->on[i]) {
+            d = s_drain_skip_legacy ? 0u : TN_DRAIN_SKIP;
+            skip[!s_drain_skip_legacy]++;
+        }
         out[K->slot[i] >> 1] |= d << ((K->slot[i] & 1u) * 16u);
     }
     out[0] |= grid << 14;
@@ -2174,7 +2203,7 @@ static void tn_keycells_pack(const tn_keycells* K, int cnt, uint32_t grid, uint3
 static void tn_keycells_begin(tn_wctx* W, const tn_keycells* K, int cnt, uint32_t grid) {
     W->emit_keycells = 1;
     W->emit_otkey = K->kmin;
-    tn_keycells_pack(K, cnt, grid, W->emit_kc);
+    tn_keycells_pack(K, cnt, grid, W->emit_kc, W->drain_skip);
 }
 
 /** @brief Sets a triangle corner's face-local coordinate in the drain grid.
@@ -2595,7 +2624,7 @@ static void trisplit_reset(int f[2], int s[2], int c[2], int m[2]) {
     memset(f, 0, 2 * sizeof(int)); memset(s, 0, 2 * sizeof(int));
     memset(c, 0, 2 * sizeof(int)); memset(m, 0, 2 * sizeof(int));
 }
-/** @brief Adds one walk context's split-triangle and tier-4 cell counters into the per-walk sums.
+/** @brief Adds one walk context's split-triangle, tier-4 cell and drain-skip counters into the per-walk sums.
  * @param W The walk context. */
 static void trisplit_sum(const tn_wctx* W) {
     for (int k = 0; k < 2; k++) {
@@ -2604,6 +2633,7 @@ static void trisplit_sum(const tn_wctx* W) {
         s_trisplit_scull[k] += W->trisplit_scull[k];
         s_trisplit_matdiff[k] += W->trisplit_matdiff[k];
         s_cells4_faces[k] += W->cells4_faces[k];
+        s_drain_skip[k] += W->drain_skip[k];
     }
 }
 
@@ -8071,6 +8101,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     s_dbg_spike_tris = 0;
     trisplit_reset(s_trisplit_faces, s_trisplit_subs, s_trisplit_scull, s_trisplit_matdiff);
     memset(s_cells4_faces, 0, sizeof(s_cells4_faces));
+    memset(s_drain_skip, 0, sizeof(s_drain_skip));
+    s_drain_skip_legacy = tn_drain_skip_legacy();
     s_near_q_agree = s_near_c_only = 0;
     ENV_FLAG_LATCH(s_sectordump, "OPENPETE_TERRAIN_SECTORDUMP");
     s_sd_n = 0;
@@ -8537,6 +8569,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         W->dbg_spike_tris = 0;
         trisplit_reset(W->trisplit_faces, W->trisplit_subs, W->trisplit_scull, W->trisplit_matdiff);
         memset(W->cells4_faces, 0, sizeof(W->cells4_faces));
+        memset(W->drain_skip, 0, sizeof(W->drain_skip));
         W->tex_faces = W->tex_tris = 0;
         W->near_q_agree = W->near_c_only = 0;
         W->walk_sectors = 0;
@@ -10447,9 +10480,9 @@ static void terrain_compare(void) {
         "  <=1px=%.0f%% <=2px=%.0f%%  onscreen(n=%d med=%.2f)\n",
         s_walk_sectors, s_tv_n, s_tri_n, cn, sum / s_tv_n, med, p90, worst,
         100.0 * within1 / s_tv_n, 100.0 * within2 / s_tv_n, nnon, med_on);
-    fprintf(stderr, "[terrain-faces] walked=%d oob=%d fullyBehind=%d nearClipped=%d nclipCulled=%d satBack=%d satEmit=%d emitted=%d  texturedFaces=%d texTris=%d hqCells=%d\n",
+    fprintf(stderr, "[terrain-faces] walked=%d oob=%d fullyBehind=%d nearClipped=%d nclipCulled=%d satBack=%d satEmit=%d emitted=%d  texturedFaces=%d texTris=%d hqCells=%d skipKeyed=%d skipMasked=%d\n",
         s_dbg_faces, s_dbg_oob, s_dbg_behind, s_dbg_clipped, s_dbg_nclip, s_dbg_satback, s_dbg_satemit,
-        s_tri_n, s_tex_faces, s_tex_tris, s_dbg_spike);
+        s_tri_n, s_tex_faces, s_tex_tris, s_dbg_spike, s_drain_skip[0], s_drain_skip[1]);
     fprintf(stderr, "[terrain-defer] queue(oracle): +0x2000{hdr=%d cell=%d} +0x1E00{hdr=%d cell=%d} total=%d  |  classifier: near=%d (×4 subquads → %d bpp8 prims)  agreeWithQueue=%d classifierOnly=%d queueOnly=%d\n",
         s_defer_hdr2, s_defer_cell2, s_defer_hdr1e, s_defer_cell1e, s_defer_n,
         s_dbg_spike, s_dbg_spike * 4, s_near_q_agree, s_near_c_only, s_defer_n - s_near_q_agree);

@@ -116,16 +116,19 @@ bool ter_debug_shade(out vec4 c)
 /* The key contest (psx_key_contest.glsl), terrain subset: never ranked,
  * never an actor, true-scope on, so the actor-key arm receives the
  * never-wins sentinel. A face with a drain sub-cell table contests at the
- * key of the sub-cell under the fragment (op_drain_koff_p). */
+ * key of the sub-cell under the fragment (op_drain_koff_p) and loses a
+ * fragment in a sub-cell the drain skips. */
 bool ter_key_loses()
 {
     if (abs(vKoff) <= 0.25) return false;
+    float koff = op_drain_koff_p(vKoff, vKfl / vKq, vKc0, vKc1);
+    if (op_drain_discards(koff)) return true;
     return op_key_loses(
         op_key_from_stored(texelFetch(u_hpkey,   ivec2(gl_FragCoord.xy), 0).r),
         OP_KEY_NONE,
         op_key_from_stored(texelFetch(u_mobykey, ivec2(gl_FragCoord.xy), 0).r),
         op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED),
-        op_drain_koff_p(vKoff, vKfl / vKq, vKc0, vKc1),
+        koff,
         false, true, SLOT_CONTEST);
 }
 

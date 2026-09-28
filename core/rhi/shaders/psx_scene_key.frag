@@ -101,6 +101,7 @@ void main()
      * the select kills everything under it (a hole to the clear). The face
      * still STAMPS its key, so keyed terrain keeps yielding to it. */
     float koff = op_drain_koff(vKoff, vRank.y, vUV / vQ, u_drain);
+    if (op_drain_discards(koff)) discard;   /* a sub-cell the drain skips */
     if (!ranked && abs(koff) > 0.25) {
         /* The additive glow fan (rank -2) runs the aura contest instead —
          * see psx_key_contest.glsl. */

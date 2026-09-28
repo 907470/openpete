@@ -63,6 +63,7 @@ void main()
      * HD-replaced terrain keeps og's per-pixel face select. Ranked faces
      * skip the positive-koff contest — see psx_scene_key.frag. */
     float koff = op_drain_koff(vKoff, vRank.y, vUVq / vQ, u_drain);
+    if (op_drain_discards(koff)) discard;   /* a sub-cell the drain skips */
     if (!ranked && abs(koff) > 0.25) {   /* contest rules in psx_scene_key.frag */
         float hk = texelFetch(u_hpkey,    ivec2(gl_FragCoord.xy), 0).r;
         float ak = texelFetch(u_actorkey, ivec2(gl_FragCoord.xy), 0).r;

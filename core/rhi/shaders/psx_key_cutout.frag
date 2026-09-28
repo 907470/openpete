@@ -63,8 +63,8 @@ void main()
     if (pc.bpp >= 0 && sample_word(int(uv.x), int(uv.y)) == 0u) discard;
     uvec4 t0, t1;
     vec2 p;
-    gl_FragDepth = op_drain_record(u_drain, vDrain, uv, t0, t1, p)
-        ? op_key_store(vKv + op_drain_delta(p, t0, t1, 0.0))
-        : gl_FragCoord.z;
+    float d = op_drain_record(u_drain, vDrain, uv, t0, t1, p) ? op_drain_delta(p, t0, t1, 0.0) : -1.0;
+    if (d >= OP_DRAIN_SKIP) discard;           /* a sub-cell the drain skips */
+    gl_FragDepth = d >= 0.0 ? op_key_store(vKv + d) : gl_FragCoord.z;
     outColor = vec4(0.0);
 }

@@ -291,6 +291,7 @@ void main()
         op_rank_loses(texelFetch(op_moby_rank, ivec2(gl_FragCoord.xy), 0), vRank, own))
         discard;
     float koff = op_drain_koff(vKoff, vRank.y, op_uv(), op_drain_records);
+    if (op_drain_discards(koff)) discard;   /* a sub-cell the drain skips */
     if (!ranked && abs(koff) > 0.25) {
         /* The additive glow fan (rank -2) runs the aura contest instead —
          * see psx_key_contest.glsl. */

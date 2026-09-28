@@ -54,8 +54,12 @@ void main()
         }
         if (p == 0u) discard;                  /* PSX transparent sentinel */
     }
-    gl_FragDepth = op_drain_grid(vKc0) == OP_DRAIN_NONE
-        ? gl_FragCoord.z
-        : op_key_store(max(vKoff - 0.5, 1.0) + op_drain_delta(vKfl / vKq, vKc0, vKc1, 0.0));
+    if (op_drain_grid(vKc0) == OP_DRAIN_NONE) {
+        gl_FragDepth = gl_FragCoord.z;
+    } else {
+        float d = op_drain_delta(vKfl / vKq, vKc0, vKc1, 0.0);
+        if (d >= OP_DRAIN_SKIP) discard;       /* a sub-cell the drain skips */
+        gl_FragDepth = op_key_store(max(vKoff - 0.5, 1.0) + d);
+    }
     outColor = vec4(1.0);                      /* colour attachment unused */
 }
