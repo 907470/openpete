@@ -1224,9 +1224,10 @@ static void mod_hot_reload(struct openpete_mod* mod) {
 
 /** @brief Poll the entered source mods for edits every 64th tick boundary and hot-reload the changed ones.
  *
- * Active only when OPENPETE_MOD_HOT_RELOAD is set and not "0", read once
- * on the first call. Each poll rechecks the SDK prefix, then recomputes,
- * for every entered mod with an object, a src/ directory and a build key,
+ * Active only when OPENPETE_MOD_HOT_RELOAD is a nonempty string whose first
+ * character is not '0', read once on the first call. Each poll rechecks the
+ * SDK prefix, then recomputes, for every entered mod with an object, a src/
+ * directory and a build key,
  * the source build key (sources and SDK), the config.toml key and the
  * shader key; any change calls mod_hot_reload. */
 static void hot_reload_poll(void) {
@@ -2292,8 +2293,8 @@ static int mod_id_reserved_stem(const char* id) {
  *
  * The id names files and directories (.build/<id>, .unpacked/<id>) and
  * reaches the compiler's output path through an argv, never a shell, so
- * quotes and spaces are legal. Refused: an empty id, a leading dot, a
- * "..", a path separator (/ or \), a character Windows file names cannot
+ * spaces and shell metacharacters are legal. Refused: an empty id, a leading
+ * dot, a "..", a path separator (/ or \), a character Windows file names cannot
  * hold (< > : " | ? * and control bytes), a trailing dot or space, and a
  * reserved device stem (mod_id_reserved_stem). Any of these either leaves
  * the mod's own directory or names a file Windows cannot create.
