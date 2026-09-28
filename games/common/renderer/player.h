@@ -123,6 +123,10 @@ void player_native_set_rot_interp(const int* active, const double* ang);
  * the draw's own reflection, and the walk negates both NCLIP results under it.
  * @param on Nonzero for the mirrored copy. */
 void player_native_set_mirror(int on);
+/** @brief Whether the current call or replayed record is the mirrored copy.
+ *
+ * Returns the latch player_native_set_mirror last set.
+ * @return 1 for the mirrored copy, else 0. */
 int  player_mirror_pass(void);
 
 /** @brief The interpolated byte-angles for one part, read by a provider's euler composer.
@@ -232,9 +236,31 @@ void player_records_epoch_commit(void);
  * @return The model record count this present, 0 when nothing is opened. */
 int  player_records_present_begin(int ring_paired, int ring_cut, double ring_alpha,
                                   double* out_alpha);
+/** @brief The newest store entry's model record k of the open present.
+ *
+ * Valid between player_records_present_begin and player_records_present_end.
+ * @param k The model record index.
+ * @return The record, or NULL when `k` is out of range or no present is
+ *         open. */
 const player_model_rec_t* player_records_curr(int k);
+/** @brief The record of the previous list that model record k pairs with.
+ *
+ * @param k The model record index.
+ * @return The paired record, or NULL when record `k` does not exist, is
+ *         unpaired, or the previous entry is invalid. */
 const player_model_rec_t* player_records_prev(int k);
+/** @brief The record two lists back that model record k pairs with.
+ *
+ * Reached through the previous record's own pairing.
+ * @param k The model record index.
+ * @return The record, or NULL when `k` does not exist, has no second pairing,
+ *         or the oldest entry is invalid. */
 const player_model_rec_t* player_records_prev2(int k);
+/** @brief Whether model record k lerps against its paired previous record.
+ *
+ * @param k The model record index.
+ * @return 1 when the record exists, player_records_present_begin enabled
+ *         lerping, and the record is paired; else 0. */
 int  player_records_lerps(int k);
 /** @brief Whether a model record of the list being built was drawn by a hook call, as opposed to created for pairing alone.
  *
@@ -245,15 +271,68 @@ int  player_records_lerps(int k);
  * @param k The model record index.
  * @return 1 when drawn, 0 when pairing-only or out of range. */
 int  player_records_model_drawn(int k);
+/** @brief The shadow record count of the open present.
+ *
+ * @return The count, 0 when no present is open. */
 int  player_records_shadow_count(void);
+/** @brief The newest store entry's shadow record j of the open present.
+ *
+ * @param j The shadow record index.
+ * @return The record, or NULL when `j` is out of range or no present is
+ *         open. */
 const player_shadow_rec_t* player_records_shadow_curr(int j);
+/** @brief The previous list's shadow record paired with shadow record j.
+ *
+ * The one bound to the model record that record j's model pairs with.
+ * @param j The shadow record index.
+ * @return The record, or NULL when `j` does not exist, its model record is
+ *         unpaired, or the previous list has no shadow bound to the pair. */
 const player_shadow_rec_t* player_records_shadow_prev(int j);
+/** @brief Prints one shadow record's binding and lerp state to stderr.
+ *
+ * Does nothing unless OPENPETE_PLAYER_RECDBG is set and record `j`
+ * exists.
+ * @param j The shadow record index.
+ * @param staged_anchor The staged shadow anchor's three words, or NULL to print
+ *        zeros. */
 void player_records_shadow_note(int j, const int32_t* staged_anchor);
+/** @brief The flame record count of the open present.
+ *
+ * @return The count, 0 when no present is open. */
 int  player_records_flame_count(void);
+/** @brief The newest store entry's flame record j of the open present.
+ *
+ * @param j The flame record index.
+ * @return The record, or NULL when `j` is out of range or no present is
+ *         open. */
 const player_flame_rec_t* player_records_flame_curr(int j);
+/** @brief The previous list's flame record paired with flame record j.
+ *
+ * The one bound to the model record that record j's model pairs with.
+ * @param j The flame record index.
+ * @return The record, or NULL when `j` does not exist, its model record is
+ *         unpaired, or the previous list has no flame bound to the pair. */
 const player_flame_rec_t* player_records_flame_prev(int j);
+/** @brief Prints one flame record's binding and lerp state to stderr.
+ *
+ * Does nothing unless OPENPETE_PLAYER_RECDBG is set and record `j`
+ * exists.
+ * @param j The flame record index.
+ * @param staged_origin The staged flame origin's three words, or NULL to print
+ *        zeros. */
 void player_records_flame_note(int j, const int32_t* staged_origin);
+/** @brief Prints one model record's pairing and lerp state to stderr.
+ *
+ * Does nothing unless OPENPETE_PLAYER_RECDBG is set and record `k`
+ * exists.
+ * @param k The model record index.
+ * @param staged_pos The staged position's three words, or NULL to print
+ *        zeros. */
 void player_records_present_note(int k, const int32_t* staged_pos);
+/** @brief Closes the store for the present.
+ *
+ * Clears the open record count and the lerp flag, so the accessors return NULL
+ * or 0 until the next player_records_present_begin. */
 void player_records_present_end(void);
 /** @brief The store's newest clock stamp.
  *

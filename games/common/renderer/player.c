@@ -68,9 +68,11 @@ uint32_t player_part_block_base(CPUState* cpu) {
 static uint8_t s_blk[PLAYER_REC_PART_MAX];
 static int     s_blk_pinned;   /* the replay supplied the bytes; do not re-derive */
 
+/** @brief Stores a 32-bit word little-endian into a byte buffer. */
 static void blk_put(uint8_t* d, uint32_t v) {
     d[0]=(uint8_t)v; d[1]=(uint8_t)(v>>8); d[2]=(uint8_t)(v>>16); d[3]=(uint8_t)(v>>24);
 }
+/** @brief Loads a 32-bit little-endian word from a byte buffer. */
 static uint32_t blk_get(const uint8_t* d) {
     return (uint32_t)d[0] | ((uint32_t)d[1]<<8) | ((uint32_t)d[2]<<16) | ((uint32_t)d[3]<<24);
 }
@@ -136,6 +138,16 @@ uint32_t player_rec_seam_word(int k) {
     return (off + 4u <= PL.part_block_len) ? blk_get(s_blk + off) : 0u;
 }
 
+/** @brief The guest base of the pre-blend colour table the draw builds.
+ *
+ * A layout with a fixed render scratch names it as part_base +
+ * colour_scratch_off; one that carves the scratch out of the polybuf every tick
+ * leaves part_base 0 and the table starts at *polybuf.end -
+ * part_base_polybuf_off + colour_scratch_off.
+ * @param cpu Reads the polybuf end pointer.
+ * @return The table's guest address, or 0 when the layout has no table
+ *         (colour_scratch_len 0), names neither form, or the polybuf end is not
+ *         a RAM address. */
 static uint32_t player_colour_scratch(CPUState* cpu) {
     if (!PL.colour_scratch_len) return 0;
     if (PL.part_base) return PL.part_base + PL.colour_scratch_off;
@@ -145,6 +157,12 @@ static uint32_t player_colour_scratch(CPUState* cpu) {
     return end - PL.part_base_polybuf_off + PL.colour_scratch_off;
 }
 
+/** @brief The part count the walk iterates.
+ *
+ * The provider's part_count when it has one, else the layout's part_count,
+ * clamped to 0..PLAYER_PARTS_MAX.
+ * @param cpu Passed to the provider.
+ * @return The clamped count. */
 static int player_parts(CPUState* cpu) {
     int n = player_game.part_count ? player_game.part_count(cpu) : PL.part_count;
     if (n > PLAYER_PARTS_MAX) n = PLAYER_PARTS_MAX;
@@ -190,6 +208,15 @@ void player_native_set_flat_key(uint32_t key) {
     s_flat_prev = s_flat_cur;
     s_flat_cur.key = key; s_flat_cur.calls = 0; s_flat_cur.min = 1e30;
 }
+/** @brief The near-plane cap the front-layer flatten shares across a tick's calls.
+ *
+ * Counts the call into the current group and folds `own_min` into the group's
+ * running minimum. The result is that minimum, lowered to the previous group's
+ * minimum when the previous group held more than one call, so the first calls
+ * of a tick, drawn before the nearest avatar, cap at the value the whole
+ * previous group settled on.
+ * @param own_min This call's smallest positive view-Z, or 1e30 when none.
+ * @return The cap. */
 static double player_flat_min(double own_min) {
     s_flat_cur.calls++;
     if (own_min < s_flat_cur.min) s_flat_cur.min = own_min;
@@ -232,6 +259,15 @@ int player_rot_interp(int part, double out[3]) {
  * every number below untouched. */
 static player_plane_t s_plane;
 
+/** @brief The signed distance from a decoded model vertex to the water plane.
+ *
+ * Evaluates plane - floor((row . V) / 4096 + tr[part]) from s_plane, the
+ * floored form the draw's own MVMVA yields.
+ * @param part The part the vertex belongs to.
+ * @param VX The decoded model-space X.
+ * @param VY The decoded model-space Y.
+ * @param VZ The decoded model-space Z.
+ * @return The distance; 0 when `part` is outside 0..PLAYER_PARTS_MAX - 1. */
 static double plane_dist(int part, double VX, double VY, double VZ) {
     if (part < 0 || part >= PLAYER_PARTS_MAX) return 0.0;
     return s_plane.plane
@@ -396,6 +432,17 @@ const player_xform_t* player_part_xform(int p) {
     return (p >= 0 && p < PLAYER_PARTS_MAX && s_xf[p].present) ? &s_xf[p] : NULL;
 }
 
+/** @brief Fills s_xf with every part's transform, root first, then seam-joined children.
+ *
+ * Clears s_xf, asks the provider for part 0 with no parent, and returns with
+ * every entry absent when it has no part_xform, the part count is 0, or it
+ * refuses the root. Each child is derived against the root; a child the
+ * provider refuses stays absent, and an accepted one has its translation
+ * replaced by the provider's seam_joint when it has one.
+ * @param cpu Passed to the provider.
+ * @param v The view the transforms are built under.
+ * @param fd0 The root part's flags word; its blend bits give the keyframe
+ *        weight the seam blends on, zero meaning a single keyframe. */
 static void player_derive_xforms(CPUState* cpu, const ngte_view* v, uint32_t fd0) {
     memset(s_xf, 0, sizeof s_xf);
     const int n = player_parts(cpu);
@@ -526,6 +573,12 @@ typedef struct { int tex, tpx, tpy, clx, cly, bpp, blend; } swmat;
  * the plane cut produced, which has no stream index of its own. */
 typedef struct { double sx, sy, vz, u, v, pd; uint32_t rgb; int idx; } pclv;
 
+/** @brief Appends one triangle to the walk's triangle store.
+ *
+ * Screen position and view-Z narrow to float and the texture coordinates
+ * truncate to int. The triangle is dropped when the store holds MAX_SWTRI.
+ * @param v The three vertices.
+ * @param m The triangle's material. */
 static void emit_raw(const pclv v[3], const swmat* m) {
     if (s_swtri_n >= MAX_SWTRI) return;
     swtri* t = &s_swtri[s_swtri_n++];
@@ -589,6 +642,30 @@ static void plane_emit(const pclv in[3], const swmat* m) {
     }
 }
 
+/** @brief Emits one triangle over projected stream vertices through the plane split.
+ *
+ * Takes screen position, view-Z and plane distance from s_sproj and the rest
+ * from the arguments. Nothing is emitted when the store is full or an index is
+ * not below the projected count.
+ * @param i0 First vertex's s_sproj index.
+ * @param i1 Second vertex's s_sproj index.
+ * @param i2 Third vertex's s_sproj index.
+ * @param c0 First vertex colour, packed 0x00BBGGRR.
+ * @param c1 Second vertex colour.
+ * @param c2 Third vertex colour.
+ * @param u0 First vertex texture U.
+ * @param v0 First vertex texture V.
+ * @param u1 Second vertex texture U.
+ * @param v1 Second vertex texture V.
+ * @param u2 Third vertex texture U.
+ * @param v2 Third vertex texture V.
+ * @param tex Nonzero for a textured triangle.
+ * @param tpx Texture page X.
+ * @param tpy Texture page Y.
+ * @param clx CLUT X.
+ * @param cly CLUT Y.
+ * @param bpp Texture depth in bits per pixel.
+ * @param blend The semitransparency mode from moby_abr_blend, 0 for opaque. */
 static void emit_swtri(int i0,int i1,int i2, uint32_t c0,uint32_t c1,uint32_t c2,
                        int u0,int v0,int u1,int v1,int u2,int v2,
                        int tex,int tpx,int tpy,int clx,int cly,int bpp,int blend) {
@@ -720,6 +797,21 @@ static float player_part_key(int vidx, int sd)
     if (slot < 0) slot = 0;
     return (float)(slot + 1);
 }
+/** @brief Builds the face walk over the projection and adds its triangles to the scene.
+ *
+ * With `reproject` set the pose is projected first; otherwise the projection
+ * already in s_sproj is used. Returns without touching the scene when the walk
+ * built no triangle. The sortDepth byte at PL.sort_depth_off selects the depth
+ * policy: the provider's front sentinel pulls the whole model toward the near
+ * plane by a cap shared across the tick's calls (player_flat_min), any other
+ * value applies a one-slot tie pull, and the mirrored copy adds its own
+ * negative bias to the depth key; OPENPETE_MOBY_OTBIAS=0 disables all of them.
+ * Perspective W is taken from the unpulled view-Z. Triangles carry the PLAYER
+ * tag of s_player_slot, and an opaque one an ordering key from its first
+ * vertex's part. OPENPETE_SPYRO_UNTEX draws every triangle untextured;
+ * OPENPETE_PLAYER_POSTRACE prints the submitted centroid and bounding box.
+ * @param cpu Reads the pose and the sortDepth byte.
+ * @param reproject Nonzero to run player_project_all first. */
 static void player_feed_walk_ex(CPUState* cpu, int reproject) {
     if (reproject) player_project_all(cpu);
     player_build_walk(cpu);
@@ -828,6 +920,9 @@ static void player_feed_walk_ex(CPUState* cpu, int reproject) {
     openpete_native_scene_set_tag(0);
 }
 
+/** @brief Projects the current pose and feeds its triangles to the scene.
+ *
+ * @param cpu Reads the pose. */
 static void player_feed_walk(CPUState* cpu) { player_feed_walk_ex(cpu, 1); }
 
 /* ---- OPENPETE_PLAYER_VERIFY -------------------------------------------
@@ -836,7 +931,7 @@ static void player_feed_walk(CPUState* cpu) { player_feed_walk_ex(cpu, 1); }
  * same pose. Precision is the share of walk triangles a primitive covers,
  * recall the share of primitives a walk triangle covers, both on a 4-pixel
  * per-vertex bound; the mean is over the matched pairs' vertex distances and
- * the colour rate over their per-vertex packed RGB. Every line carries the
+ * the colour rate over their per-vertex packed RGB. The verify line carries the
  * parts, vertices, faces and triangles the walk read, so a run that decoded
  * nothing reports zero engagement instead of a vacuous pass.
  *
@@ -845,6 +940,16 @@ static void player_feed_walk(CPUState* cpu) { player_feed_walk_ex(cpu, 1); }
 typedef struct { float x[3], y[3]; uint32_t rgb[3]; int u[3], v[3]; uint8_t code; } pv_tri;
 static pv_tri s_pv[PV_MAX_PRIM]; static int s_pv_n;
 
+/** @brief Decodes the polygon primitives of a polybuf range into s_pv as triangles.
+ *
+ * Walks the packet chain by each packet's length byte and keeps the polygon
+ * codes 0x20-0x3F, flat or gouraud, triangle or quad, textured or not. A quad
+ * becomes the triangles (0,1,2) and (1,3,2), the GPU's split. The walk stops at
+ * `end`, at a zero or over-24-word length, or after PV_MAX_PRIM packets or
+ * triangles; a packet shorter than its own layout is skipped.
+ * @param cpu Reads the polybuf.
+ * @param start The range's first packet.
+ * @param end The range's end. */
 static void pv_capture(CPUState* cpu, uint32_t start, uint32_t end) {
     s_pv_n = 0;
     uint32_t p = start;
@@ -907,6 +1012,11 @@ static int player_verify_mirror(void) {
     return v;
 }
 
+/** @brief Whether OPENPETE_PLAYER_VERIFY is set, latched on the first call.
+ *
+ * The first call also latches OPENPETE_PLAYER_VERIFY_BITSHIFT into
+ * s_probe_bitshift, the probe's negative control.
+ * @return 1 when set to a value not starting with 0, else 0. */
 static int player_verify_on(void) {
     static int v = -1;
     if (v < 0) {
@@ -917,6 +1027,20 @@ static int player_verify_on(void) {
     return v;
 }
 
+/** @brief Scores the walk against the draw's own primitives and prints the probe lines.
+ *
+ * Captures the primitives of the polybuf window, then pairs walk triangles and
+ * primitives one to one, cheapest first, within a 4-pixel per-vertex bound
+ * under the best of three vertex rotations. Reports precision, recall, mean
+ * vertex error and the colour, material and UV rates of the pairs, plus the
+ * engagement counts of the walk. A per-index leg compares every projected
+ * vertex with the draw's own screen word at PL.sxy_base; a plane leg, run while
+ * the split is active or its negative control is set, compares the plane
+ * distances with the draw's block at s_plane.dist_block, overall and per part.
+ * Reads guest memory only.
+ * @param cpu Reads the guest primitives and blocks.
+ * @param startp The draw's polybuf start.
+ * @param endp The draw's polybuf end. */
 static void player_verify_report(CPUState* cpu, uint32_t startp, uint32_t endp) {
     pv_capture(cpu, startp, endp);
     /* One-to-one assignment, not nearest-neighbour: the avatar packs dozens of
@@ -1076,6 +1200,9 @@ static void player_verify_report(CPUState* cpu, uint32_t startp, uint32_t endp) 
  * @param cpu Passed to player_game.run_draw.
  * @param addr The hooked address; unused. */
 static void player_run_draw(CPUState* cpu, uint32_t addr) { (void)addr; player_game.run_draw(cpu); }
+/** @brief Whether the provider's own verify harness wants the hook live.
+ *
+ * @return The provider's answer, 0 when it has no harness. */
 static int  player_verify_enabled(void) {
     return player_game.verify_enabled ? player_game.verify_enabled() : 0;
 }
@@ -1088,6 +1215,19 @@ static const hook_bracket_desc k_player_bracket = {
     .st = &s_player_hb,
 };
 
+/** @brief The avatar draw hook: runs the game's draw once, records it, feeds the walk.
+ *
+ * Runs the draw inside the hook bracket, appends the call's model record when
+ * the draw allocated polybuf, and latches the record's slot, the flatten group
+ * and the mirror state. When the scene is live and the call is the avatar (or
+ * the mirrored copy) with the player path selected, feeds the walk; for the
+ * avatar it also snapshots the part block, colour table, SXY block and camera
+ * into the sub-tick capture when one is open. The provider's verify and the
+ * OPENPETE_PLAYER_VERIFY report run after the draw.
+ * @param cpu The guest CPU state.
+ * @param addr The hooked draw entry.
+ * @return 0 when the bracket declines (inert or re-entered) so the ordinary
+ *         dispatch runs the draw; 1 once the draw has run. */
 static int on_player_draw(CPUState* cpu, uint32_t addr) {
     if (!player_game.run_draw) return 0;
     uint32_t startp, endp; int feed, verify;
@@ -1276,6 +1416,9 @@ static uint32_t     s_reset_gen_seen;
 static struct { const char* name; uint32_t addr; uint32_t len; const char* region; } s_reg[PLAYER_REC_FEEDERS];
 static int s_reg_ready;
 
+/** @brief Fills s_reg with each feeder's guest block, length and ring region name.
+ *
+ * Runs once; later calls return at once. */
 static void reg_init(void) {
     if (s_reg_ready) return;
     s_reg_ready = 1;
@@ -1334,10 +1477,15 @@ int player_records_dbg(void) {
     return on;
 }
 
+/** @brief The Euclidean distance between two int32 position triples. */
 static double dist3(const int32_t a[3], const int32_t b[3]) {
     double dx = (double)a[0] - b[0], dy = (double)a[1] - b[1], dz = (double)a[2] - b[2];
     return sqrt(dx * dx + dy * dy + dz * dz);
 }
+/** @brief Copies a model record's position triple out of its state bytes.
+ *
+ * @param r The record.
+ * @param out Receives the three words at PL.pos_off in host byte order. */
 static void rec_pos(const player_model_rec_t* r, int32_t out[3]) { memcpy(out, r->spyro + PL.pos_off, 12); }
 
 /** @brief Logs the live player position and copies a feeder's registered block, for the record census. */
@@ -1446,6 +1594,15 @@ int player_records_flame_append(CPUState* cpu) {
     return m;
 }
 
+/** @brief Whether two record lists differ in any byte the store compares.
+ *
+ * Compares the model, shadow and flame counts, and each model record's drawn
+ * flag and state bytes; a drawn record's part block, colour table and SXY block
+ * as well; each shadow and flame record's model index, drawn flag and state.
+ * The shown-state copies, polybuf ranges and pairing fields are not compared.
+ * @param a The first list.
+ * @param b The second list.
+ * @return 1 when they differ, else 0. */
 static int lists_differ(const rec_list_t* a, const rec_list_t* b) {
     if (a->n != b->n) return 1;
     for (int k = 0; k < a->n; k++) {
@@ -1507,6 +1664,10 @@ static void pair_lists(rec_list_t* cur, const rec_list_t* prv) {
     }
 }
 
+/** @brief Prints the record census counters as one stderr line.
+ *
+ * Registered with atexit by player_records_epoch_commit under
+ * OPENPETE_PLAYER_RECDBG; the line starts with [recdbg-summary]. */
 static void summary(void) {
     fprintf(stderr,
         "[recdbg-summary] epochs=%u no_ring=%u max_calls m=%d s=%d f=%d spec_refused=%u cap_refused=%u "
@@ -1817,6 +1978,12 @@ op_time_t player_records_curr_ns(void) { return s_store[0].valid ? s_store[0].ns
 
 static feature_dispatch_entry_t s_dispatch[2];
 
+/** @brief Installs the avatar draw hook in the dispatch table, or clears it.
+ *
+ * Entry 0 maps PL.hook_draw to on_player_draw when the layout names a hook and
+ * the provider has run_draw; otherwise both entries stay empty (address 0, no
+ * function). Entry 1 is always the empty terminator.
+ * @param o Unused. */
 static void player_apply_options(const openpete_options_t* o) {
     (void)o;
     s_dispatch[0].addr = 0u; s_dispatch[0].fn = NULL;

@@ -130,6 +130,18 @@ static int s23_kf_read(CPUState* cpu, uint32_t tab, uint32_t sel, uint32_t idx, 
     return 1;
 }
 
+/** @brief Composes a part's transform record from gamestate and the Animation table.
+ *
+ * Fills the flags word (blend weight << 4, the vertex end count << 16, the
+ * streams' form bits, and bit 31 for the body), the two keyframes' cursor
+ * triples, and for the body the two seam words, following the layout in the
+ * comment above. A missing keyframe B, or a blend byte of 0, leaves stream_b
+ * as the caller zeroed it while the flags word keeps the weight.
+ * @param cpu Reads g_Spyro, the Animation table and the blend table.
+ * @param part 0 for the body, 1 for the head.
+ * @param out Receives the record; the caller zeroes it first.
+ * @return 1 on success; 0 when `part` is not 0 or 1, the Animation table
+ *         pointer is not a RAM address, or keyframe A's entry is not. */
 static int s23_part_record(CPUState* cpu, int part, player_record_t* out) {
     if (part < 0 || part > 1) return 0;
     uint32_t tab = cpu->read_word(PG.anim_table);
@@ -220,6 +232,21 @@ static void s23_compose_euler(CPUState* cpu, const int start[3][3], uint32_t rot
     ngte_compose_euler(start, &e, out);
 }
 
+/** @brief Derives a part's model-to-view matrix and translation from gamestate.
+ *
+ * The body's translation is the camera-relative position through the camera
+ * matrix in full world units, taken from the interpolated position when
+ * openpete_native_interp_pos answers; its matrix is the body euler composed
+ * onto the camera matrix, with the second column negated on the mirrored pass
+ * unless OPENPETE_PLAYER_VERIFY_NOMIRROR is set. Every other part takes the
+ * body's matrix, composed with the head euler unless that word is 0 or the pass
+ * is mirrored, and leaves its translation zero for the seam joint to fill.
+ * @param cpu Reads g_Spyro.
+ * @param v The view.
+ * @param part 0 for the body, 1 for the head.
+ * @param parent The body's transform, NULL when `part` is 0.
+ * @param out Receives the transform, zeroed first.
+ * @return 1 when derived; 0 for a non-root part with no parent. */
 static int s23_part_xform(CPUState* cpu, const ngte_view* v, int part,
                          const player_xform_t* parent, player_xform_t* out) {
     memset(out, 0, sizeof *out);
@@ -274,6 +301,17 @@ static int s23_part_xform(CPUState* cpu, const ngte_view* v, int part,
  * @param v The value.
  * @return `v` clamped to -32768..32767. */
 static inline int s23_sat16(int v) { return v < -32768 ? -32768 : (v > 32767 ? 32767 : v); }
+/** @brief One signed 11-bit seam-word field, blended between the two keyframes.
+ *
+ * The field is (word << lsh) >> 21 arithmetic. With `dual` it is blended as the
+ * GTE's INTPL does: a plus ir0 times the difference of the two fields,
+ * saturated to int16, at 4096 to 1.
+ * @param jw Keyframe A's seam word.
+ * @param jwB Keyframe B's seam word; read only when `dual`.
+ * @param lsh The left shift selecting the field: 0 for Z, 11 for X, 22 for Y.
+ * @param ir0 The blend weight, 0..4096.
+ * @param dual Nonzero to blend both keyframes.
+ * @return The field value. */
 static int s23_seam_field(int32_t jw, int32_t jwB, int lsh, int ir0, int dual) {
     int a = (int)((int32_t)((uint32_t)jw << lsh) >> 21);
     if (!dual) return a;
@@ -427,6 +465,17 @@ static int s23_face_depth_keep(CPUState* cpu, const player_xform_t* root,
 #define PART_ORIGIN_OFF   0x78u   /* from the part block base, stride 16 */
 #define PLANE_DIST_OFF    0x1000u /* the distance array, from the scratch base */
 
+/** @brief Fills the water-plane split from g_Spyro's plane offset, or leaves it off.
+ *
+ * Returns with `pl` untouched when the offset word at +0x28 is 0 or the part
+ * block base is not a RAM address. Otherwise sets the plane row (the second row
+ * of the matrix at +0x30), the plane height (position Z less the offset's
+ * magnitude), each part's folded origin term, the far colour words, IR0 0x800,
+ * the drop policy (positive offset), and for the shading policy the key and
+ * threshold biases from the sign of camera Z plus the offset, then marks it
+ * active.
+ * @param cpu Reads g_Spyro, the part block, the far colour and the camera.
+ * @param pl Receives the split; the caller zeroes it first. */
 static void s23_plane_begin(CPUState* cpu, player_plane_t* pl) {
     int32_t off = (int32_t)cpu->read_word(PL.base + SPYRO_PLANE_OFF);
     if (off == 0) return;
