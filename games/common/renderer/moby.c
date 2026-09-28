@@ -1134,7 +1134,7 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
     /* C2_TR (projection translation) = (TR_stored << 2) >> m_Scale  [F798
      * @8001F858/8001F8C8]. m_Scale is the per-model shrink factor (AnimationHeader
      * +0x05): 2 = identity (the common case), 1 = ×2 size, 3 = /2, etc. Without
-     * this, models whose m_Scale != 2 mis-project (the multi-moby A/B residual).
+     * this, models whose m_Scale != 2 project at the wrong distance.
      * (a3 = w0&0xFF != 0 records take the GPF-TR rescale below instead.)
      *
      * TR_frac (host-rebuilt path) carries the moby-centre translation at FLOAT
@@ -1189,8 +1189,8 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
          * scl/32 > 1 pushes the moby AWAY along the view ray, < 1 pulls it in; the
          * class code animates the byte to scale the moby ON SCREEN by moving it in
          * depth (Gnasty-blast dome: the byte ticks down as the blast plays out).
-         * Without this the native projected the dome at its TRUE distance — the
-         * user-visible giant constant dome. The mtc2 int16 truncation is kept. */
+         * Without this the native projects the dome at its true distance, at
+         * constant full size. The mtc2 int16 truncation is kept. */
         TR[0] = (double)((gpf * (int)(int16_t)((TR_raw[0] << 2) >> m_scale)) >> 5);
         TR[1] = (double)((gpf * (int)(int16_t)((TR_raw[1] << 2) >> m_scale)) >> 5);
         TR[2] = (double)((gpf * (int)(int16_t)((TR_raw[2] << 2) >> m_scale)) >> 5);
@@ -1257,8 +1257,8 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
      * count = [hdr + 8 + (ZSF4>>31)] — hdr+9 is the LP vertex count — and
      * count == 0 SKIPS the record entirely (bnez → func_80020860 restore +
      * advance). Models with NO LP mesh store 0 there, so beyond the LOD band
-     * the game draws NOTHING for them (the distant-gem leak: native read the
-     * HP count unconditionally and kept drawing). --no-lod forces the HP
+     * the game draws NOTHING for them; reading the HP count unconditionally
+     * would keep drawing them. --no-lod forces the HP
      * count with the same guard as the HP face select (moby_tier_faceblock). */
     /* OPENPETE_MOBY_VERIFY_NEGCTL=1 reads the OTHER tier's vertex count, so the
      * stream is decoded to the wrong length and every vertex past the first
@@ -1322,7 +1322,7 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
         /* The Z-buffer needs FULL-WORLD view-Z so mobys sort vs terrain / Spyro /
          * each other. project's mac3 is in the m_scale-adjusted world/4 scale
          * (C2_TR = (stored<<2)>>m_scale, stored is world/4), so multiply by
-         * 2^m_scale to reach full-world (probe: m_scale=2 mac3 x4 == true cam-Z).
+         * 2^m_scale to reach full-world (at m_scale 2, mac3 x4 is the camera Z).
          * Sign-preserving, so emit_wtri's vz<=0 near cull still holds; sx/sy and
          * the saturation flag keep the unscaled GTE-faithful mac3 (vz is depth-only). */
         int ds = m_scale; if (ds < 0) ds = 0; else if (ds > 8) ds = 8;
@@ -6741,12 +6741,12 @@ int moby_verify_vbl(void) {
  * and the canonical capture takes the colour scratch, the records and the
  * camera for the sub-tick spine; the regular pass invalidates the specular
  * capture, which the specular pass revalidates only when the game runs it.
- * The path is marked drawn when reveal records or walk triangles exist on a
- * tick whose game interval is empty. With OPENPETE_MOBY_VERIFY the pass
- * compares the native decode and walk with the captured prims inside the
- * probe window. After the game's draw the pass only reads guest state, except
- * the keyframe faceblock patch mirror, which writes and restores within one
- * decode.
+ * The path is marked drawn when the regular pass appends reveal records, and
+ * when walk triangles exist on a tick whose game interval is empty. With
+ * OPENPETE_MOBY_VERIFY the pass compares the native decode and walk with the
+ * captured prims inside the probe window. After the game's draw the pass only
+ * reads guest state, except the keyframe faceblock patch mirror, which writes
+ * and restores within one decode.
  * @param cpu The guest CPU state.
  * @param draw_addr The game's draw entry for this material.
  * @param mat The material tag, "REG" or "SPEC". */
