@@ -2,45 +2,8 @@
 # library: libclang 14
 # requirement: @brief of one sentence on one line on every function; @param per named parameter and @return on non-void for external linkage
 # written-by: hook
-# head: 091d2b20bd48ea7ae053d99ebe76b80575ef287c
+# head: 39dab239069790dbcd67ff868e79d1b487eaed43
 file	function	form	accepted
-core/config/knob_registry.c	osd_set	none	
-core/config/knob_registry.c	osdpos_get	none	
-core/config/knob_registry.c	osdpos_set	none	
-core/config/knob_registry.c	osdtimeout_set	none	
-core/config/knob_registry.c	perfpos_get	none	
-core/config/knob_registry.c	perfpos_set	none	
-core/config/knob_registry.c	perfstats_get	none	
-core/config/knob_registry.c	perfstats_set	none	
-core/config/knob_registry.c	recfps_set	none	
-core/config/knob_registry.c	renderer_get	none	
-core/config/knob_registry.c	renderfps_set	none	
-core/config/knob_registry.c	renderpaths_get_str	none	
-core/config/knob_registry.c	rewind_set	none	
-core/config/knob_registry.c	rows_init	none	
-core/config/knob_registry.c	rquant_get	none	
-core/config/knob_registry.c	rquant_set	none	
-core/config/knob_registry.c	runahead_get	none	
-core/config/knob_registry.c	runahead_set	none	
-core/config/knob_registry.c	sfxvol_set	none	
-core/config/knob_registry.c	skiparea_get_str	none	
-core/config/knob_registry.c	skipcutscene_get	none	
-core/config/knob_registry.c	ssaa_get	none	
-core/config/knob_registry.c	ssaa_set	none	
-core/config/knob_registry.c	tercache_get	none	
-core/config/knob_registry.c	tervis_get	none	
-core/config/knob_registry.c	tervis_set	none	
-core/config/knob_registry.c	texmap_set	none	
-core/config/knob_registry.c	tickscale_get	none	
-core/config/knob_registry.c	tickscale_set	none	
-core/config/knob_registry.c	versionosd_get	none	
-core/config/knob_registry.c	versionosd_set	none	
-core/config/knob_registry.c	vibration_set	none	
-core/config/knob_registry.c	vprec_get	none	
-core/config/knob_registry.c	vprec_set	none	
-core/config/knob_registry.c	vsync_set	none	
-core/config/knob_registry.c	window_get_str	none	
-core/config/knob_registry.c	wireframe_set	none	
 core/config/options.c	is_bk2_flag	none	
 core/config/options.c	needs_value	none	
 core/config/options.c	sidecar_emit_token	none	

@@ -130,10 +130,17 @@ static int ssaa_idx_of(int factor) {
     }
     return best;
 }
+/** @brief The supersampling row index: the k_ssaa_vals rung nearest to the renderer's factor.
+ *
+ * Returns the stored value until the native renderer is up. */
 static double ssaa_get(const knob_desc_t *k) {
     KNOB_LIVE_OR_STORED(k);
     return ssaa_idx_of(openpete_native_get_ssaa());
 }
+/** @brief Set the supersampling factor to entry `v` of k_ssaa_vals.
+ *
+ * Stores the index in the row. Returns -1, changing nothing, when the truncated
+ * index is outside the ladder; else 0. */
 static int ssaa_set(knob_desc_t *k, double v) {
     int i = (int)v;
     if (i < 0 || i >= K_SSAA_N) return -1;
@@ -153,6 +160,7 @@ static double vsync_get(const knob_desc_t *k) {
     int pref = openpete_native_get_vsync();
     return (pref < 0) ? k->stored_num : (pref ? 1 : 0);
 }
+/** @brief Set the renderer's vsync preference from `v` (nonzero enables) and store it in the row. */
 static int vsync_set(knob_desc_t *k, double v) {
     openpete_native_set_vsync(v != 0.0);
     k->stored_num = (v != 0.0);
@@ -162,10 +170,17 @@ static int vsync_set(knob_desc_t *k, double v) {
 static const char *const k_anchor_names[] = { "top-left", "top-center", "top-right",
                                               "bottom-left", "bottom-center",
                                               "bottom-right" };
+/** @brief The performance-stats block anchor index into k_anchor_names.
+ *
+ * Returns the stored value until the native renderer is up. */
 static double perfpos_get(const knob_desc_t *k) {
     KNOB_LIVE_OR_STORED(k);
     return (double)openpete_native_perf_anchor();
 }
+/** @brief Set the performance-stats block anchor to index `v` of k_anchor_names.
+ *
+ * The renderer ignores an index outside the anchor range, while the row stores
+ * the truncated index regardless. */
 static int perfpos_set(knob_desc_t *k, double v) {
     openpete_native_set_perf_anchor((int)v);
     k->stored_num = (int)v;
@@ -177,11 +192,15 @@ static double osd_get(const knob_desc_t *k) {
     KNOB_LIVE_OR_STORED(k);
     return openpete_osd_enabled() ? 1.0 : 0.0;
 }
+/** @brief Enable or disable on-screen notifications from `v` (nonzero enables).
+ *
+ * Stores the resulting 0 or 1 in the row. */
 static int osd_set(knob_desc_t *k, double v) {
     openpete_osd_set_enabled(v != 0.0);
     k->stored_num = (v != 0.0);
     return 0;
 }
+/** @brief 1 when the version OSD is shown, else 0. */
 static double versionosd_get(const knob_desc_t *k) {
     /* No stored fallback: the backing flag is a plain host-side int, seeded
      * from the parsed options at boot whether or not the native renderer came
@@ -189,15 +208,25 @@ static double versionosd_get(const knob_desc_t *k) {
     (void)k;
     return openpete_native_version_osd() ? 1.0 : 0.0;
 }
+/** @brief Show or hide the version OSD from `v` (nonzero shows).
+ *
+ * Stores the resulting 0 or 1 in the row. */
 static int versionosd_set(knob_desc_t *k, double v) {
     openpete_native_set_version_osd(v != 0.0);
     k->stored_num = (v != 0.0);
     return 0;
 }
+/** @brief The notification anchor index into k_anchor_names.
+ *
+ * Returns the stored value until the native renderer is up. */
 static double osdpos_get(const knob_desc_t *k) {
     KNOB_LIVE_OR_STORED(k);
     return (double)openpete_osd_anchor();
 }
+/** @brief Set the notification anchor to index `v` of k_anchor_names.
+ *
+ * The OSD ignores an index outside the anchor range, while the row stores the
+ * truncated index regardless. */
 static int osdpos_set(knob_desc_t *k, double v) {
     openpete_osd_set_anchor((int)v);
     k->stored_num = (int)v;
@@ -211,6 +240,11 @@ static double osdtimeout_get(const knob_desc_t *k) {
     KNOB_LIVE_OR_STORED(k);
     return (double)openpete_osd_default_timeout_ms() / 1000.0;
 }
+/** @brief Set the default notification timeout from `v` seconds.
+ *
+ * Returns -1, changing nothing, when `v` is 0 or less. Otherwise converts to
+ * milliseconds rounded to nearest, passes them to the OSD (which clamps to its
+ * maximum), stores `v` in the row and returns 0. */
 static int osdtimeout_set(knob_desc_t *k, double v) {
     if (v <= 0.0) return -1;
     openpete_osd_set_default_timeout_ms((uint32_t)(v * 1000.0 + 0.5));
@@ -219,10 +253,17 @@ static int osdtimeout_set(knob_desc_t *k, double v) {
 }
 
 static const char *const k_perf_names[] = { "off", "fps", "detailed" };
+/** @brief The performance-stats level as an index into k_perf_names.
+ *
+ * Returns the stored value until the native renderer is up. */
 static double perfstats_get(const knob_desc_t *k) {
     KNOB_LIVE_OR_STORED(k);
     return (double)openpete_native_perf_stats_level();
 }
+/** @brief Set the performance-stats level to `v`, truncated to int.
+ *
+ * The renderer clamps the level to its valid range; the row stores the
+ * unclamped truncated value. */
 static int perfstats_set(knob_desc_t *k, double v) {
     openpete_native_set_perf_stats((int)v);
     k->stored_num = (int)v;
@@ -231,10 +272,16 @@ static int perfstats_set(knob_desc_t *k, double v) {
 
 static const char *const k_vprec_names[] = { "subpixel", "integer" };
 static const char *const k_texmap_names[] = { "perspective", "affine" };
+/** @brief 1 when the renderer snaps vertices to the integer grid, 0 when it keeps subpixel positions.
+ *
+ * Returns the stored value until the native renderer is up. */
 static double vprec_get(const knob_desc_t *k) {
     KNOB_LIVE_OR_STORED(k);
     return openpete_native_vertex_snap_active() ? 1.0 : 0.0;
 }
+/** @brief Select vertex precision from `v`: 1 is the integer grid, else subpixel.
+ *
+ * The row stores the truncated `v` unchanged. */
 static int vprec_set(knob_desc_t *k, double v) {
     openpete_native_set_vertex_precision((int)v == 1);
     k->stored_num = (int)v;
@@ -251,12 +298,19 @@ static double texmap_get(const knob_desc_t *k) {
     KNOB_LIVE_OR_STORED(k);
     return openpete_native_get_texture_mapping();
 }
+/** @brief Queue the texture mapping mode from `v`: 1 is affine, any other value perspective.
+ *
+ * The renderer applies it with a pipeline rebuild at the next present. The row
+ * stores nothing, since texmap_get reads the renderer. */
 static int texmap_set(knob_desc_t *k, double v) {
     (void)k;
     openpete_native_set_texture_mapping((int)v == 1);
     return 0;
 }
 
+/** @brief The raster-quantize multiplier, 0 when off.
+ *
+ * Returns the stored value until the native renderer is up. */
 static double rquant_get(const knob_desc_t *k) {
     KNOB_LIVE_OR_STORED(k);
     return openpete_native_get_raster_quantize();
@@ -280,10 +334,15 @@ static double loaddelay_get(const knob_desc_t *k) {
     (void)k;
     return openpete_cd_load_delay;
 }
+/** @brief 1 when the terrain cache came up, else 0. */
 static double tercache_get(const knob_desc_t *k) {
     (void)k;
     return openpete_tercache_ready() ? 1 : 0;   /* cache actually came up */
 }
+/** @brief Set the raster-quantize multiplier to `v`, truncated to int.
+ *
+ * The renderer treats a value of 0 or less as off and applies the change at the
+ * next scene split; the row stores the unclamped truncated value. */
 static int rquant_set(knob_desc_t *k, double v) {
     openpete_native_set_raster_quantize((int)v);
     k->stored_num = (int)v;
@@ -313,6 +372,9 @@ static double wireframe_get(const knob_desc_t *k) {
     (void)k;
     return openpete_native_get_wireframe();
 }
+/** @brief Queue the renderer's wireframe view flag from `v` (nonzero is on).
+ *
+ * The renderer applies it at the next present. */
 static int wireframe_set(knob_desc_t *k, double v) {
     (void)k;
     openpete_native_set_wireframe(v != 0.0);
@@ -335,10 +397,12 @@ static int dither_set(knob_desc_t *k, double v) {
 
 static const char *const k_lod_names[] = { "original", "extended" };
 static const char *const k_tervis_names[] = { "game", "frustum" };
+/** @brief 1 when terrain visibility uses the view frustum, 0 when it follows the game's own verdict. */
 static double tervis_get(const knob_desc_t *k) {
     (void)k;
     return openpete_native_get_terrain_visibility() == OPENPETE_TERRAIN_VIS_FRUSTUM ? 1.0 : 0.0;
 }
+/** @brief Select terrain visibility: nonzero `v` is frustum, zero is the game's verdict. */
 static int tervis_set(knob_desc_t *k, double v) {
     (void)k;
     openpete_native_set_terrain_visibility(v != 0.0 ? OPENPETE_TERRAIN_VIS_FRUSTUM
@@ -373,6 +437,9 @@ static int fogscale_set(knob_desc_t *k, double v) {
 }
 
 static const char *const k_renderer_names[] = { "psycross", "vk" };
+/** @brief The renderer selected at boot: 0 psycross, 1 vk.
+ *
+ * Returns 1 when options are unbound. */
 static double renderer_get(const knob_desc_t *k) { (void)k; return g_opts ? (double)g_opts->renderer : 1.0; }
 
 /* The game's default window size, handed in by the host loop once the game
@@ -385,6 +452,10 @@ void openpete_knob_default_window_set(int w, int h) {
     s_default_win_h = h;
 }
 
+/** @brief Write the window size into `buf`.
+ *
+ * Shows "WxH" for a --window size, "WxH (default)" for the game's default size
+ * once the host has supplied it, else "(default)". */
 static void window_get_str(const knob_desc_t *k, char *buf, size_t cap) {
     (void)k;
     if (g_opts && g_opts->window_w > 0)
@@ -399,13 +470,23 @@ static void window_get_str(const knob_desc_t *k, char *buf, size_t cap) {
 
 /** @brief The pacer's live render-fps target (0 is the match-sim pacer). */
 static double renderfps_get(const knob_desc_t *k) { (void)k; return openpete_get_render_fps(); }
+/** @brief Set the pacer's render-fps target to `v`, truncated to int.
+ *
+ * Values below 0 are clamped to 0 (match-sim pacing) by the pacer, which
+ * applies the change at the host loop's next quiescent point. */
 static int renderfps_set(knob_desc_t *k, double v) {
     (void)k;
     openpete_set_render_fps((int)v);
     return 0;
 }
 
+/** @brief The pacer's live tick-scale factor. */
 static double tickscale_get(const knob_desc_t *k) { (void)k; return openpete_get_tick_scale(); }
+/** @brief Set the pacer's tick-scale factor to `v`.
+ *
+ * Returns -1, changing nothing, when `v` is 0 or less. Otherwise the pacer
+ * clamps it to [0.05, 8] and applies it at the host loop's next quiescent
+ * point; only wall-clock pacing changes, not the ticks executed. */
 static int tickscale_set(knob_desc_t *k, double v) {
     (void)k;
     if (v <= 0.0) return -1;
@@ -413,7 +494,13 @@ static int tickscale_set(knob_desc_t *k, double v) {
     return 0;
 }
 
+/** @brief The applied runahead depth, which is 0 while the mod-capability gate forces it off. */
 static double runahead_get(const knob_desc_t *k) { (void)k; return (double)openpete_runahead_get(); }
+/** @brief Request runahead depth `v`, truncated to int.
+ *
+ * Returns -1, changing nothing, when `v` is negative. Otherwise the request is
+ * clamped to 3 by the runtime and applied at the host loop's next quiescent
+ * point. */
 static int runahead_set(knob_desc_t *k, double v) {
     (void)k;
     if (v < 0) return -1;
@@ -431,6 +518,11 @@ static int fov_set(knob_desc_t *k, double v) {
     return 0;
 }
 
+/** @brief Reconfigure the rewind window to `v` seconds, truncated to int.
+ *
+ * Returns -1, changing nothing, when `v` is negative. Otherwise the reconfigure
+ * discards the accumulated rewind history (0 disables rewind), the row stores
+ * the value and 0 is returned. */
 static int rewind_set(knob_desc_t *k, double v) {
     if (v < 0) return -1;
     openpete_rewind_configure((int)v);
@@ -451,6 +543,7 @@ static int mute_set(knob_desc_t *k, double v) { (void)k; openpete_set_mute(v != 
  * tick hook writes the guest slider, so the rows keep the live-row contract
  * although the value ends up in gameplay-readable RAM. */
 static double sfxvol_get(const knob_desc_t *k) { (void)k; return (double)openpete_get_sfx_volume(); }
+/** @brief Request SFX slider preset `v`, truncated to int; the runtime clamps it. */
 static int sfxvol_set(knob_desc_t *k, double v) { (void)k; openpete_set_sfx_volume((int)v); return 0; }
 /** @brief The requested music volume, read from the runtime. */
 static double musicvol_get(const knob_desc_t *k) { (void)k; return (double)openpete_get_music_volume(); }
@@ -480,6 +573,7 @@ static int mouse_set(knob_desc_t *k, double v) { (void)k; openpete_host_mouse_se
  * The setter moves this host request; the per-game feature writes the guest
  * enable flag on its tick hook. */
 static double vibration_get(const knob_desc_t *k) { (void)k; return (double)openpete_get_vibration(); }
+/** @brief Request rumble strength `v`, truncated to int; the runtime clamps it. */
 static int vibration_set(knob_desc_t *k, double v) { (void)k; openpete_set_vibration((int)v); return 0; }
 
 /* ---- Recording ---- */
@@ -496,6 +590,9 @@ static int recording_visible(const knob_desc_t *k) {
     return g_opts && g_opts->record_path && g_opts->record_path[0];
 }
 
+/** @brief Enable or disable drawing the fps readout into recorded video from `v` (nonzero enables).
+ *
+ * Stores the resulting 0 or 1 in the row. */
 static int recfps_set(knob_desc_t *k, double v) {
     openpete_native_set_fps_in_record(v != 0.0);
     k->stored_num = (v != 0.0);
@@ -537,6 +634,9 @@ static void injectmouse_get_str(const knob_desc_t *k, char *buf, size_t cap) {
     snprintf(buf, cap, "%s", (env && *env) ? env : "(off)");
 }
 
+/** @brief Write the --render-paths list into `buf`.
+ *
+ * Writes "(all)" when options are unbound or the list is empty. */
 static void renderpaths_get_str(const knob_desc_t *k, char *buf, size_t cap) {
     (void)k;
     const char *v = (g_opts && g_opts->render_paths && *g_opts->render_paths)
@@ -662,8 +762,13 @@ static int env_set_str(knob_desc_t *k, const char *v) {
 
 /** @brief The parsed --skip-to-level value, 0 before options are bound. */
 static double skiplevel_get(const knob_desc_t *k) { (void)k; return g_opts ? (double)g_opts->skip_to_level : 0.0; }
+/** @brief The parsed --skip-to-cutscene value, 0 before options are bound. */
 static double skipcutscene_get(const knob_desc_t *k) { (void)k; return g_opts ? (double)g_opts->skip_to_cutscene : 0.0; }
 
+/** @brief Write the parsed --skip-to-area value into `buf`.
+ *
+ * The form is "<level>:<area>"; "(none)" when options are unbound or no level
+ * was given. */
 static void skiparea_get_str(const knob_desc_t *k, char *buf, size_t cap) {
     (void)k;
     if (g_opts && g_opts->skip_to_area_level > 0)
@@ -1698,6 +1803,10 @@ static const knob_desc_t g_builtin[] = {
 static knob_desc_t g_rows[KNOB_BUILTIN_COUNT + KNOB_EXTRA_MAX];
 static size_t      g_row_count;
 
+/** @brief Copy the built-in rows into the working table on first use.
+ *
+ * Later calls do nothing. The copy is unsynchronized: callers are expected to
+ * run on one thread during boot. */
 static void rows_init(void) {
     if (g_row_count) return;
     memcpy(g_rows, g_builtin, sizeof g_builtin);
