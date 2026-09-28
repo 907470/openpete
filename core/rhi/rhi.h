@@ -268,7 +268,15 @@ void rhi_end_frame(rhi_device *dev);
  * @param dev Device to begin the frame on.
  * @return true when a command buffer is recording; always false headless. */
 bool     rhi_begin_frame_staged(rhi_device *dev);   /* rhi_begin_frame without the acquire */
+/** @brief Return the number of stage images in the staged-present ring.
+ *
+ * @return RHI_STAGE_RING; a compile-time constant independent of any device. */
 int      rhi_stage_count(void);
+/** @brief Return the stage-image generation, which advances when the stage ring is destroyed for a rebuild.
+ *
+ * A stage image filled under one generation is invalid under the next.
+ * @param dev Device, or NULL.
+ * @return The generation; 0 for NULL. */
 uint32_t rhi_stage_gen(const rhi_device *dev);
 /** @brief End a staged frame: blit the offscreen target into a stage image and submit, acquiring nothing.
  *
@@ -278,6 +286,14 @@ uint32_t rhi_stage_gen(const rhi_device *dev);
  * @param dev Device whose current frame is ended.
  * @param stage Stage image index, 0..rhi_stage_count()-1. */
 void     rhi_end_frame_to_stage(rhi_device *dev, int stage);
+/** @brief Acquire a swapchain image, blit a stage image onto it and present it, in one call.
+ *
+ * Runs rhi_present_stage_acquire, then rhi_present_stage_submit only when the
+ * acquire succeeded; an image already held is reused.
+ * @param dev Device whose display the calling thread owns.
+ * @param stage Stage image index, 0..rhi_stage_count()-1.
+ * @return true when the present was queued; false when either step
+ *         refuses. */
 bool     rhi_present_stage(rhi_device *dev, int stage);
 /** @brief Give back a held acquire by presenting the image's previous contents unchanged.
  *
@@ -296,6 +312,11 @@ bool     rhi_present_stage_release(rhi_device *dev);
  * first claim. The owner is global, not per device.
  * @param dev Unused. */
 void     rhi_display_claim(rhi_device *dev);
+/** @brief Return the number of frame or present entries called from a thread other than the display owner.
+ *
+ * Global and monotonic; counts every violation, while the log carries the
+ * first eight.
+ * @return The running count. */
 unsigned rhi_seam_violations(void);
 /** @brief Acquire the swapchain image for a later rhi_present_stage_submit: rhi_present_stage in two steps.
  *
@@ -324,9 +345,6 @@ bool     rhi_present_stage_acquire(rhi_device *dev);
  *         filled or was rebuilt, or when the acquire, submit or present fails. */
 bool     rhi_present_stage_submit(rhi_device *dev, int stage);
 
-/* Tell the device the window size changed; the swapchain + offscreen
- * target are recreated on the next rhi_begin_frame. Safe to call on every
- * resize event. */
 /** @brief Return whether display timing (VK_KHR_present_id and VK_KHR_present_wait) is enabled.
  *
  * Both extensions must be offered. Every other timestamp in this engine is
@@ -341,6 +359,23 @@ bool     rhi_present_stage_submit(rhi_device *dev, int stage);
  * @param dev Device, or NULL.
  * @return 1 when supported; 0 otherwise or for NULL. */
 int  rhi_present_timing_supported(const rhi_device *dev);
+/** @brief Wait for queued presents to be displayed, oldest id first, and report the one that blocked.
+ *
+ * Waits on the oldest unconfirmed present id with vkWaitForPresentKHR for the
+ * time left of timeout_ns, then continues with the next id while the wait
+ * returns without blocking (a flip that already happened), up to 8 ids per
+ * call. Returns at the first id whose wait blocked for at least
+ * RHI_FLIP_OBSERVED_NS: the caller's clock at return is that flip. Only the
+ * presenting thread calls it. Timeouts under about a millisecond return
+ * before the flip on some drivers, so the call is not a poll.
+ * @param dev Device, or NULL.
+ * @param timeout_ns Total wait budget in nanoseconds.
+ * @param out_id Receives the last id confirmed by this call; may be NULL.
+ * @param out_waited_ns Receives the time that wait blocked; may be NULL.
+ * @return 1 when a blocking wait confirmed an id; 0 on timeout or when the
+ *         drain limit ended on already-displayed ids; -1 without present
+ *         timing, without a swapchain, with a rebuild pending, with no
+ *         outstanding id, or on a wait error. */
 int  rhi_present_wait(rhi_device *dev, uint64_t timeout_ns, uint64_t *out_id,
                       uint64_t *out_waited_ns);
 /** @brief Return the number of presents queued but not yet confirmed displayed by rhi_present_wait.
@@ -352,6 +387,12 @@ int  rhi_present_wait(rhi_device *dev, uint64_t timeout_ns, uint64_t *out_id,
  *         NULL. */
 int  rhi_present_outstanding(const rhi_device *dev);
 
+/** @brief Flag a swapchain rebuild after a window size change.
+ *
+ * The swapchain and offscreen target are recreated at the next
+ * rhi_begin_frame, after the settle window that absorbs the per-pixel steps
+ * of a live drag. Safe to call on every resize event.
+ * @param dev Device, or NULL. */
 void rhi_notify_resize(rhi_device *dev);
 /** @brief Flag a swapchain rebuild for a size change the app caused, such as a fullscreen toggle.
  *
@@ -404,6 +445,12 @@ const char *rhi_driver_version(const rhi_device *dev);
  * returns the nanoseconds accumulated since the previous one. */
 enum { RHI_BLOCK_FENCE = 0, RHI_BLOCK_ACQUIRE, RHI_BLOCK_PRESENT,
        RHI_BLOCK_RECREATE, RHI_BLOCK_IMAGE_FENCE, RHI_BLOCK_PHASE_COUNT };
+/** @brief Read and clear the nanoseconds each present-path phase blocked since the previous call.
+ *
+ * The accumulators are process globals shared by every device. Phases past
+ * RHI_BLOCK_PHASE_COUNT are not written.
+ * @param out Receives one value per phase, indexed by the RHI_BLOCK_* enum.
+ * @param n Entries of @p out; at most RHI_BLOCK_PHASE_COUNT are filled. */
 void rhi_take_block_times(int64_t *out, int n);
 
 /** @brief Return the number of presents skipped because a fence had not retired.
@@ -967,7 +1014,23 @@ rhi_buffer *rhi_create_vertex_buffer_dynamic_gens(rhi_device *dev, size_t bytes,
  * and overwrote bound data (a defect). Global and monotonic.
  * @return The running count. */
 uint64_t    rhi_ring_gen_bumps(void);
+/** @brief Return the number of same-frame rewrites that found no generation left and overwrote bound data.
+ *
+ * Counts ring vertex buffers and rhi_ubo blocks together. Any nonzero value
+ * means a draw read data newer than the data it was recorded against.
+ * Global and monotonic.
+ * @return The running count. */
 uint64_t    rhi_ring_gen_overflows(void);
+/** @brief Write `bytes` of `data` at offset 0 of a mapped buffer, into the current frame slot of a ring buffer.
+ *
+ * Inside a frame a ring buffer takes the write in its current generation of
+ * the frame slot, the next generation after a bind in the same frame.
+ * Outside a frame every slot and generation receives the copy. A plain
+ * buffer is written in place. The size is clamped to the buffer's (slot's)
+ * capacity.
+ * @param buf Buffer; NULL or unmapped is ignored.
+ * @param data Source bytes; must not be NULL.
+ * @param bytes Byte count. */
 void        rhi_update_buffer(rhi_buffer *buf, const void *data, size_t bytes);
 /** @brief Write `bytes` at byte `offset` within a buffer's current frame slot.
  *
@@ -1110,6 +1173,12 @@ void          rhi_set_wireframe(int on);
  * @param on Nonzero (the default) to scope; 0 restores og's compound
  *           painter. */
 void          rhi_set_moby_truescope(int on);
+/** @brief Select the key contest's unit (fragment specialization constant 4, SLOT_CONTEST).
+ *
+ * On, the key contest compares 128-world ordering-table slot indices instead
+ * of world distances and resolves an equal slot to the terrain. Applies to
+ * pipelines created after this call. Global.
+ * @param on Nonzero to compare slot indices; 0 compares world distances. */
 void          rhi_set_slot_contest(int on);
 
 /** @brief Recompile every live pipeline on the device from its stored description and shader sources.
@@ -1188,10 +1257,39 @@ typedef struct rhi_ubo rhi_ubo;
  * @return The set, or NULL when the buffer or the two-binding descriptor
  *         set cannot be allocated (logged). */
 rhi_ubo *rhi_create_ubo(rhi_device *dev, uint32_t block_size, uint32_t blocks);
+/** @brief Write `len` bytes into one block of a uniform block set.
+ *
+ * Inside a frame the write goes to the block's current generation, moved to
+ * the next when a draw already bound the block this frame (RHI_UBO_GENS per
+ * frame; past that the last generation is overwritten and counted in
+ * rhi_ring_gen_overflows). Outside a frame every frame slot and generation of
+ * the block receives the copy.
+ * @param ubo Set; NULL is ignored.
+ * @param block Block index; at or past the block count is ignored.
+ * @param data Source bytes; NULL is ignored.
+ * @param len Byte count, clamped to the block size. */
 void     rhi_ubo_write(rhi_ubo *ubo, uint32_t block, const void *data,
                        uint32_t len);
+/** @brief Bind two blocks of a set as bindings 0 and 1 of descriptor set 3 of the bound pipeline.
+ *
+ * Marks both blocks bound, so a later same-frame write moves to a new
+ * generation. Does nothing outside an active frame, without a bound
+ * pipeline, or when either block index is out of range.
+ * @param dev Device whose current frame records the bind.
+ * @param ubo Set.
+ * @param block_a Block at binding 0.
+ * @param block_b Block at binding 1. */
 void     rhi_ubo_bind(rhi_device *dev, rhi_ubo *ubo, uint32_t block_a,
                       uint32_t block_b);
+/** @brief Bind one block of a set at descriptor set index `set` through the single-binding layout.
+ *
+ * Marks the block bound. Does nothing outside an active frame, without a
+ * bound pipeline, when the set's single-binding descriptor was not allocated,
+ * or when the block index is out of range.
+ * @param dev Device whose current frame records the bind.
+ * @param ubo Set.
+ * @param set Descriptor set index in the bound pipeline's layout.
+ * @param block Block index. */
 void     rhi_ubo_bind_at(rhi_device *dev, rhi_ubo *ubo, uint32_t set,
                          uint32_t block);
 /** @brief Free a uniform block set's descriptor sets and buffer; NULL is ignored.
@@ -1221,7 +1319,18 @@ void rhi_offscreen_to_sampled(rhi_device *dev);
  * @param dev Device whose current frame records the bind.
  * @param set Descriptor set index. */
 void rhi_bind_offscreen_tex(rhi_device *dev, uint32_t set);
+/** @brief Record the barrier that returns off_image from sampled to color-attachment use.
+ *
+ * Orders the fragment reads of a postfx pass before the re-begun offscreen
+ * pass writes the image; that pass clears on load, so the layout value only
+ * names the source scope. Does nothing outside an active frame or for NULL.
+ * @param dev Device whose current frame records the barrier. */
 void rhi_offscreen_resume_attachment(rhi_device *dev);
+/** @brief Transition off_image from SHADER_READ_ONLY back to TRANSFER_SRC without re-rendering it.
+ *
+ * Restores the layout the present blit reads after a postfx chain that ran no
+ * pass. Does nothing outside an active frame or for NULL.
+ * @param dev Device whose current frame records the barrier. */
 void rhi_offscreen_resume_blit_src(rhi_device *dev);
 /** @brief Bind a texture's or render target's sampler set at descriptor set index `set`.
  *
@@ -1305,6 +1414,16 @@ typedef struct { int x, y, w, h; } rhi_rect;
 void rhi_update_vram_rects_packed(rhi_device *dev, rhi_texture *tex,
                                   const uint8_t *packed, size_t packed_bytes,
                                   const rhi_rect *rects, int nrects);
+/** @brief Upload rects of a VRAM texture from a full-width CPU mirror in one N-region copy.
+ *
+ * Rects with a non-positive size are skipped. Past RHI_VRAM_MAX_RECTS rects,
+ * or when the packed payload exceeds one image-sized staging slot, the whole
+ * mirror is uploaded instead. Upload semantics are rhi_update_vram's.
+ * @param dev Device.
+ * @param tex VRAM texture; NULL is ignored.
+ * @param mirror Source with a row stride of the texture width.
+ * @param rects Rects, pre-clamped to the texture extent.
+ * @param nrects Rect count; 0 or less does nothing. */
 void rhi_update_vram_rects(rhi_device *dev, rhi_texture *tex,
                            const uint16_t *mirror,
                            const rhi_rect *rects, int nrects);
@@ -1329,6 +1448,12 @@ rhi_texture *rhi_create_rgba8(rhi_device *dev, uint32_t width, uint32_t height);
  * @param height Height in texels.
  * @return The texture, or NULL on failure. */
 rhi_texture *rhi_create_u32x4(rhi_device *dev, uint32_t width, uint32_t height);
+/** @brief Upload a whole image of pixel bytes to an uploadable texture such as an rhi_create_rgba8 image.
+ *
+ * Upload semantics are rhi_update_vram's.
+ * @param dev Device.
+ * @param tex Texture; NULL or one without staging is ignored.
+ * @param pixels width * height * 4 bytes; NULL logs and uploads nothing. */
 void rhi_update_rgba8(rhi_device *dev, rhi_texture *tex, const void *pixels);
 
 /* Sub-rect uploads from TIGHT per-rect source buffers (pixels = w*h*4 RGBA8
@@ -1678,6 +1803,10 @@ void rhi_bind_vram_depth_pair(rhi_device *dev, rhi_texture *tex, rhi_texture *de
  * @param w Width.
  * @param h Height. */
 void rhi_set_scissor(rhi_device *dev, int x, int y, int w, int h);
+/** @brief Restore the scissor to the full extent of the bound pass for subsequent draws.
+ *
+ * Does nothing outside an active frame. The device must not be NULL.
+ * @param dev Device whose current frame records the scissor. */
 void rhi_reset_scissor(rhi_device *dev);
 /** @brief Set the hardware depth-bias factors for subsequent draws of a depth_bias pipeline.
  *
@@ -1767,8 +1896,34 @@ typedef struct { const char *name; double us; double start_us; int depth; } rhi_
  * @return Nonzero when OPENPETE_GPU_TIMERS enabled the zones and the queue
  *         supports timestamps; 0 for NULL or when off. */
 int  rhi_gpu_timers_on(const rhi_device *dev);
+/** @brief Open a named GPU timestamp zone in the current frame slot.
+ *
+ * Writes a bottom-of-pipe timestamp for the zone's start and pushes the zone
+ * on the nesting stack; the zone's depth is the stack depth before the push.
+ * Does nothing when timers are off, outside an active frame, or when the slot
+ * holds RHI_GPU_ZONES_MAX zones or the stack is that deep. The name is also
+ * the device-lost suspect that rhi_signal_device_lost prints.
+ * @param dev Device, or NULL.
+ * @param name Zone label, stored by pointer; must outlive the harvest of the
+ *             frame slot. */
 void rhi_gpu_zone_begin(rhi_device *dev, const char *name);
+/** @brief Close the innermost open GPU timestamp zone of the current frame slot.
+ *
+ * Writes the zone's end timestamp and pops the nesting stack. Does nothing
+ * when timers are off, outside an active frame, or with no open zone. An end
+ * whose begin was refused closes the enclosing zone instead.
+ * @param dev Device, or NULL. */
 void rhi_gpu_zone_end(rhi_device *dev);
+/** @brief Copy the most recently harvested GPU zone results into `out`.
+ *
+ * The results are the zones of a frame RHI_FRAMES_IN_FLIGHT presents old,
+ * read by rhi_begin_frame; each carries the name pointer given to
+ * rhi_gpu_zone_begin. Copies at most `cap` entries.
+ * @param dev Device, or NULL.
+ * @param out Receives the results; NULL returns 0.
+ * @param cap Capacity of @p out in entries; 0 or less returns 0.
+ * @return Entries copied; 0 for NULL dev, NULL out, non-positive cap, or no
+ *         harvest. */
 int  rhi_gpu_zone_results(rhi_device *dev, rhi_gpu_zone_result *out, int cap);
 /** @brief Tag the current frame slot's GPU zones with a caller id.
  *

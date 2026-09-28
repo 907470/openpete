@@ -152,6 +152,12 @@ void rhi_display_claim(rhi_device *dev)
     (void)dev;
     s_display_owner = SDL_GetCurrentThreadID();
 }
+/** @brief Count and log a display-seam violation when the calling thread is not the display owner.
+ *
+ * Does nothing before the first rhi_display_claim. The first eight
+ * violations log; OPENPETE_SEAM_GUARD_FATAL set to a value not starting
+ * with 0 aborts at the first (read once).
+ * @param where Entry point name for the log line. */
 static void seam_check(const char *where)
 {
     if (!s_display_owner) return;                 /* pre-claim boot window */
@@ -631,6 +637,9 @@ struct rhi_buffer {
  * writes that had no generation left and overwrote bound data in place. */
 static uint64_t s_ring_gen_bumps, s_ring_gen_overflows, s_dbg_gw, s_dbg_gb;
 static uint64_t s_frame_serial;
+/** @brief Return whether OPENPETE_RING_GEN_DBG requests the ring-generation totals at rhi_destroy.
+ *
+ * The variable is read once; unset, empty or starting with 0 is off. */
 static bool ring_gen_dbg(void)
 {
     static int v = -1;
@@ -2944,6 +2953,11 @@ uint64_t rhi_frame_serial(rhi_device *dev) { (void)dev; return s_frame_serial; }
  * presents, and the consumer (the host loop) has no rhi_device handle. */
 static Uint64 s_block_ns[RHI_BLOCK_PHASE_COUNT];
 
+/** @brief Add the time since `t0` to a present-path phase's block accumulator and log a stall of 12 ms or more.
+ *
+ * @param what Phase label for the log line.
+ * @param phase RHI_BLOCK_* index into the accumulators; negative logs only.
+ * @param t0 SDL_GetTicksNS value at the start of the blocking call. */
 static void rhi_note_stall_phase(const char *what, int phase, Uint64 t0)
 {
     Uint64 dt = SDL_GetTicksNS() - t0;
@@ -6345,6 +6359,12 @@ static void ubo_frame_sync(rhi_ubo *ubo)
     memset(ubo->gen, 0, ubo->blocks);
     memset(ubo->bound, 0, ubo->blocks);
 }
+/** @brief Return the block's physical index in the buffer for the current frame slot and generation.
+ *
+ * (frame slot x RHI_UBO_GENS + generation) x blocks + block; multiply by the
+ * block size for the byte offset. The block index must be in range.
+ * @param ubo Uniform block set on a device with a valid frame slot.
+ * @param block Block index. */
 static size_t ubo_phys(const rhi_ubo *ubo, uint32_t block)
 {
     return ((size_t)ubo->dev->frame * RHI_UBO_GENS + ubo->gen[block]) * ubo->blocks + block;
