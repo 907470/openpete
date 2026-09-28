@@ -34,7 +34,7 @@ enum {
     OPENPETE_PERF_OFF    = 0,  /* nothing drawn                             */
     OPENPETE_PERF_FPS    = 1,  /* the FPS counter alone                     */
     OPENPETE_PERF_DETAIL = 2,  /* + pacing: VBL rate, slips, late ticks,
-                                *   shed and interpolation share            */
+                                *   interpolation share, gap rate, hold     */
     OPENPETE_PERF_LEVELS = 3
 };
 
