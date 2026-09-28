@@ -1,9 +1,8 @@
-// core/runtime/run.c — entry point: boot PSX EXE, optionally smoke-test a
-// recompiled function, then drop into the SDL run loop.
-//
-// Phase 1b adds the boot path. The actual main loop is still a clear-color
-// stub — Phase 1c will replace it with the recompiled `main` driving the
-// gamestate dispatcher.
+// core/runtime/run.c — openpete_run: boot the PSX EXE, optionally smoke-test
+// one recompiled function, then run the host loop that drives the game fiber
+// (input, tick, present, pacing, logs and captures). Under the thread split
+// main pumps the window and a worker runs the loop; a build without PsyCross
+// opens a window that only clears and presents.
 
 #include "openpete.h"
 #include "openpete_crash.h"
@@ -111,28 +110,23 @@ int g_openpete_canon_lag_leg = 0;
 static void vp_set_present_target(void) {
     static int s_on = -1;
     if (s_on < 0) {
-        /* OFF by default: the clock spaces animation time evenly per PRESENT,
-         * and display time is not evenly spaced. The tick executes on this
-         * thread, so one image is held for the length of it — and an evenly
-         * spaced alpha gives that frame the same slice of motion as a frame
-         * shown for one refresh. Measured at --render-fps 480, three runs
-         * each: the frame held through the tick carried 0.083 of a tick of
-         * motion for an 8.0 ms hold, an animation error of -5.24 / -5.10 /
-         * -5.15 ms repeating 30 times a second, with a +0.3 ms mid-tick bias
-         * as its mirror image. Letting the phase follow wall time instead put
-         * the boundary error at +0.05 / +0.12 / +0.15 ms and the mid-tick
-         * error at +0.01 ms.
+        /* Off by default: the clock spaces animation time evenly per present,
+         * but display time is not evenly spaced. The tick executes on this
+         * thread, so one image is held on screen for the length of it, and an
+         * evenly spaced alpha gives that image the same slice of motion as an
+         * image shown for one refresh: a systematic animation error each tick
+         * (about 5 ms of animation at --render-fps 480) plus a small mid-tick
+         * bias of the opposite sign. Letting the phase follow wall time
+         * removes that term.
          *
-         * What the clock was for is real but smaller: it removes submit-time
-         * jitter, and without it the error tail widens (p99 0.6-1.7 ms ->
-         * ~2.2 ms, roughly one refresh at 480 Hz). A periodic deficit thirty
-         * times a second is more visible than random error of that size on a
-         * percent of frames, so the systematic term is the one to kill.
-         *
-         * The clamping that sank an earlier attempt at this is no longer the
-         * problem it was — 0.0 % of presents in two of three runs — because
-         * the consumers now allow slightly negative alpha rather than
-         * snapping shown time forward at every interval roll. */
+         * What the clock buys is removal of submit-time jitter; without it
+         * the error tail widens (p99 0.6-1.7 ms -> about 2.2 ms, roughly one
+         * refresh at 480 Hz). A periodic deficit every tick is more visible
+         * than random error of that size on a small share of presents, so the
+         * systematic term is the one to remove. The [-6, +6] ms clamp below
+         * keeps the clock inside the range the consumers accept, since they
+         * allow slightly negative alpha rather than snapping shown time
+         * forward at every interval roll. */
         const char* e = getenv("OPENPETE_PRESENT_TARGET_CLOCK");
         s_on = (e && *e && *e != '0');
     }
@@ -154,16 +148,15 @@ static void vp_set_present_target(void) {
     } else {
         s_clk += (op_time_t)s_sp;         /* even step at the measured cadence */
         s_clk += (now - s_clk) / 16;      /* bounded pull toward reality */
-        /* HARD drift bound (±6 ms): the capture stamps live on their own
+        /* Hard drift bound (+-6 ms): the capture stamps live on their own
          * PLL-smoothed grid anchored to wall time; this clock smooths the
-         * present cadence — two independent oscillators. When the present
-         * cadence shifts under load (runahead's speculation inside tick
-         * iterations was the trigger; measured drift to ~10 ms), the 1/16
-         * pull is too weak and the standing offset shows up directly as an
-         * interp-alpha bias: presents clamp at the interval's start and the
-         * tail is never shown — motion arrives as 30 Hz roll-jumps ("whole
-         * world jittery"). Smoothing within ±6 ms keeps the jitter
-         * rejection; beyond that, reality wins. */
+         * present cadence, so the two are independent oscillators. When the
+         * present cadence shifts under load (runahead speculation inside a
+         * tick iteration), the 1/16 pull is too weak and the standing offset
+         * becomes an interp-alpha bias: presents clamp at the interval's
+         * start and its tail is never shown, so motion arrives as 30 Hz
+         * roll-jumps. Smoothing within +-6 ms keeps the jitter rejection;
+         * beyond that the wall clock wins. */
         const op_time_t cap = 6 * OP_NS_PER_MS;
         if (s_clk < now - cap) s_clk = now - cap;
         else if (s_clk > now + cap) s_clk = now + cap;
@@ -236,8 +229,8 @@ int openpete_psycross_renders = 1;
  * matcher, whose substitute path it also used to gate.) */
 int g_openpete_interp_enabled = 1;
 
-/* Cooperative shutdown flag. Set from SDL event filter (window close / Alt-F4),
- * an Escape keypress, or our SIGINT handler. The host-fiber loop checks this
+/* Cooperative shutdown flag. Set by the event pump (window close, SDL quit,
+ * the quit binding) and by our SIGINT handler. The host-fiber loop checks this
  * once per iteration and drains cleanly, instead of PsyCross's PsyX_Exit()
  * calling exit(0) from inside PsyX_BeginScene (which can hang in WSL/GL with
  * the game fiber and vblank thread still mid-flight). Written by the pump,
@@ -250,13 +243,13 @@ static atomic_int g_shutdown_requested = 0;
 /* Sets g_shutdown_requested; documented at the declaration. */
 void openpete_request_shutdown(void) { g_shutdown_requested = 1; }
 
-/* Set by the SDL event filter on a window double-click, by
+/* Set by the event pump on a window double-click, by
  * openpete_native_request_fullscreen_toggle from any thread, and by the
  * host loop on its own key edge under the thread split; consumed with an
  * atomic exchange by the thread that owns the window, so a raise between a
  * read and a clear is never lost and a consumed request is never raised
  * again by an observer. Kept as a flag so the heavy SDL_SetWindowFullscreen
- * call runs in a loop, not the filter. */
+ * call runs in a loop, not in the event handler. */
 static SDL_AtomicInt g_native_fs_toggle_request;
 
 /* Player screenshot pending (the `screenshot` binding). Raised where the
@@ -511,17 +504,14 @@ static bool openpete_handle_event(SDL_Event* ev) {
     /* Quit-by-key, and Escape's overlay dismiss.
      *
      * Handled here rather than through the polled hotkey block because the
-     * filter sees one key event at a time: polling would have to re-derive
+     * pump sees one key event at a time: polling would have to re-derive
      * "was this press already consumed by closing the menu?" from held
-     * state, and get it wrong the first time a user presses Escape to
-     * close the menu and quits the game instead.
+     * state, and would quit the game on the press that only closes the menu.
      *
-     * (We used to gate quitting on !SDL_HasGamepad() so a Steam-Input
-     * phantom keystroke couldn't kill the game, but that also broke
-     * Escape-to-quit for everyone playing on a normal controller — see
-     * km_sdl_key_down in keymap_sdl.c for the trade-off we re-accepted.
-     * `quit = "none"` is now the supported cure.) The window-close path
-     * above quits regardless of any binding. */
+     * Quitting is not gated on gamepad presence, so a synthetic keystroke
+     * from a controller-emulation layer can quit; `quit = "none"` unbinds
+     * it (see km_sdl_key_down in keymap_sdl.c). The window-close path above
+     * quits regardless of any binding. */
     if (ev->type == SDL_EVENT_KEY_DOWN) {
         const bool esc = (ev->key.scancode == SDL_SCANCODE_ESCAPE);
 
@@ -811,7 +801,7 @@ static void gameplay_hash_log_emit_header(FILE* fp) {
      * harness uses these to pinpoint which region first diverged.
      * Capped at OPENPETE_HASH_LOG_MAX_REGIONS to keep the per-frame
      * line bounded; over the cap we still emit the total hash and
-     * skip extra columns (loud assert on first hit). */
+     * skip extra columns (an error is logged). */
     size_t n = openpete_state_region_count;
     if (n > OPENPETE_HASH_LOG_MAX_REGIONS) {
         OPL_ERROR_F("hash-log",
@@ -1591,16 +1581,15 @@ static void eager_plan(op_time_t now, op_time_t first, op_time_t period,
     /* Budget on the tail of the per-scene cost, against what this thread
      * has left of the span once the update VBL has run.
      *
-     * Against `prod_end` — the pacer grid instant the produce deadlines are
-     * derived from — never the span endpoint. The span is anchored on the
-     * capture stamp, which PLL-locks to average tick COMPLETION, so it lands
-     * about one tick execution past the moment production actually stops
-     * (measured +2.1 ms); the lag extension above adds several more. Budgeting
-     * against either prices time this thread never has, which made `afford`
-     * exceed the slot count on every span of a level that could not keep up —
-     * 19-33 against 16 inside a 33.43 ms tick — so the proactive step below
-     * could never fire and the level fell only AFTER a span was cut short.
-     * That is the oscillation the divisor ladder exists to prevent. */
+     * Against `prod_end` (the pacer grid instant the produce deadlines are
+     * derived from), never the span endpoint. The span is anchored on the
+     * capture stamp, which PLL-locks to average tick completion, so it lands
+     * about one tick execution past the moment production actually stops;
+     * the lag extension above adds more. Budgeting against either prices
+     * time this thread never has, so `afford` would exceed the slot count
+     * even at a level that cannot keep up, the proactive step below would
+     * never fire, and the level would fall only after a span was cut short,
+     * which is the oscillation the divisor ladder exists to prevent. */
     /* How many scenes fit is a question about their SUM, not about one of
      * them. `eager_tail_cost()` is a per-scene p99.7 bound, which is the right
      * question between scenes (the produce guard below) and the wrong one
@@ -1923,15 +1912,13 @@ static void pace_sleep_until(op_time_t deadline_ns, op_time_t sim_deadline_ns)
     if (pace_flip_log_on() && !s_eager.active) {
         /* Never wait into the pacer's slack ahead of a SIM deadline. The sleep
          * is not idle right up to it: op_sleep_until parks until the deadline
-         * minus slack and the loop uses what remains to be ready on time.
-         * Waiting into that window made the instrument the defect — every
-         * flip-logged run measured 760-783 late ticks per 1000 against 12.5
-         * for the same leg without it.
+         * minus slack and the loop uses what remains to be ready on time, so
+         * a wait into that window makes ticks late.
          *
-         * Bounding by the RENDER target instead would disable the instrument
-         * outright wherever the slack exceeds a present slot, which at
-         * --render-fps 480 (2.08 ms slots, 2.5 ms slack) is always. Only the
-         * tick's own margin is protected. */
+         * Bounding by the RENDER target instead would disable the wait
+         * wherever the slack exceeds a present slot, which at --render-fps 480
+         * (2.08 ms slots, 2.5 ms slack) is always. Only the tick's own margin
+         * is protected. */
         const op_time_t guard = sim_deadline_ns
             ? sim_deadline_ns - op_pacer_slack_ns() : deadline_ns;
         const op_time_t until = (guard < deadline_ns) ? guard : deadline_ns;
@@ -2013,14 +2000,11 @@ static int pace_shed_margin_k(void)
     static int k = -1;
     if (k < 0) {
         const char* e = getenv("OPENPETE_PACE_SHED_K");
-        /* Default 0 = the shipped centre-only bound. k=3 is provably the
-         * better PREDICTOR (miss rate 19 % -> 5 % over 49k recorded presents)
-         * but no end-to-end difference is measurable on this hardware, and
-         * k=4 collapses interpolation outright — 16 intermediate presents in a
-         * run instead of ~16000, because a bound that wide almost never fits
-         * the budget. A parameter with a cliff that near, tested on one fast
-         * machine, does not become a default on a prediction-quality argument
-         * alone. */
+        /* Default 0 = the centre-only bound (EMA + EMA/4). k=3 predicts better
+         * (miss rate 19 % -> 5 % over 49k recorded presents) without a
+         * measurable end-to-end difference, and k=4 collapses interpolation
+         * (about 16 intermediate presents in a run instead of ~16000) because
+         * a bound that wide almost never fits the budget. */
         k = (e && *e) ? atoi(e) : 0;
         if (k < 0) k = 0;
     }
@@ -2267,9 +2251,9 @@ int openpete_get_render_fps(void) {
  * @return 0 on success, else an OPENPETE_EXIT_* code for the caller to
  *         return. */
 static int run_host_init(const openpete_options_t* opts) {
-    /* True when main owns the window, the pump and the SDL-state publish, and
-     * this function is running on the worker. Resolved once: it decides which
-     * half of the input seam this thread is responsible for. */
+    /* True when main owns the window, the pump and the SDL-state publish and
+     * the host loop runs on a worker. This function itself runs on main in
+     * that case, before the worker exists. Currently unused below. */
     const bool split = openpete_split_applies(opts);
 
     memset(&g_game, 0, sizeof(g_game));
@@ -2372,10 +2356,9 @@ static int run_host_init(const openpete_options_t* opts) {
      * feature modules (openpete_feature_count == 0) makes this a no-op. */
     feature_registry_apply_options(opts);
 
-    /* Modding framework: discover/build/load mods (P1 vertical slice,
-     * notes/plans/openpete-modding-framework.md). No mods directory ⇒
-     * zero work and a byte-identical modless run (inertness gate); a
-     * broken mod is disabled with a log, never a failed launch. */
+    /* Modding framework: discover, build and load mods. No mods directory
+     * means zero work and a byte-identical modless run; a broken mod is
+     * disabled with a log, never a failed launch. */
     openpete_mods_init(opts);
 
     int win_w = (opts->window_w > 0) ? opts->window_w : game_default_window_w();
@@ -2424,10 +2407,9 @@ static int run_host_init(const openpete_options_t* opts) {
         }
     }
 
-    /* --no-lod: native-renderer display policy (sets openpete_no_lod +
-     * resolves the fog scale; warns + ignores in PsyCross reference
-     * mode — the game-side producer stack was deleted 2026-07-06). See
-     * notes/plans/openpete-disable-lods.md. */
+    /* --no-lod: native-renderer display policy (sets openpete_no_lod and
+     * resolves the fog scale; warns and is ignored in PsyCross reference
+     * mode, which has no extended-LOD producer). */
     if (no_lod_apply_options(opts) != 0) {
         return OPENPETE_EXIT_SETUP_ERROR;
     }
@@ -2801,7 +2783,8 @@ static int run_host_init(const openpete_options_t* opts) {
     music_override_init();  /* logs the assets/music/ search path */
     sfx_pack_set_dir_override(opts->sfxpack_dir);
     sfx_pack_init();        /* assets/sfx/ drop-in replacement */
-    s_mute = opts->mute ? 1 : 0;   /* boot: this is the host loop's thread, before the loop */
+    /* Boot: written before the host loop starts, so no other thread reads it. */
+    s_mute = opts->mute ? 1 : 0;
     apply_mute_gains();
     live_knob_publish_shown();
 
@@ -2835,17 +2818,13 @@ static int run_host_init(const openpete_options_t* opts) {
      * when the game starts rendering — no CLI knob needed. */
     OPL_INFO_F("boot", "fast-boot: skipping host yields until first DrawOTag");
 
-    /* Start the free-running 60 Hz vblank ticker. Skipped under --headless
-     * to keep that path deterministic — psyq_VSync advances `openpete_vbl`
-     * synchronously when no ticker is running. See
-     * plans/openpete-free-running-vblank-counter.md. */
+    /* Start the free-running vblank ticker. Skipped under --headless to keep
+     * that path deterministic: psyq_VSync advances `openpete_vbl`
+     * synchronously when no ticker is running. */
     {
-        /* Ticker is normally suppressed under --headless (vbl is then
-         * advanced synchronously inside psyq_VSync — see
-         * plans/openpete-free-running-vblank-counter.md). The
-         * frame-pacing measurement harness needs the ticker active even
-         * under --headless to capture a representative paced baseline;
-         * OPENPETE_FORCE_PACING=1 opts in. */
+        /* The pacing measurement harness needs the ticker active even under
+         * --headless to capture a paced baseline; OPENPETE_FORCE_PACING=1
+         * opts in. */
         const char* fp = getenv("OPENPETE_FORCE_PACING");
         bool force_pacing = (fp && *fp && *fp != '0');
         if (!opts->headless || force_pacing) {
@@ -3115,7 +3094,7 @@ static int run_host_loop(const openpete_options_t* opts) {
      * the previous game frame stays visible until the next DrawOTag.
      *
      * Net effect: GL output is naturally 30fps and there's no yellow flash
-     * between game frames. (Phase 1f rendering fix.) */
+     * between game frames. */
 
     Uint64 start = SDL_GetTicks();  /* SDL3: SDL_GetTicks is 64-bit */
     int    exit_code = OPENPETE_EXIT_OK;
@@ -3138,9 +3117,8 @@ static int run_host_loop(const openpete_options_t* opts) {
         }
     }
 
-    /* Resolve the launch --render-fps target (Phase 2f default-on decision,
-     * openpete-fps-unlock.md). -1 = unset: windowed runs default to the
-     * display's refresh rate — the wall-clock dual-pacer + transform-interp
+    /* Resolve the launch --render-fps target. -1 = unset: windowed runs
+     * default to the display's refresh rate — the wall-clock dual-pacer + transform-interp
      * path — while headless keeps the legacy match-sim pacer (0): those runs
      * are unpaced (unlock) and the oracle/determinism harnesses expect one
      * present per tick. An explicit --render-fps 0 selects the legacy pacer.
@@ -3153,11 +3131,10 @@ static int run_host_loop(const openpete_options_t* opts) {
         OPL_INFO_F("pacer", "--render-fps unset: defaulting to display refresh %d Hz",
                    render_fps);
 
-    /* Phase 2 pacer state — single time source (op_now / op_sleep_until)
-     * for both the legacy --render-fps=0 path and the --render-fps>0
-     * wall-clock pacer. Both branches step phase-locked deadlines in
-     * integer ns and slip-clamp identically, eliminating the
-     * condvar-drain race that left Phase 1a ~3 % rate-hot.
+    /* Pacer state: a single time source (op_now / op_sleep_until) serves
+     * both the legacy --render-fps=0 path and the --render-fps>0 wall-clock
+     * pacer. Both branches step phase-locked deadlines in integer ns and
+     * slip-clamp identically.
      *
      * Period choices:
      *   sim_period    = the PSX 240p VBL, exactly 37609/2250000 s
@@ -3170,8 +3147,7 @@ static int run_host_loop(const openpete_options_t* opts) {
      * truncated away every step. Deadlines land on floor(n * period) for all
      * n: under a nanosecond off the true grid, and never drifting further.
      *
-     * Invariant (locked in by openpete-fps-unlock.md "vbl-counter
-     * loops"): the inner sim block yields the game fiber at most once
+     * Invariant: the inner sim block yields the game fiber at most once
      * per outer iteration. Multi-vbl catch-up would race-complete the
      * `pre - post < 2` GPU-pacing loops in draw.c and the 210-vbl Sony /
      * Universal logo waits in initialization.c. The slip-clamp resets
@@ -3285,14 +3261,11 @@ static int run_host_loop(const openpete_options_t* opts) {
                    (double)sim_period_ns / 1e6, op_period_hz(sim_period), tick_scale);
     }
 
-    /* fps-unlock Phase 2 (scaffolding): bring up the interpolation
-     * snapshot ring. Capture is enabled only when the render rate
-     * exceeds sim rate — at parity there's nothing to interpolate
-     * between, and the per-tick memcpy is pure overhead. The lerped
-     * re-emit path is task #58; for now the ring captures + dedupes
-     * and that's all. Safe to run unconditionally: capture is a
-     * read-only PSX-RAM memcpy on the host fiber while the game
-     * fiber is yielded inside VSync(0). */
+    /* Bring up the interpolation snapshot ring. Capture is enabled only
+     * when the render rate exceeds the sim rate: at parity there is nothing
+     * to interpolate between, and the per-tick memcpy is pure overhead.
+     * Safe to run unconditionally: capture is a read-only PSX-RAM copy on
+     * the host fiber while the game fiber is yielded inside VSync(0). */
     if (openpete_interp_init() == 0) {
         const op_time_t render_period_ns = op_period_ns(s_render_period);
         /* The cadence counters judge a display hole against this. */
@@ -3463,7 +3436,7 @@ static int run_host_loop(const openpete_options_t* opts) {
      * the *actual* present time drifts from a perfectly-paced clock,
      * regardless of whether the legacy SDL_AddTimer pacer or a future
      * high-res pacer is driving the loop. The target period is the sim
-     * cadence. See notes/plans/openpete-frame-pacing.md. */
+     * cadence. */
     if (opts->frame_time_log_path && *opts->frame_time_log_path) {
         /* Default target: the PSX tick cadence, one present per tick
          * (= 1/2 of the 59.8261054 Hz 240p VBL). When the render-fps target
@@ -3516,12 +3489,11 @@ static int run_host_loop(const openpete_options_t* opts) {
             return OPENPETE_EXIT_SETUP_ERROR;
     }
 
-    /* Input pump rate. We used to throttle to 120 Hz when Tab was held
-     * to keep per-iter cost down at 1000+ Hz, but that broke BK2 replay
-     * determinism: g_PsyX_Pad_InputOverride is set per host iter, and
-     * PsyX_UpdateInput is what propagates it into the pad buffer the
-     * game polls — skipping pumps means the game reads a stale override.
-     * Pump every iter; the cost is tolerable. */
+    /* Input pump rate: every host iteration. g_PsyX_Pad_InputOverride is
+     * set per host iteration and the input update is what propagates it into
+     * the pad buffer the game polls, so skipping pumps (for instance while
+     * Tab is held) would leave the game reading a stale override and break
+     * bk2 replay determinism. */
 
     /* Host hotkeys all come from the keymap (openpete_keymap.h), which
      * owns the bindings AND the press edges: openpete_keymap_poll() once
@@ -3563,7 +3535,8 @@ static int run_host_loop(const openpete_options_t* opts) {
      * resolved render-fps default). */
     openpete_menu_init(opts, refresh_hz);
 
-    /* Eager production (OPENPETE_EAGER=1): windowed native display only. */
+    /* Eager production (on unless OPENPETE_EAGER=0): windowed native display
+     * only. */
     if (openpete_native_scene_enabled() && !opts->headless && openpete_present_thread_start()) {
         eager_init();
         s_eager_ftl.log = &frame_time_log;
@@ -3823,7 +3796,7 @@ static int run_host_loop(const openpete_options_t* opts) {
          * interaction with the dev panel is meant to leave the game
          * playable, and the same override block above only neutralises the
          * PSX pad while imgui actually wants typing. Esc-close and the
-         * overlay toggle still work: Esc via the event filter, and the
+         * overlay toggle still work: Esc via the event pump, and the
          * toggle action itself is exempt from the suspension so the key
          * that opened the panel also closes it. Bare nav focus, which the
          * panel holds the whole time it is open, must not swallow that key;
@@ -3877,8 +3850,8 @@ static int run_host_loop(const openpete_options_t* opts) {
 
         /* The in-game settings menu. While open it captures the nav keys and
          * the game pad is neutralised above, so the other hotkeys and
-         * gameplay input stay inert. Esc-closes is handled in the SDL event
-         * filter. */
+         * gameplay input stay inert. Esc-closes is handled in the event
+         * pump. */
         {
             if (openpete_key_pressed(OPK_MENU)) {
                 openpete_menu_toggle();
@@ -5676,8 +5649,7 @@ static int run_host_loop(const openpete_options_t* opts) {
         /* Native sub-tick intermediate render between sim ticks
          * (--render-fps > 30). Each intermediate iter rebuilds the
          * native scene against interpolated gamestate and presents it.
-         * (The legacy PsyCross screen-space re-emit that used to be the
-         * fallback here was deleted 2026-07-06 with the render matcher.)
+         * (There is no PsyCross screen-space re-emit fallback.)
          *
          * Conditions:
          *  - Not headless / unlock mode (no display target).
@@ -6587,10 +6559,6 @@ static int run_host_loop(const openpete_options_t* opts) {
 
     rumble_census_report();
 
-    /* Whether the guest's own execution ever reached the Vulkan device. A
-     * present thread can only run concurrently with a tick if this is zero;
-     * any name listed here is a call that would have to be moved, locked, or
-     * deferred first. */
     /* OSD engagement. A capture-based gate reading zero here never composited
      * a toast, whatever its pixels looked like — reported unconditionally so
      * that cannot pass unnoticed. */
@@ -6604,6 +6572,10 @@ static int run_host_loop(const openpete_options_t* opts) {
                openpete_native_version_drawn());
 
     {
+        /* Whether the guest's own execution ever reached the Vulkan device. A
+         * present thread can only run concurrently with a tick if this is
+         * zero; any name listed here is a call that would have to be moved,
+         * locked, or deferred first. */
         unsigned gpu_hits = op_gpu_audit_total();
         unsigned mw = op_gpu_audit_map_writes();
         /* Mapped-memory writes are reported even when the call count is zero:
@@ -6801,23 +6773,20 @@ static void sim_liveness_check(sim_liveness_t* L)
  *         run_recomp_fiber's when the thread cannot be created. */
 static int run_split_threaded(const openpete_options_t* opts)
 {
-    /* Bring SDL video up HERE, on the thread that will pump. PsyX_Initialise
-     * calls SDL_Init(SDL_INIT_VIDEO) too, but from the worker — by then this
-     * is an existing-subsystem refcount bump rather than a second init on the
-     * wrong thread. */
+    /* Bring SDL video up here, on the thread that will pump; the
+     * SDL_Init(SDL_INIT_VIDEO) inside PsyX_Initialise (run_host_init, also on
+     * this thread) then only takes another reference. */
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
         OPL_ERROR_F("boot", "SDL_Init(video) failed: %s", SDL_GetError());
         return OPENPETE_EXIT_SETUP_ERROR;
     }
 
-    /* The window must belong to the pumping thread: Win32 delivers a window's
-     * messages only to its creator. Bring-up on the worker adopts this. */
-    /* All host + PsyCross + SDL-subsystem init runs HERE, on main, before the
-     * worker exists. SDL brings its video/gamepad/haptic subsystems up on one
-     * thread and pumps them on that thread; with init on the worker, main's
-     * pump raced it and faulted inside SDL. Doing init before main starts
-     * pumping serialises the two with no barrier — and a barrier could not
-     * work anyway, since the worker's SDL init needs main to be pumping. */
+    /* All host, PsyCross and SDL-subsystem init runs here, on main, before
+     * the worker exists. The window must belong to the pumping thread (Win32
+     * delivers a window's messages only to its creator), and SDL brings its
+     * video, gamepad and haptic subsystems up on one thread and pumps them on
+     * that thread. Initialising before main starts pumping serialises the
+     * two without a barrier. */
     int init_rc = run_host_init(opts);
     if (init_rc != 0) return init_rc;
 
@@ -6938,14 +6907,10 @@ int openpete_run(const openpete_options_t* opts) {
      * can resolve it. Threads themselves spawn lazily on first parallel run. */
     openpete_workpool_configure(opts->extract_threads);
 
-    /* libco: capture the host fiber. Phase 1b uses only co_active(); Phase 1c
-     * creates the gameplay fiber so PSYQ calls can yield (VSync etc.). */
-    /* Pointless under the split — main never switches, so it has no business
-     * being a fiber. (This call was also FATAL until libco was built with
-     * LIBCO_MP: without it `thread_local` is an empty macro, co_active_ is a
-     * plain global, and main's conversion made the worker skip its own —
-     * see the note in core/CMakeLists.txt. LIBCO_MP is the fix; this guard is
-     * just hygiene.) */
+    /* libco: capture the host fiber. Skipped under the split, where main
+     * never switches and the worker captures its own. libco is built with
+     * LIBCO_MP so co_active_ is thread-local; without it main's conversion
+     * would make the worker skip its own (see core/CMakeLists.txt). */
     if (!openpete_split_applies(opts)) {
         cothread_t host_fiber = co_active();
         OPL_INFO_F("boot", "libco host fiber=%p", host_fiber);
@@ -6953,8 +6918,8 @@ int openpete_run(const openpete_options_t* opts) {
 
     openpete_psx_install_crash_handler();
 
-    /* Phase 1b smoke test: dispatch one recompiled function and exit before
-     * the SDL loop runs. */
+    /* Smoke test: dispatch one recompiled function and exit before the SDL
+     * loop runs. */
     if (opts->test_recomp_call_addr != 0 || opts->test_recomp_segv) {
         return run_recomp_smoke_test(opts);
     }
