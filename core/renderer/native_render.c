@@ -2040,6 +2040,12 @@ typedef struct {
     int32_t  phead[CARRY_KEY_SLOTS];
 } carry_key_map_t;
 
+/** @brief Fold one 32-bit word into a 32-bit FNV-1a hash state.
+ *
+ * The word is xored in whole, then the state is multiplied by the FNV prime.
+ * @param h Hash state.
+ * @param w Word to fold.
+ * @return The new hash state. */
 static uint32_t carry_hash(uint32_t h, uint32_t w) { h ^= w; return h * 16777619u; }
 
 /** @brief Round a float to the nearest pixel as a hash word.
@@ -2103,6 +2109,14 @@ static uint32_t carry_pos_slot(int cx, int cy, int cat, int textured) {
     return h & (CARRY_KEY_SLOTS - 1);
 }
 
+/** @brief Return the occupancy bucket of an entry's first vertex, offset by whole cells.
+ *
+ * The cell is the floor of the first vertex's screen position plus the
+ * offset; the layer and texturing come from the entry.
+ * @param tri Entry.
+ * @param dx Cell offset x, -1 to 1 for a 3x3 probe.
+ * @param dy Cell offset y.
+ * @return A bucket index below CARRY_KEY_SLOTS. */
 static uint32_t carry_pos_slot_of(const scene_tri_t* tri, int dx, int dy) {
     return carry_pos_slot((int)floorf(tri->v[0].sx) + dx, (int)floorf(tri->v[0].sy) + dy,
                           tri->category, tri->textured);
@@ -2119,6 +2133,15 @@ static void carry_keys_build(const scene_tri_t* tris, int n, uint32_t* key) {
     for (int t = 0; t < n; t++) key[t] = carry_key_of(&tris[t], &zero_ord);
 }
 
+/** @brief Build the key and position chains of the previous capture.
+ *
+ * Computes the content key of each entry (carry_keys_build), then chains the
+ * entries into m->head by key bucket and into m->phead by position bucket
+ * (carry_pos_slot_of at zero offset). Each chain is built in reverse, so a
+ * walk visits entries in feed order.
+ * @param m Map to fill; every bucket is reset first.
+ * @param prev Previous capture, at most OVERLAY_CARRY_MAX entries.
+ * @param prev_n Entry count. */
 static void carry_map_build(carry_key_map_t* m, const scene_tri_t* prev, int prev_n) {
     for (int i = 0; i < CARRY_KEY_SLOTS; i++) { m->head[i] = -1; m->phead[i] = -1; }
     carry_keys_build(prev, prev_n, m->key);
@@ -2222,6 +2245,16 @@ static int carry_run_joins(const scene_tri_t* a, const scene_tri_t* b) {
            a->clut_x == b->clut_x && a->clut_y == b->clut_y;
 }
 
+/** @brief Partition a capture into runs of adjacent joinable entries and total each run.
+ *
+ * A new run opens at entry 0 and wherever carry_run_joins refuses the pair
+ * of adjacent entries. Each run records its first entry, length, order-
+ * independent content signature (the sum of the entries' hashed keys) and
+ * the mean of all its vertex positions.
+ * @param tris Capture entries, at most OVERLAY_CARRY_MAX.
+ * @param key Content keys of the entries.
+ * @param n Entry count.
+ * @param r Receives the runs. */
 static void carry_runs_build(const scene_tri_t* tris, const uint32_t* key, int n,
                              carry_runs_t* r) {
     r->n = 0;
@@ -2687,6 +2720,10 @@ typedef struct {
     float    worst_p[2], worst_c[2], worst_a[2];
 } carry_census_t;
 
+/** @brief Return whether OPENPETE_CARRY_CENSUS is set to a non-zero value.
+ *
+ * Read once and cached.
+ * @return 1 when the carry census is on, else 0. */
 static int carry_census_on(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_CARRY_CENSUS"); v = (e && *e && *e != '0'); }
@@ -2753,6 +2790,21 @@ static int carry_nearer_twin(const scene_tri_t* prev, int prev_n,
     return 0;
 }
 
+/** @brief Add one moved carry pair to the census counters and track the worst pair.
+ *
+ * A pair is far_both when the applied triangle lies more than 2 px from both
+ * brackets, uv_mismatch when both are textured and their first vertices'
+ * texture coordinates differ, and static_moved when the flag is set and the
+ * applied triangle is more than 0.5 px from both brackets. The worst pair is
+ * the one with the largest smaller bracket distance.
+ * @param cz Census being accumulated.
+ * @param prev Previous entry of the pair.
+ * @param curr Current entry of the pair.
+ * @param app The entry's applied, interpolated triangle.
+ * @param crossed Nonzero when the partner is another entry's predecessor.
+ * @param static_moved Nonzero when an entry of the same content key stands
+ *        where the current entry stands.
+ * @param ambiguous Nonzero when the pair came from a repeated content key. */
 static void carry_census_note(carry_census_t* cz, const scene_tri_t* prev,
                               const scene_tri_t* curr, const scene_tri_t* app,
                               int crossed, int static_moved, int ambiguous) {
@@ -2809,6 +2861,18 @@ static void carry_census_pair(carry_census_t* cz, const carry_key_map_t* m,
     if (carry_nearer_twin(s_overlay_prev, s_overlay_prev_n, c, pi)) cz->nearer_twin++;
 }
 
+/** @brief Print one present's carry census line on stderr.
+ *
+ * The line gives the present's index within its scene stamp (the counter
+ * restarts when the stamp changes), the sub-tick alpha, the carried and
+ * paired entry counts, the census counters and the run tallies. A present
+ * with no lerped entry ends with NO-ENGAGEMENT; otherwise the line ends with
+ * the worst pair's flags and its previous, current and applied positions.
+ * @param cz Census accumulated over the present.
+ * @param carried Carry entries this present holds.
+ * @param paired Entries the pairing matched to a previous entry.
+ * @param oalpha Sub-tick alpha of the overlay, 0 to 1.
+ * @param st Run tallies of the present. */
 static void carry_census_flush(const carry_census_t* cz, int carried, int paired,
                                double oalpha, const carry_run_stats_t* st) {
     static uint32_t s_frame = 0xFFFFFFFFu;
@@ -3534,6 +3598,18 @@ static void build_panel_tinted(rhi_vertex out[6], float cx, float cy, float hx, 
     out[0] = tl; out[1] = tr; out[2] = br;
     out[3] = tl; out[4] = br; out[5] = bl;
 }
+/** @brief Build the six vertices of an untinted textured rectangle.
+ *
+ * build_panel_tinted with a white vertex colour.
+ * @param out Receives two triangles, six vertices, at z 0.
+ * @param cx Rect centre x, clip space.
+ * @param cy Rect centre y, clip space.
+ * @param hx Half-extent x, clip space.
+ * @param hy Half-extent y, clip space.
+ * @param u0 Texture u at the left edge.
+ * @param v0 Texture v at the top edge.
+ * @param u1 Texture u at the right edge.
+ * @param v1 Texture v at the bottom edge. */
 static void build_panel(rhi_vertex out[6], float cx, float cy, float hx, float hy,
                         float u0, float v0, float u1, float v1)
 {
@@ -4762,6 +4838,15 @@ static rhi_rect s_vram_rects[NR_VRAM_MAX_RECTS];
 static int      s_vram_nrects  = 0;
 static bool     s_vram_full    = true;    /* first sync = full snapshot */
 
+/** @brief Accumulate a VRAM write rectangle reported by PsyCross.
+ *
+ * The rectangle is clamped to the 1024x512 mirror and dropped when empty or
+ * when a full refresh is already pending. A 65th rectangle in one interval
+ * turns the pending refresh into a full one.
+ * @param x Left edge.
+ * @param y Top edge.
+ * @param w Width.
+ * @param h Height. */
 static void nr_vram_dirty_cb(int x, int y, int w, int h)
 {
     /* Defensive clamp (GR_ClearVRAM can pass unmasked coords). */
@@ -5826,6 +5911,21 @@ static int terrain_key_readback_on(void)
     return v;
 }
 
+/** @brief Grow the four key-contest images to at least w by h.
+ *
+ * The terrain, prop and actor key depth images and the rank target are
+ * recreated together at the larger of the request and the current extent;
+ * an existing set that already covers the request is kept, and the terrain
+ * image is created readable under OPENPETE_TERRAIN_KEY_READBACK. Recording
+ * frames may reference the current images, so a call during a frame only
+ * warns once and defers to the per-present resource pass. The allocation is
+ * all-or-nothing: on a partial failure every image is released, tk_w and
+ * tk_h are zeroed and the failure is logged. Waits for the device to idle
+ * before destroying. Non-positive extents are ignored.
+ * @param w Requested width in pixels; the extent never shrinks below the
+ *        current one.
+ * @param h Requested height in pixels; the extent never shrinks below the
+ *        current one. */
 static void ensure_terrain_key_depth(int w, int h)
 {
     if (w <= 0 || h <= 0) return;
@@ -5986,6 +6086,9 @@ static int scene_aura_boxes(const scene_tri_t* scene, int scene_n, key_box_t* ou
     return n;
 }
 
+/** @brief Return whether a screen box overlaps any box of a table.
+ *
+ * Boxes that share only an edge or a corner overlap. */
 static int box_hits_any(key_box_t b, const key_box_t* boxes, int n)
 {
     for (int i = 0; i < n; i++)
@@ -6470,6 +6573,22 @@ static void drain_records_build(const scene_tri_t* scene, int scene_n)
                                  (size_t)rows * DRAIN_REC_PER_ROW * 64u, &r, 1);
 }
 
+/** @brief Pack and render the key images for the present's scene.
+ *
+ * Returns when the key pass is unavailable or the images do not exist; the
+ * viewport clamps to the extent the images already have. The scene's faces
+ * are packed into the terrain, prop, actor and rank batches, and the batches
+ * append to terrain_key_vb at a bump offset that restarts each RHI frame, so
+ * several scene targets in one frame keep their own vertices. When the
+ * buffer cannot grow the batches are emptied: the images clear to no cover
+ * and the contest is off for this target. The terrain image also receives
+ * the retained terrain's key draw. The four images render even from empty
+ * batches, so a stale image is never sampled. The OPENPETE_TERRAIN_KEY_*
+ * and OPENPETE_MOBY_RANK_DBG knobs add stderr and file dumps of the packed
+ * batches.
+ * @param full_extent Nonzero for the full-extent (widescreen) mapping.
+ * @param vw Viewport width in the key images.
+ * @param vh Viewport height in the key images. */
 static void native_terrain_key_pass(int full_extent, int vw, int vh)
 {
     if (!openpete_native_key_resolve_on()) return;
@@ -6693,12 +6812,14 @@ static void bind_scene_pipe(rhi_pipeline* p)
     }
 }
 
-/* The player fan's footprint block at set 2 of the Spyro shadow decal pipe.
- * Written on the first bind of each RHI frame and again when the composed
- * scene's block differs from the last written one (a rewrite after a bind
- * moves to a fresh generation), so every consumer pass of one present reads
- * the block its own scene carries. */
 static rhi_ubo* s_shfoot_ubo;
+/** @brief Bind the player fan's footprint block at set 2 of the shadow decal pipe.
+ *
+ * The one-block UBO is created on first use. The block is written on the
+ * first bind of each RHI frame and again when the composed scene's block
+ * differs from the last one written (a rewrite after a bind moves to a fresh
+ * generation), so every consumer pass of one present reads the block its own
+ * scene carries. Returns without binding when the UBO cannot be created. */
 static void bind_shadow_footprint(void)
 {
     static uint64_t s_serial = UINT64_MAX;
@@ -6814,6 +6935,12 @@ static float occl_slack(void)
     return s;
 }
 
+/** @brief Return the camera translation bound of an occlusion query.
+ *
+ * OPENPETE_OCCL_CAM_MOVE sets it in world units, default 24; the value is
+ * read once. occl_cam_in_bound refuses a query whose camera lies farther than
+ * this from the grid's camera.
+ * @return The bound in world units. */
 static float occl_cam_move(void)
 {
     static float m = -1.0f;
@@ -6838,6 +6965,10 @@ static float occl_cam_turn_trace(void)
     return t;
 }
 
+/** @brief Return whether OPENPETE_OCCL_CAMDBG is set to a non-zero value.
+ *
+ * Enables the occlusion query camera diagnostics. Read once and cached.
+ * @return 1 when on, else 0. */
 static int occl_camdbg(void)
 {
     static int v = -1;
@@ -7242,12 +7373,18 @@ static float hud_paint_depth(const scene_tri_t* T)
         d += T->v[k].z / (T->v[k].z + OPENPETE_DEPTH_VIEWZ_SCALE);
     return d * (1.0f / 3.0f);
 }
-/* Grow every compose scratch run, and the scene and pre-pass GPU buffers, to
- * hold a scene of `scene_n` triangles. Returns how many of them the smallest
- * run holds: `scene_n` unless an allocation failed, in which case the compose
- * draws that prefix of the scene and the failure is logged (by the vec or the
- * RHI, with the run's name). */
 typedef struct { mod_fvec *v; size_t elem; int verts; const char *name; } cz_run_t;
+/** @brief Grow every compose scratch run and the scene and pre-pass GPU buffers to hold a scene.
+ *
+ * Vertex runs are sized 3 per triangle plus SCENE_VB_EXTRA and index runs one
+ * per triangle; a run is initialized on its first call. A growth moves a
+ * run, so no pointer into one survives the call. The result is bounded by
+ * the smallest capacity any run or GPU buffer slot reached, and records the
+ * smallest vertex and triangle capacities in s_cz_verts and s_cz_tris.
+ * @param scene_n Scene triangle count; a negative count is 0.
+ * @return The triangle count the compose can draw: scene_n unless an
+ *         allocation failed, in which case the prefix that fits; the failure
+ *         is logged by the run or the RHI with the run's name. */
 static int compose_reserve(int scene_n)
 {
     const cz_run_t runs[] = {
@@ -7292,6 +7429,10 @@ static int compose_reserve(int scene_n)
     return fit < scene_n ? fit : scene_n;
 }
 
+/** @brief Order HUD painter entries farther first, ties by submission index.
+ *
+ * qsort comparator over hud_paint_t: descending z, then ascending scene
+ * index, so equal-depth runs keep submission order. */
 static int hud_paint_cmp(const void* pa, const void* pb) {
     const hud_paint_t* a = (const hud_paint_t*)pa;
     const hud_paint_t* b = (const hud_paint_t*)pb;
@@ -7435,6 +7576,14 @@ static struct {
 } s_hd_pending[512];
 static int s_hd_pending_n = 0;
 
+/** @brief Return the uploaded texture cached under an identity key, or NULL.
+ *
+ * The probe starts at the multiplicative hash of the key and visits at most
+ * 16 consecutive slots. It stops at the first empty slot (key 0) and passes
+ * tombstones.
+ * @param key Identity key; 0 marks an empty slot and is never stored.
+ * @return The texture, or NULL when the key is absent or its probe window
+ *         is full. */
 static rhi_texture *hd_cache_lookup(uint64_t key)
 {
     uint64_t base = key * 0x9E3779B97F4A7C15ull >> 32;
@@ -7942,6 +8091,9 @@ typedef struct { rhi_texture *tex; uint32_t count, first; hd_pc pc; } hd_defer_e
 static hd_defer_ent *s_hd_defer;
 static int s_hd_defer_n, s_hd_defer_cap;
 
+/** @brief Order deferred HD sub-runs by texture pointer, then by first vertex.
+ *
+ * qsort comparator over hd_defer_ent. Equal textures group into one bind. */
 static int hd_defer_cmp(const void *a, const void *b)
 {
     const hd_defer_ent *x = a, *y = b;
@@ -7949,6 +8101,14 @@ static int hd_defer_cmp(const void *a, const void *b)
     return x->first < y->first ? -1 : (x->first > y->first);   /* deterministic */
 }
 
+/** @brief Queue one HD sub-run for hd_defer_flush.
+ *
+ * The queue starts at 1024 entries and doubles; when the growth fails the
+ * sub-run is dropped for this present.
+ * @param tex Replacement texture.
+ * @param pc Push constants of the sub-run, copied.
+ * @param count Vertex count.
+ * @param first First vertex. */
 static void hd_defer_push(rhi_texture *tex, const hd_pc *pc,
                           uint32_t count, uint32_t first)
 {
@@ -7962,6 +8122,13 @@ static void hd_defer_push(rhi_texture *tex, const hd_pc *pc,
     e->tex = tex; e->pc = *pc; e->count = count; e->first = first;
 }
 
+/** @brief Draw the queued HD sub-runs sorted by texture, then empty the queue.
+ *
+ * Binds hd_pipe once, binds each texture once, pushes each sub-run's
+ * constants and draws it. Afterwards the SD pipeline @p self and the VRAM
+ * texture are bound again. No effect on an empty queue.
+ * @param hd_pipe Pipeline for the replacement textures.
+ * @param self Pipeline to restore. */
 static void hd_defer_flush(rhi_pipeline *hd_pipe, rhi_pipeline *self)
 {
     if (!s_hd_defer_n) return;
@@ -8890,6 +9057,25 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
     if (hd_defer_ok) hd_defer_flush(hd_pipe, self);
 }
 
+/** @brief Draw the flat 2D HUD layer: panels, textured backdrops and glyphs.
+ *
+ * The layer draws depth-off, in three steps. Bucket 8 (HUD_PANEL boxes) draws
+ * one triangle at a time through the untextured HUD pipe of each box's blend
+ * class, alpha for a class outside the family. The textured HUD range
+ * draws through draw_tex_runs on the per-class textured HUD pipes. Bucket 6
+ * (untextured HUD text and glyphs, depth-sorted at build time) draws through
+ * the base untextured HUD pipe. OPENPETE_HUD6_ZPIPE draws bucket 6 through
+ * the opaque gouraud pipe after a depth clear and returns without the
+ * default bucket 6 draw. Steps whose pipes or vertices are absent are
+ * skipped.
+ * @param scene Scene triangles.
+ * @param scene_n Triangle count.
+ * @param ut_first First vertex of each untextured bucket.
+ * @param ut_count Vertex count of each untextured bucket.
+ * @param tx_start First vertex of the textured block that draw_tex_runs
+ *        indexes.
+ * @param hud_tex_first First vertex of the textured HUD range.
+ * @param hud_tex_count Vertex count of the textured HUD range. */
 static void draw_hud_flat_layer(const scene_tri_t* scene, int scene_n,
                                 const int* ut_first, const int* ut_count, int tx_start,
                                 int hud_tex_first, int hud_tex_count)
@@ -9626,6 +9812,11 @@ static void bw_fam_census_pass(const scene_tri_t* sc, int n, int refined,
                 label, key[q], bursts[q], tris[q], first[q]);
 }
 
+/** @brief Print the burst census of a completed scene, on stderr, for OPENPETE_BWFAMCENSUS.
+ *
+ * OPENPETE_BWFAMCENSUS=N or N-M selects the scene stamps censused; the value
+ * is read once. A present in range prints a header line, then bw_fam_census_pass
+ * keyed by tag family alone ("fam") and by bw_rank_key ("rank"). */
 static void bw_fam_census(const scene_tri_t* sc, int n) {
     static int on = -2; static unsigned lo = 0, hi = 0;
     if (on == -2) { const char* e = getenv("OPENPETE_BWFAMCENSUS");
@@ -9845,6 +10036,10 @@ static void scene_probes(scene_tri_t* sc, int n)
  * scene draw composed (untextured / textured) and the boot-cumulative count
  * of scene vertices that arrived without a true view-Z. */
 static int s_dtc_on = -1, s_dtc_tris = 0, s_dtc_tex = 0;
+/** @brief Record the triangle and textured-triangle counts of the scene just composed.
+ *
+ * No effect unless OPENPETE_DEPTH_TRANSPORT_CENSUS is set to a non-zero
+ * value; the variable is read once. */
 static void depth_transport_census_scene(const scene_tri_t* scene, int n)
 {
     if (s_dtc_on < 0) { const char* e = getenv("OPENPETE_DEPTH_TRANSPORT_CENSUS");
@@ -9853,6 +10048,11 @@ static void depth_transport_census_scene(const scene_tri_t* scene, int n)
     s_dtc_tris = n; s_dtc_tex = 0;
     for (int t = 0; t < n; t++) s_dtc_tex += scene[t].textured ? 1 : 0;
 }
+/** @brief Print the depth-transport line for one screenshot, on stderr.
+ *
+ * The line gives the counts depth_transport_census_scene last recorded and
+ * s_pvz_missing, the scene vertices that arrived without a true view-Z. No
+ * effect unless the census is on. */
 static void depth_transport_census_shot(const char* path)
 {
     if (s_dtc_on == 1)
@@ -11241,6 +11441,7 @@ int  openpete_native_fps_value(void) { return s_fps_value; }
 static float  s_fov_deg;          /* 0 = default */
 static double s_fov_tan_pending;  /* tan(fov/2), 0 at the default; set live */
 static double s_fov_tan;          /* latched at scene begin */
+/// @brief Latch the live tan(fov/2) setting for the scene now beginning.
 static void fov_latch(void) { s_fov_tan = s_fov_tan_pending; }
 
 void openpete_native_set_fov(float deg) {
@@ -11452,6 +11653,10 @@ static void wireframe_apply_pending(void) {
         OPL_ERROR_F("native", "wireframe: %d pipeline(s) failed to rebuild (kept previous mode)", fails);
 }
 
+/** @brief Apply a queued untextured-lighting-view change by rebuilding the pipelines.
+ *
+ * Runs between frames. No effect when the requested mode equals the current
+ * one or there is no device. A failed pipeline rebuild is logged. */
 static void notex_apply_pending(void) {
     if (s_notex_pending == s_notex || !s_nr.dev) return;
     rhi_set_notex(s_notex_pending);
@@ -12063,10 +12268,15 @@ static void ensure_text_ss_target(rhi_texture **tex, int *cur_w, int *cur_h,
         OPL_INFO_F("native", "%s SS target %dx%d (%d×)", what, want_w, want_h, OVL_SS_FACTOR);
 }
 
-/* (Re)create ovl_ss at OVL_SS_FACTOR× the overlay region and rebuild the
- * composite quad on a window resize. Creates GPU resources / waits idle — call
- * OUTSIDE a frame (alongside ensure_ss_rtt). No-op if the SS pipeline/quad
- * failed at init (draw_perf_overlay then falls back to the 1× path). */
+/** @brief Size the stats overlay supersample target and rebuild its composite quad.
+ *
+ * ovl_ss is (re)created at OVL_SS_FACTOR times the overlay region. The
+ * composite quad, the overlay's screen rect in offscreen NDC, is rebuilt
+ * when the window size, the overlay anchor or the region size changed, never
+ * per present. Creation and the quad rewrite wait for the device to idle, so
+ * the call belongs outside a frame, beside ensure_ss_rtt. No effect when the
+ * resolve pipeline or the quad buffer failed at init (draw_perf_overlay then
+ * takes the 1x path) or the window has no extent. */
 static void ensure_ovl_ss(void) {
     if (!s_nr.ovl_resolve_pipe || !s_nr.ovl_quad_vb || s_nr.win_w <= 0 || s_nr.win_h <= 0) return;
     ensure_text_ss_target(&s_nr.ovl_ss, &s_nr.ovl_ss_w, &s_nr.ovl_ss_h,
@@ -12367,6 +12577,13 @@ static void prepare_menu_ss(void) {
     rhi_end_render_target(s_nr.dev, s_nr.menu_ss);
 }
 
+/** @brief Draw the settings menu panel and its glyph layer over the composed image.
+ *
+ * Returns when the menu is closed, the menu buffer is missing or the window
+ * has no extent. The panel is one subtractive gray quad (RGB 112,112,112)
+ * matching the game's own message box. The glyph and border layer then
+ * composites from the supersampled menu_ss layer that prepare_menu_ss built
+ * when that path is ready, else draws directly as depth-isolated 3D glyphs. */
 static void draw_menu_overlay(void) {
     if (!openpete_menu_is_open() || !s_nr.menu_vb || s_nr.win_w <= 0 || s_nr.win_h <= 0)
         return;
@@ -12901,6 +13118,18 @@ void openpete_native_present_census_report(void)
                s_pc.total, s_pc.outcome_flips, s_pc.kind_flips, s_pc.begin_refused);
 }
 
+/** @brief Compose one present's display image into the window-sized offscreen pass.
+ *
+ * With no live native scene (PsyCross display mode) the reference texture is
+ * blitted through panel 1, or the clear stands when it does not exist yet.
+ * Otherwise the native scene is drawn, after the key pass, either through
+ * the supersampled target and its box resolve (--ssaa above 1) or directly;
+ * an empty scene falls back to the PSX VRAM framebuffer. Every path then
+ * applies the SCENE postfx point, the mod HUD and, when s_overlay_live is
+ * set, the stats, version, toast and menu overlays, with the dev overlay
+ * unless a COMPOSITE chain is live. The freeze backdrop is captured from the
+ * finished offscreen unless the chrome split already took it, and s_pc_cur
+ * records what the image shows for the present census. */
 static void compose_variant(void)
 {
     /* PsyCross display mode: there is no native scene to walk. The picture is
@@ -13299,12 +13528,15 @@ static void write_engine_block(rhi_ubo* u, int blk, int w, int h)
     rhi_ubo_write(u, blk, &eng, sizeof eng);
 }
 
-/* S8b: (re)fill the material UBO — engine block 0 + each interned
- * per-instance slot's uniform bytes (blocks 1+slot). Called per present
- * before the scene draw. Lazy-creates the UBO on first override use;
- * a no-op beyond the engine block when no slots are interned. Block
- * count covers OPENPETE_MATERIAL_SLOTS interned slots + block 0. */
 #define MAT_UBO_BLOCKS 129   /* 1 engine + 128 slots (MOD_MATERIAL_SLOTS) */
+/** @brief Refill the material UBO: the engine block and each interned slot's uniform bytes.
+ *
+ * Block 0 takes the engine block and block 1 + s the uniform bytes of
+ * interned material slot s, read from the present slot's material view or,
+ * with no slot active, from the mod registry. The UBO is created on first
+ * use. Returns at once unless a material selector or dev split is armed
+ * (tag_split_on). Slots past the block count are ignored. With
+ * OPENPETE_MATERIAL_STATS set it prints each new peak of interned slots. */
 static void fill_material_ubo(void)
 {
     if (!tag_split_on()) return;   /* no selector / dev split armed */
@@ -13475,6 +13707,12 @@ static int psx_dither_append(int point, openpete_postfx_pass_t* pass)
     return 1;
 }
 
+/** @brief Return whether any postfx pass would run at a chain point.
+ *
+ * The SCENE point (1) is active when the raster-quantize multiplier or the
+ * dither is on; every point is active when the mods enable a pass there.
+ * @param point Chain point; 1 is the SCENE point, 0 the COMPOSITE point.
+ * @return 1 when a pass would run, else 0. */
 static int native_postfx_point_active(int point)
 {
     openpete_postfx_pass_t pass[PFX_MAX_PASSES];
@@ -13619,15 +13857,19 @@ static struct { const char *name; double ema; } s_gpuz[GPUZ_MAX];
 static int      s_gpuz_n = 0;
 static uint64_t s_gpuz_last = 0;
 
-/* Interned trace id per zone name, cached by name POINTER (the zone brackets
- * pass string literals) with strcmp as the collision fallback. op_prof_intern
- * walks the whole name table with strcmp under the writer mutex, and this runs
- * once per zone per frame on the rendering thread; the cache makes the steady
- * state a pointer compare. Entry contents are stored before the count is
- * raised, so a reader that sees the new count sees a complete entry. */
 static struct { const char *name; int id; } s_gpuz_pid[GPUZ_MAX];
 static int s_gpuz_pid_n = 0;
 
+/** @brief Return the interned perf-trace id of a GPU zone name, cached by name.
+ *
+ * An entry matches by name pointer (the zone brackets pass string literals)
+ * with strcmp as the fallback. op_prof_intern walks the whole name table
+ * with strcmp under the writer mutex and this runs once per zone per
+ * present, so the cache makes the steady state a pointer compare. A name
+ * past GPUZ_MAX cached entries is interned on every call.
+ * @param name Zone name; the pointer is cached, so it must outlive the
+ *        process (a string literal).
+ * @return The op_prof_intern id. */
 static int gpuz_prof_id(const char *name)
 {
     const int n = s_gpuz_pid_n;
@@ -13645,6 +13887,14 @@ static int gpuz_prof_id(const char *name)
     return id;
 }
 
+/** @brief Fold the harvested GPU zone results into the perf trace and the once-per-second line.
+ *
+ * No effect unless GPU timers are on. Every harvested zone goes to the perf
+ * trace, keyed by the RHI frame serial it was recorded under. Depth-0 zones
+ * (all depths under OPENPETE_GPU_TIMERS_VERBOSE, re-read per call) update an
+ * exponential moving average per zone name, weight 0.05, seeded by the
+ * first sample, with at most GPUZ_MAX names. About once per second the
+ * averages print as a `[gpu-pass]` line on stderr. */
 static void gpu_zone_report(void)
 {
     if (!rhi_gpu_timers_on(s_nr.dev)) return;
@@ -14473,6 +14723,11 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
  * @return The 2D triangle count. */
 static int scene_2d_count(const scene_tri_t* sc, int n) { return scene_2d_count_fwd(sc, n); }
 int scene_2d_count_fwd(const scene_tri_t* sc, int n);
+/** @brief Return whether OPENPETE_FREEZE_LEG_PROBE is set to a non-zero value.
+ *
+ * Enables the `[freezeleg]` line that openpete_native_render_snapshot_frozen
+ * prints per snapshot request. Read once and cached.
+ * @return 1 when the probe is on, else 0. */
 static int freeze_leg_probe(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_FREEZE_LEG_PROBE"); v = (e && *e && *e != '0'); }
