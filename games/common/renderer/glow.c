@@ -109,6 +109,12 @@ static uint32_t  s_code_hist[256];
 static uint32_t  s_tag_hist[256];
 static uint32_t  s_fed_tris;
 
+/** @brief Append one walked primitive to s_item, unpaired at the near-guard depth with no displacement.
+ *
+ * Also zeroes the item's record.
+ * @param ctx Unused.
+ * @param s The decoded primitive.
+ * @return 1 when stored, 0 when s_item holds GLOW_MAX_PRIMS. */
 static int glow_prim_sink(void* ctx, const ngte_prim* s) {
     (void)ctx;
     if (s_item_n >= GLOW_MAX_PRIMS) return 0;
@@ -278,6 +284,14 @@ static int glow_feed_enabled(void) {
     return v;
 }
 
+/** @brief Push every captured triangle to the native scene, shifted by its fan's displacement.
+ *
+ * Does nothing when OPENPETE_GLOW suppresses the feed or nothing was
+ * captured. Each three-vertex primitive becomes one untextured WORLD triangle
+ * at its item's depth (also used as the constant W), moved by the item's dx and
+ * dy, with the item's blend and the vertex colours made opaque. Draw-mode
+ * packets are skipped. Counts the triangles in s_fed_tris and tags them as glow
+ * particles. */
 static void glow_feed_native(void) {
     if (!glow_feed_enabled()) return;
     if (s_item_n <= 0) return;
@@ -341,6 +355,17 @@ static const hook_bracket_desc k_bracket = {
     .path = RP_GLOW, .prof_tag = "glow.srend", .st = &s_hb,
 };
 
+/** @brief Dispatch hook on the glow routine: run it once, then capture, pair and feed its prims.
+ *
+ * Runs through the shared bracket. Refuses (returns 0, the ordinary dispatch runs) a call whose return
+ * address differs from GW.ra_guard when the layout names one. When the routine
+ * appended anything, its primitives are captured and paired under the tick's
+ * view, and fed natively when the scene is live and RP_GLOW is selected. The
+ * census runs on every taken call.
+ * @param cpu The guest CPU state.
+ * @param addr The hooked entry address.
+ * @return 0 when the call is refused or the bracket declines, else 1 (the
+ *         routine has already run). */
 static int on_glow_draw(CPUState* cpu, uint32_t addr) {
     /* A game whose image holds a second call site over a frozen frame names
      * the world draw's return address; every other caller is refused. */
@@ -506,6 +531,10 @@ static feature_dispatch_entry_t glow_dispatch[] = {
     { 0u, NULL },
 };
 
+/** @brief Bind the glow dispatch entry to the layout's routine address.
+ *
+ * A game whose layout locates no routine leaves the address 0.
+ * @param opts Unused. */
 static void glow_apply_options(const openpete_options_t* opts) {
     (void)opts;
     glow_dispatch[0].addr = game_layout.glow.hook;

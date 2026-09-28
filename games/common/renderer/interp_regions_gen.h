@@ -40,6 +40,16 @@ typedef struct game_interp_row {
  * @param count Number of rows.
  * @return The index of the first row added, or -1 when nothing was added. */
 int game_interp_rows_add(const game_interp_row_t* rows, unsigned count);
+/** @brief Append one region row to the table and return its index.
+ *
+ * The name pointer is stored, not copied, so it must outlive the table.
+ * @param name The lookup key and diagnostic name; NULL is refused.
+ * @param addr KSEG0 PSX address of the region's first byte; 0 is refused.
+ * @param length Bytes captured each tick; 0 is refused.
+ * @param ra_commit 1 to present the region from the committed timeline under
+ *        runahead.
+ * @return The row's index, or -1 when an argument is refused or the table
+ *         holds OPENPETE_INTERP_MAX_REGIONS rows. */
 int game_interp_rows_add_one(const char* name, uint32_t addr, uint32_t length,
                              int ra_commit);
 

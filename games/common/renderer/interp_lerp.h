@@ -10,10 +10,26 @@
 
 #include <stdint.h>
 
+/** @brief Interpolate two int16 values, rounding half away from zero.
+ *
+ * The result is not clamped: a blend factor outside [0, 1] can leave the
+ * int16 range, and the narrowing conversion is then undefined.
+ * @param a The value at t = 0.
+ * @param b The value at t = 1.
+ * @param t The blend factor.
+ * @return The rounded interpolant. */
 static inline int16_t lerp16(int16_t a, int16_t b, double t) {
     double v = (double)a + ((double)b - (double)a) * t;
     return (int16_t)(v >= 0.0 ? v + 0.5 : v - 0.5);
 }
+/** @brief Interpolate two int32 values, rounding half away from zero.
+ *
+ * The result is not clamped: a blend factor outside [0, 1] can leave the
+ * int32 range, and the narrowing conversion is then undefined.
+ * @param a The value at t = 0.
+ * @param b The value at t = 1.
+ * @param t The blend factor.
+ * @return The rounded interpolant. */
 static inline int32_t lerp32(int32_t a, int32_t b, double t) {
     double v = (double)a + ((double)b - (double)a) * t;
     return (int32_t)(v >= 0.0 ? v + 0.5 : v - 0.5);

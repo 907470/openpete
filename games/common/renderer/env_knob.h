@@ -44,6 +44,18 @@ typedef struct { int lo, hi; } env_frame_range_t;
 
 #define ENV_FRAME_RANGE_INIT { -2, -2 }   /* -2 = not read yet */
 
+/** @brief Whether a frame lies inside the range a census environment variable names.
+ *
+ * On the first call the variable is parsed into the range: "LO-HI" gives
+ * [LO, HI] and a bare "N" gives [N, N] (atoi on each part, so a non-numeric
+ * part reads as 0). An unset or empty variable leaves the range at -1..-1,
+ * which no frame is inside; the range is latched and the variable never read
+ * again.
+ * @param r Latch slot, initialised with ENV_FRAME_RANGE_INIT; written on the
+ *          first call.
+ * @param var Name of the environment variable.
+ * @param frame The frame number to test.
+ * @return 1 when 0 <= lo and lo <= frame <= hi, else 0. */
 static inline int env_frame_range_active(env_frame_range_t* r, const char* var,
                                          unsigned frame) {
     if (r->lo == -2) {

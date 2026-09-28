@@ -155,6 +155,12 @@ static uint32_t     s_tag_hist[256];
 static uint32_t     s_fed_star_tris;
 static uint32_t     s_fed_cross_tris;
 
+/** @brief Append one walked primitive to s_item, unpaired at the near-guard depth.
+ *
+ * Also zeroes the item's record and its rebase slot.
+ * @param ctx Unused.
+ * @param s The decoded primitive.
+ * @return 1 when stored, 0 when s_item holds GLINT_MAX_PRIMS. */
 static int glint_prim_sink(void* ctx, const ngte_prim* s) {
     (void)ctx;
     if (s_item_n >= GLINT_MAX_PRIMS) return 0;
@@ -481,6 +487,10 @@ static double glint_phase_at(uint8_t spin, double life) {
     return a < 0.0 ? a + 256.0 : a;
 }
 
+/** @brief The spin phase the routine drew a record at, in sine-table entries.
+ *
+ * @param r The record as the tick read it.
+ * @return glint_phase_at of the record's phase byte and lifetime byte. */
 static double glint_angle(const glint_rec* r) {
     return glint_phase_at(r->spin, (double)r->life);
 }
@@ -554,28 +564,10 @@ static double glint_size_ramp(double life) {
     return (life < 32.0 ? life : 2.0 * (48.0 - life)) + 8.0;
 }
 
-/* The scale carrying a primitive's corner offsets from the extent the tick
- * built to the extent this present shows. The routine loads the size basis
- * into the GTE rotation registers and projects the outline against the
- * record's own view-space translation, so every corner of a star shares the
- * record point's view-Z and the screen extent is proportional to the size
- * factor and inversely proportional to that view-Z. The size byte is written
- * once by the spawner, so the size factor's ratio is the ramp's.
- *
- * The far cross (the branch the routine takes at half-world view-Z 0x2000 and
- * beyond, Spyro 2 8004AEBC-8004AEC0, Spyro 3 8002F2DC-8002F2E0) first
- * multiplies both basis terms by that same view-Z and shifts them right by 13
- * (Spyro 2 8004B004-8004B02C, Spyro 3 8002F424-8002F44C). The perspective
- * divide then cancels the view-Z, so a cross's screen arm length is the size
- * factor alone, independent of depth, and its scale is the ramp's ratio
- * without the view-Z term. `near_mode` is that branch, taken by the tick
- * whose primitive the replay carries.
- *
- * At the end of the tick's own interval the scale is one without arithmetic.
+/* Accepted range of the extent ratio glint_extent_scale returns; a ratio
+ * outside it is a camera cut or a slot reuse and the tick's extent is held.
  * The band is the discontinuity guard GLINT_REUSE_CEILING gives the
- * displacement: an extent that changed by more than a factor of four inside
- * one tick is a camera cut or a slot reuse, where the replay holds the tick's
- * extent as every other term of the rebase does. */
+ * displacement. */
 #define GLINT_SCALE_MIN 0.25
 #define GLINT_SCALE_MAX 4.0
 
@@ -603,6 +595,34 @@ static int glint_spin_enabled(void) {
     return v;
 }
 
+/** @brief The scale from the extent the tick drew a primitive at to the extent this present shows.
+ *
+ * Applies to the primitive's corner offsets about its record point.
+ * The routine loads the size basis into the GTE rotation registers and
+ * projects the outline against the record's own view-space translation, so
+ * every corner of a star shares the record point's view-Z and the screen
+ * extent is proportional to the size factor and inversely proportional to that
+ * view-Z. The size byte is written once by the spawner, so the size factor's
+ * ratio is the ramp's ratio (glint_size_ramp at the shown and the tick's
+ * lifetime).
+ *
+ * The far cross (the branch the routine takes at half-world view-Z 0x2000 and
+ * beyond, Spyro 2 8004AEBC-8004AEC0, Spyro 3 8002F2DC-8002F2E0) first
+ * multiplies both basis terms by that same view-Z and shifts them right by 13
+ * (Spyro 2 8004B004-8004B02C, Spyro 3 8002F424-8002F44C). The perspective
+ * divide then cancels the view-Z, so a cross's screen arm length is the size
+ * factor alone and its scale omits the view-Z term. A near star multiplies
+ * by the ratio of the tick's record view-Z to the shown view-Z.
+ *
+ * Returns 1.0 with no arithmetic at the end of the tick's own interval
+ * (alpha >= 1) and when OPENPETE_GLINT_EXTENT=0. A nonpositive view-Z or ramp,
+ * or a ratio outside [GLINT_SCALE_MIN, GLINT_SCALE_MAX], also gives 1.0.
+ * @param r The paired record as the tick read it; near_mode selects the
+ *        branch the tick drew.
+ * @param shown The record point projected under the pose this present shows.
+ * @param show_life The lifetime this present shows.
+ * @param alpha The present's position in the tick interval, 1 at its end.
+ * @return The scale applied to the corner offsets. */
 static double glint_extent_scale(const glint_rec* r, const ngte_proj* shown,
                                  double show_life, double alpha) {
     if (alpha >= 1.0 || !glint_extent_enabled()) return 1.0;
@@ -627,11 +647,31 @@ static double glint_extent_scale(const glint_rec* r, const ngte_proj* shown,
  * different gem. */
 static unsigned long s_reb_stat[3];   /* 0 lerped, 1 snapped, 2 rotated */
 
+/** @brief Print the rebase verdict counters to stderr.
+ *
+ * Registered with atexit by glint_rebase_all when OPENPETE_GLINT_REBASE_DBG is
+ * set. Prints how many primitives took a lerped record pair, how many
+ * snapped to the tick's pose, and how many were rotated. */
 static void glint_rebase_report(void) {
     fprintf(stderr, "[glint-rebase] lerped=%lu snapped=%lu rotated=%lu\n",
             s_reb_stat[0], s_reb_stat[1], s_reb_stat[2]);
 }
 
+/** @brief Compute the rebase of one captured primitive onto the pose this present shows.
+ *
+ * Resets the item's rebase to the identity. A primitive with no owning record
+ * stays inactive. Otherwise the record's position, spin phase and lifetime at
+ * this present come from glint_record_pair (the tick's own values when the
+ * pair snaps), the position is re-projected under the staged view, and the
+ * rebase takes the screen displacement from the record's tick projection, the
+ * scene depth of the re-projected point, the corner rotation from the tick's
+ * phase to the shown phase (ngte_table_rot) and the extent scale. The shown
+ * phase is the tick's when OPENPETE_GLINT_SPIN=0. Updates the s_reb_stat
+ * counters.
+ * @param cpu The guest CPU state, read only.
+ * @param v The projection view of this present.
+ * @param alpha The present's position in the tick interval, 1 at its end.
+ * @param i Index of the primitive in s_item and s_reb. */
 static void glint_rebase_item(CPUState* cpu, const ngte_view* v, double alpha, int i) {
     glint_item* it = &s_item[i];
     glint_rebase* r = &s_reb[i];
@@ -714,6 +754,15 @@ static void glint_rebase_xy(const glint_item* it, const glint_rebase* r,
     *y += r->dy;
 }
 
+/** @brief Push a four-corner primitive to the native scene as two untextured triangles.
+ *
+ * The triangles are (0,1,2) and (1,3,2) in the WORLD group, all corners at one
+ * depth, with the corner colours' low 24 bits made opaque.
+ * @param x Corner screen X coordinates.
+ * @param y Corner screen Y coordinates.
+ * @param rgb Corner colour words.
+ * @param depth The scene depth every corner takes.
+ * @param blend The native blend mode. */
 static void glint_add_quad(const float x[4], const float y[4],
                            const uint32_t rgb[4], float depth, int blend) {
     static const int split[2][3] = { {0, 1, 2}, {1, 3, 2} };
@@ -761,6 +810,14 @@ static void glint_feed_line(const glint_item* it, const glint_rebase* rb,
     glint_add_quad(qx, qy, cc, depth, blend);
 }
 
+/** @brief Push every captured primitive to the native scene, rebased when its rebase is active.
+ *
+ * Does nothing when OPENPETE_GLINT selects 0 or nothing was captured. Each
+ * star quad (code GLINT_QUAD) goes through glint_add_quad after the rebase
+ * moves its corners; with mode 2 or more each cross line goes through
+ * glint_feed_line. The depth is the rebase's when active, else the depth the
+ * pairing gave. Counts the triangles fed in s_fed_star_tris and
+ * s_fed_cross_tris and tags them as flare and spark particles. */
 static void glint_feed_native(void) {
     const int mode = glint_feed_mode();
     if (mode <= 0) return;
@@ -1104,15 +1161,7 @@ static int on_glint_draw(CPUState* cpu, uint32_t addr) {
     return hook_bracket_end(&k_bracket);
 }
 
-/* Sub-tick re-extract. The primitives are the guest's own output and are gone
- * once the polybuf is reused, so the replay re-feeds the set the canonical tick
- * captured, rebased onto the pose this present shows: the owning record's
- * screen displacement carries its primitive's corners and its depth, the
- * change in spin phase rotates them about that point and the change in extent
- * scales them about it. At the end of the tick's
- * interval every term of the rebase is zero and the replay reproduces the
- * canonical present exactly, which is what the spine's identity leg
- * measures. */
+/* Sub-tick re-extract; documented at the declaration in glint.h. */
 void glint_reextract(CPUState* cpu, int bracketed, double alpha) {
     if (!hook_reextract_ready(RP_SPARKLE)) return;
     if (bracketed) glint_rebase_all(cpu, alpha);
@@ -1128,6 +1177,10 @@ static feature_dispatch_entry_t glint_dispatch[] = {
     { 0u, NULL },
 };
 
+/** @brief Bind the glint dispatch entry to the layout's routine address.
+ *
+ * A game whose layout locates no routine leaves the address 0.
+ * @param opts Unused. */
 static void glint_apply_options(const openpete_options_t* opts) {
     (void)opts;
     glint_dispatch[0].addr = game_layout.glint.hook;

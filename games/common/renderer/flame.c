@@ -246,19 +246,25 @@ static void flame_report(CPUState* cpu) {
             (int)cpu->read_word(fb+FL_POS), (int)cpu->read_word(fb+FL_POS+4), (int)cpu->read_word(fb+FL_POS+8));
 }
 
-/* ---- flame origin -> camera space (the two-stage transform, step 1) -------
- * r_flame.s lines 37–70: the flame origin's camera-space position is a swizzled
- * MVMVA (sf=1, mx=0=RT, vv=3=IR, tv=3=none) of (flame - cam) through the camera
- * rotation matrix. The IR vector is swizzled exactly as the avatar's TR_body:
- * IR1=cam.y-flame.y, IR2=cam.z-flame.z, IR3=flame.x-cam.x (each truncated to
- * int16 by mtc2). TR[i] = (R · IR) >> 12. The result becomes the GTE TR for
- * every flame vertex (R is then replaced by the attach matrix). */
+/* ---- flame origin -> camera space (two-stage transform, step 1) ---------- */
 /** @brief Truncate an int to its low 16 bits, sign-extended, as mtc2 does on a GTE IR load.
  *
  * @param v The value.
  * @return The sign-extended low halfword. */
 static int s16(int v) { return (int)(int16_t)(uint32_t)v; }
 
+/** @brief Compute the flame origin's camera-space position, the translation of every flame vertex.
+ *
+ * Mirrors r_flame.s lines 37-70: a swizzled MVMVA (sf=1, mx=RT, vv=IR, tv=none)
+ * of the flame origin minus the integer camera position through the camera
+ * rotation matrix. The IR vector is swizzled as the avatar's TR_body is:
+ * IR1 = cam.y - flame.y, IR2 = cam.z - flame.z, IR3 = flame.x - cam.x, each
+ * truncated to int16 as mtc2 does. The Q12 result is divided by 4096.0 without
+ * truncation, so the origin follows the sub-tick camera. The attach matrix then
+ * replaces the rotation for the vertex projection.
+ * @param cpu The guest CPU state, read only.
+ * @param v The projection view (integer camera position and rotation).
+ * @param tr Receives the camera-space translation. */
 static void flame_origin_tr(CPUState* cpu, const ngte_view* v, double tr[3]) {
     int fx = (int)cpu->read_word(FL_STATE + FL_POS + 0);
     int fy = (int)cpu->read_word(FL_STATE + FL_POS + 4);
@@ -364,8 +370,24 @@ static void flame_read_cross(CPUState* cpu, uint32_t p,
     *Xraw = X0; *Z = Z0; *idx = i0; *sIdx = s0;
 }
 
-/* one ribbon cross-section: spine vert at `p` -> two edge verts (float screen) */
 typedef struct { float sx, sy, sz; } fpt;
+/** @brief Project one ribbon cross-section: the spine record at p becomes two edge vertices.
+ *
+ * The record is read with flame_read_cross (sub-keyframe slide applied). The
+ * sine-table entries at its index and a quarter turn later (+0x80 bytes) scale
+ * by amp (>> 11) into a cross offset (co, si); the edges are
+ * (co - X, si - idx) and (-co - X, -si - idx), both at the record's Z, and
+ * each goes through flame_project.
+ * @param cpu The guest CPU state, read only.
+ * @param p Guest address of the spine record.
+ * @param amp The ribbon half-width amplitude.
+ * @param R The attach matrix.
+ * @param TR The camera-space flame origin.
+ * @param ofx Screen X offset.
+ * @param ofy Screen Y offset.
+ * @param v The projection view.
+ * @param e0 Receives the first edge vertex.
+ * @param e1 Receives the second edge vertex. */
 static void flame_cross_section(CPUState* cpu, uint32_t p, int amp,
                                 const int R[3][3], const double TR[3],
                                 double ofx, double ofy, const ngte_view* v, fpt* e0, fpt* e1) {
@@ -413,6 +435,16 @@ static int s_strands_live;
 static double cap_nclip(const fpt* a, const fpt* b, const fpt* c) {
     return ngte_nclip(a->sx, a->sy, b->sx, b->sy, c->sx, c->sy, NGTE_NCLIP_SXY_GRID);
 }
+/** @brief Append a cap triangle to s_fcap when its NCLIP is positive.
+ *
+ * Drops the triangle when cap_nclip is not above 0 (the emitter's blez on
+ * MAC0) or when s_fcap holds MAX_FCAP caps. Colours keep their low 24 bits.
+ * @param a First corner.
+ * @param b Second corner.
+ * @param c Third corner.
+ * @param ca Colour word of the first corner.
+ * @param cb Colour word of the second corner.
+ * @param cc Colour word of the third corner. */
 static void emit_cap(const fpt* a, const fpt* b, const fpt* c,
                      uint32_t ca, uint32_t cb, uint32_t cc) {
     if (cap_nclip(a, b, c) <= 0.0) return;          /* blez MAC0 -> drop */
@@ -478,6 +510,25 @@ static int flame_first_cell(CPUState* cpu, uint32_t s7, int super,
     return 0;
 }
 
+/** @brief Rebuild the native ribbon quads (s_fquad) and caps (s_fcap) from the flame state block.
+ *
+ * Mirrors the emitter, r_flame.s: resets the counts, builds the projection
+ * view, the attach matrix and the camera-space origin, then walks strands 7
+ * down to 0, skipping those whose counter byte is not positive. Per strand the
+ * connection word selects the first spine record and the counter and length
+ * bytes bound the window. When the window bounds hold, flame_first_cell emits
+ * the base caps and can skip the strand on a near cull. The strip then steps
+ * back 16 bytes per cross-section, projecting each with flame_cross_section
+ * (the amplitude is 8 while the counter is spent or the .s gp accumulator is
+ * 0, which holds on the first cross-section when the cap bounds failed), and
+ * appends a textured quad per
+ * consecutive pair with a UV ramp and a colour ramp that darkens by step.
+ * The counter drops by 2 per pass. Logs an error when the strip tpage's blend
+ * mode is not additive, since the feed hardcodes additive. Output stops at
+ * MAX_FQUAD quads and MAX_FCAP caps; s_strands_live counts strands walked.
+ * The first three walks print a debug line when OPENPETE_FLAME_DEBUG is set.
+ * Reads guest RAM only.
+ * @param cpu The guest CPU state, read only. */
 static void flame_build_strip(CPUState* cpu) {
     s_fquad_n = 0;
     s_fcap_n = 0;
@@ -676,6 +727,11 @@ static int flame_census_on(void) {
     static env_frame_range_t s_range = ENV_FRAME_RANGE_INIT;
     return env_frame_range_active(&s_range, "OPENPETE_FLAME_CENSUS", openpete_frame);
 }
+/** @brief Print one flame census line for a feed.
+ *
+ * @param src Label of the caller, printed in the line.
+ * @param slot The model record slot the feed used.
+ * @param tris Triangle count handed to the scene. */
 static void flame_census_line(const char* src, int slot, int tris) {
     fprintf(stderr, "[flame-census f=%u %s slot=%d] strands=%d quads=%d caps=%d tris=%d\n",
             openpete_frame, src, slot, s_strands_live, s_fquad_n, s_fcap_n, tris);
@@ -751,6 +807,11 @@ static int flame_verify_enabled(void) {
     if (v < 0) { const char* e = getenv("OPENPETE_FLAME_VERIFY"); v = (e && *e && *e != '0'); }
     return v;
 }
+/** @brief First VBL at which the verify dump and comparison run.
+ *
+ * Read once from OPENPETE_FLAME_VERIFY_FRAME with strtoul (base auto-detected;
+ * default 0) and cached.
+ * @return The VBL number. */
 static unsigned flame_verify_frame(void) {
     static unsigned f = 0xFFFFFFFFu;
     if (f == 0xFFFFFFFFu) { const char* e = getenv("OPENPETE_FLAME_VERIFY_FRAME"); f = e ? (unsigned)strtoul(e, NULL, 0) : 0; }
@@ -765,6 +826,19 @@ static const hook_bracket_desc k_flame_bracket = {
     .st = &s_flame_hb,
 };
 
+/** @brief Dispatch hook for the game's flame emitter: capture its prims and feed the native ribbon.
+ *
+ * Runs the hook bracket, which calls the real emitter once. When the emitter
+ * wrote prims (endp > startp) the flame record is appended to the player
+ * records and yields the model slot. With the native scene live or verifying
+ * the prims are captured; with the scene live and RP_FLAME selected the ribbon
+ * is re-derived and pushed under that slot. From flame_verify_frame on, a
+ * verifying run dumps the inputs once and prints up to 200 reports and
+ * comparisons.
+ * @param cpu The guest CPU state.
+ * @param addr The hooked entry address.
+ * @return 0 when the bracket declined to take over, else 1 (the body has
+ *         already run). */
 static int on_flame_draw(CPUState* cpu, uint32_t addr) {
     uint32_t startp, endp; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_flame_bracket, &startp, &endp, &feed, &verify))
@@ -875,6 +949,10 @@ static feature_dispatch_entry_t flame_dispatch[] = {
     { 0u, NULL },
 };
 
+/** @brief Bind the flame dispatch entry to the layout's emitter address.
+ *
+ * A game whose layout locates no emitter leaves the address 0.
+ * @param opts Unused. */
 static void flame_apply_options(const openpete_options_t* opts) {
     (void)opts;
     flame_dispatch[0].addr = game_layout.flame.hook;

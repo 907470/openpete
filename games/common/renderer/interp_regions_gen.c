@@ -44,6 +44,9 @@ static struct {
 
 static openpete_interp_obj_capture_fn s_game_obj_capture;
 
+/** @brief Whether OPENPETE_INTERP_REGION_CENSUS is set, non-empty and not "0"; read once and cached.
+ *
+ * @return 1 when the region census is armed, else 0. */
 static int census_on(void) {
     static int on = -1;
     ENV_FLAG_LATCH(on, "OPENPETE_INTERP_REGION_CENSUS");
@@ -184,6 +187,9 @@ static int            s_stash_sorted;
 static int            s_stash_blocked;
 static uint32_t       s_stash_epoch;
 
+/** @brief Whether OPENPETE_MOBY_STASH_CENSUS is set, non-empty and not "0"; read once and cached.
+ *
+ * @return 1 when the stash census is armed, else 0. */
 static int stash_census_on(void) {
     static int on = -1;
     ENV_FLAG_LATCH(on, "OPENPETE_MOBY_STASH_CENSUS");
@@ -223,6 +229,12 @@ void game_interp_moby_stash_put(uint32_t moby) {
     s_stash_sorted = 0;
 }
 
+/** @brief qsort comparator over the stash entries: ascending moby address, then ascending stash order.
+ *
+ * Reads each entry as its two leading uint32_t fields (key, blob index).
+ * @param a First entry.
+ * @param b Second entry.
+ * @return Negative, zero or positive as a sorts before, equal to or after b. */
 static int stash_cmp(const void* a, const void* b) {
     const uint32_t ka = ((const uint32_t*)a)[0], kb = ((const uint32_t*)b)[0];
     if (ka != kb) return ka < kb ? -1 : 1;
@@ -262,6 +274,15 @@ typedef struct {
     int      census;
 } stash_walk_t;
 
+/** @brief Print the first byte at which a stashed moby record differs from the tick-end record.
+ *
+ * Prints nothing when the first `blob` bytes are equal. The line carries the
+ * moby address, its class read from the tick-end record, the offset of the
+ * first differing byte, and both values there.
+ * @param m The moby's PSX address.
+ * @param drawn The stashed record.
+ * @param end The tick-end record.
+ * @param blob Record bytes compared. */
 static void stash_census_differ(uint32_t m, const uint8_t* drawn, const uint8_t* end,
                                 uint32_t blob) {
     unsigned o = 0;
@@ -490,6 +511,12 @@ static void capture_env_anim_scroll(void) {
 
 static void (*s_extra_pools)(void);
 
+/** @brief The per-object capture the game registers: one tick's keyed object snapshots.
+ *
+ * Between openpete_interp_objs_begin_tick and end_tick it captures the moby
+ * array, the game's extra feeder pools when registered, and the scrolling
+ * env-anim descriptors. With OPENPETE_INTERP_OBJDBG set it prints the keyed
+ * table's population every 120 VBLs. Reads guest RAM only. */
 static void capture_objs_common(void) {
     openpete_interp_objs_begin_tick();
     game_interp_capture_moby_array();

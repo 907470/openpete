@@ -156,13 +156,21 @@ static void cyc_clip_emit(ngte_cvert a, ngte_cvert b, ngte_cvert c, int gouraud,
 }
 
 /* ---- native extraction ---------------------------------------------- */
-/* Reads g_Cyclorama + the two matrices + GTE OFX/OFY/H from the hook, and
- * fills s_native[]. Mirrors func_8004EBA8: phase-1 sector visibility cull
- * (cull matrix a1), phase-2 per-vertex unpack + float project (draw matrix
- * a2) + per-face flat/gouraud emit. */
 static void cyc_extract_m(CPUState* cpu, uint32_t a0,
                           const int Mcull[3][3], const int Mdraw[3][3],
                           uint32_t fade_rgb, int fade_ir0);
+/** @brief Read the sky draw's cull and draw matrices from guest RAM and extract the dome into s_native.
+ *
+ * When the layout's sky draw takes no matrix arguments (cyc.hook_args is 0),
+ * a1 and a2 are both replaced by the camera projection matrix, which the game
+ * loads for the cull and the projection alike. Each matrix is read with
+ * ngte_read_matrix, then cyc_extract_m does the work.
+ * @param cpu The guest CPU state, read only.
+ * @param a0 The draw's a0: the occlusion group index, negative for all sectors.
+ * @param a1 Guest address of the cull matrix.
+ * @param a2 Guest address of the draw matrix.
+ * @param fade_rgb Fade target colour (low 24 bits) for the depth cue.
+ * @param fade_ir0 Depth-cue factor; 0 leaves colours unfaded. */
 static void cyc_extract(CPUState* cpu, uint32_t a0, uint32_t a1, uint32_t a2,
                         uint32_t fade_rgb, int fade_ir0) {
     int Mcull[3][3], Mdraw[3][3];
@@ -176,11 +184,16 @@ static void cyc_extract(CPUState* cpu, uint32_t a0, uint32_t a1, uint32_t a2,
     cyc_extract_m(cpu, a0, Mcull, Mdraw, fade_rgb, fade_ir0);
 }
 
-/* The sky visibility bytes (game_layout.cyc.visibility), copied from the
- * scratchpad right after the canonical draw: the game reuses that scratch
- * range later in the tick, so a sub-tick re-extract reads the copy. */
 static uint8_t s_cyc_vis[1024];
 static uint32_t s_cyc_vis_n = 0;
+/** @brief Copy the sky's per-sector visibility bytes out of guest scratch memory.
+ *
+ * The bytes (game_layout.cyc.visibility, one per sector, nonzero = drawn) are
+ * copied right after the canonical draw because the game reuses that scratch
+ * range later in the tick; a sub-tick re-extract reads the copy in s_cyc_vis.
+ * The count is the sector count clamped to 1024. A layout without a
+ * visibility range leaves the count at 0.
+ * @param cpu The guest CPU state, read only. */
 static void cyc_capture_visibility(CPUState* cpu) {
     s_cyc_vis_n = 0;
     if (!game_layout.cyc.visibility) return;
@@ -189,6 +202,25 @@ static void cyc_capture_visibility(CPUState* cpu) {
     for (uint32_t i = 0; i < n; i++) s_cyc_vis[i] = cpu->read_byte(game_layout.cyc.visibility + i);
     s_cyc_vis_n = n;
 }
+/** @brief Rebuild s_native from g_Cyclorama with the given cull and draw matrices.
+ *
+ * Reads the sector table and the camera GTE offsets and H, then mirrors
+ * func_8004EBA8: builds the sector list (the visibility bytes, all sectors
+ * for a negative a0, or the occlusion group a0), culls each sector against
+ * its radius with the cull matrix, unpacks each vertex and rotates it with
+ * the draw matrix into camera space, applies the depth cue to the colour
+ * table, and emits a flat or gouraud triangle per face (strips on Spyro 3),
+ * near-plane clipped through cyc_clip_emit. Widescreen views walk every
+ * sector and skip the radius cull. Counts read from RAM are clamped to the
+ * local buffers (1024 sectors, 4096 vertices and colours); out-of-range face
+ * indices drop the face. When the layout depth-cues in the draw and no fade
+ * is passed, a nonzero fog factor word supplies the fade. Reads only.
+ * @param cpu The guest CPU state, read only.
+ * @param a0 The draw's a0: the occlusion group index, negative for all sectors.
+ * @param Mcull Q12 matrix for the sector radius cull.
+ * @param Mdraw Q12 matrix for the vertex rotation.
+ * @param fade_rgb Fade target colour (low 24 bits) for the depth cue.
+ * @param fade_ir0 Depth-cue factor; 0 leaves colours unfaded. */
 static void cyc_extract_m(CPUState* cpu, uint32_t a0,
                           const int Mcull[3][3], const int Mdraw[3][3],
                           uint32_t fade_rgb, int fade_ir0) {
@@ -375,6 +407,16 @@ static void unpack_xy(uint32_t xy, float* x, float* y) {
     *x = (float)(int16_t)(xy & 0xFFFF);
     *y = (float)(int16_t)(xy >> 16);
 }
+/** @brief Decode the POLY_F3 and POLY_G3 prims in a guest range into s_gte.
+ *
+ * Walks [start, end) word by word: a word whose high byte is 0x06 starts a
+ * gouraud prim (0x1C bytes), 0x04 a flat prim (0x14 bytes), anything else is
+ * skipped 4 bytes. Colours keep the low 24 bits and positions unpack as signed
+ * halves. Decoding stops storing at MAX_TRIS triangles and the walk at
+ * MAX_TRIS iterations, resync steps included. Resets s_gte_n.
+ * @param cpu The guest CPU state, read only.
+ * @param start Start of the prim interval.
+ * @param end End of the prim interval. */
 static void capture_gte(CPUState* cpu, uint32_t start, uint32_t end) {
     s_gte_n = 0;
     uint32_t p = start;
@@ -432,6 +474,16 @@ static void centroid(const cyc_tri* t, float* cx, float* cy) {
 static int onscreen(const cyc_vert* v) {
     return v->sx >= -1.f && v->sx <= 513.f && v->sy >= -1.f && v->sy <= 241.f;
 }
+/** @brief Compare s_gte against s_native and print one statistics line to stderr.
+ *
+ * Each GTE triangle is paired greedily with the nearest unused native
+ * triangle by the summed squared vertex distance (vertex k to vertex k); a
+ * pair farther than 3*96*96 is dropped. Over the pairs it counts exact colour
+ * matches and flat/gouraud disagreements, and over on-screen vertices whose
+ * native projection did not saturate it reports the mean, maximum and signed
+ * X error, the floor-match rate within one pixel, and the worst vertex.
+ * Off-screen or saturated vertices are counted separately. Pairing is
+ * quadratic in the triangle counts. */
 static void compare_and_report(void) {
     /* Match gte->native by centroid, breaking ties toward an exact colour
      * match (avoids mispairing among the few extra boundary tris). */
@@ -546,6 +598,10 @@ static int cyc_verify_enabled(void) {
     if (s < 0) { const char* v = getenv("OPENPETE_CYC_VERIFY"); s = (v && v[0] && v[0] != '0') ? 1 : 0; }
     return s;
 }
+/** @brief First VBL at which the float-versus-GTE comparison runs.
+ *
+ * Read once from OPENPETE_CYC_VERIFY_FRAME with atoi (default 2000) and cached.
+ * @return The VBL number. */
 static unsigned cyc_verify_frame(void) {
     static unsigned f = 0; static int init = 0;
     if (!init) { const char* v = getenv("OPENPETE_CYC_VERIFY_FRAME"); f = v ? (unsigned)atoi(v) : 2000u; init = 1; }
@@ -678,6 +734,17 @@ static const hook_bracket_desc k_cyc_bracket = {
     .st = &s_cyc_hb,
 };
 
+/** @brief Dispatch hook for the game's sky draw: extract the native dome and optionally verify it.
+ *
+ * Runs the hook bracket (which calls the real draw body), then extracts the
+ * dome with the argument triple cyc_pre stashed, pushes it to the native scene
+ * when feeding, and when verifying decodes the prims the draw emitted and
+ * compares them from cyc_verify_frame on, dumping the formats once and
+ * reporting at most 16 times.
+ * @param cpu The guest CPU state.
+ * @param addr The hooked entry address.
+ * @return 0 when the bracket declined to take over, else the bracket's end
+ *         result (the body has already run). */
 static int on_sky_draw_cyc(CPUState* cpu, uint32_t addr) {
     uint32_t start, end; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_cyc_bracket, &start, &end, &feed, &verify))
@@ -789,6 +856,9 @@ static feature_dispatch_entry_t cyc_dispatch[] = {
     { 0u, NULL },
 };
 
+/** @brief Bind the sky-draw dispatch entry to the layout's hook address.
+ *
+ * @param opts Unused. */
 static void cyc_apply_options(const openpete_options_t* opts) {
     (void)opts;
     cyc_dispatch[0].addr = game_layout.hooks.sky_draw;
