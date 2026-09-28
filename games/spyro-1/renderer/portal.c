@@ -2,25 +2,26 @@
 // skybox previews (the destination-level sky shown inside homeworld portal
 // arches), plus its falsify-before-ship capture/dump harness.
 //
-// Sub-tick spine: portal previews ride the high-FPS re-extract like every
+// Sub-tick spine: portal previews ride the high-rate re-extract like every
 // other feeder, by CAPTURE-AND-REPLAY. (1) On each canonical RenderPortals
 // the leaf hooks record every drawn portal's decision (owning portal,
 // flat/dome kind, resolved colour, fog, clip rect) into s_pcap[];
 // portal_reextract (in the spine's feeder list, after cyclorama) replays them
-// on every intermediate present, so the previews are re-added each sub-tick
-// instead of vanishing. (2) The dome rotation matrix is not read from the
-// live GTE on the reextract (it is stale on the host fiber). Instead the
-// canonical hook snapshots the shared dome matrix prev+curr each canonical
-// tick, and the reextract LERPS prev→curr componentwise by the spine's
-// sub-tick alpha — identical to how the spine interpolates the camera matrix
-// (lerp_matrix). Both the camera rotation and the portal's own spin
-// (D_80075858/D_800758FC) are baked into the snapshots, so both interpolate
-// smoothly at any framerate with NO extrapolation. (Extrapolating a single
-// frozen snapshot — a relative delta, or a camera-increment ΔR — skews,
-// wobbles and squishes because the camera never sits still and the spin is
-// not interpolated; interpolating two real snapshots is the fix.) Clip rect
-// + outline depth come from project_world, which already reads the
-// interpolated camera live. See portal_reextract() below.
+// on every intermediate present, so the previews are re-added each sub-tick.
+// (2) The dome rotation matrix is not read from the live GTE on the reextract
+// (it is stale on the host fiber). A dome a leaf drew with the GTE matrix
+// replays the componentwise lerp prev→curr of the shared dome matrix
+// snapshots (s_dome_prev, s_dome_curr) by the spine's sub-tick alpha, as the
+// spine interpolates the camera matrix (lerp_matrix); the camera rotation and
+// the portal's own spin (D_80075858/D_800758FC) are both baked into the
+// snapshots, so both interpolate with no extrapolation. A derived dome (the
+// --no-lod forced dome, a revealed portal's dome) rederives the matrix under
+// the staged camera with the spin angles lerped between the last two
+// canonical ticks (portal_replay_derived_matrix). The base clip rect is
+// rebuilt per replay under the interpolated camera by the rule the canonical
+// rect came from (portal_replay_rect); outline depth comes from
+// project_world, which reads the interpolated camera live. See
+// portal_reextract() below.
 //
 // Background. The main level sky is func_8004EBA8 (handled by
 // cyclorama.c). The PORTAL previews are a separate pipeline driven by
@@ -31,9 +32,7 @@
 //   func_8004FEA0  close range (< 0x3001), full colour
 //   func_80050240  medium range, distance colour-blended (D_800757D4 target)
 //   func_8004F4BC  secondary pass
-// — then finally calls func_8004EBA8 for the main sky. The native feeder only
-// hooked the main sky, so portal previews were missing (the arch showed the
-// hill behind it instead of the destination dome).
+// — then finally calls func_8004EBA8 for the main sky.
 //
 // This module re-derives the portal dome in float from gamestate (faithful
 // to the renderer's "3D-from-gamestate, never replay GPU packets" design,
@@ -42,8 +41,11 @@
 // inputs (skybox struct, the two matrices, clip rect, depth) and the GTE prims
 // each leaf actually emitted to the polybuf (ground truth), so the float
 // extraction can be measured against real output. Gated by OPENPETE_PORTAL_DUMP
-// (zero overhead off). Determinism: never writes PSX RAM; runs the real leaf
-// renderer exactly once (behaviour-identical fall-through) and only READS after.
+// (zero overhead off). Determinism: the real leaf renderer runs exactly once
+// (behaviour-identical fall-through) and the dump only reads. The one PSX RAM
+// store is the D_CLIPRECT stage of feed_revealed_portals and portal_reextract,
+// written only when the sub-tick view cannot stage it and restored before
+// return.
 //
 // Format notes: cyclorama.h warns m_Skybox is "strange storage", so trust the
 // dump, not the field names.
@@ -80,8 +82,10 @@ extern unsigned openpete_frame;
 /** @brief Blends an 0x00BBGGRR colour toward the fog target by t, as the GTE DPCS depth cue does.
  *
  * The blended-medium portal's cross-dissolve (func_80050240) uses t =
- * IR0 / 4096 and fog = D_800757D4. Each channel rounds to nearest; t above
- * 1 clamps to 1.
+ * IR0 / 4096 and fog = D_800757D4. A t above 1 clamps to 1. Each channel
+ * moves by (int)(delta * t + 0.5): nearest for a rising channel, up to 1
+ * smaller in magnitude than nearest for a falling one (the cast truncates
+ * toward zero).
  * @param rgb The colour, 0x00BBGGRR.
  * @param fog The fog target, 0x00BBGGRR.
  * @param t The blend factor; t <= 0 returns the colour unchanged (the un-fogged dome or flat).
@@ -499,21 +503,20 @@ static int          s_pcap_n = 0;     /* entries captured this canonical frame  
 static int          s_pcap_valid = 0; /* a canonical RenderPortals has populated it*/
 static unsigned     s_pcap_frame = 0; /* openpete_frame of the populating RenderPortals */
 static uint32_t     s_pcap_epoch = 0; /* canonical-render epoch of the populating RenderPortals */
-/* Staleness gate (liveness unification): on_80050BE0 calls
+/* Staleness gate: on_80050BE0 calls
  * render_path_mark_drawn(RP_PORTAL) while the canonical frame renders; the
  * shared render_paths commit latches it into the canon-drawn mask once per
  * canonical present, BEFORE the sub-tick reextract reads it via
  * render_path_canon_drawn(RP_PORTAL). When RenderPortals stops (load
  * transition) the bit drops next present and the reextract stops replaying
- * the stale capture. Replaces the old private s_pcap_ran /
- * s_pcap_canon_drawn latch + chained commit. */
+ * the stale capture. */
 
 /* Shared dome rotation matrix, snapshotted prev+curr per canonical tick. RenderPortals
  * builds ONE dome matrix per frame (byte-identical across all portals — the GTEmat
  * the leaves load), so a single pair suffices. The reextract LERPS prev→curr by the
  * spine's sub-tick alpha (componentwise, like the camera's lerp_matrix) — both the
  * camera rotation AND the portal's own spin are baked in, so both interpolate
- * smoothly with no extrapolation (the old frozen-snapshot recompose skewed/wobbled).
+ * smoothly with no extrapolation.
  * Rolled curr→prev at the top of each canonical RenderPortals; curr refilled when a
  * dome leaf fires. prev is valid only if the immediately-preceding canonical frame
  * also drew a dome (consecutive), else the reextract snaps to curr. */
@@ -909,29 +912,24 @@ static int portal_plane_invz(CPUState* cpu, const ngte_view* v, uint32_t p,
  * and can flicker. (The backstop push-back once noted here was retired by the
  * stencil groups' in-group painter order.) */
 
-/* The portal sky's tie-break margin, in WORLD view-Z units: the sky is pulled
- * toward the camera by this much (subtracted in the vz domain, then converted
- * through the depth curve) so it consistently wins the z-fight against the thin
- * decorative "inner frame" band many arches carry coincident with the opening
- * plane. HISTORY: this was a constant NDC offset (0.0015) — but a fixed
- * DEPTH-BUFFER offset is distance-PROPORTIONAL in world units through
- * d = vz/(vz+4096): ~10 units at vz 1000, ~55 at vz 8000, ~450 at vz 30000. At
- * mid/far range that envelope swallowed the arch's own stone wherever its
- * surface ran within it of the opening plane (the jamb/rim seen at a grazing
- * camera angle), so the sky poked out past the arch sides — the same failure
- * mode that killed the old multiplicative PORTAL_PLANE_FRONT_BIAS, just
- * smaller. A WORLD-unit margin keeps the same tie-break at every distance
- * while the sliver where it can beat real stone stays O(16 world units) —
- * sub-pixel at any range. The margin still exceeds raster interpolation error
- * by orders of magnitude at all playable distances. Applied to the WHOLE
- * portal sky (dome, flat preview, AND backstop) so all paths shift together
- * and the far/medium/close distance crossfade has no discontinuity. The
- * matching terrain-side OT-conformance clamp (terrain.c) pushes
- * straddling faces back by PORTAL_CLAMP_EPS_VZ (2x this), so clamped faces
- * always lose to the sky and unclamped coincident bands always win to it.
- * 16 -> 24: at 16 a residual z-fight sparkled on the inner
- * edge of some arches (seen live) — the decorative band evidently sits a
- * few units in FRONT of the opening plane, not exactly on it. */
+/* The portal sky's tie-break margin, in WORLD view-Z units, for the ring and
+ * spill constructions behind the opening plane (portal_sky_eps_vz). A
+ * fixed DEPTH-BUFFER offset would be distance-PROPORTIONAL in world units
+ * through d = vz/(vz+4096): ~10 units at vz 1000, ~55 at vz 8000, ~450 at vz
+ * 30000, which at mid/far range swallows the arch's own stone wherever its
+ * surface runs within it of the opening plane (the jamb/rim seen at a grazing
+ * camera angle) and lets the sky poke out past the arch sides. A WORLD-unit
+ * margin keeps the same tie-break at every distance while the sliver where it
+ * can beat real stone stays O(24 world units), sub-pixel at any range, and
+ * still exceeds raster interpolation error by orders of magnitude at all
+ * playable distances. Applied to every behind-plane construction so the paths
+ * shift together and the far/medium/close distance crossfade has no
+ * discontinuity. The matching terrain-side OT-conformance clamp (terrain.c)
+ * pushes straddling faces back by PORTAL_CLAMP_EPS_VZ (2x this), so clamped
+ * faces always lose to the sky and unclamped coincident bands always win to
+ * it. 24 rather than 16 because the decorative inner band sits a few units in
+ * FRONT of the opening plane, and at 16 a residual z-fight sparkled on the
+ * inner edge of some arches. */
 #define PORTAL_SKY_EPS_VZ_DEFAULT 24.0
 /** @brief Returns how far behind the opening plane the aperture's correction band is marked, in world units.
  *
@@ -1128,7 +1126,7 @@ static void set_ot_sky_vz(const ppt* poly, int pn) {
  *
  * Evaluates the fit_invz plane (perspective-correct), then
  * portal_cyclorama_depth pulls it nearer by the plane-cover margin
- * openpete_portal_plane_margin(). A non-positive 1/vz reads as vz = 1e9.
+ * openpete_portal_plane_margin(). A 1/vz at or below 1e-9 reads as vz = 1e9.
  * @param a The fit's x coefficient.
  * @param b The fit's y coefficient.
  * @param c The fit's constant.
@@ -1171,13 +1169,12 @@ static float plane_depth_back(double a, double b, double c, double x, double y) 
  * painter's order in the OT. With a depth buffer the flat base would land on the
  * same portal plane as the dome and z-fight (worse: the two interpolate depth
  * differently across the interior — this quad linearly per fan-tri, the dome
- * perspective-correct per pixel — so the bg colour shimmers through, f1910). So a
+ * perspective-correct per pixel — so the bg colour shimmers through). So a
  * SKYBOX-LINKED flat (a0 == a portal's m_Skybox, or m_Skybox+0x10) is the dome's
- * BACKSTOP. Historical: it used to be pushed behind the dome by a x1.0625/x1.125
- * view-Z scale so the dome won the depth test; RETIRED by the stencil groups
- * (in-group painter order at equal depth — the dome draws after the backstop and
- * wins per pixel). The backstop still only shows through the dome's
- * culled/near-rejected edge gaps, still far nearer than the through-hole terrain. */
+ * BACKSTOP. It takes no push-back: the stencil groups' in-group painter order
+ * at equal depth (the dome draws after the backstop and wins per pixel) settles
+ * it. The backstop only shows through the dome's culled/near-rejected edge
+ * gaps, still far nearer than the through-hole terrain. */
 /* rgb_override == PORTAL_RGB_RESOLVE means "resolve the colour from a0" (the
  * canonical leaf path, where a0 is live); any other value is used directly (the
  * sub-tick reextract path, where a0 may be a stale stack/transient pointer so the
@@ -1447,24 +1444,21 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, int a0_is_skybox,
      * polygon (projected m_Points) with per-vertex depth = each point's view-Z,
      * so at a sharp angle the near (bottom) edge keeps its near depth and the
      * floor occludes it exactly at the frame, instead of a single flat depth
-     * that makes the floor eat the near part (f2945). */
+     * that makes the floor eat the near part. */
     uint32_t p = portal_hint ? portal_hint
                              : owning_portal_ptr(cpu, &s_view, a0, (x0 + x1) * 0.5, (y0 + y1) * 0.5);
-    /* Backstop push-back RETIRED: a skybox-linked flat (the dome's
-     * backstop) used to sink behind the dome by x1.0625/x1.125 so the dome won
-     * the depth test — dead since the stencil groups: within a group the
-     * colours draw in submission order (backstop first, dome last) with LEQUAL,
-     * so at EQUAL plane depth the dome wins per pixel anyway. Everything sits
-     * on the opening plane now. */
+    /* A skybox-linked flat (the dome's backstop) takes no push-back: within a
+     * stencil group the colours draw in submission order (backstop first, dome
+     * last) with LEQUAL, so at EQUAL plane depth the dome wins per pixel.
+     * Everything sits on the opening plane. */
     /* Group id for mask↔colour pairing: the destination SKYBOX pointer, so a
      * portal's flat base, backstop AND dome (fed by separate leaves with
      * different a0s) all land in ONE stencil group — within a group the
      * colours composite by submission order (backstops fed before the dome →
-     * dome paints last). Keying quad-by-portal vs dome-by-skybox split one
-     * portal into two groups, and the far→near inter-group sort could put the
-     * dome FIRST (its painter-sorted farthest face can sort deeper than the
-     * backstop), letting the flat backstop paint over the dome (the "bg
-     * colour inset in the portal" report). */
+     * dome paints last). Keying the quad by portal and the dome by skybox
+     * would split one portal into two groups, and the far→near inter-group
+     * sort could then put the dome FIRST (its farthest face can sort deeper
+     * than the backstop), letting the flat backstop paint over the dome. */
     s_portal_group = (int)(p ? cpu->read_word(p + 0x00) : a0);
     ppt poly[16];
     int pn = p ? portal_outline_screen(cpu, &s_view, p, poly, 16) : 0;
@@ -1472,8 +1466,8 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, int a0_is_skybox,
      * .s just computed for THIS portal (correct even when the outline is
      * unavailable — a point behind the camera at close/steep range); the
      * sub-tick replay uses the captured bucket; the outline mirror (validated
-     * == live) is the last resort. A stale s_ot_vz from another portal put
-     * the Alpine sky ~59k deep and let the whole through-hole floor beat it. */
+     * == live) is the last resort. A stale s_ot_vz left by another portal
+     * would place the sky far too deep and let the through-hole floor beat it. */
     if (rgb_override == PORTAL_RGB_RESOLVE)
         s_ot_vz = 128.0 * (double)(int32_t)cpu->read_word(D_PORTAL_DEPTH);
     else if (ot_b_hint)
@@ -1499,14 +1493,11 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, int a0_is_skybox,
                         openpete_frame, mirB, s_ot_vz);
             }
         }
-        /* Coverage = the OUTLINE FAN. Ground truth (f2439 OT dump, slots
-         * 483-487): the .s flat leaf fans the OPENING POLYGON, not the clip
-         * rect — below the outline's bottom edge the sky never rasters and
-         * the .s shows the floor/sill there. (A rect + two-region-split
-         * variant was tried and over-covered exactly that band —
-         * sky where og shows the walkway.) The wedge-class artifact at the
-         * base is NOT a coverage problem: it is the depth test, fixed by the
-         * terrain OT-conformance sink. */
+        /* Coverage = the OUTLINE FAN. The .s flat leaf fans the OPENING
+         * POLYGON, not the clip rect: below the outline's bottom edge the sky
+         * never rasters and the .s shows the floor/sill there (a rect fill
+         * would over-cover that band). A wedge-class artifact at the base is
+         * a depth-test effect, handled by the terrain OT-conformance sink. */
         s_ring_vz = 0.0;
         for (int i = 0; i < pn; i++) if (poly[i].vz > s_ring_vz) s_ring_vz = poly[i].vz;
         s_sky_fed = 1; s_sky_fed_epoch = spyro_native_canon_epoch_stamp();
@@ -1514,7 +1505,7 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, int a0_is_skybox,
         const int cmode = sky_const_depth(&cz);
         emit_portal_aperture(cpu, p, poly, pn, 0, 0.0, 0.0, 0.0);
         /* Interior fill = the EXACT outline fan (per-vertex view-Z, the .s
-         * flat leaf's own construction, f2439); erosion (debug) offsets it to
+         * flat leaf's own construction); erosion (debug) offsets it to
          * match the eroded mask. The dilation band's colours come from the
          * behind-depth ring below, matching the mask ring's extent. */
         const double fmargin = portal_margin_for(cpu, p);
@@ -1550,20 +1541,20 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, int a0_is_skybox,
      * clip rect. vz<=1 means the plane centre is AT/BEHIND the camera — Spyro
      * is entering and the camera has crossed the portal: the preview must
      * cover the level being left (the PSX sky bucket was nearest-OT at that
-     * point), so go NEAR, not far (the old 16384 far-sentinel let
-     * current-level mobys repaint over the preview mid-entry). The sky
+     * point), so go NEAR, not far (a far depth would let current-level
+     * mobys repaint over the preview mid-entry). The sky
      * repaints after the ACTOR group; the PLAYER group draws later, so Spyro
      * himself is never covered.
      *
      * Depth: the ANALYTIC opening plane when available (computed from the
      * outline's world points, so points behind the camera don't invalidate
      * it) — a close, acutely-angled portal keeps per-pixel plane depth and
-     * the floor still meets the opening's near side instead of eating it (the
-     * f2945 failure re-appeared here as one constant farthest-outline depth).
+     * the floor still meets the opening's near side instead of eating it (one
+     * constant farthest-outline depth would let the floor eat it).
      * Constant farthest-outline depth remains the last resort. */
     double vz = portal_viewz(cpu, &s_view, a0, (x0 + x1) * 0.5, (y0 + y1) * 0.5);
     int crossed = (vz <= 1.0);
-    if (crossed) vz = 2.0;     /* crossed → nearest (was 16384 far-sentinel) */
+    if (crossed) vz = 2.0;     /* crossed → nearest */
     set_sky_ot_push();
     if (crossed) s_sky_push_vz = 0.0;   /* mid-entry cover must win everything */
     float depth = portal_cyclorama_depth(vz);
@@ -1641,20 +1632,16 @@ static int clip_half(const pgv* in, int n, pgv* out, int axis, float val, int ke
  * The .s sorts the portal sky BEHIND the whole stone ring (its OT key is
  * derived from the ring — see portal_outline_maxvz), so the rect spill over
  * the arch is repainted by ANY nearer geometry (arch stone, threshold floor)
- * while the through-hole backdrop (farther than the ring) is covered. Native
- * used ONE depth for the whole sky and had to pick a side:
- *   - plane depth everywhere (since f2945): the arch's far pillar — terrain
- *     BEHIND the opening plane at steep angles — lost to the sky, which
- *     painted over it (the magic-crafters "sky erases the pillar" report);
- *   - constant behind-ring depth everywhere (pre-f2945): the receding floor
- *     behind the plane but nearer than the ring's far point poked through
- *     the preview inside the opening.
- * Resolution: split each sky face by the OUTLINE polygon. Inside the opening
- * -> plane depth (f2945 semantics); outside (the rect spill) -> behind-ring
- * depth nudged a hair FARTHER (+PORTAL_SKY_EPS_VZ) so the ring wins even where the
- * spill grazes the outline's farthest point. Mirrors the PSX partition
- * exactly: the opening is where the preview must win; the spill is where the
- * world must win. */
+ * while the through-hole backdrop (farther than the ring) is covered. One
+ * depth for the whole sky cannot serve both: plane depth everywhere lets the
+ * sky paint over terrain behind the opening plane at steep angles (the arch's
+ * far pillar), and constant behind-ring depth everywhere lets the receding
+ * floor behind the plane but nearer than the ring's far point poke through
+ * the preview inside the opening.
+ * The dome is not split by the outline: the stencil aperture (below) bounds
+ * its coverage and emit_split_by_outline gives every face plane depth.
+ * register_skyout still records the projected outline in s_skyout, which no
+ * code reads. */
 static pgv   s_skyout[16];        /* outline polygon (screen space), CCW-oriented */
 static int   s_skyout_n = 0;      /* 0 = unavailable -> single-depth fallback */
 
@@ -1883,16 +1870,13 @@ static void emit_aperture_ring(const ppt* poly, int pn, const double* dpx,
         const int j = (i + 1) % pn;
         /* PER-VERTEX depth, following the opening plane.
          *
-         * This used to be one constant for the whole ring — the FARTHEST
-         * outline point plus the bias — which is the same constant-depth
-         * mistake the stencil aperture was introduced to fix, just moved
-         * inward. On an arch seen at an angle the opening is tilted, so a
-         * ring pinned to the far edge's depth sits far BEHIND the plane along
-         * the near jamb, and anything in that void beats it: the margin stops
-         * covering exactly where the outline needed help, leaving a 1-2px seam
-         * of through-hole world along the near side.
+         * A ring at one constant depth (the FARTHEST outline point plus the
+         * bias) is wrong on an arch seen at an angle: the opening is tilted, so
+         * the ring sits far BEHIND the plane along the near jamb, and anything
+         * in that void beats it, leaving a 1-2px seam of through-hole world
+         * along the near side.
          *
-         * Each ring vertex now carries its own outline point's view-Z, so the
+         * Each ring vertex carries its own outline point's view-Z, so the
          * ring is a skirt on the plane rather than a flat card behind it, and
          * the stone-versus-gap contest resolves the same way at every point
          * around the opening. */
@@ -2168,21 +2152,15 @@ static void emit_clipped_gouraud(pgv v0, pgv v1, pgv v2, int x0, int y0, int x1,
     emit_split_by_outline(a, n, depth, use_plane, pa, pb, pc);
 }
 
-/* A collected dome face awaiting ordered emission. The dome is drawn at the
+/* A collected dome face awaiting emission. The dome is drawn at the
  * single portal-plane depth so the arch occludes it; with every face at the
  * same depth the paint ORDER decides each pixel. The whole dome lands in ONE
- * OT bucket on the PSX (a single leaf depth — see the portal-dump OTdepth),
- * and AddPrim PREPENDS to the bucket chain: the GPU walks the chain in
- * reverse-insertion order, so the FIRST face the .s walk emits paints LAST
- * (on top). Authored list order — not view-Z — is the paint order. A far→near
- * view-Z sort here (the earlier fix for the medium leaf's Y-fold) broke the
- * beast_makers destination sky: its swamp-trunk faces sit early in the face
- * list so the .s paints them OVER the cloud band, but they project FARTHER
- * than the clouds, so the Z-sort buried them (truncated trunks + floating
- * shards). Mirroring the authored order also renders
- * the fold correctly by construction — the PSX itself draws the fold with
- * this exact order. With LESS_OR_EQUAL the last emit wins per pixel, so we
- * emit the collected array BACKWARDS (.s-last first, .s-first on top). */
+ * OT bucket on the PSX (a single leaf depth — see the portal-dump OTdepth), so
+ * the authored face-list order, not view-Z, is the paint order: a far→near
+ * view-Z sort buries faces the .s paints over others (the beast_makers swamp
+ * trunks project farther than the cloud band they are painted over). The
+ * faces are emitted in walk order, index 0 first; with LESS_OR_EQUAL the last
+ * emitted face wins per pixel. */
 typedef struct { pgv a, b, c; double key; } dome_face;
 
 /** @brief Feeds a destination-sky dome into the scene as gouraud sky triangles.
@@ -2480,8 +2458,7 @@ static void derive_dome_matrix_at(CPUState* cpu, double yaw, double pitch, int M
     /* Game angle units: 4096/circle (the game's Cos/Sin table domain). The
      * pitch matrix carries the camera convention's Y-ASPECT bake: its middle
      * ROW is scaled 2560/4096 = 5/8 (the same non-orthonormal structure as
-     * g_Camera's matrix). Solved
-     * against live GTE matrices at mc f2601/f2945 (element-exact). */
+     * g_Camera's matrix). */
     double a1 = ((double)(int16_t)(cpu->read_word(G_CAMERA + 0x4Cu) >> 16)
                - pitch) * TAU / 4096.0;                                             /* +0x4E − pitch */
     double a2 = ((double)(int16_t)(cpu->read_word(G_CAMERA + 0x50u) & 0xFFFFu)
@@ -2575,10 +2552,11 @@ static uint32_t s_fed_portal[8]; static int s_fed_n = 0;
  *
  * Inert (returns 0) unless the portal dump, the native scene, or a render-path
  * selection is on, and on re-entry. Runs the leaf `real`, feeds its preview of
- * kind `kind` (PORTAL_FLAT, _DOME, _BLENDED) natively, where --no-lod forces
- * the geometric dome for a blended leaf, records the fed portal for the
- * widescreen reveal, and captures the leaf's decision, clip rect and rect rule
- * for the sub-tick replay.
+ * kind `kind` (PORTAL_FLAT, _DOME, _BLENDED) natively, records the fed portal
+ * for the widescreen reveal, and captures the leaf's decision, clip rect and
+ * rect rule for the sub-tick replay. Under --no-lod a far flat leaf (not a
+ * close backstop) also feeds the geometric dome of its portal's skybox, and a
+ * blended leaf is fed without fog.
  * @param cpu   guest CPU state
  * @param which the leaf's label in the portal dump
  * @param real  the leaf's recompiled function
@@ -2633,9 +2611,8 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
         }
         /* Far/medium FLAT leaves: one quad = the whole preview; the close FEA0
          * flat (a0=skybox+0x10) is the dome's authored BACKSTOP. All on the
-         * opening plane — the old x1.0625/x1.125 backstop push-back is retired:
-         * in-group painter order at equal depth already lets the dome
-         * (drawn last) win per pixel, incl. the f1910 bg z-fight case. */
+         * opening plane: in-group painter order at equal depth lets the dome
+         * (drawn last) win per pixel. */
         int is_skybox_a0 = (a0 >= 0x80010000u && a0 < 0x80200000u);
         /* --no-lod always-dome: the .s renders far portals as a FLAT colour and
          * only projects the geometric destination-sky dome when close (the
@@ -2647,9 +2624,8 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
          * dome's backstop, exactly like the close-range FEA0 backstop — but
          * with the CLOSE-BASE colour [m_Skybox+0x10], NOT the leaf's far fog
          * colour: the dome covers only the sky ABOVE its horizon, and a
-         * distant portal's opening can sit entirely BELOW it (beast-makers
-         * f2021: dome faces end at y=43, opening at y[53,70]) — with the far
-         * fog backstop (night ≈ black) the opening looked empty. The .s's own
+         * distant portal's opening can sit entirely BELOW it, where the far fog
+         * colour (night ≈ black) would leave the opening empty. The .s's own
          * close look fills below-horizon with [skybox+0x10]. */
         int forced_dome = 0; uint32_t forced_sb = 0; int forced_M[3][3];
         uint32_t forced_fp = 0;
@@ -2798,9 +2774,9 @@ static int on_8004F4BC(CPUState* cpu, uint32_t a) { (void)a; return leaf_hook(cp
  * view-Z is below the .s's dome range 16384, fading toward the flat colour over
  * [12288, 16384), or always under the --no-lod dome. Each reveal is captured
  * for the sub-tick replay. Returns at once on a canonical 4:3 view without
- * --no-lod. The clip rect D_CLIPRECT and the GTE rotation registers are
- * staged in the sub-tick view or saved and restored; no gameplay byte is
- * written.
+ * --no-lod. The GTE rotation registers are saved and restored. D_CLIPRECT is
+ * staged in the sub-tick view when one is open, else written and restored to
+ * its saved value before return.
  * @param cpu guest CPU state */
 static void feed_revealed_portals(CPUState* cpu) {
     ngte_view_build(cpu, &s_view);
@@ -2808,8 +2784,7 @@ static void feed_revealed_portals(CPUState* cpu) {
     /* Widescreen reveals off-4:3 portals; --no-lod ALSO reveals
      * distance-culled ones at any aspect — the no-lod terrain renders the
      * arch at any range, but the .s RenderPortals distance-culls the portal
-     * itself, leaving a visible arch with an empty opening
-     * (beast-makers-distant-portal.bk2 f2022). */
+     * itself, which would leave a visible arch with an empty opening. */
     if (!s_view.extended && !nolod) return;   /* canonical view: the .s draws every portal it admits */
     const float xlo = s_view.xlo, xhi = s_view.xhi;
     uint32_t n = cpu->read_word(G_PORTALCOUNT); if (n > 6) n = 6;
@@ -2831,11 +2806,9 @@ static void feed_revealed_portals(CPUState* cpu) {
             if (poly[k].x < oxlo) oxlo = poly[k].x; if (poly[k].x > oxhi) oxhi = poly[k].x;
             if (poly[k].y < oylo) oylo = poly[k].y; if (poly[k].y > oyhi) oyhi = poly[k].y;
         }
-        /* Gate by the outline BBOX, not its centroid (user repro
-         * portal-cyclorama-cull.bk2 f2156 @16:9: Stone Hill's preview popped
-         * out with half the arch still visible at the right edge — the
-         * centroid left the widened bounds / stayed on-4:3 while the OPENING
-         * straddled the boundary, and the reveal skipped both ways):
+        /* Gate by the outline BBOX, not its centroid: a centroid test skips
+         * an opening that straddles a boundary while its centroid lies
+         * outside the widened bounds or inside the 4:3 frame.
          *   - a portal fully INSIDE the 4:3 frame (small margin) is
          *     canonical — the .s renders it (or wouldn't at 4:3 either);
          *   - a portal whose bbox misses the widened view entirely is
@@ -2850,16 +2823,13 @@ static void feed_revealed_portals(CPUState* cpu) {
         if (oxhi < xlo || oxlo > xhi) continue;           /* fully outside the widened view */
         uint32_t rgb = cpu->read_word(skybox + 0x18) & 0xFFFFFF;   /* destination sky bg colour */
         /* Destination DOME for revealed portals, distance rule mirrored from
-         * RenderPortals (calibrated: the reveal otherwise showed the solid LQ
-         * colour where the player expects the sky cyclorama).
+         * RenderPortals.
          * The .s leaf selection (0x80051858) draws the dome whenever its
          * distance metric t4 < 16384, with the medium band [12288,16384)
          * DPCS-fading the dome toward the flat colour by (t4-12288)/4096 — at
          * the boundary the dome is 100% faded, so the far flat-only side
-         * crossfades seamlessly and the ~2% mirror error is invisible. t4
-         * tracks the OUTLINE MEAN view-Z (back-solved from live IR0 at
-         * cyclorama-portal f1811/f1831: t4/mean = 0.956/0.955; far/medium flip
-         * observed between mean 18010 and 15949, consistent). The reveal fades
+         * crossfades seamlessly. t4 tracks the OUTLINE MEAN view-Z at
+         * t4/mean ~ 0.956 (about 2% mirror error). The reveal fades
          * toward its OWN flat colour (the destination bg it fans below) so the
          * crossfade converges on what the far reveal already shows. --no-lod
          * keeps its unconditional un-faded dome. */
@@ -2962,12 +2932,13 @@ int openpete_portal_capture_follows(CPUState* cpu) {
  *
  * Inert (returns 0) unless the portal dump, the native scene, or a render-path
  * selection is on, and on re-entry. Resets the tick's fed-portal set and
- * capture set, rolls the shared dome matrix and the portal spin angles
- * (D_PORTAL_YAW, D_PORTAL_PITCH) to prev, and runs the game's draw, whose
- * leaves feed and capture the on-4:3 portals. With the native scene on it
- * reveals the culled portals, stamps the capture with the canonical-render
- * epoch and marks RP_PORTAL drawn. Last it releases a terrain feed that waited
- * for this capture.
+ * capture set, rolls the shared dome matrix to prev, and runs the game's
+ * draw, whose leaves feed and capture the on-4:3 portals. With the native
+ * scene on it reveals the culled portals, stamps the capture with the
+ * canonical-render epoch and marks RP_PORTAL drawn. After the draw it rolls
+ * the portal spin angles to prev and records the live D_PORTAL_YAW and
+ * D_PORTAL_PITCH as curr, then releases a terrain feed that waited for this
+ * capture.
  * @param cpu guest CPU state
  * @param a   the hooked address (unused)
  * @return 1 after running the draw, 0 when inert or re-entered */
