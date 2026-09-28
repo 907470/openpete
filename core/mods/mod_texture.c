@@ -108,6 +108,15 @@ static int s_retired_n;
                                        * event; a flood means per-tick churn,
                                        * which also floods the GPU cache */
 
+/** @brief Keep a superseded pixel buffer alive for the rest of the session.
+ *
+ * The address is never handed to the allocator again, so the renderer's
+ * pointer-keyed GPU texture cache cannot resolve a new image to an old
+ * texture. The buffer is chained on s_retired; when the node cannot be
+ * allocated the buffer is still not freed and is only untracked. A warning
+ * logs when the retained count reaches MOD_TEXTURE_RETIRE_WARN.
+ *
+ * @param px Malloc'd pixel buffer the renderer has been handed. */
 static void tex_retire(unsigned char* px) {
     retired_px* r = (retired_px*)malloc(sizeof *r);
     if (r) { r->px = px; r->next = s_retired; s_retired = r; }
@@ -134,6 +143,22 @@ static void tex_poll_owner(mod_texture_t* t) {
     t->warned = 0;
 }
 
+/** @brief Register or replace the RGBA8 image of a texture id for an owner.
+ *
+ * Copies the pixels, so the source may be freed after the call. An existing
+ * entry with the id is replaced whatever its owner, and its old buffer is
+ * retired when it was drawn and freed otherwise. The copy is allocated
+ * before the old buffer is released. A new id appends an entry; when the
+ * copy then fails to allocate, the entry stays with no pixels. Never gated
+ * on the owner's enabled state.
+ *
+ * @param owner Owning mod id, kept by pointer; may be NULL.
+ * @param id Texture id.
+ * @param rgba @p w * @p h RGBA8 pixels.
+ * @param w Width, 1 to MOD_TEXTURE_DIM_MAX.
+ * @param h Height, 1 to MOD_TEXTURE_DIM_MAX.
+ * @return 0, or -1 for NULL pixels, a size out of range, or an allocation
+ *         failure. */
 static int tex_register_owned(const char* owner, uint16_t id,
                               const void* rgba, int w, int h) {
     if (!rgba || w <= 0 || h <= 0 ||

@@ -846,6 +846,15 @@ const uint32_t* openpete_mods_shader_spv(int handle, size_t* words,
  * @param words Receives the word count; may be NULL.
  * @return The words, or NULL. */
 const uint32_t* openpete_mods_shader_spv_terrain(int handle, size_t* words);
+/** @brief Free every shader a mod registered and mark its slots dead.
+ *
+ * Takes the registry write lock. Both SPIR-V profiles are freed and the
+ * slot stays allocated with live 0, so a stale handle returns NULL from
+ * openpete_mods_shader_spv() and is never reused. Callers remove the
+ * owner's postfx passes and materials first, which retires their cached
+ * pipelines.
+ *
+ * @param mod_id Owning mod id. */
 void openpete_mods_shader_remove_owner(const char* mod_id);
 /** @brief Compute the hot-reload watch key of a mod's shaders/ directory.
  *
@@ -858,9 +867,43 @@ void openpete_mods_shader_remove_owner(const char* mod_id);
  *        directory holds no such file.
  * @return 0. */
 int openpete_mods_shader_watch_key(const char* mod_dir, char key_out[65]);
+/** @brief Register a fragment shader as a disabled postfx pass and return its handle.
+ *
+ * Takes the registry write lock. Refused inside a present hook, for an
+ * insertion point other than 0 (COMPOSITE) or 1 (SCENE), and for a handle
+ * that is not a live fragment-stage shader. The pass runs only after
+ * openpete_mods_postfx_enable(); enabled passes at one point run by
+ * ascending owner load index, then @p order, then registration index.
+ *
+ * @param self Registering mod.
+ * @param frag_shader Fragment shader handle.
+ * @param point Insertion point (OP_POSTFX_*).
+ * @param order Position among the same mod's passes; lower runs first.
+ * @return The pass handle, or -1. */
 int openpete_mods_postfx_register(openpete_mod_t* self, int frag_shader,
                                   int point, int order);
+/** @brief Turn a postfx pass on or off.
+ *
+ * Takes the registry write lock.
+ *
+ * @param self Owning mod.
+ * @param fx Pass handle.
+ * @param enabled Nonzero to run the pass.
+ * @return 0, or -1 for a NULL mod, an unknown or swept handle, or a pass
+ *         another mod owns. */
 int openpete_mods_postfx_enable(openpete_mod_t* self, int fx, int enabled);
+/** @brief Copy a postfx pass's uniform block.
+ *
+ * Takes the registry write lock. The block is copied at the call, so the
+ * caller keeps its buffer. A block longer than OPENPETE_POSTFX_UNIFORMS_MAX
+ * is truncated to that length and the call still succeeds.
+ *
+ * @param self Owning mod.
+ * @param fx Pass handle.
+ * @param data Block bytes.
+ * @param size Length of @p data.
+ * @return 0, or -1 for a NULL mod, a NULL @p data, an unknown or swept
+ *         handle, or a pass another mod owns. */
 int openpete_mods_postfx_set_uniforms(openpete_mod_t* self, int fx,
                                       const void* data, uint32_t size);
 
@@ -892,9 +935,28 @@ typedef struct {
  * @return Passes written. */
 int  openpete_mods_postfx_collect(int point, openpete_postfx_pass_t* out,
                                   int cap);
+/** @brief Move retired pipeline pointers out of the retirement list for the renderer to destroy.
+ *
+ * Takes no lock: the renderer calls it inside a compose that holds the
+ * registry read lock, and at shutdown. The taken entries are removed from
+ * the list; the rest keep their order.
+ *
+ * @param out Receives the pointers.
+ * @param cap Capacity of @p out.
+ * @return The number of pointers written. */
 int  openpete_mods_postfx_take_retired(void** out, int cap);
+/** @brief Retire the pipelines of every postfx pass a mod registered and mark the passes dead.
+ *
+ * Takes the registry write lock. The slots stay allocated with live 0 and
+ * are not reused.
+ *
+ * @param mod_id Owning mod id. */
 void openpete_mods_postfx_remove_owner(const char* mod_id);
-void openpete_mods_postfx_retire_all(void);   /* shutdown: cache every pipeline */
+/** @brief Move the cached pipeline of every live postfx pass, enabled or not, to the retirement list.
+ *
+ * Takes the registry write lock. Used at shutdown; the passes stay live and
+ * rebuild their pipelines on next use. */
+void openpete_mods_postfx_retire_all(void);
 
 /** @brief Take the registry read lock for a compose.
  *
@@ -932,9 +994,35 @@ typedef struct {
     const char* owner;
     int   uniform_slot;
 } openpete_mod_material_gpu_t;
+/** @brief Resolve a draw's provenance tag to the material override that applies.
+ *
+ * Takes no lock; the compose calls it under the registry read lock. A slot
+ * the tag carries (moby bits 27:16, terrain bits 24:16) selects its
+ * material directly; slot 0 falls through to the declarative winner among
+ * live, user-enabled materials of enabled mods, the highest load index
+ * winning. An OPENPETE_MATERIAL_SLOT_STOCK or
+ * OPENPETE_MATERIAL_TERRAIN_STOCK slot, a slot past the view, and a slot
+ * whose material is swept or owner disabled resolve to none.
+ *
+ * @param tag Provenance tag; 0 resolves to none.
+ * @param out Receives the shaders, pipeline slots, owner and uniform slot.
+ * @return The winning material index, or -1 for none. */
 int  openpete_mods_material_resolve(uint32_t tag,
                                     openpete_mod_material_gpu_t* out);
+/** @brief Retire the pipelines of every material a mod registered and mark the materials dead.
+ *
+ * Takes the registry write lock. Also drops a parked selector retune, bumps
+ * the terrain epoch, and re-arms the batcher tag split. The slots stay
+ * allocated with live 0 and are not reused, so the table's capacity is
+ * consumed by every registration, including re-registrations after a hot
+ * reload.
+ *
+ * @param mod_id Owning mod id. */
 void openpete_mods_material_remove_owner(const char* mod_id);
+/** @brief Move the cached pipelines of every live material to the retirement list.
+ *
+ * Takes the registry write lock. Used at shutdown; the materials stay live
+ * and rebuild on next use. */
 void openpete_mods_material_retire_all(void);
 
 /** @brief Return 1 when any live material selector carries a per-instance callback.
@@ -944,15 +1032,29 @@ void openpete_mods_material_retire_all(void);
  * it is 0.
  * @return 1 or 0. */
 int  openpete_mods_material_has_instance(void);
-/* Resolve ONE moby instance at extraction (moby walk, cpu available):
- * returns the batch-split slot stamped into the provenance tag — 0 =
- * defer to draw-time class resolve (declarative / no per-instance
- * winner), OPENPETE_MATERIAL_SLOT_STOCK = the callback declined (force
- * stock), else an interned per-instance slot (1..). */
+/* Moby tag slot field: 0 defers to the draw-time class resolve,
+ * OPENPETE_MATERIAL_SLOT_STOCK marks a declined callback (draw stock),
+ * anything else is an interned per-instance slot. */
 #define OPENPETE_MATERIAL_SLOT_STOCK 0xFFF
 /* Terrain-untextured twin of SLOT_STOCK: the terrain tag's slot field is
  * 9 bits ([24:16]), so its "declined -> stock" sentinel is 0x1FF. */
 #define OPENPETE_MATERIAL_TERRAIN_STOCK 0x1FF
+/** @brief Resolve the per-instance material slot of one moby at extraction.
+ *
+ * Takes no lock. Returns 0 when no live selector has a callback, or the
+ * winning material for the class is declarative or absent. Otherwise runs
+ * the winner's callback with a moby key; its block, capped at
+ * OPENPETE_MATERIAL_UNIFORMS_MAX, reuses an interned slot of the same
+ * material with identical bytes, else takes a new one. The slot table is
+ * reset by openpete_mods_material_frame_reset(), so a slot is valid for one
+ * present.
+ *
+ * @param cpu Unused.
+ * @param moby_class Moby class id.
+ * @param moby_vaddr Guest address of the moby.
+ * @return 0 to defer to the draw-time resolve, OPENPETE_MATERIAL_SLOT_STOCK
+ *         when the callback declined or the slot table is full, else the
+ *         slot. */
 int  openpete_mods_material_moby_slot(CPUState* cpu, int moby_class,
                                       uint32_t moby_vaddr);
 /** @brief Resolve the per-instance material of the untextured terrain band to a uniform slot.
@@ -1087,7 +1189,23 @@ void openpete_mods_material_frame_reset(void);
  * scenes and read at draw; no lock is taken.
  * @param level_id The game's level id. */
 void openpete_mods_set_level(int level_id);
-int  openpete_mods_material_slot_count(void);   /* 1 + interned slots */
+/** @brief Return one plus the number of slots interned this present in the live table.
+ *
+ * Slot 0 is reserved, so the valid slots are 1 up to the count minus one.
+ * Reads the live table, not the installed view.
+ *
+ * @return The count. */
+int  openpete_mods_material_slot_count(void);
+/** @brief Return the uniform bytes of an interned slot in the live table.
+ *
+ * The pointer addresses the live table and changes at the next
+ * openpete_mods_material_frame_reset().
+ *
+ * @param slot Slot index.
+ * @param len Receives the byte count, 0 when the slot is out of range; may
+ *        be NULL.
+ * @return The bytes, or NULL for slot 0, a negative slot, or a slot at or
+ *         past the count. */
 const void* openpete_mods_material_slot_uniforms(int slot, uint32_t* len);
 /* The material view: the per-present interned-slot table (bytes AND the
  * slot -> material / material -> static-slot indices) as one immutable
@@ -1109,6 +1227,13 @@ typedef struct {
     int ter_bucket_n;
     int ter_bucket[OPENPETE_MODS_MATERIAL_VIEW_MATS];
 } openpete_mods_material_view_t;
+/** @brief Copy the interned slots, per-material static slots and terrain bucket list into a view.
+ *
+ * Takes no lock; the sim thread calls it at scene publish. Copies slots 1
+ * up to the live count, the static slot of every material index, and the
+ * terrain bucket ids read from the live materials.
+ *
+ * @param out Receives the snapshot. */
 void openpete_mods_material_view_capture(openpete_mods_material_view_t* out);
 /** @brief Install the material view the present thread resolves and binds through.
  *
@@ -1132,13 +1257,66 @@ int  openpete_mods_load_index_of(openpete_mod_t* self);
  * @param alpha receives the sub-tick phase, or NULL.
  * @param canonical receives 1 for a canonical present, or NULL. */
 void openpete_mods_present_ctx(uint32_t* tick, float* alpha, int* canonical);
+/** @brief Register a material selector with shader overrides, enabled, and return its handle.
+ *
+ * Takes the registry write lock. Refused inside a present hook, for a NULL
+ * mod or selector, for a selector the engine cannot honour exactly, for a
+ * shader handle that is not a live shader of the matching stage, when both
+ * handles are negative, and when the table holds
+ * OPENPETE_MATERIAL_TER_BUCKET_MAX entries, swept ones included. Bumps the
+ * terrain epoch when the selector could bucket terrain and re-arms the
+ * batcher tag split.
+ *
+ * @param self Registering mod.
+ * @param sel Selector; copied.
+ * @param vert_shader Vertex shader handle, or -1 for the stock stage.
+ * @param frag_shader Fragment shader handle, or -1 for the stock stage.
+ * @param per_instance Refine callback, or NULL for a declarative material.
+ * @return The material handle, or -1. */
 int openpete_mods_material_register(openpete_mod_t* self,
                                     const openpete_mod_material_selector_t* sel,
                                     int vert_shader, int frag_shader,
                                     openpete_mod_material_fn per_instance);
+/** @brief Turn a registered material on or off.
+ *
+ * Takes the registry write lock. Bumps the terrain epoch when the material
+ * could bucket terrain and re-arms the batcher tag split. The caller is not
+ * checked against the owner.
+ *
+ * @param self Unused.
+ * @param material Material handle.
+ * @param on Nonzero to enable.
+ * @return 0, or -1 for an unknown or swept material. */
 int openpete_mods_material_enable(openpete_mod_t* self, int material, int on);
+/** @brief Set a material's static uniform block.
+ *
+ * Takes the registry write lock. The block is copied and interned into a
+ * slot at each present for a material whose owner is enabled. The caller is
+ * not checked against the owner.
+ *
+ * @param self Unused.
+ * @param material Material handle.
+ * @param block Block bytes.
+ * @param len Length of @p block.
+ * @return 0, or -1 for an unknown or swept material, a @p len above
+ *         OPENPETE_MATERIAL_UNIFORMS_MAX, or a NULL @p block with nonzero
+ *         @p len. */
 int openpete_mods_material_set_params(openpete_mod_t* self, int material,
                                       const void* block, uint32_t len);
+/** @brief Replace a live material's selector, keeping its handle, shaders, callback and enabled state.
+ *
+ * Takes the registry write lock. Only the owning mod may retune, and the
+ * selector must be one openpete_mods_material_register() accepts. Inside a
+ * present the selector is parked until
+ * openpete_mods_material_apply_pending(); outside one it applies at once
+ * and bumps the terrain epoch when the old or new selector could bucket
+ * terrain.
+ *
+ * @param self Owning mod.
+ * @param material Material handle.
+ * @param sel New selector; copied.
+ * @return 0, or -1 for a NULL argument, an unknown or swept material, a
+ *         material another mod owns, or an invalid selector. */
 int openpete_mods_material_set_selector(
         openpete_mod_t* self, int material,
         const openpete_mod_material_selector_t* sel);
@@ -1227,6 +1405,18 @@ int openpete_mods_config_write(const char* mod_dir, const char* log_tag,
  *         allocation failure. */
 int openpete_mods_texture_register(openpete_mod_t* self, uint16_t id,
                                    const void* rgba, int w, int h);
+/** @brief Return the RGBA8 pixels of a registered mod texture and mark them handed to the renderer.
+ *
+ * Linear scan by id, called from the renderer. Marking the entry drawn
+ * makes a later re-registration retire its buffer instead of freeing it. A
+ * texture whose owner is disabled is still served, with one log line per
+ * toggle epoch; the first draw of an id also logs once.
+ *
+ * @param id Texture id.
+ * @param w Receives the width; may be NULL.
+ * @param h Receives the height; may be NULL.
+ * @return The pixels, which stay allocated for the session, or NULL when
+ *         the id is not registered. */
 const unsigned char* openpete_mods_texture_get(uint16_t id, int* w, int* h);
 /** @brief Register every <hexid>.png under an asset root's textures/own/ as a mod-owned texture.
  *

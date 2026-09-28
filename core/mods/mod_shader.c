@@ -46,6 +46,12 @@
  * rather than shading half of it under the old key. Uncontended in the
  * common case: the tables change at tick boundaries and mod load/unload. */
 static SDL_RWLock* s_reg_lock;
+/** @brief Return the registry lock, creating it on first use.
+ *
+ * The creation is not synchronized: the first call must not race another
+ * thread's first call.
+ *
+ * @return The lock, or NULL when SDL cannot create one. */
 static SDL_RWLock* reg_lock(void) {
     if (!s_reg_lock) s_reg_lock = SDL_CreateRWLock();
     return s_reg_lock;
@@ -57,11 +63,20 @@ static SDL_RWLock* reg_lock(void) {
  * this lock exists to preserve. Only one compose runs at a time, so one
  * reader thread id suffices. */
 static SDL_ThreadID s_reg_reader_tid;
+/** @brief Take the registry write lock unless the caller is the compose reader thread.
+ *
+ * The thread recorded by openpete_mods_registry_read_lock() already holds
+ * the read side, so it proceeds unlocked instead of deadlocking.
+ *
+ * @return 1 when the write lock was taken, 0 when it was not. */
 static int reg_wr_begin(void) {
     if (s_reg_reader_tid && s_reg_reader_tid == SDL_GetCurrentThreadID()) return 0;
     SDL_LockRWLockForWriting(reg_lock());
     return 1;
 }
+/** @brief Release the registry write lock when reg_wr_begin() took it.
+ *
+ * @param locked The value reg_wr_begin() returned. */
 static void reg_wr_end(int locked) { if (locked) SDL_UnlockRWLock(s_reg_lock); }
 #define REG_WR()     const int reg_l_ = reg_wr_begin()
 #define REG_WR_END() reg_wr_end(reg_l_)
@@ -105,7 +120,9 @@ typedef struct {
  * an entry's SPIR-V under REG_RD while a registration appends. */
 static mod_cvec s_shaders;   /* mod_shader_t */
 
+/** @brief Return the number of slots in the shader table, live or swept. */
 static int shader_count(void) { return (int)mod_cvec_count(&s_shaders); }
+/** @brief Return the shader table slot at an index; the caller bounds the index by shader_count(). */
 static mod_shader_t* shader_at(int i) {
     return (mod_shader_t*)mod_cvec_at(&s_shaders, (size_t)i);
 }
@@ -175,6 +192,11 @@ static void key_update_str(openpete_sha256_ctx* hc, const char* s) {
     openpete_sha256_update(hc, s, strlen(s));
 }
 
+/** @brief Feed the contents of a file to a SHA-256 context.
+ *
+ * An empty file feeds nothing and succeeds.
+ *
+ * @return 0, or -1 when the file cannot be read. */
 static int key_update_file(openpete_sha256_ctx* hc, const char* path) {
     size_t len = 0;
     char* data = openpete_mod_glsl_read_file(path, &len);
@@ -197,6 +219,11 @@ static const char* const k_iface_files[] = {
     "terrain_shade.glsl",           /* retained-terrain engine half       */
 };
 
+/** @brief Feed every staged shader interface file under the SDK directory to a SHA-256 context.
+ *
+ * The files are the k_iface_files entries under `<sdk>/shaders/`, in table
+ * order; a missing file contributes nothing, so the hash is stable without
+ * the SDK staged. */
 static void key_update_interface(openpete_sha256_ctx* hc) {
     for (size_t i = 0; i < sizeof k_iface_files / sizeof *k_iface_files; i++) {
         char p[MOD_SHADER_PATH_MAX * 2];
@@ -494,6 +521,10 @@ const uint32_t* openpete_mods_shader_spv_terrain(int handle, size_t* words) {
     return sh->spv_ter;
 }
 
+/** @brief Body of openpete_mods_shader_remove_owner, run under the registry write lock.
+ *
+ * Frees both SPIR-V profiles of every live shader the mod owns and marks
+ * the slot dead; the slot is not reused, so a stale handle reads as swept. */
 static void openpete_mods_shader_remove_owner_locked(const char* mod_id) {
     for (int i = 0; i < shader_count(); i++) {
         mod_shader_t* sh = shader_at(i);
@@ -597,11 +628,17 @@ static void retire_pipeline(void* pipe) {
     *slot = pipe;
 }
 
+/** @brief Return the number of slots in the postfx table, live or swept. */
 static int fx_count(void) { return (int)mod_cvec_count(&s_fx); }
+/** @brief Return the postfx table slot at an index; the caller bounds the index by fx_count(). */
 static mod_postfx_t* fx_at(int i) {
     return (mod_postfx_t*)mod_cvec_at(&s_fx, (size_t)i);
 }
 
+/** @brief Body of openpete_mods_postfx_register, run under the registry write lock.
+ *
+ * Appends a disabled pass that records the owner, the shader handle, the
+ * insertion point, the order and the owner's load index. */
 static int openpete_mods_postfx_register_locked(openpete_mod_t* self, int frag_shader,
                                   int point, int order) {
     const char* id = openpete_mods_id_of(self);
@@ -644,6 +681,9 @@ int openpete_mods_postfx_register(openpete_mod_t* self, int frag_shader,
                                   int point, int order) { REG_WR(); int r_ = openpete_mods_postfx_register_locked(self, frag_shader, point, order); REG_WR_END(); return r_; }
 
 
+/** @brief Body of openpete_mods_postfx_enable, run under the registry write lock.
+ *
+ * Refuses a pass another mod owns. */
 static int openpete_mods_postfx_enable_locked(openpete_mod_t* self, int fx, int enabled) {
     const char* id = openpete_mods_id_of(self);
     if (!id || fx < 0 || fx >= fx_count() || !fx_at(fx)->live) return -1;
@@ -654,6 +694,10 @@ static int openpete_mods_postfx_enable_locked(openpete_mod_t* self, int fx, int 
 int openpete_mods_postfx_enable(openpete_mod_t* self, int fx, int enabled) { REG_WR(); int r_ = openpete_mods_postfx_enable_locked(self, fx, enabled); REG_WR_END(); return r_; }
 
 
+/** @brief Body of openpete_mods_postfx_set_uniforms, run under the registry write lock.
+ *
+ * Copies at most OPENPETE_POSTFX_UNIFORMS_MAX bytes; a longer block is
+ * truncated and still succeeds. */
 static int openpete_mods_postfx_set_uniforms_locked(openpete_mod_t* self, int fx,
                                       const void* data, uint32_t size) {
     const char* id = openpete_mods_id_of(self);
@@ -765,6 +809,10 @@ static void openpete_mods_postfx_retire_all_locked(void) {
 void openpete_mods_postfx_retire_all(void) { REG_WR(); openpete_mods_postfx_retire_all_locked(); REG_WR_END(); }
 
 
+/** @brief Body of openpete_mods_postfx_remove_owner, run under the registry write lock.
+ *
+ * Retires the cached pipeline of each live pass the mod owns and marks the
+ * slot dead. */
 static void openpete_mods_postfx_remove_owner_locked(const char* mod_id) {
     for (int i = 0; i < fx_count(); i++) {
         mod_postfx_t* f = fx_at(i);
@@ -872,8 +920,16 @@ static int s_mat_slot_n = 1;    /* next free; 0 is the reserved sentinel */
 /* The present thread's view of the slot table (NULL = the live table, for
  * the single-threaded path). See openpete_mods_material_view_t. */
 static const openpete_mods_material_view_t* s_mat_view;
+/** @brief Return the slot count of the installed view, else of the live table. */
 static int view_slot_n(void) { return s_mat_view ? s_mat_view->slot_n : s_mat_slot_n; }
+/** @brief Return the material index of an interned slot in the installed view, else in the live table.
+ *
+ * @param s Slot index below view_slot_n(). */
 static int view_slot_mat(int s) { return s_mat_view ? s_mat_view->slots[s].mat : s_mat_slots[s].mat; }
+/** @brief Return the static uniform slot of a material in the installed view, else in the live table.
+ *
+ * @param m Material index below s_mat_count.
+ * @return The slot, or 0 for no params. */
 static int view_static_slot(int m) { return s_mat_view ? s_mat_view->static_slot[m] : s_mats[m].static_slot; }
 
 /* Slot ids are minted from ONE global counter but stamped into per-path
@@ -918,6 +974,12 @@ static int terrain_sel_relevant(const mod_material_t* m) {
     return m->live && (m->sel.channel == -1 || m->sel.channel == OP_CHAN_TERRAIN);
 }
 
+/** @brief Recompute the per-instance flag and arm the batcher tag split from the live materials.
+ *
+ * The split is armed while any material is live, whatever its owner's
+ * enabled state, and s_mat_has_instance is set while any live material has
+ * a per-instance callback. Runs under the registry write lock or on the
+ * compose reader thread. */
 static void material_rearm_split(void) {
     int any = 0, inst = 0;
     for (int i = 0; i < s_mat_count; i++)
@@ -1092,6 +1154,11 @@ static int material_sel_valid(const char* id,
     return 1;
 }
 
+/** @brief Body of openpete_mods_material_register, run under the registry write lock.
+ *
+ * Validates the selector and shader handles, appends the material enabled,
+ * bumps the terrain epoch when it could bucket terrain, and re-arms the tag
+ * split. */
 static int openpete_mods_material_register_locked(openpete_mod_t* self,
                                     const openpete_mod_material_selector_t* sel,
                                     int vert_shader, int frag_shader,
@@ -1300,6 +1367,7 @@ static int material_moby_winner(int cls) {
  * renders. Draw-time resolve is the only consumer, and -1 (nothing has
  * pushed yet) makes every level key inert rather than wrongly matching. */
 static int s_cur_level = -1;
+/** @brief Record the level for level-scoped selectors and bump the terrain epoch when it changes. */
 static void openpete_mods_set_level_locked(int level_id) {
     /* The retained-terrain claim latches its verdict against
      * openpete_mods_material_terrain_epoch(), and that verdict depends on
@@ -1313,6 +1381,7 @@ static void openpete_mods_set_level_locked(int level_id) {
 /* No lock: a compose blocked on the display never delays the push. */
 void openpete_mods_set_level(int level_id) { openpete_mods_set_level_locked(level_id); }
 
+/** @brief Return the level id the game last pushed, or -1 before any push. */
 static int openpete_mods_current_level(void) { return s_cur_level; }
 
 /* Bumped every present, so a per-present memo (the terrain refine slot) can
@@ -1563,6 +1632,18 @@ typedef struct {
     int env, lp, untex;
 } material_key_t;
 
+/** @brief Decode a provenance tag into the selector keys it carries.
+ *
+ * Bits 31:28 hold the path plus one (a nibble of 0 gives path -1), and the
+ * channel is that raw nibble. Identity is bits 15:0 for every path. A moby
+ * tag (path 0) carries its class in bits 15:0. A terrain tag (path 1)
+ * carries the env-rewrite flag in bit 27, the LP-tier flag in bit 26, the
+ * untextured flag in bit 25, and, when textured, the Tiledef id in bits
+ * 15:9. The level is the one last pushed.
+ *
+ * @param tag Provenance tag.
+ * @param k Receives the decoded keys; a key the path does not carry is -1
+ *        or 0. */
 static void material_key_from_tag(uint32_t tag, material_key_t* k) {
     k->path  = (int)(tag >> 28) - 1;
     k->untex = (k->path == 1) && (tag & 0x02000000u);
@@ -1681,6 +1762,11 @@ int openpete_mods_material_resolve(uint32_t tag,
     return material_fill_gpu(best, 0, out);
 }
 
+/** @brief Body of openpete_mods_material_remove_owner, run under the registry write lock.
+ *
+ * For each live material the mod owns: retires every cached pipeline, drops
+ * a parked selector, marks the slot dead and bumps the terrain epoch. The
+ * slot is not reused. Re-arms the tag split once. */
 static void openpete_mods_material_remove_owner_locked(const char* mod_id) {
     for (int i = 0; i < s_mat_count; i++) {
         if (!s_mats[i].live || strcmp(s_mats[i].owner, mod_id) != 0) continue;
@@ -1701,6 +1787,10 @@ static void openpete_mods_material_remove_owner_locked(const char* mod_id) {
 void openpete_mods_material_remove_owner(const char* mod_id) { REG_WR(); openpete_mods_material_remove_owner_locked(mod_id); REG_WR_END(); }
 
 
+/** @brief Body of openpete_mods_material_retire_all, run under the registry write lock.
+ *
+ * Moves the cached pipelines of every live material to the retirement list
+ * and clears the slots; the materials stay live and rebuild on next use. */
 static void openpete_mods_material_retire_all_locked(void) {
     for (int i = 0; i < s_mat_count; i++) {
         if (!s_mats[i].live) continue;
