@@ -63,13 +63,25 @@ typedef struct {
  * body it is running, and that body may register another chain. */
 static mod_cvec s_chains;   /* mod_chain_t */
 
+/** @brief Return chain i in registration order.
+ *
+ * Chains never move, so the pointer stays valid across later registrations.
+ * @param i the chain index, below chain_count(). */
 static mod_chain_t* chain_at(int i) {
     return (mod_chain_t*)mod_cvec_at(&s_chains, (size_t)i);
 }
+/** @brief Return the number of registered chains. */
 static int chain_count(void) { return (int)mod_cvec_count(&s_chains); }
+/** @brief Return the number of links in a chain, disabled ones included. */
 static int link_count(const mod_chain_t* c) {
     return (int)mod_fvec_count(&c->links);
 }
+/** @brief Return link i of a chain, where 0 is the highest priority.
+ *
+ * The pointer is valid until the next link is added to the chain, which
+ * can move the link list.
+ * @param c the chain.
+ * @param i the link index, below link_count(c). */
 static mod_link_t* link_at(const mod_chain_t* c, int i) {
     return (mod_link_t*)mod_fvec_at(&c->links, (size_t)i);
 }
@@ -103,6 +115,11 @@ typedef struct {
 } owner_state_t;
 static mod_fvec s_owner_state;   /* owner_state_t */
 
+/** @brief Find an owner's recorded enable state.
+ *
+ * The pointer is valid until the next owner_state_set adds an owner.
+ * @param owner_id the mod id.
+ * @return the state row, or NULL when the owner was never toggled. */
 static owner_state_t* owner_state_find(const char* owner_id) {
     for (size_t i = 0; i < mod_fvec_count(&s_owner_state); i++) {
         owner_state_t* o = (owner_state_t*)mod_fvec_at(&s_owner_state, i);
@@ -111,6 +128,7 @@ static owner_state_t* owner_state_find(const char* owner_id) {
     return NULL;
 }
 
+/** @brief Return 1 when an owner's links are toggled off; a NULL or never-toggled owner reads as enabled. */
 static int owner_disabled(const char* owner_id) {
     const owner_state_t* o;
     if (!owner_id) return 0;
@@ -118,6 +136,13 @@ static int owner_disabled(const char* owner_id) {
     return o ? o->disabled : 0;
 }
 
+/** @brief Record an owner's disabled state, adding the owner on first use.
+ *
+ * The id is stored truncated to MOD_OWNER_ID_MAX - 1 characters. An
+ * allocation failure is logged and leaves the owner unrecorded, so its
+ * links read as enabled after a reload.
+ * @param owner_id the mod id.
+ * @param disabled nonzero to record the owner as toggled off. */
 static void owner_state_set(const char* owner_id, int disabled) {
     owner_state_t* o = owner_state_find(owner_id);
     if (o) { o->disabled = disabled; return; }
@@ -154,6 +179,10 @@ static _Thread_local int         s_frame_depth = 0;
 static _Thread_local uint32_t s_bypass_addr = 0;
 static _Thread_local int      s_bypass_armed = 0;
 
+/** @brief Find the chain registered for a guest function address.
+ *
+ * @param addr the function's vaddr.
+ * @return the chain, or NULL when none is registered. */
 static mod_chain_t* chain_find(uint32_t addr) {
     for (int i = 0; i < chain_count(); i++) {
         mod_chain_t* c = chain_at(i);
@@ -352,6 +381,13 @@ int openpete_mods_dispatch(CPUState* cpu, uint32_t addr) {
     return 1;
 }
 
+/** @brief Run the next override below the running one, bottoming out at the recompiled original.
+ *
+ * The mod api's base(). It continues from the link the innermost live
+ * frame is executing, skipping disabled links. Refused with an error log
+ * and no effect inside a present hook (openpete_mods_in_present set) and
+ * when no override is running on this thread.
+ * @param cpu the guest CPU passed to the running override. */
 void openpete_mods_base(CPUState* cpu) {
     if (openpete_mods_in_present) {
         OPL_ERROR_F("mods", "base() refused inside a present hook "

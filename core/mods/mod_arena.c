@@ -113,7 +113,12 @@ typedef struct {
 
 static mod_fvec s_rows;   /* arena_row_t */
 
+/** @brief Return the number of ledger rows. */
 static uint32_t row_count(void) { return (uint32_t)mod_fvec_count(&s_rows); }
+/** @brief Return ledger row i.
+ *
+ * The pointer is valid until the next row_push, which can move the table.
+ * @param i the row index, below row_count(). */
 static arena_row_t* row_at(uint32_t i) {
     return (arena_row_t*)mod_fvec_at(&s_rows, (size_t)i);
 }
@@ -161,6 +166,11 @@ static arena_owner_t* owner_slot(const char* owner, int create) {
     return o;
 }
 
+/** @brief Register the arena as a psx_runtime region on first use and report whether it is live.
+ *
+ * The first call attempts the registration once and logs its outcome; a
+ * failure is latched, so every later call returns 0 without retrying.
+ * @return 1 when the region is registered, else 0. */
 static int arena_register(void) {
     if (s_state == 0) {
         s_state = (psx_runtime_register_region(ARENA_BASE, ARENA_SIZE,
@@ -263,6 +273,11 @@ uint32_t openpete_mods_guest_alloc(uint32_t size, uint32_t align,
  * repeats a request and one that does not. Handle 0 is never issued. */
 static uint32_t s_next_handle = 1;
 
+/** @brief Return the vstream handle bound to a stream vaddr, binding the next unused handle when none is.
+ *
+ * @param vaddr the stream's guest vaddr.
+ * @return the handle, or 0 when the handle range is exhausted or the
+ *         table refuses the binding. */
 static uint32_t handle_bind(uint32_t vaddr) {
     uint32_t h = openpete_vstream_table_find(vaddr);
     if (h) return h;
@@ -398,6 +413,10 @@ typedef struct {
     uint32_t superseded;
 } arena_rec_t;
 
+/** @brief Copy a live row into a zero-padded on-disk record.
+ *
+ * @param d the record written.
+ * @param r the live row; its host-only digest is not copied. */
 static void rec_from_row(arena_rec_t* d, const arena_row_t* r) {
     memset(d, 0, sizeof *d);
     memcpy(d->owner, r->owner, sizeof d->owner);
@@ -406,6 +425,11 @@ static void rec_from_row(arena_rec_t* d, const arena_row_t* r) {
     d->superseded = r->superseded;
 }
 
+/** @brief Test whether a saved record equals a live row in every field the record carries.
+ *
+ * @param a the saved record.
+ * @param b the live row; its host-only digest is not compared.
+ * @return 1 when equal, else 0. */
 static int rec_matches(const arena_rec_t* a, const arena_row_t* b) {
     return a->kind == b->kind && a->call_idx == b->call_idx &&
            a->size == b->size && a->align == b->align &&
@@ -434,6 +458,17 @@ void openpete_mods_arena_state_save(void* dst) {
     memcpy(p, s_arena, s_used);
 }
 
+/** @brief Split a saved arena section into its header, row records and byte payload, checking bounds.
+ *
+ * The outputs point into src; nothing is copied except the header.
+ * @param src the section bytes; NULL is treated as no section.
+ * @param size the section size in bytes.
+ * @param h receives the header.
+ * @param rows receives the first row record.
+ * @param bytes receives the first payload byte.
+ * @return 1 when parsed, 0 for no section (NULL src or a size below the
+ *         header), -1 for a version other than 3, a section too short for
+ *         its rows and payload, or a payload over the arena size. */
 static int arena_section_parse(const void* src, uint32_t size,
                                arena_state_hdr_t* h,
                                const arena_rec_t** rows,

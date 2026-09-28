@@ -56,10 +56,18 @@ typedef struct {
  * lives inside it, so a slot must not move once handed out. */
 static mod_cvec s_slots;   /* cfg_slot_t */
 
+/** @brief Return the number of keys a slot holds. */
 static int slot_keys(const cfg_slot_t* s) {
     return (int)mod_fvec_count(&s->e);
 }
 
+/** @brief Find a mod's config slot, or create an empty one.
+ *
+ * Slots never move once created.
+ * @param mod the owning mod, compared by address.
+ * @param create nonzero to create a missing slot.
+ * @return the slot, or NULL when it is missing and create is 0 or the
+ *         allocation fails. */
 static cfg_slot_t* slot_of(const openpete_mod_t* mod, int create) {
     for (size_t i = 0; i < mod_cvec_count(&s_slots); i++) {
         cfg_slot_t* c = (cfg_slot_t*)mod_cvec_at(&s_slots, i);
@@ -166,6 +174,12 @@ void openpete_mods_config_load(openpete_mod_t* mod, const char* mod_dir,
     OPL_INFO_F(log_tag, "config.toml: %d key(s) loaded", slot_keys(s));
 }
 
+/** @brief Find a mod's config entry by dotted key.
+ *
+ * @param self the mod; NULL yields NULL.
+ * @param key the dotted key path; NULL yields NULL.
+ * @return the entry, or NULL when the key or the mod's slot is absent. The
+ *         pointer is valid until the mod's next config load. */
 static const cfg_entry_t* find(openpete_mod_t* self, const char* key) {
     if (!self || !key) return NULL;
     const cfg_slot_t* s = slot_of(self, 0);
@@ -236,6 +250,15 @@ int openpete_mods_config_str(openpete_mod_t* self, const char* key,
  * its value, each bounded by the schema's own field sizes. */
 #define CFGW_EDIT_GROWTH 1024
 
+/** @brief Format an edit's value as a TOML literal.
+ *
+ * A bool prints as true or false, an integer in decimal, a float with
+ * "%g" plus ".0" when the text has no '.', 'e' or 'E', and a string in
+ * double quotes with '"' and '\\' escaped and its tail cut to fit cap. An
+ * unknown type yields an empty string.
+ * @param out the destination, NUL-terminated on return.
+ * @param cap the destination size in bytes; at least 4.
+ * @param e the edit whose value is formatted. */
 static void cfgw_format_value(char* out, size_t cap,
                               const openpete_mods_cfg_edit_t* e) {
     switch (e->type) {

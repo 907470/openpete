@@ -54,6 +54,14 @@ int openpete_mod_glsl_has_terrain_profile(const char* src, int stage) {
            strstr(src, "openpete_psx_material.glsl") != NULL;
 }
 
+/** @brief Overwrite a compile log file with one phase's messages.
+ *
+ * The file holds `[phase]`, then a, then b on their own lines; a NULL text
+ * writes an empty line. An unopenable file is skipped silently.
+ * @param log_path the log file path.
+ * @param phase the failed phase name.
+ * @param a the first message text; may be NULL.
+ * @param b the second message text; may be NULL. */
 static void write_log(const char* log_path, const char* phase,
                       const char* a, const char* b) {
     FILE* f = fopen(log_path, "wb");
@@ -74,6 +82,14 @@ size_t openpete_mod_glsl_compile(const char* src, int stage,
     return 0;
 }
 #else
+/** @brief Read an include file from a directory into a glslang include result.
+ *
+ * The result and its name and data are heap allocations that include_free
+ * releases.
+ * @param dir the directory to look in.
+ * @param name the include name, appended to dir.
+ * @return the result, or NULL when the file cannot be read (see
+ *         openpete_mod_glsl_read_file) or an allocation fails. */
 static glsl_include_result_t* include_load(const char* dir, const char* name) {
     char p[OPENPETE_MOD_GLSL_PATH_MAX * 2];
     snprintf(p, sizeof p, "%s/%s", dir, name);
@@ -88,6 +104,14 @@ static glsl_include_result_t* include_load(const char* dir, const char* name) {
     return r;
 }
 
+/** @brief Resolve an include against the SDK shader directory first, then the including shader's directory.
+ *
+ * @param ctx_v the openpete_mod_glsl_include_t for the shader.
+ * @param name the include name.
+ * @param includer_name the including file, unused.
+ * @param depth the include nesting depth; more than 8 fails.
+ * @return the result, or NULL when the name resolves in neither
+ *         directory or the depth limit is passed. */
 static glsl_include_result_t* include_resolve(void* ctx_v, const char* name,
                                               const char* includer_name,
                                               size_t depth) {
@@ -100,14 +124,21 @@ static glsl_include_result_t* include_resolve(void* ctx_v, const char* name,
     return r;
 }
 
+/** @brief glslang callback for a `<name>` include; resolves like include_resolve. */
 static glsl_include_result_t* include_system(void* ctx, const char* name,
                                              const char* inc, size_t depth) {
     return include_resolve(ctx, name, inc, depth);
 }
+/** @brief glslang callback for a `"name"` include; resolves like include_resolve. */
 static glsl_include_result_t* include_local(void* ctx, const char* name,
                                             const char* inc, size_t depth) {
     return include_resolve(ctx, name, inc, depth);
 }
+/** @brief glslang callback releasing an include result from include_load.
+ *
+ * @param ctx unused.
+ * @param r the result to free; NULL does nothing.
+ * @return 0. */
 static int include_free(void* ctx, glsl_include_result_t* r) {
     (void)ctx;
     if (r) {

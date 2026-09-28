@@ -194,6 +194,27 @@ void openpete_mods_bk2_query(openpete_mods_bk2_status_t* out);
  * re-entry replay and the savestate verdict all consume. Returns the
  * guest vaddr, 0 on failure (exhausted, ledger full, bad args). */
 #define OPENPETE_ARENA_OWNER_MAX 64 /* == the loader's MOD_ID_MAX */
+/** @brief Allocate a block in the guest arena, or replay the owner's ledger row for this call.
+ *
+ * Runs the owner's next call index. When the owner's live row at that
+ * index is an allocation with the same size, align and flags, that row is
+ * served again: same vaddr, same host view, bytes as last written. A row
+ * of another shape is marked superseded and the call takes a fresh block
+ * at the arena cursor, aligned up and zeroed. The first call that passes
+ * argument validation registers the arena as a psx_runtime region at
+ * 0x80700000. A failure
+ * logs and returns 0, except a bad argument, which returns 0 silently.
+ * @param size the block size in bytes; 0 or more than the 8 MiB arena
+ *        fails.
+ * @param align the alignment, a power of two; 0 selects 8, any other
+ *        value fails.
+ * @param flags OP_GALLOC_* flags, stored in the row as passed.
+ * @param host_view receives the block's host address, or NULL on failure;
+ *        may be NULL.
+ * @param owner the calling mod's id; NULL or empty fails.
+ * @return the block's guest vaddr, or 0 on failure: a bad argument,
+ *         region registration failure, exhausted arena, or an owner or
+ *         ledger table allocation failure. */
 uint32_t openpete_mods_guest_alloc(uint32_t size, uint32_t align,
                                    uint32_t flags, void** host_view,
                                    const char* owner);
@@ -220,9 +241,30 @@ void openpete_mods_arena_entry_begin(const char* owner);
  * same span. A restore raises the watermark, never lowers it.
  * @return the used prefix in bytes. */
 uint32_t       openpete_mods_arena_used(void);
+/** @brief Return the arena's backing bytes.
+ *
+ * The buffer spans the whole 8 MiB arena and stays valid for the process
+ * lifetime; offsets [0, openpete_mods_arena_used()) hold allocated data.
+ * The runahead hash and the in-memory snapshot read that prefix.
+ * @return the arena's first byte. */
 const uint8_t* openpete_mods_arena_bytes(void);
+/** @brief Copy a snapshot's arena bytes over the arena's prefix and raise the watermark to cover them.
+ *
+ * Bytes past @p used keep their contents and the watermark never
+ * decreases, so a handle a mod took after the snapshot stays valid. The
+ * arena region is not registered here.
+ * @param bytes the snapshot's arena bytes; NULL does nothing.
+ * @param used the byte count; 0 does nothing, and a value above the arena
+ *        size is clamped to it. */
 void           openpete_mods_arena_mem_restore(const void* bytes,
                                                uint32_t used);
+/** @brief Check every live IMMUTABLE row's bytes against its first-seen checksum.
+ *
+ * The first check of a row records the FNV-1a 64-bit hash of its bytes; a
+ * later mismatch logs one warning naming the owner and call index and
+ * stops checking that row. Superseded rows are skipped.
+ * @param when the caller's context, named in the warning; NULL reads as
+ *        "snapshot". */
 void           openpete_mods_arena_immutable_check(const char* when);
 
 /** @brief Return the stream handle for a stream vaddr, the index a mod writes into a frame word's 21-bit field in place of the vaddr.
@@ -476,8 +518,23 @@ void openpete_mods_registry_set_owner_enabled(const char* mod_id, int on);
  * Call only at a tick boundary.
  * @param owner_id the mod id; NULL does nothing. */
 void openpete_mods_chain_remove_owner(const char* owner_id);
+/** @brief Enable or disable every override link an owner registered, keeping chain order.
+ *
+ * A disabled link is skipped by dispatch and by base(), and stays in its
+ * chain. The owner's state is recorded apart from its links, so links
+ * registered later (hot reload) start in it. Call only at a tick boundary.
+ * @param owner_id the mod id; NULL does nothing.
+ * @param on nonzero to enable, 0 to disable. */
 void openpete_mods_chain_set_owner_enabled(const char* owner_id, int on);
+/** @brief Remove every present hook an owner registered, compacting the table.
+ *
+ * @param owner_id the mod id; NULL does nothing. */
 void openpete_mods_draw_remove_owner(const char* owner_id);
+/** @brief Enable or disable every present hook an owner registered.
+ *
+ * A disabled hook stays in the table and is skipped by the flush.
+ * @param owner_id the mod id; NULL does nothing.
+ * @param on nonzero to enable, 0 to disable. */
 void openpete_mods_draw_set_owner_enabled(const char* owner_id, int on);
 void openpete_mods_registry_remove_owner(const char* mod_id);
 
@@ -552,6 +609,11 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical);
 typedef int (*openpete_mods_text_emit_fn)(const char* str, float x, float y,
                                           float cap_h, unsigned rgb,
                                           void* out_verts, int cap);
+/** @brief Register the game's text rasterizer for the mod overlay.
+ *
+ * The flush calls it once per queued text. Without one, or while it
+ * returns 0, queued text draws nothing.
+ * @param fn the emitter; NULL unregisters it. */
 void openpete_mods_draw_set_text_fn(openpete_mods_text_emit_fn fn);
 
 /* Loader-facing submission entry points (wired into the mod api). */
@@ -571,6 +633,13 @@ void openpete_mods_draw_set_text_fn(openpete_mods_text_emit_fn fn);
  *        ignored. */
 void openpete_mods_draw_text(float x, float y, float cap_h, uint32_t rgb,
                              const char* str);
+/** @brief Add a hook that runs once per present with that present's context.
+ *
+ * The hook starts disabled when the loader lists the owner and reports it
+ * disabled. Sets the flag that keeps the draw flush active.
+ * @param fn the hook; NULL fails.
+ * @param owner_id the registering mod's id, stored by pointer, or NULL.
+ * @return 0, or -1 for a NULL fn or a table allocation failure. */
 int  openpete_mods_register_present_hook(openpete_mod_present_fn fn,
                                          const char* owner_id);
 
@@ -1362,12 +1431,48 @@ int openpete_mods_sfx_replace(openpete_mod_t* self, const char* name,
  * @param log_tag the mod's log tag. */
 void openpete_mods_config_load(openpete_mod_t* mod, const char* mod_dir,
                                const char* log_tag);
+/** @brief Read a boolean config value.
+ *
+ * A bool or integer value reads as nonzero-is-true; a value of another
+ * type logs a warning and yields the default.
+ * @param self the mod.
+ * @param key the dotted key path.
+ * @param def the value for an absent key or a type mismatch.
+ * @return the value, or @p def. */
 int     openpete_mods_config_bool(openpete_mod_t* self, const char* key,
                                   int def);
+/** @brief Read an integer config value.
+ *
+ * A bool reads as 0 or 1 and a float as its truncation; a string logs a
+ * warning and yields the default.
+ * @param self the mod.
+ * @param key the dotted key path.
+ * @param def the value for an absent key or a type mismatch.
+ * @return the value, or @p def. */
 int64_t openpete_mods_config_int(openpete_mod_t* self, const char* key,
                                  int64_t def);
+/** @brief Read a float config value.
+ *
+ * A bool reads as 0.0 or 1.0 and an integer as its double conversion; a
+ * string logs a warning and yields the default.
+ * @param self the mod.
+ * @param key the dotted key path.
+ * @param def the value for an absent key or a type mismatch.
+ * @return the value, or @p def. */
 double  openpete_mods_config_float(openpete_mod_t* self, const char* key,
                                    double def);
+/** @brief Read a string config value into a caller buffer.
+ *
+ * Copies the value, or @p def (empty when NULL) for an absent key or a
+ * non-string value, truncated to fit and NUL-terminated. A non-string
+ * value logs a warning. Values are stored at most 127 characters long.
+ * @param self the mod.
+ * @param key the dotted key path.
+ * @param def the default text; may be NULL.
+ * @param buf the destination; NULL returns 0 without writing.
+ * @param cap the destination size in bytes; 0 or less returns 0 without
+ *        writing.
+ * @return 1 when the key held a string, else 0. */
 int     openpete_mods_config_str(openpete_mod_t* self, const char* key,
                                  const char* def, char* buf, int cap);
 
@@ -1520,7 +1625,13 @@ int openpete_mods_state_safe(const char** offender);
  * core/record/savestate.c serializes the section with the engine state.
  * @return Section size in bytes. */
 uint32_t openpete_mods_arena_state_size(void);
-/// @brief Write the arena state section, openpete_mods_arena_state_size() bytes, to @p dst.
+/** @brief Write the arena state section to a buffer.
+ *
+ * The layout is a version-3 header (version, row count, used bytes), one
+ * fixed-width record per ledger row, superseded marks included, then the
+ * arena's used prefix. Host-only row state (the immutable digest) is not
+ * written.
+ * @param dst a buffer of at least openpete_mods_arena_state_size() bytes. */
 void     openpete_mods_arena_state_save(void* dst);
 /** @brief Check a saved arena section against the live ledger before a state load commits.
  *

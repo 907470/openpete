@@ -70,6 +70,10 @@ static cmd_buf_t* s_tick_staging   = &s_tick_bufs[0];
 static cmd_buf_t* s_tick_committed = &s_tick_bufs[1];
 static cmd_buf_t  s_present;       /* rebuilt inside each present hook  */
 
+/** @brief Initialize a command buffer's text list once.
+ *
+ * @param b the buffer; a second call does nothing.
+ * @param name the list's name for the allocation census. */
 static void buf_init(cmd_buf_t* b, const char* name) {
     if (b->inited) return;
     b->inited = 1;
@@ -77,6 +81,7 @@ static void buf_init(cmd_buf_t* b, const char* name) {
                   DRAW_TEXTS_INIT);
 }
 
+/** @brief Return the number of texts a command buffer holds. */
 static int buf_count(const cmd_buf_t* b) {
     return (int)mod_fvec_count(&b->texts);
 }
@@ -133,7 +138,13 @@ typedef struct {
  * assert_one_owner() above latches that thread. */
 static mod_fvec s_phooks;   /* present_hook_t */
 
+/** @brief Return the number of registered present hooks, disabled ones included. */
 static int phook_count(void) { return (int)mod_fvec_count(&s_phooks); }
+/** @brief Return present hook i in registration order.
+ *
+ * The pointer is valid until the next registration, which can move the
+ * table.
+ * @param i the hook index, below phook_count(). */
 static present_hook_t* phook_at(int i) {
     return (present_hook_t*)mod_fvec_at(&s_phooks, (size_t)i);
 }
@@ -274,6 +285,14 @@ static void warn_glyph_overflow(const char* owner) {
                id, MOD_DRAW_VERTS_MAX);
 }
 
+/** @brief Lay out a command buffer's texts into the overlay vertex array after the first n vertices.
+ *
+ * Each text goes through the registered emitter with the space left in
+ * the array. A text that writes no vertices after an earlier text in this
+ * call has written some is reported as an overflow drop.
+ * @param b the buffer to lay out.
+ * @param n the vertices already used.
+ * @return the new vertex count; n when no emitter is registered. */
 static int emit_buf(const cmd_buf_t* b, int n) {
     /* A text that laid out no glyphs at all is the drop this reports. The
      * emitter refuses a glyph only when the remaining budget cannot hold
