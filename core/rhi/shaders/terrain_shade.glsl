@@ -118,7 +118,7 @@ bool ter_debug_shade(out vec4 c)
 }
 
 /* The key contest (psx_key_contest.glsl), terrain subset: never ranked,
- * never an actor, true-scope on, so the actor-key arm receives the
+ * never an actor or a prop, true-scope on, so the actor-key arm receives the
  * never-wins sentinel. A face with a drain sub-cell table contests at the
  * key of the sub-cell under the fragment (op_drain_koff_pf) and loses a
  * fragment in a sub-cell the drain skips. */
@@ -134,7 +134,7 @@ bool ter_key_loses()
         op_key_from_stored(texelFetch(u_mobykey, ivec2(gl_FragCoord.xy), 0).r),
         op_vz_from_depth(gl_FragCoord.z, DEPTH_REVERSED),
         koff,
-        false, true, SLOT_CONTEST);
+        false, false, true, SLOT_CONTEST);
 }
 
 /* The stock colour for this fragment. a == 0 marks a texel the PSX treats

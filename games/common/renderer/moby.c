@@ -6410,6 +6410,38 @@ static uint32_t moby_tri_alpha(const ntri_t* w) {
     return (w->textured && w->tmix) ? ((uint32_t)w->tmix << 24) : 0xFF000000u;
 }
 
+/** @brief Report whether a moby class is a curated embedded prop.
+ *
+ * Embedded props are static scenery authored sunk into the ground (the
+ * k_lp_artfix seam pattern). Near-band terrain yields to them within the
+ * embed bound and their own faces never yield to a terrain key, so they
+ * render whole from every angle instead of the original's view-dependent
+ * piece-key roulette. The list is curated, because no geometric quantity
+ * separates an embedded prop from an actor standing just behind a crest.
+ * @param cls The moby's m_Class.
+ * @return 1 for a prop class, 0 otherwise. */
+static int moby_class_is_prop(uint16_t cls) {
+    switch (cls) {
+    case 250:   /* dragon-pedestal statue */
+    case 332:   /* dragon-pedestal base disc */
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+/** @brief Return the rank sentinel an unranked opaque actor face carries into the key contest.
+ *
+ * The contest reads the sentinel as the class whose arms to run: an actor
+ * face never yields to a prop key, and a prop face also never yields to a
+ * terrain key.
+ * @param prop Nonzero when the face belongs to a curated embedded prop.
+ * @return OPENPETE_SCENE_RANK_PROP for a prop face, else
+ *         OPENPETE_SCENE_RANK_ACTOR. */
+static float moby_actor_rank_marker(int prop) {
+    return prop ? OPENPETE_SCENE_RANK_PROP : OPENPETE_SCENE_RANK_ACTOR;
+}
+
 /** @brief Append the walk's moby triangles to the native scene, panel 0.
  *
  * Does nothing unless the moby render path is selected. Begins the scene for
@@ -6498,19 +6530,8 @@ static void push_scene_moby(void) {
               double key = mean - 128.0 * (double)dofs;
               if (key < 1.0) key = 1.0;      /* og floors the slot at 0 */
               t.koff = (float)(key + 0.5);
-              /* Embedded-PROP classes (the k_lp_artfix seam pattern):
-               * static scenery authored sunk into the ground — near-band
-               * terrain always yields to them within the embed bound, so
-               * they render whole from every angle instead of og's
-               * view-dependent piece-key roulette. Curated, because no
-               * geometric quantity separates an embedded prop from an
-               * actor standing just behind a crest. */
-              switch (s_wtri_cls[i]) {
-              case 250:   /* dragon-pedestal statue */
-              case 332:   /* dragon-pedestal base disc */
-                  t.prop = 1; break;
-              default: break;
-              }
+              /* Embedded-PROP classes: rendered whole from every angle. */
+              t.prop = moby_class_is_prop(s_wtri_cls[i]);
           } }
         /* Rank: the face's paint position while it intersects another face
          * of its moby (moby_face_rank). Mangled faces (near fixup / coordinate
@@ -6525,11 +6546,14 @@ static void push_scene_moby(void) {
             if (oi == rord_n && rord_n < 256) rord_moby[rord_n++] = s_wtri_moby[i];
             if (oi < 255) { t.rank = (float)rank; t.mordinal = oi + 1; }
         } else if (cat == OPENPETE_SCENE_ACTOR && t.blend == 0) {
-            /* Actor-fragment marker (rank -1, still "unranked" to every
-             * rank consumer): the key contest's prop-embed rule must fire
-             * on TERRAIN fragments only — a statue standing on its disc
-             * must never yield the pixel to it (psx_scene_key.frag). */
-            t.rank = -1.0f;
+            /* Actor-fragment marker (still "unranked" to every rank
+             * consumer): the key contest's prop-embed rule fires on
+             * TERRAIN fragments only, so a statue standing on its disc
+             * never yields the pixel to it (psx_scene_key.frag). A prop
+             * face carries the prop marker, which also skips the contest's
+             * terrain-key arm: terrain that yields to the prop is not
+             * yielded to in turn, which would leave the pixel to neither. */
+            t.rank = moby_actor_rank_marker(t.prop);
         }
         /* Per-instance material slot, resolved HERE rather than banked at
          * extraction. Slot ids are interned per feed cycle and this loop

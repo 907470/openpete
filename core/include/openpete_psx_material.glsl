@@ -305,6 +305,7 @@ void main()
                 op_key_from_stored(texelFetch(op_key_moby,    ivec2(gl_FragCoord.xy), 0).r),
                 own, koff,
                 vRank.x < -0.5,     /* unranked moby faces carry rank -1 */
+                op_rank_is_prop(vRank.x),
                 OP_MOBY_TRUESCOPE, OP_SLOT_CONTEST))
             discard;
     }

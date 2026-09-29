@@ -959,9 +959,15 @@ typedef struct {
 
 /* Rank sentinels for faces that are not ranked but must still be told
  * apart by the key contest (openpete_scene_tri::rank): -1 = an opaque
- * actor face, -2 = an additive glow fan. Every rank consumer reads both as
- * unranked; the contest reads them as the class whose arm to run. */
+ * actor face, -1.25 = an opaque actor face of an embedded prop, -2 = an
+ * additive glow fan. Every rank consumer reads all three as unranked; the
+ * contest reads them as the class whose arm to run. The prop sentinel sits
+ * on the actor side of every threshold (actor < -0.5, aura < -1.5), so a
+ * prop face runs the actor contest minus its terrain-key arm: terrain in
+ * front of a prop within the embed bound yields to it, and the prop never
+ * yields back. */
 #define OPENPETE_SCENE_RANK_ACTOR (-1.0f)
+#define OPENPETE_SCENE_RANK_PROP  (-1.25f)
 #define OPENPETE_SCENE_RANK_AURA  (-2.0f)
 
 /* ---- scene view-Z: the ONE named point (W0.7b) ------------------------------

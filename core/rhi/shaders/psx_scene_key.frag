@@ -115,6 +115,7 @@ void main()
                 op_key_from_stored(texelFetch(u_mobykey,  ivec2(gl_FragCoord.xy), 0).r),
                 own, koff,
                 vRank.x < -0.5,     /* unranked moby faces mark rank -1 */
+                op_rank_is_prop(vRank.x),
                 MOBY_TRUESCOPE, SLOT_CONTEST))
             discard;
     }

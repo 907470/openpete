@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 345278780a16afd15f3c9fbd36c3de241f8a1ca8
+# head: 7a6267288a868845cab1c4328acb6e6c1650d45e
 file	function	score	marked	accepted
 core/config/config.c	harvest_args	30	0	
 core/config/config.c	harvest_base	39	0	
@@ -138,7 +138,7 @@ games/common/renderer/moby.c	moby_reextract_body	48	0
 games/common/renderer/moby.c	moby_reveal_dbg	44	0	
 games/common/renderer/moby.c	project_all_records_inner	60	0	
 games/common/renderer/moby.c	project_all_shaded	183	0	
-games/common/renderer/moby.c	push_scene_moby	55	0	
+games/common/renderer/moby.c	push_scene_moby	52	0	
 games/common/renderer/moby.c	reextract_record_pass	215	0	
 games/common/renderer/moby.c	shaded_color_ab	35	0	
 games/common/renderer/moby.c	shaded_compose_euler	54	0	

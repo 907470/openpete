@@ -495,10 +495,24 @@ bool op_rank_loses(vec4 e, vec2 rank, float own_vz)
     return abs(e.a * 32640.0 - own_vz) < 384.0;
 }
 
+/* Whether a rank channel value carries the embedded-prop sentinel
+ * (OPENPETE_SCENE_RANK_PROP, -1.25): an unranked opaque face of a curated
+ * embedded prop. The sentinel reads as an actor (< -0.5) and not as an
+ * aura (< -1.5) at every other rank consumer. */
+bool op_rank_is_prop(float rank)
+{
+    return abs(rank + 1.25) < 0.125;
+}
+
 /* The key contest. koff is the face's key channel: positive = its absolute
  * OT key + 0.5 (OT-band terrain and moby faces); negative = near-band
  * terrain, contest-only, where the fragment's own view-Z is the limit.
- * actor = an unranked moby face. truescope = moby keys yield by the
+ * actor = an unranked moby face. prop = an actor face of a curated
+ * embedded prop, which never loses to a terrain key: terrain within the
+ * embed bound in front of it yields to it, terrain beyond the bound in
+ * front occludes it by true depth, terrain behind it loses by true depth.
+ * Without the exemption both sides of the embed rule discard and the pixel
+ * keeps whatever is behind them. truescope = moby keys yield by the
  * fragment's own true view-Z (the default; false restores the full
  * compound painter).
  *
@@ -514,7 +528,8 @@ bool op_rank_loses(vec4 e, vec2 rank, float own_vz)
  * wins the pixel. This carries dofs-0 pedestals at mid range, where the
  * original floated them on the ground's own push. */
 bool op_key_loses(float tkey, float akey, float mkey, float own,
-                  float koff, bool actor, bool truescope, bool slot_contest)
+                  float koff, bool actor, bool prop, bool truescope,
+                  bool slot_contest)
 {
     if (koff > 0.0) {
         float band = (koff - 0.5) - 64.0;      /* strict, by half an OT slot */
@@ -529,8 +544,9 @@ bool op_key_loses(float tkey, float akey, float mkey, float own,
              * fragment must never lose to its own key). */
             float own_slot = floor((koff - 0.5) / OP_KEY_SLOT);
             float t_slot   = op_key_bucket(tkey);
-            if (actor ? (t_slot <= own_slot) : (t_slot < own_slot)) return true;
-        } else if (tkey < band) return true;
+            if (!prop && (actor ? (t_slot <= own_slot) : (t_slot < own_slot)))
+                return true;
+        } else if (!prop && tkey < band) return true;
         if ((actor || !truescope) && akey < band &&
             (!truescope || akey < own - 64.0)) return true;
         return truescope && !actor && mkey < own + 1024.0;
