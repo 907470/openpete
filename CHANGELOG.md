@@ -35,7 +35,11 @@ code span renders as <code><a>...</a></code>.
   `games/<game>/corpus/<x>.manifest`; the oracle gate `check_psx_oracle.sh` moved with them,
   its flags, exit codes and golden capture unchanged
 
-## v0.4.1 - 2026-09-22 (Current)
+## v0.4.2 - 2026-09-29 (Current)
+
+- Spyro 1: Fixed Sparx, gems and other mobys near Spyro drawing behind him when they are in front of him
+
+## v0.4.1 - 2026-09-22
 
 - Spyro 1: Fixed the HUD eggs swimming between each other with interpolation active
 - Spyro 1: Fixed a black line along the bottom of the screen on the pause menu
