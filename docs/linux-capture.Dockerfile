@@ -17,6 +17,8 @@
 #   gcc / g++            the cc and c++ the build's mod-compile step invokes
 #   glslang-tools        glslangValidator compiles the renderer's shaders to
 #                        SPIR-V, which lavapipe executes
+#   spirv-tools          spirv-opt rewrites the terrain vertex stages to SSA
+#                        form after glslangValidator (core/rhi/CMakeLists.txt)
 #   Pillow, numpy (pip)  PNG decode for the diff, digest and identity legs;
 #                        numpy for the credits leg. The blessing host carries
 #                        them from pip (Pillow 12.0.0, numpy 2.2.6), not from
@@ -45,6 +47,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libllvm15=1:15.0.7-0ubuntu0.22.04.3 \
         libvulkan1=1.3.204.1-2 \
         glslang-tools=11.8.0+1.3.204.0-1 \
+        spirv-tools=2022.1+1.3.204.0-2 \
         libopenal-dev libasound2-dev libpulse-dev libsndio-dev \
         libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev \
         libxi-dev libxss-dev libxkbcommon-dev \

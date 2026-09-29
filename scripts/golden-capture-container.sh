@@ -180,7 +180,7 @@ case "$sub" in
         echo "engine: $("$ENGINE" --version)"
         run_in bash -c '
             dpkg-query -W -f "\${Package}\t\${Version}\n" \
-                mesa-vulkan-drivers libgl1-mesa-dri libegl-mesa0 libllvm15 libvulkan1 glslang-tools gcc-11 g++-11 gcc g++ cmake ninja-build python3
+                mesa-vulkan-drivers libgl1-mesa-dri libegl-mesa0 libllvm15 libvulkan1 glslang-tools spirv-tools gcc-11 g++-11 gcc g++ cmake ninja-build python3
             python3 -c "import PIL, numpy, tomli; print(\"Pillow\t\" + PIL.__version__); print(\"numpy\t\" + numpy.__version__)"
             gcc-11 --version | head -1'
         ;;

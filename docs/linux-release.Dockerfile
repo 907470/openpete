@@ -38,7 +38,7 @@ FROM debian:bullseye@sha256:6f519a81440354a85eb592c5f32109ab80605f6b892455983a6f
 # from Kitware's own apt repository rather than from a source build.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl gnupg git \
-        build-essential ninja-build pkg-config python3 python3-pip glslang-tools \
+        build-essential ninja-build pkg-config python3 python3-pip glslang-tools spirv-tools \
         libopenal-dev libasound2-dev libpulse-dev libsndio-dev \
         libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev \
         libxi-dev libxss-dev libxkbcommon-dev \

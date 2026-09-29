@@ -28,13 +28,37 @@ set(RHI_SHADER_INCLUDES ${RHI_SHADER_SRC_DIR}/psx_clut.glsl
                         ${RHI_SHADER_SRC_DIR}/psx_unorm8.glsl
                         ${RHI_SHADER_SRC_DIR}/psx_viewz.glsl
                         ${RHI_SHADER_SRC_DIR}/terrain_shade.glsl)
+# terrain.vert and its four variants are rewritten to SSA form after
+# glslangValidator: every function-local variable whose loads and stores are
+# whole-value is promoted to an SSA value (spirv-opt's local single-block and
+# single-store elimination, then ssa-rewrite). glslangValidator -V emits each
+# local as a Function-storage variable with explicit loads and stores. For
+# the cell-record variant the NVIDIA driver compiles that memory form of this
+# large fp64 stage into code whose output differs between executions of the
+# same draw on the same inputs: a record's cells land at wrong positions or
+# not at all for one present. The passes replace each load with the value
+# last stored (a phi where control flow merges) and drop the stores; no
+# arithmetic instruction is added, reordered or re-associated, and
+# NoContraction stays on every arithmetic result, so the SSA form is the same
+# computation, and the driver compiles it to a stage whose output is a
+# function of its inputs.
+find_program(SPIRV_OPT spirv-opt REQUIRED)
+set(RHI_TERRAIN_SSA_ARGS --eliminate-local-single-block
+                         --eliminate-local-single-store
+                         --ssa-rewrite)
 set(RHI_SHADER_SPV "")
 foreach(s IN LISTS RHI_SHADERS)
+    set(post "")
+    if(s STREQUAL "terrain.vert")
+        set(post COMMAND ${SPIRV_OPT} ${RHI_TERRAIN_SSA_ARGS}
+                         ${RHI_SHADER_OUT_DIR}/${s}.spv -o ${RHI_SHADER_OUT_DIR}/${s}.spv)
+    endif()
     add_custom_command(
         OUTPUT ${RHI_SHADER_OUT_DIR}/${s}.spv
         COMMAND ${GLSLANG_VALIDATOR} -V -I${RHI_SHADER_SRC_DIR}
                 ${RHI_SHADER_SRC_DIR}/${s}
                 -o ${RHI_SHADER_OUT_DIR}/${s}.spv
+        ${post}
         DEPENDS ${RHI_SHADER_SRC_DIR}/${s} ${RHI_SHADER_INCLUDES}
         COMMENT "glslangValidator ${s} -> ${s}.spv"
         VERBATIM)
@@ -47,6 +71,8 @@ add_custom_command(
     COMMAND ${GLSLANG_VALIDATOR} -V -I${RHI_SHADER_SRC_DIR} --define-macro TERRAIN_ANIM=1
             ${RHI_SHADER_SRC_DIR}/terrain.vert
             -o ${RHI_SHADER_OUT_DIR}/terrain_anim.vert.spv
+    COMMAND ${SPIRV_OPT} ${RHI_TERRAIN_SSA_ARGS}
+            ${RHI_SHADER_OUT_DIR}/terrain_anim.vert.spv -o ${RHI_SHADER_OUT_DIR}/terrain_anim.vert.spv
     DEPENDS ${RHI_SHADER_SRC_DIR}/terrain.vert ${RHI_SHADER_INCLUDES}
     COMMENT "glslangValidator terrain.vert (TERRAIN_ANIM) -> terrain_anim.vert.spv"
     VERBATIM)
@@ -58,6 +84,8 @@ add_custom_command(
     COMMAND ${GLSLANG_VALIDATOR} -V -I${RHI_SHADER_SRC_DIR} --define-macro TERRAIN_NEAR=1
             ${RHI_SHADER_SRC_DIR}/terrain.vert
             -o ${RHI_SHADER_OUT_DIR}/terrain_near.vert.spv
+    COMMAND ${SPIRV_OPT} ${RHI_TERRAIN_SSA_ARGS}
+            ${RHI_SHADER_OUT_DIR}/terrain_near.vert.spv -o ${RHI_SHADER_OUT_DIR}/terrain_near.vert.spv
     DEPENDS ${RHI_SHADER_SRC_DIR}/terrain.vert ${RHI_SHADER_INCLUDES}
     COMMENT "glslangValidator terrain.vert (TERRAIN_NEAR) -> terrain_near.vert.spv"
     VERBATIM)
@@ -72,6 +100,9 @@ foreach(v near anim)
         COMMAND ${GLSLANG_VALIDATOR} -V -I${RHI_SHADER_SRC_DIR}
                 --define-macro TERRAIN_CELLS=1 --define-macro TERRAIN_${V}=1
                 ${RHI_SHADER_SRC_DIR}/terrain.vert
+                -o ${RHI_SHADER_OUT_DIR}/terrain_cells_${v}.vert.spv
+        COMMAND ${SPIRV_OPT} ${RHI_TERRAIN_SSA_ARGS}
+                ${RHI_SHADER_OUT_DIR}/terrain_cells_${v}.vert.spv
                 -o ${RHI_SHADER_OUT_DIR}/terrain_cells_${v}.vert.spv
         DEPENDS ${RHI_SHADER_SRC_DIR}/terrain.vert ${RHI_SHADER_INCLUDES}
         COMMENT "glslangValidator terrain.vert (TERRAIN_CELLS, TERRAIN_${V}) -> terrain_cells_${v}.vert.spv"

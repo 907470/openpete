@@ -4,7 +4,7 @@
 
 ### Linux (Ubuntu / Debian-flavored)
 ```bash
-sudo apt install build-essential cmake ninja-build python3 glslang-tools \
+sudo apt install build-essential cmake ninja-build python3 glslang-tools spirv-tools \
                  libopenal-dev \
                  libavformat-dev libavcodec-dev libavutil-dev \
                  libswscale-dev libswresample-dev
@@ -24,6 +24,9 @@ What each is for:
   `find_program(GLSLANG_VALIDATOR glslangValidator REQUIRED)` — configure
   fails without it. The shaders compile to `.spv` on the host, so this is
   identical for native and cross builds.
+- `spirv-tools`: `core/rhi/CMakeLists.txt:45` does
+  `find_program(SPIRV_OPT spirv-opt REQUIRED)`; spirv-opt rewrites the
+  terrain vertex stages to SSA form after glslangValidator compiles them.
 - `libopenal-dev`: PsyCross calls `find_package(OpenAL REQUIRED)`
   (`third_party/PsyCross/CMakeLists.txt:51`). Cross builds use the
   vendored prebuilt at `third_party/OpenAL-mingw/` instead
@@ -378,6 +381,8 @@ reference's parse-failures page. It deletes and rewrites
 - `cmake: command not found`, or a version error. Minimum is 3.22.
 - Configure fails on `GLSLANG_VALIDATOR-NOTFOUND`. Install `glslang-tools`;
   `core/rhi/CMakeLists.txt:18` requires the binary on the host.
+- Configure fails on `SPIRV_OPT-NOTFOUND`. Install `spirv-tools`;
+  `core/rhi/CMakeLists.txt:45` requires `spirv-opt` on the host.
 - CMake cannot find `generated/PSX.EXE_full.c`. The recompiler outputs are
   gitignored — run the two generation steps above.
 - SDL fails to configure or build. Ensure the submodule is checked out
