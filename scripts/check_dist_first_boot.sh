@@ -239,6 +239,12 @@ echo "[dist-gate] full 20k oracle on the dist exe + self-built module..."
       --frame-limit 200000 > "$WORK/oracle.log" 2>&1 \
     || { echo "[dist-gate] FAIL: oracle divergence or crash" >&2;
          tail -20 "$WORK/oracle.log" >&2; exit 2; }
+# The verdict line is printed here because $WORK is removed on exit, and a
+# zero exit alone does not show that the replay reached its verdict.
+grep -E "psxtrace: (summary|verdict)" "$WORK/oracle.log" | tail -2 | sed 's/^/[dist-gate]   /'
+grep -q "verdict: PASS" "$WORK/oracle.log" \
+    || { echo "[dist-gate] FAIL: the oracle printed no 'verdict: PASS'" >&2;
+         tail -20 "$WORK/oracle.log" >&2; exit 2; }
 
 if [[ $APPIMAGE -eq 1 ]]; then
     echo "[dist-gate] warm boot re-attaches (module cache is mount-independent)..."

@@ -31,7 +31,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-IMAGE="${OPENPETE_RELEASE_IMAGE:-openpete-linux-release}"
+# The image is tagged with a hash of its Dockerfile, so an edited Dockerfile
+# names an image that does not exist yet and is built, rather than silently
+# reusing the one an older Dockerfile made.
+DOCKERFILE=docs/linux-release.Dockerfile
+IMAGE="${OPENPETE_RELEASE_IMAGE:-openpete-linux-release:$(sha256sum "$DOCKERFILE" | cut -c1-12)}"
 ENGINE="${OPENPETE_CONTAINER_ENGINE:-}"
 if [[ -z "$ENGINE" ]]; then
     for e in podman docker; do command -v "$e" >/dev/null && { ENGINE=$e; break; }; done
@@ -40,7 +44,7 @@ fi
 
 if ! "$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1; then
     echo "[release] building $IMAGE"
-    "$ENGINE" build -f docs/linux-release.Dockerfile -t "$IMAGE" .
+    "$ENGINE" build -f "$DOCKERFILE" -t "$IMAGE" docs
 fi
 
 scripts/setup_linux_clang.sh
@@ -69,8 +73,17 @@ fi
 # OPENPETE_DIST_VERSION names the artifact and sets the exe's version line
 # (CMake configure and package-dist.sh both read it); the container sees
 # only the variables passed with -e.
-env_args=(-e OPENPETE_NO_COMMITS=1)
-[[ -n "${OPENPETE_DIST_VERSION:-}" ]] && env_args+=(-e "OPENPETE_DIST_VERSION=$OPENPETE_DIST_VERSION")
+# The version is read on the host when the caller names none: in a git
+# worktree /src/.git is a file pointing at a gitdir outside the mount, so
+# `git describe` inside the container fails and the artifact would be named
+# `dev`.
+if [[ -z "${OPENPETE_DIST_VERSION:-}" ]]; then
+    OPENPETE_DIST_VERSION=$(git describe --tags --always --dirty 2>/dev/null || true)
+    [[ -n "$OPENPETE_DIST_VERSION" ]] \
+        || { echo "[release] git describe failed; set OPENPETE_DIST_VERSION" >&2; exit 64; }
+    echo "[release] OPENPETE_DIST_VERSION=$OPENPETE_DIST_VERSION (host git describe)"
+fi
+env_args=(-e OPENPETE_NO_COMMITS=1 -e "OPENPETE_DIST_VERSION=$OPENPETE_DIST_VERSION")
 
 # The release builds from nothing, in directories only the container uses.
 # The host tree's third_party/psxrecomp/build and build/linux-release-shared
