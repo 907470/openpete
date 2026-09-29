@@ -348,6 +348,25 @@ alongside. `CMakeLists.txt:49-55` forces `SDL_STATIC=ON`, `SDL_SHARED=OFF`,
 `SDL_TEST=OFF`, and `SDL_X11_XTEST=OFF` (openpete only polls input, never
 injects it, so disabling XTEST drops the `libXtst-dev` build dependency).
 
+## Documentation site
+
+The site config is `docs/mkdocs.yml`. The Developer section's
+`reference/` pages are generated from the doxygen comments and are not
+committed, so the generator runs before `mkdocs`:
+
+```
+cmake --build --preset linux-release --target code_docs   # or: python3 tools/gen_code_docs.py
+mkdocs build --strict -f docs/mkdocs.yml                  # writes build/docs-site/
+```
+
+The generator reads the linux-release compile database
+(`build/linux-release/compile_commands.json`, or `OPENPETE_DOCS_DB`) with
+the documentation ratchet's libclang parse (`scripts/fences/doc_ratchet.py`),
+so it needs a configured tree and libclang 14; a TU whose generated headers
+are not built yet still yields its functions and is listed on the
+reference's parse-failures page. It deletes and rewrites
+`docs/src/developer/reference/`.
+
 ## Troubleshooting
 
 - A preset knob is not taking effect. Knobs live in

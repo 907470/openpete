@@ -127,6 +127,36 @@ else()
         VERBATIM)
 endif()
 
+# Codebase reference pages for the documentation site (docs/mkdocs.yml).
+# Not part of ALL: `cmake --build --preset <preset> --target code_docs`
+# rewrites docs/src/developer/reference/ from the doxygen comments, parsed
+# by the documentation ratchet over this tree's compile database.
+# Stamp-guarded: it reruns when a scanned source or the generator changes.
+file(GLOB_RECURSE _code_docs_inputs CONFIGURE_DEPENDS
+     ${CMAKE_CURRENT_SOURCE_DIR}/core/*.c ${CMAKE_CURRENT_SOURCE_DIR}/core/*.cpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/core/*.h ${CMAKE_CURRENT_SOURCE_DIR}/core/*.hpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/games/*.c ${CMAKE_CURRENT_SOURCE_DIR}/games/*.cpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/games/*.h ${CMAKE_CURRENT_SOURCE_DIR}/games/*.hpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/games/*.inc)
+list(FILTER _code_docs_inputs EXCLUDE REGEX
+     "/(generated|third_party|build|mods-attic)/|/games/(spyro-1/spyro-1|spyro-2/spyro-2|spyro-3/spyro-3)/")
+set(_code_docs_stamp ${CMAKE_CURRENT_BINARY_DIR}/codedocs.stamp)
+add_custom_command(
+    OUTPUT  ${_code_docs_stamp}
+    COMMAND ${CMAKE_COMMAND} -E env
+            OPENPETE_DOCS_DB=${CMAKE_BINARY_DIR}/compile_commands.json
+            python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_code_docs.py
+    COMMAND ${CMAKE_COMMAND} -E touch ${_code_docs_stamp}
+    DEPENDS ${_code_docs_inputs}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_code_docs.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/doc_ratchet.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/ratchet_lib.py
+            ${CMAKE_BINARY_DIR}/compile_commands.json
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    COMMENT "Generating the codebase reference (gen_code_docs.py)"
+    VERBATIM)
+add_custom_target(code_docs DEPENDS ${_code_docs_stamp})
+
 foreach(game IN LISTS OPENPETE_GAMES)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/games/${game}/CMakeLists.txt")
         add_subdirectory(games/${game})

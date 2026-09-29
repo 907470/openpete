@@ -2,6 +2,8 @@
 # Developer, Spyro). No CMake target or packaging step reads it.
 #   mkdocs serve -f docs/mkdocs.yml            live preview
 #   mkdocs build --strict -f docs/mkdocs.yml   build to build/docs-site/
+# Run `python3 tools/gen_code_docs.py` (or the `code_docs` CMake target)
+# first: it writes developer/reference/, which the nav names and git ignores.
 # Modding is a navigation link to the published site; its source stays
 # under docs/modding/ with its own mkdocs.yml.
 
@@ -13,6 +15,9 @@ use_directory_urls: false
 # The docs map is an input of the docs tooling, not a page.
 exclude_docs: |
   user/pages.toml
+# The generated reference links its pages from its own index.
+not_in_nav: |
+  /developer/reference/**
 
 theme:
   name: material
@@ -115,6 +120,7 @@ nav:
       - developer/README.md
       - Architecture: developer/architecture.md
       - Building: developer/building.md
+      - Reference: developer/reference/index.md
       - Unattended runs: developer/unattended-runs.md
       - Recording video: developer/recording-video.md
       - Adding a game: developer/adding-a-game.md
