@@ -267,3 +267,7 @@ crystal_flight | pos=(130240, 115736, 218978) yaw=0 pitch=992
 # gnorc_gnexus ground terrain missing: some ground sectors in view do not
 # render at this pose (user report 2026-09-28); blessed pre-fix.
 gnorc_gnexus | pos=(77512, 70274, 9034) yaw=2354 pitch=205
+# peace_keepers dragon pedestal renders the level background colour: the
+# pedestal's faces are missing or keyed behind the backdrop at this pose
+# (user report 2026-09-29); blessed pre-fix.
+peace_keepers | pos=(36639, 111464, 54580) yaw=1798 pitch=10
