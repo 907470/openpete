@@ -15,7 +15,11 @@ directories, and shows them as images. Three views:
              tests/harness/presentation-corpus-diff.py, sorted by pixel count
              descending; filtered by a pixel floor, by leg and by corpus row;
              each row opens a reference | candidate | heat panel and carries a
-             checkbox that adds its tile name to the promote list.
+             checkbox that adds its tile name to the promote list. With og
+             naming a directory of PsyCross captures
+             (<row>[__lodext]__canon__<vbl>-og.png), the panel adds the -og
+             tile of the row's VBL, or of the VBL before it (the tick an
+             intermediate tile sits after).
   history    two revisions (a, default HEAD~1; b, default HEAD) resolved with
              golden-at's tiers (store, archive, materialize price): the rows
              whose digest differs with the same panel, and the rows one side
@@ -48,7 +52,7 @@ tracked tiles of a revision before the cutover.
 Usage:
   tools/golden-browser.py [--port N] [--promote-dir DIR]
   tools/golden-browser.py --once VIEW --out FILE [--game G] [--tier T]
-        [--cand DIR] [--a REV] [--b REV] [--q S] [--leg L] [--floor N]
+        [--cand DIR] [--og DIR] [--a REV] [--b REV] [--q S] [--leg L] [--floor N]
         [--row S]
 --once renders one view to a static HTML file with file:// images (thumbnails
 generated eagerly) and writes FILE.rows.tsv, the listed rows, for a headless
@@ -258,12 +262,28 @@ def pixel_diff(ref_src, cand_src, a_dig, b_dig):
             "heat": heat if res[1] else None}
 
 
+def og_tile(ogdir, tile):
+    """The -og capture beside a tile: the canon -og tile of its VBL, else of
+    the VBL before it. Returns (path, vbl) or (None, None)."""
+    meta = tile_meta(tile)
+    if not meta["vbl"].isdigit():
+        return None, None
+    stem = tile[:-len("-vk.png")].rsplit("__", 2)[0]
+    for v in (int(meta["vbl"]), int(meta["vbl"]) - 1):
+        path = os.path.join(ogdir, "%s__canon__%d-og.png" % (stem, v))
+        if os.path.isfile(path):
+            return path, v
+    return None, None
+
+
 def candidate_rows(p, ctx):
     """Divergent rows of a candidate directory against its manifest, each
     with its diff and panel sources. Returns (rows, summary, error)."""
     cand = p["cand"] or default_candidate(p["game"], p["tier"])
     cand = os.path.join(ROOT, cand) if not os.path.isabs(cand) else cand
     p["cand"] = cand
+    ogdir = p["og"] and (p["og"] if os.path.isabs(p["og"])
+                         else os.path.join(ROOT, p["og"]))
     if not os.path.isdir(cand):
         return [], None, "no candidate directory %s" % cand
     m, err = load_manifest(p["game"], p["tier"])
@@ -284,6 +304,10 @@ def candidate_rows(p, ctx):
         ent = dict(row, **tile_meta(t))
         ent["cand_digest"] = got[0] if got else None
         ent["cand_src"] = ctx.file(path)
+        if ogdir:
+            ogp, ogv = og_tile(ogdir, t)
+            if ogp:
+                ent["og_src"], ent["og_vbl"] = ctx.file(ogp), ogv
         if got is None:
             ent["note"] = "undecodable candidate tile"
             rows.append(ent)
@@ -720,10 +744,12 @@ def render_candidate(p, ctx, static, pdir):
     rows, summ, err = candidate_rows(p, ctx)
     form = "" if static else (
         "<form action=/candidate>%s <input name=cand size=48 value='%s' "
-        "placeholder='candidate dir'> floor <input name=floor size=6 "
+        "placeholder='candidate dir'> <input name=og size=32 value='%s' "
+        "placeholder='-og dir (optional)'> floor <input name=floor size=6 "
         "value='%s'> %s <input name=row value='%s' placeholder='corpus row'> "
         "<button>show</button></form>" % (
-            game_tier_select(p), E(p["cand"] or ""), p["floor"] or "",
+            game_tier_select(p), E(p["cand"] or ""), E(p["og"]),
+            p["floor"] or "",
             select("leg", p["leg"], ["", "canon", "inter"]), E(p["row"])))
     if err:
         return page("candidate review", form + "<p>%s</p>" % E(err),
@@ -746,11 +772,12 @@ def render_candidate(p, ctx, static, pdir):
         panel = ""
         if e.get("ref_src"):
             panel = "<details%s><summary>panel</summary><div class=panel>" \
-                "%s%s%s</div></details>" % (
+                "%s%s%s%s</div></details>" % (
                     " open" if n == 0 else "",
                     figure(e["ref_src"], "reference (%s)" % e["where"]),
                     figure(e["cand_src"], "candidate"),
-                    figure(e.get("heat_src"), "heat x8"))
+                    figure(e.get("heat_src"), "heat x8"),
+                    figure(e.get("og_src"), "-og (VBL %s)" % e.get("og_vbl")))
         trs.append("<tr><td>%s</td><td>%s%s</td>%s<td>%s</td></tr>" % (
             cb, E(e["tile"]), panel, meta_cells(e), E(diff_text(e))))
     body = form + head + "<table><tr><th>promote</th><th>tile</th><th>row" \
@@ -829,7 +856,7 @@ def params(q):
         floor = 0
     p = {"game": game, "tier": tier or "presentation", "q": q.get("q", ""),
          "leg": q.get("leg", ""), "row": q.get("row", ""),
-         "cand": q.get("cand", ""), "floor": floor,
+         "cand": q.get("cand", ""), "og": q.get("og", ""), "floor": floor,
          "a": q.get("a") or "HEAD~1", "b": q.get("b") or "HEAD"}
     return p
 
@@ -950,7 +977,7 @@ def once(a, pdir):
     assets = out + ".assets"
     os.makedirs(assets, exist_ok=True)
     q = {k: v for k, v in vars(a).items()
-         if k in ("game", "tier", "cand", "a", "b", "q", "leg", "row")
+         if k in ("game", "tier", "cand", "og", "a", "b", "q", "leg", "row")
          and v is not None}
     q["floor"] = str(a.floor or 0)
     doc, listed = render(a.once, params(q), Ctx(static_dir=assets), True,
@@ -975,7 +1002,7 @@ def main():
                                                           "golden-browser"))
     ap.add_argument("--once", choices=("current", "candidate", "history"))
     ap.add_argument("--out")
-    for k in ("game", "tier", "cand", "a", "b", "q", "leg", "row"):
+    for k in ("game", "tier", "cand", "og", "a", "b", "q", "leg", "row"):
         ap.add_argument("--" + k)
     ap.add_argument("--floor", type=int)
     a = ap.parse_args()
