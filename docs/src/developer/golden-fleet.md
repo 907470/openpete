@@ -27,6 +27,7 @@ transport = "local"
 fleet_root = "~/.cache/openpete-fleet"
 slots = 4
 speed = 1.00
+calib_s = 270
 calibrated = "2026-01-01 governor=performance cpu=AMD Ryzen 9 7950X"
 enabled = true
 default = true
@@ -39,6 +40,7 @@ ssh = "user@box2"
 engine = "podman"
 slots = 2
 speed = 0.45
+calib_s = 600
 calibrated = "2026-01-01 governor=performance cpu=Intel Core i5-8400"
 enabled = true
 default = true
@@ -52,29 +54,51 @@ build = true
 | `fleet_root` | string | Directory holding every fleet file on the host; `~` resolves on the host. Default `~/.cache/openpete-fleet`. |
 | `engine` | string | `"podman"` or `"docker"`. Default: the first of the two found on the host. |
 | `slots` | integer | `CORPUS_JOBS` for a unit on the host (at least 1). Written by `add`. |
-| `speed` | float | Throughput relative to the local host (local is 1.00). Written by `add`. Scales leg timeouts, deadlines and placement. |
-| `calibrated` | string | `YYYY-MM-DD governor=G cpu=MODEL`, written by `add`. A host without `governor=` here, or whose current governor differs, is dropped by preflight. |
+| `speed` | float | Throughput relative to the local host (local is 1.00). Written by `add` and `calibrate`. Scales leg timeouts, deadlines and placement. |
+| `calib_s` | integer | Wall time in seconds of the calibration unit at `slots`. Written by `add` and `calibrate`; the local host's is `t_local` for every remote host's `speed`. |
+| `calibrated` | string | `YYYY-MM-DD governor=G cpu=MODEL`, written by `add` and `calibrate`. A host without `governor=` here, or whose current governor differs, is dropped by preflight. |
 | `enabled` | boolean | `false`: the host is never used. Default `true`. |
 | `default` | boolean | `true`: the host joins every run that names no `--hosts`. Default `true`. |
 | `build` | boolean | The host may build the engine for a run. Default `true`. |
 | `nice` | integer | CPU priority of units on the host. Default 19 on the local host, 0 on a remote host when absent; `add local` writes 19. |
 
-Only `add` writes the file. It replaces the named host's table and keeps
-every other line. The parser accepts strings, integers, floats and
-booleans; any other table, key or type exits 1 naming the line or key.
+Only `add` and `calibrate` write the file. Each replaces the named host's
+table and keeps every other line. The parser accepts strings, integers,
+floats and booleans; any other table, key or type exits 1 naming the line
+or key.
 
-`slots` and `speed` are measured, not chosen. `add` sweeps the spyro-2
-presentation unit at slots 1, 2, 4, ... up to the host's core count while
-sampling `MemAvailable` once a second. `slots` is the smallest sweep value
-past which wall time improves by under 10%, lowered while the leg's minimum
-`MemAvailable` falls under 2 GiB. For a remote host, `speed` is
-`t_local / t_host`, where `t_local` is the same unit on the local host at
-its recorded slots with the local machine idle (1-minute load average at
-most `max(1, 0.1 x cores)` before the leg and, 90 s after it, at most that
-bound plus a quarter of the load at the leg's end; a loaded leg is retried
-up to 3 times). `add local` records speed 1.00. The measured sweep runs on
-the local host only: `add <name> --ssh ...` without `--timings` exits 64,
-and a remote host's legs are supplied as a JSON file:
+`slots`, `speed` and `calib_s` are measured, not chosen. `add` measures a
+host with the machinery of `run` (preflight without the calibration
+requirement, the host's `clean`, image shipping, the build on the local
+host, the positive sync set into `runs/<run-id>/tree` and a detached
+supervisor per leg under the host golden lock). Each leg is the spyro-2
+presentation unit (capture, then `--verdict-only`) at one slots value, with
+`LP_NUM_THREADS = max(1, cores // slots)` and `MemAvailable` sampled once
+a second on the host. A leg whose report compares fewer than every blessed
+row, or lists a missing tile, ends the `add` with exit 1 after printing the
+tails of the leg's logs.
+
+The sweep runs slots 1, 2, 4, ... up to the host's core count (on the local
+host, up to `MemAvailable / 2 GiB`) and stops at the first step that
+improves wall time by under 10% or whose leg's minimum `MemAvailable` falls
+under 2 GiB. `slots` is the smallest sweep value past which wall time
+improves by under 10%, lowered while the leg's minimum `MemAvailable` is
+under 2 GiB; `calib_s` is the leg's wall time at that value. For a remote
+host, `speed` is `t_local / t_host`, where `t_local` is the local host's
+`calib_s`. When the local host has none, the same `add` runs a local leg at
+the local `slots` beside the remote sweep and writes the local `calib_s`
+too. `add local` records speed 1.00. `add` prints its wall time.
+
+A local leg counts only with the local machine idle: the 1-minute load
+average at most `max(1, 0.1 x cores)` before the leg (waited for up to
+600 s) and, 90 s after it, at most that bound plus a quarter of the load at
+the leg's end. A loaded leg is discarded and re-run; the third loaded leg
+at one slots value ends the `add` with exit 64.
+
+`--dry-run` preflights, prints the build host and every planned leg, and
+writes nothing. `--timings FILE` applies the rules to recorded legs, ships
+no image and runs nothing; `"local"` is optional, and without it `t_local`
+is the local host's `calib_s`:
 
 ```json
 {"cores": 8,
@@ -83,6 +107,14 @@ and a remote host's legs are supplied as a JSON file:
             "load_end": 22.0, "load_after": 5.1}]}
 ```
 
+`calibrate` runs one leg at each host's recorded `slots` (`--hosts`, else
+every enabled host; the local one under the idle rule) through the same
+machinery, in parallel across hosts, and rewrites `speed`, `calib_s` and
+`calibrated`. It records the current governor, so it clears a governor
+mismatch that preflight reports. A leg whose minimum `MemAvailable` falls
+under 2 GiB prints that `add` re-measures `slots`; `calibrate` never
+changes `slots`.
+
 ## Commands
 
 Run from the checkout (or a worktree) whose working copy is to be gated.
@@ -90,10 +122,14 @@ Run from the checkout (or a worktree) whose working copy is to be gated.
 ```sh
 # Record the local host (measured sweep, takes the local golden lock).
 scripts/golden-fleet.py add local
-# Record a remote host from legs measured by hand; --dry-run prints every
-# command a measured run would execute and writes nothing.
-scripts/golden-fleet.py add box2 --ssh user@box2 --engine podman \
-  --timings box2-legs.json
+# Record a remote host (measured sweep on it; a local leg too when the local
+# host has no calib_s); --dry-run prints every planned leg and writes nothing.
+scripts/golden-fleet.py add box2 --ssh user@box2 --engine podman
+# Apply the rules to legs measured elsewhere.
+scripts/golden-fleet.py add box2 --ssh user@box2 --timings box2-legs.json
+# Re-measure speed at the recorded slots on every enabled host.
+scripts/golden-fleet.py calibrate
+scripts/golden-fleet.py calibrate --hosts box2
 # Reachability, engine, :fleet image Id against the local image, image.id,
 # golden lock and its holder, governor, calibration, free space, fleet_root size.
 scripts/golden-fleet.py status
@@ -243,10 +279,10 @@ host, attempt and wall time.
     active.lock          held shared by the coordinator and supervisors
     ship/                supervise.sh, fields-<game>.txt, binaries.sha256
     tree/                the snapshot units run in
-    u-<job>/             attempt-N.pid, attempt-N.done, capture.log,
-                         verdict.log, store/, cand/
+    u-<job>/             attempt-N.pid, attempt-N.done, attempt-N.memavail,
+                         capture.log, verdict.log, store/, cand/
+                         (calibration legs: u-calib-<host>-s<slots>-<n>/)
     helpers.tsv          dbus-daemon helpers started during a job
-  calib/                 add local: the calibration unit's store and candidates
 ```
 
 `<key>` is the first 16 hex digits of the SHA-256 of the coordinator's
@@ -301,12 +337,13 @@ set by hand does not reach a unit.
 |---|---|
 | `SKIP: no host file ...` | Create it with `scripts/golden-fleet.py add local`. |
 | `dropped: not calibrated (no governor= in calibrated); run add` | Run `add` for the host. |
-| `dropped: governor X, calibrated at Y` | Restore the governor, or re-run `add` to recalibrate. |
+| `dropped: governor X, calibrated at Y` | Restore the governor, or run `calibrate --hosts <host>` to recalibrate under the new one. |
 | `dropped: golden lock held: <holder>` | Another golden runs on that host; the holder record names it. |
 | `dropped: free space ... need ... (image ships)` | Free space under `fleet_root`, or run `clean`. |
 | `local image ... was built from recipe ..., the tree's is ...` | Rebuild it: `scripts/golden-capture-container.sh image`. |
-| `a measured remote sweep needs the snapshot sync ...` | Pass `add <name> --ssh ... --timings FILE`. |
-| `no local host in the host file; run add local first` | `add` of a remote host needs the local host's slots. |
+| `no local host with recorded slots in the host file; run add local first` | `add` of a remote host needs the local host's slots. |
+| `local: 3 loaded legs at slots N; the machine is not idle` | The local machine was busy through three legs; rerun when it is idle. |
+| `leg calib-... compared N of M blessed rows, K missing; not a full unit` | A capture leg timed out or failed; the `add` printed the tails of the leg's `capture.log` and `verdict.log` before deleting the run directory. |
 | `torn sync: <host> snapshot differs from ...` | The checkout changed during the sync; rerun when no edit or build is in flight. |
 | `synced <file> hashes to ..., blessed header disc-... is ...` | The disc image differs from the one the golden was blessed on. |
 | `canary: REFUSED: N of M tile(s) differ between ...` | The hosts render differently; take the named host out (`enabled = false`) until the difference is explained. |

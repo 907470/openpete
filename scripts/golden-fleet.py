@@ -7,6 +7,7 @@
     golden-fleet.py add local [--dry-run] [--timings FILE]
     golden-fleet.py add <name> --ssh user@host [--engine podman|docker]
                     [--fleet-root DIR] [--dry-run] [--timings FILE]
+    golden-fleet.py calibrate [--hosts a,b] [--dry-run]
     golden-fleet.py run [--game G | --all] [--tier T | --all-tiers]
                     [--hosts a,b | --no-local] [--pull divergent|all] [--wait]
     golden-fleet.py clean [--hosts a,b] [--tree PATH | --all]
@@ -22,13 +23,14 @@ fleet-hosts.toml`, the main checkout resolved through `git rev-parse
     engine = "podman" | "docker"    # default: the first found on the host
     slots = N                       # CORPUS_JOBS on the host, measured by add
     speed = F                       # throughput relative to local (1.00)
+    calib_s = N                     # calibration unit's wall time at slots (s)
     calibrated = "YYYY-MM-DD governor=G cpu=MODEL"
     enabled = true                  # false: never used
     default = true                  # in every run unless opted out
     build = true                    # may build the engine for a run
     nice = 19                       # CPU priority of units on the host
 
-Only `add` writes the file: it replaces the named host's table and keeps
+Only `add` and `calibrate` write the file: it replaces the named host's table and keeps
 every other line. A missing host file makes status and preflight exit 64
 naming the `add` command; a malformed one exits 1 naming the line or key.
 
@@ -50,28 +52,48 @@ local image's, streams `<engine> save` into `ssh host <engine> load`, tags
 the loaded Id :fleet and writes <fleet_root>/image.id. No label is added,
 since a label changes the image config and so its Id.
 
-add: preflights the host (calibration not required), ships the image,
-then sweeps the spyro-2 presentation unit at slots 1, 2, 4, ... up to the
-host's core count while sampling MemAvailable at 1 Hz. The rule: slots is
-the smallest sweep value past which wall-clock improves by less than 10%,
-lowered while the minimum MemAvailable during its leg is under 2 GiB. For
-a remote host, speed = t_local / t_host, t_local being the same unit on
-this machine at the local host's recorded slots with this machine idle
-(the 1-minute load average at most max(1, 0.1 x cores) before the leg,
-and, 90 s after it ends, at most that bound plus a quarter of the load at
-its end; a loaded measurement is discarded and retried up to 3 times).
-`add local` records speed 1.00. The host's table is then written with
-slots, speed and calibrated (date, governor, CPU model).
+add: measures a host with run's machinery (steps 1-3 below: preflight
+without the calibration requirement, the host's clean and image ship, the
+build on the local host and the positive sync set into
+runs/<run-id>/tree on each measured host, and each leg's detached
+supervisor, under the host golden lock on an ssh host and the coordinator's
+on the local one). Each leg is the spyro-2 presentation unit (capture, then
+--verdict-only) at one slots value, with LP_NUM_THREADS = max(1, cores //
+slots) and MemAvailable sampled at 1 Hz on the host; a leg whose report
+compares fewer than every blessed row or lists a missing tile ends the add.
+The sweep runs slots 1, 2, 4, ... up to the host's core count and stops at
+the first step improving under 10% or a leg whose minimum MemAvailable is
+under 2 GiB. The rule: slots is the smallest sweep value past which
+wall-clock improves by less than 10%, lowered while the minimum
+MemAvailable during its leg is under 2 GiB. calib_s is the leg's wall time
+at that slots. For an ssh host, speed = t_local / t_host, t_local being the
+local host's calib_s; when the local host has none, a leg at its recorded
+slots runs beside the sweep and its calib_s is written too. A local leg
+counts only with this machine idle: the 1-minute load average at most
+max(1, 0.1 x cores) before the leg (waited for up to 600 s) and, 90 s after
+it ends, at most that bound plus a quarter of the load at its end; a
+loaded leg is discarded and re-run, and the third loaded leg at one slots
+value ends the add (64). `add local` records speed 1.00. The host's table
+is then written with slots, speed, calib_s and calibrated (date, governor,
+CPU model), and the add's wall time is printed.
 
---timings FILE replaces the measurement with recorded legs (JSON):
+--dry-run preflights and prints the build host and every planned leg, and
+writes nothing. --timings FILE replaces the measurement with recorded legs
+(JSON), ships no image and runs nothing:
 
     {"cores": 8,
      "sweep": [{"slots": 1, "wall_s": 1500, "min_memavail_kib": 9000000}, ...],
      "local": [{"slots": 4, "wall_s": 270, "load_before": 0.4,
                 "load_end": 22.0, "load_after": 5.1}, ...]}
 
-and ships no image; with --dry-run nothing is written and every command a
-measured run would execute is printed with the decision.
+"local" is optional; without it t_local is the local host's calib_s.
+
+calibrate: runs one leg at each host's recorded slots (--hosts, else every
+enabled host; the local one under the idle rule) through the same
+machinery, in parallel across hosts, and rewrites speed, calib_s and
+calibrated; the governor is re-recorded, so a governor change is cleared by
+calibrate. A leg under 2 GiB MemAvailable prints that `add` re-measures
+slots. t_local is this calibration's local leg, else the local calib_s.
 
 run: gates this checkout's working copy on the fleet and never blesses or
 promotes. It detaches (setsid; the log and done marker are
@@ -151,7 +173,6 @@ import shutil
 import signal
 import subprocess
 import sys
-import threading
 import time
 
 IMAGE_TAG = "openpete-linux-capture:fleet"
@@ -197,10 +218,10 @@ RUN_KEEP = ("coordinator.log", "done", "active.lock")
 
 HOST_KEYS = {
     "transport": str, "ssh": str, "fleet_root": str, "engine": str,
-    "slots": int, "speed": float, "calibrated": str, "enabled": bool,
+    "slots": int, "speed": float, "calib_s": int, "calibrated": str, "enabled": bool,
     "default": bool, "build": bool, "nice": int,
 }
-KEY_ORDER = ["transport", "ssh", "fleet_root", "engine", "slots", "speed",
+KEY_ORDER = ["transport", "ssh", "fleet_root", "engine", "slots", "speed", "calib_s",
              "calibrated", "enabled", "default", "build", "nice"]
 
 
@@ -755,126 +776,9 @@ def pick_t_local(legs, cores):
     raise FleetError(f"no idle local leg in {len(legs)} attempts")
 
 
-class MemSampler(threading.Thread):
-    """Samples local MemAvailable at 1 Hz and keeps the minimum."""
-
-    def __init__(self):
-        """Start with no minimum and a stop event."""
-        super().__init__(daemon=True)
-        self.min_kib = None
-        self.stop = threading.Event()
-
-    def run(self):
-        """Read /proc/meminfo once a second until stopped."""
-        while not self.stop.is_set():
-            kib = read_memavail_kib()
-            self.min_kib = kib if self.min_kib is None else min(self.min_kib, kib)
-            self.stop.wait(1.0)
-
-
-def read_memavail_kib():
-    """Return the local MemAvailable in KiB."""
-    with open("/proc/meminfo") as f:
-        for line in f:
-            if line.startswith("MemAvailable:"):
-                return int(line.split()[1])
-    raise FleetError("no MemAvailable in /proc/meminfo")
-
-
 def loadavg1():
     """Return the local 1-minute load average."""
     return os.getloadavg()[0]
-
-
-def local_leg_env(root, slots):
-    """Return the environment of a local calibration leg under <root>/calib."""
-    calib = os.path.join(root, "calib")
-    env = dict(os.environ)
-    env.update({
-        "CORPUS_JOBS": str(slots),
-        "LP_NUM_THREADS": lp_threads({}, slots),
-        "OPENPETE_CAPTURE_IMAGE": IMAGE_TAG,
-        "OPENPETE_FLEET_ROOT": root,
-        "OPENPETE_GOLDEN_LOCK_HELD": os.path.join(root, "golden.lock"),
-        "OPENPETE_GOLDEN_REF_DIR": os.path.join(calib, "store"),
-        "PRESENTATION_GOLDEN_OUT": os.path.join(calib, "out"),
-    })
-    return env
-
-
-def local_leg_argv(nice):
-    """Return the argv of one local calibration leg (the calibration unit's harness)."""
-    return ["nice", "-n", str(nice), "tests/harness/check_presentation_golden.sh",
-            "--game", CALIBRATION_GAME]
-
-
-def run_local_leg(tree, root, slots, nice):
-    """Run the calibration unit locally at `slots`; return the leg's measurements."""
-    env = local_leg_env(root, slots)
-    out = env["PRESENTATION_GOLDEN_OUT"]
-    subprocess.run(["rm", "-rf", out], check=True)
-    sampler = MemSampler()
-    load_before = loadavg1()
-    sampler.start()
-    t0 = time.monotonic()
-    rc = subprocess.run(local_leg_argv(nice), cwd=tree, env=env).returncode
-    wall = time.monotonic() - t0
-    sampler.stop.set()
-    sampler.join()
-    load_end = loadavg1()
-    report = os.path.join(out, "verdict-report.txt")
-    if rc not in (0, 1) or not os.path.exists(report):
-        raise FleetError(f"calibration leg at slots {slots} exited {rc} "
-                         f"({'no' if not os.path.exists(report) else 'with'} {report})")
-    time.sleep(IDLE_SETTLE_S)
-    return {"slots": slots, "wall_s": wall, "rc": rc, "min_memavail_kib": sampler.min_kib,
-            "load_before": load_before, "load_end": load_end, "load_after": loadavg1()}
-
-
-def measure_sweep(host, info, tree, dry_run):
-    """Run or print the slots sweep on a host; return legs (empty under dry-run)."""
-    cores = int(info["nproc"])
-    root = info["root"]
-    legs = []
-    for s in sweep_values(cores):
-        env = local_leg_env(root, s)
-        shown = " ".join(f"{k}={shlex.quote(env[k])}" for k in (
-            "CORPUS_JOBS", "OPENPETE_CAPTURE_IMAGE", "OPENPETE_FLEET_ROOT",
-            "OPENPETE_GOLDEN_LOCK_HELD", "OPENPETE_GOLDEN_REF_DIR", "PRESENTATION_GOLDEN_OUT"))
-        if not host.local:
-            print(f"[fleet] {host.name} slots {s}: needs the snapshot sync and remote "
-                  f"unit supervisor that `run` provides; leg not runnable yet")
-            continue
-        print(f"[fleet] {host.name} slots {s}: (cd {tree} && {shown} "
-              f"{shlex.join(local_leg_argv(host.cfg.get('nice', 19)))}) + MemAvailable 1 Hz")
-        if dry_run:
-            continue
-        legs.append(run_local_leg(tree, root, s, host.cfg.get("nice", 19)))
-        print(f"[fleet] slots {s}: {legs[-1]['wall_s']:.0f} s, min MemAvailable "
-              f"{legs[-1]['min_memavail_kib'] / GIB_KIB:.2f} GiB, verdict rc {legs[-1]['rc']}")
-        if sweep_should_stop(legs):
-            break
-    return legs
-
-
-def measure_t_local(local_host, tree, dry_run):
-    """Run or print the local reference legs at the local host's slots until one is idle."""
-    root = expand_root(local_host.fleet_root)
-    slots = local_host.cfg.get("slots")
-    if slots is None:
-        raise FleetError("the local host has no recorded slots; run `add local` first")
-    cores = os.cpu_count()
-    print(f"[fleet] t_local: {CALIBRATION_GAME} at local slots {slots}, idle rule "
-          f"load <= {idle_bound(cores):.2f}, re-checked {IDLE_SETTLE_S} s after; "
-          f"up to {IDLE_RETRIES} attempts")
-    if dry_run:
-        return []
-    legs = []
-    for _ in range(IDLE_RETRIES):
-        legs.append(run_local_leg(tree, root, slots, local_host.cfg.get("nice", 19)))
-        if leg_is_idle(legs[-1], cores)[0]:
-            break
-    return legs
 
 
 # ---- commands ---------------------------------------------------------------
@@ -980,8 +884,61 @@ def new_host_cfg(a, existing):
     return cfg
 
 
+def calibrated_stamp(info):
+    """Return the `calibrated` value: date, governor and CPU model of a probe."""
+    return f"{datetime.date.today().isoformat()} governor={info['governor']} cpu={info['cpu']}"
+
+
+def find_local(hosts):
+    """Return the host file's local Host, or None."""
+    return next((Host(n, c) for n, c in hosts.items() if c["transport"] == "local"), None)
+
+
+def add_from_timings(a, path, hosts, host, cfg):
+    """Apply the slots rule and speed to recorded legs (--timings); write the table unless --dry-run."""
+    timings = json.load(open(a.timings))
+    (_h, info, reasons, _s), = preflight([host], need_bytes=CALIB_NEED_BYTES,
+                                         require_calibration=False)
+    reasons = [r for r in reasons if not r.startswith("golden lock held")]
+    for r in reasons:
+        print(f"[fleet] {host.name}: preflight: {r}")
+    if reasons:
+        raise FleetError(f"{host.name}: preflight failed", EXIT_SKIP)
+    cores = int(timings.get("cores") or info["nproc"])
+    print(f"[fleet] legs from {a.timings} (cores {cores}); sweep values {sweep_values(cores)}")
+    slots, t_host, why = pick_slots(timings["sweep"])
+    for w in why:
+        print(f"[fleet] rule: {w}")
+    speed = 1.0
+    if not host.local:
+        local = find_local(hosts)
+        if timings.get("local"):
+            t_local = pick_t_local(timings["local"], os.cpu_count())
+        elif local and local.cfg.get("calib_s"):
+            t_local = float(local.cfg["calib_s"])
+            print(f"[fleet] t_local {t_local:.0f} s: calib_s of [hosts.{local.name}]")
+        else:
+            raise FleetError("no local leg in --timings and no calib_s on a local host; "
+                             "run `add local` first")
+        speed = t_local / t_host
+        print(f"[fleet] speed = t_local {t_local:.0f} s / t_host {t_host:.0f} s = {speed:.2f}")
+    cfg.update(slots=slots, speed=round(speed, 2), calib_s=int(round(t_host)),
+               calibrated=calibrated_stamp(info))
+    return write_or_show(path, host.name, cfg, a.dry_run)
+
+
+def write_or_show(path, name, cfg, dry_run):
+    """Print a host table and write it into the host file unless dry_run."""
+    print(f"[fleet] {'would write' if dry_run else 'writing'} {path}:")
+    sys.stdout.write(format_table(name, cfg))
+    if not dry_run:
+        write_host_table(path, name, cfg)
+    return 0
+
+
 def cmd_add(a):
-    """Preflight, ship, sweep and record a host's slots, speed and calibration."""
+    """Measure a host through `run`'s machinery and record its slots, speed, calib_s and calibration."""
+    t0 = time.monotonic()
     path, hosts = load_hosts(required=False)
     if a.name != "local" and hosts.get(a.name, {}).get("transport") == "local":
         raise FleetError(f"{a.name} is the local host; use `add local`")
@@ -991,66 +948,83 @@ def cmd_add(a):
             raise FleetError(f"the host file already names a local host: {other[0]}")
     cfg = new_host_cfg(a, hosts.get(a.name))
     host = Host(a.name, cfg)
-    timings = json.load(open(a.timings)) if a.timings else None
-    measuring = timings is None
+    if a.timings:
+        return add_from_timings(a, path, hosts, host, cfg)
 
-    (_h, info, reasons, _s), = preflight([host], need_bytes=CALIB_NEED_BYTES,
-                                         require_calibration=False)
-    if a.dry_run or not measuring:
-        reasons = [r for r in reasons if not r.startswith("golden lock held")]
-    for r in reasons:
-        print(f"[fleet] {host.name}: preflight: {r}")
-    if reasons:
-        raise FleetError(f"{host.name}: preflight failed", EXIT_SKIP)
+    local = host if host.local else find_local(hosts)
+    if local is None or (not host.local and not local.cfg.get("slots")):
+        raise FleetError("no local host with recorded slots in the host file; run "
+                         "`add local` first", EXIT_SKIP)
+    plans, measure = {host.name: "sweep"}, [host]
+    if not host.local and not local.cfg.get("calib_s"):
+        plans[local.name] = local.cfg["slots"]
+        measure.append(local)
+        print(f"[fleet] {local.name} has no calib_s: t_local is measured in this add at "
+              f"slots {local.cfg['slots']}")
+    rc, co = run_calibration(local, measure, plans, a.dry_run)
+    if rc != 0 or a.dry_run:
+        return rc
 
-    tree = script_repo()
-    if measuring:
-        if not host.local and not a.dry_run:
-            raise FleetError(f"{host.name}: a measured remote sweep needs the snapshot sync "
-                             f"and unit supervisor that `run` provides; pass --timings FILE "
-                             f"with legs measured by hand", EXIT_SKIP)
-        lock_fd = None
-        if not a.dry_run:
-            lock_fd = try_golden_lock(info["root"])
-            if lock_fd is None:
-                raise FleetError(f"{host.name}: golden lock busy", EXIT_SKIP)
-        ship_image(host, info, dry_run=a.dry_run)
-        legs = measure_sweep(host, info, tree, a.dry_run)
-        local_legs = []
-        if not host.local:
-            local_host = next((Host(n, c) for n, c in hosts.items()
-                               if c["transport"] == "local"), None)
-            if local_host is None:
-                raise FleetError("no local host in the host file; run `add local` first")
-            local_legs = measure_t_local(local_host, tree, a.dry_run)
-        cores = int(info["nproc"])
-        if lock_fd is not None:
-            os.close(lock_fd)
-        if a.dry_run:
-            print("[fleet] dry run: no legs measured; pass --timings FILE to apply the rules")
-            return 0
-    else:
-        legs, local_legs = timings["sweep"], timings.get("local", [])
-        cores = int(timings.get("cores") or info["nproc"])
-        print(f"[fleet] legs from {a.timings} (cores {cores}); sweep values "
-              f"{sweep_values(cores)}")
-
-    slots, t_host, why = pick_slots(legs)
+    slots, t_host, why = pick_slots(co.legs[host.name])
     for w in why:
         print(f"[fleet] rule: {w}")
-    if host.local:
-        speed = 1.0
-    else:
-        t_local = pick_t_local(local_legs, os.cpu_count())
+    speed = 1.0
+    if not host.local:
+        if local.name in plans:
+            t_local = co.legs[local.name][-1]["wall_s"]
+            lcfg = dict(local.cfg, calib_s=int(round(t_local)))
+            write_or_show(path, local.name, lcfg, False)
+        else:
+            t_local = float(local.cfg["calib_s"])
+            print(f"[fleet] t_local {t_local:.0f} s: calib_s of [hosts.{local.name}]")
         speed = t_local / t_host
         print(f"[fleet] speed = t_local {t_local:.0f} s / t_host {t_host:.0f} s = {speed:.2f}")
-    date = datetime.date.today().isoformat()
-    cfg["slots"], cfg["speed"] = slots, round(speed, 2)
-    cfg["calibrated"] = f"{date} governor={info['governor']} cpu={info['cpu']}"
-    print(f"[fleet] {'would write' if a.dry_run else 'writing'} {path}:")
-    sys.stdout.write(format_table(a.name, cfg))
-    if not a.dry_run:
-        write_host_table(path, a.name, cfg)
+    cfg.update(slots=slots, speed=round(speed, 2), calib_s=int(round(t_host)),
+               calibrated=calibrated_stamp(co.infos[host.name]))
+    write_or_show(path, host.name, cfg, False)
+    print(f"[fleet] add {host.name}: wall time {time.monotonic() - t0:.0f} s")
+    return 0
+
+
+def cmd_calibrate(a):
+    """Re-run the calibration unit at each host's recorded slots; rewrite speed, calib_s and calibrated."""
+    t0 = time.monotonic()
+    path, hosts = load_hosts()
+    names = a.hosts.split(",") if a.hosts else [
+        n for n, c in hosts.items() if c.get("enabled", True)]
+    for n in names:
+        if n not in hosts:
+            raise FleetError(f"no host {n!r} in the host file (have: {', '.join(hosts)})")
+        if not hosts[n].get("slots"):
+            raise FleetError(f"{n}: no recorded slots; run `add {n}` first", EXIT_SKIP)
+    # The governor recorded in `calibrated` is what calibrate re-records, so
+    # preflight runs without it.
+    strip = {n: {k: v for k, v in c.items() if k != "calibrated"} for n, c in hosts.items()}
+    local = find_local(strip)
+    if local is None:
+        raise FleetError("no local host in the host file; run `add local` first", EXIT_SKIP)
+    measure = [local if n == local.name else Host(n, strip[n]) for n in names]
+    plans = {h.name: h.cfg["slots"] for h in measure}
+    rc, co = run_calibration(local, measure, plans, a.dry_run)
+    if rc != 0 or a.dry_run:
+        return rc
+    if local.name in plans:
+        t_local = co.legs[local.name][-1]["wall_s"]
+    elif local.cfg.get("calib_s"):
+        t_local = float(local.cfg["calib_s"])
+    else:
+        raise FleetError(f"{local.name} has no calib_s and was not calibrated; include it")
+    for h in measure:
+        leg = co.legs[h.name][-1]
+        if leg["min_memavail_kib"] < MEM_PER_SLOT_KIB:
+            print(f"[fleet] {h.name}: min MemAvailable {leg['min_memavail_kib'] / GIB_KIB:.2f} "
+                  f"GiB under 2 GiB at slots {leg['slots']}; `add {h.name}` re-measures slots")
+        speed = 1.0 if h.local else t_local / leg["wall_s"]
+        print(f"[fleet] {h.name}: slots {leg['slots']}, {leg['wall_s']:.0f} s, speed {speed:.2f}")
+        cfg = dict(hosts[h.name], speed=round(speed, 2), calib_s=int(round(leg["wall_s"])),
+                   calibrated=calibrated_stamp(co.infos[h.name]))
+        write_or_show(path, h.name, cfg, False)
+    print(f"[fleet] calibrate: wall time {time.monotonic() - t0:.0f} s")
     return 0
 
 
@@ -1247,6 +1221,10 @@ T0=$(date +%s)
 mkdir -p "$UNIT_DIR"
 ''' + SH_STARTTIME + r'''
 echo "$$ $(starttime $$)" >"$ATTEMPT_BASE.pid"
+# MemAvailable at 1 Hz for the attempt's life; its minimum enters the done marker.
+MEMLOG="$ATTEMPT_BASE.memavail"
+while :; do awk '/^MemAvailable:/{print $2; exit}' /proc/meminfo; sleep 1; done >"$MEMLOG" 2>/dev/null &
+MEMPID=$!
 exec 7>>"$RUN_DIR/active.lock"
 flock -s 7
 helpers() {
@@ -1266,11 +1244,14 @@ record_helpers() {
     comm -13 <(echo "$BEFORE") <(helpers) | sed "s/\$/ $flag/" >>"$RUN_DIR/helpers.tsv"
 }
 finish() {  # rc status
-    local bytes=0
+    local bytes=0 wall mem
+    wall=$(( $(date +%s) - T0 ))
+    kill "$MEMPID" 2>/dev/null
+    mem="$(sort -n "$MEMLOG" 2>/dev/null | head -n1)"
     [ -d "$UNIT_DIR/cand" ] && bytes="$(du -sb "$UNIT_DIR/cand" | cut -f1)"
     record_helpers
-    printf 'rc=%s\nstatus=%s\nattempt=%s\nwall=%s\ncand-bytes=%s\n' \
-        "$1" "$2" "$ATTEMPT" "$(( $(date +%s) - T0 ))" "$bytes" >"$ATTEMPT_BASE.done.tmp"
+    printf 'rc=%s\nstatus=%s\nattempt=%s\nwall=%s\ncand-bytes=%s\nmin-memavail-kib=%s\n' \
+        "$1" "$2" "$ATTEMPT" "$wall" "$bytes" "${mem:-0}" >"$ATTEMPT_BASE.done.tmp"
     mv -f "$ATTEMPT_BASE.done.tmp" "$ATTEMPT_BASE.done"
     exit 0
 }
@@ -1766,9 +1747,10 @@ class CheckoutSpan:
 class Job:
     """One placement: the engine build, one host's canary, or a (game, tier) unit."""
 
-    def __init__(self, kind, game=None, tier="presentation", pinned=None):
-        """Bind the job's kind, unit and the host it is pinned to (build, canary)."""
+    def __init__(self, kind, game=None, tier="presentation", pinned=None, slots=None, label=None):
+        """Bind the job's kind, unit, pinned host, and a calibration leg's slots and name."""
         self.kind, self.game, self.tier, self.pinned = kind, game, tier, pinned
+        self.slots, self.label = slots, label
         self.attempts = 0
         self.result = None
 
@@ -1780,6 +1762,8 @@ class Job:
     @property
     def name(self):
         """The job's directory name under the run directory."""
+        if self.label:
+            return self.label
         if self.kind == "build":
             return "build"
         if self.kind == "canary":
@@ -2152,9 +2136,18 @@ class Coordinator:
             return CANARY_DEADLINE_S / hs.speed * 2
         return expected_s(job.unit, self.ledger) / hs.speed * 2
 
+    def leg_timeout_s(self, _job, hs):
+        """Return a job's PRESENTATION_LEG_TIMEOUT on a host."""
+        return leg_timeout(hs.speed)
+
+    def job_slots(self, job, hs):
+        """Return a job's CORPUS_JOBS: its own slots (a calibration leg), else the host's."""
+        return job.slots or hs.slots
+
     def job_env(self, job, hs, att):
         """Return the KEY=VALUE list a supervisor sources."""
         game, tier = job.game or "", job.tier
+        slots = self.job_slots(job, hs)
         canary = CANARY.get(game, ("", "")) if job.kind == "canary" else None
         filters = f"--filter={canary[0]} --freecam-filter={canary[1]}" if canary else ""
         poke = ""
@@ -2165,11 +2158,11 @@ class Coordinator:
                "ATTEMPT": att.n, "ATTEMPT_BASE": att.base, "FLEET_ROOT": hs.root,
                "LOCK_MODE": "held" if hs.host.local else "take", "IMAGE": IMAGE_TAG,
                "MOUNT_AS": self.tree, "ENGINE": hs.engine, "NICE": hs.nice,
-               "SLOTS": hs.slots, "LEG_TIMEOUT": leg_timeout(hs.speed), "FILTERS": filters,
+               "SLOTS": slots, "LEG_TIMEOUT": self.leg_timeout_s(job, hs), "FILTERS": filters,
                "POKE": poke, "BINARIES": " ".join(
                    f"{BUILD_TREE}/games/{g}/openpete-{g.replace('-', '')}" for g in GAMES),
                "TARGETS": " ".join(GAME_TARGETS),
-               "PIN_LP_NUM_THREADS": lp_threads(hs.info, hs.slots)}
+               "PIN_LP_NUM_THREADS": lp_threads(hs.info, slots)}
         return [f"{k}={v}" for k, v in env.items()]
 
     def launch(self, job, hs, deadline_s):
@@ -2183,9 +2176,10 @@ class Coordinator:
             self.drop(hs, f"launch failed: {cp.stderr.strip()[-200:]}")
             return None
         hs.current = att
+        slots = self.job_slots(job, hs)
         print(f"[fleet] {hs.name}: {job.name} attempt {att.n} started "
-              f"(slots {hs.slots}, LP_NUM_THREADS {lp_threads(hs.info, hs.slots)}, leg timeout {leg_timeout(hs.speed)} s, deadline "
-              f"{deadline_s / 60:.0f} min)")
+              f"(slots {slots}, LP_NUM_THREADS {lp_threads(hs.info, slots)}, leg timeout "
+              f"{self.leg_timeout_s(job, hs)} s, deadline {deadline_s / 60:.0f} min)")
         return att
 
     def drop(self, hs, why):
@@ -2201,7 +2195,7 @@ class Coordinator:
         return None
 
     def run_jobs(self, jobs, deadline=None, on_done=None):
-        """Place jobs on free hosts until every job has a result (step 7)."""
+        """Place jobs on free hosts until every job has a result; on_done may return follow-up jobs."""
         pending = list(jobs)
         deadline = deadline or self.deadline
         while True:
@@ -2304,11 +2298,12 @@ class Coordinator:
         job.result = {"rc": rc, "status": done.get("status", ""), "host": hs.name,
                       "attempt": att.n, "wall": int(done.get("wall", 0)),
                       "cand_bytes": int(done.get("cand-bytes", 0)), "speed": hs.speed,
-                      "unit_dir": att.unit_dir}
+                      "unit_dir": att.unit_dir,
+                      "min_memavail_kib": int(done.get("min-memavail-kib") or 0)}
         print(f"[fleet] {hs.name}: {job.name} attempt {att.n} finished: rc {rc} "
               f"({job.result['status']}) in {job.result['wall']} s")
         if on_done:
-            on_done(job, hs)
+            pending.extend(on_done(job, hs) or ())
 
     # -- verdict and pull (step 9) --
 
@@ -2506,6 +2501,239 @@ class Coordinator:
               + f" (exit {rc})")
 
 
+# ---- add and calibrate: the calibration unit through run's machinery ----------
+
+CALIB_DEADLINE_S = 4 * 3600         # one calibration leg, any slots
+CALIB_LEG_TIMEOUT_S = 3600          # a sweep leg's, or an uncalibrated host's, harness leg timeout
+IDLE_WAIT_S = 600                   # longest wait for the dev box to fall idle before a local leg
+
+
+class Calibrator(Coordinator):
+    """Legs of the calibration unit, placed on hosts through `run`'s preflight, sync, build and supervisor.
+
+    plans maps a measured host to "sweep" (slots 1, 2, 4, ... up to its
+    core count, stopped by sweep_should_stop) or to a fixed slots value.
+    Each leg is one supervisor job (capture, then --verdict-only) whose done
+    marker carries its wall time and the minimum MemAvailable sampled at
+    1 Hz on the host. A local leg obeys the idle rule: a loaded leg is
+    discarded and re-run, and the IDLE_RETRIES-th loaded leg at one slots
+    value ends the calibration. legs holds each host's accepted legs.
+    """
+
+    def __init__(self, run_id, local_run_dir, measure, plans, local_host, dry_run=False):
+        """Bind the measured hosts, their plans and the local host (the builder)."""
+        a = argparse.Namespace(game=CALIBRATION_GAME, tier="presentation", all=False,
+                               all_tiers=False, hosts="", no_local=False, pull="divergent")
+        super().__init__(a, run_id, local_run_dir)
+        self.measure, self.plans, self.local_host = measure, plans, local_host
+        self.dry_run = dry_run
+        self.legs = {h.name: [] for h in measure}
+        self.loaded = {}
+        self.infos = {}
+        self.fit = {}
+        self.seq = 0
+
+    def canary_on(self):
+        """False: calibration legs capture no canary."""
+        return False
+
+    def local_legs(self):
+        """True when a leg runs on the local host."""
+        return self.local_host.name in self.plans
+
+    def planned_slots(self, hs):
+        """Return the slots values a host's plan may run, in order."""
+        plan = self.plans[hs.name]
+        if plan != "sweep":
+            return [plan]
+        vals = sweep_values(int(hs.info["nproc"]))
+        kept = [v for v in vals if v <= self.fit.get(hs.name, v)] or [1]
+        if kept != vals and not getattr(self, "cap_shown", False):
+            self.cap_shown = True
+            print(f"[fleet] {hs.name}: sweep capped at slots {kept[-1]}: MemAvailable fits "
+                  f"{self.fit[hs.name]} slot(s) at 2 GiB each")
+        return kept
+
+    def prepare_hosts(self, src_bytes):
+        """Preflight every measured host and the builder, take the local lock when a local leg runs, clean, ship."""
+        check_recipe(self.tree)
+        sel = list(self.measure)
+        if not self.local_legs():
+            sel.append(self.local_host)
+        results = preflight(sel, self.need_bytes(src_bytes), require_calibration=False)
+        for h, i, reasons, _slots in results:
+            self.infos[h.name] = i
+            if self.dry_run or (h.local and not self.local_legs()):
+                reasons = [r for r in reasons if not r.startswith("golden lock held")]
+            for r in reasons:
+                print(f"[fleet] {h.name}: preflight: {r}")
+            if reasons:
+                raise FleetError(f"{h.name}: preflight failed", EXIT_SKIP)
+            plan = self.plans.get(h.name)
+            fit = int(i.get("memavail_kib") or 0) // MEM_PER_SLOT_KIB
+            if h.local:
+                self.fit[h.name] = fit  # this machine's sweep stops at 2 GiB MemAvailable per slot
+            if h.local and isinstance(plan, int) and fit < plan:
+                raise FleetError(f"{h.name}: MemAvailable fits {fit} slot(s) at 2 GiB each, "
+                                 f"under the recorded slots {plan}", EXIT_SKIP)
+            hs = HostState(h, i, h.cfg.get("slots", 1), self.run_id)
+            if h in self.measure:
+                self.hosts.append(hs)
+            if h.local:
+                self.local_hs = hs
+        builders = [hs for hs in self.hosts + [self.local_hs] if hs.host.cfg.get("build", True)]
+        if not builders:
+            raise FleetError("no measured host and not the local host may build (build = true)",
+                             EXIT_SKIP)
+        self.build_hs = max(builders, key=lambda hs: (hs.host.local, hs.speed))
+        if self.dry_run:
+            return
+        if self.local_legs():
+            self.golden_fd = try_golden_lock(self.local_host.fleet_root)
+            if self.golden_fd is None:
+                raise FleetError(f"{self.local_host.name}: golden lock taken since preflight",
+                                 EXIT_SKIP)
+        for hs in self.hosts:
+            rc = clean_host(hs.host, "stale", held=hs.host.local)
+            if rc != 0:
+                raise FleetError(f"{hs.name}: start-of-run clean exited {rc}", EXIT_SKIP)
+        for hs in {id(h): h for h in self.hosts + [self.build_hs]}.values():
+            ship_image(hs.host, hs.info)
+
+    def leg_timeout_s(self, job, hs):
+        """Return a leg's harness timeout: a fixed leg's scaled by the recorded speed, else CALIB_LEG_TIMEOUT_S."""
+        if self.plans.get(hs.name) != "sweep" and "speed" in hs.host.cfg:
+            return leg_timeout(hs.speed)
+        return CALIB_LEG_TIMEOUT_S
+
+    def leg_job(self, hs, slots):
+        """Return one calibration leg on a host at slots."""
+        self.seq += 1
+        return Job("unit", CALIBRATION_GAME, "presentation", pinned=hs.name, slots=slots,
+                   label=f"calib-{hs.name}-s{slots}-{self.seq}")
+
+    def print_plan(self):
+        """Print the build host and every host's planned legs (dry run)."""
+        print(f"[fleet] build host {self.build_hs.name}; sync set and snapshot as `run`; "
+              f"unit {CALIBRATION_GAME} presentation")
+        for hs in self.hosts:
+            for s in self.planned_slots(hs):
+                job = Job("unit", CALIBRATION_GAME, "presentation", pinned=hs.name, slots=s)
+                print(f"[fleet] {hs.name} slots {s}: CORPUS_JOBS={s} "
+                      f"LP_NUM_THREADS={lp_threads(hs.info, s)} "
+                      f"PRESENTATION_LEG_TIMEOUT={self.leg_timeout_s(job, hs)} "
+                      f"tests/harness/check_presentation_golden.sh --game {CALIBRATION_GAME}, "
+                      f"then --verdict-only; MemAvailable 1 Hz"
+                      + ("; idle rule" if hs.host.local else ""))
+            if self.plans[hs.name] == "sweep":
+                print(f"[fleet] {hs.name}: the sweep stops at the first step improving under "
+                      f"{IMPROVEMENT_FLOOR * 100:.0f}% or a leg under 2 GiB MemAvailable")
+
+    def launch(self, job, hs, deadline_s):
+        """Wait for the dev box to fall idle before a local leg, then launch as `run` does."""
+        if hs.host.local:
+            job.load_before = self.wait_idle()
+        return super().launch(job, hs, deadline_s)
+
+    @staticmethod
+    def wait_idle():
+        """Wait up to IDLE_WAIT_S for the 1-minute load average to reach the idle bound; return it."""
+        bound, t0, load = idle_bound(os.cpu_count()), time.monotonic(), loadavg1()
+        if load > bound:
+            print(f"[fleet] local: load {load:.2f} over the idle bound {bound:.2f}; waiting up "
+                  f"to {IDLE_WAIT_S} s")
+        while load > bound and time.monotonic() - t0 < IDLE_WAIT_S:
+            time.sleep(15)
+            load = loadavg1()
+        return load
+
+    def check_engaged(self, job, hs):
+        """Refuse a leg whose verdict report compared other than every blessed row or lists a missing tile."""
+        dst = os.path.join(self.local_run_dir, "calib", job.name)
+        rsync_pull(hs.host, f"{job.result['unit_dir']}/cand", dst, names=["verdict-report.txt"])
+        path = os.path.join(dst, "verdict-report.txt")
+        text = open(path, encoding="utf-8").read() if os.path.exists(path) else ""
+        fields = parse_report(path)["fields"]
+        rows = len(self.pb.load_manifest(CALIBRATION_GAME, "presentation").rows)
+        missing = sum(1 for ln in text.splitlines() if ln.startswith("missing: "))
+        if fields.get("compared") != str(rows) or missing:
+            self.show_logs(job, hs)
+            raise FleetError(f"{hs.name}: leg {job.name} compared {fields.get('compared') or 'none'} "
+                             f"of {rows} blessed rows, {missing} missing; not a full unit")
+        return fields.get("verdict", "")
+
+    @staticmethod
+    def show_logs(job, hs):
+        """Print the tails of a failed leg's capture and verdict logs before teardown deletes them."""
+        cp = hs.host.run_script('for f in "$1"/build.log "$1"/capture.log "$1"/verdict.log; do '
+                                '[ -f "$f" ] && { echo "== $f"; tail -n 15 "$f"; }; done; exit 0',
+                                [job.result.get("unit_dir", "")], timeout=60)
+        for line in cp.stdout.splitlines():
+            print(f"[fleet] {hs.name}: {line}")
+
+    def leg_done(self, job, hs):
+        """Accept or discard a finished leg; return the host's next leg, if any."""
+        r = job.result
+        if r["rc"] not in (0, 1) or r["status"] != "verdict":
+            self.show_logs(job, hs)
+            raise FleetError(f"{hs.name}: leg {job.name} ended rc {r['rc']} ({r['status']}); "
+                             f"logs under {r.get('unit_dir', '?')} on {hs.name}")
+        verdict = self.check_engaged(job, hs)
+        leg = {"slots": job.slots, "wall_s": float(r["wall"]),
+               "min_memavail_kib": r["min_memavail_kib"], "rc": r["rc"]}
+        print(f"[fleet] {hs.name}: slots {job.slots}: {leg['wall_s']:.0f} s, min MemAvailable "
+              f"{leg['min_memavail_kib'] / GIB_KIB:.2f} GiB, verdict {verdict}")
+        if hs.host.local:
+            leg.update(load_before=job.load_before, load_end=loadavg1())
+            time.sleep(IDLE_SETTLE_S)
+            leg["load_after"] = loadavg1()
+            idle, why = leg_is_idle(leg, os.cpu_count())
+            print(f"[fleet] {hs.name}: slots {job.slots}: {why}; "
+                  + ("accepted" if idle else "loaded, discarded"))
+            if not idle:
+                key = (hs.name, job.slots)
+                self.loaded[key] = self.loaded.get(key, 0) + 1
+                if self.loaded[key] >= IDLE_RETRIES:
+                    raise FleetError(f"{hs.name}: {IDLE_RETRIES} loaded legs at slots {job.slots}; "
+                                     f"the machine is not idle", EXIT_SKIP)
+                return [self.leg_job(hs, job.slots)]
+        legs = self.legs[hs.name]
+        legs.append(leg)
+        if self.plans[hs.name] == "sweep" and not sweep_should_stop(legs):
+            rest = [v for v in self.planned_slots(hs) if v > job.slots]
+            if rest:
+                return [self.leg_job(hs, rest[0])]
+        return []
+
+    def run(self):
+        """Preflight, build and sync as `run`, then place every host's legs; return 0 or raise."""
+        src_bytes = set_bytes(self.tree, source_set(self.tree, self.pb, [CALIBRATION_GAME]))
+        self.prepare_hosts(src_bytes)
+        if self.dry_run:
+            self.print_plan()
+            return 0
+        self.build_and_sync()
+        first = [self.leg_job(hs, self.planned_slots(hs)[0]) for hs in self.hosts]
+        self.run_jobs(first, deadline=lambda _j, _hs: CALIB_DEADLINE_S, on_done=self.leg_done)
+        for hs in self.hosts:
+            if not self.legs[hs.name]:
+                raise FleetError(f"{hs.name}: no accepted calibration leg "
+                                 f"({hs.dropped or 'no result'})")
+        return 0
+
+
+def run_calibration(local_host, measure, plans, dry_run):
+    """Run a Calibrator under drive() (directly under --dry-run, which writes nothing); return (rc, calibrator)."""
+    run_id = new_run_id()
+    run_dir = os.path.join(expand_root(local_host.fleet_root), "runs", run_id)
+    make = lambda: Calibrator(run_id, run_dir, measure, plans, local_host, dry_run)  # noqa: E731
+    if dry_run:
+        co = make()
+        return co.run(), co
+    print(f"[fleet] calibration run {run_id}: {run_dir}")
+    return drive(run_id, run_dir, make)
+
+
 def check_recipe(tree):
     """Refuse (64) when the local capture image was built from another recipe than the tree's."""
     engine = local_engine()
@@ -2576,9 +2804,13 @@ def raise_interrupted(signum, _frame):
     raise Interrupted(f"interrupted by signal {signum}", 1)
 
 
-def run_foreground(a):
-    """Run the coordinator in this process; write the done marker on every exit path."""
-    run_dir = os.path.join(local_fleet_root(), "runs", a.run_id)
+def drive(run_id, run_dir, factory):
+    """Run factory().run() under the run directory's active lock; teardown and done marker on every exit.
+
+    Returns (exit code, coordinator or None). SIGTERM, SIGINT and SIGHUP
+    become Interrupted so teardown stops in-flight attempts and deletes the
+    run's directories; the done marker's first line is `rc=N`.
+    """
     os.makedirs(run_dir, exist_ok=True)
     active = os.open(os.path.join(run_dir, "active.lock"), os.O_WRONLY | os.O_CREAT, 0o644)
     fcntl.flock(active, fcntl.LOCK_SH)
@@ -2586,7 +2818,7 @@ def run_foreground(a):
         signal.signal(sig, raise_interrupted)
     rc, why, co = 1, "", None
     try:
-        co = Coordinator(a, a.run_id, run_dir)
+        co = factory()
         rc = co.run()
     except FleetError as e:
         rc, why = e.code, str(e)
@@ -2601,9 +2833,16 @@ def run_foreground(a):
         if co is not None:
             co.teardown()
         with open(os.path.join(run_dir, "done.tmp"), "w") as f:
-            f.write(f"rc={rc}\nrun={a.run_id}\n" + (f"reason={why}\n" if why else ""))
+            f.write(f"rc={rc}\nrun={run_id}\n" + (f"reason={why}\n" if why else ""))
         os.replace(os.path.join(run_dir, "done.tmp"), os.path.join(run_dir, "done"))
         os.close(active)
+    return rc, co
+
+
+def run_foreground(a):
+    """Run the coordinator in this process under drive()."""
+    run_dir = os.path.join(local_fleet_root(), "runs", a.run_id)
+    rc, _co = drive(a.run_id, run_dir, lambda: Coordinator(a, a.run_id, run_dir))
     return rc
 
 
@@ -2658,6 +2897,10 @@ def main(argv=None):
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--timings")
     p.set_defaults(fn=cmd_add)
+    p = sub.add_parser("calibrate")
+    p.add_argument("--hosts", default="")
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(fn=cmd_calibrate)
     p = sub.add_parser("run")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--game", default="spyro-1", choices=GAMES)
