@@ -58,7 +58,7 @@ build on the local host and the positive sync set into
 runs/<run-id>/tree on each measured host, and each leg's detached
 supervisor, under the host golden lock on an ssh host and the coordinator's
 on the local one). Each leg is the spyro-2 presentation unit (capture, then
---verdict-only) at one slots value, with LP_NUM_THREADS = max(1, cores //
+--verdict-only) at one slots value, with LP_NUM_THREADS = ceil(cores /
 slots) and MemAvailable sampled at 1 Hz on the host; a leg whose report
 compares fewer than every blessed row or lists a missing tile ends the add.
 The sweep runs slots 1, 2, 4, ... up to the host's core count and stops at
@@ -1532,11 +1532,15 @@ def cand_bytes(unit, ledger):
 
 
 def lp_threads(info, slots):
-    """Return LP_NUM_THREADS for a host: $LP_NUM_THREADS, else max(1, cores // slots)."""
+    """Return LP_NUM_THREADS for a host: $LP_NUM_THREADS, else ceil(cores / slots).
+
+    Rounding up keeps every core busy when slots does not divide the core
+    count; 6 slots x 3 threads measured faster than 6 x 2 or 8 x 2 on 16 cores.
+    """
     pinned = os.environ.get("LP_NUM_THREADS")
     if pinned:
         return pinned
-    return str(max(1, int(info.get("nproc") or os.cpu_count() or 1) // int(slots)))
+    return str(max(1, -(-int(info.get("nproc") or os.cpu_count() or 1) // int(slots))))
 
 
 def leg_timeout(speed):

@@ -3,7 +3,7 @@
 # repeated, as a measurement of capture survival under load.
 #
 # The corpus capture forks one game process per leg and caps them at
-# CORPUS_JOBS (default nproc/2, see scripts/corpus-jobs.sh). Legs have been
+# CORPUS_JOBS (default 3/8 of nproc, see scripts/corpus-jobs.sh). Legs have been
 # lost mid-run on a loaded machine: the process disappears, its tiles are
 # never written, and the only trace is a MISSING row in the diff — a symptom
 # that reads like a corpus-shape error rather than like a killed process, and

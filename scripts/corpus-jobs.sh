@@ -8,16 +8,18 @@
 # corpora take ~24 minutes together, which made the presentation golden too
 # expensive to run per change; that cost is scheduling, not work.
 #
-# CORPUS_JOBS caps concurrency (default nproc/2). The captures render under
+# CORPUS_JOBS caps concurrency (default 3/8 of nproc). The captures render under
 # software Vulkan, which is ITSELF multithreaded, so the useful ceiling is well
 # below core count — past it the jobs just contend and wall-clock stops
 # improving. CORPUS_JOBS=1 restores strictly serial execution, which is the
 # reference any parallel run must reproduce byte-for-byte.
 #
 # LP_NUM_THREADS (llvmpipe's rasterizer threads per process) defaults to
-# max(1, nproc / CORPUS_JOBS), so jobs x threads stays at the core count: the
-# default of one llvmpipe thread per core in every job oversubscribes the CPU
-# CORPUS_JOBS-fold. The thread count does not change a captured pixel.
+# ceil(nproc / CORPUS_JOBS), so jobs x threads stays near the core count:
+# llvmpipe's own default of one thread per core in every job oversubscribes the
+# CPU CORPUS_JOBS-fold. On 16 cores the spyro-1 presentation golden took 1123 s
+# at 6 x 3, 1191 s at 16 x 1, 1317 s at 8 x 2 and 1397-1547 s at 4 x 16. The
+# thread count does not change a captured pixel.
 #
 # Usage:
 #   source scripts/corpus-jobs.sh
@@ -28,10 +30,9 @@
 # variable — the caller's `fail=1` would be set in a subshell and lost. Failures
 # are recorded in a status file instead, and surface from cj_wait.
 
-CORPUS_JOBS="${CORPUS_JOBS:-$(( $(nproc) / 2 ))}"
+CORPUS_JOBS="${CORPUS_JOBS:-$(( $(nproc) * 3 / 8 ))}"
 [[ "$CORPUS_JOBS" -lt 1 ]] && CORPUS_JOBS=1
-_cj_lp=$(( $(nproc) / CORPUS_JOBS ))
-export LP_NUM_THREADS="${LP_NUM_THREADS:-$(( _cj_lp < 1 ? 1 : _cj_lp ))}"
+export LP_NUM_THREADS="${LP_NUM_THREADS:-$(( ($(nproc) + CORPUS_JOBS - 1) / CORPUS_JOBS ))}"
 
 _cj_status="$(mktemp -t corpus-jobs.XXXXXX)"
 trap 'rm -f "$_cj_status"' EXIT

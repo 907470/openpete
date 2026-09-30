@@ -73,7 +73,7 @@ requirement, the host's `clean`, image shipping, the build on the local
 host, the positive sync set into `runs/<run-id>/tree` and a detached
 supervisor per leg under the host golden lock). Each leg is the spyro-2
 presentation unit (capture, then `--verdict-only`) at one slots value, with
-`LP_NUM_THREADS = max(1, cores // slots)` and `MemAvailable` sampled once
+`LP_NUM_THREADS = ceil(cores / slots)` and `MemAvailable` sampled once
 a second on the host. A leg whose report compares fewer than every blessed
 row, or lists a missing tile, ends the `add` with exit 1 after printing the
 tails of the leg's logs.
@@ -321,7 +321,7 @@ A full re-bless (`--bless`) also runs on the dev box.
 | `OPENPETE_CAPTURE_IMAGE` | Local image the coordinator ships (default `openpete-linux-capture`). |
 | `OPENPETE_GOLDEN_REF_DIR`, `XDG_DATA_HOME` | Local reference store; the unit-time ledger lies beside it. |
 | `PRESENTATION_GOLDEN_OUT` | Local pull target instead of `build/*-candidate*`. |
-| `LP_NUM_THREADS` | Pins llvmpipe threads per capture on every host; default `max(1, cores / slots)` per host. |
+| `LP_NUM_THREADS` | Pins llvmpipe threads per capture on every host; default `ceil(cores / slots)` per host. |
 | `OPENPETE_FLEET_AFTER_SYNC` | Test only: a shell command run in the checkout between the syncs and the recheck (negative control for the torn-sync recheck). |
 | `OPENPETE_FLEET_POKE` | Test only: `<host>:<job\|unit\|canary>:<tile substring>` flips one pixel of the first matching candidate tile on that host before its verdict (negative control for the verdict and canary). |
 
