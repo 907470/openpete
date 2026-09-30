@@ -63,7 +63,11 @@
 # whole-corpus re-bless needs --bless. PRESENTATION_GOLDEN_KEEP=0 discards them.
 # Before capturing, the run writes capture-record.txt into the candidate
 # directory (the working copy's tree over the build's source roots and the
-# recomp identity), from which a promote takes the blessed revision.
+# recomp identity), from which a promote takes the blessed revision. A tree
+# without .git (a copy of a checkout) cannot measure those fields: the run
+# reads them from the file OPENPETE_CAPTURE_FIELDS names (`key: value` lines,
+# as `scripts/presentation-blessed.py capture-fields` writes them in the
+# checkout), and a copy without that variable fails before capturing.
 #
 # A third leg, tests/harness/check_credits_interp.sh, runs after the corpus capture:
 # sub-tick interpolation of the credits-roll letters (settled-line pose,
@@ -335,7 +339,14 @@ fi
 OUT="${PRESENTATION_GOLDEN_OUT:-$PG_CAND_DIR}"
 rm -rf "$OUT"; mkdir -p "$OUT"
 if [[ "${PRESENTATION_GOLDEN_KEEP:-1}" == "0" ]]; then trap 'rm -rf "$OUT"' EXIT; fi
-python3 scripts/presentation-blessed.py capture-record "$GAME" --tier "$PG_TIER" "$OUT" --build-dir "$BUILD_DIR" \
+FIELDS_ARG=()
+if [[ -n "${OPENPETE_CAPTURE_FIELDS:-}" ]]; then
+  FIELDS_ARG=(--fields "$OPENPETE_CAPTURE_FIELDS")
+elif [[ ! -e .git ]]; then
+  echo "[presentation-golden] FAIL: $PWD has no .git, so the capture record's tree fields cannot be measured here; set OPENPETE_CAPTURE_FIELDS to a file written by scripts/presentation-blessed.py capture-fields in the checkout"
+  exit 1
+fi
+python3 scripts/presentation-blessed.py capture-record "$GAME" --tier "$PG_TIER" "$OUT" --build-dir "$BUILD_DIR" "${FIELDS_ARG[@]}" \
   || { echo "[presentation-golden] FAIL: capture record not written"; exit 1; }
 
 # Capture at the compiled DEFAULT depth encoding (now screen-affine), so the

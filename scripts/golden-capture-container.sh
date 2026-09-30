@@ -72,7 +72,9 @@
 # are skipped: such a copy has no .git and its build inputs are real files.
 #
 # Every container runs with --network=none. OPENPETE_CAPTURE_LABEL=<value>
-# adds the container label org.openpete.fleet=<value>.
+# adds the container label org.openpete.fleet=<value>. OPENPETE_CAPTURE_FIELDS
+# (the capture record's tree fields for a tree without .git) passes into the
+# container with the harness knobs; the file must lie on a mounted path.
 #
 # Rootless podman on a btrfs home has no overlay driver; build the image
 # there as scripts/release-container.sh describes (podman run + commit, the
@@ -194,7 +196,8 @@ else
 fi
 # The harness knobs a capture run reads; the container sees only what -e passes.
 for v in CORPUS_JOBS PRESENTATION_TIER PRESENTATION_GOLDEN_OUT PRESENTATION_GOLDEN_KEEP \
-         PRESENTATION_LEG_TIMEOUT LP_NUM_THREADS OPENPETE_CAP_LODS OPENPETE_FRAME_LIMIT; do
+         PRESENTATION_LEG_TIMEOUT LP_NUM_THREADS OPENPETE_CAP_LODS OPENPETE_FRAME_LIMIT \
+         OPENPETE_CAPTURE_FIELDS; do
     [[ -n "${!v:-}" ]] && env_args+=(-e "$v=${!v}")
 done
 
@@ -251,10 +254,15 @@ verify_binaries() {
     return 1
 }
 
+# OPENPETE_CAPTURE_TARGETS (space-separated) builds those targets instead of
+# ALL: a tree without .git fails the ratchet targets ALL carries, and a
+# capture needs only the game binaries.
 build_engine() {
+    local targets=()
+    [[ -n "${OPENPETE_CAPTURE_TARGETS:-}" ]] && read -ra targets <<<"$OPENPETE_CAPTURE_TARGETS"
     run_in bash -euo pipefail -c '
         cmake --preset linux-release-container
-        cmake --build build/linux-release-container -j'
+        cmake --build build/linux-release-container -j ${1:+--target "$@"}' _ "${targets[@]}"
 }
 
 case "$sub" in

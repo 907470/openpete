@@ -163,6 +163,8 @@ DIGEST_RULE = ('sha256(b"RGB\\n" + width + b"\\n" + height + b"\\n" + '
 # are written to the capture record only, never to a manifest header: they
 # name the machine that captured, a promote refuses a capture record whose
 # host is not its own (cmd_promote), and a committed header names no machine.
+# lp-num-threads (the llvmpipe thread count of the capture) is recorded the
+# same way: every value is pixel-identical and it only sets throughput.
 ENV_KEYS = ("recipe-hash", "mesa", "device", "compiler", "preset",
             "image-digest", "libvulkan")
 RECORDED_KEYS = ("image-digest", "libvulkan", "host", "cpu")
@@ -729,7 +731,8 @@ def environment_here(game, preset):
            or "unrecorded",
            "libvulkan": package_version("libvulkan1"),
            "compiler": compiler_version(preset), "preset": preset,
-           "host": host_here(), "cpu": cpu_here()}
+           "host": host_here(), "cpu": cpu_here(),
+           "lp-num-threads": os.environ.get("LP_NUM_THREADS") or "unset"}
     env.update(disc_hashes(game, preset))
     return env
 
