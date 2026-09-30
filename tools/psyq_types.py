@@ -118,7 +118,7 @@ typedef unsigned int uint;
 typedef unsigned short ushort;
 """
 
-# Layout facts the probe re-derives and asserts ( engagement).
+# Layout facts the probe re-derives and asserts.
 DRAWENV_SIZE = 0x5C
 DISPENV_SIZE = 0x14
 DRAWENV_R0_OFFSET = 0x19   # the credits overlay stores r0 at g_DB + 0x19

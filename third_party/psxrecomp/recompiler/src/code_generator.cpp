@@ -734,7 +734,7 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                     && _ca->second.kind == ChannelSite::AppendCall) {
                     /* AppendCall: generic (canonical sll emitted verbatim
                      * first; the appended call is host-side only). Used by
-                     * the §13.7c quad-identity gather sites — the tri
+                     * the quad-identity gather sites — the tri
                      * variants' `sll $v1,$at,2` entry holds the packed
                      * corner-index word in rt ($at). */
                     code = translate_sll(instr)
@@ -946,8 +946,7 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                      * The OffsetAdd kind emits `rt = rs + <knob>`, identity at
                      * default knob value. PC+imm keyed (the imm disambiguates a
                      * PC whose `addi $r,$r,0x2000` recurs in non-pool integer
-                     * arithmetic — e.g. Z-saturation chains at 0x80026DEC). See
-                     * .claude/plans/openpete-generic-hook-anchor-refactor.md. */
+                     * arithmetic — e.g. Z-saturation chains at 0x80026DEC). */
                     if (auto _cs = channel_sites_.find(addr);
                         _cs != channel_sites_.end()
                         && _cs->second.kind == ChannelSite::OffsetAdd

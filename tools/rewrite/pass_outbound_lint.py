@@ -11,7 +11,7 @@ classifies each pointer-typed argument. Clear-bad shapes warn; safe
 shapes pass; ambiguous shapes (function-parameter pass-through, etc.)
 are silent — better to miss than false-positive on every callee.
 
-Mitigations (per plan §"Pass 5e"):
+Mitigations:
   - Flavor A — PsyCross outbound where the host signature matches.
     Add to ``outbound_psyq_skip``; source link-resolves to host symbol.
   - Flavor B — recomp outbound where the callee runs MIPS gp+offset.

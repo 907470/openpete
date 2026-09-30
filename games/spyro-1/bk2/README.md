@@ -123,6 +123,3 @@ Read the failure tag, then:
   channel.
 - **BROKEN (no hash log)** — openpete crashed or hung; check
   `/tmp/determinism-matrix/log-*.txt` (rerun with `--keep-logs`).
-
-See `notes/plans/openpete-determinism-enforcement.md` for the
-full enforcement plan.

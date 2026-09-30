@@ -8,8 +8,7 @@
 #          Raise it for a level that loads slower than the default post-load frame.
 #
 # Each pose is captured native-only at 16:9, both LOD modes, on two legs
-# (canonical + alpha-0.5 intermediate). Gathered from chat history; see
-# notes/plans/openpete-presentation-golden.md. Verify each first sample
+# (canonical + alpha-0.5 intermediate). Verify each first sample
 # renders real geometry (not a load/transition frame) before blessing.
 artisans | pos=(100000, 50000, 12000) yaw=512 pitch=-100
 artisans | pos=(105243, 34497, 6393) yaw=3281 pitch=160

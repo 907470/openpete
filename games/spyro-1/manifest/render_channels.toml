@@ -32,8 +32,6 @@
 # effect of another channel's substitutions) or a `verdict_fn`
 # (openpete-side gating). The audit verifies the referenced channel
 # exists and is itself gated.
-#
-# See notes/plans/openpete-determinism-enforcement.md Phase 4.
 
 # ─── Gated channels ──────────────────────────────────────────────────
 
@@ -82,7 +80,6 @@ determinism_critical = true   # gates gameplay-readable state
 verdict_fn       = "psx_runtime_native_cone_pass"
 verified_against = ["aspect_determinism"]
 state_regions    = []
-doc              = "notes/plans/spyro-moby-update-vs-render.md"
 
 [[channel]]
 name        = "widescreen_clip_x_threshold"
@@ -98,7 +95,6 @@ any more — the 20 const_load sites reverted to the hardcoded 512 and
 the knob was deleted. Entry kept for the audit trail."""
 substitution_sites = []
 state_regions    = []
-doc              = "notes/plans/openpete-widescreen-fov.md"
 
 [[channel]]
 name        = "widescreen_portal_clip_rect"
@@ -112,7 +108,6 @@ sites reverted to the hardcoded 512/513 and the knob + hook were
 deleted. Entry kept for the audit trail."""
 substitution_sites = []
 state_regions    = []
-doc              = "notes/plans/openpete-widescreen-fov.md"
 
 [[channel]]
 name        = "widescreen_ui_moby_tag"
@@ -126,7 +121,6 @@ plain translation at regen; hooks deleted. Entry kept for the audit
 trail."""
 substitution_sites = []
 state_regions    = []
-doc              = "notes/plans/openpete-transform-interp.md"
 
 [[channel]]
 name        = "transform_interp_moby_queue"
@@ -140,7 +134,6 @@ plain translation at regen; hooks deleted. Entry kept for the audit
 trail."""
 substitution_sites = []
 state_regions    = []
-doc              = "notes/plans/openpete-transform-interp.md"
 
 [[channel]]
 name        = "untagged_renderer_clear"
@@ -154,13 +147,12 @@ plain translation at regen; hooks deleted. Entry kept for the audit
 trail."""
 substitution_sites = []
 state_regions    = []
-doc              = "notes/plans/openpete-transform-interp.md"
 
 [[channel]]
 name        = "envvert_terrain_probe"
 status      = "audited_clean"
 description = """
-§7.5 terrain-reproject validation probe. func_800258F0 (r_environment.s,
+Terrain-reproject validation probe. func_800258F0 (r_environment.s,
 the env/terrain renderer) per-vertex transform loads the camera-free
 packed world vertex then CPU-subtracts the camera position before the
 MVMVA. The recompiler substitution at `0x80025A34: lw $a0, 4($s1)`
@@ -177,7 +169,7 @@ translated `lw` (the original load is emitted verbatim before it).
 Verified: aspect_determinism bit-identical across 3000 frames with
 the substitution present (gameplay log unchanged); validated the
 camera-free property (100% of terrain verts constant per ptr across
-frames) used by the §7.5 PSX-RAM terrain-reproject path."""
+frames) used by the PSX-RAM terrain-reproject path."""
 # GENERATED (append_call, multi-operand): the recompiler appends
 # openpete_envvert_probe(cpu, v0, a0, s1, s7, t8, t9) after the verbatim lw.
 substitution_sites = [
@@ -186,7 +178,6 @@ substitution_sites = [
 verdict_fn       = "openpete_envvert_probe"
 verified_against = ["aspect_determinism"]
 state_regions    = []  # read-only diagnostic; no state written
-doc              = "notes/plans/openpete-transform-interp.md"
 
 [[channel]]
 name        = "world_geo_strip_tag"
@@ -200,7 +191,6 @@ plain translation at regen; hooks deleted. Entry kept for the audit
 trail."""
 substitution_sites = []
 state_regions    = []
-doc              = "notes/plans/openpete-transform-interp.md"
 
 [[channel]]
 name        = "world_geo_vertex_src"
@@ -214,7 +204,6 @@ plain translation at regen; hooks deleted. Entry kept for the audit
 trail."""
 substitution_sites = []
 state_regions    = []
-doc              = "notes/plans/openpete-transform-interp.md"
 
 [[channel]]
 name        = "moby_shadow_subtag"
@@ -228,7 +217,6 @@ plain translation at regen; hooks deleted. Entry kept for the audit
 trail."""
 substitution_sites = []
 state_regions    = []
-doc              = "notes/plans/openpete-transform-interp.md"
 
 [[channel]]
 name        = "widescreen_2d_fullbleed_x_max"
@@ -244,7 +232,6 @@ hardcoded 512 and the knob was deleted. Entry kept for the audit
 trail."""
 substitution_sites = []
 state_regions    = []
-doc              = "notes/plans/openpete-widescreen-fov.md"
 
 [[channel]]
 name        = "widescreen_env_cell_x_bound"
@@ -260,7 +247,6 @@ hardcoded +0x100/-0x200 and the knob + hook were deleted. Entry kept
 for the audit trail."""
 substitution_sites = []
 state_regions    = []
-doc              = "notes/plans/openpete-widescreen-fov.md"
 
 [[channel]]
 name        = "widescreen_polybuf_size"
@@ -275,7 +261,6 @@ Was: the 4 const_load (ori) sites substituting the 0x1C000 polybuf slot size so 
 Entry kept for the audit trail."""
 substitution_sites = []
 state_regions    = []
-doc              = "notes/plans/openpete-disable-lods.md"
 
 [[channel]]
 name        = "widescreen_polybuf_lower"
@@ -290,7 +275,6 @@ Was: the 2 replace_call sites (polybuf_lower_load) re-anchoring the cursor-reset
 Entry kept for the audit trail."""
 substitution_sites = []
 state_regions    = []
-doc              = "notes/plans/openpete-disable-lods.md"
 
 [[channel]]
 name        = "sparkle_alloc_state"
@@ -337,7 +321,6 @@ determinism_critical = true   # gates gameplay-readable state
 verdict_fn       = "openpete_canonical_sx2_q16"
 verified_against = []
 state_regions    = ["g_Sparkles_pool"]
-doc              = "notes/plans/openpete-presentation-decoupling.md"
 
 [[channel]]
 name        = "particle_drawn_flag"
@@ -447,7 +430,6 @@ determinism_critical = true   # gates gameplay-readable state
 verdict_fn       = "psx_runtime_native_part_pass"
 verified_against = []
 state_regions    = ["g_Particles_pool"]
-doc              = "notes/plans/openpete-presentation-decoupling.md"
 
 [[channel]]
 name        = "moby_pool_state"
@@ -483,7 +465,6 @@ substitution_sites = []
 verdict_fn         = "shared with m_WasDrawn closure (clamp added 2026-05-04)"
 verified_against   = ["aspect_determinism gate 2026-05-04: divergence pushed 8363 → 14590"]
 state_regions      = ["g_LevelMobys_pool", "g_DynMobys_pool", "g_Sparx_moby"]
-doc                = "notes/plans/spyro-moby-update-vs-render.md"
 
 [[channel]]
 name        = "sector_visibility_flags"
@@ -510,7 +491,6 @@ substitution_sites = []
 verdict_fn         = ""
 verified_against   = []
 state_regions      = []
-doc                = "notes/plans/openpete-presentation-decoupling.md"
 
 [[channel]]
 name        = "moby_render_queue"
@@ -566,7 +546,6 @@ substitution_sites = []
 verdict_fn         = ""
 verified_against   = ["aspect_determinism"]
 state_regions      = []
-doc                = "notes/plans/openpete-presentation-decoupling.md"
 
 [[channel]]
 name        = "dedup_flag_table"
@@ -594,7 +573,6 @@ substitution_sites = []
 verdict_fn         = ""
 verified_against   = []
 state_regions      = []
-doc                = "notes/plans/spyro-moby-update-vs-render.md"
 
 [[channel]]
 name        = "class_skip_flags"
@@ -614,11 +592,9 @@ PsyCross-mode Hor+ arm, traced 2026-05-04 via MVMVA-trace at PC
 arm. With the widening arm deleted, every mode runs the canonical
 cull and writes the canonical verdict directly — no interception
 needed. The full root-cause + closure history (including the
-delay-slot 19E/32 gotcha in the C replica) lives in git history and
-notes/plans/spyro-moby-update-vs-render.md."""
+delay-slot 19E/32 gotcha in the C replica) lives in git history."""
 substitution_sites = []
 state_regions      = ["render_channel:class_skip_flags"]
-doc                = "notes/plans/spyro-moby-update-vs-render.md"
 
 [[channel]]
 name        = "no_lod_env_queue_offsets"
@@ -633,7 +609,6 @@ Was: the 11 offset_add sites relocating the three env visible-queues (HP/mid/LP 
 Entry kept for the audit trail."""
 substitution_sites = []
 state_regions    = []
-doc              = "notes/plans/openpete-disable-lods.md"
 
 [[channel]]
 name        = "dbg_kill_env_lp_walk"
@@ -649,7 +624,6 @@ by moving into the world_geo_strip_tag channel as a plain append_call
 (it was a dbg/world-geo hybrid)."""
 substitution_sites = []
 state_regions    = []
-doc              = "notes/plans/openpete-disable-lods.md"
 
 [[channel]]
 name        = "no_lod_moby_face_offset"
@@ -664,7 +638,6 @@ Was: the 2 replace_call sites (moby_lp_face_load) swinging the LP-band face-list
 Entry kept for the audit trail."""
 substitution_sites = []
 state_regions    = []
-doc              = "notes/plans/openpete-disable-lods.md"
 
 [[channel]]
 name        = "no_lod_moby_zsf4_distance_neutralize"
@@ -679,7 +652,6 @@ Was: the 2 void-replace_call sites (no_lod_moby_zsf4_store) neutralizing the ZSF
 Entry kept for the audit trail."""
 substitution_sites = []
 state_regions    = []
-doc              = "notes/plans/openpete-disable-lods.md"
 
 [[channel]]
 name        = "no_lod_env_texture_tier"
@@ -694,7 +666,6 @@ Was: the 3 replace_call sites (no_lod_tier_bump) suppressing the HP-walk HQ->LQ 
 Entry kept for the audit trail."""
 substitution_sites = []
 state_regions    = []
-doc              = "notes/plans/openpete-disable-lods.md"
 
 [[channel]]
 name        = "no_lod_lod_distance_saturate"
@@ -709,7 +680,6 @@ Was: the 3 replace_call sites (no_lod_saturate32) returning INT32_MAX for m_LodD
 Entry kept for the audit trail."""
 substitution_sites = []
 state_regions    = []
-doc              = "notes/plans/openpete-disable-lods.md"
 
 [[channel]]
 name        = "no_lod_culling_distance_saturate"
@@ -724,7 +694,6 @@ Was: the 1 replace_call site (no_lod_saturate32) returning INT32_MAX for the m_C
 Entry kept for the audit trail."""
 substitution_sites = []
 state_regions    = []
-doc              = "notes/plans/openpete-disable-lods.md"
 
 [[channel]]
 name        = "no_lod_moby_render_distance_saturate"
@@ -739,7 +708,6 @@ Was: the 3 replace_call sites (no_lod_moby_distance) saturating the packed m_Ren
 Entry kept for the audit trail."""
 substitution_sites = []
 state_regions    = []
-doc              = "notes/plans/openpete-disable-lods.md"
 
 [[channel]]
 name        = "no_lod_moby_distance_cull_verdict"
@@ -794,7 +762,6 @@ determinism_critical = true   # gates gameplay-readable state
 verdict_fn       = "psx_runtime_dist_gate_lower / _upper (-> psx_runtime_native_dist_pass)"
 verified_against = ["aspect_determinism", "psx_oracle_match"]
 state_regions    = []  # substitution-granularity + oracle verified; see note
-doc              = "notes/plans/openpete-disable-lods.md"
 
 
 [[channel]]
@@ -810,7 +777,6 @@ Was: the 3 offset_add sites relocating the regular/specular moby visible-queue h
 Entry kept for the audit trail."""
 substitution_sites = []
 state_regions    = []
-doc              = "notes/plans/openpete-disable-lods.md"
 
 [[channel]]
 name        = "polybuf_hudmoby_canonical"
@@ -825,7 +791,6 @@ Was: the void-replace_call sites (polybuf_hudmoby_store/_reset_store) mapping th
 Entry kept for the audit trail."""
 substitution_sites = []
 state_regions    = []
-doc              = "notes/plans/openpete-disable-lods.md"
 
 [[channel]]
 name        = "moby_vstream_field"
@@ -874,4 +839,3 @@ substitution_sites = [
 determinism_critical = false  # stock values pass through bit-identical; the oracle census proves it
 verified_against = ["psx_oracle"]
 state_regions    = []
-doc              = "notes/plans/openpete-moby-stream-handles.md"

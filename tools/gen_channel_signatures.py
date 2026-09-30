@@ -23,7 +23,7 @@ Outputs `<out>` (a signatures table) and exits non-zero if any site cannot be
 made unique or fails to resolve — so a stale manifest / shifted reference is
 caught.
 
-Scope is deliberately minimal (per the plan's Open question §3): single-window
+Scope is deliberately minimal: single-window
 signatures over determinism-critical sites, calibrated + verified on retail.
 Deploying them to actually relocate a romhack is Tier-3 (future).
 """

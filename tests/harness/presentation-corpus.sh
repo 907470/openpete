@@ -40,8 +40,6 @@
 #       65 = no rows (the manifest holds none, or the filter matched none) —
 #            the caller decides whether an empty corpus is a skip or a
 #            vacuous run.
-#
-# See notes/plans/openpete-presentation-golden.md.
 set -u
 
 # Unattended launcher: silence controller vibration for every run this script

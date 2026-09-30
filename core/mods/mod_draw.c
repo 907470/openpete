@@ -1,7 +1,6 @@
 // core/mods/mod_draw.c — the mod-facing screen-space draw service.
 //
-// P2 workhorse of notes/plans/openpete-modding-framework.md (native
-// draw/overlay service, vk-renderer-first — USER-LOCKED direction): mods
+// The native draw/overlay service, vk-renderer-first: mods
 // draw HUD text through the native renderer, never guest-side, so
 // an observer/HUD mod stays sim-neutral by construction (zero guest-RAM
 // writes; guest prim injection provably leaks — the 16:9

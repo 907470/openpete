@@ -69,7 +69,6 @@ tests/freecam/__pycache__/
 Testing/
 # crash3-models: pack + atlases are converted from the disc (tools/crash3/convert.py)
 mods/crash3-models/assets/
-/notes/
 # Local git worktrees: full checkouts of this repo (worktree-setup.sh).
 /worktrees/
 

@@ -3,9 +3,9 @@
 openpete runs Spyro the Dragon (SCUS-94228) as a native executable. There is
 no emulator: the game's MIPS code is translated to C at build time, the PSYQ
 system library is replaced by a host re-implementation, and a native Vulkan
-renderer draws the scene from gameplay state. The binding constraint is the
-north star — every gameplay-readable byte matches
-SCPH-1001 hardware, tick for tick, under any presentation layer.
+renderer draws the scene from gameplay state. The binding constraint: every
+gameplay-readable byte matches SCPH-1001 hardware, tick for tick, under any
+presentation layer.
 
 ## Repository layout
 
@@ -161,11 +161,3 @@ the functions not yet documented are the rows of
 `baselines/docs/undocumented.tsv`.
 
 ## Where the design lives
-
-The port's origin plan, `notes/plans/openpete-pc-port.md`, is superseded
-and is kept as history. The live plans are
-`notes/plans/openpete-source-rewriter.md` (decomp migration),
-`notes/plans/openpete-native-renderer.md` (the Vulkan renderer),
-`notes/plans/openpete-presentation-decoupling.md` (the presentation-to-gameplay
-channels), and the per-feature `notes/plans/openpete-*.md`, indexed by
-`notes/plans/INDEX.md`.

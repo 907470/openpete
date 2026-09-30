@@ -107,5 +107,3 @@ read `0` because we were sampling the game's `r0` byte.
 - Other PSX games compiled against PSYQ headers (which is to say,
   every Sony-licensed PSX title) likely also benefit — but Spyro is
   the one we have a regression test for.
-- Cross-link: `notes/plans/psycross-loading-smear.md` documents
-  the diagnostic journey and bisects.

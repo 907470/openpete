@@ -4,8 +4,7 @@
 /* FNV1a-64 — used by the determinism harness to hash the
  * gameplay-state regions per frame. Header-only so the unit test
  * can verify the implementation against published vectors without
- * pulling the whole runtime. See
- * notes/plans/openpete-determinism-enforcement.md Phase 1. */
+ * pulling the whole runtime. */
 
 #include <stddef.h>
 #include <stdint.h>

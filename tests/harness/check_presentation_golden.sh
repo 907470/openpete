@@ -104,8 +104,6 @@
 #       image, a missing corpus manifest (either one; the message names the
 #       path), or a blessed.tsv absent or with zero rows;
 #       64 = SKIP (prereqs missing).
-#
-# See notes/plans/openpete-presentation-golden.md.
 set -u
 cd "$(dirname "$0")/../.."
 # shellcheck source=scripts/presentation-game.sh

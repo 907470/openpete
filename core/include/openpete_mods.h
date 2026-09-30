@@ -1,8 +1,7 @@
 // openpete_mods.h — ENGINE-facing mod framework API (loader + chains).
 //
 // The mod-facing surface lives in openpete_mod_api.h; this header is what
-// the runtime and per-game code call. See
-// notes/plans/openpete-modding-framework.md (P1 vertical slice).
+// the runtime and per-game code call.
 //
 // Interposition rides the recompiler's universal function-entry
 // chokepoint: every recompiled function's prologue calls

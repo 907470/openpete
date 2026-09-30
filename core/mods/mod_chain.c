@@ -1,7 +1,6 @@
 // core/mods/mod_chain.c — per-address override chains + base() fallthrough.
 //
-// The ONE override primitive of the modding framework
-// (notes/plans/openpete-modding-framework.md): N mods stack on a guest
+// The ONE override primitive of the modding framework: N mods stack on a guest
 // function; the highest-priority override runs first; base() calls the
 // next link down and bottoms out at the recompiled original.
 //

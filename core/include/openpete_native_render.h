@@ -1,7 +1,6 @@
 /* core/include/openpete_native_render.h — native Vulkan renderer A/B harness.
  *
- * The host-side entry points for openpete's native renderer (the Phase 1c
- * foundation of notes/plans/openpete-native-renderer.md). The native
+ * The host-side entry points for openpete's native renderer. The native
  * renderer is a pure *display* consumer: it reads gamestate + asset data +
  * the VRAM mirror and draws into its own Vulkan window. It NEVER writes
  * PSX-readable RAM, so it is determinism-safe by construction — the
@@ -267,8 +266,7 @@ int  openpete_native_fps_value(void);
 /* Live presentation setters (the in-game settings menu drives these). All
  * display-only: they mutate renderer/GPU state only, never gameplay-readable RAM,
  * and take effect on the next native present. Harmless (no visible effect) when
- * the native renderer isn't the active present path. See
- * notes/plans/openpete-ingame-settings-menu.md. */
+ * the native renderer isn't the active present path. */
 
 /** @brief Set the target display aspect (width over height); 0 or less selects AUTO.
  *

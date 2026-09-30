@@ -1,28 +1,28 @@
 #!/usr/bin/env bash
-# check_interp_visual.sh — automated visual harness for the transform-
-# interp plan (notes/plans/openpete-transform-interp.md).
+# check_interp_visual.sh — automated visual harness for transform
+# interpolation.
 #
 # Captures K consecutive presents starting at sim frame N under three
 # --render-fps modes (0/60/480), then computes a diff matrix:
 #
-#   1. CANONICAL REGRESSION (§10.5): every fps>0 canonical present must
+#   1. CANONICAL REGRESSION: every fps>0 canonical present must
 #      be byte-identical to the fps=0 canonical at the same sim frame.
 #      Any drift means the interp mechanism perturbs the *canonical*
 #      output, which would violate PHASE-C's read-only claim.
 #
-#   2. INTERP-FIRING (§10.1, §10.2): at fps=60, INTERMEDIATE presents
+#   2. INTERP-FIRING: at fps=60, INTERMEDIATE presents
 #      should differ from canonical presents (interp delta reaches the
 #      GL submit). Adjacent-present diff < canonical→canonical diff at
 #      fps=0 (single sim frame vs two-sim-frame gap).
 #
-#   3. 480-DEGENERATION (§7.5-R3 PHASE-B open item): if fps=480
+#   3. 480-DEGENERATION: if fps=480
 #      adjacent-diffs are pixel-identical to fps=60 adjacent-diffs, the
 #      8× sim rate is being clamped somewhere (vsync, pacer, or swap
 #      latency) — not interp itself, but the symptom users report as
 #      "looks like 30fps."
 #
 # Deterministic attract-mode demo (no --bk2), windowed via WSLg or any
-# X/Wayland display. Headless mode is not used because §7.5 documented
+# X/Wayland display. Headless mode is not used because measurement showed
 # `substitute_query` is gated `if lerp_alpha>0` and headless alpha≡0.
 #
 # Usage:

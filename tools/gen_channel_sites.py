@@ -18,8 +18,6 @@ audit's address-parity check.
 
 Output: one site per line, `<kind> <addr-hex> <imm-hex> <symbol>`, e.g.
   offset_add 0x800259BC 0x1C00 psx_runtime_env_hp_queue_offset
-
-See notes/plans/openpete-generic-hook-anchor-refactor.md (step 1).
 """
 import argparse
 import sys

@@ -16,7 +16,7 @@
 extern "C" {
 #endif
 
-/* Exit codes — see notes/plans/openpete-pc-port.md Phase 0b. */
+/* Exit codes. */
 #define OPENPETE_EXIT_OK           0  /* clean termination */
 #define OPENPETE_EXIT_PANIC        1  /* panic / crash / timeout */
 #define OPENPETE_EXIT_DIVERGENCE   2  /* state-divergence detected (Phase 1c+) */
@@ -55,7 +55,7 @@ typedef enum {
  * All native modes are pure display consumers — they never perturb gameplay
  * state. Native modes are ignored under --headless (PsyCross renders instead),
  * so the oracle / determinism gates (which run headless) are unaffected by the
- * default. See notes/plans/openpete-native-renderer.md. */
+ * default. */
 typedef enum {
     /* PsyCross GL rasterizes; the native Vulkan window DISPLAYS its frame
      * (read back per present). No native scene is extracted. */
@@ -72,7 +72,7 @@ typedef enum {
  * int16). Display-only: it rounds only the emitted display geometry — never
  * gameplay-readable RAM — and only the 3D-world layers (2D HUD/overlay stays
  * smooth). Depth and UVs are untouched, so the true Z-buffer and perspective-
- * correct texturing are kept. See notes/plans/openpete-ps1-retro-look.md. */
+ * correct texturing are kept. */
 typedef enum {
     OPENPETE_VERTEX_PRECISION_SUBPIXEL = 0,  /* default: sub-pixel float, smooth motion */
     OPENPETE_VERTEX_PRECISION_INTEGER,       /* PSX integer-grid snap (polygon wobble) */
@@ -99,7 +99,7 @@ typedef enum {
  * (fog effectively off, so the extended far detail is actually visible).
  * Native renderer only — the feeders derive detail from gamestate, never
  * perturbing gameplay-readable RAM (in PsyCross reference mode EXTENDED warns
- * and is ignored). See notes/plans/openpete-disable-lods.md. */
+ * and is ignored). */
 typedef enum {
     OPENPETE_LOD_ORIGINAL = 0,  /* default: authentic PSX LOD band + fog curve */
     OPENPETE_LOD_EXTENDED,      /* full detail at any distance (was --no-lod) */
@@ -140,7 +140,7 @@ typedef struct openpete_options {
      * (condvar-paced ticker, the historical behavior). >0 = wall-clock
      * dual-pacer: sim still yields at the native PSX 60 Hz vblank, input
      * pump runs at this Hz, and present fires when the game produced new
-     * draw commands. See notes/plans/openpete-fps-unlock.md "Phase 1". */
+     * draw commands. */
     int render_fps;
 
     /* --tick-scale F (default 1.0): wall-clock SPEED multiplier for the whole
@@ -162,8 +162,7 @@ typedef struct openpete_options {
      * overscan ratio) in GR_BeginScene and rasterizes the GTE-projected
      * geometry directly into it with a real depth buffer — a taller window
      * genuinely renders the scene at higher resolution, not an upscale
-     * (empirically ~5x the edge detail at 4x height; see
-     * notes/plans/openpete-record-video.md). Window width is decoupled:
+     * (empirically ~5x the edge detail at 4x height). Window width is decoupled:
      * the FBO width is derived from height × aspect, so it only affects the
      * letterbox/pillarbox margins of the final present-blit to the window. */
     int window_w;
@@ -190,8 +189,7 @@ typedef struct openpete_options {
      * EXTENDED collapses it so every visible sector is drawn from its
      * high-poly mesh out to the cull distance and beyond. The native feeders
      * derive detail from gamestate and do not perturb gameplay-readable RAM.
-     * `--no-lod` is a deprecated alias for `--lod extended`.
-     * See notes/plans/openpete-disable-lods.md. */
+     * `--no-lod` is a deprecated alias for `--lod extended`. */
     openpete_lod_mode_t lod;
 
     /* --terrain-visibility game|frustum: the terrain candidate set (see
@@ -270,8 +268,7 @@ typedef struct openpete_options {
      * CPU cost is O(sectors) instead of O(faces). Display-only; falls back to
      * the CPU walk per present whenever an unsupported mode is active (debug
      * envs, portal previews, HD texture packs, mod material selectors, A/B
-     * reference modes, software Vulkan, --vertex-precision integer). See
-     * notes/plans/openpete-terrain-gpu-cache.md. */
+     * reference modes, software Vulkan, --vertex-precision integer). */
     int         terrain_cache;
 
     /* Disc image resident in memory (default on): PsyCross reads the .bin
@@ -356,7 +353,7 @@ typedef struct openpete_options {
      * (game fiber yielded) when openpete_frame (a VBL counter) reaches N.
      * Headless-friendly: this is the autonomous test vehicle for the
      * savestate plan's restore-correctness gates (save→tick→restore→tick
-     * hash A/B) — see plans/openpete-savestate-frame-step-rewind.md P0/P3.
+     * hash A/B).
      * Load re-anchors openpete_frame exactly like the hotkey path. */
     int         state_save_on_frame;   /* -1 = disabled */
     const char* state_save_output;     /* path; default ./frameN.state */
@@ -568,8 +565,7 @@ typedef struct openpete_options {
      * openpete_devui_init parses it once. Display-only. */
 
     /* BizHawk .bk2 movie replay. Full pad-bitstream fidelity (holds,
-     * releases, gamepad, analog). NULL = disabled. See
-     * notes/plans/openpete-bk2-input.md. */
+     * releases, gamepad, analog). NULL = disabled. */
     const char* bk2_path;
 
     /* Map bk2 frame 0 to openpete_frame `bk2_frame_offset`. Negative is
@@ -715,8 +711,7 @@ typedef struct openpete_options {
 
     /* --frame-time-log PATH (default NULL): write one 32-byte record
      * per present (frame, slip_count, op_now_ns, deadline_ns, slack_ns)
-     * for the pacing measurement harness. Off by default. See
-     * notes/plans/openpete-frame-pacing.md and
+     * for the pacing measurement harness. Off by default. Read by
      * scripts/measure-pacing.py. */
     const char* frame_time_log_path;
     /* --pace-log PATH: the unified pacing event log (every VBL, every
@@ -737,7 +732,7 @@ typedef struct openpete_options {
      * letter/pillarbox bars). Links libav* in-process. NULL = disabled.
      * Container auto-picked by extension (.mkv recommended; .mp4 supported).
      * Written incrementally + trailer on shutdown, so Ctrl-C still yields a
-     * playable file. See notes/plans/openpete-record-video.md. */
+     * playable file. */
     const char* record_path;
     const char* record_encoder;   /* libavcodec video encoder. Default libx264. */
     int         record_crf;       /* x264/x265 quality. Default 23. */
@@ -746,8 +741,7 @@ typedef struct openpete_options {
 
     /* Audio capture into the recording. The mixed SPU PCM is pulled via an
      * OpenAL loopback device (only while recording; normal playback is
-     * unaffected) and encoded as a second stream. See
-     * notes/plans/openpete-record-audio.md. */
+     * unaffected) and encoded as a second stream. */
     bool        record_no_audio;     /* --no-record-audio: video-only */
     const char* record_audio_encoder; /* libavcodec audio encoder. Default aac. */
 
@@ -802,8 +796,7 @@ typedef struct openpete_options {
     /* --mods-dir PATH: mods root (each subdir with a mod.toml is a mod;
      * enabled.txt fixes the order = priority). NULL = unset (defer to
      * env OPENPETE_MODS_DIR, else <exe>/mods). A missing directory means
-     * zero mods and a byte-identical modless run. See
-     * notes/plans/openpete-modding-framework.md. */
+     * zero mods and a byte-identical modless run. */
     const char* mods_dir;
 
     /* --mods ID[,ID...]: enabled modset override — replaces the mods dir's

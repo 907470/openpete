@@ -28,8 +28,7 @@
 # To add a spot: fly there windowed (F key freecam), read the pose off the
 # `freecam: pos=(...) yaw=... pitch=...` log line, add a case, run
 # tests/harness/check_gapfill_corpus.sh once to read the measured values, then
-# set thresholds with margin.  Chronicle of the classifier + all these
-# spots: the gap investigation notes
+# set thresholds with margin.
 
 # --- The original artisans repro: sparse-HP hole at a detached pose. ---
 # Yaw 283 = historic hole (the yaw-284 bisection pair); the wedge between

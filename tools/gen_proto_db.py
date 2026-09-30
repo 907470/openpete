@@ -2,7 +2,7 @@
 """gen_proto_db.py — harvest function prototypes from the decomp headers
 into a committed manifest (the framework's "prototype database").
 
-P1 of notes/plans/openpete-modding-framework.md: natural-signature
+Natural-signature
 marshalling wrappers are generated from prototypes, decoupled from
 whether a function body is decompiled/matched — so the DB is dev-side
 metadata, committed like the forced-entry lists, and builds never need

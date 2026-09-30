@@ -1,6 +1,6 @@
 /* openpete_frame_time_log.h — binary frame-time recorder.
  *
- * Phase 4.1 of notes/plans/openpete-frame-pacing.md. Off by default;
+ * Off by default;
  * activated by `--frame-time-log PATH`. Writes one 32-byte record per
  * present, plus a 32-byte header up front.
  *

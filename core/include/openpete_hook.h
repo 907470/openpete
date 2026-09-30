@@ -29,8 +29,7 @@
  * One mechanism, three payoffs: preserves the byte-match, lets us patch a
  * decomped function, and carries hooks into custom-compiled-from-source
  * builds (the compiler may move addresses; the macro stays in the right
- * semantic place). See notes/plans/openpete-generic-hook-anchor-refactor.md.
- */
+ * semantic place). */
 
 #ifdef OPENPETE_BUILD
 #  define OPENPETE_HOOK(name, ...) openpete_hook_##name(__VA_ARGS__)

@@ -11,8 +11,8 @@ For each native TU the rewriter emits ``<stem>.discovered.toml`` listing
 - entries in native.toml that the rewriter didn't find (hand-list
   workarounds / functions called from MIPS asm but not the native C).
 
-Output is informational only — exit code is always 0. The plan §5
-Phase 3 calls this manifest-diff "diagnostic, not pass/fail."
+Output is informational only — exit code is always 0. This manifest-diff
+is diagnostic, not pass/fail.
 
 Usage:
     diff_discovered_manifest.py <manifest_dir> <rewritten_dir>

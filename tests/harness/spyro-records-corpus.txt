@@ -1,5 +1,4 @@
-# Corpus for tests/harness/check_spyro_records.sh (the multi-Spyro sub-tick harness,
-# notes/plans/openpete-native-multi-spyro-subtick.md "Instruments").
+# Corpus for tests/harness/check_spyro_records.sh (the multi-Spyro sub-tick harness).
 #
 # Every case runs the spyro-coop mod headless with the players setting pinned
 # and asserts the OPENPETE_SPYRO_RECDBG epoch line at the case frame: the hook

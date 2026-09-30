@@ -577,7 +577,7 @@ tripwire for that audit.
   The reference counts 3413 GPU ticks per NTSC line (measured);
   the hardware line is 227.5
   colour-subcarrier cycles, 3412.5 GPU ticks, which is what
-  `core/include/openpete_time.h` and encode (2250000/37609 Hz). The
+  `core/include/openpete_time.h` encodes (2250000/37609 Hz). The
   reference therefore runs 59.81734 Hz against 59.82611 Hz, 0.0147 % slow,
   one frame of wall-clock drift every 113 s. Guest state is unaffected: the
   guest counts VBLs, guest-timed models count VBLs, and the gate samples at
@@ -587,7 +587,5 @@ tripwire for that audit.
 
 ## Related
 
-- `notes/plans/openpete-psx-oracle-ci.md` — gate design, the transient
-  policy, and the CI wiring.
 - `games/spyro-1/manifest/gameplay_state_regions.toml` — the region contract itself, with
   the address source and audit note for every region.

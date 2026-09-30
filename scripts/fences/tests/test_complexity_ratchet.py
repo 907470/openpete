@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-"""Tests for the cognitive-complexity ratchet (complexity_ratchet.py) and the
-staging guard rules that protect its pre-commit hook.
+"""Tests for the cognitive-complexity ratchet (complexity_ratchet.py).
 
-DecideTest drives the pure decision function per rule. GitGuardTest drives
-the command-string rules. EndToEndTest builds a throwaway git repo with the
+DecideTest drives the pure decision function per rule. EndToEndTest builds a throwaway git repo with the
 hook installed and its own compile database (OPENPETE_COMPLEXITY_DB) and
 commits each index shape: M, A, D, identical rename, changed rename, the
 temporary-index form, and a stale hook-written baseline on a doc-only commit.
@@ -22,11 +20,6 @@ import unittest
 FENCES = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, FENCES)
 import complexity_ratchet as cr                              # noqa: E402
-
-_spec = importlib.util.spec_from_file_location(
-    "git_guard", os.path.join(FENCES, "git-guard.py"))
-gg = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(gg)
 
 SCRIPT = os.path.join(FENCES, "complexity_ratchet.py")
 
@@ -176,56 +169,6 @@ class DecideTest(unittest.TestCase):
         head, back = cr.parse_tsv(text)
         self.assertEqual(back, rows)
         self.assertEqual((head["written-by"], head["head"]), ("tighten", "abc"))
-
-
-class GitGuardTest(unittest.TestCase):
-    REFUSED = [
-        "git commit --no-verify -m x", "git commit -n -m x",
-        "git commit -nm x", "git commit -qnm x", "git commit -an",
-        "git -c core.hooksPath=/dev/null commit -m x",
-        "git -c CORE.HOOKSPATH= commit -m x",
-        "git --config-env=core.hooksPath=X commit -m x",
-        "GIT_CONFIG_PARAMETERS=\"'core.hooksPath=x'\" git commit -m x",
-        "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath "
-        "GIT_CONFIG_VALUE_0=x git commit -m x",
-        "git config core.hooksPath /tmp", "git config --unset core.hooksPath",
-        "git config set core.hooksPath x", "git config --local core.hookspath ''",
-        "git commit foo.c -m x", "git commit -m x -- foo.c",
-        "git commit --only -m x", "git commit -om x",
-        "git commit --pathspec-from-file=p -m x",
-        "git commit --amend foo.c", "chmod -x githooks/pre-commit",
-        # Quoting that does not parse: flags before the message still count,
-        # and the long spellings count anywhere.
-        "echo \"unbalanced && git commit --no-verify -m x",
-        "echo \"unbalanced && git commit -a -m x",
-        "echo \"unbalanced && git commit -o -m x",
-        "echo \"unbalanced && git commit -m x --no-verify",
-        "python3 - <<'EOF'\nx = \"it's\"\nEOF\ngit commit -n -m x",
-    ]
-    PASSES = [
-        "git commit -m 'x'", "git commit -q -m x", "git commit --amend -m x",
-        'git commit -m "mentions -n and --no-verify"',
-        "git -c core.hookspath=githooks commit -m x",
-        "git config core.hooksPath githooks", "git config core.hooksPath",
-        "git config --get core.hooksPath", "git commit -F /tmp/msg",
-        "git commit -q -m x 2>&1", "git commit -m x > /tmp/out 2>/dev/null",
-        "git commit --author 'A <a@b>' -m x", "git commit -m x --date now",
-        "git commit --include foo.c -m x", "git commit -i foo.c -m x",
-        "git add a && git commit -m \"it's fine\" && git show --stat HEAD",
-        "python3 - <<'EOF'\ns = \"it's\"\nEOF\ngit add a && git commit -q -m "
-        "\"the -og leg\n\nbody -o\" 2>&1 | tail -1",
-        "echo \"unbalanced && git commit -q -m the -og leg",
-        "cd openpete && git commit -q -m \"$(cat <<'EOF'\nsubject with "
-        "\"quotes\" and -n\n\nbody --no-verify\nEOF\n)\"",
-    ]
-
-    def test_refused(self):
-        for cmd in self.REFUSED:
-            self.assertIsNotNone(gg.check(cmd), cmd)
-
-    def test_passes(self):
-        for cmd in self.PASSES:
-            self.assertIsNone(gg.check(cmd), cmd)
 
 
 @unittest.skipUnless(shutil.which("clang-tidy-%d" % cr.TOOL_MAJOR),

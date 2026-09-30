@@ -13,8 +13,8 @@ promotes.
 
 ## Host file
 
-Path: `$OPENPETE_FLEET_HOSTS` when set, else `fleet-hosts.toml` of the planning checkout
-beside the main checkout (`<main checkout>/../<planning checkout>/fleet-hosts.toml`).
+Path: `$OPENPETE_FLEET_HOSTS` when set, else
+`${XDG_CONFIG_HOME:-~/.config}/openpete/fleet-hosts.toml`.
 The main checkout is resolved through `git rev-parse --git-common-dir`, so
 every worktree reads the same file. The file is gitignored and belongs to
 one machine: it names that machine's hosts and their measurements.

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# check_spyro_records.sh — the multi-Spyro sub-tick harness
-# (notes/plans/openpete-native-multi-spyro-subtick.md "Instruments").
+# check_spyro_records.sh — the multi-Spyro sub-tick harness.
 #
 # The spyro-coop mod draws extra dragons by calling the game's own player
 # renderers once per player with the player's state swapped into g_Spyro.
 # This harness runs each case of tests/harness/spyro-records-corpus.txt headless
-# with the mod loaded and asserts the OPENPETE_SPYRO_RECDBG numbers (numbers from the instrument, not pixels):
+# with the mod loaded and asserts the OPENPETE_SPYRO_RECDBG numbers (numbers
+# from the instrument, not pixels):
 #
 #   canonical leg (--screenshot-on-frame F):
 #     the epoch line at f=F reports the expected model / shadow / flame hook
@@ -22,7 +22,7 @@
 #     case's `pairs`, a paired record interpolates and stages within B/2 of
 #     its canonical position.
 #
-# The run is VACUOUS (exit 64) unless some case reports two or more model
+# Engagement: the run is VACUOUS (exit 64) unless some case reports two or more model
 # calls on its canonical tick (the multi-record path engaged; cases expecting
 # fewer are the pairing-only rows), and the store-clock record-only arm is
 # reported VACUOUS unless some case's summary reports roll_records >= 1.

@@ -34,7 +34,7 @@ errs=0
 echo "==> Disc image"
 if [[ ! -f "$DISC_BIN" ]]; then
     red "  missing: $DISC_BIN"
-    red "  build it with build-iso.sh, or override with"
+    red "  dump your disc to that path, or override with"
     red "  OPENPETE_DISC=/path/to/SCUS-94228.bin"
     errs=$((errs+1))
 else

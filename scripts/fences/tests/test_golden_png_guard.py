@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-"""Tests for the golden-image fence (golden-png-guard.py) .
+"""Tests for the golden-image fence (golden-png-guard.py).
 
-RuleTest drives the path predicate. GitGuardTest drives the `git add`
-command-string refusal. OnWriteTest drives the write-time script check.
-HookTest builds a scratch repository armed with the tracked dispatcher
+RuleTest drives the path predicate. HookTest builds a scratch repository armed with the tracked dispatcher
 (githooks/pre-commit, core.hooksPath=githooks) and the real fence scripts,
 and commits each staged shape: a PNG, a BMP, a nested PNG, a tile under a
 renamed golden directory (`git mv`, staged as R), the allowed .tsv/.md and an
@@ -37,8 +35,6 @@ def load(name, fname):
 
 
 gpg = load("golden_png_guard", "golden-png-guard.py")
-gg = load("git_guard", "git-guard.py")
-fow = load("fence_on_write", "fence-on-write.py")
 
 TINY_PNG = bytes.fromhex(
     "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
@@ -69,38 +65,6 @@ class RuleTest(unittest.TestCase):
                   "docs/phase1/x.png", "games/spyro-1/a.png"):
             self.assertFalse(gpg.refused(p), p)
 
-
-class GitGuardTest(unittest.TestCase):
-    def test_add_refused(self):
-        for cmd in ("git add tests/golden/spyro-1/presentation/a-vk.png",
-                    "cd openpete && git add -f tests/golden/spyro-1/x.bmp",
-                    "git add scripts/a.py tests/golden/spyro-2/presentation/s/x.png",
-                    "git add tests/golden/spyro-1/native-vk/demo-1-vk.png"):
-            self.assertIsNotNone(gg.check(cmd), cmd)
-
-    def test_add_passes(self):
-        for cmd in ("git add tests/golden/spyro-1/presentation/blessed.tsv",
-                    "git add scripts/presentation-blessed.py",
-                    "git commit -m 'git add tests/golden/x.png'"):
-            self.assertIsNone(gg.check(cmd), cmd)
-
-
-class OnWriteTest(unittest.TestCase):
-    def test_script_staging_a_tile_is_flagged(self):
-        text = ("#!/bin/sh\ncp a.png tests/golden/spyro-1/presentation/\n"
-                "git add tests/golden/spyro-1/presentation/a-vk.png\n")
-        self.assertEqual([n for n, _ in gpg.offends(text)], [3])
-        with tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False) as fh:
-            fh.write(text)
-        try:
-            self.assertEqual(len(fow.check(fh.name)), 1)
-        finally:
-            os.unlink(fh.name)
-
-    def test_marker_and_manifest_pass(self):
-        text = ("git add tests/golden/spyro-1/presentation/blessed.tsv\n"
-                "git add tests/golden/spyro-1/x.png  # golden-png-guard: intentional\n")
-        self.assertEqual(gpg.offends(text), [])
 
 
 def nest(name, depth, flat=0):

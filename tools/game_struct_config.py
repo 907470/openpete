@@ -27,7 +27,7 @@ between decompilations lives here, keyed by game slug:
   known_slack    .bss reservations larger than the struct, with the reason
   pins           layout facts read out of the game's own asm or source,
                  asserted by the probe against the probed values and by
-                 the generator against the toml ( engagement)
+                 the generator against the toml
 
 A pin is {"struct", "size"|("field", "offset"), "why"}: `why` names the
 file and line the value was read from.

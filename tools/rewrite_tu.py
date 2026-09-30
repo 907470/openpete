@@ -253,7 +253,7 @@ def main(argv=None) -> int:
     # Hard-error if the TU passes (or returns) a struct by value at a call
     # site — the host LP64/LLP64 calling convention can't marshal those
     # bytes through cpu->aN today. No rewrite path implemented; trips are
-    # zero across spyro-1/src/. See plan §2.3 Pass 5.
+    # zero across spyro-1/src/.
     sbv = run_struct_by_value(parsed.cursor, main_path)
     if sbv.violations:
         print(format_sbv_violations(sbv), file=sys.stderr)
@@ -273,7 +273,7 @@ def main(argv=None) -> int:
     # pointer (stack-local / host-global / host-heap) through an outbound
     # thunk. host_to_psx returns 0 for those and the callee dereferences
     # NULL — silent on platforms whose smoke gate doesn't reach the call,
-    # loud on platforms where it does. Plan §"Pass 5e".
+    # loud on platforms where it does.
     thunked_fns: set[str] = set()
     game_global_names: set[str] = set()
     if args.native_toml is not None and args.native_toml.exists():

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """modtest.py — the mod test runner ([test] block in modtest.toml).
 
-The P1 "modtest harness" of notes/plans/openpete-modding-framework.md:
+The modtest harness:
 a mod declares its own regression test in its manifest; this runner
 replays it and checks the assertions. In-tree PoC rungs run through it
 in CI (tests/harness/check_mods.sh); third-party modders run the *identical*

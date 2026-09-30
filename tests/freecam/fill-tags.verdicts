@@ -14,7 +14,7 @@
 # Two sanctioned ways to reach this file, both ending in a reviewed verdict:
 #   1. the coverage sweep (scripts/terrain-fill-sweep.sh) + a per-face strip
 #      review — the origin of every measured need-px row below;
-#   2. the in-game inspector (P key, notes/plans/openpete-fill-tag-inspector.md):
+#   2. the in-game inspector (P key):
 #      aim at a face, read its identity and whether authored HP covers that
 #      sightline, flip the verdict live, then fold the session file in with
 #      scripts/fill-tags-apply.py. Rows it adds carry provenance `pick` and

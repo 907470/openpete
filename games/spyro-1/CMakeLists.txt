@@ -24,7 +24,6 @@ option(OPENPETE_SKIP_DECOMP
 # generated EXE with -finstrument-functions so func_trace.c can attribute
 # self/total time per recompiled func_80XXXXXX. ~1-8 ms/tick overhead — a
 # drill-down build, never the baseline. Off by default (zero cost).
-# See notes/plans/openpete-perf-profiling.md.
 option(OPENPETE_FUNC_TRACE
        "Instrument the generated EXE for per-function CPU tracing"
        OFF)
@@ -297,7 +296,7 @@ add_custom_target(spyro1_sfx_names DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/gen/spyro
 add_dependencies(openpete-spyro1 spyro1_sfx_names)
 
 
-# --- Mod SDK v0 (notes/plans/openpete-modding-framework.md P1) ---
+# --- Mod SDK v0 ---
 # Generate the name→vaddr symbol surface from manifest/symbols.toml:
 # a #define header for mods + a sorted resolve table compiled into the
 # exe. Staged with the API headers into <exe>/sdk/ so the mod loader can
@@ -351,7 +350,7 @@ add_custom_target(spyro1_game_structs ALL
     COMMENT "Staging typed game structs into <exe>/sdk/")
 add_dependencies(openpete-spyro1 spyro1_game_structs)
 
-# --- Mod-author docs (notes/plans/openpete-mod-docs.md) ---
+# --- Mod-author docs ---
 # tools/gen_mod_docs.py extracts the SDK surface (api header, symbol/
 # global/prototype manifests, typed structs, mod examples) into markdown;
 # scripts/build-mod-docs.sh then builds the mkdocs-material site when
@@ -453,7 +452,7 @@ add_custom_target(spyro1_sdk_stage ALL
     VERBATIM)
 add_dependencies(spyro1_sdk_stage openpete-spyro1)
 
-# --- Build-time mod compile (notes/plans/openpete-mod-compile-on-boot.md)
+# --- Build-time mod compile
 # `cmake --build` leaves every mod compiled, not just the engine:
 #  - Native presets: run the freshly built exe in --compile-mods mode over
 #    OPENPETE_COMPILE_MODS_DIR, so keys/stamps/flags are byte-identical to
@@ -683,13 +682,12 @@ endif()
 # build time by core/rhi/embed_shaders.cmake), so nothing is staged beside the
 # exe — the executable is self-contained. For shader dev/modding without a
 # relink, point OPENPETE_SHADER_DIR at a dir of loose .spv (e.g. the build's
-# core/rhi/shaders). See Phase 8 of openpete-native-renderer.md.
+# core/rhi/shaders).
 
 # Stage the music WAV override directory next to the executable so users
 # have a ready-made drop point, and seed it with the template manifest
 # (full track table + instructions). copy_if_missing never clobbers a
-# user-edited manifest on rebuild. See
-# notes/plans/openpete-music-wav-override.md.
+# user-edited manifest on rebuild.
 add_custom_command(TARGET openpete-spyro1 POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory
         "$<TARGET_FILE_DIR:openpete-spyro1>/assets/music"

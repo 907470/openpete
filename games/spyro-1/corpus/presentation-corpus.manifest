@@ -2,8 +2,7 @@
 #
 # presentation-corpus.sh captures, for each bk2, a canonical leg (VBL-keyed) and
 # an intermediate leg (deterministic alpha=0.5) on the native -vk path under
-# llvmpipe, at 16:9, across both LOD modes. See
-# notes/plans/openpete-presentation-golden.md.
+# llvmpipe, at 16:9, across both LOD modes.
 #
 # Fields (pipe-separated):
 #   name      bk2 basename under games/spyro-1/bk2/ (its .args sidecar is

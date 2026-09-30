@@ -22,10 +22,6 @@ A file is BANNED when any rule holds:
   header  first 8 bytes "PS-X EXE".
 
 Modes (argv[1]):
-  pre           pre-commit hook. Refuses a `git add` whose
-                named paths would stage a banned file, and a `git commit`
-                whose index holds one (the index blob is inspected, not the
-                working tree). Exit 2 refuses the command.
   tree [ROOT]   Scan `git ls-files` of ROOT (default: this repo). Runs the
                 self-test first and refuses to report PASS unless both
                 negative controls were refused. Exit 0 clean,
@@ -40,9 +36,7 @@ Modes (argv[1]):
 Declared escape: none. A dump never belongs in the repo.
 """
 import fnmatch
-import json
 import os
-import re
 import shlex
 import struct
 import subprocess
@@ -250,15 +244,9 @@ def self_test(verbose=True):
 
 
 def main():
-    mode = sys.argv[1] if len(sys.argv) > 1 else "pre"
+    mode = sys.argv[1] if len(sys.argv) > 1 else "tree"
     here = os.path.dirname(os.path.abspath(__file__))
     repo_default = os.path.normpath(os.path.join(here, "..", ".."))
-
-    if mode == "armed":
-        settings = os.path.normpath(os.path.join(repo_default, ".git", "hooks", "pre-commit"))
-        armed = os.path.isfile(settings) and "no-ram-dump.py" in open(settings).read()
-        print("no-ram-dump: %s (%s)" % ("ARMED" if armed else "DISARMED", settings))
-        sys.exit(0 if armed else 1)
 
     if mode == "self-test":
         print("no-ram-dump self-test:")
@@ -286,21 +274,8 @@ def main():
         print("no-ram-dump: %d tracked files scanned, %d banned" % (n, len(hits)))
         sys.exit(1 if hits else 0)
 
-    # pre: pre-commit hook
-    data = json.load(sys.stdin)
-    cmd = data.get("command") or ""
-    if not re.search(r"\bgit\b", cmd):
-        sys.exit(0)
-    try:
-        reason = check_command(cmd, data.get("cwd"))
-    except Exception as e:  # a broken fence must not block unrelated commands
-        sys.stderr.write("no-ram-dump: fence error (not blocking): %s\n" % e)
-        sys.exit(0)
-    if reason:
-        sys.stderr.write("FENCE (no-ram-dump, a RAM dump never enters the repo): %s\n" % reason)
-        sys.exit(2)
-    sys.exit(0)
-
+    print("no-ram-dump: unknown mode %r (check | self-test | tree [ROOT])" % mode, file=sys.stderr)
+    sys.exit(64)
 
 if __name__ == "__main__":
     main()

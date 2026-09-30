@@ -2,7 +2,7 @@
 #
 # Builds a static lib `openpete_core` consumed by per-game targets under
 # games/<game>/. Anything Spyro-specific belongs in games/spyro-1/, not
-# here. See notes/plans/openpete-pc-port.md.
+# here.
 
 set(PSXRECOMP_RUNNER ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner)
 
@@ -156,8 +156,7 @@ add_library(openpete_core STATIC
     ${CMAKE_SOURCE_DIR}/third_party/tomlc99/toml.c
 
     # High-resolution monotonic clock + hybrid sleep+spin waiter. Leaf
-    # module (no SDL); used by ticker + dual-pacer. See
-    # notes/plans/openpete-frame-pacing.md.
+    # module (no SDL); used by ticker + dual-pacer.
     runtime/openpete_time.c
 
     runtime/present_thread.c
@@ -165,21 +164,18 @@ add_library(openpete_core STATIC
 
     # Render-side state interpolation snapshot ring (game-agnostic;
     # regions supplied by games/<game>/). Capture-only in v1; lerp +
-    # re-emission lands in fps-unlock Phase 2a. See
-    # notes/plans/openpete-fps-unlock.md.
+    # re-emission is the sub-tick re-feed below.
     renderer/openpete_interp.c
 
     # Per-object prev-state snapshot table (the INDIRECT counterpart to the
     # singleton interp ring above). Keyed by object identity (game-supplied
-    # walk); double-buffered for sub-tick lerp/re-feed. Step 1 of the
-    # native-renderer high-FPS plan. See notes/plans/openpete-native-renderer.md.
+    # walk); double-buffered for sub-tick lerp/re-feed.
     renderer/openpete_interp_objs.c
 
     # World-space render cache. Populated per-vertex by psxrecomp's
     # gte_rtps_internal; consumed by PsyCross's OT walker (PsyX_GPU.cpp
     # MakeVertexTriangle/Quad) to recover world-space + matrix state at
-    # draw time. Phase 0 foundation for draw-call matching and renderer-
-    # side lerp. See notes/plans/openpete-renderer-foundation.md.
+    # draw time. Foundation for draw-call matching and renderer-side lerp.
 
     # Draw-call matcher (renderer-foundation Phase 1). Groups OT prims
     # by matrix_span_id, hashes each batch by geometric fingerprint,
@@ -197,12 +193,12 @@ add_library(openpete_core STATIC
     renderer/native_vram.c
     renderer/native_fb_snapshot.c
 
-    # Per-feature modules. See notes/plans/openpete-feature-modules.md.
+    # Per-feature modules.
     renderer/no_lod.c
     renderer/widescreen.c
 
     # Music WAV override: play user PCM WAVs from assets/music/ in place
-    # of XA music. See notes/plans/openpete-music-wav-override.md.
+    # of XA music.
     host/host_spawn.c
     host/window_restack.c
     host/music_override.c
@@ -216,7 +212,6 @@ add_library(openpete_core STATIC
     # Temp-file-and-rename replacement shared by every persisted file.
     host/atomic_file.c
     # Host-backed PSX memory card (save/load).
-    # See notes/plans/openpete-memcard-host-backed.md.
     host/memcard.c
 
     # Data-parallel extraction worker pool (--extract-threads). See
@@ -232,8 +227,8 @@ add_library(openpete_core STATIC
     # code. C++ TU because PsyCross's libgpu.h uses static_assert.
     renderer/debug_render.cpp
 
-    # Vendored psxrecomp pieces we keep verbatim (per notes plan §5 Phase 1b
-    # "keep gte.cpp + memory helpers + iso_reader"). Compiled directly here so
+    # Vendored psxrecomp pieces kept verbatim: gte.cpp, the memory helpers and
+    # iso_reader. Compiled directly here so
     # we don't drag the rest of psxrecomp's runtime.c into the build.
     ${PSXRECOMP_RUNNER}/src/gte.cpp
     ${PSXRECOMP_RUNNER}/src/iso_reader.cpp
@@ -445,7 +440,6 @@ target_link_libraries(openpete_core PUBLIC openpete_rhi)
 # backend rides volk's already-loaded function pointers
 # (IMGUI_IMPL_VULKAN_USE_VOLK — openpete_rhi runs volkInitialize/volkLoadInstance
 # at rhi_create, and volk.c is compiled ONLY there, so no duplicate symbols).
-# See notes/plans/openpete-imgui-config-overlay.md.
 set(IMGUI_DIR ${CMAKE_SOURCE_DIR}/third_party/imgui)
 
 # dear_bindings (third_party/dear_bindings, generated output vendored from the
@@ -550,8 +544,7 @@ if(OPENPETE_HIDE_DEBUG_FLAGS)
 endif()
 
 # libav* for --record gameplay video capture (record/record.c). On a native
-# build this is a hard dependency — see notes/plans/openpete-record-video.md
-# ("hard-require" decision). On Debian/Ubuntu: libavformat-dev libavcodec-dev
+# build this is a hard dependency. On Debian/Ubuntu: libavformat-dev libavcodec-dev
 # libavutil-dev libswscale-dev libswresample-dev. Min version libav* 58
 # (ffmpeg 4.0).
 #
@@ -631,8 +624,7 @@ if(WIN32)
 endif()
 
 # Fail the build (cheap automated check) if anyone smuggles a Spyro
-# address or Win32-only header into core/. The exit-criteria greps in
-# §5 Phase 0b live here as build-time guards.
+# address or Win32-only header into core/. These greps live here as build-time guards.
 if(NOT CMAKE_HOST_WIN32)
     # A handful of core/ TUs legitimately #include <windows.h>, each
     # behind `#ifdef _WIN32` so the POSIX build is unaffected:
@@ -703,8 +695,8 @@ if(NOT CMAKE_HOST_WIN32)
     # silence the pad (nobody is holding it, and the buzzing reaches no log),
     # and a script that sets OPENPETE_* knobs for a Windows .exe must name
     # WSLENV or the knob never crosses and the run measures the default.
-    # Both run on every build, since a scanner run only by hand
-    # is not enforced.
+    # A scanner that depends on someone remembering to run it is an
+    # advisory, so both run on every build.
     add_custom_target(openpete_launch_guards ALL
         COMMAND ${CMAKE_COMMAND} -E echo "Checking launcher hygiene..."
         COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/rumble_guard.py ${CMAKE_SOURCE_DIR}

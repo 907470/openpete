@@ -1305,7 +1305,7 @@ def emit_access_edits(tu_cursor: ci.Cursor,
                 # `obj.field = (cast)((lhs_read_form) <op> (rhs))`. The
                 # binop here is the C-level operator with the trailing
                 # `=` stripped. Long-family fields stay in uint32 space
-                # (per plan §1.6.5 — field-to-field arithmetic on relaid
+                # (field-to-field arithmetic on relaid
                 # storage). Pointer compound-assigns (`+=`, `-=` for
                 # pointer arithmetic) hard-error today; deferred until
                 # we hit a real one in the wild.
@@ -1328,7 +1328,7 @@ def emit_access_edits(tu_cursor: ci.Cursor,
                 # If the RHS is a function reference with a known PSX
                 # vaddr, substitute the literal — the host fn-ptr lives
                 # outside g_ram, so host_to_psx() would yield 0 and
-                # corrupt the field. Plan §1.6.3 / §2.3 Pass 1.
+                # corrupt the field.
                 fn_addr = (_resolve_function_psx_vaddr(rhs, symbols)
                            if symbols else None)
                 if fn_addr is not None:

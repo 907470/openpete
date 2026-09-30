@@ -55,7 +55,7 @@ OUT_DIR="/tmp/aspect-screenshot"
 # the central 4:3 region have per-channel abs diff > DIFF_THRESHOLD.
 # Per-aspect ceilings — each ratchets the inherent integer-GTE
 # precision floor for that aspect (the irrational-Δ-OFX silhouette
-# jitter described in notes/plans/openpete-widescreen-fov.md).
+# jitter).
 # Sub-pixel edge jitter trivially saturates a worst-per-channel
 # metric to 255 (one anti-aliased edge pixel flipping fg<->bg), so a
 # count metric is the meaningful gate.

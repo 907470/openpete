@@ -61,7 +61,7 @@ SANCTIONED = re.compile(r"""
 # out so it is a decision someone made, not a pattern that quietly matched.
 EXEMPT = re.compile(r"wslenv-guard:\s*no-launch")
 
-SKIP_DIRS = {".git", "notes", "worktrees", "build", "__pycache__", "node_modules",
+SKIP_DIRS = {".git", "worktrees", "build", "__pycache__", "node_modules",
              "third_party"}
 
 

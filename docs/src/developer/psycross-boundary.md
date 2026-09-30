@@ -8,8 +8,7 @@ caller cross into it:
   the path every shipping preset takes.
 - Rewritten decomp C, which calls PsyCross directly as native code. This is
   decomp mode, pinned off in every non-debug preset; the source rewriter
-  that produces it is dormant (`notes/plans/openpete-source-rewriter.md`,
-  `status: blocked`).
+  that produces it is dormant.
 
 The hazard on both paths is the same: PsyCross's public signatures are the
 PSYQ ones, but its structs and its `long`-family types are laid out for the

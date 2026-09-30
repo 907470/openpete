@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 # check_mods.sh — the PoC-ladder CI gate (modtest orchestration).
-# (notes/plans/openpete-modding-framework.md, "modtest harness" P1 item.)
 #
 # Single-mod rungs declare their own tests in mod.toml [test] blocks and
 # run through tools/modtest.py (the identical harness third-party modders
@@ -1039,7 +1038,7 @@ else
 fi
 
 # ── mod shaders: engine-compiled GLSL postfx visibly present in the
-# headless dump (plans/openpete-mod-shaders.md S3). The headless
+# headless dump. The headless
 # screenshot path composes native_rtt, which BYPASSES off_image — a
 # chain wired only into the live path passes a boots-and-screenshots
 # gate vacuously, so this rung asserts CONTENT: the crt scanlines make

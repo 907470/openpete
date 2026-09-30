@@ -30,7 +30,7 @@ set_target_properties(fnv1a64_test PROPERTIES C_STANDARD 99)
 add_test(NAME fnv1a64_test COMMAND fnv1a64_test)
 
 # openpete_time_test — verifies the high-resolution monotonic clock +
-# hybrid sleep+spin waiter (Phase 0 of openpete-frame-pacing.md).
+# hybrid sleep+spin waiter.
 # Compiles openpete_time.c directly to stay SDL-free. The Win32 path
 # needs winmm; Linux is link-clean.
 add_executable(openpete_time_test
@@ -44,8 +44,7 @@ if(WIN32)
 endif()
 add_test(NAME openpete_time_test COMMAND openpete_time_test)
 
-# openpete_hook_test — verifies the OPENPETE_HOOK decomp-seam macro
-# (notes/plans/openpete-generic-hook-anchor-refactor.md step 4). Built
+# openpete_hook_test — verifies the OPENPETE_HOOK decomp-seam macro. Built
 # twice from one source: the "matching" variant (no OPENPETE_BUILD) asserts
 # the macro is a no-op (byte-match-preserving); the "openpete" variant
 # (-DOPENPETE_BUILD) asserts it calls the named host hook. Header-only.
@@ -80,7 +79,7 @@ add_test(NAME keymap_test COMMAND keymap_test)
 # psx_region_test — verifies the PSX RAM virtualization region table
 # (registration / lookup / overlap-rejection). Compiles psx_region.c
 # directly so we don't drag openpete_core's SDL2 dependency into a
-# console test binary. See notes/plans/openpete-ram-virtualization.md.
+# console test binary.
 add_executable(psx_region_test
     psx_region_test.c
     ${CMAKE_SOURCE_DIR}/core/psx/psx_region.c)
@@ -190,7 +189,7 @@ endif()
 # of ~10 layers wins each knob and then materializes exactly one spelling of
 # it; this pins that ordering down so an edit can't quietly re-order the
 # tiers. config.c is deliberately SDL-free so it compiles straight in
-# alongside tomlc99. See notes/plans/openpete-config-consolidation.md.
+# alongside tomlc99.
 add_executable(config_resolve_test
     config_resolve_test.c
     ${CMAKE_SOURCE_DIR}/core/config/config.c
@@ -205,8 +204,7 @@ target_include_directories(config_resolve_test PRIVATE
 set_target_properties(config_resolve_test PROPERTIES C_STANDARD 11)
 add_test(NAME config_resolve_test COMMAND config_resolve_test)
 
-# record_encode_bench — encode-throughput validation for --record (plan
-# openpete-record-video.md Phase 7). Drives the swscale RGBA->yuv420p ->
+# record_encode_bench — encode-throughput validation for --record. Drives the swscale RGBA->yuv420p ->
 # libx264 path with synthetic frames as fast as the encoder allows and
 # reports the sustained fps (480 is the plan target). Self-contained: finds
 # libav* locally so the unit-test dir needn't depend on link order with

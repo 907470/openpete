@@ -145,7 +145,7 @@ static void light_color(GTEState* gte, bool lm) {
 }
 
 // Multiply IR by RGBC color and push to RGB FIFO (step 3 of color output)
-/* §13.16 audit (OPENPETE_OFX_CENSUS=1): full-trace census of RTPS calls
+/* OFX audit (OPENPETE_OFX_CENSUS=1): full-trace census of RTPS calls
  * whose native OFX ≠ canonical 256. The widescreen fix treats
  * non-canonical OFX as the authoritative UI signal — this census proves
  * (or breaks) the converse claim that no WORLD projection anywhere in a
@@ -317,7 +317,7 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0) {
         }
     }
 
-    /* §13.16 audit — see ofx_census_record above. */
+    /* OFX audit — see ofx_census_record above. */
     {
         static int s_ofxc = -1;
         if (s_ofxc < 0) { const char* e = getenv("OPENPETE_OFX_CENSUS");

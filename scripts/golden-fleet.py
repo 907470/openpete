@@ -12,8 +12,8 @@
                     [--hosts a,b | --no-local] [--pull divergent|all] [--wait]
     golden-fleet.py clean [--hosts a,b] [--tree PATH | --all]
 
-Host file. $OPENPETE_FLEET_HOSTS, else `<main checkout>/../<planning checkout>/
-fleet-hosts.toml`, the main checkout resolved through `git rev-parse
+Host file. $OPENPETE_FLEET_HOSTS, else `${XDG_CONFIG_HOME:-~/.config}/
+openpete/fleet-hosts.toml`, the main checkout resolved through `git rev-parse
 --git-common-dir` so a worktree resolves the same file. One table per host:
 
     [hosts.<name>]
@@ -244,12 +244,13 @@ def script_repo():
 
 
 def default_hosts_path():
-    """Return <main checkout>/../<planning checkout>/fleet-hosts.toml via the common git dir."""
+    """Return ${XDG_CONFIG_HOME:-~/.config}/openpete/fleet-hosts.toml."""
     common = subprocess.run(
         ["git", "-C", script_repo(), "rev-parse", "--path-format=absolute",
          "--git-common-dir"], capture_output=True, text=True, check=True).stdout.strip()
     main = os.path.dirname(common.rstrip("/"))
-    return os.path.normpath(os.path.join(main, "..", "notes", "fleet-hosts.toml"))
+    cfg = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return os.path.join(cfg, "openpete", "fleet-hosts.toml")
 
 
 def hosts_path():

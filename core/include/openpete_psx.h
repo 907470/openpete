@@ -72,8 +72,7 @@ uint8_t* openpete_psx_get_scratch(void);
  * a game doesn't supply one, openpete_state_region_count == 0 and the
  * hash log is just the FNV1a-64 offset basis (effectively a no-op
  * sentinel). See games/<game>/manifest/gameplay_state_regions.toml +
- * tools/gen_state_regions.py for the canonical generation path, and
- * notes/plans/openpete-determinism-enforcement.md Phase 1. */
+ * tools/gen_state_regions.py for the canonical generation path. */
 /* DIRECT regions live at a fixed PSX vaddr.
  * INDIRECT_ARRAY regions live behind a pointer at `start`: the runtime
  * reads a 4-byte PSX vaddr from RAM[start] and hashes `length` bytes
@@ -134,8 +133,7 @@ typedef struct {
      * a bounded window (a permanent divergence here still fails); every
      * other region must match bit-exact every tick. Set per-region in
      * games/<game>/manifest/gameplay_state_regions.toml (`cd_load_transient = true`).
-     * Becomes a no-op once openpete models CD timing faithfully — see
-     * notes/plans/openpete-psx-oracle-ci.md. */
+     * Becomes a no-op once openpete models CD timing faithfully. */
     uint8_t     cd_load_transient;
     /* Render-side region, audited gameplay-neutral. Its divergence is
      * counted/logged for diagnostics but NEVER hard-fails the gate,

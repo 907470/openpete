@@ -17,8 +17,7 @@ Three sources, in descending order of authority:
   (`spyro-1/asm/renderers/r_environment.s`) and A/B-checked against the prims
   the game itself emits: `games/spyro-1/renderer/terrain.c` (environment
   sectors, faces, textures), `games/spyro-1/renderer/moby.c` (moby
-  instances), `games/spyro-1/renderer/cyclorama.c` (sky sectors). The
-  full renderer contract map is the format notes.
+  instances), `games/spyro-1/renderer/cyclorama.c` (sky sectors).
 - **SpyroEdit** (`../SpyroEdit/Source/SpyroScene.{h,cpp}`, `SpyroData.h`), an
   emulator-plugin editor primarily for Spyro 2/3 with partial Spyro 1 support.
   Corroboration only. Its Spyro-1 sector-header count word and its 11/11/10

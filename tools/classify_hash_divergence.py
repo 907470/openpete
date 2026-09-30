@@ -10,8 +10,6 @@ Exit codes:
    0 — logs are bit-identical
    1 — logs diverge (classification printed to stdout)
    2 — setup error
-
-See notes/plans/openpete-determinism-enforcement.md Phase 5.
 """
 from __future__ import annotations
 

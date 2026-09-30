@@ -68,8 +68,7 @@ struct GeneratedFunction {
 // games/spyro-1/manifest/render_channels.toml by tools/gen_channel_sites.py and loaded at
 // runtime via --channel-sites. This keeps Spyro-specific addresses out of the
 // recompiler source: the addresses + knob symbols live in the manifest, and
-// the recompiler only knows how to emit each generic `kind`. See
-// .claude/plans/openpete-generic-hook-anchor-refactor.md (step 1).
+// the recompiler only knows how to emit each generic `kind`.
 struct ChannelSite {
     enum Kind {
         OffsetAdd,   // addi: emit `rt = rs + <symbol>` at this PC+imm

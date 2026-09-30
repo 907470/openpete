@@ -19,7 +19,7 @@ Emits a per-TU TOML at ``${SPYRO_GENERATED}/rewritten/<stem>.discovered.toml``
 that downstream ``gen_*.py`` tools merge with ``native.toml``. The TOML is
 *advisory*: hand-curated entries always win on conflict.
 
-This pass is the project goal of §1.4 made concrete — the manifest treadmill
+This pass makes the project goal concrete — the manifest treadmill
 shrinks from "hand-list every callee" to "hand-list the policy bits", with
 the address book emerging from the AST itself.
 """

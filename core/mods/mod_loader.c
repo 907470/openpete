@@ -1,6 +1,6 @@
 // core/mods/mod_loader.c — discover, build, and load mods.
 //
-// P1 vertical slice of notes/plans/openpete-modding-framework.md:
+// The mod layout:
 //   mods/<id>/mod.toml     manifest ([mod] id/version/api)
 //   mods/<id>/src/*.c      mod source, compiled on load
 //   mods/enabled.txt       one mod id per line; order IS priority

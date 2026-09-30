@@ -127,8 +127,7 @@ the recompiled module joins the runtime:
   (`games/spyro-1/dist/recomp_build.cpp`), keying the cache on a hash of the
   PSXRecomp binary, its emission metadata and the disc's SHA-256. Discs live
   in a content-addressed library under the user data dir, or beside the exe
-  for a portable install (`games/spyro-1/dist/disc_library.cpp:89-92`). Subject of
-  `notes/plans/openpete-distribution-local-recomp.md`.
+  for a portable install (`games/spyro-1/dist/disc_library.cpp:89-92`).
 
 Both modes build from the same sources; `shared` is an additive second
 linkage, not a fork.

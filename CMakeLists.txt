@@ -59,8 +59,8 @@ add_subdirectory(third_party/SDL)
 # warns and skips itself, so listing one costs nothing until it is regenerated.
 set(OPENPETE_GAMES "spyro-1;spyro-2;spyro-3" CACHE STRING "Games to build (semicolon-separated)")
 
-# In-process GLSL→SPIR-V for the mod shader compile service
-# (notes/plans/openpete-mod-shaders.md S1). glslang 15.4.0 pinned:
+# In-process GLSL→SPIR-V for the mod shader compile service. glslang
+# 15.4.0 pinned:
 # C++17 under GCC 10 (the MinGW cross compiler's ceiling), targets
 # vulkan1.0 like the engine's own glslangValidator -V builds. OFF is a
 # degraded build: mods' prebuilt .spv still load, GLSL sources refuse
@@ -94,7 +94,7 @@ endif()
 
 # Native render foundation: RHI + Vulkan backend (game-agnostic, under
 # core/). Added before core/ so openpete_core can link openpete_rhi as the
-# renderer milestones land. See notes/plans/openpete-native-renderer.md.
+# renderer milestones land.
 add_subdirectory(core/rhi)
 
 add_subdirectory(core)
@@ -181,7 +181,6 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # observer-neutrality vs the PSX oracle, raw-tier warning, and the
     # double-gems expected-divergence assertion. Slow (four headless
     # sessions); `ctest -L mods` or tests/harness/check_mods.sh directly.
-    # See notes/plans/openpete-modding-framework.md.
     add_test(NAME mod_poc_ladder
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_mods.sh)
     set_tests_properties(mod_poc_ladder PROPERTIES
@@ -196,7 +195,6 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # body, and a body needs an open overlay — so this leg opens one in a
     # real window and reads engagement, the error bracket and the
     # out-of-body refusal off the log. Skips (64) with no display.
-    # See notes/plans/openpete-mod-imgui-escape-hatch.md.
     add_test(NAME mod_imgui
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_mod_imgui.sh)
     set_tests_properties(mod_imgui PROPERTIES
@@ -345,8 +343,8 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     set_tests_properties(complexity_ratchet PROPERTIES
         LABELS "fence"
         SKIP_RETURN_CODE 64)
-    # The fence's own tests: the decision function per rule, the staging guard
-    # rules that protect the hook, and the hook end to end in a scratch repo.
+    # The fence's own tests: the decision function per rule and the hook end
+    # to end in a scratch repo.
     add_test(NAME complexity_ratchet_selftest
              COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_complexity_ratchet.py)
     set_tests_properties(complexity_ratchet_selftest PROPERTIES LABELS "fence")
@@ -372,8 +370,8 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     add_test(NAME ratchet_tsv_merge_selftest
              COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_ratchet_tsv_merge.py)
     set_tests_properties(ratchet_tsv_merge_selftest PROPERTIES LABELS "fence")
-    # The golden-image fence: the path rule, the staging guard `add` arm, the
-    # write-time script check, and the pre-commit dispatcher end to end in a
+    # The golden-image fence: the path rule and the pre-commit dispatcher end
+    # to end in a
     # scratch repository (staged image shapes, the bypass, and a complexity
     # refusal through the dispatcher).
     add_test(NAME golden_png_guard_selftest
@@ -888,7 +886,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
-    # Multi-Spyro sub-tick records (notes/plans/openpete-native-multi-spyro-subtick.md):
+    # Multi-Spyro sub-tick records:
     # the spyro-coop mod draws N dragons through the game's own player
     # renderers; each corpus case asserts the OPENPETE_SPYRO_RECDBG hook-call
     # counts, the hook-vs-ring byte identity and the staging census with the
@@ -907,8 +905,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # The pacing analysis suite's own maths, against synthetic inputs with
     # known answers. Fast, no PSX boot, no display: a wrong Allan deviation or
     # a mis-set gate tolerance is worse than none, because it looks
-    # authoritative and nobody re-derives it. See
-    # notes/plans/openpete-sim-tick-pacing-perfection.md (M2).
+    # authoritative and nobody re-derives it.
     add_test(NAME pacing_stats
              COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/pacing/test_pacestats.py)
     set_tests_properties(pacing_stats PROPERTIES
@@ -938,8 +935,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # --record and uses ffprobe to assert a playable VFR H.264 stream with
     # even dimensions, the reported frame count, monotonic non-uniform PTS,
     # and window-independent (bars-free) capture at 21:9. Skips cleanly
-    # (exit 64) if the disc/binary/ffprobe are absent. See
-    # notes/plans/openpete-record-video.md.
+    # (exit 64) if the disc/binary/ffprobe are absent.
     add_test(NAME record_smoke
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_record.sh
                      --build-dir=${CMAKE_BINARY_DIR}
@@ -971,7 +967,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # the profiler (--profile-out) and asserts the trace/summary/rollup pipeline
     # runs and parses. NOT a perf-threshold gate (CI hardware varies); the
     # baseline regression check (tests/harness/bench-corpus.py --baseline) is a
-    # manually-run tool. See notes/plans/openpete-perf-profiling.md.
+    # manually-run tool.
     add_test(NAME bench_corpus_smoke
              COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/bench-corpus.py
                      --exe $<TARGET_FILE:openpete-spyro1>
@@ -989,8 +985,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # Channel registry audit — fast static check (no PSX boot). Cross-
     # references games/spyro-1/manifest/render_channels.toml against the recompiler's
     # address-keyed substitution table; fails on missing or orphaned
-    # substitutions. See notes/plans/openpete-determinism-enforcement.md
-    # Phase 4.
+    # substitutions.
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)
         add_test(NAME channel_registry_audit
@@ -1119,7 +1114,6 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # Divergence in an open channel is expected; in a gated or verified
     # channel it is a regression.
     # Slow (boots N PSX sessions); only runs under `ctest -L slow`.
-    # Phase 6 of openpete-determinism-enforcement.md.
     add_test(NAME determinism_matrix
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_determinism_matrix.sh
                      --build-dir=${CMAKE_BINARY_DIR}
@@ -1155,7 +1149,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # trivially), and a portal entry must still complete its level load under
     # speculation. Slow (~20 headless sessions); `ctest -L savestate` or the
     # script directly. Skips (exit 64) if the binary / disc / movies are
-    # absent. See notes/plans/openpete-savestate-frame-step-rewind.md.
+    # absent.
     add_test(NAME state_roundtrip
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_state_roundtrip.sh)
     set_tests_properties(state_roundtrip PROPERTIES

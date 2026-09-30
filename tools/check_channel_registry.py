@@ -14,8 +14,6 @@ On success, prints a one-line dashboard:
    channels: N total / G gated / O open / V verified
 
 Wire into CTest as `channel_registry_audit`. Cheap (no PSX boot).
-
-See notes/plans/openpete-determinism-enforcement.md Phase 4.
 """
 from __future__ import annotations
 

@@ -6,7 +6,7 @@ globals.toml, and writes a CMake fragment that:
 
   1. set(SPYRO_NATIVE_DEFSYMS ...) — list of -Wl,--defsym=NAME=g_ram+OFF
   2. PE/COFF guard — emits a fatal_error if the platform can't represent
-     absolute symbols, until a PE-friendly aliasing path lands (plan §8).
+     absolute symbols, until a PE-friendly aliasing path lands.
 
 The CMakeLists.txt picks up the fragment with `include()` and feeds
 SPYRO_NATIVE_DEFSYMS straight into target_link_options.

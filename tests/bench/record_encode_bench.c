@@ -1,5 +1,5 @@
 // tests/bench/record_encode_bench.c — encode-throughput validation for the
-// --record pipeline (plan openpete-record-video.md Phase 7).
+// --record pipeline.
 //
 // Drives the SAME encode path record.c uses (swscale RGBA -> yuv420p ->
 // libavcodec encoder, microsecond PTS, interleaved mux) with synthetic

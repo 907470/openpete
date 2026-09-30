@@ -115,5 +115,5 @@ def format_violations(result: StructByValueResult) -> str:
         else:
             lines.append(f"  {v.location}: call to {v.callee}() — "
                          f"returns by value ({v.type_spelling})")
-        lines.append("    needs a g_ram scratch copy-in/out shim — see plan §2.3 Pass 5")
+        lines.append("    needs a g_ram scratch copy-in/out shim")
     return "\n".join(lines)

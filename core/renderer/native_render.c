@@ -13167,7 +13167,7 @@ static void draw_osd_overlay(void) {
         drawn++;
     }
     if (drawn <= 0) return;
-    s_osd_composited += (unsigned)drawn;   /* engagement counter (a green must prove it engaged) */
+    s_osd_composited += (unsigned)drawn;   /* engagement counter: a green must prove it engaged */
 
     if (pn > 0 && s_nr.gouraud_hud_pipes[NR_BLEND_SUB]) {
         rhi_update_buffer(s_nr.osd_panel_vb, panels, (size_t)pn * sizeof(rhi_vertex));
@@ -14194,7 +14194,7 @@ static int native_postfx_run(int point, rhi_texture* target, int w, int h)
  * ~1 s cadence as the phase report. Zone identity is the name POINTER (the
  * brackets pass literals), with strcmp as the collision fallback. WSLg /
  * lavapipe numbers measure the CPU rasterizer, not a GPU — real numbers come
- * from the Windows build (see plans/openpete-gpu-pass-timers.md). */
+ * from the Windows build. */
 #define GPUZ_MAX 40   /* pass skeleton + nested sc.* (verbose) + per-mod postfx */
 static struct { const char *name; double ema; } s_gpuz[GPUZ_MAX];
 static int      s_gpuz_n = 0;

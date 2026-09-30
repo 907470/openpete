@@ -89,8 +89,7 @@ mkdir -p "$OUT"
 # Render-channel substitution table: generated from the single source of
 # truth, games/spyro-1/manifest/render_channels.toml, and passed to the recompiler via
 # --channel-sites so the env/moby queue-head substitutions are data-driven
-# (no Spyro addresses hardcoded in code_generator.cpp for that shape). See
-# notes/plans/openpete-generic-hook-anchor-refactor.md.
+# (no Spyro addresses hardcoded in code_generator.cpp for that shape).
 # A game with no render-channel manifest gets no --channel-sites at all:
 # that table is a list of one game's addresses, and feeding it to another
 # substitutes at addresses that mean something different there.

@@ -47,8 +47,6 @@
 #   PRESENTATION_LEG_TIMEOUT  seconds one capture process may run (default
 #                             300); the binary's own --max-runtime-seconds is
 #                             20 less, as in presentation-corpus.sh.
-#
-# See notes/plans/openpete-presentation-golden.md.
 set -u
 
 # Unattended launcher: silence controller vibration for every run this script

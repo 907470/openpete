@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 measure-pacing.py — analyze a binary frame-time log produced by openpete's
-`--frame-time-log PATH` option (Phase 4.1/4.3 of openpete-frame-pacing.md).
+`--frame-time-log PATH` option.
 
 Binary format (little-endian, see core/include/openpete_frame_time_log.h):
   header (32 B): u32 magic='OFTL', u32 version=1, i64 target_period_ns,

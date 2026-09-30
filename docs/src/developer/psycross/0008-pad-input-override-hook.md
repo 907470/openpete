@@ -2,8 +2,7 @@
 
 Adds `g_PsyX_Pad_InputOverride` so the host can replace SDL keyboard /
 gamepad input with a scripted bitfield per frame. Used to implement
-`--bk2` BizHawk movie replay (see
-`notes/plans/openpete-bk2-input.md`); future scripted-input modes
+`--bk2` BizHawk movie replay; future scripted-input modes
 (record/playback, golden-trace harness) reuse the same slot.
 
 ## Why an override slot, not just keyboard-poke

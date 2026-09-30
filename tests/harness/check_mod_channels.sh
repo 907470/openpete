@@ -219,7 +219,7 @@ for leg in "id_terrain flame 1800 1 terrain (both LOD tiers)" \
     if [ "${n:-999}" -le "$IDTOL" ]; then
         ok "$label: identity material is stock (${n:-?} px <= $IDTOL)"
     else
-        bad "$label: identity material moved ${n:-?} px — the engine's own fragment work is being replaced, not the colour (perspective term? an occlusion contest? see notes/plans/openpete-terrain-cache-materials.md)"
+        bad "$label: identity material moved ${n:-?} px — the engine's own fragment work is being replaced, not the colour (perspective term? an occlusion contest?)"
     fi
 done
 

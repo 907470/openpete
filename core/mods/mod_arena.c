@@ -22,7 +22,7 @@
 //     engine checksums at each keyframe and file save.
 //   - Recompiled game sites that canonicalize addresses (mask to 2MB)
 //     cannot see arena data — the same per-site limitation every
-//     relocated buffer has (see openpete-ram-virtualization.md). The
+//     relocated buffer has. The
 //     standard accessor paths (cpu->read_*/write_*, api->guest) all
 //     resolve it.
 //   - Arena data readable by gameplay is divergence, as with any guest

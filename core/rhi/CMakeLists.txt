@@ -2,7 +2,7 @@
 #
 # The native renderer's foundation. Lives under core/ because it is both
 # game-agnostic and platform-agnostic (windowing/surface via SDL, never a
-# platform header). See notes/plans/openpete-native-renderer.md Phase 1.
+# platform header).
 #
 # Vulkan is loaded dynamically via volk (third_party/volk): it dlopens
 # libvulkan.so.1 / LoadLibrary("vulkan-1.dll") at runtime, so NO Vulkan
@@ -113,8 +113,7 @@ endforeach()
 # the SPIR-V into a generated C source (byte arrays + a name->blob table),
 # which is compiled into the library. The renderer then loads shaders from
 # memory — the binary is self-contained, no loose shaders/ dir ships. Pure
-# CMake (file(READ ... HEX)); see embed_shaders.cmake and Phase 8 of
-# openpete-native-renderer.md. (A dev/modding file override via
+# CMake (file(READ ... HEX)); see embed_shaders.cmake. (A dev/modding file override via
 # OPENPETE_SHADER_DIR still reads loose .spv from disk — e.g. this build's
 # ${RHI_SHADER_OUT_DIR} — without a relink.)
 set(RHI_EMBED_C ${CMAKE_CURRENT_BINARY_DIR}/rhi_shaders_embedded.c)

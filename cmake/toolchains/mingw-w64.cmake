@@ -1,5 +1,4 @@
 # MinGW-w64 cross toolchain for building Windows x64 binaries from Linux/WSL2.
-# See notes/plans/openpete-pc-port.md for rationale.
 #
 # Use:
 #   cmake -B build/win -G Ninja \

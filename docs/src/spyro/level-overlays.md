@@ -256,8 +256,7 @@ function; nothing in the overlay path is special-cased against it.
 
 Either way the function-pointer slot mechanism (§3) is unchanged: a decomped
 overlay installs the same `g_SpawnMoby` pointers the recompiled one would. The
-seam is address-stable, which is why the named-anchor hook refactor
-(`notes/plans/openpete-generic-hook-anchor-refactor.md`) and the modding
+seam is address-stable, which is why the named-anchor hooks and the modding
 framework can target overlay behaviour by anchor.
 
 ## 6. Gotchas for openpete work
@@ -268,8 +267,7 @@ framework can target overlay behaviour by anchor.
   loads (fast-load, custom CD simulation, savestates) must still leave the
   correct id word at `0x8007AA38` and call
   `spyro_set_active_overlay_by_magic`, or dispatch runs the wrong overlay: a
-  stub miss, or plausible-but-wrong code. See
-  `notes/plans/openpete-cd-drive-simulation.md`.
+  stub miss, or plausible-but-wrong code.
 - Regen inputs. `regen-recomp.sh` harvests fn-pointer constants from the
   PSX.EXE bytes, so a run into an empty `generated/` is complete. Re-run after
   bumping psxrecomp, editing a forced-entry list, or pulling a new EXE or

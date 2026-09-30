@@ -1,8 +1,7 @@
 # Developer
 
 Reference pages for the port. [`architecture.md`](architecture.md) is the
-entry point; the per-feature design record lives in the sibling `notes`
-repo under `notes/plans/openpete-*.md`.
+entry point.
 
 ## Start here
 

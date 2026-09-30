@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """gen_mod_sdk.py — generate the mod SDK symbol surface from symbols.toml.
 
-P1 of notes/plans/openpete-modding-framework.md ("SDK generation at
-recomp time"). v0 scope: the function symbol table only. Emits:
+SDK generation at recomp time. v0 scope: the function symbol table only. Emits:
 
   <out>/openpete_sdk_symbols.h   #define OP_FNADDR_<name> 0x...u
                                  (mod-facing; staged into <exe>/sdk/)

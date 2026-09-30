@@ -1,7 +1,6 @@
 // core/mods/mod_services.c — engine services for mods (P2 contract).
 //
-// v1 surface (notes/plans/openpete-modding-framework.md,
-// "engine-services contract"):
+// v1 surface (the engine-services contract):
 //   - savestate trigger: mods QUEUE a save/load; run.c executes it at
 //     the same quiescent host-loop point as the user's hotkeys (the game
 //     fiber is yielded — snapshot/restore can't race recompiled code).
