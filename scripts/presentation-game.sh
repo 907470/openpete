@@ -117,12 +117,17 @@ pg_resolve() {
 # (docs/linux-capture.Dockerfile), which carries its recipe at
 # PG_IMAGE_RECIPE; pg_in_capture_image is true inside it.
 #
-# pg_enter_capture_image SCRIPT ARGS... runs SCRIPT with ARGS inside the image
-# through `scripts/golden-capture-container.sh gate`, which builds the engine
-# into PG_CONTAINER_BUILD_DIR with the image's toolchain under an exclusive
-# lock, then runs SCRIPT there; a --build-dir= argument is replaced by
-# PG_CONTAINER_BUILD_DIR, since the host's build tree holds host-compiled
-# objects. The caller stays the host-side parent for the whole run, so
+# pg_enter_capture_image [--no-build] SCRIPT ARGS... runs SCRIPT with ARGS
+# inside the image through `scripts/golden-capture-container.sh gate`, which
+# builds the engine into PG_CONTAINER_BUILD_DIR with the image's toolchain
+# under an exclusive lock, then runs SCRIPT there; a --build-dir= argument is
+# replaced by PG_CONTAINER_BUILD_DIR, since the host's build tree holds
+# host-compiled objects. --no-build enters through the wrapper's `run`
+# instead, for a SCRIPT that reads files and runs no engine; `run` builds the
+# image when it is absent or stale rather than skipping. The machine's
+# hostname enters as OPENPETE_CAPTURE_HOST, since inside the container the
+# hostname is the container id (scripts/presentation-blessed.py host_here).
+# The caller stays the host-side parent for the whole run, so
 # the build lock sees its gate in flight. Returns the inner
 # run's status; 64 (SKIP) when no container engine or no current image exists.
 PG_IMAGE_RECIPE=/etc/openpete/capture.Dockerfile
@@ -130,11 +135,14 @@ PG_CONTAINER_BUILD_DIR=build/linux-release-container
 
 pg_in_capture_image() { [[ -f "$PG_IMAGE_RECIPE" ]]; }
 
-pg_enter_capture_image() {  # script args...
+pg_enter_capture_image() {  # [--no-build] script args...
+  local sub=gate
+  [[ "$1" == "--no-build" ]] && { sub=run; shift; }
   local script="$1" a; shift
   local -a args=()
   for a in "$@"; do [[ "$a" == --build-dir=* ]] || args+=("$a"); done
-  scripts/golden-capture-container.sh gate -- "$script" \
+  scripts/golden-capture-container.sh "$sub" -- \
+    env "OPENPETE_CAPTURE_HOST=$(uname -n)" "$script" \
     "--build-dir=$PG_CONTAINER_BUILD_DIR" "${args[@]}"
 }
 

@@ -17,6 +17,7 @@
 #   tests/harness/check_presentation_golden.sh [--build-dir=DIR] [--filter=SUBSTR]
 #                                        [--freecam-filter=SUBSTR] [--bless]
 #                                        [--game SLUG]
+#   tests/harness/check_presentation_golden.sh --verdict-only DIR [--game SLUG]
 #   tests/harness/check_presentation_golden.sh --materialize-ref [--game SLUG]
 #                                        [--tier T] [--at REV] <tile>...
 #     --filter          bk2-name substring (default all bk2s)
@@ -33,6 +34,17 @@
 #                       with --bless: admit a capture environment that departs
 #                       from the manifest header (scripts/presentation-blessed.py,
 #                       Environment); the header records REASON
+#     --verdict-only DIR
+#                       capture nothing: decide the verdict of the candidate
+#                       directory DIR (a whole-corpus capture, taken elsewhere)
+#                       with the post-capture steps a capturing run takes over
+#                       its own candidates: the row census, the identity leg,
+#                       the credits leg's recorded result and the strict diff
+#                       (never --expect-subset). Takes no --bless, --filter or
+#                       --freecam-filter. DIR must lie under this tree or the
+#                       store's parent directory, the paths the capture image
+#                       mounts; outside the image the run enters it through
+#                       the wrapper's `run`, which builds no engine.
 #
 # The verdict is defined over the pinned capture image
 # (docs/linux-capture.Dockerfile). Run outside it, the script re-runs itself
@@ -57,7 +69,18 @@
 # sub-tick interpolation of the credits-roll letters (settled-line pose,
 # fly-in position/depth/rotation, key stability), a case the corpus bk2s do
 # not reach. It runs whether or not the diff passes, so one run reports every
-# verdict; it is not gated by --filter.
+# verdict; it is not gated by --filter. The leg is a capture: its exit code
+# and output lines are recorded in credits-verdict.txt in the candidate
+# directory (first line `rc=N`), and the verdict reads its result from that
+# file, so --verdict-only decides a candidate captured elsewhere the same way.
+# On a tier that runs the leg, an absent or unreadable file is a failure.
+#
+# Every verdict writes verdict-report.txt into the candidate directory: the
+# verdict and exit code, the row census, the sha256 of the blessed.tsv and
+# identity baseline read, the credits, identity and diff exit codes, the
+# divergent, missing and extra tiles and the identity pairs over baseline
+# (both members). The identity and diff output is kept beside it in
+# verdict-ident.log and verdict-diff.log.
 #
 # PRESENTATION_TIER selects the corpus tier (scripts/presentation-game.sh):
 # its manifest, golden, identity baseline and default candidate directory. A
@@ -71,9 +94,11 @@
 # a pass; a run in which no captured tile names a row is refused by the diff.
 #
 # Exit: 0 = matches golden, the identity leg is within baseline and the credits
-#       leg passes; 1 = divergence, identity exceed, credits failure, a
-#       vacuous (zero-row) run, a missing corpus manifest (either one; the
-#       message names the path), or a blessed.tsv absent or with zero rows;
+#       leg passes; 1 = divergence, identity exceed, credits failure (or no
+#       credits-verdict.txt on the presentation tier), a vacuous (zero-row)
+#       run, a --verdict-only DIR that is absent or not mounted in the
+#       image, a missing corpus manifest (either one; the message names the
+#       path), or a blessed.tsv absent or with zero rows;
 #       64 = SKIP (prereqs missing).
 #
 # See notes/plans/openpete-presentation-golden.md.
@@ -94,19 +119,43 @@ FREECAM_FILTER=""   # level substring for the freecam corpus; default = all pose
 BLESS=0
 BUILD_ARG=""
 ENV_ACCEPT=""
-for a in "$@"; do case "$a" in
+VERDICT_ONLY=""     # candidate directory decided without a capture
+next_verdict=0
+for a in "$@"; do
+  if (( next_verdict )); then VERDICT_ONLY="$a"; next_verdict=0; continue; fi
+  case "$a" in
   --bless) BLESS=1;;
   --filter=*) FILTER="${a#--filter=}";;
   --freecam-filter=*) FREECAM_FILTER="${a#--freecam-filter=}";;
   --build-dir=*) BUILD_ARG="$a";;
   --environment-accept=*) ENV_ACCEPT="${a#--environment-accept=}";;
+  --verdict-only) next_verdict=1;;
+  --verdict-only=*) VERDICT_ONLY="${a#--verdict-only=}";;
 esac; done
+if (( next_verdict )) || [[ "$*" == *--verdict-only* && -z "$VERDICT_ONLY" ]]; then
+  echo "[presentation-golden] FAIL: --verdict-only takes a candidate directory"; exit 1
+fi
+if [[ -n "$VERDICT_ONLY" && ( $BLESS -eq 1 || -n "$FILTER" || -n "$FREECAM_FILTER" ) ]]; then
+  echo "[presentation-golden] FAIL: --verdict-only takes no --bless, --filter or --freecam-filter"; exit 1
+fi
 GAME="$(pg_parse_game "$@")" || exit 64
 BUILD_DIR="build/linux-release"
 [[ -n "$BUILD_ARG" ]] && BUILD_DIR="${BUILD_ARG#--build-dir=}"
 PG_BUILD_DIR="$BUILD_DIR" pg_resolve "$GAME" || exit 64
 if ! pg_in_capture_image; then
-  pg_enter_capture_image tests/harness/check_presentation_golden.sh "$@"
+  if [[ -n "$VERDICT_ONLY" ]]; then
+    # The container sees this tree and the store's parent directory only.
+    vdir="$(realpath -m -- "$VERDICT_ONLY")"
+    store="${OPENPETE_GOLDEN_REF_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/openpete/golden-ref}"
+    sparent="$(dirname "$(realpath -m -- "$store")")"
+    if [[ "$vdir/" != "$PWD/"* && "$vdir/" != "$sparent/"* ]]; then
+      echo "[presentation-golden] FAIL: --verdict-only $VERDICT_ONLY lies outside $PWD and $sparent, which the capture image mounts"
+      exit 1
+    fi
+    pg_enter_capture_image --no-build tests/harness/check_presentation_golden.sh "$@"
+  else
+    pg_enter_capture_image tests/harness/check_presentation_golden.sh "$@"
+  fi
   rc=$?
   if [[ $rc -eq 64 ]]; then
     echo "[presentation-golden] SKIP: no verdict outside the capture image; environment for information:"
@@ -130,6 +179,159 @@ pg_manifest_dry_run_exit
 # discard-on-exit behaviour.
 # Per game and tier (PG_CAND_DIR), so a run for one game or tier cannot wipe
 # another's kept candidates.
+CREDITS_NAME="credits-verdict.txt"
+REPORT_NAME="verdict-report.txt"
+
+# ---- post-capture steps ------------------------------------------------------
+#
+# One implementation for a capturing run over its own OUT and --verdict-only
+# over a candidate directory captured elsewhere: vr_census, then vr_verdict.
+
+# Row census. `captured` counts the images in OUT; `compared` counts the
+# tiles that name a row of blessed.tsv and `golden` the manifest's rows (the
+# identity leg has no row, so it is excluded from both). A capture that
+# produced nothing proves nothing about the renderer, so it is refused here;
+# a capture no row matches is refused by the diff. Sets captured, compared,
+# goldrows.
+captured=0 compared=0 goldrows=0 irc="not run" crc="not run" drc="not run"
+vr_census() {
+  local f census
+  captured=0
+  for f in "$OUT"/*-vk.png; do [[ -e "$f" ]] && captured=$((captured+1)); done
+  census="$(python3 scripts/presentation-blessed.py census "$GAME" --tier "$PG_TIER" --candidate "$OUT")" \
+    || { echo "[presentation-golden] FAIL: $PG_BLESSED unreadable (see above)"; vr_finish 1; }
+  goldrows="${census#rows=}"; goldrows="${goldrows%% *}"
+  compared="${census##*matched=}"
+  echo "[presentation-golden] $GAME$TIER_LABEL rows: captured=$captured compared=$compared golden=$goldrows"
+  if [[ $captured -eq 0 ]]; then
+    echo "[presentation-golden] VACUOUS: $GAME captured 0 rows — nothing was rendered,"
+    echo "  so nothing was verified. Populate $PG_CORPUS_MANIFEST"
+    [[ -n "$PG_FREECAM_MANIFEST" ]] && echo "  (or $PG_FREECAM_MANIFEST)"
+    echo "  and bless rows into $PG_BLESSED."
+    vr_finish 1
+  fi
+  return 0
+}
+
+# Record the credits leg's exit code and output lines in OUT. args: rc log
+vr_record_credits() {
+  { echo "rc=$1"; cat "$2"; } >"$OUT/$CREDITS_NAME.tmp" && mv -f "$OUT/$CREDITS_NAME.tmp" "$OUT/$CREDITS_NAME"
+}
+
+# The credits leg's recorded result: crc = its exit code, 64 on a tier
+# without the leg, 1 when the file is absent or its first line is not
+# `rc=N`.
+vr_read_credits() {
+  crc=64
+  [[ "$PG_TIER" == "presentation" ]] || return 0
+  local first
+  if [[ ! -f "$OUT/$CREDITS_NAME" ]]; then
+    echo "[presentation-golden] FAIL: $OUT/$CREDITS_NAME absent; the credits leg's result was not recorded"
+    crc=1; return 0
+  fi
+  first="$(head -n 1 "$OUT/$CREDITS_NAME")"
+  if [[ ! "$first" =~ ^rc=([0-9]+)$ ]]; then
+    echo "[presentation-golden] FAIL: $OUT/$CREDITS_NAME: first line '$first' is not rc=N"
+    crc=1; return 0
+  fi
+  crc="${BASH_REMATCH[1]}"
+  if [[ -n "$VERDICT_ONLY" ]]; then
+    echo "[presentation-golden] credits leg recorded rc=$crc:"
+    tail -n +2 "$OUT/$CREDITS_NAME" | sed 's/^/  /'
+  fi
+}
+
+# Write OUT/verdict-report.txt and exit with rc. The lists are read from the
+# identity and diff logs of this run.
+vr_finish() {
+  local rc="$1" verdict=FAIL
+  [[ $rc -eq 0 ]] && verdict=PASS
+  [[ $rc -eq 64 ]] && verdict=SKIP
+  {
+    echo "verdict: $verdict"
+    echo "exit: $rc"
+    echo "game: $GAME"
+    echo "tier: $PG_TIER"
+    echo "mode: $([[ -n "$VERDICT_ONLY" ]] && echo verdict-only || echo capture)"
+    echo "candidate: $OUT"
+    echo "captured: $captured"
+    echo "compared: $compared"
+    echo "manifest-rows: $goldrows"
+    echo "blessed-sha256: $(sha256sum "$PG_BLESSED" 2>/dev/null | cut -d' ' -f1) $PG_BLESSED"
+    echo "ident-baseline-sha256: $(sha256sum "$PG_IDENT_BASELINE" 2>/dev/null | cut -d' ' -f1) $PG_IDENT_BASELINE"
+    echo "credits-rc: $crc"
+    echo "identity-rc: $irc"
+    echo "diff-rc: $drc"
+    [[ -f "$OUT/verdict-diff.log" ]] && awk '
+      $1 == "DIVERGE" { print "divergent: " $2 " " substr($0, index($0, $3)) }
+      $1 == "MISSING" { print "missing: " $2 }
+      $1 == "EXTRA"   { print "extra: " $2 }' "$OUT/verdict-diff.log"
+    [[ -f "$OUT/verdict-ident.log" ]] && awk '
+      $1 == "EXCEED" || $1 == "NOCANON" {
+        canon = $2; sub(/__ident__/, "__canon__", canon)
+        print "identity-" tolower($1) ": " $2 " " canon " " $3 " " $4 }' "$OUT/verdict-ident.log"
+  } >"$OUT/$REPORT_NAME"
+  echo "[presentation-golden] report: $OUT/$REPORT_NAME"
+  exit "$rc"
+}
+
+# Identity leg, the credits leg's recorded result and the strict diff over
+# OUT, then the verdict; exits. The identity leg and the diff both run
+# whatever the other reports, so one run reports every verdict. Their
+# previous outputs in OUT (heat diffs, logs, report) are deleted first.
+vr_verdict() {
+  rm -rf "$OUT/diff"
+  rm -f "$OUT/verdict-ident.log" "$OUT/verdict-diff.log" "$OUT/$REPORT_NAME"
+  # Identity leg: the alpha-0 re-extract against the canon tile of the same
+  # capture (no golden).
+  python3 tests/harness/presentation-ident-check.py "$OUT" --game "$GAME" --baseline "$PG_IDENT_BASELINE" \
+    | tee "$OUT/verdict-ident.log"
+  irc=${PIPESTATUS[0]}
+  vr_read_credits
+  # A filtered run captures part of the corpus on purpose, so the golden
+  # tiles it did not capture are out of scope rather than missing. An
+  # unfiltered run and --verdict-only keep the strict shape check: every
+  # golden tile must be captured.
+  local -a subset=()
+  [[ -n "$FILTER" || -n "$FREECAM_FILTER" ]] && subset=(--expect-subset)
+  python3 tests/harness/presentation-corpus-diff.py "$OUT" --game "$GAME" --manifest "$PG_BLESSED" --diff-out "$OUT/diff" "${subset[@]}" \
+    | tee "$OUT/verdict-diff.log"
+  drc=${PIPESTATUS[0]}
+  if [[ $drc -eq 64 ]]; then echo "[presentation-golden] SKIP (diff prereqs missing)"; vr_finish 64; fi
+  if [[ $crc -ne 0 && $crc -ne 64 ]]; then
+    echo "[presentation-golden] FAIL: credits interpolation leg (see the credits-interp lines above)."
+    [[ $drc -eq 0 ]] && vr_finish 1
+  fi
+  if [[ $irc -ne 0 && $irc -ne 64 ]]; then
+    echo "[presentation-golden] FAIL: identity leg exceeds its baseline (see EXCEED lines above)."
+    echo "  A raised count is a sub-tick spine regression. Re-baseline only for a"
+    echo "  deliberate change: tests/harness/presentation-ident-check.py $OUT --bless --baseline $PG_IDENT_BASELINE"
+    [[ $drc -eq 0 ]] && vr_finish 1
+  fi
+  if [[ $drc -ne 0 ]]; then
+    echo "[presentation-golden] FAIL: candidate diverged from golden."
+    echo "  Candidate images kept in: $OUT"
+    echo "  If this is an INTENDED visual change, adjudicate reference-first, then"
+    echo "  promote from the images ALREADY CAPTURED above — no re-capture needed:"
+    echo "    ${TIER_ENV}tests/harness/presentation-corpus-promote.sh $OUT --game $GAME <tile-or-substring>...   # selective"
+    echo "    ${TIER_ENV}tests/harness/presentation-corpus-promote.sh $OUT --game $GAME --all                    # whole corpus"
+    vr_finish 1
+  fi
+  [[ $crc -eq 64 && "$PG_TIER" == "presentation" ]] && echo "[presentation-golden] credits leg SKIPPED (see the credits-interp line above)"
+  echo "[presentation-golden] PASS: $GAME$TIER_LABEL corpus matches golden ($compared rows compared)"
+  vr_finish 0
+}
+
+if [[ -n "$VERDICT_ONLY" ]]; then
+  OUT="$VERDICT_ONLY"
+  if [[ ! -d "$OUT" ]]; then
+    echo "[presentation-golden] FAIL: --verdict-only: no candidate directory $OUT"; exit 1
+  fi
+  vr_census
+  python3 scripts/presentation-blessed.py environment "$GAME" --tier "$PG_TIER" --candidate "$OUT"
+  vr_verdict
+fi
+
 OUT="${PRESENTATION_GOLDEN_OUT:-$PG_CAND_DIR}"
 rm -rf "$OUT"; mkdir -p "$OUT"
 if [[ "${PRESENTATION_GOLDEN_KEEP:-1}" == "0" ]]; then trap 'rm -rf "$OUT"' EXIT; fi
@@ -157,25 +359,7 @@ if [[ -n "$PG_FREECAM_MANIFEST" ]]; then
   if [[ $frc -eq 1 ]]; then echo "[presentation-golden] FAIL: freecam capture incomplete"; exit 1; fi
 fi
 
-# Row census. `captured` counts the images this run produced; `compared` counts
-# the captured tiles that name a row of blessed.tsv and `golden` the manifest's
-# rows (the identity leg has no row, so it is excluded from both). A capture
-# that produced nothing proves nothing about the renderer, so it is refused
-# here; a capture no row matches is refused by the diff.
-captured=0
-for f in "$OUT"/*-vk.png; do [[ -e "$f" ]] && captured=$((captured+1)); done
-census="$(python3 scripts/presentation-blessed.py census "$GAME" --tier "$PG_TIER" --candidate "$OUT")" \
-  || { echo "[presentation-golden] FAIL: $PG_BLESSED unreadable (see above)"; exit 1; }
-goldrows="${census#rows=}"; goldrows="${goldrows%% *}"
-compared="${census##*matched=}"
-echo "[presentation-golden] $GAME$TIER_LABEL rows: captured=$captured compared=$compared golden=$goldrows"
-if [[ $captured -eq 0 ]]; then
-  echo "[presentation-golden] VACUOUS: $GAME captured 0 rows — nothing was rendered,"
-  echo "  so nothing was verified. Populate $PG_CORPUS_MANIFEST"
-  [[ -n "$PG_FREECAM_MANIFEST" ]] && echo "  (or $PG_FREECAM_MANIFEST)"
-  echo "  and bless rows into $PG_BLESSED."
-  exit 1
-fi
+vr_census
 
 # A refused promote stops the bless before the identity baseline is rewritten,
 # so the baseline is never re-blessed against a manifest the promote did not
@@ -192,48 +376,13 @@ if [[ $BLESS -eq 1 ]]; then
   exit 0
 fi
 
-# Identity leg: the alpha-0 re-extract against the canon tile of the same
-# capture (no golden). Runs whether or not the golden diff below passes, so
-# one run reports both verdicts.
-python3 tests/harness/presentation-ident-check.py "$OUT" --game "$GAME" --baseline "$PG_IDENT_BASELINE"
-irc=$?
-
 # Credits leg (no golden: the checks are relations between one run's own
-# canonical and intermediate captures). Presentation tier only; 64 reads as
-# skipped below.
-crc=64
+# canonical and intermediate captures). Presentation tier only. Its result is
+# recorded in OUT and read back by vr_verdict.
 if [[ "$PG_TIER" == "presentation" ]]; then
-  PG_BUILD_DIR="$BUILD_DIR" tests/harness/check_credits_interp.sh "$GAME_ARG"
-  crc=$?
+  credits_log="$(mktemp)"
+  PG_BUILD_DIR="$BUILD_DIR" tests/harness/check_credits_interp.sh "$GAME_ARG" | tee "$credits_log"
+  vr_record_credits "${PIPESTATUS[0]}" "$credits_log"
+  rm -f "$credits_log"
 fi
-
-# A filtered run captures part of the corpus on purpose, so the golden tiles it
-# did not capture are out of scope rather than missing. An unfiltered run keeps
-# the strict shape check: every golden tile must be captured.
-SUBSET_ARG=()
-[[ -n "$FILTER" || -n "$FREECAM_FILTER" ]] && SUBSET_ARG=(--expect-subset)
-python3 tests/harness/presentation-corpus-diff.py "$OUT" --game "$GAME" --manifest "$PG_BLESSED" --diff-out "$OUT/diff" "${SUBSET_ARG[@]}"
-drc=$?
-if [[ $drc -eq 64 ]]; then echo "[presentation-golden] SKIP (diff prereqs missing)"; exit 64; fi
-if [[ $crc -ne 0 && $crc -ne 64 ]]; then
-  echo "[presentation-golden] FAIL: credits interpolation leg (see the credits-interp lines above)."
-  [[ $drc -eq 0 ]] && exit 1
-fi
-if [[ $irc -ne 0 && $irc -ne 64 ]]; then
-  echo "[presentation-golden] FAIL: identity leg exceeds its baseline (see EXCEED lines above)."
-  echo "  A raised count is a sub-tick spine regression. Re-baseline only for a"
-  echo "  deliberate change: tests/harness/presentation-ident-check.py $OUT --bless --baseline $PG_IDENT_BASELINE"
-  [[ $drc -eq 0 ]] && exit 1
-fi
-if [[ $drc -ne 0 ]]; then
-  echo "[presentation-golden] FAIL: candidate diverged from golden."
-  echo "  Candidate images kept in: $OUT"
-  echo "  If this is an INTENDED visual change, adjudicate reference-first, then"
-  echo "  promote from the images ALREADY CAPTURED above — no re-capture needed:"
-  echo "    ${TIER_ENV}tests/harness/presentation-corpus-promote.sh $OUT --game $GAME <tile-or-substring>...   # selective"
-  echo "    ${TIER_ENV}tests/harness/presentation-corpus-promote.sh $OUT --game $GAME --all                    # whole corpus"
-  exit 1
-fi
-[[ $crc -eq 64 && "$PG_TIER" == "presentation" ]] && echo "[presentation-golden] credits leg SKIPPED (see the credits-interp line above)"
-echo "[presentation-golden] PASS: $GAME$TIER_LABEL corpus matches golden ($compared rows compared)"
-exit 0
+vr_verdict

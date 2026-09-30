@@ -64,10 +64,17 @@ Subcommands:
                                   resolve a revision's rows: store, then the
                                   archive, then the materialize price
   capture-record <game> [--tier T] <candidate> [--build-dir DIR]
-                                  write capture-record.txt into a candidate
+          [--fields FILE]         write capture-record.txt into a candidate
                                   directory: the working copy's tree over the
-                                  build's source roots, the recomp identity and
-                                  the capture environment
+                                  build's source roots, HEAD, the recomp
+                                  identity and the capture environment. With
+                                  --fields, head, source-tree, recomp-input and
+                                  generated-tree are read from FILE (`key:
+                                  value` lines) and no git runs; the
+                                  environment is measured in place either way
+  capture-fields <game> [--out FILE]
+                                  print (or write) those four fields of the
+                                  checkout as the file --fields reads
   identity <game>                 print the recomp identity pair of the
                                   checkout (recomp-input=, generated-tree=)
   rebless-identity <game> [--tier T]
@@ -96,13 +103,16 @@ Subcommands:
                                   record's source tree, else a refusal naming
                                   the first differing path; refused outside
                                   the pinned capture environment (Environment)
+                                  and when the record's host is not this
+                                  machine (a record without a host is local)
 
 Environment: each header records the capture environment. The comparison
 surface (SURFACE_KEYS) is the hash of the image recipe the capture ran in, the
 Mesa driver version and the device name from the engine's Vulkan device line,
 the compiler version the build prints, the preset, and the disc .bin and .cue
 hashes; the image digest and the Vulkan loader version are recorded and not
-compared. A promote is refused when the candidate's surface differs from the
+compared; the host name and CPU model are written to the capture record only.
+A promote is refused when the candidate's surface differs from the
 header's, when a surface field was not measured, or when the promote itself
 runs outside the capture image; --environment-accept "<reason>" admits the
 departure and writes the reason into the header.
@@ -117,6 +127,7 @@ import os
 import pathlib
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -147,9 +158,14 @@ DIGEST_RULE = ('sha256(b"RGB\\n" + width + b"\\n" + height + b"\\n" + '
 # whose capture differs from the header in one of them is refused unless
 # --environment-accept records the reason. image-digest and libvulkan are
 # recorded and never compared: two builds of one recipe produce different
-# image digests, and the loader version is fixed by the recipe hash.
+# image digests, and the loader version is fixed by the recipe hash. host
+# (the machine's hostname, host_here) and cpu (the /proc/cpuinfo model name)
+# are written to the capture record only, never to a manifest header: they
+# name the machine that captured, a promote refuses a capture record whose
+# host is not its own (cmd_promote), and a committed header names no machine.
 ENV_KEYS = ("recipe-hash", "mesa", "device", "compiler", "preset",
             "image-digest", "libvulkan")
+RECORDED_KEYS = ("image-digest", "libvulkan", "host", "cpu")
 SURFACE_KEYS = ("recipe-hash", "mesa", "device", "compiler", "preset",
                 "disc-bin", "disc-cue")
 # The capture image carries the recipe it was built from at IMAGE_RECIPE
@@ -675,16 +691,45 @@ def preset_of(build_dir):
     return os.path.basename(os.path.normpath(build_dir))
 
 
+def host_here():
+    """The name of the machine this process runs on: $OPENPETE_CAPTURE_HOST
+    when set, else `unrecorded` inside the capture image (a container's
+    hostname is its container id, which names no machine), else the
+    hostname. The capture image's callers pass the machine's hostname in
+    OPENPETE_CAPTURE_HOST (pg_enter_capture_image)."""
+    h = os.environ.get("OPENPETE_CAPTURE_HOST", "").strip()
+    if h:
+        return h
+    if recipe_hash_here() != OUTSIDE_IMAGE:
+        return "unrecorded"
+    return socket.gethostname() or "unrecorded"
+
+
+def cpu_here():
+    """The first `model name` of /proc/cpuinfo, or `unrecorded`."""
+    try:
+        with open("/proc/cpuinfo", errors="replace") as fh:
+            for line in fh:
+                k, sep, v = line.partition(":")
+                if sep and k.strip() == "model name" and v.strip():
+                    return " ".join(v.split())
+    except OSError:
+        pass
+    return "unrecorded"
+
+
 def environment_here(game, preset):
     """The capture environment measurable without running the engine: the
     image's recipe hash and digest, the Vulkan loader version, the compiler
-    of the preset's build directory, the preset and the disc hashes. The
-    Mesa and device strings come from the engine's log (device_record)."""
+    of the preset's build directory, the preset, the host and CPU model and
+    the disc hashes. The Mesa and device strings come from the engine's log
+    (device_record)."""
     env = {"recipe-hash": recipe_hash_here(),
            "image-digest": os.environ.get("OPENPETE_CAPTURE_IMAGE_DIGEST")
            or "unrecorded",
            "libvulkan": package_version("libvulkan1"),
-           "compiler": compiler_version(preset), "preset": preset}
+           "compiler": compiler_version(preset), "preset": preset,
+           "host": host_here(), "cpu": cpu_here()}
     env.update(disc_hashes(game, preset))
     return env
 
@@ -1434,14 +1479,71 @@ def read_record(cand):
     return out
 
 
+# The capture record's fields derived from the checkout: HEAD and the source
+# tree need git and the repository's objects, the recomp identity the
+# untracked regen inputs and outputs.
+TREE_FIELDS = ("head", "source-tree", "recomp-input", "generated-tree")
+
+
+def tree_fields(game):
+    """The TREE_FIELDS of the checkout, measured here."""
+    return {"head": git("rev-parse", "HEAD").strip(),
+            "source-tree": source_tree(),
+            "recomp-input": recomp_input_digest(game),
+            "generated-tree": generated_tree_digest(game)}
+
+
+def read_tree_fields(path):
+    """TREE_FIELDS from a file of `key: value` lines (blank lines and `#`
+    lines skipped). Raises ValueError naming an unknown, repeated, empty or
+    missing key."""
+    out = {}
+    with open(path) as fh:
+        for n, line in enumerate(fh, 1):
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            k, sep, v = s.partition(":")
+            k, v = k.strip(), v.strip()
+            if not sep or k not in TREE_FIELDS or k in out or not v:
+                raise ValueError("%s:%d: expected `<key>: <value>` with a "
+                                 "key of %s, once each" % (
+                                     path, n, ", ".join(TREE_FIELDS)))
+            out[k] = v
+    missing = [k for k in TREE_FIELDS if k not in out]
+    if missing:
+        raise ValueError("%s: missing %s" % (path, ", ".join(missing)))
+    return out
+
+
+def cmd_capture_fields(a):
+    """Print (or write to --out) the checkout's TREE_FIELDS as the
+    `key: value` file capture-record --fields reads."""
+    text = "".join("%s: %s\n" % kv for kv in tree_fields(a.game).items())
+    if a.out:
+        with open(a.out + ".tmp", "w") as fh:
+            fh.write(text)
+        os.replace(a.out + ".tmp", a.out)
+    else:
+        sys.stdout.write(text)
+    return 0
+
+
 def cmd_capture_record(a):
     """Write the capture record into a candidate directory: the source
-    tree over SOURCE_ROOTS, HEAD, and the recomp identity of the build."""
-    rec = {"game": a.game, "tier": a.tier,
-           "head": git("rev-parse", "HEAD").strip(),
-           "source-tree": source_tree(),
-           "recomp-input": recomp_input_digest(a.game),
-           "generated-tree": generated_tree_digest(a.game)}
+    tree over SOURCE_ROOTS, HEAD, the recomp identity of the build and the
+    capture environment. Under --fields the four tree fields come from the
+    file and no git runs; the environment is measured here either way."""
+    rec = {"game": a.game, "tier": a.tier}
+    if a.fields:
+        try:
+            rec.update(read_tree_fields(a.fields))
+        except (OSError, ValueError) as e:
+            print("[presentation-blessed] capture-record --fields: %s" % e,
+                  file=sys.stderr)
+            return 1
+    else:
+        rec.update(tree_fields(a.game))
     rec.update(environment_here(a.game, preset_of(a.build_dir)))
     os.makedirs(a.candidate, exist_ok=True)
     path = os.path.join(a.candidate, RECORD_NAME)
@@ -1477,7 +1579,7 @@ def cmd_environment(a):
                                             else "env-match   ", k,
                                             header.get(k, "unrecorded"), what,
                                             env.get(k, "unrecorded")))
-    for k in ("image-digest", "libvulkan"):
+    for k in RECORDED_KEYS:
         print("  env-recorded %s: header=%s %s=%s" % (
             k, header.get(k, "unrecorded"), what, env.get(k, "unrecorded")))
     print("[presentation-env] %s %s: %s" % (
@@ -1561,6 +1663,28 @@ def promote_manifest(a, rec):
         return None
 
 
+def foreign_host(rec):
+    """Why a capture record was not captured on this machine, or None. A
+    record without a host (written before records named one, or captured
+    where the host was not passed in) counts as local; a record naming a
+    host is refused when that host differs from host_here(), or when this
+    process cannot name its own host."""
+    theirs = rec.get("host", "unrecorded")
+    if theirs == "unrecorded":
+        return None
+    ours = host_here()
+    if ours == theirs:
+        return None
+    if ours == "unrecorded":
+        return ("the candidate was captured on host %s and this process "
+                "cannot name its own host (inside the capture image, pass "
+                "OPENPETE_CAPTURE_HOST); promote from a capture taken on "
+                "this machine" % theirs)
+    return ("the candidate was captured on host %s, not on this host %s; "
+            "re-capture the rows here (--filter / --freecam-filter) and "
+            "promote from that capture" % (theirs, ours))
+
+
 def cmd_promote(a):
     """Rewrite the manifest rows of promoted candidate tiles (digest,
     blessed revision, recomp identity, origin) and file the tiles into the
@@ -1572,6 +1696,10 @@ def cmd_promote(a):
     names the reason, which the header records."""
     root = repo_root()
     rec = read_record(a.candidate)
+    foreign = foreign_host(rec)
+    if foreign:
+        print("[presentation-promote] REFUSED: %s" % foreign, file=sys.stderr)
+        return 1
     m = promote_manifest(a, rec)
     if m is None:
         return 1
@@ -1757,9 +1885,17 @@ def main(argv=None):
     p = sub.add_parser("capture-record")
     game_tier(p)
     p.add_argument("candidate")
+    p.add_argument("--fields", metavar="FILE",
+                   help="take head, source-tree, recomp-input and "
+                   "generated-tree from FILE (`key: value` lines, as "
+                   "capture-fields writes) and run no git")
     p.add_argument("--build-dir", default="build/linux-release",
                    help="the capture binary's build directory; its basename "
                    "is the preset recorded")
+    p = sub.add_parser("capture-fields")
+    p.add_argument("game", choices=GAMES)
+    p.add_argument("--out", metavar="FILE", help="write FILE instead of "
+                   "printing")
     p = sub.add_parser("environment")
     game_tier(p)
     p.add_argument("--candidate", help="a captured candidate directory")
@@ -1800,6 +1936,7 @@ def main(argv=None):
                 "store-read": cmd_store_read, "gc": cmd_gc,
                 "golden-at": cmd_golden_at,
                 "capture-record": cmd_capture_record,
+                "capture-fields": cmd_capture_fields,
                 "census": cmd_census, "promote": cmd_promote,
                 "environment": cmd_environment, "identity": cmd_identity,
                 "rebless-identity": cmd_rebless_identity}[a.cmd](a)
