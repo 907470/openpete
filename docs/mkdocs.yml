@@ -122,6 +122,7 @@ nav:
       - Building: developer/building.md
       - Reference: developer/reference/index.md
       - Unattended runs: developer/unattended-runs.md
+      - Golden fleet: developer/golden-fleet.md
       - Recording video: developer/recording-video.md
       - Adding a game: developer/adding-a-game.md
       - Render channel census: developer/render-channel-census.md

@@ -61,6 +61,8 @@ sub-tick is invisible to a headless capture.
 | Mods | `tests/harness/check_mods.sh` | The mod PoC ladder, including per-mod `modtest.toml` scenarios (ctest `mod_poc_ladder`, ~10 min). |
 
 Oracle internals are in [`duckstation-oracle.md`](duckstation-oracle.md).
+The presentation golden runs across several machines through
+[`golden-fleet.md`](golden-fleet.md).
 
 ### Skip targets
 
