@@ -43,6 +43,11 @@
 #           the path),
 #       64 = SKIP (binary / disc / Vulkan loader missing).
 #
+# Environment:
+#   PRESENTATION_LEG_TIMEOUT  seconds one capture process may run (default
+#                             300); the binary's own --max-runtime-seconds is
+#                             20 less, as in presentation-corpus.sh.
+#
 # See notes/plans/openpete-presentation-golden.md.
 set -u
 
@@ -71,6 +76,9 @@ CAP_LODS="${OPENPETE_CAP_LODS:-original extended}"
 # Pinned post-load frame for the canonical leg (+HALF for the intermediate).
 # --skip-to-level is playable well before this (loads ~f1700); a row may override.
 START_DEFAULT="${OPENPETE_FREECAM_START:-1900}"
+LEG_TIMEOUT="${PRESENTATION_LEG_TIMEOUT:-300}"
+if ! [[ "$LEG_TIMEOUT" =~ ^[0-9]+$ ]] || (( LEG_TIMEOUT <= 20 )); then
+  echo "freecam-corpus: PRESENTATION_LEG_TIMEOUT must be an integer above 20 (got '$LEG_TIMEOUT')" >&2; exit 64; fi
 
 BUILD_DIR="build/linux-release"
 for a in "$@"; do case "$a" in --build-dir=*) BUILD_DIR="${a#--build-dir=}";; esac; done
@@ -121,11 +129,13 @@ run_leg() {  # slug frame_limit leg flag target lodmode level pose launch
   local out="$OUTDIR/${slug}__${tag}${leg}__{n}.png"
   local log; log="$(mktemp)"
   local -a leg_env=(); [[ "$leg" == ident ]] && leg_env=(OPENPETE_INTERMEDIATE_ALPHA=1)
-  env "${leg_env[@]}" "${ROW_ENV[@]}" timeout 300 "$BIN" --headless --disc "$DISC" --disc-cache 0 --renderer vk \
+  # --no-config: the tiles are compared pixel-for-pixel, so the run is
+  # independent of any openpete.toml in the capturing machine's home.
+  env "${leg_env[@]}" "${ROW_ENV[@]}" timeout "$LEG_TIMEOUT" "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 --renderer vk \
     --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" "${PG_RUN_ARGS[@]}" \
     --skip-to-level "$level" --freecam-pose "$pose" \
     --screenshot-native-only "$flag" "$target" --screenshot-output "$out" \
-    --frame-limit "$flim" --max-runtime-seconds 280 "${ROW_ARGS[@]}" >"$log" 2>&1
+    --frame-limit "$flim" --max-runtime-seconds "$((LEG_TIMEOUT - 20))" "${ROW_ARGS[@]}" >"$log" 2>&1
   local rc=$?
   pg_note_device "$log" "$OUTDIR"
   if [[ ! -f "$OUTDIR/${slug}__${tag}${leg}__${target}-vk.png" ]]; then

@@ -5,7 +5,11 @@
 #   scripts/golden-capture-container.sh image            # build the image
 #   scripts/golden-capture-container.sh build            # configure + build
 #   scripts/golden-capture-container.sh run -- CMD ARGS  # run CMD in the tree
+#   scripts/golden-capture-container.sh run --golden -- CMD ARGS
+#                                        # run CMD under the host golden lock
 #   scripts/golden-capture-container.sh gate -- CMD ARGS # build, then run CMD
+#   scripts/golden-capture-container.sh gate --no-build -- CMD ARGS
+#                                        # verify shipped binaries, then run CMD
 #   scripts/golden-capture-container.sh identity         # image id + versions
 #
 # `gate` is the entry the presentation gates take from the host
@@ -15,6 +19,20 @@
 # exclusive lock on build/linux-release-container.build-lock for their whole run, so
 # two gates (ctest -j, a manual run beside ctest) never configure or build into
 # the shared container build directory at once; the second waits.
+#
+# `gate --no-build` skips the engine build and runs CMD on binaries built
+# elsewhere. OPENPETE_CAPTURE_BINARIES names a sha256sum-format file whose
+# paths are relative to the tree; it is checked with `sha256sum -c` from the
+# tree root under the build-directory lock, before CMD runs, so no local build
+# rewrites the tree between the check and the run. Exit 64 when the variable
+# is unset or the file is absent, 1 naming each mismatching path.
+#
+# Host golden lock. `gate` and `run --golden` hold an exclusive flock on
+# ${OPENPETE_FLEET_ROOT:-~/.cache/openpete-fleet}/golden.lock for their whole
+# run, so one presentation golden runs per host whatever starts it; a second
+# waits and prints the holder. Plain `run` (promote, rebless, materialize,
+# short checks) does not take it. When OPENPETE_GOLDEN_LOCK_HELD equals the
+# lock's path, the caller already holds the lock and the flock is skipped.
 #
 # The image is labelled with the SHA-256 of the recipe it was built from and
 # carries the recipe at /etc/openpete/capture.Dockerfile. An image whose label
@@ -45,18 +63,41 @@
 # materialize worktree at a past revision, which carries no copy of this
 # script); the image is built from this checkout's recipe either way.
 #
+# OPENPETE_CAPTURE_MOUNT_AS=<absolute path> mounts the tree (its real path)
+# at that path inside the container, for a copy of a checkout whose build
+# tree recorded the checkout's absolute paths. The working directory and
+# every in-container path (HOME, XDG_*, a reference store inside the tree)
+# take the in-container spelling; every host-side operation (the container
+# home, the lock files, the store) uses the real path. The worktree mounts
+# are skipped: such a copy has no .git and its build inputs are real files.
+#
+# Every container runs with --network=none. OPENPETE_CAPTURE_LABEL=<value>
+# adds the container label org.openpete.fleet=<value>.
+#
 # Rootless podman on a btrfs home has no overlay driver; build the image
 # there as scripts/release-container.sh describes (podman run + commit, the
 # commit passing --change "LABEL org.openpete.capture-recipe=<sha256>").
 # Elsewhere this script builds the image when it is absent or stale, from a
 # context directory holding the recipe alone.
 set -euo pipefail
+# The binaries hash file resolves against the caller's directory.
+if [[ -n "${OPENPETE_CAPTURE_BINARIES:-}" && "$OPENPETE_CAPTURE_BINARIES" != /* ]]; then
+    OPENPETE_CAPTURE_BINARIES="$PWD/$OPENPETE_CAPTURE_BINARIES"
+fi
 cd "$(dirname "$0")/.."
 RECIPE_DIR="$PWD"
 if [[ -n "${OPENPETE_CAPTURE_TREE:-}" ]]; then
     cd "$OPENPETE_CAPTURE_TREE" || { echo "[capture-container] no tree at $OPENPETE_CAPTURE_TREE" >&2; exit 64; }
 fi
 TREE="$PWD"
+MOUNT_AS="${OPENPETE_CAPTURE_MOUNT_AS:-}"
+if [[ -n "$MOUNT_AS" ]]; then
+    [[ "$MOUNT_AS" == /* ]] || { echo "[capture-container] OPENPETE_CAPTURE_MOUNT_AS must be absolute (got $MOUNT_AS)" >&2; exit 64; }
+    MOUNT_AS="${MOUNT_AS%/}"
+    TREE="$(pwd -P)"
+fi
+# CTREE is the tree's spelling inside the container.
+CTREE="${MOUNT_AS:-$TREE}"
 
 IMAGE="${OPENPETE_CAPTURE_IMAGE:-openpete-linux-capture}"
 ENGINE="${OPENPETE_CONTAINER_ENGINE:-}"
@@ -66,12 +107,23 @@ fi
 [[ -n "$ENGINE" ]] || { echo "[capture-container] no podman or docker found" >&2; exit 64; }
 
 sub="${1:-}"; shift || true
+no_build=0 golden=0
 case "$sub" in
     image|build|identity) ;;
-    run|gate) [[ "${1:-}" == "--" ]] && shift
+    run|gate)
+         [[ "$sub" == gate && "${1:-}" == "--no-build" ]] && { no_build=1; shift; }
+         [[ "$sub" == run && "${1:-}" == "--golden" ]] && { golden=1; shift; }
+         [[ "$sub" == gate ]] && golden=1
+         [[ "${1:-}" == "--" ]] && shift
          [[ $# -gt 0 ]] || { echo "[capture-container] $sub: no command" >&2; exit 64; } ;;
-    *) echo "usage: $0 image | build | run -- CMD [ARGS...] | gate -- CMD [ARGS...] | identity" >&2; exit 64 ;;
+    *) echo "usage: $0 image | build | run [--golden] -- CMD [ARGS...] | gate [--no-build] -- CMD [ARGS...] | identity" >&2; exit 64 ;;
 esac
+if (( no_build )); then
+    if [[ -z "${OPENPETE_CAPTURE_BINARIES:-}" || ! -f "$OPENPETE_CAPTURE_BINARIES" ]]; then
+        echo "[capture-container] SKIP: gate --no-build needs OPENPETE_CAPTURE_BINARIES naming a sha256sum file (got '${OPENPETE_CAPTURE_BINARIES:-}')"
+        exit 64
+    fi
+fi
 
 RECIPE_HASH="$(sha256sum "$RECIPE_DIR/docs/linux-capture.Dockerfile" | cut -d' ' -f1)"
 LABEL=org.openpete.capture-recipe
@@ -95,7 +147,8 @@ fi
 [[ "$sub" == image ]] && exit 0
 
 mounts=()
-common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+common="" main=""
+[[ -z "$MOUNT_AS" ]] && common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
 main="${common%/.git}"
 if [[ -n "$common" && "$main" != "$common" && "$main" != "$TREE" ]]; then
     # The common git directory stays writable beneath the read-only checkout:
@@ -103,7 +156,7 @@ if [[ -n "$common" && "$main" != "$common" && "$main" != "$TREE" ]]; then
     # promote stages its manifest in the worktree's index.
     mounts+=(-v "$main:$main:ro" -v "$common:$common")
 fi
-mounts+=(-v "$TREE:$TREE")
+mounts+=(-v "$TREE:$CTREE")
 image_digest="$("$ENGINE" image inspect --format '{{.Digest}}' "$IMAGE" 2>/dev/null || true)"
 [[ -z "$image_digest" || "$image_digest" == "<none>" ]] && \
     image_digest="$("$ENGINE" image inspect --format '{{.Id}}' "$IMAGE")"
@@ -116,9 +169,10 @@ env_args=(-e OPENPETE_NO_COMMITS=1 -e OPENPETE_VIBRATION=0
 home="$TREE/build/linux-release-container/home"
 mkdir -p "$home/run"
 chmod 700 "$home/run"
-env_args+=(-e "HOME=$home" -e "XDG_CONFIG_HOME=$home/.config"
-           -e "XDG_CACHE_HOME=$home/.cache" -e "XDG_DATA_HOME=$home/.local/share"
-           -e "XDG_RUNTIME_DIR=$home/run")
+chome="$CTREE/build/linux-release-container/home"
+env_args+=(-e "HOME=$chome" -e "XDG_CONFIG_HOME=$chome/.config"
+           -e "XDG_CACHE_HOME=$chome/.cache" -e "XDG_DATA_HOME=$chome/.local/share"
+           -e "XDG_RUNTIME_DIR=$chome/run")
 # The reference store resolves as scripts/presentation-blessed.py resolves it,
 # and the container gets it by an explicit path: the container's home is not
 # the host's, so the default would otherwise name a directory inside the
@@ -127,23 +181,32 @@ store="${OPENPETE_GOLDEN_REF_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/openpete/
 mkdir -p "$store"
 store="$(cd "$store" && pwd -P)"
 store_parent="$(dirname "$store")"
-mounts+=(-v "$store_parent:$store_parent")
-env_args+=(-e "OPENPETE_GOLDEN_REF_DIR=$store")
+if [[ -n "$MOUNT_AS" && "$store/" == "$TREE/"* ]]; then
+    # A store inside the tree is already mounted with it, under the
+    # in-container spelling.
+    env_args+=(-e "OPENPETE_GOLDEN_REF_DIR=$CTREE${store#"$TREE"}")
+else
+    mounts+=(-v "$store_parent:$store_parent")
+    env_args+=(-e "OPENPETE_GOLDEN_REF_DIR=$store")
+fi
 # The harness knobs a capture run reads; the container sees only what -e passes.
 for v in CORPUS_JOBS PRESENTATION_TIER PRESENTATION_GOLDEN_OUT PRESENTATION_GOLDEN_KEEP \
-         PRESENTATION_LEG_TIMEOUT OPENPETE_CAP_LODS OPENPETE_FRAME_LIMIT; do
+         PRESENTATION_LEG_TIMEOUT LP_NUM_THREADS OPENPETE_CAP_LODS OPENPETE_FRAME_LIMIT; do
     [[ -n "${!v:-}" ]] && env_args+=(-e "$v=${!v}")
 done
 
 uidmap=(--user "$(id -u):$(id -g)")
 [[ "$ENGINE" == podman ]] && uidmap=(--userns=keep-id)
+run_opts=(--network=none)
+[[ -n "${OPENPETE_CAPTURE_LABEL:-}" ]] && run_opts+=(--label "org.openpete.fleet=$OPENPETE_CAPTURE_LABEL")
 
-# The lock descriptor (9) is closed for the engine: rootless podman leaves
-# helper processes (slirp4netns, a session dbus-daemon) running after the
-# container exits, and an inherited descriptor would hold the lock with them.
+# The lock descriptors (9 build directory, 8 host golden lock) are closed for
+# the engine: rootless podman leaves helper processes (a session dbus-daemon)
+# running after the container exits, and an inherited descriptor would hold
+# the lock with them.
 run_in() {
-    "$ENGINE" run --rm "${mounts[@]}" "${env_args[@]}" "${uidmap[@]}" \
-        -w "$TREE" "$IMAGE" "$@" 9>&-
+    "$ENGINE" run --rm "${run_opts[@]}" "${mounts[@]}" "${env_args[@]}" "${uidmap[@]}" \
+        -w "$CTREE" "$IMAGE" "$@" 9>&- 8>&-
 }
 
 # Serialise every configure and build into build/linux-release-container: the
@@ -155,6 +218,34 @@ lock_build_dir() {
         echo "[capture-container] build/linux-release-container is locked by another run; waiting"
         flock 9
     fi
+}
+
+# Hold the host golden lock (descriptor 8) until this process exits, unless
+# OPENPETE_GOLDEN_LOCK_HELD names it; a waiter prints the holder's record.
+lock_golden() {
+    local root="${OPENPETE_FLEET_ROOT:-$HOME/.cache/openpete-fleet}"
+    local lock="$root/golden.lock"
+    [[ "${OPENPETE_GOLDEN_LOCK_HELD:-}" == "$lock" ]] && return 0
+    mkdir -p "$root"
+    exec 8>>"$lock"
+    if ! flock -n 8; then
+        echo "[capture-container] pid $$ ($sub) waiting on the host golden lock $lock; last holder record: $(head -c 200 "$lock" 2>/dev/null || true)"
+        flock 8
+    fi
+    : >"$lock"
+    echo "pid $$ host $(hostname) $sub tree $TREE since $(date -Is)" >&8
+}
+
+# Check the shipped binaries against OPENPETE_CAPTURE_BINARIES from the tree
+# root; print each mismatching path and return 1 on any mismatch.
+verify_binaries() {
+    local out
+    if out="$(cd "$TREE" && sha256sum -c --strict -- "$OPENPETE_CAPTURE_BINARIES" 2>&1)"; then
+        return 0
+    fi
+    echo "[capture-container] FAIL: shipped binaries differ from $OPENPETE_CAPTURE_BINARIES:"
+    grep -v ': OK$' <<<"$out" | sed 's/^/  /'
+    return 1
 }
 
 build_engine() {
@@ -169,8 +260,13 @@ case "$sub" in
         build_engine
         ;;
     gate)
+        lock_golden
         lock_build_dir
-        build_engine || { echo "[capture-container] FAIL: in-image engine build"; exit 1; }
+        if (( no_build )); then
+            verify_binaries || exit 1
+        else
+            build_engine || { echo "[capture-container] FAIL: in-image engine build"; exit 1; }
+        fi
         run_in "$@"
         ;;
     identity)
@@ -185,6 +281,7 @@ case "$sub" in
             gcc-11 --version | head -1'
         ;;
     run)
+        (( golden )) && lock_golden
         run_in "$@"
         ;;
 esac
