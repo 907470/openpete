@@ -486,6 +486,9 @@ else
     echo "lock_holder="
 fi
 echo "governor=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo none)"
+echo "kill_user_processes=$(busctl get-property org.freedesktop.login1 /org/freedesktop/login1 \
+    org.freedesktop.login1.Manager KillUserProcesses 2>/dev/null | awk '{print $2}')"
+echo "linger=$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)"
 echo "cpu=$(grep -m1 'model name' /proc/cpuinfo | sed 's/.*: //')"
 echo "nproc=$(nproc)"
 echo "memavail_kib=$(awk '/^MemAvailable:/{print $2}' /proc/meminfo)"
@@ -622,6 +625,10 @@ def preflight(hosts, need_bytes=0, require_calibration=True, info=None):
                 print(f"[fleet] {h.name}: slots lowered {slots} -> {fit} "
                       f"(MemAvailable {int(i['memavail_kib']) / GIB_KIB:.1f} GiB, 2 GiB per slot)")
                 slots = fit
+        if not h.local and i.get("kill_user_processes") == "true" and i.get("linger") != "yes":
+            reasons.append("logind kills an ssh session's processes at logout "
+                           "(KillUserProcesses=yes) and lingering is off; run "
+                           "`loginctl enable-linger` on the host")
         if i.get("lock") == "busy":
             reasons.append(f"golden lock held: {i.get('lock_holder', '').strip()}")
         results.append((h, i, reasons, slots))
@@ -1259,7 +1266,7 @@ if [ "$LOCK_MODE" = take ]; then
     exec 8>>"$FLEET_ROOT/golden.lock"
     flock -n 8 || finish 75 lock-busy
     : >"$FLEET_ROOT/golden.lock"
-    echo "pid $$ host $(hostname) golden-fleet $RUN_ID $JOB since $(date -Is)" >&8
+    echo "pid $$ host $(uname -n) golden-fleet $RUN_ID $JOB since $(date -Is)" >&8
 fi
 export OPENPETE_FLEET_ROOT="$FLEET_ROOT" OPENPETE_GOLDEN_LOCK_HELD="$FLEET_ROOT/golden.lock"
 export OPENPETE_CAPTURE_IMAGE="$IMAGE" OPENPETE_CAPTURE_LABEL="$RUN_ID"
@@ -1314,8 +1321,16 @@ print("poked", fs[0])' "$cand" "$POKE" >>"$UNIT_DIR/capture.log" 2>&1 || finish 
 esac
 '''
 
-# Launch a supervisor detached (setsid, all descriptors redirected, so ssh
-# returns at once). args: supervisor envfile logfile KEY=VALUE...
+# Launch a supervisor detached, all descriptors redirected, so ssh returns at
+# once. With lingering on, the supervisor is a transient unit of the user's
+# systemd manager: logind with KillUserProcesses=yes (SteamOS) kills every
+# process of an ssh session's scope when the session closes, setsid or not,
+# and a unit under user@.service is outside that scope. systemd already makes
+# the unit's main process a session leader, so it runs bash directly: setsid
+# there would fork, the unit would end with its main process, and systemd
+# would kill the forked child with the unit's cgroup. Without lingering the
+# user manager stops with the last session, so setsid is used.
+# args: supervisor envfile logfile KEY=VALUE...
 LAUNCH_SCRIPT = r'''
 set -eu
 sup="$1"; envf="$2"; log="$3"; shift 3
@@ -1323,8 +1338,16 @@ mkdir -p "$(dirname "$envf")"
 : >"$envf.tmp"
 for kv in "$@"; do printf 'export %s=%q\n' "${kv%%=*}" "${kv#*=}" >>"$envf.tmp"; done
 mv -f "$envf.tmp" "$envf"
-setsid nohup bash "$sup" "$envf" >"$log" 2>&1 </dev/null &
-echo "launched $!"
+if [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)" = yes ] \
+        && command -v systemd-run >/dev/null 2>&1; then
+    unit="openpete-fleet-$(basename "$envf" .env | tr -c 'A-Za-z0-9_.-' '_')-$$"
+    systemd-run --user --collect --quiet --unit="$unit" \
+        bash -c 'exec bash "$0" "$1" >"$2" 2>&1 </dev/null' "$sup" "$envf" "$log"
+    echo "launched $(systemctl --user show -p MainPID --value "$unit") unit $unit"
+else
+    setsid nohup bash "$sup" "$envf" >"$log" 2>&1 </dev/null &
+    echo "launched $!"
+fi
 '''
 
 # Report each attempt's state: `<base> done <k=v ...>`, `running`, `dead`

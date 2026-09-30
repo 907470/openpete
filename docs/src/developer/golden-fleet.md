@@ -338,6 +338,7 @@ set by hand does not reach a unit.
 | `SKIP: no host file ...` | Create it with `scripts/golden-fleet.py add local`. |
 | `dropped: not calibrated (no governor= in calibrated); run add` | Run `add` for the host. |
 | `dropped: governor X, calibrated at Y` | Restore the governor, or run `calibrate --hosts <host>` to recalibrate under the new one. |
+| `dropped: logind kills an ssh session's processes at logout (KillUserProcesses=yes) and lingering is off ...` | Run `loginctl enable-linger` on the host (SteamOS ships `KillUserProcesses=yes`). With lingering on, each supervisor runs as a transient unit of the user's systemd manager (`systemd-run --user`), outside the ssh session; without it, under `setsid`. |
 | `dropped: golden lock held: <holder>` | Another golden runs on that host; the holder record names it. |
 | `dropped: free space ... need ... (image ships)` | Free space under `fleet_root`, or run `clean`. |
 | `local image ... was built from recipe ..., the tree's is ...` | Rebuild it: `scripts/golden-capture-container.sh image`. |

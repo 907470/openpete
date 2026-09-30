@@ -239,7 +239,7 @@ lock_golden() {
         flock 8
     fi
     : >"$lock"
-    echo "pid $$ host $(hostname) $sub tree $TREE since $(date -Is)" >&8
+    echo "pid $$ host $(uname -n) $sub tree $TREE since $(date -Is)" >&8
 }
 
 # Check the shipped binaries against OPENPETE_CAPTURE_BINARIES from the tree
