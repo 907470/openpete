@@ -160,8 +160,11 @@ mounts+=(-v "$TREE:$CTREE")
 image_digest="$("$ENGINE" image inspect --format '{{.Digest}}' "$IMAGE" 2>/dev/null || true)"
 [[ -z "$image_digest" || "$image_digest" == "<none>" ]] && \
     image_digest="$("$ENGINE" image inspect --format '{{.Id}}' "$IMAGE")"
+# A container's hostname is its container id, so the machine's hostname
+# enters as OPENPETE_CAPTURE_HOST for the capture record's host field.
 env_args=(-e OPENPETE_NO_COMMITS=1 -e OPENPETE_VIBRATION=0
-          -e "OPENPETE_CAPTURE_IMAGE_DIGEST=$image_digest")
+          -e "OPENPETE_CAPTURE_IMAGE_DIGEST=$image_digest"
+          -e "OPENPETE_CAPTURE_HOST=${OPENPETE_CAPTURE_HOST:-$(uname -n)}")
 # The image has no passwd entry for the mapped uid, so HOME is unset inside
 # the container and the engine's per-user directories ($HOME/.config/openpete)
 # and PulseAudio's runtime cookie resolve relative to the working directory,
