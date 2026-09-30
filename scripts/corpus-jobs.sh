@@ -14,6 +14,11 @@
 # improving. CORPUS_JOBS=1 restores strictly serial execution, which is the
 # reference any parallel run must reproduce byte-for-byte.
 #
+# LP_NUM_THREADS (llvmpipe's rasterizer threads per process) defaults to
+# max(1, nproc / CORPUS_JOBS), so jobs x threads stays at the core count: the
+# default of one llvmpipe thread per core in every job oversubscribes the CPU
+# CORPUS_JOBS-fold. The thread count does not change a captured pixel.
+#
 # Usage:
 #   source scripts/corpus-jobs.sh
 #   cj_run some_function arg1 arg2      # queues, blocking only when full
@@ -25,6 +30,8 @@
 
 CORPUS_JOBS="${CORPUS_JOBS:-$(( $(nproc) / 2 ))}"
 [[ "$CORPUS_JOBS" -lt 1 ]] && CORPUS_JOBS=1
+_cj_lp=$(( $(nproc) / CORPUS_JOBS ))
+export LP_NUM_THREADS="${LP_NUM_THREADS:-$(( _cj_lp < 1 ? 1 : _cj_lp ))}"
 
 _cj_status="$(mktemp -t corpus-jobs.XXXXXX)"
 trap 'rm -f "$_cj_status"' EXIT
