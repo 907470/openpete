@@ -251,7 +251,7 @@ def disc_check(game, rev, m, main, from_archive=False):
 def make_worktree(rev, name, from_archive, logf):
     """Create the throwaway worktree. Returns its path."""
     main = main_checkout()
-    wt = os.path.join(main, "notes", "worktrees", name)
+    wt = os.path.join(main, "worktrees", name)
     if not from_archive:
         env = dict(os.environ, OPENPETE_ROOT=main)
         run(["bash", setup_script(), name, "--ref", rev, "--no-links",
@@ -547,8 +547,7 @@ def rewriter_decomp(wt, game):
     """Point the AST rewriter at the worktree's own decomp for the span of
     regen-manifest.sh. tools/rewrite/parser.py takes the decomp's include
     directories from `spyro-1` beside the checkout's parent directory,
-    which for a worktree under worktrees is worktrees/
-    spyro-1: that path is made a link to the worktree's pinned decomp under
+    which for a worktree under worktrees/ is worktrees/spyro-1: that path is made a link to the worktree's pinned decomp under
     an exclusive lock and removed afterwards. Only a game carrying
     manifest/native.toml runs the rewriter, and the parser names spyro-1."""
     if game != "spyro-1" or not os.path.isfile(

@@ -77,14 +77,16 @@ WINDOW_ALLOW = {
 
 EXEMPT = re.compile(r"seam-guard:\s*display-owner")
 
-# "notes" holds local tooling, including git worktrees: whole
-# copies of this repo whose paths do not match the allow-lists below, so every
-# owner file in one reads as a violation. Only the working tree is scanned.
+# "notes" holds local tooling; "worktrees" holds git worktrees:
+# whole copies of this repo whose paths do not match the allow-lists below, so
+# every owner file in one reads as a violation. Only the working tree is
+# scanned.
 # ".tools" holds downloaded toolchains (clang headers, pcsx-redux): two thirds
 # of the C bytes under the root, none of them openpete source. A game's nested
 # decomp checkout (games/<game>/<game>/) is PSX code with no RHI access.
-SKIP_DIRS = {".git", "notes", ".tools", "build", "__pycache__", "third_party",
-             "dist", "mods-attic", "node_modules", "tests", "generated"}
+SKIP_DIRS = {".git", "notes", "worktrees", ".tools", "build", "__pycache__",
+             "third_party", "dist", "mods-attic", "node_modules", "tests",
+             "generated"}
 GAMES_DIR = "games"
 SUFFIXES = (".c", ".cpp", ".h", ".hpp")
 

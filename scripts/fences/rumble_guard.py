@@ -71,11 +71,11 @@ SANCTIONED = re.compile(r"""
 # is a decision someone made rather than a pattern that quietly matched.
 EXEMPT = re.compile(r"rumble-guard:\s*(intentional|no-launch)")
 
-# "notes" holds local tooling, including git worktrees: whole
-# copies of this repo whose scripts predate or duplicate the working tree's.
-# Only the working tree is scanned.
-SKIP_DIRS = {".git", "notes", "build", "__pycache__", "node_modules", "third_party",
-             "dist", "mods-attic"}
+# "notes" holds local tooling; "worktrees" holds git worktrees:
+# whole copies of this repo whose scripts predate or duplicate the working
+# tree's. Only the working tree is scanned.
+SKIP_DIRS = {".git", "notes", "worktrees", "build", "__pycache__", "node_modules",
+             "third_party", "dist", "mods-attic"}
 SUFFIXES = (".sh", ".py", ".bash")
 
 
