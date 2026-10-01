@@ -20,9 +20,9 @@
 #     [MODULE_SOURCES <file>...])     # module TUs beyond the generated code
 #
 # Called from games/<id>/CMakeLists.txt; a game whose generated/ holds no
-# recompiled output is skipped with a warning. <id> is the directory name
-# and the game's config-scope id ("spyro-2"); the target names drop its
-# hyphen:
+# recompiled output stops the configure with FATAL_ERROR. <id> is the
+# directory name and the game's config-scope id ("spyro-2"); the target
+# names drop its hyphen:
 # module `<tag>_recomp_module`, executable `openpete-<tag>`. After the call
 # the caller's scope holds OPENPETE_GAME_TAG, OPENPETE_GAME_EXE,
 # OPENPETE_GAME_MODULE, OPENPETE_GAME_GENERATED and OPENPETE_GAME_GEN_DIR
@@ -69,11 +69,21 @@ function(openpete_add_game GAME_ID)
     set(_generated ${CMAKE_CURRENT_SOURCE_DIR}/generated)
     set(_gen_dir ${CMAKE_CURRENT_BINARY_DIR}/gen)
 
+    # The recompiled C under generated/ is gitignored and produced only by
+    # scripts/regen-recomp.sh. A game listed in OPENPETE_GAMES without it
+    # stops the configure; -DOPENPETE_GAMES= configures the core alone and
+    # -DOPENPETE_GAMES=<id> narrows the configure to the games that have it.
     if(NOT EXISTS ${_generated}/PSX.EXE_full.c)
-        message(WARNING
-            "${GAME_ID}: no recompiled output in generated/ — run "
-            "`GAME=${GAME_ID} bash scripts/regen-recomp.sh` first. Skipping target.")
-        return()
+        set(_other_games ${OPENPETE_GAMES})
+        list(REMOVE_ITEM _other_games ${GAME_ID})
+        message(FATAL_ERROR
+            "${GAME_ID}: no recompiled output in ${_generated}. "
+            "Run `GAME=${GAME_ID} bash scripts/regen-recomp.sh` from the source "
+            "directory first; it needs PSXRecomp built under "
+            "third_party/psxrecomp/build and the decomp built under "
+            "games/${GAME_ID}/${GAME_ID}/build (docs/src/developer/building.md). "
+            "To configure without this game: -DOPENPETE_GAMES=\"${_other_games}\" "
+            "(an empty list configures the core alone).")
     endif()
 
     if(NOT G_MAIN)

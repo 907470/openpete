@@ -967,20 +967,23 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # the profiler (--profile-out) and asserts the trace/summary/rollup pipeline
     # runs and parses. NOT a perf-threshold gate (CI hardware varies); the
     # baseline regression check (tests/harness/bench-corpus.py --baseline) is a
-    # manually-run tool.
-    add_test(NAME bench_corpus_smoke
-             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/bench-corpus.py
-                     --exe $<TARGET_FILE:openpete-spyro1>
-                     --movies artisans-bridge,stone-hill-entry
-                     --frame-limit 4000 --max-runtime-seconds 90
-                     --skip-ticks 30
-                     --out-dir ${CMAKE_BINARY_DIR}/bench-smoke --run-id ctest)
-    set_tests_properties(bench_corpus_smoke PROPERTIES
-        LABELS "slow;bench"
-        RESOURCE_LOCK openpete_game
-        TIMEOUT 400
-        SKIP_RETURN_CODE 64
-        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    # manually-run tool. Registered only when spyro-1 is configured: the
+    # $<TARGET_FILE> expression fails generation on an absent target.
+    if(TARGET openpete-spyro1)
+        add_test(NAME bench_corpus_smoke
+                 COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/bench-corpus.py
+                         --exe $<TARGET_FILE:openpete-spyro1>
+                         --movies artisans-bridge,stone-hill-entry
+                         --frame-limit 4000 --max-runtime-seconds 90
+                         --skip-ticks 30
+                         --out-dir ${CMAKE_BINARY_DIR}/bench-smoke --run-id ctest)
+        set_tests_properties(bench_corpus_smoke PROPERTIES
+            LABELS "slow;bench"
+            RESOURCE_LOCK openpete_game
+            TIMEOUT 400
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endif()
 
     # Channel registry audit — fast static check (no PSX boot). Cross-
     # references games/spyro-1/manifest/render_channels.toml against the recompiler's

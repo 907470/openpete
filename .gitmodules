@@ -11,7 +11,7 @@
 	branch = release-3.4.x
 [submodule "games/spyro-1/spyro-1"]
 	path = games/spyro-1/spyro-1
-	url = git@github.com:TheMobyCollective/spyro-1.git
+	url = https://github.com/TheMobyCollective/spyro-1.git
 [submodule "third_party/glslang"]
 	path = third_party/glslang
 	url = https://github.com/KhronosGroup/glslang.git
@@ -20,7 +20,7 @@
 	url = https://github.com/ocornut/imgui.git
 [submodule "games/spyro-2/spyro-2"]
 	path = games/spyro-2/spyro-2
-	url = git@github.com:TheMobyCollective/spyro-2.git
+	url = https://github.com/TheMobyCollective/spyro-2.git
 [submodule "games/spyro-3/spyro-3"]
 	path = games/spyro-3/spyro-3
-	url = git@github.com:TheMobyCollective/spyro-3.git
+	url = https://github.com/TheMobyCollective/spyro-3.git

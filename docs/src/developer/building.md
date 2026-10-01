@@ -63,50 +63,133 @@ CMake. The `windows-msvc` preset exists in `CMakePresets.json` but is not
 validated; the supported Windows build is the MinGW cross-build from Linux
 (`windows-mingw-shared`), which is what releases ship.
 
-## Required before the first configure
+## Step 0: before the first configure
 
-Two generation steps run outside CMake. `games/*/generated/` is gitignored
-(`.gitignore:8`) and `games/spyro-1/CMakeLists.txt` lists
-`generated/PSX.EXE_full.c` and globs `generated/*/*.bin_full.c` as sources,
-so a fresh clone cannot configure until they exist. This is true of every
-preset, including the `*-shared` distribution ones.
+The game executables are built from recompiled C under
+`games/<game>/generated/`, which is gitignored (`.gitignore:8`) and produced
+outside CMake. `openpete_add_game` (`cmake/openpete_game.cmake`) lists
+`generated/PSX.EXE_full.c`, `PSX.EXE_dispatch.c`, `spyro_overlay_table.c`
+and the globbed `generated/*/*.bin_full.c` overlays as module sources, and
+stops the configure with a `FATAL_ERROR` naming the regeneration command for
+any game in `OPENPETE_GAMES` whose `generated/PSX.EXE_full.c` is absent. This
+holds for every preset, including the `*-shared` distribution ones. The steps
+below run once per clone, in order.
 
-1. Build the matching decompilation. `games/spyro-1/spyro-1/` is a
-   submodule of the decomp repo; OpenPete consumes its `build/PSX.EXE`
-   (recompiler input), `build/wad/*.ovl` (the level overlays) and
-   `build/psx.map` (symbol addresses).
+### 1. Clone with submodules
 
-   ```bash
-   cd games/spyro-1/spyro-1 && make
-   ```
+```bash
+git clone --recursive <openpete repository URL> openpete
+cd openpete
+```
 
-   This step is independent of OpenPete and may take longer than the
-   OpenPete build itself. `scripts/setup.sh` checks for its outputs, for
-   the initialized submodules, and for the rebuilt disc.
+Every submodule URL in `.gitmodules` except PsyCross and DuckStation is
+HTTPS. A recursive clone that cannot fetch a submodule retries it once, then
+aborts, and leaves the submodules it did fetch at their remote's default
+branch, not at the pinned commit, with their own nested submodules
+uninitialized. Recover
+by initializing each path explicitly; `git submodule status` then shows no
+`+` or `-` prefix on the paths you need:
 
-2. Build the recompiler, then run it over the EXE and every overlay.
+```bash
+git submodule update --init --recursive -- third_party/SDL
+git submodule update --init --recursive -- third_party/cubeb
+git submodule update --init --recursive -- third_party/glslang
+git submodule update --init --recursive -- third_party/imgui
+git submodule update --init --recursive -- games/spyro-1/spyro-1
+git submodule update --init --recursive -- third_party/PsyCross
+```
 
-   ```bash
-   cmake -S third_party/psxrecomp/recompiler -B third_party/psxrecomp/build \
-         -G Ninja -DCMAKE_BUILD_TYPE=Release
-   cmake --build third_party/psxrecomp/build -j
-   scripts/regen-recomp.sh     # -> games/spyro-1/generated/*.c
-   scripts/regen-manifest.sh   # -> manifest/{symbols,globals}.toml + defsyms
-   ```
+`third_party/PsyCross` (the PSYQ library reimplementation, built as
+`psycross_static` by `CMakeLists.txt` under `OPENPETE_BUILD_PSYCROSS`) is a
+fork whose repository is not yet publicly readable; without access, the
+configure fails at its `add_subdirectory`.
 
-   `regen-recomp.sh` recompiles each overlay under its own `--func-prefix`
-   and sed-renames the generated `psx_dispatch_compiled` to
-   `psx_dispatch_<name>`, so all 23 same-address overlays coexist at link;
-   it also emits the `spyro_overlay_table.c` registry.
-   `regen-manifest.sh` parses `psx.map` and defaults to the sibling checkout
-   (`PSX_MAP=../spyro-1/build/psx.map`); point it at the submodule with
-   `PSX_MAP=games/spyro-1/spyro-1/build/psx.map`.
+`third_party/duckstation` is optional and no configure input. It is the
+reference emulator the gameplay oracle (`tests/harness/check_psx_oracle.sh`)
+captures its golden traces from, built by `scripts/setup_duckstation.sh`; a
+failed fetch of it can be ignored for building and playing.
 
-   Re-run `regen-recomp.sh` after bumping psxrecomp, changing a forced
-   entry, or pulling a new EXE dump. For the Windows distribution build,
-   `package-dist.sh` also needs the cross-built recompiler at
-   `third_party/psxrecomp/build-mingw/PSXRecomp.exe` (same source tree,
-   configured with `-DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/mingw-w64.cmake`).
+### 2. Build the matching decompilation
+
+`games/<game>/<game>/` is the game's decompilation submodule. OpenPete
+consumes its `build/PSX.EXE` (recompiler input), `build/wad/*.ovl` (the
+level overlays) and `build/psx.map` (symbol addresses). Its prerequisites:
+
+- The decomp's own nested submodule `tools/maspsx`
+  (`git -C games/spyro-1/spyro-1 submodule update --init tools/maspsx`;
+  covered by a recursive clone). The build pipes the compiler output
+  through it with the assembler's exit status, so without it the build
+  reports success and writes empty objects.
+- The MIPS toolchain: `mips-linux-gnu-cpp`, `-as`, `-ld` and `-objcopy`
+  (binutils and gcc for `mips-linux-gnu`); the gcc 2.7.2 `cc1` is bundled
+  under `tools/gcc2.7.2/`. The decomp's `Dockerfile` installs the toolchain,
+  and `docker_env.sh` starts a shell in that image with the checkout
+  mounted.
+- PSYQ SDK headers in `games/<game>/<game>/psyq/include` (gitignored in the
+  Spyro 1 and Spyro 2 decomps). The SDK is Sony proprietary and not
+  distributed with either project; supply your own copy. Spyro 1 accepts
+  any PSYQ version after 4.0 (the decomp's `readme.md`); Spyro 2 builds
+  against the 4.7 headers, and `scripts/setup.sh` checks for them and
+  states the expected layout. The Spyro 3 decomp tracks the one PSYQ header
+  its sources include, `psyq/include/libgpu.h`.
+
+```bash
+cd games/spyro-1/spyro-1 && make all -j"$(nproc)"
+```
+
+Run `make all`, not `make`: the Makefile's first rule is
+`$(OBJ_C): | create_dirs` (`games/spyro-1/spyro-1/Makefile:118`), so a
+bare `make` builds one object and exits 0. `all` builds `PSX.EXE` and every
+overlay and verifies them against `sha256sum.txt`. Spyro 2 builds with
+`make all` as well; Spyro 3 builds with `python3 ./build_multiproc.py`.
+`scripts/setup.sh` reports which decomp outputs, submodules and disc are
+present, per game.
+
+### 3. Build PSXRecomp and regenerate the recompiled C
+
+```bash
+cmake -S third_party/psxrecomp/recompiler -B third_party/psxrecomp/build \
+      -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build third_party/psxrecomp/build -j
+GAME=spyro-1 bash scripts/regen-recomp.sh     # -> games/spyro-1/generated/*.c
+GAME=spyro-1 bash scripts/regen-manifest.sh   # -> manifest/{symbols,globals}.toml + defsyms
+```
+
+`regen-recomp.sh` reads `third_party/psxrecomp/build/PSXRecomp` and the
+paths in `games/<game>/recomp.conf`. It recompiles each overlay under its
+own `--func-prefix` and sed-renames the generated `psx_dispatch_compiled`
+to `psx_dispatch_<name>`, so all same-address overlays coexist at link; it
+also emits the `spyro_overlay_table.c` registry and `psyq_stubs.c`.
+`regen-manifest.sh` parses `games/<game>/<game>/build/psx.map` by default
+(`PSX_MAP` overrides it); its `symbols.toml` and `globals.toml` are build
+inputs of the symbol-alias header every game compiles.
+
+`OPENPETE_GAMES` defaults to `spyro-1;spyro-2;spyro-3`. Repeat steps 2 and
+3 with `GAME=spyro-2` and `GAME=spyro-3`, or configure only the games you
+regenerated:
+
+```bash
+cmake --preset linux-release -DOPENPETE_GAMES=spyro-1
+```
+
+`-DOPENPETE_GAMES=` (empty) configures the core libraries and their unit
+tests with no game executable and no recompiled C; the `bench_corpus_smoke`
+test, which names the `openpete-spyro1` target, is registered only when that
+target exists.
+
+Re-run `regen-recomp.sh` after bumping psxrecomp, changing a forced
+entry, or pulling a new EXE dump. For the Windows distribution build,
+`package-dist.sh` also needs the cross-built recompiler at
+`third_party/psxrecomp/build-mingw/PSXRecomp.exe` (same source tree,
+configured with `-DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/mingw-w64.cmake`).
+
+### 4. Place a disc image
+
+Running the game needs a disc image made from your own dump of the retail
+disc; see [Disc image](#disc-image) for the expected image and its hash.
+Development scripts read `games/spyro-1/spyro-1/build/SCUS-94228.cue` unless
+`OPENPETE_DISC` names another path; the executable takes the path with
+`--disc`. The configure and build do not read the disc.
 
 ## Configure + build
 
@@ -382,8 +465,9 @@ reference's parse-failures page. It deletes and rewrites
   `core/rhi/CMakeLists.txt:18` requires the binary on the host.
 - Configure fails on `SPIRV_OPT-NOTFOUND`. Install `spirv-tools`;
   `core/rhi/CMakeLists.txt:45` requires `spirv-opt` on the host.
-- CMake cannot find `generated/PSX.EXE_full.c`. The recompiler outputs are
-  gitignored — run the two generation steps above.
+- Configure stops with `<game>: no recompiled output in .../generated`. The
+  recompiler outputs are gitignored; run Step 0 for that game, or drop it
+  from `OPENPETE_GAMES` as the message states.
 - SDL fails to configure or build. Ensure the submodule is checked out
   (`git submodule update --init --recursive`); SDL3 builds from source as
   part of the CMake configure.

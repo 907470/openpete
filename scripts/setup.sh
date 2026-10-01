@@ -141,7 +141,7 @@ else
     yellow "  not a git checkout; hooks not armed"
 fi
 
-check_decomp spyro-1 "make"
+check_decomp spyro-1 "make all -j\"\$(nproc)\""
 # `make` alone builds a single object and exits 0 — the Makefile's default goal
 # is one .o, not the game. The target that builds everything is `all`.
 check_decomp spyro-2 "make all -j\"\$(nproc)\""

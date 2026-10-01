@@ -30,10 +30,12 @@ cmake --preset linux-release
 cmake --build --preset linux-release
 ```
 
-A fresh clone runs two generation steps before the first configure;
-[building](docs/src/developer/building.md) lists the prerequisites, those
-steps, the presets and the Windows cross build. Every build needs the
-original disc (NTSC-U, SCUS-94228); the required image is described under
+A fresh clone builds the decompilation and regenerates the recompiled C
+before the first configure;
+[building](docs/src/developer/building.md#step-0-before-the-first-configure)
+lists the prerequisites, those steps, the presets and the Windows cross
+build. Running the game needs the original disc (NTSC-U, SCUS-94228); the
+required image is described under
 [Disc image](docs/src/developer/building.md#disc-image).
 
 ## License
