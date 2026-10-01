@@ -13,6 +13,8 @@ gte_execute
 psx_syscall
 psx_override_dispatch
 openpete_logf
+dispatch_census_open
+dispatch_census_append
 openpete_envvert_probe
 openpete_gte_caller_pc DATA
 psx_runtime_g_sony_image_base DATA

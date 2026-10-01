@@ -13,13 +13,16 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
 
-/* Local declaration instead of openpete_log.h: this TU is part of the
- * recomp-module source kit, which must stay self-contained (openpete_log.h
- * drags in openpete.h). The level value matches OPL_INFO. */
+/* Local declarations instead of openpete_log.h and dispatch_census.h: this
+ * TU is part of the recomp-module source kit, which must stay
+ * self-contained, and the first-boot compile sees only the compiler's
+ * freestanding headers (no libc), so every libc call routes through the
+ * host. The level value matches OPL_INFO. */
 void openpete_logf(int level, const char* subsystem, const char* fmt, ...);
+int  dispatch_census_open(void);
+void dispatch_census_append(const char* overlay, uint32_t addr, uint32_t ra,
+                            const char* cls, int resolved);
 #define DISPATCH_LOG_INFO 2
 
 extern int psx_dispatch_main_exe(CPUState* cpu, uint32_t addr);
@@ -71,20 +74,8 @@ int psx_dispatch_from_jalr = 0;
  * [spyro_overlay_window_lo, spyro_overlay_window_hi): every overlay of a game
  * loads at one address, and the range runs from that base over the largest
  * overlay's extent. */
-static FILE* s_census = NULL;
-static int   s_census_checked = 0;
-
-/** @brief Open the dispatch census file on the first dispatch.
- *
- * Opens the path in OPENPETE_DISPATCH_CENSUS for writing; an unset or empty
- * variable, or a failed open, leaves the census off. Runs once. */
-static void census_open(void) {
-    const char* path;
-    s_census_checked = 1;
-    path = getenv("OPENPETE_DISPATCH_CENSUS");
-    if (!path || !path[0]) return;
-    s_census = fopen(path, "w");
-}
+static int s_census = 0;
+static int s_census_checked = 0;
 
 /** @brief Append one census line for a dispatch into the overlay window.
  *
@@ -114,9 +105,8 @@ static void census_record(CPUState* cpu, uint32_t addr, uint32_t ra,
     } else {
         cls = "jr";
     }
-    fprintf(s_census, "%s %08X %08X %s %s\n",
-            s_active ? s_active->name : "none", addr, ra, cls,
-            resolved ? "resolved" : "missed");
+    dispatch_census_append(s_active ? s_active->name : "none", addr, ra, cls,
+                           resolved);
 }
 
 /** @brief Run the compiled function at a guest address.
@@ -150,7 +140,10 @@ int psx_dispatch_compiled(CPUState* cpu, uint32_t addr) {
         addr < spyro_overlay_window_hi)
         s_resync();
     hit = s_active ? s_active->fn(cpu, addr) : 0;
-    if (!s_census_checked) census_open();
+    if (!s_census_checked) {
+        s_census_checked = 1;
+        s_census = dispatch_census_open();
+    }
     if (s_census) census_record(cpu, addr, ra, from_jalr, hit);
     return hit;
 }

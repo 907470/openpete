@@ -625,9 +625,16 @@ extern "C" int spyro1_recomp_build_module(const char* disc_path,
         " -c -O2 -fno-strict-aliasing" + arch + moddef + " -w -std=gnu99 -I" + q +
         src.string() + q;
 #else
+    /* The bundled clang is the shipped configuration, and the machines it
+     * ships to (SteamOS, any host without development packages) have no
+     * libc headers. -nostdlibinc leaves only the compiler's freestanding
+     * headers on every host, so a libc include in the kit fails the
+     * build here as it would there. */
+    const bool bundled_cc =
+        cc == (base / "recomp" / "tools" / "clang" / "bin" / "clang").string();
     const std::string common =
-        " -c -O2 -fPIC -fno-strict-aliasing" + arch + moddef + " -w -std=gnu99 -I" + q +
-        src.string() + q;
+        " -c -O2 -fPIC -fno-strict-aliasing" + arch + moddef + " -w -std=gnu99" +
+        (bundled_cc ? " -nostdlibinc" : "") + " -I" + q + src.string() + q;
 #endif
     if (!arch.empty())
         std::fprintf(stderr, "[first-boot] tuning for this CPU (%s)\n",

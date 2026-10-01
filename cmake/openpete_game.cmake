@@ -295,6 +295,7 @@ function(openpete_add_game GAME_ID)
         ${_common}/psyq/psyq_game_hooks_default.c
         ${_common}/psyq/psyq_thunk_state.c
         ${_common}/write_census.c
+        ${_common}/dispatch_census.c
         ${_common}/freecam_game.c
         ${_common}/named_target.c
 
