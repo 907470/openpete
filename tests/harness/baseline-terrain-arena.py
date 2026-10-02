@@ -60,6 +60,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "scripts", "fences"))
@@ -158,6 +159,22 @@ POSE_RE = re.compile(r"freecam: topdown pose set to")
 def die(msg):
     sys.stderr.write("baseline-terrain-arena: %s\n" % msg)
     sys.exit(1)
+
+
+KEPT_LOG_DIR = os.path.join(ROOT, "build", "terrain-arena-failed-runs")
+
+
+def keep_log(log, tag):
+    """Copy a failed run's log out of the work directory, which the harness
+    deletes on exit, and return the kept path. The engine's crash report
+    (fault address, backtrace) is in that log and nowhere else."""
+    os.makedirs(KEPT_LOG_DIR, exist_ok=True)
+    kept = os.path.join(KEPT_LOG_DIR, "%s-%d.log" % (tag, int(time.time())))
+    try:
+        shutil.copyfile(log, kept)
+    except OSError as e:
+        return "%s (not kept: %s)" % (log, e)
+    return kept
 
 
 # ---- launching -------------------------------------------------------------
@@ -417,7 +434,7 @@ def sweep(work, cap, levels, jobs):
         level, pose = tag.split("__")
         row = read_run(log)
         if row is None:
-            die("%s %s: no census line in %s (exit %d)" % (level, pose, log, rc))
+            die("%s %s: no census line in %s (exit %d)" % (level, pose, keep_log(log, tag), rc))
         row["exit"] = rc
         out.setdefault(level, {})[pose] = row
         sys.stderr.write("  %-16s %-8s exit=%d svc=%d/%d afail=%d caps=%.1fMiB\n" % (
@@ -537,7 +554,7 @@ def cmd_bk2corpus(jobs, out_dir=OUT_DIR, quiet=False):
         for tag, rc, log, _png in run_batch(work, jobs)(specs, jobs):
             row = read_run(log)
             if row is None:
-                die("%s: no census line in %s (exit %d)" % (tag, log, rc))
+                die("%s: no census line in %s (exit %d)" % (tag, keep_log(log, tag), rc))
             if rc != 0:
                 bad.append("%s: exit %d" % (tag, rc))
             if row["draws_retired"]:
@@ -625,7 +642,7 @@ def cmd_demo(out_dir=OUT_DIR):
         p._log_file.close()
         row = read_run(log)
         if row is None:
-            die("attract demo: no census line in %s (exit %d)" % (log, rc))
+            die("attract demo: no census line in %s (exit %d)" % (keep_log(log, "attract-demo"), rc))
         visited = [LEVEL_BY_ID[i] for i in row["levels"] if i in LEVEL_BY_ID]
         print("attract demo: exit=%d svc=%d/%d edges=%d draws-retired=%d rebake=%d levels=%s"
               % (rc, row["svc_calls"], row["svc_fulfilled"], row["edges"],
@@ -718,7 +735,7 @@ def cmd_overflow():
         for tag, rc, log, png in run_batch(work, 2)(specs, 2):
             row = read_run(log)
             if row is None:
-                die("%s: no census line in %s (exit %d)" % (tag, log, rc))
+                die("%s: no census line in %s (exit %d)" % (tag, keep_log(log, tag), rc))
             runs[tag] = (rc, row, png)
         bad = []
         for tag in ("stock", "tiny"):
