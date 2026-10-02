@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 7a6267288a868845cab1c4328acb6e6c1650d45e
+# head: 80825c6cb4b9d19f4b930f570eb016dd9f913033
 file	function	score	marked	accepted
 core/config/config.c	harvest_args	30	0	
 core/config/config.c	harvest_base	39	0	

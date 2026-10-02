@@ -2,5 +2,5 @@
 # library: libclang 14
 # requirement: @brief of one sentence on one line on every function; @param per named parameter and @return on non-void for external linkage
 # written-by: hook
-# head: 184d0f5fc4327cdd37a6e80c58a1ab88af7ceed3
+# head: c1bcec7f278ae0de6567574752b420dafb30317a
 file	function	form	accepted
