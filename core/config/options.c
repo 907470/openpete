@@ -807,7 +807,7 @@ static void print_help(const char* display_name, const char* argv0,
         "  --pace-log PATH            write the unified pacing event log (every VBL + present, one timebase) for scripts/pacing/\n"
         "  --profile-out PATH         stream a binary .opp perf trace (CPU scopes + GPU zones + census,\n"
         "                             keyed per present / canonical tick) for scripts/profile-summary.py\n"
-        "                             (text summary) and scripts/profile-to-trace.py (Perfetto flame chart).\n"
+        "                             (plain text) and scripts/profile-to-trace.py (Perfetto flame chart).\n"
         "                             Windowed only for GPU/intermediate coverage; ~0.1% CPU overhead.\n",
         stderr);
 #endif

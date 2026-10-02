@@ -131,8 +131,8 @@ pg_resolve() {
 # shipped binaries match their hashes. The machine's
 # hostname enters as OPENPETE_CAPTURE_HOST, since inside the container the
 # hostname is the container id (scripts/presentation-blessed.py host_here).
-# The caller stays the host-side parent for the whole run, so
-# the build lock sees its gate in flight. Returns the inner
+# The caller stays the host-side parent for the whole run, so a process
+# listing on the host shows the gate in flight. Returns the inner
 # run's status; 64 (SKIP) when no container engine or no current image exists.
 PG_IMAGE_RECIPE=/etc/openpete/capture.Dockerfile
 PG_CONTAINER_BUILD_DIR=build/linux-release-container

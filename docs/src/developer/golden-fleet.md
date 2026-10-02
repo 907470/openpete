@@ -206,8 +206,8 @@ scripts/golden-fleet.py clean --all --hosts box2  # every fleet file on box2
    `third_party/psxrecomp/build`, and the build tree minus `home/` and the
    disc-hash memo. While it reads the checkout the coordinator holds
    `build/linux-release-container.build-lock` and runs a
-   `golden-fleet-sync` marker process, on which
-   the build lock refuses a build. Each run game's
+   `golden-fleet-sync` marker process, which marks the checkout as being
+   read; do not build while it runs. Each run game's
    capture fields are written with `scripts/presentation-blessed.py
    capture-fields` (a snapshot has no `.git`; the capture record reads them
    through `OPENPETE_CAPTURE_FIELDS`).

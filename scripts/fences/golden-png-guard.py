@@ -20,13 +20,14 @@ Residual: a golden corpus committed outside tests/golden escapes the scan;
 a new golden directory outside tests/golden extends GOLDEN_ROOTS in the
 change that adds it.
 
-Wiring: githooks/pre-commit runs `hook`.
+Wiring: githooks/pre-commit runs `hook`. `refused` is the rule's one
+definition; a scanner of script text imports it.
 
 Escape: OPENPETE_GOLDEN_PNG_ACCEPT="<reason>" on the commit. The reason is
 recorded with the staged tree and the refused paths in
 <git-common-dir>/golden-png-guard.log, and admits one commit: the same
 reason on a different staged tree is refused. A script line carrying
-`golden-png-guard: intentional` is exempt from the write-time check.
+`golden-png-guard: intentional` is exempt from a scan of script text.
 
 Run: python3 scripts/fences/golden-png-guard.py hook
      python3 scripts/fences/golden-png-guard.py paths <path>...

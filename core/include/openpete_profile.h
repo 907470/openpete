@@ -4,7 +4,7 @@
  * (present_index, canon_tick, kind), and GPU zone time to rendered frames,
  * keyed by the RHI frame serial. Records are
  * streamed to a compact binary `.opp` file; post-run Python converters turn it
- * into a Chrome/Perfetto trace (human flame charts) and a compact text
+ * into a Chrome/Perfetto trace (human flame charts) and a plain-text
  * summary (scripts/profile-to-trace.py, scripts/profile-summary.py).
  *
  * Relationship to the OPPT phase timers (openpete_native_render.h): the profiler

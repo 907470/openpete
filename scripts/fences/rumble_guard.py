@@ -80,10 +80,10 @@ SUFFIXES = (".sh", ".py", ".bash")
 
 def offends(name, text, require_unattended=True):
     """One file's verdict: True when it launches the binary unattended and
-    never silences vibration. Shared with the write-time hook, which passes
-    require_unattended=False — the naming convention is a tree-scan heuristic
-    for spotting harnesses among a repo's other scripts, and at write time
-    there is nothing to guess: the file is a script, and it launches the game.
+    never silences vibration. A caller that already knows the file is a
+    launcher passes require_unattended=False: the naming convention is a
+    tree-scan heuristic for spotting harnesses among a repo's other scripts,
+    and it misses a harness whose name does not follow it.
 
     Deliberately NOT exempting headless-only scripts. Whether a given
     invocation is headless cannot be read reliably out of shell that builds

@@ -8186,7 +8186,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
              * every LP face takes it, fill tags included (og-attested cover
              * cannot extend past og's own draw distance). Skipped under
              * --lod extended: extending the draw distance is that mode's
-             * charter. OPENPETE_TERRAIN_LP_FARCULL=0 disables (A/B). */
+             * purpose. OPENPETE_TERRAIN_LP_FARCULL=0 disables (A/B). */
             if (passLP && !passFill && !openpete_no_lod) {
                 if (G->lp_farcull) {
                     double fcz3 = quad ? sv[i3].m3 : sv[i2].m3;

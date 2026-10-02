@@ -109,7 +109,7 @@ def main_checkout():
 
 
 def setup_script():
-    """The worktree setup script named by OPENPETE_WORKTREE_SETUP."""
+    """The worktree setup script OPENPETE_WORKTREE_SETUP names."""
     p = os.environ.get("OPENPETE_WORKTREE_SETUP") or ""
     if not os.path.isfile(p):
         raise Refusal("no worktree-setup.sh at %s (set OPENPETE_WORKTREE_SETUP)"

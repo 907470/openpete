@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Summarize a .opp performance trace into a compact, plain-text report
+"""Summarize a .opp performance trace into a compact plain-text report
 (and optional JSON). CPU scopes and GPU zones are split by frame_kind
 (canonical vs intermediate) with p50/p99/max and per-run totals.
 

@@ -115,7 +115,7 @@ coordinator:
      copy with rsync -n --checksum over the same lists and refuses the run as
      torn on any change. While it reads the checkout it holds the checkout's
      build/linux-release-container.build-lock and runs a `golden-fleet-sync`
-     marker process (the build lock); it then hashes the
+     marker process, which a build lock can test for; it then hashes the
      synced disc bytes against the blessed headers;
   4. places units longest first (ledger fleet-unit-times.tsv beside the
      store; a unit without a record is scaled from the spyro-1 presentation
@@ -1741,7 +1741,7 @@ class CheckoutSpan:
         self.lock_fd = None
 
     def start_marker(self):
-        """Start the `golden-fleet-sync` marker process the build lock refuses a build on."""
+        """Start the `golden-fleet-sync` marker process a build lock tests for."""
         if self.marker is None:
             self.marker = subprocess.Popen(
                 [sys.executable, "-c", "import time\nwhile True: time.sleep(3600)",
