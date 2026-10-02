@@ -1,4 +1,7 @@
 build/
+# Python bytecode, anywhere in the tree.
+__pycache__/
+*.pyc
 .cache/
 compile_commands.json
 *.o
@@ -10,8 +13,6 @@ games/*/generated/
 # native.toml is hand-curated and is checked in.
 games/*/manifest/symbols.toml
 games/*/manifest/globals.toml
-tools/__pycache__/
-tools/rewrite/__pycache__/
 third_party/psxrecomp/build/
 third_party/psxrecomp/build-mingw/
 
@@ -53,7 +54,6 @@ docs/src/developer/reference/
 # into tests/freecam/fill-tags.verdicts with scripts/fill-tags-apply.py, which
 # is what gets committed.
 fill-tags.session
-tests/freecam/__pycache__/
 
 # ctest scratch, written when ctest runs from the source dir rather than
 # the build dir (a wrong-cwd invocation still leaves this behind).
