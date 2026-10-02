@@ -319,7 +319,8 @@ def cmd_summary(a):
         for r in sheds:
             by_reason[r.aux] = by_reason.get(r.aux, 0) + 1
         names = {1: "slot busy", 2: "no budget before the tick deadline",
-                 3: "no swapchain image (acquire expired or backing off)"}
+                 3: "no swapchain image (acquire expired or backing off)",
+                 4: "display instant passed before the scene was produced"}
         print("sheds: " + ", ".join(f"{v} {names.get(k, k)}"
                                     for k, v in sorted(by_reason.items())))
 

@@ -1467,6 +1467,67 @@ static op_time_t eager_tail_cost(void)
         ? s_eager.cost_ema + 3 * s_eager.cost_dev : 0;
 }
 
+/** @brief Record one intermediate scene the eager producer dropped as a SHED record.
+ *
+ * The record is the one the inline path writes for a present it does not
+ * make: kind OP_PACE_INTERMEDIATE, the per-scene tail cost as the predicted
+ * cost, and the time left before the scene's deadline as the margin.
+ * @param reason PACE_SHED_NO_BUDGET or PACE_SHED_INSTANT_PASSED.
+ * @param margin_ns Time left before the deadline; negative once it passed. */
+static void eager_shed(uint16_t reason, op_time_t margin_ns)
+{
+    openpete_pace_shed(OP_PACE_INTERMEDIATE, reason,
+                       (int64_t)eager_tail_cost(), (int64_t)margin_ns);
+}
+
+/** @brief Close the previous span: count it cut when targets were left unproduced and shed each one.
+ *
+ * Every target from s_eager.i to s_eager.n is an intermediate scene (the
+ * canonical scene, index 0, is produced when its span is planned) that the
+ * produce guard held back for the deadline or a full scene ring, and the new
+ * plan discards it. Each is written as one PACE_SHED_NO_BUDGET record while
+ * the world is live; while it is not, production was withheld for the
+ * liveness gate and the display holds the last image, which is not a shed.
+ * Sets span_cut for the plan's level ladder. */
+static void eager_close_span(void)
+{
+    if (!s_eager.n || s_eager.i >= s_eager.n) return;
+    s_eager.cut++;
+    s_eager.span_cut = 1;
+    if (!s_eager.world_live) return;
+    for (int q = s_eager.i; q < s_eager.n; q++) eager_shed(PACE_SHED_NO_BUDGET, 0);
+}
+
+/** @brief Shed the display-grid slots of a new span that the plan leaves without a scene for cost.
+ *
+ * Two plan verdicts leave a slot of the display grid unproduced because
+ * scenes cost more than the span affords: the cost floor that coarsens the
+ * grid period to the scene or present-thread cost, and the decimation level
+ * (or the greedy policy's afford) that targets fewer slots than the grid
+ * holds. Each such slot is the eager form of the inline present the host
+ * loop sheds with PACE_SHED_NO_BUDGET, and is written as one. A level pinned
+ * by OPENPETE_EAGER_LEVEL under the divisor policy is a configuration, not a
+ * cost verdict, and sheds nothing; nor does any slot while the world is not
+ * live, when no scene is produced and the display holds the last image.
+ * @param first The span's first display instant.
+ * @param span_end The span's last admissible display instant.
+ * @param grid_period The display grid period before the cost floor.
+ * @param period The planned grid period, at least grid_period.
+ * @param ns The number of slots enumerated at period. */
+static void eager_shed_unplanned(op_time_t first, op_time_t span_end,
+                                 op_time_t grid_period, op_time_t period, int ns)
+{
+    if (!s_eager.world_live) return;
+    int grid_slots = ns;
+    if (grid_period > 0 && grid_period < period && span_end >= first) {
+        const op_time_t g = (span_end - first) / grid_period + 1;
+        grid_slots = g < EAGER_MAX_TARGETS ? (int)g : EAGER_MAX_TARGETS;
+    }
+    const int ladder = s_eager.pinned == 0 || s_eager.policy == 1;
+    const int planned = ladder ? s_eager.n : ns;
+    for (int q = planned; q < grid_slots; q++) eager_shed(PACE_SHED_NO_BUDGET, 0);
+}
+
 /* Room for the canonical scene between its plan and its vblank: production
  * (~0.25 ms), compose (0.3 ms on a light scene, 1.2 ms on a 48k-prim vista)
  * and the driver's own lead to the flip (a submit 0.33 ms before a vblank
@@ -1497,8 +1558,7 @@ static op_time_t eager_tail_cost(void)
 static void eager_plan(op_time_t now, op_time_t first, op_time_t period,
                        op_time_t span_end, op_time_t prod_end)
 {
-    /* Close the previous span's books first. */
-    if (s_eager.n && s_eager.i < s_eager.n) { s_eager.cut++; s_eager.span_cut = 1; }
+    eager_close_span();   /* the previous span's books first */
     /* The lag follows the tick's execution tail: up at once (a slot at
      * alpha > 1 is a lost frame), down only after a second of headroom (a
      * lag that flickers warps animation time). */
@@ -1519,6 +1579,7 @@ static void eager_plan(op_time_t now, op_time_t first, op_time_t period,
      * faster than any can be shown and superseded unpresented. Plan on the
      * coarser of the two grids, phase-preserving. */
     int64_t lat_base = 0; double lat_period = 0.0;
+    op_time_t grid_period;            /* the display grid before the cost floor */
     const int on_lattice = openpete_native_display_vsync() &&
                            openpete_present_thread_lattice(&lat_base, &lat_period);
     {
@@ -1553,6 +1614,7 @@ static void eager_plan(op_time_t now, op_time_t first, op_time_t period,
          * production cost; the ring's back-pressure below does the rest, and
          * the present thread shows the newest scene at whatever rate the GPU
          * allows. */
+        grid_period = period;
         op_time_t floor_ns = eager_tail_cost() ? eager_tail_cost() : 250000;
         const op_time_t pc = openpete_present_thread_cost_ns();
         if (pc > floor_ns) floor_ns = pc;
@@ -1652,6 +1714,7 @@ static void eager_plan(op_time_t now, op_time_t first, op_time_t period,
         for (int q = 0; q < ns; q += s_eager.level) s_eager.target[s_eager.n++] = slots[q];
     }
     s_eager.last_target = s_eager.n ? s_eager.target[s_eager.n - 1] : 0;
+    eager_shed_unplanned(first, span_end, grid_period, period, ns);
     s_eager.spans++;
 }
 
@@ -1662,8 +1725,11 @@ static void eager_plan(op_time_t now, op_time_t first, op_time_t period,
  * mods' present work and publishes the scene tagged with t, its kind and
  * alpha; a published scene kicks the present thread, a refused one counts
  * as refused. The canonical scene, first of the span, also raises
- * g_openpete_canon_lag_leg for the re-extract. The scene's production time
- * updates the cost mean and deviation that eager_tail_cost reads.
+ * g_openpete_canon_lag_leg for the re-extract. An intermediate scene first
+ * spends the OPENPETE_PACE_INJECT_PRESENT_US fault injection (none unless
+ * set) inside the measured span. The scene's production time updates the
+ * cost mean and deviation that eager_tail_cost reads and is logged as its
+ * PRESENT_SPAN.
  * @param t Display instant on the op_now() clock.
  * @param canonical Nonzero for the span's canonical scene. */
 static void eager_produce_one(op_time_t t, int canonical)
@@ -1671,6 +1737,7 @@ static void eager_produce_one(op_time_t t, int canonical)
     extern int g_openpete_canon_lag_leg;
     openpete_native_reextract_fn re = openpete_native_get_reextract();
     const op_time_t t0 = op_now();
+    if (!canonical) openpete_pace_inject_present();   /* fault injection, off by default */
     uint64_t pt0 = openpete_phase_timers_on() ? openpete_phase_now_us() : 0;
     openpete_native_vram_sync();                 /* guest idle: the mirror cannot tear */
     openpete_interp_set_present_target(t - s_eager.lag);   /* the animation instant this display instant shows */
@@ -1713,7 +1780,8 @@ static void eager_produce_one(op_time_t t, int canonical)
 /** @brief Produce the span's planned scenes in order while they fit before deadline.
  *
  * The canonical scene, first of the span, is always produced. A later scene
- * is skipped when its instant is more than half a period past; the walk
+ * is skipped, and recorded as a PACE_SHED_INSTANT_PASSED shed, when its
+ * instant is more than half a period past; the walk
  * stops when the scene ring has one free slot or less, or when the tail
  * cost of one more scene would pass the deadline, and resumes from the same
  * scene on the next call. The checks run between scenes only.
@@ -1729,6 +1797,7 @@ static int eager_produce(op_time_t deadline, op_time_t period)
         const op_time_t t = s_eager.target[s_eager.i];
         const int canonical = s_eager.i == 0;
         if (!canonical && t < now - period / 2) {   /* its instant is gone */
+            eager_shed(PACE_SHED_INSTANT_PASSED, t - now);
             s_eager.i++; s_eager.skipped_late++; continue;
         }
         if (!canonical && openpete_native_scene_ring_free() <= 1) break;   /* ring full: resume next iteration */

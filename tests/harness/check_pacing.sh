@@ -107,6 +107,9 @@ run_leg() {   # name, mode(headless|windowed), extra env assignments...
   local log="$OUT/gate-$name.pacelog"
   local extra=()
   [ "$mode" = headless ] && extra+=(--headless)
+  # A window takes keyboard and mouse focus; the user's input would reach
+  # the run and change what it measures.
+  [ "$mode" = windowed ] && extra+=(--input-lock)
   echo "[pacing] leg $name ($mode, ${SECONDS_PER_LEG}s)"
   # Forward the knobs through WSLENV: a Windows .exe launched from WSL does
   # not inherit the Linux environment, and a knob that fails to arrive is
@@ -162,7 +165,7 @@ if [ $level_possible -eq 1 ]; then
     local log="$OUT/gate-in-level.pacelog"
     wslenv_forward "${COMMON[@]}"
     env "${WSLENV_ARGS[@]}" "$EXE" --disc "$DISC" --skip-to-level "$LEVEL" \
-        --frame-limit "$LEVEL_VBLS" --pace-log "$log" \
+        --frame-limit "$LEVEL_VBLS" --pace-log "$log" --input-lock \
         >"$OUT/in-level.out" 2>&1 || return 1
     [ -s "$log" ] || return 1
   }
@@ -259,7 +262,10 @@ ki, _ = li.analysis_vbls()
 kb, _ = lb.analysis_vbls()
 sheds_i = len(li.of(pacelog.SHED))
 sheds_b = len(lb.of(pacelog.SHED))
-spans_i = li.of(pacelog.PRESENT_SPAN)
+# The injector inflates intermediate presents only. Canonical spans in the
+# median dilute the rise by however many of them a run logs, so the arrival
+# check reads intermediate spans alone.
+spans_i = [r for r in li.of(pacelog.PRESENT_SPAN) if r.flags == pacelog.INTERMEDIATE]
 
 fail = []
 if not ki:
@@ -267,11 +273,11 @@ if not ki:
 
 # The injector must actually have made presents expensive, or the leg proves
 # nothing about shedding.
-spans_b = lb.of(pacelog.PRESENT_SPAN)
+spans_b = [r for r in lb.of(pacelog.PRESENT_SPAN) if r.flags == pacelog.INTERMEDIATE]
 if spans_i:
     cost = ps.percentile([r.span_cost_ns for r in spans_i], 50)
     cost_b = ps.percentile([r.span_cost_ns for r in spans_b], 50) if spans_b else 0
-    print(f"present cost p50: {cost_b/1e3:.1f}us baseline -> {cost/1e3:.1f}us "
+    print(f"intermediate present cost p50: {cost_b/1e3:.1f}us baseline -> {cost/1e3:.1f}us "
           f"injected (asked for +{inject_us:.0f}us)")
     # The injection ITSELF has to be shown to have arrived. Everything below
     # compares two legs and calls the difference a demonstration of shedding;
@@ -286,7 +292,7 @@ if spans_i:
             f"for, so the two legs are the same configuration and nothing "
             f"here is a demonstration of anything")
 else:
-    fail.append("injected leg recorded no present spans - the path never ran")
+    fail.append("injected leg recorded no intermediate present spans - the path never ran")
 
 # A predicate that shed every intermediate would score perfectly on phase
 # error while destroying interpolation. Nothing below would have caught it:

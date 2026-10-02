@@ -47,7 +47,8 @@ extern "C" {
 #endif
 
 /* Reasons a present did not reach the display (SHED record `reason`). */
-enum { PACE_SHED_SLOT_BUSY = 1, PACE_SHED_NO_BUDGET = 2, PACE_SHED_NO_IMAGE = 3 };
+enum { PACE_SHED_SLOT_BUSY = 1, PACE_SHED_NO_BUDGET = 2, PACE_SHED_NO_IMAGE = 3,
+       PACE_SHED_INSTANT_PASSED = 4 };
 #define OP_PACE_MAGIC        0x4C50504FU   /* 'OPPL' LE */
 #define OP_PACE_VERSION      2U
 #define OP_PACE_HEADER_FIXED 64U
@@ -339,7 +340,11 @@ void openpete_pace_present(uint8_t kind, int64_t done_ns,
  *
  * The census counter increments whether or not a log file is open. The host
  * loop sheds an intermediate present with PACE_SHED_NO_BUDGET when its
- * predicted cost does not fit before the sim deadline;
+ * predicted cost does not fit before the sim deadline; eager production
+ * sheds an intermediate scene with PACE_SHED_NO_BUDGET when its span ends
+ * with the scene unproduced for the deadline or a full scene ring, and with
+ * PACE_SHED_INSTANT_PASSED when its display instant passed before it could
+ * be produced;
  * openpete_pace_record_present records swapchain refusals as
  * PACE_SHED_SLOT_BUSY (fence) and PACE_SHED_NO_IMAGE (acquire), with the
  * matching block time as the cost.
@@ -617,6 +622,9 @@ int64_t openpete_pace_inject(int paced);
  * Inflating the measured cost of intermediate presents until they no longer
  * fit before the tick deadline makes the shed predicate fire, so the
  * contract that presents are shed while ticks hold phase can be measured.
+ * The inline intermediate present and the eager producer's intermediate
+ * scene each spend it inside the span logged as that present's
+ * PRESENT_SPAN cost.
  * The variable is read once and a warning logged when it is positive;
  * inactive under the virtual clock.
  * @return The µs spent, 0 when nothing was injected. */
