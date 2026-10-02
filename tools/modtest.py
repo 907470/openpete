@@ -84,8 +84,16 @@ def parse_manifest(mod_dir: Path):
         text += "\n" + mt.read_text(encoding="utf-8")
     section = None
     m = {"id": mod_dir.name, "deps": [], "test": None}
+    lines = []
     for line in text.splitlines():
         line = strip_comment(line)
+        # An array value left open on its line continues on the next ones.
+        if lines and lines[-1].count("[") > lines[-1].count("]") \
+                and "=" in lines[-1]:
+            lines[-1] += " " + line
+        else:
+            lines.append(line)
+    for line in lines:
         if not line:
             continue
         if line.startswith("["):
@@ -138,6 +146,23 @@ def dep_closure(mod_dir: Path):
     return ordered
 
 
+AUDIO_RE = re.compile(r"alcOpenDevice|ALC_|AL lib:|OpenAL|PsyX_SPUAL|"
+                      r"sound device|wav override")
+
+
+def print_audio_device_lines(mid: str, out: str):
+    """Print the run's audio-device and wav-override log lines.
+
+    Lines the engine logs after the OpenAL check (the wav override's
+    streaming and active lines) are absent when the device failed to open,
+    for example alcOpenDevice returning ALC_OUT_OF_MEMORY; these lines show
+    the device state beside the missing-line failure."""
+    lines = [ln for ln in out.splitlines() if AUDIO_RE.search(ln)]
+    print(f"[modtest] {mid}: audio-device lines ({len(lines)}):")
+    for ln in lines[:20]:
+        print(f"[modtest]   {ln.strip()}")
+
+
 def run_one(mod_dir: Path, bin_path: str, disc: str, verbose: bool):
     """Run one mod's [test] block. Returns ("pass"|"skip"|"fail", reason)."""
     man = parse_manifest(mod_dir)
@@ -167,6 +192,7 @@ def run_one(mod_dir: Path, bin_path: str, disc: str, verbose: bool):
         frames = str(test["frames"])
         mode = test["expect_oracle"]
         env = dict(os.environ)
+        env["OPENPETE_VIBRATION"] = "0"
         if mode in ("pass", "fail"):
             env["OPENPETE_FRAME_LIMIT"] = frames
             cmd = [str(REPO / "tests/harness/check_psx_oracle.sh"),
@@ -216,10 +242,12 @@ def run_one(mod_dir: Path, bin_path: str, disc: str, verbose: bool):
             print(f"[modtest] {mid}: FAIL - oracle did not FAIL "
                   "(expected divergence missing)")
             ok = False
-        for needle in test["expect_log"]:
-            if needle not in out:
-                print(f"[modtest] {mid}: FAIL - log missing: {needle!r}")
-                ok = False
+        missing = [n for n in test["expect_log"] if n not in out]
+        for needle in missing:
+            print(f"[modtest] {mid}: FAIL - log missing: {needle!r}")
+            ok = False
+        if missing:
+            print_audio_device_lines(mid, out)
         if ok:
             print(f"[modtest] {mid}: PASS ({mode}, {frames} frames, "
                   f"{len(test['expect_log'])} log asserts)")

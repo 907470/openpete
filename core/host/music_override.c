@@ -496,6 +496,9 @@ int music_override_try_start(int track_index, int start_sector)
     const Uint64 t0 = SDL_GetTicksNS();
     char path[sizeof(s.dir[0]) + 1040];
     if (!resolve_track(track_index, path, sizeof path)) return 0;
+    /* Logged before the AL check: the selection does not depend on the
+     * audio device, and a run without one still names the file it chose. */
+    OPL_INFO_F("music", "wav override selected: track %02d -> %s", track_index, path);
     if (!ensure_al()) return 0;
 
     music_override_stop();
@@ -530,6 +533,7 @@ int music_override_try_start_path(const char* path, int start_sector)
         snprintf(s_path.path, sizeof(s_path.path), "%s", path);
     }
     if (s_path.failed) return 0;
+    OPL_INFO_F("music", "wav override selected: %s", path);
     if (!ensure_al()) return 0;
 
     const Uint64 t0 = SDL_GetTicksNS();
