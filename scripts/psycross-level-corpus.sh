@@ -39,7 +39,7 @@
 #       1 = a level failed to load or produced no tile.
 set -u
 
-# Unattended launcher: nobody is holding the pad (scripts/fences/rumble_guard.py).
+# Unattended launcher: vibration is silenced (scripts/fences/rumble_guard.py).
 # Forwarded rather than exported, because WSL does not pass the Linux
 # environment to a Windows child: an exported knob would silently not arrive
 # for the --exe windows leg and the run would use the default.

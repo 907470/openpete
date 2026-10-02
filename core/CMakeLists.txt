@@ -692,17 +692,17 @@ if(NOT CMAKE_HOST_WIN32)
         VERBATIM)
 
     # Launcher hygiene, the two silent-failure defaults. A scripted run must
-    # silence the pad (nobody is holding it, and the buzzing reaches no log),
+    # silence the pad (no player is using it, and the buzzing reaches no log),
     # and a script that sets OPENPETE_* knobs for a Windows .exe must name
     # WSLENV or the knob never crosses and the run measures the default.
-    # A scanner that depends on someone remembering to run it is an
-    # advisory, so both run on every build.
+    # A scanner that runs only by hand is not enforced, so both run on
+    # every build.
     add_custom_target(openpete_launch_guards ALL
         COMMAND ${CMAKE_COMMAND} -E echo "Checking launcher hygiene..."
         COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/rumble_guard.py ${CMAKE_SOURCE_DIR}
         COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/wslenv_guard.py ${CMAKE_SOURCE_DIR}
-        # An unattended launcher that can open a window locks host input, so a
-        # key, pointer or pad at the desk cannot steer or end the run.
+        # An unattended launcher that can open a window locks host input, so
+        # host keyboard, mouse or pad input cannot steer or end the run.
         COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/input_lock_guard.py ${CMAKE_SOURCE_DIR}
         # The keymap's KM_LEVEL / KM_DELTA flags against their consumer sites:
         # the parser enforces them for mouse sources and the unit test cannot

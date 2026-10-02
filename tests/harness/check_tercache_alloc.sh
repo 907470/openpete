@@ -47,7 +47,7 @@ cd "$(dirname "$0")/../.."
 # shellcheck source=scripts/lib/game.sh
 source scripts/lib/game.sh
 
-# Unattended launcher: nobody is holding the pad and the buzzing appears in no
+# Unattended launcher: no player uses the pad and the buzzing appears in no
 # log, so every run this script starts is silenced.
 # (scripts/fences/rumble_guard.py enforces this.)
 export OPENPETE_VIBRATION=0

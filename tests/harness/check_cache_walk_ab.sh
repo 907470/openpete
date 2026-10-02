@@ -38,7 +38,7 @@ set -u
 
 # Unattended launcher: every run this script starts is silenced. Vibration
 # ships on by default, which is right for a player and wrong for a
-# machine-driven run.
+# scripted run.
 # (scripts/fences/rumble_guard.py enforces this.)
 export OPENPETE_VIBRATION=0
 

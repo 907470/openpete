@@ -102,7 +102,7 @@ source scripts/lib/game.sh
 # shellcheck source=scripts/lib/wslenv.sh
 source scripts/lib/wslenv.sh
 
-# Unattended launcher: no one is holding the pad and the buzzing appears in no
+# Unattended launcher: no player uses the pad and the buzzing appears in no
 # log, so every run this script starts is silenced.
 # (scripts/fences/rumble_guard.py enforces this.)
 export OPENPETE_VIBRATION=0

@@ -1,7 +1,7 @@
-"""Fence: an unattended windowed launch ignores the desk it runs on.
+"""Fence: an unattended windowed launch ignores host input.
 
 A scripted run that brings up a window shares the keyboard, the mouse and the
-gamepads with whoever is at the machine. A key pressed while that window has
+gamepads with the host session. A key pressed while that window has
 focus opens the settings menu, engages the free camera or quits the run; a
 pointer crossing it steers the camera. The run still exits 0 and its numbers
 are still self-consistent, so nothing in a log shows the capture was steered.
@@ -105,8 +105,8 @@ def main():
         return 0
     sys.stderr.write(
         "FENCE (input_lock_guard): these unattended launchers can open a "
-        "window and never lock host input, so a key, pointer or pad at the "
-        "desk can steer or end the run:\n")
+        "window and never lock host input, so host keyboard, mouse or pad "
+        "input can steer or end the run:\n")
     for path in bad:
         sys.stderr.write(f"  {path}\n")
     sys.stderr.write(

@@ -125,7 +125,7 @@ void openpete_rumble_set_headless(int headless);
 
 /** @brief Add one of the harness's virtual pads (OPENPETE_INPUT_VGAMEPAD) to the test-device set.
  *
- * The headless and focus refusals protect a human's controller and are
+ * The headless and focus refusals protect a connected physical controller and are
  * lifted for a device in the set, checked against the instance id of the
  * handle being driven, so the vibration harness observes the real apply
  * path headlessly. The set holds OPENPETE_PAD_SLOTS ids, one per slot the

@@ -625,7 +625,7 @@ static void print_help(const char* display_name, const char* argv0,
         "  --input-lock [0|1]         ignore every host input device: keyboard (game keys and every\n"
         "                             hotkey), mouse (as --mouse 0) and gamepads. A --bk2 replay still\n"
         "                             drives the game and closing the window still exits. For a window\n"
-        "                             that must not react to the desk it runs on (default 0 = off)\n"
+        "                             that must not react to host input (default 0 = off)\n"
         "  --mouse-sensitivity S      mouse look scale for the free camera and camlock (default 1.0;\n"
         "                             0.5 = one full turn per 8192 counts). Mouse look binds through\n"
         "                             [keys.host] look_axis_x = \"pad:rightx,mouse:x\" and\n"
@@ -1823,7 +1823,7 @@ static int apply_env_spellings(openpete_options_t* opts) {
      * needs one line it can put at the top of the file, not an argument
      * threaded into however many invocation sites it builds - and an argument
      * appended to the wrong one of those is a silent miss, which for this knob
-     * means a controller buzzing on someone's desk for the length of a corpus
+     * means a connected controller buzzing for the length of a corpus
      * run. (Under WSL an env knob only reaches a Windows .exe if WSLENV names
      * it; scripts/fences/wslenv_guard.py is what enforces that half.) */
     if (opts->vibration < 0) {

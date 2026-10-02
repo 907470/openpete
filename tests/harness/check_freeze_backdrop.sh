@@ -56,9 +56,9 @@
 #
 # Every launch passes --background 1: the window comes up at its normal size
 # and visible but takes no focus, so an unattended run does not steal the
-# keyboard from whoever is at the machine. The engine prints its own window
+# keyboard from the host session. The engine prints its own window
 # state and the harness asserts background=1 on it, so a run whose window did
-# take the desk cannot be read as this check's result.
+# take focus cannot be read as this check's result.
 #
 # Verdict line per row:
 #   [freeze-backdrop] game=<g> bk2=<b> presents=<n> world=<n> world_min=<n>
@@ -74,7 +74,7 @@ cd "$(dirname "$0")/../.."
 # shellcheck source=scripts/lib/game.sh
 source scripts/lib/game.sh
 
-# Unattended launcher: nobody is holding the pad and the buzzing appears in no
+# Unattended launcher: no player uses the pad and the buzzing appears in no
 # log, so every run this script starts is silenced.
 # (scripts/fences/rumble_guard.py enforces this.)
 export OPENPETE_VIBRATION=0

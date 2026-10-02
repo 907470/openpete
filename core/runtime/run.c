@@ -2274,7 +2274,7 @@ static int run_host_init(const openpete_options_t* opts) {
 
     /* --vibration: the host-side strength (0..10, -1 = parity), plus the
      * context gates. Headless is a refusal rather than a default - a run with
-     * no window has no player at the desk, and every gate battery, capture and
+     * no window has no player, and every gate battery, capture and
      * scripted launch is one.
      *
      * Installing the actuator-registration hook is what moves the per-vsync

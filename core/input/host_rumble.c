@@ -61,9 +61,8 @@ static SDL_AtomicInt s_pair;
 
 /* The harness's own virtual pad, when one is attached (OPENPETE_INPUT_VGAMEPAD).
  *
- * The headless and focus refusals below exist to protect a HUMAN's controller,
- * and a virtual device attached by a test harness is not one - nobody is
- * holding it. Left as an unconditional refusal, headless would also blind the
+ * The headless and focus refusals below exist to protect a connected physical
+ * controller, and a virtual device attached by a test harness is not one. Left as an unconditional refusal, headless would also blind the
  * only instrument that can observe this path at all, and the vibration oracle
  * would be reduced to testing a mock of the code instead of the code.
  *
@@ -71,7 +70,7 @@ static SDL_AtomicInt s_pair;
  * virtual pads, identified by instance id and re-checked against the handle
  * actually being driven. If a real controller is also plugged in and has taken
  * a slot, its id is not in the set and the normal gates apply - a diagnostic
- * run must not buzz a pad on the desk just because a test flag is set.
+ * run must not buzz a connected pad just because a test flag is set.
  *
  * A set rather than one id, because the harness attaches one pad per slot and
  * a per-slot claim is only observable when every one of them can be driven.
@@ -239,7 +238,7 @@ static int driving_test_device(SDL_Gamepad* gp)
 /** @brief Return whether a pad must stay silent this pump iteration.
  *
  * The refusals shared by every slot: headless and missing keyboard focus
- * protect a human's controller and are lifted for a registered test device;
+ * protect a connected physical controller and are lifted for a registered test device;
  * pause silences every pad. Focus is polled with SDL_GetKeyboardFocus rather
  * than tracked through focus events.
  * @param gp the gamepad about to be driven, or NULL (never a test device).
@@ -297,10 +296,9 @@ void openpete_rumble_apply(void)
         rumble_apply_mod_slot(slot);
 
     /* Headless, focus and pause: see rumble_gates_block. Headless is a
-     * refusal, not a default - a run with no window has no player at the desk,
-     * and every gate battery and scripted capture is one. Focus is the layer
-     * that protects a human from a background window buzzing a pad on their
-     * desk, polled rather than tracked through FOCUS_LOST / FOCUS_GAINED so
+     * refusal, not a default - a run with no window has no player, and every
+     * gate battery and scripted capture is one. Focus is the layer that keeps
+     * a background window from buzzing a connected controller, polled rather than tracked through FOCUS_LOST / FOCUS_GAINED so
      * there is no state to get out of step with reality. */
     if (rumble_gates_block(gp)) {
         openpete_rumble_stop();

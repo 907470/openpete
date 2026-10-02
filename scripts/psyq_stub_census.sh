@@ -27,7 +27,7 @@
 # Exit: 0 = census produced, 64 = SKIP (binary or disc missing), 1 = a run failed.
 set -u
 
-# Unattended launcher: nobody is holding the pad (scripts/fences/rumble_guard.py).
+# Unattended launcher: vibration is silenced (scripts/fences/rumble_guard.py).
 export OPENPETE_VIBRATION=0
 
 cd "$(dirname "$0")/.."

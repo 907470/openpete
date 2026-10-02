@@ -163,7 +163,7 @@ static void register_rows(void) {
 /* OPENPETE_LEVELWARP_TEST=<vbl>:<level> queues the same request the Jump
  * button does, at the given VBL counter. The warp is a multi-tick ride
  * through the game's own state machine, so firing it from a script is what
- * makes it testable without a human at the overlay. Deliberately not a knob
+ * makes it testable from a script. Deliberately not a knob
  * registry row (harness variable, not a config knob):
  *   OPENPETE_LEVELWARP_TEST=2200:tree_tops openpete-spyro1 --skip-to-level artisans
  */

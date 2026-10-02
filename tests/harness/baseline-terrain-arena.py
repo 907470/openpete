@@ -67,7 +67,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
 import bench_guard  # noqa: F401  (import-time launcher preconditions)
 import corpus_manifest
 
-# Unattended launcher: no pad is being held, and the buzzing shows up in no
+# Unattended launcher: no player uses the pad, and the buzzing shows up in no
 # log, so it would never surface on its own. (scripts/fences/rumble_guard.py)
 os.environ.setdefault("OPENPETE_VIBRATION", "0")
 

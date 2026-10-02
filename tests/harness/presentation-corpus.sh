@@ -44,7 +44,7 @@ set -u
 
 # Unattended launcher: silence controller vibration for every run this script
 # starts. Vibration ships on by default, which is right for a player and wrong
-# for a machine-driven run - nobody is holding the pad, and the buzzing shows
+# for a scripted run - no player uses the pad, and the buzzing shows
 # up in no log, so it would never surface on its own. Set here rather than at
 # each invocation because this script builds its argument list in more than one
 # place, and a flag appended to the wrong one is a silent miss.

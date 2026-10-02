@@ -1,6 +1,6 @@
 # Unattended runs
 
-How to drive the built binary without a human at the keyboard: the flags a
+How to drive the built binary from a script: the flags a
 headless run needs, the gates that decide correctness claims, and the exit
 codes that let a script read the verdict.
 

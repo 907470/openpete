@@ -19,8 +19,8 @@
 # before the call, selects the build directory.
 #
 # Vibration: every run pg_capture starts is silenced. Vibration ships on by
-# default, which is right for a player and wrong for a machine-driven run -
-# nobody is holding the pad, and the buzzing appears in no log, so it would
+# default, which is right for a player and wrong for a scripted run - no
+# player uses the pad, and the buzzing appears in no log, so it would
 # never surface on its own. Setting it here rather than at each call site
 # means a harness cannot miss it by appending the flag to the wrong one of
 # the several argument lists it builds.

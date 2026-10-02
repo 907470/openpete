@@ -53,7 +53,7 @@ set -euo pipefail
 
 # rumble-guard: intentional - this gate's whole purpose is to make the motors
 # fire, and the only device that can receive them is the virtual pad it
-# attaches itself. No human's controller is reachable from here: the actuator
+# attaches itself. No physical controller is reachable from here: the actuator
 # path lifts its headless/focus refusals for that one device id and re-checks
 # it against the handle actually driven, so a real pad occupying slot 0 gets
 # the normal treatment and stays silent.

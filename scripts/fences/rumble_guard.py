@@ -1,11 +1,10 @@
-"""Fence: a scripted launch must never rumble the human's controller.
+"""Fence: a scripted launch must never rumble a connected controller.
 
 Vibration ships ON by default, which is right for a player and wrong for every
 other way this binary starts. Harnesses, capture scripts, gate batteries and
-bench runs are machine-driven; a human is not holding the pad, and often is not
-even at the desk. A background window buzzing a controller for ten minutes
-while someone works is a real cost, and it is invisible in every log - the run
-still passes, the numbers are still right, so nothing ever surfaces it.
+bench runs are scripted; no player uses the pad. Vibration in a scripted run
+is invisible in every log - the run still passes, the numbers are still
+right, so nothing ever surfaces it.
 
 Two layers already handle the common cases in code: headless never arms the
 motors at all, and the pump-side apply gates on window focus, so an unfocused
@@ -31,7 +30,7 @@ This file names the knob and talks about Windows binaries without ever
 launching one, so: wslenv-guard: no-launch
 
 Run: python3 scripts/fences/rumble_guard.py [root]
-Exit: 0 clean, 65 a script could rumble a human's pad.
+Exit: 0 clean, 65 a script could rumble a connected controller.
 """
 import os
 import re
@@ -42,11 +41,10 @@ import sys
 # nobody can read is a fence nobody runs.
 LAUNCH = re.compile(r"openpete-spyro1|openpete_spyro1")
 
-# ...and only the UNATTENDED launchers are in scope. A machine-driven run is
-# the hazard: nobody is holding the pad, often nobody is at the desk, and the
-# run passes either way so the buzzing never surfaces in any log. An
-# interactive one-off a human typed is not this fence's business - they are
-# right there.
+# ...and only the UNATTENDED launchers are in scope. A scripted run is the
+# hazard: no player uses the pad, and the run passes either way so the
+# buzzing never surfaces in any log. An interactive one-off typed at a
+# terminal is not this fence's business.
 #
 # The other two layers cover the rest and are enforced in code, not here:
 # headless never arms the motors, and the pump-side apply gates on window
@@ -129,8 +127,7 @@ def main():
         return 0
     sys.stderr.write(
         "FENCE (rumble_guard): these unattended launchers never silence "
-        "vibration, so a machine-driven run can buzz a controller sitting on "
-        "someone's desk:\n")
+        "vibration, so a scripted run can buzz a connected controller:\n")
     for path in bad:
         sys.stderr.write(f"  {path}\n")
     sys.stderr.write(

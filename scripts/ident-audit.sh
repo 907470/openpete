@@ -29,7 +29,7 @@
 set -u
 
 # Unattended launcher: silence controller vibration for every run this script
-# starts. Nobody is holding the pad and the buzzing shows up in no log, so it
+# starts. No player uses the pad and the buzzing shows up in no log, so it
 # would never surface on its own. (scripts/fences/rumble_guard.py enforces this.)
 export OPENPETE_VIBRATION=0
 

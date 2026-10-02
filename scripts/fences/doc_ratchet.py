@@ -985,8 +985,8 @@ Ways to land this commit:
   3. accept     %s="<reason>" git commit ...
                 for a mechanical pass (a reformat, a move between TUs)
                 where documenting every touched function is out of scope.
-  4. fence      a mis-read is a defect in the fence: fix or retire it this
-                session.
+  4. fence      a mis-read is a defect in the fence: fix or retire it in
+                the same commit.
 """ % ACCEPT_VAR
 
 

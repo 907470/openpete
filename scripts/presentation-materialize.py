@@ -17,10 +17,10 @@ at --at REV. Per blessed revision the rows name:
  1. disc: the main checkout's disc .cue and the .bin the manifest header names
     are hashed and compared against the header; an absent file, a header that
     records no hash, or a differing hash refuses, naming the file.
- 2. worktree: a throwaway worktree at the revision from worktree-setup.sh
-    --no-links (under --from-archive, `git worktree add` against the archive
+ 2. worktree: a throwaway worktree at the revision from the script
+    OPENPETE_WORKTREE_SETUP names (<name> --ref REV --no-links) (under --from-archive, `git worktree add` against the archive
     golden-ref.state names, submodules fetched from their remotes). Every
-    untracked build input `worktree-setup.sh --list-links` names, except the
+    untracked build input that script's `--list-links` names, except the
     oracle goldens and the DuckStation trees, must be absent there: a link
     refuses. The game's five inputs are then created as real paths below.
  3. decomp inputs: the decomp's own submodules (tools/maspsx) as worktrees
@@ -112,7 +112,7 @@ def setup_script():
     """The worktree setup script OPENPETE_WORKTREE_SETUP names."""
     p = os.environ.get("OPENPETE_WORKTREE_SETUP") or ""
     if not os.path.isfile(p):
-        raise Refusal("no worktree-setup.sh at %s (set OPENPETE_WORKTREE_SETUP)"
+        raise Refusal("no worktree setup script at %s (set OPENPETE_WORKTREE_SETUP)"
                       % p)
     return p
 
@@ -255,7 +255,7 @@ def make_worktree(rev, name, from_archive, logf):
         env = dict(os.environ, OPENPETE_ROOT=main)
         run(["bash", setup_script(), name, "--ref", rev, "--no-links",
              "--no-configure"], env=env, logf=logf,
-            what="worktree-setup.sh --no-links")
+            what="worktree setup script --no-links")
         return wt
     arch = pb.read_state().get("archive")
     if not arch or not os.path.isdir(arch):
@@ -292,17 +292,17 @@ def remove_worktree(wt, name, from_archive, logf):
     td = os.path.join(os.path.dirname(setup_script()), "worktree-teardown.sh")
     run(["bash", td, name, "--force"], env=dict(os.environ,
                                                 OPENPETE_ROOT=main_checkout()),
-        logf=logf, what="worktree-teardown.sh")
+        logf=logf, what="worktree teardown script")
 
 
 def input_paths(game):
-    """The untracked build inputs worktree-setup.sh links, minus the
+    """The untracked build inputs the worktree setup script links, minus the
     oracle goldens and the DuckStation trees. Returns (all, this game's)."""
     p = subprocess.run(["bash", setup_script(), "--list-links"],
                        env=dict(os.environ, OPENPETE_ROOT=main_checkout()),
                        capture_output=True, text=True)
     if p.returncode != 0:
-        raise Refusal("worktree-setup.sh --list-links exited %d"
+        raise Refusal("worktree setup script --list-links exited %d"
                       % p.returncode)
     paths = [ln.strip() for ln in p.stdout.splitlines() if ln.strip()]
     paths = [x for x in dict.fromkeys(paths) if not EXCLUDED_LINK_RE.match(x)]

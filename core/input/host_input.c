@@ -487,7 +487,7 @@ static void vgamepad_maybe_attach(void)
  *
  * openpete_rumble_set_test_device() adds the pad's instance id to the set
  * the actuator path may drive headless and unfocused; the headless and
- * focus refusals protect a human's controller, which a harness-attached
+ * focus refusals protect a connected physical controller, which a harness-attached
  * virtual pad is not. The probe is one non-zero pair (VPAD_PROBE_LOW,
  * VPAD_PROBE_HIGH) followed by a stop; the callback latches probe_seen when
  * the pair arrives, and an error is logged when it did not, since a zero

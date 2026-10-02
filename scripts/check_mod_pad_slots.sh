@@ -230,7 +230,7 @@ fi
 # device reachable from it is the virtual pad the run attaches itself: the
 # actuator path lifts its headless and focus refusals for exactly the ids in
 # its test-device set and re-checks each against the handle actually driven,
-# so a real controller on the desk keeps the normal treatment and stays
+# so a connected real controller keeps the normal treatment and stays
 # silent. The other legs go through pg_capture, which silences vibration for
 # every run it starts.
 #

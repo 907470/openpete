@@ -32,7 +32,7 @@
 set -euo pipefail
 
 # Staging runs the built exe (--compile-mods) to fill each mod's .build, and
-# vibration ships on by default: nobody is holding a pad during packaging, and
+# vibration ships on by default: no player uses a pad during packaging, and
 # the buzzing shows up in no log, so it would never surface on its own.
 # (scripts/fences/rumble_guard.py enforces this.)
 export OPENPETE_VIBRATION=0

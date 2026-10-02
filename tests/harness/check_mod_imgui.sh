@@ -56,7 +56,7 @@ set -uo pipefail
 
 # Unattended launcher: silence controller vibration for every run this script
 # starts. Vibration ships on by default, which is right for a player and wrong
-# for a machine-driven run - nobody is holding the pad, and the buzzing shows
+# for a scripted run - no player uses the pad, and the buzzing shows
 # up in no log, so it would never surface on its own.
 # (scripts/fences/rumble_guard.py enforces this.)
 export OPENPETE_VIBRATION=0

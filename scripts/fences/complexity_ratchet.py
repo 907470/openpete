@@ -519,8 +519,8 @@ own no-behaviour-change commit, then land the feature on top of it.
                the marker reinstates the ratchet at the then-current
                score.
   7. fence     if the score is a mis-count (macro, generated block), the
-               fence is the defect: fix or retire it this session and say
-               so in the commit.
+               fence is the defect: fix or retire it in the same commit and say
+               so in its message.
 """ % {"cap": CAP}
 
 

@@ -519,7 +519,7 @@ static void freecam_drive(CPUState* cpu) {
     /* OPENPETE_FREECAM_DRIFT="dx,dy,dz": scripted per-tick camera drift
      * (world units), applied on top of input. Deterministic boundary-crossing
      * repro for cull/handoff work - headless runs can sweep the camera across
-     * an admission edge without a human at the stick. */
+     * an admission edge from a script. */
     {
         static int32_t s_drift[3]; static int s_have_drift = -1;
         if (s_have_drift < 0) {
