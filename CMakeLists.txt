@@ -138,7 +138,7 @@ file(GLOB_RECURSE _code_docs_inputs CONFIGURE_DEPENDS
      ${CMAKE_CURRENT_SOURCE_DIR}/games/*.h ${CMAKE_CURRENT_SOURCE_DIR}/games/*.hpp
      ${CMAKE_CURRENT_SOURCE_DIR}/games/*.inc)
 list(FILTER _code_docs_inputs EXCLUDE REGEX
-     "/(generated|third_party|build|mods-attic)/|/games/(spyro-1/spyro-1|spyro-2/spyro-2|spyro-3/spyro-3)/")
+     "/(generated|third_party|build)/|/games/(spyro-1/spyro-1|spyro-2/spyro-2|spyro-3/spyro-3)/")
 set(_code_docs_stamp ${CMAKE_CURRENT_BINARY_DIR}/codedocs.stamp)
 add_custom_command(
     OUTPUT  ${_code_docs_stamp}

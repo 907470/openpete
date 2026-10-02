@@ -72,7 +72,7 @@ EXEMPT = re.compile(r"rumble-guard:\s*(intentional|no-launch)")
 # "worktrees" holds git worktrees of this repo: whole copies whose scripts
 # predate or duplicate the working tree's. Only the working tree is scanned.
 SKIP_DIRS = {".git", "worktrees", "build", "__pycache__", "node_modules",
-             "third_party", "dist", "mods-attic"}
+             "third_party", "dist"}
 SUFFIXES = (".sh", ".py", ".bash")
 
 

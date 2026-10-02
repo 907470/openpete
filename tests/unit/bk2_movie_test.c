@@ -37,7 +37,7 @@
 static int test_basic_parse(void) {
     /* Hand-rolled minimal log: header, LogKey, 4 frames, [/Input].
      * Frame 0: no input.
-     * Frame 1: Start + Cross - matches the first real press in tas.bk2.
+     * Frame 1: Start + Cross.
      * Frame 2: D-pad Up.
      * Frame 3: every digital button down (lets us catch a bit-mask typo
      *          without writing 16 separate frames). */

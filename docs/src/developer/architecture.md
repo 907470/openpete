@@ -22,7 +22,7 @@ presentation layer.
   per-game `features/`, `renderer/` and `corpus/`; `games/<game>/<game>/`
   is the matching-decomp submodule. `games/common/` holds code shared by
   the games (PSYQ thunks, overlay dispatch, the default hooks).
-- `mods/` - shipped and example mods; `mods-attic/` - retired mods.
+- `mods/` - shipped and example mods.
 - `tests/` - `golden/`, `harness/`, `unit/`, `recomp/`, `bench/`,
   `freecam/`, `state-baselines/`.
 - `scripts/` - build, gate and release scripts; `scripts/fences/` holds

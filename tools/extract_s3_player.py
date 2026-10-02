@@ -2,15 +2,15 @@
 """extract_s3_player.py - carve the Spyro 3 (SCUS-94467) player model
 blob out of the user's own Year of the Dragon disc image.
 
-The triangle-flutter mod's hover-animation upgrade renders Spyro 3's
-hover cels through the native actor render service; the S3 player model
+A mod that renders Spyro 3's hover cels through the native actor render
+service needs the S3 player model; that model
 (mesh + boot animation set, ~136 KiB) is Activision/Insomniac data, so -
 same legal posture as every openpete asset tool - mods never SHIP it:
 this tool derives it locally from a disc the user supplies:
 
     tools/extract_s3_player.py \
         --disc "roms/SCUS-94467/SCUS-94467.bin" \
-        --out  mods/triangle-flutter/data/s3_player.bin
+        --out  mods/<id>/data/s3_player.bin
 
 Format facts (spyro-3 decomp, disc-verified):
   - WAD.WAD sits in the ISO9660 filesystem (LBA 500 on the known image;

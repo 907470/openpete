@@ -36,7 +36,7 @@ ARM = "git config core.hooksPath githooks"
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 SCOPE_EXCLUDE = re.compile(
-    r"(^|/)(generated|third_party|build|mods-attic)/"
+    r"(^|/)(generated|third_party|build)/"
     r"|^games/(spyro-[123])/\3/")
 SOURCE_EXT = (".c", ".cc", ".cpp", ".cxx")
 HEADER_EXT = (".h", ".hh", ".hpp", ".inc")

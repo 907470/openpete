@@ -42,21 +42,12 @@ mods/*/.build/
 mods/*/data/
 # Derived-locally assets (extract_*.py output - never shipped/committed)
 mods/*/assets/s3/
-mods-attic/*/assets/s3/
-# Texel strip convert_chests.py derives from the same disc.
-mods/spyro3/assets/textures/own/
-# S3 samples the converters decode to WAV for the sfx pack (same disc).
-mods/spyro3/assets/sfx/
 
 # Generated mod-docs reference pages (tools/gen_mod_docs.py output)
 docs/modding/pages/reference/
 docs/modding/pages/imgui.md
 # Generated codebase reference pages (tools/gen_code_docs.py output)
 docs/src/developer/reference/
-
-# Custom levels: derived locally from the xdelta + your own disc (tools/derive.py)
-mods/grim-garden/assets/
-mods/spyro15-cliff-town/assets/
 
 # In-game fill-tag pick sessions (P-key inspector). Working files: fold them
 # into tests/freecam/fill-tags.verdicts with scripts/fill-tags-apply.py, which

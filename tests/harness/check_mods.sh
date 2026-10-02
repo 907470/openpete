@@ -619,7 +619,7 @@ fi
 say "[test] blocks via tools/modtest.py (the harness modders run)"
 # Every mod that declares a modtest.toml runs, so adding one to a mod is
 # all it takes to enter the gate. Sorted under LC_ALL=C so the run order
-# is the same on every machine. mods-attic/ is not scanned. A mod whose
+# is the same on every machine. A mod whose
 # assets are derived locally and never committed declares `requires` and
 # the runner skips it by name; the runner exits non-zero if the whole
 # list executed nothing.
@@ -885,12 +885,15 @@ fi
 # level slot. Contrast two mods of the identical shape (declarative, no
 # .so, no sim_mutative key) whose only difference is [[level]] - the
 # level mod must be tagged and the asset mod must not.
-fixture "$WORK/ss-level" grim-garden
+mkdir -p "$WORK/ss-level/level-only"
+printf '[mod]\nid = "level-only"\nversion = "0.0.1"\ngame = "spyro-1"\napi = %s\n\n[[level]]\nname = "Level Only"\nfiles = "level_only"\ndonor = "dark_hollow"\n' \
+    "$API_VER" > "$WORK/ss-level/level-only/mod.toml"
+echo level-only > "$WORK/ss-level/enabled.txt"
 fixture "$WORK/ss-assets" music-swap
 rm -f "$CARDS/card1.mcr.modset"
 dd if=/dev/zero of="$CARDS/card1.mcr" bs=1024 count=128 2>/dev/null
 mc_run --mods-dir "$WORK/ss-level" --adopt-saves >/dev/null 2>&1
-if grep -q "^grim-garden@" "$CARDS/card1.mcr.modset" 2>/dev/null; then
+if grep -q "^level-only@" "$CARDS/card1.mcr.modset" 2>/dev/null; then
     ok "custom-level mod joins the tag (derived mutative without code)"
 else
     bad "level mod absent from the tag - the [[level]] derivation broke"

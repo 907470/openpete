@@ -83,7 +83,7 @@ EXEMPT = re.compile(r"seam-guard:\s*display-owner")
 # of the C bytes under the root, none of them openpete source. A game's nested
 # decomp checkout (games/<game>/<game>/) is PSX code with no RHI access.
 SKIP_DIRS = {".git", "worktrees", ".tools", "build", "__pycache__", "third_party",
-             "dist", "mods-attic", "node_modules", "tests", "generated"}
+             "dist", "node_modules", "tests", "generated"}
 GAMES_DIR = "games"
 SUFFIXES = (".c", ".cpp", ".h", ".hpp")
 

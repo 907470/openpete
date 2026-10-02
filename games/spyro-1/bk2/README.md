@@ -92,10 +92,16 @@ own settings - deliberately, since a movie's scenario must not shift with
 whoever's config it replays under - but yields to anything typed on the
 command line. See the "Config file" section of the top-level `README.md`.
 
+A movie that starts from a save names its memory card with `--card1` in
+the sidecar and keeps the card beside it (`all-eggs.bk2.mcr`). The card's
+save block has its icon palette and icon frames zeroed; the game loads
+the save without them.
+
 ## Current corpus
 
 | BK2                          | What it exercises                                          |
 | ---------------------------- | ---------------------------------------------------------- |
+| `all-eggs.bk2`               | HUD egg row with every egg collected (2D carry pairing)    |
 | `artisans-bridge.bk2`        | Artisans bridge->hill junction (terrain GT3 UV orientation) |
 | `demo.bk2`                   | Full run through of demo mode (no inputs)                  |
 | `frame-time-test.bk2`        | Frame-pacing under variable input                          |
@@ -107,7 +113,6 @@ command line. See the "Config file" section of the top-level `README.md`.
 | `portal-cyclorama-issue.bk2` | Cyclorama clip-X widening (gated channel exemplar)         |
 | `skip-to-artisans.bk2`       | Title -> first level transition                             |
 | `stone-hill-entry.bk2`       | Stone Hill entry sequence (longest deterministic baseline) |
-| `tas.bk2`                    | Multi-minute TAS-style input (broad coverage)              |
 | `titlescreen-menu.bk2`       | Title -> memory-card menu (2D sprite mirror/flip; frame 450)|
 
 ## When the matrix harness fails on a BK2
