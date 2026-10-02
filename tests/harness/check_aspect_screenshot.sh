@@ -13,8 +13,7 @@
 #      (--screenshot-native-only). The native path is where Hor+ ships;
 #      its headless capture renders at the internal resolution,
 #      window-independent: 4:3 -> 640x448, W:H -> 640*(W/H)/(4/3) wide.
-#      (The PsyCross -og capture stopped widening when the Phase-6
-#      --aspect substitution stack was retired, and stays 4:3.)
+#      (The PsyCross -og capture does not widen and stays 4:3.)
 #   2. Take screenshot at frame N at each aspect.
 #   3. Drop top/bottom 16 rows of PSX overscan, center-crop to 640x416
 #      and pixel-diff against the 4:3 baseline. 21:9 (even width) is

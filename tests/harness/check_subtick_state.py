@@ -33,7 +33,7 @@ intermediate capture reaches the re-extract headless, which is why the
 armed leg drives --screenshot-intermediate-on-frame rather than a high
 --render-fps.
 
-PROVEN SENSITIVITY (fault injection, moby-crossfade, 2026-08-26). An
+PROVEN SENSITIVITY (fault injection, moby-crossfade). An
 instrument that has only ever passed is not yet an instrument, so both
 checks were run against a deliberately broken restore:
 
@@ -55,7 +55,7 @@ that were not sampled, regions no producer brackets, or whether the state is
 CORRECT -- only the oracle speaks to that.
 
 Kept deliberately small by default so it can run inside an iteration loop;
---corpus full is the arc-end sweep.
+--corpus full is the complete sweep, run before a commit.
 """
 import argparse
 import gzip
@@ -97,7 +97,7 @@ CORPUS = {
     "quick": ["moby-crossfade", "dream-weavers-particle"],
     # Adds the distant-terrain/vista movies. Both carry a --skip-to-level
     # sidecar (auto-spliced by --bk2) and are 1.7-2.7x longer, so this tier
-    # costs several times `quick` -- it is the arc-end sweep, not the loop.
+    # costs several times `quick` -- it runs before a commit, not in the loop.
     "full": ["moby-crossfade", "dream-weavers-particle",
              "artisans-lp-waterfall", "inventory-moby-swim",
              "stone-hill-distant-terrain", "cliff-town-vista"],

@@ -19,7 +19,7 @@ extern "C" {
 /* Exit codes. */
 #define OPENPETE_EXIT_OK           0  /* clean termination */
 #define OPENPETE_EXIT_PANIC        1  /* panic / crash / timeout */
-#define OPENPETE_EXIT_DIVERGENCE   2  /* state-divergence detected (Phase 1c+) */
+#define OPENPETE_EXIT_DIVERGENCE   2  /* state-divergence detected */
 #define OPENPETE_EXIT_SETUP_ERROR  3  /* disc not found, unknown flag, etc. */
 
 /* Highest accepted --ssaa factor. The supersampled extent drives FIVE
@@ -176,8 +176,7 @@ typedef struct openpete_options {
 
     /* Target display aspect ratio (width / height), native renderer only —
      * the Hor+ widening happens purely at the display layer from canonical
-     * 4:3 producers (the PsyCross-mode substitution stack was retired
-     * 2026-07-06). 0 = auto (`--aspect auto`, the default): the render
+     * 4:3 producers. 0 = auto (`--aspect auto`, the default): the render
      * aspect follows the window / fullscreen shape live, filling it with no
      * bars (clamped ≥ 4:3 — Hor+ only ADDS world). >0 = fixed (`--aspect
      * W:H`): sizes the launch window to match and letterboxes/pillarboxes
@@ -352,15 +351,14 @@ typedef struct openpete_options {
     /* Scheduled savestate ops — fire once at the savestate quiescent point
      * (game fiber yielded) when openpete_frame (a VBL counter) reaches N.
      * Headless-friendly: this is the autonomous test vehicle for the
-     * savestate plan's restore-correctness gates (save→tick→restore→tick
-     * hash A/B).
+     * restore-correctness checks (save→tick→restore→tick hash A/B).
      * Load re-anchors openpete_frame exactly like the hotkey path. */
     int         state_save_on_frame;   /* -1 = disabled */
     const char* state_save_output;     /* path; default ./frameN.state */
     int         state_load_on_frame;   /* -1 = disabled */
     const char* state_load_input;      /* path; required when load armed */
 
-    /* Savestate stress harnesses (P3 restore-at-yield gates; headless):
+    /* Savestate stress harnesses (restore-at-yield checks; headless):
      * state_stress N       — every N ticked iterations: in-memory save +
      *                        immediate quiet restore. A clean run and a
      *                        stressed run must produce identical
@@ -371,14 +369,14 @@ typedef struct openpete_options {
     int         state_stress;          /* 0 = disabled */
     int         state_stress_rewind;   /* 0 = disabled */
 
-    /* Rewind (savestate P4). rewind_window: seconds of keyframe ring
+    /* Rewind. rewind_window: seconds of keyframe ring
      * (0 = off). rewind_hold_frame/iters: headless harness — simulate
      * holding the rewind key for N iterations at frame A. */
     int         rewind_window;         /* 0 = disabled */
     int         rewind_hold_frame;     /* -1 = disabled */
     int         rewind_hold_iters;
 
-    /* Runahead (savestate P5): lead the presented timeline by N sim
+    /* Runahead: lead the presented timeline by N sim
      * ticks to collapse internal input latency (measured L_submit =
      * 2 ticks; N=2 collapses it fully). 0 = off. Arms only when every
      * enabled mod declares a runahead capability. */
@@ -429,7 +427,7 @@ typedef struct openpete_options {
      * $OPENPETE_LOG_FILE and then the default state-dir path apply. */
     const char* log_file;
 
-    /* Disc / data — Phase 1b uses these; Phase 0b ignores them. */
+    /* Disc / data inputs. */
     const char* disc_path;
     const char* exe_path;          /* Direct PSX EXE bytes (overrides disc) */
     const char* ingest_path;       /* --ingest: copy this disc image into
@@ -444,7 +442,7 @@ typedef struct openpete_options {
                                        library name next to the exe). Ignored
                                        by static builds. */
 
-    /* Phase 1b bring-up smoke test: skip the run loop and instead boot the
+    /* Bring-up smoke test: skip the run loop and instead boot the
      * PSX EXE, dispatch a single recompiled function at this address, and
      * exit reporting cpu->v0. 0 = disabled. */
     uint32_t test_recomp_call_addr;
@@ -453,15 +451,15 @@ typedef struct openpete_options {
     uint32_t probe_addr;                /* read 4 bytes at this PSX vaddr post-dispatch (0 = off) */
     bool     test_recomp_segv;          /* deliberately fault to verify crash handler */
 
-    /* Phase 1d main-loop driver. Dispatches the function at this PSX vaddr on a
+    /* Main-loop driver. Dispatches the function at this PSX vaddr on a
      * dedicated fiber; PSYQ thunks (VSync etc.) yield back to the host fiber,
      * which presents via PsyCross and advances `openpete_frame` until exit. */
     uint32_t run_recomp_addr;
 
-    /* Phase 1e infra-triangle. When set, the host fiber emits a hardcoded
-     * POLY_F3 each frame between PsyX_BeginScene and PsyX_EndScene. Used to
-     * validate the full GL render path before real-game draw code is online
-     * (the title-screen overlay is untranslated until Phase 1d.5/Phase 2). */
+    /* Infra-triangle (--debug-triangle). When set, the host fiber emits a
+     * hardcoded POLY_F3 each frame between PsyX_BeginScene and
+     * PsyX_EndScene. Validates the full GL render path independently of the
+     * game's own draw code. */
     bool debug_triangle;
 
     /* Active renderer / display mode (--renderer psycross|vk). Default

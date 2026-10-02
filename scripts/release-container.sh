@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # scripts/release-container.sh — build and package the Linux release
-# inside the Debian 11 base (distribution D6.6; plan
-# openpete-distribution-local-recomp).
+# inside the Debian 11 base.
 #
 # The symbol floor of the shipped binary is set by the machine that
 # compiles it, so the release build is not a dev-box build with different

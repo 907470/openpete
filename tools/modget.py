@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """modget.py — install mods from a decentralized mod-source manifest
-(the modding framework's P4 distribution piece; OpenGOAL's model).
+(the modding framework's distribution piece; OpenGOAL's model).
 
 A mod-source is a JSON file anyone can host:
 

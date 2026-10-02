@@ -1,5 +1,6 @@
 /* openpete_func_trace.h — opt-in per-function CPU tracing of the recompiled
- * game code (Tier B drill-down; see openpete_profile.h for Tier A scopes).
+ * game code (function-level drill-down; see openpete_profile.h for the
+ * profiler's named scopes).
  *
  * Built with -DOPENPETE_FUNC_TRACE=ON, which compiles the main generated EXE
  * (PSX.EXE_full.c) with -finstrument-functions. GCC/Clang then call the

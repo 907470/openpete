@@ -170,7 +170,7 @@ process_overlay() {
     local base_args=(
         # Raw overlay blob straight from the decomp's build/wad — the
         # recompiler synthesizes the PS-X EXE header internally
-        # (--raw-bin, D2.2; replaces tools/synth_overlay_exe.py).
+        # (--raw-bin).
         --raw-bin
         --load-addr="$load_addr"
         --output-stem="$name.bin"
@@ -235,7 +235,7 @@ process_overlay() {
     #
     # Invalidate the previous run's combined list: it is only rewritten when
     # THIS run's loop fires, and a stale one poisons the converged-manifest
-    # emission (level_43 lesson, D2.1).
+    # emission (as it did for level_43).
     rm -f "$OUT/$name/extra_funcs.combined.txt"
     local split_found="$OUT/$name/split_targets.txt"
     local split_accum="$OUT/$name/extra_funcs.split.txt"
@@ -504,7 +504,8 @@ echo "[regen] ra-spill returns: $ra_spill_found (matches recomp.conf)"
 # Calibrate + verify signature anchors for the determinism-critical channels
 # from the freshly-recompiled reference binary (needs discovered_functions.log
 # for the function-scoped tier). Fails the regen if any determinism-critical
-# site can't be uniquely anchored — the Tier-3 (romhack) prerequisite.
+# site can't be uniquely anchored, which relocating the sites in a romhack
+# would need.
 if [[ -n "${CHANNEL_MANIFEST:-}" ]]; then
     echo "[regen] Generating $OUT/channel_signatures.txt (determinism-critical anchors)"
     python3 tools/gen_channel_signatures.py \
@@ -514,7 +515,7 @@ if [[ -n "${CHANNEL_MANIFEST:-}" ]]; then
 fi
 
 # Snapshot the converged per-binary inputs as committed metadata for the
-# single-pass first-boot pipeline (distribution D2.1). Skipped in scoped
+# single-pass first-boot pipeline. Skipped in scoped
 # mode — the converged manifest describes the STOCK full-regen state, and
 # a mod-site bake is a local dev configuration, not a distribution input.
 # The converged manifest feeds the single-pass first-boot pipeline, which is

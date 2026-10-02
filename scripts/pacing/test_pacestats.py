@@ -95,7 +95,7 @@ def test_drift():
     check("recovers a 50 ppm frequency error",
           approx(ppm, ppm_true, 0.01), f"got {ppm:.4f} ppm")
 
-    # An exact grid must read below the plan's 1 ppm gate.
+    # An exact grid must read below the 1 ppm drift gate.
     t0 = [int(i * VBL_NS) for i in idx]
     ppm0, _ = ps.drift_ppm(idx, t0, VBL_NS)
     check("an exact grid reads < 1 ppm", abs(ppm0) < 1.0, f"got {ppm0:.6f} ppm")
@@ -322,7 +322,7 @@ def test_stability():
 
 # ------------------------------------------------------------------------
 def test_baseline_compare():
-    """The half of M9 that was missing: reading a blessed baseline back.
+    """The baseline gate's read side: reading a blessed baseline back.
 
     A baseline nothing compares against is an archive, not a gate. These cases
     pin the four verdicts it must be able to reach — including SKIP, because a
@@ -487,7 +487,7 @@ def test_spectrum():
     if ps.np is None:
         check("numpy present", False, "skipped")
         return
-    # A 0.06 Hz line is the signature the plan names: a FIFO present cadence
+    # A 0.06 Hz line is the signature of a FIFO present cadence
     # beating against a monitor whose refresh is not the tick rate.
     f_true = 0.06
     t, v = [], []

@@ -1,6 +1,6 @@
 #version 450
 
-/* Milestone 1b.2 — PSX VRAM sampler, fragment stage.
+/* PSX VRAM sampler, fragment stage.
  *
  * A faithful, integer-exact port of PsyCross's 4/8/16bpp + CLUT decoder
  * (third_party/PsyCross/src/render/PsyX_render.cpp, samplePSX / decodeRG),

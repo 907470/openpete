@@ -58,7 +58,7 @@ def robust_sigma(vals):
 
 
 def triple(vals):
-    """The mandated S1/S2 reporting form: (robust sigma, p99, max |x|).
+    """The phase/interval-error reporting form: (robust sigma, p99, max |x|).
 
     Three different questions — how tight is normal operation, how bad is a
     typical bad tick, what is the worst thing that happened. No one of them

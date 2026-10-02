@@ -11,14 +11,14 @@
  *
  * Consumers:
  *   - bk2_record: serializes entries [begin_idx, count) into the movie.
- *   - rewind driver (savestate plan P4): replays entries forward from a
+ *   - rewind driver: replays entries forward from a
  *     keyframe, and truncates the log after a restore (it KNOWS its
  *     restores rewind this session's own timeline — that's why truncation
  *     is an explicit API and NOT an openpete_discontinuity subscriber: an
  *     arbitrary savestate load is a foreign timeline, where truncating
  *     would fabricate a bogus input history; bk2_record's finalize-on-load
  *     guard handles that case instead).
- *   - runahead driver (P5): source of held-input for speculative ticks.
+ *   - runahead driver: source of held-input for speculative ticks.
  *
  * Entries use bk2 axis order (LX, LY, RX, RY) — the recorder's storage
  * order, converted from the PSX readback order by the producer.

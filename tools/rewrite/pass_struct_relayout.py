@@ -22,7 +22,8 @@ Field-access conversions in the .c body:
     WRITE:  `obj.m_LongFld = expr;`         → `obj.m_LongFld = (int32_t)(expr);`
 
 Out of scope (deferred):
-  - PSYQ structs (defined under spyro-1/psyq/include/) — Phase 1.5 audit.
+  - PSYQ structs (defined under spyro-1/psyq/include/) — see
+    docs/src/developer/psycross-boundary.md.
   - Function-pointer fields — flagged as warnings, not rewritten.
   - sizeof() agreement, struct-by-value, struct-pointer arithmetic.
 """
@@ -366,7 +367,7 @@ def emit_header_edits(rewrites: Dict[FieldKey, FieldRewrite],
             # Function-pointer fields: leave alone for MVP, warn.
             result.fnptr_warnings.append(
                 f"function-pointer field {fr.record_name}.{fr.field_name} "
-                f"at {fr.file}: not rewritten (Phase 4)")
+                f"at {fr.file}: not rewritten")
             continue
         if fr.is_opaque_pad:
             # Replace the entire FIELD_DECL with a byte-array pad sized to

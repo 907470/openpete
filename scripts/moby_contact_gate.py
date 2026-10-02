@@ -12,9 +12,9 @@ The gate rasterises the moby/terrain subset twice with the same sampling
 rule — once under the shipped ordering rule (interpolate z, min wins), once
 under the true-geometry rule (re-encode pvz, min wins) — and reports every
 pixel whose WINNER DOMAIN (moby vs terrain) differs. Those pixels are
-exactly where an authored offset (terrain W1/W2 tier offsets, moby
-m_DepthOffset pulls W4) flips a contact against geometry. The gate is clean
-when the scene tests true depth (P6b/P6e end state).
+exactly where an authored offset (terrain tier offsets, moby
+m_DepthOffset pulls) flips a contact against geometry. The gate is clean
+when the scene tests true depth with no authored offset in stored depth.
 
 Categories: terrain = WORLD(0) + WORLD_FILL(11); moby = ACTOR(1) + PLAYER(3).
 Transparent tris write no depth and are excluded. Depth encode:

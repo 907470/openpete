@@ -235,7 +235,7 @@ class Record:
 
     @property
     def phase_err_ns(self):
-        """Start-phase error (S1): how late the tick began against its grid
+        """Start-phase error: how late the tick began against its grid
         point. Signed — an early start is a different defect from a late one."""
         return self.exec_start_ns - self.deadline_ns
 

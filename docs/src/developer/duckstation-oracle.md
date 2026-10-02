@@ -504,9 +504,9 @@ stream request, environment and cyclorama pointers, the title sequence,
 fills or advances as sectors arrive. openpete lands a read instantly
 while the reference lands it over the load's VBLs, so both kinds differ
 for the duration of a level or streaming load and re-converge at its
-end. The Spyro 1 manifest's head comment lists the rows; the
-openpete-per-game-oracle plan (P6) charges the reference's VBLs on
-openpete's side and removes the main-image flags.
+end. The Spyro 1 manifest's head comment lists the rows. Charging the
+reference's load VBLs on openpete's side would let the main-image flags
+be removed.
 
 The verifier (`core/diag/psxtrace_verify.c`) tracks each transient
 region's divergence burst independently. A burst that re-converges is

@@ -1,6 +1,6 @@
 // core/include/openpete_psx.h — slim PSX runtime public API.
 //
-// Phase 1b: replaces psxrecomp's bundled (Tomba-shaped) runner with a
+// Replaces psxrecomp's bundled (Tomba-shaped) runner with a
 // minimal layer. We keep psxrecomp's CPUState definition (so generated
 // code stays compatible) but own boot/dispatch/memory/crash here.
 

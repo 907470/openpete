@@ -4,9 +4,9 @@
 # depth (authored OT shifts baked in) and TRUE view-Z geometry.
 # See scripts/moby_contact_gate.py for the model.
 #
-# Report-only, not a CTest gate: the baseline is nonzero while terrain W1/W2
-# offsets and moby m_DepthOffset pulls live in stored depth, so the number is
-# read against the P6b/P6e "goes clean" target rather than against zero.
+# Report-only, not a CTest gate: the baseline is nonzero while terrain tier
+# offsets and moby m_DepthOffset pulls live in stored depth, so a nonzero
+# number is expected and is not a failure.
 #
 # Usage: scripts/probe_moby_contact.sh [outdir]
 #   MAX_VIOL=<n>  fail (exit 2) if any pose exceeds n violation px (default:

@@ -1406,7 +1406,7 @@ static void tp_census_report(void)
                         tp_cat_name(c), cat_ids[c], (unsigned long long)cat_draws[c]);
     }
 
-    /* Q1: is any single identity drawn under more than one category? */
+    /* Is any single identity drawn under more than one category? */
     for (int i = 0; i < TP_CENSUS_SLOTS; i++) {
         tp_census_ent *e = &s_census[i];
         if (!e->key) continue;
@@ -1428,7 +1428,7 @@ static void tp_census_report(void)
     fprintf(stderr, "[texpack/census] identities drawn under >1 category: %d\n", multi_cat);
     fprintf(stderr, "[texpack/census] identities drawn under >1 tag:      %d\n", multi_tag);
 
-    /* Q2: CLUT fan-out — distinct palettes per texel box, and whether the
+    /* CLUT fan-out — distinct palettes per texel box, and whether the
      * variants of one box ever span categories. */
     int boxes = 0, worst = 0, fan_total = 0;
     for (int i = 0; i < TP_CENSUS_SLOTS; i++) {

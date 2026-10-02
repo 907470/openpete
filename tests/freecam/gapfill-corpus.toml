@@ -70,7 +70,7 @@ mode  = "full"
   min_px = 30000
 
 # gnorc_cove water plane (z=1088 LP grid over sparse HP): the fills that
-# shrink the user-reported water wedge must stay active.  (The residual
+# shrink the water wedge must stay active.  (The residual
 # small notch is a DIFFERENT, pre-existing fog-boundary class — see the
 # investigation doc.)
 [[case]]
@@ -82,7 +82,7 @@ mode  = "full"
   kind   = "ab-active"
   min_px = 8000
 
-# haunted_towers top-down pose pair (found in testing): under EXTENDED LOD the
+# haunted_towers top-down pose pair: under EXTENDED LOD the
 # stencil holefill used to paint each far sector's fully-fogged LP
 # silhouette wholesale (raw-lodThr distance gate), popping fog-coloured LP
 # fringes around the island edges once the camera crossed the fog band.
@@ -99,7 +99,7 @@ ab_env = "OPENPETE_TERRAIN_HOLEFILL"
   kind   = "ab-identical"
   max_px = 0
 
-# artisans outer-wall gap (found in testing, --lod extended only): the level-
+# artisans outer-wall gap (--lod extended only): the level-
 # boundary cliff LP (sectors 94/103) sits between HP territory and the
 # LP-only outer region; v3's wall rule dropped it (unbacked dmed 117-178)
 # leaving a cyclorama channel at the sector boundary.  v4 re-admits wall
@@ -120,7 +120,7 @@ mode  = "terrain"
   bbox   = [285, 180, 340, 300]
   max_px = 300
 
-# peace_keepers missing water quad (found in testing, extended-only visible): a
+# peace_keepers missing water quad (extended-only visible): a
 # 512x512 LP water quad over an authored ONE-CELL hole in the same
 # sector's HP mesh measures cov = 27/30 = 0.900 exactly -- knife-edge
 # rejected by the 0.9 gate, so under extended LOD (HP + gapfill-LP only)
@@ -150,7 +150,7 @@ mode  = "terrain"
 # is a native HP coverage deficit, not missing LP. Tracked as a renderer bug,
 # not a fill concern.
 
-# magic_crafters waterfall room (found in testing, 2026-07-09): the outside
+# magic_crafters waterfall room: the outside
 # waterfall sheet and the room's inner wall are back-to-back surfaces a
 # few world units apart -- under emit-all the sheet's BACK-face is
 # genuinely nearer and wins the true-Z depth test, punching blue patches
@@ -177,7 +177,7 @@ pin_env = { OPENPETE_TERRAIN_CACHE_FORCE = "1" }
   min_px = 3960
   bbox   = [520, 55, 639, 300]
 
-# Dragon-rescue cutscene (found in testing, 2026-07-10): the cutscene actors
+# Dragon-rescue cutscene: the cutscene actors
 # draw in FRONT of terrain (depth-isolated ACTOR pass, the HUD3D trick;
 # moby_native actor_front <- GS_Dragon + g_DragonCutscene.m_State 1..6).
 # Delvin's spread wing interpenetrates the town_square tower wall; true
@@ -185,7 +185,7 @@ pin_env = { OPENPETE_TERRAIN_CACHE_FORCE = "1" }
 # over the wall.  bk2 replay (not a freecam pose): the movie walks into
 # the rescue; frame 2621 is mid-wing-spread.  ON vs OFF must differ by
 # the clipped wing region (calibrated 2171 px at the live frame, 2210 px
-# after screenshots became reference-aligned 2026-07-10 -- ALL inside the
+# after screenshots became reference-aligned -- ALL inside the
 # bbox; the full-frame ON/OFF diff equals the bbox diff).
 # NOTE (moby OT-bias): the game's own m_DepthOffset OT pull (mirrored as a
 # 128-world-unit-per-slot depth bias, OPENPETE_MOBY_OTBIAS) now paints the wing
@@ -206,7 +206,7 @@ pin_env = { OPENPETE_MOBY_OTBIAS = "0" }
   min_px = 1000
   bbox   = [120, 150, 300, 260]
 
-# Delbin pedestal disc (user repro, 2026-07-17): the level authors cut an HP
+# Delbin pedestal disc: the level authors cut an HP
 # ground hole under the platform moby (og's OT order always covered it with the
 # disc), and the LP hole-fill used to read those pixels as uncovered and paint
 # the LP backing OVER the disc. Fixed structurally: ACTOR opaques stencil-MARK
@@ -248,7 +248,7 @@ pin_env = { OPENPETE_ACTOR_FRONT = "0" }
   min_px = 150
   bbox   = [205, 160, 250, 245]
 
-# Dragon-rescue front pass leak under --lod extended (found in testing, 2026-07-14):
+# Dragon-rescue front pass leak under --lod extended:
 # the actor front pass used to clear the WHOLE depth buffer, safe only while the
 # LOD cull kept the cutscene draw list free of distant level mobys.  Extended LOD
 # un-culls them (statues / chests / the level-end vortex + its critters), and the
@@ -276,8 +276,8 @@ ab_env = "OPENPETE_ACTOR_FRONT"
   max_px = 100
   bbox   = [60, 300, 340, 430]
 
-# Semi-transparent terrain unoccluded during a dragon-rescue cutscene (user
-# repro, 2026-08-15): the front pass used to clear depth over the cutscene
+# Semi-transparent terrain unoccluded during a dragon-rescue cutscene: the
+# front pass used to clear depth over the cutscene
 # actors' whole screen BBOX, and the ALPHA / ADDITIVE / SUBTRACT-WORLD groups
 # draw after it -- so every transparent face inside that rect tested wiped depth
 # and passed.  In Dream Weavers that painted additive terrain slabs buried

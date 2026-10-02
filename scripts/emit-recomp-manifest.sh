@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # emit-recomp-manifest.sh — snapshot the CONVERGED recomp inputs into
-# committed, ROM-hash-keyed metadata (distribution D2.1; plan
-# openpete-distribution-local-recomp).
+# committed, ROM-hash-keyed metadata.
 #
 # The multi-pass discovery in regen-recomp.sh exists to converge
 # forced-entry address lists. For a known ROM those lists are facts:

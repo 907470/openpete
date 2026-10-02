@@ -1,4 +1,4 @@
-/* crash-dummy — rung 6: deliberate segfault inside an override, so the
+/* crash-dummy — deliberate segfault inside an override, so the
  * crash handler's attribution line can be asserted. See mod.toml. */
 
 #include <openpete_mod_api.h>

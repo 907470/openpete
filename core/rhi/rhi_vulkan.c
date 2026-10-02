@@ -1,12 +1,11 @@
 /*
- * openpete RHI — Vulkan backend (milestone 1a).
+ * openpete RHI — Vulkan backend.
  *
  * Brings up an instance/device/swapchain, an offscreen color target the
- * size of the swapchain, and per-frame: clear the offscreen target via a
- * render pass, blit it onto the acquired swapchain image, present. This is
- * the standard Vulkan bringup; later milestones add the VRAM image,
- * pipelines, vertex buffers, descriptor sets, and readback behind the same
- * rhi.h seam.
+ * size of the swapchain, and per-frame: render into the offscreen target,
+ * blit it onto the acquired swapchain image, present. The VRAM image,
+ * pipelines, vertex buffers, descriptor sets, and readback sit behind the
+ * same rhi.h seam.
  *
  * Sync model: imageAvailable + inFlight fence per frame-in-flight;
  * renderFinished semaphore per swapchain image; an imagesInFlight fence
@@ -371,7 +370,7 @@ struct rhi_device {
     /* Offscreen color target (== swapchain extent). SSAA supersampling lives in
      * the renderer as a separate render target that resolves into this. */
     VkRenderPass   off_rp;
-    VkRenderPass   off_load_rp;   /* off_rp but color LOADs (SCENE postfx re-begin, S5) */
+    VkRenderPass   off_load_rp;   /* off_rp but color LOADs (SCENE postfx re-begin) */
     /* Render-to-texture pass: same attachment formats as off_rp (so off_rp-built
      * pipelines are compatible) but the color attachment ends in
      * SHADER_READ_ONLY_OPTIMAL so the result can be sampled the same frame. */
@@ -388,7 +387,7 @@ struct rhi_device {
     VkImageView    off_view;
     VkFramebuffer  off_fb;
 
-    /* Depth attachment for the offscreen target (3a.3 native-renderer depth):
+    /* Depth attachment for the offscreen target (native-renderer depth):
      * D32_SFLOAT, cleared to 1.0 each frame, store-discarded. Pipelines opt in
      * via rhi_pipeline_desc.depth_test; the 2D panels leave it off. */
     VkImage        off_depth_image;
@@ -480,7 +479,7 @@ struct rhi_device {
 
     float clear[4];
 
-    /* VRAM-sampler infrastructure (1b.2): one shared sampler + set layout +
+    /* VRAM-sampler infrastructure: one shared sampler + set layout +
      * pool; each rhi_texture owns a descriptor set allocated from the pool. */
     VkSampler             vram_sampler;
     VkSampler             linear_sampler;   /* LINEAR twin for HD replacement art */
@@ -527,7 +526,7 @@ struct rhi_device {
      * timestamps are BOTTOM_OF_PIPE: elapsed = previous work drained → this
      * zone's work drained, which attributes correctly on a serial queue and
      * degrades to an approximation where the GPU overlaps passes. */
-    /* S2 mod-shader extensions: 2-binding dynamic-UBO set layout (postfx
+    /* Mod-shader extensions: 2-binding dynamic-UBO set layout (postfx
      * set 3), per-frame-slot descriptor sets for sampling off_image (the
      * COMPOSITE postfx input — lazily (re)written when off_gen moves, i.e.
      * after every offscreen recreate), and the UBO offset alignment. */
@@ -6292,7 +6291,7 @@ int rhi_rebuild_pipelines(rhi_device *dev)
     return fails;
 }
 
-/* ---- rhi_ubo: fixed-size uniform blocks × frame ring (S2) ---------- */
+/* ---- rhi_ubo: fixed-size uniform blocks × frame ring --------------- */
 
 /* Generations per frame slot for a uniform block: a write to a block that a
  * draw in the same frame already bound moves to the next generation
@@ -6459,7 +6458,7 @@ void rhi_destroy_ubo(rhi_device *dev, rhi_ubo *ubo)
     free(ubo);
 }
 
-/* ---- offscreen-as-input: the COMPOSITE postfx point (S2) ----------- */
+/* ---- offscreen-as-input: the COMPOSITE postfx point ---------------- */
 
 void rhi_offscreen_to_sampled(rhi_device *dev)
 {

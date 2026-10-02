@@ -2875,7 +2875,7 @@ void psyq_CdRead(CPUState* cpu) {
     if (remaining > 0) {
         OPL_WARN_F("thunks", "CdReadSync left %d sectors unread", remaining);
     }
-    /* Level-segment asset overlay (rung 9): serve mod-supplied bytes over
+    /* Level-segment asset overlay: serve mod-supplied bytes over
      * the just-drained read BEFORE the game's loader parses them. Also
      * advances the tracked head position. */
     psyq_game_cd_apply_buf((uint8_t*)buf, sectors);

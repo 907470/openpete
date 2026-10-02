@@ -122,7 +122,7 @@ def main() -> int:
       "`ui->entry(` (widget entries) in `mods/*/src/*.c`. Pointer-stashing "
       "or macro indirection would undercount; none is known in-tree.")
     w("- A *caller* is a mod with at least one call. Probe mods count as "
-      "callers — the tail analysis in the plan discounts them by hand.")
+      "callers; a tail analysis discounts them by hand.")
     w("")
     w(f"## API struct entries ({len(api_entries)})")
     w("")

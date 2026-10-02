@@ -13,8 +13,7 @@
 #      that are not the raw window dimensions — the capture scales with the
 #      window (present-FBO readback) but its shape is content-derived,
 #      never the window's letterboxed shape. (Headless capture forces the
-#      PsyCross present, which no longer aspect-widens since the Phase-6
-#      --aspect substitution-stack retirement — so the recorded aspect is
+#      PsyCross present, which does not aspect-widen — so the recorded aspect is
 #      the PSX-derived present shape, not 21:9; the windowed native record
 #      DOES widen — 21:9 records 1120x448 on a real GPU.)
 #   3. --record-cfr: the opposite of run 1 — an exact NTSC rational rate, a
@@ -23,7 +22,7 @@
 #
 # Headless runs unpaced, so wall-clock duration reflects host speed, not
 # 30 fps — this test asserts frame *count* + codec + VFR structure, never
-# duration. See the plan's "headless VFR caveat".
+# duration.
 #
 # Usage:
 #   tests/harness/check_record.sh [--game SLUG] [--build-dir=build/linux-release]

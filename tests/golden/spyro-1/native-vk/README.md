@@ -1,4 +1,4 @@
-# Native `-vk` draw-tick golden (W1.2)
+# Native `-vk` draw-tick golden
 
 The golden of the `native_visual_regression` ctest
 (`tests/harness/check_native_visual.sh`): the native Vulkan renderer's output

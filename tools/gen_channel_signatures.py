@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """gen_channel_signatures.py — signature anchors for the determinism-critical
-render channels (hook-anchor plan step 2 / Tier-3 prep).
+render channels.
 
 A channel substitution site is normally anchored by its cached retail address.
 For a *non-retail* binary (a romhack, or a custom-compiled-from-source build)
@@ -25,7 +25,7 @@ caught.
 
 Scope is deliberately minimal: single-window
 signatures over determinism-critical sites, calibrated + verified on retail.
-Deploying them to actually relocate a romhack is Tier-3 (future).
+Nothing yet deploys them to relocate the sites in a romhack.
 """
 import argparse
 import bisect

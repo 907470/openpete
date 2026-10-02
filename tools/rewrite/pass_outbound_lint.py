@@ -17,7 +17,7 @@ Mitigations:
   - Flavor B — recomp outbound where the callee runs MIPS gp+offset.
     Boundary-copy shim materializing a g_ram scratch slot per call.
 
-Surfaced 2026-04-28 by the windows-mingw smoke gate hitting
+Surfaced by the windows-mingw smoke gate hitting
 ``CdIntToPos(i, &local_pos)`` from music.c / spu.c — stack-local
 ``CdlLOC`` ⇒ host_to_psx ⇒ 0 ⇒ NULL deref.
 """

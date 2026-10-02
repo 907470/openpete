@@ -204,7 +204,7 @@ fail=0
 ran=0        # a requested leg reached its launch
 engaged=0    # a leg ran with a balloon holding more than 0 MiB
 structural=0 # a leg skipped because this device cannot carry it
-pending=0    # a leg skipped because the mechanism it tests has not landed
+pending=0    # a leg skipped because the build lacks the mechanism it tests
 want() { [[ -z "$LEG" || "$LEG" == "$1" ]]; }
 
 # ---- probe: the device's memory table, and a census to read svc= from ------
@@ -263,7 +263,7 @@ if [[ "$sys_expected" != "$SYS_TYPES" ]]; then
     fail=1
 fi
 
-# The margin legs need P2's level-edge service point, which the census names.
+# The margin legs need the level-edge service point, which the census names.
 HAS_SVC=0
 grep -q '\[ter-gpu f=[0-9]*\].*svc=' "$OUT/probe.log" && HAS_SVC=1
 echo "[tercache-vram] probe: barHeap=${BAR_HEAP:-none} barType=${BAR_TYPE:-none}" \
@@ -371,7 +371,7 @@ fi
 if want edge-margin; then
     ran=1
     if [[ "$HAS_SVC" -eq 0 ]]; then
-        echo "[tercache-vram] leg=edge-margin SKIP (P2/P3 not landed: the census carries no svc=)"
+        echo "[tercache-vram] leg=edge-margin SKIP (no level-edge service point: the census carries no svc=)"
         pending=1
     elif [[ -z "$BAR_HEAP" ]]; then
         echo "[tercache-vram] leg=edge-margin SKIP (no DEVICE_LOCAL host-visible type on this device)"
@@ -405,7 +405,7 @@ fi
 if want overflow-margin; then
     ran=1
     if [[ "$HAS_SVC" -eq 0 ]]; then
-        echo "[tercache-vram] leg=overflow-margin SKIP (P2/P3 not landed: the census carries no svc=)"
+        echo "[tercache-vram] leg=overflow-margin SKIP (no level-edge service point: the census carries no svc=)"
         pending=1
     elif [[ -z "$BAR_HEAP" ]]; then
         echo "[tercache-vram] leg=overflow-margin SKIP (no DEVICE_LOCAL host-visible type on this device)"
@@ -451,7 +451,7 @@ fi
 
 # A verdict is earned by a leg that ran with a balloon holding memory. A leg
 # that skipped because this device carries no such heap or type, or because
-# the mechanism it tests has not landed, leaves the run with nothing measured:
+# the build lacks the mechanism it tests, leaves the run with nothing measured:
 # that is SKIP, never PASS. A leg that skipped on a device that does carry
 # what it needs is a defect in the parse above, which the self-check already
 # turned into a FAIL.

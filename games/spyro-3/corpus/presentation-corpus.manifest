@@ -14,7 +14,7 @@
 # intermediate sample covers the transition's start; 2700 covers it 50 VBLs
 # further in, where the canonical frame no longer moves between ticks.
 # 1666: Bianca's trail effect blends toward dark where the PSX blends toward
-# light (user report 2026-09-20); blessed pre-fix.
+# light; blessed pre-fix.
 sunrise-spring-sunny-villa-portal-entry|1500|100||1500,1666,2560,2700
 
 # sunrise-spring-surface-swim arms the player draw's water-plane split.
@@ -38,9 +38,9 @@ sunrise-spring-surface-swim|1900|150||1900,2000,2200
 # it: 5011 to 7167 pixels of the frame move when the reflection is suppressed,
 # against 588 to 1421 on the grid samples after 2025.
 icy-peak-reflective-mirror|1900|150||1900,1921,1950,1961,2000,2001
-# icy-peak-reflective-mirror@1856: the same movie at the tick the user reports
+# icy-peak-reflective-mirror@1856: the same movie at the tick that shows
 # Spyro's reflection on the ice (VBL 1856), before the row above starts; the
-# player colour-block swap (P11t.10) is measured here.
+# player colour-block swap is measured here.
 icy-peak-reflective-mirror@1856|1856|600||1856
 # icy-peak-reflective-mirror@1864: the same movie where the player shadow fan,
 # cast onto the reflective floor's plane, lands on the ice ramp that stands

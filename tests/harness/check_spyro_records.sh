@@ -75,7 +75,7 @@ rm -rf "$OUT/mods/spyro-coop/.build"
 
 # One headless run. $1 case, $2 leg (canon|inter), $3 bk2-or-level, $4 players,
 # $5 frame. Log to $OUT/<case>-<leg>.log. Headless native (the hooks) comes up
-# only when a capture is requested (native_render.c W1.1), so every leg names one.
+# only when a capture is requested (native_render.c), so every leg names one.
 run_leg() {
   local name=$1 leg=$2 src=$3 players=$4 frame=$5 extra=${6:-}
   local log="$OUT/$name-$leg.log"
@@ -172,7 +172,7 @@ while IFS='|' read -r name src players frame em es ef pairs note extra; do
 done < "$CORPUS"
 
 if [[ $cases -eq 0 ]]; then echo "[spyro-records] SKIP: no case matched '$FILTER'"; exit 64; fi
-[[ $recroll -eq 0 ]] && echo "[spyro-records] VACUOUS: store-clock record-only arm not reached by any case (roll_records=0 everywhere; covered by the injected-state probe, see the plan)"
+[[ $recroll -eq 0 ]] && echo "[spyro-records] VACUOUS: store-clock record-only arm not reached by any case (roll_records=0 everywhere; covered by the injected-state probe)"
 if [[ $fail -ne 0 ]]; then echo "[spyro-records] FAIL ($cases case(s); logs in $OUT)"; exit 1; fi
 if [[ $engaged -eq 0 ]]; then echo "[spyro-records] VACUOUS: no case reported >= 2 model calls on its canonical tick"; exit 64; fi
 echo "[spyro-records] PASS: $cases case(s)"

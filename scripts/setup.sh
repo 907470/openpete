@@ -4,7 +4,7 @@
 # Runs three checks before allowing the project to build:
 #   1. Disc image exists at the expected location and matches the known SHA256.
 #   2. Each game's matching-decomp submodule has been built at least once
-#      (psx.map produced) — psx.map drives the recompiler manifest in Phase 1a.
+#      (psx.map produced) — psx.map drives the recompiler manifest.
 #   3. Submodules are initialized.
 #
 # The PSYQ SDK is a user-supplied developer prerequisite: it is Sony

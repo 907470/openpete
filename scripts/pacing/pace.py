@@ -255,12 +255,12 @@ def cmd_summary(a):
 
     s1 = [r.phase_err_ns for r in kept]
     starts = [r.exec_start_ns for r in kept]
-    # S2, interval error: successive starts against the nominal period. A run
+    # Interval error: successive starts against the nominal period. A run
     # can hold a perfect average interval while every individual one is wrong,
-    # so this is not implied by S1.
+    # so this is not implied by the phase error.
     s2 = [b - a_ - nominal_vbl_ns(log) for a_, b in zip(starts, starts[1:])]
 
-    for name, vals in (("S1 phase error", s1), ("S2 interval error", s2)):
+    for name, vals in (("phase error", s1), ("interval error", s2)):
         if not vals:
             continue
         rsig, p99, mx = ps.triple(vals)
@@ -458,7 +458,7 @@ def cmd_drift(a):
           + (f"; {recovery} VBL dropped at segment edges (clamp approach + recovery)" if recovery
              else "") + ")")
     # What the frequency error costs over a real session, which is the form
-    # that matters: this plan's deliverable is that RTA and tick time agree.
+    # that matters: the pacer exists so that RTA and tick time agree.
     err_2h = ppm * 1e-6 * 7200
     print(f"executed period: {slope/1e6:.6f} ms vs nominal "
           f"{nominal/1e6:.6f} ms over {span_s:.1f}s")
@@ -479,7 +479,7 @@ def cmd_drift(a):
     # loose, and only an interval straddling the gate is unresolved.
     lo_mag, hi_mag = abs(ppm) - 2 * se, abs(ppm) + 2 * se
 
-    # C1, host-clock honesty. Everything above measures the grid against
+    # Host-clock honesty. Everything above measures the grid against
     # op_now; this measures op_now itself against a disciplined wall clock.
     # A TSC calibrated dozens of ppm off is invisible to every
     # self-measurement, and at 50 ppm a two-hour run is ~0.36 s from true
@@ -503,17 +503,17 @@ def cmd_drift(a):
         # clock against itself — a guaranteed +0.00 ppm that reads as a clean
         # bill of health. Report the coupling, not the zero.
         if spread < 1000:
-            print(f"host clock (C1): VACUOUS on this platform — the two "
+            print(f"host clock: VACUOUS on this platform — the two "
                   f"sources track to {spread}ns over {c_span:.0f}s, so they "
                   f"are not independent and no oscillator error can be seen. "
                   f"Needs a genuinely external reference.")
         else:
-            print(f"host clock (C1): monotonic vs wall {c_ppm:+.2f} +/- "
+            print(f"host clock: monotonic vs wall {c_ppm:+.2f} +/- "
                   f"{c_se:.2f} ppm over {c_span:.0f}s "
                   f"({c_ppm*1e-6*7200:+.3f} s per 2 hours) "
                   f"[UNCALIBRATED — no injector proves this column yet]")
     else:
-        print(f"host clock (C1): {len(cs)} sample(s) — need a longer run "
+        print(f"host clock: {len(cs)} sample(s) — need a longer run "
               f"(one per 10 s)")
 
     hits = ps.cusum([r.phase_err_ns for r in kept])
@@ -534,7 +534,7 @@ def cmd_drift(a):
         # statistic resolves ARBITRARILY small shifts given enough samples —
         # it flagged a 1.7 us wander across 3296 VBLs — but a re-anchor
         # abandons the grid, so its step is a pacing-scale event. A shift
-        # below the plan's own phase goal is not one.
+        # below the phase goal (--step-floor-us) is not one.
         before = ps.median([r.phase_err_ns for r in kept[max(0, i - 200):i]])
         after = ps.median([r.phase_err_ns for r in kept[i:i + 200]])
         shift = abs(after - before)
@@ -1258,8 +1258,8 @@ def input_regime(log):
 def wall_to_mono(log):
     """Least-squares wall -> op_now conversion from the log's CLOCKSAMPLE pairs.
 
-    Note the asymmetry with C1: for the honesty audit these two sources being
-    the same underlying clock makes the estimate vacuous, and on Windows they
+    Note the asymmetry with the host-clock check: for that audit these two
+    sources being the same underlying clock makes the estimate vacuous, and on Windows they
     are. For converting an injector's timestamps into the log's timebase that
     same coupling is exactly what is wanted, and the conversion is near-exact."""
     cs = log.of(pacelog.CLOCKSAMPLE)
@@ -1295,7 +1295,7 @@ def report_injection(log, a, period, yielded, seqs, edges):
     meta = lines[0]
     pulses = [p for p in lines[1:] if not p.get("skipped")]
 
-    print(f"\nTier B injection: {meta['injector']} on {meta['platform']}, "
+    print(f"\nexternal injection: {meta['injector']} on {meta['platform']}, "
           f"{len(pulses)}/{meta['count']} pulse(s) injected, bit "
           f"0x{meta['pad_bit']:04x}, hold {meta['hold_us']/1000:.1f} ms")
 
@@ -1371,7 +1371,7 @@ def report_injection(log, a, period, yielded, seqs, edges):
     print(f"  {got} matched, {len(missed)} unaccounted")
     if got < 0.9 * len(pulses):
         print(f"REFUSED: only {100.0*got/max(1,len(pulses)):.0f}% of injected "
-              f"presses reached the game. Tier B fails by DELIVERING LESS, so "
+              f"presses reached the game. Injection fails by DELIVERING LESS, so "
               f"a statistic over what arrived would describe a biased sample. "
               f"Check focus, elevation (UIPI blocks a non-elevated injector "
               f"against an elevated window), and that the scancode is bound.",
@@ -1382,13 +1382,13 @@ def report_injection(log, a, period, yielded, seqs, edges):
     e2e = [v.exec_start_ns - t for t, _ed, v in matched]
     print(f"  OS + pump (inject -> publish): p50 {us(ps.percentile(pump,50))} "
           f"p99 {us(ps.percentile(pump,99))} max {us(max(pump))}")
-    print("    the share no in-process source can see; it is why Tier A may "
-          "not print an end-to-end number.")
+    print("    the share no in-process source can see; it is why the pulse "
+          "sweep may not print an end-to-end number.")
     print(f"  end to end (inject -> consuming VBL start): "
           f"p50 {us(ps.percentile(e2e,50))} p99 {us(ps.percentile(e2e,99))} "
           f"max {us(max(e2e))}")
 
-    # ---- I2: the latch window, as a pivot.
+    # ---- The latch window, as a pivot.
     #
     # For each injection, which VBL consumed it, counted from the VBL whose
     # grid period the injection landed in. Early phases should be consumed by
@@ -1485,7 +1485,7 @@ def report_injection(log, a, period, yielded, seqs, edges):
               f"by the same VBL (+{offsets[0]}), and the only mixed bin(s) are "
               f"at " + ", ".join(f"{p:.2f}" for p, _ in mixed) + ". The window "
               f"edge coincides with the grid point itself — which is the fixed "
-              f"window this plan claims: arrival phase does not decide which "
+              f"window the pacer claims: arrival phase does not decide which "
               f"VBL sees the press.")
     elif len(offsets) == 1:
         print(f"    every phase consumed by +{offsets[0]} with no mixed bin. "
@@ -1497,8 +1497,8 @@ def report_injection(log, a, period, yielded, seqs, edges):
               f"not a function of arrival phase alone, which is what a "
               f"VARIABLE input window looks like.")
     print(f"    the edge must sit at the same phase under load; a moving edge "
-          f"is a variable input window, which is the thing this plan exists to "
-          f"rule out.")
+          f"is a variable input window, which the fixed input window rules "
+          f"out.")
     return 0
 
 
@@ -1523,7 +1523,7 @@ def cmd_input(a):
 
     period = nominal_vbl_ns(log)
 
-    # ---- I1 and staleness, over VBLs that actually consumed a host sample.
+    # ---- Latch phase and staleness, over VBLs that actually consumed a host sample.
     consumed = [r for r in kept if r.consumed_input]
     claimed = sum(1 for r in kept if r.latched_seq == pacelog.LATCH_CLAIMED)
     nolatch = sum(1 for r in kept if r.latched_seq == pacelog.LATCH_NONE)
@@ -1542,7 +1542,7 @@ def cmd_input(a):
 
     i1 = [r.latch_ns - r.deadline_ns for r in consumed]
     stale = [r.exec_start_ns - r.latch_ns for r in consumed]
-    for name, vals in (("I1 latch phase (latch - deadline)", i1),
+    for name, vals in (("latch phase (latch - deadline)", i1),
                        ("publish staleness (exec_start - latch)", stale)):
         rsig, p99, mx = ps.triple(vals)
         print(f"{name}: robust sigma {us(rsig)}  p50 {us(ps.percentile(vals,50))} "
@@ -1671,7 +1671,7 @@ def cmd_input(a):
           "it is not in this number, and an external injector is the only "
           "thing that can see it.")
 
-    # ---- Tier A sweep: did every injected pulse reach a VBL?
+    # ---- Pulse sweep: did every in-process injected pulse reach a VBL?
     #
     # Deliberately reported as plumbing validation, not as an input-latency
     # result. This source lives inside the process, downstream of everything
@@ -1690,7 +1690,7 @@ def cmd_input(a):
                    and not (ed.edge_bits & pulse_bit)]
         got = sum(1 for ed, _v in consumed_edges
                   if (ed.edge_delta & pulse_bit) and not (ed.edge_bits & pulse_bit))
-        print(f"Tier A sweep (bit 0x{pulse_bit:04x}, {pulse_n} scheduled): "
+        print(f"pulse sweep (bit 0x{pulse_bit:04x}, {pulse_n} scheduled): "
               f"{len(presses)} press(es) published, {got} consumed")
         if not presses:
             print("VACUOUS: the pulse source was configured but published no "
@@ -1735,7 +1735,7 @@ def cmd_input(a):
               "hold.")
 
 
-    # ---- Tier B: external injection, the only end-to-end measurement here.
+    # ---- External injection, the only end-to-end measurement here.
     if a.inject:
         rc = report_injection(log, a, period, yielded, seqs, edges)
         if rc:
@@ -1786,7 +1786,7 @@ def cmd_input(a):
         print("  A flat histogram means edges arrive at uniformly random "
               "phases; it is NOT a latency result on its own. The latch-window "
               "edge shows as a step in WHICH VBL consumes each phase, which "
-              "needs an injector driving known phases (M5 Tier B).")
+              "needs an injector driving known phases (inject_input.py).")
     return 0
 
 
@@ -1824,7 +1824,7 @@ def main():
                         "moves with their count, and gates that flap teach "
                         "people to ignore them")
     p.add_argument("--p99-us", type=float, default=250.0,
-                   help="p99 phase-error goal in us (default 250, the plan's)")
+                   help="p99 phase-error goal in us (default 250)")
     p.add_argument("--window", type=float, default=1.0)
 
     p = add("drift", cmd_drift, "frequency error + undeclared re-anchors")
@@ -1853,7 +1853,7 @@ def main():
     p = add("input", cmd_input,
             "input latch phase, pad-read phase, edge mapping")
     p.add_argument("--inject", type=Path,
-                   help="sidecar written by inject_input.py (M5 Tier B): the "
+                   help="sidecar written by inject_input.py: the "
                         "only input that can measure the OS and pump time "
                         "ahead of the publish instant, and the only one that "
                         "can drive a known arrival phase")

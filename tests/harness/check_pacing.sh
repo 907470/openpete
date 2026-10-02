@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_pacing.sh — the standing pacing gate (M9).
+# check_pacing.sh — the standing pacing gate.
 #
 # Proves two things about the sim clock, in order:
 #
@@ -12,10 +12,10 @@
 #      this leg the gate would pass on a machine fast enough never to exercise
 #      the mechanism, which is a green that proves nothing.
 #
-#   3. That it holds its grid IN A LEVEL, not only on the attract demo. Every
-#      leg of this gate was the attract demo until 2026-08-27, and the shipped
-#      default was missing the 250 us goal in an actual level the whole time
-#      (+107.7 us attract, +301.0 us in twilight_harbor, same build and GPU).
+#   3. That it holds its grid IN A LEVEL, not only on the attract demo. A
+#      default can meet the 250 us goal on the attract demo and miss it in a
+#      level (+107.7 us attract, +301.0 us in twilight_harbor, same build and
+#      GPU).
 #      Present CPU cost is ~2x heavier in a level and the shed predicate's
 #      bound was a centre estimate, so a fifth of presents overran it.
 #   4. Optionally (--tier-b), that a press entering the OS reaches the tick it
@@ -177,7 +177,7 @@ summary_rc=$?
 python3 scripts/pacing/pace.py drift "$OUT/gate-grid.pacelog"
 drift_rc=$?
 
-# ---- Tier B: does a press entering the OS reach the tick it should? --------
+# ---- --tier-b: does a press entering the OS reach the tick it should? ------
 #
 # Everything above measures the clock against itself. This measures it against
 # something outside the process, which is the only way to see the OS and pump

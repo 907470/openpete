@@ -697,7 +697,7 @@ void openpete_native_set_display_rect(int x, int y, int w, int h);
  * @param h Height in VRAM pixels. */
 void openpete_native_set_draw_clip(int x, int y, int w, int h);
 
-/* ---- native 3D scene (Phase 2: cyclorama/sky from gamestate) --------
+/* ---- native 3D scene (cyclorama/sky and world from gamestate) -------
  *
  * The game-specific layer (games/<game>/) re-derives 3D geometry from
  * gamestate in float and pushes screen-space triangles here; core draws
@@ -710,7 +710,7 @@ void openpete_native_set_draw_clip(int x, int y, int w, int h);
  * Determinism-safe: this is host-side display state only; the game's push
  * reads gamestate but writes nothing PSX-readable. Inert unless the native
  * path is live. */
-/* z is the ORDERING view-Z the native depth buffer is written from (3a.3):
+/* z is the ORDERING view-Z the native depth buffer is written from:
  * full-world view-Z, >= 1 (see openpete_native_scene_viewz). Actors map their
  * view-space Z through openpete_native_scene_viewz; the cyclorama/sky passes
  * OPENPETE_DEPTH_VIEWZ_FAR (always the backdrop); screen-space 2D content
@@ -733,7 +733,7 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; float pvz; } openpe
 /* A scene triangle. When `textured` is 0 it is gouraud-shaded from the vertex
  * rgba (the cyclorama, and untextured moby faces). When 1, it samples the PSX
  * VRAM mirror via the material below (tpage/CLUT/bpp in VRAM-pixel units, exactly
- * the GTE/GPU encoding) and modulates by rgba (tex*colour/128). 3a.3.
+ * the GTE/GPU encoding) and modulates by rgba (tex*colour/128).
  * A textured tri's vertex ALPHA byte is not a blend alpha. 0xFF, which every
  * feeder but the moby walk states, draws the tri's CLUT row alone. A value
  * with a high nibble h below 15 and a nonzero low nibble q, constant over the
@@ -741,8 +741,8 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; float pvz; } openpe
  * h - 7 rows from clut_y draws (the moby fog band between two ticks;
  * psx_scene.frag clut_fog_mix). */
 /* blend: 0 = opaque; 1 = PSX semi-transparent ABR mode 0 ((B+F)/2) -> alpha blend;
- * 2 = ABR mode 1 (B+F) -> additive blend (3b.1, flame/glows: src ONE + dst ONE);
- * 3 = ABR mode 2 (B-F) -> subtractive blend (3b.2, shadows: reverse-subtract,
+ * 2 = ABR mode 1 (B+F) -> additive blend (flame/glows: src ONE + dst ONE);
+ * 3 = ABR mode 2 (B-F) -> subtractive blend (shadows: reverse-subtract,
  * src ONE + dst ONE — the shadow colour darkens the framebuffer). All
  * transparent classes are depth_write_off (test vs opaque, never occlude
  * another transparent layer). ABR mode 3 (B+F/4) + back-to-front sort are still
@@ -823,7 +823,7 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; float pvz; } openpe
  * it per-pixel the way a shared Z-buffer otherwise would). Untextured only;
  * self-occlusion comes from the feeder's own far→near painter sort. */
 #define OPENPETE_SCENE_PORTAL_CYCLORAMA 7
-/* PORTAL_MASK — the stencil aperture mask for a portal-sky group (W2.6). The
+/* PORTAL_MASK — the stencil aperture mask for a portal-sky group. The
  * portal feeder emits each portal's sky FOOTPRINT again under this category
  * (same geometry+z, colour irrelevant): core rasterizes it through an
  * invisible (colour-write-off) depth-TESTED stencil-MARK pass, so the mask is
@@ -834,7 +834,7 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; float pvz; } openpe
  * portals are isolated from each other per group (rhi_clear_stencil between
  * groups; groups drawn far→near by their plane depth). Untextured only. */
 #define OPENPETE_SCENE_PORTAL_MASK 8
-/* PORTAL_GUARD — near-band terrain PROTECTION (the PSX mask bit, 2026-07-03).
+/* PORTAL_GUARD — near-band terrain PROTECTION (the PSX mask bit).
  * The .s drains deferred terrain (depthSum < 0x2000 = mean world vz < 8192,
  * minus word3&0x80 faces) via immediate DrawPrim, which the PSX renders with
  * the mask bit SET; every OT prim — including the portal sky — draws with
@@ -848,17 +848,17 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; float pvz; } openpe
 #define OPENPETE_SCENE_PORTAL_GUARD 9
 /* SKY — the main cyclorama dome (cyclorama.c). Drawn exactly like WORLD
  * (opaque, depth-tested, before everything else) EXCEPT it does not stencil-MARK
- * terrain coverage (W2.6-c): the WORLD group's mark defines "pixels real world
+ * terrain coverage: the WORLD group's mark defines "pixels real world
  * geometry covered", and the hole-fill LP backing (WORLD_FILL) paints only where
  * that mark is absent — which is precisely where the sky shows through a terrain
  * seam. If the dome marked, every hole would be self-masked and the fill dead. */
 #define OPENPETE_SCENE_SKY 10
 /* WORLD_FILL — the terrain LP backing layer for sectors whose HP is drawn
- * (W2.6-c hole-fill). The PSX draws the coarse LP list first and the fine HP
+ * (hole-fill). The PSX draws the coarse LP list first and the fine HP
  * over it, so LP shows through wherever HP leaves a T-junction seam against an
  * LP-only neighbour (the artisans distant-water gaps). Natively, drawing LP
  * behind HP with a depth bias poked through on non-flat sectors (the coarse
- * mesh bulges in front of the fine one — tried and reverted 2026-06-26).
+ * mesh bulges in front of the fine one).
  * Instead the WORLD group stencil-MARKs its coverage and this layer draws right
  * after it with RHI_STENCIL_TEST_ZERO: it can only touch pixels NO world
  * geometry covered, so poke-through is impossible by construction and every
@@ -895,7 +895,7 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; float pvz; } openpe
  * heuristic). */
 #define OPENPETE_SCENE_ACTOR_FRONT 13
 /* TERRAIN_KEY: RETIRED (number reserved — do not reuse). Formerly the
- * portal-aperture og-key fan (P6c): the sky bucket's key rastered into the
+ * portal-aperture og-key fan: the sky bucket's key rastered into the
  * HP key image to discard og-covered terrain, plus the WORLD_FILL stencil
  * pre-mark. Replaced by the plane-cover rule: the aperture mask and preview
  * colours test at opening plane − margin, covering everything behind it per
@@ -915,7 +915,7 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; float pvz; } openpe
  * exclusively through the add_tri arguments and lives on the renderer's
  * internal stored tri (native_render.c). A feeder that tries to write
  * `tri.category = …` gets a compile error instead of a silently-ignored
- * field (W0.7b). */
+ * field. */
 typedef struct {
     openpete_scene_vert v[3];
     int textured;
@@ -968,7 +968,7 @@ typedef struct {
 #define OPENPETE_SCENE_RANK_PROP  (-1.25f)
 #define OPENPETE_SCENE_RANK_AURA  (-2.0f)
 
-/* ---- scene view-Z: the ONE named point (W0.7b) ------------------------------
+/* ---- scene view-Z: the ONE named point ------------------------------------
  *
  * The scene vertex stream carries depth as FULL-WORLD view-space Z (the GTE
  * MAC3 of full-world camera-relative coords; larger = farther, 1.0 == one GTE
@@ -1120,7 +1120,7 @@ static inline float openpete_native_scene_viewz(openpete_worldvz z) {
  * the game passes it here each frame (display-only; never written back to PSX RAM).
  * `cam_col0..2` are 4096²·C⁻¹ rows (pushed numerical inverse — the Spyro camera
  * matrix is NOT orthonormal); the inverse recovers V = C⁻¹·MAC with the Spyro GTE
- * swizzle V=(-Δy,-Δz,Δx). AXIS NOTE (2026-07-02): Spyro's VERTICAL world axis is
+ * swizzle V=(-Δy,-Δz,Δx). AXIS NOTE: Spyro's VERTICAL world axis is
  * the **z field** — V1 carries -Δz, so world height = cam_pos_up − V1 (cam_col1).
  * The original decal tested cam_pos_y − V0, i.e. HORIZONTAL-Y proximity, which
  * rejected walls incidentally and left the wall-base notch. `ofx/ofy/h` are the
@@ -1428,7 +1428,7 @@ void openpete_native_scene_set_key_fold(const float kn[12]);
  * order when the feed emits no triangle of its own. */
 void openpete_native_scene_mark_terrain_feed(void);
 
-/* ── Provenance tag (mod-shaders S6) ─────────────────────────────────
+/* ── Provenance tag ──────────────────────────────────────────────────────
  * Sticky per-tri provenance stamped by add_tri until changed (same
  * ambient-state pattern as the terrain feeder's s_emit_* context; set
  * 0 when leaving a tagged emit loop). Carries what the material key
@@ -1440,31 +1440,31 @@ void openpete_native_scene_mark_terrain_feed(void);
  *   terrain:    bit 27 env-anim member (func_8002A6FC rewrite set),
  *               bit 26 LP tier, bits 8:0 sector id; textured faces add
  *               the Tiledef/texture-record id in [15:9] (word2 & 0x7F —
- *               the texture-selector key, S9) and a per-present material
+ *               the texture-selector key) and a per-present material
  *               slot in [24:16] (texture-keyed per-instance resolve)
  *
  * INERT BY DEFAULT: the tag joins the material sort/coalesce key ONLY
- * when a split consumer is armed (a registered material selector — S8 —
- * or the OPENPETE_TAG_SPLIT=1 dev flag), so the ~70-draw batching is
+ * when a split consumer is armed (a registered material selector or
+ * the OPENPETE_TAG_SPLIT=1 dev flag), so the ~70-draw batching is
  * byte-identical without mods. OPENPETE_TAG_TINT=1 tints vertex colours
  * by tag hash (visual coverage instrument, no split needed). */
 #define OPENPETE_TAG_MOBY(cls) \
     (0x10000000u | ((uint32_t)(cls) & 0xFFFFu))
-/* moby + a per-instance material slot (S8b) in the spare bits [27:16];
+/* moby + a per-instance material slot in the spare bits [27:16];
  * slot 0 == OPENPETE_TAG_MOBY (declarative / no per-instance winner). */
 #define OPENPETE_TAG_MOBY_SLOT(cls, slot) \
     (0x10000000u | (((uint32_t)(slot) & 0xFFFu) << 16) | ((uint32_t)(cls) & 0xFFFFu))
 #define OPENPETE_TAG_TERRAIN(lp, env, sec) \
     (0x20000000u | ((env) ? 0x08000000u : 0u) | ((lp) ? 0x04000000u : 0u) | \
      ((uint32_t)(sec) & 0x1FFu))
-/* Textured terrain face (S9): [15:9] = the face's Tiledef/texture-record id
+/* Textured terrain face: [15:9] = the face's Tiledef/texture-record id
  * (word2 & 0x7F — the id texture selectors key on), [24:16] = the
  * per-present material slot from the texture-keyed per-instance resolve
  * (0 = declarative resolve, 0x1FF = the callback declined -> stock). */
 #define OPENPETE_TAG_TERRAIN_TEX(lp, env, sec, tex, slot) \
     (OPENPETE_TAG_TERRAIN(lp, env, sec) | \
      (((uint32_t)(slot) & 0x1FFu) << 16) | (((uint32_t)(tex) & 0x7Fu) << 9))
-/* Untextured terrain band (S8c): bit 25 marks the flat/gouraud tris, and
+/* Untextured terrain band: bit 25 marks the flat/gouraud tris, and
  * [24:16] carries the per-extraction material slot (0 = declarative resolve,
  * 0x1FF = the callback declined -> stock). */
 #define OPENPETE_TAG_TERRAIN_UNTEX(lp, env, sec, slot) \

@@ -1,5 +1,4 @@
-// games/spyro-1/recomp_attach_shared.c — shared-linkage module attach
-// (distribution D1; plan openpete-distribution-local-recomp).
+// games/spyro-1/recomp_attach_shared.c — shared-linkage module attach.
 //
 // The ROM-derived code lives in spyro1-recomp.{so,dll}, built from the
 // same sources as the static OBJECT library. This TU is the host half
@@ -12,8 +11,8 @@
 //   3. Resolve the host->module forwarders below.
 //
 // FORWARDERS: native feature code calls a small set of recompiled
-// leaves directly (sub-tick re-extraction replays render functions —
-// see the plan's D0-spike results). In the static build those names
+// leaves directly (sub-tick re-extraction replays render functions).
+// In the static build those names
 // resolve at link; here each is a forwarder through a pointer filled
 // at attach. The list is SELF-ENFORCING: a feature referencing a new
 // func_* compiles in static mode but fails THIS build's exe link with
@@ -191,7 +190,7 @@ int spyro1_recomp_attach(const char* module_path_override,
     if (!desc && allow_build && disc_path) {
         /* Either first boot, or an upgrade left a module this build
          * cannot use. Both are the same job — recompile from the disc
-         * (extract -> recomp -> compile -> link; D2.4) — and both are
+         * (extract -> recomp -> compile -> link) — and both are
          * recoverable without the user doing anything, so say what is
          * happening rather than failing at them.
          *

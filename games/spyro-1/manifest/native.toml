@@ -78,8 +78,7 @@ file = "src/checkpoint.c"
 # with PSX.EXE_full.c's recompiled `func_80037E98`, so native_renames.h
 # rewrites the source to `spyro_native_func_80037E98` and Pass 6's
 # auto-discovered [[dispatch]] entry routes the PSX addr to the renamed
-# body. End-to-end test of a path that's been plumbed since Phase 2 but
-# never had a real native func_* body to validate against.
+# body. End-to-end test of that path with a real native func_* body.
 [[native_source]]
 file = "src/moby_interpolation_check.c"
 
@@ -175,7 +174,7 @@ file = "src/moby_helpers.c"
 
 # initialization.c + completion.c — re-enable currently held.
 #
-# Speculative re-enable on top of Phase 4 prep + VSync outbound_psyq
+# A speculative re-enable with VSync outbound_psyq
 # routing reaches further into Initialize than before — boots through
 # the 5 CDLoadSync calls (titlescreen → universal logo) and ~210
 # frames of VSync wait, then hangs silently somewhere in the

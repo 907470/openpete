@@ -1,6 +1,6 @@
 #version 450
 
-/* Milestone 1b.2 — PSX VRAM sampler, vertex stage.
+/* PSX VRAM sampler, vertex stage.
  *
  * Passthrough of the fixed native vertex layout (position / uv / color).
  * UVs are in TEXEL units within the texture page (0..w, 0..h) — the PSX

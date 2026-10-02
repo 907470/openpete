@@ -36,7 +36,7 @@ enum {
     OPP_REC_SPAN    = 3,  /* fixed 32                                           */
     OPP_REC_GPUZ    = 4,  /* fixed 32                                           */
     OPP_REC_COUNT   = 5,  /* fixed 32                                           */
-    OPP_REC_FUNC    = 6,  /* fixed 32: per-function aggregate (Tier B)          */
+    OPP_REC_FUNC    = 6,  /* fixed 32: per-function aggregate (func trace)      */
 };
 #define OPP_REC_SIZE   32
 #define OPP_REC_TID    28   /* u8 thread index, same offset in every fixed record */
@@ -397,7 +397,7 @@ void op_prof_gpu_zone(int name_id, int depth, uint64_t frame_serial,
     chunk_put(t, r, sizeof(r));
 }
 
-/* ---- per-function aggregate (Tier B) --------------------------------------- */
+/* ---- per-function aggregate (function-trace builds) ------------------------ */
 void op_prof_func(int name_id, uint32_t addr, uint64_t calls,
                   uint64_t self_us, uint64_t total_us) {
     if (!s_on || name_id < 0) return;

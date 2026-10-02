@@ -6,7 +6,7 @@ convention packs struct args / returns differently from PSYQ MIPS, and
 post-Pass-1 the host-laid struct is PSX-laid in memory but the call
 site still has to marshal those bytes through a0..a3 / stack slots.
 
-The plan's full rewrite for this case is to allocate a g_ram scratch
+The full rewrite for this case is to allocate a g_ram scratch
 slot, memcpy the host struct into it, and pass the PSX vaddr in
 ``cpu->aN`` instead — symmetric for return values. That's a real chunk
 of work and only worth landing once a real call site needs it.

@@ -72,7 +72,7 @@ def summarize(path, skip_ticks=0, label=None, transient_ms=40):
         "funcs": [],
     }
 
-    # ---- per-function aggregate (Tier B, present only in FUNC_TRACE builds) --
+    # ---- per-function aggregate (present only in FUNC_TRACE builds) --------
     ncanon_ticks = len(set(p.canon_tick for p in presents if p.kind == KIND_CANONICAL)) or 1
     for fn in sorted(funcs, key=lambda r: -r["self_us"])[:40]:
         out["funcs"].append({

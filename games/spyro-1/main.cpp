@@ -199,14 +199,14 @@ int main(int argc, char** argv) {
     /* ...and the draw service's text rasterizer (Spyro's 3D gold
      * text-moby glyphs — the same font as the FPS overlay). */
     openpete_mods_draw_set_text_fn(text_moby_native_mod_emit);
-    /* ...and the content registries' game ops (rungs 11+12). */
+    /* ...and the content registries' game ops (moby classes, level slots). */
     spyro1_moby_ops_register();
     spyro1_level_ops_register();
-    /* Level-segment asset overlay (rung 9): needs the disc image to read
+    /* Level-segment asset overlay: needs the disc image to read
      * the WAD TOC (lazy — first CdRead). */
     spyro1_mod_wad_configure(opts.disc_path);
 
-    /* Distribution D2: standalone extraction stage — carve PSX.EXE +
+    /* Standalone extraction stage — carve PSX.EXE +
      * overlay blobs from the disc and exit (also the first stage of the
      * first-boot pipeline). Runs before module attach: extraction must
      * work when no module exists yet. */
@@ -238,7 +238,7 @@ int main(int argc, char** argv) {
                                     opts.dump_sfx_wads) == 0 ? 0 : 1;
     }
 
-    /* Distribution D2.5: resolve disc + module through the
+    /* Resolve disc + module through the
      * content-addressed library (--ingest copies an image in; no disc
      * at all boots the most recent library entry). Explicit --disc
      * bypasses the library entirely (dev/CI path). The splash renders
@@ -274,7 +274,7 @@ int main(int argc, char** argv) {
             return fatal_start(src_rc, "No Spyro the Dragon disc image was found.");
     }
 
-    /* Distribution D0/D1: the runtime reaches recompiled code only
+    /* The runtime reaches recompiled code only
      * through the recomp-module descriptor. Static builds register the
      * linked-in module; shared-linkage builds dlopen spyro1-recomp and
      * resolve the same descriptor. Must precede any dispatch. */
@@ -291,7 +291,7 @@ int main(int argc, char** argv) {
     if (spyro1_recomp_attach(module_override, opts.disc_path, allow_build) != 0)
         return fatal_start(1, "The game code built from the disc could not be loaded or built.");
 
-    /* Mod compile-on-boot (openpete-mod-compile-on-boot): compile any
+    /* Mod compile-on-boot: compile any
      * stale enabled source mods behind the splash while it is still
      * alive — run_task lazy-opens the window only if there is real work,
      * so a boot with nothing stale never flashes it. Loading stays in
@@ -311,7 +311,7 @@ int main(int argc, char** argv) {
     else
         spyro1_splash_close();
 
-    /* fps-unlock Phase 2: register the interp ring's region table. Must
+    /* Register the interp ring's region table. Must
      * happen before openpete_run() so openpete_interp_init() (called
      * from inside the run loop) sees the regions. Explicit registration
      * instead of the weak-symbol pattern used by openpete_state_regions

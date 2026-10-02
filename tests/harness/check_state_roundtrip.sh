@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/harness/check_state_roundtrip.sh — savestate P3 restore-at-yield gates.
+# tests/harness/check_state_roundtrip.sh — savestate restore-at-yield gates.
 #
 # For each corpus movie, three headless runs:
 #   clean                       — baseline --gameplay-hash-log
@@ -114,7 +114,7 @@ sys.exit(0 if ok else 1)
 EOF
 done
 
-# P5 runahead determinism gate: with --runahead 2 the presented timeline
+# Runahead determinism gate: with --runahead 2 the presented timeline
 # leads, but the COMMITTED timeline must be byte-identical to clean —
 # gameplay state is never allowed to feel the speculation.
 #
@@ -179,7 +179,7 @@ else
     echo "  exit-level under runahead(2): DIVERGED FAIL"; fail=1
 fi
 
-# P4 driver gate: hold rewind for 40 iterations mid-gameplay via
+# Rewind driver gate: hold rewind for 40 iterations mid-gameplay via
 # --rewind-hold; the scrub must be a single backward jump and the
 # post-release timeline must match the clean run bit-for-bit (movie
 # inputs are frame-locked, so resuming re-runs the same future).

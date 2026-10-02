@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""terrain-claim-census.py — the S2b claim-ratchet report.
+"""terrain-claim-census.py — the retained-terrain claim census report.
 
 Runs the presentation corpus's bk2 rows and freecam poses headless with the
 retained terrain cache ON and harvests one [tgpu-cen] line per row (the
 per-walk claim-by-reason census printed under OPENPETE_TERRAIN_GPU_CENSUS=1),
-then aggregates claims BY REASON into the migration roadmap for S2c: the
+then aggregates claims BY REASON: the
 reason holding the most sectors on the CPU walk is the next verdict to move
 into the shader.
 
@@ -239,7 +239,7 @@ def main():
                 w.writerow([kind, slug, d["frame"], d["secs"], d["claims"]] +
                            [d[r] for r in REASONS])
 
-    lines = [f"# Terrain claim census (S2b ratchet) — lod={opts.lod}", ""]
+    lines = [f"# Terrain claim census — lod={opts.lod}", ""]
     if fails:
         lines += ["**FAILED ROWS (no engagement — investigate before trusting the rest):** " +
                   ", ".join(f"{k}/{s}" for k, s in fails), ""]

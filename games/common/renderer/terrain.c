@@ -64,7 +64,7 @@
 #include "renderer/terrain_game.h" /* per-game data: portal sky planes, fill tags, level names, art fixes */
 #include "openpete_recomp_module.h"  /* the game's own world draw, run through the module dispatch */
 #include "texture_pack.h"           /* identity resolve for the record dumper */
-#include "openpete_mods.h"          /* untextured-band material resolve (S8c) */
+#include "openpete_mods.h"          /* untextured-band material resolve */
 #include "openpete_native_vram.h"   /* VRAM model reads for the record dumper */
 #include "openpete_workpool.h"      /* parallel sector walk (--extract-threads) */
 #include "openpete_profile.h"       /* ter.* sub-scopes (--profile-out) */
@@ -398,7 +398,7 @@ typedef struct {
     float u[3], v[3];                              /* page-relative texel coords */
     int textured, tpx, tpy, clx, cly, bpp, blend;  /* PSX material (VRAM px) */
     int fog_delta;                                 /* CLUT ladder row (see tmat) */
-    int16_t texid;                                 /* Tiledef/record id, -1 untex (S9) */
+    int16_t texid;                                 /* Tiledef/record id, -1 untex */
     int tier;                                      /* 1=LP, 0=HP (debug tiercolor) */
     uint8_t guard;                                 /* .s-deferred face (portal-guard dup) */
     uint8_t nearband;                              /* .s near-band classified: no og key */
@@ -935,7 +935,7 @@ static void terrain_texmat(CPUState* cpu, uint32_t table, int texByte, int hiDet
     if (texByte == -1) { m->textured = 0; return; }      /* 0xFF: untextured */
     uint32_t e = table + (uint32_t)(texByte & 0x7F) * game_layout.terrain.tex_stride + (hiDetail ? 8u : 0u);  /* LOD half */
     decode_tiledef(cpu, e, (texByte < 0), m, u, v);      /* high bit = semi-transparent */
-    m->texid = texByte & 0x7F;                           /* texture-selector key (S9) */
+    m->texid = texByte & 0x7F;                           /* texture-selector key */
 }
 
 /* Native colour-verts (per emitted tri corner) for the colour A/B. An
@@ -4940,8 +4940,8 @@ static void terrain_visdbg(CPUState* cpu, uint32_t sectorCnt, int group,
  * by construction. The candidate set is a SUPERSET of the 4:3 visible set
  * (verified by OPENPETE_TERRAIN_VISDBG: every D_800771C8==0xFF sector is in the
  * sublist), so widescreen only ADDS side sectors, never drops a visible one. A
- * cheap per-sector wide-frustum prune of this candidate set (for the 480fps /
- * --no-lod passes) is a follow-up; see the plan.
+ * per-sector wide-frustum prune of this candidate set (for the 480fps /
+ * --no-lod passes) is not implemented.
  *
  * `group` is the occlusion-group ARGUMENT the .s renderer (func_800258F0)
  * received this frame (captured from cpu->a0 at the hook, BEFORE the real call
@@ -5447,16 +5447,15 @@ static double   s_rim_rowmax = 1.0;   /* max ||M row||/4096 — world->view scal
  *
  * CLAIMED back to the CPU walk (sub-tick or per-face semantics the retained
  * mesh cannot bake): near-plane-approaching sectors (the no-clip guarantee),
- * portal-outline overlaps (rim cull / transparent-cover drop / plane-cover —
- * the S2c plane-cover migration retires this one), vert-anim sectors (the
+ * portal-outline overlaps (rim cull / transparent-cover drop / plane-cover),
+ * vert-anim sectors (the
  * fractional lerp banks), scroll-anim tiles (the 7-bit accumulator lerp),
  * fill-duty sectors (the feed's screen-space dilation), arena-full and
  * unmapped-colour sectors, sectors an HD texture pack would replace into
  * (per-run replacement rides the feed's draw_tex_runs), and sectors a mod
  * material selector could override (custom pipelines resolve off the feed's
  * provenance tags). The pack/selector claims are tier 1 of the
- * exclusion→claim→fold ladder; the S2c texpack GPU fold retires them for
- * replaced sectors. */
+ * exclusion→claim→fold ladder. */
 
 typedef struct {
     uint32_t s;                       /* sector vaddr chunks were built from (0 = none) */
@@ -7276,7 +7275,7 @@ static void tgpu_census(void) {   /* OPENPETE_TERRAIN_GPU_DBG: ~1/s */
 
 
 /* Per-walk shared inputs, latched by the build prologue BEFORE dispatch and
- * read-only during the walk (contract C2: the game fiber is parked for the
+ * read-only during the walk (the game fiber is parked for the
  * whole build; workers read guest RAM + latched state only, and write only
  * their own tn_wctx). */
 typedef struct {
@@ -7750,7 +7749,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
          * it from them with the tier/fill verdicts above (published via the
          * sector-params UBO) and the face walk is SKIPPED entirely. The
          * sector_set staging write is host memory, distinct slot per sector —
-         * safe from pool workers (contract C3 keeps rhi_* on the owner). */
+         * safe from pool workers (rhi_* calls stay on the owning thread). */
         if (G->own && G->own[vi]) {
             /* own == 2: owned, NO-DRAW — the whole bounding sphere sits
              * behind the near threshold, so the CPU walk would emit nothing
@@ -8816,7 +8815,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         s_nearz = (e && *e) ? atof(e) : 1.0;
     }
     { static tn_envvbl_t fog_c; s_fogdbg = tn_env_vbl(&fog_c, "OPENPETE_TERRAIN_FOGDBG", 0, 1); }
-    /* Far-band identity instrument (fog decode arc): one-shot full dump of
+    /* Far-band identity instrument (fog decode): one-shot full dump of
      * per-sector binning state + per-face corner records (screen xy, m3, raw
      * colour words per tier) for the offline identity JOIN against the
      * captured .s prims (which self-classify LP/HP by prim code 0x30/0x38 vs
@@ -8981,14 +8980,14 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     static uint32_t tt_presents, tt_nvis_sum, tt_nvis_max, tt_pres_max_us;
     uint64_t tt_prev = 0; uint32_t tt_prev_i = 0; int tt_prev_valid = 0, tt_prev_tris = 0;
     uint64_t tt_present_us = 0;
-    /* ---- parallel sector walk (S1) ----------------------------------------
+    /* ---- parallel sector walk ---------------------------------------------
      * Serial mode (1 thread, any debug/verify instrument active, or the very
      * first walk so every one-time getenv latch initializes single-threaded)
      * fuses walk_sector into the prepass loop below — the exact legacy order,
      * writing s_tri directly. Parallel mode: the prepass resolves the decode
      * cache + occlusion serially (tsc_get mutates shared slots), then the
      * pool walks sectors into per-worker buffers, merged in sector order —
-     * byte-identical output to serial by construction (contract C4). */
+     * byte-identical output to serial by construction. */
     {   /* lp_artfix_lookup latches g_LevelId once per VBL inside the walk;
          * resolve it here, serially, so workers only hit the cached path. */
         uint32_t afx_dummy;
@@ -9101,7 +9100,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     }
     /* OPENPETE_TERRAIN_GPU_CENSUS=1: one stderr line per hook walk with THIS
      * walk's claim counts by reason (deltas of the window counters, printed
-     * before tgpu_census can reset them) — the S2b claim-ratchet metric,
+     * before tgpu_census can reset them) — the claim-count metric,
      * harvested by scripts/terrain-claim-census.py. Temp instrument;
      * unregistered; GPU_-prefixed so it is safe with the cache engaged. */
     static int s_cen = -1;
@@ -9270,8 +9269,9 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             s_lpg_acc_n++;
         }
         /* ---- retained-GPU claim (main thread: chunk builds write RHI
-         * buffers — contract C3). An unclaimed sector's chunks are validated
-         * or rebuilt here; the walk then publishes its verdict flags and
+         * buffers, so they stay on the owning thread). An unclaimed
+         * sector's chunks are validated or rebuilt here; the walk then
+         * publishes its verdict flags and
          * skips the face loop. Claim reasons, in test order:
          *  - near: the bounding sphere may reach the near plane; the CPU
          *    walk near-clips, the GPU path guarantees m3 > 0 instead.
@@ -10658,15 +10658,15 @@ static void terrain_feed_native(CPUState* cpu) {
     static float s_fill_dilate = -1.0f;  /* OPENPETE_TERRAIN_FILL_DILATE px (0 disables) */
     if (s_fill_dilate < 0.0f) {
         const char* e = getenv("OPENPETE_TERRAIN_FILL_DILATE");
-        s_fill_dilate = (e && *e) ? (float)atof(e) : 0.0f;  /* v4.1: quantize/grow OFF by default (v2/v3 machinery caused silhouette ghosting/spikes + sub-tick crawl; envs re-enable for experiments) */
+        s_fill_dilate = (e && *e) ? (float)atof(e) : 0.0f;  /* quantize/grow OFF by default (they cause silhouette ghosting/spikes + sub-tick crawl; envs re-enable for experiments) */
     }
     /* Level-scoped selector keys resolve at draw time, which has no cpu —
      * push the id from here, the feed that runs whenever a world renders. */
     openpete_mods_set_level((int)cpu->read_word(game_layout.level_id));
-    /* Untextured-band material (S8c): one resolve per feed — the whole
+    /* Untextured-band material: one resolve per feed — the whole
      * beyond-LOD gouraud band shares a single per-instance outcome. */
     const int untex_slot = openpete_mods_material_terrain_untex_slot(cpu);
-    /* Texture-keyed materials (S9): one resolve per (feed, Tiledef id),
+    /* Texture-keyed materials: one resolve per (feed, Tiledef id),
      * memoized — -1 = unresolved. */
     int16_t tex_slot[128];
     memset(tex_slot, 0xFF, sizeof tex_slot);
@@ -10812,11 +10812,11 @@ static void terrain_feed_native(CPUState* cpu) {
              * by the truncated fraction (~0.5px avg, matching the PSX edge);
              * additionally growing UP pushed the fill's fully-fogged LP-only
              * strips ABOVE the terrain silhouette into the sky (a dark fringe
-             * on the peace-keepers cliff line, gate tick 4888 round 2). */
+             * on the peace-keepers cliff line at tick 4888). */
             static float s_fill_up = -1.0f;   /* OPENPETE_TERRAIN_FILL_UP: upward growth px */
             if (s_fill_up < 0.0f) { const char* e = getenv("OPENPETE_TERRAIN_FILL_UP"); s_fill_up = (e && *e) ? (float)atof(e) : 0.7f; }
-            /* CONTINUOUS growth (replaces the v2 floor()-quantize
-             * as the DEFAULT): floor() snapped the fill verts to the pixel
+            /* CONTINUOUS growth (the DEFAULT, not a floor()-quantize):
+             * floor() snapped the fill verts to the pixel
              * grid EVERY PRESENT, so under the sub-tick spine the fill fringe
              * crawled/jittered against the smoothly-interpolated canonical
              * terrain (ghosting / spikes at terrain tops, all

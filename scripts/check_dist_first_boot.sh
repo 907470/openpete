@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# check_dist_first_boot.sh — the distribution gate (D4/D6.5; plan
-# openpete-distribution-local-recomp).
+# check_dist_first_boot.sh — the distribution gate.
 #
 # Proves the SHIPPED artifact works: package it, put it somewhere clean,
 # --ingest the reference disc, let first boot extract+recompile+link the
 # module, then replay the full 20k hardware oracle against the dist exe +
 # its self-built module. Finally, drop a source-only mod into the mods
-# directory and prove a subsequent boot compiles + loads it
-# (openpete-mod-compile-on-boot). This is the closest thing to "a stranger
+# directory and prove a subsequent boot compiles + loads it.
+# This is the closest thing to "a stranger
 # downloaded it and it worked" that CI can check.
 #
 #   scripts/check_dist_first_boot.sh              # the .tar.xz artifact
@@ -28,8 +27,8 @@
 # writes to the per-user directories (openpete_paths) — the gate must not
 # read or write the developer's real ones.
 #
-# The glibc floor is asserted here too (D6.6): a release-base artifact
-# must not require symbols newer than the target rung, or it fails to
+# The glibc floor is asserted here too: a release-base artifact
+# must not require symbols newer than the floor, or it fails to
 # start on the distributions it claims to support, with a loader error the
 # user cannot act on. Building on a dev box legitimately exceeds it — set
 # OPENPETE_DIST_ALLOW_GLIBC_FLOOR=1 to downgrade that to a loud warning.
@@ -71,7 +70,7 @@ cd "$(dirname "$0")/.."
 APPIMAGE=0
 [[ "${1:-}" == "--appimage" ]] && APPIMAGE=1
 
-# Debian 11 / bullseye — see "Build base and the glibc floor" in the plan.
+# Debian 11 / bullseye, the release build base (docs/linux-release.Dockerfile).
 GLIBC_MAX=2.31
 GLIBCXX_MAX=3.4.28
 
@@ -229,7 +228,7 @@ grep -q "first-boot module build" "$WORK/first-boot.log" \
     || { echo "[dist-gate] FAIL: first boot did not build a module" >&2; exit 2; }
 # The module must not have acquired a shared-library dependency it cannot
 # resolve: it is linked -nostdlib and binds everything else against the
-# already-loaded exe at dlopen (D6.0).
+# already-loaded exe at dlopen.
 needed=$(objdump -p "$module" | awk '/NEEDED/ {print $2}' || true)
 [[ -z "$needed" ]] || { echo "[dist-gate] FAIL: module carries DT_NEEDED: $needed" >&2; exit 2; }
 

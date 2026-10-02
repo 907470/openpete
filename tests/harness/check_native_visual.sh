@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_native_visual.sh — native Vulkan renderer visual-regression gate (W1.2).
+# check_native_visual.sh — native Vulkan renderer visual-regression gate.
 #
 # Renders the native `-vk` frame HEADLESS — surfaceless Vulkan through the
 # software rasterizer (lavapipe/llvmpipe), no GPU and no display — at seven

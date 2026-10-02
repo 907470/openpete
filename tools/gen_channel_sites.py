@@ -13,8 +13,7 @@ Input schema: a channel's `substitution_sites` entry may be either
   * a bare address int (legacy: still hardcoded in code_generator.cpp), or
   * an inline table { addr, imm, kind, knob } describing a GENERATED site.
 Only the inline-table entries (those with a `kind`) are emitted here; bare
-ints are left to the recompiler's remaining hand-written arms and to the
-audit's address-parity check.
+ints are left to the recompiler's remaining hand-written arms.
 
 Output: one site per line, `<kind> <addr-hex> <imm-hex> <symbol>`, e.g.
   offset_add 0x800259BC 0x1C00 psx_runtime_env_hp_queue_offset

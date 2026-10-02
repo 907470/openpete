@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # scripts/setup_appimagetool.sh — fetch the pinned appimagetool used to
-# build the Linux AppImage (distribution D6; plan
-# openpete-distribution-local-recomp).
+# build the Linux AppImage.
 #
 # The tool is a release artifact, not source we build: pin it by version
 # AND sha256 so a release is reproducible and a compromised upstream

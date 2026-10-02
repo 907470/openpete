@@ -1,4 +1,4 @@
-/* games/spyro-1/decomp/psyq_compat.h — Phase 3/4 compat shim.
+/* games/spyro-1/decomp/psyq_compat.h — PSYQ/PsyCross type compat shim.
  *
  * Bridges the renaming of PSYQ types in PsyCross. Spyro's matching-decomp
  * source uses original PSYQ identifiers (RECT, …); PsyCross's libgpu.h

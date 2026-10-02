@@ -14,7 +14,7 @@ id = "SCUS-94425"
 args = []
 
 [reference]
-# openpete's Spyro 2 stalls at its first card wait with a card present (P8):
+# openpete's Spyro 2 stalls at its first card wait with a card present:
 # no card on either side.
 card = "none"
 # The reference module's configuration these baselines were taken under:
@@ -70,7 +70,7 @@ start  = 0x80066F9C
 end    = 0x80066FA4
 name   = "D_80066F9C, D_80066FA0 (VBL counters, draw/func_800156FC)"
 reason = "advance per VBL; hardware spends the load's wall time in VBLs that openpete's synchronous CdRead does not"
-owner  = "openpete-psx-oracle-ci"
+owner  = "oracle CI"
 
 
 # Loop anchor, hit 1: the title's own VSync loop ran 6 more frames on the
@@ -83,7 +83,7 @@ start  = 0x8006700C
 end    = 0x80067010
 name   = "D_8006700C (title frame counter word; byte 1 follows the title's step timing)"
 reason = "advances per title-loop frame during the pre-anchor reads"
-owner  = "openpete-per-game-oracle"
+owner  = "per-game oracle"
 
 [[expect]]
 class  = "load_timing"
@@ -91,7 +91,7 @@ start  = 0x80067160
 end    = 0x80067161
 name   = "D_80067160 (copy of the title frame counter)"
 reason = "advances per title-loop frame during the pre-anchor reads"
-owner  = "openpete-per-game-oracle"
+owner  = "per-game oracle"
 
 [[expect]]
 class  = "load_timing"
@@ -99,7 +99,7 @@ start  = 0x8007F02C
 end    = 0x8007F02D
 name   = "title overlay 0x8007F02C (sequence step)"
 reason = "title sequence one step further on the reference"
-owner  = "openpete-per-game-oracle"
+owner  = "per-game oracle"
 
 [[expect]]
 class  = "load_timing"
@@ -107,7 +107,7 @@ start  = 0x8007F06C
 end    = 0x8007F071
 name   = "title overlay 0x8007F06C-0x8007F070 (step timer and index)"
 reason = "title sequence one step further on the reference"
-owner  = "openpete-per-game-oracle"
+owner  = "per-game oracle"
 
 [[expect]]
 class  = "load_timing"
@@ -115,7 +115,7 @@ start  = 0x8007F090
 end    = 0x8007F091
 name   = "title overlay 0x8007F090 (sequence flag)"
 reason = "title sequence one step further on the reference"
-owner  = "openpete-per-game-oracle"
+owner  = "per-game oracle"
 
 [[expect]]
 class  = "load_timing"
@@ -123,7 +123,7 @@ start  = 0x8007F0EC
 end    = 0x8007F0F1
 name   = "title overlay 0x8007F0EC-0x8007F0F0 (frame counter copies)"
 reason = "derived from the title frame counter"
-owner  = "openpete-per-game-oracle"
+owner  = "per-game oracle"
 
 [[expect]]
 class  = "load_timing"
@@ -131,7 +131,7 @@ start  = 0x8007F14C
 end    = 0x8007F169
 name   = "title overlay 0x8007F14C-0x8007F168 (index table, entries (n, 0, 0, 0xF1); one entry further on the reference)"
 reason = "title sequence one step further on the reference"
-owner  = "openpete-per-game-oracle"
+owner  = "per-game oracle"
 
 [[expect]]
 class  = "load_timing"
@@ -139,7 +139,7 @@ start  = 0x8007F180
 end    = 0x8007F185
 name   = "title overlay 0x8007F180-0x8007F184 (per-step flag words; the set flag sits at step 0 on openpete, step 1 on the reference)"
 reason = "title sequence one step further on the reference"
-owner  = "openpete-per-game-oracle"
+owner  = "per-game oracle"
 
 # libcd's state block: the bytes its translated getters read, written by the
 # shared CD thunks. A differing byte here is a defective mirror.
@@ -158,15 +158,15 @@ start  = 0x8006671C
 length = 0x2
 name   = "libcd block 0x80066700 mode and last command (CdMode, CdLastCom)"
 
-# Drive timing the game records; openpete fixes seeks at zero VBLs (drive
-# model abandoned 2026-09-05), hardware's vary with head distance.
+# Drive timing the game records; openpete fixes seeks at zero VBLs (no
+# drive model), hardware's vary with head distance.
 [[expect]]
 class  = "cd_timing"
 start  = 0x8006830C
 end    = 0x80068314
 name   = "D_8006830C, D_80068310 (stream driver: state-5 countdown and retry word, str/func_80012CBC)"
 reason = "the countdown runs from 300 while the drive seeks; hardware's seek takes 13 to 15 iterations, openpete's none"
-owner  = "openpete-spyro2-3-bringup"
+owner  = "Spyro 2 and 3 bring-up"
 
 [[expect]]
 class  = "cd_timing"
@@ -174,7 +174,7 @@ start  = 0x80068324
 end    = 0x80068328
 name   = "D_80068324 (furthest CdlGetlocP position, str/func_80012CBC)"
 reason = "hardware's head starts after its seek; openpete's virtual head starts at the CdlReadS"
-owner  = "openpete-spyro2-3-bringup"
+owner  = "Spyro 2 and 3 bring-up"
 
 
 
@@ -184,7 +184,7 @@ start  = 0x800682EC
 end    = 0x800682F0
 name   = "D_800682EC (VBLs since the last CdRead was issued; zeroed by str/func_80013810 and peers, incremented by the VBL callback pad/func_800125C8)"
 reason = "advances per VBL; hardware spends the load's wall time in VBLs that openpete's synchronous CdRead does not"
-owner  = "openpete-psx-oracle-ci"
+owner  = "oracle CI"
 
 # Words the crt0 and InitHeap write on the way to main: the heap base and
 # size, and the BIOS return address the crt0 stores.

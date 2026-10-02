@@ -1,4 +1,4 @@
-/* mod_shader.c — the mod GLSL compile service (shader tier S1).
+/* mod_shader.c — the mod GLSL compile service.
  *
  * Mods ship GLSL source; the ENGINE compiles it to SPIR-V at load through
  * mod_glsl.c (in-process glslang, the dialect of the engine's own
@@ -23,7 +23,7 @@
 #include "openpete_atomic_file.h"
 #include "openpete_log.h"
 #include "mod_vec.h"
-#include "openpete_native_render.h"   /* set_tag_split arming (S8) */
+#include "openpete_native_render.h"   /* set_tag_split arming (material selectors) */
 #include "../host/sha256.h"
 #include "mod_glsl.h"
 
@@ -579,7 +579,7 @@ int openpete_mods_shader_watch_key(const char* mod_dir, char key_out[65]) {
     } while (0)
 
 /* ------------------------------------------------------------------ */
-/* postfx tier (S3): registry + the renderer-facing collect. The GPU
+/* postfx: registry + the renderer-facing collect. The GPU
  * pipeline object is executor-owned (native_render.c) but cached in
  * the slot via pass.pipeline_slot; a sweep moves it to the retirement
  * list, drained by the renderer under its own frame discipline. */
@@ -826,11 +826,11 @@ void openpete_mods_postfx_remove_owner(const char* mod_id) { REG_WR(); openpete_
 
 
 /* ------------------------------------------------------------------ */
-/* material-selector tier (S8a declarative + S8b per-instance).
+/* material selectors (declarative + per-instance).
  *
- * S8a: whole-class overrides matched at DRAW time against the S6
- * provenance tag — extractors stay selector-agnostic. S8b: a
- * per-instance callback runs at EXTRACTION (the moby walk, cpu
+ * Declarative: whole-class overrides matched at DRAW time against the
+ * provenance tag — extractors stay selector-agnostic. Per-instance: a
+ * callback runs at EXTRACTION (the moby walk, cpu
  * available) per matching instance, returns a per-draw uniform block
  * or declines. Its outcome is interned to a small per-present SLOT id
  * stamped into the tag's spare bits, so the batcher splits draws by
@@ -857,7 +857,7 @@ typedef struct {
     const char* owner;
     openpete_mod_material_selector_t sel;
     int  vert, frag;       /* shader handles; -1 = stock stage */
-    openpete_mod_material_fn per_instance;   /* NULL = declarative (S8a) */
+    openpete_mod_material_fn per_instance;   /* NULL = declarative */
     int  load_index;
     /* Executor-cached rhi_pipeline*, one per BLEND CLASS (0 opaque, 1
      * average, 2 additive, 3 subtract). A material reshades inside
@@ -904,7 +904,7 @@ static mod_fixed s_mat_census;
 static int s_mat_sel_dirty;      /* any material carries a parked selector */
 static int s_mat_has_instance;   /* cached: any live selector has a callback */
 
-/* Per-present interned per-instance slots (S8b). Index 0 reserved
+/* Per-present interned per-instance slots. Index 0 reserved
  * (= "defer to draw-time class resolve"); 1.. are interned outcomes. */
 #define MOD_MATERIAL_SLOTS 128
 _Static_assert(MOD_MATERIAL_SLOTS == OPENPETE_MODS_MATERIAL_VIEW_SLOTS, "view mirrors the slot table");
@@ -1038,7 +1038,7 @@ static int terrain_winner(int texid, int env, int lp) {
         if (!terrain_sel_usable(m, level)) continue;
         if (m->per_instance) {
             /* Mirror the winner scans exactly: the untex band resolve keys
-             * on OP_SEL_UNTEXTURED + texture=-1, the S9 texture resolve on
+             * on OP_SEL_UNTEXTURED + texture=-1, the texture-keyed resolve on
              * texture==texid with the flag clear — neither reads the
              * env/tier refinements. */
             if (untex ? ((m->sel.flags & OP_SEL_UNTEXTURED) && m->sel.texture == -1)
@@ -1505,7 +1505,7 @@ static int material_terrain_tex_winner(int texid) {
         if (m->sel.channel != -1 && m->sel.channel != OP_CHAN_TERRAIN) continue;
         if (m->sel.flags & OP_SEL_UNTEXTURED) continue;
         /* Per-instance terrain selectors are texture-keyed: texture=-1
-         * per-instance stays the untex band's business (S8c), never a
+         * per-instance stays the untex band's business, never a
          * blanket all-textured-terrain override. */
         if (m->sel.texture == -1 || m->sel.texture != texid) continue;
         if (best < 0 || m->load_index > s_mats[best].load_index) best = i;
@@ -1616,9 +1616,9 @@ static int material_fill_gpu(int best, int uniform_slot,
     return best;
 }
 
-/* Draw-time resolve (native_render draw_tex_runs): the run's S6 tag →
+/* Draw-time resolve (native_render draw_tex_runs): the run's provenance tag →
  * the winning override, or -1. Tag layout: [31:28] path+1; moby class
- * [15:0] + per-instance slot [27:16] (S8b); terrain env bit 27 / LP
+ * [15:0] + per-instance slot [27:16]; terrain env bit 27 / LP
  * bit 26 + sector [8:0]. Enabled-list priority: the later-loaded mod
  * wins. */
 /* The selector keys a tag carries, decoded once. `path` is 0 moby,
@@ -1713,7 +1713,7 @@ static int material_selector_matches(const mod_material_t* m,
     if (k->path == 0 && m->sel.moby_class != -1 &&
         m->sel.moby_class != k->cls)
         return 0;
-    /* Texture key (S9): terrain textured faces only. */
+    /* Texture key: terrain textured faces only. */
     if (m->sel.texture != -1 && (k->tex < 0 || m->sel.texture != k->tex))
         return 0;
     if ((m->sel.flags & OP_SEL_ENV_ANIM) && !k->env) return 0;

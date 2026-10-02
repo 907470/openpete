@@ -3,10 +3,8 @@
  * The game registers the static g_Hud.m_Mobys range at boot
  * (games/spyro-1/game_extras_impl.c); the native renderer classifies
  * moby addresses against it (flat-HUD overlay vs the depth-isolated
- * HUD3D icon pass — see moby.c). The per-current-moby channel
- * (set_current/is_current_ui, fed by recompiler-injected loop tags) and
- * the per-frame text range died with the PsyCross --aspect stack + the
- * render cache, 2026-07-06. */
+ * HUD3D icon pass — see moby.c). Classification is by address range
+ * only. */
 
 #ifndef OPENPETE_UI_MOBY_H
 #define OPENPETE_UI_MOBY_H

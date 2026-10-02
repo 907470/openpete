@@ -155,7 +155,7 @@ because the mod asked for nothing. It is a rung in
 
 The key that would survive a channel's geometry being banked across presents
 or baked onto the GPU. A channel cannot be cached until this column has an
-answer, and the answer must be designed before the caching arc.
+answer.
 
 | Channel | Retention identity | State |
 |---|---|---|

@@ -1266,14 +1266,14 @@ static void hot_reload_poll(void) {
     }
 }
 
-/* ── Live modset toggle (P2) ─────────────────────────────────────────
+/* ── Live modset toggle ──────────────────────────────────────────────
  * enable/disable apply at the NEXT TICK BOUNDARY (the canonical present
  * commit), never mid-tick: requests queue here and the apply flips
  * owner-keyed disabled flags across every registration surface — chain
  * links (skipped transparently, base() nesting preserved), present
- * hooks, and registry rows. Nothing is torn down, so re-enable restores the mod exactly
- * where it was. Asset overlays stay boot-scoped ("restart tier" in the
- * plan's language — their consumers scan at init).
+ * hooks, and registry rows. Nothing is torn down, so re-enable restores
+ * the mod exactly where it was. Asset overlays stay boot-scoped (a toggle
+ * takes effect on restart): their consumers scan at init.
  *
  * The save modset tag deliberately does NOT rebuild on toggle: a
  * divergent mod that already ran this session has already diverged it;
@@ -3644,7 +3644,7 @@ static int mod_enter_deferred(struct openpete_mod* mod) {
 
 /* ---- enabled-list resolution ---------------------------------------- */
 
-/* Dependency topo-sort (rung 5). DFS, stable in enabled order: a dep
+/* Dependency topo-sort. DFS, stable in enabled order: a dep
  * loads before its dependents, so dependents keep HIGHER chain priority
  * than their libraries, and a library's entry has run by the time its
  * client's does. Missing dep / cycle = actionable error, dependent

@@ -26,8 +26,7 @@ layout(location = 0) out vec4 outColor;
  * 0..31. Normalized luma weights = (4,3,1)/8 = (0.5, 0.375, 0.125). The 32-entry CLUT
  * (g_GrayscalePalette, math.data.s) is a near-linear FULL-range gray ramp (index i ->
  * (i,i,i)), so the grey value IS this luma directly — no extra range scaling, no
- * fudge. (An earlier red-weighted guess under-weighted green, darkening terrain and
- * cranking contrast — the harsh look the user reported; these are the real weights.)
+ * fudge.
  * Continuous here rather than 5-bit-in / 32-level-out quantized (HQ). */
 const vec3 PSX_GRAY = vec3(4.0, 3.0, 1.0) / 8.0;
 

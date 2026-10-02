@@ -153,10 +153,10 @@ set_target_properties(openpete_rhi PROPERTIES
 # outputs — so building openpete_rhi compiles shaders and regenerates the
 # embed as needed. No explicit shader target/dependency required.
 
-# Milestone 1a/1b smoke test: a standalone Vulkan window (1a cleared the
-# offscreen target; 1b.1 also draws a vertex-colored quad). Verifies the
-# bringup without the rest of openpete. On by default while the foundation
-# is under construction; off via -DOPENPETE_BUILD_RHI_SMOKETEST=OFF.
+# RHI smoke test: a standalone Vulkan window that draws three quads sampled
+# from a synthetic PSX VRAM pattern and a vertex-colored quad over a cycling
+# clear color. Verifies the bringup without the rest of openpete. On by
+# default; off via -DOPENPETE_BUILD_RHI_SMOKETEST=OFF.
 option(OPENPETE_BUILD_RHI_SMOKETEST "Build the RHI smoke test exe" ON)
 if(OPENPETE_BUILD_RHI_SMOKETEST)
     add_executable(rhi_smoketest smoketest.c)

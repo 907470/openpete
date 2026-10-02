@@ -1,5 +1,5 @@
 #!/bin/bash
-# P0 field census across all levels: one boot per level (sectors decode only at
+# Terrain field census across all levels: one boot per level (sectors decode only at
 # a render, so the census needs a present — the screenshot forces one).
 set -u
 REPO="$(cd "$(dirname "$0")/.." && pwd)"

@@ -102,8 +102,7 @@ enum {
  * the last composed frame onto a slot the sim thread was going to refuse. It
  * fills a hole in the DISPLAY without advancing animation by a microsecond, so
  * it is its own kind -- folding it into either of the others would let a
- * duplicate be counted as motion, which is the one thing this rung must not
- * be allowed to claim. */
+ * duplicate be counted as motion, which a REPEAT must never be. */
 enum { OP_PACE_CANONICAL = 0, OP_PACE_INTERMEDIATE = 1, OP_PACE_REPEAT = 2 };
 
 /* SLIP kinds. */

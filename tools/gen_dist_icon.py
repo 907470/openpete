@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Generate the ROM-free distribution icon (original art, authored here —
-no game bytes; distribution D3). Emits the same artifacts as
+no game bytes). Emits the same artifacts as
 mcs_icon_to_ico.py: a C file with openpete_game_icon_{w,h,rgba} for
 SDL_SetWindowIcon, a Windows .ico (32-bit BMP-format entry), and/or a PNG
 for the Linux .desktop / AppImage icon.

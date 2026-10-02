@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""bench-matrix.py — the pacing run matrix (M4) and baseline archive (M9).
+"""bench-matrix.py — the pacing run matrix and baseline archive.
 
 Runs a fixed set of configurations one at a time, writes a pace log per leg,
 and prints them as one table. Legs are NEVER run concurrently: two paced runs
@@ -36,8 +36,8 @@ import pacelog                                                # noqa: E402
 from paceleg import REPO, VBL_HZ, exe_for, run_leg              # noqa: E402
 import pacestats as ps                                        # noqa: E402
 
-# The knob axis the 0b findings identified as the driver: presents per tick.
-# Each leg names what it is FOR, so a table row can be read without the plan.
+# The knob axis that drives pacing cost: presents per tick.
+# Each leg names what it is FOR, so a table row reads on its own.
 LEGS = {
     "fps0":      (["--render-fps", "0"],
                   "legacy pacer, one present per tick — the floor"),

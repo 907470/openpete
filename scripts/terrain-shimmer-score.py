@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""P2 flip-site shimmer score: tier flips should happen WHERE the PSX flips,
+"""Flip-site shimmer score: tier flips should happen WHERE the PSX flips,
 not nowhere.
 
 Native leg: TIERCOLOR screenshots (LP=(255,0,0), HP=(0,0,255), fill=(0,255,0))

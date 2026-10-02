@@ -1301,7 +1301,8 @@ void main()
         double slotv = (m0.z + m1.z + m2.z + z3g) / 32.0lf;
         if ((gf & GF_NOLOD) == 0) {
             /* .s LP far cull: slot >= m_CullingDistance>>7 drops (all faces,
-             * fill tags included). Skipped under extended LOD by design. */
+             * fill tags included). Skipped under extended LOD, which keeps
+             * far faces. */
             if (slotv >= double(g.fog.z)) { kill_vert(); return; }
         }
         if (!gapfill_face) {

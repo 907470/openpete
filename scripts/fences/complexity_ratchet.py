@@ -21,7 +21,7 @@ Modes:
                     the baselines' merge driver (ratchet_tsv_merge.py) is
                     configured.
   tighten [--accept <key> <reason>]...
-                    full-corpus rewrite at arc end: tightenings, retirements,
+                    full-corpus rewrite, run on demand: tightenings, retirements,
                     admissions; a rise is refused unless named by --accept.
   baseline          recapture the whole file (tool-version change only).
 

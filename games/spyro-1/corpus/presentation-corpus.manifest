@@ -52,9 +52,9 @@
 # stays broad across bk2s without a dense per-bk2 grid. The intermediate leg
 # mirrors the kept canonical frames + interval/2.
 #
-# This is the Category-A fan-out: every --skip-to-level bk2 whose movie is long
-# enough for the shared 1700 start (movie > 1800 frames). UI-only / cutscene /
-# demo / TAS bk2s that need a bespoke start are tracked separately (plan §fan-out).
+# The rows below cover every --skip-to-level bk2 whose movie is long enough
+# for the shared 1700 start (movie > 1800 frames). UI-only / cutscene / demo /
+# TAS bk2s that need a bespoke start are not in this list.
 #
 # name                                     | start | int. | freeze | pins | launch
 alban-rescue                             | 1700  | 100  |        | 1756,1760
@@ -121,8 +121,8 @@ stone-hill-gem-spyro-occlusion           | 1700  | 100  |        | 1896
 stone-hill-lindar-rescue@mobyrank        | 2369  | 10   |        | 2374 | OPENPETE_MOBY_RANK=1
 sunny-flight-exit                        | 1700  | 100  | freeze | 2466
 # sunny-flight-wall-punch: the Artisans waterfall pool at VBL 2700, a green
-# wedge under the rim's inner edge between rim and water (user report
-# 2026-09-21); drawn by both renderers on v0.3.0 and main, pinned as is.
+# wedge under the rim's inner edge between rim and water; drawn by both
+# renderers on v0.3.0 and main, pinned as is.
 sunny-flight-wall-punch                  | 1700  | 100  |        | 2700
 toasty-moving-terrain-z-fighting         | 1700  | 100  |        | 3111
 # Toasty lowered wall 1 drawn under the grass (disappears); freecam at VBL 3650.

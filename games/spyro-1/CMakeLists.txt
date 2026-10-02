@@ -20,7 +20,7 @@ option(OPENPETE_SKIP_DECOMP
        "Skip native-decomp TUs and run the full recomp path"
        OFF)
 
-# Per-function CPU tracing (Tier B of the perf profiler): instrument the main
+# Per-function CPU tracing for the perf profiler: instrument the main
 # generated EXE with -finstrument-functions so func_trace.c can attribute
 # self/total time per recompiled func_80XXXXXX. ~1-8 ms/tick overhead — a
 # drill-down build, never the baseline. Off by default (zero cost).
@@ -124,7 +124,7 @@ else()
     set(SPYRO_RECOMP_ATTACH_SOURCES recomp_attach_static.c)
 endif()
 
-# App icon. Two sources (distribution D3):
+# App icon. Two sources:
 #   OPENPETE_ROM_FREE_ICON=OFF (dev default) — decoded from the PSX
 #     save-file header's CLUT+icon data (save_file.h:39): the authentic
 #     memcard icon, which is GAME BYTES and must not ship.

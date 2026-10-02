@@ -175,7 +175,7 @@ def main():
 
     acc = {}
     if args.which == "func":
-        # Flat self-time profile of the recompiled game logic (Tier B). No call
+        # Flat self-time profile of the recompiled game logic (FUNC_TRACE). No call
         # stacks are recorded, so this is a one-level flame: width = self µs.
         for fn in funcs:
             if fn["self_us"] > 0:

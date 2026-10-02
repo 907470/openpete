@@ -88,7 +88,7 @@ static char    s_path_override[2][1024];       /* --card1 / --card2 */
 static char    s_dir_override[1024];           /* --card-dir */
 static int     s_unformatted     = 0;          /* --card-unformatted */
 
-/* Per-modset save safety (modding plan P3): a sidecar "<image>.modset"
+/* Per-modset save safety: a sidecar "<image>.modset"
  * records the modset tag the card's progress belongs to. Mismatch at
  * open warns (never blocks); --adopt-saves retags explicitly. */
 static int  s_adopt = 0;                       /* --adopt-saves */

@@ -1,5 +1,4 @@
-# The Linux release build base (distribution D6.6; plan
-# openpete-distribution-local-recomp).
+# The Linux release build base.
 #
 # Debian 11 (bullseye) — glibc 2.31, GLIBCXX 3.4.28 — because the symbol
 # floor of a binary is decided by the machine that built it, not by any

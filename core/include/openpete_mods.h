@@ -344,7 +344,7 @@ int openpete_mod_sound_play_pcm(const char* key, const int16_t* pcm,
  * @param on Nonzero mutes. */
 void openpete_mod_sound_set_mute(int on);
 
-/* Live modset toggle (P2): queue an enable/disable; it applies at the
+/* Live modset toggle: queue an enable/disable; it applies at the
  * NEXT tick boundary by flipping owner-keyed disabled flags across all
  * registration surfaces (nothing is torn down — re-enable restores the
  * mod exactly where it was). Asset overlays follow the toggle at their
@@ -796,12 +796,12 @@ void openpete_mods_moby_class_census(CPUState* cpu);
  *         is NULL or @p cap is 0 or less. */
 int  openpete_mods_moby_classes(uint16_t* out, int cap);
 
-/* Level-slot namespace (rung 12). A registered slot is a NEW level id
+/* Level-slot namespace. A registered slot is a NEW level id
  * whose WAD TOC entry is cloned from a donor level; the game ops own
  * the id→behavior aliasing so the slot loads and plays like the donor
  * while keeping its own per-level state index. v1 capacity: the guest
  * tables have exactly ONE free in-bounds slot (index 35 / id 65 in
- * Spyro 1); lifts beyond that ride openpete-ram-virtualization. */
+ * Spyro 1); more slots need larger guest tables. */
 typedef struct {
     /* Claim the free slot for donor_level_id: seed its TOC entry and
      * install the alias hooks. Returns the claimed level id, 0 = not
@@ -1240,10 +1240,11 @@ void openpete_mods_registry_read_unlock(void);
 #define OPENPETE_MATERIAL_PIPE_VARIANTS 6
 #define OPENPETE_MATERIAL_PIPE_DECAL    5
 
-/* Material selectors (S8a/S8b) — draw-time resolve for the batcher.
+/* Material selectors (declarative and per-instance) — draw-time resolve
+ * for the batcher.
  * NULL spv side = keep the stock stage (executor falls back to the
  * embedded psx_scene shaders). uniform_slot > 0 = a per-instance
- * override (S8b): bind material-UBO block (1 + uniform_slot) as the mod
+ * override: bind material-UBO block (1 + uniform_slot) as the mod
  * block; 0 = declarative whole-class (engine block only). */
 typedef struct {
     const uint32_t* vert_spv; size_t vert_words;

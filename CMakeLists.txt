@@ -78,7 +78,7 @@ if(OPENPETE_BUILD_GLSLANG)
     add_subdirectory(third_party/glslang)
 endif()
 
-# PsyCross integration (Phase 1c+). Builds the static lib and links it
+# PsyCross integration. Builds the static lib and links it
 # into openpete_core; psyq_thunks.cpp routes recompiled PSYQ calls into
 # PsyCross. PsyCross's CMake calls find_package(OpenAL REQUIRED), so a
 # Linux build needs `libopenal-dev`. Disable with -DOPENPETE_BUILD_PSYCROSS=OFF
@@ -93,8 +93,7 @@ if(OPENPETE_BUILD_PSYCROSS)
 endif()
 
 # Native render foundation: RHI + Vulkan backend (game-agnostic, under
-# core/). Added before core/ so openpete_core can link openpete_rhi as the
-# renderer milestones land.
+# core/). Added before core/ so openpete_core can link openpete_rhi.
 add_subdirectory(core/rhi)
 
 add_subdirectory(core)
@@ -398,7 +397,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # beside ctest), and each timeout includes the in-image build (~4 min
     # from fresh at nproc 16; priced at 10 min).
 
-    # Native renderer visual-regression gate (W1.2). Renders the native `-vk`
+    # Native renderer visual-regression gate. Renders the native `-vk`
     # frame headless through the software rasterizer (surfaceless Vulkan, no
     # GPU, no display) at seven attract-demo draw-ticks and compares each
     # tile's verdict digest against its row of
@@ -913,7 +912,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         TIMEOUT 300
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
-    # The standing pacing gate (M9): does the sim clock hold its grid, does it
+    # The standing pacing gate: does the sim clock hold its grid, does it
     # hold BECAUSE presents shed (proved by fault injection, not by a machine
     # fast enough never to exercise the mechanism), and does it hold in a level
     # rather than only on the attract demo. Exit 3 = vacuous (nothing engaged)
@@ -999,7 +998,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             TIMEOUT 30
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
-        # Channel signature anchors (hook-anchor plan step 2): calibrate +
+        # Channel signature anchors: calibrate +
         # verify that every determinism-critical channel site is uniquely
         # anchorable by an instruction-pattern signature (local or
         # function-scoped) in the reference binary, and that the matcher
@@ -1172,7 +1171,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # that names the region a leak came from, and the canonical leg compared
     # against the blessed baseline under tests/state-baselines/. Refuses to
     # pass at zero sub-tick presents (exit 3, VACUOUS). Runs the `quick`
-    # corpus here; `--corpus full` is the arc-end sweep. Skips (exit 64) if
+    # corpus here; `--corpus full` is the complete sweep. Skips (exit 64) if
     # the binary or disc are absent.
     add_test(NAME subtick_state
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/harness/check_subtick_state.py)

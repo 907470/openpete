@@ -12,7 +12,7 @@ this tool derives it locally from a disc the user supplies:
         --disc "roms/SCUS-94467/SCUS-94467.bin" \
         --out  mods/triangle-flutter/data/s3_player.bin
 
-Format facts (spyro-3 decomp, disc-verified 2026-07-11):
+Format facts (spyro-3 decomp, disc-verified):
   - WAD.WAD sits in the ISO9660 filesystem (LBA 500 on the known image;
     located by directory parse here, not hardcoded).
   - wadHeader = first 0x620 bytes of WAD.WAD; bytes 0..7 are

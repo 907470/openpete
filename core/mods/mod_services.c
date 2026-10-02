@@ -1,4 +1,4 @@
-// core/mods/mod_services.c — engine services for mods (P2 contract).
+// core/mods/mod_services.c — engine services for mods.
 //
 // v1 surface (the engine-services contract):
 //   - savestate trigger: mods QUEUE a save/load; run.c executes it at
@@ -75,7 +75,7 @@ int openpete_mods_pending_state_op(unsigned* out_slot) {
     return op;
 }
 
-/* ---- asset-overlay roots (P2: logical-ID asset overlay v1) ----------- */
+/* ---- asset-overlay roots (logical-ID asset overlay v1) --------------- */
 /* One root per entered mod with an assets/ dir, registered by the loader
  * in ENABLED ORDER (= priority; later wins). Consumers (texture pack,
  * music override) layer these over their base directories.

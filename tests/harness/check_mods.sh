@@ -175,7 +175,7 @@ else
     bad "raw-tier warning missing"
 fi
 
-# ── 4. lib-and-client: deps topo-sort (rung 5) ──────────────────────────
+# ── 4. lib-and-client: deps topo-sort ───────────────────────────────────
 say "lib-and-client: client listed FIRST — topo-sort must load lib first"
 fixture "$WORK/libclient" lib-and-client demo-lib
 out="$(run_game "$WORK/libclient" 600)"
@@ -227,7 +227,7 @@ else
     ok "neither cycle mod loaded"
 fi
 
-# ── 5. crash-dummy: attribution names the offending mod (rung 6) ────────
+# ── 5. crash-dummy: attribution names the offending mod ─────────────────
 say "crash-dummy: deliberate segfault must be attributed to the mod"
 fixture "$WORK/crash" crash-dummy
 out="$(run_game "$WORK/crash" 5000)"; rc=$?
@@ -382,8 +382,8 @@ else
     bad "override from a failed entry is still live"
 fi
 
-# ── 8. asset overlay: texture namespace scan + overlay-duel (rungs 7+10) ─
-say "asset overlay: mod texture joins the pack (rung 7 scan)"
+# ── 8. asset overlay: texture namespace scan + overlay-duel ─────────────
+say "asset overlay: mod texture joins the pack (namespace scan)"
 fixture "$WORK/tex" hd-single-texture
 out="$(run_game "$WORK/tex" 300 \
         --screenshot-on-frame 200 \
@@ -395,7 +395,7 @@ else
     printf '%s\n' "$out" | grep -i texpack | head -3
 fi
 
-say "asset overlay: symbolic name binds to content, not to the VRAM rect (rung 7d)"
+say "asset overlay: symbolic name binds to content, not to the VRAM rect"
 # The title UI atlas and every level's texture page upload to the same
 # 512x256 block at VRAM (512,256). The annotation must bind title_ui to
 # the atlas content so a level page landing on the rect stays unnamed.
@@ -420,7 +420,7 @@ else
     printf '%s\n' "$out" | grep '\[texpack\] entry 512,256' | head -3
 fi
 
-say "asset overlay: two mods collide on one asset — last in order wins (rung 10)"
+say "asset overlay: two mods collide on one asset — last in order wins"
 for m in duel-a duel-b; do
     mkdir -p "$WORK/duelsrc/$m/assets/textures"
     printf '[mod]\nid = "%s"\nversion = "0.0.1"\napi = '"$API_VER"'\n' "$m" \
@@ -561,7 +561,7 @@ else
     diff <(printf '%s\n' "$stock_keys") <(printf '%s\n' "$probe_keys") | head -10
 fi
 
-# ── 9. level-segment overlay: CdRead chokepoint (rung 9) ────────────────
+# ── 9. level-segment overlay: CdRead chokepoint ─────────────────────────
 say "wad overlay: byte-identical blob — chokepoint provably transparent"
 mkdir -p "$WORK/wadsrc/wad-identity/assets/wad"
 printf '[mod]\nid = "wad-identity"\nversion = "0.0.1"\napi = '"$API_VER"'\n' \
@@ -903,7 +903,7 @@ else
     bad "asset-only mod tagged the card: $(cat "$CARDS/card1.mcr.modset")"
 fi
 
-# ── 15. zip mods: folder or zip, identical (P1 build+load) ──────────────
+# ── 15. zip mods: folder or zip, identical (build + load) ───────────────
 # hello-anchor zipped, dropped as <id>.zip, loads end-to-end (unpack →
 # content-hash-cached compile → dlopen); a second boot reuses both
 # caches (no re-extract, no recompile).
@@ -1110,7 +1110,7 @@ else
     fi
 fi
 
-# ── mod shaders S5: the SCENE injection point processes the 3D scene
+# ── mod shaders: the SCENE injection point processes the 3D scene
 # UNDER the HUD. scene-sepia sepia-tones the scene at the SCENE point,
 # then draws a cyan HUD text marker AFTER. The decisive proof is that
 # the marker stays CYAN, a colour a sepia tone cannot produce: if the

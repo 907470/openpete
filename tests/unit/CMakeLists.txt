@@ -206,7 +206,7 @@ add_test(NAME config_resolve_test COMMAND config_resolve_test)
 
 # record_encode_bench — encode-throughput validation for --record. Drives the swscale RGBA->yuv420p ->
 # libx264 path with synthetic frames as fast as the encoder allows and
-# reports the sustained fps (480 is the plan target). Self-contained: finds
+# reports the sustained fps (480 is the target). Self-contained: finds
 # libav* locally so the unit-test dir needn't depend on link order with
 # core/. The ctest floor is loose (a gross-regression catch); the real
 # number is printed in the RESULT line.

@@ -48,7 +48,7 @@
 #include "renderer/render_paths.h"  /* --render-paths isolation */
 #include "renderer/hook_bracket.h"  /* the shared feeder hook bracket */
 #include "openpete_ui_moby.h"  /* HUD/UI moby classifier (overlay-on-top tagging) */
-#include "openpete_mods.h"     /* per-instance material slot resolve (S8b) */
+#include "openpete_mods.h"     /* per-instance material slot resolve */
 #include "openpete_workpool.h" /* data-parallel face walk (--extract-threads) */
 
 #include <math.h>
@@ -895,7 +895,7 @@ typedef struct { float sx, sy, vz; int sat; int unr; int rec;
                  unr = this vertex fell in the GTE divide-overflow regime (see
                  moby_gte_near_fixup); sx/sy are then the hardware-clamped pair;
                  ex/ey/ez = the model->view rotated vertex offset (M.v)/4096 = viewPos-TR,
-                 the input to the specular env-reflection UV map (#1). */
+                 the input to the specular env-reflection UV map. */
 
 /** @brief Open the previous pose's keyframe streams for the two-pass shape lerp.
  *
@@ -1442,7 +1442,7 @@ static int moby_project_record(CPUState* cpu, const moby_record_t* R, int zsf4,
 #define MAX_PROJ 32768
 static proj_xy s_proj[MAX_PROJ]; static int s_proj_n;
 
-/* Per-record metadata for the independent face-stream walk (3a.2b): where this
+/* Per-record metadata for the independent face-stream walk: where this
  * record's vertices live in s_proj[] (filled in stream order, so a face's stream
  * vertex index k maps to s_proj[proj_off + k]) + the face-stream base. */
 typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, header_b, faceblock, w0;
@@ -2964,12 +2964,11 @@ int moby_reveal_candidates(CPUState* cpu, moby_reveal_kind_t kind) {
 }
 
 /* ---- native scene triangle (fed to panel 0) ------------------------------
- * Filled by the 3a.2b independent face-stream walk (below). The 3a.2a
- * nearest-neighbour prim scaffold it replaced was removed when the walk was
- * promoted; the walk is jitter-free (exact word0 indices) where
- * the scaffold's screen-proximity matching jittered. */
+ * Filled by the independent face-stream walk (below). The walk is
+ * jitter-free (exact word0 indices) where a screen-proximity match against
+ * the captured prims would jitter. */
 typedef struct { float sx, sy, vz; int u, v; uint32_t rgb;
-                 float ex, ey, ez; float tvz; } ntri_vert;  /* vz=depth; u,v=texel; ex/ey/ez=env-UV input (#1);
+                 float ex, ey, ez; float tvz; } ntri_vert;  /* vz=depth; u,v=texel; ex/ey/ez=env-UV input;
                  tvz = the same vertex's UNSHIFTED view-Z, the perspective W (see
                  openpete_scene_vert.pvz): vz carries the OT-slot pull, which can
                  reach 16256 world units on a saturated authored bias. */
@@ -2981,14 +2980,14 @@ typedef struct {
 } ntri_t;
 #define MAX_NTRI (MAX_PRIMS * 2)              /* GT4 quad -> 2 tris */
 
-/* ---- 3a.2b: INDEPENDENT gamestate face-stream walk -----------------------
+/* ---- INDEPENDENT gamestate face-stream walk ------------------------------
  * Derive triangle TOPOLOGY from the moby face stream itself (not the captured
  * prims). Each face's word0 packs three stream-vertex indices (byte offsets
  * into the per-record SXY scratchpad; >>2 = the s_proj index); textured faces
  * bake a Tiledef at fp-0xC/-0x8/-0x4; per-vertex colour comes from the fog
- * scratchpad (g_SonyImage+0x1100), word0-indexed. This replaces the 3a.2a
- * nearest-neighbour scaffold whose screen-proximity matching was the measured
- * cause of the 55%-NN-ambiguous jitter -- here connectivity is exact.
+ * scratchpad (g_SonyImage+0x1100), word0-indexed. Connectivity is exact,
+ * where a nearest-neighbour match by screen proximity against the
+ * captured prims is 55% ambiguous and jitters.
  *
  * The face-record stride is software-pipelined in the .s (2 faces in flight),
  * so the per-shape strides are validated EMPIRICALLY: compare_walk_vs_prims
@@ -3264,7 +3263,7 @@ static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
     O->isxy[O->n][2] = b->iv.sx; O->isxy[O->n][3] = b->iv.sy;
     O->isxy[O->n][4] = c->iv.sx; O->isxy[O->n][5] = c->iv.sy;
     s_emit_otk = -1;
-    O->cls[O->n] = s_cur_moby_cls;            /* provenance tag (mod-shaders S6) */
+    O->cls[O->n] = s_cur_moby_cls;            /* provenance tag for mod shaders */
     ntri_t* t = &O->tri[O->n++];
     t->v[0]=(ntri_vert){a->sx,a->sy,a->vz,ua,va,ca, a->ex,a->ey,a->ez, a->tvz};
     t->v[1]=(ntri_vert){b->sx,b->sy,b->vz,ub,vb,cb, b->ex,b->ey,b->ez, b->tvz};
@@ -3385,7 +3384,7 @@ void moby_simple_tri(const double p[3][3], const uint32_t rgb[3],
               textured, tpage_x, tpage_y, clut_x, clut_y, bpp, blend);
 }
 
-/* specular env-reflection UV (#1) -- definitions below (near recolor); forward-
+/* specular env-reflection UV -- definitions below (near recolor); forward-
  * declared so the walk can derive metal-face UVs natively. s_env_* = the static
  * metal Tiledef (D_800756F0, level-load asset), decoded to VRAM px by _load. */
 static void specular_env_load(CPUState* cpu);
@@ -4450,7 +4449,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
             uint8_t tmix = moby_face_fog_mix(&fd, fcc);
             cly += cly_fog;
             int u[4]={F->u[0],F->u[1],F->u[2],F->u[3]}, v[4]={F->v[0],F->v[1],F->v[2],F->v[3]};
-            /* #1 SPECULAR per-face shading. STRIP faces (!fresh) with word0&0x4
+            /* SPECULAR per-face shading. STRIP faces (!fresh) with word0&0x4
              * get the special per-face treatment (highlight-enable @80021B64;
              * dispatcher .L80021DB4): METAL record -> env reflection (the
              * .L80021FE0 chain, per-vertex .L800222C0 atan2 + the per-moby
@@ -5340,7 +5339,7 @@ static void recolor_walk_from_prims(void) {
     }
 }
 
-/* ---- specular env-reflection UV (#1), native float ---------------------
+/* ---- specular env-reflection UV, native float --------------------------
  * The shiny-metal faces reflect the environment: the .s computes per-vertex UV
  * from refl = metalMatrix . (viewPos-TR) mapped to spherical coords (atan2 + the
  * D_8006D908/D_8006CBF8 tables), gated by m_SpecularMetalColor's high byte and
@@ -6461,7 +6460,7 @@ static void push_scene_moby(void) {
     if (!s_logged && s_gout.n > 0) {
         s_logged = 1;
         fprintf(stderr, "[moby-native] feeding panel 0: %d moby tris from gamestate "
-                "(3a.2b independent face-stream walk) frame %u\n", s_gout.n, openpete_frame);
+                "(independent face-stream walk) frame %u\n", s_gout.n, openpete_frame);
     }
     openpete_native_scene_begin_frame(openpete_frame);
     /* mobys cover shadows (ACTOR); HUD/UI mobys overlay on top. Stamped per-tri
@@ -6829,7 +6828,7 @@ static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat)
      * same +0x1600 record queue; SPECULAR re-draws the identical geometry to overlay
      * an additive per-face specular highlight (PSX can't bake it into one pass), so
      * the two .s passes OVERLAP at one pose. The native bakes the specular shading
-     * per-face in build_walk_tris (#1) already, so re-feeding the same moby from the
+     * per-face in build_walk_tris already, so re-feeding the same moby from the
      * SPECULAR pass is redundant — AND wrong-pose: the native re-projects AFTER
      * func_80020F34 (and the intervening specular cull) has advanced the per-record
      * keyframe/blend state, so the SPEC feed paints a SECOND, different animation
@@ -6869,7 +6868,7 @@ static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat)
             if (append_revealed_regular(cpu) > 0) render_path_mark_drawn(RP_MOBY);
         }
         { OP_PROF_ACCUM_SCOPE("moby.build");
-          build_walk_tris(cpu); }             /* 3a.2b walk; SPEC dedups vs s_reg_moby; shading baked (#1) */
+          build_walk_tris(cpu); }             /* face-stream walk; SPEC dedups vs s_reg_moby; shading baked */
         /* The walk admits what its own cull mirror admits; on a tick where the
          * .s pass emitted nothing (an empty interval: the portal-entry tick
          * culls every record) but the walk still produced tris, the path
@@ -6921,11 +6920,11 @@ static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat)
         if (target && !s_dumped) { hex_dump(cpu, start, end); s_dumped = 1; }
         if (target) {
             compare_and_report(nrec);
-            build_walk_tris(cpu);             /* 3a.2b independent walk + topology A/B */
+            build_walk_tris(cpu);             /* independent walk + topology A/B */
             compare_walk_vs_prims();
             if (mat && mat[0] == 'S' && mat[1] == 'P') {   /* confirm specular recolor attaches the prim colour */
-                specular_env_calibrate(cpu);  /* #1 env-UV calibration dump (native refl vs prim UV) */
-                specular_hl_calibrate(cpu);   /* #1 follow-up: highlight (face-normal.light vs prim) */
+                specular_env_calibrate(cpu);  /* env-UV calibration dump (native refl vs prim UV) */
+                specular_hl_calibrate(cpu);   /* highlight calibration (face-normal.light vs prim) */
                 recolor_walk_from_prims();
                 compare_walk_vs_prims();      /* the post-recolor col= should jump high */
             }
@@ -8485,7 +8484,7 @@ static int build_shaded_walk_tris(CPUState* cpu) {
          * flagged as a mismatch by the static recomp read, but it is NOT a visible
          * bug: on a 54-gem demo frame (f3494) the native-vs-PsyCross A/B diff is
          * mean 0.9 with no systematic per-gem divergence (only sub-pixel edge jitter)
-         * and the user confirms gems look correct — the unmodelled ABE-removal gate
+         * and the gems look correct — the unmodelled ABE-removal gate
          * clears it for these faces, and any kept additive shimmer is subtle and also
          * dropped by PsyCross. Left opaque; revisit only if a metal moby ever looks
          * wrong. (The earlier per-frame ABR-FIXME alarm here was a false-positive

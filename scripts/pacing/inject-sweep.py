@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""inject-sweep.py — locate the canonical-present cliff (Phase 3).
+"""inject-sweep.py — locate the canonical-present cliff.
 
 `OPENPETE_PACE_INJECT_CANON_US` makes the one present that CANNOT be shed
 expensive, which is the fault a fast machine never produces. A first pass at
@@ -43,7 +43,7 @@ def analyse(log_path, warmup, goal_us):
     spans = [r for r in log.of(pacelog.PRESENT_SPAN)
              if r.flags == pacelog.CANONICAL]
     pres = log.of(pacelog.PRESENT)
-    # Two clocks slip, and only one of them is the grid this plan defends.
+    # Two clocks slip, and only one of them is the sim grid.
     # Reporting a single "slips" column hides the other entirely: at 25 ms the
     # sim grid never clamped once while the RENDER clock clamped 206 times and
     # discarded 3504 VBL of render deadlines.

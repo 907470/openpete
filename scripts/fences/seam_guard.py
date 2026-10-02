@@ -6,9 +6,8 @@ host loop otherwise, with openpete_present_thread_set_active() as the only
 handoff. Every defect in this family (a frozen display after a resize, a
 silent driver kill after a few interpolation toggles, scenes retired while
 the GPU still read their arenas, a fullscreen toggle that no-ops) came from
-code touching that state from the wrong side of the handoff. The ownership
-rule already lived in comments and a plan section; this fence makes the
-build refuse the violation instead of describing it.
+code touching that state from the wrong side of the handoff. This fence
+makes the build refuse the violation instead of describing it in comments.
 
 Three rules, each greppable:
 

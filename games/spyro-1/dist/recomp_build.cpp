@@ -9,7 +9,7 @@
 // (CMake): recomp/manifest/ (converged funcs lists + manifest.toml +
 // psyq.toml + channel_sites.txt), recomp/src/ (the 5-file module source
 // kit), recomp/tools/PSXRecomp when packaged. The host compiler is
-// $OPENPETE_CC or `cc` until D3 bundles a pinned clang.
+// the bundled clang when packaged, else $OPENPETE_CC or `cc`.
 //
 // Cross-platform: POSIX uses the bundled clang / $OPENPETE_CC / cc;
 // Windows requires the bundled llvm-mingw next to the exe
@@ -532,8 +532,8 @@ extern "C" int spyro1_recomp_build_module(const char* disc_path,
     /* Per-binary identity: the manifests were converged against the
      * retail binaries whose sha256 they record. A mismatched binary is
      * a code-modified romhack — the forced-entry lists may under-cover
-     * it (stub-miss risk); run anyway, loudly (default-and-warn; the
-     * discovery tier is plan D5). */
+     * it (stub-miss risk); run anyway, loudly (default-and-warn; no
+     * discovery pass runs for a modified binary). */
     {
         int modified = 0;
         if (!main_exe_sha.empty() &&

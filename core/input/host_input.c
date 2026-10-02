@@ -137,7 +137,7 @@ static void synth_pad(unsigned frame, unsigned short* bits, unsigned char axes[4
     }
 }
 
-/* Timed pulse source (M5 Tier A) — OPENPETE_INPUT_PULSE=<count>.
+/* Timed pulse source — OPENPETE_INPUT_PULSE=<count>.
  *
  * The frame-indexed synth source above cannot answer an input-PHASE question:
  * it changes on a frame boundary, so every edge lands at the same point in the
@@ -150,7 +150,8 @@ static void synth_pad(unsigned frame, unsigned short* bits, unsigned char axes[4
  * cannot see the SDL pump, event delivery, focus, or a main thread parked in a
  * modal loop — during such a stall it publishes nothing and its own schedule
  * slides with it, so it would absolve exactly the hazard the thread split
- * introduced. Only an external injector (Tier B) can see that. Accordingly
+ * introduced. Only an external OS-level injector
+ * (scripts/pacing/inject_input.py) can see that. Accordingly
  * this source must never be the producer behind an end-to-end latency claim.
  *
  * Presses are held for at least one grid period by default, so a pulse the

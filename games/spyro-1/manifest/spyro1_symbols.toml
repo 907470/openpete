@@ -10,7 +10,7 @@
 # Why curated aliases instead of the raw manifest names: recomp globals only
 # have D_<addr> names (non-descriptive), the decomp names (g_Camera, ...) are
 # REAL linker symbols that a `#define` would clobber, and the feeders want
-# SCREAMING_CASE raw vaddr integers for cpu->read_word(). See plan W0.8.
+# SCREAMING_CASE raw vaddr integers for cpu->read_word().
 #
 # NOT here (deliberately kept local): the PSX hardware scratchpad 0x1F800000,
 # the openpete-invented relocation regions (no_lod.c 0x80300000/0x80600000),

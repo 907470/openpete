@@ -22,10 +22,8 @@
  *      own-ground by surface ORIENTATION: walkable ground has a large up
  *      normal, a wall face ≈ 0. The normal comes from neighbouring pre-pass
  *      texels (world-position differences — camera position constants
- *      cancel). The old "terrain view-Z skew" blocker was DISPROVEN
- *      2026-07-02 (axis misread in the measuring harness — Spyro's vertical
- *      is the z field/V1, not y/V0); fed terrain floors reconstruct flat to
- *      the unit, so the clause is sound.
+ *      cancel). Spyro's vertical is the z field/V1, not y/V0; fed terrain
+ *      floors reconstruct flat to the unit, so the clause is sound.
  *
  * Reconstruction (the inverse of the game's GTE path, swizzle V=(-dy,-dz,dx)):
  *   viewZ from the pre-pass depth;  MAC1=(SX-ofx)*viewZ/h;  MAC2=(SY-ofy)*viewZ/h
@@ -259,8 +257,8 @@ void main()
     float dT = texelFetch(uOpaqueDepth, tx, 0).r;
     float viewZ = viewz_from_prepass_depth(dT);
 
-    /* Reconstruct the terrain point's world HEIGHT at this pixel. AXIS NOTE
-     * (2026-07-02): Spyro's vertical world axis is the z FIELD, carried by V1
+    /* Reconstruct the terrain point's world HEIGHT at this pixel. AXIS NOTE:
+     * Spyro's vertical world axis is the z FIELD, carried by V1
      * (swizzle V=(-dy,-dz,dx) => slot 1 = -dz). The original decal used V0
      * (world y — HORIZONTAL), a proximity test that rejected walls
      * incidentally and left the wall-base notch. */

@@ -100,7 +100,7 @@ for rel in $NATIVE_SOURCES; do
         --globals-toml="$MANIFEST_DIR/globals.toml"
 done
 
-# Phase 3 (auto-manifest): cross-check the discovered entries against the
+# Auto-manifest (Pass 6): cross-check the discovered entries against the
 # hand-curated [[outbound_recomp]] / [[outbound_psyq]] / [[dispatch]] in
 # native.toml. Diagnostic-only — discrepancies don't fail the build, but
 # make it visible when the rewriter has caught up to (or surpassed) the

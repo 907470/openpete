@@ -10,7 +10,7 @@
 # are applied.
 #
 # Usage:
-#   scripts/check_move_symbols.sh record                 # before the arc
+#   scripts/check_move_symbols.sh record                 # before the first move
 #   scripts/check_move_symbols.sh check [renames-file]   # after each content commit
 #   scripts/check_move_symbols.sh accept [renames-file]  # roll the declared renames into the record
 #

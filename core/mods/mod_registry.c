@@ -173,7 +173,7 @@ static void registry_tick(CPUState* cpu) {
     }
 }
 
-/* ── Level-slot namespace (rung 12) ─────────────────────────────────── */
+/* ── Level-slot namespace ──────────────────────────────────────────── */
 
 /* Slots the registry starts with. The game ops expose one free slot
  * today, so a stock set never grows this. */
@@ -367,8 +367,8 @@ int openpete_mods_level_enter(CPUState* cpu, int level_id) {
  * donor's own entry, and warps. The WAD overlay asks
  * openpete_mods_custom_files_for() which files serve a level id.
  * v1 capacity: rows TIME-SHARE the one free slot (id 65); per-level
- * progress on the shared index is common to all of them until the
- * capacity arc lifts the guest tables. */
+ * progress on the shared index is common to all of them, since the guest
+ * tables have no second free slot. */
 /* Rows the custom-level table allocates up front; it grows past this. */
 #define CUSTOM_INIT 64
 

@@ -21,7 +21,7 @@
 
 /* --- Recomp-module registry -------------------------------------------
  * Core carries NO link-time reference to the recompiled code; the game
- * (static build) or the module loader (distribution D1) registers the
+ * (static build) or the module loader (distribution build) registers the
  * descriptor before the first dispatch. See openpete_recomp_module.h. */
 
 /** @brief Dispatch of the sentinel module: log the address and abort.

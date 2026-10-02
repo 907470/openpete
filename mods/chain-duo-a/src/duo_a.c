@@ -1,4 +1,4 @@
-/* chain-duo-a — rung 4: prove stacking + order semantics (see mod.toml).
+/* chain-duo-a — proves stacking + order semantics (see mod.toml).
  * Logs the nesting once: "A>" before base(), "<A" after. */
 
 #include <openpete_mod_api.h>

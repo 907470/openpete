@@ -72,7 +72,7 @@ start  = 0x80078EA0
 length = 0x1808
 source = "libgpu's queued-command ring placed in game .bss: head/tail/count words D_80078EA0..A8 and the 0x60-byte entries from D_80078EAC to g_LevelVortexExitFlags (psyq.s 0x80061980 indexes D_80078EAC by slot*0x60); referenced only by psyq.s, openpete's host libgpu never writes it"
 
-# PSYQ-internal words openpete's mirrors write, derived by hand on 2026-09-11
+# PSYQ-internal words openpete's mirrors write, derived by hand
 # from every write_word, table and block site in games/spyro-1/psyq_hooks.cpp
 # and the libgpu copies in games/common/psyq/psyq_thunks.cpp; a new site there
 # adds a row here. A differing byte here is a defective or incomplete
@@ -215,7 +215,7 @@ start  = 0x800786A0
 end    = 0x800786C4
 name   = "g_PadBuffer"
 reason = "the raw poll answer; the reference answers as an analog pad"
-owner  = "P16"
+owner  = "pad model"
 
 [[expect]]
 class  = "music_head"
@@ -223,7 +223,7 @@ start  = 0x800776B8
 end    = 0x800776C4
 name   = "g_CdMusic+0x208..+0x214 (stream position bookkeeping)"
 reason = "openpete's virtual XA head advances at a fixed rate per VBL; the drive's head does not"
-owner  = "openpete-music-xa-double-speed"
+owner  = "XA double-speed music"
 
 [[expect]]
 class  = "boot_timing"
@@ -231,14 +231,14 @@ start  = 0x80075950
 end    = 0x80075958
 name   = "D_80075950 (.pre = VSync(-1) timing pair)"
 reason = "VBL counts read from VSync(-1); the boot's VBL count differs"
-owner  = "openpete-psx-oracle-ci"
+owner  = "oracle CI"
 [[expect]]
 class  = "pad_model"
 start  = 0x800773BC
 end    = 0x80077420
 name   = "g_Pad stick calibration (m_CaliStick*, m_Cali*Sensitivity)"
 reason = "filled from the analog pad's poll answer; openpete's pad answers a digital poll"
-owner  = "P16"
+owner  = "pad model"
 
 [[expect]]
 class  = "boot_timing"
@@ -246,7 +246,7 @@ start  = 0x80075760
 end    = 0x80075764
 name   = "g_UnprocessedFrames"
 reason = "VBL count taken during boot; equal by the loop anchor's first hit (oracle record 0)"
-owner  = "openpete-psx-oracle-ci"
+owner  = "oracle CI"
 
 [[expect]]
 class  = "boot_timing"
@@ -254,7 +254,7 @@ start  = 0x800758C8
 end    = 0x800758CC
 name   = "g_LevelTicks"
 reason = "VBL count taken during boot; equal by the loop anchor's first hit (oracle record 0)"
-owner  = "openpete-psx-oracle-ci"
+owner  = "oracle CI"
 
 [[expect]]
 class  = "callback_stack"
@@ -262,7 +262,7 @@ start  = 0x80077DFC
 end    = 0x80077E04
 name   = "D_80077DD8+0x24..+0x2C (saved sp, fp of a handwritten register-save block, collision.s func_8004AE38)"
 reason = "the guest stack depth at that save differs between the two sides; which call chain differs is an open unknown"
-owner  = "openpete-guest-interrupt-delivery"
+owner  = "guest interrupt delivery"
 
 # libetc's interrupt-dispatch state: the handler, stack pointer and argument
 # of the callback in flight, the callback ring's head and tail indices, and
@@ -275,7 +275,7 @@ start  = 0x80074B58
 end    = 0x80074B64
 name   = "libetc callback context (handler, sp, argument)"
 reason = "hardware runs the handler from the interrupt on the kernel stack; the values are the last dispatch's registers"
-owner  = "openpete-guest-interrupt-delivery"
+owner  = "guest interrupt delivery"
 
 [[expect]]
 class  = "irq_dispatch"
@@ -283,7 +283,7 @@ start  = 0x80074B68
 end    = 0x80074B70
 name   = "libetc callback ring head and tail"
 reason = "count of callbacks queued and dispatched by the interrupt path"
-owner  = "openpete-guest-interrupt-delivery"
+owner  = "guest interrupt delivery"
 
 [[expect]]
 class  = "irq_dispatch"
@@ -291,7 +291,7 @@ start  = 0x80074B7C
 end    = 0x80074B84
 name   = "libetc interrupt counters"
 reason = "advance per interrupt since the BIOS boot; openpete's VBL count starts at the EXE entry"
-owner  = "openpete-guest-interrupt-delivery"
+owner  = "guest interrupt delivery"
 
 # libcd's state block: the bytes its translated getters read, written by the
 # shared CD thunks. A differing byte here is a defective mirror.

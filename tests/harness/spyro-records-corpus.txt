@@ -21,9 +21,9 @@
 #              record has nothing to pair)
 #   note
 #   args       optional 10th field: extra launch args (`--runahead N` rows
-#              exercise the led lists, P7)
+#              exercise the led lists)
 #
-# Measured 2026-09-14 (P0). Extra dragons draw FIRST, the composer's own
+# Measured: extra dragons draw FIRST, the composer's own
 # player-1 call LAST (coop_draw.c); the mod draws no shadow for a gliding
 # extra dragon, so the glide case has one shadow call for four models.
 #
@@ -36,13 +36,13 @@ tas-blink-1of3|tas|3|5588|3|1|0|0,1,2|three models, one shadow (tas f5588: playe
 tas-shadows-2of3|tas|3|7698|1|3|0|2|one model, three shadows: players 2-3 hidden with their shadows drawn from f7578 on (their shadow hooks append pairing-only model records 0-1 at their call ordinal; player 1 is record 2)
 tas-shadow-only|tas|3|6394|0|1|0|?|no model call, one shadow (the hidden-player shadow-only draw; the ring is frozen here)
 flame-3p|flame|3|1800|3|3|1|0,1,2|player 1 breathing fire: three models, three shadows, one flame (player 1, record 2)
-glide-4p-ra2|glide-flutter|4|1760|4|1|0|0,1,2,3|glide-4p under --runahead 2: every record's lerp source is its led-list record (P7)|--runahead 2
-sunny-flight-3p-ra2|sunny-flight-exit|3|1600|3|0|0|0,1,2|sunny-flight-3p under --runahead 2: three moving dragons, each led by its led-list record (P7)|--runahead 2
+glide-4p-ra2|glide-flutter|4|1760|4|1|0|0,1,2,3|glide-4p under --runahead 2: every record's lerp source is its led-list record|--runahead 2
+sunny-flight-3p-ra2|sunny-flight-exit|3|1600|3|0|0|0,1,2|sunny-flight-3p under --runahead 2: three moving dragons, each led by its led-list record|--runahead 2
 #
 # Not reachable headless (each needs a second controller or a live menu):
 #   menu preview draw (coop_draw.c:263-266); player 1 idle with player 2
 #   charging; respawn blink off->on for player k>=1; fly-in / fly-out wingmen
-#   (RA_FLYIN_MODEL / RA_FLYOUT_MODEL). P5 covers them on a real GPU.
+#   (RA_FLYIN_MODEL / RA_FLYOUT_MODEL). They need a windowed run on a real GPU.
 #   Fairy-Kiss on player 1 with the mod: fairy-kiss.bk2 desyncs under the mod
 #   (the push-apart moves player 1; no epoch reaches the filter, c=0 on every
 #   record through f4000, and player 2 stops drawing at f1688 once player 1

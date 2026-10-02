@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # verify-recomp-manifest.sh — prove the committed converged manifests
 # reproduce the multi-pass regen output with a SINGLE psxrecomp pass per
-# binary (distribution D2.1 gate; plan openpete-distribution-local-recomp).
+# binary.
 #
 # For each binary: run PSXRecomp once with manifest/recomp/<sku>/'s funcs
 # list, apply the same dispatch-rename regen applies, and byte-diff the

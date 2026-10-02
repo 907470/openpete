@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # check_carve_equivalence.sh — prove disc-carved recomp inputs == the
-# decomp build outputs regen consumes (distribution D2.3 gate; plan
-# openpete-distribution-local-recomp).
+# decomp build outputs regen consumes.
 #
 # Runs the resolved game binary with --extract-recomp-inputs against the
 # reference disc, then byte-compares: PSX.EXE vs the decomp's build/PSX.EXE, and

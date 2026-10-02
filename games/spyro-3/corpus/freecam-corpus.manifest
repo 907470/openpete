@@ -2,7 +2,7 @@
 # golden. Same row form as games/spyro-1/corpus/freecam-corpus.manifest:
 #   <level> | pos=(x, y, z) yaw=Y pitch=P | [start]
 # Each row is a reported defect; the class it belongs to is named on
-# the row's comment and the plan ticks it when the fix lands.
+# the row's comment.
 # animated terrain holds its tick pose on intermediate presents
 sunrise_spring | pos=(45559, 29220, 16378) yaw=1474 pitch=379
 # animated terrain draws through the portal preview
@@ -36,11 +36,11 @@ sunrise_spring | pos=(59755, 4990, 36743) yaw=1480 pitch=354
 # (50 of 54 simple records low-poly at the pose; the lodext tiles carry the defect)
 sunrise_spring | pos=(50900, 12500, 26900) yaw=1480 pitch=354
 # Widescreen moby cull: the basket on the right of the frame is visible at
-# 16:9 but is culled early (user report 2026-09-19); blessed pre-fix.
+# 16:9 but is culled early; blessed pre-fix.
 sunrise_spring | pos=(39482, 20225, 17997) yaw=-201 pitch=-30
 # terrain texture tier: the wall's higher-quality texture repeats four times
 # where the lower one drew whole; under --lod extended the highest tier must
-# draw everywhere (reported 2026-09-20). The second pose sits one step closer.
+# draw everywhere. The second pose sits one step closer.
 evening_lake | pos=(45318, 64221, 42770) yaw=1790 pitch=-20
 evening_lake | pos=(44902, 64396, 42783) yaw=1790 pitch=-20
 # same-moby paint order: a head face cuts through Hunter's right eye under true depth; OPENPETE_MOBY_RANK=1 paints the eye whole as the game does

@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # scripts/setup_linux_clang.sh — fetch and trim the Linux clang that the
-# AppImage bundles for the first-boot module compile (distribution D6.3;
-# plan openpete-distribution-local-recomp).
+# AppImage bundles for the first-boot module compile.
 #
 # Produces .tools/clang/ (gitignored), which package-dist.sh stages as
 # recomp/tools/clang — where find_cc (games/spyro-1/dist/recomp_build.cpp) looks before the

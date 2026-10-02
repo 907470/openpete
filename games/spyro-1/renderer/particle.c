@@ -2285,7 +2285,7 @@ static int on_80058864_dragonstar(CPUState* cpu, uint32_t addr) {
 /* Sub-tick re-extract (high-FPS spine): reproduce particles, glows and
  * sparkles from the current g_Particles pool — extract-only (no render_fn, no
  * verdicts). Pool walks self-limit to live particles; Sparx + ambient sparkles
- * stay present on intermediates (per-particle pos+=α·vel lerp lands in step 5). */
+ * stay present on intermediates. */
 void particle_reextract(CPUState* cpu) {
     if (!openpete_native_scene_enabled()) return;
     /* Each feeder replays only when ITS .s renderer drew on the canonical

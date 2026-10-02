@@ -44,7 +44,7 @@ Modes:
   check --list  print every in-scope key with its bin and form, the
                 NO-HEADER-INCLUDE and Windows-only lists; the population
                 query of the fence.
-  tighten       full-corpus rewrite at arc end: retirements and form
+  tighten       full-corpus rewrite, run on demand: retirements and form
                 changes; a key with no row that does not meet is refused.
   baseline      recapture the whole file (library-version change only).
 

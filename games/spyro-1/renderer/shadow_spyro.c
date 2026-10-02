@@ -98,7 +98,7 @@ static void shadow_spyro_dump(CPUState* cpu) {
 }
 
 /* ===========================================================================
- *  SPYRO SILHOUETTE SHADOW — native float walk (3b.2). Re-derived entirely
+ *  SPYRO SILHOUETTE SHADOW — native float walk. Re-derived entirely
  *  from gamestate (no scratchpad coupling): the silhouette ring is the model's
  *  shadow keyframes A/B (g_Models[0] + g_Spyro selectors) linearly interpolated
  *  by g_Spyro+0x24, doubled to 16 ring points (point + midpoint); each point's

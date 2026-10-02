@@ -14,13 +14,13 @@
  * function pointers per row, and everything imgui-specific stays in
  * devui.cpp. The registry itself is plain C and UI-free.
  *
- * Mutability contract (the runtime-safety audit's output, enforced here):
+ * Mutability contract (enforced here):
  *  - KNOB_LIVE rows route every write through a public setter that touches
  *    renderer/host state only — never gameplay-readable RAM (north-star).
  *  - KNOB_RESTART_ONLY rows have set_num/set_str == NULL and render disabled;
  *    they still display the resolved boot value + source. Promoting one to
  *    LIVE requires auditing every consumer for boot-time latching first
- *    (see the plan: a single latched consumer means LIVE_FIXUP, not LIVE).
+ *    (a single latched consumer means LIVE_FIXUP, not LIVE).
  */
 
 #include <stddef.h>

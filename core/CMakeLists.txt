@@ -177,11 +177,11 @@ add_library(openpete_core STATIC
     # MakeVertexTriangle/Quad) to recover world-space + matrix state at
     # draw time. Foundation for draw-call matching and renderer-side lerp.
 
-    # Draw-call matcher (renderer-foundation Phase 1). Groups OT prims
-    # by matrix_span_id, hashes each batch by geometric fingerprint,
-    # matches curr-frame batches against prev-frame. Produces stable
-    # object_ids that Phase 2 lerp will use as identity for T/R/S
-    # decompose + interpolate. No render changes in Phase 1.
+    # Draw-call matcher. Groups OT prims by matrix_span_id, hashes each
+    # batch by geometric fingerprint, matches curr-frame batches against
+    # prev-frame. Produces stable object_ids for a renderer-side lerp to
+    # use as identity for T/R/S decompose + interpolate. Changes no
+    # rendering.
 
     # Per-batch binary trace for the substitute pipeline. Off unless
     # --vertex-trace-log PATH is given. Consumed by
@@ -215,16 +215,17 @@ add_library(openpete_core STATIC
     host/memcard.c
 
     # Data-parallel extraction worker pool (--extract-threads). See
-    # openpete_workpool.h for the threading contracts (C1-C5).
+    # openpete_workpool.h for the threading contracts.
     runtime/work_pool.c
 
     # Pacing-clock lifecycle + the fast-forward flag. The host loop paces
     # itself against op_sleep_until deadlines; there is no pacing thread.
     runtime/ticker.c
 
-    # Phase 1e infra-triangle: hardcoded POLY_F3 emit to validate the full
-    # PsyCross render pipeline without depending on overlay-resident Spyro
-    # code. C++ TU because PsyCross's libgpu.h uses static_assert.
+    # --debug-triangle infra-triangle: hardcoded POLY_F3 emit to validate
+    # the full PsyCross render pipeline without depending on
+    # overlay-resident Spyro code. C++ TU because PsyCross's libgpu.h uses
+    # static_assert.
     renderer/debug_render.cpp
 
     # Vendored psxrecomp pieces kept verbatim: gte.cpp, the memory helpers and
@@ -236,8 +237,7 @@ add_library(openpete_core STATIC
 
 # libco: cooperative single-fiber scheduler. third_party/libco/libco.c
 # `#include`s a per-arch sibling (amd64.c on x86_64 Linux/macOS, fiber.c
-# under MinGW). The Phase 1b shim has been retired now that we ship the
-# real implementations.
+# under MinGW); these are the real implementations, with no shim.
 target_sources(openpete_core PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party/libco/libco.c)
 
@@ -603,8 +603,8 @@ else()
 endif()
 
 # PsyCross provides the PSYQ surface (libgs/libgte/libetc/libapi/...) used by
-# PSYQ-targeted thunks. Phase 1c flips this default ON; downstream targets
-# include PsyCross/include and link `psycross_static` automatically.
+# PSYQ-targeted thunks. When the target exists, downstream targets include
+# PsyCross/include and link `psycross_static` automatically.
 if(TARGET psycross_static)
     target_link_libraries(openpete_core PUBLIC psycross_static)
     target_include_directories(openpete_core PUBLIC

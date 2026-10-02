@@ -14,9 +14,9 @@
  * pacing lines updating at some other cadence reads as flicker. */
 #define PERF_WINDOW_NS (OP_NS_PER_SEC / 2)
 
-/* Late-tick threshold: the S1 goal the pacing work is held to. Also the
- * boundary between phase-histogram buckets 2 and 3, which is what makes the
- * rate computable from census deltas alone. */
+/* Late-tick threshold: the 250 µs start-phase goal the pacer is held to.
+ * Also the boundary between phase-histogram buckets 2 and 3, which is what
+ * makes the rate computable from census deltas alone. */
 #define PERF_LATE_BUCKET 3
 
 static openpete_pace_census_t s_prev;

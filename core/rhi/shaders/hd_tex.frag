@@ -1,12 +1,12 @@
 #version 450
 
-/* HD texture-replacement PoC (openpete-texture-replacement plan, Phase 4
- * spike): samples a host RGBA8 replacement texture instead of the PSX VRAM
- * decode. UVs arrive in PSX texel units (same vertex path as psx_scene); the
- * push-constant rect maps the replaced texel box onto [0,1]^2 of the HD
- * image. Modulation mirrors psx_scene.frag (texel * colour / 128, rgb only);
- * alpha is the replacement's own (real per-texel alpha, drawn on an
- * RHI_BLEND_ALPHA pipe instead of the PSX black-sentinel discard). */
+/* HD texture replacement: samples a host RGBA8 replacement texture instead
+ * of the PSX VRAM decode. UVs arrive in PSX texel units (same vertex path as
+ * psx_scene); the push-constant rect maps the replaced texel box onto
+ * [0,1]^2 of the HD image. Modulation mirrors psx_scene.frag (texel *
+ * colour / 128, rgb only); alpha is the replacement's own (real per-texel
+ * alpha, drawn on an RHI_BLEND_ALPHA pipe instead of the PSX black-sentinel
+ * discard). */
 
 layout(set = 0, binding = 0) uniform sampler2D u_hd;
 

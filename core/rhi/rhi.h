@@ -10,17 +10,15 @@
  * function-by-function as the renderer requires; it is deliberately
  * NOT a general render graph.
  *
- * Milestone 1a surface (this file): device + swapchain + a single
- * offscreen color target, a clear-the-offscreen pass, a blit of that
- * target onto the swapchain, and present. No pipelines, buffers, or
- * textures yet — those arrive in 1b alongside the native-res VRAM model
- * and the ported PSX texture-sampling shader.
+ * Surface (this file): device + swapchain, an offscreen color target
+ * with depth, buffers, pipelines, textures over the native VRAM model,
+ * uniform blocks, a blit of the offscreen target onto the swapchain, and
+ * present.
  *
- * The offscreen-target -> blit -> present structure is intentional from
- * day one: the 3D scene will render INTO the offscreen target, the 2D
- * layer composites over it, framebuffer effects (StoreImage) read back
- * from it, and only then is it blitted to the swapchain. 1a establishes
- * that path by clearing the offscreen target rather than the swapchain.
+ * The offscreen-target -> blit -> present structure: the 3D scene renders
+ * INTO the offscreen target, the 2D layer composites over it, framebuffer
+ * effects (StoreImage) read back from it, and only then is it blitted to
+ * the swapchain.
  *
  * Threading: single-threaded. Every call happens on the loop that drives
  * the frame (the host fiber in openpete; main() in the smoke test).
@@ -582,8 +580,8 @@ bool rhi_drain_readback(rhi_device *dev, void *out, size_t out_bytes,
 /* ---- buffers, pipelines, draws ------------------------------------ */
 
 /* Native vertex format — one fixed layout for all renderer geometry, so a
- * single vertex buffer format feeds every pipeline. 1b.1 used position +
- * color; 1b.2 brought uv online for the PSX sampler. The per-draw texture
+ * single vertex buffer format feeds every pipeline: position, color, and
+ * uv for the PSX sampler. The per-draw texture
  * page / CLUT / bpp ride a push constant (one material per draw batch — a
  * native renderer sorts by material), so the packed per-vertex `tex` field
  * is currently unused/reserved (PSX-era per-vertex tpage packing would only
@@ -887,7 +885,7 @@ typedef struct {
                                  * set 3 = the 2-binding dynamic UBO layout
                                  * (engine block, mod block — rhi_ubo_bind).
                                  * uses_vram/uses_vram2 are ignored.           */
-    bool           mod_pipeline; /* mod custom-draw layout (S7): the STANDARD
+    bool           mod_pipeline; /* mod custom-draw layout: the STANDARD
                                  * rhi_vertex input + the postfx 4-set layout
                                  * (sets 0..2 samplers, set 3 UBO pair), so
                                  * mod vert/frag pairs see attributes at
@@ -1230,7 +1228,7 @@ rhi_pipeline *rhi_create_pipeline_spv(rhi_device *dev,
                                       const uint32_t *vert_words, size_t vert_n,
                                       const uint32_t *frag_words, size_t frag_n);
 
-/* ---- uniform-buffer blocks (S2: postfx/custom-pipeline uniforms) ----
+/* ---- uniform-buffer blocks (postfx/custom-pipeline uniforms) --------
  * A rhi_ubo is `blocks` fixed-size uniform blocks × the frame ring, in
  * one HOST_VISIBLE buffer, with a 2-binding DYNAMIC-offset descriptor
  * set (binding 0 = block_a, binding 1 = block_b at bind time; both

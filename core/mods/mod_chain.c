@@ -13,7 +13,7 @@
 // 0 and the recompiled body runs — the generalization of the in-tree
 // re-entrancy-guard pattern in game_extras_impl.c (func_80023AC4 trace).
 //
-// Chain contents are runtime data (plan Round 7): registering and
+// Chain contents are runtime data: registering and
 // removing links needs no re-link or code patching. All chain execution
 // happens on the sim thread (guest-call semantics); the TLS frame stack
 // is belt-and-braces.

@@ -15,15 +15,15 @@ Both legs are rasterised here with the SAME sampling rule (pixel centres in
 walk space x2 vertical, i.e. 512x464 grid mapped from 512x240-8), so edge
 pixels cancel instead of reading as disagreement.
 
-Native winner rule mirrors the GPU (--model): 'offset' = the pre-P6b
-renderer, min interpolated stored depth (true vz + 128*otslots); 'keyresolve'
-= the P6b renderer, flat per-face og-key raster + strict-less-by-half-slot
+Native winner rule mirrors the GPU (--model): 'offset' = min interpolated
+stored depth (true vz + 128*otslots); 'keyresolve' = flat per-face og-key
+raster + strict-less-by-half-slot
 survivor filter, winner = min TRUE depth among survivors. og winner rule is
 the PSX painter: prims draw in dump order (far -> near), last wins.
 
 Census classes per both-covered pixel:
   agree           same (sec,face,tier) wins both legs
-  intra-tier      matched faces, same tier, different face   (P6d population)
+  intra-tier      matched faces, same tier, different face
   cross-tier      matched faces, different tier              (tier-map class)
   og-hole         og winner prim not fed by native (>=2 shared verts with a
                   native face => terrain coverage hole; else likely non-
@@ -189,7 +189,7 @@ KEY_MODELS = ('keyresolve', 'nbcontest', 'nbemit')
 
 def native_winner_map(tris, model='offset'):
     """model='offset': winner = min interpolated stored depth
-    (true vz + 128*slots) — the pre-P6b renderer.
+    (true vz + 128*slots).
 
     Key models: a flat per-face og-key raster (face_key = mean view-Z +
     128*slots; opaque, non-fill faces) forms the key image; a keyed face
@@ -561,7 +561,7 @@ def main():
     # Identity matching degrades where faces shrink toward the snap radius:
     # a far vista packs many native verts inside SNAP_R and the exact-tri
     # lookup misses, inflating og-hole. Band the census by the native
-    # winner's stored view-Z so near/mid attribution (where P6b/P6d act)
+    # winner's stored view-Z so near/mid attribution
     # is read separately from the far-field noise floor.
     BANDS = ((0.0, 8192.0, 'near'), (8192.0, 32768.0, 'mid'),
              (32768.0, 1e18, 'far'))
@@ -646,7 +646,7 @@ def main():
     # visible near pixels are DrawPrim'd HQ subdivision twins under mask-bit
     # protection, and the OT carries fallback tessellations that can
     # cross-cut the native subdivision (neither footprint contains the
-    # other). Since P5.5 the near band carries no authored offsets in either
+    # other). The near band carries no authored offsets in either
     # tier, so no stored-depth change acts there — the GATE metric is the
     # mid+far population, where the offsets actually live.
     gm = {k: C.get(f'{k}/mid', 0) + C.get(f'{k}/far', 0)

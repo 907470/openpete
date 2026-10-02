@@ -1,5 +1,5 @@
 /* openpete_hook_test.c — verifies the OPENPETE_HOOK decomp-seam macro's two
- * invariants (hook-anchor plan step 4):
+ * invariants:
  *   - matching build (OPENPETE_BUILD undefined): the macro is a no-op, so a
  *     function carrying it behaves identically to the un-hooked source (the
  *     byte-match-preserving property, observed here as "the hook never runs").

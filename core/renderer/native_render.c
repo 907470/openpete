@@ -63,11 +63,11 @@
 extern int  GR_GetPresentSceneSize(int *out_w, int *out_h);
 extern int  GR_ReadPresentSceneRGBA(unsigned char *pixels, int w, int h,
                                     unsigned int gl_format);
-#include "openpete_native_vram.h"   /* W2.4: the owned VRAM model + native ops */
+#include "openpete_native_vram.h"   /* the owned VRAM model + native ops */
 #include "openpete_terrain_cache.h" /* terrain sector-mesh GPU cache (retained terrain) */
 #include "texture_pack.h"           /* texture-replacement registry */
 extern void PsyX_SetVRAMDirtyCallback(void (*cb)(int x, int y, int w, int h));
-static void nr_vram_dirty_cb(int x, int y, int w, int h);   /* W2.4, defined below */
+static void nr_vram_dirty_cb(int x, int y, int w, int h);   /* defined below */
 extern void GR_ReadVRAM(unsigned short *dst, int x, int y, int dst_w, int dst_h);
 
 /* GL_RGBA enum — byte order R,G,B,A, matching VK_FORMAT_R8G8B8A8_UNORM. */
@@ -311,7 +311,7 @@ typedef struct {
 #define OSD_SLOT_W      0.62f   /* max toast box width,  overlay units */
 #define OSD_SLOT_H      0.075f  /* max toast box height, overlay units */
 #define OSD_GLYPH_MAX   24576   /* 8 toasts of border + wrapped text        */
-/* The INTERNAL stored tri (W0.7b): the feeder-facing openpete_scene_tri plus
+/* The INTERNAL stored tri: the feeder-facing openpete_scene_tri plus
  * the routing state that travels through the add_tri arguments. Private to
  * this TU — feeders can't write routing fields (no such field exists on their
  * type), and no API ever hands a stored tri back out. The feeder tri is a
@@ -330,7 +330,7 @@ typedef struct {
     int carry;      /* 2D-UI sub-tick carry: 0/1 from add_tri; 2 = re-applied marker
                      * stamped by apply_overlay so the next canonical capture skips it */
     int group;      /* per-portal grouping id (add_tri_grouped; plain add_tri: 0) */
-    uint32_t tag;   /* provenance (mod-shaders S6): sticky set_tag value; joins
+    uint32_t tag;   /* provenance: sticky set_tag value; joins
                      * the material key ONLY when tag_split_on() (else inert) */
     int fog_delta;  /* sticky set_fog_delta value — the CLUT-ladder row this
                      * tri's palette was shifted to (0 = unfogged base row) */
@@ -544,8 +544,8 @@ void openpete_native_scene_register_overlay_precapture(void (*fn)(void)) {
     s_overlay_precapture = fn;
 }
 
-/* Provenance-tag state (S6). s_tag_split_ext is armed by the material-
- * selector registry (S8); the env flags are the dev instruments. */
+/* Provenance-tag state. s_tag_split_ext is armed by the material-
+ * selector registry; the env flags are the dev instruments. */
 static uint32_t s_cur_tag;        /* sticky, stamped by add_tri */
 /* The ordering-table traversal rank of the tris added next (see scene_tri_t::seq).
  * Sticky, cleared at each frame boundary; a feeder that never sets it leaves 0. */
@@ -564,7 +564,7 @@ static uint32_t s_scene_fam_n[16];
 static int s_cur_fog_delta;       /* sticky, stamped by add_tri */
 static int      s_tag_tint = -1;  /* OPENPETE_TAG_TINT: tint colours by tag */
 static int      s_tag_split_env = -1;   /* OPENPETE_TAG_SPLIT: force key join */
-static int      s_tag_split_ext = 0;    /* armed by registered selectors (S8) */
+static int      s_tag_split_ext = 0;    /* armed by registered selectors */
 
 void openpete_native_scene_set_tag(uint32_t tag) { s_cur_tag = tag; }
 /* Sticky host-added origin (see openpete_native_scene_set_host_added). */
@@ -720,18 +720,18 @@ static void scene_box_summary(void) {
                 s_box.presents ? "" : " (VACUOUS: no present composed in the window)");
 }
 
-/* Mod custom-pipeline drain (S7) — defined with the postfx executor
+/* Mod custom-pipeline drain — defined with the postfx executor
  * below; called from compose_variant (mod 3D under mod HUD). */
 /* Postfx executor + SCENE-point split — defined below the
  * postfx typedef; compose_variant (above them) calls via these decls. */
 static int native_postfx_run(int point, rhi_texture* target, int w, int h);
 static int native_postfx_point_active(int point);
-/* Shared with the postfx executor below (S3): the build-failed pipeline
+/* Shared with the postfx executor below: the build-failed pipeline
  * sentinel and the engine/mod UBO — draw_tex_runs' material overrides
- * (S8a) bind them from earlier in the file. */
+ * bind them from earlier in the file. */
 #define PFX_PIPE_FAILED OPENPETE_POSTFX_PIPE_FAILED
 static rhi_ubo* s_pfx_ubo;
-/* Material-selector UBO (S8b): block 0 = engine block, blocks 1+slot =
+/* Material-selector UBO: block 0 = engine block, blocks 1+slot =
  * per-instance uniform blocks. Filled once per present at the top of
  * draw_native_scene (defined after the postfx typedef); draw_tex_runs'
  * override binds it. */
@@ -1114,7 +1114,7 @@ void openpete_native_scene_begin(void) {
      * before it goes. A later re-extract of the same tick must not
      * overwrite the record with its own (already reordered) order. */
     if (!s_scene_replay) bw_key_order_record(s_scene, s_scene_n);
-    s_scene_replay = 1; s_scene_moved = 0; fov_latch(); s_scene_epoch++; s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; openpete_mods_material_frame_reset(); /* S8b: per-present interned slots */ }
+    s_scene_replay = 1; s_scene_moved = 0; fov_latch(); s_scene_epoch++; s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_cur_ter_after = 0; openpete_mods_material_frame_reset(); /* per-present interned slots */ }
 
 /* VBL stamp of the scene accumulating in s_scene; 0xFFFFFFFF before the
  * first openpete_native_scene_begin_frame. */
@@ -3378,7 +3378,7 @@ static struct {
      * is up but the picture it shows is PsyCross's read-back frame and no
      * native scene exists to walk. */
     bool          scene_live;
-    bool          headless;     /* W1.1: surfaceless capture (no window/present); screenshots only */
+    bool          headless;     /* surfaceless capture (no window/present); screenshots only */
     SDL_Window   *window;
     rhi_device   *dev;
     int           win_w, win_h; /* last-known pixel size, for resize detection */
@@ -3412,22 +3412,22 @@ static struct {
      * the cyclorama/sky scene the game pushes in. Replaces the VRAM re-display
      * in panel 0 when a scene is present. */
     rhi_pipeline *gouraud_pipe;
-    rhi_pipeline *gouraud_blend_pipe; /* 3b.2: semi-transparent UNTEXTURED gouraud (alpha, ABR mode 0) */
-    rhi_pipeline *gouraud_sub_pipe;   /* 3b.2: subtractive UNTEXTURED gouraud (ABR mode 2, B-F) — the Spyro shadow as a DEPTH-AWARE decal (shadow_decal.frag samples opaque_depth at set 0; depth-test OFF, the shader owns occlusion) */
-    rhi_pipeline *gouraud_sub_ztest_pipe; /* fallback subtractive pipe (plain depth test + W2.5 hw bias) when the depth pre-pass is unavailable */
+    rhi_pipeline *gouraud_blend_pipe; /* semi-transparent UNTEXTURED gouraud (alpha, ABR mode 0) */
+    rhi_pipeline *gouraud_sub_pipe;   /* subtractive UNTEXTURED gouraud (ABR mode 2, B-F) — the Spyro shadow as a DEPTH-AWARE decal (shadow_decal.frag samples opaque_depth at set 0; depth-test OFF, the shader owns occlusion) */
+    rhi_pipeline *gouraud_sub_ztest_pipe; /* fallback subtractive pipe (plain depth test + hw depth bias) when the depth pre-pass is unavailable */
     rhi_pipeline *gouraud_sub_fade_pipe;  /* subtractive, depth-test OFF, quad.frag — the full-screen mode-2 fade (NOT the decal pipe, which would sample/discard) */
-    rhi_pipeline *gouraud_add_pipe;   /* 3b.3: additive UNTEXTURED gouraud (ABR mode 1, B+F) — glow rings */
-    rhi_pipeline *gouraud_noz_pipe;   /* opaque UNTEXTURED gouraud, depth-test ON / write OFF ("noz" = no z WRITE) + stencil TEST — portal-sky colours inside the aperture mask (W2.6) */
-    rhi_pipeline *portal_mask_pipe;   /* W2.6: invisible (colour-write-off) depth-tested stencil-MARK of the portal aperture */
-    rhi_pipeline *gouraud_mark_pipe;  /* W2.6-c: WORLD-opaque untextured + stencil-MARK coverage (may be NULL → plain pipe, no hole-fill) */
-    rhi_pipeline *scene_tex_mark_pipe;/* W2.6-c: WORLD-opaque textured + stencil-MARK coverage (may be NULL → plain pipe, no hole-fill) */
-    rhi_pipeline *gouraud_fill_pipe;  /* W2.6-c: WORLD_FILL LP backing, stencil TEST_ZERO (paints only unmarked pixels; may be NULL → no hole-fill) */
-    rhi_pipeline *scene_tex_pipe;     /* 3a.3: opaque textured scene tris (VRAM sampler) */
-    rhi_pipeline *scene_tex_blend_pipe; /* 3a.3: semi-transparent (ABE) textured tris (alpha, ABR mode 0) */
-    rhi_pipeline *scene_tex_add_pipe; /* 3b.1: additive (ABR mode 1, B+F) textured tris — flame */
+    rhi_pipeline *gouraud_add_pipe;   /* additive UNTEXTURED gouraud (ABR mode 1, B+F) — glow rings */
+    rhi_pipeline *gouraud_noz_pipe;   /* opaque UNTEXTURED gouraud, depth-test ON / write OFF ("noz" = no z WRITE) + stencil TEST — portal-sky colours inside the aperture mask */
+    rhi_pipeline *portal_mask_pipe;   /* invisible (colour-write-off) depth-tested stencil-MARK of the portal aperture */
+    rhi_pipeline *gouraud_mark_pipe;  /* WORLD-opaque untextured + stencil-MARK coverage (may be NULL → plain pipe, no hole-fill) */
+    rhi_pipeline *scene_tex_mark_pipe;/* WORLD-opaque textured + stencil-MARK coverage (may be NULL → plain pipe, no hole-fill) */
+    rhi_pipeline *gouraud_fill_pipe;  /* WORLD_FILL LP backing, stencil TEST_ZERO (paints only unmarked pixels; may be NULL → no hole-fill) */
+    rhi_pipeline *scene_tex_pipe;     /* opaque textured scene tris (VRAM sampler) */
+    rhi_pipeline *scene_tex_blend_pipe; /* semi-transparent (ABE) textured tris (alpha, ABR mode 0) */
+    rhi_pipeline *scene_tex_add_pipe; /* additive (ABR mode 1, B+F) textured tris — flame */
     rhi_pipeline *scene_tex_qadd_pipe; /* quarter-additive (ABR mode 3, B+F/4) textured tris — glass */
     rhi_pipeline *gouraud_qadd_pipe;  /* quarter-additive UNTEXTURED gouraud (ABR mode 3) */
-    rhi_pipeline *scene_tex_sub_pipe; /* 3b.2: subtractive (ABR mode 2, B-F) textured tris — moby shadows (plain depth test + bias; the fallback when the depth pre-pass is unavailable) */
+    rhi_pipeline *scene_tex_sub_pipe; /* subtractive (ABR mode 2, B-F) textured tris — moby shadows (plain depth test + bias; the fallback when the depth pre-pass is unavailable) */
     rhi_pipeline *scene_tex_sub_decal_pipe; /* moby shadows as a DEPTH-AWARE decal: shadow_decal_tex.frag samples opaque_depth (set 0) + VRAM (set 1); depth-test OFF, the shader owns wall/steep/platform occlusion. NULL → fall back to scene_tex_sub_pipe */
     rhi_pipeline *gouraud_hud_pipes[NR_BLEND_CLASSES]; /* HUD overlay and panels: UNTEXTURED gouraud, depth-test OFF (on top), one pipe per blend class */
     rhi_pipeline *scene_tex_hud_pipes[NR_HUD_TEX_PIPES]; /* HUD overlay: textured (VRAM sampler), depth-test OFF (on top), one pipe per texel STP selection and blend class */
@@ -3605,7 +3605,7 @@ static struct {
     rhi_texture  *opaque_depth;       /* rhi_create_render_target_depth_sampled */
     int           od_w, od_h;         /* current opaque_depth allocation */
     rhi_buffer   *prepass_vb;         /* WORLD-opaque clip geometry, one batched draw */
-    rhi_pipeline *terrain_key_pipe;   /* P6b HP key pass (terrain_key.vert) */
+    rhi_pipeline *terrain_key_pipe;   /* HP key pass (terrain_key.vert) */
     rhi_pipeline *terrain_key_tex_pipe; /* textured keyed faces: alpha-aware
                                          * cutout (psx_key_cutout.frag) — keys
                                          * exist only on opaque texels */
@@ -3805,7 +3805,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     if (opts->headless && opts->renderer == OPENPETE_RENDERER_PSYCROSS)
         return 0;
 
-    /* W1.1: under --headless, bring the native renderer up SURFACELESS purely to
+    /* Under --headless, bring the native renderer up SURFACELESS purely to
      * service screenshots (CI visual-regression capture under lavapipe) — but
      * only when a native renderer is selected (checked above) AND screenshots
      * are requested. Plain --headless (the oracle / determinism gates) keeps
@@ -3964,7 +3964,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         openpete_devui_init(dev, win, opts);
     }
     /* On an unrecoverable device-loss (acquire/present), flag a clean shutdown
-     * rather than spin failed frames forever (W0.6 RHI robustness). */
+     * rather than spin failed frames forever. */
     rhi_set_device_lost_handler(openpete_request_shutdown);
     /* Live-window supersampling (--ssaa N, default 1=no-op): the ss_rtt + resolve
      * pass are set up lazily (ensure_ss_rtt) once the window size is known. */
@@ -4009,14 +4009,14 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .uses_vram = true, .push_const_size = sizeof(psx_material),
     };
     /* Gouraud pipeline for the native 3D scene: vertex-coloured, untextured
-     * (quad.vert/quad.frag from 1b.1) — exactly the cyclorama dome's shading. */
+     * (quad.vert/quad.frag) — exactly the cyclorama dome's shading. */
     rhi_pipeline_desc gouraud_desc = {
         .vert_spv = "quad.vert.spv",
         .frag_spv = "quad_key.frag.spv",   /* + terrain LP key-resolve (set 2) */
-        .blend = RHI_BLEND_NONE, .depth_test = true,  /* 3a.3: sort actors near→far */
+        .blend = RHI_BLEND_NONE, .depth_test = true,  /* sort actors near→far */
         .uses_vram = false, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = 0,
     };
-    /* WORLD-group variants that also stencil-MARK their coverage (W2.6-c): the
+    /* WORLD-group variants that also stencil-MARK their coverage: the
      * WORLD-opaque group rasterizes normally AND writes stencil=1 wherever a
      * fragment passes the depth test, defining "pixels real world geometry
      * covered". The terrain LP hole-fill layer (WORLD_FILL, TEST_ZERO below)
@@ -4039,7 +4039,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .blend = RHI_BLEND_NONE, .depth_test = true, .stencil = RHI_STENCIL_TEST_ZERO,
         .uses_vram = false, .push_const_size = 0,
     };
-    /* Semi-transparent UNTEXTURED gouraud pipeline (3b.2): the Spyro silhouette
+    /* Semi-transparent UNTEXTURED gouraud pipeline: the Spyro silhouette
      * shadow (func_80059A48) is a POLY_G3 strip with ABE set (ABR mode 0,
      * (B+F)/2) — untextured, so it can't go through the textured-blend pipe.
      * RHI_BLEND_ALPHA = src*a + dst*(1-a); the feeder sets vertex alpha = 128
@@ -4053,7 +4053,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .blend = RHI_BLEND_ALPHA, .depth_test = true, .depth_write_off = true,
         .uses_vram = false, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = 0,
     };
-    /* Subtractive UNTEXTURED gouraud pipeline (3b.2, the Spyro silhouette
+    /* Subtractive UNTEXTURED gouraud pipeline (the Spyro silhouette
      * shadow): POLY_G3 with ABR mode 2 (dst = B - F). RHI_BLEND_SUBTRACT
      * reverse-subtracts the vertex colour from the framebuffer, darkening the
      * ground (the shadow grey is subtracted; black vertices leave it
@@ -4076,7 +4076,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     };
     /* Fallback for a device whose depth format is not sampleable (the pre-pass
      * RT can't be created): the pre-decal behaviour — plain depth test + the
-     * W2.5 hardware bias (correct against walls, may slice on steep ground). */
+     * hardware depth bias (correct against walls, may slice on steep ground). */
     rhi_pipeline_desc gouraud_sub_ztest_desc = {
         .vert_spv = "quad.vert.spv",
         .frag_spv = "quad.frag.spv",
@@ -4124,7 +4124,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .blend = RHI_BLEND_NONE, .depth_test = true, .depth_class = RHI_DEPTH_FORWARD,
         .uses_vram = false, .push_const_size = 0,
     };
-    /* Additive UNTEXTURED gouraud pipeline (3b.3, the glow rings): POLY_G3 with
+    /* Additive UNTEXTURED gouraud pipeline (the glow rings): POLY_G3 with
      * ABR mode 1 (dst = B + F). RHI_BLEND_ADD = src ONE + dst ONE. The glow is a
      * gouraud fan, bright centre colour fading to black ring vertices, so the
      * additive accumulation peaks at the centre and vanishes at the edge — the
@@ -4145,7 +4145,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline_desc gouraud_noz_desc = {
         .vert_spv = "quad.vert.spv",
         .frag_spv = "quad.frag.spv",
-        /* W2.6 (revised): portal-sky colours — depth-TEST ON (LEQUAL at the
+        /* Portal-sky colours — depth-TEST ON (LEQUAL at the
          * portal-plane z, write OFF) + stencil TEST, drawn AFTER the ACTOR
          * group. The depth test is what lets the sky repaint over mobys
          * BEHIND the plane while losing to geometry/mobys in front of it;
@@ -4156,7 +4156,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .stencil = RHI_STENCIL_TEST,
         .uses_vram = false, .push_const_size = 0,
     };
-    /* W2.6 — the portal aperture mask: rasterize the portal's sky footprint
+    /* The portal aperture mask: rasterize the portal's sky footprint
      * invisibly (colour-write-off), depth-TESTED against the world written by
      * the WORLD group (depth-write off, so the mask pass can't perturb it),
      * marking stencil=1 where the sky is actually visible (arch stone / a
@@ -4170,7 +4170,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .depth_bias = true, .stencil = RHI_STENCIL_MARK, .color_write_off = true,
         .uses_vram = false, .push_const_size = 0,
     };
-    /* Textured scene pipeline (3a.3): samples the PSX VRAM mirror via the ported
+    /* Textured scene pipeline: samples the PSX VRAM mirror via the ported
      * decoder + per-draw material, modulates by the vertex colour (tex*col/128).
      * Reuses psx_sample.vert (clip-space passthrough + uv + colour). */
     rhi_pipeline_desc scene_tex_desc = {
@@ -4179,7 +4179,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .blend = RHI_BLEND_NONE, .depth_test = true,
         .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = sizeof(psx_material),
     };
-    /* Textured WORLD-group stencil-MARK variant (W2.6-c) — most terrain is
+    /* Textured WORLD-group stencil-MARK variant — most terrain is
      * textured, so the coverage mark must come from this pipe too. */
     rhi_pipeline_desc scene_tex_mark_desc = {
         .vert_spv = "psx_scene.vert.spv",
@@ -4190,15 +4190,15 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     /* Semi-transparent (ABE) textured pipeline: alpha blend, reproducing PSX ABR
      * mode 0 ((B+F)/2) with per-texel STP gating via psx_scene.frag's STP alpha.
      * depth_write_off: transparent tris Z-TEST against opaque but do NOT write
-     * depth, so they never occlude each other (correct ordering still needs the
-     * back-to-front sort, 3c; this is the prerequisite half). */
+     * depth, so they never occlude each other (ordering among them needs a
+     * back-to-front sort on top of this). */
     rhi_pipeline_desc scene_tex_blend_desc = {
         .vert_spv = "psx_scene.vert.spv",   /* perspective-correct UV (near-camera) */
         .frag_spv = "psx_scene_key.frag.spv",   /* + og-key contest (transparent terrain contests, never emits) */
         .blend = RHI_BLEND_ALPHA, .depth_test = true, .depth_write_off = true,
         .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = sizeof(psx_material),
     };
-    /* Additive (ABR mode 1, dst = B + F) textured pipeline (3b.1): the first
+    /* Additive (ABR mode 1, dst = B + F) textured pipeline: the first
      * additive consumer is Spyro's flame (func_80058D64 / r_flame.s), a textured
      * gouraud quad ribbon whose tpage selects ABR=1. RHI_BLEND_ADD = src ONE +
      * dst ONE; depth_write_off so the glow tests against opaque geometry (a wall
@@ -4221,7 +4221,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     scene_tex_qadd_desc.blend = RHI_BLEND_ADD_QUARTER;
     rhi_pipeline_desc gouraud_qadd_desc = gouraud_add_desc;
     gouraud_qadd_desc.blend = RHI_BLEND_ADD_QUARTER;
-    /* Subtractive (ABR mode 2, dst = B - F) textured pipeline (3b.2): moby
+    /* Subtractive (ABR mode 2, dst = B - F) textured pipeline: moby
      * shadows (func_80059F8C), a textured FT3 fan whose tpage selects ABR=2.
      * RHI_BLEND_SUBTRACT reverse-subtracts the modulated shadow sprite from the
      * framebuffer (tex*col/128 darkens the ground), depth_write_off so the
@@ -4230,7 +4230,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .vert_spv = "psx_scene.vert.spv",   /* perspective-correct UV (near-camera) */
         .frag_spv = "psx_scene.frag.spv",
         .blend = RHI_BLEND_SUBTRACT, .depth_test = true, .depth_write_off = true,
-        .depth_bias = true, /* shadow decal: hardware coplanar tie-break (W2.5) */
+        .depth_bias = true, /* shadow decal: hardware coplanar tie-break */
         .uses_vram = true, .push_const_size = sizeof(psx_material),
     };
     /* DEPTH-AWARE moby-shadow decal (the same fix Spyro's silhouette shadow got,
@@ -4285,7 +4285,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     };
     /* HD texture-replacement pipe:
      * samples a host RGBA8 replacement (hd_tex.frag) with real per-texel alpha
-     * instead of the PSX VRAM decode. Depth OFF (the PoC target is a HUD-layer
+     * instead of the PSX VRAM decode. Depth OFF (the target is a HUD-layer
      * 2D quad); push constants carry the replaced texel box. */
     rhi_pipeline_desc hd_tex_desc = {
         .vert_spv = "psx_scene.vert.spv",
@@ -4294,7 +4294,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .uses_vram = true, .push_const_size = sizeof(hd_pc),
     };
     /* Opaque-scene HD replacement: depth-tested cutout (true blending on
-     * opaque groups would break Z ordering); the MARK twin keeps the W2.6-c
+     * opaque groups would break Z ordering); the MARK twin keeps the
      * hole-fill stencil coverage intact when replacing WORLD-group runs. */
     rhi_pipeline_desc hd_cutout_desc = {
         .vert_spv = "psx_scene.vert.spv",
@@ -4435,7 +4435,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline *freeze_plain_pipe = rhi_create_pipeline(dev, &freeze_plain_desc);
     rhi_pipeline *resolve_pipe = rhi_create_pipeline(dev, &resolve_desc);
     /* Per-present-rewritten buffers (scene/prepass/overlay) are frame-in-flight
-     * RINGS (W2.2): their every-present rhi_update_buffer used to race the
+     * RINGS: their every-present rhi_update_buffer used to race the
      * frame two presents ago, previously masked only by the per-present VRAM
      * upload's vkQueueWaitIdle drain. panels/ovl_quad/fs_quad update rarely
      * (init / re-layout) under rhi_wait_idle and stay single. */
@@ -4464,7 +4464,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_buffer   *osd_panel_vb = rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * OPENPETE_OSD_MAX * 6);
     /* Optional occlusion-grid resources (graceful fallback: NULL → no culling). */
     rhi_pipeline *occl_pipe = rhi_create_pipeline(dev, &occl_desc);
-    /* Optional W2.6-c hole-fill pipes (graceful fallback: any NULL → WORLD uses
+    /* Optional hole-fill pipes (graceful fallback: any NULL → WORLD uses
      * the plain pipes and the FILL layer is skipped — the pre-fill look). */
     rhi_pipeline *gouraud_mark_pipe = rhi_create_pipeline(dev, &gouraud_mark_desc);
     rhi_pipeline *scene_tex_mark_pipe = rhi_create_pipeline(dev, &scene_tex_mark_desc);
@@ -4530,7 +4530,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         OPL_ERROR_F("native", "moby rank pass unavailable; same-moby painter select disabled");
     rhi_texture  *vram_tex  = rhi_create_vram(dev, NR_VRAM_W, NR_VRAM_H);
     rhi_texture  *drain_tex = rhi_create_u32x4(dev, DRAIN_REC_PER_ROW * 4, DRAIN_REC_ROWS);
-    /* W2.4: the CPU mirror IS the owned native VRAM model (static storage in
+    /* The CPU mirror IS the owned native VRAM model (static storage in
      * native_vram.c) — written by the native ops at op time and shadow-synced
      * from PsyCross's mirror per dirty rect at present time. */
     uint16_t     *mirror    = openpete_vram_data();
@@ -4660,8 +4660,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.vram_tex     = vram_tex;
     s_nr.drain_tex    = drain_tex;
     s_nr.vram_mirror  = mirror;
-    /* W2.4: subscribe to PsyCross VRAM writes (dirty-rect tracked mirror) and
-     * install the native op implementations (1b — verified via
+    /* Subscribe to PsyCross VRAM writes (dirty-rect tracked mirror) and
+     * install the native op implementations (verified via
      * OPENPETE_VRAM_VERIFY against PsyCross's mirror). */
     PsyX_SetVRAMDirtyCallback(nr_vram_dirty_cb);
     openpete_vram_install_ops();
@@ -4900,7 +4900,7 @@ void openpete_native_set_draw_clip(int x, int y, int w, int h)
     s_geom_in[4] = x; s_geom_in[5] = y; s_geom_in[6] = w; s_geom_in[7] = h;
 }
 
-/* ---- W2.4 native VRAM model: dirty-rect tracked mirror -------------------
+/* ---- native VRAM model: dirty-rect tracked mirror ------------------------
  * PsyCross notifies every write to its CPU VRAM mirror (LoadImage/MoveImage/
  * ClearImage, DR_LOAD/DR_MOVE, framebuffer copyback, savestate restore) via
  * PsyX_SetVRAMDirtyCallback with the effective post-clamp rect. We accumulate
@@ -5028,7 +5028,7 @@ static void sync_vram_texture_locked(void)
                     presents, (double)rects / presents, (double)bytes / presents / 1024.0, full);
         }
     }
-    /* OPENPETE_VRAM_VERIFY (W2.4-1b): before the shadow copy overwrites the
+    /* OPENPETE_VRAM_VERIFY: before the shadow copy overwrites the
      * model with PsyCross's bytes, memcmp every op-written rect (exact-rect
      * match against the ops' post-clamp log) — proves the native op
      * implementations produce PsyCross's bytes. Shadow-only rects (framebuffer
@@ -5080,7 +5080,7 @@ static void sync_vram_texture_locked(void)
         }
     }
     /* OPENPETE_VRAM_PEEK="x,y,w,h,frame": one-shot dump of PsyCross VRAM vs
-     * the native mirror for a rect (fog-arc palette forensics). */
+     * the native mirror for a rect (fog palette forensics). */
     { static int s_peek = -1; static int px_, py_, pw_, ph_, pf_;
       if (s_peek < 0) { const char* e = getenv("OPENPETE_VRAM_PEEK");
           s_peek = 0; pf_ = 0;
@@ -5102,7 +5102,7 @@ static void sync_vram_texture_locked(void)
       } }
     /* Refresh the owned mirror from PsyCross's, dirty regions only, and
      * journal the same regions (with their texels) for the presents to apply
-     * in scene order (W2.2 staging-ring upload, per frame). */
+     * in scene order (staging-ring upload, per frame). */
     if (!s_vram_full && s_vram_nrects == 0) return;
     if (s_vj_n == VRAM_JOURNAL) {
         /* Ring full: the oldest entry is folded into a full refresh of the
@@ -6121,12 +6121,12 @@ static void ensure_terrain_key_targets(void)
  * scene-draw time and byte-compares to prove pass and draw consumed the
  * same snapshot (the draw fetches scene_present_buf independently). */
 /* prop_class 0 = TERRAIN og KEYS (the set-2 image): keyed WORLD faces as
- * their ABSOLUTE og key laid FLAT, og's per-pixel OT occupancy (the P6b
+ * their ABSOLUTE og key laid FLAT, og's per-pixel OT occupancy (the
  * painter select).
  * prop_class 1 = PROP TRUE DEPTH (the set-3 image): curated embedded-prop
  * faces only (openpete_scene_tri.prop), per-vertex TRUE view-Z, no bias.
  * prop_class 2 = MOBY og KEYS (the set-1 image): keyed opaque ACTOR faces
- * as their ABSOLUTE og key laid FLAT (P6g). Split from set 2 so fragments
+ * as their ABSOLUTE og key laid FLAT. Split from set 2 so fragments
  * can hold a moby's paint-over to keys in front of their own TRUE surface
  * while terrain-vs-terrain keeps contesting authored (pushed) keys — a
  * moby pull and a terrain push must not compound into a punch-through
@@ -7710,9 +7710,7 @@ static void tex_mat_sort(const scene_tri_t* scene, int* idx, int n)
  * Identity comes from the upload-time registry (texture_pack_resolve, per
  * TRI — run-union boxes vary with per-frame clipping); the pack match is
  * containment-based (texture_pack_match), so one tile-sized file covers LP
- * full-tile draws, HP sub-quad draws, and partially-clipped boxes alike.
- * (The original hardcoded title-logo PoC path is retired — the generic path
- * replaced it 1:1.) */
+ * full-tile draws, HP sub-quad draws, and partially-clipped boxes alike. */
 
 /* ---- HD replacement GPU-texture cache ------------------------------------
  * identity hashkey -> uploaded rhi texture, open addressing with a 16-slot
@@ -7953,8 +7951,9 @@ static void hd_cache_shutdown(void)
  * run, not per tri). Caller binds the pipeline + vram + vertex buffer; `self` is
  * the pipeline the caller bound, restored after an HD-replaced run (an HD run
  * swaps pipeline + texture, so batching survives: a replaced material is its own
- * run by construction). The same restore covers S8a/S8b material
- * overrides (a resolved run swaps to the mod pipeline, then restores).
+ * run by construction). The same restore covers declarative and
+ * per-instance material overrides (a resolved run swaps to the mod
+ * pipeline, then restores).
  * NB: `self` is never a depth_bias pipeline at any current call site
  * (those are the shadow-decal/stencil pipes, not the scene_tex* pipes
  * passed here), so the dynamic-bias-invalidation-on-restore gap is
@@ -8066,7 +8065,7 @@ static void tp_fog_affine(int clut_x, int base_y, int delta, int bpp,
     }
 }
 
-/* Deferred untextured material spans (S8c). The untextured buckets are one
+/* Deferred untextured material spans. The untextured buckets are one
  * bulk gouraud draw each; a tri whose provenance tag resolves to a registered
  * material (an untextured moby with a per-instance slot, or the terrain
  * beyond-LOD gouraud band) is deferred during the bucket fill, appended
@@ -9018,7 +9017,7 @@ static int draw_run_material(const tex_run* r, int ov_mark, int blend_class,
     if (pack_bound)
         rhi_bind_texture_set(s_nr.dev, pack_bound, 1);
     bind_material_keys();
-    /* engine block 0 + the per-instance slot's mod block (S8b, block 1+slot;
+    /* engine block 0 + the per-instance slot's mod block (block 1+slot;
      * slot 0 = declarative binds the engine block as the mod block too). */
     if (s_mat_ubo)
         rhi_ubo_bind(s_nr.dev, s_mat_ubo, 0,
@@ -10525,7 +10524,7 @@ static bool draw_native_scene(bool full_extent)
           }
       } }
 
-    /* S8b: publish this present's interned per-instance material uniforms
+    /* Publish this present's interned per-instance material uniforms
      * into the material UBO before any draw_tex_runs override binds them.
      * No-op (and cheap) when no per-instance selector is active. */
     fill_material_ubo();
@@ -10622,7 +10621,7 @@ static bool draw_native_scene(bool full_extent)
      * group takes the free slots above the HUD and overlay buckets, so those
      * keep their numbers. */
     struct scene_group { int blend, gcat, utb, txb; rhi_pipeline *utex, *tex; };
-    /* W2.6-c: the WORLD-opaque group draws through the stencil-MARK variants
+    /* The WORLD-opaque group draws through the stencil-MARK variants
      * (identical raster + stencil=1 coverage write) so the FILL layer below can
      * paint only uncovered pixels. Falls back to the plain pipes (and no fill)
      * if the mark/fill pipes didn't come up. */
@@ -10803,7 +10802,7 @@ static bool draw_native_scene(bool full_extent)
     n = utc_reserve(UTC_OVERLAY, UTC_WORLD_FILL, utc_cnt, n, s_cz_verts, utc_cur, utc_end, ut_first, ut_count);
     utc_scatter(UTC_OVERLAY, UTC_WORLD_FILL, scene, scene_n, buf, utc_cur, utc_end);
     /* SKY (cyclorama dome) + WORLD_FILL (terrain LP hole-fill) untextured
-     * buckets (W2.6-c). SKY draws before the group loop with the PLAIN opaque
+     * buckets. SKY draws before the group loop with the PLAIN opaque
      * pipe (depth-tested backdrop, no stencil mark); FILL draws right after
      * the WORLD group with the TEST_ZERO pipe. Both untextured by
      * construction (gouraud dome / gouraud LP). */
@@ -10840,7 +10839,7 @@ static bool draw_native_scene(bool full_extent)
     ut_count[13] = 0;
     n = utc_reserve(UTC_ACTOR_FRONT, UTC_N, utc_cnt, n, s_cz_verts, utc_cur, utc_end, ut_first, ut_count);
     utc_scatter(UTC_WORLD_FILL, UTC_N, scene, scene_n, buf, utc_cur, utc_end);
-    /* PORTAL buckets (W2.6): sky colours (PORTAL_CYCLORAMA) + their stencil
+    /* PORTAL buckets: sky colours (PORTAL_CYCLORAMA) + their stencil
      * aperture masks (PORTAL_MASK), collected per-portal via the feeder's group
      * id. Draw site (after the WORLD group): per group — clear stencil →
      * rasterize the mask invisibly, depth-TESTED against the world (the arch
@@ -11191,9 +11190,9 @@ static bool draw_native_scene(bool full_extent)
         }
         /* SUBTRACT (shadow decal) group: engage the hardware slope-scaled
          * depth bias for these draws (both sub pipes are .depth_bias). This is
-         * the W2.5 replacement for the moby-shadow ×0.96 multiplicative view-Z
-         * pull, which was distance-PROPORTIONAL (the depth audit's diagnosed
-         * dimensional error for a coplanar tie-break); the hardware offset is
+         * the replacement for a moby-shadow ×0.96 multiplicative view-Z
+         * pull, which is distance-PROPORTIONAL (a dimensional error for a
+         * coplanar tie-break); the hardware offset is
          * distance-invariant, slope-aware at grazing angles, and its clamp
          * bounds the total pull far below anything that could reorder a
          * genuine occluder.
@@ -11209,9 +11208,9 @@ static bool draw_native_scene(bool full_extent)
                  * WORLD-opaque pre-pass depth and decides every hull pixel
                  * from the fan's footprint block). Fallback (pre-pass
                  * unavailable this present / unsupported device): plain depth
-                 * test + W2.5 bias: the fed fan triangles draw with their
-                 * gouraud as before, and the hull's black vertices subtract
-                 * nothing. The decal discards the fan triangles. */
+                 * test + hardware depth bias: the fed fan triangles draw with
+                 * their gouraud as before, and the hull's black vertices
+                 * subtract nothing. The decal discards the fan triangles. */
                 if (s_od_ready && s_nr.opaque_depth) {
                     bind_player_shadow_decal();
                 } else {
@@ -11336,7 +11335,7 @@ static bool draw_native_scene(bool full_extent)
                 rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
                 rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
                 /* HD replacement per group family: opaque -> depth-tested cutout
-                 * (WORLD's stencil-MARK variant gets the MARK twin so W2.6-c
+                 * (WORLD's stencil-MARK variant gets the MARK twin so
                  * hole-fill coverage stays intact); alpha/additive -> the
                  * ztest/no-zwrite HD twins. SUBTRACTIVE (gi==1) stays SD — its
                  * draws depend on the caller's dynamic depth-bias state, which
@@ -11404,7 +11403,7 @@ static bool draw_native_scene(bool full_extent)
             openpete_tercache_draw(OPTC_DRAW_WORLD, &aff, s_nr.vram_tex, holefill_on,
                                    s_nr.terrain_key_depth, s_nr.moby_key_depth);
         }
-        /* WORLD_FILL — terrain LP hole-fill (W2.6-c): depth-tested at TRUE LP
+        /* WORLD_FILL — terrain LP hole-fill: depth-tested at TRUE LP
          * depth, gated on stencil==0 so it can only paint pixels no opaque
          * coverage MARK claimed (LP↔HP T-junction seams — where the sky shows
          * through). Runs at gi==2 AFTER the ACTOR opaques so authored HP holes
@@ -13453,7 +13452,7 @@ static void compose_variant(void)
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.panels_vb);
             rhi_draw(s_nr.dev, 6, 6);   /* panel 1: the reference panel */
         }
-        scene_postfx_split();                     /* SCENE point (S5) */
+        scene_postfx_split();                     /* SCENE point */
         draw_mod_overlay();                       /* mod HUD (content) */
         if (s_overlay_live) {
             draw_perf_overlay();
@@ -13555,7 +13554,7 @@ static void compose_variant(void)
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.panels_vb);
             rhi_draw(s_nr.dev, 6, 0);
         }
-        scene_postfx_split();                     /* SCENE point (S5): scene→chain→HUD */
+        scene_postfx_split();                     /* SCENE point: scene→chain→HUD */
         draw_mod_overlay();                       /* mod HUD (content — records too) */
         /* Freeze snapshot first, chrome after — see chrome_split_capture. */
         const bool froze = chrome_split_capture(world_frame);
@@ -13613,7 +13612,7 @@ static void compose_variant(void)
 
     }
 
-    /* SCENE point (S5) then mod HUD — vk variant, live + record composes. */
+    /* SCENE point then mod HUD — vk variant, live + record composes. */
     scene_postfx_split();
     draw_mod_overlay();
     bool froze = chrome_split_capture(world_frame);   /* backdrop before chrome */
@@ -14142,7 +14141,7 @@ static int native_postfx_run(int point, rhi_texture* target, int w, int h)
         }
         if (*pass[i].pipeline_slot == PFX_PIPE_FAILED) continue;
         rhi_texture* out = ping[out_idx];
-        /* Per-mod GPU attribution (S9): one zone per pass, named by the
+        /* Per-mod GPU attribution: one zone per pass, named by the
          * owning mod id (loader-stable string). Live path only — the dump
          * path runs outside the frame-loop zone budget. */
         if (!target) rhi_gpu_zone_begin(s_nr.dev, pass[i].owner);
@@ -14558,7 +14557,7 @@ void openpete_native_render_frame(uint64_t record_pts_us)
     if (!s_nr.enabled)
         return;
 
-    /* Headless (W1.1): no window / swapchain, so there is no live present. The
+    /* Headless: no window / swapchain, so there is no live present. The
      * scene is composed on demand by openpete_native_render_screenshot_all. */
     if (s_nr.headless)
         return;
@@ -14904,7 +14903,7 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
      * submitted it. */
     if (op_prof_on()) rhi_gpu_frame_token(s_nr.dev, rhi_frame_serial(s_nr.dev));
     gpu_zone_report();  /* fold in the zone results begin_frame just harvested */
-    /* Pending VRAM/reference uploads ride THIS frame's command buffer (W2.2)
+    /* Pending VRAM/reference uploads ride THIS frame's command buffer
      * — must precede the first render pass (the depth pre-pass below). */
     rhi_gpu_zone_begin(s_nr.dev, "upload");
     { OP_PROF_ACCUM_SCOPE("upl.synced");   upload_synced_textures(); }
@@ -14949,7 +14948,7 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
     /* Mod postfx chain (COMPOSITE point). Runs on EVERY present (canonical +
      * intermediate). No outer GPU zone: the executor emits ONE ZONE PER
      * PASS NAMED BY THE OWNING MOD (zones don't nest), so a slow shader
-     * shows up BY MOD ID in the [gpu-pass] report — the S9 budget
+     * shows up BY MOD ID in the [gpu-pass] report — the per-mod budget
      * attribution. */
     {
         pfx_drain_retired();
@@ -15598,7 +15597,7 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
      * isn't disturbed mid-dump; the RTT (not the window) is the data source. */
     for (int attempt = 0; ; attempt++) {
         if (!rhi_begin_frame(s_nr.dev)) return 1;
-        upload_synced_textures();  /* pending VRAM/ref uploads ride this frame (W2.2) */
+        upload_synced_textures();  /* pending VRAM/ref uploads ride this frame */
         hd_flush_pending();        /* HD replacement textures queued at draw time */
         openpete_native_hdfold_flush();
         native_depth_prepass();    /* shared WORLD-opaque depth for the shadow decal */
@@ -15745,7 +15744,7 @@ void openpete_native_render_shutdown(void)
     rhi_wait_idle(s_nr.dev);
     openpete_devui_shutdown();   /* imgui backend objects die before the device */
     openpete_tercache_shutdown(s_nr.dev);
-    /* Mod postfx chain objects (S3): ping pool, UBO, cached pipelines
+    /* Mod postfx chain objects: ping pool, UBO, cached pipelines
      * (both live registrations and the retirement list). */
     for (int i = 0; i < 2; i++)
         for (int j = 0; j < 2; j++)

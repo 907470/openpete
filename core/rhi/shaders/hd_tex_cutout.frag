@@ -5,7 +5,7 @@
 /* HD replacement sampling for OPAQUE (depth-tested, depth-writing) scene
  * geometry: like hd_tex.frag but alpha works as a CUTOUT (discard below 0.5,
  * else opaque) — true alpha blending on opaque groups would break Z ordering.
- * Semi-transparent HD edges harden slightly; the HQ path (Phase 7) revisits. */
+ * Semi-transparent HD edges harden slightly. */
 
 layout(set = 0, binding = 0) uniform sampler2D u_hd;
 layout(set = 1, binding = 0) uniform sampler2D u_actorkey; /* moby og-key image */

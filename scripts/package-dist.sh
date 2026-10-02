@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# package-dist.sh — assemble end-user distribution archives
-# (distribution D3; plan openpete-distribution-local-recomp).
+# package-dist.sh — assemble end-user distribution archives.
 #
 # Ships ONLY our own code + tools + facts-metadata. No game bytes: no
 # recomp module (users first-boot-compile it), no disc data, ROM-free
@@ -132,7 +131,7 @@ stage_common() {  # stage_common <build-game-dir>
     # C — but its comments are engineering notes about the host tree.
     scripts/strip-comments.py "$STAGE"/recomp/src/*
     if [[ $WITH_MOD_SDK -eq 1 ]]; then
-        # Mod SDK (openpete-mod-compile-on-boot): mods ship mod.toml +
+        # Mod SDK: mods ship mod.toml +
         # src/ and compile at boot against <exe>/sdk with the bundled
         # toolchain. The SDK is a handful of headers, and read-only —
         # unlike mods/ it belongs in the install.
@@ -466,7 +465,7 @@ windows)
         # Prune them so a polluted source tree can't quietly bloat a release.
         find "$T/bin" -mindepth 1 -maxdepth 1 -type d -print -exec rm -rf {} + \
             | sed 's|^|[package] dropped stray dir from toolchain bin: |'
-        # x86_64 + C-focused trim (see plan D3.1 measurements)
+        # x86_64 + C-focused trim: the module compile needs only x86_64 C
         ( cd "$T/bin" && ls | grep -E "^(aarch64|armv7|i686)" | xargs -r rm -f \
           && rm -f lldb* clang-tidy* clang-format* clang-scan-deps* \
                    llvm-pdbutil* llvm-cov* llvm-profdata* liblldb* 2>/dev/null || true )

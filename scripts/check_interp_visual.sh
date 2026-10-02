@@ -8,7 +8,7 @@
 #   1. CANONICAL REGRESSION: every fps>0 canonical present must
 #      be byte-identical to the fps=0 canonical at the same sim frame.
 #      Any drift means the interp mechanism perturbs the *canonical*
-#      output, which would violate PHASE-C's read-only claim.
+#      output, which would violate the interp mechanism's read-only claim.
 #
 #   2. INTERP-FIRING: at fps=60, INTERMEDIATE presents
 #      should differ from canonical presents (interp delta reaches the
@@ -98,7 +98,7 @@ def diff(a, b):
 
 print()
 print("=== 1. Canonical regression — fps0 vs fps60/480 at same sim frame ===")
-print("    EXPECTED: 0 pixels differ. Any drift = PHASE-C is NOT read-only.")
+print("    EXPECTED: 0 pixels differ. Any drift = interp is NOT read-only.")
 fps0 = { int(re.search(r'f(\d+)', f).group(1)): f
          for f in glob.glob(f'{out}/fps0_p*.png') }
 ok = True

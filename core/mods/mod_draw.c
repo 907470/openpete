@@ -6,7 +6,7 @@
 // writes; guest prim injection provably leaks — the 16:9
 // particle_drawn_flag regression).
 //
-// Two submission contexts (plan Round 7):
+// Two submission contexts:
 //   - sim-tick hooks (inside overrides): commands land in a staging
 //     buffer; the canonical present commits it for display across ALL of
 //     that tick's presents (immediate mode per tick — draw every tick or
@@ -368,7 +368,7 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical) {
 
     /* Present hooks: render-pure by API shape (see header comment). The
      * ctx is computed unconditionally — the postfx engine UBO reads the
-     * same values through openpete_mods_present_ctx (S4), hooks or not. */
+     * same values through openpete_mods_present_ctx, hooks or not. */
     buf_clear(&s_present);
     {
         static op_time_t s_prev_present_ns = 0;

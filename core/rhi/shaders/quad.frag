@@ -1,7 +1,7 @@
 #version 450
 
-/* Milestone 1b.1 — output the interpolated vertex color. 1b.2 replaces
- * this with the ported PSX 4/8/16bpp + CLUT VRAM sampler. */
+/* Output the interpolated vertex color, perspective-divided by vQ. The
+ * PSX 4/8/16bpp + CLUT VRAM sampler is psx_sample.frag. */
 
 layout(location = 0) in vec4 vColor;  /* x ratio (divide by vQ) */
 layout(location = 1) in vec2 vUV;

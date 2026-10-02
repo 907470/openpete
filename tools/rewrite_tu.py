@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """rewrite_tu.py — drive all rewrite passes over a single matching-decomp TU.
 
-Phase 2 scope: only Pass 2 (bare-global redirects) runs. Pass 1 (struct
-relayout), 3-5 etc. land in later phases.
+Runs every pass (Pass 1 struct relayout through Pass 6 auto-manifest
+discovery) in the order main() lays out.
 
 Usage:
     rewrite_tu.py <input.c> <output.c> --domain=<NAME>
@@ -13,7 +13,7 @@ Side outputs:
     <output.c>            rewritten source (compiled by host CMake)
     <defsym>.cmake        SPYRO_REWRITER_DEFSYMS_<DOMAIN> list, appended
                           to the linker via target_link_options
-    <auto-manifest>       (Phase 3+) auto-discovered manifest entries
+    <auto-manifest>       (Pass 6) auto-discovered manifest entries
 """
 
 from __future__ import annotations

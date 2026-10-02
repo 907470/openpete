@@ -1,4 +1,4 @@
-/* pace_log.c — unified pacing event log (M1) + always-on pacing census (M8).
+/* pace_log.c — unified pacing event log + always-on pacing census.
  * See openpete_pace_log.h for the format and the reasoning behind it.
  */
 
@@ -62,8 +62,8 @@ static openpete_pace_census_t s_census;
 
 const int64_t openpete_pace_hist_edges_ns[OP_PACE_HIST_BUCKETS] = {
     0,          /* early: started before the deadline                     */
-    100000,     /* 100 µs — the plan's target band                        */
-    250000,     /* 250 µs — the stated p99 goal (S1)                      */
+    100000,     /* 100 µs — the target band                               */
+    250000,     /* 250 µs — the p99 start-phase goal                      */
     500000,
     1000000,
     2000000,
@@ -376,8 +376,9 @@ static void maybe_clocksample(int64_t caller_ns)
     if (!s_fp || caller_ns < s_next_clocksample_ns) return;
     s_next_clocksample_ns = caller_ns + PACE_CLOCKSAMPLE_PERIOD_NS;
 
-    /* The pair the analyzer needs for C1: the monotonic source the pacer
-     * steps against, and a precise wall clock, read back to back HERE.
+    /* The pair the analyzer's host-clock check needs: the monotonic source
+     * the pacer steps against, and a precise wall clock, read back to back
+     * HERE.
      *
      * Both must be sampled at the same instant. The caller's timestamp is a
      * tick body older than this call — fiber, presents and captures happened
@@ -523,9 +524,10 @@ void openpete_pace_vbl(uint32_t vbl_index, uint8_t flags, uint16_t pad_reads,
     s_census.vbls++;
     if (paced) {
         s_census.vbls_paced++;
-        /* S1, the plan's headline metric: how late the tick actually started
-         * against the grid point it was paced to. Signed — an early start is
-         * a different defect from a late one and must not average away. */
+        /* The start-phase error, the headline metric: how late the tick
+         * actually started against the grid point it was paced to. Signed —
+         * an early start is a different defect from a late one and must not
+         * average away. */
         const int64_t err = exec_start_ns - deadline_ns;
         if (flags & transient) {
             s_census.vbls_transient++;
@@ -954,12 +956,12 @@ void openpete_pace_census_format(char* buf, unsigned buf_bytes)
         return;
     }
 
-    /* Fraction of clean paced VBLs that started within the 250 µs S1 goal —
-     * the one number worth reading at a glance. Buckets 0..2 are (early,
-     * <100 µs, <250 µs); bucket 0 is early starts, which the loop cannot
-     * produce today (sim_due gates on now >= deadline) but which a future
-     * pacer change could, and an early start is as much a phase error as a
-     * late one. */
+    /* Fraction of clean paced VBLs that started within the 250 µs
+     * start-phase goal — the one number worth reading at a glance. Buckets
+     * 0..2 are (early, <100 µs, <250 µs); bucket 0 is early starts, which
+     * the loop cannot produce today (sim_due gates on now >= deadline) but
+     * which a future pacer change could, and an early start is as much a
+     * phase error as a late one. */
     const uint64_t early   = c->phase_hist[0];
     const uint64_t on_grid = c->phase_hist[1] + c->phase_hist[2];
     const double pct = c->vbls_clean

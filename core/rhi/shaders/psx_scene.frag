@@ -2,18 +2,17 @@
 #extension GL_GOOGLE_include_directive : require
 #include "psx_clut.glsl"
 
-/* Phase 3a.3 — textured native-scene fragment stage.
+/* Textured native-scene fragment stage.
  *
  * Same PSX 4/8/16bpp + CLUT VRAM decode as psx_sample.frag, but with the PSX
  * TEXTURE-MODULATION rule for gouraud-textured polys: out = texel * color / 128
  * (8-bit), i.e. a vertex colour of 128 means "unchanged", 255 ~2x, 0 black.
  * In normalised floats that is texel * color_n * (255/128), clamped. Using the
- * /255 of psx_sample.frag here would darken every textured moby by ~half (the
- * modulation-brightness bug).
+ * /255 of psx_sample.frag here would darken every textured moby by ~half.
  *
- * Determinism-irrelevant: pixel output only. Semi-transparency (STP + the 4 ABR
- * modes) is a later 3a.3 step; here the STP bit only affects the discard
- * sentinel, and the pipeline blends opaque. */
+ * Determinism-irrelevant: pixel output only. Semi-transparency: the ABR mode
+ * is the pipeline's blend state; this stage passes the decoded texel alpha
+ * through, and STP_SELECT (below) splits STP-set from STP-clear texels. */
 
 layout(set = 0, binding = 0) uniform usampler2D u_vram; /* R16_UINT 1024x512 */
 

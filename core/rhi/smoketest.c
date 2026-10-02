@@ -1,13 +1,13 @@
 /*
- * rhi_smoketest — milestone 1a/1b verification.
+ * rhi_smoketest — standalone RHI verification.
  *
  * Opens a Vulkan window and, over a cycling clear color, draws:
- *   - 1b.2: three quads sampled from a synthetic PSX VRAM test pattern
+ *   - three quads sampled from a synthetic PSX VRAM test pattern
  *     through the ported 4/8/16bpp + CLUT decoder (shaders/psx_sample.*):
  *       left   = 16bpp direct  (red->right / green->down gradient)
  *       middle =  8bpp + 256-entry CLUT (grayscale ramp left->right)
  *       right  =  4bpp +  16-entry CLUT (16 color bars)
- *   - 1b.1: a vertex-colored reference quad (the non-VRAM pipeline path).
+ *   - a vertex-colored reference quad (the non-VRAM pipeline path).
  *
  * Proves the whole foundation in isolation: instance/device/swapchain,
  * offscreen target, clear/blit/present, vertex buffers, pipelines, the
@@ -171,7 +171,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    SDL_Window *win = SDL_CreateWindow("openpete rhi smoketest (1b.2)", 1280, 720,
+    SDL_Window *win = SDL_CreateWindow("openpete rhi smoketest", 1280, 720,
                                        SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
     if (!win) {
         fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());

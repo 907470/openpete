@@ -19,7 +19,7 @@
 #   gated          — substitution(s) in place that restore the
 #                    canonical PSX verdict. Harness green here.
 #   verified       — gated AND confirmed against the PSX hardware
-#                    oracle (Phase 2). Strongest possible status.
+#                    oracle. Strongest possible status.
 #   audited_clean  — investigation completed; the candidate region
 #                    is presentation scratch (no gameplay code reads
 #                    it) so no substitution is needed. The owning
@@ -85,7 +85,7 @@ state_regions    = []
 name        = "widescreen_clip_x_threshold"
 status      = "audited_clean"
 description = """
-RETIRED 2026-07-06 (PsyCross --aspect substitution stack deleted).
+RETIRED (PsyCross --aspect substitution stack deleted).
 Was: per-vertex SX right-edge clip threshold (`lui $r, 0x200` == 512)
 across the cyclorama / moby / particle / environment renderers,
 substituted with psx_runtime_clip_x_threshold so PsyCross-mode Hor+
@@ -100,7 +100,7 @@ state_regions    = []
 name        = "widescreen_portal_clip_rect"
 status      = "audited_clean"
 description = """
-RETIRED 2026-07-06 (PsyCross --aspect substitution stack deleted).
+RETIRED (PsyCross --aspect substitution stack deleted).
 Was: func_80050BD0 portal clip-rect X-upper clamp (const_load 0x200 +
 `slti 0x201` replace_call -> psx_runtime_portal_clip_slt) widened for
 PsyCross-mode Hor+. Producers run canonical 4:3 in every mode now;
@@ -113,7 +113,7 @@ state_regions    = []
 name        = "widescreen_ui_moby_tag"
 status      = "audited_clean"
 description = """
-RETIRED 2026-07-06 (write-only identity-tag feeder — the render cache
+RETIRED (write-only identity-tag feeder — the render cache
 that consumed these tags was deleted with the screen-space matcher +
 PGXP, openpete 92646a6; native interpolation pairs by
 game_interp_moby_key, never by these). Was: per-moby append_call tags at the shaded loop (0x80022B08 moby_loop_tag: obj_id + ui_moby set_current) + cyclorama/Spyro obj_loop_tag sites feeding the cache obj_tag and the (deleted) eff_OFX UI classifier. The ui_moby ADDRESS-RANGE classifier survives (is_addr_ui/is_addr_static — native moby_native consumers). Sites revert to
@@ -126,7 +126,7 @@ state_regions    = []
 name        = "transform_interp_moby_queue"
 status      = "audited_clean"
 description = """
-RETIRED 2026-07-06 (write-only identity-tag feeder — the render cache
+RETIRED (write-only identity-tag feeder — the render cache
 that consumed these tags was deleted with the screen-space matcher +
 PGXP, openpete 92646a6; native interpolation pairs by
 game_interp_moby_key, never by these). Was: render-queue iter-top append_calls (0x8001F800/0x80020F9C moby_render_entry_tag) stamping the per-moby obj_tag from the 56-byte queue entry. Sites revert to
@@ -139,7 +139,7 @@ state_regions    = []
 name        = "untagged_renderer_clear"
 status      = "audited_clean"
 description = """
-RETIRED 2026-07-06 (write-only identity-tag feeder — the render cache
+RETIRED (write-only identity-tag feeder — the render cache
 that consumed these tags was deleted with the screen-space matcher +
 PGXP, openpete 92646a6; native interpolation pairs by
 game_interp_moby_key, never by these). Was: 6 renderer-entry append_calls clearing the obj_id/world_geo stamps so untagged renderers did not inherit a stale tag. Sites revert to
@@ -183,7 +183,7 @@ state_regions    = []  # read-only diagnostic; no state written
 name        = "world_geo_strip_tag"
 status      = "audited_clean"
 description = """
-RETIRED 2026-07-06 (write-only identity-tag feeder — the render cache
+RETIRED (write-only identity-tag feeder — the render cache
 that consumed these tags was deleted with the screen-space matcher +
 PGXP, openpete 92646a6; native interpolation pairs by
 game_interp_moby_key, never by these). Was: terrain strip-head append_calls (dominant xor 0x80026238 + 7 lw loop heads + the cyclorama piece heads) stamping the per-strip WORLD batch identity. Sites revert to
@@ -196,10 +196,10 @@ state_regions    = []
 name        = "world_geo_vertex_src"
 status      = "audited_clean"
 description = """
-RETIRED 2026-07-06 (write-only identity-tag feeder — the render cache
+RETIRED (write-only identity-tag feeder — the render cache
 that consumed these tags was deleted with the screen-space matcher +
 PGXP, openpete 92646a6; native interpolation pairs by
-game_interp_moby_key, never by these). Was: the PHASE-D per-vertex source-address FIFO (20 push_vsrc/mark_refine sites across the stream/subdiv/LOD walk variants) giving each terrain vertex a camera-free cross-frame key. Sites revert to
+game_interp_moby_key, never by these). Was: the per-vertex source-address FIFO (20 push_vsrc/mark_refine sites across the stream/subdiv/LOD walk variants) giving each terrain vertex a camera-free cross-frame key. Sites revert to
 plain translation at regen; hooks deleted. Entry kept for the audit
 trail."""
 substitution_sites = []
@@ -209,7 +209,7 @@ state_regions    = []
 name        = "moby_shadow_subtag"
 status      = "audited_clean"
 description = """
-RETIRED 2026-07-06 (write-only identity-tag feeder — the render cache
+RETIRED (write-only identity-tag feeder — the render cache
 that consumed these tags was deleted with the screen-space matcher +
 PGXP, openpete 92646a6; native interpolation pairs by
 game_interp_moby_key, never by these). Was: the shadow-renderer sub-tag append_call disambiguating shadow prims from their owner moby in the cache identity space. Sites revert to
@@ -222,7 +222,7 @@ state_regions    = []
 name        = "widescreen_2d_fullbleed_x_max"
 status      = "audited_clean"
 description = """
-RETIRED 2026-07-06 (PsyCross --aspect substitution stack deleted).
+RETIRED (PsyCross --aspect substitution stack deleted).
 Was: 2D full-bleed prim X-width (cutscene letterbox func_80018F30 +
 fade overlay func_800190D4) widened via psx_runtime_fullbleed_x_max
 to span the PsyCross-widened GL ortho. Native mode always kept these
@@ -237,7 +237,7 @@ state_regions    = []
 name        = "widescreen_env_cell_x_bound"
 status      = "audited_clean"
 description = """
-RETIRED 2026-07-06 (PsyCross --aspect substitution stack deleted).
+RETIRED (PsyCross --aspect substitution stack deleted).
 Was: r_environment.s per-vertex lateral bound (|MAC1| < 256) widened
 render-pass-only (offset_add knob + env_cell_x_bound_neg companion
 hook) so PsyCross-mode Hor+ admitted off-4:3 env vertices. The native
@@ -252,7 +252,7 @@ state_regions    = []
 name        = "widescreen_polybuf_size"
 status      = "audited_clean"
 description = """
-RETIRED 2026-07-06 (--no-lod producer stack deleted — the game-side
+RETIRED (--no-lod producer stack deleted — the game-side
 machinery that made the ORIGINAL .s renderer draw full detail,
 reachable only via manual `--renderer psycross --no-lod` since 30ec733).
 --no-lod is a native-renderer display policy now (the native feeders
@@ -266,7 +266,7 @@ state_regions    = []
 name        = "widescreen_polybuf_lower"
 status      = "audited_clean"
 description = """
-RETIRED 2026-07-06 (--no-lod producer stack deleted — the game-side
+RETIRED (--no-lod producer stack deleted — the game-side
 machinery that made the ORIGINAL .s renderer draw full detail,
 reachable only via manual `--renderer psycross --no-lod` since 30ec733).
 --no-lod is a native-renderer display policy now (the native feeders
@@ -358,10 +358,10 @@ math (truncated pixels or Q16) had irreducible 1-pixel boundary
 ambiguity; reading the canonical SX directly from gte.cpp resolves
 that exactly.
 
-Open regression (2026-05-04, post-cone-clamp): 20k-frame soak
+Open regression (post-cone-clamp): 20k-frame soak
 fails at frame 14590, particle[4].m_03 differs (4:3=0, 16:9=1).
 
-Diagnosed 2026-05-05: the leak is NOT in the C8C..CB8 cull chain
+Diagnosis: the leak is NOT in the C8C..CB8 cull chain
 itself — it's in the prim-buffer-full early-exit at PC 0x80057C14
 (`bgez $v0, 0x8005809C` where $v0 = $t7 - $fp = remaining buffer
 bytes). At frame 14589:
@@ -442,7 +442,7 @@ gameplay-controlled state (position, rotation, animation, AI
 counters, props pointers); a leak in *any* render→gameplay channel
 that AI consumes will surface here.
 
-Root cause (2026-05-04 frame-8363 investigation): the cone-extra
+Root cause (the frame-8363 divergence): the cone-extra
 WIDENING substitutions at 0x8001F30C / 0x80020AB8 / 0x80022C0C
 multiplied (MAC3 + Z_offset) by `psx_runtime_moby_cone_extra_q12`
 without clamping. When the moby straddles or sits behind the camera
@@ -462,8 +462,8 @@ preserving 4:3-equivalent verdicts. Substitution sites updated; no
 new sites added — fix is a math correction inside the existing
 cone-extra closures."""
 substitution_sites = []
-verdict_fn         = "shared with m_WasDrawn closure (clamp added 2026-05-04)"
-verified_against   = ["aspect_determinism gate 2026-05-04: divergence pushed 8363 → 14590"]
+verdict_fn         = "shared with m_WasDrawn closure (with the cone clamp)"
+verified_against   = ["aspect_determinism gate: divergence pushed 8363 → 14590"]
 state_regions      = ["g_LevelMobys_pool", "g_DynMobys_pool", "g_Sparx_moby"]
 
 [[channel]]
@@ -473,7 +473,7 @@ description = """
 Originally suspected (bisect 2026-04-xx) of being an env-renderer
 per-cell visibility byte table at 0x80070C00..0x80070FFF.
 
-Audited 2026-05-03 with the env-var write-watcher
+Audited with the env-var write-watcher
 (install_watch_from_env in game_extras_impl.c) + PC tracking. All
 writes to this range come from r_moby.s's GTE per-vertex color
 depth-cueing loop (PC 0x8001FE78: `mfc2 $t1, C2_RGB2; sw $t1, 0x0(\
@@ -502,7 +502,7 @@ maps to g_SonyImage's m_WorldNearQueued[256] (0x800718F4..0x80071CF4),
 m_WorldFarQueued[256] (0x80071CF4..0x800720F4), and the tail of the
 DrawStateSonyBuf union — all three are render-side prim queues.
 
-Audited 2026-05-03 with the env-var write-watcher (PC tracking
+Audited with the env-var write-watcher (PC tracking
 regen) + decomp-grep:
 
   Writers (recompiled MIPS):
@@ -555,7 +555,7 @@ Originally suspected (bisect 2026-04-xx) of being an open render→
 gameplay channel at D_80077868 (32 bytes, "func_80051FEC's per-class
 dedup flag table").
 
-Audited 2026-05-03 (asm read of moby_lists.s + grep across decomp):
+Audited (asm read of moby_lists.s + grep across decomp):
 this region is purely internal scratch within func_80051FEC. The
 function clears the 32 bytes at entry (lines 17-20 of moby_lists.s),
 populates them during a pass over g_LevelMobys (gated on m_WasDrawn,
@@ -584,10 +584,10 @@ cull pass; read by func_800521C0 (moby_lists.s) which clears
 m_WasDrawn=0 on every moby whose owning sector wasn't rendered.
 Genuine render->gameplay channel.
 
-CLOSED BY CONSTRUCTION 2026-07-06 (PsyCross --aspect substitution
+CLOSED BY CONSTRUCTION (PsyCross --aspect substitution
 stack deleted). The only thing that ever perturbed this table was
 openpete's own env-renderer widening (m_ViewMatrix row-0 scale in the
-PsyCross-mode Hor+ arm, traced 2026-05-04 via MVMVA-trace at PC
+PsyCross-mode Hor+ arm, traced via MVMVA-trace at PC
 0x80025A68); the closure was a C-side canonical-mask AND in that same
 arm. With the widening arm deleted, every mode runs the canonical
 cull and writes the canonical verdict directly — no interception
@@ -600,7 +600,7 @@ state_regions      = ["render_channel:class_skip_flags"]
 name        = "no_lod_env_queue_offsets"
 status      = "audited_clean"
 description = """
-RETIRED 2026-07-06 (--no-lod producer stack deleted — the game-side
+RETIRED (--no-lod producer stack deleted — the game-side
 machinery that made the ORIGINAL .s renderer draw full detail,
 reachable only via manual `--renderer psycross --no-lod` since 30ec733).
 --no-lod is a native-renderer display policy now (the native feeders
@@ -614,10 +614,10 @@ state_regions    = []
 name        = "dbg_kill_env_lp_walk"
 status      = "audited_clean"
 description = """
-RETIRED 2026-07-06 (deleted with the --no-lod producer stack, whose
+RETIRED (deleted with the --no-lod producer stack, whose
 setup was the only place the OPENPETE_DBG_KILL_LP env knob was armed).
 Was: 2 replace_call sites forcing the env-renderer LP-walk off for
-visual identification (Phase 3 investigation, closed since commit
+visual identification (an investigation closed since commit
 8fa68ae). The 0x800261E0 g_SkipLowPolyWorld read reverted to the plain
 lw; the 0x800276B4 LP-walk loop head kept its world-geo identity stamp
 by moving into the world_geo_strip_tag channel as a plain append_call
@@ -629,7 +629,7 @@ state_regions    = []
 name        = "no_lod_moby_face_offset"
 status      = "audited_clean"
 description = """
-RETIRED 2026-07-06 (--no-lod producer stack deleted — the game-side
+RETIRED (--no-lod producer stack deleted — the game-side
 machinery that made the ORIGINAL .s renderer draw full detail,
 reachable only via manual `--renderer psycross --no-lod` since 30ec733).
 --no-lod is a native-renderer display policy now (the native feeders
@@ -643,7 +643,7 @@ state_regions    = []
 name        = "no_lod_moby_zsf4_distance_neutralize"
 status      = "audited_clean"
 description = """
-RETIRED 2026-07-06 (--no-lod producer stack deleted — the game-side
+RETIRED (--no-lod producer stack deleted — the game-side
 machinery that made the ORIGINAL .s renderer draw full detail,
 reachable only via manual `--renderer psycross --no-lod` since 30ec733).
 --no-lod is a native-renderer display policy now (the native feeders
@@ -657,7 +657,7 @@ state_regions    = []
 name        = "no_lod_env_texture_tier"
 status      = "audited_clean"
 description = """
-RETIRED 2026-07-06 (--no-lod producer stack deleted — the game-side
+RETIRED (--no-lod producer stack deleted — the game-side
 machinery that made the ORIGINAL .s renderer draw full detail,
 reachable only via manual `--renderer psycross --no-lod` since 30ec733).
 --no-lod is a native-renderer display policy now (the native feeders
@@ -671,7 +671,7 @@ state_regions    = []
 name        = "no_lod_lod_distance_saturate"
 status      = "audited_clean"
 description = """
-RETIRED 2026-07-06 (--no-lod producer stack deleted — the game-side
+RETIRED (--no-lod producer stack deleted — the game-side
 machinery that made the ORIGINAL .s renderer draw full detail,
 reachable only via manual `--renderer psycross --no-lod` since 30ec733).
 --no-lod is a native-renderer display policy now (the native feeders
@@ -685,7 +685,7 @@ state_regions    = []
 name        = "no_lod_culling_distance_saturate"
 status      = "audited_clean"
 description = """
-RETIRED 2026-07-06 (--no-lod producer stack deleted — the game-side
+RETIRED (--no-lod producer stack deleted — the game-side
 machinery that made the ORIGINAL .s renderer draw full detail,
 reachable only via manual `--renderer psycross --no-lod` since 30ec733).
 --no-lod is a native-renderer display policy now (the native feeders
@@ -699,7 +699,7 @@ state_regions    = []
 name        = "no_lod_moby_render_distance_saturate"
 status      = "audited_clean"
 description = """
-RETIRED 2026-07-06 (--no-lod producer stack deleted — the game-side
+RETIRED (--no-lod producer stack deleted — the game-side
 machinery that made the ORIGINAL .s renderer draw full detail,
 reachable only via manual `--renderer psycross --no-lod` since 30ec733).
 --no-lod is a native-renderer display policy now (the native feeders
@@ -723,7 +723,7 @@ comparand rejects, and the m_WasDrawn=1 stores gate on
 HISTORY: built to close the --no-lod m_Distance-saturation leak (the
 saturated .s cull admitted far mobys -> m_WasDrawn=1 -> AI / rand()
 divergence). The producer stack that created the saturated/canonical
-split was deleted 2026-07-06, so the gates now simply replay the .s's
+split is deleted, so the gates now simply replay the .s's
 own canonical verdict (mdist_thresh_delta retired) — kept because they
 are the m_WasDrawn closure architecture shared by the whole channel
 family, and a future producer perturbation would be caught by them.
@@ -768,12 +768,12 @@ state_regions    = []  # substitution-granularity + oracle verified; see note
 name        = "no_lod_moby_reg_queue"
 status      = "audited_clean"
 description = """
-RETIRED 2026-07-06 (--no-lod producer stack deleted — the game-side
+RETIRED (--no-lod producer stack deleted — the game-side
 machinery that made the ORIGINAL .s renderer draw full detail,
 reachable only via manual `--renderer psycross --no-lod` since 30ec733).
 --no-lod is a native-renderer display policy now (the native feeders
 own detail selection from gamestate).
-Was: the 3 offset_add sites relocating the regular/specular moby visible-queue head+limit into a grown 0x80600000 host region (Phase 8.5 overflow fix). Sites reverted to the .s constants; knob + hook deleted.
+Was: the 3 offset_add sites relocating the regular/specular moby visible-queue head+limit into a grown 0x80600000 host region (a queue overflow fix). Sites reverted to the .s constants; knob + hook deleted.
 Entry kept for the audit trail."""
 substitution_sites = []
 state_regions    = []
@@ -782,7 +782,7 @@ state_regions    = []
 name        = "polybuf_hudmoby_canonical"
 status      = "audited_clean"
 description = """
-RETIRED 2026-07-06 (--no-lod producer stack deleted — the game-side
+RETIRED (--no-lod producer stack deleted — the game-side
 machinery that made the ORIGINAL .s renderer draw full detail,
 reachable only via manual `--renderer psycross --no-lod` since 30ec733).
 --no-lod is a native-renderer display policy now (the native feeders

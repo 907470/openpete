@@ -22,10 +22,9 @@
  * Consumed by scripts/measure-pacing.py.
  *
  * Caller is responsible for picking sensible deadline / slip values.
- * Until Phase 1 wires the real high-res pacer, the baseline path can
- * synthesise a deadline as `start_op_ns + frame * target_period_ns`,
- * which gives an honest read of the legacy ticker's wall-clock drift
- * against an ideal cadence — exactly the before/after we want.
+ * A caller with no pacer deadline can synthesise one as
+ * `start_op_ns + frame * target_period_ns`, which reads the loop's
+ * wall-clock drift against an ideal cadence.
  */
 
 #ifndef OPENPETE_FRAME_TIME_LOG_H

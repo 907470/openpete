@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Generate placeholder bodies for every PSYQ symbol in a manifest.
 
-Phase 1b uses these stubs so the binary links — every PSYQ symbol the
+These stubs make the binary link — every PSYQ symbol the
 recompiled C declares `extern void NAME(CPUState* cpu);` resolves to a
-function that logs the call and aborts. Phase 1c will replace selected
-stubs with real PsyCross thunks (generated, ABI-translating).
+function that logs the call and aborts. Real PsyCross thunks override
+selected stubs at link time.
 
 Usage:
     gen_psyq_stubs.py manifest.toml output.c [--prefix STR]
@@ -49,7 +49,7 @@ HEADER = """\
  * and aborts. Bodies are emitted as `__attribute__((weak))` so a hand-
  * written thunk in psyq_thunks.c (linked in the same target) wins at
  * link time for any function PsyCross actually implements. The remaining
- * abort stubs catch unimplemented surface in Phase 1c development.
+ * abort stubs catch unimplemented surface.
  *
  * Caveat: PSYQ exports a few stdlib names (printf/sprintf/exit/rand/srand/
  * strlen/etc.). We deliberately do NOT include <stdio.h>/<stdlib.h> here

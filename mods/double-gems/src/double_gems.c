@@ -1,4 +1,4 @@
-/* double-gems — PoC rung 3: typed guest-RAM write, real divergence.
+/* double-gems — PoC: typed guest-RAM write, real divergence.
  *
  * Post-hook + state-diff (the framework's event-detection idiom): let
  * CollectItem run, diff g_GemTotal across base(), and add the delta

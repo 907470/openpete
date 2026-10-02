@@ -9,7 +9,7 @@
  * HUD too). Depth-independent, so the effect is unmistakable on any
  * frame. op_scene_depth is wired at set 1 (the WORLD-opaque pre-pass)
  * for depth-aware effects, but its coverage/scale needs further work
- * before distance fog is practical — see the mod-shaders plan S5. */
+ * before distance fog is practical. */
 /* Grade strength, pushed by the mod (std140: one float). 0 leaves the
  * scene untouched, 1 is the full sepia tone. */
 layout(set = 3, binding = 1, std140) uniform sepia_params {

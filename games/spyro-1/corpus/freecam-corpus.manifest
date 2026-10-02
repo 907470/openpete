@@ -33,7 +33,7 @@ artisans | pos=(58245, 42770, 9989) yaw=1599 pitch=-29
 # face changes from the 2x2 fold image to the 4x4 grid on the bilinear surface
 # (curved curb and sloped grass move, the flat floor does not).
 artisans | pos=(84319, 31822, 11248) yaw=-3051 pitch=992
-# Warp on approach between these two poses under --lod extended (user report on
+# Warp on approach between these two poses under --lod extended (seen on
 # the geomorph build 26134f04): the near grass and curb faces cross the tier-4
 # blend band between them.
 artisans | pos=(85079, 28860, 10795) yaw=9461 pitch=394
@@ -200,13 +200,13 @@ peace_keepers | pos=(73452, 77502, 55889) yaw=2942 pitch=81
 # a regression re-shows a grey panel floating over the water here.
 stone_hill | pos=(163352, 247415, 37632) yaw=1038 pitch=602
 
-# artisans NW water plane, top-down (found in testing 2026-08-05): the far corner of
+# artisans NW water plane, top-down: the far corner of
 # the water LP showed bare backdrop — 17 unswept water-plane quads absent from
 # the fill-tag table. Guards the tags for the whole NW water cluster
 # (s120/s124/s153/s78/s111/s68).
 artisans | pos=(55555, 118312, 58525) yaw=5120 pitch=992
 
-# User audit guard poses (2026-08-05, the fill-tag/admission batch):
+# Fill-tag/admission guard poses:
 # artisans east water quads (s7/s172 fills)
 artisans | pos=(99194, 99580, 19688) yaw=-154 pitch=350
 # cliff_town mesa-top ground quads from above (s2/s3/s5/s7/s14 fills)
@@ -228,30 +228,28 @@ gnastys_loot | pos=(70303, 47226, 16489) yaw=3047 pitch=-24
 # pixels on the wall's top face.
 artisans | pos=(99608, 40719, 8382) yaw=-1338 pitch=-181
 # Widescreen moby cull: the pad on the left, on the water, is visible at
-# 16:9 but is culled early (user report 2026-09-19); blessed pre-fix.
+# 16:9 but is culled early; blessed pre-fix.
 artisans | pos=(69222, 48707, 7142) yaw=1706 pitch=138
 # Widescreen moby cull, second pose: the pad's edge crosses into the 16:9
-# field while its centre lies outside; the reveal drops it (user report
-# 2026-09-19); blessed pre-fix.
+# field while its centre lies outside; the reveal drops it; blessed pre-fix.
 artisans | pos=(69222, 48707, 7142) yaw=1685 pitch=135
 # Widescreen moby cull, third pose: the pad's near corner reaches into the
 # 16:9 field while its centre lies 197 px outside; the reveal's centre-depth
-# margin drops it (user report 2026-09-21); blessed pre-fix.
+# margin drops it; blessed pre-fix.
 artisans | pos=(68239, 49731, 8905) yaw=1705 pitch=437
 # 4x4 near-cell floor textures warp up close.
 artisans | pos=(85572, 29197, 10208) yaw=2061 pitch=446
 # town_square bull moby: disappears or shrinks when it changes animation
-# pose while interpolation is active (user report 2026-09-19, VBL ~1800;
-# pose corrected the same day); blessed pre-fix. Canonical at 1764 so the
-# intermediate leg lands on VBL 1814, the tick the bull turns 180 degrees
+# pose while interpolation is active (VBL ~1800); blessed pre-fix. Canonical
+# at 1764 so the intermediate leg lands on VBL 1814, the tick the bull turns 180 degrees
 # by a rotation step and a mirrored keyframe pair at once.
 town_square | pos=(109911, 108961, 10607) yaw=1026 pitch=75 | 1764
-# stone_hill sector 7 faces 0 and 1: the fill-tag pick session of 2026-09-19;
+# stone_hill sector 7 faces 0 and 1, picked with the fill-tag inspector;
 # blessed pre-fix on the binary before the header regeneration.
 stone_hill | pos=(74035, 203225, 34658) yaw=6884 pitch=311
 # town_square fanning chests: under --lod extended the fans on top of the
 # chests draw fully black (no shading) at a distance the stock cull would drop
-# them, centre of frame (user report 2026-09-20). Canonical class: the
+# them, centre of frame. Canonical class: the
 # extended-LOD leg is the defect's leg; blessed pre-fix.
 town_square | pos=(135549, 111171, 39041) yaw=1509 pitch=678
 # Depth tie under z = 1 - 1/vz: floor 115/1-2 vs pinned wall 115/13,15 (0.17% apart),
@@ -264,9 +262,9 @@ cliff_town | pos=(108752, 84992, 255090) yaw=0 pitch=992
 # blend order differs walk vs cache, under --lod extended.
 crystal_flight | pos=(130240, 115736, 218978) yaw=0 pitch=992
 # gnorc_gnexus ground terrain missing: some ground sectors in view do not
-# render at this pose (user report 2026-09-28); blessed pre-fix.
+# render at this pose; blessed pre-fix.
 gnorc_gnexus | pos=(77512, 70274, 9034) yaw=2354 pitch=205
 # peace_keepers dragon pedestal renders the level background colour: the
 # pedestal's faces are missing or keyed behind the backdrop at this pose
-# (user report 2026-09-29); blessed pre-fix.
+# blessed pre-fix.
 peace_keepers | pos=(36639, 111464, 54580) yaw=1798 pitch=10

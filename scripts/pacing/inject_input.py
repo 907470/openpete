@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""inject_input.py — M5 Tier B: inject real OS input at scheduled wall times.
+"""inject_input.py — external injection: real OS input at scheduled wall times.
 
 Everything inside the process is downstream of the thing that most needs
 measuring. The pulse source built into openpete (OPENPETE_INPUT_PULSE) fires
@@ -12,7 +12,7 @@ it — it would absolve the hazard the host thread split introduced.
 This injects from a separate process, through the OS, into the game's window.
 It is therefore the only producer permitted to state an end-to-end input
 latency, and the only one that can drive a KNOWN arrival phase, which is what
-the latch-window pivot (I2) needs.
+the latch-window pivot needs.
 
 Timestamps are taken immediately AFTER the injection call returns, on the same
 wall clock the pace log's CLOCKSAMPLE records pair against
@@ -148,11 +148,11 @@ def make_injector(scancode):
         return WindowsInjector(scancode)
     # Linux would need /dev/uinput, which is root-only here, and under WSLg the
     # compositor does not route synthetic evdev to the focused surface. Saying
-    # so beats shipping a path that silently injects into nothing: a Tier B leg
+    # so beats shipping a path that silently injects into nothing: an injection leg
     # that delivers zero events fails by producing FEWER edges, not wrong ones,
     # which is invisible unless the run is refused outright.
     raise SystemExit(
-        f"inject_input: no external injector on {sys.platform}. Tier B needs a "
+        f"inject_input: no external injector on {sys.platform}. Injection needs a "
         f"real desktop session: Windows (SendInput) is supported; Linux needs "
         f"write access to /dev/uinput AND a compositor that routes synthetic "
         f"evdev to the focused surface (WSLg does not).")

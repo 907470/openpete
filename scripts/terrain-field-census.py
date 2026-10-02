@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""P0 census analysis over OPENPETE_TERRAIN_FIELDCENSUS logs:
+"""Census analysis over OPENPETE_TERRAIN_FIELDCENSUS logs:
 1. Authored-field distributions: LP admission (w0&0x1F), LP OT bias
    ((w1>>3)&0x1F), HP OT bias ((w3>>3)&0x7), per level + global.
 2. Admission <-> LP-OT-bias correlation (joint table + Pearson).

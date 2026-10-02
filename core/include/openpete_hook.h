@@ -1,10 +1,10 @@
 #pragma once
 /* openpete_hook.h — the OPENPETE_HOOK decomp seam.
  *
- * Hook-anchor plan, step 4: once a Spyro function is decompiled to matching
- * C, its render->gameplay interception can no longer be an address-keyed
- * recompiler substitution (there is no recompiled instruction to key on).
- * Instead the hook lives as a macro at the matching source location:
+ * Once a Spyro function is decompiled to matching C, its render->gameplay
+ * interception can no longer be an address-keyed recompiler substitution
+ * (there is no recompiled instruction to key on). Instead the hook lives
+ * as a macro at the matching source location:
  *
  *     int func_80022A2C(...) {
  *         ...

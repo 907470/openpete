@@ -4,7 +4,7 @@ build_manifest.py emits symbols.toml + globals.toml from psx.map.
 The generators (gen_defsyms, gen_dispatch, …) load those plus the
 hand-curated native.toml to decide what code/links to emit.
 
-When the rewriter has run (Phase 3+), per-TU ``*.discovered.toml``
+When the rewriter has run (Pass 6 discovery), per-TU ``*.discovered.toml``
 files under the rewritten dir carry auto-discovered entries that the
 generators merge in on top of native.toml. Hand entries override auto
 on name collision (a hand entry's `c_name`, `args`, `psyq_main`, etc.

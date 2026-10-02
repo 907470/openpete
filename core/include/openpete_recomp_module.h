@@ -4,9 +4,8 @@
 // dispatch_chain.c) reaches the runtime through psx_runtime.h; the runtime
 // reaches the recompiled code ONLY through this descriptor. Static builds
 // register the built-in module from game main; the distribution build
-// (plan openpete-distribution-local-recomp, D1) resolves the same
-// descriptor from a dlopen'd module compiled on the user's machine and
-// verifies the stamps before running.
+// resolves the same descriptor from a dlopen'd module compiled on the
+// user's machine and verifies the stamps before running.
 #ifndef OPENPETE_RECOMP_MODULE_H
 #define OPENPETE_RECOMP_MODULE_H
 
@@ -26,8 +25,8 @@ typedef struct openpete_recomp_module {
     uint32_t abi_version;      /* OPENPETE_RECOMP_ABI_VERSION at module build */
     const char* codegen_stamp; /* hash(PSXRecomp + emission metadata +
                                   toolchain id/flags + opt level); the static
-                                  dev build carries "dev-static" (D2 makes it
-                                  real for boot-compiled modules) */
+                                  dev build carries "dev-static"; a
+                                  boot-compiled module carries the hash */
     const char* rom_sha256;    /* identity of the ROM this module was built
                                   from; "" for dev-static builds (the regen
                                   inputs are pinned by the decomp submodule) */

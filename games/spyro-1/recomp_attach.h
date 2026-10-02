@@ -3,7 +3,7 @@
 // Two implementations, selected by OPENPETE_RECOMP_LINKAGE:
 //   recomp_attach_static.c — registers the linked-in descriptor.
 //   recomp_attach_shared.c — dlopen/LoadLibrary + descriptor lookup +
-//                            forwarder resolution (distribution D1).
+//                            forwarder resolution.
 #ifndef SPYRO1_RECOMP_ATTACH_H
 #define SPYRO1_RECOMP_ATTACH_H
 
