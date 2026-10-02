@@ -115,6 +115,10 @@ target_sources(${OPENPETE_GAME_EXE} PRIVATE
     renderer/game_structs_check.c
     ${_spyro3_structs_gen}/openpete_game_structs.h)
 target_include_directories(${OPENPETE_GAME_EXE} PRIVATE ${_spyro3_structs_gen})
+add_custom_target(spyro3_game_structs
+    DEPENDS ${_spyro3_structs_gen}/openpete_game_structs.h)
+add_dependencies(${OPENPETE_GAME_EXE} spyro3_game_structs)
+add_dependencies(openpete_generated_headers spyro3_game_structs)
 
 # The Win32 icon resource: the same source as the window icon, upscaled into
 # a multi-size .ico.

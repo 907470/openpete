@@ -338,6 +338,13 @@ function(openpete_add_game GAME_ID)
         ${_stubs_filtered}
         ${_common}/psyq/psyq_stub_runtime.c)
 
+    # The region table and symbol aliases as a target of their own, so the
+    # source parsers order after them without waiting for the executable.
+    add_custom_target(${_tag}_generated_headers
+        DEPENDS ${_regions_sources} ${_symbols_sources})
+    add_dependencies(${_exe} ${_tag}_generated_headers)
+    add_dependencies(openpete_generated_headers ${_tag}_generated_headers)
+
     # Generated C addresses psx_runtime.h via the include path provided by
     # openpete_core (which adds psxrecomp/runner/include).
     target_include_directories(${_exe} PRIVATE

@@ -349,6 +349,7 @@ add_custom_target(spyro1_game_structs ALL
     DEPENDS ${_mod_sdk_gen}/openpete_game_structs.h
     COMMENT "Staging typed game structs into <exe>/sdk/")
 add_dependencies(openpete-spyro1 spyro1_game_structs)
+add_dependencies(openpete_generated_headers spyro1_sfx_names spyro1_game_structs)
 
 # --- Mod-author docs ---
 # tools/gen_mod_docs.py extracts the SDK surface (api header, symbol/

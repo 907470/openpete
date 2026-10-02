@@ -485,6 +485,15 @@ add_custom_command(
             ${CMAKE_SOURCE_DIR}/tools/gen_imgui_table.py
     COMMENT "Generating the mod ImGui table (gen_imgui_table.py)"
     VERBATIM)
+add_custom_target(openpete_imgui_table DEPENDS ${_imgui_table_outputs})
+
+# Every header a build rule generates and a tracked source includes. The
+# documentation and complexity ratchets and code_docs parse the tracked
+# sources from the compile database, so they depend on this target: before
+# the headers exist, a TU that includes one stops at its first missing
+# include. Each producer target adds itself here.
+add_custom_target(openpete_generated_headers)
+add_dependencies(openpete_generated_headers openpete_imgui_table)
 
 add_library(openpete_imgui STATIC
     ${IMGUI_DIR}/imgui.cpp
@@ -500,6 +509,7 @@ add_library(openpete_imgui STATIC
     ${_imgui_table_dir}/openpete_imgui_guard.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ui/imgui_guard.c
 )
+add_dependencies(openpete_imgui openpete_imgui_table)
 target_include_directories(openpete_imgui PRIVATE
     ${DCIMGUI_DIR}
     ${_imgui_table_dir}
@@ -732,6 +742,7 @@ if(NOT CMAKE_HOST_WIN32)
         ${_openpete_complexity_check}
         COMMENT "complexity fence: the pre-commit hook is armed, and no function's excess rose"
         VERBATIM)
+    add_dependencies(openpete_complexity_ratchet openpete_generated_headers)
 
     # Function-documentation ratchet, the same shape: the hook shared with
     # the complexity fence must call it (`check --armed`), and `check`
@@ -748,4 +759,5 @@ if(NOT CMAKE_HOST_WIN32)
         ${_openpete_doc_check}
         COMMENT "documentation fence: the pre-commit hook calls it, and every function is documented or has a row"
         VERBATIM)
+    add_dependencies(openpete_doc_ratchet openpete_generated_headers)
 endif()

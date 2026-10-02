@@ -155,6 +155,7 @@ add_custom_command(
     COMMENT "Generating the codebase reference (gen_code_docs.py)"
     VERBATIM)
 add_custom_target(code_docs DEPENDS ${_code_docs_stamp})
+add_dependencies(code_docs openpete_generated_headers)
 
 foreach(game IN LISTS OPENPETE_GAMES)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/games/${game}/CMakeLists.txt")
