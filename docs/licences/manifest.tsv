@@ -39,7 +39,7 @@ MinGW-w64 CRT / winpthreads 8.0.0 (static, Windows)	windows	docs/licences/mingw-
 MinGW-w64 CRT / winpthreads 8.0.0 (static, Windows)	windows	docs/licences/winpthreads.txt	winpthreads.txt
 OpenAL Soft 1.25.1 (`OpenAL32.dll`, Windows; text also as `OpenAL-COPYING.txt`)	windows	third_party/OpenAL-mingw/COPYING	OpenAL-Soft.txt
 SDL_GameControllerDB (`gamecontrollerdb.txt`)	all	docs/licences/gamecontrollerdb.txt	SDL_GameControllerDB.txt
-llvm-mingw (LLVM/Clang, lld, llvm-ar, …)	toolchain-windows	LICENSE.TXT	llvm-mingw.txt
+llvm-mingw (LLVM/Clang, lld, llvm-ar, ...)	toolchain-windows	LICENSE.TXT	llvm-mingw.txt
 LLVM/Clang 18.1.8 + lld (llvm.org build)	toolchain-linux	LICENSE.TXT	LLVM.txt
 PSXRecomp (psxrecomp)	all	third_party/psxrecomp/LICENSE	PSXRecomp.txt
 crt-beans (`sdk/examples/crt-beans`)	sdk	mods/crt-beans/LICENSE	crt-beans.txt
