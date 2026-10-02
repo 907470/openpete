@@ -1447,7 +1447,7 @@ cen_out="$(cat "$CEN_TXT" 2>/dev/null || true)"
 # a failure, so the row count is asserted against the header the report
 # prints for exactly that purpose.
 cen_tables="$(printf '%s\n' "$cen_out" | sed -n 's/.*mod-table: tables=\([0-9]*\).*/\1/p' | head -1)"
-cen_rows="$(printf '%s\n' "$cen_out" | grep -c 'mod-table: [a-z_]* count=' || true)"
+cen_rows="$(printf '%s\n' "$cen_out" | grep -c 'mod-table: [^ =]* count=' || true)"
 if [ -n "$cen_tables" ] && [ "$cen_rows" -eq "$cen_tables" ]; then
     ok "census complete: $cen_rows rows, header says $cen_tables (${CEN_SECS}s)"
 else
