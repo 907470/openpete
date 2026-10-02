@@ -1,4 +1,4 @@
-# 0002 — Phase 1b fallthrough + symbol-prefix fixes
+# 0002 — Fallthrough and symbol-prefix fixes
 
 These changes are applied directly on top of the vendored psxrecomp source
 (see `ORIGIN.txt` for the upstream commit). They are documented here so a
@@ -39,7 +39,7 @@ future re-vendoring or upstream pull request can pick them up.
 ## Companion tooling
 
 - `tools/gen_psyq_stubs.py` (in `openpete/`) accepts `--prefix STR` so the
-  Phase 1b PSYQ-stub file matches the recompiler's prefix output.
+  generated PSYQ-stub file matches the recompiler's prefix output.
 
 ## Invocation example
 

@@ -1,12 +1,14 @@
 # Adding a game
 
 How a PSX title becomes an `openpete-<game>` executable. Three ports exist:
-`games/spyro-1/` (the first, with the native renderer walks, the mod SDK and
-the distribution pipeline), `games/spyro-2/` and `games/spyro-3/` (PsyCross
-rendering, every vaddr through the recompiler). The second and third are the
-template: a fourth game is `games/<game>/` holding a `recomp.conf`, a
-`game_extras_impl.c`, a `psyq_game_provides.h`, a `manifest/` and a
-five-line `CMakeLists.txt`.
+`games/spyro-1/` (the first, with the mod SDK and the distribution
+pipeline), `games/spyro-2/` and `games/spyro-3/` (every vaddr through the
+recompiler, no mod SDK). All three draw through the native renderer: the
+walks are under `games/common/renderer/`, and each game supplies its engine
+layout and decoder addresses under `games/<game>/renderer/`. The second and
+third are the template: a fourth game is `games/<game>/` holding a
+`recomp.conf`, a `game_extras_impl.c`, a `psyq_game_provides.h`, a
+`manifest/` and a `CMakeLists.txt` that calls `openpete_add_game`.
 
 ## Prerequisites
 
@@ -81,8 +83,11 @@ the entry TU, `game_extras_impl.c`, the generated identity TU, the shared
 PSYQ-to-PsyCross layer with the inert default for every hook the game does
 not name in `psyq_game_provides.h`, the freecam body, the write census, and
 the generated abort-on-call PSYQ stubs. `MAIN`, `FEATURE_LIST`,
-`ICON_SOURCE`, `MODULE_LINKAGE` and `MODULE_SOURCES` override the defaults;
-`games/spyro-1/CMakeLists.txt` uses all of them. A game whose `generated/`
+`ICON_SOURCE`, `MODULE_LINKAGE`, `MODULE_SOURCES` and `SYMBOLS_MANIFEST`
+override the defaults. `ORCHESTRATOR`, `INTERP_REGIONS`, `TERRAIN_GAME`,
+`MOBY_GAME` and `PLAYER_GAME` name the game's native-renderer TUs; each
+defaults to an inert `*_none.c` under `games/common/`
+(`cmake/openpete_game.cmake:92-112`). A game whose `generated/`
 holds no recompiled output is skipped with a warning.
 
 Append the game to `OPENPETE_GAMES` in the top-level `CMakeLists.txt`, or
@@ -136,11 +141,9 @@ control failing at its record ([`duckstation-oracle.md`](duckstation-oracle.md))
 
 ## 7. What stays Spyro-1-specific
 
-- The native Vulkan renderer walks, the mod SDK, the disc library, the
-  splash and the shared-linkage distribution build are `games/spyro-1/`
-  sources listed in its `CMakeLists.txt`; the other games render through
-  PsyCross (`openpete_options_set_default_renderer` in
-  `games/common/game_main.cpp`).
+- The mod SDK, the disc library, the splash and the shared-linkage
+  distribution build are `games/spyro-1/` sources listed in its
+  `CMakeLists.txt`.
 - The dragon-rescue golden tier (`tests/golden/spyro-1/dragons/`) exists
   for Spyro 1 alone. The presentation golden itself is per game
   (`tests/golden/<game>/presentation/blessed.tsv` for spyro-1, spyro-2 and

@@ -92,7 +92,6 @@ by initializing each path explicitly; `git submodule status` then shows no
 
 ```bash
 git submodule update --init --recursive -- third_party/SDL
-git submodule update --init --recursive -- third_party/cubeb
 git submodule update --init --recursive -- third_party/glslang
 git submodule update --init --recursive -- third_party/imgui
 git submodule update --init --recursive -- games/spyro-1/spyro-1
@@ -198,7 +197,7 @@ Every build sits on two axes: the target (which OS) and the recomp linkage
 
 ### The two linkage modes
 
-`OPENPETE_RECOMP_LINKAGE` (`games/spyro-1/CMakeLists.txt:108`) selects how
+`OPENPETE_RECOMP_LINKAGE` (`games/spyro-1/CMakeLists.txt:91`) selects how
 the recompiled module joins the runtime:
 
 - `static` (default) - the dev build. The recompiled C is an OBJECT library
@@ -210,7 +209,7 @@ the recompiled module joins the runtime:
   (`games/spyro-1/dist/recomp_build.cpp`), keying the cache on a hash of the
   PSXRecomp binary, its emission metadata and the disc's SHA-256. Discs live
   in a content-addressed library under the user data dir, or beside the exe
-  for a portable install (`games/spyro-1/dist/disc_library.cpp:89-92`).
+  for a portable install (`games/spyro-1/dist/disc_library.cpp:98-103`).
 
 Both modes build from the same sources; `shared` is an additive second
 linkage, not a fork.
@@ -232,7 +231,7 @@ Every preset except `linux-debug` sets `OPENPETE_SKIP_DECOMP=ON`
 (full-recompilation mode). `shared` requires it: configure aborts with a
 `FATAL_ERROR` otherwise, because the hybrid decomp path's `--defsym` aliases
 and native thunks assume one image
-(`games/spyro-1/CMakeLists.txt:112-117`).
+(`games/spyro-1/CMakeLists.txt:95-100`).
 
 ### Where preset knobs live: `cmake/presets/<preset>.cmake`
 
@@ -266,7 +265,7 @@ What the preset files pin, beyond `CMAKE_BUILD_TYPE`:
 | `OPENPETE_FUNC_TRACE=OFF` | `linux-release*`, `windows-mingw*` | `-finstrument-functions` per-function tracing is a dev-only drill-down (1-8 ms/tick). Pinned as a tracked knob so no dist build inherits a stale ON; enable in a throwaway dir with `-DOPENPETE_FUNC_TRACE=ON` |
 | `CMAKE_C_FLAGS`/`CMAKE_CXX_FLAGS=-march=x86-64` | `windows-mingw*` | pinned to the baseline ISA (not left implicit - toolchains differ in their default) so the distributable runs on any x86-64 CPU. `x86-64-v3` (AVX2/FMA/BMI2) measures flat: the hot path is the recompiled game's scalar integer code with no vectorizable loops, so the pre-Haswell/Zen1 cutoff would buy nothing |
 | `-ffile-prefix-map` on source and binary dir | `*-shared` | `__FILE__`/assert strings are referenced `.rdata` that package-time stripping cannot remove; without the mapping they leak the build machine's username and layout |
-| `CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON` | `linux-release-shared` | LTO. No Windows preset enables it: GNU LTO does not treat `.def` exports as liveness roots, so it DCEs the exported `psyq_*` thunks and ld silently emits absolute-0 exports, giving a DEP crash at the first PSYQ call. `games/spyro-1/CMakeLists.txt:613-614` forces IPO off on the exe target as a guard, and line 150 keeps it off for the module (the shipped module is boot-compiled at plain `-O2`, so the CMake-built one is a dev artifact) |
+| `CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON` | `linux-release-shared` | LTO. No Windows preset enables it: GNU LTO does not treat `.def` exports as liveness roots, so it DCEs the exported `psyq_*` thunks and ld silently emits absolute-0 exports, giving a DEP crash at the first PSYQ call. `games/spyro-1/CMakeLists.txt:565-566` forces IPO off on the exe target as a guard, and `cmake/openpete_game.cmake:145` keeps it off for the module (the shipped module is boot-compiled at plain `-O2`, so the CMake-built one is a dev artifact) |
 | `OPENPETE_RECOMP_LINKAGE=shared` | `*-shared` | the linkage axis |
 | `OPENPETE_ROM_FREE_ICON=ON` | `*-shared` | no game bytes baked into the exe |
 | `OPENPETE_ENABLE_RECORD=OFF` | `*-shared` | compiles out `--record`, dropping the libav dependency |
@@ -344,7 +343,7 @@ repo-relative paths resolved against the working directory. An explicit
 touches the first-boot machinery.
 
 Persistent settings come from `openpete.toml`, read from the exe's directory
-and then the per-user config dir (`core/config/config.c:1094-1100`) - never
+and then the per-user config dir (`core/config/config.c:1232-1239`) - never
 from the working directory, and no such file is staged into a dev build dir.
 `--config-report` prints the resolved settings and exits; `--config PATH`
 uses only that file; `--no-config` ignores every config file, which is what
@@ -403,7 +402,7 @@ developer's real directories; `--appimage` gates the AppImage instead, and
 build tree present.
 
 `OPENPETE_PSXRECOMP` and `OPENPETE_CC`
-(`games/spyro-1/dist/recomp_build.cpp:298,318`) override the bundled tools for
+(`games/spyro-1/dist/recomp_build.cpp:300,320`) override the bundled tools for
 dev testing of the shared path; without them the exe looks in
 `recomp/tools/` next to itself, then the repo build dir, then the system
 compiler.
@@ -479,7 +478,7 @@ reference's parse-failures page. It deletes and rewrites
   `record.c` down to a stub unless a static FFmpeg exists at
   `third_party/ffmpeg-mingw/`. `scripts/setup_mingw_ffmpeg.sh` cross-builds
   one (static GPL FFmpeg with x264, which makes the resulting exe GPL).
-- `--headless` logs an SDL_Init failure. `core/runtime/run.c:5920-5936`
+- `--headless` logs an SDL_Init failure. `core/runtime/run.c:6946-6956`
   requests the `offscreen` video driver and, if `SDL_Init` fails under it,
   retries with `dummy`, which is sufficient for screenshots. The startup log
   line names the driver that was actually selected.

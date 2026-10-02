@@ -28,9 +28,10 @@ presentation layer.
 - `scripts/` - build, gate and release scripts; `scripts/fences/` holds
   the mechanical rule checks.
 - `tools/` - code generators and analysis scripts.
-- `third_party/` - vendored dependencies (psxrecomp, libco, glad, stb,
-  volk, Vulkan headers, miniz, tomlc99, xxhash, among others) and
-  submodules (PsyCross, SDL, cubeb, duckstation, glslang, imgui).
+- `third_party/` - vendored dependencies (psxrecomp, libco, stb, volk,
+  Vulkan headers, miniz, tomlc99, xxhash, dear_bindings, the MinGW OpenAL
+  prebuilt) and submodules (PsyCross, SDL, cubeb, duckstation, glslang,
+  imgui).
 - `docs/` - this site's source under `docs/src/`, the modding site under
   `docs/modding/`, and the release inputs.
 
@@ -46,7 +47,7 @@ model.
   translated with its own `--func-prefix` into
   `generated/<level>/*.bin_full.c` and `*.bin_dispatch.c` so that overlays
   sharing one PSX load address coexist at link time;
-  `games/spyro-1/dispatch_chain.c` routes a call to the active overlay.
+  `games/common/overlay_dispatch.c` routes a call to the resident overlay.
   Regenerate with `scripts/regen-recomp.sh`.
 - **Rewritten decomp C.** Functions with a matching decompile in the sibling
   `spyro-1/src/` can be compiled directly instead of recompiled. `tools/rewrite_tu.py`
@@ -69,7 +70,7 @@ drops the rewritten TUs and routes every vaddr through the recompiler;
 
 ## Shared memory
 
-`core/psx/cpu.c:26` defines `g_ram`, the 2 MiB main RAM array, plus a
+`core/psx/cpu.c:30` defines `g_ram`, the 2 MiB main RAM array, plus a
 1 KiB scratchpad. All three bodies of code address the same buffer:
 recompiled code through the `psx_runtime.h` load/store callbacks bound in
 `core/psx/cpu.c`, rewritten decomp C through link-time
@@ -86,7 +87,7 @@ module.
 
 ## Execution model
 
-The game runs on one libco fiber created in `core/runtime/run.c:2480`; the
+The game runs on one libco fiber created in `core/runtime/run.c:3088`; the
 host loop drives it and the game yields back through
 `openpete_yield_to_host()` (`core/psx/fiber.c`). Additional fibers are
 added only if the game's IRQ semantics force it. Clocks are NTSC-exact: tick
@@ -94,9 +95,10 @@ added only if the game's IRQ semantics force it. Clocks are NTSC-exact: tick
 
 ## Presentation
 
-`--renderer` selects the display path (`core/config/options.c:727`):
-`vk` (the native Vulkan renderer), `psycross` (the legacy GL path), `ab`, and
-`diff`. Headless runs fall back to PsyCross. The default is `vk` on every
+`--renderer` selects the rasterizer (`core/config/options.c:956-963`):
+`vk` (the native Vulkan renderer) or `psycross` (the legacy GL path, shown
+in the same native window). Under `--headless` the native renderer stays
+off and PsyCross rasterizes. The default is `vk` on every
 game; a game that must start elsewhere calls
 `openpete_options_set_default_renderer` before parsing, and `--help` names
 each game's own default.
@@ -114,9 +116,9 @@ into gameplay state until the oracle clears them.
 
 `core/` contains nothing Spyro-specific. Entry point, CRC, overlay layout,
 disc layout, and runtime quirks are declared in `core/include/game_extras.h`
-and implemented in `games/<game>/game_extras_impl.c`. Spyro 1 is the only
-implemented game; `games/spyro-2/` and `games/spyro-3/` hold TODO notes and,
-for Spyro 3, generated recompiler output used by model-porting tools.
+and implemented in `games/<game>/game_extras_impl.c`. `OPENPETE_GAMES`
+(`CMakeLists.txt:60`) builds `games/spyro-1/`, `games/spyro-2/` and
+`games/spyro-3/` by default, one executable each.
 
 ## Mods
 
@@ -124,7 +126,7 @@ for Spyro 3, generated recompiler output used by model-porting tools.
 `core/include/openpete_mod_api.h`, with services for shaders, textures,
 sound, draw, and configuration. `tools/gen_mod_sdk.py` generates the
 distributable SDK. The shipped mods are under `mods/`; author documentation
-is under `modding/`.
+is under `docs/modding/`.
 
 ## Level data
 
@@ -159,5 +161,3 @@ it keeps and the problem it solves, never its history.
 libclang in the pre-commit hook for every function a commit adds or edits;
 the functions not yet documented are the rows of
 `baselines/docs/undocumented.tsv`.
-
-## Where the design lives

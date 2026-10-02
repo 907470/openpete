@@ -92,6 +92,31 @@ than of a device: with no daemon running, OpenAL falls through to its ALSA
 or PulseAudio backend, both of which still resolve against the host. ALSA
 itself stays unbundled, so `libasound.so.2` remains a host requirement.
 
+## In the repository, not in any distributed build
+
+Present under `third_party/` or produced there by a setup script. No release
+archive carries them, so they have no table row and no text under
+`licences/`.
+
+- cubeb (`third_party/cubeb`, submodule) - ISC (`third_party/cubeb/LICENSE`).
+  https://github.com/mozilla/cubeb. No CMake target builds it.
+- DuckStation fork (`third_party/duckstation`, submodule) - CC BY-NC-ND 4.0
+  (`third_party/duckstation/LICENSE`). https://github.com/stenzek/duckstation.
+  The reference emulator the gameplay oracle captures its golden trace
+  from, built by `scripts/setup_duckstation.sh`; never linked.
+- FFmpeg 6.1.1 and x264 (`third_party/ffmpeg-mingw/`, gitignored) - GPL:
+  `scripts/setup_mingw_ffmpeg.sh` configures FFmpeg with `--enable-gpl
+  --enable-libx264`. https://ffmpeg.org, https://code.videolan.org/videolan/x264.
+  Linked statically into a `windows-mingw` executable for `--record` only
+  when the prefix exists, which makes that executable GPL; a dist preset
+  refuses the combination at configure (`core/CMakeLists.txt`), and
+  `scripts/dist_compliance.py scan` refuses an archive whose binaries carry
+  an FFmpeg or x264 marker.
+
+The MinGW OpenAL Soft prebuilt in `third_party/OpenAL-mingw/` (version in
+`VERSION`, licence in `COPYING`) is the import library, headers and
+`OpenAL32.dll` of the OpenAL Soft 1.25.1 row above.
+
 ## Trademarks
 
 _Spyro the Dragon_ and related marks are trademarks of their respective

@@ -207,19 +207,17 @@ current. A forced-entry, `psyq.toml`, or psxrecomp change that moves discovery
 re-runs the regen with `OPENPETE_MANIFEST_BLESS=1` and commits the snapshot in
 the same change.
 
-### 4.5 Runtime overlay routing (`dispatch_chain.c`)
+### 4.5 Runtime overlay routing (`overlay_dispatch.c`)
 
 Since all overlays share `0x8007AA38`, only the resident one may match a
-dispatch. `games/spyro-1/dispatch_chain.c` tracks the resident overlay in
-`s_active`:
-
-```c
-int psx_dispatch_compiled(CPUState* cpu, uint32_t addr) {
-    if (psx_dispatch_main_exe(cpu, addr)) return 1;   // main EXE always live
-    if (s_active) return s_active->fn(cpu, addr);      // only the resident overlay
-    return 0;
-}
-```
+dispatch. `games/common/overlay_dispatch.c` tracks the resident overlay in
+`s_active`. `psx_dispatch_compiled` tries the main EXE first, which is always
+resident, then only the tracked overlay's dispatcher
+(`games/common/overlay_dispatch.c:123-149`). A game that registers a resync
+hook through `spyro_overlay_set_resync` has the tracker re-derived from the
+overlay's id word before each dispatch into the overlay window; Spyro 2 and
+3 register one (`games/common/game_extras_overlay_resync.c`), Spyro 1 does
+not.
 
 `psyq_CdRead` (`games/common/psyq/psyq_thunks.cpp`) updates `s_active` after the
 bytes have settled: when the read's destination `cpu->a1` is exactly
@@ -231,7 +229,7 @@ the overlay's bytes.
 
 The id -> name -> dispatcher table is the auto-generated
 `games/spyro-1/generated/spyro_overlay_table.c`, declared by
-`games/spyro-1/spyro_overlay_table.h`. Savestates carry the active id in the
+`games/common/spyro_overlay_table.h`. Savestates carry the active id in the
 game-side extra payload (`game_state_extra_save` in
 `games/spyro-1/game_extras_impl.c`, field `ovl` at offset 8, version 2 and up)
 rather than re-deriving it from the RAM marker, because a cutscene-style load

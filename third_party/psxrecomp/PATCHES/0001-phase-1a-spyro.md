@@ -1,4 +1,4 @@
-# 0001 — Phase 1a Spyro adaptations
+# 0001 — Spyro adaptations
 
 These changes are applied directly on top of the vendored psxrecomp source
 (see `ORIGIN.txt` for the upstream commit). They are documented here so a
@@ -26,8 +26,8 @@ future re-vendoring or upstream pull request can pick them up.
    `addr`).
 5. **`--skip-on-error`** — wraps each function's codegen in `try`. On
    failure, emits a stub that logs the address and `abort()`s when called,
-   then continues. Lets a partial Phase-1a output land while individual
-   codegen edge cases get fixed.
+   then continues. Lets a partial output build while individual
+   codegen edge cases are open.
 6. **`--output-dir=<dir>`** — writes `<stem>_full.c`, `<stem>_dispatch.c`,
    and `discovered_functions.log` into `<dir>`. Defaults to `generated/`
    for backwards compat.

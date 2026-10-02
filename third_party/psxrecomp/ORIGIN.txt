@@ -1,4 +1,4 @@
 upstream: https://github.com/mstan/psxrecomp
 commit: 3c2b87cb883d67db984fcabed30c5195f39ee3cd
 vendored: 2026-04-25T00:10:35Z
-notes: Phase 0b vendor; Phase 1a will land patches under PATCHES/.
+notes: local changes are applied in tree; each is described under PATCHES/.
